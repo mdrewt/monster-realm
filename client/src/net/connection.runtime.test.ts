@@ -1573,7 +1573,7 @@ describe('connect(): the world scope', { sequential: true }, () => {
 
   it('a prefetched zone that is rejected is reported, tried again no sooner than a second later, and never ends the connection; one that never applies does not either [WS-PREFETCH-FAILS]', async () => {
     // WRONG IMPL KILLED: a prefetch failure on the own zone's ladder (a zone the player is not
-    // in respawns them at the zone 0 spawn); a rejected prefetch re-issued on every scope run.
+    // in costs them their connection); a rejected prefetch re-issued on every scope run.
     const w = wsPrefetchOpts();
     const { b, handle } = await wsSettled(0, w, 5, 5);
     expect(wsQueries(b)).toEqual([WS_OWN_QUERY, wsZoneQuery(0), wsZoneQuery(1)]);
@@ -1631,7 +1631,8 @@ describe('connect(): the world scope', { sequential: true }, () => {
   it('a rejected own-zone set is reported and retried in place after each backoff; rejected once more than there are retries, the connection takes the drop path and is closed [WS-REJECTED]', async () => {
     // WRONG IMPL KILLED: a rejection ignored (the player stands in an empty zone for good); an
     // immediate retry loop; a retry issued while the previous handle is live; the drop path taken
-    // on the first rejection (a reconnect respawns the player); the socket left open after it.
+    // on the first rejection (a reconnect replaces the player's character); the socket left open
+    // after it.
     const { b, w } = await wsSettled(0);
     const subscribeErrors = (): unknown[][] => wsErrors(w, 'subscribe');
 

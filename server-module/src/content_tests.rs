@@ -1940,6 +1940,16 @@ mod nh_sync {
             })
             .writable()
             .scannable();
+        // init / sync_content's reaper arms read the tables they reap. The export
+        // arm reads `export_bundle` through its creation-stamp index, which reads
+        // as empty unless a test registers it.
+        let _ = fx
+            .table_keyed::<crate::playtest::PlaytestEvent, u64>("playtest_event", "event_id", |r| {
+                r.event_id
+            })
+            .writable()
+            .scannable()
+            .unique();
         // init / sync_content's singleton + per-account reaper arms.
         let _ = fx
             .table_keyed::<PlaytestReaperSchedule, u64>("playtest_reaper_schedule", "id", |r| r.id)
@@ -2295,10 +2305,10 @@ mod nh_sync {
         assert_eq!(ticks_by_zone(&w), vec![], "a reseed arms no zone");
         assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "skip path");
         assert_eq!(ticks_by_zone(&w), vec![], "the skip path arms no zone");
-        // The 60 s heartbeat keeps running in an empty world: its log line is
-        // what the AlloyIngestStalled alert reads as "the log pipeline is alive"
-        // when nobody is playing. (The playtest and export-bundle interval
-        // reapers, 300 s and 3600 s, keep running too.)
+        // The 60 s heartbeat is the only schedule in an empty world: its log line
+        // is what tells the operator the whole server is alive when nobody is
+        // playing. The playtest and export-bundle reapers have nothing to reap,
+        // so neither has a schedule row.
         let beats = fx
             .table_keyed::<MrHeartbeatSchedule, u64>("mr_heartbeat_schedule", "id", |r| r.id)
             .rows();
@@ -2306,6 +2316,163 @@ mod nh_sync {
             beats.len(),
             1,
             "the heartbeat stays armed with nobody connected"
+        );
+        assert_eq!(
+            beats[0].scheduled_at,
+            spacetimedb::ScheduleAt::Interval(std::time::Duration::from_secs(60).into()),
+            "every sixty seconds"
+        );
+        assert_eq!(
+            playtest_wakes(&fx),
+            vec![],
+            "no playtest reaper run is armed"
+        );
+        assert_eq!(export_wakes(&fx), vec![], "no export reaper run is armed");
+    }
+
+    /// Every playtest reaper schedule row as its one-shot fire time in ms
+    /// (`None` = an interval row).
+    fn playtest_wakes(fx: &Fixture) -> Vec<Option<i64>> {
+        fx.table_keyed::<PlaytestReaperSchedule, u64>("playtest_reaper_schedule", "id", |r| r.id)
+            .rows()
+            .iter()
+            .map(|s| crate::playtest::one_shot_ms(&s.scheduled_at))
+            .collect()
+    }
+
+    fn export_wakes(fx: &Fixture) -> Vec<Option<i64>> {
+        fx.table_keyed::<ExportBundleReaperSchedule, u64>(
+            "export_bundle_reaper_schedule",
+            "id",
+            |r| r.id,
+        )
+        .rows()
+        .iter()
+        .map(|s| crate::playtest::one_shot_ms(&s.scheduled_at))
+        .collect()
+    }
+
+    /// A republish over a world whose schema ran the two reapers and the
+    /// heartbeat on interval rows. `sync_content` — on the reseed path and on
+    /// the skip path — removes the reapers' interval rows and re-creates none;
+    /// with nothing to reap it leaves no row, and with rows waiting it leaves
+    /// exactly one one-shot per reaper at the oldest row's expiry. The
+    /// heartbeat's interval row is kept as it is, id included.
+    /// kills: a reaper interval row kept or re-created by init / sync_content;
+    /// a one-shot armed for an empty table; pending rows left with no run; a
+    /// second row on a repeat sync; the heartbeat converted or re-minted.
+    #[test]
+    fn nh_sync_content_converges_legacy_interval_reapers_to_on_demand() {
+        use crate::schema::ExportBundle;
+        use spacetimedb::{ScheduleAt, Timestamp};
+        const NOW: i64 = 1_700_000_000_000;
+        const TTL: i64 = 604_800_000;
+        let fx = fixture();
+        let w = world(&fx);
+        let playtest_rows =
+            fx.table_keyed::<PlaytestReaperSchedule, u64>("playtest_reaper_schedule", "id", |r| {
+                r.id
+            });
+        let export_rows = fx.table_keyed::<ExportBundleReaperSchedule, u64>(
+            "export_bundle_reaper_schedule",
+            "id",
+            |r| r.id,
+        );
+        let beats =
+            fx.table_keyed::<MrHeartbeatSchedule, u64>("mr_heartbeat_schedule", "id", |r| r.id);
+        let events = fx.table_keyed::<crate::playtest::PlaytestEvent, u64>(
+            "playtest_event",
+            "event_id",
+            |r| r.event_id,
+        );
+        let bundles = fx.table_keyed::<ExportBundle, i64>("export_bundle", "created_at_ms", |r| {
+            r.created_at_ms
+        });
+        let at = Timestamp::from_micros_since_unix_epoch(NOW * 1000);
+        fx.run_as_at(owner(), at, crate::init);
+        let beat_before = beats.rows();
+        assert_eq!(beat_before.len(), 1);
+        let every = |secs: u64| ScheduleAt::Interval(std::time::Duration::from_secs(secs).into());
+        let seed_legacy = || {
+            for id in [700, 701] {
+                playtest_rows.seed(&PlaytestReaperSchedule {
+                    id,
+                    scheduled_at: every(300),
+                });
+            }
+            export_rows.seed(&ExportBundleReaperSchedule {
+                id: 800,
+                scheduled_at: every(3600),
+            });
+        };
+        let sync = |reseed: bool| {
+            if reseed {
+                seed_config(&w, 0);
+            }
+            assert_eq!(fx.run_as_at(owner(), at, crate::sync_content), Ok(()));
+        };
+
+        // Nothing to reap: the interval rows go and nothing replaces them.
+        for reseed in [true, false] {
+            seed_legacy();
+            sync(reseed);
+            assert_eq!(playtest_wakes(&fx), vec![], "reseed={reseed}");
+            assert_eq!(export_wakes(&fx), vec![], "reseed={reseed}");
+        }
+
+        // Rows waiting: one one-shot each, at the oldest row's expiry.
+        let player = Identity::from_byte_array([0x31; 32]);
+        for (event_id, created_at_ms) in [(1, NOW - 50), (2, NOW - 9_000)] {
+            events.seed(&crate::playtest::PlaytestEvent {
+                event_id,
+                identity: player,
+                kind: 1,
+                created_at_ms,
+                battle_id: 0,
+                species_id: 1,
+                hp_permille: 500,
+                bait_item_id: 0,
+                success: false,
+            });
+        }
+        for (chunk_id, created_at_ms) in [(1, NOW - 20), (2, NOW - 4_000), (3, NOW - 4_000)] {
+            bundles.seed(&ExportBundle {
+                chunk_id,
+                owner_identity: player,
+                request_id: created_at_ms as u64,
+                table_name: "monster".to_string(),
+                chunk_index: 0,
+                total_chunks: 1,
+                payload_json: "{}".to_string(),
+                created_at_ms,
+            });
+        }
+        for reseed in [true, false, false] {
+            seed_legacy();
+            sync(reseed);
+            assert_eq!(
+                playtest_wakes(&fx),
+                vec![Some(NOW - 9_000 + TTL)],
+                "reseed={reseed}"
+            );
+            assert_eq!(
+                export_wakes(&fx),
+                vec![Some(NOW - 4_000 + TTL)],
+                "reseed={reseed}"
+            );
+        }
+        fx.reset_writes();
+        sync(false);
+        assert_eq!(fx.writes_to("playtest_reaper_schedule"), 0, "already armed");
+        assert_eq!(fx.writes_to("export_bundle_reaper_schedule"), 0);
+
+        let beat_after = beats.rows();
+        assert_eq!(beat_after.len(), 1, "one heartbeat row throughout");
+        assert_eq!(beat_after[0].id, beat_before[0].id, "the same row");
+        assert_eq!(
+            beat_after[0].scheduled_at,
+            every(60),
+            "still a 60 s interval"
         );
     }
 

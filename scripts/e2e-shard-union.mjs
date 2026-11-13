@@ -5,10 +5,12 @@
 //
 //   node scripts/e2e-shard-union.mjs <dir>
 //
-// <dir> holds one directory per shard artifact, each with the shard's JSON report (e2e.json)
-// and the listing of the whole suite taken on that runner (e2e-list.json). Exits 1 unless
-// every report has tests and no unexpected or flaky result, no test is in two reports, and the
-// reports' tests are exactly the listed tests.
+// <dir> holds one directory per shard artifact, named e2e-timings-<shard>-<run attempt>, each
+// with the shard's JSON report (e2e.json) and the listing of the whole suite taken on that
+// runner (e2e-list.json). A re-run of failed jobs re-runs only the failed shards, and every
+// attempt's artifacts are downloaded together, so each shard is judged by its highest attempt.
+// Exits 1 unless every such report has tests and no unexpected or flaky result, no test is in
+// two reports, and the reports' tests are exactly the listed tests.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -35,7 +37,22 @@ if (!dir) {
 const problems = [];
 const listed = new Set();
 const ran = new Map();
-const shards = existsSync(dir) ? readdirSync(dir).sort() : [];
+/** The artifact directory of each shard's highest attempt, in shard order. */
+function latestAttempts(names) {
+  const latest = new Map();
+  for (const name of names) {
+    const m = /^e2e-timings-(\d+)-(\d+)$/.exec(name);
+    if (!m) {
+      problems.push(`${name}: not an e2e-timings-<shard>-<attempt> artifact`);
+      continue;
+    }
+    const [shard, attempt] = [Number(m[1]), Number(m[2])];
+    if (!latest.has(shard) || latest.get(shard).attempt < attempt)
+      latest.set(shard, { attempt, name });
+  }
+  return [...latest.entries()].sort((x, y) => x[0] - y[0]).map(([, v]) => v.name);
+}
+const shards = latestAttempts(existsSync(dir) ? readdirSync(dir) : []);
 if (shards.length === 0) problems.push(`no shard artifacts in ${dir}`);
 for (const shard of shards) {
   const reportPath = join(dir, shard, 'e2e.json');

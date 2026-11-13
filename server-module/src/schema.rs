@@ -74,6 +74,25 @@ pub struct MoveIntent {
     pub last_input_seq: u64,
 }
 
+/// Where an account's character stood when its last connection closed: the
+/// zone, the tile and the facing `join_game` puts the next character on.
+/// PRIVATE with no view: it is the owner's own location while offline and no
+/// client reads it. A row exists only while the account has no character:
+/// `on_disconnect` writes it as it deletes the character and `join_game` deletes
+/// it as it creates the next one, so a position is stored once, never per step.
+/// `zone_id` is indexed like every table's zone column, so a per-zone read of
+/// the table is a query and never a migration.
+#[spacetimedb::table(accessor = last_position)]
+pub struct LastPosition {
+    #[primary_key]
+    pub owner_identity: Identity,
+    #[index(btree)]
+    pub zone_id: u32,
+    pub tile_x: i32,
+    pub tile_y: i32,
+    pub facing: Direction,
+}
+
 /// Singleton world config.
 #[spacetimedb::table(accessor = config, public)]
 pub struct Config {
@@ -1856,6 +1875,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         exportable: true,
     },
     DataLifecycleEntry {
+        table: "last_position",
+        policy: DeletionPolicy::Erase,
+        basis: "the zone and tile the owner's character stood on at its last disconnect, deleted outright at cascade time; re-keyed by the claim flow; not exported: an owner in the game has no row and has the same position in the exported character row, and an export requested by an account with no character omits its saved position",
+        exportable: false,
+    },
+    DataLifecycleEntry {
         table: "player_wallet",
         policy: DeletionPolicy::Erase,
         basis: "owned currency balance, deleted outright at cascade time",
@@ -2170,8 +2195,8 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "export_bundle_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "global hourly TTL reaper schedule for the export_bundle table: an \
-                interval singleton with no Identity column, armed by request_data_export \
+        basis: "global TTL reaper schedule for the export_bundle table: at most one \
+                one-shot row with no Identity column, armed by request_data_export \
                 and by init and sync_content, never keyed to any player",
         exportable: false,
     },

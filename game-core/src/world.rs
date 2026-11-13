@@ -208,6 +208,18 @@ pub fn spawn() -> TilePos {
     TilePos { x: 1, y: 1 }
 }
 
+/// May a returning character be put back on `pos` of the zone whose current map
+/// is `map`? Yes exactly when the tile is walkable in that map, which is also
+/// the only thing `apply_move` asks of a destination tile. A warp tile
+/// qualifies: a warp fires on the step onto it and its arrival tile is the tile
+/// of the warp back, so a character that has just changed zone stands on one.
+/// Another character on the tile is not asked about, because characters do not
+/// block each other.
+#[must_use]
+pub fn can_resume_at(map: &TileMap, pos: TilePos) -> bool {
+    map.is_walkable(pos)
+}
+
 // ===========================================================================
 // M11a: build_grid (private), map_for, validate_zone_maps
 // ===========================================================================
@@ -1137,6 +1149,28 @@ mod tests {
     #[test]
     fn spawn_is_walkable_in_zone_0() {
         assert!(zone_0().is_walkable(spawn()));
+    }
+
+    /// A walkable tile resumes, warp tiles included; a blocking tile and a tile
+    /// outside the map do not.
+    ///
+    /// kills: `can_resume_at` constant true or false, a warp tile refused.
+    #[test]
+    fn sr11_a_character_resumes_only_on_a_walkable_tile() {
+        let map =
+            map_for(0, &crate::content::load_zone_maps().expect("zone maps")).expect("zone 0");
+        assert!(super::can_resume_at(&map, spawn()), "floor");
+        let warp = map.warps.first().expect("zone 0 has a warp").from;
+        assert!(
+            super::can_resume_at(&map, warp),
+            "a warp tile is where a warp arrives"
+        );
+        assert!(!super::can_resume_at(&map, tp(0, 0)), "a wall");
+        assert!(!super::can_resume_at(&map, tp(-1, 1)), "west of the map");
+        assert!(
+            !super::can_resume_at(&map, tp(1, map.height)),
+            "south of the map"
+        );
     }
 
     #[test]

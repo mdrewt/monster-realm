@@ -13,13 +13,15 @@
 //! `game_core::EXPORT_CHUNK_ROWS`, and writes `export_bundle` rows read back only
 //! through the owner-scoped `my_export_bundle` view.
 //!
-//! an hourly interval-singleton schedule (`export_bundle_reaper_schedule`, no
-//! Identity column) drives the scheduler-only `export_bundle_reaper`, which
-//! deletes every `export_bundle` chunk older than `EXPORT_BUNDLE_TTL_MS` (7 days)
-//! through the pure `plan_export_reap` seam. a tick deletes WHOLE BUNDLES: the
+//! one one-shot schedule row (`export_bundle_reaper_schedule`, no Identity
+//! column) at the oldest chunk's expiry drives the scheduler-only
+//! `export_bundle_reaper`, which deletes every `export_bundle` chunk older than
+//! `EXPORT_BUNDLE_TTL_MS` (7 days) through the pure `plan_export_reap` seam and
+//! arms its own next run from what is left: none once the table is empty. a
+//! tick deletes WHOLE BUNDLES: the
 //! delete unit is the creation stamp every chunk of one request shares no other
 //! live request shares, so a bundle is never committed part-gone.
-//! `request_data_export` arms the singleton as its last statement, and `init` /
+//! `request_data_export` arms the row as its last write, and `init` /
 //! `sync_content` re-arm it on publish, so a chunk can never exist without its
 //! expiry armed.
 //!
@@ -80,6 +82,9 @@ pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usi
     for id in ids {
         ctx.db.export_bundle().chunk_id().delete(id);
     }
+    // A purge that empties the table leaves the reaper nothing to do, so its
+    // schedule row goes with the last chunk.
+    ensure_export_bundle_reaper(ctx);
     purged
 }
 
@@ -1536,7 +1541,7 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 /// the game-core sub-chunk boundary), all sharing one request_id — the
 /// request's unique creation stamp. Rejects (distinct static reasons,
 /// reject-not-clamp) a caller with no game state at all (anonymous identities
-/// are free; an orphaned bundle now expires via the hourly TTL reaper, but a
+/// are free; an orphaned bundle expires via the TTL reaper, but a
 /// zero-state identity should not write one in the first place), a caller
 /// inside the deletion grace window (cancel-then-export stays available), and a
 /// caller inside the flood-control cooldown window.
@@ -1681,8 +1686,9 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 }
 
 // ===========================================================================
-// A GLOBAL hourly interval singleton — not a per-request one-shot: no Identity column
-// (so NotOwned in the manifest, no re-key entry) and reachability-independent. Its read
+// ONE schedule row for the whole table, a one-shot at the oldest chunk's expiry — not a
+// row per request: no Identity column (so NotOwned in the manifest, no re-key entry) and
+// reachability-independent. An empty table has no row, so nothing runs. Its read
 // is a BOUNDED btree range over `created_at_ms`, so this module no longer sweeps
 // `export_bundle` at all. The behavioural proof is the pair of pure seams below —
 // `plan_export_reap` (which rows have expired) and `plan_export_reap_stamps` (which
@@ -1696,10 +1702,14 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 
 // Retention ceiling for an export snapshot.
 pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-// Sweep cadence: an hour is 168 times finer than the TTL, and every tick is one
+// Tick spacing: the reaper arms its own next tick no sooner than this from now, so
+// a tick that leaves expired rows behind (its read window or its stamp cap bound)
+// runs again after this long, never at once, and bundles expiring close together
+// share one tick. An hour is 168 times finer than the TTL, and every tick is one
 // bounded range read of at most EXPORT_REAP_MAX_READ_PER_TICK rows plus at most
 // EXPORT_REAP_MAX_STAMPS_PER_TICK index-point deletes under the global write lock
 // — so the cadence argument is about transaction COUNT, not about scan cost.
+// With no backlog the next tick is at the oldest remaining chunk's expiry.
 pub(crate) const EXPORT_REAP_INTERVAL: Duration = Duration::from_secs(3600);
 // Per-tick READ window: how many chunk rows a tick may decode. Export rows carry
 // whole payload chunks, so a small batch that always commits beats a large one
@@ -1845,10 +1855,11 @@ fn plan_export_reap_stamps(
     stamps
 }
 
-// Scheduler-only reducer. GUARD FIRST (before any read). Interval singleton:
-// the runtime keeps the row and re-fires it every EXPORT_REAP_INTERVAL. The
+// Scheduler-only reducer. GUARD FIRST (before any read). One-shot: the runtime
+// deletes the row it fired, and the tick arms the next one from the rows it
+// left (`arm_export_bundle_reaper`), so an empty table ends with no row. The
 // clock is read HERE, once per tick, and passed down: one instant per tick for
-// every row the tick weighs, and the helper's cutoff is injectable by a future
+// every row the tick weighs, and the helper's cutoff is injectable by a
 // native test. The reducer itself reaches no table.
 //
 // A scheduled reducer has no caller, so it is ITS OWN calling reducer. ONE line,
@@ -1857,9 +1868,13 @@ fn plan_export_reap_stamps(
 // guard REJECT emits nothing: on the 2.x host a scheduled function is private
 // (owner/collaborators only; the guard is belt-and-braces), and an owner-driven
 // reject line is still an unbounded 30-day-store write for ticks that never ran.
-// ABSENCE of the hourly line is therefore the abort-loop dead-man signal (the
-// mr_heartbeat idiom, at an hourly cadence): a tick that aborts before the last
-// statement writes no line at all. The tick reports its stamp count before the
+// A tick that aborts before the last statement writes no line at all, and its
+// re-arm rolls back with it while the runtime still consumes the row that
+// fired: chunks are then left with no tick armed until the next export request,
+// purge, `init` or `sync_content` arms one from the oldest chunk. The signal is
+// the host's own failed-reducer log for `export_bundle_reaper`, and a non-empty
+// `export_bundle` beside an empty `export_bundle_reaper_schedule`; the line has
+// no fixed cadence, so its absence is not one. The tick reports its stamp count before the
 // write bound beside what it planned, so a binding cap is observed rather than
 // inferred. A FULL read window says nothing about rows past its edge; only a
 // tick that read less than a full window and planned every stamp it saw has
@@ -1867,12 +1882,16 @@ fn plan_export_reap_stamps(
 #[spacetimedb::reducer]
 pub fn export_bundle_reaper(
     ctx: &ReducerContext,
-    _sched: ExportBundleReaperSchedule,
+    sched: ExportBundleReaperSchedule,
 ) -> Result<(), String> {
     if ctx.sender() != ctx.database_identity() {
         return Err(stringify!(export_reaper_scheduler_only).to_string());
     }
-    let tick = reap_expired_export_bundles(ctx, now_ms(ctx));
+    let now = now_ms(ctx);
+    let tick = reap_expired_export_bundles(ctx, now);
+    let firing = crate::playtest::firing_one_shot(sched.id, &sched.scheduled_at);
+    let wanted = export_rearm_ms(oldest_export_stamp(ctx), now);
+    arm_export_bundle_reaper(ctx, wanted, firing);
     let fields = reap_fields(tick);
     crate::observability::mr_log(stringify!(export_bundle_reap), &fields);
     Ok(())
@@ -2041,28 +2060,83 @@ fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> ExportReapT
     }
 }
 
-// Idempotent self-healing singleton arm (delegates to playtest::plan_reaper_arm,
-// the crate SSOT for the one-row rule). Called last by request_data_export and
-// from init / sync_content in lib.rs.
-pub(crate) fn ensure_export_bundle_reaper(ctx: &ReducerContext) {
-    let existing: Vec<u64> = ctx
+// The oldest creation stamp any chunk carries, or None for an empty table: the
+// first row of the creation-stamp btree read from its low end. ONE row decoded,
+// never a scan. The index hands rows back ascending by key; if it ever did not,
+// the tick would run at a later chunk's expiry and reap the older ones then —
+// late, never wrong.
+fn oldest_export_stamp(ctx: &ReducerContext) -> Option<i64> {
+    ctx.db
+        .export_bundle()
+        .created_at_ms()
+        .filter(i64::MIN..)
+        .next()
+        .map(|c| c.created_at_ms)
+}
+
+// The first tick a table whose oldest chunk carries `oldest` is owed
+// (playtest::next_wake_ms is the crate SSOT for the rule). No chunk: none. A
+// chunk already expired runs after EXPORT_REAP_INTERVAL. Otherwise the tick is
+// at the oldest chunk's expiry. This is what a write to the table and
+// init / sync_content arm.
+fn export_wake_ms(oldest: Option<i64>, now_ms: i64) -> Option<i64> {
+    crate::playtest::next_wake_ms(
+        oldest,
+        false,
+        now_ms,
+        EXPORT_BUNDLE_TTL_MS,
+        EXPORT_REAP_INTERVAL.as_millis() as i64,
+    )
+}
+
+// The next tick as armed by a tick that has just run: `export_wake_ms`, never
+// sooner than EXPORT_REAP_INTERVAL from now. Bundles expiring closer together
+// than that are reaped by one later tick, so the reaper is at most one
+// transaction and one log line per interval while chunks remain, and a chunk is
+// reaped within one interval of its expiry.
+fn export_rearm_ms(oldest: Option<i64>, now_ms: i64) -> Option<i64> {
+    crate::playtest::rearm_wake_ms(
+        export_wake_ms(oldest, now_ms),
+        now_ms,
+        EXPORT_REAP_INTERVAL.as_millis() as i64,
+    )
+}
+
+// Sole writer of the schedule table: bring its one row in line with the table
+// (playtest::plan_wake is the crate SSOT for the one-row rule). `wanted` is the
+// tick the table is owed: `export_rearm_ms` from the reaper, `export_wake_ms`
+// from everything else. An existing one-shot that is early enough is kept, so a
+// call that changes nothing writes nothing; an interval row left by an earlier
+// version of the module is removed. `firing` is the row the running reaper was
+// called with, which the runtime is about to delete.
+fn arm_export_bundle_reaper(ctx: &ReducerContext, wanted: Option<i64>, firing: Option<u64>) {
+    let existing: Vec<(u64, Option<i64>)> = ctx
         .db
         .export_bundle_reaper_schedule()
         .iter()
-        .map(|s| s.id)
+        .filter(|s| Some(s.id) != firing)
+        .map(|s| (s.id, crate::playtest::one_shot_ms(&s.scheduled_at)))
         .collect();
-    let plan = crate::playtest::plan_reaper_arm(&existing);
-    if plan.insert_one {
+    let plan = crate::playtest::plan_wake(&existing, wanted);
+    for id in plan.delete_ids {
+        ctx.db.export_bundle_reaper_schedule().id().delete(id);
+    }
+    if let Some(at_ms) = plan.insert_at_ms {
         ctx.db
             .export_bundle_reaper_schedule()
             .insert(ExportBundleReaperSchedule {
                 id: 0,
-                scheduled_at: ScheduleAt::Interval(EXPORT_REAP_INTERVAL.into()),
+                scheduled_at: crate::playtest::ms_to_schedule(at_ms),
             });
     }
-    for id in plan.delete_ids {
-        ctx.db.export_bundle_reaper_schedule().id().delete(id);
-    }
+}
+
+// Arm the tick the table is owed as it stands. Called last by request_data_export,
+// by purge_export_bundles (a purge that empties the table removes the row) and
+// from init / sync_content in lib.rs.
+pub(crate) fn ensure_export_bundle_reaper(ctx: &ReducerContext) {
+    let wanted = export_wake_ms(oldest_export_stamp(ctx), now_ms(ctx));
+    arm_export_bundle_reaper(ctx, wanted, None);
 }
 
 #[cfg(test)]

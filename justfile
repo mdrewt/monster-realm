@@ -56,7 +56,7 @@ test:
     }
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
-    door "scripts node suites" 4 24 scripts/*.test.mjs
+    door "scripts node suites" 5 30 scripts/*.test.mjs
     guard() {
         local hook=$1 ok=$2 floor=$3 out n
         out="$(CLAUDE_PROJECT_DIR="$PWD" node "$hook" --selftest 2>&1)" || { echo "$out" >&2; exit 1; }
