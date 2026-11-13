@@ -5,8 +5,10 @@
 //! so `super::` resolves to `playtest.rs`.
 //!
 //! Pure seams (`hp_permille`, `PlaytestKind`, `plan_reap`, `plan_reaper_arm`,
-//! `build_playtest_event`) plus a native-host test of the shipped
-//! `playtest_reaper`'s scheduler-only guard.
+//! `next_wake_ms`, `plan_wake`, `build_playtest_event`) plus native-host tests of
+//! the shipped `playtest_reaper`, its scheduler-only guard and its on-demand
+//! schedule (`record_recruit_event`, `ensure_playtest_reaper`,
+//! `erase_playtest_events`).
 
 use spacetimedb::Identity;
 
@@ -547,6 +549,7 @@ fn nh_playtest_reaper_is_scheduler_only_and_refuses_before_any_delete() {
         .writable()
         .scannable()
         .unique();
+    let _schedule = schedule_table(&fx);
     let player = Identity::from_byte_array([0x11; 32]);
     let now = super::PLAYTEST_EVENT_TTL_MS * 3;
     let ev = |event_id: u64, created_at_ms: i64| super::PlaytestEvent {
@@ -612,6 +615,7 @@ fn nh_playtest_reaper_retains_exactly_seven_days() {
         .writable()
         .scannable()
         .unique();
+    let _schedule = schedule_table(&fx);
     let player = Identity::from_byte_array([0x12; 32]);
     let now = 10 * SEVEN_DAYS_MS;
     for (event_id, created_at_ms) in [(1, now - SEVEN_DAYS_MS), (2, now - SEVEN_DAYS_MS + 1)] {
@@ -642,41 +646,690 @@ fn nh_playtest_reaper_retains_exactly_seven_days() {
     assert_eq!(left, vec![2], "exactly the seven-day-old row is reaped");
 }
 
-/// `ensure_playtest_reaper` arms exactly one interval row at the reap cadence,
-/// stays at one on a repeat call, and collapses duplicates back to one.
-///
-/// kills: the arm replaced by a no-op.
-#[test]
-fn nh_ensure_playtest_reaper_arms_one_interval_singleton() {
-    use crate::native_host_tests::fixture;
-    use spacetimedb::ScheduleAt;
+// ===========================================================================
+// On-demand schedule: the reaper runs only when something is owed. One one-shot
+// row at the oldest event's expiry (or `PLAYTEST_REAP_RETRY_MS` out when work is
+// owed now), no row for an empty table.
+// ===========================================================================
 
-    let fx = fixture();
-    let rows = fx
-        .table_keyed::<super::PlaytestReaperSchedule, u64>("playtest_reaper_schedule", "id", |r| {
-            r.id
-        })
+type ScheduleHandle<'a> = crate::native_host_tests::Handle<'a, super::PlaytestReaperSchedule, u64>;
+type EventHandle<'a> = crate::native_host_tests::Handle<'a, super::PlaytestEvent, u64>;
+
+fn schedule_table(fx: &crate::native_host_tests::Fixture) -> ScheduleHandle<'_> {
+    fx.table_keyed::<super::PlaytestReaperSchedule, u64>("playtest_reaper_schedule", "id", |r| r.id)
         .writable()
         .scannable()
         .unique()
-        .auto_inc(|r| r.id, |r, v| r.id = v);
-    let ctx = fx.ctx();
-    super::ensure_playtest_reaper(&ctx);
-    let armed = rows.rows();
-    assert_eq!(armed.len(), 1, "one reaper row armed");
+        .auto_inc(|r| r.id, |r, v| r.id = v)
+}
+
+fn event_table(fx: &crate::native_host_tests::Fixture) -> EventHandle<'_> {
+    fx.table_keyed::<super::PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.event_id, |r, v| r.event_id = v)
+}
+
+fn event_row(event_id: u64, identity: Identity, created_at_ms: i64) -> super::PlaytestEvent {
+    super::PlaytestEvent {
+        event_id,
+        identity,
+        kind: 1,
+        created_at_ms,
+        battle_id: 0,
+        species_id: 1,
+        hp_permille: 500,
+        bait_item_id: 0,
+        success: false,
+    }
+}
+
+fn ts(ms: i64) -> spacetimedb::Timestamp {
+    spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000)
+}
+
+fn one_shot(id: u64, at_ms: i64) -> super::PlaytestReaperSchedule {
+    super::PlaytestReaperSchedule {
+        id,
+        scheduled_at: spacetimedb::ScheduleAt::Time(ts(at_ms)),
+    }
+}
+
+fn interval(id: u64) -> super::PlaytestReaperSchedule {
+    super::PlaytestReaperSchedule {
+        id,
+        scheduled_at: spacetimedb::ScheduleAt::Interval(std::time::Duration::from_secs(300).into()),
+    }
+}
+
+/// Every schedule row as (id, one-shot fire ms; `None` = an interval row), by id.
+fn wakes(schedule: &ScheduleHandle<'_>) -> Vec<(u64, Option<i64>)> {
+    let mut v: Vec<(u64, Option<i64>)> = schedule
+        .rows()
+        .iter()
+        .map(|s| (s.id, super::one_shot_ms(&s.scheduled_at)))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+const MODULE: [u8; 32] = [0x7E; 32];
+const TTL: i64 = 604_800_000;
+const RETRY: i64 = 300_000;
+const NOW: i64 = 10 * TTL;
+
+/// The retry delay is five minutes, as a literal: it is the bound on how long
+/// the table may sit over its cap and on how long a batch-limited backlog waits.
+#[test]
+fn playtest_reap_retry_is_five_minutes() {
+    assert_eq!(super::PLAYTEST_REAP_RETRY_MS, 300_000);
+    assert_eq!(super::PLAYTEST_EVENT_TTL_MS, TTL);
+}
+
+/// `next_wake_ms`: nothing left means no run; a fresh oldest row runs at its
+/// expiry; a row at or past its expiry, or a table over its cap, runs one retry
+/// delay from now and never at once.
+///
+/// kills: `>=` to `>` / `<` at the expiry boundary, `||` to `&&`, either arm's
+/// arithmetic, a constant return.
+#[test]
+fn next_wake_is_the_oldest_expiry_or_a_retry_when_work_is_owed_now() {
+    let f = |oldest, over_cap, now| super::next_wake_ms(oldest, over_cap, now, 1_000, 30);
+    assert_eq!(f(None, false, 5_000), None, "an empty table owes nothing");
     assert_eq!(
-        armed[0].scheduled_at,
-        ScheduleAt::Interval(std::time::Duration::from_secs(300).into()),
-        "every five minutes"
+        f(None, true, 5_000),
+        None,
+        "no row, no run, whatever the cap says"
     );
-    super::ensure_playtest_reaper(&ctx);
-    assert_eq!(rows.rows().len(), 1, "a repeat call keeps one row");
-    rows.seed(&super::PlaytestReaperSchedule {
-        id: 99,
-        scheduled_at: ScheduleAt::Interval(std::time::Duration::from_secs(300).into()),
-    });
-    super::ensure_playtest_reaper(&ctx);
-    assert_eq!(rows.rows().len(), 1, "duplicates collapse to one");
+    assert_eq!(
+        f(Some(4_500), false, 5_000),
+        Some(5_500),
+        "at the oldest row's expiry"
+    );
+    assert_eq!(
+        f(Some(4_001), false, 5_000),
+        Some(5_001),
+        "one ms before expiry"
+    );
+    assert_eq!(
+        f(Some(4_000), false, 5_000),
+        Some(5_030),
+        "exactly expired: retry"
+    );
+    assert_eq!(
+        f(Some(100), false, 5_000),
+        Some(5_030),
+        "long expired: retry"
+    );
+    assert_eq!(
+        f(Some(4_500), true, 5_000),
+        Some(5_030),
+        "over the cap: retry"
+    );
+    assert_eq!(f(Some(100), true, 5_000), Some(5_030));
+    assert_eq!(
+        super::next_wake_ms(Some(i64::MAX - 1), false, 0, 1_000, 30),
+        Some(i64::MAX),
+        "saturates instead of overflowing"
+    );
+}
+
+/// `one_shot_ms` / `ms_to_schedule` / `firing_one_shot`: a one-shot row's fire
+/// time in whole ms and its id; an interval row has neither.
+///
+/// kills: the micros-to-ms division, the ms-to-micros factor, a constant return.
+#[test]
+fn schedule_row_time_conversions_round_trip() {
+    use spacetimedb::{ScheduleAt, Timestamp};
+    let t = ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(5_000_999));
+    let i = ScheduleAt::Interval(std::time::Duration::from_secs(300).into());
+    assert_eq!(super::one_shot_ms(&t), Some(5_000));
+    assert_eq!(super::one_shot_ms(&i), None);
+    assert_eq!(
+        super::ms_to_schedule(7_654),
+        ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(7_654_000))
+    );
+    assert_eq!(
+        super::one_shot_ms(&super::ms_to_schedule(NOW + TTL)),
+        Some(NOW + TTL)
+    );
+    assert_eq!(super::firing_one_shot(42, &t), Some(42));
+    assert_eq!(super::firing_one_shot(42, &i), None);
+}
+
+/// `plan_wake`: nothing owed removes every row; something owed leaves exactly
+/// one one-shot no later than wanted — the earliest early-enough one is kept
+/// and nothing is inserted, otherwise every row goes and one is inserted.
+/// Interval rows always go.
+///
+/// kills: `<=` to `<` / `>` / `==`, keeping the latest or the first-listed row,
+/// keeping an interval row, inserting beside a kept row, deleting the kept row.
+#[test]
+fn plan_wake_keeps_at_most_one_early_enough_one_shot() {
+    let p = |existing: &[(u64, Option<i64>)], wanted| {
+        let plan = super::plan_wake(existing, wanted);
+        (plan.delete_ids, plan.insert_at_ms)
+    };
+    assert_eq!(p(&[], None), (vec![], None));
+    assert_eq!(p(&[], Some(10)), (vec![], Some(10)));
+    assert_eq!(p(&[(1, None)], Some(10)), (vec![1], Some(10)));
+    assert_eq!(p(&[(1, None), (2, Some(5))], None), (vec![1, 2], None));
+    assert_eq!(p(&[(1, Some(5))], Some(10)), (vec![], None));
+    assert_eq!(p(&[(1, Some(10))], Some(10)), (vec![], None));
+    assert_eq!(p(&[(1, Some(11))], Some(10)), (vec![1], Some(10)));
+    assert_eq!(
+        p(
+            &[(1, Some(8)), (2, Some(3)), (3, Some(20)), (4, None)],
+            Some(10)
+        ),
+        (vec![1, 3, 4], None),
+        "the earliest early-enough row is the one kept"
+    );
+    assert_eq!(
+        p(&[(7, Some(5)), (3, Some(5))], Some(10)),
+        (vec![7], None),
+        "equal times: the lower id is kept"
+    );
+    assert_eq!(
+        p(&[(1, Some(30)), (2, Some(20)), (3, None)], Some(10)),
+        (vec![1, 2, 3], Some(10)),
+        "no row is early enough: all go, one is inserted"
+    );
+}
+
+/// `playtest_wake_ms`: the oldest CREATION time decides (not the lowest id), and
+/// one row over the cap is work owed now.
+///
+/// kills: `>` to `>=` / `==` / `<` on the cap test, min replaced by first or max,
+/// the wrong TTL or retry constant.
+#[test]
+fn playtest_wake_reads_the_oldest_creation_time_and_the_cap() {
+    assert_eq!(super::playtest_wake_ms(&[], NOW), None);
+    assert_eq!(
+        super::playtest_wake_ms(&[(1, NOW - 5), (2, NOW - 900), (3, NOW - 1)], NOW),
+        Some(NOW - 900 + TTL)
+    );
+    assert_eq!(
+        super::playtest_wake_ms(&[(1, NOW - TTL), (2, NOW)], NOW),
+        Some(NOW + RETRY),
+        "an expired row left behind is retried"
+    );
+    // A reap that hit its batch limit: what `plan_reap` leaves of a table of
+    // expired rows is retried, not left to a TTL that has already passed.
+    let batch = super::PLAYTEST_REAP_MAX_DELETE_PER_TICK;
+    let mut backlog: Vec<(u64, i64)> = (1..=batch as u64 + 2).map(|i| (i, NOW - TTL)).collect();
+    let gone = super::plan_reap(&backlog, NOW, TTL, super::PLAYTEST_EVENT_CAP, batch);
+    backlog.retain(|(id, _)| gone.binary_search(id).is_err());
+    assert_eq!(backlog.len(), 2);
+    assert_eq!(super::playtest_wake_ms(&backlog, NOW), Some(NOW + RETRY));
+    let cap = super::PLAYTEST_EVENT_CAP;
+    let at_cap: Vec<(u64, i64)> = (1..=cap).map(|i| (i, NOW - 10)).collect();
+    assert_eq!(super::playtest_wake_ms(&at_cap, NOW), Some(NOW - 10 + TTL));
+    let over: Vec<(u64, i64)> = (1..=cap + 1).map(|i| (i, NOW - 10)).collect();
+    assert_eq!(super::playtest_wake_ms(&over, NOW), Some(NOW + RETRY));
+}
+
+/// The first recorded event arms exactly one one-shot at that event's expiry;
+/// later events leave it alone and write no schedule row.
+///
+/// kills: the arm dropped from `record_recruit_event`, armed at the wrong time,
+/// a row per event, an interval row.
+#[test]
+fn nh_first_event_arms_one_run_at_its_expiry_and_later_events_write_nothing() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let player = Identity::from_byte_array([0x21; 32]);
+    assert_eq!(
+        wakes(&schedule),
+        vec![],
+        "an empty table has no schedule row"
+    );
+    let record = |ms: i64| {
+        fx.run_as_at(player, ts(ms), |ctx| {
+            super::record_recruit_event(ctx, player, 9, 3, 400, None, false)
+        })
+    };
+    record(NOW);
+    assert_eq!(events.rows().len(), 1);
+    let armed = wakes(&schedule);
+    assert_eq!(armed.len(), 1, "exactly one schedule row");
+    assert_eq!(armed[0].1, Some(NOW + TTL), "at the event's expiry");
+    fx.reset_writes();
+    record(NOW + 60_000);
+    record(NOW + 120_000);
+    assert_eq!(events.rows().len(), 3);
+    assert_eq!(wakes(&schedule), armed, "the same row, untouched");
+    assert_eq!(fx.writes_to("playtest_reaper_schedule"), 0);
+}
+
+/// Cap under burst. The event that fills the table to exactly the cap leaves the
+/// run at the oldest expiry; the next one, which takes it over, pulls the run in
+/// to one retry delay from now; further events in the burst keep that one row.
+/// The run then trims the table back to the cap and re-arms at the new oldest
+/// expiry.
+///
+/// kills: `>` to `>=` / `==` / `<` on the insert-side cap test, a run armed at
+/// once (a scan per insert) or left at the TTL (the cap unenforced for days), a
+/// second schedule row, a reaper that does not re-arm.
+#[test]
+fn nh_burst_over_the_cap_pulls_the_run_in_and_the_run_trims_to_the_cap() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let player = Identity::from_byte_array([0x22; 32]);
+    let cap = super::PLAYTEST_EVENT_CAP;
+    let oldest = NOW - 1_000;
+    // Seeded ids start above the ones the fixture's sequence hands the recorded
+    // events (1, 2, ...), so no id is used twice.
+    for i in 1..cap {
+        events.seed(&event_row(100 + i, player, oldest + i as i64 / 100));
+    }
+    schedule.seed(&one_shot(900, oldest + TTL));
+    let record = |ms: i64| {
+        fx.run_as_at(player, ts(ms), |ctx| {
+            super::record_recruit_event(ctx, player, 9, 3, 400, None, false)
+        })
+    };
+    record(NOW);
+    assert_eq!(events.rows().len() as u64, cap);
+    assert_eq!(
+        wakes(&schedule),
+        vec![(900, Some(oldest + TTL))],
+        "at the cap: unchanged"
+    );
+    record(NOW + 1);
+    assert_eq!(events.rows().len() as u64, cap + 1);
+    let pulled = wakes(&schedule);
+    assert_eq!(pulled.len(), 1, "still one row");
+    assert_eq!(
+        pulled[0].1,
+        Some(NOW + 1 + RETRY),
+        "one retry delay from the crossing"
+    );
+    record(NOW + 2);
+    record(NOW + 3);
+    assert_eq!(
+        wakes(&schedule),
+        pulled,
+        "the rest of the burst keeps that row"
+    );
+    assert_eq!(events.rows().len() as u64, cap + 3);
+
+    let module = Identity::from_byte_array(MODULE);
+    fx.set_database_identity(module);
+    let firing = schedule.rows().remove(0);
+    let firing_id = firing.id;
+    let run_at = NOW + 1 + RETRY;
+    assert_eq!(
+        fx.run_as_at(module, ts(run_at), |ctx| super::playtest_reaper(
+            ctx, firing
+        )),
+        Ok(())
+    );
+    let left = events.rows();
+    assert_eq!(left.len() as u64, cap, "trimmed back to the cap");
+    let mut ids: Vec<u64> = left.iter().map(|e| e.event_id).collect();
+    ids.sort_unstable();
+    assert_eq!(ids[0], 4, "the three lowest ids went");
+    let new_oldest = left.iter().map(|e| e.created_at_ms).min().unwrap();
+    let next: Vec<(u64, Option<i64>)> = wakes(&schedule)
+        .into_iter()
+        .filter(|&(id, _)| id != firing_id)
+        .collect();
+    assert_eq!(next.len(), 1, "one new row besides the one that fired");
+    assert_eq!(next[0].1, Some(new_oldest + TTL));
+}
+
+/// A run arms its own next run from what it left, never counting the row it
+/// was fired with (the runtime deletes a one-shot once its reducer returns):
+/// rows left means one NEW one-shot at the oldest remaining expiry; an emptied
+/// table means none.
+///
+/// kills: the re-arm dropped, the firing row counted as the next run, a re-arm
+/// computed from the rows as they were before the reap, a row left for an empty
+/// table.
+#[test]
+fn nh_reaper_rearms_iff_rows_remain_and_ignores_the_row_that_fired() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let player = Identity::from_byte_array([0x23; 32]);
+    let module = Identity::from_byte_array(MODULE);
+    fx.set_database_identity(module);
+    events.seed(&event_row(1, player, NOW - TTL));
+    events.seed(&event_row(2, player, NOW - 500));
+    events.seed(&event_row(3, player, NOW - 700));
+    schedule.seed(&one_shot(5, NOW));
+    let run = |id: u64, ms: i64| {
+        fx.run_as_at(module, ts(ms), |ctx| {
+            super::playtest_reaper(ctx, one_shot(id, ms))
+        })
+    };
+    assert_eq!(run(5, NOW), Ok(()));
+    let mut ids: Vec<u64> = events.rows().iter().map(|e| e.event_id).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![2, 3], "the expired row is gone");
+    let after = wakes(&schedule);
+    assert_eq!(after.len(), 2, "the fired row and one new row: {after:?}");
+    assert!(
+        after.contains(&(5, Some(NOW))),
+        "the fired row is left to the runtime"
+    );
+    let next: Vec<&(u64, Option<i64>)> = after.iter().filter(|w| w.0 != 5).collect();
+    assert_eq!(
+        next[0].1,
+        Some(NOW - 700 + TTL),
+        "at the oldest remaining expiry"
+    );
+    let next_id = next[0].0;
+
+    // The runtime removes the fired row; the next run is the row armed above.
+    assert_eq!(schedule.remove(5), 1);
+    let last = NOW - 500 + TTL;
+    assert_eq!(run(next_id, last), Ok(()));
+    assert_eq!(events.rows().len(), 0, "both remaining rows had expired");
+    assert_eq!(
+        wakes(&schedule),
+        vec![(next_id, Some(NOW - 700 + TTL))],
+        "an empty table is left no row but the one that fired"
+    );
+}
+
+/// A world upgraded from the interval schedule converges on the interval row's
+/// own next firing, with no publish step: the run removes the interval row it
+/// was fired with (the runtime keeps interval rows) and leaves a one-shot only
+/// when rows remain.
+///
+/// kills: an interval row treated like a one-shot and left in place, so the
+/// reaper keeps running every five minutes for ever.
+#[test]
+fn nh_reaper_fired_by_a_legacy_interval_row_removes_it() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let player = Identity::from_byte_array([0x25; 32]);
+    let module = Identity::from_byte_array(MODULE);
+    fx.set_database_identity(module);
+    schedule.seed(&interval(1));
+    assert_eq!(
+        fx.run_as_at(module, ts(NOW), |ctx| super::playtest_reaper(
+            ctx,
+            interval(1)
+        )),
+        Ok(())
+    );
+    assert_eq!(
+        wakes(&schedule),
+        vec![],
+        "empty table: the interval row goes, nothing replaces it"
+    );
+
+    schedule.seed(&interval(1));
+    events.seed(&event_row(1, player, NOW - 40));
+    assert_eq!(
+        fx.run_as_at(module, ts(NOW), |ctx| super::playtest_reaper(
+            ctx,
+            interval(1)
+        )),
+        Ok(())
+    );
+    let after = wakes(&schedule);
+    assert_eq!(after.len(), 1, "exactly one row: {after:?}");
+    assert_eq!(
+        after[0].1,
+        Some(NOW - 40 + TTL),
+        "a one-shot at the pending row's expiry"
+    );
+}
+
+/// `ensure_playtest_reaper` (init / sync_content) brings the schedule in line
+/// with the table whatever it finds: legacy interval rows and duplicates go; an
+/// empty table ends with no row; pending rows end with exactly one one-shot at
+/// the oldest expiry (one retry delay out when a row has already expired); a
+/// repeat call writes nothing.
+///
+/// kills: the arm replaced by a no-op, an interval row re-created or kept, a
+/// row armed for an empty table, a second row on a repeat call.
+#[test]
+fn nh_ensure_playtest_reaper_converges_any_schedule_on_the_table() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let player = Identity::from_byte_array([0x26; 32]);
+    let ensure = |ms: i64| fx.run_as_at(player, ts(ms), super::ensure_playtest_reaper);
+
+    ensure(NOW);
+    assert_eq!(wakes(&schedule), vec![], "a new world arms nothing");
+    assert_eq!(fx.writes_to("playtest_reaper_schedule"), 0);
+
+    schedule.seed(&interval(1));
+    schedule.seed(&interval(99));
+    ensure(NOW);
+    assert_eq!(
+        wakes(&schedule),
+        vec![],
+        "legacy interval rows go; empty table, no row"
+    );
+
+    schedule.seed(&interval(1));
+    events.seed(&event_row(1, player, NOW - 300));
+    events.seed(&event_row(2, player, NOW - 800));
+    ensure(NOW);
+    let armed = wakes(&schedule);
+    assert_eq!(armed.len(), 1, "pending rows: exactly one row: {armed:?}");
+    assert_eq!(
+        armed[0].1,
+        Some(NOW - 800 + TTL),
+        "a one-shot at the oldest expiry"
+    );
+    fx.reset_writes();
+    ensure(NOW + 5);
+    assert_eq!(wakes(&schedule), armed, "a repeat call keeps the row");
+    assert_eq!(fx.writes_to("playtest_reaper_schedule"), 0);
+
+    schedule.seed(&one_shot(500, NOW + 2 * TTL));
+    ensure(NOW + 6);
+    assert_eq!(
+        wakes(&schedule),
+        armed,
+        "a later duplicate goes, the early row stays"
+    );
+
+    events.seed(&event_row(3, player, NOW - TTL));
+    for id in schedule.rows().iter().map(|s| s.id) {
+        schedule.remove(id);
+    }
+    ensure(NOW);
+    assert_eq!(wakes(&schedule).len(), 1);
+    assert_eq!(
+        wakes(&schedule)[0].1,
+        Some(NOW + RETRY),
+        "already expired: one retry delay out"
+    );
+}
+
+/// `rearm_wake_ms`: a run that has just happened arms the next one no sooner
+/// than one retry delay from now. Nothing owed stays nothing; a run already
+/// further out than that is left where it is.
+///
+/// kills: the floor dropped (a constant or pass-through return), `max` turned
+/// into `min`, the floor taken from the wake time instead of from now, `+`
+/// turned into `-` or `*`.
+#[test]
+fn rearm_wake_is_never_sooner_than_one_retry_from_now() {
+    let f = |wake| super::rearm_wake_ms(wake, 5_000, 30);
+    assert_eq!(f(None), None, "nothing owed: no run");
+    assert_eq!(f(Some(5_001)), Some(5_030), "1 ms out: floored");
+    assert_eq!(
+        f(Some(5_029)),
+        Some(5_030),
+        "just inside the delay: floored"
+    );
+    assert_eq!(f(Some(5_030)), Some(5_030), "exactly one delay out");
+    assert_eq!(f(Some(5_031)), Some(5_031), "further out: kept");
+    assert_eq!(f(Some(9_000)), Some(9_000));
+    assert_eq!(
+        super::rearm_wake_ms(Some(7), i64::MAX - 1, 30),
+        Some(i64::MAX),
+        "saturates instead of overflowing"
+    );
+}
+
+/// Rows that expire 1 ms apart are one run per retry delay, not one run per
+/// row. The run at the first row's expiry reaps that row and arms exactly one
+/// next run at now + retry (the second row expires 1 ms later, the third 2 ms
+/// later); that run reaps both and, with the table empty, arms nothing.
+///
+/// kills: the reaper re-arming at the exact next expiry (a full scan per
+/// distinct expiry), the floor applied with the wrong constant.
+#[test]
+fn nh_rows_expiring_1ms_apart_rearm_once_at_now_plus_retry() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let player = Identity::from_byte_array([0x29; 32]);
+    let module = Identity::from_byte_array(MODULE);
+    fx.set_database_identity(module);
+    events.seed(&event_row(1, player, NOW - TTL));
+    events.seed(&event_row(2, player, NOW - TTL + 1));
+    events.seed(&event_row(3, player, NOW - TTL + 2));
+    schedule.seed(&one_shot(5, NOW));
+    let run = |id: u64, ms: i64| {
+        fx.run_as_at(module, ts(ms), |ctx| {
+            super::playtest_reaper(ctx, one_shot(id, ms))
+        })
+    };
+    assert_eq!(run(5, NOW), Ok(()));
+    assert_eq!(events.rows().len(), 2, "only the expired row went");
+    let next: Vec<(u64, Option<i64>)> = wakes(&schedule).into_iter().filter(|w| w.0 != 5).collect();
+    assert_eq!(next.len(), 1, "exactly one re-arm: {next:?}");
+    assert_eq!(
+        next[0].1,
+        Some(NOW + RETRY),
+        "one retry delay from the run, not 1 ms"
+    );
+    assert_eq!(schedule.remove(5), 1);
+    assert_eq!(run(next[0].0, NOW + RETRY), Ok(()));
+    assert_eq!(events.rows().len(), 0, "one run reaped both later rows");
+    assert_eq!(
+        wakes(&schedule),
+        next,
+        "an empty table is left no row but the one that fired"
+    );
+}
+
+/// `insert_arm_from_ms`: with a run armed the insert arms from its own row and
+/// reads nothing; with none it arms from the table's oldest row.
+///
+/// kills: the branches swapped, a constant return, the scan run when a run is
+/// armed.
+#[test]
+fn insert_arms_from_the_oldest_row_only_when_no_run_is_armed() {
+    assert_eq!(
+        super::insert_arm_from_ms(true, 5_000, || -> Option<i64> {
+            panic!("the events are not read while a run is armed")
+        }),
+        5_000
+    );
+    assert_eq!(
+        super::insert_arm_from_ms(false, 5_000, || Some(1_200)),
+        1_200
+    );
+    assert_eq!(super::insert_arm_from_ms(false, 5_000, || None), 5_000);
+}
+
+/// Rows left with no run armed (the reaper's transaction was lost after the
+/// runtime consumed its schedule row) are picked up by the next insert, which
+/// arms from the table's true oldest row: one retry delay out when that row has
+/// already expired, at its expiry when it has not. A legacy interval row is not
+/// a run armed, so the same holds beside one, and the interval row goes.
+///
+/// kills: the insert arming at its own row's expiry when no run is armed (old
+/// rows outliving the TTL by a second TTL), an interval row counted as a run.
+#[test]
+fn nh_insert_with_no_run_armed_arms_from_the_true_oldest_row() {
+    use crate::native_host_tests::fixture;
+    let player = Identity::from_byte_array([0x2A; 32]);
+    let record = |fx: &crate::native_host_tests::Fixture, ms: i64| {
+        fx.run_as_at(player, ts(ms), |ctx| {
+            super::record_recruit_event(ctx, player, 9, 3, 400, None, false)
+        })
+    };
+    {
+        let fx = fixture();
+        let events = event_table(&fx);
+        let schedule = schedule_table(&fx);
+        events.seed(&event_row(101, player, NOW - TTL - 9));
+        events.seed(&event_row(102, player, NOW - 50));
+        record(&fx, NOW);
+        let armed = wakes(&schedule);
+        assert_eq!(armed.len(), 1, "exactly one row: {armed:?}");
+        assert_eq!(armed[0].1, Some(NOW + RETRY), "an expired row is waiting");
+    }
+    {
+        let fx = fixture();
+        let events = event_table(&fx);
+        let schedule = schedule_table(&fx);
+        events.seed(&event_row(101, player, NOW - 800));
+        events.seed(&event_row(102, player, NOW - 50));
+        record(&fx, NOW);
+        let armed = wakes(&schedule);
+        assert_eq!(armed.len(), 1, "exactly one row: {armed:?}");
+        assert_eq!(armed[0].1, Some(NOW - 800 + TTL), "the oldest row's expiry");
+    }
+    {
+        let fx = fixture();
+        let events = event_table(&fx);
+        let schedule = schedule_table(&fx);
+        events.seed(&event_row(101, player, NOW - 800));
+        schedule.seed(&interval(1));
+        record(&fx, NOW);
+        let armed = wakes(&schedule);
+        assert_eq!(armed.len(), 1, "the interval row is replaced: {armed:?}");
+        assert_eq!(armed[0].1, Some(NOW - 800 + TTL), "the oldest row's expiry");
+    }
+}
+
+/// Erasing an identity's events removes the schedule row when that empties the
+/// table and leaves it when another identity's rows remain.
+///
+/// kills: the disarm dropped or inverted, an erase that deletes other
+/// identities' rows.
+#[test]
+fn nh_erase_that_empties_the_table_removes_the_schedule_row() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let a = Identity::from_byte_array([0x27; 32]);
+    let b = Identity::from_byte_array([0x28; 32]);
+    events.seed(&event_row(1, a, NOW));
+    events.seed(&event_row(2, b, NOW + 1));
+    events.seed(&event_row(3, a, NOW + 2));
+    schedule.seed(&one_shot(1, NOW + TTL));
+    fx.run_as(a, |ctx| super::erase_playtest_events(ctx, a));
+    let left: Vec<u64> = events.rows().iter().map(|e| e.event_id).collect();
+    assert_eq!(left, vec![2], "only the erased identity's rows go");
+    assert_eq!(
+        wakes(&schedule),
+        vec![(1, Some(NOW + TTL))],
+        "rows remain: the row stays"
+    );
+    fx.run_as(b, |ctx| super::erase_playtest_events(ctx, b));
+    assert_eq!(events.rows().len(), 0);
+    assert_eq!(
+        wakes(&schedule),
+        vec![],
+        "the table is empty: no schedule row"
+    );
 }
 
 /// Tripwire for the `PlaytestKind::code -> 1` entry in `.cargo/mutants.toml`: that mutant is

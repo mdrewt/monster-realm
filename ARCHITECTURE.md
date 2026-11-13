@@ -170,7 +170,8 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
 
 - `init` (first publish only) records the publisher as `config.owner_identity`, seeds
   content, reconciles zone schedules (a new world has no player, so no zone is
-  armed), and arms the reapers and heartbeat.
+  armed), arms the heartbeat, and arms each reaper that has something to reap (a new
+  world has nothing, so the heartbeat is the only schedule).
 - `sync_content` does the same reseed for the owner on later publishes. It refuses
   other callers.
 - `on_connect` records the connection in the private `player_session` table and, for
@@ -686,7 +687,9 @@ root, so opening one never closes a sibling.
   chunks into the private `export_bundle` table, read back through
   `my_export_bundle`. It enforces a per-caller cooldown, a unique creation stamp per
   bundle, and a global live-row cap (smaller for callers without an account, smaller
-  still without a wallet). An hourly reaper deletes bundles older than 7 days. The
+  still without a wallet). A reaper deletes bundles older than 7 days within an hour
+  of their expiry; it is scheduled only while bundles exist, one one-shot at the oldest
+  expiry, and runs at most once an hour. The
   client assembles the chunks (`ui/exportAssembly.ts`) and offers the file for
   download from the privacy overlay, which opens from the account overlay (`C`).
 - **Ranked PvP** will require accounts on both sides once a real issuer is set
@@ -696,9 +699,11 @@ root, so opening one never closes a sibling.
 
 - **Server.** The module emits JSON log lines. New code uses `observability::mr_log`;
   refusals go through `guards::log_reject`. A 60 s `mr_heartbeat` logs the deployed
-  content version and writes nothing; it runs with nobody connected, because the
-  `AlloyIngestStalled` alert reads ten minutes without module log bytes as a stalled
-  log pipeline and an empty world logs nothing else. The module never measures time itself or makes
+  content version and writes nothing. It is the only thing scheduled in a world with
+  nobody connected and it stays on purpose: it is the operator's dead-man's switch for
+  the whole server (the `AlloyIngestStalled` alert reads ten minutes without module log
+  bytes as a stalled log pipeline, and an empty world logs nothing else). Zone ticks
+  and reapers are armed only while something needs them. The module never measures time itself or makes
   outbound calls; the SpacetimeDB host exposes `/v1/metrics` and writes module logs
   to files.
 - **Stack.** `ops/observability/` is a Docker Compose stack on the host network,
@@ -710,8 +715,11 @@ root, so opening one never closes a sibling.
   relay node suites) and `just observability-validate` (upstream validators in the
   pinned images). Operations are in `docs/runbooks/observability-dr.md`.
 - **Playtest capture.** The private `playtest_event` table records recruit attempts
-  (`server-module/src/playtest.rs`); `playtest_reaper` runs every 5 minutes and keeps
-  it under a 7-day TTL and a 20 000-row cap. `just playtest-report` summarises it.
+  (`server-module/src/playtest.rs`); `playtest_reaper` keeps it under a 7-day TTL
+  and a 20 000-row cap. It is scheduled only while events exist: one one-shot at the
+  oldest event's expiry, pulled in to 5 minutes out when an insert takes the table over
+  the cap. It runs at most once per 5 minutes, so an event is reaped within 5 minutes of
+  its expiry. `just playtest-report` summarises it.
 - **Load.** `sim-harness`'s `mr_load_driver` connects many WebSocket clients to a
   live module and reads the breaking point from `/v1/metrics`. It never runs in CI.
 

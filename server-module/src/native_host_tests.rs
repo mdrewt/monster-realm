@@ -678,7 +678,7 @@ impl Fixture {
     ///
     /// The observable half of the iterator lifecycle: a scan the caller
     /// abandoned mid-way must come back through the close syscall, and a leak
-    /// is a real datastore resource an hourly job would strand once an hour.
+    /// is a real datastore resource a scheduled job would strand on every run.
     /// Zero between tests is guaranteed by [`fixture`]; zero after a tick is
     /// not, and that is what a test asserts.
     ///

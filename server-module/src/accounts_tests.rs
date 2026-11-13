@@ -802,10 +802,10 @@ use crate::schema::{DataLifecycleEntry, DeletionPolicy, DATA_LIFECYCLE_MANIFEST}
 /// reason.
 ///
 /// `export_bundle_reaper_schedule` is NotOwned more strongly
-/// still: it is a GLOBAL interval singleton with NO Identity column at any
+/// still: it is ONE row for the whole table with NO Identity column at any
 /// depth, so there is no per-player key a cascade step could scope itself with.
-/// One row exists for the whole database, `ensure_export_bundle_reaper` keeps it
-/// at one, and it carries the reaper's cadence and nothing else. Its exportable
+/// At most one row exists for the whole database, `ensure_export_bundle_reaper`
+/// keeps it at one, and it carries the reaper's next run and nothing else. Its exportable
 /// flag is false for the same reason: a subject's export must not contain the
 /// module's own scheduler state.
 ///
@@ -969,7 +969,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
          `export_bundle_reaper_schedule` (ADR-0238). Both of the additions are scheduler \
          bookkeeping rather than player data, and neither is reachable by a per-owner cascade \
          step: the rb-24 row holds the identity whose own cascade it runs, and the rb-48 row is \
-         a GLOBAL interval singleton with no Identity column at all, so there is nothing for a \
+         ONE GLOBAL schedule row with no Identity column at all, so there is nothing for a \
          cascade to key on. Every one is an EXPLICIT registry entry with a mandatory reason — \
          never a silent omission — because the two failure directions are symmetric: cascading \
          over `config` deletes global game config, and quietly dropping a genuinely-owned table \
@@ -3237,7 +3237,7 @@ fn m22s6_table_row_registry_matches_manifest() {
          `pending_evolution_notice` (ADR-0254) adds another on the same reasoning — its \
          `owner_identity` primary key is what its Erase classification rests on. The count was \
          UNCHANGED by rb-48 on purpose: \
-         `export_bundle_reaper_schedule` is a global interval singleton carrying only an auto-inc \
+         `export_bundle_reaper_schedule` is one global schedule row carrying only an auto-inc \
          id and the runtime's fire instant, so it adds a row type without adding an owner key — \
          which is the derive-metadata proof, stronger than any text scan, that its `NotOwned` \
          classification and its empty re-key obligation are both honest. A count that drifted \
@@ -5256,6 +5256,17 @@ mod acct_nh {
         let _ = fx.table_keyed::<ExportBundle, i64>("export_bundle", "created_at_ms", |r| {
             r.created_at_ms
         });
+        // `erase_playtest_events` drops the playtest reaper's schedule row when it
+        // empties the table.
+        let _ = fx
+            .table_keyed::<crate::playtest::PlaytestReaperSchedule, u64>(
+                "playtest_reaper_schedule",
+                "id",
+                |r| r.id,
+            )
+            .writable()
+            .scannable()
+            .unique();
         // bt-7: the anchor's key, its wild sidecar and the deadline schedule
         // (`battle::anonymize_battles` reaches all three per battle row).
         let _ =
@@ -8632,6 +8643,225 @@ mod acct_nh {
         );
         assert_eq!(tick(scheduler(), T0 + 1 + ttl), Ok(()));
         assert!(w.export.rows().is_empty());
+    }
+
+    /// Every export reaper schedule row as (id, one-shot fire ms; `None` = an
+    /// interval row), by id.
+    fn export_wakes(w: &W<'_>) -> Vec<(u64, Option<i64>)> {
+        let mut v: Vec<(u64, Option<i64>)> = w
+            .export_reaper
+            .rows()
+            .iter()
+            .map(|s| (s.id, crate::playtest::one_shot_ms(&s.scheduled_at)))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    fn export_tick(fx: &Fixture, sched: ExportBundleReaperSchedule, ms: i64) -> Result<(), String> {
+        fx.run_as_at(scheduler(), at(ms), |ctx| {
+            crate::privacy::export_bundle_reaper(ctx, sched)
+        })
+    }
+
+    /// The export reaper runs only when something is owed. An empty table has no
+    /// schedule row; the first export arms exactly one one-shot at that bundle's
+    /// expiry and a later export leaves it alone; the run at that instant reaps
+    /// the expired bundle and arms a NEW row at the oldest remaining bundle's
+    /// expiry (never counting the row it was fired with, which the runtime
+    /// deletes); the run that empties the table arms nothing.
+    ///
+    /// kills: the arm dropped from the export or from the reaper, a row per
+    /// export, an interval row, a run armed at the newest bundle's expiry or at
+    /// a fixed delay, the fired row taken for the next run, a row left for an
+    /// empty table.
+    #[test]
+    fn acct_export_reaper_is_armed_on_demand_at_the_oldest_expiry() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xC3);
+        let b = id(0xC4);
+        seed_export_subject(&w, a, 1, "TAG-A");
+        seed_export_subject(&w, b, 2, "TAG-B");
+        let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+        assert_eq!(ttl, 604_800_000, "seven days");
+        assert_eq!(
+            export_wakes(&w),
+            vec![],
+            "an empty table has no schedule row"
+        );
+
+        assert_eq!(export_as(&fx, a, T0), Ok(()));
+        let armed = export_wakes(&w);
+        assert_eq!(armed.len(), 1, "exactly one schedule row: {armed:?}");
+        assert_eq!(armed[0].1, Some(T0 + ttl), "at the bundle's expiry");
+        fx.reset_writes();
+        assert_eq!(export_as(&fx, b, T0 + 5_000), Ok(()));
+        assert_eq!(export_wakes(&w), armed, "a later export keeps the row");
+        assert_eq!(fx.writes_to("export_bundle_reaper_schedule"), 0);
+
+        let firing = w.export_reaper.rows().remove(0);
+        let fired_id = firing.id;
+        assert_eq!(export_tick(&fx, firing, T0 + ttl), Ok(()));
+        assert!(chunks_of(&w, a).is_empty(), "the expired bundle is reaped");
+        assert!(!chunks_of(&w, b).is_empty());
+        let after = export_wakes(&w);
+        assert_eq!(after.len(), 2, "the fired row and one new row: {after:?}");
+        let next: Vec<(u64, Option<i64>)> = after.into_iter().filter(|r| r.0 != fired_id).collect();
+        assert_eq!(next.len(), 1, "exactly one re-arm: {next:?}");
+        assert_eq!(
+            next[0].1,
+            Some(T0 + ttl + 3_600_000),
+            "the next bundle expires 5 s later: one interval from the tick, not 5 s"
+        );
+
+        // The runtime removes the fired row; the next run is the row armed above.
+        assert_eq!(w.export_reaper.remove(fired_id), 1);
+        let firing = w.export_reaper.rows().remove(0);
+        assert_eq!(export_tick(&fx, firing, T0 + ttl + 3_600_000), Ok(()));
+        assert!(w.export.rows().is_empty());
+        assert_eq!(
+            export_wakes(&w),
+            next,
+            "an empty table is left no row but the one that fired"
+        );
+    }
+
+    /// Bundles that expire 1 ms apart are one tick per interval, not one tick
+    /// (and one `export_bundle_reap` line) per bundle: the tick at the first
+    /// expiry arms exactly one next tick an hour out. A bundle expiring further
+    /// out than an hour is armed at its own expiry, and so is every arm that is
+    /// not the reaper's (`ensure_export_bundle_reaper` here), whatever the gap.
+    ///
+    /// kills: the reaper re-arming at the exact next expiry, the floor applied
+    /// to the arms that are not the reaper's, the floor replacing a later
+    /// expiry.
+    #[test]
+    fn acct_export_bundles_expiring_1ms_apart_rearm_once_an_hour_out() {
+        let fx = fixture();
+        let w = world(&fx);
+        let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+        let hour = 3_600_000;
+        let now = T0 + ttl;
+        w.export.seed(&export_row(9001, id(0xC8), T0));
+        w.export.seed(&export_row(9002, id(0xC8), T0 + 1));
+        w.export.seed(&export_row(9003, id(0xC8), T0 + 2));
+        w.export.seed(&export_row(9004, id(0xC8), T0 + 2 * hour));
+        let fired = ExportBundleReaperSchedule {
+            id: 50,
+            scheduled_at: ScheduleAt::Time(at(now)),
+        };
+        w.export_reaper.seed(&fired);
+        assert_eq!(export_tick(&fx, fired, now), Ok(()));
+        assert_eq!(w.export.rows().len(), 3, "only the expired bundle went");
+        let next: Vec<(u64, Option<i64>)> =
+            export_wakes(&w).into_iter().filter(|r| r.0 != 50).collect();
+        assert_eq!(next.len(), 1, "exactly one re-arm: {next:?}");
+        assert_eq!(
+            next[0].1,
+            Some(now + hour),
+            "an hour from the tick, not 1 ms"
+        );
+
+        assert_eq!(w.export_reaper.remove(50), 1);
+        let firing = w.export_reaper.rows().remove(0);
+        let fired_id = firing.id;
+        assert_eq!(export_tick(&fx, firing, now + hour), Ok(()));
+        assert_eq!(w.export.rows().len(), 1, "one tick reaped both");
+        let next: Vec<(u64, Option<i64>)> = export_wakes(&w)
+            .into_iter()
+            .filter(|r| r.0 != fired_id)
+            .collect();
+        assert_eq!(next.len(), 1);
+        assert_eq!(
+            next[0].1,
+            Some(now + 2 * hour),
+            "further out than an hour: at the bundle's own expiry"
+        );
+
+        // An arm that is not the reaper's has no floor: with no row armed and a
+        // bundle expiring in 1 ms, it arms at that expiry.
+        for s in w.export_reaper.rows() {
+            w.export_reaper.remove(s.id);
+        }
+        fx.run_as_at(scheduler(), at(now + 2 * hour - 1), |ctx| {
+            crate::privacy::ensure_export_bundle_reaper(ctx)
+        });
+        let armed = export_wakes(&w);
+        assert_eq!(armed.len(), 1);
+        assert_eq!(armed[0].1, Some(now + 2 * hour), "at the expiry itself");
+    }
+
+    /// A tick that leaves expired bundles behind (its stamp cap bound) runs again
+    /// one backlog interval later — an hour — never at once and never at the TTL.
+    /// A tick fired by an interval row left by an earlier version of the module
+    /// removes that row, so the world converges without a publish step.
+    ///
+    /// kills: a backlog re-armed at once or left to the next expiry, an interval
+    /// row kept (the reaper would run hourly for ever) or kept beside the
+    /// one-shot.
+    #[test]
+    fn acct_export_reaper_backlog_reruns_in_an_hour_and_a_legacy_interval_row_goes() {
+        let fx = fixture();
+        let w = world(&fx);
+        let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+        let hourly = || ExportBundleReaperSchedule {
+            id: 77,
+            scheduled_at: ScheduleAt::Interval(std::time::Duration::from_secs(3600).into()),
+        };
+        w.export_reaper.seed(&hourly());
+        assert_eq!(export_tick(&fx, hourly(), T0), Ok(()));
+        assert_eq!(
+            export_wakes(&w),
+            vec![],
+            "empty table: the interval row goes"
+        );
+
+        let stamps = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK as i64;
+        for k in 0..stamps + 1 {
+            w.export
+                .seed(&export_row(9000 + k as u64, id(0xC5), T0 - ttl - 100 + k));
+        }
+        w.export.seed(&export_row(9999, id(0xC5), T0 - 1));
+        w.export_reaper.seed(&hourly());
+        assert_eq!(export_tick(&fx, hourly(), T0), Ok(()));
+        assert_eq!(w.export.rows().len(), 2, "one stamp cap's worth went");
+        let after = export_wakes(&w);
+        assert_eq!(after.len(), 1, "the interval row is replaced: {after:?}");
+        assert_eq!(after[0].1, Some(T0 + 3_600_000), "an hour from the tick");
+    }
+
+    /// A purge that removes the last bundle removes the schedule row with it; a
+    /// purge that leaves another identity's bundle leaves the row.
+    ///
+    /// kills: the disarm dropped from the purge, a purge that disarms while
+    /// bundles remain.
+    #[test]
+    fn acct_purge_that_empties_the_export_table_removes_the_schedule_row() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xC6);
+        let b = id(0xC7);
+        seed_export_subject(&w, a, 1, "TAG-A");
+        seed_export_subject(&w, b, 2, "TAG-B");
+        assert_eq!(export_as(&fx, a, T0), Ok(()));
+        assert_eq!(export_as(&fx, b, T0 + 9), Ok(()));
+        let armed = export_wakes(&w);
+        assert_eq!(armed.len(), 1);
+        let purge = |who: Identity| {
+            fx.run_as_at(who, at(T0 + 20), |ctx| {
+                crate::privacy::purge_export_bundles(ctx, who)
+            })
+        };
+        assert!(purge(b) > 0);
+        assert_eq!(export_wakes(&w), armed, "a bundle remains: the row stays");
+        assert!(purge(a) > 0);
+        assert!(w.export.rows().is_empty());
+        assert_eq!(
+            export_wakes(&w),
+            vec![],
+            "the table is empty: no schedule row"
+        );
     }
 
     /// Admission control through the shipped reducer, at the exact edge. The
