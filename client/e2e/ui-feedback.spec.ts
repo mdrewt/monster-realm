@@ -176,9 +176,9 @@ test.describe
       // rect read that beats it races it: the cursor scrolls the shell part of the way, then the
       // late focus scrolls it further and every box inside the shell moves. The open is over once
       // the rows have the focus (the pending timer is inert from then on). The rows do get it in
-      // this spec: every open here starts with focus outside the frame, because the menu beneath
-      // is blurred as Controls opens over it. A retried predicate with the expect timeout as its
-      // bound, not a sleep.
+      // this spec: every open here starts with focus outside the frame (on the page body, or on
+      // the menu beneath, which is blurred as Controls opens over it). A retried predicate with
+      // the expect timeout as its bound, not a sleep.
       await expect(
         page.locator('#controls-rows'),
         `${label}: the open settled on the rows`,
@@ -343,6 +343,15 @@ test.describe
       // the late focus scrolls the shell further and the tab strip and the rows grid move.
       // The hold is inside the PAGE (it delays the product's own zero-delay timer); the test itself
       // never sleeps, every wait in it is a retried predicate.
+      // While installed, the hold delays EVERY zero-delay timer in the page, not only the
+      // overlay's; any other one is only slowed.
+      // The value: the hold starts at the Controls open, and an unsettled fixture is red only
+      // while its first read comes before the held focus. The unsettled fixture's
+      // open-to-first-read latency measures under 100 ms unthrottled and 959 ms at 20x CPU
+      // throttle, so 1500 ms keeps that read ahead of the focus on a loaded machine. It is a
+      // duration and not "until released" because a settled `openControls` waits for that
+      // very focus. It must stay under the expect timeout (5 s) that bounds the settle in
+      // `openControls`.
       const ZERO_DELAY_HOLD_MS = 1500;
       const label = 'late focus';
       const BOXES = ['#controls-overlay', '#controls-tabs', '#controls-rows'] as const;
@@ -364,7 +373,9 @@ test.describe
           const real = w.setTimeout;
           w.__mrRealSetTimeout = real;
           w.__mrHeldFocus = false;
-          // Delegates to the real timer and returns ITS id (overlayA11y clears it on a re-open).
+          // Delegates to the real timer and returns ITS id: overlayA11y clears a pending timer
+          // by that id when another frame opens over its frame, on a re-open, and on a close
+          // (the menu's held timer is cleared that way when Controls opens over it).
           w.setTimeout = (handler, delay, ...args) => {
             if (typeof handler !== 'function' || (delay !== undefined && delay !== 0)) {
               return real.call(window, handler, delay, ...args);
