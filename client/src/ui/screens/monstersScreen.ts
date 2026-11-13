@@ -6,9 +6,10 @@
 // Storage (a grid), opening on the tab its open path bound (`ctx.monstersTab`, uif-6: Party from the
 // menu and V, Storage from B), else Storage, each tab keeping its own cursor. A on a monster opens its sheet
 // (Summary, Care, Feed…, Evolve…, Nickname, Move, Close); B backs out one level and B at the list pops the
-// frame. Move sends `setPartySlot` (to the view model's boxed sentinel, or -1: dispatch picks the
-// next free slot); the "Moved" line is shown only once a batch shows the monster in the other tab,
-// and a pending move expires with the next button, so a refused move never claims success.
+// frame. Move sends `setPartySlot` (to the view model's boxed sentinel, or NEXT_FREE_PARTY_SLOT:
+// dispatch picks the next free slot); X on a monster in the list is the same Move (ts-6b-5). The
+// "Moved" line is shown only once a batch shows the monster in the other tab, and a pending move
+// expires with the next button, so a refused move never claims success.
 //
 // ctl-8c. Care sends `care` and stays on the sheet. Feed… opens the food list; A on a food sends
 // `train` at once (no confirm) and the "Fed {name}" line shows only once a batch shows that food's
@@ -50,7 +51,7 @@ import {
   party_size,
   party_slot_none,
 } from '../../../../client-wasm/pkg/client_wasm.js';
-import type { MonsterCardViewModel } from '../boxModel';
+import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from '../boxModel';
 import type { BoxView } from '../boxView';
 import type { EvolutionMonsterViewModel } from '../evolutionModel';
 import {
@@ -356,9 +357,10 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
     const to = (phase: MonstersPhase, extra: Partial<MonstersScreenState> = {}) =>
       finish({ ...base, ...extra, phase }, 'consumed');
     if (btn.button === 'Start') return done({ kind: 'popToBase' });
-    // A phase the settle just changed under the player's A only paints (the shop's rule): the
+    // A phase the settle just changed under the player's A or X only paints (the shop's rule): the
     // press was aimed at what was on screen, which is gone.
-    if (btn.button === 'A' && settled.phase !== state.phase) return done('consumed');
+    if ((btn.button === 'A' || btn.button === 'X') && settled.phase !== state.phase)
+      return done('consumed');
     const { phase } = base;
     const found = phase.kind === 'list' ? undefined : findMonster(vm, phase.monsterId);
     const mon = phase.kind === 'list' ? undefined : findEvolution(vm, phase.monsterId);
@@ -374,6 +376,13 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
             const id = base.nav.item === null ? undefined : idOfKey(vm, base.nav.item);
             if (btn.repeat || id === undefined) return done('consumed');
             return to(sheet(id, 'summary'));
+          }
+          case 'X': {
+            // Quick Move: the sheet's Move row for the monster under the cursor.
+            const id = base.nav.item === null ? undefined : idOfKey(vm, base.nav.item);
+            const at = id === undefined ? undefined : findMonster(vm, id);
+            if (btn.repeat || id === undefined || at === undefined) return done('consumed');
+            return finish(...moveOf(base, vm, id, at.tab));
           }
           case 'Up':
           case 'Down':
@@ -605,14 +614,24 @@ function act(
     }
     case 'close':
       return [{ ...state, phase: LIST }, 'consumed'];
-    case 'move': {
-      const toParty = found.tab === 'storage';
-      return [
-        { ...state, phase: LIST, pendingMove: { monsterId, toParty } },
-        { kind: 'setPartySlot', monsterId, slot: toParty ? -1 : vm.partySlotNone },
-      ];
-    }
+    case 'move':
+      return moveOf(state, vm, monsterId, found.tab);
   }
+}
+
+/** Move `monsterId` (on `tab`) to the other tab: Storage to the next free party slot, Party to the
+ *  view model's boxed sentinel; the list shows and the arrival is awaited. */
+function moveOf(
+  state: MonstersScreenState,
+  vm: MonstersVm,
+  monsterId: bigint,
+  tab: MonstersTab,
+): readonly [MonstersScreenState, ScreenResult] {
+  const toParty = tab === 'storage';
+  return [
+    { ...state, phase: LIST, pendingMove: { monsterId, toParty } },
+    { kind: 'setPartySlot', monsterId, slot: toParty ? NEXT_FREE_PARTY_SLOT : vm.partySlotNone },
+  ];
 }
 
 /** The sheet is painted in the sheet phase and under its typing row (on Nickname) only: the food

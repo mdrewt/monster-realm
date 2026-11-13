@@ -765,6 +765,76 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
 });
 
 // ==========================================================================================
+// ts-6b-5.2: B at the bare world acknowledges the shown evolution notice (R-ctl-13-CTL13.5)
+// ==========================================================================================
+
+describe('main.ts B acknowledges the evolution notice (runtime, ts-6b-5)', {
+  sequential: true,
+}, () => {
+  afterEach(teardown);
+
+  it('B at the bare world acknowledges the shown evolution notice once and the next queued notice shows', async () => {
+    // WRONG IMPL KILLED: a B at the world that does nothing for the evolution banner (today: the
+    // banner is no Notice, so the hint bar has no B chip and B is swallowed); a B that acks twice
+    // (a second press while the first ack is in flight would drain a notice the player never saw:
+    // the OK button's lock must bound it); an ack with a count other than 1; a B that dismisses the
+    // banner locally without sending; a banner that does not move on to the next queued notice
+    // once the store batch drains the head.
+    const sentence = (from: number, to: number): string =>
+      tf('evolutionNotice.reveal.anonymous', {
+        from: tf('evolutionNotice.species.fallback', { id: from }),
+        to: tf('evolutionNotice.species.fallback', { id: to }),
+      });
+    const first = { monsterId: 1n, fromSpecies: 1, toSpecies: 5, evolvedAtMs: 0n };
+    const second = { monsterId: 2n, fromSpecies: 2, toSpecies: 6, evolvedAtMs: 0n };
+    const label = (): string => byId('evolution-notice-label').textContent ?? '';
+    const acks = (): Array<{ name: string; args: unknown }> =>
+      H.calls.filter((c) => c.name === 'ackEvolutionNotices');
+    const chips = (): Array<string | null> =>
+      [...document.querySelectorAll('#hint-bar [data-button]')].map((el) =>
+        el.getAttribute('data-button'),
+      );
+
+    await bootReady();
+    batch();
+    frame();
+    opts.store.reconcileEvolutionNoticesFromView([
+      { ownerIdentity: H.identity, entries: [first, second] },
+    ]);
+    opts.store.flushBatch();
+    frame();
+    expect(stackNames(), 'precondition: the bare world').toEqual(['world']);
+    expect(shownById('evolution-notice'), 'precondition: the banner shows').toBe(true);
+    expect(label(), 'precondition: the head notice is the first').toBe(sentence(1, 5));
+    expect(chips(), 'the hint bar offers B (dismiss) for the banner').toContain('B');
+
+    // Two B presses with no await between them: the second lands while the first ack is in flight.
+    press(B);
+    press(B);
+    expect(acks(), 'B acknowledges once, whatever the second press does').toEqual([
+      { name: 'ackEvolutionNotices', args: { count: 1 } },
+    ]);
+
+    // The server drains the head: the next queued notice takes its place.
+    await flush();
+    opts.store.reconcileEvolutionNoticesFromView([
+      { ownerIdentity: H.identity, entries: [second] },
+    ]);
+    opts.store.flushBatch();
+    frame();
+    expect(shownById('evolution-notice'), 'the banner still shows').toBe(true);
+    expect(label(), 'the second notice`s sentence shows').toBe(sentence(2, 6));
+    expect(acks(), 'nothing more was sent by the drain').toHaveLength(1);
+
+    press(B);
+    expect(acks(), 'a further B acknowledges the second notice once').toEqual([
+      { name: 'ackEvolutionNotices', args: { count: 1 } },
+      { name: 'ackEvolutionNotices', args: { count: 1 } },
+    ]);
+  });
+});
+
+// ==========================================================================================
 // uif-12: the world sheets on the ContextSheet kit, pointer-live (UIF12.1, UIF12.4, UIF12.5)
 // ==========================================================================================
 

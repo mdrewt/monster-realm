@@ -342,17 +342,30 @@ function endConversation(t: number): void {
   server(t);
 }
 
-/** Click a greet-then-shop button, as the dialogue renders one (main.dialogueDismiss.test.ts). */
-function clickShop(t: number, shopId = '1'): void {
-  const button = document.createElement('button');
-  button.dataset.shopId = shopId;
-  const host =
-    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
-  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
-  host.appendChild(button);
+/** Click the REAL rendered greet-then-shop button at clock `t`. ts-6b-5 (named intentional change):
+ *  the click is a seek + A through the dialogue screen, so the NPC must be a shopkeeper
+ *  (`makeShopkeeper()` before `startConversation`) and `t` past the node's 600 ms reveal; it was a
+ *  fake `<button data-shop-id>` appended to the overlay. */
+function clickShop(t: number): void {
+  const button = document.querySelector<HTMLElement>('#dialogue-choices [data-shop-id]');
+  if (button === null) throw new Error('fixture: the dialogue rendered no Shop button');
   clock.t = t;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
+}
+
+/** ts-6b-5: the guide NPC re-seeded as a shopkeeper (shop 1), written into the store only; the
+ *  next batch delivers it. */
+function makeShopkeeper(): void {
+  opts.store.upsertNpc({
+    entityId: NPC_ENTITY,
+    npcId: 'guide',
+    zoneId: 0,
+    homeX: 3,
+    homeY: 6,
+    wanderRadius: 0,
+    dialogueTreeId: 'no-such-tree',
+    interaction: { kind: 'shop', shopId: 1 },
+  });
 }
 
 /** A tap: keydown at `t`, keyup 5 ms later (the keyboard source reads a second keydown of a code
@@ -499,11 +512,13 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     // key, and one that hides only what the menu opened.
     await bootReady();
     seedWorld(1000);
+    makeShopkeeper();
     startConversation(1010);
     expect(dialogueShown(), 'precondition: the server opened the dialogue').toBe(true);
-    clickShop(1100);
-    endConversation(1200);
-    frame(1210);
+    // ts-6b-5: the Shop click is past the reveal (1800; was 1100), the end batch after it.
+    clickShop(1800);
+    endConversation(1900);
+    frame(1910);
     expect(shopShown(), 'precondition: the shop opened when the conversation ended').toBe(true);
     expect(stack(), 'precondition: the shop is the one frame over the world').toEqual([
       { kind: 'world' },

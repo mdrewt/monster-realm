@@ -186,6 +186,36 @@ vi.mock('./ui/screens/index', async (importOriginal) => {
   return { ...actual, SCREEN_ADAPTERS: H.adapters };
 });
 
+// ts-6b-5 (named fixture change): the shipped bundle has one choice per node, so a click on a choice
+// with an index above 0 had no real button. The real bundle plus ONE fixture tree (`ts6b5_pick`:
+// node `start` and node `next`, three choices each) gives the real dialogue view real choice buttons.
+vi.mock('./ui/dialogueContent', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ui/dialogueContent')>();
+  const node = (text: string) => ({
+    text,
+    choices: [
+      { text: 'One', nextNodeId: null },
+      { text: 'Two', nextNodeId: null },
+      { text: 'Three', nextNodeId: null },
+    ],
+  });
+  return {
+    ...actual,
+    DIALOGUE_TREES: new Map([
+      ...actual.DIALOGUE_TREES,
+      [
+        'ts6b5_pick',
+        {
+          nodes: new Map([
+            ['start', node('Pick one.')],
+            ['next', node('Pick another.')],
+          ]),
+        },
+      ],
+    ]),
+  };
+});
+
 // The renderer: init(mount) appends a focusable canvas so main.ts can resolve its world focus.
 vi.mock('./render/world', () => worldRendererMock());
 
@@ -411,6 +441,44 @@ function putBattle(battleId: bigint, t: number, outcome = 'Ongoing'): void {
     tacticalRow(battleId, outcome === 'Ongoing' ? 'Deploying' : 'Finished'),
   ]);
   server(t);
+}
+
+/**
+ * ts-6b-5: the guide NPC re-seeded with the fixture tree `ts6b5_pick` (three real choice buttons) and,
+ * with `shop`, the greet-then-shop interaction and its shop row (a real Shop button). One batch at
+ * `t`; call it BEFORE `startConversation`.
+ */
+function seedPickNpc(t: number, shop = false): void {
+  opts.store.upsertNpc({
+    entityId: NPC_ENTITY,
+    npcId: 'guide',
+    zoneId: 0,
+    homeX: 3,
+    homeY: 6,
+    wanderRadius: 0,
+    dialogueTreeId: 'ts6b5_pick',
+    interaction: shop ? { kind: 'shop', shopId: 1 } : { kind: 'dialogue' },
+  });
+  if (shop) opts.store.upsertShop({ shopId: 1, name: 'General Store' });
+  server(t);
+}
+
+/**
+ * ts-6b-5: a node has arrived at clock `t0` (its batch ran): pump one frame so the screen keys the
+ * node and paints it, and, if no row is painted active yet, a Down and an Up paint the cursor (the
+ * pointer seeks from the painted cursor). A reveal begins at the first of these (at most `t0 + 40`),
+ * so a click from `t0 + 700` on is past it.
+ */
+function armDialogue(t0: number): void {
+  frame(t0 + 10);
+  if (byId('dialogue-choices').querySelector('.is-active') === null) {
+    tap('ArrowDown', t0 + 20);
+    tap('ArrowUp', t0 + 40);
+  }
+  expect(
+    byId('dialogue-choices').querySelector('.is-active'),
+    'fixture: the dialogue cursor is painted',
+  ).not.toBeNull();
 }
 
 function startConversation(t: number): void {
@@ -693,18 +761,16 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(renameShown(), 'precondition: the rename overlay closed').toBe(false);
 
     // --- dialogue: choice clicks (a pair) and the pop command's dismiss ------------------------
+    seedPickNpc(1390);
     startConversation(1400);
     expect(dialogueShown(), 'precondition: the server opened the dialogue').toBe(true);
-    // ctl-15 (named intentional change): the choice buttons sit inside the dialogue overlay (in
-    // #game-screen, where the pointer dispatcher listens); they were appended to document.body.
-    const dialogueHost = byId('dialogue-overlay');
-    for (const idx of ['2', '0']) {
-      const choice = document.createElement('button');
-      choice.dataset.choiceIdx = idx;
-      dialogueHost.appendChild(choice);
-      choice.click();
-      choice.remove();
-    }
+    // ts-6b-5 (named intentional change): the clicks are on the REAL rendered choice buttons of the
+    // fixture tree, once the text reveal is over (700 ms after the node), and the pair is more than
+    // DIALOGUE_RESEND_MS apart (a second send inside it is swallowed). Was: fake buttons appended
+    // to the overlay, clicked at once.
+    armDialogue(1400);
+    clickChoice('2', 2200);
+    clickChoice('0', 3300);
     expect(
       callsOf('advanceDialogue'),
       'each choice reaches advance_dialogue with its own index',
@@ -713,10 +779,66 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       { name: 'advanceDialogue', args: { choiceIdx: 0 } },
     ]);
     expect(callsOf('dismissDialogue'), 'precondition: no dismiss yet').toEqual([]);
-    const back = tap('Backspace', 1500);
+    const back = tap('Backspace', 3400);
     expect(back.defaultPrevented, 'the consumed B press is prevented').toBe(true);
     expect(callsOf('dismissDialogue'), 'popping the dialogue frame dismisses exactly once').toEqual(
       [{ name: 'dismissDialogue', args: {} }],
+    );
+  });
+
+  it('a double click on a dialogue choice sends advanceDialogue once, and a click during the text reveal only finishes the reveal', async () => {
+    // WRONG IMPL KILLED: a choice click that dispatches advanceDialogue directly (today: every
+    // click sends, so a double click advances twice and lands on the next, unseen node), a click
+    // that skips the reveal gate (a click on a node still revealing sends at once instead of
+    // finishing the text), and a second click inside DIALOGUE_RESEND_MS that is not swallowed.
+    // Both halves click the REAL rendered button (the fixture tree `ts6b5_pick`, three choices).
+    const reveal = (): boolean => byId('dialogue-node-text').classList.contains('is-revealing');
+    const choiceBtn = (idx: number): HTMLElement => {
+      const el = document.querySelector<HTMLElement>(
+        `#dialogue-choices [data-choice-idx="${idx}"]`,
+      );
+      if (el === null) throw new Error(`fixture: no rendered choice button ${idx}`);
+      return el;
+    };
+    await bootReady();
+    seedWorld(1000);
+    seedPickNpc(1005);
+    startConversation(1010);
+    armDialogue(1010);
+    expect(dialogueShown(), 'precondition: the dialogue is open').toBe(true);
+
+    // Part 1: past the reveal, two clicks 50 ms apart send exactly one advance, for that choice.
+    clock.t = 1800;
+    choiceBtn(2).click();
+    clock.t = 1850;
+    choiceBtn(2).click();
+    expect(
+      callsOf('advanceDialogue'),
+      'a double click advances once, with the clicked choice`s index',
+    ).toEqual([{ name: 'advanceDialogue', args: { choiceIdx: 2 } }]);
+
+    // Part 2: the server answers with the next node; while its text reveals, one click sends
+    // nothing and finishes the reveal, and the click after it sends the advance once.
+    opts.store.upsertConversation({
+      ownerIdentity: H.identity,
+      npcEntityId: NPC_ENTITY,
+      currentNodeId: 'next',
+    });
+    server(3000);
+    armDialogue(3000);
+    expect(reveal(), 'precondition: the new node`s text is revealing').toBe(true);
+    clock.t = 3100;
+    choiceBtn(1).click();
+    expect(callsOf('advanceDialogue'), 'a click during the reveal sends nothing').toHaveLength(1);
+    frame(3110);
+    expect(reveal(), 'the click finished the reveal').toBe(false);
+    clock.t = 3200;
+    choiceBtn(1).click();
+    expect(callsOf('advanceDialogue'), 'the click after the reveal sends the advance once').toEqual(
+      [
+        { name: 'advanceDialogue', args: { choiceIdx: 2 } },
+        { name: 'advanceDialogue', args: { choiceIdx: 1 } },
+      ],
     );
   });
 
@@ -1739,16 +1861,43 @@ const battleRoot = (): HTMLElement => {
 const menuFeedback = (): string | null =>
   byId('menu-overlay').querySelector('.mr-frame-feedback')?.textContent ?? null;
 
-/** Click a dialogue choice button, as the dialogue renders one. ctl-15 (named intentional change):
- *  inside the dialogue overlay (in #game-screen, where the pointer dispatcher listens); it was
- *  appended to document.body. */
+/** Click the REAL rendered dialogue choice button `idx` at clock `t` (ts-6b-5, named intentional
+ *  change: the click is a seek + A through the dialogue screen now, so it needs a real, painted
+ *  button; the callers arm the dialogue and click past its reveal). It was a fake `<button>` with a
+ *  `data-choice-idx` appended to the overlay. */
 function clickChoice(idx: string, t: number): void {
-  const button = document.createElement('button');
-  button.dataset.choiceIdx = idx;
-  byId('dialogue-overlay').appendChild(button);
+  const button = document.querySelector<HTMLElement>(
+    `#dialogue-choices [data-choice-idx="${idx}"]`,
+  );
+  if (button === null) throw new Error(`fixture: no rendered choice button ${idx}`);
   clock.t = t;
   button.click();
-  button.remove();
+}
+
+/** ts-6b-5: how the battle-refusal cases reach a refused command. A click on a dialogue choice used
+ *  to be the convenient one; at a battle base the real dialogue frame now answers only B, Start and
+ *  Select, so no real control there issues a refused command. The `dialogueView` adapter is swapped
+ *  (ctl-7c's swapAdapter) for a stand-in whose A is `advanceDialogue` for choice 1 (a command the
+ *  battle refuses) and whose Start and B are the real adapter's stack moves; the refusal itself, the
+ *  toast, the announcement and the world control all run through the real dispatch and policy. */
+function swapRefusingDialogue(): void {
+  swapAdapter('dialogueView', {
+    nav: true,
+    viewModel: () => ({}),
+    init: () => ({}),
+    onButton: (_vm: unknown, state: unknown, btn: NavInput) => ({
+      state,
+      result:
+        btn.button === 'A'
+          ? { kind: 'advanceDialogue', choiceIdx: 1 }
+          : btn.button === 'Start'
+            ? { kind: 'popToBase' }
+            : btn.button === 'B'
+              ? { kind: 'dismissDialogue' }
+              : 'consumed',
+    }),
+    paint: () => undefined,
+  });
 }
 
 const statusText = (): string => byId('status').textContent ?? '';
@@ -2269,19 +2418,22 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // policy that refuses at the world (the control sends); one that refuses everything (Start
     // over the suspended dialogue still dismisses it: dismissDialogue is battle-safe); and a
     // stack read that is a frame stale (the dialogue is up before the battle row arrives).
-    // The path is a REAL production one that bypasses the menu: the document-level click
-    // delegation on `[data-choice-idx]` runs `dispatch({ kind: 'advanceDialogue' })`.
+    // ts-6b-5 (named intentional change): the refused command is reached by A on a stand-in
+    // `dialogueView` adapter (`swapRefusingDialogue`), not by a click on a choice button: the real
+    // dialogue frame answers only B, Start and Select at a battle base, so a click there reaches
+    // nothing. The refusal runs through the real dispatch and policy all the same.
     // The same reason is also announced through the live region; CTL6C-3-ANNOUNCE-REFUSAL below
     // pumps the frame loop past the region's coalescing window and pins that.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await bootReady();
     seedWorld(1000);
+    swapRefusingDialogue();
     startConversation(1010);
     expect(dialogueShown(), 'precondition: the dialogue is open').toBe(true);
     expect(statusText(), 'precondition: the status line is empty').toBe('');
 
-    // Control: at the world the click sends.
-    clickChoice('1', 1020);
+    // Control: at the world the A sends.
+    tap('Enter', 1020);
     expect(
       callsOf('advanceDialogue'),
       'control: at the world the choice reaches the reducer',
@@ -2295,10 +2447,10 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       kind: 'battle',
       battleId: '101',
     });
-    clickChoice('2', 1200);
+    tap('Enter', 1200);
     expect(
       callsOf('advanceDialogue'),
-      'at a battle base the click reaches no reducer: still the one world call',
+      'at a battle base the A reaches no reducer: still the one world call',
     ).toEqual([{ name: 'advanceDialogue', args: { choiceIdx: 1 } }]);
     // uif-4 (named intentional change, UIF4.2): battle-refused is a toast kind: the reason is on
     // #toast (was #status), and #status stays empty.
@@ -2307,8 +2459,8 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     );
     expect(toastText(), 'fixture: and it is real text').not.toBe('');
     expect(statusText(), 'and the status line is not told').toBe('');
-    clickChoice('0', 1210);
-    expect(callsOf('advanceDialogue'), 'a second click is refused too').toHaveLength(1);
+    tap('Enter', 1210);
+    expect(callsOf('advanceDialogue'), 'a second A is refused too').toHaveLength(1);
     expect(
       errorSpy.mock.calls.filter((c) => c[0] === '[status]'),
       'a refusal is a policy, not an error: nothing goes through the error path',
@@ -2340,8 +2492,11 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // `performance.now()`: its coalescing window (liveRegion.ts, COALESCE_WINDOW_MS = 500) is then
     // over by the frame at age 10 or age 300, which paints the reason early; both must still show
     // the earlier announcement.
+    // ts-6b-5 (named intentional change): the refused command is A on the stand-in dialogue adapter
+    // (`swapRefusingDialogue`); a click on a choice button reaches nothing at a battle base now.
     await bootReady();
     seedWorld(1000);
+    swapRefusingDialogue();
     startConversation(1010);
     putBattle(BATTLE_ID, 1100);
     expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
@@ -2360,8 +2515,8 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       reason,
     );
 
-    clickChoice('2', 1800); // the refusal's coalescing window opens at clock 1800
-    expect(callsOf('advanceDialogue'), 'precondition: the click was refused').toEqual([]);
+    tap('Enter', 1800); // the refusal's coalescing window opens at clock 1800
+    expect(callsOf('advanceDialogue'), 'precondition: the A was refused').toEqual([]);
     // uif-4 (named intentional change, UIF4.2): battle-refused is a toast kind: the reason is read
     // off #toast (was #status).
     expect(toastText(), 'precondition: the toast shows the reason').toBe(reason);
@@ -2444,16 +2599,19 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // battle goes on); a toast that expires early or never; a refusal that survives past TOAST_MS
     // because a base change or batch re-showed it; an error hint replaced by (or wiping) the toast.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // ts-6b-5 (named intentional change): the refused command is A on the stand-in dialogue adapter
+    // (`swapRefusingDialogue`); a click on a choice button reaches nothing at a battle base now.
     await bootReady();
     seedWorld(1000);
+    swapRefusingDialogue();
     startConversation(1010);
     const reason = i18nT('menu.disabled.inBattle');
 
     // (a) The battle goes on: the toast is visible just before TOAST_MS and hidden at it, the
     // battle still running (not held until it ends).
     putBattle(BATTLE_ID, 1100);
-    clickChoice('1', 1200);
-    expect(callsOf('advanceDialogue'), 'precondition: the click was refused').toEqual([]);
+    tap('Enter', 1200);
+    expect(callsOf('advanceDialogue'), 'precondition: the A was refused').toEqual([]);
     expect(toastText(), 'precondition: the refusal shows its reason').toBe(reason);
     server(1300);
     frame(1310);
@@ -2479,7 +2637,7 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     tap('Backspace', 6050);
     expect(battleShown(), 'precondition: B continued the outcome').toBe(false);
     putBattle(102n, 6100);
-    clickChoice('1', 6200);
+    tap('Enter', 6200);
     expect(toastText(), 'precondition: refused at the second battle').toBe(reason);
     opts.store.removeBattle(102n);
     server(6300);
@@ -2492,7 +2650,7 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // (c) An error (a hint kind) reported after the refusal goes to #status and leaves the toast to
     // its own clock.
     putBattle(103n, 11000);
-    clickChoice('1', 11100);
+    tap('Enter', 11100);
     expect(toastText(), 'precondition: refused at the third battle').toBe(reason);
     opts.onError('subscription', 'quota exceeded');
     const error = 'subscription: quota exceeded';
@@ -2502,7 +2660,7 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       errorSpy.mock.calls.filter((c) => c[0] === '[status]').map((c) => c[1]),
       'precondition: it went through the error path',
     ).toEqual([error]);
-    expect(callsOf('advanceDialogue'), 'no refused click ever reached the reducer').toEqual([]);
+    expect(callsOf('advanceDialogue'), 'no refused A ever reached the reducer').toEqual([]);
   });
 
   it('CTL6C-3-MAIN-MENU-DISABLED: over a battle every root row but Options and Close is aria-disabled; A or a click on Monsters, Bag or Journal opens nothing and shows the reason, A on the disabled Social row opens nothing, and Q and L open no Journal or Rankings either; Options > How to play opens help above the menu over the battle, it survives a batch and a frame, and Backspace closes just help', async () => {
@@ -3097,14 +3255,14 @@ function so2OpenByKeys(path: readonly string[], t0: number): void {
   }
 }
 
-/** Click a greet-then-shop button, as the dialogue renders one (main.dialogueDismiss.test.ts's). */
+/** Click the REAL rendered greet-then-shop button at clock `t` (ts-6b-5, named intentional change:
+ *  the caller seeds the shop NPC with `seedPickNpc(_, true)`, arms the dialogue and clicks past its
+ *  reveal; it was a fake `<button data-shop-id>` appended to the overlay). */
 function so2ClickShop(t: number): void {
-  const button = document.createElement('button');
-  button.dataset.shopId = '1';
-  byId('dialogue-overlay').appendChild(button);
+  const button = document.querySelector<HTMLElement>('#dialogue-choices [data-shop-id]');
+  if (button === null) throw new Error('fixture: no rendered Shop button');
   clock.t = t;
-  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
+  button.click();
 }
 
 /** A heal pad faced at (3, 6), then A at it: the heal frame opens (main.reconnectStack.test.ts's). */
@@ -3344,10 +3502,13 @@ const SO2_OPENS: readonly So2Open[] = [
     views: [{ load: so2Shop, method: 'show' }],
     shown: () => shownById('shop-overlay'),
     drive: () => {
+      // ts-6b-5: a real Shop button, clicked past the reveal (was: a fake button at 1100).
+      seedPickNpc(1005, true);
       startConversation(1010);
-      so2ClickShop(1100);
-      endConversation(1200);
-      frame(1210);
+      armDialogue(1010);
+      so2ClickShop(1800);
+      endConversation(1900);
+      frame(1910);
     },
   },
   {

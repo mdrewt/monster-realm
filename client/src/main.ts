@@ -579,6 +579,8 @@ let sessionView: SessionView | undefined;
 // The post-evolve reveal banner — runtime-constructed in main(), NOT a
 // registry overlay; read by the batch listener below and reset at the onReconnect tail.
 let evolutionNoticeBanner: EvolutionNoticeBanner | undefined;
+/** The banner's OK button, which B at the world presses for the player with no pointer. */
+let evolutionNoticeOk: HTMLButtonElement | null = null;
 let claimModelState: ClaimModelState = CLAIM_INITIAL;
 let sessionModelState: SessionModelState = SESSION_INITIAL;
 // The dialogue-dismiss / deferred shop-open state (ui/shopOpenModel.ts): whether a
@@ -1420,6 +1422,7 @@ function hintChips(
     },
     // bt-12: the shown tactical view's verbs — the shell's, else the deploy panel's (both screens).
     battleHint(),
+    { quickMove: screenHost.monstersQuickMove },
   );
 }
 
@@ -1503,6 +1506,7 @@ function noticeInput(): NoticeInput {
     players: store.allPlayers(),
     identity,
     errorPending: errorOverlayView?.visible ?? false,
+    evolutionPending: evolutionNoticeBanner?.visible ?? false,
     dismissed:
       answeredRequests.size === 0
         ? dismissedRequests
@@ -1536,6 +1540,11 @@ const worldPort: WorldPort = {
     dismiss: (key) => {
       if (key === 'error') {
         dismissErrorToast();
+        return;
+      }
+      // The banner's own OK: its in-flight lock sends one ack until that ack settles.
+      if (key === 'evolution') {
+        evolutionNoticeOk?.click();
         return;
       }
       // B on a line standing for several trade requests dismisses all of them.
@@ -2285,8 +2294,8 @@ let unrenderableReported: bigint | null = null;
 // is the world hint (`#status`, the world line, or the main menu's strip while the menu is on
 // top, WF1-A9). `statusEl` and the toast are created in main() BEFORE `conn = connect(...)` is
 // assigned (C8: no lifecycle callback can ever report into the void) but held at module scope
-// because send sites OUTSIDE main() (the Escape-dismiss keydown handler and the dialogue-choice
-// click handler) report through them too. textContent ONLY: server-supplied SenderError text must
+// because send sites OUTSIDE main() (the Escape-dismiss keydown handler among them) report
+// through them too. textContent ONLY: server-supplied SenderError text must
 // never become markup.
 let statusEl: HTMLElement | undefined;
 let toastChrome: ToastChrome | undefined;
@@ -4916,7 +4925,7 @@ async function main(): Promise<void> {
   toastChrome = createToast(document, gameScreen);
 
   // ONE pointer dispatcher on the game screen (ctl-15): clicks, right-clicks, long-presses and
-  // hover become button presses; the dialogue's choice and shop buttons keep their commands. Not
+  // hover become button presses (a dialogue choice too: a seek plus A through its screen). Not
   // attached to the shell-less boot's body fallback, which would make it a page-wide listener.
   const pointerScreen = document.getElementById('game-screen');
   if (pointerScreen !== null) {
@@ -4925,10 +4934,6 @@ async function main(): Promise<void> {
       press: pointerPress,
       capturing: () => controlsCapture() !== null,
       cancelCapture: cancelControlsCapture,
-      // The greet-then-shop button dispatches `pickShop`, so a battle base refuses it like any
-      // other command.
-      choice: (choiceIdx) => void dispatch({ kind: 'advanceDialogue', choiceIdx }),
-      shop: (shopId) => void dispatch({ kind: 'pickShop', shopId }),
     });
   }
 
@@ -5009,6 +5014,7 @@ async function main(): Promise<void> {
       returnFocus: () => worldCanvasEl?.focus(),
     },
   );
+  evolutionNoticeOk = noticeMount.querySelector('button');
 
   // mount the F9 error overlay (self-mounting, starts hidden,
   // non-blocking pointer-events:none). pushError renders into it on the first error.

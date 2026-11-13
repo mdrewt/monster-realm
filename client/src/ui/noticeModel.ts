@@ -1,8 +1,9 @@
 // ui/noticeModel.ts — the world's notices and the request action sheet (ctl-13, CTL13.2, CTL13.3).
-// Pure: no DOM, SDK, resolver, clock or module state. Notices are exactly two kinds: a pending
-// incoming request (a trade session opened with the viewer, a challenge aimed at them) and the
-// pending error. The hint bar shows Y and B for them, Y opens a request's Accept / Decline / View
-// sheet and B at the world dismisses the top notice. Nothing here opens a frame or moves focus.
+// Pure: no DOM, SDK, resolver, clock or module state. Notices are three kinds: the pending error,
+// the shown evolution reveal (ts-6b-5: its banner's OK, for the player with no pointer) and a
+// pending incoming request (a trade session opened with the viewer, a challenge aimed at them). The
+// hint bar shows Y and B for them, Y opens a request's Accept / Decline / View sheet and B at the
+// world dismisses the top notice. Nothing here opens a frame or moves focus.
 //
 // A trade request is an incoming session the viewer has not acted in and whose editor this client
 // has not opened. Accept opens that editor, Decline cancels the session. Several waiting trade
@@ -37,7 +38,13 @@ export interface ErrorNotice {
   readonly key: 'error';
 }
 
-export type Notice = RequestNotice | ErrorNotice;
+/** The evolution reveal banner while it shows: B acknowledges its entry as its OK button does. */
+export interface EvolutionNotice {
+  readonly kind: 'evolution';
+  readonly key: 'evolution';
+}
+
+export type Notice = RequestNotice | ErrorNotice | EvolutionNotice;
 
 export interface NoticeInput {
   readonly sessions: readonly StoreTradeSession[];
@@ -48,11 +55,14 @@ export interface NoticeInput {
   readonly identity: string;
   /** Whether the error toast shows. */
   readonly errorPending: boolean;
+  /** Whether the evolution reveal banner shows. */
+  readonly evolutionPending: boolean;
   /** The request keys the player dismissed with B. */
   readonly dismissed: ReadonlySet<string>;
 }
 
 const ERROR_NOTICE: ErrorNotice = { kind: 'error', key: 'error' };
+const EVOLUTION_NOTICE: EvolutionNotice = { kind: 'evolution', key: 'evolution' };
 
 /** The requests waiting on the viewer, oldest first (a tie: the smaller key, so challenge before
  *  session). Dismissal does not hide a request here: Y still answers one the banner has stopped
@@ -94,11 +104,13 @@ export function pendingRequests(i: NoticeInput): readonly RequestNotice[] {
   );
 }
 
-/** The notices, top first: the error when it shows, then the oldest undismissed request. When that
- *  request is a trade and more undismissed trade requests wait, it stands for all of them. */
+/** The notices, top first: the error when it shows, then the evolution reveal when it shows, then
+ *  the oldest undismissed request. When that request is a trade and more undismissed trade requests
+ *  wait, it stands for all of them. */
 export function buildNotices(i: NoticeInput): readonly Notice[] {
   const shown = pendingRequests(i).filter((n) => !i.dismissed.has(n.key));
   const out: Notice[] = i.errorPending ? [ERROR_NOTICE] : [];
+  if (i.evolutionPending) out.push(EVOLUTION_NOTICE);
   const request = shown[0];
   if (request === undefined) return out;
   const trades = request.request === 'trade' ? shown.filter((n) => n.request === 'trade') : [];

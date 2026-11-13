@@ -34,7 +34,10 @@
 // and focus anchor are frozen seams); the constructor docks it (`mr-dock`, a class rule
 // that aligns to the bottom and paints nothing itself) and moves the three content nodes into one
 // inner `.mr-frame--bottom`, so the visible box is a bottom box without an inset on the shell
-// (A11Y-12, the CTL7A-2 shell rule). `paint()` is the screen adapter's (ui/screens/dialogueScreen.ts):
+// (A11Y-12, the CTL7A-2 shell rule). Each choice and the Shop button is a nav row
+// (`data-nav-key`: `c<idx>`, `shop`, dialogueScreen's own keys), so a click is the pointer's seek
+// plus A through the screen, under its reveal and resend guards (input/pointerSource.ts).
+// `paint()` is the screen adapter's (ui/screens/dialogueScreen.ts):
 // the cursor button and the reveal class. The kept paint is re-applied after every batch
 // `render(vm)` and reset to its opening value on the hidden→visible edge, so a reopened talk never
 // shows the last one's cursor.
@@ -125,17 +128,18 @@ export class DialogueView {
       btn.className = 'mr-nav-item';
       btn.textContent = choice.text;
       btn.dataset.choiceIdx = String(choice.idx);
+      btn.dataset.navKey = `c${choice.idx}`;
       this.choicesContainer.appendChild(btn);
     });
     // The enum-derived Shop affordance — rendered from
     // vm.shopAction only (never from choice text). Carries data-shop-id and
-    // deliberately NO data-choice-idx, so the existing dialogue click
-    // delegation never mistakes it for a choice.
+    // deliberately NO data-choice-idx, so the paint never mistakes it for a choice.
     if (vm.shopAction) {
       const shopBtn = document.createElement('button');
       shopBtn.className = 'mr-nav-item';
       shopBtn.textContent = shopLabel;
       shopBtn.dataset.shopId = String(vm.shopAction.shopId);
+      shopBtn.dataset.navKey = 'shop';
       this.choicesContainer.appendChild(shopBtn);
     }
     this.#buttonsKey = key;

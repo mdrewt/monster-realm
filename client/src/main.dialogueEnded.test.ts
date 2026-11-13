@@ -284,7 +284,14 @@ function ownRows(store: AuthoritativeStore, t: number, tileX = 2, tileY = 6): vo
 }
 
 /** An NPC with the shipped `elder_oak_talk` tree, standing at (`tileX`, 6). */
-function elderRows(store: AuthoritativeStore, t: number, entityId = ELDER, tileX = 3): void {
+function elderRows(
+  store: AuthoritativeStore,
+  t: number,
+  entityId = ELDER,
+  tileX = 3,
+  /** ts-6b-5: a shopkeeper elder (the dialogue renders a real Shop button after the choice). */
+  shopId?: number,
+): void {
   store.upsertNpc({
     entityId,
     npcId: entityId === ELDER ? 'elder_oak' : `elder_oak_${entityId}`,
@@ -293,7 +300,7 @@ function elderRows(store: AuthoritativeStore, t: number, entityId = ELDER, tileX
     homeY: 6,
     wanderRadius: 0,
     dialogueTreeId: 'elder_oak_talk',
-    interaction: { kind: 'dialogue' },
+    interaction: shopId === undefined ? { kind: 'dialogue' } : { kind: 'shop', shopId },
   });
   store.upsertCharacter(character(entityId, tileX, 6), t);
 }
@@ -312,10 +319,10 @@ function frames(from: number, to: number, stepMs = 50): void {
 
 /** Me beside the elder plus my conversation with him, in one batch at `t`; then frames until the
  *  dialogue's open label has been spoken. */
-function openConversation(t: number): void {
+function openConversation(t: number, shopId?: number): void {
   batch(t, (s) => {
     ownRows(s, t);
-    elderRows(s, t);
+    elderRows(s, t, ELDER, 3, shopId);
     s.upsertConversation(conversationWith());
   });
   frames(t + 50, t + 750);
@@ -336,16 +343,14 @@ function clickChoice(t: number): void {
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 }
 
-/** Click a greet-then-shop button inside the dialogue overlay, as the dialogue renders one. */
-function clickShop(t: number, shopId = '1'): void {
-  const button = document.createElement('button');
-  button.dataset.shopId = shopId;
-  const host = document.getElementById('dialogue-overlay');
-  if (host === null) throw new Error('the shell must ship #dialogue-overlay');
-  host.appendChild(button);
+/** Click the REAL rendered greet-then-shop button at clock `t` (ts-6b-5, named intentional change:
+ *  it was a fake `<button data-shop-id>` appended to the overlay). The conversation must be a shop
+ *  one (`openConversation(t, shopId)`), and `t` past the node's reveal. */
+function clickShop(t: number): void {
+  const button = document.querySelector<HTMLElement>('#dialogue-choices [data-shop-id]');
+  if (button === null) throw new Error('the dialogue must render the Shop button');
   clock.t = t;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
 }
 
 const dismissCalls = (): number => H.calls.filter((name) => name === 'dismissDialogue').length;
@@ -653,20 +658,22 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
     // "end it, no shop" (last intent wins), so the shop the player picked would never open; and a
     // second dismiss on top of the one already ending the conversation.
     await bootReady();
-    openConversation(1000);
+    openConversation(1000, 1);
     H.manualDismiss = true;
     clickShop(1900);
     expect(dismissCalls(), "precondition: the Shop pick's dismiss is in flight").toBe(1);
     H.advanceRejection = senderError('walked too far away');
 
-    clickChoice(2000);
+    // ts-6b-5: the choice click is 1100 ms after the Shop click (was 100): a second A inside
+    // DIALOGUE_RESEND_MS of the first is swallowed by the dialogue screen.
+    clickChoice(3000);
     await settle();
     expect(statusText(), 'the ended line still shows').toBe(ENDED_WALKED_AWAY);
     expect(dismissCalls(), 'the dismiss in flight ends it: no second one').toBe(1);
 
     H.dismissPromises[0]?.resolve();
     await settle();
-    endConversation(2200);
+    endConversation(3200);
     expect(dialogueShown(), "the server's no-conversation batch closes it").toBe(false);
     expect(shopShown(), 'the shop the player picked still opens').toBe(true);
   });

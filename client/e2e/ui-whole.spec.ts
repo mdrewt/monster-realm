@@ -1289,6 +1289,14 @@ const SCREEN_CHIPS: Chips = [
   ['Start', 'Close'],
   ['Select', 'Help'],
 ];
+// The Monsters frame in its list (both tabs) adds X, quick Move (box.sheet.move), before Close.
+const MONSTERS_LIST_CHIPS: Chips = [
+  ['A', 'OK'],
+  ['B', 'Back'],
+  ['X', 'Move'],
+  ['Start', 'Close'],
+  ['Select', 'Help'],
+];
 const WORLD_TAIL: Chips = [
   ['Start', 'Menu'],
   ['Select', 'Help'],
@@ -1325,13 +1333,26 @@ const hintSnap = (p: Page): Promise<HintSnap> =>
   });
 
 /** The bar sits on the window's bottom edge, below the frame, on top at each chip, with this chip
- *  set (button order and verbs). `frame` null: no frame is open (the world). */
+ *  set (button order and verbs). `frame` null: no frame is open (the world). The frame loop paints
+ *  the bar on the animation frame after an open, so a first read can still show the previous
+ *  context's chips: wait for this exact set, let two more frames paint, then measure that settled
+ *  bar (a set only seen in passing fails below). */
 async function expectHint(
   p: Page,
   label: string,
   want: Chips,
   frame: string | null,
 ): Promise<HintSnap> {
+  const wanted = want.map(([b, v]) => [b, v]);
+  await expect
+    .poll(async () => (await hintSnap(p)).chips.map((c) => [c.button, c.verb]), {
+      message: `${label}: chip buttons and verbs`,
+    })
+    .toEqual(wanted);
+  await p.evaluate(
+    () =>
+      new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))),
+  );
   const h = await hintSnap(p);
   expectNear(
     h.bar.y + h.bar.height,
@@ -1350,7 +1371,7 @@ async function expectHint(
   expect(
     h.chips.map((c) => [c.button, c.verb]),
     `${label}: chip buttons and verbs`,
-  ).toEqual(want.map(([b, v]) => [b, v]));
+  ).toEqual(wanted);
   for (const c of h.chips) expect(c.hit, `${label}: the ${c.button} chip is on top`).toBe(true);
   return h;
 }
@@ -1994,8 +2015,10 @@ test.describe
               stop.tab as string,
             );
           }
-          // Every screen's chip set is the same literal (Profile left its name field above).
-          const h = await expectHint(page, stop.id, SCREEN_CHIPS, stop.root);
+          // Every screen's chip set is the same literal (Profile left its name field above),
+          // except the Monsters list, where X is quick Move.
+          const want = screen.key === 'monsters' ? MONSTERS_LIST_CHIPS : SCREEN_CHIPS;
+          const h = await expectHint(page, stop.id, want, stop.root);
           if (screen.strip !== null) {
             expect(
               h.tabChips,

@@ -81,6 +81,7 @@ import type {
   StoreMonsterPub,
   StoreSpeciesRow,
 } from '../../net/store';
+import { NEXT_FREE_PARTY_SLOT } from '../boxModel';
 import type { BoxView } from '../boxView';
 import {
   buildMonstersVm,
@@ -816,7 +817,7 @@ describe('monstersScreen — tabs and cursor (ctl-8b, CTL8B.1)', () => {
     }
   });
 
-  it('a D-pad press that moves nothing is still swallowed with the cursor unmoved: on an empty Storage and on a one-monster list; and Y and X in the list phase are not the screen`s', () => {
+  it('a D-pad press that moves nothing is still swallowed with the cursor unmoved: on an empty Storage and on a one-monster list; and Y in the list phase is not the screen`s', () => {
     // WRONG IMPL KILLED: a D-pad press with no row to move to that throws, is `unhandled` (the
     // world would walk under the open frame) or invents a cursor, and a Y or X that is swallowed
     // (Y belongs to the page / a later slice; the screen must not eat it).
@@ -838,9 +839,86 @@ describe('monstersScreen — tabs and cursor (ctl-8b, CTL8B.1)', () => {
     }
     expect(press(empty, party, 'Right').state.nav.item, 'Right: the empty slot 1').toBe('slot-1');
     expect(press(empty, party, 'Down').state.nav.item, 'Down: the empty slot 2').toBe('slot-2');
-    for (const input of ['Y', 'X'] as const) {
-      expect(press(empty, opened, input).result, `${input} in the list phase`).toBe('unhandled');
+    // ts-6b-5.4 (named intentional change): X is the screen's quick Move now; only Y stays unhandled.
+    expect(press(empty, opened, 'Y').result, 'Y in the list phase').toBe('unhandled');
+  });
+
+  it('X on a Party monster sends the same setPartySlot as the sheet Move; X on an empty slot does nothing', () => {
+    // WRONG IMPL KILLED: X left unhandled (the world would hear it); X sending the next-free slot
+    // from a Party monster (it never leaves), the sentinel from Storage, or the wrong monster; X
+    // that leaves no pendingMove (no "moved" line) or stays in the list state of another phase;
+    // X on an empty Party slot that sends a command or moves the cursor; a held X that sends; an
+    // X that lands after the settle changed the phase under it (the monster it aimed at is gone)
+    // that still sends for the monster the cursor re-seated onto.
+    const vm = vmOf(world());
+    const opened = monstersScreen.init(vm);
+
+    // Party monster 12: X equals A -> sheet -> Move, in command and in next state.
+    const inParty = swallowed(vm, opened, ['RB', 'Right']);
+    const viaSheet = press(vm, swallowed(vm, opened, ['RB', 'Right', ...SHEET_STEPS.move]), 'A');
+    const quickParty = press(vm, inParty, 'X');
+    expect(quickParty.result).toEqual({ kind: 'setPartySlot', monsterId: 12n, slot: NONE });
+    expect(quickParty.result, 'the same command as the sheet Move').toEqual(viaSheet.result);
+    expect(quickParty.state.phase.kind, 'back on the list').toBe('list');
+    expect(quickParty.state.pendingMove).toEqual({ monsterId: 12n, toParty: false });
+    expect(quickParty.state.pendingMove).toEqual(viaSheet.state.pendingMove);
+    expect(cursorOf(quickParty.state)).toEqual(cursorOf(viaSheet.state));
+
+    // The sentinel is the view model's: a view model built with 77 sends 77 on X too.
+    const odd = buildMonstersVm(
+      world().monsters.map((m) => (m.partySlot === NONE ? { ...m, partySlot: 77 } : m)),
+      new Map(SPECIES.map((s) => [s.id, s])),
+      PARTY_SIZE,
+      77,
+    );
+    expect(press(odd, swallowed(odd, monstersScreen.init(odd), ['RB']), 'X').result).toEqual({
+      kind: 'setPartySlot',
+      monsterId: 11n,
+      slot: 77,
+    });
+
+    // Storage monster 21 (and 23, to prove the id comes from the cursor): the next free slot.
+    const quickBox = press(vm, opened, 'X');
+    expect(quickBox.result).toEqual({
+      kind: 'setPartySlot',
+      monsterId: 21n,
+      slot: NEXT_FREE_PARTY_SLOT,
+    });
+    expect(quickBox.state.phase.kind).toBe('list');
+    expect(quickBox.state.pendingMove).toEqual({ monsterId: 21n, toParty: true });
+    expect(cursorOf(quickBox.state)).toEqual({ tab: 'storage', item: '21' });
+    expect(press(vm, swallowed(vm, opened, ['Right', 'Right']), 'X').result).toEqual({
+      kind: 'setPartySlot',
+      monsterId: 23n,
+      slot: NEXT_FREE_PARTY_SLOT,
+    });
+
+    // An empty Party slot: nothing sent, nothing moved.
+    const onEmpty = swallowed(vm, opened, ['RB', 'Down']);
+    expect(onEmpty.nav.item, 'fixture: an empty slot').toBe('slot-2');
+    const emptyX = press(vm, onEmpty, 'X');
+    expect(emptyX.result, 'X on an empty slot sends nothing').toBe('consumed');
+    expect(cursorOf(emptyX.state)).toEqual(cursorOf(onEmpty));
+    expect(emptyX.state.pendingMove).toBeNull();
+    expect(emptyX.state.phase.kind).toBe('list');
+
+    // A held X sends nothing, on a Party and a Storage monster alike.
+    for (const from of [inParty, opened]) {
+      const held = press(vm, from, rep('X'));
+      expect(held.result, 'a repeat X sends nothing').toBe('consumed');
+      expect(held.state.pendingMove).toBeNull();
+      expect(cursorOf(held.state)).toEqual(cursorOf(from));
     }
+
+    // X after the settle changed the phase under it only paints: monster 21's sheet is open, 21
+    // leaves, the settle drops to the list (cursor re-seated on 22), X sends nothing.
+    const sheetOn21 = press(vm, opened, 'A').state;
+    expect(sheetOn21.phase).toMatchObject({ kind: 'sheet', monsterId: 21n });
+    const gone = vmOf(without(world(), 21n));
+    const late = press(gone, sheetOn21, 'X');
+    expect(late.result, 'X that lands on a changed phase sends nothing').toBe('consumed');
+    expect(late.state.phase.kind).toBe('list');
+    expect(late.state.pendingMove).toBeNull();
   });
 });
 

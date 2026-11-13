@@ -61,12 +61,21 @@ export interface HintDeploy {
   readonly deploy: 'confirm' | 'edit';
 }
 
+/** What only the shell knows about the top screen frame (ts-6b-5): whether the Monsters frame is
+ *  in its list, where X moves the monster under the cursor (its sheet and pages give X nothing). */
+export interface HintFrame {
+  readonly quickMove: boolean;
+}
+
+const NO_FRAME: HintFrame = { quickMove: false };
+
 export function hintBar(
   stack: Stack,
   bindings: Bindings,
   notices: readonly Notice[],
   world: HintWorld = NO_WORLD,
   battleOrDeploy?: HintBattle | HintDeploy,
+  frame: HintFrame = NO_FRAME,
 ): readonly HintChip[] {
   const deploy =
     battleOrDeploy !== undefined && 'deploy' in battleOrDeploy ? battleOrDeploy : undefined;
@@ -140,6 +149,9 @@ export function hintBar(
       return [
         chip('A', t('chrome.chip.ok')),
         chip('B', t('chrome.chip.back')),
+        ...(top.kind === 'screen' && top.id === 'boxView' && frame.quickMove
+          ? [chip('X', t('box.sheet.move'))]
+          : []),
         chip('Start', t('chrome.chip.close')),
         select(),
       ];

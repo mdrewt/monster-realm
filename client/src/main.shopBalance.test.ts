@@ -158,7 +158,9 @@ function seedWorld(t: number, balance?: bigint): void {
     homeY: 6,
     wanderRadius: 0,
     dialogueTreeId: 'no-such-tree',
-    interaction: { kind: 'dialogue' },
+    // ts-6b-5 (named intentional change): a shopkeeper, so the real dialogue renders a real Shop
+    // button (it was a dialogue NPC, and the test clicked a fake `<button data-shop-id>`).
+    interaction: { kind: 'shop', shopId: SHOP_ID },
   });
   opts.store.upsertCharacter(
     {
@@ -181,17 +183,14 @@ function seedWorld(t: number, balance?: bigint): void {
   server(t);
 }
 
-/** Click a greet-then-shop button, as the dialogue renders one (main.dialogueDismiss.test.ts). */
+/** Click the REAL rendered greet-then-shop button at clock `t` (ts-6b-5, named intentional change:
+ *  it was a fake `<button data-shop-id>` appended to the overlay). The click is a seek + A through
+ *  the dialogue screen, so the caller passes a `t` past the node's 600 ms text reveal. */
 function clickShop(t: number): void {
-  const button = document.createElement('button');
-  button.dataset.shopId = String(SHOP_ID);
-  const host =
-    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
-  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
-  host.appendChild(button);
+  const button = document.querySelector<HTMLElement>(`#dialogue-choices [data-shop-id]`);
+  if (button === null) throw new Error('fixture: the dialogue rendered no Shop button');
   clock.t = t;
-  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
+  button.click();
 }
 
 const shopShown = (): boolean => {
@@ -214,9 +213,10 @@ function openShop(t: number): void {
     currentNodeId: 'start',
   });
   server(t + 10);
-  clickShop(t + 100);
+  // ts-6b-5: past the reveal (was t + 100); the batches after it move on with the clock.
+  clickShop(t + 800);
   opts.store.removeConversation(H.identity);
-  server(t + 200);
+  server(t + 900);
 }
 
 describe('main.ts booted: the wallet balance in the shop overlay (qf-17)', {
@@ -242,13 +242,13 @@ describe('main.ts booted: the wallet balance in the shop overlay (qf-17)', {
 
     // The balance changes while the shop is open (a sale, a payout, a settled trade).
     opts.store.upsertWallet({ ownerIdentity: H.identity, balance: 80n });
-    server(1400);
+    server(2400);
     expect(shopShown(), 'the shop is still open').toBe(true);
     expect(balanceEl().textContent, 'the next batch updates the open shop').toBe('Gold: 80');
     expect(balanceEl().hidden).toBe(false);
 
     opts.store.upsertWallet({ ownerIdentity: H.identity, balance: 0n });
-    server(1500);
+    server(2500);
     expect(balanceEl().textContent, 'a zero balance is a balance').toBe('Gold: 0');
     expect(balanceEl().hidden, 'and is shown, not hidden').toBe(false);
     expect(balanceEl().dataset.balanceState).toBe('known');

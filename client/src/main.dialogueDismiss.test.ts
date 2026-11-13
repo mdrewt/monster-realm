@@ -188,7 +188,9 @@ function seedWorld(t: number): void {
     homeY: 6,
     wanderRadius: 0,
     dialogueTreeId: 'no-such-tree',
-    interaction: { kind: 'dialogue' },
+    // ts-6b-5 (named intentional change): a shopkeeper (shop 1), so the real dialogue renders a
+    // real Shop button; the tests here only press Escape or click Shop, neither reads the kind.
+    interaction: { kind: 'shop', shopId: 1 },
   });
   opts.store.upsertCharacter(
     {
@@ -241,19 +243,15 @@ function endConversation(t: number): void {
   opts.store.removeConversation(H.identity);
   server(t);
 }
-/** Click a greet-then-shop button, as the dialogue renders one. ctl-15 (named intentional change):
- *  the document-level delegate is absorbed by the #game-screen pointer dispatcher, so the button
- *  sits inside the dialogue overlay (in #game-screen); it was appended to document.body. */
-function clickShop(t: number, shopId = '1'): void {
-  const button = document.createElement('button');
-  button.dataset.shopId = shopId;
-  const host =
-    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
-  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
-  host.appendChild(button);
+/** Click the REAL rendered greet-then-shop button at clock `t`. ts-6b-5 (named intentional change):
+ *  the click is a seek + A through the dialogue screen, so `t` is past the node's 600 ms reveal and
+ *  two Shop clicks are more than DIALOGUE_RESEND_MS apart; it was a fake `<button data-shop-id>`
+ *  appended to the overlay. */
+function clickShop(t: number): void {
+  const button = document.querySelector<HTMLElement>('#dialogue-choices [data-shop-id]');
+  if (button === null) throw new Error('fixture: the dialogue rendered no Shop button');
   clock.t = t;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
 }
 /** Let queued microtasks and zero-delay timers run (a rejection handler, a deferred focus). */
 const flush = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -351,13 +349,13 @@ describe('main.ts Escape-in-dialogue dismiss (runtime, ctl-3)', { sequential: tr
     expect(dialogueShown(), 'precondition: the server opened the dialogue').toBe(true);
     H.manualDismiss = true;
 
-    clickShop(1100);
+    clickShop(1700);
     expect(dismissCalls(), 'precondition: the Shop click sent a dismiss').toBe(1);
     expect(H.dismissPromises, 'precondition: it is unsettled').toHaveLength(1);
     H.dismissPromises[0]?.reject(new Error('boom'));
     await flush();
 
-    endConversation(1200);
+    endConversation(1800);
     expect(dialogueShown(), 'precondition: the conversation ended').toBe(false);
     expect(shopShown(), 'the rejected click opens no shop').toBe(false);
   });
@@ -373,14 +371,16 @@ describe('main.ts Escape-in-dialogue dismiss (runtime, ctl-3)', { sequential: tr
 
     H.linkLive = false;
     expect(H.frozen, 'precondition: the link is not frozen').toBe(false);
-    clickShop(1100);
+    clickShop(1700);
     expect(dismissCalls(), 'no live handle: the Shop click calls no reducer').toBe(0);
 
+    // The next click is 1100 ms later (was 100): the dialogue screen swallows a second A inside
+    // DIALOGUE_RESEND_MS of the one it just handed out, sent or not.
     H.linkLive = true;
-    clickShop(1200);
+    clickShop(2800);
     expect(dismissCalls(), 'the handle is back: the next Shop click sends exactly once').toBe(1);
 
-    endConversation(1300);
+    endConversation(2900);
     expect(shopShown(), 'and the shop opens once the conversation ends').toBe(true);
   });
 

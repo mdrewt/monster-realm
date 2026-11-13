@@ -1628,23 +1628,36 @@ const dismissCalls = (): number => H.calls.filter((name) => name === 'dismissDia
 /** Open the shop the one way the shell does: a conversation, a click on the shop button inside it,
  *  and the batch that ends the conversation (which performs the deferred open). */
 function openShopViaDialogue(t: number): void {
+  makeShopkeeper();
   startConversation(t);
   expect(shownById('dialogue-overlay'), 'precondition: the server opened the dialogue').toBe(true);
   const before = dismissCalls();
-  const button = document.createElement('button');
-  button.dataset.shopId = '1';
-  // ctl-15 (named intentional change): inside the dialogue overlay (in #game-screen, where the
-  // pointer dispatcher absorbed the document delegate); it was appended to document.body.
-  const host =
-    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
-  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
-  host.appendChild(button);
-  clock.t = t + 5;
+  // ts-6b-5 (named intentional change): the REAL rendered Shop button, clicked past the node's
+  // 600 ms text reveal (the click is a seek + A through the dialogue screen); it was a fake
+  // `<button data-shop-id>` appended to the overlay, clicked 5 ms after the node. The batch that
+  // ends the conversation follows 10 ms after the click (callers' later batches move on with it).
+  const button = document.querySelector<HTMLElement>('#dialogue-choices [data-shop-id]');
+  if (button === null) throw new Error('fixture: the dialogue rendered no Shop button');
+  clock.t = t + 700;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
   expect(dismissCalls(), 'precondition: the shop click sent a dismiss').toBe(before + 1);
-  endConversation(t + 10);
+  endConversation(t + 710);
   expect(shownById('shop-overlay'), 'precondition: the deferred open showed the shop').toBe(true);
+}
+
+/** ts-6b-5: the guide NPC re-seeded as a shopkeeper (shop 1), so the real dialogue renders a real
+ *  Shop button. Written into the store only; the next batch delivers it. */
+function makeShopkeeper(): void {
+  opts.store.upsertNpc({
+    entityId: NPC_ENTITY,
+    npcId: 'guide',
+    zoneId: 0,
+    homeX: 3,
+    homeY: 6,
+    wanderRadius: 0,
+    dialogueTreeId: 'no-such-tree',
+    interaction: { kind: 'shop', shopId: 1 },
+  });
 }
 
 describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }, () => {
@@ -1708,14 +1721,15 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
       { kind: 'screen', id: 'shopView' },
     ]);
 
-    startBattle(BATTLE_ID, 1100);
+    // ts-6b-5: the batches below sit after the shop open's own (the clock was 1100 / 1200 here).
+    startBattle(BATTLE_ID, 1800);
     expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
     expect(shownById('shop-overlay'), 'the shop is hidden once the battle row arrives').toBe(false);
     expect(stack(), 'and only the battle base is left').toEqual([
       { kind: 'battle', battleId: '101' },
     ]);
 
-    endBattle(BATTLE_ID, 1200);
+    endBattle(BATTLE_ID, 1900);
     expect(battleShown(), 'precondition: the battle is gone').toBe(false);
     expect(shownById('shop-overlay'), 'the shop does not come back by itself').toBe(false);
     expect(stack()).toEqual([{ kind: 'world' }]);
@@ -1803,7 +1817,9 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
         `${overlay.name}: precondition: opened through its own a11y path`,
       ).toBe('true');
 
-      startBattle(battleId, t + 50);
+      // ts-6b-5: t + 800 / t + 900 / t += 1000 (were t + 50 / t + 100 / t += 200): the shop row's
+      // open runs to t + 710 (it clicks the real Shop button past the reveal).
+      startBattle(battleId, t + 800);
       expect(battleShown(), `${overlay.name}: precondition: the battle is on screen`).toBe(true);
       expect(isShown(root), `${overlay.name}: hidden once the battle row arrives`).toBe(false);
       expect(
@@ -1817,9 +1833,9 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
         { kind: 'battle', battleId: battleId.toString() },
       ]);
 
-      endBattle(battleId, t + 100);
+      endBattle(battleId, t + 900);
       expect(battleShown(), `${overlay.name}: precondition: the battle ended`).toBe(false);
-      t += 200;
+      t += 1000;
       checked += 1;
     }
     expect(checked, 'ANTI-VACUITY: all five overlays were driven').toBe(5);
@@ -1903,20 +1919,16 @@ function accepterBattleRow(battleId: bigint, outcome: string): StoreBattle {
     opponentMonsterIds: [2n],
   };
 }
-/** Click a greet-then-shop button, as the dialogue renders one; asserts the dismiss was sent. */
-function clickShop(t: number, shopId = '1'): void {
+/** Click the REAL rendered greet-then-shop button at clock `t`; asserts the dismiss was sent.
+ *  ts-6b-5 (named intentional change): the click is a seek + A through the dialogue screen, so the
+ *  conversation must be a shopkeeper's (`makeShopkeeper()` before `startConversation`) and `t` past
+ *  the node's 600 ms reveal; it was a fake `<button data-shop-id>` appended to the overlay. */
+function clickShop(t: number): void {
   const before = dismissCalls();
-  const button = document.createElement('button');
-  button.dataset.shopId = shopId;
-  // ctl-15 (named intentional change): inside the dialogue overlay (in #game-screen, where the
-  // pointer dispatcher absorbed the document delegate); it was appended to document.body.
-  const host =
-    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
-  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
-  host.appendChild(button);
+  const button = document.querySelector<HTMLElement>('#dialogue-choices [data-shop-id]');
+  if (button === null) throw new Error('fixture: the dialogue rendered no Shop button');
   clock.t = t;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
   expect(dismissCalls(), 'precondition: the shop click sent a dismiss').toBe(before + 1);
 }
 /** Let queued microtasks and zero-delay timers run (an overlay's deferred initial focus). */
@@ -1947,21 +1959,24 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     await bootReady();
     seedWorld(1000);
 
+    // ts-6b-5: the Shop clicks are 700 ms after their node (was 10 ms); every later clock here is
+    // moved on by the same 1000 ms (was 1100 / 1200 / 1250 / 1300 / 1310 / 1400 / 1500 / 1600).
     // (a) one batch: the conversation row goes AND an Ongoing battle row arrives.
+    makeShopkeeper();
     startConversation(1010);
     expect(shownById('dialogue-overlay'), 'precondition: the dialogue is open').toBe(true);
-    clickShop(1020);
+    clickShop(1710);
     opts.store.removeConversation(H.identity);
     // bt-17 (named fixture change): seeded renderable (Deploying row + own monster): (a) asserts the
     // battle ON SCREEN, which a row-less anchor no longer is after the purge.
     seedRenderableBattle(battleRow(BATTLE_ID, 'Ongoing'));
-    settle(1100);
+    settle(2100);
     expect(battleShown(), 'a: precondition: the battle is on screen').toBe(true);
     expect(shownById('shop-overlay'), 'a: no shop opens over a battle').toBe(false);
     expect(stack(), 'a: only the battle base').toEqual([{ kind: 'battle', battleId: '101' }]);
-    endBattle(BATTLE_ID, 1200);
+    endBattle(BATTLE_ID, 2200);
     expect(battleShown(), 'a: precondition: the battle is gone').toBe(false);
-    settle(1250);
+    settle(2250);
     expect(shownById('shop-overlay'), 'a: the pending id was consumed: nothing opens later').toBe(
       false,
     );
@@ -1969,15 +1984,15 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
 
     // (b) one batch: the conversation row goes AND a TERMINAL battle row arrives and is shown as
     // the outcome. The base is the world: only the outcome (battleView) frame blocks the open.
-    startConversation(1300);
+    startConversation(2300);
     expect(shownById('dialogue-overlay'), 'precondition: the dialogue is open again').toBe(true);
-    clickShop(1310);
+    clickShop(3000);
     opts.store.removeConversation(H.identity);
     // bt-17 (named fixture change): the terminal anchor comes with its Finished tactical row, so the
     // results panel shows the outcome; a row-less terminal anchor is hidden and latched dismissed
     // after the purge (no outcome frame at all), which is not what (b) is about.
     seedRenderableBattle(battleRow(BATTLE_ID + 1n, 'SideAWins'), 'Finished');
-    settle(1400);
+    settle(3100);
     expect(battleShown(), 'b: precondition: the outcome is on screen').toBe(true);
     expect(stack()[0], 'b: precondition: the base is the world, not a battle').toEqual({
       kind: 'world',
@@ -1989,11 +2004,11 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     ]);
     // bt-17 (named intentional change): B, not Escape — the results panel continues on B at once
     // (main.dispatch.test.ts BT12-4-BOOT-RESULTS); Escape dismissed the purged 1v1 outcome.
-    fire('keydown', 'Backspace', 1500);
-    fire('keyup', 'Backspace', 1502);
+    fire('keydown', 'Backspace', 3500);
+    fire('keyup', 'Backspace', 3502);
     await flush();
     expect(battleShown(), 'b: precondition: B dismissed the outcome').toBe(false);
-    settle(1600);
+    settle(3600);
     expect(shownById('shop-overlay'), 'b: the pending id was consumed: nothing opens later').toBe(
       false,
     );

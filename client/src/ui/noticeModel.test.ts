@@ -112,6 +112,7 @@ function input(over: Partial<NoticeInput> = {}): NoticeInput {
     players: PLAYERS,
     identity: ME,
     errorPending: false,
+    evolutionPending: false,
     dismissed: new Set<string>(),
     ...over,
   };
@@ -506,6 +507,27 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
 //   request, buildNotices collapses several into one notice, `dismissKeys` answers the keys B
 //   dismisses, and requestCommand answers a trade request with the session commands.
 // ==========================================================================================
+
+describe('noticeModel: the evolution notice (ts-6b-5.2)', () => {
+  it('an evolution banner is a notice between the error and the oldest request; evolutionPending false raises none; its dismiss key is its own', () => {
+    // WRONG IMPL KILLED: no evolution notice (B at the world could never reach the banner); the
+    // evolution notice ahead of the error or behind the request; one raised while not pending.
+    const bobTrade = tradeSession(51n, BOB, ME, 1_000n);
+    const evo = { kind: 'evolution', key: 'evolution' };
+    expect(buildNotices(input({ evolutionPending: true }))).toEqual([evo]);
+    expect(buildNotices(input({ evolutionPending: false }))).toEqual([]);
+    expect(
+      buildNotices(input({ sessions: [bobTrade], evolutionPending: true, errorPending: true })).map(
+        (n) => n.key,
+      ),
+      'order: error, evolution, request',
+    ).toEqual(['error', 'evolution', 'session-51']);
+    expect(
+      buildNotices(input({ sessions: [bobTrade], evolutionPending: true })).map((n) => n.key),
+    ).toEqual(['evolution', 'session-51']);
+    expect(dismissKeys(evo as Notice)).toEqual(['evolution']);
+  });
+});
 
 describe('noticeModel: incoming trade sessions (ts-3)', () => {
   it('ts-3.5 an incoming untouched session NOT in `opened` is a pending request from its opener; once this client opened its editor it is not; the opener never gets one', () => {

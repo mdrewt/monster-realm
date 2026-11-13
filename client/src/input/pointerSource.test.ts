@@ -10,9 +10,9 @@
 // CONTRACT (imported exactly as the plan names it):
 //   navPath(count, cols | null, from, to): VButton[]   tabPath(from, to): VButton[]
 //   new PointerSource(gameScreen, () => canvas, deps, clock); keyPressed()
-//   deps = { top(), press(button), capturing(), cancelCapture(), choice(idx), shop(shopId) }
-// The pointer emits virtual-button presses ONLY (never coordinates), plus the two dialogue
-// commands the old document delegate owned.
+//   deps = { top(), press(button), capturing(), cancelCapture() }
+// The pointer emits virtual-button presses ONLY (never coordinates). ts-6b-5: the direct
+// choice/shop deps are gone; a dialogue choice/Shop button is an ordinary nav row.
 //
 // THE FAKE ADAPTER. `press` records every button AND simulates the screen adapter the router would
 // reach: the fixture's ONE driven container (a list, a grid or a tab strip) moves its `is-active` /
@@ -95,8 +95,6 @@ interface Fx {
   /** Every pressed button, in order. */
   readonly presses: VButton[];
   readonly press: ReturnType<typeof vi.fn>;
-  readonly choice: ReturnType<typeof vi.fn>;
-  readonly shop: ReturnType<typeof vi.fn>;
   readonly cancelCapture: ReturnType<typeof vi.fn>;
   top: PointerTop;
   capturing: boolean;
@@ -252,18 +250,14 @@ function mount(top: PointerTop): Fx {
     if (fx.drive !== null) drive(fx.drive, button);
     fx.onPress?.(button);
   });
-  const choice = vi.fn((_idx: number) => undefined);
-  const shop = vi.fn((_shopId: number) => undefined);
   const cancelCapture = vi.fn(() => undefined);
   const deps: PointerDeps = {
     top: () => fx.top,
     press,
     capturing: () => fx.capturing,
     cancelCapture,
-    choice,
-    shop,
   };
-  Object.assign(fx, { press, choice, shop, cancelCapture });
+  Object.assign(fx, { press, cancelCapture });
   Object.assign(fx, { source: new PointerSource(gameScreen, () => canvas, deps, clock) });
   return fx;
 }
@@ -589,8 +583,6 @@ describe('PointerSource — CTL15.1 the world canvas', () => {
     ]);
     fx.clock.advance(5_000);
     expect(pressCalls(fx), 'no late timer presses anything').toEqual([['A'], ['A']]);
-    expect(fx.choice).not.toHaveBeenCalled();
-    expect(fx.shop).not.toHaveBeenCalled();
     expect(fx.cancelCapture).not.toHaveBeenCalled();
   });
 
@@ -649,8 +641,6 @@ describe('PointerSource — CTL15.2 the top frame', () => {
     expect(fx.presses, 'a click inside the row, upward').toEqual(['Up', 'Up', 'A']);
     expect(activeIndex(navItems(l))).toBe(1);
     for (const call of pressCalls(fx)) expect(call, 'one argument per press').toHaveLength(1);
-    expect(fx.choice).not.toHaveBeenCalled();
-    expect(fx.shop).not.toHaveBeenCalled();
   });
 
   it('CTL15-2-GRID-SEEK: a click on a grid cell walks the row-major D-pad path (short last row included), then presses A', () => {
@@ -870,40 +860,49 @@ describe('PointerSource — CTL15.2 the top frame', () => {
     }
   });
 
-  it('CTL15-2-DIALOGUE: a dialogue choice button sends choice(idx) and a greet-then-shop button sends shop(id), once each, with no press; outside #game-screen nothing', () => {
-    // WRONG IMPL KILLED: the absorbed document delegate dropped (dialogue clicks dead); index 0
-    // treated as missing; the string attribute passed through un-parsed; a choice that also
-    // presses A (double dispatch); a document-level listener kept (a choice outside the game
-    // screen still sent).
+  it('CTL15-2-DIALOGUE: a native <button data-nav-key> row in the top frame (a dialogue choice or Shop) seeks and presses A like any row; outside #game-screen nothing', () => {
+    // ts-6b-5.1: the direct choice/shop deps are gone. WRONG IMPL KILLED: the native early return
+    // swallowing a row that IS the native control (the dialogue click dead); a click that presses
+    // A on the stale cursor instead of seeking; a document-level listener kept.
     const fx = mount('frame');
     const body = addFrame(fx);
-    const pick = document.createElement('button');
-    pick.dataset.choiceIdx = '2';
-    const inner = document.createElement('span');
-    inner.textContent = 'Tell me more';
-    pick.appendChild(inner);
-    const shopBtn = document.createElement('button');
-    shopBtn.dataset.shopId = '7';
-    body.append(pick, shopBtn);
+    const l = document.createElement('div');
+    l.setAttribute('role', 'listbox');
+    l.setAttribute('tabindex', '0');
+    for (const k of ['c0', 'c1', 'c2', 'shop']) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mr-nav-item';
+      b.setAttribute('role', 'option');
+      b.dataset.navKey = k;
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = k;
+      b.appendChild(label);
+      l.appendChild(b);
+    }
+    body.appendChild(l);
+    setActive(navItems(l), 0);
+    fx.drive = items(l);
 
-    click(inner);
-    expect(fx.choice.mock.calls).toEqual([[2]]);
-    click(shopBtn);
-    expect(fx.shop.mock.calls).toEqual([[7]]);
+    click(item(l, 2).querySelector('.label') as HTMLElement);
+    expect(fx.presses, 'a click inside a native button row seeks, then A').toEqual([
+      'Down',
+      'Down',
+      'A',
+    ]);
+    expect(activeIndex(navItems(l))).toBe(2);
 
-    fx.top = 'world';
-    const zero = document.createElement('button');
-    zero.dataset.choiceIdx = '0';
-    body.appendChild(zero);
-    click(zero);
-    expect(fx.choice.mock.calls, 'index 0, whatever the top').toEqual([[2], [0]]);
+    fx.presses.length = 0;
+    click(item(l, 3));
+    expect(fx.presses, 'the Shop row routes the same way').toEqual(['Down', 'A']);
 
     const stray = document.createElement('button');
-    stray.dataset.choiceIdx = '1';
+    stray.dataset.navKey = 'c1';
     fx.outside.appendChild(stray);
+    fx.presses.length = 0;
     click(stray);
-    expect(fx.choice.mock.calls, 'no listener outside the game screen').toEqual([[2], [0]]);
-    expect(fx.presses, 'no press for a dialogue command').toEqual([]);
+    expect(fx.presses, 'no listener outside the game screen').toEqual([]);
   });
 
   it('CTL15-2-NATIVE-IGNORED: a native control inside a row, or a row inside [data-pointer-own], presses nothing; the row itself still seeks', () => {
@@ -933,6 +932,14 @@ describe('PointerSource — CTL15.2 the top frame', () => {
     click(link);
     click(item(owned, 2));
     expect(fx.presses, 'native controls and owned rows answer their own clicks').toEqual([]);
+
+    // ts-6b-5: a native <button> that is NOT a row (no data-nav-key), outside any row, still
+    // presses nothing.
+    const plain = document.createElement('button');
+    plain.textContent = 'plain';
+    body.appendChild(plain);
+    click(plain);
+    expect(fx.presses, 'a native control that is not a row').toEqual([]);
 
     click(item(l, 2));
     expect(fx.presses, 'control: the row itself seeks').toEqual(['Down', 'Down', 'A']);
@@ -1015,7 +1022,7 @@ describe('PointerSource — CTL15.3 back (B)', () => {
     const l = addList(body, ['a', 'b', 'c'], 0);
     fx.drive = items(l);
     const pick = document.createElement('button');
-    pick.dataset.choiceIdx = '1';
+    pick.dataset.navKey = 'c1';
     body.appendChild(pick);
     fx.capturing = true;
 
@@ -1031,7 +1038,6 @@ describe('PointerSource — CTL15.3 back (B)', () => {
     fx.top = 'world';
     click(fx.canvas);
     expect(fx.press, 'left clicks do nothing under the capture').not.toHaveBeenCalled();
-    expect(fx.choice).not.toHaveBeenCalled();
     expect(fx.cancelCapture, 'and do not cancel it').toHaveBeenCalledTimes(1);
 
     pointer('pointerdown', fx.canvas);
@@ -2000,8 +2006,7 @@ describe('wheelSteps (pure)', () => {
 describe('PointerSource — uif-5 side effects', () => {
   it('UIF5.5 ONLY-PRESS: the close and wheel paths call deps.press alone, with one argument, and dispatch no keyboard event', () => {
     // WRONG IMPL KILLED: a close that synthesizes an Escape keydown instead of pressing B; a
-    // wheel that dispatches ArrowDown events; a close or wheel that calls choice, shop or
-    // cancelCapture; a press carrying the event or coordinates.
+    // wheel that dispatches ArrowDown events; a close or wheel that calls cancelCapture; a press carrying the event or coordinates.
     const keydown = vi.fn();
     window.addEventListener('keydown', keydown);
     document.addEventListener('keydown', keydown);
@@ -2020,8 +2025,6 @@ describe('PointerSource — uif-5 side effects', () => {
       for (const f of [fx, world]) {
         for (const call of pressCalls(f)) expect(call).toHaveLength(1);
         for (const b of f.presses) expect(VBUTTONS).toContain(b);
-        expect(f.choice).not.toHaveBeenCalled();
-        expect(f.shop).not.toHaveBeenCalled();
         expect(f.cancelCapture).not.toHaveBeenCalled();
       }
       expect(keydown, 'no synthetic keyboard event').not.toHaveBeenCalled();
@@ -2069,18 +2072,42 @@ function wheelWith(el: Element, init: WheelEventInit): WheelEvent {
 }
 
 describe('PointerSource — uif-5 round 2 close and routing', () => {
-  it('UIF5.1 CHOICE-OUTSIDE-SHEET: with a frame sheet open, a dialogue choice button outside it presses B and then sends choice(idx) once', () => {
-    // WRONG IMPL KILLED: a close step that skips dialogue buttons (the sheet stays over the
-    // dialogue); a close that eats the click (choice never sent); a choice sent twice.
+  it('UIF5.1 CHOICE-OUTSIDE-SHEET: with a frame sheet open, a dialogue choice button row outside it presses B and then routes the row (seek + A) once', () => {
+    // WRONG IMPL KILLED: a close step that skips native button rows (the sheet stays over the
+    // dialogue); a close that eats the click (the row never routed); a native early return that
+    // swallows the button row after the close; the A sent twice.
     const fx = mount('frame');
-    const { body } = frameWithSheet(fx);
-    const pick = document.createElement('button');
-    pick.dataset.choiceIdx = '2';
-    body.appendChild(pick);
-    click(pick);
-    expect(fx.presses).toEqual(['B']);
-    expect(fx.choice.mock.calls).toEqual([[2]]);
-    expect(fx.shop).not.toHaveBeenCalled();
+    const body = addFrame(fx);
+    const l = document.createElement('div');
+    l.setAttribute('role', 'listbox');
+    for (const k of ['c0', 'c1', 'c2']) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mr-nav-item';
+      b.setAttribute('role', 'option');
+      b.dataset.navKey = k;
+      l.appendChild(b);
+    }
+    body.appendChild(l);
+    setActive(navItems(l), 0);
+    const sheet = addSheet(body, ['s1', 's2', 's3'], 0);
+    sheetAdapter(fx, sheet, { after: items(l) });
+    click(item(l, 2));
+    expect(fx.presses).toEqual(['B', 'Down', 'Down', 'A']);
+    expect(sheet.root.hidden, 'the sheet is closed').toBe(true);
+  });
+
+  it('a click on the only row of an open frame sheet presses A even when the base list under it has one row', () => {
+    // WRONG IMPL KILLED: the one-row elimination rooted at the whole aria-modal frame, so the
+    // base list's single row ties the sheet's single row and the click presses nothing.
+    const fx = mount('frame');
+    const body = addFrame(fx);
+    const base = addList(body, ['base'], 0);
+    const sheet = addSheet(body, ['only'], 0);
+    fx.drive = items(sheet.rows);
+    expect(base.querySelectorAll('[data-nav-key]').length).toBe(1);
+    click(item(sheet.rows, 0));
+    expect(fx.presses).toEqual(['A']);
   });
 
   it('UIF5.1 POINTER-OWN-OUTSIDE-SHEET: with a frame sheet open, a click on a [data-pointer-own] row outside it presses B and nothing else', () => {
@@ -2094,8 +2121,6 @@ describe('PointerSource — uif-5 round 2 close and routing', () => {
     const owned = addList(own, ['o1', 'o2', 'o3'], 0);
     click(item(owned, 2));
     expect(fx.presses).toEqual(['B']);
-    expect(fx.choice).not.toHaveBeenCalled();
-    expect(fx.shop).not.toHaveBeenCalled();
   });
 
   it('UIF5.1 SHEET-OUTSIDE-MODAL-NOT-CLOSED: a shown sheet not under any aria-modal root while top is "frame" is not closed by a click in the frame', () => {

@@ -1551,12 +1551,12 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
         'no view constructor callback since ctl-10a: the heal frame`s screen adapter dispatches ' +
         'it, and CTL7C-3-PRESENT in this file refuses every healParty shape at a battle base',
       advanceDialogue:
-        'no view constructor callback: the document-level [data-choice-idx] click delegation ' +
-        'dispatches it, and main.controls.test.ts refuses that click at a battle base',
+        'no view constructor callback: the dialogue screen`s A dispatches it (a click on a choice ' +
+        'is a seek + A, ts-6b-5), and main.controls.test.ts refuses it at a battle base',
       pickShop:
-        'no view constructor callback: a dialogue screen adapter and the document-level ' +
-        '[data-shop-id] click delegation dispatch it, and CTL7D-5-BOOT-BATTLE-REFUSED in this ' +
-        'file refuses both at a battle base',
+        'no view constructor callback: the dialogue screen adapter dispatches it (a click on the ' +
+        'Shop button is a seek + A, ts-6b-5), and CTL7D-5-BOOT-BATTLE-REFUSED in this file ' +
+        'refuses it at a battle base',
       // ts-3 (named intentional change): `proposeTrade` leaves the policy with the wizard; the five
       // session kinds join it, all 'refuse', none with a view constructor callback.
       openTradeSession:
@@ -1865,14 +1865,12 @@ describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
       label: 'advanceDialogue',
       reducer: 'advanceDialogue',
       run: async () => {
+        // ts-6b-5 (named intentional change): the REAL rendered choice button of the shipped
+        // `elder_oak_talk` greeting ("I seek a quest."), clicked past its 600 ms reveal (the click
+        // is a seek + A through the dialogue screen); it was a fake `<button data-choice-idx>`.
         seedNpcs(1010);
-        startConversation(1020);
-        const button = document.createElement('button');
-        button.dataset.choiceIdx = '0';
-        document.getElementById('dialogue-overlay')?.appendChild(button);
-        clock.t = 1100;
-        button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        button.remove();
+        startElderConversation(1020);
+        clickDialogueChoice(0, 1800);
         await flush();
       },
     },
@@ -2458,7 +2456,10 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     const paints: Array<{ id: string; view: unknown }> = [];
     /** The Social frame's three panels (ctl-8s): never frames of their own. HARD-CODED. */
     const PANELS: readonly string[] = ['tradeView', 'pvpView', 'leaderboardView'];
+    // ts-6b-5: the real dialogue adapter is kept (the shop opener clicks the real Shop button).
+    const realDialogue = H.adapters.dialogueView;
     for (const id of [...OVERLAY_IDS, 'social']) swapAdapter(id, paintingAdapter(id, paints));
+    const standInDialogue = H.adapters.dialogueView;
     /** The paints one routed button (PageUp = LB) to the top frame produced. */
     const paintsOfOnePress = (t: number): Array<{ id: string; view: unknown }> => {
       paints.length = 0;
@@ -2492,9 +2493,15 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       {
         id: 'shopView',
         open: (at) => {
-          startConversation(at);
-          clickShop(at + 10, '1');
-          endConversation(at + 20);
+          // ts-6b-5 (named intentional change): the click is a seek + A through the REAL dialogue
+          // adapter (this case's painting stand-in for `dialogueView` would swallow the A), so the
+          // real one is put back for the open and the stand-in after it; the Shop click is past the
+          // reveal (+700, was +10).
+          swapAdapter('dialogueView', realDialogue);
+          startConversation(at, 1);
+          clickShop(at + 700, '1');
+          endConversation(at + 710);
+          swapAdapter('dialogueView', standInDialogue);
         },
       },
       // uif-16b (named intentional change): 7 -> 5 stand-in rows. The claimView (KeyC), privacyView
@@ -2947,8 +2954,22 @@ function itemDef(id: number, name: string, sellPrice: bigint): StoreItemRow {
   };
 }
 
-/** The server opens a conversation with the guide, in one batch at clock `t`. */
-function startConversation(t: number): void {
+/** The server opens a conversation with the guide, in one batch at clock `t`. ts-6b-5: with a
+ *  `shopId` the guide is first re-seeded as that shop's keeper (the real dialogue then renders a
+ *  real Shop button for it). */
+function startConversation(t: number, shopId?: number): void {
+  if (shopId !== undefined) {
+    opts.store.upsertNpc({
+      entityId: GUIDE_ENTITY,
+      npcId: 'guide',
+      zoneId: 0,
+      homeX: 3,
+      homeY: 6,
+      wanderRadius: 0,
+      dialogueTreeId: 'no-such-tree',
+      interaction: { kind: 'shop', shopId },
+    } as never);
+  }
   opts.store.upsertConversation({
     ownerIdentity: H.identity,
     npcEntityId: GUIDE_ENTITY,
@@ -2957,26 +2978,57 @@ function startConversation(t: number): void {
   server(t);
 }
 
+/** ts-6b-5: the server opens a conversation on the shipped `elder_oak_talk` greeting, whose one
+ *  real choice (index 0) renders a real button, in one batch at clock `t`. */
+function startElderConversation(t: number): void {
+  opts.store.upsertNpc({
+    entityId: GUIDE_ENTITY,
+    npcId: 'guide',
+    zoneId: 0,
+    homeX: 3,
+    homeY: 6,
+    wanderRadius: 0,
+    dialogueTreeId: 'elder_oak_talk',
+    interaction: { kind: 'dialogue' },
+  } as never);
+  opts.store.upsertConversation({
+    ownerIdentity: H.identity,
+    npcEntityId: GUIDE_ENTITY,
+    currentNodeId: 'greeting',
+  });
+  server(t);
+}
+
+/** ts-6b-5: click the REAL rendered choice button `idx` at clock `t` (a seek + A through the
+ *  dialogue screen: `t` is past the node's reveal). */
+function clickDialogueChoice(idx: number, t: number): void {
+  const button = document.querySelector<HTMLElement>(
+    `#dialogue-choices [data-choice-idx="${idx}"]`,
+  );
+  if (button === null) throw new Error(`fixture: no rendered choice button ${idx}`);
+  clock.t = t;
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+}
+
 /** The server ends the conversation, in one batch at clock `t`. */
 function endConversation(t: number): void {
   opts.store.removeConversation(H.identity);
   server(t);
 }
 
-/** Click a greet-then-shop button as the dialogue renders one. ctl-15 (named intentional change):
- *  the document-level delegate is absorbed by the #game-screen pointer dispatcher, so the button
- *  sits inside the dialogue overlay (in #game-screen), where the dialogue renders it; it was
- *  appended to document.body. */
+/** Click the REAL rendered greet-then-shop button at clock `t`. ts-6b-5 (named intentional change):
+ *  the click is a seek + A through the REAL dialogue screen, so the conversation was opened with
+ *  `startConversation(_, Number(shopId))` (the Shop button carries that id), the dialogue frame
+ *  holds the real adapter, and `t` is past the node's 600 ms reveal; it was a fake
+ *  `<button data-shop-id>` appended to the overlay. */
 function clickShop(t: number, shopId: string): void {
-  const button = document.createElement('button');
-  button.dataset.shopId = shopId;
-  const host =
-    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
-  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
-  host.appendChild(button);
+  const button = document.querySelector<HTMLElement>('#dialogue-choices [data-shop-id]');
+  if (button === null) throw new Error('fixture: the dialogue rendered no Shop button');
+  expect(button.dataset.shopId, 'fixture: the Shop button is the one the caller named').toBe(
+    shopId,
+  );
   clock.t = t;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  button.remove();
 }
 
 /** Open the main menu at the world, send its stand-in one LB, and close it again with Start. */
@@ -2991,22 +3043,23 @@ async function readAtMenu(t: number): Promise<void> {
  *  the conversation), one LB to the shop frame's stand-in, then Start closes it. */
 async function openShopAndRead(t: number, shopId: string): Promise<void> {
   const shop = stubView('ShopView');
-  startConversation(t);
+  startConversation(t, Number(shopId));
   expect(stackNow(), `shop ${shopId}: precondition: the conversation is the one frame`).toEqual([
     WORLD_FRAME,
     screenFrame('dialogueView'),
   ]);
   H.calls = [];
-  clickShop(t + 10, shopId);
+  // ts-6b-5: the Shop click is 700 ms after the node (was 10), and the rest follow it.
+  clickShop(t + 700, shopId);
   expect(H.calls, `shop ${shopId}: precondition: the pick sent one dismiss`).toEqual(ONE_DISMISS);
   expect(shop.visible, `shop ${shopId}: precondition: no shop over the conversation`).toBe(false);
-  endConversation(t + 20);
+  endConversation(t + 710);
   expect(stackNow(), `shop ${shopId}: precondition: the shop frame is the one frame`).toEqual([
     WORLD_FRAME,
     screenFrame('shopView'),
   ]);
-  await pageUp(t + 30);
-  press('Escape', t + 40);
+  await pageUp(t + 720);
+  press('Escape', t + 730);
   expect(stackNow(), `shop ${shopId}: precondition: Start closed the shop`).toEqual([WORLD_FRAME]);
 }
 
@@ -3358,9 +3411,10 @@ describe('main.ts screen context reads (runtime, ctl-7d)', { sequential: true },
       'precondition: a change listener is registered',
     ).toBeGreaterThan(0);
     for (const listener of motion.listeners) listener({ matches: true });
-    startConversation(1100);
-    clickShop(1110, '4');
-    endConversation(1120);
+    // ts-6b-5: a real Shop button, clicked past the reveal (1800, was 1110).
+    startConversation(1100, 4);
+    clickShop(1800, '4');
+    endConversation(1810);
     expect(stackNow(), 'precondition: the open showed the shop').toEqual([
       WORLD_FRAME,
       screenFrame('shopView'),
@@ -3436,9 +3490,10 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     // so-2 (named intentional change, SO2.3): the shop was shown by flipping the stand-in's own flag
     // (`shop.visible = true`) and adopted by the mirror. A view shown off every open path is never a
     // frame now, so it opens through its real path: the greet-then-shop click.
-    startConversation(1030);
-    clickShop(1040, '1');
-    endConversation(1050);
+    // ts-6b-5: a real Shop button, clicked past the reveal (1740, was 1040); `t` starts after it.
+    startConversation(1030, 1);
+    clickShop(1740, '1');
+    endConversation(1750);
     expect(shop.visible, 'precondition: the greet-then-shop open showed the shop').toBe(true);
     const status = document.getElementById('status');
     if (status === null) throw new Error('#status must exist once booted');
@@ -3451,7 +3506,7 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
       kind === 'buy'
         ? { name: 'buy', args: { shopId: 11, itemId: 22, qty } }
         : { name: 'sell', args: { itemId: 23, qty } };
-    let t = 1100;
+    let t = 2000;
     /** One routed LB on the shop frame issuing `kind` at `qty`, on a fresh call record, shop line
      *  and error log, then one frame past the live region's 500 ms window (the frame loop is what
      *  writes an announcement into it); returns the keydown. */
@@ -3601,9 +3656,10 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     });
     // Shop 12 (Bait at 17) is BOUND by a real greet-then-shop open; the commands below name
     // shop 11 (Bait at 13) as often as shop 12, and each is priced from the shop it names.
-    startConversation(1030);
-    clickShop(1040, '12');
-    endConversation(1050);
+    // ts-6b-5: a real Shop button (shop 12), clicked past the reveal (1740, was 1040).
+    startConversation(1030, 12);
+    clickShop(1740, '12');
+    endConversation(1750);
     expect(stackNow(), 'precondition: the greet-then-shop open showed the shop').toEqual([
       WORLD_FRAME,
       screenFrame('shopView'),
@@ -3674,7 +3730,7 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
         fr: frBoughtCount(5),
       },
     ];
-    let t = 1100;
+    let t = 2000; // ts-6b-5: after the shop open's own 1740 / 1750 (was 1100)
     const run = async (locale: 'en' | 'fr'): Promise<void> => {
       for (const row of rows) {
         issue.command = row.command;
@@ -3732,9 +3788,10 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     // so-2 (named intentional change, SO2.3): the shop was shown by flipping the stand-in's own flag
     // (`shop.visible = true`) and adopted by the mirror. A view shown off every open path is never a
     // frame now, so it opens through its real path: the greet-then-shop click (shop 11).
-    startConversation(1030);
-    clickShop(1040, '11');
-    endConversation(1050);
+    // (ts-6b-5: the Shop button is real now, clicked past the reveal at 1740, was 1040.)
+    startConversation(1030, 11);
+    clickShop(1740, '11');
+    endConversation(1750);
     expect(shop.visible, 'precondition: the greet-then-shop open showed the shop').toBe(true);
     /** Hold every reducer call open until the returned release runs. */
     const hold = (): (() => void) => {
@@ -3752,7 +3809,7 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     let release = hold();
     issue.command = { kind: 'buy', shopId: 11, itemId: 22, qty: 3 };
     H.calls = [];
-    await pageUp(1100);
+    await pageUp(2100); // ts-6b-5: the clock moves on by 1000 from here (was 1100 .. 1600)
     // The exact arguments are the quantity cases' to pin; here only that one buy is in flight.
     expect(
       H.calls.map((c) => c.name),
@@ -3763,10 +3820,10 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     expect(toastText(), 'buy: nothing is painted while pending').toBe('');
     opts.store.upsertItemDef(itemDef(22, 'Lure', 70n));
     opts.store.upsertShopItem({ shopItemId: 1n, shopId: 11, itemId: 22, buyPrice: 130n });
-    server(1200);
+    server(2200);
     opts.store.removeShopItem(1n);
     opts.store.removeItemDef(22);
-    server(1300);
+    server(2300);
     await flush();
     expect(toastText(), 'buy: still nothing while pending').toBe('');
     release();
@@ -3778,7 +3835,7 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     release = hold();
     issue.command = { kind: 'sell', itemId: 23, qty: 3 };
     H.calls = [];
-    await pageUp(1400);
+    await pageUp(2400);
     expect(
       H.calls.map((c) => c.name),
       'sell: precondition: one sell is in flight',
@@ -3786,9 +3843,9 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     expect(toastText(), 'sell: nothing is painted while pending').toBe('');
     opts.store.reconcileInventoryFromView([]);
     opts.store.upsertItemDef(itemDef(23, 'Husk', 1n));
-    server(1500);
+    server(2500);
     opts.store.removeItemDef(23);
-    server(1600);
+    server(2600);
     await flush();
     expect(toastText(), 'sell: still nothing while pending').toBe('');
     release();
@@ -3810,7 +3867,11 @@ describe('main.ts the shop pick command (runtime, ctl-7d)', { sequential: true }
     server(1000);
     seedNpcs(1010);
     const dlg: { command: unknown } = { command: { kind: 'pop' } };
-    swapAdapter('dialogueView', commandAdapter(dlg));
+    // ts-6b-5: the real dialogue adapter is kept for the one case that clicks the real Shop button
+    // (a stand-in cannot act on the click's A); every other case keeps the stand-in.
+    const realDialogue = H.adapters.dialogueView;
+    const standInDialogue = commandAdapter(dlg);
+    swapAdapter('dialogueView', standInDialogue);
     const shopReads: unknown[] = [];
     swapAdapter(
       'shopView',
@@ -3819,36 +3880,42 @@ describe('main.ts the shop pick command (runtime, ctl-7d)', { sequential: true }
     const shop = stubView('ShopView');
     let t = 1100;
 
-    /** With the conversation open `pick` runs: one dismiss and no shop yet, not even after a batch
-     *  that still has the conversation; the batch that ends it opens the shop, whose stand-in then
-     *  reads the bound id; Start closes it. Returns that read. */
+    /** With the conversation open `pick` runs `lead` ms after it opened: one dismiss and no shop
+     *  yet, not even after a batch that still has the conversation; the batch that ends it opens
+     *  the shop, whose stand-in then reads the bound id; Start closes it. Returns that read.
+     *  ts-6b-5: `lead` (default 10) lets the real click run past the node's reveal; `shopId` makes
+     *  the guide that shop's keeper and `real` puts the real dialogue adapter in for the case. */
     const pickThenOpen = async (
       label: string,
       pick: (at: number) => Promise<void>,
+      o: { lead?: number; shopId?: number; real?: boolean } = {},
     ): Promise<unknown[]> => {
-      startConversation(t);
+      const lead = o.lead ?? 10;
+      if (o.real === true) swapAdapter('dialogueView', realDialogue);
+      startConversation(t, o.shopId);
       expect(stackNow(), `${label}: precondition: the conversation is the top frame`).toEqual([
         WORLD_FRAME,
         screenFrame('dialogueView'),
       ]);
       H.calls = [];
-      await pick(t + 10);
+      await pick(t + lead);
       expect(H.calls, `${label}: one dismissDialogue`).toEqual(ONE_DISMISS);
       expect(shop.visible, `${label}: no shop while the conversation is open`).toBe(false);
-      server(t + 20);
+      server(t + lead + 10);
       expect(shop.visible, `${label}: nor after a batch that still has it`).toBe(false);
-      endConversation(t + 30);
+      endConversation(t + lead + 20);
       expect(shop.visible, `${label}: the first batch with no conversation opens it`).toBe(true);
       expect(stackNow(), `${label}: the shop frame is the one frame`).toEqual([
         WORLD_FRAME,
         screenFrame('shopView'),
       ]);
       const before = shopReads.length;
-      await pageUp(t + 40);
+      await pageUp(t + lead + 30);
       const read = shopReads.slice(before);
-      press('Escape', t + 50);
+      press('Escape', t + lead + 40);
       expect(stackNow(), `${label}: precondition: Start closed the shop`).toEqual([WORLD_FRAME]);
-      t += 100;
+      if (o.real === true) swapAdapter('dialogueView', standInDialogue);
+      t += lead + 90;
       return read;
     };
     const pickShop =
@@ -3867,18 +3934,32 @@ describe('main.ts the shop pick command (runtime, ctl-7d)', { sequential: true }
       }),
       'the last pick wins: shop 6',
     ).toEqual([6]);
+    // ts-6b-5 (named intentional change): the click is on the REAL Shop button of shop 7's keeper,
+    // 700 ms after the node (past the reveal), through the REAL dialogue adapter (a seek + A).
     expect(
-      await pickThenOpen('a click on data-shop-id 7', async (at) => {
-        clickShop(at, '7');
-        await flush();
-      }),
+      await pickThenOpen(
+        'a click on data-shop-id 7',
+        async (at) => {
+          clickShop(at, '7');
+          await flush();
+        },
+        { lead: 700, shopId: 7, real: true },
+      ),
       'the click takes the same path: shop 7',
     ).toEqual([7]);
 
-    // A non-numeric data-shop-id sends nothing, and leaves no shop to open.
+    // A stray `<button data-shop-id="abc">` that is no nav row sends nothing, and leaves no shop to
+    // open. ts-6b-5 (named intentional change): the pointer no longer reads `data-shop-id` at all
+    // (the id comes from the server's NPC row through the dialogue screen, never from the DOM, so
+    // a non-numeric one cannot be rendered); the stray native control is simply not a row.
     startConversation(t);
     H.calls = [];
-    clickShop(t + 10, 'abc');
+    const stray = document.createElement('button');
+    stray.dataset.shopId = 'abc';
+    document.getElementById('dialogue-overlay')?.appendChild(stray);
+    clock.t = t + 10;
+    stray.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    stray.remove();
     await flush();
     expect(H.calls, 'data-shop-id "abc": nothing is sent').toEqual([]);
     endConversation(t + 20);
@@ -3921,13 +4002,19 @@ describe('main.ts the shop pick command (runtime, ctl-7d)', { sequential: true }
     // off #toast (was #status), with the toast cleared between the two reads.
     expect(toastText(), 'the command: the battle reason').toBe(reason);
 
+    // ts-6b-5 (named intentional change): the second refused command is the dialogue frame's
+    // `advanceDialogue` (the stand-in's LB again), not a click on a Shop button: at a battle base
+    // the real dialogue frame answers only B, Start and Select, so a click reaches nothing there.
+    // The policy refusal, the toast and the "no dismiss, no pending shop" claims are unchanged.
     H.calls = [];
     status.textContent = '';
     clearToast();
-    clickShop(1400, '9');
+    dlg.command = { kind: 'advanceDialogue', choiceIdx: 0 };
+    await pageUp(1400);
     await flush();
-    expect(H.calls, 'the click: no dismissDialogue at a battle base').toEqual([]);
-    expect(toastText(), 'the click: the battle reason').toBe(reason);
+    expect(H.calls, 'the second command: no reducer call at a battle base').toEqual([]);
+    expect(toastText(), 'the second command: the battle reason').toBe(reason);
+    dlg.command = { kind: 'pickShop', shopId: 9 };
 
     // The battle ends with the conversation still open, then the conversation ends: nothing was
     // picked, so no shop opens.
@@ -3969,22 +4056,33 @@ describe('main.ts batches reach observe (runtime, ctl-7d)', { sequential: true }
     seedNpcs(1010);
     const shop = stubView('ShopView');
     // The dialogue frame's stand-in has no observe: no batch may call any of its methods.
+    // ts-6b-5 (named intentional change): the stand-in answers LB with the shop pick (the Shop
+    // click it replaced cannot reach a stand-in: the click is a seek + A through the real dialogue
+    // adapter). Its own calls are noted only outside the pick press (`pressing`), so the claim
+    // below, that no BATCH ever calls a frame without observe, is the one it was.
     const dialogueCalls: string[] = [];
+    let pressing = false;
+    const note = (call: string): void => {
+      if (!pressing) dialogueCalls.push(call);
+    };
     swapAdapter('dialogueView', {
       viewModel: () => {
-        dialogueCalls.push('viewModel');
+        note('viewModel');
         return undefined;
       },
       init: () => {
-        dialogueCalls.push('init');
+        note('init');
         return undefined;
       },
-      onButton: (_vm: unknown, state: unknown) => {
-        dialogueCalls.push('onButton');
-        return { state, result: 'consumed' };
+      onButton: (_vm: unknown, state: unknown, btn: Pressed) => {
+        note('onButton');
+        return {
+          state,
+          result: btn.button === 'LB' && !btn.repeat ? { kind: 'pickShop', shopId: 3 } : 'consumed',
+        };
       },
       paint: () => {
-        dialogueCalls.push('paint');
+        note('paint');
       },
     });
     const S0 = { state: 'from init' };
@@ -4028,8 +4126,10 @@ describe('main.ts batches reach observe (runtime, ctl-7d)', { sequential: true }
       screenFrame('dialogueView'),
     ]);
     H.calls = [];
-    clickShop(1200, '3');
-    expect(H.calls, 'precondition: the Shop click sent the dismiss').toEqual(ONE_DISMISS);
+    pressing = true;
+    await pageUp(1200);
+    pressing = false;
+    expect(H.calls, 'precondition: the Shop pick sent the dismiss').toEqual(ONE_DISMISS);
     expect(observes, 'no shop frame yet: nothing is observed').toEqual([]);
 
     // --- the batch that ends the conversation pushes the shop frame ---------------------------
