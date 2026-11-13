@@ -3213,6 +3213,97 @@ mod nh {
         healed(&fx, &w, T0, "location 1, on the heal tile");
     }
 
+    /// `heal_party(location_id)` measures the caller against THE REQUESTED location's
+    /// tile. Three locations: 1 at `HEAL_TILE` (8, 3) in zone 0, 2 at (20, 12) in zone 0
+    /// (12 + 9 tiles away), and 3 on location 2's coordinates in zone 7; none charges
+    /// currency. On location 2's tile, location 1 and location 3 are refused with the
+    /// reach text and write nothing, then location 2 heals; on location 1's tile the
+    /// mirror holds, and location 2 stays refused for reach inside location 1's cooldown.
+    /// Standing on location 3's coordinates in zone 7, location 3 heals, so it is a live
+    /// location.
+    ///
+    /// kills: reach judged against any heal location in the caller's zone (location 1
+    /// is accepted from location 2's tile); against the nearest heal location (the same);
+    /// against the first `heal_location_row` row; against a location on the same
+    /// coordinates in another zone (location 3 accepted from location 2's tile).
+    #[test]
+    fn heal_party_measures_reach_against_the_requested_location() {
+        const B_TILE: (i32, i32) = (20, 12);
+        const OTHER_ZONE: u32 = 7;
+        fn sites(fx: &Fixture) -> World<'_> {
+            let w = heal_world(fx);
+            for (location_id, zone_id) in [(2, 0), (3, OTHER_ZONE)] {
+                w.locs.seed(&HealLocationRow {
+                    location_id,
+                    zone_id,
+                    tile_x: B_TILE.0,
+                    tile_y: B_TILE.1,
+                    cost_item_id: Some(NOT_FOOD),
+                    cost_qty: 1,
+                    cooldown_ms: 30_000,
+                    cost_currency: 0,
+                });
+            }
+            w
+        }
+        fn rows(w: &World<'_>) -> Vec<Vec<u8>> {
+            let mut all = w.snapshot();
+            all.push(to_vec(&w.chars.rows()).unwrap());
+            all
+        }
+        fn heal(fx: &Fixture, location_id: u32, now: i64) -> Result<(), String> {
+            fx.run_as_at(a(), at(now), |ctx| heal_party(ctx, location_id))
+        }
+        fn refused(fx: &Fixture, w: &World<'_>, location_id: u32, now: i64, label: &str) {
+            let before = rows(w);
+            assert_eq!(
+                heal(fx, location_id, now),
+                Err(HEALER_NOT_CLOSE.to_string()),
+                "{label}"
+            );
+            assert_eq!(rows(w), before, "{label}: nothing written");
+        }
+        fn healed(fx: &Fixture, w: &World<'_>, location_id: u32, label: &str) {
+            let held = w.count(a(), NOT_FOOD);
+            assert_eq!(heal(fx, location_id, T0), Ok(()), "{label}");
+            assert_eq!(w.monster(11).current_hp, 40, "{label}: party healed");
+            assert_eq!(w.count(a(), NOT_FOOD), held - 1, "{label}: cost spent");
+            let cd: Vec<(Identity, i64)> = w
+                .cooldowns
+                .rows()
+                .iter()
+                .map(|r| (r.owner_identity, r.last_heal_at_ms))
+                .collect();
+            assert_eq!(cd, vec![(a(), T0)], "{label}: cooldown written");
+        }
+
+        // On location 2's tile: 1 and 3 refused, then 2 heals.
+        let fx = fixture();
+        let w = sites(&fx);
+        w.place_char(1, 0, B_TILE.0, B_TILE.1);
+        refused(&fx, &w, 1, T0, "on 2's tile, asking for 1");
+        refused(&fx, &w, 3, T0, "on 2's tile, asking for 3 (zone 7)");
+        healed(&fx, &w, 2, "on 2's tile, asking for 2");
+        drop(fx);
+
+        // The mirror: on location 1's tile, 2 refused, then 1 heals; 2 is still refused
+        // for reach inside the cooldown that heal started.
+        let fx = fixture();
+        let w = sites(&fx);
+        w.place_char(1, 0, HEAL_TILE.0, HEAL_TILE.1);
+        refused(&fx, &w, 2, T0, "on 1's tile, asking for 2");
+        healed(&fx, &w, 1, "on 1's tile, asking for 1");
+        refused(&fx, &w, 2, T0 + 1, "in 1's cooldown, asking for 2");
+        drop(fx);
+
+        // Location 3 is live: from its own coordinates in its own zone it heals.
+        let fx = fixture();
+        let w = sites(&fx);
+        w.place_char(1, OTHER_ZONE, B_TILE.0, B_TILE.1);
+        refused(&fx, &w, 2, T0, "on 3's tile, asking for 2");
+        healed(&fx, &w, 3, "on 3's tile in zone 7, asking for 3");
+    }
+
     impl World<'_> {
         /// Stand character `entity_id` on `(x, y)` in `zone_id`, replacing any row it had.
         fn place_char(&self, entity_id: u64, zone_id: u32, x: i32, y: i32) {
