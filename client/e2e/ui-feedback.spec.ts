@@ -40,6 +40,12 @@ import { closeAll, pressAccel, pressButton } from './controls';
 // binds a key, so it removes `mr.controls` and reloads in a finally: the page never leaves a custom
 // table behind. No encounter, no battle, no fixed sleep: every wait polls a DOM or `__game()`
 // predicate with a bound.
+//
+// LATE DEFERRED FOCUS (ci-fix-20261113T2045). The last test proves the FIXTURE, not the product:
+// `openControls` must return only once the frame's deferred initial focus on `#controls-rows` has
+// landed, else that focus can land between two reads and scroll the 640x240 shell, moving the tab
+// strip and the rows grid by itself. It holds the page's zero-delay timers back so the late focus
+// is deterministic, not luck.
 
 interface Frame {
   kind: string;
@@ -144,6 +150,27 @@ test.describe
         .toEqual([w.width, w.height]);
     };
 
+    const openControls = async (label: string): Promise<void> => {
+      // Start, Down to Controls, A: the Controls frame above the menu (remap.spec).
+      // uif-15c (UIF15C.4): Controls is a root entry of the menu, so there is no group and no
+      // Down-into-sub-list step.
+      await pressButton(page, 'Start');
+      await expect
+        .poll(() => stackNames(page), { message: `${label}: Start opens the menu` })
+        .toEqual(['world', 'menuView']);
+      await downTo(page, navActive, 'controls', 7, `${label}: the main menu`);
+      await expect
+        .poll(() => navActive(page), {
+          message: `${label}: the cursor is on Controls before A`,
+        })
+        .toBe('controls');
+      await pressButton(page, 'A');
+      await expect
+        .poll(() => stackNames(page), { message: `${label}: A opens Controls over the menu` })
+        .toEqual(['world', 'menuView', 'controlsView']);
+      await expect(page.locator('#controls-overlay')).toBeVisible();
+    };
+
     test.beforeAll(async () => {
       browser = await chromium.launch();
       ctx = await browser.newContext();
@@ -223,24 +250,7 @@ test.describe
             timeout: 15_000,
           });
 
-          // Start, Down to Controls, A: the Controls frame above the menu (remap.spec).
-          // uif-15c (UIF15C.4, named intentional change): Controls is a root entry, no Options
-          // group and no Down-into-sub-list step. Was: Start, Options, A, Down to Controls, A.
-          await pressButton(page, 'Start');
-          await expect
-            .poll(() => stackNames(page), { message: `${label}: Start opens the menu` })
-            .toEqual(['world', 'menuView']);
-          await downTo(page, navActive, 'controls', 7, `${label}: the main menu`);
-          await expect
-            .poll(() => navActive(page), {
-              message: `${label}: the cursor is on Controls before A`,
-            })
-            .toBe('controls');
-          await pressButton(page, 'A');
-          await expect
-            .poll(() => stackNames(page), { message: `${label}: A opens Controls over the menu` })
-            .toEqual(['world', 'menuView', 'controlsView']);
-          await expect(page.locator('#controls-overlay')).toBeVisible();
+          await openControls(label);
           // The X row's Alt slot (main.remap.test.ts's protected-refusal case): Down to X_0, Right.
           await downTo(page, controlsActive, 'X_0', 13, `${label}: the Controls grid`);
           await pressButton(page, 'Right');
@@ -308,6 +318,111 @@ test.describe
         await ready(page);
         await closeAll(page);
         await setWindow({ width: 1280, height: 720 });
+      }
+    });
+
+    test('UIF4B.2 fixture: openControls waits out a late deferred focus on the rows before any further key is sent, so at 640x240 no box of the Controls frame moves once the rows have their focus', async () => {
+      // The two orderings. SETTLED fixture: `openControls` waits out the hold, the rows take their
+      // focus (which scrolls the 640x240 shell), and only then is the cursor walked to X_0, so
+      // every read is at the same scroll. UNSETTLED fixture: the walk runs inside the hold and the
+      // cursor's own nearest-scroll moves the shell part of the way, `before` is read there, then
+      // the late focus scrolls the shell further and the tab strip and the rows grid move.
+      // The hold is inside the PAGE (it delays the product's own zero-delay timer); the test itself
+      // never sleeps, every wait in it is a retried predicate.
+      const ZERO_DELAY_HOLD_MS = 1500;
+      const label = 'late focus';
+      const BOXES = ['#controls-overlay', '#controls-tabs', '#controls-rows'] as const;
+      const heldFocus = (): Promise<boolean> =>
+        page.evaluate(() => {
+          const w = window as unknown as { __mrHeldFocus?: boolean };
+          return w.__mrHeldFocus === true;
+        });
+      try {
+        await setWindow({ width: 640, height: 240 });
+        await closeAll(page);
+        await page.evaluate((hold) => {
+          type Timer = (handler: unknown, delay?: number, ...args: unknown[]) => number;
+          const w = window as unknown as {
+            setTimeout: Timer;
+            __mrRealSetTimeout?: Timer;
+            __mrHeldFocus?: boolean;
+          };
+          const real = w.setTimeout;
+          w.__mrRealSetTimeout = real;
+          w.__mrHeldFocus = false;
+          // Delegates to the real timer and returns ITS id (overlayA11y clears it on a re-open).
+          w.setTimeout = (handler, delay, ...args) => {
+            if (typeof handler !== 'function' || (delay !== undefined && delay !== 0)) {
+              return real.call(window, handler, delay, ...args);
+            }
+            const fn = handler as (...a: unknown[]) => void;
+            const held = (): void => {
+              const prior = document.activeElement;
+              try {
+                fn(...args);
+              } finally {
+                const rows = document.getElementById('controls-rows');
+                if (rows !== null && prior !== rows && document.activeElement === rows) {
+                  w.__mrHeldFocus = true;
+                }
+              }
+            };
+            return real.call(window, held, hold);
+          };
+        }, ZERO_DELAY_HOLD_MS);
+
+        await openControls(label);
+        await downTo(page, controlsActive, 'X_0', 13, `${label}: the Controls grid`);
+        const before = await rectsOf(page, BOXES);
+
+        await expect(
+          page.locator('#controls-rows'),
+          'late focus: the rows receive the open initial focus',
+        ).toBeFocused();
+        expect(
+          await heldFocus(),
+          'FIXTURE: the hold did not carry the overlay initial focus onto the rows, so this test no longer exercises the late-focus ordering',
+        ).toBe(true);
+        const after = await rectsOf(page, BOXES);
+        for (const [k, sel] of BOXES.entries()) {
+          expect(
+            after[k],
+            `late focus: ${sel} did not move when the deferred focus landed`,
+          ).toEqual(before[k]);
+        }
+
+        const shell = await page.evaluate(() => {
+          const overlay = document.getElementById('controls-overlay');
+          const cell = document.querySelector('#controls-rows [aria-selected="true"]');
+          if (overlay === null || cell === null) {
+            throw new Error('late focus: the shell or the active cell is not on the page');
+          }
+          const o = overlay.getBoundingClientRect();
+          const scrollportBottom = o.top + overlay.clientTop + overlay.clientHeight;
+          return {
+            scrollTop: overlay.scrollTop,
+            clearance: scrollportBottom - cell.getBoundingClientRect().bottom,
+          };
+        });
+        expect(
+          shell.scrollTop,
+          'FIXTURE: the shell is scrolled at 640x240 (else no focus can move a box and this test is vacuous)',
+        ).toBeGreaterThan(0);
+        expect(
+          shell.clearance,
+          'FIXTURE: the focus scrolled the shell past the active cell`s nearest-scroll (else a late focus moves no box and this test is vacuous)',
+        ).toBeGreaterThan(0);
+      } finally {
+        try {
+          await page.evaluate(() => {
+            const w = window as unknown as { setTimeout: unknown; __mrRealSetTimeout?: unknown };
+            if (w.__mrRealSetTimeout !== undefined) w.setTimeout = w.__mrRealSetTimeout;
+            w.__mrRealSetTimeout = undefined;
+          });
+        } finally {
+          await closeAll(page);
+          await setWindow({ width: 1280, height: 720 });
+        }
       }
     });
   });
