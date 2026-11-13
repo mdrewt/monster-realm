@@ -252,3 +252,18 @@ export function describeScope(state: ScopeState): ScopeSummary {
   zones.sort((a, b) => a.zoneId - b.zoneId);
   return { own, zones, settled: state.settled };
 }
+
+/**
+ * Whether the world's characters are drawn, after a `settled` edge. Settled always draws. An
+ * unsettled edge hides the world only when no own character is held: that is a connection whose
+ * scope has just opened, where drawing would show the own character alone until its zone's rows
+ * arrive. With an own character held it is a warp into a zone whose set has not applied yet, and
+ * the world stays drawn while the zone fills in.
+ */
+export function revealAfterScopeEdge(
+  revealed: boolean,
+  settled: boolean,
+  ownCharacterHeld: boolean,
+): boolean {
+  return settled || (revealed && ownCharacterHeld);
+}

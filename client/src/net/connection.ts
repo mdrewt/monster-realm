@@ -1,5 +1,6 @@
 // net/connection.ts — the live SpacetimeDB adapter (M4a; app-level reconnect M13.5b).
-// Imperative shell only: connect, per-zone subscribe, mirror authoritative
+// Imperative shell only: connect, subscribe (the base set, then the own character row and each
+// wanted zone's characters as worldScope.ts directs), mirror authoritative
 // rows into the AuthoritativeStore (converting at the boundary, coalescing a
 // transaction's row burst via MicrotaskBatcher -> ONE flushBatch), and
 // surface lifecycle. It owns NO game state and never writes anything but the store
@@ -88,6 +89,20 @@ import {
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
 import { isOwnZoneChange } from './warpDetect';
+import {
+  describeScope,
+  INITIAL_SCOPE,
+  onScopeEvent,
+  type ScopeEffect,
+  type ScopeKey,
+  type ScopeState,
+  type ScopeSummary,
+  syncScope,
+} from './worldScope';
+
+/** How often the world scope is re-evaluated with nothing else happening: it is what ends a
+ *  linger, retries a rejected set and notices one that never applied. */
+const SCOPE_TICK_MS = 500;
 
 export interface ConnectionOptions {
   readonly uri: string;
@@ -115,6 +130,11 @@ export interface ConnectionOptions {
   /** Called when the own entity crosses a zone boundary.
    *  Receives the new zone id so the caller can reload the map and reset prediction. */
   readonly onOwnWarp?: (newZoneId: number) => void;
+  /** The world scope settled (true: the own character row's set and its zone's set are both
+   *  applied, so the store holds the own zone's characters) or is not settled (false: a
+   *  connection's scope has just opened, a warp into a zone not yet applied, a lost own row, a
+   *  dropped or superseded connection). */
+  readonly onScopeSettled?: (settled: boolean) => void;
   /** dev-observability: outbound reducer-call sink. `undefined` (the default
    *  production build) makes wrapReducerLogging strict identity — no Proxy is installed. */
   readonly onSend?: SendLogger;
@@ -162,6 +182,8 @@ export interface Connection {
    *  frozen or unbuilt: a call on a dead conn never settles, and the next onApplied joins (the
    *  claim flow only asks once it has cleared the code that vetoes that join). */
   join(): void;
+  /** The `character` query sets the live connection holds (worldScope.ts). */
+  worldScope(): ScopeSummary;
 }
 
 /** R-rb-128-E1: re-join only on the PendingDeletion -> Active edge. An undefined `prev` (initial
@@ -357,6 +379,10 @@ export function connect(opts: ConnectionOptions): Connection {
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
   // Teardown guard: once the page is going away, never rebuild.
   let teardown = false;
+  // Ends the current build's world scope: its timer stops and its state is discarded. No handle
+  // is unsubscribed, because every caller is leaving that connection behind.
+  let stopScope: (() => void) | undefined;
+  let scopeSummary: () => ScopeSummary = () => describeScope(INITIAL_SCOPE);
   // Build generation: each build() bumps this;
   // lifecycle callbacks from a SUPERSEDED build (a late onDisconnect the browser
   // buffered across a bfcache freeze, a slow onConnectError racing a successful
@@ -406,6 +432,7 @@ export function connect(opts: ConnectionOptions): Connection {
    * double-transition, A7/A8), and schedule the rebuild.
    */
   function handleDrop(): void {
+    stopScope?.();
     store.reset();
     const wasConnected = state.link === 'connected';
     state = onDisconnected(state);
@@ -423,6 +450,7 @@ export function connect(opts: ConnectionOptions): Connection {
   // future scheduling — a dying page must not spawn a fresh WebSocket.
   window.addEventListener('pagehide', () => {
     teardown = true;
+    stopScope?.();
     if (rebuildTimer !== undefined) {
       clearTimeout(rebuildTimer);
       rebuildTimer = undefined;
@@ -447,12 +475,21 @@ export function connect(opts: ConnectionOptions): Connection {
    * means the new connection silently ingests nothing for it (re-wire
    * everything or the reconnect looks connected but stays empty).
    */
-  function wireTables(conn: DbConnection): void {
+  function wireTables(conn: DbConnection, runScope: () => void): void {
     const ingestChar = (row: SdkCharacterRow): void => {
       store.upsertCharacter(characterRowToStore(row), performance.now());
       batcher.schedule();
     };
-    conn.db.character.onInsert((_ctx, row) => ingestChar(row as unknown as SdkCharacterRow));
+    // The own rows decide the world scope (the entity id names the own-row set, the own
+    // character's zone names the zone set), so each change to one re-evaluates it, after the
+    // store holds the change.
+    const scopeIfOwn = (row: SdkCharacterRow): void => {
+      if (row.entityId === store.ownEntityId(identity)) runScope();
+    };
+    conn.db.character.onInsert((_ctx, row) => {
+      ingestChar(row as unknown as SdkCharacterRow);
+      scopeIfOwn(row as unknown as SdkCharacterRow);
+    });
     conn.db.character.onUpdate((_ctx, oldRow, row) => {
       const newSdkRow = row as unknown as SdkCharacterRow;
       // detect own-entity zone transition via isOwnZoneChange
@@ -466,21 +503,28 @@ export function connect(opts: ConnectionOptions): Connection {
         }
       }
       ingestChar(newSdkRow);
+      scopeIfOwn(newSdkRow);
     });
     conn.db.character.onDelete((_ctx, row) => {
+      const own = (row as unknown as SdkCharacterRow).entityId === store.ownEntityId(identity);
       store.removeCharacter((row as unknown as SdkCharacterRow).entityId);
       batcher.schedule();
+      if (own) runScope();
     });
 
     const ingestPlayer = (row: SdkPlayerRow): void => {
-      store.upsertPlayer(playerRowToStore(row));
+      const player = playerRowToStore(row);
+      store.upsertPlayer(player);
       batcher.schedule();
+      if (player.identity === identity) runScope();
     };
     conn.db.player.onInsert((_ctx, row) => ingestPlayer(row as unknown as SdkPlayerRow));
     conn.db.player.onUpdate((_ctx, _old, row) => ingestPlayer(row as unknown as SdkPlayerRow));
     conn.db.player.onDelete((_ctx, row) => {
-      store.removePlayer((row as unknown as SdkPlayerRow).identity.toHexString());
+      const hex = (row as unknown as SdkPlayerRow).identity.toHexString();
+      store.removePlayer(hex);
       batcher.schedule();
+      if (hex === identity) runScope();
     });
 
     // `my_monster_pub` is a PK-less VIEW — the SDK never
@@ -857,6 +901,94 @@ export function connect(opts: ConnectionOptions): Connection {
     // true once a newer attempt exists. Number-token comparison, no TDZ dependence on `current`.
     const gen = buildGen;
     const stale = (): boolean => gen !== buildGen;
+
+    // The world scope of THIS build: which `character` query sets it holds beyond the base set.
+    // Per build, so a rebuilt connection starts with none. worldScope.ts decides; this block only
+    // reads the own rows, executes the effects and reports each handle's outcome back.
+    type ScopeHandle = { isActive(): boolean; unsubscribe(): void };
+    // One record per live set. A callback acts only while its own record is still the key's, so
+    // a set that was unsubscribed or replaced by a retry cannot report into its successor.
+    const scopeHandles = new Map<ScopeKey, { handle?: ScopeHandle }>();
+    let scope: ScopeState = INITIAL_SCOPE;
+    let scopeConn: DbConnection | undefined;
+    let scopeTimer: ReturnType<typeof setInterval> | undefined;
+    const endScope = (): void => {
+      if (scopeTimer !== undefined) clearInterval(scopeTimer);
+      scopeTimer = undefined;
+      scopeConn = undefined;
+      scopeHandles.clear();
+      const wasSettled = scope.settled;
+      scope = INITIAL_SCOPE;
+      if (wasSettled) opts.onScopeSettled?.(false);
+    };
+    const scopeEvent = (kind: 'applied' | 'rejected', key: ScopeKey): void => {
+      scope = onScopeEvent(scope, { kind, key, now: performance.now() });
+      runScope();
+    };
+    const runScopeEffect = (c: DbConnection, effect: ScopeEffect): void => {
+      switch (effect.kind) {
+        case 'subscribe': {
+          const { key } = effect;
+          const rec: { handle?: ScopeHandle } = {};
+          const mine = (): boolean => !stale() && scopeHandles.get(key) === rec;
+          scopeHandles.set(key, rec);
+          rec.handle = c
+            .subscriptionBuilder()
+            .onApplied(() => {
+              if (mine()) scopeEvent('applied', key);
+            })
+            .onError((ctx) => {
+              if (!mine()) return;
+              opts.onError('subscribe', subscriptionErrorMessage(ctx));
+              scopeHandles.delete(key);
+              scopeEvent('rejected', key);
+            })
+            .subscribe(effect.query);
+          return;
+        }
+        case 'unsubscribe': {
+          const rec = scopeHandles.get(effect.key);
+          scopeHandles.delete(effect.key);
+          if (rec?.handle?.isActive()) rec.handle.unsubscribe();
+          return;
+        }
+        case 'settled':
+          opts.onScopeSettled?.(effect.settled);
+          return;
+        case 'drop':
+          // The sets this client needs cannot be had on this connection (rejected past the
+          // retries, or never applied): take the drop path, then close the socket the SDK
+          // still holds open so the server sees this connection end.
+          handleDrop();
+          c.disconnect();
+          return;
+      }
+    };
+    // TOTAL: it runs inside row callbacks and a timer, where a throw would break the SDK's
+    // dispatch of the rest of the message.
+    const runScope = (): void => {
+      const c = scopeConn;
+      if (c === undefined || stale()) return;
+      try {
+        const step = syncScope(scope, {
+          wantEntity: store.ownEntityId(identity),
+          ownZone: store.ownCharacter(identity)?.row.zoneId,
+          wantZones: new Set(),
+          now: performance.now(),
+        });
+        scope = step.state;
+        for (const effect of step.effects) {
+          try {
+            runScopeEffect(c, effect);
+          } catch (err) {
+            console.error('[net] world scope effect threw (continuing)', effect.kind, err);
+          }
+        }
+      } catch (err) {
+        opts.onError('subscribe', err instanceof Error ? err.message : 'world scope failed');
+      }
+    };
+
     const conn = DbConnection.builder()
       .withUri(opts.uri)
       .withDatabaseName(opts.db)
@@ -913,6 +1045,15 @@ export function connect(opts: ConnectionOptions): Connection {
             } else {
               opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe
             }
+            // The link is live: open the world scope. The first run usually finds no own rows
+            // yet (they arrive as row callbacks after this one); each own-row callback runs it
+            // again, and the timer runs it while nothing else does.
+            scopeConn = c;
+            stopScope = endScope;
+            scopeSummary = () => describeScope(scope);
+            scopeTimer = setInterval(runScope, SCOPE_TICK_MS);
+            opts.onScopeSettled?.(false);
+            runScope();
             // Arm the hydration edge BEFORE notifying, so a throwing callback cannot lose it.
             snapshotApplied = true;
             hadSession = true;
@@ -923,12 +1064,10 @@ export function connect(opts: ConnectionOptions): Connection {
           // subscriptionErrorMessage is fallback-guarded against shape surprises.
           .onError((ctx) => opts.onError('subscribe', subscriptionErrorMessage(ctx)))
           .subscribe([
-            // global character subscription — no WHERE zone_id filter.
-            // Warp detection uses character.onUpdate (inline scalar comparison);
-            // off-zone characters are excluded at RENDER time by the currentZoneId filter
-            // (main.ts) — the real mechanism. (store.resetCharacters() exists but is NOT
-            // wired into switchZone.)
-            'SELECT * FROM character',
+            // `character` is NOT in this set: it is the one table written on every step, so it
+            // is subscribed by the world scope above as the own row plus one set per wanted
+            // zone. `player` is world-wide: nothing writes it per step, and it is the directory
+            // the Players tab, names and trade / challenge targeting read.
             'SELECT * FROM player',
             // monster_pub is PRIVATE — subscribe
             // the owner-scoped my_monster_pub view instead (the my_conversation /
@@ -1030,7 +1169,7 @@ export function connect(opts: ConnectionOptions): Connection {
         handleDrop();
       })
       .build();
-    wireTables(conn);
+    wireTables(conn, runScope);
     // dev-observability: wrap AFTER wireTables so the inbound row callbacks
     // stay wired to the RAW connection. Identity when opts.onSend is undefined.
     const wrapped = wrapReducerLogging(conn, opts.onSend);
@@ -1080,6 +1219,8 @@ export function connect(opts: ConnectionOptions): Connection {
    * stop the ladder), re-checks staleness after the await, and routes each terminal kind.
    */
   async function attemptBuild(): Promise<void> {
+    // The build this attempt supersedes stops driving its world scope.
+    stopScope?.();
     buildGen += 1; // opens the generation BEFORE the async gap
     const gen = buildGen;
     let credential: ConnectCredential;
@@ -1207,5 +1348,6 @@ export function connect(opts: ConnectionOptions): Connection {
     join: () => {
       if (current !== undefined && !linkFrozen(state)) attemptJoin(current, name, opts.onError);
     },
+    worldScope: () => scopeSummary(),
   };
 }

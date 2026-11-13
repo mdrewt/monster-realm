@@ -141,9 +141,17 @@ export function marshalInteract(
     });
   };
   const npcById = new Map(npcs.map((n) => [n.entityId, n]));
-  const playerById = new Map(players.map((p) => [p.entityId, p]));
-  const ownIdentity = players.find((p) => p.entityId === ownEntityId)?.identity;
-  for (const c of characters) {
+  // `players` is the whole world's directory and `characters` only the zones this client holds,
+  // so the lookup is built for the players who have a character here, not for everyone online.
+  const present = Array.from(characters);
+  const presentIds = new Set(present.map((c) => c.entityId));
+  const playerById = new Map<bigint, StorePlayer>();
+  let ownIdentity: string | undefined;
+  for (const p of players) {
+    if (p.entityId === ownEntityId) ownIdentity ??= p.identity;
+    if (presentIds.has(p.entityId)) playerById.set(p.entityId, p);
+  }
+  for (const c of present) {
     if (c.entityId === ownEntityId) continue;
     const at = { x: c.tileX, y: c.tileY, zone: c.zoneId, id: c.entityId.toString() };
     const npc = npcById.get(c.entityId);

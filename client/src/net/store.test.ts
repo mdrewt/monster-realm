@@ -2158,118 +2158,6 @@ describe('AuthoritativeStore EG4: evolutionPathCount property (fast-check)', () 
 });
 
 // =============================================================================
-// M11c extension: store.resetCharacters() (C3)
-//
-// Contract:
-//   - resetCharacters() clears ONLY the #chars map.
-//   - It does NOT touch #players, #monsters, #species, #battles, #skills,
-//     #inventory, #itemDefs, or #evolutionPaths (EG4-5: #fusions is gone).
-// =============================================================================
-
-describe('AuthoritativeStore M11c C3: resetCharacters() clears only the character map', () => {
-  it('BITES: after resetCharacters(), characterCount is 0', () => {
-    // Kills: an impl where resetCharacters() is a no-op or clears the wrong map.
-    const s = new AuthoritativeStore();
-    s.upsertCharacter(char(1n, 2, 3), 100);
-    s.upsertCharacter(char(2n, 4, 5), 100);
-    expect(s.characterCount).toBe(2);
-    s.resetCharacters();
-    expect(s.characterCount).toBe(0);
-  });
-
-  it('BITES: after resetCharacters(), character(id) returns undefined', () => {
-    // Kills: an impl that decrements a counter but keeps rows accessible.
-    const s = new AuthoritativeStore();
-    s.upsertCharacter(char(42n, 3, 7), 100);
-    s.resetCharacters();
-    expect(s.character(42n)).toBeUndefined();
-  });
-
-  it('BITES: resetCharacters() does NOT clear players', () => {
-    // Kills: an impl that calls reset() (which clears everything) instead of
-    // targeting only the character map.
-    const s = new AuthoritativeStore();
-    s.upsertPlayer(player('alice', 1n));
-    s.upsertCharacter(char(1n, 0, 0), 100);
-    s.resetCharacters();
-    // Player row must still be present
-    expect(s.player('alice')).toBeDefined();
-    expect(s.player('alice')!.entityId).toBe(1n);
-  });
-
-  it('BITES: resetCharacters() does NOT clear monsters', () => {
-    // Kills: an impl that wipes all maps instead of just #chars.
-    // reads the same fact through ownMonsters (store.monster(id) is gone).
-    const s = new AuthoritativeStore();
-    s.upsertMonster(monsterPub(7n, 'bob'));
-    s.upsertCharacter(char(1n, 0, 0), 100);
-    s.resetCharacters();
-    expect(s.ownMonsters('bob')).toHaveLength(1);
-    expect(s.monsterCount).toBe(1);
-  });
-
-  it('BITES: resetCharacters() does NOT clear species', () => {
-    // Kills: an impl that routes resetCharacters() through a full reset().
-    const s = new AuthoritativeStore();
-    s.upsertSpecies(speciesRow(3));
-    s.upsertCharacter(char(1n, 0, 0), 100);
-    s.resetCharacters();
-    expect(s.species(3)).toBeDefined();
-    expect(s.speciesMap().size).toBe(1);
-  });
-
-  it('BITES: resetCharacters() does NOT clear battles', () => {
-    // Kills: an impl that resets battles as a side effect.
-    const s = new AuthoritativeStore();
-    s.upsertBattle(battle(1n, 'alice'));
-    s.upsertCharacter(char(1n, 0, 0), 100);
-    s.resetCharacters();
-    expect(s.battle(1n)).toBeDefined();
-  });
-
-  it('BITES: resetCharacters() does NOT clear skills', () => {
-    // Kills: an impl that resets the skill map as a side effect.
-    const s = new AuthoritativeStore();
-    s.upsertSkill(skillRow(10));
-    s.upsertCharacter(char(1n, 0, 0), 100);
-    s.resetCharacters();
-    expect(s.skill(10)).toBeDefined();
-  });
-
-  it('BITES: characters upserted after resetCharacters() are visible (map is still live)', () => {
-    // Kills: an impl that nulls out the map reference instead of calling .clear().
-    const s = new AuthoritativeStore();
-    s.upsertCharacter(char(1n, 0, 0), 100);
-    s.resetCharacters();
-    s.upsertCharacter(char(2n, 5, 5), 200);
-    expect(s.characterCount).toBe(1);
-    expect(s.character(2n)!.row.tileX).toBe(5);
-  });
-
-  it('BITES: resetCharacters() marks batch dirty so flushBatch fires', () => {
-    // Kills: an impl that clears without marking dirty (render loop misses the warp transition).
-    const s = new AuthoritativeStore();
-    s.upsertCharacter(char(1n, 0, 0), 100);
-    s.flushBatch(); // drain dirty from upsert
-    const cb = vi.fn();
-    s.onBatchApplied(cb);
-    s.resetCharacters();
-    s.flushBatch();
-    expect(cb).toHaveBeenCalledTimes(1);
-  });
-
-  it('BITES: resetCharacters() on already-empty map does NOT mark dirty (no phantom re-render)', () => {
-    // Kills: an impl that unconditionally marks dirty even when nothing changed.
-    const s = new AuthoritativeStore();
-    const cb = vi.fn();
-    s.onBatchApplied(cb);
-    s.resetCharacters(); // nothing to clear
-    s.flushBatch();
-    expect(cb).toHaveBeenCalledTimes(0);
-  });
-});
-
-// =============================================================================
 // upsertCharacter snap-on-teleport
 //
 // zone change or abs(Δtile)>1 on either axis causes prev to be dropped (undefined), so
@@ -5428,7 +5316,7 @@ describe('AuthoritativeStore rb-53: a value-changing reconcile REPLACES the stor
 // qf-15 (QF15.1): the zone-name map. `zone_def` is a regular public table with a primary key
 // (`zone_id`), so the adapter feeds it row by row (insert, update, delete) like heal_location_row;
 // the store keeps the one fact the zone cue reads: zone id -> display name. The names are content
-// data: they survive a zone warp (`resetCharacters` drops characters only) and go on a reconnect
+// data: a zone warp leaves them alone and they go on a reconnect
 // (`reset`, repopulated by the fresh snapshot's insert burst).
 //
 // CONTRACT UNDER TEST (do not invent variants):
@@ -5439,12 +5327,12 @@ describe('AuthoritativeStore rb-53: a value-changing reconcile REPLACES the stor
 // =============================================================================
 
 describe('AuthoritativeStore qf-15: zone names (zone_def content)', () => {
-  it('a stored zone name reads back by its id, an upsert overwrites, a remove drops only that id, and the names survive resetCharacters but not reset [QF15-1-STORE-ZONE-NAME]', () => {
+  it('a stored zone name reads back by its id, an upsert overwrites, a remove drops only that id, and the names survive the removal of the characters of a zone but not reset [QF15-1-STORE-ZONE-NAME]', () => {
     // WRONG IMPL KILLED: a lookup that ignores the id (returns the last name written); an
     // insert-if-absent upsert (a renamed zone keeps its old name); a falsy-id check (zone 0 is the
     // spawn zone); a remove that clears every name, or throws on a missing id; a map that
-    // resetCharacters() clears (the cue reads the name AFTER a warp's character flush, so a warp
-    // would announce nothing); a reset() that forgets the map (a reconnect to another build keeps
+    // removeCharacter() clears (the cue reads the name after a warp, and the zone left behind
+    // gives up its characters, so a warp would announce nothing); a reset() that forgets the map (a reconnect to another build keeps
     // names for zones that may no longer exist).
     const s = new AuthoritativeStore();
     expect(s.zoneName(0), 'an unknown id reads undefined (zone 0)').toBeUndefined();
@@ -5467,14 +5355,14 @@ describe('AuthoritativeStore qf-15: zone names (zone_def content)', () => {
     expect(() => s.removeZoneName(99), 'removing a never-stored id is a no-op').not.toThrow();
     expect(s.zoneName(0), 'and still leaves the stored name alone').toBe('Cobalt Reach');
 
-    // A warp flushes the characters, never the content: seed a character so the flush runs.
+    // A zone left behind gives up its characters, never the content.
     s.upsertZoneName(7, 'Umber Fen');
     s.upsertCharacter(char(1n, 2, 3), 100);
     expect(s.characterCount, 'precondition: a character is held').toBe(1);
-    s.resetCharacters();
-    expect(s.characterCount, 'resetCharacters dropped the character').toBe(0);
-    expect(s.zoneName(0), 'zone 0 survives the warp flush').toBe('Cobalt Reach');
-    expect(s.zoneName(7), 'zone 7 survives the warp flush').toBe('Umber Fen');
+    s.removeCharacter(1n);
+    expect(s.characterCount, 'the character is gone').toBe(0);
+    expect(s.zoneName(0), 'zone 0 survives the removal').toBe('Cobalt Reach');
+    expect(s.zoneName(7), 'zone 7 survives the removal').toBe('Umber Fen');
 
     s.reset();
     expect(s.zoneName(0), 'reset() drops zone 0').toBeUndefined();

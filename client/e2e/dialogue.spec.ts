@@ -99,7 +99,8 @@ import {
 //     needed to leave TALK_RANGE of (4,5) — only (6,4) and (7,5) are out of it —
 //     so the server's talk range re-check holds, and a conversation, once open,
 //     pins him in range. The zone-1 shopkeeper (8,1) can never appear on
-//     (4,5) or (5,5), so the zone-less __game().characters cannot fool the poll.
+//     (4,5) or (5,5), so the poll, which does not read a character's zone, cannot be fooled
+//     by a zone-1 row a client still holds just after a warp.
 
 interface Tile {
   x: number;
@@ -624,7 +625,7 @@ test.describe
       if (elderNow === undefined) throw new Error('unreachable: the elder was asserted above');
       expect(
         manhattan(elderNow, away.ownAuthTile),
-        'A is out of talk range of THIS elder (never measured to all characters: zone-less)',
+        'A is out of talk range of THIS elder (never measured to all characters: the poll reads no zone)',
       ).toBeGreaterThanOrEqual(TALK_RANGE + 1);
       await expect(overlay, 'walking away ends nothing by itself').toBeVisible();
 

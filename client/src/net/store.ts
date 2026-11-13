@@ -535,7 +535,7 @@ export class AuthoritativeStore {
   readonly #quests = new Map<bigint, StorePlayerQuest>();
   readonly #healLocations = new Map<number, StoreHealLocationRow>();
   /** Zone display names from `zone_def` (public content), keyed by zone id — the client's only
-   *  zone-name source (qf-15). Content: cleared by `reset()`, kept by `resetCharacters()`. */
+   *  zone-name source (qf-15). Content: cleared by `reset()`. */
   readonly #zoneNames = new Map<number, string>();
   readonly #npcs = new Map<bigint, StoreNpcRow>();
   readonly #npcsByNpcId = new Map<string, StoreNpcRow>();
@@ -913,16 +913,6 @@ export class AuthoritativeStore {
     return () => {
       this.#batchListeners.delete(cb);
     };
-  }
-
-  /** Zone-warp character flush: drop ONLY the character map so remote positions
-   *  from the old zone are never interpolated in the new zone. All other tables
-   *  (players, monsters, species, battles, skills, inventory, itemDefs, evolutionPaths)
-   *  are untouched — they survive the zone transition. */
-  resetCharacters(): void {
-    if (this.#chars.size === 0) return; // no-op → no dirty mark (no phantom re-render)
-    this.#chars.clear();
-    this.#dirty = true;
   }
 
   /** Reconnect clean re-init: drop all stale rows (never merge), keep listeners so

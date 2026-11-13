@@ -340,8 +340,9 @@ three ways to play"). A tick for every zone at 5 Hz costs reducer-thread time, w
 commit-log writes in proportion to the number of zones, with nobody there to see the result. Resetting
 on the way out, instead of catching up on the way in, means nobody in the zone renders it, so the jump
 home is never seen, and the next player always finds the zone in a known state with nothing to wait
-for. The reset is a one-off write of at most one row per NPC that differs; the `character`
-subscription covers all zones, so clients in other zones receive those rows and drop them at render.
+for. The reset is a one-off write of at most one row per NPC that differs; clients hold `character`
+by zone (see "World rows are subscribed by zone"), so it reaches only a client still holding the
+emptied zone's set after leaving it, which does not draw that zone.
 One disarm path, driven by the tick itself, means a new way of leaving a zone cannot forget to disarm
 it.
 The heartbeat stays because the `AlloyIngestStalled` alert treats ten minutes without module log
@@ -354,6 +355,93 @@ tick, an effect that expires after N ticks of an unwatched zone); elapsed-time c
 zone is entered; a second schedule row for a zone; disarming a zone from the paths that remove a
 character instead of from the tick; resetting anything a player caused; arming every zone at
 `init` or `sync_content`.
+
+## World rows are subscribed by zone
+
+**Decision.** The client never subscribes `character` whole. Beside the base set (29 queries,
+`client/src/net/connection.ts`) a connection holds three kinds of subscription set: the base set,
+one set for its own character row (`SELECT * FROM character WHERE entity_id = <E>`), and one set per
+wanted zone (`SELECT * FROM character WHERE zone_id = <Z>`). `client/src/net/worldScope.ts` owns
+both query strings and the state of the sets; the connection executes what it decides.
+
+- **The scope follows the authoritative own row, not the map being drawn.** The own `player` row
+  names the entity, the own-row set delivers the character, and that row's `zone_id` names the zone
+  set. Zone 0 is never assumed.
+- **Settled.** The scope is settled when the own-row set and the own zone's set are both applied.
+  `main.ts` draws no character on a new connection until then. A warp into a zone whose set is not
+  applied yet leaves the world drawn while the zone fills in. Every warp is that case: the
+  destination is subscribed when the own row arrives in it, so the player is drawn there alone
+  and the zone's NPCs and players appear together one round trip later (1 or 2 frames on
+  loopback, 17 frames measured at a 300 ms round trip).
+- **No own character, no characters.** The wanted zones come from the own character row. A client
+  without one (an account pending deletion, a join the server refused, an own row that was
+  deleted) wants no zone, so it holds no `character` row and draws none, NPCs included.
+- **Subscribe new before unsubscribing old.** On a warp the new zone is subscribed inside the own
+  row's update callback. The old zone's set is released only once the new one is applied and the old
+  one has gone unwanted for `LINGER_MS` (5 s). Nothing is unsubscribed on a connection that is being
+  dropped.
+- **Failure.** A rejected own-row or own-zone set is retried in place after 250, 500 and 1000 ms;
+  one more rejection sends the connection down the drop-and-reconnect path. One not applied within
+  5 s takes that path at once. That path costs the player their place: the server deletes a
+  character when its last connection ends, so the reconnect joins again at the zone 0 spawn with
+  a new entity id. A link that stalls for 5 s while one of the two sets is pending (at login, or
+  just after a warp) ends that way; the same stall with both sets applied drops nothing and the
+  player stays where they were (measured with a 7 s hold on a 300 ms link: alone on the
+  destination map for 5.2 s, then back at the zone 0 spawn).
+- **`player` is a world directory.** It stays in the base set, unfiltered: the Players tab, names,
+  presence counts and trade and challenge targeting read it.
+
+No table, reducer, view or binding is involved: the two queries use the primary key
+`character.entity_id` and the indexed `character.zone_id`, so the client works against any
+published module.
+
+**Why.** `character` is the only public table written on every step, so an unfiltered subscription
+delivers every step of every player to every client. Measured on a local host with every player
+walking: 57 KB/s per client at 500 players unscoped, against 5 KB/s for a client in a zone of 50 and
+9.5 KB/s in a zone of 100 when scoped. Walkers in another zone cost a scoped client nothing (a
+zone-0 client reads 2.6 KB/s with 20 walkers beside it and 2.5 KB/s after 100 more walk in zone 1).
+`player` is written at join, leave and rename and never per step, so scoping it would save little
+and change what the Players tab lists.
+
+The own-row set is what keeps the warp path intact. Because the row stays subscribed while its
+`zone_id` changes, the host delivers the warp as one update of the own row (no insert and no delete
+in 3,417 measured warps), so `onOwnWarp`, `switchZone` and the row's position, queue and ack arrive
+together as they do unscoped.
+
+The other properties this rests on were measured on SpacetimeDB 2.11.0, not assumed:
+
+- The host shares a query among subscribers by its SQL text. 50 clients in one zone add one zone
+  query between them, plus 50 own-row queries. One module builds the text so that it never differs.
+- Both queries are pruned by value: a `character` write is evaluated against its own zone's query
+  and its own row's query, never the others (2 evaluations per write at 20 and at 120 walkers).
+- An applied set's rows are consistent with the updates that follow (no gap and no duplicate in
+  8,400 compared sequences), and an unsubscribe returns the rows it drops as deletes. The store
+  needs no re-seeding and no sweep.
+- A rejected set fails only its own handle and subscribing inside a row callback is safe. That is
+  what makes retrying in place possible; a reconnect would respawn the player in zone 0.
+- A subscribe and unsubscribe pair costs about 20 µs of the database thread. The linger bounds it to
+  one pair per zone per 5 s for a player pacing across a door, who also re-downloads nothing.
+
+**Cost.** The own-row query has one subscriber and is evaluated once per step of that player: about
+3.4 µs of database-thread time per step, the same at 100 and at 500 walking players. That is about
+0.9% of the thread at 500 walking players and about 1.7% at 1,000, and it is the whole thread cost
+of the design: the zone query alone measures 1.6% more thread share than the unfiltered
+subscription. It is inside the budgets this was sized for (the database thread under 50%, a tick's
+p95 under `STEP_MS`, input round-trip p95 under 50 ms, 20 KB/s per client). If thread share ever
+becomes the constraint, the follow-up is a bootstrap-only own-row query: held only until the zone's
+set is applied, and issued again if the own row is lost.
+
+Scoping `player` is the second stage, to be taken up when the directory measures above 1 KB/s per
+client or the population target passes about 5,000 concurrent players. Its shape is a cold,
+zone-indexed roster with one owner module, names of counterparts read by identity, shipped
+server-first with a client fallback for older modules.
+
+**Rules out.** A `character` query in the base set, or one with no `WHERE`; building either query's
+text anywhere but `worldScope.ts` (a formatting difference stops the host sharing it); taking the
+zone from `rawMap` or assuming one; releasing the old zone before the new one is applied;
+unsubscribing on a dropped connection; drawing characters on a new connection before the scope has
+settled; subscribing a zone for a client that has no own character row; a sender-scoped view of "players in my zone" (a view is evaluated on the reducer thread for
+every subscriber on every write); scoping `player` before its trigger.
 
 ## Bounded client prediction
 
@@ -368,7 +456,9 @@ generation id (`PredictorEpoch`), so a rejection addressed to a predictor discar
 a warp or reconnect does nothing. A rebuilt predictor starts its sequence numbers
 above the highest one already sent. Zone warps resolve only server-side, in
 `movement_tick` (`server-module/src/movement.rs`); the client never predicts a zone
-crossing. `skip_warp` there defaults `true` when the mover has no player row, so an NPC
+crossing. It learns of one as a single update of its own `character` row, which its
+own-row subscription holds across the change of zone (see "World rows are subscribed
+by zone"). `skip_warp` there defaults `true` when the mover has no player row, so an NPC
 never leaves its home zone.
 
 **Why.** A client that runs ahead of authority has to pull the player back, which is

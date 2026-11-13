@@ -295,7 +295,7 @@ part of the schema:
 | Class | Tables | Client read path |
 |---|---|---|
 | Public content | `species_row`, `skill_row`, `item_row`, `type_relation_row`, `zone_def`, `shop_row`, `shop_item_row`, `heal_location_row`, `npc`, `evolution_path`, `config` | direct subscription |
-| Public world state | `character`, `player`, `profile`, `battle_challenge`, `player_quest` | direct subscription |
+| Public world state | `character`, `player`, `profile`, `battle_challenge`, `player_quest` | direct subscription; `character` only for the own row and per zone (see "Connection and store") |
 | Public, drain-only | `trade_offer` | none in the client: no query subscribes to it and the store holds no offer state |
 | Private, owner-readable | `monster_pub`, `inventory`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
@@ -393,8 +393,24 @@ with thin shells.
 `net/connection.ts` builds the SpacetimeDB connection (URI and database from
 `VITE_STDB_URI`/`VITE_STDB_DB`; a production build refuses the dev-default database,
 `net/connectionConfig.ts`). It subscribes to the public tables it renders (never the
-drain-only `trade_offer`) and the owner-scoped views in one batch; the character subscription covers all zones, and off-zone
-characters are filtered at render time. The SDK fires per-row callbacks.
+drain-only `trade_offer`) and the owner-scoped views in one batch, the base set of 29
+queries. `player` is in it, world-wide. `character` is not: it is the one public table
+written on every step, so the connection holds it as query sets of their own, one for
+the own row (`WHERE entity_id = …`) and one per wanted zone (`WHERE zone_id = …`).
+`net/worldScope.ts` owns those two query strings and the state of the sets, as pure
+functions: which sets are wanted, pending or applied, when an unwanted one is released
+(after `LINGER_MS`, and never before the own zone's set is applied), and when a
+rejected or never-applied set ends the connection. `connection.ts` executes its
+effects: it re-evaluates the scope after every change to the own `player` or
+`character` row, after each set's applied or error callback and on a 500 ms timer, and
+discards the scope with the connection. The wanted zone is the one the own row is in.
+On a warp the own row's update callback calls `onOwnWarp`, stores the row and
+subscribes the new zone, in that order. The scope is settled when the own-row set and
+the own zone's set are both applied; `main.ts` draws no character on a new connection
+until then, so a login or reconnect never shows the player alone in an empty zone. The
+store therefore holds the own character, the characters of the own zone, and those of
+a zone still lingering, which the render filter leaves out. The SDK fires per-row
+callbacks.
 `net/batch.ts` coalesces a transaction's callbacks within one microtask so the store
 flushes once per burst, and the predictor reconciles against a consistent snapshot.
 `net/rowConvert.ts` and `convert/convert.ts` convert SDK rows (tagged unions,

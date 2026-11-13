@@ -15,6 +15,16 @@ import type { RenewalOutcome } from './credentialDecision';
 import { AuthoritativeStore } from './store';
 
 type Cb = (...args: unknown[]) => void;
+/** One `subscriptionBuilder().subscribe(...)` call on the connection handed to onConnect. */
+interface SubRec {
+  /** The base set's string list, or one world-scope query string. */
+  query: readonly string[] | string | undefined;
+  onApplied?: Cb;
+  onError?: Cb;
+  /** What the handle's `isActive()` answers; a test sets it when it applies the set. */
+  active: boolean;
+  unsubscribes: number;
+}
 interface BuildRec {
   token: unknown;
   onConnect?: Cb;
@@ -24,6 +34,9 @@ interface BuildRec {
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
   readonly startGuestClaim: ReturnType<typeof vi.fn>;
+  /** Every subscribe call, in order: the base set first. */
+  readonly subs: SubRec[];
+  readonly disconnect: ReturnType<typeof vi.fn>;
   /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
   queries?: readonly string[];
 }
@@ -83,6 +96,8 @@ vi.mock('../module_bindings', () => {
           joinGame: vi.fn(() => Promise.resolve()),
           completeGuestClaim: vi.fn(() => Promise.resolve()),
           startGuestClaim: vi.fn(() => (H.startGuestClaimImpl ?? (() => Promise.resolve()))()),
+          subs: [],
+          disconnect: vi.fn(),
         };
         H.builds.push(rec);
         const sub = {
@@ -439,17 +454,15 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
   // qf-15 (QF15.1): the zone cue names the destination zone from the `zone_def` content table. It
   // is a REGULAR public table with a primary key (`zone_id`), so unlike the PK-less views above it
   // is fed row by row (heal_location_row's idiom) and onUpdate DOES fire.
-  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 30 in all [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
+  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 29 in all [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
     // WRONG IMPL KILLED: no subscription (the client never receives a zone name and the cue stays
     // silent forever); a second subscription call or a duplicate entry (the length pin); a query
-    // for a table nobody named riding along (the length pin: 22 queries before qf-15, plus this
-    // one); the table spelled differently (`zoneDef`, `zone_defs`).
-    // bt-12 (named intentional change, BT12.1): 23 → 30, the seven tactical views
-    // (BT12-1-SUBSCRIBE-SEVEN pins which seven).
-    // ts-3 (named intentional change, M-trade-sessions): 30 → 31, the `my_trade_session` view
-    // (TS3-SUBSCRIBE-SESSION-VIEW pins which one).
-    // ts-4 (named intentional change, ts-4.4): 31 → 30, the public `trade_offer` table is not
-    // subscribed (TS4-4-NO-TRADE-OFFER pins it).
+    // for a table nobody named riding along (the length pin); the table spelled differently
+    // (`zoneDef`, `zone_defs`); `character` in the base set (every step of every player in the
+    // world would reach every client).
+    // The 29: 20 base queries, zone_def, the seven tactical views (BT12-1-SUBSCRIBE-SEVEN pins
+    // which seven) and `my_trade_session` (TS3-SUBSCRIBE-SESSION-VIEW). Not among them:
+    // `trade_offer` (TS4-4-NO-TRADE-OFFER) and `character` (the world scope's sets).
     const opts = makeOpts();
     connect(opts);
     await settle();
@@ -462,8 +475,12 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     ).toHaveLength(1);
     expect(
       queries,
-      'the 21 base queries, zone_def, the seven tactical views and my_trade_session',
-    ).toHaveLength(30);
+      'the 20 base queries, zone_def, the seven tactical views and my_trade_session',
+    ).toHaveLength(29);
+    expect(
+      queries.filter((q) => /\bcharacter\b/.test(q)),
+      'no base query reads `character`: the world scope subscribes it by own row and by zone',
+    ).toEqual([]);
   });
 
   it('an inserted zone_def row stores its name by zone id, an update replaces it, a delete removes it, and each change flushes one batch [QF15-1-WIRE-ZONE-DEF]', async () => {
@@ -752,7 +769,7 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
     vi.useRealTimers();
   });
 
-  it('the one subscription batch names each of the seven owner-scoped tactical views exactly once and no private battle table, 30 queries in all [BT12-1-SUBSCRIBE-SEVEN]', async () => {
+  it('the one subscription batch names each of the seven owner-scoped tactical views exactly once and no private battle table, 29 queries in all [BT12-1-SUBSCRIBE-SEVEN]', async () => {
     // WRONG IMPL KILLED: a view left out (its rows never reach the client: the deploy panel or the
     // results never show); a view subscribed twice (the length pin); the PRIVATE table subscribed
     // instead of its view (`battle_unit`, `player_formation`: a private table errors the WHOLE
@@ -770,8 +787,12 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
       queries.filter((q) => BT12_PRIVATE_TABLES.some((table) => q.endsWith(` ${table}`))),
       'no private battle table is subscribed',
     ).toEqual([]);
-    // ts-4.4: the 22 non-tactical queries (no `trade_offer`), the seven, my_trade_session.
-    expect(queries, 'the 22 non-tactical queries, the seven, my_trade_session').toHaveLength(30);
+    // The 21 non-tactical queries (no `trade_offer`, no `character`), the seven, my_trade_session.
+    expect(queries, 'the 21 non-tactical queries, the seven, my_trade_session').toHaveLength(29);
+    expect(
+      queries.filter((q) => /\bcharacter\b/.test(q)),
+      'no base query reads `character`: the world scope subscribes it by own row and by zone',
+    ).toEqual([]);
   });
 
   it('each tactical view registers an insert and a delete handler and never an update handler; a handler writes nothing to the store itself, and one insert or one delete is exactly one flushed batch that reconciles the view from the SDK cache [BT12-1-VIEW-HANDLERS]', async () => {
@@ -1035,7 +1056,7 @@ describe('connect(): the trade session view (ts-3)', { sequential: true }, () =>
     vi.useRealTimers();
   });
 
-  it('the one subscription batch names my_trade_session exactly once and never the private trade_session, 30 queries in all [TS3-SUBSCRIBE-SESSION-VIEW]', async () => {
+  it('the one subscription batch names my_trade_session exactly once and never the private trade_session, 29 queries in all [TS3-SUBSCRIBE-SESSION-VIEW]', async () => {
     // WRONG IMPL KILLED: the view left out (the editor and the Trades rows never see a session);
     // the PRIVATE table subscribed (it errors the whole batch: onApplied never fires and every
     // session hangs); the view subscribed twice; another query riding along (the length pin).
@@ -1044,7 +1065,11 @@ describe('connect(): the trade session view (ts-3)', { sequential: true }, () =>
     expect(queries.filter((q) => q === 'SELECT * FROM my_trade_session')).toHaveLength(1);
     expect(queries, 'never the private table').not.toContain('SELECT * FROM trade_session');
     expect(queries.filter((q) => q.endsWith(' trade_session'))).toEqual([]);
-    expect(queries).toHaveLength(30);
+    expect(queries).toHaveLength(29);
+    expect(
+      queries.filter((q) => /\bcharacter\b/.test(q)),
+      'no base query reads `character`: the world scope subscribes it by own row and by zone',
+    ).toEqual([]);
   });
 
   it('ts-4.4: no trade_offer query is subscribed, no handler is registered on the trade_offer table, and a trade_offer row delivered by the SDK changes no store state and flushes no batch [TS4-4-NO-TRADE-OFFER]', async () => {
@@ -1172,21 +1197,456 @@ describe('connect(): the trade session view (ts-3)', { sequential: true }, () =>
   });
 });
 
+// =============================================================================================
+// The world scope: `character` is subscribed as the own row plus one set per wanted zone, each a
+// handle of its own, driven by worldScope.ts. These tests drive the REAL connect() with the SDK
+// faked: what is subscribed and when, what a warp does, what a rebuild and a failed set do.
+// =============================================================================================
+
+const WS_E = 77n;
+const WS_OWN_QUERY = 'SELECT * FROM character WHERE entity_id = 77';
+const wsZoneQuery = (zone: number) => `SELECT * FROM character WHERE zone_id = ${zone}`;
+const wsPlayer = (entityId: bigint = WS_E, identity: { toHexString(): string } = ID) => ({
+  identity,
+  entityId,
+  name: 'Tester',
+  online: true,
+  lastInputSeq: 0n,
+});
+const wsChar = (entityId: bigint, zoneId: number, tileX = 2, tileY = 2) => ({
+  entityId,
+  zoneId,
+  tileX,
+  tileY,
+  facing: { tag: 'Down' },
+  action: { tag: 'Idle' },
+  moveStartedAtMs: 0n,
+  moveQueue: [],
+  ackedSeq: 0n,
+});
+/** Run build `buildIdx`'s handler for one row event, as the SDK would. */
+function wsFire(
+  table: 'character' | 'player',
+  event: 'insert' | 'update' | 'delete',
+  args: unknown[],
+  buildIdx = 0,
+): void {
+  const cb = H.rowEvents[table]?.[event][buildIdx];
+  if (cb === undefined) throw new Error(`no ${table}.${event} handler for build ${buildIdx}`);
+  cb({}, ...args);
+}
+/** The world-scope subscribes of a build: every subscribe after the base set. */
+const wsSubs = (b: BuildRec): SubRec[] => b.subs.slice(1);
+const wsQueries = (b: BuildRec): unknown[] => wsSubs(b).map((sub) => sub.query);
+function wsApply(sub: SubRec | undefined): void {
+  if (sub === undefined) throw new Error('no such subscribe');
+  sub.active = true;
+  sub.onApplied?.();
+}
+function wsReject(sub: SubRec | undefined, message = 'bad query'): void {
+  if (sub === undefined) throw new Error('no such subscribe');
+  sub.active = false;
+  sub.onError?.({ event: new Error(message) });
+}
+const wsUnsubscribes = (b: BuildRec): number =>
+  b.subs.reduce((total, sub) => total + sub.unsubscribes, 0);
+/** Options whose scope-facing callbacks are typed mocks. */
+function wsOpts() {
+  const onError = vi.fn<(where: string, message: string) => void>();
+  const onScopeSettled = vi.fn<(settled: boolean) => void>();
+  const onOwnWarp = vi.fn<(newZoneId: number) => void>();
+  const opts: ConnectionOptions = { ...makeOpts(), onError, onScopeSettled, onOwnWarp };
+  return { opts, onError, onScopeSettled, onOwnWarp };
+}
+type WsOpts = ReturnType<typeof wsOpts>;
+const wsErrors = (w: WsOpts, where: string): unknown[][] =>
+  w.onError.mock.calls.filter(([at]) => at === where);
+const wsLinkErrors = (w: WsOpts): unknown[][] => wsErrors(w, 'link');
+
+/** Connect, apply the base set, then deliver the own player row and the own character row, each
+ *  set applied as it is issued: the login sequence, ending settled in `zone`. */
+async function wsSettled(zone = 0, w: WsOpts = wsOpts()) {
+  const handle = connect(w.opts);
+  await settle();
+  const b = H.builds[0];
+  b.onConnect?.(conn0(b), ID, 'anon-tok');
+  b.onApplied?.();
+  wsFire('player', 'insert', [wsPlayer()]);
+  wsApply(wsSubs(b)[0]);
+  wsFire('character', 'insert', [wsChar(WS_E, zone)]);
+  wsApply(wsSubs(b)[1]);
+  return { handle, w, b };
+}
+
+describe('connect(): the world scope', { sequential: true }, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  it('login: nothing beyond the base set until the own player row, then the own-row set, then the own zone once the own character row arrives; settled only when both are applied [WS-LOGIN]', async () => {
+    // WRONG IMPL KILLED: a zone assumed before the own row says which (zone 0 subscribed for a
+    // character that is in zone 1); the zone set issued before the own-row set applied a row;
+    // settled reported on the first applied set; a query text other than the canonical one.
+    const w = wsOpts();
+    const handle = connect(w.opts);
+    await settle();
+    const b = H.builds[0];
+    b.onConnect?.(conn0(b), ID, 'anon-tok');
+    expect(b.subs, 'onConnect issues the base set alone').toHaveLength(1);
+    b.onApplied?.();
+    expect(wsQueries(b), 'no own player row yet: nothing to scope by').toEqual([]);
+    expect(w.onScopeSettled.mock.calls, 'the scope opens unsettled').toEqual([[false]]);
+
+    // Another player's rows decide nothing.
+    const other = { toHexString: () => 'ee'.repeat(32) };
+    wsFire('player', 'insert', [wsPlayer(5n, other)]);
+    wsFire('character', 'insert', [wsChar(5n, 1)]);
+    expect(wsQueries(b)).toEqual([]);
+
+    wsFire('player', 'insert', [wsPlayer()]);
+    expect(wsQueries(b), 'the own-row set, by entity id').toEqual([WS_OWN_QUERY]);
+    wsApply(wsSubs(b)[0]);
+    expect(wsQueries(b), 'no own character row yet: no zone').toEqual([WS_OWN_QUERY]);
+
+    wsFire('character', 'insert', [wsChar(WS_E, 1)]);
+    expect(wsQueries(b), 'the zone the own row is in, never an assumed one').toEqual([
+      WS_OWN_QUERY,
+      wsZoneQuery(1),
+    ]);
+    expect(handle.worldScope()).toEqual({
+      own: 'active',
+      zones: [{ zoneId: 1, state: 'pending' }],
+      settled: false,
+    });
+    expect(w.onScopeSettled.mock.calls).toEqual([[false]]);
+
+    wsApply(wsSubs(b)[1]);
+    expect(w.onScopeSettled.mock.calls).toEqual([[false], [true]]);
+    expect(handle.worldScope()).toEqual({
+      own: 'active',
+      zones: [{ zoneId: 1, state: 'active' }],
+      settled: true,
+    });
+    // Nothing else is ever issued while nothing changes.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(b.subs).toHaveLength(3);
+    expect(wsUnsubscribes(b)).toBe(0);
+    expect(b.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('a second tab: the own player row is already there when the base set applies, and the scope follows the own character row into zone 1 [WS-SECOND-TAB]', async () => {
+    const { b, handle } = await wsSettled(1);
+    expect(wsQueries(b)).toEqual([WS_OWN_QUERY, wsZoneQuery(1)]);
+    expect(handle.worldScope().settled).toBe(true);
+  });
+
+  it('a warp is one own-row update: exactly one onOwnWarp, before the store takes the row, and the new zone is subscribed inside that same callback; the old zone is unsubscribed once, after the new one applied and the linger passed [WS-WARP]', async () => {
+    // WRONG IMPL KILLED: onOwnWarp after ingestChar (switchZone would run against a store already
+    // in the new zone); the zone subscribe left to the timer (one tick of empty zone on top of
+    // the round trip); the old zone unsubscribed at the warp, or before the new one applied (a
+    // frame with neither zone's rows); unsubscribed twice.
+    const w = wsOpts();
+    const seen: { storeZone: number | undefined; subs: number }[] = [];
+    const { b } = await wsSettled(0, w);
+    w.onOwnWarp.mockImplementation(() => {
+      seen.push({
+        storeZone: w.opts.store.ownCharacter(ID.toHexString())?.row.zoneId,
+        subs: b.subs.length,
+      });
+    });
+    const zone0 = wsSubs(b)[1];
+    w.onScopeSettled.mockClear();
+
+    wsFire('character', 'update', [wsChar(WS_E, 0, 1, 5), wsChar(WS_E, 1, 1, 5)]);
+    expect(w.onOwnWarp.mock.calls).toEqual([[1]]);
+    expect(
+      seen,
+      'at onOwnWarp the store still holds the old row and nothing is issued yet',
+    ).toEqual([{ storeZone: 0, subs: 3 }]);
+    expect(w.opts.store.ownCharacter(ID.toHexString())?.row.zoneId).toBe(1);
+    expect(wsQueries(b), 'issued by the time the update callback returns').toEqual([
+      WS_OWN_QUERY,
+      wsZoneQuery(0),
+      wsZoneQuery(1),
+    ]);
+    expect(w.onScopeSettled.mock.calls).toEqual([[false]]);
+    expect(wsUnsubscribes(b), 'the old zone is held').toBe(0);
+
+    // Four seconds on the new zone is still not applied: the old zone is held.
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(wsUnsubscribes(b)).toBe(0);
+    wsApply(wsSubs(b)[2]);
+    expect(w.onScopeSettled.mock.calls).toEqual([[false], [true]]);
+    expect(wsUnsubscribes(b), 'applied, but the linger has not passed').toBe(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(zone0.unsubscribes, 'the old zone, once').toBe(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(wsUnsubscribes(b)).toBe(1);
+    expect(b.subs).toHaveLength(4);
+    expect(w.onOwnWarp).toHaveBeenCalledTimes(1);
+  });
+
+  it('a zone whose linger has ended is held while the own zone is not applied, and released once it is [WS-WARP-CHAIN]', async () => {
+    // WRONG IMPL KILLED: the old zone released on its linger alone. After a second warp the
+    // first zone's linger ends while the third zone's set is still inside its timeout; with
+    // zone 0 gone the store would hold no zone the player has been drawn in.
+    const { b } = await wsSettled(0);
+    const zone0 = wsSubs(b)[1];
+    wsFire('character', 'update', [wsChar(WS_E, 0, 1, 5), wsChar(WS_E, 1, 1, 5)]);
+    wsApply(wsSubs(b)[2]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    wsFire('character', 'update', [wsChar(WS_E, 1, 1, 5), wsChar(WS_E, 2, 1, 5)]);
+    expect(wsQueries(b)).toEqual([WS_OWN_QUERY, wsZoneQuery(0), wsZoneQuery(1), wsZoneQuery(2)]);
+
+    // 5.5 s after zone 0 was left, 1.5 s into zone 2's subscribe.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(wsUnsubscribes(b), 'zone 0 has lingered; zone 2 is not applied').toBe(0);
+
+    wsApply(wsSubs(b)[3]);
+    expect(zone0.unsubscribes, 'released in the step that applied the own zone').toBe(1);
+    expect(wsUnsubscribes(b), 'zone 1 was left 1.5 s ago').toBe(1);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(wsSubs(b).map((sub) => sub.unsubscribes)).toEqual([0, 1, 1, 0]);
+  });
+
+  it('a bounce back into the old zone inside the linger re-subscribes nothing and unsubscribes nothing until the zone left last has lingered [WS-BOUNCE]', async () => {
+    const { b } = await wsSettled(0);
+    wsFire('character', 'update', [wsChar(WS_E, 0), wsChar(WS_E, 1)]);
+    wsApply(wsSubs(b)[2]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    wsFire('character', 'update', [wsChar(WS_E, 1), wsChar(WS_E, 0)]);
+    expect(b.subs, 'zone 0 is still held: no new subscribe').toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(wsUnsubscribes(b), 'zone 0 is wanted again; zone 1 has lingered 4 s').toBe(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(wsSubs(b).map((sub) => sub.unsubscribes)).toEqual([0, 0, 1]);
+  });
+
+  it('a rebuilt connection starts with no world-scope set and nothing is unsubscribed on the way out; the dropped build issues nothing more [WS-REBUILD]', async () => {
+    // WRONG IMPL KILLED: unsubscribe on a dead socket (the SDK throws or queues onto nothing);
+    // scope state kept across the rebuild (the new connection believes it holds sets it never
+    // asked for and shows an empty zone); the old build's timer still subscribing.
+    const w = wsOpts();
+    const { b, handle } = await wsSettled(0, w);
+    w.onScopeSettled.mockClear();
+
+    b.onDisconnect?.();
+    expect(w.onScopeSettled.mock.calls, 'the drop unsettles').toEqual([[false]]);
+    expect(handle.worldScope()).toEqual({ own: null, zones: [], settled: false });
+    expect(w.opts.store.characterCount).toBe(0);
+    await nextAttempt();
+    expect(H.builds).toHaveLength(2);
+    const b1 = H.builds[1];
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    expect(b1.subs, 'the base set alone').toHaveLength(1);
+    expect(wsUnsubscribes(b), 'no unsubscribe on the dropped connection').toBe(0);
+
+    // A late callback of a dropped set, and time, change nothing on either build.
+    wsApply(wsSubs(b)[1]);
+    wsReject(wsSubs(b)[0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(b.subs).toHaveLength(3);
+    expect(b1.subs).toHaveLength(1);
+    expect(wsUnsubscribes(b)).toBe(0);
+    expect(handle.worldScope()).toEqual({ own: null, zones: [], settled: false });
+
+    // The new build scopes from its own rows.
+    wsFire('player', 'insert', [wsPlayer()], 1);
+    expect(wsQueries(b1)).toEqual([WS_OWN_QUERY]);
+  });
+
+  it('a rejected own-zone set is reported and retried in place after each backoff; rejected once more than there are retries, the connection takes the drop path and is closed [WS-REJECTED]', async () => {
+    // WRONG IMPL KILLED: a rejection ignored (the player stands in an empty zone for good); an
+    // immediate retry loop; a retry issued while the previous handle is live; the drop path taken
+    // on the first rejection (a reconnect respawns the player); the socket left open after it.
+    const { b, w } = await wsSettled(0);
+    const subscribeErrors = (): unknown[][] => wsErrors(w, 'subscribe');
+
+    wsReject(wsSubs(b)[1], 'no such column');
+    expect(subscribeErrors()).toEqual([['subscribe', 'no such column']]);
+    expect(b.subs, 'not retried at once').toHaveLength(3);
+
+    const backoffs = [250, 500, 1000];
+    for (const [i, wait] of backoffs.entries()) {
+      // The 500 ms tick is what retries: by `wait` rounded up to a tick the retry is out, and
+      // one tick earlier it is not.
+      const ticks = Math.ceil(wait / 500);
+      await vi.advanceTimersByTimeAsync((ticks - 1) * 500);
+      expect(b.subs, `retry ${i + 1} waits its backoff`).toHaveLength(3 + i);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(b.subs, `retry ${i + 1} is issued`).toHaveLength(4 + i);
+      expect(b.subs[3 + i].query).toBe(wsZoneQuery(0));
+      expect(wsLinkErrors(w), 'still on this connection').toEqual([]);
+      expect(b.disconnect).not.toHaveBeenCalled();
+      wsReject(b.subs[3 + i]);
+    }
+    // The fourth rejection in a row: the scope is re-evaluated in that callback and drops.
+    expect(subscribeErrors()).toHaveLength(4);
+    expect(wsLinkErrors(w)).toHaveLength(1);
+    expect(b.disconnect).toHaveBeenCalledTimes(1);
+    expect(wsUnsubscribes(b), 'nothing is unsubscribed on the way out').toBe(0);
+    expect(w.opts.store.playerCount, 'the drop path reset the store').toBe(0);
+    await nextAttempt();
+    expect(H.builds, 'and a rebuild follows').toHaveLength(2);
+    expect(b.subs, 'no further retry on the dropped build').toHaveLength(6);
+  });
+
+  it('a set that applies clears its rejections: a later rejection starts the ladder again [WS-REJECTED-RESET]', async () => {
+    const { b, w } = await wsSettled(0);
+    for (let i = 0; i < 3; i += 1) {
+      wsReject(b.subs[b.subs.length - 1]);
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(b.subs).toHaveLength(6);
+    wsApply(b.subs[5]);
+    wsReject(b.subs[5]);
+    expect(
+      b.disconnect,
+      'one rejection after an applied set is not the fourth',
+    ).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(b.subs).toHaveLength(7);
+    expect(wsLinkErrors(w)).toEqual([]);
+  });
+
+  it('an own-zone set still not applied after 5 s takes the drop path; at 4.5 s it has not [WS-TIMEOUT]', async () => {
+    // WRONG IMPL KILLED: no timeout (a lost applied message leaves the player in an empty zone
+    // with a live-looking link); a timeout that retries in place on an ordered socket.
+    const w = wsOpts();
+    connect(w.opts);
+    await settle();
+    const b = H.builds[0];
+    b.onConnect?.(conn0(b), ID, 'anon-tok');
+    b.onApplied?.();
+    wsFire('player', 'insert', [wsPlayer()]);
+    wsApply(wsSubs(b)[0]);
+    wsFire('character', 'insert', [wsChar(WS_E, 0)]);
+    expect(wsQueries(b)).toEqual([WS_OWN_QUERY, wsZoneQuery(0)]);
+
+    await vi.advanceTimersByTimeAsync(4_500);
+    expect(b.disconnect).not.toHaveBeenCalled();
+    expect(wsLinkErrors(w)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(b.disconnect).toHaveBeenCalledTimes(1);
+    expect(wsLinkErrors(w)).toHaveLength(1);
+    expect(wsUnsubscribes(b)).toBe(0);
+    await nextAttempt();
+    expect(H.builds).toHaveLength(2);
+  });
+
+  it('an own-row set still not applied after 5 s takes the drop path too [WS-TIMEOUT-OWN]', async () => {
+    const w = wsOpts();
+    connect(w.opts);
+    await settle();
+    const b = H.builds[0];
+    b.onConnect?.(conn0(b), ID, 'anon-tok');
+    b.onApplied?.();
+    wsFire('player', 'insert', [wsPlayer()]);
+    await vi.advanceTimersByTimeAsync(4_500);
+    expect(b.disconnect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(b.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unsubscribe that throws does not escape the scope run, and the scope carries on [WS-UNSUBSCRIBE-THROWS]', async () => {
+    // WRONG IMPL KILLED: an unguarded unsubscribe. A scope run inside a row callback would abort the SDK's
+    // dispatch of the rest of that message; a throw in the timer is an uncaught error every tick.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { b, handle, w } = await wsSettled(0);
+      wsFire('character', 'update', [wsChar(WS_E, 0), wsChar(WS_E, 1)]);
+      wsApply(wsSubs(b)[2]);
+      // The zone-0 handle now throws on unsubscribe, as the SDK's does when it was already called.
+      const zone0 = wsSubs(b)[1];
+      zone0.unsubscribes = 1;
+      await vi.advanceTimersByTimeAsync(4_900);
+      // The tick that ends the linger makes the call; the throw stays inside the scope run.
+      expect(() => {
+        vi.advanceTimersByTime(600);
+      }).not.toThrow();
+      expect(zone0.unsubscribes, 'it was called, and threw').toBe(2);
+      expect(errors).toHaveBeenCalled();
+      expect(handle.worldScope()).toEqual({
+        own: 'active',
+        zones: [{ zoneId: 1, state: 'active' }],
+        settled: true,
+      });
+      // The scope still works: the next warp subscribes as usual.
+      expect(() => wsFire('character', 'update', [wsChar(WS_E, 1), wsChar(WS_E, 2)])).not.toThrow();
+      expect(wsQueries(b)[3]).toBe(wsZoneQuery(2));
+      expect(wsLinkErrors(w)).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('losing the own character row unsettles the scope and its zone is unsubscribed after the linger; the own-row set stays [WS-OWN-ROW-LOST]', async () => {
+    const w = wsOpts();
+    const { b, handle } = await wsSettled(0, w);
+    w.onScopeSettled.mockClear();
+    wsFire('character', 'delete', [wsChar(WS_E, 0)]);
+    expect(w.onScopeSettled.mock.calls).toEqual([[false]]);
+    await vi.advanceTimersByTimeAsync(5_500);
+    expect(wsSubs(b).map((sub) => sub.unsubscribes)).toEqual([0, 1]);
+    expect(handle.worldScope()).toEqual({ own: 'active', zones: [], settled: false });
+    expect(b.disconnect).not.toHaveBeenCalled();
+  });
+});
+
 /** The connection object handed to onConnect: only subscriptionBuilder is read there. */
 function conn0(rec: BuildRec) {
-  const sub = {
-    onApplied: (cb: Cb) => {
-      rec.onApplied = cb;
-      return sub;
-    },
-    onError: () => sub,
-    subscribe: (queries: readonly string[]) => {
-      rec.queries = queries;
-      return sub;
-    },
+  // A fresh builder per call, as the SDK gives: every subscribe is its own handle with its own
+  // callbacks. The first is the base set (`rec.onApplied`, `rec.queries`); the rest are the world
+  // scope's. `unsubscribe` throws on a second call, as the SDK's does.
+  const subscriptionBuilder = () => {
+    const sub: SubRec = { query: undefined, active: false, unsubscribes: 0 };
+    const first = rec.subs.length === 0;
+    rec.subs.push(sub);
+    const builder = {
+      onApplied: (cb: Cb) => {
+        sub.onApplied = cb;
+        if (first) rec.onApplied = cb;
+        return builder;
+      },
+      onError: (cb: Cb) => {
+        sub.onError = cb;
+        return builder;
+      },
+      subscribe: (queries: readonly string[] | string) => {
+        sub.query = queries;
+        if (first) rec.queries = queries as readonly string[];
+        return {
+          isActive: () => sub.active,
+          unsubscribe: () => {
+            sub.unsubscribes += 1;
+            if (sub.unsubscribes > 1) throw new Error('Unsubscribe has already been called');
+            sub.active = false;
+          },
+        };
+      },
+    };
+    return builder;
   };
   return {
-    subscriptionBuilder: () => sub,
+    subscriptionBuilder,
+    disconnect: rec.disconnect,
     reducers: {
       joinGame: rec.joinGame,
       completeGuestClaim: rec.completeGuestClaim,
