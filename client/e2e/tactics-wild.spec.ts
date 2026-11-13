@@ -355,7 +355,9 @@ async function checkBoardArt(p: Page, backdropStatuses: readonly number[]): Prom
 let forecastAttacks = 0;
 
 /** Battle 1's live-turn loop. Resolves true when the wild was recruited, false when the battle
- *  ended or stalled without a recruit (the caller restarts). */
+ *  ended or stalled without a recruit (the caller restarts). The last own turn's commit is
+ *  awaited before the verdict: a Recruit pressed on that turn can still succeed, and a recruit
+ *  reported as none makes the caller recruit a second wild. */
 async function fightToRecruit(p: Page): Promise<boolean> {
   let last: string | null = null;
   for (let turn = 0; turn < MAX_OWN_TURNS; turn += 1) {
@@ -388,7 +390,10 @@ async function fightToRecruit(p: Page): Promise<boolean> {
     if (!drafted) await pressButton(p, 'B'); // the Move aim had no band tile: leave the menu
     await endTurn(p); // the live draft plus EndTurn
   }
-  return false;
+  const end = await waitOwnTurnOrEnd(p, last, TURN_WAIT_MS);
+  return (
+    end.phase === 'Finished' && end.units.some((u) => u.side === 'B' && u.state === 'Recruited')
+  );
 }
 
 /** Flee on a fresh own turn (the whole budget) once a wild has damaged us: true. False when no wild
