@@ -489,6 +489,104 @@ fn ts4_apply_swap_deletes_a_drained_stack_row_and_leaves_a_bystander_untouched()
     );
 }
 
+/// Each item leg of a swap is ONE `inventory` write per stack: alice gives 4 of her
+/// 10 x item 5 and bob gives 3 of his 8 x item 6, so the call makes exactly four
+/// inventory writes (two debits that update in place, two credits that insert), and
+/// the counts come out exact. A plan that debits more than a side holds is refused
+/// with that side's stack byte-identical: alice asked for 5 of her 4 (no write at all),
+/// and bob asked for 9 of his 8 after alice's leg of 2 (bob's row unchanged).
+///
+/// kills:
+///   - a per-unit `consume_one` loop in the ItemDebit arm (4 + 3 debit writes).
+///   - a shortfall that drains the stack before failing (alice's or bob's row is
+///     deleted, the inventory took writes).
+///   - a debit taken from the wrong side (counts come out swapped).
+#[test]
+fn apply_swap_debits_each_item_stack_in_one_write_and_refuses_a_shortfall_unchanged() {
+    let stack_of = |w: &World<'_>, who: Identity, item_id: u32| -> Vec<Vec<u8>> {
+        w.stacks
+            .rows()
+            .iter()
+            .filter(|r| r.owner_identity == who && r.item_id == item_id)
+            .map(bytes)
+            .collect()
+    };
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.stack(alice(), 5, 10);
+        w.stack(bob(), 6, 8);
+        w.stack(carol(), 5, 3);
+        let plan =
+            build_swap_plan(&[], &[], &[item(5, 4)], &[item(6, 3)], 0, 0).expect("plan builds");
+        fx.reset_writes();
+        let got = fx.run_as(carol(), |ctx| {
+            super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
+        });
+        assert_eq!(got, Ok(()));
+        assert_eq!(
+            fx.writes_to("inventory"),
+            4,
+            "two debits and two credits: one inventory write per stack"
+        );
+        assert_eq!(
+            (
+                w.count(alice(), 5),
+                w.count(alice(), 6),
+                w.count(bob(), 5),
+                w.count(bob(), 6),
+                w.count(carol(), 5),
+            ),
+            (6, 3, 4, 5, 3),
+            "exact counts on both sides; the bystander untouched"
+        );
+    }
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.stack(alice(), 5, 4);
+        let before = stack_of(&w, alice(), 5);
+        assert_eq!(before.len(), 1, "setup: alice's one stack of item 5");
+        let plan = build_swap_plan(&[], &[], &[item(5, 5)], &[], 0, 0).expect("plan builds");
+        fx.reset_writes();
+        let got = fx.run_as(carol(), |ctx| {
+            super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
+        });
+        assert!(
+            got.is_err(),
+            "5 of a stack of 4 must be refused, got {got:?}"
+        );
+        assert_eq!(
+            stack_of(&w, alice(), 5),
+            before,
+            "alice's stack is byte-identical"
+        );
+        assert_eq!(fx.writes_to("inventory"), 0, "no inventory write at all");
+        assert_eq!(w.count(bob(), 5), 0, "bob is credited nothing");
+    }
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.stack(alice(), 5, 10);
+        w.stack(bob(), 6, 8);
+        let before = stack_of(&w, bob(), 6);
+        let plan =
+            build_swap_plan(&[], &[], &[item(5, 2)], &[item(6, 9)], 0, 0).expect("plan builds");
+        let got = fx.run_as(carol(), |ctx| {
+            super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
+        });
+        assert!(
+            got.is_err(),
+            "9 of a stack of 8 must be refused, got {got:?}"
+        );
+        assert_eq!(
+            stack_of(&w, bob(), 6),
+            before,
+            "bob's stack is byte-identical"
+        );
+    }
+}
+
 /// The receiver's post-debit effective stacks, one per RECEIVING item in
 /// `receiving` order: held count (0 with no row, only the RECEIVER's rows) minus
 /// the same item's quantity in `sending`, saturating at 0.
