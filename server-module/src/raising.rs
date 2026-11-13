@@ -12,18 +12,18 @@
 //! pure `evaluate_train` seam → SSOT `focus_train`; decision-before-
 //! `consume_one` so a rejected train never burns the food item.
 
-use crate::economy::{spend_currency, wallet_balance};
+use crate::economy::{check_currency_spend, check_item_spend, spend_currency, wallet_balance};
 use crate::evolution::check_and_evolve;
 use crate::guards::{
     character_of, escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, log_reject,
-    reject_if_monster_locked, require_owner, saturating_sub_u64,
+    reject_if_monster_locked, require_owner,
 };
-use crate::inventory::consume_one;
+use crate::inventory::{consume_n, consume_one, item_count};
 use crate::marshal::{char_state, now_ms, pub_from_monster};
 use crate::monster_mgmt::update_monster_synced;
 use crate::schema::{
-    heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub, player,
-    species_row, HealCooldown, Monster,
+    heal_cooldown, heal_location_row, item_row, monster, monster_pub, player, species_row,
+    HealCooldown, Monster,
 };
 use game_core::interact::within_interact_range;
 use game_core::{
@@ -144,21 +144,12 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     }
     // Trade escrow guards: monster and food item must be free.
     reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
-    // Item escrow: reject if consuming this item would breach the escrowed reserve.
-    {
-        let escrowed = escrowed_item_qty_of(ctx, m.owner_identity, food_item_id);
-        let count = ctx
-            .db
-            .inventory()
-            .owner_identity()
-            .filter(m.owner_identity)
-            .find(|r| r.item_id == food_item_id)
-            .map(|r| r.count)
-            .unwrap_or(0);
-        if escrowed >= count {
-            return Err("item is in an active trade".to_string());
-        }
-    }
+    // Spend rule: holding none of the food is a shortfall; a stack a trade has locked says so.
+    check_item_spend(
+        1,
+        item_count(ctx, m.owner_identity, food_item_id),
+        escrowed_item_qty_of(ctx, m.owner_identity, food_item_id),
+    )?;
 
     let Some(item) = ctx.db.item_row().id().find(food_item_id) else {
         return Err("item not found".to_string());
@@ -262,9 +253,10 @@ pub(crate) fn evaluate_heal(
 /// currency (`cost_currency > 0`), `Ok(None)` when the location is unknown or free.
 /// `read_balance_and_escrow` yields `(wallet balance, currency escrowed in the
 /// caller's open trades)`; it is invoked ONLY for a priced location, so a free
-/// heal performs no wallet/escrow reads. Rejects with the trade-escrow error when
-/// `cost` exceeds the unescrowed balance (`balance - escrowed`, saturating);
-/// `cost == available` is allowed.
+/// heal performs no wallet/escrow reads. The refusal is the spend rule's
+/// (`economy::check_currency_spend`): a cost beyond the balance is a shortfall, a
+/// cost the balance covers but the unescrowed part does not names the trade;
+/// `cost == balance - escrowed` is allowed.
 pub(crate) fn evaluate_heal_currency(
     defs: &[game_core::HealLocationDef],
     location_id: u32,
@@ -277,9 +269,7 @@ pub(crate) fn evaluate_heal_currency(
         .unwrap_or(0);
     if cost > 0 {
         let (balance, escrowed) = read_balance_and_escrow();
-        if cost > saturating_sub_u64(balance, escrowed) {
-            return Err("currency is in an active trade".to_string());
-        }
+        check_currency_spend(cost, balance, escrowed)?;
         return Ok(Some(cost));
     }
     Ok(None)
@@ -292,7 +282,8 @@ const ERR_HEAL_OUT_OF_REACH: &str = "the healer is not close enough";
 
 /// Restore all party monsters to full HP at a heal location.
 /// Reject-never-burns: all checks run BEFORE the first DB write.
-/// Reach + in-battle + cooldown checked. Cost consumed before heal.
+/// Reach + in-battle + cooldown checked. A cost the caller is short of, or that one of
+/// their trades has locked, is refused. Cost consumed before heal.
 #[spacetimedb::reducer]
 pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> {
     let me = ctx.sender();
@@ -341,27 +332,31 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         .unwrap_or(0);
     evaluate_heal(last_heal, now, loc.cooldown_ms)?;
 
-    // Step 5b: currency cost. Cost from the process-wide
-    // heal-location cache — no per-call RON re-parse; a free location spends nothing.
-    // The decision (incl. the trade escrow guard) is the pure seam
-    // `evaluate_heal_currency`; the wallet/escrow reads stay lazy (only for a priced
-    // location) and the spend is the first write, after every rejection.
+    // Step 5b: the cost is decided before the first write. The currency price comes from the
+    // process-wide heal-location cache (no per-call RON re-parse) and is judged by the pure
+    // seam `evaluate_heal_currency`; the wallet/escrow reads stay lazy (only for a priced
+    // location).
     let defs = crate::content_cache::cached_heal_locations()
         .map_err(|e| format!("heal_party: cached_heal_locations: {e}"))?;
-    if let Some(currency_cost) = evaluate_heal_currency(defs, location_id, || {
+    let currency_cost = evaluate_heal_currency(defs, location_id, || {
         let escrowed = escrowed_currency_of(ctx, me);
         (wallet_balance(ctx, me), escrowed)
-    })? {
-        spend_currency(ctx, me, currency_cost)?;
-    }
+    })?;
 
-    // Step 6: cost consume. consume_one is a DB write; if it fails mid-loop the
-    // reducer transaction rolls back (ACID), so no items are permanently lost.
-    // Batch consume (cost_qty > 1) is deferred to M13 — current content has None cost.
+    // Step 6: take the cost. The item goes first: its debit can still refuse, and it does so
+    // ahead of every other write of this call.
     if let Some(item_id) = loc.cost_item_id {
-        for _ in 0..loc.cost_qty {
-            consume_one(ctx, me, item_id)?;
+        // A cost item one of the caller's trades has locked is not theirs to spend. Only a
+        // stack that covers the cost is judged for that: one that does not is `consume_n`'s
+        // own refusal.
+        let held = item_count(ctx, me, item_id);
+        if held >= loc.cost_qty {
+            check_item_spend(loc.cost_qty, held, escrowed_item_qty_of(ctx, me, item_id))?;
         }
+        consume_n(ctx, me, item_id, loc.cost_qty)?;
+    }
+    if let Some(currency_cost) = currency_cost {
+        spend_currency(ctx, me, currency_cost)?;
     }
 
     // Step 7: heal all party monsters (party_slot != PARTY_SLOT_NONE)
@@ -638,8 +633,8 @@ pub fn essence_train(
 }
 
 /// Consume a crystalized-essence item: grant the ITEM's essence to the matching
-/// pool, sharing `essence_train`'s cooldown clock. Exactly two decision
-/// rejects (wrong item; cooldown), both BEFORE `consume_one` — a reject never
+/// pool, sharing `essence_train`'s cooldown clock. Every refusal (the spend rule,
+/// a wrong item, the cooldown) comes BEFORE `consume_one` — a reject never
 /// burns the item. Item defs come from the compile-time content
 /// registry: `ItemRow` carries no essence columns.
 #[spacetimedb::reducer]
@@ -660,22 +655,12 @@ pub fn consume_crystalized_essence(
     }
     // Trade escrow guard: an escrowed monster must not be mutated.
     reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
-    // Item escrow: reject if consuming this item would breach the escrowed
-    // reserve (same block as train, non-optional double-spend guard).
-    {
-        let escrowed = escrowed_item_qty_of(ctx, m.owner_identity, item_id);
-        let count = ctx
-            .db
-            .inventory()
-            .owner_identity()
-            .filter(m.owner_identity)
-            .find(|r| r.item_id == item_id)
-            .map(|r| r.count)
-            .unwrap_or(0);
-        if escrowed >= count {
-            return Err("item is in an active trade".to_string());
-        }
-    }
+    // Spend rule, as in train: holding none is a shortfall; a stack a trade has locked says so.
+    check_item_spend(
+        1,
+        item_count(ctx, m.owner_identity, item_id),
+        escrowed_item_qty_of(ctx, m.owner_identity, item_id),
+    )?;
     // ItemDef from the process-wide content registry (essence fields live only
     // there — ItemRow has no essence columns).
     let item = crate::content_cache::cached_items()

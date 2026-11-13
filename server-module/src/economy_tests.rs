@@ -1707,7 +1707,7 @@ fn buy_and_sell_are_refused_away_from_a_shop_npc_and_accepted_beside_it() {
     reach_first(
         "9 in the wallet for a 10 purchase",
         &|| buy_as(3, 5, 1),
-        "currency is in an active trade",
+        "not enough currency",
     );
     assert_eq!(w.wallets.remove(me), 1, "fixture: the 9 wallet");
     w.wallet(me, balance);
@@ -1729,7 +1729,7 @@ fn buy_and_sell_are_refused_away_from_a_shop_npc_and_accepted_beside_it() {
     reach_first(
         "selling one more than held",
         &|| sell_as(5, held + 1),
-        "item is in an active trade",
+        "not enough of that item",
     );
     w.escrow(0, held);
     reach_first(
@@ -1744,4 +1744,438 @@ fn buy_and_sell_are_refused_away_from_a_shop_npc_and_accepted_beside_it() {
         Some(7),
         "a bystander is never touched"
     );
+}
+
+// ===========================================================================
+// Spend refusals: a shortfall against the RAW holding says so; the active-trade text
+// is given only when the raw holding covers the request and the part not locked in
+// trades does not. Locks are real `trade_offer` / `trade_session` rows read through
+// the indexes the lock readers use (`trade_session` by `opener` and `partner`), so a
+// "nothing in trade" world is one where those reads really return nothing.
+// ===========================================================================
+
+const EC_NOT_ENOUGH_CURRENCY: &str = "not enough currency";
+const EC_NOT_ENOUGH_ITEM: &str = "not enough of that item";
+const EC_CURRENCY_IN_TRADE: &str = "currency is in an active trade";
+const EC_ITEM_IN_TRADE: &str = "item is in an active trade";
+
+/// The `trade_session` table under both participant indexes (one row store).
+fn ec_sessions(fx: &EcFixture) -> EcHandle<'_, crate::schema::TradeSession> {
+    let _ = fx.table::<crate::schema::TradeSession>("trade_session", "partner", |r| r.partner);
+    fx.table::<crate::schema::TradeSession>("trade_session", "opener", |r| r.opener)
+}
+
+/// A session `ec_me()` opened with `ec_other()`. The caller's side lists `currency` and
+/// `items` and is confirmed when `confirmed`; the partner's side is empty and confirmed.
+fn ec_session(currency: u64, items: &[(u32, u32)], confirmed: bool) -> crate::schema::TradeSession {
+    let offer =
+        |currency: u64, items: Vec<game_core::TradeItem>| game_core::trading::TradeSessionOffer {
+            monster_ids: vec![],
+            items,
+            currency,
+            cards: vec![],
+        };
+    let listed = items
+        .iter()
+        .map(|&(item_id, qty)| game_core::TradeItem { item_id, qty })
+        .collect();
+    crate::schema::TradeSession {
+        session_id: 31,
+        opener: ec_me(),
+        partner: ec_other(),
+        opener_offer: offer(currency, listed),
+        partner_offer: offer(0, vec![]),
+        opener_confirmed: confirmed,
+        partner_confirmed: true,
+        revision: 1,
+        created_at_ms: 0,
+    }
+}
+
+/// Every row a buy or sell could write, plus the offers and sessions that lock.
+fn ec_all(w: &EcWorld<'_>, sessions: &EcHandle<'_, crate::schema::TradeSession>) -> Vec<Vec<u8>> {
+    use spacetimedb::sats::bsatn::to_vec;
+    let mut all = w.snapshot();
+    all.push(to_vec(&w.offers.rows()).expect("offers encode"));
+    all.push(to_vec(&sessions.rows()).expect("sessions encode"));
+    all
+}
+
+/// `call` is refused with exactly `want`, every row is byte-identical and neither the
+/// wallet nor the inventory table took a write.
+fn ec_refused(
+    fx: &EcFixture,
+    w: &EcWorld<'_>,
+    sessions: &EcHandle<'_, crate::schema::TradeSession>,
+    label: &str,
+    call: &dyn Fn() -> Result<(), String>,
+    want: &str,
+) {
+    let before = ec_all(w, sessions);
+    fx.reset_writes();
+    assert_eq!(call(), Err(want.to_string()), "{label}");
+    assert_eq!(ec_all(w, sessions), before, "{label}: nothing changed");
+    for table in ["player_wallet", "inventory"] {
+        assert_eq!(fx.writes_to(table), 0, "{label}: no write to {table}");
+    }
+}
+
+/// `sell` takes a multi-unit sale off the stack in ONE `inventory` write (an update,
+/// then for the last units the delete), credits exactly sell_price x qty, and leaves a
+/// stranger's stack of the same item alone. Selling more than the stack holds is
+/// refused before any write, the stack untouched.
+///
+/// kills:
+///   - a per-unit `consume_one` loop (4 writes for 4 units, 6 for 6).
+///   - a debit that ignores `qty` or takes it from the stranger's stack.
+///   - an over-sell that drains the stack and then fails (the stack is gone and
+///     the inventory took writes).
+#[test]
+fn sell_debits_a_multi_unit_stack_in_one_inventory_write() {
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    let sessions = ec_sessions(&fx);
+    w.wallet(ec_me(), 10);
+    w.stack(ec_me(), 5, 10);
+    w.stack(ec_other(), 5, 8);
+    let sell_as = |qty: u32| fx.run_as(ec_me(), |ctx| sell(ctx, 5, qty));
+
+    fx.reset_writes();
+    assert_eq!(sell_as(4), Ok(()));
+    assert_eq!(
+        fx.writes_to("inventory"),
+        1,
+        "selling 4 units is one inventory write"
+    );
+    assert_eq!(w.count(ec_me(), 5), Some(6), "exactly 4 of 10 sold");
+    assert_eq!(w.balance(ec_me()), Some(10 + 4 * 4), "credited 4 x 4");
+
+    fx.reset_writes();
+    assert_eq!(sell_as(6), Ok(()));
+    assert_eq!(
+        fx.writes_to("inventory"),
+        1,
+        "selling the last 6 units is one inventory write: the delete"
+    );
+    assert_eq!(w.count(ec_me(), 5), None, "the drained stack is deleted");
+    assert_eq!(w.balance(ec_me()), Some(26 + 6 * 4), "credited 6 x 4");
+    assert_eq!(
+        w.count(ec_other(), 5),
+        Some(8),
+        "a stranger's stack of the item is untouched"
+    );
+
+    w.stack(ec_me(), 5, 3);
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "selling 4 of a stack of 3",
+        &|| sell_as(4),
+        EC_NOT_ENOUGH_ITEM,
+    );
+    assert_eq!(w.count(ec_me(), 5), Some(3), "the stack is untouched");
+}
+
+/// With nothing in any trade (offers and sessions registered and empty), a purchase
+/// the wallet cannot pay is refused with `"not enough currency"` — no wallet at all,
+/// one short, and well short — before any write. Exactly the balance is the control:
+/// admitted, charged, credited.
+///
+/// kills: the active-trade text for a plain shortfall (the funds check folded into
+/// the escrow-netted comparison); a refusal after the spend; `>=` for `>` (the exact
+/// balance refused); the stack headroom checked before the spend rule (a short
+/// wallet buying onto a full stack gets the stack-cap text).
+#[test]
+fn buy_beyond_the_balance_with_nothing_in_trade_says_not_enough_currency() {
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    let sessions = ec_sessions(&fx);
+    w.wallet(ec_other(), 1000);
+    let buy_as = |item: u32, qty: u32| fx.run_as(ec_me(), |ctx| buy(ctx, 3, item, qty));
+
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "no wallet, a 10 purchase",
+        &|| buy_as(5, 1),
+        EC_NOT_ENOUGH_CURRENCY,
+    );
+    w.wallet(ec_me(), 9);
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "9 in the wallet, a 10 purchase",
+        &|| buy_as(5, 1),
+        EC_NOT_ENOUGH_CURRENCY,
+    );
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "9 in the wallet, a 3 x 7 purchase",
+        &|| buy_as(6, 3),
+        EC_NOT_ENOUGH_CURRENCY,
+    );
+
+    assert_eq!(w.wallets.remove(ec_me()), 1, "fixture: the 9 wallet");
+    w.wallet(ec_me(), 10);
+    assert_eq!(buy_as(5, 1), Ok(()), "exactly the balance is admitted");
+    assert_eq!(w.balance(ec_me()), Some(0), "charged 10");
+    assert_eq!(w.count(ec_me(), 5), Some(1), "credited 1");
+    assert_eq!(w.balance(ec_other()), Some(1000), "a stranger is untouched");
+
+    // The shortfall is judged before the stack cap: a full stack of item 5 and one
+    // less than the price.
+    assert_eq!(w.wallets.remove(ec_me()), 1, "fixture: the emptied wallet");
+    w.wallet(ec_me(), 9);
+    assert_eq!(w.stacks.remove(ec_me()), 1, "fixture: the bought stack");
+    w.stack(ec_me(), 5, game_core::MAX_ITEM_STACK);
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "9 in the wallet, a 10 purchase onto a full stack",
+        &|| buy_as(5, 1),
+        EC_NOT_ENOUGH_CURRENCY,
+    );
+}
+
+/// With nothing in any trade, selling more than the stack holds — and selling an item
+/// the caller holds none of while a stranger holds plenty — is refused with
+/// `"not enough of that item"` before any write. Selling exactly the stack is the
+/// control.
+///
+/// kills: the active-trade text for a plain shortfall; a missing stack answered
+/// with another text; a stack read from the wrong owner (the stranger's 9 would
+/// cover the sale); `>=` for `>` (the whole stack refused); the balance headroom
+/// checked before the spend rule (an over-sale with a full wallet gets the cap text).
+#[test]
+fn sell_beyond_the_stack_with_nothing_in_trade_says_not_enough_of_that_item() {
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    let sessions = ec_sessions(&fx);
+    w.wallet(ec_me(), 10);
+    w.stack(ec_me(), 5, 3);
+    w.stack(ec_other(), 6, 9);
+    let sell_as = |item: u32, qty: u32| fx.run_as(ec_me(), |ctx| sell(ctx, item, qty));
+
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "4 of a stack of 3",
+        &|| sell_as(5, 4),
+        EC_NOT_ENOUGH_ITEM,
+    );
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "1 of an item held only by a stranger",
+        &|| sell_as(6, 1),
+        EC_NOT_ENOUGH_ITEM,
+    );
+    assert_eq!(sell_as(5, 3), Ok(()), "exactly the stack is admitted");
+    assert_eq!(w.count(ec_me(), 5), None, "the whole stack sold");
+    assert_eq!(w.balance(ec_me()), Some(10 + 3 * 4), "credited 3 x 4");
+    assert_eq!(w.count(ec_other(), 6), Some(9), "a stranger is untouched");
+
+    // The shortfall is judged before the proceeds cap: a full wallet and one more
+    // than the stack holds.
+    assert_eq!(w.wallets.remove(ec_me()), 1, "fixture: the caller's wallet");
+    w.wallet(ec_me(), MAX_BALANCE);
+    w.stack(ec_me(), 5, 3);
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "4 of a stack of 3 with the wallet at MAX_BALANCE",
+        &|| sell_as(5, 4),
+        EC_NOT_ENOUGH_ITEM,
+    );
+}
+
+/// The spend rule, on both pure functions and through `buy` and `sell` over real lock
+/// rows: a request above the raw holding is a shortfall whatever is locked; a request
+/// the raw holding covers but the unlocked part does not names the trade; the rest is
+/// admitted. Held 9 / locked 5: 10 is the shortfall, 5 the trade text, 4 admitted.
+/// Locked above held: anything up to held names the trade, anything above is the
+/// shortfall. 0 is always admitted. Through `buy` the lock is a confirmed session side
+/// (scaled x10: 90 held, 50 locked), then also a legacy offer on top; an unconfirmed
+/// side locks nothing. Through `sell` the lock is a legacy offer, then also a confirmed
+/// session side on top.
+///
+/// kills:
+///   - the netted holding compared first: every shortfall row gets
+///     the trade text.
+///   - the lock ignored: held 9 / locked 5 / want 5 is admitted.
+///   - `>=` for `>` in either comparison: want == held - locked, or want == held
+///     with nothing locked, is refused.
+///   - a plain `held - locked` subtraction: locked above held underflows (panics in
+///     debug, wraps to a huge free amount in release).
+///   - a `buy` / `sell` that keeps its own comparison instead of the rule: the
+///     reducer rows disagree with the pure rows.
+///   - an unconfirmed session side counted as a lock: the 90 purchase is refused.
+#[test]
+fn a_spend_names_a_trade_only_when_the_raw_holding_covers_it() {
+    let item_rows: [(u32, u32, u32, Result<(), &str>); 14] = [
+        (10, 9, 5, Err(EC_NOT_ENOUGH_ITEM)),
+        (5, 9, 5, Err(EC_ITEM_IN_TRADE)),
+        (4, 9, 5, Ok(())),
+        (9, 9, 0, Ok(())),
+        (10, 9, 0, Err(EC_NOT_ENOUGH_ITEM)),
+        (1, 9, 12, Err(EC_ITEM_IN_TRADE)),
+        (9, 9, 12, Err(EC_ITEM_IN_TRADE)),
+        (10, 9, 12, Err(EC_NOT_ENOUGH_ITEM)),
+        (0, 0, 0, Ok(())),
+        (0, 9, 12, Ok(())),
+        (1, 0, 0, Err(EC_NOT_ENOUGH_ITEM)),
+        (u32::MAX, u32::MAX, 0, Ok(())),
+        (u32::MAX, u32::MAX, 1, Err(EC_ITEM_IN_TRADE)),
+        (u32::MAX, u32::MAX - 1, 0, Err(EC_NOT_ENOUGH_ITEM)),
+    ];
+    for (want, count, escrowed, expected) in item_rows {
+        assert_eq!(
+            check_item_spend(want, count, escrowed),
+            expected.map_err(str::to_string),
+            "check_item_spend(want {want}, count {count}, escrowed {escrowed})"
+        );
+    }
+    let currency_rows: [(u64, u64, u64, Result<(), &str>); 14] = [
+        (10, 9, 5, Err(EC_NOT_ENOUGH_CURRENCY)),
+        (5, 9, 5, Err(EC_CURRENCY_IN_TRADE)),
+        (4, 9, 5, Ok(())),
+        (9, 9, 0, Ok(())),
+        (10, 9, 0, Err(EC_NOT_ENOUGH_CURRENCY)),
+        (1, 9, 12, Err(EC_CURRENCY_IN_TRADE)),
+        (9, 9, 12, Err(EC_CURRENCY_IN_TRADE)),
+        (10, 9, 12, Err(EC_NOT_ENOUGH_CURRENCY)),
+        (0, 0, 0, Ok(())),
+        (0, 9, 12, Ok(())),
+        (1, 0, 0, Err(EC_NOT_ENOUGH_CURRENCY)),
+        (u64::MAX, u64::MAX, 0, Ok(())),
+        (u64::MAX, u64::MAX, 1, Err(EC_CURRENCY_IN_TRADE)),
+        (u64::MAX, u64::MAX - 1, 0, Err(EC_NOT_ENOUGH_CURRENCY)),
+    ];
+    for (want, balance, escrowed, expected) in currency_rows {
+        assert_eq!(
+            check_currency_spend(want, balance, escrowed),
+            expected.map_err(str::to_string),
+            "check_currency_spend(want {want}, balance {balance}, escrowed {escrowed})"
+        );
+    }
+
+    // buy: 90 held, 50 locked by the caller's confirmed session side. Item 5 is 10 at
+    // shop 3, item 6 is 7.
+    {
+        let fx = ec_fixture();
+        let w = ec_world(&fx);
+        let sessions = ec_sessions(&fx);
+        w.wallet(ec_me(), 90);
+        sessions.seed(&ec_session(50, &[], true));
+        let buy_as = |item: u32, qty: u32| fx.run_as(ec_me(), |ctx| buy(ctx, 3, item, qty));
+        let refused = |label: &str, call: &dyn Fn() -> Result<(), String>, want: &str| {
+            ec_refused(&fx, &w, &sessions, label, call, want);
+        };
+        refused(
+            "buy 100 with 90 held, 50 locked",
+            &|| buy_as(5, 10),
+            EC_NOT_ENOUGH_CURRENCY,
+        );
+        refused(
+            "buy 50 with 90 held, 50 locked",
+            &|| buy_as(5, 5),
+            EC_CURRENCY_IN_TRADE,
+        );
+        assert_eq!(buy_as(5, 4), Ok(()), "buy 40 with 90 held, 50 locked");
+        assert_eq!(w.balance(ec_me()), Some(50), "charged 40");
+        assert_eq!(w.count(ec_me(), 5), Some(4), "credited 4");
+        refused(
+            "buy 7 with 50 held, 50 locked",
+            &|| buy_as(6, 1),
+            EC_CURRENCY_IN_TRADE,
+        );
+        w.escrow(30, 0);
+        refused(
+            "buy 7 with 50 held, 80 locked",
+            &|| buy_as(6, 1),
+            EC_CURRENCY_IN_TRADE,
+        );
+        refused(
+            "buy 50 with 50 held, 80 locked",
+            &|| buy_as(5, 5),
+            EC_CURRENCY_IN_TRADE,
+        );
+        refused(
+            "buy 60 with 50 held, 80 locked",
+            &|| buy_as(5, 6),
+            EC_NOT_ENOUGH_CURRENCY,
+        );
+    }
+
+    // buy: the caller's session side is NOT confirmed, so nothing is locked.
+    {
+        let fx = ec_fixture();
+        let w = ec_world(&fx);
+        let sessions = ec_sessions(&fx);
+        w.wallet(ec_me(), 90);
+        sessions.seed(&ec_session(50, &[], false));
+        assert_eq!(
+            fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, 9)),
+            Ok(()),
+            "an unconfirmed side locks nothing: 90 of 90 is spendable"
+        );
+        assert_eq!(w.balance(ec_me()), Some(0));
+    }
+
+    // sell: 9 of item 5 held, 5 locked by a legacy offer.
+    {
+        let fx = ec_fixture();
+        let w = ec_world(&fx);
+        let sessions = ec_sessions(&fx);
+        w.wallet(ec_me(), 0);
+        w.stack(ec_me(), 5, 9);
+        w.escrow(0, 5);
+        let sell_as = |qty: u32| fx.run_as(ec_me(), |ctx| sell(ctx, 5, qty));
+        let refused = |label: &str, call: &dyn Fn() -> Result<(), String>, want: &str| {
+            ec_refused(&fx, &w, &sessions, label, call, want);
+        };
+        refused(
+            "sell 10 with 9 held, 5 locked",
+            &|| sell_as(10),
+            EC_NOT_ENOUGH_ITEM,
+        );
+        refused(
+            "sell 5 with 9 held, 5 locked",
+            &|| sell_as(5),
+            EC_ITEM_IN_TRADE,
+        );
+        assert_eq!(sell_as(4), Ok(()), "sell 4 with 9 held, 5 locked");
+        assert_eq!(w.count(ec_me(), 5), Some(5), "4 sold");
+        assert_eq!(w.balance(ec_me()), Some(16), "credited 4 x 4");
+        refused(
+            "sell 1 with 5 held, 5 locked",
+            &|| sell_as(1),
+            EC_ITEM_IN_TRADE,
+        );
+        sessions.seed(&ec_session(0, &[(5, 3)], true));
+        refused(
+            "sell 1 with 5 held, 8 locked",
+            &|| sell_as(1),
+            EC_ITEM_IN_TRADE,
+        );
+        refused(
+            "sell 5 with 5 held, 8 locked",
+            &|| sell_as(5),
+            EC_ITEM_IN_TRADE,
+        );
+        refused(
+            "sell 6 with 5 held, 8 locked",
+            &|| sell_as(6),
+            EC_NOT_ENOUGH_ITEM,
+        );
+    }
 }

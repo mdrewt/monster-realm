@@ -2812,7 +2812,7 @@ mod nh {
                     w.stacks.remove(a());
                     w.stack(b(), FOOD, 5);
                 },
-                "item is in an active trade",
+                "not enough of that item",
             ),
         ];
         for (label, food, setup, want) in cases {
@@ -3581,6 +3581,408 @@ mod nh {
         crate::raising::erase_heal_cooldown(&ctx, c());
         assert_eq!(rows(&w), vec![(b(), T0 + 1)]);
     }
+
+    // -----------------------------------------------------------------------
+    // Item debits and trade locks: heal_party's item cost is taken in one
+    // inventory write and refused before any write when the caller is short of it
+    // or a trade lock leaves too little of it free; train and essence name a
+    // shortfall when the caller holds none of the item. Locks are real
+    // `trade_session` / `trade_offer` rows under the indexes the lock reads use.
+    // -----------------------------------------------------------------------
+
+    const ITEM_IN_TRADE: &str = "item is in an active trade";
+    const NOT_ENOUGH_ITEM: &str = "not enough of that item";
+
+    /// The `trade_session` table under both participant indexes (one row store).
+    fn sessions(fx: &Fixture) -> Handle<'_, crate::schema::TradeSession> {
+        let _ = fx.table::<crate::schema::TradeSession>("trade_session", "partner", |r| r.partner);
+        fx.table::<crate::schema::TradeSession>("trade_session", "opener", |r| r.opener)
+    }
+
+    /// Session 1 between `opener` and `partner`; each side lists its `(item_id, qty)`
+    /// items and is confirmed as given. No monsters, no currency.
+    fn session(
+        opener: Identity,
+        opener_items: &[(u32, u32)],
+        opener_confirmed: bool,
+        partner: Identity,
+        partner_items: &[(u32, u32)],
+        partner_confirmed: bool,
+    ) -> crate::schema::TradeSession {
+        let offer = |items: &[(u32, u32)]| game_core::trading::TradeSessionOffer {
+            monster_ids: vec![],
+            items: items
+                .iter()
+                .map(|&(item_id, qty)| TradeItem { item_id, qty })
+                .collect(),
+            currency: 0,
+            cards: vec![],
+        };
+        crate::schema::TradeSession {
+            session_id: 1,
+            opener,
+            partner,
+            opener_offer: offer(opener_items),
+            partner_offer: offer(partner_items),
+            opener_confirmed,
+            partner_confirmed,
+            revision: 1,
+            created_at_ms: T0,
+        }
+    }
+
+    /// The heal world plus the session and wallet tables a heal could read as a lock
+    /// or write as a charge.
+    struct CostWorld<'a> {
+        w: World<'a>,
+        sessions: Handle<'a, crate::schema::TradeSession>,
+        wallets: Handle<'a, crate::schema::PlayerWallet>,
+    }
+
+    /// `heal_world` with location 1 costing `cost_qty` of `NOT_FOOD` (no currency in
+    /// the content cache), A holding `held` of it (none when 0; B still holds 2), A's
+    /// wallet at 100, and the session table registered and empty.
+    fn cost_world(fx: &Fixture, cost_qty: u32, held: u32) -> CostWorld<'_> {
+        let w = heal_world(fx);
+        assert_eq!(w.locs.remove(1), 1, "fixture: heal location 1");
+        w.locs.seed(&HealLocationRow {
+            location_id: 1,
+            zone_id: 0,
+            tile_x: HEAL_TILE.0,
+            tile_y: HEAL_TILE.1,
+            cost_item_id: Some(NOT_FOOD),
+            cost_qty,
+            cooldown_ms: 30_000,
+            cost_currency: 0,
+        });
+        assert_eq!(w.stacks.remove(a()), 1, "fixture: A's cost stack");
+        if held > 0 {
+            w.stack(a(), NOT_FOOD, held);
+        }
+        let wallets =
+            fx.table::<crate::schema::PlayerWallet>("player_wallet", "owner_identity", |r| {
+                r.owner_identity
+            });
+        wallets.seed(&crate::schema::PlayerWallet {
+            owner_identity: a(),
+            balance: 100,
+        });
+        CostWorld {
+            w,
+            sessions: sessions(fx),
+            wallets,
+        }
+    }
+
+    impl CostWorld<'_> {
+        /// Monsters, monster_pub, stacks, cooldowns, sessions, offers and wallets.
+        fn rows(&self) -> Vec<Vec<u8>> {
+            let mut all = self.w.snapshot();
+            all.push(to_vec(&self.sessions.rows()).expect("sessions encode"));
+            all.push(to_vec(&self.w.offers.rows()).expect("offers encode"));
+            all.push(to_vec(&self.wallets.rows()).expect("wallets encode"));
+            all
+        }
+
+        /// A's `heal_party(1)` at T0 is refused with exactly `want` and nothing is
+        /// written: every row byte-identical, no write syscall on any table a heal
+        /// writes, party monster 11 still at 5 HP.
+        fn refused(&self, fx: &Fixture, want: &str, label: &str) {
+            let before = self.rows();
+            fx.reset_writes();
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| heal_party(ctx, 1)),
+                Err(want.to_string()),
+                "{label}"
+            );
+            assert_eq!(self.rows(), before, "{label}: nothing changed");
+            for table in [
+                "inventory",
+                "monster",
+                "monster_pub",
+                "heal_cooldown",
+                "player_wallet",
+            ] {
+                assert_eq!(fx.writes_to(table), 0, "{label}: no write to {table}");
+            }
+            assert_eq!(self.w.monster(11).current_hp, 5, "{label}: not healed");
+        }
+
+        /// A's `heal_party(1)` at T0 heals the party and takes exactly `cost` of A's
+        /// `held` cost items in ONE inventory write; B's stack and the wallet are
+        /// untouched and A's cooldown is stamped.
+        fn healed(&self, fx: &Fixture, held: u32, cost: u32, label: &str) {
+            let wallets_before = to_vec(&self.wallets.rows()).expect("wallets encode");
+            fx.reset_writes();
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| heal_party(ctx, 1)),
+                Ok(()),
+                "{label}"
+            );
+            assert_eq!(
+                fx.writes_to("inventory"),
+                1,
+                "{label}: the cost is one inventory write"
+            );
+            assert_eq!(
+                self.w.count(a(), NOT_FOOD),
+                held - cost,
+                "{label}: exactly {cost} spent"
+            );
+            assert_eq!(
+                self.w.count(b(), NOT_FOOD),
+                2,
+                "{label}: B's stack untouched"
+            );
+            assert_eq!(self.w.monster(11).current_hp, 40, "{label}: party healed");
+            let cd: Vec<(Identity, i64)> = self
+                .w
+                .cooldowns
+                .rows()
+                .iter()
+                .map(|r| (r.owner_identity, r.last_heal_at_ms))
+                .collect();
+            assert_eq!(cd, vec![(a(), T0)], "{label}: cooldown stamped");
+            assert_eq!(
+                to_vec(&self.wallets.rows()).expect("wallets encode"),
+                wallets_before,
+                "{label}: no currency charged"
+            );
+        }
+    }
+
+    /// A heal whose cost item the caller holds enough of, but a trade lock leaves too
+    /// little of free, is refused with `"item is in an active trade"` before any write:
+    /// monsters, monster_pub, stacks, cooldown, wallet, sessions and offers
+    /// byte-identical, no write syscall. The lock is the caller's confirmed side of a
+    /// session (as opener and as partner) or a legacy offer (as initiator and as
+    /// counterparty). Controls in the same shape heal: the caller's side unconfirmed
+    /// (the partner's confirmed side listing the item is not the caller's lock), a
+    /// lock leaving exactly `cost_qty` free, and a lock on another item.
+    ///
+    /// kills:
+    ///   - no lock check in heal_party (the locked item is consumed and the party
+    ///     healed).
+    ///   - a lock check after the cost debit or the heal (the stack or monster moved).
+    ///   - only one lock source read (sessions or offers), or only one role.
+    ///   - an unconfirmed side counted as a lock, or the partner's side read as the
+    ///     caller's.
+    ///   - `>=` for `>` (a lock leaving exactly cost_qty free is refused).
+    ///   - the lock check run only when the stack holds MORE than cost_qty: a caller
+    ///     holding exactly cost_qty, all of it locked, is healed and the locked stack
+    ///     consumed (the exact-cost rows, session and offer locks alike).
+    ///   - the lock compared without the item id (a lock on FOOD blocks NOT_FOOD).
+    #[test]
+    fn heal_party_refuses_a_cost_item_locked_by_a_confirmed_trade_session() {
+        type Lock = fn(&CostWorld<'_>);
+        let locked: [(&str, Lock); 4] = [
+            ("A opened the session and confirmed 2", |cw| {
+                cw.sessions
+                    .seed(&session(a(), &[(NOT_FOOD, 2)], true, b(), &[], false))
+            }),
+            ("A is the partner and confirmed 2", |cw| {
+                cw.sessions
+                    .seed(&session(b(), &[], false, a(), &[(NOT_FOOD, 2)], true))
+            }),
+            ("a legacy offer A initiated lists 2", |cw| {
+                let mut o = offer(a(), b());
+                o.initiator_items = vec![TradeItem {
+                    item_id: NOT_FOOD,
+                    qty: 2,
+                }];
+                cw.w.offers.seed(&o);
+            }),
+            ("a legacy offer to A lists 2 of A's", |cw| {
+                let mut o = offer(b(), a());
+                o.counterparty_items = vec![TradeItem {
+                    item_id: NOT_FOOD,
+                    qty: 2,
+                }];
+                cw.w.offers.seed(&o);
+            }),
+        ];
+        for (label, lock) in locked {
+            let fx = fixture();
+            let cw = cost_world(&fx, 2, 3);
+            lock(&cw);
+            cw.refused(&fx, ITEM_IN_TRADE, &format!("cost 2, 3 held, {label}"));
+        }
+        // The exact-cost boundary: A holds exactly the cost and every unit is locked.
+        for (label, lock) in locked {
+            let fx = fixture();
+            let cw = cost_world(&fx, 2, 2);
+            lock(&cw);
+            cw.refused(
+                &fx,
+                ITEM_IN_TRADE,
+                &format!("cost 2, exactly 2 held, {label}"),
+            );
+        }
+
+        let free: [(&str, Lock); 4] = [
+            ("nothing locked", |_| {}),
+            ("A's side unconfirmed, B's confirmed side lists 3", |cw| {
+                cw.sessions.seed(&session(
+                    a(),
+                    &[(NOT_FOOD, 2)],
+                    false,
+                    b(),
+                    &[(NOT_FOOD, 3)],
+                    true,
+                ))
+            }),
+            ("A confirmed 1, leaving exactly 2 free", |cw| {
+                cw.sessions
+                    .seed(&session(a(), &[(NOT_FOOD, 1)], true, b(), &[], false))
+            }),
+            ("A confirmed 3 of another item", |cw| {
+                cw.sessions
+                    .seed(&session(a(), &[(FOOD, 3)], true, b(), &[], false))
+            }),
+        ];
+        for (label, lock) in free {
+            let fx = fixture();
+            let cw = cost_world(&fx, 2, 3);
+            lock(&cw);
+            cw.healed(&fx, 3, 2, &format!("cost 2, 3 held, {label}"));
+        }
+    }
+
+    /// A multi-unit item cost is taken in ONE inventory write: cost 3 of 5 leaves 2 on
+    /// the same stack, cost 3 of exactly 3 deletes the stack in one write.
+    ///
+    /// kills: a per-unit `consume_one` loop (3 writes); a debit that takes 1 whatever
+    /// `cost_qty` says; a drained cost stack left as an empty row.
+    #[test]
+    fn heal_party_takes_a_multi_unit_item_cost_in_one_inventory_write() {
+        let fx = fixture();
+        let cw = cost_world(&fx, 3, 5);
+        cw.healed(&fx, 5, 3, "cost 3 of 5");
+        drop(fx);
+
+        let fx = fixture();
+        let cw = cost_world(&fx, 3, 3);
+        cw.healed(&fx, 3, 3, "cost 3 of exactly 3");
+        assert!(
+            !cw.w
+                .stacks
+                .rows()
+                .iter()
+                .any(|r| r.owner_identity == a() && r.item_id == NOT_FOOD),
+            "the drained cost stack is deleted, not left at 0"
+        );
+    }
+
+    /// A caller holding fewer cost items than the location asks is refused with
+    /// `"not enough of that item"` before any write — with nothing locked, and also
+    /// when the one held item is locked by a confirmed session side or a legacy offer
+    /// (a shortfall is never reported as a trade). Holding exactly the cost heals.
+    ///
+    /// kills: a per-unit debit loop that spends the one held item before failing
+    /// (the stack is gone and the inventory took a write); a shortfall answered with
+    /// `"item not in inventory"` or the active-trade text; the lock checked before
+    /// the raw holding.
+    #[test]
+    fn heal_party_short_of_the_cost_item_with_nothing_in_trade_gets_a_shortfall_reason() {
+        type Lock = fn(&CostWorld<'_>);
+        let cases: [(&str, Lock); 3] = [
+            ("nothing locked", |_| {}),
+            ("the 1 held is on A's confirmed session side", |cw| {
+                cw.sessions
+                    .seed(&session(a(), &[(NOT_FOOD, 1)], true, b(), &[], false))
+            }),
+            ("the 1 held is in a legacy offer", |cw| {
+                let mut o = offer(a(), b());
+                o.initiator_items = vec![TradeItem {
+                    item_id: NOT_FOOD,
+                    qty: 1,
+                }];
+                cw.w.offers.seed(&o);
+            }),
+        ];
+        for (label, lock) in cases {
+            let fx = fixture();
+            let cw = cost_world(&fx, 2, 1);
+            lock(&cw);
+            cw.refused(&fx, NOT_ENOUGH_ITEM, &format!("cost 2, 1 held, {label}"));
+            assert_eq!(cw.w.count(a(), NOT_FOOD), 1, "{label}: the 1 held is kept");
+        }
+
+        let fx = fixture();
+        let cw = cost_world(&fx, 2, 2);
+        cw.healed(&fx, 2, 2, "cost 2, exactly 2 held");
+    }
+
+    /// `train` and `consume_crystalized_essence` refuse a caller who holds none of the
+    /// item — while a stranger holds plenty and nothing is locked — with
+    /// `"not enough of that item"`, before any write. A stack the caller's confirmed
+    /// session side locks in full is still refused with the active-trade text, and a
+    /// lock leaving one free is admitted and spends exactly one.
+    ///
+    /// kills: the active-trade text for an empty holding (`escrowed >= count` with
+    /// both 0); the stranger's stack counted as the caller's; a session lock ignored
+    /// (the fully locked stack is spent); a lock that leaves one free refused.
+    #[test]
+    fn train_and_essence_without_the_item_say_not_enough_of_that_item() {
+        let calls: [(&str, Call, u32, u32); 2] = [
+            ("train", call_train, FOOD, 3),
+            (
+                "consume_crystalized_essence",
+                call_consume,
+                WATER_ESSENCE,
+                2,
+            ),
+        ];
+        let rows = |w: &World<'_>, s: &Handle<'_, crate::schema::TradeSession>| {
+            let mut all = w.snapshot();
+            all.push(to_vec(&s.rows()).expect("sessions encode"));
+            all.push(to_vec(&w.offers.rows()).expect("offers encode"));
+            all
+        };
+        for (name, call, item, held) in calls {
+            let fx = fixture();
+            let w = growth_world(&fx);
+            let s = sessions(&fx);
+            assert_eq!(w.stacks.remove(a()), 2, "fixture: A's two stacks");
+            w.stack(b(), item, 5);
+            let before = rows(&w, &s);
+            fx.reset_writes();
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), call),
+                Err(NOT_ENOUGH_ITEM.to_string()),
+                "{name}: A holds none, B holds 5"
+            );
+            assert_eq!(rows(&w, &s), before, "{name}: nothing changed");
+            for table in ["inventory", "monster", "monster_pub"] {
+                assert_eq!(fx.writes_to(table), 0, "{name}: no write to {table}");
+            }
+            drop(fx);
+
+            let fx = fixture();
+            let w = growth_world(&fx);
+            let s = sessions(&fx);
+            s.seed(&session(a(), &[(item, held)], true, b(), &[], false));
+            let before = rows(&w, &s);
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), call),
+                Err(ITEM_IN_TRADE.to_string()),
+                "{name}: all {held} held are locked"
+            );
+            assert_eq!(rows(&w, &s), before, "{name}, locked: nothing changed");
+            drop(fx);
+
+            let fx = fixture();
+            let w = growth_world(&fx);
+            let s = sessions(&fx);
+            s.seed(&session(a(), &[(item, held - 1)], true, b(), &[], false));
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), call),
+                Ok(()),
+                "{name}: one of {held} is free"
+            );
+            assert_eq!(w.count(a(), item), held - 1, "{name}: exactly one spent");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3596,6 +3998,7 @@ mod heal_currency {
     use game_core::HealLocationDef;
 
     const ESCROW_ERR: &str = "currency is in an active trade";
+    const SHORT_ERR: &str = "not enough currency";
 
     fn def(location_id: u32, cost_currency: u64) -> HealLocationDef {
         HealLocationDef {
@@ -3652,20 +4055,22 @@ mod heal_currency {
     }
 
     // kills: `cost > 0` -> `<` / `==` for a priced location (gate would be skipped,
-    // letting an unaffordable heal through).
+    // letting an unaffordable heal through); an empty wallet answered with the
+    // active-trade text.
     #[test]
     fn a_priced_location_consults_the_wallet_and_rejects_when_broke() {
         let defs = [def(1, 50)];
-        assert_eq!(run(&defs, 1, 0, 0), (Err(ESCROW_ERR.to_string()), true));
+        assert_eq!(run(&defs, 1, 0, 0), (Err(SHORT_ERR.to_string()), true));
     }
 
-    // kills: `cost > available` -> `>=` (rejects the exact-fit), `<` (rejects every
-    // affordable heal), `==` (passes cost > available).
+    // kills: `cost > balance` -> `>=` (rejects the exact-fit), `<` (rejects every
+    // affordable heal), `==` (passes cost > balance); a plain shortfall answered with
+    // the active-trade text.
     #[test]
     fn exactly_the_available_balance_is_affordable_one_more_is_not() {
         let defs = [def(1, 50)];
         assert_eq!(run(&defs, 1, 50, 0), (Ok(Some(50)), true));
-        assert_eq!(run(&defs, 1, 49, 0), (Err(ESCROW_ERR.to_string()), true));
+        assert_eq!(run(&defs, 1, 49, 0), (Err(SHORT_ERR.to_string()), true));
         assert_eq!(run(&defs, 1, 51, 0), (Ok(Some(50)), true));
     }
 
@@ -3684,5 +4089,39 @@ mod heal_currency {
     fn escrow_exceeding_balance_leaves_nothing_available() {
         let defs = [def(1, 1)];
         assert_eq!(run(&defs, 1, 10, 25), (Err(ESCROW_ERR.to_string()), true));
+    }
+
+    /// A heal costing more than the RAW balance is a shortfall whatever is locked in
+    /// trades; the active-trade text is given only when the balance covers the cost
+    /// and the part not locked does not.
+    ///
+    /// kills: the escrow-netted balance compared first (every shortfall row reads
+    /// the active-trade text); the lock ignored (covered-but-locked rows admitted);
+    /// `>=` for `>` against the raw balance (the exact balance with nothing locked
+    /// refused); a plain `balance - escrowed` (underflow when the lock exceeds the
+    /// balance).
+    #[test]
+    fn heal_cost_beyond_the_balance_with_nothing_in_trade_says_not_enough_currency() {
+        let defs = [def(1, 50)];
+        /// `(balance, escrowed, expected result)` for a heal costing 50.
+        type Row = (u64, u64, Result<Option<u64>, &'static str>);
+        let rows: [Row; 9] = [
+            (49, 0, Err(SHORT_ERR)),
+            (0, 0, Err(SHORT_ERR)),
+            (50, 0, Ok(Some(50))),
+            (50, 1, Err(ESCROW_ERR)),
+            (100, 51, Err(ESCROW_ERR)),
+            (100, 50, Ok(Some(50))),
+            (49, 1, Err(SHORT_ERR)),
+            (10, 25, Err(SHORT_ERR)),
+            (50, 60, Err(ESCROW_ERR)),
+        ];
+        for (balance, escrowed, want) in rows {
+            assert_eq!(
+                run(&defs, 1, balance, escrowed),
+                (want.map_err(str::to_string), true),
+                "cost 50, balance {balance}, escrowed {escrowed}"
+            );
+        }
     }
 }

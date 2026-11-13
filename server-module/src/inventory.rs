@@ -1,14 +1,11 @@
 //! `inventory` — server-module domain submodule.
 //!
 //! The single item-mutation surface: every grant/consume path for the
-//! `inventory` table routes through `grant_item` / `consume_one` here, so the
+//! `inventory` table routes through `grant_item` / `consume_n` here, so the
 //! single-stack-per-`(owner, item_id)` discipline and the delete-at-zero / capped
-//! invariants live in one place (recruit bait now; training food, shop, quest
-//! reward later). Item counts are PUBLIC / world-readable — no transport RLS
-//! (no `client_visibility_filter` in this toolchain); owner-scoping
-//! is a client subscription filter only; per-owner transport RLS is deferred
-//! until per-row RLS lands. The row carries ONLY (owner, item_id, count) — no
-//! gene/seed field.
+//! invariants live in one place. The table is private: an owner reads their own
+//! stacks through the `my_inventory` view. The row carries ONLY
+//! (owner, item_id, count) — no gene/seed field.
 
 use crate::schema::{inventory, Inventory};
 use game_core::MAX_ITEM_STACK;
@@ -55,16 +52,37 @@ pub(crate) fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qt
     }
 }
 
-/// Consume exactly one of `item_id` from `owner`. Rejects (`Err`) when the stack
-/// is absent or already empty. Uses `checked_sub` — NEVER a bare decrement — so
-/// an empty stack can never underflow into a 2^32 windfall. Delete-at-zero on both
-/// paths: a pre-existing zombie (`count == 0`) is deleted before the
-/// reject, and a stack drained to 0 is deleted rather than left as an empty row.
-pub(crate) fn consume_one(
+/// Refusal when a stack holds fewer units than the quantity asked for.
+pub(crate) const ERR_NOT_ENOUGH_ITEM: &str = "not enough of that item";
+
+/// `owner`'s count of `item_id`: 0 when they hold no stack of it. The count is raw: units
+/// a trade locks are included.
+pub(crate) fn item_count(ctx: &ReducerContext, owner: Identity, item_id: u32) -> u32 {
+    ctx.db
+        .inventory()
+        .owner_identity()
+        .filter(owner)
+        .find(|r| r.item_id == item_id)
+        .map(|r| r.count)
+        .unwrap_or(0)
+}
+
+/// Debit `qty` of `item_id` from `owner`'s stack with one lookup and one write. A `qty` of
+/// 0 is a no-op. Rejects (`Err`) when the stack is absent or holds fewer than `qty`, and a
+/// stack of 1 or more units is then left exactly as it was: `checked_sub`, NEVER a bare
+/// subtraction, so a short stack can never underflow into a 2^32 windfall. Delete-at-zero
+/// on both paths: a pre-existing empty row (`count == 0`) is deleted before the reject,
+/// and a stack drained to 0 is deleted rather than left as an empty row.
+// Crate-internal; the sole inventory debit.
+pub(crate) fn consume_n(
     ctx: &ReducerContext,
     owner: Identity,
     item_id: u32,
+    qty: u32,
 ) -> Result<(), String> {
+    if qty == 0 {
+        return Ok(());
+    }
     let mut row = ctx
         .db
         .inventory()
@@ -73,20 +91,29 @@ pub(crate) fn consume_one(
         .find(|r| r.item_id == item_id)
         .ok_or_else(|| "item not in inventory".to_string())?;
     if row.count == 0 {
-        // Self-cleaning: remove any pre-existing zombie row before rejecting.
+        // Self-cleaning: remove any pre-existing empty row before rejecting.
         ctx.db.inventory().inv_id().delete(row.inv_id);
         return Err("item count is zero".to_string());
     }
     row.count = row
         .count
-        .checked_sub(1)
-        .ok_or_else(|| "item count is zero".to_string())?;
+        .checked_sub(qty)
+        .ok_or_else(|| ERR_NOT_ENOUGH_ITEM.to_string())?;
     if row.count == 0 {
         ctx.db.inventory().inv_id().delete(row.inv_id);
     } else {
         ctx.db.inventory().inv_id().update(row);
     }
     Ok(())
+}
+
+/// Consume exactly one of `item_id` from `owner`: `consume_n` with a quantity of 1.
+pub(crate) fn consume_one(
+    ctx: &ReducerContext,
+    owner: Identity,
+    item_id: u32,
+) -> Result<(), String> {
+    consume_n(ctx, owner, item_id, 1)
 }
 
 // --- M21 guest→account re-key ----------------------------------

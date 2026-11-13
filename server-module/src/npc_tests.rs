@@ -895,8 +895,8 @@ fn s20rc_load_error_limiter_suppresses_the_second_immediate_check() {
 // text twin: the balance DELTA is asserted, not the call token.
 // ===========================================================================
 
-/// Completing a quest credits EXACTLY its content-authored `reward.currency` (read
-/// from the same process-wide quest cache the shipped code reads) on top of an existing
+/// Completing a quest credits EXACTLY its content-authored `reward.currency` (the
+/// process-wide quest cache `talk` passes in, handed in here too) on top of an existing
 /// balance, removes the finished `player_quest` row, moves the quest to done, and pays
 /// nobody else. A non-matching trigger pays nothing.
 /// kills: `grant_currency(ctx, owner, reward.currency)` deleted / wrong owner / wrong
@@ -961,24 +961,32 @@ fn nh_quest_complete_grants_exactly_the_content_currency_reward() {
     };
     let ctx = fx.ctx();
 
-    apply_quest_trigger(
-        &ctx,
-        me,
-        &TriggerEvent::Talked {
-            npc_id: format!("{npc_id}-not-this-one"),
-        },
-        &mut state,
+    assert_eq!(
+        apply_quest_trigger(
+            &ctx,
+            me,
+            &TriggerEvent::Talked {
+                npc_id: format!("{npc_id}-not-this-one"),
+            },
+            &mut state,
+            Ok(defs.as_slice()),
+        ),
+        Ok(())
     );
     assert_eq!(balance(me), Some(7), "a non-matching trigger pays nothing");
     assert_eq!(quests.rows().len(), 2, "and completes nothing");
 
-    apply_quest_trigger(
-        &ctx,
-        me,
-        &TriggerEvent::Talked {
-            npc_id: npc_id.clone(),
-        },
-        &mut state,
+    assert_eq!(
+        apply_quest_trigger(
+            &ctx,
+            me,
+            &TriggerEvent::Talked {
+                npc_id: npc_id.clone(),
+            },
+            &mut state,
+            Ok(defs.as_slice()),
+        ),
+        Ok(())
     );
     assert_eq!(
         balance(me),
@@ -2036,4 +2044,1131 @@ mod ctl16_battle_guard {
             );
         }
     }
+}
+
+// ===========================================================================
+// Rewards are refused, never clamped. A quest-completion reward or a dialogue
+// `GrantItem` that would push a stack past `MAX_ITEM_STACK` or the balance past
+// `MAX_BALANCE` refuses the whole call before any write: the quest stays active,
+// the dialogue does not advance, and no stack, wallet, quest, dialogue-state or
+// conversation row changes. The check covers the whole reward of the call. The
+// host has no rollback, so every refusal is asserted as a byte snapshot of the
+// five tables plus a zero write count on each of them.
+// ===========================================================================
+
+use crate::native_host_tests::{Fixture as RwFixture, Handle as RwHandle};
+
+const RW_ME: Identity = Identity::from_byte_array([0x7A; 32]);
+const RW_OTHER: Identity = Identity::from_byte_array([0x7B; 32]);
+/// The caller's character entity id.
+const RW_ME_ENTITY: u64 = 1;
+/// The NPC's entity id.
+const RW_NPC: u64 = 80;
+/// The `npc_id` every test quest's Talk step names.
+const RW_NPC_ID: &str = "rw_npc";
+const RW_ITEM: u32 = 600;
+const RW_OTHER_ITEM: u32 = 601;
+const RW_CAP: u32 = game_core::MAX_ITEM_STACK;
+const RW_MAX_BALANCE: u64 = game_core::currency::MAX_BALANCE;
+/// Every table a reward, a dialogue step or a talk writes.
+const RW_TABLES: [&str; 5] = [
+    "player_conversation",
+    "player_dialogue_state",
+    "player_quest",
+    "player_wallet",
+    "inventory",
+];
+
+fn rw_bytes<T: spacetimedb::Serialize>(row: &T) -> Vec<u8> {
+    spacetimedb::sats::bsatn::to_vec(row).expect("rows encode")
+}
+
+/// The refusal text for crediting `qty` of `item_id` onto a stack of `count`.
+fn rw_item_cap_err(count: u32, qty: u32, item_id: u32) -> String {
+    game_core::check_item_headroom(count, qty, item_id)
+        .expect_err("fixture: the grant must overflow the stack cap")
+        .to_string()
+}
+
+/// The refusal text for crediting `amount` onto a balance of `balance`.
+fn rw_currency_cap_err(balance: u64, amount: u64) -> String {
+    game_core::check_currency_headroom(balance, amount)
+        .expect_err("fixture: the credit must overflow the balance cap")
+        .to_string()
+}
+
+/// The five tables a reward writes, each writable under the index the shipped code
+/// reads and writes through.
+struct RwWorld<'a> {
+    wallets: RwHandle<'a, crate::schema::PlayerWallet>,
+    stacks: RwHandle<'a, crate::schema::Inventory>,
+    quests: RwHandle<'a, PlayerQuestRow>,
+    states: RwHandle<'a, PlayerDialogueStateRow>,
+    convs: RwHandle<'a, PlayerConversation>,
+}
+
+/// NPC `RW_NPC` at home (6, 5) in zone 0, with `npc_id` and dialogue tree `tree_id`.
+fn rw_npc_row(npc_id: &str, tree_id: &str) -> crate::schema::Npc {
+    crate::schema::Npc {
+        entity_id: RW_NPC,
+        npc_id: npc_id.to_string(),
+        zone_id: 0,
+        home_x: 6,
+        home_y: 5,
+        wander_radius: 0,
+        dialogue_tree_id: tree_id.to_string(),
+        interaction: game_core::NpcInteraction::Dialogue,
+    }
+}
+
+/// The caller (`RW_ME`) is joined and stands at (5, 5) in zone 0 beside NPC `RW_NPC`
+/// at (6, 5), whose `npc_id` is `npc_id` and whose dialogue tree is `tree_id`; no
+/// battle, no deletion state. The five reward tables are registered and empty.
+fn rw_world<'a>(fx: &'a RwFixture, npc_id: &str, tree_id: &str) -> RwWorld<'a> {
+    fx.table::<crate::schema::Player>("player", "identity", |r| r.identity)
+        .seed(&crate::schema::Player {
+            identity: RW_ME,
+            entity_id: RW_ME_ENTITY,
+            name: String::new(),
+            online: true,
+            last_input_seq: 0,
+        });
+    let chars =
+        fx.table_keyed::<crate::schema::Character, u64>("character", "entity_id", |r| r.entity_id);
+    for (entity_id, tile_x) in [(RW_ME_ENTITY, 5), (RW_NPC, 6)] {
+        chars.seed(&crate::schema::Character {
+            entity_id,
+            zone_id: 0,
+            tile_x,
+            tile_y: 5,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+            acked_seq: 0,
+        });
+    }
+    fx.table_keyed::<crate::schema::Npc, u64>("npc", "entity_id", |r| r.entity_id)
+        .seed(&rw_npc_row(npc_id, tree_id));
+    let _ = fx
+        .table_keyed::<PlayerQuestRow, u64>("player_quest", "pq_id", |r| r.pq_id)
+        .unique();
+    let _ = fx
+        .table_keyed::<crate::schema::Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+        .unique();
+    RwWorld {
+        wallets: fx
+            .table::<crate::schema::PlayerWallet>("player_wallet", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .unique(),
+        stacks: fx
+            .table::<crate::schema::Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id),
+        quests: fx
+            .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .auto_inc(|r| r.pq_id, |r, id| r.pq_id = id),
+        states: fx
+            .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .unique(),
+        convs: fx
+            .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .unique(),
+    }
+}
+
+impl RwWorld<'_> {
+    /// The five tables, as BSATN.
+    fn snapshot(&self) -> [Vec<u8>; 5] {
+        [
+            rw_bytes(&self.convs.rows()),
+            rw_bytes(&self.states.rows()),
+            rw_bytes(&self.quests.rows()),
+            rw_bytes(&self.wallets.rows()),
+            rw_bytes(&self.stacks.rows()),
+        ]
+    }
+    fn wallet(&self, balance: u64) {
+        self.wallets.seed(&crate::schema::PlayerWallet {
+            owner_identity: RW_ME,
+            balance,
+        });
+    }
+    /// Replace every stack of `owner` with one stack of `count` x `item_id`. Seeded
+    /// ids are far above the modelled auto-inc (1, 2, ...).
+    fn only_stack(&self, owner: Identity, item_id: u32, count: u32) {
+        self.stacks.remove(owner);
+        self.stacks.seed(&crate::schema::Inventory {
+            inv_id: 100_000 + u64::from(owner.to_byte_array()[0]) * 1_000 + u64::from(item_id),
+            owner_identity: owner,
+            item_id,
+            count,
+        });
+    }
+    fn count(&self, owner: Identity, item_id: u32) -> Option<u32> {
+        self.stacks
+            .rows()
+            .into_iter()
+            .find(|r| r.owner_identity == owner && r.item_id == item_id)
+            .map(|r| r.count)
+    }
+    fn balance(&self) -> Option<u64> {
+        self.wallets
+            .rows()
+            .into_iter()
+            .find(|r| r.owner_identity == RW_ME)
+            .map(|r| r.balance)
+    }
+    /// One active quest row of the caller.
+    fn quest(&self, pq_id: u64, quest_id: &str, step_index: u32) {
+        self.quests.seed(&PlayerQuestRow {
+            pq_id,
+            owner_identity: RW_ME,
+            quest_id: quest_id.to_string(),
+            step_index,
+        });
+    }
+    /// The caller's quest rows as `(quest_id, step_index)`, in store order.
+    fn quest_rows(&self) -> Vec<(String, u32)> {
+        self.quests
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == RW_ME)
+            .map(|r| (r.quest_id, r.step_index))
+            .collect()
+    }
+}
+
+/// Nothing was written to any of the five reward tables since the last
+/// `reset_writes`.
+fn rw_no_writes(fx: &RwFixture, label: &str) {
+    for table in RW_TABLES {
+        assert_eq!(fx.writes_to(table), 0, "{label}: no write to {table}");
+    }
+}
+
+/// A quest of `steps` Talk steps at `RW_NPC_ID` (no step conditions) rewarding
+/// `items` and `currency`.
+fn rw_quest(id: &str, steps: usize, items: &[(u32, u32)], currency: u64) -> game_core::QuestDef {
+    game_core::QuestDef {
+        id: id.to_string(),
+        name: id.to_string(),
+        start_conditions: vec![],
+        steps: (0..steps)
+            .map(|_| game_core::QuestStep {
+                trigger: game_core::StepTrigger::Talk {
+                    npc_id: RW_NPC_ID.to_string(),
+                },
+                conditions: vec![],
+            })
+            .collect(),
+        reward: game_core::QuestReward {
+            xp: 0,
+            items: items
+                .iter()
+                .map(|&(item_id, qty)| game_core::RewardItem { item_id, qty })
+                .collect(),
+            currency,
+        },
+    }
+}
+
+fn rw_talked() -> TriggerEvent {
+    TriggerEvent::Talked {
+        npc_id: RW_NPC_ID.to_string(),
+    }
+}
+
+/// A dialogue state with `active` quests, one stored flag and one old done quest (so
+/// an unchanged state is distinguishable from a default one).
+fn rw_state(active: &[&str]) -> PlayerDialogueState {
+    PlayerDialogueState {
+        flags: ["rw_flag".to_string()].into_iter().collect(),
+        active_quests: active.iter().map(|q| q.to_string()).collect(),
+        done_quests: ["rw_old".to_string()].into_iter().collect(),
+    }
+}
+
+fn rw_conv(node: &str) -> PlayerConversation {
+    PlayerConversation {
+        owner_identity: RW_ME,
+        npc_entity_id: RW_NPC,
+        current_node_id: node.to_string(),
+    }
+}
+
+fn rw_choice(effects: Vec<DialogueEffect>, next_node: Option<&str>) -> game_core::DialogueChoice {
+    game_core::DialogueChoice {
+        text: "go".to_string(),
+        conditions: vec![],
+        effects,
+        next_node: next_node.map(str::to_string),
+    }
+}
+
+fn rw_node(
+    id: &str,
+    entry_conditions: Vec<game_core::Condition>,
+    auto_effects: Vec<DialogueEffect>,
+    choices: Vec<game_core::DialogueChoice>,
+) -> game_core::DialogueNode {
+    game_core::DialogueNode {
+        id: id.to_string(),
+        text: id.to_string(),
+        entry_conditions,
+        auto_effects,
+        choices,
+    }
+}
+
+fn rw_tree(id: &str, nodes: Vec<game_core::DialogueNode>) -> game_core::DialogueTree {
+    game_core::DialogueTree {
+        id: id.to_string(),
+        root_node_id: nodes[0].id.clone(),
+        nodes,
+    }
+}
+
+/// A quest whose completion reward would overflow the caller's stack is refused
+/// with the stack-cap text: the `player_quest` row, every stack, the wallet and the
+/// in-memory dialogue state are unchanged and nothing is written — at the cap, and
+/// one unit past it. With room for exactly the reward, the same call completes the
+/// quest and credits exactly the reward (the quest stayed completable).
+///
+/// kills:
+///   - a clamping grant (the quest completes, its row is deleted, the stack sits at
+///     the cap and the overflow is destroyed).
+///   - the headroom check after the quest-row delete or the state update.
+///   - a check that ignores the held count (at cap - 2 a reward of 3 passes).
+///   - `>=` for `>` against the cap (exactly filling the stack refused).
+///   - a refused reward that still marks the quest done in `state`.
+#[test]
+fn quest_completion_at_a_full_stack_is_refused_and_the_quest_stays_active() {
+    let fx = crate::native_host_tests::fixture();
+    let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+    let defs = [rw_quest("rw_q1", 1, &[(RW_ITEM, 3)], 0)];
+    w.wallet(7);
+    w.only_stack(RW_OTHER, RW_ITEM, 4);
+    w.quest(1, "rw_q1", 0);
+    let ctx = fx.ctx();
+
+    for held in [RW_CAP, RW_CAP - 2] {
+        w.only_stack(RW_ME, RW_ITEM, held);
+        let mut state = rw_state(&["rw_q1"]);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(held, 3, RW_ITEM)),
+            "a reward of 3 onto a stack of {held}"
+        );
+        assert_eq!(state, state_before, "held {held}: the state is unchanged");
+        assert_eq!(w.snapshot(), before, "held {held}: every row is unchanged");
+        rw_no_writes(&fx, &format!("held {held}"));
+        assert_eq!(
+            w.quest_rows(),
+            vec![("rw_q1".to_string(), 0)],
+            "held {held}: the quest stays active"
+        );
+    }
+
+    w.only_stack(RW_ME, RW_ITEM, RW_CAP - 3);
+    let mut state = rw_state(&["rw_q1"]);
+    assert_eq!(
+        apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+        Ok(()),
+        "a reward of 3 onto a stack of cap - 3 fits exactly"
+    );
+    assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP), "credited exactly 3");
+    assert!(w.quest_rows().is_empty(), "the quest row is gone");
+    assert!(
+        state.done_quests.contains("rw_q1") && !state.active_quests.contains("rw_q1"),
+        "the quest is done in the state"
+    );
+    assert_eq!(w.balance(), Some(7), "no currency reward, no change");
+    assert_eq!(
+        w.count(RW_OTHER, RW_ITEM),
+        Some(4),
+        "a stranger's stack is untouched"
+    );
+}
+
+/// A dialogue choice (taken through `choose_in_dialogue`, the dialogue half of
+/// `advance_dialogue`) whose `GrantItem` would overflow the caller's stack is refused
+/// with the stack-cap text before any write: the conversation row byte-identical
+/// (still at the choosing node), no dialogue-state, quest, stack or wallet change and
+/// no write to any of the five tables. `dismiss_dialogue` still ends the
+/// conversation. With room, the same choice advances to its next node, stores its
+/// flag and grants exactly.
+///
+/// kills:
+///   - a clamping `GrantItem` (the dialogue advances and the overflow is destroyed).
+///   - the dialogue state written before the grant is checked.
+///   - the conversation moved to the next node before the check.
+#[test]
+fn a_dialogue_reward_at_a_full_stack_is_refused_and_the_dialogue_does_not_advance() {
+    const TREE: &str = "rw_take_tree";
+    let trees = [rw_tree(
+        TREE,
+        vec![
+            rw_node(
+                "start",
+                vec![],
+                vec![],
+                vec![rw_choice(
+                    vec![
+                        DialogueEffect::SetFlag("rw_took".to_string()),
+                        DialogueEffect::GrantItem(RW_ITEM, 2),
+                    ],
+                    Some("after"),
+                )],
+            ),
+            rw_node(
+                "after",
+                vec![game_core::Condition::HasFlag("rw_never".to_string())],
+                vec![],
+                vec![rw_choice(vec![], None)],
+            ),
+        ],
+    )];
+    let fx = crate::native_host_tests::fixture();
+    let w = rw_world(&fx, RW_NPC_ID, TREE);
+    w.convs.seed(&rw_conv("start"));
+    w.only_stack(RW_ME, RW_ITEM, RW_CAP - 1);
+    w.wallet(7);
+    let advance = || {
+        fx.run_as(RW_ME, |ctx| {
+            choose_in_dialogue(ctx, RW_ME, rw_conv("start"), &trees[0], 0)
+        })
+    };
+
+    let before = w.snapshot();
+    fx.reset_writes();
+    assert_eq!(
+        advance(),
+        Err(rw_item_cap_err(RW_CAP - 1, 2, RW_ITEM)),
+        "a grant of 2 onto a stack of cap - 1"
+    );
+    assert_eq!(w.snapshot(), before, "every row is unchanged");
+    rw_no_writes(&fx, "refused choice");
+    assert_eq!(
+        w.convs.rows().iter().map(rw_bytes).collect::<Vec<_>>(),
+        vec![rw_bytes(&rw_conv("start"))],
+        "the conversation is still at the choosing node"
+    );
+
+    assert_eq!(fx.run_as(RW_ME, dismiss_dialogue), Ok(()));
+    assert!(
+        w.convs.rows().is_empty(),
+        "dismiss_dialogue still ends the conversation"
+    );
+
+    w.convs.seed(&rw_conv("start"));
+    w.only_stack(RW_ME, RW_ITEM, RW_CAP - 2);
+    assert_eq!(advance(), Ok(()), "a grant of 2 onto cap - 2 fits exactly");
+    assert_eq!(
+        w.convs.rows().iter().map(rw_bytes).collect::<Vec<_>>(),
+        vec![rw_bytes(&rw_conv("after"))],
+        "the conversation advanced to the choice's next node"
+    );
+    assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP), "granted exactly 2");
+    let states = w.states.rows();
+    assert_eq!(states.len(), 1, "one dialogue-state row");
+    assert!(
+        states[0].flags.contains(&"rw_took".to_string()),
+        "the choice's flag is stored"
+    );
+    assert_eq!(w.balance(), Some(7), "the wallet is untouched");
+}
+
+/// The cap check covers the WHOLE reward of a call, never one grant at a time, and
+/// never wraps or clamps:
+/// - two `GrantItem`s of one item that each fit and together do not are refused, and
+///   a `StartQuest` earlier in the same list starts nothing; together exactly filling
+///   the stack they are admitted;
+/// - a zero-quantity grant onto a full stack, or of an item never held, is admitted
+///   and writes nothing;
+/// - two quests completing in one trigger whose item rewards (and, separately, whose
+///   currency rewards) together overflow are refused and neither completes; exactly
+///   filling is admitted;
+/// - an effect-list grant followed by a quest reward of the same item sums (the quest
+///   reward sees the stack the grant left);
+/// - a currency reward of `u64::MAX`, and two rewards that sum past `u64::MAX`, are
+///   refused;
+/// - the cap is checked against the RAW stack: a stack at cap - 1 with 5 of it locked
+///   in a confirmed trade session refuses a reward of 2, through a quest and through
+///   a `GrantItem`;
+/// - a zero-quantity grant asks for no room even on a stack already over the cap,
+///   alone and beside a grant of another item that fits.
+///
+/// kills: a per-grant check (each grant fits on its own); a check per quest that
+/// runs between that quest's writes; a sum that wraps (`u64::MAX - 1 + 2` reads 0
+/// and passes); a zero grant that writes a row or refuses at the cap; a refusal that
+/// leaves the earlier `StartQuest` row behind; headroom computed on the stack net of
+/// trade locks (`item_count - escrowed_item_qty_of` admits the reward and the grant
+/// clamps it); a zero-quantity grant checked against the cap (an over-cap stack
+/// refuses the whole call); a per-item sum with `wrapping_add` (two item rewards of
+/// `u32::MAX / 2 + 1` wrap to 0, pass, and the grants clamp at the cap).
+#[test]
+fn a_reward_is_checked_against_the_caps_as_a_whole() {
+    // Two GrantItems in one effect list.
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let state = PlayerDialogueState::default();
+        w.wallet(7);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 6);
+        let over = [
+            DialogueEffect::StartQuest("rw_q9".to_string()),
+            DialogueEffect::GrantItem(RW_ITEM, 3),
+            DialogueEffect::GrantItem(RW_ITEM, 4),
+        ];
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(&ctx, RW_ME, &state, &over),
+            Err(rw_item_cap_err(RW_CAP - 6, 7, RW_ITEM)),
+            "3 + 4 onto cap - 6"
+        );
+        assert_eq!(w.snapshot(), before, "3 + 4: every row is unchanged");
+        rw_no_writes(&fx, "3 + 4");
+
+        let fill = [
+            DialogueEffect::StartQuest("rw_q9".to_string()),
+            DialogueEffect::GrantItem(RW_ITEM, 3),
+            DialogueEffect::GrantItem(RW_ITEM, 3),
+        ];
+        assert_eq!(
+            apply_effects_to_db(&ctx, RW_ME, &state, &fill),
+            Ok(()),
+            "3 + 3 onto cap - 6 fills exactly"
+        );
+        assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP), "granted exactly 6");
+        assert_eq!(
+            w.quest_rows(),
+            vec![("rw_q9".to_string(), 0)],
+            "the StartQuest of the admitted list starts the quest"
+        );
+
+        let zero = [
+            DialogueEffect::GrantItem(RW_ITEM, 0),
+            DialogueEffect::GrantItem(RW_OTHER_ITEM, 0),
+        ];
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(&ctx, RW_ME, &state, &zero),
+            Ok(()),
+            "a zero grant onto a full stack is not a refusal"
+        );
+        assert_eq!(w.snapshot(), before, "a zero grant changes nothing");
+        rw_no_writes(&fx, "zero grants");
+    }
+
+    // Two quests completing in one trigger: item rewards, then currency rewards.
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let defs = [
+            rw_quest("rw_qa", 1, &[(RW_ITEM, 3)], 0),
+            rw_quest("rw_qb", 1, &[(RW_ITEM, 3)], 0),
+        ];
+        w.wallet(7);
+        w.quest(1, "rw_qa", 0);
+        w.quest(2, "rw_qb", 0);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 5);
+        let mut state = rw_state(&["rw_qa", "rw_qb"]);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(RW_CAP - 5, 6, RW_ITEM)),
+            "two rewards of 3 onto cap - 5"
+        );
+        assert_eq!(state, state_before, "two item rewards: state unchanged");
+        assert_eq!(w.snapshot(), before, "two item rewards: neither completes");
+        rw_no_writes(&fx, "two item rewards");
+
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 6);
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Ok(()),
+            "two rewards of 3 onto cap - 6 fill exactly"
+        );
+        assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP));
+        assert!(w.quest_rows().is_empty(), "both quests completed");
+    }
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let defs = [
+            rw_quest("rw_qc", 1, &[], 400),
+            rw_quest("rw_qd", 1, &[], 400),
+        ];
+        w.wallet(RW_MAX_BALANCE - 799);
+        w.quest(1, "rw_qc", 0);
+        w.quest(2, "rw_qd", 0);
+        let mut state = rw_state(&["rw_qc", "rw_qd"]);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_currency_cap_err(RW_MAX_BALANCE - 799, 800)),
+            "two rewards of 400 onto MAX_BALANCE - 799"
+        );
+        assert_eq!(state, state_before, "two currency rewards: state unchanged");
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "two currency rewards: neither completes"
+        );
+        rw_no_writes(&fx, "two currency rewards");
+
+        assert_eq!(w.wallets.remove(RW_ME), 1, "fixture: the caller's wallet");
+        w.wallet(RW_MAX_BALANCE - 800);
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Ok(()),
+            "two rewards of 400 onto MAX_BALANCE - 800 fill exactly"
+        );
+        assert_eq!(w.balance(), Some(RW_MAX_BALANCE), "credited exactly 800");
+        assert!(w.quest_rows().is_empty(), "both quests completed");
+    }
+
+    // An effect-list grant, then a quest reward of the same item.
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let defs = [rw_quest("rw_qe", 1, &[(RW_ITEM, 3)], 0)];
+        w.wallet(7);
+        w.quest(1, "rw_qe", 0);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 5);
+        let mut state = rw_state(&["rw_qe"]);
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &state,
+                &[DialogueEffect::GrantItem(RW_ITEM, 3)]
+            ),
+            Ok(()),
+            "3 onto cap - 5 fits"
+        );
+        assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP - 2));
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(RW_CAP - 2, 3, RW_ITEM)),
+            "the quest's 3 onto the cap - 2 the grant left"
+        );
+        assert_eq!(state, state_before, "effect then quest: state unchanged");
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "effect then quest: the quest stays active"
+        );
+        rw_no_writes(&fx, "effect then quest");
+    }
+
+    // The cap reads the RAW stack: cap - 1 held, 5 of it locked by a confirmed
+    // session side, a reward of 2.
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let sessions =
+            fx.table::<crate::schema::TradeSession>("trade_session", "opener", |r| r.opener);
+        let _ = fx.table::<crate::schema::TradeSession>("trade_session", "partner", |r| r.partner);
+        let _ = fx.table::<crate::schema::TradeOffer>("trade_offer", "initiator", |r| r.initiator);
+        let _ = fx
+            .table::<crate::schema::TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let locked_side = game_core::trading::TradeSessionOffer {
+            monster_ids: vec![],
+            items: vec![game_core::TradeItem {
+                item_id: RW_ITEM,
+                qty: 5,
+            }],
+            currency: 0,
+            cards: vec![],
+        };
+        let empty_side = game_core::trading::TradeSessionOffer {
+            monster_ids: vec![],
+            items: vec![],
+            currency: 0,
+            cards: vec![],
+        };
+        sessions.seed(&crate::schema::TradeSession {
+            session_id: 1,
+            opener: RW_ME,
+            partner: RW_OTHER,
+            opener_offer: locked_side,
+            partner_offer: empty_side,
+            opener_confirmed: true,
+            partner_confirmed: false,
+            revision: 1,
+            created_at_ms: 0,
+        });
+        let ctx = fx.ctx();
+        let defs = [rw_quest("rw_ql", 1, &[(RW_ITEM, 2)], 0)];
+        w.wallet(7);
+        w.quest(1, "rw_ql", 0);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 1);
+        assert_eq!(
+            crate::guards::escrowed_item_qty_of(&ctx, RW_ME, RW_ITEM),
+            5,
+            "fixture: the session lock is visible to the lock reader"
+        );
+
+        let mut state = rw_state(&["rw_ql"]);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(RW_CAP - 1, 2, RW_ITEM)),
+            "a quest reward of 2 onto a raw cap - 1, 5 of it locked"
+        );
+        assert_eq!(state, state_before, "locked stack, quest: state unchanged");
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "locked stack, quest: the quest stays active, stack and wallet unchanged"
+        );
+        rw_no_writes(&fx, "locked stack, quest");
+        assert_eq!(
+            w.quest_rows(),
+            vec![("rw_ql".to_string(), 0)],
+            "locked stack: the quest row is still there"
+        );
+
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &PlayerDialogueState::default(),
+                &[DialogueEffect::GrantItem(RW_ITEM, 2)]
+            ),
+            Err(rw_item_cap_err(RW_CAP - 1, 2, RW_ITEM)),
+            "a GrantItem of 2 onto a raw cap - 1, 5 of it locked"
+        );
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "locked stack, grant: every row unchanged"
+        );
+        rw_no_writes(&fx, "locked stack, grant");
+    }
+
+    // A zero grant onto a stack already over the cap.
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let state = PlayerDialogueState::default();
+        w.wallet(7);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP + 7);
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &state,
+                &[DialogueEffect::GrantItem(RW_ITEM, 0)]
+            ),
+            Ok(()),
+            "a zero grant onto an over-cap stack asks for no room"
+        );
+        assert_eq!(w.snapshot(), before, "over-cap zero grant: nothing changed");
+        assert_eq!(
+            fx.writes_to("inventory"),
+            0,
+            "over-cap zero grant: no inventory write"
+        );
+
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &state,
+                &[
+                    DialogueEffect::GrantItem(RW_ITEM, 0),
+                    DialogueEffect::GrantItem(RW_OTHER_ITEM, 4),
+                ]
+            ),
+            Ok(()),
+            "a zero grant beside a fitting grant of another item"
+        );
+        assert_eq!(
+            w.count(RW_ME, RW_OTHER_ITEM),
+            Some(4),
+            "the other item is granted exactly"
+        );
+        assert_eq!(
+            w.count(RW_ME, RW_ITEM),
+            Some(RW_CAP + 7),
+            "the over-cap stack is unchanged"
+        );
+    }
+
+    // Item rewards whose sum would wrap a u32, onto no stack at all.
+    {
+        const HALF: u32 = u32::MAX / 2 + 1;
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let defs = [
+            rw_quest("rw_qx", 1, &[(RW_ITEM, HALF)], 0),
+            rw_quest("rw_qy", 1, &[(RW_ITEM, HALF)], 0),
+        ];
+        w.wallet(7);
+        w.quest(1, "rw_qx", 0);
+        w.quest(2, "rw_qy", 0);
+        let mut state = rw_state(&["rw_qx", "rw_qy"]);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(0, u32::MAX, RW_ITEM)),
+            "two item rewards of u32::MAX / 2 + 1 onto no stack"
+        );
+        assert_eq!(state, state_before, "u32 wrap, quests: state unchanged");
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "u32 wrap, quests: every row unchanged"
+        );
+        rw_no_writes(&fx, "u32 wrap, quests");
+        assert_eq!(
+            w.quest_rows(),
+            vec![("rw_qx".to_string(), 0), ("rw_qy".to_string(), 0)],
+            "u32 wrap: both quest rows are still there"
+        );
+
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &PlayerDialogueState::default(),
+                &[
+                    DialogueEffect::GrantItem(RW_ITEM, HALF),
+                    DialogueEffect::GrantItem(RW_ITEM, HALF),
+                ]
+            ),
+            Err(rw_item_cap_err(0, u32::MAX, RW_ITEM)),
+            "two GrantItems of u32::MAX / 2 + 1 onto no stack"
+        );
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "u32 wrap, grants: every row unchanged"
+        );
+        rw_no_writes(&fx, "u32 wrap, grants");
+    }
+
+    // Currency rewards that would wrap a u64.
+    for (label, rewards) in [
+        ("one reward of u64::MAX", vec![u64::MAX]),
+        ("u64::MAX - 1 and 2", vec![u64::MAX - 1, 2]),
+    ] {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        w.wallet(0);
+        let mut defs = Vec::new();
+        let mut ids = Vec::new();
+        for (i, amount) in rewards.into_iter().enumerate() {
+            let id = format!("rw_wrap{i}");
+            defs.push(rw_quest(&id, 1, &[], amount));
+            w.quest(u64::try_from(i).expect("small") + 1, &id, 0);
+            ids.push(id);
+        }
+        let active: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut state = rw_state(&active);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_currency_cap_err(0, u64::MAX)),
+            "{label}"
+        );
+        assert_eq!(state, state_before, "{label}: state unchanged");
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "{label}: nothing completes, nothing paid"
+        );
+        rw_no_writes(&fx, label);
+    }
+}
+
+/// When one quest's completion reward is refused, no OTHER quest of the same trigger
+/// moves: quest A (two Talk steps) would advance a step and quest B's completion
+/// overflows the stack — in both row orders A's `step_index` stays 0 and
+/// `player_quest` takes no write. The success twins: with room, A advances and B
+/// completes in one call; and quest B whose step requires quest A done (A's row
+/// first) completes in the same call as A.
+///
+/// kills: a check per quest that lets an earlier quest's step advance or completion
+/// land before a later quest's refusal; a two-pass rewrite that evaluates every quest
+/// against the state from before the call (the dependent quest B never completes).
+#[test]
+fn a_refused_quest_reward_advances_no_other_quest() {
+    let defs = [
+        rw_quest("rw_qa", 2, &[], 0),
+        rw_quest("rw_qb", 1, &[(RW_ITEM, 2)], 0),
+    ];
+    for order in [["rw_qa", "rw_qb"], ["rw_qb", "rw_qa"]] {
+        let label = format!("rows {order:?}");
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        w.wallet(7);
+        w.quest(1, order[0], 0);
+        w.quest(2, order[1], 0);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 1);
+        let mut state = rw_state(&order);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(RW_CAP - 1, 2, RW_ITEM)),
+            "{label}"
+        );
+        assert_eq!(
+            fx.writes_to("player_quest"),
+            0,
+            "{label}: no quest row written"
+        );
+        rw_no_writes(&fx, &label);
+        assert_eq!(w.snapshot(), before, "{label}: every row unchanged");
+        assert!(
+            w.quest_rows()
+                .iter()
+                .any(|(id, step)| id == "rw_qa" && *step == 0),
+            "{label}: quest A is still at step 0"
+        );
+        assert_eq!(state, state_before, "{label}: state unchanged");
+
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 2);
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Ok(()),
+            "{label}, with room"
+        );
+        assert_eq!(
+            w.quest_rows(),
+            vec![("rw_qa".to_string(), 1)],
+            "{label}, with room: A advanced, B completed"
+        );
+        assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP), "{label}: B paid 2");
+    }
+
+    let fx = crate::native_host_tests::fixture();
+    let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+    let ctx = fx.ctx();
+    let mut second = rw_quest("rw_second", 1, &[], 7);
+    second.steps[0].conditions = vec![game_core::Condition::QuestDone("rw_first".to_string())];
+    let defs = [rw_quest("rw_first", 1, &[], 5), second];
+    w.wallet(10);
+    w.quest(1, "rw_first", 0);
+    w.quest(2, "rw_second", 0);
+    let mut state = rw_state(&["rw_first", "rw_second"]);
+    assert_eq!(
+        apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+        Ok(())
+    );
+    assert!(
+        w.quest_rows().is_empty(),
+        "both quests completed in one call"
+    );
+    assert_eq!(w.balance(), Some(10 + 5 + 7), "both rewards paid exactly");
+    assert!(
+        state.done_quests.contains("rw_first") && state.done_quests.contains("rw_second"),
+        "both quests are done in the state"
+    );
+}
+
+/// Through the `talk` reducer with shipped content (the elder `elder_oak`, tree
+/// `elder_oak_talk`, whose entry node only sets a flag, and an active `quest_001`):
+/// a balance one past room for the content reward is refused with the balance-cap
+/// text and NOTHING is written — no conversation, no dialogue state, no quest, wallet
+/// or stack change. With exactly room, talk completes the quest: the balance lands on
+/// `MAX_BALANCE`, the quest row is gone and the conversation row is present (the
+/// completion acknowledgement). Through `open_dialogue` (the dialogue half of `talk`)
+/// with a tree whose entry node auto-grants one item onto a full stack, the talk is
+/// refused with zero writes; with room it opens the conversation and grants exactly.
+///
+/// kills: a clamping quest reward in `talk` (the quest completes and the balance
+/// saturates); the conversation upsert or the state write before the reward check;
+/// a clamping auto-effect grant; the acknowledgement broken (the conversation row
+/// missing after a completion).
+#[test]
+fn talk_refuses_a_reward_over_the_cap_before_any_write() {
+    let shipped = crate::content_cache::cached_quest_defs().expect("shipped quest RON parses");
+    let reward = shipped
+        .iter()
+        .find(|d| d.id == "quest_001")
+        .expect("shipped quest_001")
+        .reward
+        .currency;
+    assert!(reward > 0, "fixture: quest_001 pays currency");
+
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, "elder_oak", "elder_oak_talk");
+        w.quest(900, "quest_001", 0);
+        w.wallet(RW_MAX_BALANCE - reward + 1);
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            fx.run_as(RW_ME, |ctx| talk(ctx, RW_NPC)),
+            Err(rw_currency_cap_err(RW_MAX_BALANCE - reward + 1, reward)),
+            "quest_001's reward onto one past room"
+        );
+        assert_eq!(w.snapshot(), before, "refused talk: every row unchanged");
+        rw_no_writes(&fx, "refused talk");
+
+        assert_eq!(w.wallets.remove(RW_ME), 1, "fixture: the caller's wallet");
+        w.wallet(RW_MAX_BALANCE - reward);
+        assert_eq!(fx.run_as(RW_ME, |ctx| talk(ctx, RW_NPC)), Ok(()));
+        assert_eq!(
+            w.balance(),
+            Some(RW_MAX_BALANCE),
+            "the reward lands exactly on the cap"
+        );
+        assert!(w.quest_rows().is_empty(), "quest_001's row is gone");
+        assert_eq!(
+            w.convs.rows().iter().map(rw_bytes).collect::<Vec<_>>(),
+            vec![rw_bytes(&rw_conv("greeting"))],
+            "the conversation row is present beside the completion"
+        );
+    }
+
+    const TREE: &str = "rw_gift_tree";
+    let trees = [rw_tree(
+        TREE,
+        vec![rw_node(
+            "gift",
+            vec![game_core::Condition::NotFlag("rw_gifted".to_string())],
+            vec![
+                DialogueEffect::SetFlag("rw_gifted".to_string()),
+                DialogueEffect::GrantItem(RW_ITEM, 1),
+            ],
+            vec![rw_choice(vec![], None)],
+        )],
+    )];
+    let fx = crate::native_host_tests::fixture();
+    let w = rw_world(&fx, RW_NPC_ID, TREE);
+    w.wallet(7);
+    w.only_stack(RW_ME, RW_ITEM, RW_CAP);
+    let npc_row = rw_npc_row(RW_NPC_ID, TREE);
+    let before = w.snapshot();
+    fx.reset_writes();
+    assert_eq!(
+        fx.run_as(RW_ME, |ctx| open_dialogue(ctx, RW_ME, &npc_row, &trees[0])),
+        Err(rw_item_cap_err(RW_CAP, 1, RW_ITEM)),
+        "an auto-granted item onto a full stack"
+    );
+    assert_eq!(
+        w.snapshot(),
+        before,
+        "refused auto grant: every row unchanged"
+    );
+    rw_no_writes(&fx, "refused auto grant");
+
+    w.only_stack(RW_ME, RW_ITEM, RW_CAP - 1);
+    assert_eq!(
+        fx.run_as(RW_ME, |ctx| open_dialogue(ctx, RW_ME, &npc_row, &trees[0])),
+        Ok(())
+    );
+    assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP), "granted exactly 1");
+    assert_eq!(
+        w.convs.rows().iter().map(rw_bytes).collect::<Vec<_>>(),
+        vec![rw_bytes(&rw_conv("gift"))],
+        "the conversation opened at the entry node"
+    );
+}
+
+/// A quest-definition load error is logged, never a refusal: `apply_quest_trigger`
+/// with `Err` definitions returns `Ok`, writes nothing and leaves the state alone,
+/// even with a quest row that would complete. A `player_quest` row whose id has no
+/// definition is skipped, never a refusal: beside it a completable quest completes
+/// and pays, and the unknown row is left as it was.
+///
+/// kills: the load error propagated as `Err` (every talk refused after a bad
+/// republish); an unknown quest id answered with `Err` or treated as complete
+/// (its row deleted); processing stopped at the unknown row.
+#[test]
+fn missing_quest_definitions_refuse_nothing() {
+    let fx = crate::native_host_tests::fixture();
+    let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+    let ctx = fx.ctx();
+    let defs = [rw_quest("rw_q1", 1, &[], 5)];
+    w.wallet(7);
+    w.quest(1, "rw_q1", 0);
+
+    let mut state = rw_state(&["rw_q1"]);
+    let state_before = state.clone();
+    let before = w.snapshot();
+    fx.reset_writes();
+    assert_eq!(
+        apply_quest_trigger(
+            &ctx,
+            RW_ME,
+            &rw_talked(),
+            &mut state,
+            Err("quest RON did not parse".to_string()),
+        ),
+        Ok(()),
+        "a definition load error is not a refusal"
+    );
+    assert_eq!(state, state_before, "load error: state unchanged");
+    assert_eq!(w.snapshot(), before, "load error: every row unchanged");
+    rw_no_writes(&fx, "load error");
+
+    assert_eq!(w.quests.remove(RW_ME), 1, "fixture: the caller's quest row");
+    w.quest(1, "rw_gone", 0);
+    w.quest(2, "rw_q1", 0);
+    let mut state = rw_state(&["rw_gone", "rw_q1"]);
+    assert_eq!(
+        apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+        Ok(()),
+        "an unknown quest id is skipped, not refused"
+    );
+    assert_eq!(
+        w.quest_rows(),
+        vec![("rw_gone".to_string(), 0)],
+        "the unknown row is untouched; the known quest completed"
+    );
+    assert_eq!(w.balance(), Some(12), "the known quest paid exactly 5");
+    assert!(
+        state.done_quests.contains("rw_q1") && state.active_quests.contains("rw_gone"),
+        "the known quest is done, the unknown one still active"
+    );
 }
