@@ -914,8 +914,14 @@ period stops a deleting account from laundering assets to a confederate. The exp
 caps and tiers bound storage abuse, with anonymous identities limited before account
 holders.
 
+**Export scope.** The export is for the data held about the person. Game state is
+included where a query on existing tables provides it; it is assembled from the tables
+the game already keeps, and nothing is stored for the export's sake. A row that only
+duplicates exported state, or exists only between sessions, may stay out with its
+reason in the manifest's `basis` (`last_position` is one).
+
 **Rules out.** An unclassified table; deleting before the grace period ends; an export
-path any other player can read.
+path any other player can read; a table or column added only so the export can carry it.
 
 ## Battles run on one engine at a time; the tactical cutover was a flip, not a toggle
 
