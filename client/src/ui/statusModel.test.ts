@@ -405,7 +405,7 @@ describe('conversationEndReason: the advance refusals that end a conversation (q
     // conversation the server never refused for distance, zone or a missing NPC).
     const others = [
       'cannot advance dialogue during an ongoing battle',
-      'account deletion requested; new trades, battles and challenges are unavailable',
+      'account deletion requested; this action is unavailable until the deletion is cancelled',
       'no active conversation',
       'not joined',
       'character not found',

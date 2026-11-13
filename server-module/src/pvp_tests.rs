@@ -1340,6 +1340,138 @@ fn nh_accept_challenge_refuses_a_format_0_or_deleting_challenger_and_keeps_it_pe
     }
 }
 
+/// `who`'s open NPC conversation, `npc` its NPC entity: distinct per owner so a row that moved or
+/// was rewritten cannot pass for another's.
+fn pv_conversation(who: PvId, npc: u64) -> crate::schema::PlayerConversation {
+    crate::schema::PlayerConversation {
+        owner_identity: who,
+        npc_entity_id: npc,
+        current_node_id: format!("node-{npc}"),
+    }
+}
+
+/// Every `player_conversation` row as canonical bytes, sorted.
+fn pv_conversation_rows(t: &PvTacticsWorld<'_>) -> Vec<Vec<u8>> {
+    let mut rows: Vec<Vec<u8>> = t
+        .conversations
+        .rows()
+        .iter()
+        .map(crate::tactics::tactics_tests::enc)
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// Both parties' Active accounts, so the accept passes the ranked gate whether or not the
+/// deployment enforces it.
+fn pv_seed_ranked_accounts(w: &PvWorld<'_>) {
+    for who in [pv_a(), pv_b()] {
+        w.accounts
+            .seed(&crate::accounts::new_account_row(who, String::new(), 0));
+    }
+}
+
+/// An accepted challenge ends the open NPC conversation of the acceptor (B) and of the challenger
+/// (A) in the transaction that starts their battle; a bystander's (D's) conversation is untouched.
+///
+/// kills: the conversation delete missing; deleted for the acceptor only (the caller) or the
+/// challenger only; deleted for the wrong identities (a bystander's row taken); every
+/// conversation cleared table-wide; the row rewritten instead of deleted.
+#[test]
+fn accept_challenge_ends_both_parties_open_conversations() {
+    let fx = pv_fixture();
+    let (w, t) = pv_accept_world(&fx, 1);
+    pv_seed_ranked_accounts(&w);
+    for row in [
+        pv_conversation(pv_a(), 1),
+        pv_conversation(pv_b(), 2),
+        pv_conversation(pv_d(), 3),
+    ] {
+        t.conversations.seed(&row);
+    }
+    assert_eq!(
+        pv_conversation_rows(&t).len(),
+        3,
+        "fixture: three open conversations"
+    );
+
+    let got = fx.run_as_at(pv_b(), pv_at(PV_T0 + 5_000), |ctx| {
+        super::accept_challenge(ctx, 100, vec![21])
+    });
+    assert_eq!(got, Ok(()), "the accept succeeds");
+    let bystander = crate::tactics::tactics_tests::enc(&pv_conversation(pv_d(), 3));
+    let battles: Vec<(PvId, PvId)> = w
+        .battles
+        .rows()
+        .iter()
+        .map(|b| (b.player_identity, b.opponent_identity))
+        .collect();
+    assert_eq!(
+        battles,
+        vec![(pv_a(), pv_b())],
+        "the accept opened the challenger-vs-acceptor battle"
+    );
+    assert_eq!(
+        pv_conversation_rows(&t),
+        vec![bystander],
+        "the battle's start ends the acceptor's and the challenger's conversations; only the \
+         bystander's stays, byte-identical"
+    );
+}
+
+/// A refused accept starts no battle and ends nobody's conversation: refusals by the accept's own
+/// guards (the acceptor busy, an empty party) and by the tactical writer after them (a format-0
+/// challenge, a deletion-gated challenger) all leave every `player_conversation` row in place.
+///
+/// kills: the conversations deleted before the guards; deleted before the battle start, where
+/// the writer's own refusal (no rollback on this host) leaves them gone.
+#[test]
+fn a_refused_accept_challenge_keeps_both_parties_conversations() {
+    type Arm = (&'static str, u8, Vec<u64>, PvSetup);
+    let arms: Vec<Arm> = vec![
+        ("an empty party", 1, vec![], |_| {}),
+        ("a pre-bt-14 format 0 challenge", 0, vec![21], |_| {}),
+        ("a deletion-gated challenger", 1, vec![21], |w| {
+            assert_eq!(w.accounts.remove(pv_a()), 1);
+            w.deleting(pv_a());
+        }),
+        ("the acceptor busy", 1, vec![21], |w| {
+            w.battles.seed(&pv_battle(
+                900,
+                pv_b(),
+                PV_WILD,
+                PvOutcome::Ongoing,
+                &[30],
+                &[30],
+            ))
+        }),
+    ];
+    for (label, format, party, extra) in arms {
+        let fx = pv_fixture();
+        let (w, t) = pv_accept_world(&fx, format);
+        pv_seed_ranked_accounts(&w);
+        extra(&w);
+        for row in [
+            pv_conversation(pv_a(), 1),
+            pv_conversation(pv_b(), 2),
+            pv_conversation(pv_d(), 3),
+        ] {
+            t.conversations.seed(&row);
+        }
+        let before = pv_conversation_rows(&t);
+        let got = fx.run_as_at(pv_b(), pv_at(PV_T0 + 5_000), |ctx| {
+            super::accept_challenge(ctx, 100, party.clone())
+        });
+        assert!(got.is_err(), "{label}: the accept must be refused");
+        assert_eq!(
+            pv_conversation_rows(&t),
+            before,
+            "{label}: a refused accept starts no battle and must leave every conversation in \
+             place"
+        );
+    }
+}
+
 /// EV-pvp-handshake-guards (decline / cancel): decline is target-only, cancel is
 /// challenger-only, both Pending-only; refusals write nothing; success deletes exactly
 /// that challenge and exactly its reaper.

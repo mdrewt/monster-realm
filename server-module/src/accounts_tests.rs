@@ -7428,14 +7428,16 @@ mod acct_nh {
             "player_formation",
             "last_position",
         ];
-        // Left under the guest on purpose: presence / session rows die with the
+        // Never moved onto the claimer: presence / session rows die with the
         // connection (guard 9), live interactions block the claim (guard 10),
         // telemetry and the export store are not game data, and the account is
-        // the claimer's own. bt-7: a live tactical battle's anchor row blocks
-        // the claim (guard 10), a finished battle's per-battle rows belong to
-        // that battle (GC-bound), and `battle_summary` is telemetry. A trade
-        // session is a live interaction like a trade offer: the claim deletes the
-        // claimer's sessions instead of moving any onto it.
+        // the claimer's own. A live tactical battle's anchor row blocks the
+        // claim (guard 10). A finished battle is not moved either: the claim
+        // erases its per-battle rows and writes the tombstone identity over the
+        // guest's side of its `battle` and `battle_summary` rows, as the
+        // deletion cascade does. A trade session is a live interaction like a
+        // trade offer: the claim deletes the claimer's sessions instead of
+        // moving any onto it.
         const NOT_REKEYED: [&str; 16] = [
             "player",
             "player_conversation",
@@ -10200,6 +10202,298 @@ mod acct_nh {
             "[bt7/rekey-formation] a bystander's formation never moves"
         );
         assert_eq!(w.formation.rows().len(), 2, "a move, not a copy");
+    }
+
+    /// The battles a guest leaves behind at claim time, all finished: `g`'s four battles
+    /// against `p` (`seed_tactical_population`: `g` as side A, as side B, a wild battle and a
+    /// practice battle, each with staging, plus `g`'s formation), `p`'s four against `x` (battles
+    /// without `g`, plus `p`'s formation), battle 2031 that the CLAIMER `c` played against `g`,
+    /// and two anchor-only battles in which nothing but the settled anchor names `g` (2035: `g`
+    /// is `player_identity`; 2036: `opponent_identity`), each holding its tactical row, its
+    /// secret and `p`'s deploy + clock rows. Returns the ids of every battle `g` was a side of.
+    fn seed_guest_battles(
+        w: &W<'_>,
+        g: Identity,
+        c: Identity,
+        p: Identity,
+        x: Identity,
+    ) -> Vec<u64> {
+        seed_tactical_population(w, g, p, 1);
+        seed_tactical_population(w, p, x, 2);
+        seed_tactical_battle(w, 2031, c, Some(g));
+        seed_staging(w, 2031, c, Some(g));
+        let anchor_only = [(2035, g, p, SideRow::B), (2036, p, g, SideRow::A)];
+        for (battle_id, player, opponent, peer_side) in anchor_only {
+            let mut anchor = battle_row(player, opponent);
+            anchor.battle_id = battle_id;
+            anchor.state.outcome = game_core::BattleOutcome::SideAWins;
+            w.battle.seed(&anchor);
+            w.tactical.seed(&tactical_row(battle_id, BattleKind::Pvp));
+            w.secret.seed(&secret_row(battle_id));
+            w.deploy.seed(&deploy_row(battle_id, peer_side, p));
+            w.clock.seed(&clock_row(battle_id, peer_side, p));
+        }
+        vec![2011, 2012, 2013, 2014, 2031, 2035, 2036]
+    }
+
+    /// A completed guest claim leaves no `battle` or `battle_summary` row naming the retired
+    /// guest: each row survives with the guest's column(s) holding the tombstone identity and
+    /// the other side untouched (the claimer's side included), every summary telemetry column
+    /// byte-identical; every per-battle tactical row of a battle the guest was a side of is
+    /// gone, the other participant's rows included; every row of a battle without the guest is
+    /// byte-identical. The claim's own effects still hold: the guest's formation arrives under
+    /// the claimer and the code is spent.
+    ///
+    /// Kills: the claim writing nothing to the guest's battles; only the tactical erase run
+    /// (the anchors still name the guest); only the anchor tombstone run (the
+    /// tactical rows survive, the summaries name the guest); the tombstone run BEFORE the
+    /// erase (the anchor-only battles 2035 / 2036 are then unreachable and keep their rows);
+    /// either helper run BEFORE the re-key (the erase deletes the guest's formation, so none
+    /// arrives under the claimer); the helpers run for the claimer instead of the guest (battle
+    /// 2031's claimer side becomes the tombstone); the guest's battles re-keyed onto the claimer
+    /// instead of tombstoned; a summary deleted or a telemetry column rewritten; a battle
+    /// without the guest touched.
+    #[test]
+    fn guest_claim_tombstones_the_guests_terminal_battle_and_summary_rows() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x91);
+        let c = id(0x92);
+        let p = id(0x93);
+        let x = id(0x94);
+        let tomb = crate::TOMBSTONE_IDENTITY;
+        let wild = crate::WILD_IDENTITY;
+        let secret = code('7');
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest disconnects");
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        let guest_battles = seed_guest_battles(&w, g, c, p, x);
+
+        let before = per_battle_rows(&w);
+        for (table, rows) in &before {
+            assert!(
+                rows.iter().any(|(bid, _)| guest_battles.contains(bid))
+                    && rows.iter().any(|(bid, _)| !guest_battles.contains(bid)),
+                "fixture: `{table}` must hold rows of the guest's battles AND of battles without \
+                 it, or the erase and keep halves below are vacuous"
+            );
+        }
+        let swap = |who: Identity| if who == g { tomb } else { who };
+        let battles_want: Vec<crate::schema::Battle> = w
+            .battle
+            .rows()
+            .into_iter()
+            .map(|mut b| {
+                b.player_identity = swap(b.player_identity);
+                b.opponent_identity = swap(b.opponent_identity);
+                b
+            })
+            .collect();
+        let summaries_want: Vec<BattleSummary> = w
+            .summary
+            .rows()
+            .into_iter()
+            .map(|mut s| {
+                s.player_identity = swap(s.player_identity);
+                s.opponent_identity = swap(s.opponent_identity);
+                s
+            })
+            .collect();
+        let guest_formation = formation_row(g, 1);
+
+        assert_eq!(
+            signed_in(&fx, c, T0 + 1_000, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "a destination with no game data completes the claim of a guest whose battles are \
+             all finished"
+        );
+
+        let after = per_battle_rows(&w);
+        for ((table, was), (_, now)) in before.iter().zip(after.iter()) {
+            let survivors: Vec<u64> = now
+                .iter()
+                .map(|(bid, _)| *bid)
+                .filter(|bid| guest_battles.contains(bid))
+                .collect();
+            assert!(
+                survivors.is_empty(),
+                "[claim-erase] `{table}` still holds rows of the retired guest's battles \
+                 {survivors:?}: every tactical row of a battle the guest was a side of goes, the \
+                 other participant's included"
+            );
+            let kept: Vec<&(u64, Vec<u8>)> = was
+                .iter()
+                .filter(|(bid, _)| !guest_battles.contains(bid))
+                .collect();
+            let now_refs: Vec<&(u64, Vec<u8>)> = now.iter().collect();
+            assert_eq!(
+                now_refs, kept,
+                "[claim-keep] `{table}`: every row of a battle without the guest must be \
+                 byte-identical after the claim"
+            );
+        }
+
+        let battle_sides = |battle_id: u64| -> Vec<(Identity, Identity)> {
+            w.battle
+                .rows()
+                .into_iter()
+                .filter(|b| b.battle_id == battle_id)
+                .map(|b| (b.player_identity, b.opponent_identity))
+                .collect()
+        };
+        let summary_sides = |battle_id: u64| -> Vec<(Identity, Identity)> {
+            w.summary
+                .rows()
+                .into_iter()
+                .filter(|s| s.battle_id == battle_id)
+                .map(|s| (s.player_identity, s.opponent_identity))
+                .collect()
+        };
+        for (battle_id, want, has_summary) in [
+            (2011, (tomb, p), true),
+            (2012, (p, tomb), true),
+            (2013, (tomb, wild), true),
+            (2014, (tomb, tomb), true),
+            (2031, (c, tomb), true),
+            (2035, (tomb, p), false),
+            (2036, (p, tomb), false),
+            (2021, (p, x), true),
+            (2022, (x, p), true),
+            (2023, (p, wild), true),
+            (2024, (p, p), true),
+        ] {
+            assert_eq!(
+                battle_sides(battle_id),
+                vec![want],
+                "[claim-battle-sides] battle {battle_id}'s anchor survives once, with exactly the \
+                 retired guest's side(s) holding the tombstone and every other side untouched"
+            );
+            let summary_want = if has_summary { vec![want] } else { vec![] };
+            assert_eq!(
+                summary_sides(battle_id),
+                summary_want,
+                "[claim-summary-sides] battle {battle_id}'s summary survives once, with exactly \
+                 the retired guest's side(s) holding the tombstone and every other side untouched"
+            );
+        }
+        assert_eq!(
+            encs(&w.battle.rows()),
+            encs(&battles_want),
+            "[claim-battle-rows] the battle rows survive with only the guest's identity columns \
+             rewritten; nothing else in any row changes and none is deleted"
+        );
+        assert_eq!(
+            encs(&w.summary.rows()),
+            encs(&summaries_want),
+            "[claim-summary-rows] the summary rows survive with only the guest's identity columns \
+             rewritten; every telemetry column is byte-identical and none is deleted"
+        );
+
+        let formations_of = |who: Identity| {
+            encs(
+                &w.formation
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner_identity == who)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            formations_of(c),
+            encs(&[PlayerFormation {
+                owner_identity: c,
+                monster_ids: guest_formation.monster_ids.clone(),
+            }]),
+            "[claim-formation] the guest's formation still arrives under the claimer"
+        );
+        assert!(
+            formations_of(g).is_empty(),
+            "[claim-formation] no formation stays under the retired guest"
+        );
+        assert_eq!(
+            formations_of(p),
+            encs(&[formation_row(p, 2)]),
+            "[claim-formation] a bystander's formation never moves"
+        );
+        assert!(
+            w.claim.rows().is_empty(),
+            "[claim-spent] the claim code is consumed"
+        );
+        let claimed_from = w
+            .account
+            .rows()
+            .into_iter()
+            .find(|a| a.identity == c)
+            .and_then(|a| a.claimed_from);
+        assert_eq!(
+            claimed_from,
+            Some(g),
+            "[claim-spent] the claimer's account records the claimed guest"
+        );
+    }
+
+    /// A refused guest claim writes nothing to the guest's battles: with the same finished
+    /// battles seeded, a claim refused because the destination already plays (guard 11, the
+    /// last guard) leaves every `battle`, `battle_summary`, per-battle tactical and formation
+    /// row byte-identical and the code unspent.
+    ///
+    /// Kills: the erase or the tombstone run above the claim's guards (this host keeps a
+    /// refused reducer's writes, so a write before the refusal stays visible).
+    #[test]
+    fn a_refused_guest_claim_leaves_the_guests_battle_rows_untouched() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x95);
+        let c = id(0x96);
+        let p = id(0x97);
+        let x = id(0x98);
+        let secret = code('8');
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest disconnects");
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        w.formation.seed(&formation_row(c, 9));
+        seed_guest_battles(&w, g, c, p, x);
+        let snapshot = |w: &W<'_>| {
+            (
+                per_battle_rows(w),
+                encs(&w.battle.rows()),
+                encs(&w.summary.rows()),
+                encs(&w.formation.rows()),
+                encs(&w.claim.rows()),
+            )
+        };
+        let before = snapshot(&w);
+
+        assert_eq!(
+            signed_in(&fx, c, T0 + 1_000, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Err("already has game data".to_string()),
+            "a destination that already plays is refused"
+        );
+        assert!(
+            snapshot(&w) == before,
+            "[claim-refused] a refused claim wrote to the guest's battle, summary, tactical, \
+             formation or claim rows"
+        );
     }
 
     /// BT7.4 — a `player_formation` row is game data: `account_has_game_data`
