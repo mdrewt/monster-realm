@@ -1974,10 +1974,10 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 //
 // HONEST LIMITS, stated once for the block. The source pins read text, never
 // behaviour. The executed matrix reads behaviour but stops at the first guard
-// PAST the gate: `Fixture::table` keys rows by the indexed column, so the
-// `u64`-keyed `character` index is never seeded, an unregistered index yields
-// no rows in this host, and every write syscall ABORTS the process (uncatchable,
-// so `#[should_panic]` is not available). What it proves is that a
+// PAST the gate, the heal-location lookup: the `heal_location_row` index is
+// never registered, an unregistered index yields no rows in this host, and
+// every write syscall ABORTS the process (uncatchable, so `#[should_panic]` is
+// not available). What it proves is that a
 // deletion-gated caller is REFUSED exactly where an admitted one is let
 // through — not that a wallet moved.
 // ===========================================================================
@@ -2038,7 +2038,6 @@ fn rb80_seed_deleting_stranger(
 /// EXACTLY rather than as any-error: otherwise a regression in the joined check
 /// (which returns a different error) would masquerade as a pass in all three
 /// admitted states and the whole positive control would go quietly vacuous.
-/// Ordering relative to the spend is owned by the source pin above.
 ///
 /// kills: M1 (the dropped gate) · M5 (a discarded verdict) · M8 (an unreachable
 /// placement) · M11 (a constant reject in `guards` — the three admitted states)
@@ -3066,8 +3065,8 @@ mod nh {
     /// cooldown and cost guards.
     ///
     /// kills:
-    ///   - zone-only (the shipped code before this slice): (3, 0), (0, -3), (2, 1)
-    ///     and (-1, -2) in the heal zone are healed.
+    ///   - a reach check that compares only the zones: (3, 0), (0, -3), (2, 1) and
+    ///     (-1, -2) in the heal zone are healed.
     ///   - `<` for `<=`: (2, 0) and (0, -2) are healed.
     ///   - Chebyshev distance: (2, 1) and (-1, -2) are Chebyshev 2, Manhattan 3.
     ///   - the zone dropped: the heal tile's coordinates and (1, 0) in zone 5.

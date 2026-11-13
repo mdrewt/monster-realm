@@ -1771,9 +1771,9 @@ fn nh_escrowed_monster_is_refused_by_every_guarded_reducer() {
 /// EV-trade-escrow-guards (item/currency half): escrowed quantities shrink what the
 /// owner may spend. Each row escrows exactly the holding (refused, store untouched) and
 /// then one less, which runs to Ok on a writable store. For `sell` and `buy`, A stands
-/// beside a keeper of shop 3 (`nh_shopfront`). `heal_party`'s currency-escrow branch is unreachable with shipped
-/// content (no heal location charges currency), so its guard rides on the
-/// `escrowed_currency_amount_*` unit tests above.
+/// beside a keeper of shop 3 (`nh_shopfront`). `heal_party`'s currency-escrow branch is
+/// unreachable with shipped content (no heal location charges currency), so its guard
+/// rides on the `escrowed_currency_amount_*` unit tests above.
 #[test]
 fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
     const ITEM_REFUSAL: &str = "item is in an active trade";

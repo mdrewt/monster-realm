@@ -5,10 +5,12 @@
 use proptest::prelude::*;
 
 use crate::interact::{
-    interact_candidates, within_interact_range, within_npc_reach, InteractEntity, InteractKind,
+    interact_candidates, npc_offers_shop, within_interact_range, within_npc_reach, InteractEntity,
+    InteractKind,
 };
-use crate::npc::rules::in_talk_range;
-use crate::types::{Direction, TilePos};
+use crate::npc::rules::{in_talk_range, npc_decide};
+use crate::types::{Direction, NpcInteraction, TilePos};
+use crate::world::TileMap;
 use crate::TALK_RANGE;
 
 const ZONE: u32 = 3;
@@ -1005,5 +1007,116 @@ proptest! {
             talkable_from_the_disc,
             "pos {:?} home {:?} radius {}", pos, home, r
         );
+    }
+}
+
+/// The reach rule covers the real wander rule: an NPC walked by `npc_decide` itself
+/// (from home, on an open 41 x 41 floor, for 400 consecutive ticks, several NPC ids and
+/// radii 0, 1, 2 and 7) never stands on a tile from which some tile in talk range is out
+/// of `within_npc_reach` of its home. For every radius > 0 the walk visits more than one
+/// tile, so a frozen NPC cannot pass it.
+///
+/// kills: a reach bound narrower than the disc `npc_decide` actually lets an NPC wander
+/// (`<` for `<=`, the radius dropped), and a change to `npc_decide`'s own bound (a wider
+/// or differently shaped wander area) that the reach rule does not follow.
+#[test]
+fn within_npc_reach_covers_every_tile_npc_decide_walks_an_npc_to() {
+    let rows: Vec<String> = vec![".".repeat(41); 41];
+    let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let map = TileMap::from_rows(ZONE, &rows).expect("an all-floor map");
+    let home = TilePos { x: 20, y: 18 };
+    let talk = i32::try_from(TALK_RANGE).expect("TALK_RANGE fits an i32");
+    for radius in [0u8, 1, 2, 7] {
+        for npc_id in [1u64, 7, 42, 1_000_003] {
+            let mut current = home;
+            let mut facing = Direction::South;
+            let mut visited = std::collections::HashSet::new();
+            for tick in 0..400u64 {
+                visited.insert(current);
+                for dx in -talk..=talk {
+                    for dy in -talk..=talk {
+                        let tile = TilePos {
+                            x: current.x + dx,
+                            y: current.y + dy,
+                        };
+                        if in_talk_range(tile, current) {
+                            assert!(
+                                within_npc_reach(ZONE, tile, ZONE, home, radius),
+                                "npc {npc_id} radius {radius} tick {tick}: standing on \
+                                 {current:?}, talk-range tile {tile:?} is out of reach of \
+                                 home {home:?}"
+                            );
+                        }
+                    }
+                }
+                if let Some(d) = npc_decide(current, home, radius, facing, npc_id, tick, &map) {
+                    let next = current.step(d);
+                    if map.is_walkable(next) {
+                        current = next;
+                    }
+                    facing = d;
+                }
+            }
+            if radius > 0 {
+                assert!(
+                    visited.len() > 1,
+                    "npc {npc_id} radius {radius}: the walk never left home"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `npc_offers_shop`: `Shop(id)` offers shop `id` (and "any shop"); `Dialogue` and
+// `Heal(_)` offer no shop at all
+// ---------------------------------------------------------------------------
+
+/// `Shop(id)` offers exactly shop `id` and counts as "any shop", for ids 0, 3 and
+/// `u32::MAX`; it does not offer a neighbouring or distant id.
+///
+/// kills: always-false; `!=` for `==`; `None` treated as "no shop"; a comparison that
+/// ignores the id (always-true on `Shop`).
+#[test]
+fn npc_offers_shop_is_true_for_its_own_shop_id_and_for_any_shop() {
+    for id in [0u32, 3, u32::MAX] {
+        assert!(
+            npc_offers_shop(NpcInteraction::Shop(id), Some(id)),
+            "Shop({id}) offers shop {id}"
+        );
+        assert!(
+            npc_offers_shop(NpcInteraction::Shop(id), None),
+            "Shop({id}) offers some shop"
+        );
+        for other in [id.wrapping_add(1), id.wrapping_sub(1), id ^ 0x8000_0000] {
+            assert!(
+                !npc_offers_shop(NpcInteraction::Shop(id), Some(other)),
+                "Shop({id}) does not offer shop {other}"
+            );
+        }
+    }
+}
+
+/// `Dialogue` offers no shop, `None` included; `Heal(n)` offers no shop either, not
+/// even shop `n` (heal-location ids and shop ids are different id spaces), for ids 0, 3
+/// and `u32::MAX`.
+///
+/// kills: always-true; a `Heal(n)` arm that matches shop `n`; a `Dialogue` or `Heal`
+/// arm that offers on `None`.
+#[test]
+fn npc_offers_shop_is_false_for_dialogue_and_heal_npcs() {
+    for shop in [None, Some(0u32), Some(3), Some(u32::MAX)] {
+        assert!(
+            !npc_offers_shop(NpcInteraction::Dialogue, shop),
+            "Dialogue offers no shop ({shop:?})"
+        );
+    }
+    for n in [0u32, 3, u32::MAX] {
+        for shop in [None, Some(n), Some(n.wrapping_add(1))] {
+            assert!(
+                !npc_offers_shop(NpcInteraction::Heal(n), shop),
+                "Heal({n}) offers no shop ({shop:?})"
+            );
+        }
     }
 }

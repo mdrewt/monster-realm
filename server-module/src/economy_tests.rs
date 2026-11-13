@@ -1341,7 +1341,8 @@ mod ctl16_shop_battle_guard {
         w
     }
 
-    /// Wallets, stacks, stock and items (`EcWorld::snapshot`) plus the trade offers.
+    /// Wallets, stacks, stock, items, characters and NPCs (`EcWorld::snapshot`) plus the
+    /// trade offers.
     fn snapshot(w: &EcWorld<'_>) -> Vec<Vec<u8>> {
         let mut all = w.snapshot();
         all.push(to_vec(&w.offers.rows()).unwrap());
@@ -1487,8 +1488,8 @@ fn rc_world(fx: &EcFixture) -> EcWorld<'_> {
 /// refusals of a call that would otherwise succeed.
 ///
 /// kills:
-///   - reach never checked (the shipped code before this slice): the first far tile around
-///     shop 3's keeper buys and sells.
+///   - a `buy` / `sell` that reads no position at all: the first far tile around shop 3's
+///     keeper buys and sells.
 ///   - `<` for `<=`: (5, 0), (-4, -1), (2, -3) and (-1, 4) from home are at exactly reach 5
 ///     and must be accepted.
 ///   - the wander radius dropped or passed as 0 (reach 2): the same four tiles.
