@@ -2505,12 +2505,20 @@ fn a_dialogue_reward_at_a_full_stack_is_refused_and_the_dialogue_does_not_advanc
 /// - an effect-list grant followed by a quest reward of the same item sums (the quest
 ///   reward sees the stack the grant left);
 /// - a currency reward of `u64::MAX`, and two rewards that sum past `u64::MAX`, are
-///   refused.
+///   refused;
+/// - the cap is checked against the RAW stack: a stack at cap - 1 with 5 of it locked
+///   in a confirmed trade session refuses a reward of 2, through a quest and through
+///   a `GrantItem`;
+/// - a zero-quantity grant asks for no room even on a stack already over the cap,
+///   alone and beside a grant of another item that fits.
 ///
 /// kills: a per-grant check (each grant fits on its own); a check per quest that
 /// runs between that quest's writes; a sum that wraps (`u64::MAX - 1 + 2` reads 0
 /// and passes); a zero grant that writes a row or refuses at the cap; a refusal that
-/// leaves the earlier `StartQuest` row behind.
+/// leaves the earlier `StartQuest` row behind; headroom computed on the stack net of
+/// trade locks (`item_count - escrowed_item_qty_of` admits the reward and the grant
+/// clamps it); a zero-quantity grant checked against the cap (an over-cap stack
+/// refuses the whole call).
 #[test]
 fn a_reward_is_checked_against_the_caps_as_a_whole() {
     // Two GrantItems in one effect list.
@@ -2678,6 +2686,148 @@ fn a_reward_is_checked_against_the_caps_as_a_whole() {
             "effect then quest: the quest stays active"
         );
         rw_no_writes(&fx, "effect then quest");
+    }
+
+    // The cap reads the RAW stack: cap - 1 held, 5 of it locked by a confirmed
+    // session side, a reward of 2.
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let sessions =
+            fx.table::<crate::schema::TradeSession>("trade_session", "opener", |r| r.opener);
+        let _ = fx.table::<crate::schema::TradeSession>("trade_session", "partner", |r| r.partner);
+        let _ = fx.table::<crate::schema::TradeOffer>("trade_offer", "initiator", |r| r.initiator);
+        let _ = fx
+            .table::<crate::schema::TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let locked_side = game_core::trading::TradeSessionOffer {
+            monster_ids: vec![],
+            items: vec![game_core::TradeItem {
+                item_id: RW_ITEM,
+                qty: 5,
+            }],
+            currency: 0,
+            cards: vec![],
+        };
+        let empty_side = game_core::trading::TradeSessionOffer {
+            monster_ids: vec![],
+            items: vec![],
+            currency: 0,
+            cards: vec![],
+        };
+        sessions.seed(&crate::schema::TradeSession {
+            session_id: 1,
+            opener: RW_ME,
+            partner: RW_OTHER,
+            opener_offer: locked_side,
+            partner_offer: empty_side,
+            opener_confirmed: true,
+            partner_confirmed: false,
+            revision: 1,
+            created_at_ms: 0,
+        });
+        let ctx = fx.ctx();
+        let defs = [rw_quest("rw_ql", 1, &[(RW_ITEM, 2)], 0)];
+        w.wallet(7);
+        w.quest(1, "rw_ql", 0);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP - 1);
+        assert_eq!(
+            crate::guards::escrowed_item_qty_of(&ctx, RW_ME, RW_ITEM),
+            5,
+            "fixture: the session lock is visible to the lock reader"
+        );
+
+        let mut state = rw_state(&["rw_ql"]);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(RW_CAP - 1, 2, RW_ITEM)),
+            "a quest reward of 2 onto a raw cap - 1, 5 of it locked"
+        );
+        assert_eq!(state, state_before, "locked stack, quest: state unchanged");
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "locked stack, quest: the quest stays active, stack and wallet unchanged"
+        );
+        rw_no_writes(&fx, "locked stack, quest");
+        assert_eq!(
+            w.quest_rows(),
+            vec![("rw_ql".to_string(), 0)],
+            "locked stack: the quest row is still there"
+        );
+
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &PlayerDialogueState::default(),
+                &[DialogueEffect::GrantItem(RW_ITEM, 2)]
+            ),
+            Err(rw_item_cap_err(RW_CAP - 1, 2, RW_ITEM)),
+            "a GrantItem of 2 onto a raw cap - 1, 5 of it locked"
+        );
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "locked stack, grant: every row unchanged"
+        );
+        rw_no_writes(&fx, "locked stack, grant");
+    }
+
+    // A zero grant onto a stack already over the cap.
+    {
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let state = PlayerDialogueState::default();
+        w.wallet(7);
+        w.only_stack(RW_ME, RW_ITEM, RW_CAP + 7);
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &state,
+                &[DialogueEffect::GrantItem(RW_ITEM, 0)]
+            ),
+            Ok(()),
+            "a zero grant onto an over-cap stack asks for no room"
+        );
+        assert_eq!(w.snapshot(), before, "over-cap zero grant: nothing changed");
+        assert_eq!(
+            fx.writes_to("inventory"),
+            0,
+            "over-cap zero grant: no inventory write"
+        );
+
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &state,
+                &[
+                    DialogueEffect::GrantItem(RW_ITEM, 0),
+                    DialogueEffect::GrantItem(RW_OTHER_ITEM, 4),
+                ]
+            ),
+            Ok(()),
+            "a zero grant beside a fitting grant of another item"
+        );
+        assert_eq!(
+            w.count(RW_ME, RW_OTHER_ITEM),
+            Some(4),
+            "the other item is granted exactly"
+        );
+        assert_eq!(
+            w.count(RW_ME, RW_ITEM),
+            Some(RW_CAP + 7),
+            "the over-cap stack is unchanged"
+        );
     }
 
     // Currency rewards that would wrap a u64.

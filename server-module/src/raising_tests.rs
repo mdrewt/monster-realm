@@ -3768,6 +3768,9 @@ mod nh {
     ///   - an unconfirmed side counted as a lock, or the partner's side read as the
     ///     caller's.
     ///   - `>=` for `>` (a lock leaving exactly cost_qty free is refused).
+    ///   - the lock check run only when the stack holds MORE than cost_qty: a caller
+    ///     holding exactly cost_qty, all of it locked, is healed and the locked stack
+    ///     consumed (the exact-cost rows, session and offer locks alike).
     ///   - the lock compared without the item id (a lock on FOOD blocks NOT_FOOD).
     #[test]
     fn heal_party_refuses_a_cost_item_locked_by_a_confirmed_trade_session() {
@@ -3803,6 +3806,17 @@ mod nh {
             let cw = cost_world(&fx, 2, 3);
             lock(&cw);
             cw.refused(&fx, ITEM_IN_TRADE, &format!("cost 2, 3 held, {label}"));
+        }
+        // The exact-cost boundary: A holds exactly the cost and every unit is locked.
+        for (label, lock) in locked {
+            let fx = fixture();
+            let cw = cost_world(&fx, 2, 2);
+            lock(&cw);
+            cw.refused(
+                &fx,
+                ITEM_IN_TRADE,
+                &format!("cost 2, exactly 2 held, {label}"),
+            );
         }
 
         let free: [(&str, Lock); 4] = [
