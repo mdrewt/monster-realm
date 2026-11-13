@@ -249,16 +249,15 @@ vi.mock('./ui/toast', async (importOriginal) => {
 vi.mock('./ui/profileView', () => ({ ProfileView: H.makeStub('ProfileView') }));
 
 // bt-12: what the stubbed `tactics_map` was asked for (every mapId, oldest first). Map 17 is the one
-// map the stub gives TWO spawn cells (every other map has the shipped three) and map 19 FOUR (bt-12 B,
-// plan REV B2.11).
-// ts-6b-4.2 (named intentional change): the wild deploy slot count is whatever the stubbed
+// map the stub gives TWO spawn cells (every other map has the shipped three) and map 19 FOUR.
+// The wild deploy slot count is whatever the stubbed
 // `tactics_deploy_slots(mapId)` answers (game-core's `deploy_slots`, the count the server enforces),
-// no longer `min(tuning.max_pack, spawn_a.length)` read off `tactics_map`. `slotCalls` records every
+// never a count read off `tactics_map`. `slotCalls` records every
 // mapId it is asked; `slots` is its answer per map (any other map: 3) — map 17 answers 2, map 19
 // answers 2 (neither its four spawn cells nor a literal 3), map 23 (three stubbed spawn cells)
 // answers 1. A case may change `slots` before its first deploy render and must restore it.
-// `tuning` is what the stubbed `tactics_tuning` answers (`autopass_forfeit` 7: the PvP strike pips,
-// ts-6b-4.3); `nextInit` answers `tactics_next_initiative` and `nextInitCalls` records its
+// `tuning` is what the stubbed `tactics_tuning` answers (`autopass_forfeit` 7: the PvP strike
+// pips); `nextInit` answers `tactics_next_initiative` and `nextInitCalls` records its
 // arguments; `overlayQueries` records every `tactics_overlays` query (its `viewer` is the shell's
 // `mySide`).
 const T12 = vi.hoisted(() => ({
@@ -280,7 +279,7 @@ const T12 = vi.hoisted(() => ({
 // bt-12 (named intentional change, plan §5 / REV 2b B1): this file's OWN factory gains the 14
 // `tactics_*` exports the rules port binds (`bindTacticsRules` refuses a pkg missing any), so the
 // lazily bound port works in the BT12 cases below; `tactics_map` answers 3 `spawn_a` cells (2 on map
-// 17, 4 on map 19) and records the map asked for; `tactics_deploy_slots` (ts-6b-4.2) answers
+// 17, 4 on map 19) and records the map asked for; `tactics_deploy_slots` answers
 // `T12.slots`; the others answer minimal shapes nothing in increment A reads.
 // The shared test-util harness is not edited.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
@@ -5494,8 +5493,7 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     const deployTitle = deploy.querySelector('[data-testid="battle-title"]');
     owner('Deploying', deployTitle, deploy);
     expect(deploy.getAttribute('role'), 'Deploying: the deploy root is the dialog').toBe('dialog');
-    // ts-6b-4.2 (named intentional change): the slot count is asked of `tactics_deploy_slots`, not
-    // read off `tactics_map`. Was: `T12.mapCalls` contains 13.
+    // The slot count is asked of `tactics_deploy_slots`, never read off `tactics_map`.
     expect(T12.slotCalls, 'the slot count is asked for the tactical row`s own map (13)').toContain(
       13,
     );
@@ -6076,8 +6074,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     };
 
     // --- the pack cap: a deploy slot count of 2 on a FOUR-spawn map sizes the deploy at two -----
-    // ts-6b-4.2 (named intentional change): the cap is `tactics_deploy_slots(mapId)`, no longer
-    // `min(tuning.max_pack, spawns)`. Was: `T12.tuning.max_pack = 2`.
+    // The cap is whatever `tactics_deploy_slots(mapId)` answers: 2 here, on a four-spawn map.
     T12.slots = { ...T12.slots, [T12.fourSpawnMap]: 2 };
     T12.slotCalls.length = 0;
     const S = 2n ** 60n + 1n;
@@ -7843,8 +7840,7 @@ describe('bt-17: no 1v1 renderer — a row-less anchor shows nothing (BT17.1, BT
     // as a blank; `??` where `||` is needed (the empty species name never falls through); an
     // unknown species printed as "undefined"; the fallback id taken from the species id (#2, #3)
     // instead of the monster id.
-    // ts-6b-4.2 (named intentional change): four deploy slots on the four-spawn map come from
-    // `tactics_deploy_slots`. Was: `T12.tuning.max_pack = 4`.
+    // Four deploy slots on the four-spawn map: `tactics_deploy_slots` answers 4 here.
     T12.slots = { ...T12.slots, [T12.fourSpawnMap]: 4 };
     await bootReady();
     server(1000);

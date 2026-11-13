@@ -85,8 +85,8 @@ const SLOW = { timeout: 120_000 };
  *  (`recruitTargets`), bound after `tactics_ai_plan`. Was: 13. bt-12 B (NAMED INTENTIONAL CHANGE,
  *  plan §2.2 "EXPORT_NAMES 14 → 16, a pkg missing either throws at bind"): +`tactics_tuning`
  *  (`tuning`) and +`tactics_next_initiative` (`nextInitiative`), bound last; the port's type is
- *  `TacticsClientRules`. Was: 14 (a fake pkg of the 14 no longer binds). ts-6b-4.2:
- *  +`tactics_deploy_slots` (`deploySlots`), bound last. Was: 16. */
+ *  `TacticsClientRules`. Was: 14 (a fake pkg of the 14 no longer binds). */
+// `tactics_deploy_slots` (`deploySlots`) is bound last, after `tactics_next_initiative`.
 const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof TacticsClientRules])[] = [
   ['tactics_map', 'map'],
   ['tactics_fresh_budget', 'freshBudget'],
@@ -924,7 +924,7 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
       // bt-12 B (named intentional change, plan §2.2): the two client-rules methods.
       ['tuning', () => tp.tuning()],
       ['nextInitiative', () => tp.nextInitiative(blank, 'A')],
-      // ts-6b-4.2: the deploy slot count.
+      // The deploy slot count.
       ['deploySlots', () => tp.deploySlots(1)],
     ];
     expect(
@@ -2773,7 +2773,7 @@ describe('tactics rules port: the recruit targets (BT11.1, REV 5 A26)', () => {
 // --- bt-12 B (BT12.1): the tuning, the next round's initiative, the view-model mappers -------------
 //
 // SOURCE OF TRUTH: plan memory/projects/monster-realm-bt-12-plan-b.md §2.1 / §2.2 as amended by REV B2.5
-// (the three pure mappers live here), with ts-6b-4's shape: `TacticsTuningOut` is
+// (the three pure mappers live here). `TacticsTuningOut` is
 // `{ surge_start_round, wild_round_cap, autopass_forfeit }` and the deploy slot count is its own
 // export, `tactics_deploy_slots(map_id)`.
 

@@ -8,8 +8,8 @@
 // every accepted submit, turn amber at 10 s and red at 5 s, and strike pips (0–4) SHALL sit by each
 // player's name"); plan memory/projects/monster-realm-bt-15-plan.md REV 3 §1 BT15.2 as amended by
 // §8 REV 3.1 (fraction rounded to 2 decimals, `data-fraction` 0..100); the tester brief's API freeze
-// (client/src/tactics/clock.ts); ts-6b-4.3 (the pip count is the input's `strikesMax` — the loaded
-// tuning's `autopass_forfeit` — carried on every StrikesVM; no client constant).
+// (client/src/tactics/clock.ts). The pip count is the input's `strikesMax` (the loaded tuning's
+// `autopass_forfeit`), carried on every StrikesVM; no client constant.
 //
 // DOM CONTRACT PINNED HERE (the freeze): the ring is the ONE child
 // `span.tactics-clock-ring[role=img][data-band][data-fraction=<round(fraction*100)>]` of the one
@@ -557,7 +557,7 @@ describe('clock: the DOM (bt-15 B, BT15.2)', () => {
     // WRONG IMPL KILLED: a painter or clamp that keeps a literal 4 (STRIKES_MAX); the clamp at the
     // input's max but the painter at another (or the reverse: 9 strikes painted 9 hit of 7); a
     // painter that reads the max from module state set by clockVM instead of the view it paints
-    // (the hand-built view below never went through clockVM); a label with the old max; a strip
+    // (the hand-built view below never went through clockVM); a label with a stale max; a strip
     // memoised on the players' names and strikes alone (the same players at a new max kept at 7).
     const paintedPips = (
       host: HTMLElement,

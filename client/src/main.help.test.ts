@@ -48,11 +48,10 @@ const H = vi.hoisted(() => ({
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
 }));
 
-// bt-12 B (named intentional change, BT12.2 / R-bt-12-DEPLOYHINT): the factory gains the
-// `tactics_*` exports the rules port binds (`bindTacticsRules` refuses a pkg missing any), so a
-// Deploying battle's deploy panel can render here; nothing else in this file reads them. ts-6b-4:
-// 17 exports — `tactics_deploy_slots` (three slots) joins, and the tuning carries `autopass_forfeit`
-// (4) instead of `max_pack`.
+// The factory carries the 17 `tactics_*` exports the rules port binds (`bindTacticsRules` refuses
+// a pkg missing any), so a Deploying battle's deploy panel can render here; nothing else in this
+// file reads them. `tactics_deploy_slots` answers three slots and the tuning's `autopass_forfeit`
+// is 4.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
   ...wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
   tactics_map: () => ({

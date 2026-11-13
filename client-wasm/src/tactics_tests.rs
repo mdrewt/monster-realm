@@ -2150,7 +2150,7 @@ fn bt11_type_factor_matches_chart() {
 // SOURCE OF TRUTH: memory/projects/monster-realm-bt-12-plan-b.md §2.1 as amended by REV B2.5 / B2.6
 // (`tuning_out_of` is pure and tested with distinct values) and F4 (the next round's priority is
 // `priority_for_round(this, 2)`: game-core's alternation applied from the CURRENT side, never a
-// restated flip), with ts-6b-4's shape: `TacticsTuningOut` is `{ surge_start_round, wild_round_cap,
+// restated flip). `TacticsTuningOut` is `{ surge_start_round, wild_round_cap,
 // autopass_forfeit }` (the deploy slot count is `deploy_slots_of`, not a tuning field). Names start
 // `bt12_` (the BT12.1 CHECK filters `test(/bt12_/)`).
 
@@ -2223,7 +2223,7 @@ fn bt12_tuning_out_mirrors_the_loaded_tuning() {
     );
 }
 
-/// ts-6b-4.3: `TacticsTuningOut.autopass_forfeit` is the tuning's own `autopass_forfeit` — over a
+/// `TacticsTuningOut.autopass_forfeit` is the tuning's own `autopass_forfeit` — over a
 /// hand-built tuning whose forfeit (7) equals no other `u8` field of that tuning (DESIGN's u8
 /// fields are 6, 2, 2, 1, 2, 4, 2, 3, 6, 6, 0, 2, 3, 4, 5, 4, 5, 3), over the loaded tuning, and
 /// through `tuning_out()`.
@@ -2275,7 +2275,7 @@ fn tuning_out_carries_autopass_forfeit() {
     );
 }
 
-/// ts-6b-4.2: `deploy_slots_of(id)` is game-core's `deploy_slots` over the content map `id`, for
+/// `deploy_slots_of(id)` is game-core's `deploy_slots` over the content map `id`, for
 /// every shipped map; an unknown id (4242, `u32::MAX`) is refused with an error naming it — the
 /// refusals are what tell an export that ignores `map_id` apart, since every shipped map has three
 /// side-A cells.

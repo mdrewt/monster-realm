@@ -546,7 +546,7 @@ fn generate_encounter_reports_the_first_failure_in_declaration_order_bt4_7() {
 }
 
 // ===========================================================================
-// ts-6b-4.2 — the deploy slot count
+// The deploy slot count
 // ===========================================================================
 
 /// An unvalidated 7×7 map with `a` side-A cells and `b` side-B cells (all `(0, 0)`: only the
@@ -559,7 +559,7 @@ fn map_with_spawn_counts(a: usize, b: usize) -> BattleMapDef {
     }
 }
 
-/// ts-6b-4.2: `deploy_slots` is `min(MAX_PACK, spawn_a.len())`, counted without narrowing: 0, 1,
+/// `deploy_slots` is `min(MAX_PACK, spawn_a.len())`, counted without narrowing: 0, 1,
 /// 2, 3, 4, 255, 256, 258 and 300 side-A cells answer 0, 1, 2, 3, 3, 3, 3, 3, 3. Every case's
 /// `spawn_b` has a length whose `min(3, len)` differs from the expected answer (4 cells when
 /// `spawn_a` has 0 or 1, else 1 cell), so the side-B count never decides it. Every shipped map

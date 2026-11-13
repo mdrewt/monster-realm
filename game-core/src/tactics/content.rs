@@ -1,5 +1,5 @@
-//! Tactical content (bt-6) — the SIDECAR registries keyed by id, their join, a unit's kit
-//! ([`unit_kit`]), and the content lints.
+//! Tactical content — the SIDECAR registries keyed by id, their join, a unit's kit ([`unit_kit`]),
+//! and the content lints.
 //!
 //! The tactical data does not add fields to `SkillDef` / `Species` / `ItemDef` / `ZoneDef`: a new
 //! field on those structs breaks ~100 hand-built struct literals and the `encounter` table round

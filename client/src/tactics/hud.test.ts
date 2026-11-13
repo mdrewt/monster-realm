@@ -8,7 +8,7 @@
 // block). `infoBoxes` is pure; `renderInfoBoxes` paints a hand-built InfoBoxesVM, so the DOM tests
 // do not depend on infoBoxes.
 //
-// ts-6b-4.4: the pip count is the caller's `apMax` (the shell passes the rules port's fresh-budget
+// The pip count is the caller's `apMax` (the shell passes the rules port's fresh-budget
 // AP); the six-pip cases pass `apMax: 6`.
 //
 // DOM CONTRACT PINNED HERE BEYOND THE FREEZE TEXT: the AP count label (`tactics.hud.ap`, ap = the

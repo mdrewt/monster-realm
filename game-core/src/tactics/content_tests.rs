@@ -2055,10 +2055,10 @@ fn tactics_ron_parts_are_non_empty_sorted_and_load_rows_bt6_6() {
 }
 
 // ===========================================================================
-// ts-6b-4.1 — the battle_unit join: `unit_kit`
+// The battle_unit join: `unit_kit`
 // ===========================================================================
 
-/// ts-6b-4.1: `unit_kit` takes the id and affinity from the species row, the base speed, movement
+/// `unit_kit` takes the id and affinity from the species row, the base speed, movement
 /// class and `[light, heavy]` from the kit row, and the level and stats from its arguments.
 ///
 /// FIXTURE: every source differs from every other — kit base speed 117, species base speed 63,

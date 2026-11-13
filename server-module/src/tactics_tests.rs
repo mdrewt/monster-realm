@@ -6967,7 +6967,7 @@ fn tactics_content_zone_finds_the_zone_with_that_id_mutw3() {
     );
 }
 
-/// ts-6b-4.1: the server's `battle_unit` join is game-core's `tactics::unit_kit` — for every
+/// The server's `battle_unit` join is game-core's `tactics::unit_kit` — for every
 /// content species with a kit (game-core's `build_kits` over the loaded registries is the roster),
 /// at a level and stats that are not the species' own; an unknown species is the documented `Err`.
 ///
