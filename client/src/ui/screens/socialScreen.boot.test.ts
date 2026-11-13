@@ -265,7 +265,6 @@ function server(at: number): void {
     entityId: EID,
     name: 'P',
     online: true,
-    lastInputSeq: 0n,
   });
   opts.store.upsertCharacter(
     {
@@ -296,7 +295,7 @@ function otherPlayer(
   tileY: number,
   online = true,
 ): void {
-  opts.store.upsertPlayer({ identity, entityId, name, online, lastInputSeq: 0n });
+  opts.store.upsertPlayer({ identity, entityId, name, online });
   opts.store.upsertCharacter(
     {
       entityId,

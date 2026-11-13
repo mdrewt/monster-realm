@@ -268,7 +268,7 @@ function makeBattleFor(
 }
 
 function makePlayer(): StorePlayer {
-  return { identity: H.identity, entityId: 1n, name: 'Player', online: true, lastInputSeq: 0n };
+  return { identity: H.identity, entityId: 1n, name: 'Player', online: true };
 }
 
 /** The ring events this gate reasons about, projected to STABLE fields only. */

@@ -173,7 +173,6 @@ function seedOwnCharacter(): void {
     entityId: 7n,
     name: 'P',
     online: true,
-    lastInputSeq: 0n,
   });
   store.upsertCharacter(
     {

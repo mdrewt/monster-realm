@@ -183,9 +183,9 @@ const inv = (invId: bigint, itemId: number, count: number, ownerIdentity = ME): 
 });
 
 const PLAYERS: readonly StorePlayer[] = [
-  { identity: ME, entityId: 1n, name: 'Me', online: true, lastInputSeq: 0n },
-  { identity: BOB, entityId: 2n, name: 'Bob', online: true, lastInputSeq: 0n },
-  { identity: CAROL, entityId: 3n, name: '', online: true, lastInputSeq: 0n },
+  { identity: ME, entityId: 1n, name: 'Me', online: true },
+  { identity: BOB, entityId: 2n, name: 'Bob', online: true },
+  { identity: CAROL, entityId: 3n, name: '', online: true },
 ];
 
 function input(over: Partial<TradeSessionInput> = {}): TradeSessionInput {

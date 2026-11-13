@@ -385,7 +385,6 @@ function server(t: number, s: { x: number; y: number; ack: number }): void {
     entityId: EID,
     name: 'P',
     online: true,
-    lastInputSeq: BigInt(s.ack),
   });
   opts.store.upsertCharacter(
     {
@@ -2879,7 +2878,7 @@ function placePlayer(
   t: number,
   online = true,
 ): void {
-  opts.store.upsertPlayer({ identity, entityId, name, online, lastInputSeq: 0n });
+  opts.store.upsertPlayer({ identity, entityId, name, online });
   opts.store.upsertCharacter(
     {
       entityId,

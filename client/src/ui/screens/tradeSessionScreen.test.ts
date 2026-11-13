@@ -88,7 +88,7 @@ function input(sessions: readonly StoreTradeSession[], over: Partial<TradeSessio
     sessions,
     identity: ME,
     sessionId: SID,
-    players: [{ identity: BOB, entityId: 2n, name: 'Bob', online: true, lastInputSeq: 0n }],
+    players: [{ identity: BOB, entityId: 2n, name: 'Bob', online: true }],
     ownMonsters: [mon(13n, 2, 'Cyd'), mon(11n, 0, 'Ash'), mon(12n, 1, 'Bry', 0)],
     speciesMap: new Map([[1, { name: 'Sprout' }]]),
     itemDefs: new Map(),
@@ -710,9 +710,7 @@ describe('tradeSessionScreen — viewModel(ctx) over the store (ts-4.4)', () => 
     const base: Record<string, unknown> = {
       allTradeSessions: () => [sess()],
       ongoingBattle: () => ({ partyMonsterIds: [13n], opponentMonsterIds: [] }),
-      allPlayers: () => [
-        { identity: BOB, entityId: 2n, name: 'Bob', online: true, lastInputSeq: 0n },
-      ],
+      allPlayers: () => [{ identity: BOB, entityId: 2n, name: 'Bob', online: true }],
       ownMonsters: () => [mon(13n, 2, 'Cyd'), mon(11n, 0, 'Ash'), mon(12n, 1, 'Bry', 0)],
       speciesMap: () => new Map([[1, { name: 'Sprout' }]]),
       itemDefs: () => new Map(),

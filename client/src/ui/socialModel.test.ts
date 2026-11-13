@@ -369,14 +369,8 @@ const ME_EID = 1n;
 const DAN = 'dd'.repeat(32);
 const EVE = 'ee'.repeat(32);
 
-function person(
-  identity: string,
-  name: string,
-  entityId: bigint,
-  online = true,
-  lastInputSeq = 0n,
-): StorePlayer {
-  return { identity, name, entityId, online, lastInputSeq };
+function person(identity: string, name: string, entityId: bigint, online = true): StorePlayer {
+  return { identity, name, entityId, online };
 }
 
 function at(entityId: bigint, tileX: number, tileY: number, zoneId = 0): StoreCharacter {

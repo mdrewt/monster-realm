@@ -267,7 +267,6 @@ function server(): void {
     entityId: EID,
     name: 'P',
     online: true,
-    lastInputSeq: 0n,
   });
   opts.store.upsertCharacter(
     {

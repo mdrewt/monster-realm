@@ -944,7 +944,7 @@ describe('Predictor: monotonic prediction (ADR-0013 smoothness)', () => {
 // ================================================================================
 describe('M8.8e §A: reconnect re-seed (seedSeq)', () => {
   it('first post-reconnect enqueue seq is > server acked seq and survives reconcile', () => {
-    // Scenario: fresh predictor, reconnect where server's last_input_seq = 500.
+    // Scenario: fresh predictor, reconnect where the server's acked seq = 500.
     // seedSeq(500) raises #nextSeq to 500 so the next #record yields seq 501.
     // reconcile(ackedSeq=500) drops pending with seq <= 500; seq=501 > 500 → survives.
     //
@@ -956,7 +956,7 @@ describe('M8.8e §A: reconnect re-seed (seedSeq)', () => {
     // Initial seed reconcile (server baseline, empty queue, nothing acked yet).
     p.reconcile(baseline(5, 5, 0), [], 0, 0);
 
-    // Simulate reconnect: server reports last_input_seq = 500.
+    // Simulate reconnect: the server reports acked seq = 500.
     p.seedSeq(500);
 
     // Enqueue one move post-reconnect.

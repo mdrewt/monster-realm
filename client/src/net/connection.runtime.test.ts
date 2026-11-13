@@ -1212,7 +1212,6 @@ const wsPlayer = (entityId: bigint = WS_E, identity: { toHexString(): string } =
   entityId,
   name: 'Tester',
   online: true,
-  lastInputSeq: 0n,
 });
 const wsChar = (entityId: bigint, zoneId: number, tileX = 2, tileY = 2) => ({
   entityId,
