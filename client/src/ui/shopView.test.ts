@@ -2142,4 +2142,25 @@ describe('ShopView ts-6b-8: batch renders keep nodes; tab switches keep focus', 
     expect(document.activeElement, 'focus on the title stays on the title').toBe(title);
     removeOverlay(overlay);
   });
+
+  it('ts-6b-8 lens: a rebuild that destroys the focused Sell button moves focus to the Sell list', () => {
+    // WRONG IMPL KILLED: a rebuild that always refocuses the Buy list (whichever list held the
+    // destroyed button), leaving a Sell-tab keyboard user on the wrong list.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+    view.render(ts6b8Shop());
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    const sellBtn = ts6b8Buttons('shop-inventory')[0] as HTMLElement;
+    sellBtn.focus();
+    expect(document.activeElement, 'precondition: focus on the Sell button').toBe(sellBtn);
+
+    view.render(ts6b8Shop({ sell0: { count: 4 } }));
+    expect(sellBtn.isConnected, 'precondition: the rebuild destroyed the focused button').toBe(
+      false,
+    );
+    expect(document.activeElement, 'focus is not lost to the body').not.toBe(document.body);
+    expect(document.activeElement).toBe(document.getElementById('shop-inventory'));
+    removeOverlay(overlay);
+  });
 });
