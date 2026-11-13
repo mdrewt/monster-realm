@@ -81,6 +81,7 @@ export const HIDDEN_TYPES = [
   'PvpAction', // an opponent's pending PvP action
   'PlayerWallet',
   'HealCooldown',
+  'LastPosition', // where an account's character stood at its last disconnect
   'PlayerDialogueStateRow',
   'PlaytestEvent',
   'AccountDeletionReaperSchedule',

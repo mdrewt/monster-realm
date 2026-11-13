@@ -228,7 +228,8 @@ client read path at all: `monster` (IVs, EVs, nature), `encounter` (spawn weight
 tactical seed), `battle_summary` (telemetry), `battle_action` (secret PvP picks),
 `trade_session_snapshot` (the review copy of each monster offered in a trade session,
 genes included), `move_intent` (each character's undrained input queue and seq guard;
-`movement_tick` publishes a copy on the public `character` row), `heal_cooldown`,
+`movement_tick` publishes a copy on the public `character` row), `last_position` (where
+an account's character stood at its last disconnect), `heal_cooldown`,
 `guest_claim`, `player_session`.
 
 **Why.** Hidden stats, item stock, balances and a pending PvP pick are competitive
@@ -312,8 +313,8 @@ other than `movement_tick`; a tick branch that holds an intent row and does not 
 ## An empty zone does no work; no state depends on a tick having run
 
 **Decision.** A zone's `movement_tick` is scheduled only while a player's character is in the zone.
-Entering arms it (`movement::arm_zone_tick`, from `join_game` and the tick's warp arm; one row per
-zone at most). The tick that finds no player's character in its zone resets the zone's ambient state
+Entering arms it (`movement::arm_zone_tick`, from `join_game` for the zone the character starts in
+and from the tick's warp arm; one row per zone at most). The tick that finds no player's character in its zone resets the zone's ambient state
 and removes its own schedule row, so every way of leaving — walking out through a warp,
 disconnecting, timing out, account deletion — ends in the same code path one tick later. State is one
 of three kinds, and the kind decides what an empty zone does with it:
@@ -355,6 +356,65 @@ tick, an effect that expires after N ticks of an unwatched zone); elapsed-time c
 zone is entered; a second schedule row for a zone; disarming a zone from the paths that remove a
 character instead of from the tick; resetting anything a player caused; arming every zone at
 `init` or `sync_content`.
+
+## A session resumes where it left off
+
+**Decision.** A returning account's character appears on the zone, tile and facing its last
+character had when the account's last connection closed. The position is kept in the private
+`last_position` table, one row per identity (`server-module/src/schema.rs`), owned by `movement`:
+
+- **Saved at the last disconnect only.** `on_disconnect` calls `movement::save_last_position` as it
+  deletes the character, after the battle, trade and challenge force-resolves. That is the one
+  place a character is destroyed while its account lives on. `movement_tick` and the move reducers
+  never touch the table. A disconnect while another connection of the identity is live deletes
+  nothing and saves nothing.
+- **Consumed at join.** `join_game` reads the row and deletes it (`movement::take_start`), so a row
+  exists only while the account has no character and a position is never stored twice.
+- **First join.** An identity with no row starts on the authored spawn (`game_core::spawn`, zone 0,
+  facing South).
+- **One fallback rule.** The saved position is used when the saved zone still has a map and the tile
+  is walkable in it (`game_core::can_resume_at`). Otherwise the character starts on the world spawn
+  facing South. A zone that was removed, a tile that is now a wall, water or scenery, and a tile
+  outside a resized map all take that one path; the row is consumed either way.
+- **A warp tile is a valid place to resume.** A warp fires on the step onto its tile, and a warp's
+  arrival tile is the tile of the warp back, so a player who has just changed zone stands on one.
+- **Another character on the tile is ignored.** Characters do not block each other anywhere:
+  `apply_move` asks only whether the tile is walkable, and `join_game` has always put every new
+  player on the same spawn tile.
+- **Battles, trades and conversations.** What those systems do on a disconnect is unchanged. None of
+  them moves or deletes a character, so the position saved is where the character stands: on the
+  grass tile for a wild battle that auto-flees, in place for a PvP forfeit.
+- **The resumed zone is the zone armed.** `join_game` calls `arm_zone_tick` for the zone the
+  character is put in.
+- **Account lifecycle.** The table is classified `Erase` in `DATA_LIFECYCLE_MANIFEST`: the deletion
+  cascade deletes the row (`movement::erase_last_position`). During the deletion grace period
+  `join_game` is refused before it reads the row, so an account whose deletion is cancelled resumes
+  like any other. The guest claim re-keys the row onto the claiming account
+  (`movement::rekey_last_position`), and a row counts as game data for the claim's
+  destination-is-empty guard, so the claimed account's first join puts it where the guest stood.
+- **Not exported.** The row exists only while the account has no character. An account in the game
+  has no row, and the same position is in its exported `character` row. `request_data_export` also
+  accepts an account that has not joined on any connection; that export omits the saved position,
+  which is an accepted limit: the game client joins before it can request an export, and the
+  position is in the next export made from inside the game.
+
+**Why.** With every session starting in zone 0, the spawn zone holds every player's first minutes
+and is the population peak the per-client byte budget has to survive, however the rest of the
+world is spread; and a single-player world sent the player back to the start each time the game was
+opened. Saving at disconnect costs one row write per session. Saving per step would add a private
+write to every step of every player for a value read once per session. Keeping the character row
+itself across a disconnect would leave offline players standing in the world, visible, counted as
+occupying their zone and keeping its tick armed. The world spawn is the fallback because it is the
+one tile content guarantees walkable and connected to the rest of the world (the zone-0
+reachability test in `game-core/src/world.rs`): a search for the nearest walkable tile can pick one
+on the far side of a wall or in a pocket with no way out, and zones have no authored entry point of
+their own. Content invalidating a saved tile is rare, and the cost when it happens is a walk.
+
+**Rules out.** Writing `last_position` from `movement_tick` or a move reducer; a row for an account
+that has a character; a client-readable view of the table; restoring a position mid-session;
+treating occupancy or a warp as a reason to move a resuming character; a second fallback rule or a
+nearest-tile search; a zone-0 assumption in anything that runs after `join_game` (tests and tools
+that need the spawn use a new identity); arming zone 0 for a character that resumed elsewhere.
 
 ## World rows are subscribed by zone
 
@@ -399,12 +459,12 @@ both query strings and the state of the sets; the connection executes what it de
   connection that is being dropped.
 - **Failure.** A rejected own-row or own-zone set is retried in place after 250, 500 and 1000 ms;
   one more rejection sends the connection down the drop-and-reconnect path. One not applied within
-  5 s takes that path at once. That path costs the player their place: the server deletes a
-  character when its last connection ends, so the reconnect joins again at the zone 0 spawn with
-  a new entity id. A link that stalls for 5 s while one of the two sets is pending (at login, or
+  5 s takes that path at once. That path costs the player their character row, not their place:
+  the server deletes a character when its last connection ends and saves where it stood, so the
+  reconnect joins again on the same tile with a new entity id (see "A session resumes where it
+  left off"). A link that stalls for 5 s while one of the two sets is pending (at login, or
   just after a warp) ends that way; the same stall with both sets applied drops nothing and the
-  player stays where they were (measured with a 7 s hold on a 300 ms link: alone on the
-  destination map for 5.2 s, then back at the zone 0 spawn).
+  player stays where they were.
 - **`player` is a world directory.** It stays in the base set, unfiltered: the Players tab, names,
   presence counts and trade and challenge targeting read it.
 
@@ -435,7 +495,8 @@ The other properties this rests on were measured on SpacetimeDB 2.11.0, not assu
   8,400 compared sequences), and an unsubscribe returns the rows it drops as deletes. The store
   needs no re-seeding and no sweep.
 - A rejected set fails only its own handle and subscribing inside a row callback is safe. That is
-  what makes retrying in place possible; a reconnect would respawn the player in zone 0.
+  what makes retrying in place possible; a reconnect replaces the player's character with a new
+  entity.
 - A subscribe and unsubscribe pair costs about 20 µs of the database thread. The linger bounds it to
   one pair per zone per 5 s for a player pacing across a door, who also re-downloads nothing.
 

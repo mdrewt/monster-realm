@@ -4851,6 +4851,19 @@ fn on_disconnect_of_the_last_session_reaches_the_tactical_pvp_forfeit_bt14_5() {
         connection_id: spacetimedb::ConnectionId::from_u128(CONN_B),
         identity: b(),
     });
+    let b_entity = w
+        .players
+        .rows()
+        .into_iter()
+        .find(|p| p.identity == b())
+        .expect("b joined")
+        .entity_id;
+    let stood = w
+        .characters
+        .rows()
+        .into_iter()
+        .find(|c| c.entity_id == b_entity)
+        .expect("b's character");
     fx.run_as_conn_at(b(), CONN_B, None, at(T0 + 9_000), crate::on_disconnect);
     assert_eq!(outcome(&w, live.id), BattleOutcome::SideAWins);
     assert_eq!(
@@ -4863,6 +4876,24 @@ fn on_disconnect_of_the_last_session_reaches_the_tactical_pvp_forfeit_bt14_5() {
     let (win, lose) = first_game_ratings();
     assert_eq!(w.profile(a()), Some((win, 1, 0)));
     assert_eq!(w.profile(b()), Some((lose, 0, 1)));
+    let saved: Vec<(Identity, u32, i32, i32)> = w
+        .last_positions
+        .rows()
+        .iter()
+        .map(|p| (p.owner_identity, p.zone_id, p.tile_x, p.tile_y))
+        .collect();
+    assert_eq!(
+        saved,
+        vec![(b(), stood.zone_id, stood.tile_x, stood.tile_y)],
+        "a PvP forfeit by disconnect saves the leaver's tile, and only the leaver's"
+    );
+    assert!(
+        w.characters
+            .rows()
+            .iter()
+            .any(|c| c.entity_id != stood.entity_id),
+        "the opponent's character stays"
+    );
 }
 
 /// Surge (PvP only): round 9's upkeep takes `max(1, max_hp * 5 * (9 - 8) / 100)` from EVERY living

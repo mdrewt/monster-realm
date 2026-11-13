@@ -2685,10 +2685,11 @@ function reconcileFromStore(): void {
     // still reflects the phantom — self-heals on the next batch reconcile.
     if (own === undefined || player === undefined) return;
 
-    // State-based zone sync — catches reconnect-strand (a character
-    // INSERTED at zone 0 after disconnect-in-zone-1 fires no onUpdate, so the
-    // edge-triggered onOwnWarp never fires; but the zone mismatch IS visible here
-    // on every batch). Also subsumes live-warp: switchZone is idempotent so if
+    // State-based zone sync — catches a character INSERTED in a zone other than
+    // the one drawn (a join that resumes where the last session left, or a rejoin
+    // whose saved zone is gone and starts on the zone 0 spawn): an insert fires no
+    // onUpdate, so the edge-triggered onOwnWarp never fires; but the zone mismatch
+    // IS visible here on every batch. Also subsumes live-warp: switchZone is idempotent so if
     // onOwnWarp already updated rawMap this is a no-op.
     // After switchZone, fall through to reconcile: this seeds the fresh predictor
     // from the authoritative baseline so ownPredictedTile is non-null on the same
@@ -4265,8 +4266,8 @@ function snapshot() {
     art: renderer?.describeArt?.() ?? null,
     setPostStack: (toggles: PostStackToggles) => renderer?.setPostStack({ toggles }),
     // 12.5c-5 proof-of-teeth hook: forcibly set rawMap to zone_map(zoneId) WITHOUT
-    // the zone-switch protocol. Used by zoneSync.spec.ts to simulate "client kept
-    // zone-1 rawMap after a disconnect, but server re-spawned character at zone 0".
+    // the zone-switch protocol. Used by zoneSync.spec.ts to simulate "the client draws
+    // zone 1 while the server holds its character in zone 0".
     // The reconcile listener then sees own.row.zoneId(0) !== rawMap.zone_id(1) and
     // calls switchZone(0), proving the state-based fix. NOT exposed via onOwnWarp or
     // switchZone; test-only. Never used in production paths.
@@ -5154,8 +5155,8 @@ async function main(): Promise<void> {
     },
     // onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);
-    // the reconcile listener's state-based check handles reconnect-strand (character
-    // INSERTED at zone 0 with no onUpdate). Both paths are safe to call: switchZone
+    // the reconcile listener's state-based check handles a character INSERTED in a
+    // zone other than the one drawn (no onUpdate). Both paths are safe to call: switchZone
     // checks rawMap.zone_id before doing any work.
     onOwnWarp: (newZoneId) => {
       switchZone(newZoneId);

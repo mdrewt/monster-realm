@@ -110,9 +110,9 @@ table over `spacetime` SQL and prints aggregate recruit rates only
 
 - The client keeps its token in the tab's `sessionStorage` (`net/authToken.ts`).
   A reload keeps the identity; a new tab or a closed tab means a new identity.
-- A reload keeps monsters, inventory, currency, quests and profile, but not map
-  position: disconnecting deletes the `player` and `character` rows, and `join_game`
-  respawns the player in zone 0.
+- A reload keeps monsters, inventory, currency, quests, profile and map position:
+  disconnecting deletes the `player` and `character` rows and saves where the
+  character stood, and `join_game` puts the new character there.
 - A duplicated tab copies `sessionStorage`, so both tabs share one identity. The
   server resolves battles and trades only when the identity's last connection closes
   (`player_session` in `server-module/src/lib.rs`), so closing one of the two tabs no

@@ -3017,6 +3017,298 @@ mod nh {
         assert_eq!(w.players.rows().len(), 2, "both joined");
     }
 
+    // --- SR11: a session resumes where it left off ---------------------------
+
+    use crate::schema::LastPosition;
+
+    /// The movement world plus what `join_game` needs beyond it: an auto-inc
+    /// `character` key and the `last_position` table.
+    fn sr11_world(fx: &Fixture) -> (World<'_>, Handle<'_, LastPosition>) {
+        let w = world(fx);
+        let _ = fx
+            .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
+        let saved = fx
+            .table::<LastPosition>("last_position", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique();
+        // A monster each, so join_game grants no starter.
+        w.seed_monster(&monster(11, a(), 0));
+        w.seed_monster(&monster(12, b(), 0));
+        (w, saved)
+    }
+
+    fn sr11_saved(who: Identity, zone_id: u32, x: i32, y: i32, facing: Direction) -> LastPosition {
+        LastPosition {
+            owner_identity: who,
+            zone_id,
+            tile_x: x,
+            tile_y: y,
+            facing,
+        }
+    }
+
+    fn sr11_join(fx: &Fixture, who: Identity) -> Result<(), String> {
+        fx.run_as_at(who, at(T0), |ctx| {
+            crate::movement::join_game(ctx, "Ada".to_string())
+        })
+    }
+
+    /// `who`'s character as `(zone, x, y, facing, action)`.
+    fn sr11_stands(w: &World<'_>, who: Identity) -> (u32, i32, i32, Direction, ActionState) {
+        let p = w
+            .players
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .expect("a player row");
+        let c = w.character(p.entity_id);
+        (c.zone_id, c.tile_x, c.tile_y, c.facing, c.action)
+    }
+
+    fn sr11_zones(w: &World<'_>) -> Vec<u32> {
+        w.armed().iter().map(|&(z, _)| z).collect()
+    }
+
+    fn sr11_spawn() -> (u32, i32, i32, Direction, ActionState) {
+        let sp = game_core::spawn();
+        (
+            crate::ZONE_0,
+            sp.x,
+            sp.y,
+            Direction::South,
+            ActionState::Idle,
+        )
+    }
+
+    /// An identity with no saved position starts on the authored spawn of zone
+    /// 0 facing South, and the join writes no saved position, whoever else has
+    /// one.
+    ///
+    /// kills: a start read from another owner's row; a join that saves.
+    #[test]
+    fn sr11_a_first_join_starts_on_the_spawn_and_saves_nothing() {
+        let fx = fixture();
+        let (w, saved) = sr11_world(&fx);
+        let other = sr11_saved(b(), 1, 2, 4, Direction::West);
+        saved.seed(&other);
+        fx.reset_writes();
+        assert_eq!(sr11_join(&fx, a()), Ok(()));
+        assert_eq!(sr11_stands(&w, a()), sr11_spawn());
+        assert_eq!(sr11_zones(&w), vec![crate::ZONE_0]);
+        assert_eq!(fx.writes_to("last_position"), 0, "nothing to consume");
+        assert_eq!(
+            to_vec(&saved.rows()).unwrap(),
+            to_vec(&vec![other]).unwrap(),
+            "another owner's saved position is untouched"
+        );
+    }
+
+    /// A returning identity's character stands on its saved zone, tile and
+    /// facing, Idle; the saved row is consumed; the zone it resumes in is the
+    /// one armed. Another owner's row stays.
+    ///
+    /// kills: the saved row ignored (zone-0 spawn), its facing dropped, the row
+    /// left behind, the wrong owner's row consumed, zone 0 armed instead of (or
+    /// as well as) the resumed zone.
+    #[test]
+    fn sr11_a_returning_join_resumes_on_the_saved_tile_and_arms_that_zone() {
+        let fx = fixture();
+        let (w, saved) = sr11_world(&fx);
+        let other = sr11_saved(b(), 0, 2, 1, Direction::North);
+        saved.seed(&other);
+        saved.seed(&sr11_saved(a(), 1, 2, 4, Direction::West));
+        assert_eq!(sr11_join(&fx, a()), Ok(()));
+        assert_eq!(
+            sr11_stands(&w, a()),
+            (1, 2, 4, Direction::West, ActionState::Idle)
+        );
+        assert_eq!(sr11_zones(&w), vec![1], "only the resumed zone is armed");
+        assert_eq!(
+            to_vec(&saved.rows()).unwrap(),
+            to_vec(&vec![other]).unwrap(),
+            "the joiner's row is consumed and only it"
+        );
+        let p = w.players.rows().into_iter().find(|p| p.identity == a());
+        assert_eq!(
+            w.intent(p.expect("joined").entity_id),
+            (vec![], 0),
+            "the resumed character has its empty intent row"
+        );
+    }
+
+    /// A saved position the current content no longer allows falls back to the
+    /// world spawn facing South, and the row is still consumed: a zone with no
+    /// map, a blocking tile, and a tile off each edge of the map.
+    ///
+    /// kills: the zone check or the walkability check dropped or inverted (the
+    /// character is put in a wall, off the map or in a zone nothing ticks); the
+    /// saved facing kept on the fallback; the invalid row left to be retried.
+    #[test]
+    fn sr11_a_saved_position_content_no_longer_allows_falls_back_to_the_spawn() {
+        let zone1 = crate::content_cache::cached_zone_tile_map(1).expect("zone 1 map");
+        let cases: [(&str, u32, i32, i32); 7] = [
+            ("a zone with no map", 99, 1, 1),
+            ("a wall", 1, 0, 0),
+            ("a rock", 1, 4, 3),
+            ("west of the map", 1, -1, 1),
+            ("north of the map", 1, 1, -1),
+            ("east of the map", 1, zone1.width, 1),
+            ("south of the map", 1, 1, zone1.height),
+        ];
+        assert!(
+            crate::content_cache::cached_zone_tile_map(99).is_err(),
+            "zone 99 has no map"
+        );
+        assert!(
+            !zone1.is_walkable(game_core::TilePos { x: 4, y: 3 }) && zone1.width > 4,
+            "zone 1 (4,3) is an in-bounds blocking tile"
+        );
+        for (label, zone, x, y) in cases {
+            let fx = fixture();
+            let (w, saved) = sr11_world(&fx);
+            saved.seed(&sr11_saved(a(), zone, x, y, Direction::West));
+            assert_eq!(sr11_join(&fx, a()), Ok(()), "{label}");
+            assert_eq!(sr11_stands(&w, a()), sr11_spawn(), "{label}");
+            assert_eq!(sr11_zones(&w), vec![crate::ZONE_0], "{label}");
+            assert!(saved.rows().is_empty(), "{label}: the row is consumed");
+        }
+    }
+
+    /// A warp tile and a tile another character stands on are both resumed on:
+    /// the arrival tile of a warp is the tile of the warp back, and characters
+    /// do not block each other. The resumed character stays in the saved zone.
+    ///
+    /// kills: a warp tile refused or followed at join; occupancy treated as a
+    /// reason to move.
+    #[test]
+    fn sr11_a_warp_tile_and_an_occupied_tile_are_resumed_on() {
+        let (_, warp, _, _) = sr10_warp();
+        let fx = fixture();
+        let (w, saved) = sr11_world(&fx);
+        // b is already standing on the warp's arrival tile.
+        w.join(
+            b(),
+            700,
+            Character {
+                zone_id: warp.to_zone,
+                tile_x: warp.to_tile.x,
+                tile_y: warp.to_tile.y,
+                ..character(700, vec![], ActionState::Idle)
+            },
+        );
+        let map = crate::content_cache::cached_zone_tile_map(warp.to_zone).expect("map");
+        assert!(
+            map.warp_at(warp.to_tile).is_some(),
+            "the arrival tile is itself a warp tile"
+        );
+        saved.seed(&sr11_saved(
+            a(),
+            warp.to_zone,
+            warp.to_tile.x,
+            warp.to_tile.y,
+            Direction::East,
+        ));
+        assert_eq!(sr11_join(&fx, a()), Ok(()));
+        assert_eq!(
+            sr11_stands(&w, a()),
+            (
+                warp.to_zone,
+                warp.to_tile.x,
+                warp.to_tile.y,
+                Direction::East,
+                ActionState::Idle
+            )
+        );
+        let b_stands = sr11_stands(&w, b());
+        assert_eq!(
+            (b_stands.0, b_stands.1, b_stands.2),
+            (warp.to_zone, warp.to_tile.x, warp.to_tile.y),
+            "the character already on the tile is not moved"
+        );
+    }
+
+    /// The saved position is written at disconnect and consumed at join, never
+    /// per step: the three intent reducers and a tick that drains a step, a
+    /// tick that warps and a tick with nothing to do make no write call to
+    /// `last_position`, and a row seeded for the walker is byte-identical after.
+    ///
+    /// kills: a save moved into (or added to) the tick or a move reducer.
+    #[test]
+    fn sr11_moving_never_writes_the_saved_position() {
+        let (zone, warp, start, dir) = sr10_warp();
+        let fx = fixture();
+        let q = qf5_world(&fx);
+        let w = &q.w;
+        let saved = fx
+            .table::<LastPosition>("last_position", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique();
+        let row = sr11_saved(a(), 1, 2, 4, Direction::West);
+        saved.seed(&row);
+        // The walker stands on the warp's approach tile: one step in `dir` warps.
+        let back = match dir {
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        };
+        w.join(
+            a(),
+            1,
+            Character {
+                zone_id: zone,
+                tile_x: start.x,
+                tile_y: start.y,
+                ..character(1, vec![], ActionState::Idle)
+            },
+        );
+        w.ticks.seed(&sr10_row(7, zone));
+        fx.reset_writes();
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| set_move(ctx, MoveInput::Step(back), 1)),
+            Ok(())
+        );
+        assert_eq!(fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 2)), Ok(()));
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| enqueue_move(
+                ctx,
+                MoveInput::Step(dir),
+                3
+            )),
+            Ok(())
+        );
+        let tick = |zone: u32, id: u64, now: i64| {
+            let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+            let sched = MovementTickSchedule {
+                id,
+                zone_id: zone,
+                scheduled_at: ScheduleAt::Time(at(now)),
+            };
+            assert_eq!(
+                fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched)),
+                Ok(())
+            );
+        };
+        tick(zone, 7, T0 + 200);
+        assert_eq!(w.character(1).zone_id, warp.to_zone, "the step warped");
+        assert!(fx.writes_to("character") > 0, "the walk did write rows");
+        // A tick with nothing queued, in the zone the walker is now in.
+        let dest = w
+            .armed()
+            .into_iter()
+            .find(|&(z, _)| z == warp.to_zone)
+            .expect("the destination is armed")
+            .1;
+        tick(warp.to_zone, dest, T0 + 400);
+        // The emptied source zone's disarming tick.
+        tick(zone, 7, T0 + 400);
+
+        assert_eq!(fx.writes_to("last_position"), 0);
+        assert_eq!(to_vec(&saved.rows()).unwrap(), to_vec(&vec![row]).unwrap());
+    }
+
     /// The first shipped warp with a walkable, warp-free approach tile:
     /// `(source zone, warp, approach tile, step direction)`.
     fn sr10_warp() -> (u32, game_core::WarpDef, game_core::TilePos, Direction) {

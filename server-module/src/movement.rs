@@ -25,17 +25,19 @@ use crate::marshal::{
 };
 use crate::raising::accrue_quality_time;
 use crate::schema::{
-    character, encounter, monster, monster_pub, move_intent, npc, player, player_conversation,
-    species_row, Character, MoveIntent, Player, PlayerConversation,
+    character, encounter, last_position, monster, monster_pub, move_intent, npc, player,
+    player_conversation, species_row, Character, LastPosition, MoveIntent, Player,
+    PlayerConversation,
 };
 use crate::tactics::start_wild_tactical;
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::npc::rules::{in_talk_range, npc_step_due};
 use game_core::{
-    apply_move, npc_decide, resolve_encounter, roll_starter, spawn, stepped_onto_grass,
-    ActionState, Direction, Millis, MoveInput, StatBlock, TilePos, MOVE_QUEUE_CAP, STEP_MS,
+    apply_move, can_resume_at, npc_decide, resolve_encounter, roll_starter, spawn,
+    stepped_onto_grass, ActionState, Direction, Millis, MoveInput, StatBlock, TilePos,
+    MOVE_QUEUE_CAP, STEP_MS,
 };
-use spacetimedb::{ReducerContext, ScheduleAt, Table};
+use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -54,9 +56,9 @@ pub struct MovementTickSchedule {
 
 /// Arm `zone_id`'s tick. Idempotent: a zone that already holds a schedule row
 /// keeps that row, so there is never more than one tick per zone per `STEP_MS`.
-/// Called by every path that puts a player's character into a zone (`join_game`,
-/// the tick's warp arm) and by the content sync's reconcile. The scan is over at
-/// most one row per occupied zone.
+/// Called by every path that puts a player's character into a zone (`join_game`
+/// for the zone it starts in, the tick's warp arm) and by the content sync's
+/// reconcile. The scan is over at most one row per occupied zone.
 pub(crate) fn arm_zone_tick(ctx: &ReducerContext, zone_id: u32) {
     if ctx
         .db
@@ -113,9 +115,85 @@ fn reset_npcs_home(ctx: &ReducerContext, zone: u32) {
     }
 }
 
-/// Join: one `player` + one `character` at the spawn + its `move_intent` row + one starter `monster`
+/// Record where `owner`'s character `entity_id` stands, for the next
+/// `join_game`. Called by `on_disconnect` as it deletes the character, which is
+/// the one place a character is destroyed while its account lives on. Writes
+/// nothing when the character row is already gone (an erased account's socket
+/// closing after the cascade).
+pub(crate) fn save_last_position(ctx: &ReducerContext, owner: Identity, entity_id: u64) {
+    let Some(ch) = ctx.db.character().entity_id().find(entity_id) else {
+        return;
+    };
+    // A row already on record for this owner would make the insert a
+    // primary-key conflict, aborting `on_disconnect` with the presence rows
+    // still in place.
+    ctx.db.last_position().owner_identity().delete(owner);
+    ctx.db.last_position().insert(LastPosition {
+        owner_identity: owner,
+        zone_id: ch.zone_id,
+        tile_x: ch.tile_x,
+        tile_y: ch.tile_y,
+        facing: ch.facing,
+    });
+}
+
+/// Where `owner`'s new character starts, consuming the saved position: the
+/// saved zone, tile and facing when that zone still has a map and the tile is
+/// still walkable in it (`game_core::can_resume_at`), otherwise the world spawn
+/// facing South, which is also where an owner with no saved position starts.
+/// The spawn is the one tile content guarantees walkable and connected to the
+/// rest of the world, so a position that content has since invalidated never
+/// leaves the character somewhere it cannot walk out of.
+fn take_start(ctx: &ReducerContext, owner: Identity) -> (u32, TilePos, Direction) {
+    if let Some(saved) = ctx.db.last_position().owner_identity().find(owner) {
+        ctx.db.last_position().owner_identity().delete(owner);
+        let pos = TilePos {
+            x: saved.tile_x,
+            y: saved.tile_y,
+        };
+        let resumes = crate::content_cache::cached_zone_tile_map(saved.zone_id)
+            .is_ok_and(|map| can_resume_at(map, pos));
+        if resumes {
+            return (saved.zone_id, pos, saved.facing);
+        }
+    }
+    (ZONE_0, spawn(), Direction::South)
+}
+
+/// True if `owner` has a saved position (a REKEY-policy table, so it counts as
+/// game data for `accounts::account_has_game_data`).
+pub(crate) fn has_last_position(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db
+        .last_position()
+        .owner_identity()
+        .find(owner)
+        .is_some()
+}
+
+/// Re-key the guest's saved position onto the claimer, so the claimed account's
+/// first `join_game` resumes where the guest stood. The claim flow refuses a
+/// destination that already has game data, so the two rows never coexist.
+pub(crate) fn rekey_last_position(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let Some(row) = ctx.db.last_position().owner_identity().find(from) else {
+        return;
+    };
+    ctx.db.last_position().owner_identity().delete(from);
+    ctx.db.last_position().insert(LastPosition {
+        owner_identity: to,
+        ..row
+    });
+}
+
+/// Delete `owner`'s saved position (the deletion cascade).
+pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
+    ctx.db.last_position().owner_identity().delete(owner);
+}
+
+/// Join: one `player` + one `character` + its `move_intent` row + one starter `monster`
 /// (idempotent: a returning player gets character+player only, not a second
-/// monster). Rejects a double-join within the same session.
+/// monster). The character stands where the account's last one stood when it
+/// disconnected (`take_start`), or on the spawn. Rejects a double-join within
+/// the same session.
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.
@@ -127,13 +205,13 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         log_reject("join_game", me, &e);
         return Err(e);
     }
-    let sp = spawn();
+    let (zone_id, pos, facing) = take_start(ctx, me);
     let ch = ctx.db.character().insert(Character {
         entity_id: 0,
-        zone_id: ZONE_0,
-        tile_x: sp.x,
-        tile_y: sp.y,
-        facing: Direction::South,
+        zone_id,
+        tile_x: pos.x,
+        tile_y: pos.y,
+        facing,
         action: ActionState::Idle,
         move_started_at_ms: now_ms(ctx),
         sprite_id: SPRITE_PLAYER,
@@ -153,7 +231,7 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         online: true,
         last_input_seq: 0,
     });
-    arm_zone_tick(ctx, ZONE_0);
+    arm_zone_tick(ctx, zone_id);
 
     // Grant starter if this identity has no monsters yet (idempotent on reconnect).
     let has_monsters = ctx

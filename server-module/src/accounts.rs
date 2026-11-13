@@ -498,6 +498,7 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
         || crate::npc::has_quest_or_dialogue_state(ctx, identity)
         || crate::raising::has_heal_cooldown(ctx, identity)
         || crate::schema::has_formation(ctx, identity)
+        || crate::movement::has_last_position(ctx, identity)
 }
 
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
@@ -521,6 +522,7 @@ pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> R
     crate::economy::rekey_wallet(ctx, from, to);
     crate::ranking::rekey_profile(ctx, from, to);
     crate::schema::rekey_formation(ctx, from, to);
+    crate::movement::rekey_last_position(ctx, from, to);
     crate::trading_session::delete_sessions_of(ctx, from);
     crate::trading_session::delete_sessions_of(ctx, to);
     Ok(())
@@ -1048,6 +1050,7 @@ pub fn account_deletion_reaper(
     crate::inventory::erase_inventory(ctx, args.account_identity);
     crate::npc::erase_npc_state(ctx, args.account_identity);
     crate::raising::erase_heal_cooldown(ctx, args.account_identity);
+    crate::movement::erase_last_position(ctx, args.account_identity);
     crate::economy::erase_wallet(ctx, args.account_identity);
     crate::playtest::erase_playtest_events(ctx, args.account_identity);
     crate::trading::erase_trade_offers(ctx, args.account_identity);
