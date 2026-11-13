@@ -82,7 +82,7 @@ export class HealView {
     this.overlay = document.getElementById('heal-overlay')!;
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('heal-list')!;
-    // The title bar, first in the frame (uif-10 frame anatomy). Located before it is created.
+    // The title bar, first in the frame (the frame anatomy). Located before it is created.
     const title = document.getElementById('heal-title');
     if (title !== null) {
       this.#title = title;
