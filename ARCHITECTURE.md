@@ -183,7 +183,9 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
   discarded, a Deploying one closes as `Fled` with nothing persisted, and the anchor
   stays terminal so the legacy wild resolver skips it), then its trade offers and trade sessions, PvP battles,
   legacy wild battles and challenges (`resolve_all_live_interactions`), then deletes
-  the conversation, character and player rows.
+  the conversation, character and player rows. As it deletes the character it saves
+  the character's zone, tile and facing in the private `last_position` table
+  (`movement::save_last_position`).
 
 ### Movement
 
@@ -198,8 +200,8 @@ client subscribes to.
 
 A zone has an interval schedule row that runs `movement_tick` every `STEP_MS` only
 while a player's character is in it. `movement::arm_zone_tick` inserts the row when a
-player enters (`join_game`, the tick's warp arm) and never adds a second row for a
-zone. The tick that finds no player's character in its zone puts each of the zone's
+player enters (`join_game` for the zone it starts in, the tick's warp arm) and never
+adds a second row for a zone. The tick that finds no player's character in its zone puts each of the zone's
 NPCs back on its home tile, Idle, writing only the rows that differ, and deletes the
 zone's row, so leaving, warping out, disconnecting and timing out all disarm the zone
 through that one path and a world with nobody connected runs no `movement_tick`. A
@@ -219,6 +221,12 @@ up to one tick after the input was accepted, and every other client receives one
 `character` update per step. A character whose player is in a battle drains nothing
 (its queue is published once and stays intact), and `enqueue_move`/`set_move` reject
 new moves during a battle. Quality-Time accrues in `enqueue_move`.
+
+`join_game` puts the character where the account's last one stood: it consumes the
+identity's `last_position` row (`movement::take_start`) and uses it when the saved zone
+still has a map and the tile is walkable in it, and otherwise, or with no row, starts
+the character on the zone 0 spawn. It arms the zone the character starts in. Nothing
+writes `last_position` while a character exists, so a step costs no extra write.
 
 `join_game` creates the `move_intent` row with the character; the last disconnect and
 the account-deletion cascade delete it with the character. A character with no intent
@@ -301,7 +309,7 @@ part of the schema:
 | Private, owner-readable | `monster_pub`, `inventory`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
 | Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
-| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `guest_claim`, `player_session`, all schedule tables | none |
+| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, all schedule tables | none |
 
 A view takes only its context and filters on `ctx.sender()` through an index. That
 body is the whole security boundary.
@@ -657,7 +665,7 @@ root, so opening one never closes a sibling.
   expired, not its own session, guest no longer connected, neither side in a battle,
   and the account owns no game data yet. Then `rekey_all` moves the guest's persistent
   game data (monsters and their public projection, evolution notices, inventory,
-  quests and dialogue state, heal cooldown, wallet, profile) onto the account, the
+  quests and dialogue state, heal cooldown, saved position, wallet, profile) onto the account, the
   guest's export bundles are purged, the code is consumed, and
   `claimed_from`/`claimed_at_ms` are stamped. Session and in-flight rows (player,
   conversation, sessions, battles, trades, challenges) are not moved.

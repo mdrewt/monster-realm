@@ -864,6 +864,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "export_bundle",
         "heal_cooldown",
         "inventory",
+        "last_position",
         "monster",
         "monster_pub",
         "pending_evolution_notice",
@@ -886,8 +887,9 @@ fn data_lifecycle_partition_matches_spec_section3() {
          personal data is itself personal data — rb-73 adds `player_session` (ADR-0245 \
          D1), 20r-d adds `pending_evolution_notice` (ADR-0254 D2) and bt-7 adds the five \
          tactical tables that carry the identity themselves (battle_unit, battle_queue, \
-         battle_deploy, battle_clock, player_formation) and `trade_session` names both \
-         participants of an open trade session: twenty-one in all. A table moved OUT of \
+         battle_deploy, battle_clock, player_formation), `trade_session` names both \
+         participants of an open trade session and `last_position` is the owner's saved \
+         zone and tile: twenty-two in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
@@ -2969,6 +2971,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::HealLocationRow as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "last_position",
+            <crate::schema::LastPosition as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "inventory",
             <crate::schema::Inventory as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3198,14 +3204,14 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 60,
+        registry_len, 61,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 60 (21 ERASE + 5 ANONYMIZE + 15 JOIN-ONLY + 19 NOT-OWNED) — \
+         manifest carries exactly 61 (22 ERASE + 5 ANONYMIZE + 15 JOIN-ONLY + 19 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
          trade-session tables (`trade_session`, `trade_session_snapshot`, \
-         `trade_session_reaper_schedule`), plus `move_intent`. \
+         `trade_session_reaper_schedule`), plus `move_intent`, plus `last_position`. \
          A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
@@ -3217,11 +3223,12 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 30,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 60 registered row types \
-         carry an Identity column at some depth; exactly 30 is the live count (the 26 \
+        identity_bearing, 31,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 61 registered row types \
+         carry an Identity column at some depth; exactly 31 is the live count (the 27 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). `trade_session` adds one (its `opener` and `partner` \
+         exceptions R3 below names). `last_position` adds one (its `owner_identity` key). \
+         `trade_session` adds one (its `opener` and `partner` \
          columns), while its snapshot and schedule tables, both ViaJoin, add none. bt-7 adds six — battle_unit (its `Option<Identity>` \
          owner, visible only to this deep walk), battle_queue and battle_deploy (`owner`), \
          battle_clock (`player`), battle_summary (both sides) and player_formation (its key) — \
@@ -3306,11 +3313,11 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 26,
+        population, 27,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 26 (21 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
+         the live partition is exactly 27 (22 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
          20r-d's `pending_evolution_notice`, bt-7's five Erase tactical tables plus its \
-         Anonymize `battle_summary`, and the Erase `trade_session` included). A floor would let this population grow \
+         Anonymize `battle_summary`, the Erase `trade_session` and the Erase `last_position` included). A floor would let this population grow \
          silently; an exact count forces a conscious edit to this test alongside any \
          reclassification."
     );
@@ -5008,9 +5015,9 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        60,
+        61,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
-         schedule tables plus the three trade-session tables plus move_intent"
+         schedule tables plus the three trade-session tables plus move_intent plus last_position"
     );
 }
 
@@ -5046,7 +5053,7 @@ mod acct_nh {
         Account, BattleAction, BattleChallenge, BattleClock, BattleDeploy, BattleEvent,
         BattleQueue, BattleSecret, BattleSummary, BattleTactical, BattleUnit, BattleWildUnit,
         ChallengeStatus, Character, DeletionPolicy, DeployPick, EvolutionRevealRow, ExportBundle,
-        GuestClaim, HealCooldown, Inventory, Monster, MonsterPub, MoveClassRow,
+        GuestClaim, HealCooldown, Inventory, LastPosition, Monster, MonsterPub, MoveClassRow,
         PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
         PlayerFormation, PlayerQuestRow, PlayerSession, PlayerWallet, Profile, SideRow, StanceRow,
         TradeOffer, TradeSession, TradeSessionSnapshot, DATA_LIFECYCLE_MANIFEST,
@@ -5154,6 +5161,7 @@ mod acct_nh {
         dialogue: Handle<'a, PlayerDialogueStateRow>,
         conversation: Handle<'a, PlayerConversation>,
         heal: Handle<'a, HealCooldown>,
+        last_position: Handle<'a, LastPosition>,
         wallet: Handle<'a, PlayerWallet>,
         profile: Handle<'a, Profile>,
         character: Handle<'a, Character, u64>,
@@ -5398,6 +5406,10 @@ mod acct_nh {
                 .writable(),
             heal: fx
                 .table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            last_position: fx
+                .table::<LastPosition>("last_position", "owner_identity", |r| r.owner_identity)
+                .unique()
                 .writable(),
             wallet: fx
                 .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
@@ -6064,6 +6076,7 @@ mod acct_nh {
             owner_identity: who,
             last_heal_at_ms: 40 + k as i64,
         });
+        w.last_position.seed(&last_position_row(who, k));
         w.wallet.seed(&PlayerWallet {
             owner_identity: who,
             balance: 1000 + k,
@@ -6075,6 +6088,17 @@ mod acct_nh {
             wins: 7,
             losses: 2,
         });
+    }
+
+    /// A saved position distinct per `k`, in zone 1 so no default reproduces it.
+    fn last_position_row(who: Identity, k: u64) -> LastPosition {
+        LastPosition {
+            owner_identity: who,
+            zone_id: 1,
+            tile_x: 2 + k as i32,
+            tile_y: 3,
+            facing: game_core::Direction::West,
+        }
     }
 
     /// Every row that names `who` in an owner / participant column, per table,
@@ -6186,6 +6210,16 @@ mod acct_nh {
                 "heal_cooldown",
                 encs(
                     &w.heal
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "last_position",
+                encs(
+                    &w.last_position
                         .rows()
                         .into_iter()
                         .filter(|r| r.owner_identity == who)
@@ -6474,13 +6508,16 @@ mod acct_nh {
 
     /// `on_disconnect` (lib.rs) over REAL connections: a disconnect deletes only
     /// its OWN session row; while another of the identity's connections is
-    /// live it does nothing else; the LAST disconnect removes the presence rows
-    /// (player, its character, the conversation). A stranger is untouched.
+    /// live it does nothing else, so nothing is saved mid-session; the LAST
+    /// disconnect removes the presence rows (player, its character, the
+    /// conversation) and saves where that character stood. A stranger is untouched.
     ///
     /// kills: the own-row delete dropped or keyed on the identity (a sibling
     /// tab's row goes too); the live-session guard dropped (a second tab's
     /// close wipes the first tab's presence) or inverted (presence never
-    /// cleaned); presence deletes keyed on the wrong identity.
+    /// cleaned); presence deletes keyed on the wrong identity; the position save
+    /// dropped, taken after the character delete, keyed on another identity or
+    /// built from anything but the character row.
     #[test]
     fn acct_on_disconnect_closes_its_own_session_and_waits_for_the_last() {
         let fx = fixture();
@@ -6490,7 +6527,14 @@ mod acct_nh {
         let sibling_conn: u128 = 0x5E55_9999;
         for (who, entity) in [(me, 5u64), (stranger, 6)] {
             w.player.seed(&player_row(who, entity, "p"));
-            w.character.seed(&character_row(entity));
+            // Each stands somewhere no default reproduces, in a different place.
+            w.character.seed(&Character {
+                zone_id: 1,
+                tile_x: 2 + entity as i32,
+                tile_y: 4,
+                facing: game_core::Direction::East,
+                ..character_row(entity)
+            });
             w.intent.seed(&intent_row(entity));
             w.conversation.seed(&PlayerConversation {
                 owner_identity: who,
@@ -6539,9 +6583,22 @@ mod acct_nh {
 
         fx.run_as_conn_at(me, sibling_conn, None, at(T0 + 1), crate::on_disconnect);
         assert!(conns(&w).is_empty());
-        assert!(
-            owned_tables(&owned_by(&w, me)).is_empty(),
-            "the last disconnect removes the presence rows"
+        assert_eq!(
+            owned_tables(&owned_by(&w, me)),
+            vec!["last_position"],
+            "the last disconnect removes the presence rows and leaves the saved position"
+        );
+        assert_eq!(
+            encs(&w.last_position.rows()),
+            encs(&[LastPosition {
+                owner_identity: me,
+                zone_id: 1,
+                tile_x: 7,
+                tile_y: 4,
+                facing: game_core::Direction::East,
+            }]),
+            "the saved position is the leaver's character's zone, tile and facing, and the \
+             stranger still in the game has none"
         );
         assert!(w.character.rows().iter().all(|r| r.entity_id != 5));
         assert_eq!(
@@ -6697,6 +6754,171 @@ mod acct_nh {
             ticks.rows().is_empty(),
             "no schedule row is left: nothing fires in the empty world"
         );
+    }
+
+    // --- SR11: a session resumes where it left off -----------------------------
+
+    /// What `join_game` needs beyond [`world`]: an auto-inc `character` key and
+    /// the zone schedule table `arm_zone_tick` scans and inserts into.
+    fn sr11_join_tables(fx: &Fixture) -> Handle<'_, crate::movement::MovementTickSchedule, u64> {
+        let _ = fx
+            .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .auto_inc(|r| r.entity_id, |r, v| r.entity_id = v);
+        fx.table_keyed::<crate::movement::MovementTickSchedule, u64>(
+            "movement_tick_schedule",
+            "id",
+            |r| r.id,
+        )
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.id, |r, v| r.id = v)
+    }
+
+    fn sr11_join(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
+        as_conn(fx, who, None, ms, |ctx| {
+            crate::movement::join_game(ctx, "Ada".to_string())
+        })
+    }
+
+    /// `who`'s character, through its `player` row.
+    fn sr11_character(w: &W<'_>, who: Identity) -> Character {
+        let p = w
+            .player
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .expect("a player row");
+        w.character
+            .rows()
+            .into_iter()
+            .find(|c| c.entity_id == p.entity_id)
+            .expect("its character")
+    }
+
+    /// The whole loop through the shipped reducers: a player standing in zone 1
+    /// closes their last connection and joins again. The new character is a new
+    /// entity on the tile, zone and facing the old one had, its zone is the one
+    /// armed, and no saved row is left while the character exists. A second
+    /// disconnect and join, after the character has been moved, resumes at the
+    /// new place: the save is taken at each last disconnect, not once.
+    ///
+    /// kills: the save or the restore dropped; a restore that leaves the row (a
+    /// later disconnect with no character would resurrect a stale position);
+    /// zone 0 armed for a character that resumed elsewhere.
+    #[test]
+    fn sr11_a_disconnect_then_join_resumes_on_the_tile_left() {
+        let fx = fixture();
+        let w = world(&fx);
+        let ticks = sr11_join_tables(&fx);
+        let me = id(0x15);
+        w.monster.seed(&monster_row(101, me));
+        let stand = |entity: u64, x: i32, facing: game_core::Direction| {
+            w.player.seed(&player_row(me, entity, "p"));
+            w.character.seed(&Character {
+                zone_id: 1,
+                tile_x: x,
+                tile_y: 4,
+                facing,
+                ..character_row(entity)
+            });
+            w.intent.seed(&intent_row(entity));
+            w.session.seed(&PlayerSession {
+                connection_id: ConnectionId::from_u128(conn_of(me)),
+                identity: me,
+            });
+        };
+        stand(5, 2, game_core::Direction::West);
+
+        as_conn(&fx, me, None, T0, crate::on_disconnect);
+        assert!(w.character.rows().is_empty() && w.player.rows().is_empty());
+        assert_eq!(sr11_join(&fx, me, T0 + 1), Ok(()));
+        let c = sr11_character(&w, me);
+        assert_eq!(
+            (c.zone_id, c.tile_x, c.tile_y, c.facing),
+            (1, 2, 4, game_core::Direction::West),
+            "the returning character stands where the last one stood"
+        );
+        assert_ne!(c.entity_id, 5, "it is a new character row");
+        assert!(
+            w.last_position.rows().is_empty(),
+            "the saved row is consumed by the join"
+        );
+        let zones: Vec<u32> = ticks.rows().iter().map(|t| t.zone_id).collect();
+        assert_eq!(zones, vec![1], "the zone resumed in is the zone armed");
+
+        // The session walks on, then leaves and returns again.
+        assert_eq!(w.player.remove(me), 1);
+        assert_eq!(w.character.remove(c.entity_id), 1);
+        w.intent.remove(c.entity_id);
+        stand(c.entity_id, 5, game_core::Direction::North);
+        as_conn(&fx, me, None, T0 + 2, crate::on_disconnect);
+        assert_eq!(sr11_join(&fx, me, T0 + 3), Ok(()));
+        let c = sr11_character(&w, me);
+        assert_eq!(
+            (c.zone_id, c.tile_x, c.tile_y, c.facing),
+            (1, 5, 4, game_core::Direction::North)
+        );
+    }
+
+    /// An account in its deletion grace period cannot join, and the refusal
+    /// leaves its saved position in place; once the deletion is cancelled it
+    /// resumes like any returning account.
+    ///
+    /// kills: the saved row consumed ahead of the deletion gate.
+    #[test]
+    fn sr11_a_deletion_grace_account_keeps_its_saved_position_until_it_returns() {
+        let fx = fixture();
+        let w = world(&fx);
+        let _ticks = sr11_join_tables(&fx);
+        let me = id(0x15);
+        w.monster.seed(&monster_row(101, me));
+        let active = crate::accounts::new_account_row(me, "i".to_string(), 1);
+        w.account
+            .seed(&crate::accounts::requested_deletion(active.clone(), T0));
+        let saved = last_position_row(me, 0);
+        w.last_position.seed(&saved);
+
+        assert_eq!(
+            sr11_join(&fx, me, T0 + 1),
+            Err(crate::guards::REJECT_DELETION_GATED.to_string())
+        );
+        assert_eq!(
+            encs(&w.last_position.rows()),
+            encs(std::slice::from_ref(&saved)),
+            "a refused join consumes nothing"
+        );
+        assert!(w.character.rows().is_empty());
+
+        assert_eq!(w.account.remove(me), 1);
+        w.account.seed(&active);
+        assert_eq!(sr11_join(&fx, me, T0 + 2), Ok(()));
+        let c = sr11_character(&w, me);
+        assert_eq!(
+            (c.zone_id, c.tile_x, c.tile_y, c.facing),
+            (saved.zone_id, saved.tile_x, saved.tile_y, saved.facing)
+        );
+        assert!(w.last_position.rows().is_empty());
+    }
+
+    /// The last disconnect of an identity whose character row is already gone
+    /// (an erased account's socket closing after the cascade) saves nothing.
+    ///
+    /// kills: a save built from the `player` row or from defaults when there is
+    /// no character.
+    #[test]
+    fn sr11_a_disconnect_with_no_character_saves_nothing() {
+        let fx = fixture();
+        let w = world(&fx);
+        let me = id(0x15);
+        w.player.seed(&player_row(me, 5, "p"));
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(conn_of(me)),
+            identity: me,
+        });
+        as_conn(&fx, me, None, T0, crate::on_disconnect);
+        assert!(w.player.rows().is_empty(), "the presence row still goes");
+        assert!(w.last_position.rows().is_empty());
     }
 
     // --- guest claim ----------------------------------------------------------
@@ -7068,6 +7290,7 @@ mod acct_nh {
             "player_quest",
             "player_dialogue_state",
             "heal_cooldown",
+            "last_position",
             "export_bundle",
         ] {
             assert!(
@@ -7082,6 +7305,18 @@ mod acct_nh {
                 );
             }
         }
+        assert_eq!(
+            encs(
+                &w.last_position
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner_identity != b)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[last_position_row(c, 1)]),
+            "the guest's saved position arrives under the claimer unchanged, so the claimed \
+             account's first join resumes where the guest stood"
+        );
         // Copy-forward re-keys: the guest row is RETAINED but emptied.
         let wallet = |who: Identity| {
             w.wallet
@@ -7180,7 +7415,7 @@ mod acct_nh {
     /// owner-keyed table added to the manifest without a re-key decision.
     #[test]
     fn acct_rekey_roster_is_total_and_game_data_sees_every_rekeyed_table() {
-        const REKEYED: [&str; 10] = [
+        const REKEYED: [&str; 11] = [
             "monster",
             "monster_pub",
             "pending_evolution_notice",
@@ -7191,6 +7426,7 @@ mod acct_nh {
             "player_wallet",
             "profile",
             "player_formation",
+            "last_position",
         ];
         // Left under the guest on purpose: presence / session rows die with the
         // connection (guard 9), live interactions block the claim (guard 10),
@@ -7248,10 +7484,11 @@ mod acct_nh {
             w.wallet.remove(g);
             w.profile.remove(g);
             w.formation.remove(g);
+            w.last_position.remove(g);
         };
         wipe(&w);
         assert!(owned_tables(&owned_by(&w, g)).is_empty());
-        let singles: [(&str, &dyn Fn()); 9] = [
+        let singles: [(&str, &dyn Fn()); 10] = [
             ("monster", &|| w.monster.seed(&monster_row(103, g))),
             ("pending_evolution_notice", &|| {
                 w.notice.seed(&PendingEvolutionNotice {
@@ -7308,6 +7545,9 @@ mod acct_nh {
                     owner_identity: g,
                     monster_ids: vec![103],
                 })
+            }),
+            ("last_position", &|| {
+                w.last_position.seed(&last_position_row(g, 3))
             }),
         ];
         for (table, seed) in singles {
@@ -8772,9 +9012,10 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            60,
+            61,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
-             bt-8's three schedule tables plus the three trade-session tables plus move_intent"
+             bt-8's three schedule tables plus the three trade-session tables plus move_intent \
+             plus last_position"
         );
         for table in [
             "battle_tactical",

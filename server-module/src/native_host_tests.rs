@@ -1158,6 +1158,8 @@ unsafe extern "C" {
     fn register_table_player();
     #[link_name = "__preinit__20_register_describer_move_intent"]
     fn register_table_move_intent();
+    #[link_name = "__preinit__20_register_describer_last_position"]
+    fn register_table_last_position();
     #[link_name = "__preinit__20_register_describer_config"]
     fn register_table_config();
     #[link_name = "__preinit__20_register_describer_zone_def"]
@@ -1272,7 +1274,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 60] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 61] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1283,6 +1285,7 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 60] = [
     register_table_character,
     register_table_player,
     register_table_move_intent,
+    register_table_last_position,
     register_table_config,
     register_table_zone_def,
     register_table_species_row,
