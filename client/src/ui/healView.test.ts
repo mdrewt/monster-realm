@@ -729,4 +729,59 @@ describe('HealView ts-6b-8: kept rows and the localized title', () => {
     view.render(healVm());
     expect(document.getElementById('heal-title')?.textContent).toBe('Soins');
   });
+
+  it('ts-6b-8 lens: a locale switch rebuilds the rows and they read in the new locale', () => {
+    // WRONG IMPL KILLED: a rows key that drops currentLocale(), so an equal vm after
+    // setLocale('fr') keeps the English "Heal here (...)" rows.
+    mountHealOverlay();
+    const view = new HealView();
+    const loc = healLocation({ costItemName: 'Herb', costQty: 3, isFree: false });
+    try {
+      view.render(healVm([loc]));
+      const row = document.querySelector('#heal-list > li');
+      expect(row?.textContent, 'precondition: English').toBe('Heal here (3x Herb)');
+      setLocale('fr');
+      view.render(healVm([{ ...loc }]));
+      const rebuilt = document.querySelector('#heal-list > li');
+      expect(rebuilt, 'the row is a new node').not.toBe(row);
+      expect(rebuilt?.textContent).toBe(i18nTf('heal.location', { cost: formatHealCostLine(loc) }));
+      expect(rebuilt?.textContent).not.toBe('Heal here (3x Herb)');
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('ts-6b-8 lens: changing any ONE displayed field of a location rebuilds its row', () => {
+    // WRONG IMPL KILLED: a rows key that omits a field the row shows (locationId, the cost item
+    // name, the quantity, the currency, the free flag), leaving a stale row on screen.
+    const baseLoc = (): HealLocationViewModel =>
+      healLocation({ locationId: 1, costItemName: 'Herb', costQty: 3, isFree: false });
+    const variants: Array<{
+      field: string;
+      over: Partial<HealLocationViewModel>;
+      text: boolean;
+    }> = [
+      { field: 'locationId', over: { locationId: 2 }, text: false },
+      { field: 'costItemName', over: { costItemName: 'Root' }, text: true },
+      { field: 'costQty', over: { costQty: 4 }, text: true },
+      { field: 'costCurrency', over: { costCurrency: 5n }, text: true },
+      { field: 'isFree', over: { isFree: true }, text: true },
+    ];
+    for (const v of variants) {
+      mountHealOverlay();
+      const view = new HealView();
+      const other = healLocation({ locationId: 9, costCurrency: 7n, isFree: false });
+      view.render(healVm([baseLoc(), other]));
+      const rowsBefore = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+      const before = rowsBefore[0] as HTMLElement;
+      const beforeText = before.textContent;
+
+      view.render(healVm([{ ...baseLoc(), ...v.over }, { ...other }]));
+      const after = document.querySelector('#heal-list > li') as HTMLElement;
+      expect(after, `${v.field}: the row is a new node`).not.toBe(before);
+      if (v.text) expect(after.textContent, `${v.field}: text changed`).not.toBe(beforeText);
+      else expect(after.dataset.locationId, `${v.field}: the id is carried`).toBe('2');
+      view.hide();
+    }
+  });
 });

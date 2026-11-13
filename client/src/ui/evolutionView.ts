@@ -5,8 +5,9 @@
 // one-way flow only, and the eligibility decision is the model's (it is the SAME
 // predicate game-core runs, so the shell must never re-derive or second-guess it).
 // The loop calls refresh() on batch-applied; a refresh whose view model and locale are what the
-// cards already show keeps them (a store batch arrives several times a second). Nothing here sends an intent: the view is
-// informational (qf-8 deleted its choice buttons), and the constructor's callbacks are unread.
+// cards already show keeps them (a store batch arrives several times a second). Nothing here sends
+// an intent: the view is informational (qf-8 deleted its choice buttons), and the constructor's
+// callbacks are unread.
 // Coverage-excluded shell.
 //
 // TWO RULES THIS FILE MUST NOT BREAK:

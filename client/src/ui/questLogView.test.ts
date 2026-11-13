@@ -463,7 +463,7 @@ describe('QuestLogView render(): existing paint behaviour (pinned, not changed b
 // only, so a missing module reds that case alone.
 // ---------------------------------------------------------------------------
 
-import { tf as ctl8fTf, t as qf4T } from './i18n/resolver';
+import { tf as ctl8fTf, t as qf4T, setLocale } from './i18n/resolver';
 
 const ctl8fListEl = (): HTMLElement => document.getElementById('quest-log-list') as HTMLElement;
 /** The list's own <li> children (a nested one, were a detail ever put inside, would not count). */
@@ -1731,5 +1731,67 @@ describe('QuestLogView ts-6b-8: kept rows', () => {
     expect(rebuilt[1], 'a changed step rebuilds its row').not.toBe(rows[1]);
     expect(rebuilt[1]?.textContent).toContain('9');
     expect(rebuilt[1]?.getAttribute('aria-selected'), 'the kept paint still applies').toBe('true');
+  });
+
+  it('ts-6b-8 lens: a locale switch rebuilds the rows and the empty state and they read in the new locale', () => {
+    // WRONG IMPL KILLED: a rows key that drops currentLocale(), so an equal vm after
+    // setLocale('fr') keeps English rows ("alpha (step 4)") and the English empty sentence.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    try {
+      view.render(ctl8fSteps());
+      const rows = ctl8fRows();
+      expect(rows[0]?.textContent, 'precondition: English').toBe('alpha (step 4)');
+      setLocale('fr');
+      view.render(ctl8fSteps());
+      const rebuilt = ctl8fRows();
+      expect(rebuilt).toHaveLength(3);
+      rebuilt.forEach((li, i) => {
+        expect(li, `row ${i} is a new node`).not.toBe(rows[i]);
+      });
+      expect(rebuilt[0]?.textContent).toBe(ctl8fTf('questLog.entry', { name: 'alpha', step: 4 }));
+      expect(rebuilt[1]?.textContent).toBe(ctl8fTf('questLog.entry', { name: 'beta', step: 7 }));
+      expect(rebuilt[0]?.textContent).not.toBe('alpha (step 4)');
+
+      setLocale('en');
+      view.render({ active: [] });
+      const emptyEn = document.getElementById('quest-log-empty');
+      setLocale('fr');
+      view.render({ active: [] });
+      const emptyFr = document.getElementById('quest-log-empty');
+      expect(emptyFr, 'the empty state is a new node').not.toBe(emptyEn);
+      expect(emptyFr?.textContent).toContain(qf4T('journal.empty'));
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('ts-6b-8 lens: changing any ONE displayed field of a quest rebuilds its row', () => {
+    // WRONG IMPL KILLED: a rows key that omits questId (the row's dataset id goes stale), the
+    // display name or the step index (the row text goes stale).
+    const variants: Array<{
+      field: string;
+      over: { questId?: string; displayName?: string; stepIndex?: number };
+      text: boolean;
+    }> = [
+      { field: 'questId', over: { questId: 'betax' }, text: false },
+      { field: 'displayName', over: { displayName: 'Beta!' }, text: true },
+      { field: 'stepIndex', over: { stepIndex: 8 }, text: true },
+    ];
+    for (const v of variants) {
+      mountQuestLogOverlay();
+      const view = new QuestLogView();
+      view.render(ctl8fSteps());
+      const before = ctl8fRows()[1] as HTMLElement;
+      const beforeText = before.textContent;
+      const changed = ctl8fSteps();
+      changed.active = changed.active.map((q, i) => (i === 1 ? { ...q, ...v.over } : q));
+      view.render(changed);
+      const after = ctl8fRows()[1] as HTMLElement;
+      expect(after, `${v.field}: the row is a new node`).not.toBe(before);
+      if (v.text) expect(after.textContent, `${v.field}: text changed`).not.toBe(beforeText);
+      else expect(after.dataset.questId, `${v.field}: the id is carried`).toBe('betax');
+      view.hide();
+    }
   });
 });

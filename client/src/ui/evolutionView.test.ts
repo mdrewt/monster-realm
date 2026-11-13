@@ -103,7 +103,7 @@ import { EvolutionView, type EvolutionViewCallbacks } from './evolutionView';
 
 import { beforeEach } from 'vitest';
 import { t } from './a11yCopy';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -2752,5 +2752,129 @@ describe('EvolutionView ts-6b-8: kept cards', () => {
     expect(changed).toHaveLength(2);
     expect(changed[0], 'a changed level rebuilds the card').not.toBe(cards[0]);
     expect(changed[0]?.textContent).toContain('31');
+  });
+
+  /** A fresh vm per call: one monster, one path, five gates; one field of each level overridable. */
+  const lensBuild = (
+    m: Partial<EvolutionMonsterViewModel> = {},
+    p: Partial<EvolutionPathViewModel> = {},
+    g: Partial<EvolutionGateViewModel> = {},
+  ): EvolutionViewModel =>
+    viewModel(
+      monsterVm({
+        readyPathName: 'Pyrodrake',
+        paths: [
+          pathVm({ ...p, gates: FIVE_GATES.map((x, i) => (i === 0 ? { ...x, ...g } : { ...x })) }),
+        ],
+        ...m,
+      }),
+    );
+
+  it('ts-6b-8 lens: a locale switch rebuilds the cards and they read in the new locale', () => {
+    // WRONG IMPL KILLED: a refresh key that drops currentLocale(), so an equal vm after
+    // setLocale('fr') keeps the English stats line, ready note and gate rows.
+    const { parent, view } = mount();
+    try {
+      view.refresh(lensBuild());
+      const card = parent.querySelector(CARD_SELECTOR);
+      const pathRow = parent.querySelector(PATH_ROW_SELECTOR);
+      const gateRow = parent.querySelector(GATE_ROW_SELECTOR);
+      const englishGate = gateRow?.textContent;
+
+      setLocale('fr');
+      view.refresh(lensBuild());
+      const nowCard = parent.querySelector(CARD_SELECTOR) as HTMLElement;
+      expect(nowCard, 'the card is a new node').not.toBe(card);
+      expect(parent.querySelector(PATH_ROW_SELECTOR), 'the path row is a new node').not.toBe(
+        pathRow,
+      );
+      const nowGate = parent.querySelector(GATE_ROW_SELECTOR) as HTMLElement;
+      expect(nowGate, 'the gate row is a new node').not.toBe(gateRow);
+      expect(nowCard.children[1]?.textContent).toBe(
+        i18nTf('evolution.card.stats', {
+          level: 30,
+          stage: 1,
+          trust: 'Wary',
+          qualityTime: 1,
+          nutrition: 41,
+        }),
+      );
+      expect(parent.querySelector(READY_NOTE_SELECTOR)?.textContent).toBe(
+        i18nTf('evolution.card.ready', { species: 'Pyrodrake' }),
+      );
+      expect(nowGate.textContent).toBe(
+        i18nTf('evolution.gate.unmetRow', { label: 'Level', current: 'Lv 17', required: 'Lv 20' }),
+      );
+      expect(nowGate.textContent).not.toBe(englishGate);
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('ts-6b-8 lens: changing any ONE displayed field rebuilds the card', () => {
+    // WRONG IMPL KILLED: a refresh key that omits a field the card shows (nickname, species, level,
+    // the three tiers, nutrition, the ready path) or one a path or gate row shows (target species,
+    // met flag, unmet reason, gate label, current text, required text, gate met flag).
+    type Variant = {
+      field: string;
+      vm: () => EvolutionViewModel;
+      text: boolean;
+    };
+    const variants: Variant[] = [
+      { field: 'nickname', vm: () => lensBuild({ nickname: 'Blazer' }), text: true },
+      { field: 'speciesName', vm: () => lensBuild({ speciesName: 'Flamelingx' }), text: true },
+      { field: 'level', vm: () => lensBuild({ level: 31 }), text: true },
+      { field: 'tier', vm: () => lensBuild({ tier: 2 }), text: true },
+      { field: 'trustTier', vm: () => lensBuild({ trustTier: 'Friendly' }), text: true },
+      { field: 'qualityTimeTier', vm: () => lensBuild({ qualityTimeTier: 2 }), text: true },
+      { field: 'nutritionPct', vm: () => lensBuild({ nutritionPct: 42 }), text: true },
+      { field: 'readyPathName', vm: () => lensBuild({ readyPathName: 'Drakeling' }), text: true },
+      {
+        field: 'path.toSpeciesName',
+        vm: () => lensBuild({}, { toSpeciesName: 'Pyrodrakex' }),
+        text: true,
+      },
+      { field: 'path.met', vm: () => lensBuild({}, { met: true }), text: false },
+      {
+        field: 'path.unmetReason',
+        vm: () => lensBuild({}, { unmetReason: 'requires level 21' }),
+        text: true,
+      },
+      { field: 'gate.label', vm: () => lensBuild({}, {}, { label: 'Levelx' }), text: true },
+      {
+        field: 'gate.currentText',
+        vm: () => lensBuild({}, {}, { currentText: 'Lv 18' }),
+        text: true,
+      },
+      {
+        field: 'gate.requiredText',
+        vm: () => lensBuild({}, {}, { requiredText: 'Lv 21' }),
+        text: true,
+      },
+      { field: 'gate.met', vm: () => lensBuild({}, {}, { met: true }), text: true },
+    ];
+    for (const v of variants) {
+      const { parent, view } = mount();
+      view.refresh(lensBuild());
+      const card = parent.querySelector(CARD_SELECTOR) as HTMLElement;
+      const pathRow = parent.querySelector(PATH_ROW_SELECTOR) as HTMLElement;
+      const gateRow = parent.querySelector(GATE_ROW_SELECTOR) as HTMLElement;
+      const beforeText = card.textContent;
+
+      view.refresh(v.vm());
+      const after = parent.querySelector(CARD_SELECTOR) as HTMLElement;
+      expect(after, `${v.field}: the card is a new node`).not.toBe(card);
+      if (v.field.startsWith('path.')) {
+        expect(parent.querySelector(PATH_ROW_SELECTOR), `${v.field}: the path row is new`).not.toBe(
+          pathRow,
+        );
+      }
+      if (v.field.startsWith('gate.')) {
+        expect(parent.querySelector(GATE_ROW_SELECTOR), `${v.field}: the gate row is new`).not.toBe(
+          gateRow,
+        );
+      }
+      if (v.text) expect(after.textContent, `${v.field}: text changed`).not.toBe(beforeText);
+    }
   });
 });

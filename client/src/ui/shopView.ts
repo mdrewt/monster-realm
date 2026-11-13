@@ -16,7 +16,8 @@
 // batch, and wallet-balance.spec.ts reads `#shop-for-sale` at first paint — the tabs only hide the
 // inactive one and move the cursor. A render whose title, rows and locale are what the lists already
 // show keeps their nodes (the balance alone is rewritten): a store batch arrives several times a
-// second, and a rebuilt row drops a pointer press that spans it and its button's in-flight lock.
+// second, and a rebuilt row drops a pointer press that spans it. A button rebuilt while a command is
+// in flight is built disabled, and focus on a node a rebuild destroys moves to the list that held it.
 // The kept paint is re-applied after every batch render and reset to its opening value (Buy, the
 // first row) by a render while hidden and by the hidden→visible edge, so a reopened shop never sits
 // under the last visit's confirm. A tab switch that hides the list holding focus moves focus to the
@@ -143,6 +144,9 @@ export class ShopView {
   readonly #cbs: ShopCallbacks;
   // In-flight lock: prevents double-spend when a reducer Promise is pending.
   #pending = false;
+  /** Counts locks; a command's settle ends the lock only while it is still the newest one (a close
+   *  ends a lock early, and a reopened shop may already hold a newer one). */
+  #lockGen = 0;
   #paint: ShopPaint = OPENING;
   /** What the title and the two lists show: the view model less its balance, and the locale, as
    *  JSON with bigints as decimal strings. Null until the first render. */
@@ -301,15 +305,19 @@ export class ShopView {
       typeof v === 'bigint' ? `${v}` : v,
     );
     if (key !== this.#shownLists) {
+      const focused = document.activeElement;
+      const holder = [this.#forSaleList, this.#inventoryList].find((l) => l.contains(focused));
       this.#shownLists = null;
       this.#renderLists(vm);
       this.#shownLists = key;
+      if (holder !== undefined && focused instanceof HTMLElement && !focused.isConnected) {
+        holder.focus();
+      }
     }
     this.#apply();
   }
 
-  /** Rebuilds the title and both lists from `vm`. A button built while a command is in flight is
-   *  built locked. */
+  /** Rebuilds the title and both lists from `vm`. */
   #renderLists(vm: ShopScreenViewModel): void {
     if (vm.kind === 'no-shop') {
       this.#title.textContent = t('shop.title');
@@ -423,14 +431,19 @@ export class ShopView {
     btn.addEventListener('click', () => {
       if (this.#pending) return;
       this.#pending = true;
+      const gen = ++this.#lockGen;
       btn.disabled = true;
-      void Promise.resolve(send()).finally(() => this.#unlock());
+      void Promise.resolve(send()).finally(() => {
+        if (gen === this.#lockGen) this.#unlock();
+      });
     });
     return btn;
   }
 
-  /** Ends the in-flight lock: every row button is enabled again. */
+  /** Ends the in-flight lock: every row button is enabled again, and an older command's settle no
+   *  longer ends anything. */
   #unlock(): void {
+    this.#lockGen += 1;
     this.#pending = false;
     for (const listEl of [this.#forSaleList, this.#inventoryList]) {
       for (const btn of Array.from(listEl.querySelectorAll('button'))) btn.disabled = false;

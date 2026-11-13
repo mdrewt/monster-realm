@@ -65,18 +65,12 @@ function part(after: Element, id: string, tag: 'p' | 'div'): HTMLElement {
   return el;
 }
 
-/** The rows' render key: the locations and the locale their text resolves in. JSON, with bigints
- *  as decimal strings. */
-const rowsKey = (vm: HealViewModel): string =>
-  JSON.stringify([currentLocale(), vm.locations], (_, v: unknown) =>
-    typeof v === 'bigint' ? `${v}` : v,
-  );
-
 export class HealView {
   private overlay: HTMLElement;
   private list: HTMLElement;
   readonly #title: HTMLElement;
-  /** What `#heal-list` shows (`rowsKey`); null until the first render. */
+  /** What `#heal-list` shows: the locations and the locale their text resolves in, as JSON with
+   *  bigints as decimal strings. Null until the first render. */
   #shownRows: string | null = null;
   readonly #question: HTMLElement;
   readonly #reason: HTMLElement;
@@ -126,7 +120,9 @@ export class HealView {
       this.#paint = { active: 'yes', cost: first === undefined ? null : formatHealCostLine(first) };
     }
     this.#title.textContent = t('heal.title');
-    const key = rowsKey(vm);
+    const key = JSON.stringify([currentLocale(), vm.locations], (_, v: unknown) =>
+      typeof v === 'bigint' ? `${v}` : v,
+    );
     if (key !== this.#shownRows) {
       this.#shownRows = null;
       this.list.replaceChildren();

@@ -69,7 +69,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import { type ShopScreenViewModel, type ShopViewModel, shopBuyKey, shopSellKey } from './shopModel';
@@ -1819,6 +1819,327 @@ describe('ShopView ts-6b-8: batch renders keep nodes; tab switches keep focus', 
     view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
     expect(document.activeElement, 'focus outside the hidden list is untouched').toBe(title);
 
+    removeOverlay(overlay);
+  });
+
+  // ---- red-team lens cases (ts-6b-8) ---------------------------------------------------------
+
+  type Buy0 = Partial<ShopViewModel['forSale'][number]>;
+  type Sell0 = Partial<ShopViewModel['forSaleByPlayer'][number]>;
+  /** The base shop (shop 3, "Wayside Stall"), one field of one row varied per call. */
+  const ts6b8Shop = (
+    over: { shopId?: number; shopName?: string; buy0?: Buy0; sell0?: Sell0; balance?: bigint } = {},
+  ): ShopViewModel => {
+    const base = ts6b8Vm() as ShopViewModel;
+    return {
+      ...base,
+      shopId: over.shopId ?? base.shopId,
+      shopName: over.shopName ?? base.shopName,
+      forSale: base.forSale.map((x, i) => (i === 0 ? { ...x, ...over.buy0 } : x)),
+      forSaleByPlayer: base.forSaleByPlayer.map((x, i) => (i === 0 ? { ...x, ...over.sell0 } : x)),
+      balance: knownBalance(over.balance ?? 250n),
+    };
+  };
+  const deferred = (): { promise: Promise<void>; resolve: () => void } => {
+    let resolve: () => void = () => {};
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+  const flushMicrotasks = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+  const allButtons = (): HTMLButtonElement[] =>
+    [...ts6b8Buttons('shop-for-sale'), ...ts6b8Buttons('shop-inventory')] as HTMLButtonElement[];
+
+  it('ts-6b-8 lens: a locale switch rebuilds the rows and they read in the new locale', () => {
+    // WRONG IMPL KILLED: a render key that drops currentLocale(), so an equal vm after setLocale('fr')
+    // keeps rows still written in English.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    try {
+      view.show();
+      view.render(ts6b8Vm());
+      const buyLi = ts6b8Rows('shop-for-sale')[0];
+      const sellLi = ts6b8Rows('shop-inventory')[0];
+      const unsellableLi = ts6b8Rows('shop-inventory')[1];
+      setLocale('fr');
+      view.render(ts6b8Vm());
+      const nowBuy = ts6b8Rows('shop-for-sale')[0] as HTMLElement;
+      const nowSell = ts6b8Rows('shop-inventory')[0] as HTMLElement;
+      const nowUnsellable = ts6b8Rows('shop-inventory')[1] as HTMLElement;
+      expect(nowBuy, 'buy row rebuilt').not.toBe(buyLi);
+      expect(nowSell, 'sell row rebuilt').not.toBe(sellLi);
+      expect(nowUnsellable, 'unsellable row rebuilt').not.toBe(unsellableLi);
+      expect(nowBuy.firstChild?.textContent).toBe(
+        i18nTf('shop.buy.row', { name: 'Charm', price: 17n }),
+      );
+      expect(nowBuy.querySelector('button')?.textContent).toBe(i18nT('shop.buy.submit'));
+      expect(nowSell.firstChild?.textContent).toBe(
+        i18nTf('shop.sell.row', { name: 'Charm', count: 5, price: 9n }),
+      );
+      expect(nowSell.querySelector('button')?.textContent).toBe(i18nT('shop.sell.submit'));
+      expect(nowUnsellable.textContent).toBe(
+        i18nTf('shop.sell.unsellable', { name: 'Talisman', count: 1 }),
+      );
+      expect(nowBuy.firstChild?.textContent).not.toBe('Charm — 17 gold ');
+    } finally {
+      setLocale('en');
+    }
+    removeOverlay(overlay);
+  });
+
+  it('ts-6b-8 lens: changing any ONE displayed field of the shop rebuilds the row it shows in', () => {
+    // WRONG IMPL KILLED: a render key that omits a field the row shows or acts on (name, price,
+    // count, canSell, either id, shopId which the Buy closure captures, the shop name in the title).
+    type Variant = {
+      field: string;
+      over: Parameters<typeof ts6b8Shop>[0];
+      list: 'shop-for-sale' | 'shop-inventory' | 'title';
+      text: boolean;
+      buy?: [number, number];
+      sell?: number;
+    };
+    const variants: Variant[] = [
+      { field: 'buy.name', over: { buy0: { name: 'Charmx' } }, list: 'shop-for-sale', text: true },
+      {
+        field: 'buy.buyPrice',
+        over: { buy0: { buyPrice: 18n } },
+        list: 'shop-for-sale',
+        text: true,
+      },
+      {
+        field: 'buy.itemId',
+        over: { buy0: { itemId: 8 } },
+        list: 'shop-for-sale',
+        text: false,
+        buy: [3, 8],
+      },
+      {
+        field: 'buy.shopItemId',
+        over: { buy0: { shopItemId: 99n } },
+        list: 'shop-for-sale',
+        text: false,
+      },
+      {
+        field: 'sell.name',
+        over: { sell0: { name: 'Charmx' } },
+        list: 'shop-inventory',
+        text: true,
+      },
+      { field: 'sell.count', over: { sell0: { count: 6 } }, list: 'shop-inventory', text: true },
+      {
+        field: 'sell.sellPrice',
+        over: { sell0: { sellPrice: 10n } },
+        list: 'shop-inventory',
+        text: true,
+      },
+      {
+        field: 'sell.canSell',
+        over: { sell0: { canSell: false } },
+        list: 'shop-inventory',
+        text: true,
+      },
+      {
+        field: 'sell.itemId',
+        over: { sell0: { itemId: 8 } },
+        list: 'shop-inventory',
+        text: false,
+        sell: 8,
+      },
+      {
+        field: 'sell.invId',
+        over: { sell0: { invId: 103n } },
+        list: 'shop-inventory',
+        text: false,
+      },
+      { field: 'shopName', over: { shopName: 'Other Stall' }, list: 'title', text: true },
+      {
+        field: 'shopId',
+        over: { shopId: 4 },
+        list: 'shop-for-sale',
+        text: false,
+        buy: [4, 7],
+      },
+    ];
+    for (const v of variants) {
+      document.body.innerHTML = '';
+      mountShopOverlay();
+      const cbs = { onBuy: vi.fn(), onSell: vi.fn() };
+      const view = new ShopView(cbs);
+      view.render(ts6b8Shop());
+      const pick = (): HTMLElement =>
+        v.list === 'title' ? ctl8aShopEl('shop-title') : (ts6b8Rows(v.list)[0] as HTMLElement);
+      const before = pick();
+      const beforeText = before.textContent;
+      view.render(ts6b8Shop(v.over));
+      const after = pick();
+      if (v.list !== 'title') {
+        expect(after, `${v.field}: the row is a new node`).not.toBe(before);
+      }
+      if (v.text) expect(after.textContent, `${v.field}: text changed`).not.toBe(beforeText);
+      if (v.buy !== undefined) {
+        (ts6b8Buttons('shop-for-sale')[0] as HTMLElement).click();
+        expect(cbs.onBuy, `${v.field}: Buy sends the new ids`).toHaveBeenCalledWith(...v.buy);
+      }
+      if (v.sell !== undefined) {
+        (ts6b8Buttons('shop-inventory')[0] as HTMLElement).click();
+        expect(cbs.onSell, `${v.field}: Sell sends the new item`).toHaveBeenCalledWith(v.sell);
+      }
+    }
+  });
+
+  it('ts-6b-8 lens: a rebuild while a command is in flight builds every button locked, and settling unlocks them all', async () => {
+    // WRONG IMPL KILLED: a rebuild that forgets the in-flight lock (the fresh button double-spends);
+    // a lock that is dropped from the rebuilt rows of the OTHER list; an unlock that misses the
+    // rebuilt buttons.
+    const overlay = mountShopOverlay();
+    const a = deferred();
+    const onBuy = vi.fn(() => a.promise);
+    const onSell = vi.fn();
+    const view = new ShopView({ onBuy, onSell });
+    view.show();
+    view.render(ts6b8Shop());
+    const original = allButtons();
+    expect(original).toHaveLength(3);
+    original[0]?.click();
+    expect(onBuy).toHaveBeenCalledTimes(1);
+
+    view.render(ts6b8Shop({ buy0: { buyPrice: 18n }, sell0: { count: 4 } }));
+    const rebuilt = allButtons();
+    expect(rebuilt).toHaveLength(3);
+    rebuilt.forEach((b, i) => {
+      expect(b, `button ${i} was rebuilt`).not.toBe(original[i]);
+      expect(b.disabled, `rebuilt button ${i} is locked`).toBe(true);
+    });
+    rebuilt[1]?.click();
+    rebuilt[2]?.click();
+    expect(onBuy, 'no second Buy while one is in flight').toHaveBeenCalledTimes(1);
+    expect(onSell, 'no Sell while a Buy is in flight').not.toHaveBeenCalled();
+
+    a.resolve();
+    await flushMicrotasks();
+    allButtons().forEach((b, i) => {
+      expect(b.disabled, `button ${i} unlocked once settled`).toBe(false);
+    });
+    removeOverlay(overlay);
+  });
+
+  it('ts-6b-8 lens: closing and reopening the shop drops a stuck lock and keeps the nodes of an equal render', () => {
+    // WRONG IMPL KILLED: hide() that leaves the lock on (a reply that never comes bricks the shop
+    // for the session); a reopen that rebuilds the rows of an equal view model.
+    const overlay = mountShopOverlay();
+    const onBuy = vi.fn(() => new Promise<void>(() => {}));
+    const view = new ShopView({ onBuy, onSell: vi.fn() });
+    view.show();
+    view.render(ts6b8Shop());
+    const btn = ts6b8Buttons('shop-for-sale')[0] as HTMLButtonElement;
+    btn.click();
+    expect(btn.disabled, 'precondition: locked').toBe(true);
+
+    view.hide();
+    view.show();
+    view.render(ts6b8Shop());
+    expect(ts6b8Buttons('shop-for-sale')[0], 'the same node').toBe(btn);
+    expect(btn.disabled).toBe(false);
+    btn.click();
+    expect(onBuy, 'a click works again').toHaveBeenCalledTimes(2);
+    removeOverlay(overlay);
+  });
+
+  it('ts-6b-8 lens: a stale settle from before a close does not unlock a newer in-flight command', async () => {
+    // WRONG IMPL KILLED: an unconditional unlock in the settle handler, so the FIRST (abandoned)
+    // command settling re-enables the button while the SECOND is still in flight and the player can
+    // double-spend; the third click below would reach onBuy.
+    const overlay = mountShopOverlay();
+    const a = deferred();
+    const b = deferred();
+    const onBuy = vi.fn().mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    const view = new ShopView({ onBuy, onSell: vi.fn() });
+    view.show();
+    view.render(ts6b8Shop());
+    const btn = ts6b8Buttons('shop-for-sale')[0] as HTMLButtonElement;
+    btn.click();
+    view.hide();
+    view.show();
+    view.render(ts6b8Shop());
+    expect(ts6b8Buttons('shop-for-sale')[0]).toBe(btn);
+    expect(btn.disabled, 'precondition: the close dropped the first lock').toBe(false);
+    btn.click();
+    expect(onBuy).toHaveBeenCalledTimes(2);
+    expect(btn.disabled).toBe(true);
+
+    a.resolve();
+    await flushMicrotasks();
+    expect(btn.disabled, 'the stale settle leaves the newer lock alone').toBe(true);
+    btn.click();
+    expect(onBuy, 'the third click is refused').toHaveBeenCalledTimes(2);
+
+    b.resolve();
+    await flushMicrotasks();
+    expect(btn.disabled, 'the live settle unlocks').toBe(false);
+    removeOverlay(overlay);
+  });
+
+  it('ts-6b-8 lens: switching Sell to Buy with focus on a Sell button focuses the Buy list itself', () => {
+    // WRONG IMPL KILLED: a fix that only handles Buy to Sell, or that focuses the first button or
+    // the body instead of the list element that holds the shown rows.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+    view.render(ts6b8Vm());
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    const sellBtn = ts6b8Buttons('shop-inventory')[0] as HTMLElement;
+    sellBtn.focus();
+    expect(document.activeElement, 'precondition: focus on the Sell button').toBe(sellBtn);
+
+    view.paint(ctl8aPaint({ tab: 'buy' }));
+    expect(document.activeElement).toBe(ctl8aShopEl('shop-for-sale'));
+    removeOverlay(overlay);
+  });
+
+  it('ts-6b-8 lens: switching Buy to Sell with focus on a Buy button focuses the Sell list itself', () => {
+    // WRONG IMPL KILLED: focus moved to a descendant, the body, or the wrong list.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+    view.render(ts6b8Vm());
+    view.paint(ctl8aPaint({ tab: 'buy' }));
+    const buyBtn = ts6b8Buttons('shop-for-sale')[0] as HTMLElement;
+    buyBtn.focus();
+    expect(document.activeElement, 'precondition: focus on the Buy button').toBe(buyBtn);
+
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    expect(document.activeElement).toBe(ctl8aShopEl('shop-inventory'));
+    removeOverlay(overlay);
+  });
+
+  it('ts-6b-8 lens: a rebuild that destroys the focused Buy button moves focus to the Buy list, and focus elsewhere stays put', () => {
+    // WRONG IMPL KILLED: a rebuild that lets focus fall to document.body (a keyboard user loses
+    // their place on every price change); a fix that yanks focus to the list even when it was on
+    // the title.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+    view.render(ts6b8Shop());
+    view.paint(ctl8aPaint({ tab: 'buy' }));
+    const buyBtn = ts6b8Buttons('shop-for-sale')[0] as HTMLElement;
+    buyBtn.focus();
+    expect(document.activeElement, 'precondition: focus on the Buy button').toBe(buyBtn);
+
+    view.render(ts6b8Shop({ buy0: { buyPrice: 18n } }));
+    expect(buyBtn.isConnected, 'precondition: the rebuild destroyed the focused button').toBe(
+      false,
+    );
+    expect(document.activeElement, 'focus is not lost to the body').not.toBe(document.body);
+    expect(document.activeElement).toBe(ctl8aShopEl('shop-for-sale'));
+
+    const title = ctl8aShopEl('shop-title');
+    title.focus();
+    expect(document.activeElement, 'precondition: focus on the title').toBe(title);
+    view.render(ts6b8Shop({ buy0: { buyPrice: 19n } }));
+    expect(document.activeElement, 'focus on the title stays on the title').toBe(title);
     removeOverlay(overlay);
   });
 });

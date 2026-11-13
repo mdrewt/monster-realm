@@ -795,6 +795,53 @@ describe('shopScreen — ts-6b-8: a vanished cursor row seats on its neighbour',
     expect(paintOf(soldOut, observe(soldOut, onPotion))).toEqual(browse('buy', buyKey(soldOut, 1)));
     expect(buyKey(soldOut, 1)).not.toBe(buyKey(soldOut, 0));
   });
+
+  it('ts-6b-8 lens: two batches in a row re-seat on the row at the cursor`s CURRENT index, not on the original layout', () => {
+    // WRONG IMPL KILLED: an adapter that keeps the layout from the FIRST observe (or from init)
+    // instead of the one it last settled against, so after an earlier row vanishes the cursor's
+    // index is read from the stale layout and the re-seat lands one row too far (Potion, not Berry).
+    const w = world({
+      inventory: [bag(101n, 7, 5), bag(102n, 9, 2), bag(103n, 8, 1), bag(104n, 10, 3)],
+    });
+    const vm = vmOf(w);
+    const onSecond = swallowed(vm, shopScreen.init(vm), ['RB', 'Down']);
+    expect(paintOf(vm, onSecond), 'fixture: cursor on sell row 1').toEqual(
+      browse('sell', sellKey(vm, 1)),
+    );
+    const cursorKey = sellKey(vm, 1);
+
+    // Batch 1: the stack at index 0 goes. The cursor keeps its own row (now at index 0).
+    const w1 = { ...w, inventory: w.inventory.filter((r) => r.invId !== 101n) };
+    const vm1 = vmOf(w1);
+    expect(sellKey(vm1, 0), 'fixture: the cursor row moved up to index 0').toBe(cursorKey);
+    const s1 = observe(vm1, onSecond);
+    expect(paintOf(vm1, s1), 'batch 1: same row, new index').toEqual(browse('sell', cursorKey));
+
+    // Batch 2: the cursor's own stack goes. The row that followed it takes the cursor.
+    const w2 = { ...w1, inventory: w1.inventory.filter((r) => r.invId !== 102n) };
+    const vm2 = vmOf(w2);
+    expect(sellKey(vm2, 0), 'fixture: two rows left, the follower at index 0').not.toBe(cursorKey);
+    expect(sellKey(vm2, 1), 'fixture: index 0 and 1 differ').not.toBe(sellKey(vm2, 0));
+    const s2 = observe(vm2, s1);
+    expect(paintOf(vm2, s2), 'batch 2: the row at the CURRENT index 0').toEqual(
+      browse('sell', sellKey(vm2, 0)),
+    );
+  });
+
+  it('ts-6b-8 lens: a Buy row vanishing ABOVE the cursor leaves the cursor on its own row', () => {
+    // WRONG IMPL KILLED: a re-seat that keeps the cursor's INDEX when any row vanishes (the cursor
+    // would slide onto the row below Potion), or one that re-seats on every layout change.
+    const w = world();
+    const vm = vmOf(w);
+    const onPotion = swallowed(vm, shopScreen.init(vm), ['Down']);
+    const potionKey = buyKey(vm, 1);
+    expect(paintOf(vm, onPotion), 'fixture: cursor on buy row 1').toEqual(browse('buy', potionKey));
+
+    const without = vmOf({ ...w, stock: STOCK.filter((r) => r.shopItemId !== 31n) });
+    expect(buyKey(without, 0), 'fixture: Potion moved up to index 0').toBe(potionKey);
+    expect(buyKey(without, 1), 'fixture: the row below is a different one').not.toBe(potionKey);
+    expect(paintOf(without, observe(without, onPotion))).toEqual(browse('buy', potionKey));
+  });
 });
 
 // ===========================================================================================
