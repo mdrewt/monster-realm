@@ -599,10 +599,9 @@ pub fn tactics_golden(cases: JsValue) -> Result<JsValue, JsValue> {
 // below converts a JS value, calls game-core's `tactics::*` and converts the answer back. No rule
 // lives here — the shell only looks up compile-time content (the kit itself is game-core's
 // `unit_kit`, as on the server), loops tiles / units / skills over game-core calls and copies trace
-// fields into booleans. The TWO
-// restated predicates (`stab`, the carried `combat/damage.rs` STAB test, and `status_blocked`, the
-// resolver's status preconditions) are flagged at their sites and differentially tested against
-// `damage_pipeline` / `resolve_attack` in `tactics_tests.rs`.
+// fields into booleans. The TWO restated predicates (`stab`, the carried `combat/damage.rs` STAB
+// test, and `status_blocked`, the resolver's status preconditions) are flagged at their sites and
+// differentially tested against `damage_pipeline` / `resolve_attack` in `tactics_tests.rs`.
 //
 // Error policy (plan A10): a malformed INPUT — an undeserialisable value, an unknown map / species /
 // unit / skill id, duplicate unit ids, a unit that fails `validate_unit`, an unusable tuning — is a
