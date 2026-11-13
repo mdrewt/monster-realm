@@ -137,7 +137,7 @@ fn apply_effects_to_db(
     owner: Identity,
     state: &PlayerDialogueState,
     effects: &[DialogueEffect],
-) {
+) -> Result<(), String> {
     for effect in effects {
         match effect {
             DialogueEffect::StartQuest(q) => {
@@ -165,6 +165,7 @@ fn apply_effects_to_db(
             | DialogueEffect::GrantXp(_) => {}
         }
     }
+    Ok(())
 }
 
 /// Apply a `TriggerEvent` to all of the player's active quests.
@@ -177,9 +178,9 @@ fn apply_quest_trigger(
     owner: Identity,
     event: &TriggerEvent,
     state: &mut PlayerDialogueState,
-) {
-    // Quest-defs cache: compile-time-embedded RON, parsed once per process.
-    let quest_defs = match crate::content_cache::cached_quest_defs() {
+    quest_defs: Result<&[game_core::QuestDef], String>,
+) -> Result<(), String> {
+    let quest_defs = match quest_defs {
         Ok(q) => q,
         Err(e) => {
             // RON parse-error text may contain quotes —
@@ -197,7 +198,7 @@ fn apply_quest_trigger(
                     "{{\"evt\":\"quest_defs_load_error\",\"reason\":\"{escaped}\",\"suppressed\":{suppressed}}}"
                 );
             }
-            return;
+            return Ok(());
         }
     };
     let active_rows: Vec<PlayerQuestRow> = ctx
@@ -259,6 +260,7 @@ fn apply_quest_trigger(
             }
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +272,18 @@ fn apply_quest_trigger(
 /// quest trigger fired for Talk event.
 #[spacetimedb::reducer]
 pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
+    talk_with_content(
+        ctx,
+        npc_entity_id,
+        crate::content_cache::cached_dialogue_trees().map(Vec::as_slice),
+    )
+}
+
+fn talk_with_content(
+    ctx: &ReducerContext,
+    npc_entity_id: u64,
+    trees: Result<&[game_core::DialogueTree], String>,
+) -> Result<(), String> {
     let me = ctx.sender();
 
     // Step 1: player must be joined
@@ -309,7 +323,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
 
     // Step 6: load dialogue tree
     // Dialogue-trees cache: compile-time-embedded RON, parsed once per process.
-    let trees = crate::content_cache::cached_dialogue_trees()?;
+    let trees = trees?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
@@ -330,7 +344,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     // re-runs each time. A GrantItem in auto_effects without a NotFlag+SetFlag once-only
     // gate is therefore an unlimited item farm. validate_npc_content (game-core) rejects
     // such content at seed time — this is the enforcement point.
-    apply_effects_to_db(ctx, me, &state, &node.auto_effects);
+    apply_effects_to_db(ctx, me, &state, &node.auto_effects)?;
 
     // Step 11: upsert player_conversation
     match ctx.db.player_conversation().owner_identity().find(me) {
@@ -356,7 +370,8 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
             npc_id: npc_row.npc_id.clone(),
         },
         &mut state,
-    );
+        crate::content_cache::cached_quest_defs().map(Vec::as_slice),
+    )?;
 
     // Step 13: write state ONCE (flags + done_quests; active_quests in player_quest)
     write_player_dialogue_state(ctx, me, &state);
@@ -376,6 +391,18 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
 /// (pinned by the client's statusModel and booted main tests and the dialogue e2e).
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
+    advance_dialogue_with_content(
+        ctx,
+        choice_idx,
+        crate::content_cache::cached_dialogue_trees().map(Vec::as_slice),
+    )
+}
+
+fn advance_dialogue_with_content(
+    ctx: &ReducerContext,
+    choice_idx: u32,
+    trees: Result<&[game_core::DialogueTree], String>,
+) -> Result<(), String> {
     let me = ctx.sender();
 
     // Step 1: PK-scoped lookup (F1: Player A cannot advance Player B's conversation)
@@ -420,7 +447,7 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
 
     // Step 2: load NPC + dialogue tree
     // Dialogue-trees cache: compile-time-embedded RON, parsed once per process.
-    let trees = crate::content_cache::cached_dialogue_trees()?;
+    let trees = trees?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
@@ -441,7 +468,7 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
 
     // Step 7: persist state + DB-side effects (BEFORE conversation update)
     write_player_dialogue_state(ctx, me, &state);
-    apply_effects_to_db(ctx, me, &state, result.effects);
+    apply_effects_to_db(ctx, me, &state, result.effects)?;
 
     // Step 8: update or delete conversation row
     match result.next_node_id {

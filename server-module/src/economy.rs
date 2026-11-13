@@ -76,6 +76,24 @@ pub(crate) fn spend_currency(
     Ok(())
 }
 
+pub(crate) const ERR_NOT_ENOUGH_CURRENCY: &str = "not enough currency";
+pub(crate) const ERR_CURRENCY_IN_TRADE: &str = "currency is in an active trade";
+pub(crate) const ERR_ITEM_IN_TRADE: &str = "item is in an active trade";
+
+pub(crate) fn check_currency_spend(want: u64, balance: u64, escrowed: u64) -> Result<(), String> {
+    if want > saturating_sub_u64(balance, escrowed) {
+        return Err(ERR_CURRENCY_IN_TRADE.to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn check_item_spend(want: u32, count: u32, escrowed: u32) -> Result<(), String> {
+    if want > saturating_sub_u32(count, escrowed) {
+        return Err(ERR_ITEM_IN_TRADE.to_string());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // M13b reducers: buy / sell
 // ---------------------------------------------------------------------------

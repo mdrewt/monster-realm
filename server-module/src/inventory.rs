@@ -89,6 +89,30 @@ pub(crate) fn consume_one(
     Ok(())
 }
 
+pub(crate) const ERR_NOT_ENOUGH_ITEM: &str = "not enough of that item";
+
+pub(crate) fn item_count(ctx: &ReducerContext, owner: Identity, item_id: u32) -> u32 {
+    ctx.db
+        .inventory()
+        .owner_identity()
+        .filter(owner)
+        .find(|r| r.item_id == item_id)
+        .map(|r| r.count)
+        .unwrap_or(0)
+}
+
+pub(crate) fn consume_n(
+    ctx: &ReducerContext,
+    owner: Identity,
+    item_id: u32,
+    qty: u32,
+) -> Result<(), String> {
+    for _ in 0..qty {
+        consume_one(ctx, owner, item_id)?;
+    }
+    Ok(())
+}
+
 // --- M21 guest→account re-key ----------------------------------
 
 /// Re-key every `inventory` row owned by `from` onto `to`. Called only from
