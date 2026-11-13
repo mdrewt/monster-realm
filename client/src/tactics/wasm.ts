@@ -276,14 +276,15 @@ export interface TacticsWasmExports {
   tactics_overlays(board: unknown, q: unknown): unknown;
   tactics_tuning(): unknown;
   tactics_next_initiative(board: unknown, thisRoundPriority: unknown): unknown;
+  tactics_deploy_slots(mapId: number): number;
 }
 
-/** bt-12: the tuning the client shows and sizes by (`tactics_tuning()`): the Surge start and the wild
- *  round cap (the turn bar), the pack cap (the deploy slot count is `min(max_pack, spawn_a.length)`). */
+/** The tuning the client shows (`tactics_tuning()`): the Surge start and the wild round cap (the turn
+ *  bar) and the PvP auto-pass count that forfeits a match (the strike pips). */
 export interface TacticsTuning {
   readonly surge_start_round: number;
   readonly wild_round_cap: number;
-  readonly max_pack: number;
+  readonly autopass_forfeit: number;
 }
 
 /** The rules as the tactical client asks them. Synchronous once bound; throws on malformed input. */
@@ -313,8 +314,8 @@ export interface TacticsRules {
   overlays(board: RulesBoard, q: OverlayQuery): OverlaysOut;
 }
 
-/** bt-12 (BT12.1): what main.ts's view-model builder asks beyond the shell's port — the tuning the shell
- *  shows and the next round's initiative. A separate extension so the shell's deps (and every fake
+/** What main.ts asks beyond the shell's port — the tuning the shell shows, the next round's initiative
+ *  and a map's deploy slot count. A separate extension so the shell's deps (and every fake
  *  `TacticsRules` in the pure models' tests) stay the port the shell actually calls. */
 export interface TacticsClientRules extends TacticsRules {
   /** The loaded tuning's client-facing fields. */
@@ -322,6 +323,9 @@ export interface TacticsClientRules extends TacticsRules {
   /** The NEXT round's initiative over `board`'s conscious units, given the side that holds tie priority
    *  THIS round (`battle_tactical.tie_priority_side`): game-core's alternation, never a flip here. */
   nextInitiative(board: RulesBoard, thisRoundPriority: RuleSide): number[];
+  /** How many units a side deploys on the content map `mapId` in a wild battle: game-core's
+   *  `deploy_slots`, the count the server enforces. Throws on an unknown map. */
+  deploySlots(mapId: number): number;
 }
 
 /** The `tactics_*` exports the port binds, in the order `bindTacticsRules` checks them. */
@@ -342,6 +346,7 @@ const EXPORT_NAMES = [
   'tactics_overlays',
   'tactics_tuning',
   'tactics_next_initiative',
+  'tactics_deploy_slots',
 ] as const satisfies readonly (keyof TacticsWasmExports)[];
 
 const U16_MAX = 0xffff;
@@ -412,6 +417,7 @@ export function bindTacticsRules(pkg: TacticsWasmExports): TacticsClientRules {
     tuning: () => pkg.tactics_tuning() as TacticsTuning,
     nextInitiative: (board, thisRoundPriority) =>
       pkg.tactics_next_initiative(board, thisRoundPriority) as number[],
+    deploySlots: (mapId) => pkg.tactics_deploy_slots(int('mapId', mapId, U32_MAX)),
   };
 }
 

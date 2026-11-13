@@ -22,10 +22,10 @@
 //! - `clock`      — the idle clock: pure window / pad / reset / strike arithmetic.
 //! - `queue`      — `TacticalBattle`: submit gate, `validate_at_pop`, the executor (halt-and-return), the chain rule.
 //! - `ai`         — the wild planner: the three stances + Exhausted, seed-free (a pure function of the public board).
-//! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement.
+//! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement; the deploy slot count.
 //! - `recruit`    — the recruit rules behind the turn machine's gate: quantized odds + line items, preflight, the roll, the rebuild.
 //! - `rewards`    — the KO hook's in-battle ledger (XP split, essence, currency) and the battle-end payout.
-//! - `content`    — the bt-6 sidecar registries (skills/species/items/zones/maps + tuning), the kit join, the lints.
+//! - `content`    — the sidecar registries (skills/species/items/zones/maps + tuning), the species kit join (`build_kits`), a unit's kit (`unit_kit`), the lints.
 
 pub mod ai;
 #[cfg(test)]
@@ -89,7 +89,7 @@ pub use ai::{is_exhausted, plan, Stance};
 pub use clock::{ClockError, ClockState, Expiry, Window};
 pub use content::{
     build_kits, dmg_ref, lint_kits, load_battle_maps, load_tactics_items, load_tactics_skills,
-    load_tactics_species, load_tactics_tuning, load_tactics_zones, parse_tactics_tuning,
+    load_tactics_species, load_tactics_tuning, load_tactics_zones, parse_tactics_tuning, unit_kit,
     validate_battle_maps, validate_tactics_content, validate_tactics_items, validate_tactics_zones,
     BattleMapEntry, ItemTarget, Role, SpeciesTactics, TacticsContentError, TacticsItemDef,
     TacticsRegistries, TacticsSkillDef, TacticsSpeciesDef, TacticsZoneDef,
@@ -99,8 +99,8 @@ pub use economy::{
     TurnBudget, TurnEndCause,
 };
 pub use encounter::{
-    effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles, wild_seed,
-    Encounter, EncounterError, PackWeights, MAX_PACK,
+    deploy_slots, effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles,
+    wild_seed, Encounter, EncounterError, PackWeights, MAX_PACK,
 };
 pub use events::{
     payload_of, presentation_cap_ms, AutoPassEvent, AwardsEvent, BattleEndEvent,

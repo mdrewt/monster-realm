@@ -26,7 +26,7 @@ use super::encounter::PackWeights;
 use super::geometry::{Cell, FfFilter, Origin, Shape, SkillGeometry};
 use super::map::{validate_battle_map, BattleMapDef, MapError, TileDef};
 use super::movement::{MoveClass, Terrain};
-use super::resolve::SkillTactics;
+use super::resolve::{SkillTactics, UnitKit};
 use super::tuning::{TacticsTuning, TuningError};
 use crate::combat::ability::StatusKind;
 use crate::combat::weather::WeatherKind;
@@ -2051,5 +2051,166 @@ fn tactics_ron_parts_are_non_empty_sorted_and_load_rows_bt6_6() {
     assert!(
         !load_battle_maps().expect("maps").is_empty(),
         "battle_maps rows"
+    );
+}
+
+// ===========================================================================
+// The battle_unit join: `unit_kit`
+// ===========================================================================
+
+/// `unit_kit` takes the id and affinity from the species row, the base speed, movement
+/// class and `[light, heavy]` from the kit row, and the level and stats from its arguments.
+///
+/// FIXTURE: every source differs from every other — kit base speed 117, species base speed 63,
+/// argument speed 29; light (id 501, Wind, power 25, range 1..=1 Single from the caster) differs
+/// from heavy (id 502, Earth, power 75, Burn, range 2..=3 Diamond 1 AllButSelf) in every field;
+/// the species affinity Dark is neither skill's; level 23 is held by no other field; the class is
+/// Swim, not the `Walk` a default would produce.
+/// LIVE: species 2 (Tidalin, Water, base speed 43, Swim, kit (3, 6)) joined by `build_kits`, at
+/// a level and stats that are not its own: species/000-core.ron:12-17,
+/// tactics_species/000-core.ron:13, skills/000-core.ron:8 + :11, tactics_skills/000-core.ron:12
+/// + :20.
+///
+/// Kills: base speed read from the species row or from `stats.speed`; light/heavy swapped or a
+/// skill duplicated; level or stats taken from the species; affinity taken from a skill; the
+/// movement class defaulted.
+#[test]
+fn unit_kit_joins_species_affinity_and_kit_moves_with_the_row_level_and_stats() {
+    let sp = Species {
+        id: 41,
+        name: "Fixture41".to_string(),
+        base_stats: StatBlock {
+            hp: 90,
+            attack: 81,
+            defense: 72,
+            speed: 63,
+            sp_attack: 54,
+            sp_defense: 45,
+        },
+        affinity: Affinity::Dark,
+        learnable_skill_ids: vec![501, 502],
+        ability: None,
+        tier: 0,
+    };
+    let light = SkillTactics {
+        skill_id: 501,
+        tier: Tier::Light,
+        affinity: Affinity::Wind,
+        power: 25,
+        accuracy: 95,
+        applies_status: None,
+        geometry: SkillGeometry {
+            range_min: 1,
+            range_max: 1,
+            origin: Origin::Caster,
+            shape: Shape::Single,
+            radius: 0,
+            ff_filter: FfFilter::Enemies,
+        },
+    };
+    let heavy = SkillTactics {
+        skill_id: 502,
+        tier: Tier::Heavy,
+        affinity: Affinity::Earth,
+        power: 75,
+        accuracy: 85,
+        applies_status: Some(StatusKind::Burn),
+        geometry: SkillGeometry {
+            range_min: 2,
+            range_max: 3,
+            origin: Origin::TargetUnit,
+            shape: Shape::Diamond,
+            radius: 1,
+            ff_filter: FfFilter::AllButSelf,
+        },
+    };
+    let k = SpeciesTactics {
+        species_id: 41,
+        base_speed: 117,
+        movement: MoveClass::Swim,
+        role: Role::Support,
+        stance: Stance::Skittish,
+        light: light.clone(),
+        heavy: heavy.clone(),
+    };
+    let stats = StatBlock {
+        hp: 140,
+        attack: 31,
+        defense: 37,
+        speed: 29,
+        sp_attack: 43,
+        sp_defense: 47,
+    };
+    assert_eq!(
+        unit_kit(&sp, &k, 23, stats),
+        UnitKit {
+            species_id: 41,
+            affinity: Affinity::Dark,
+            level: 23,
+            stats: StatBlock {
+                hp: 140,
+                attack: 31,
+                defense: 37,
+                speed: 29,
+                sp_attack: 43,
+                sp_defense: 47,
+            },
+            base_speed: 117,
+            class: MoveClass::Swim,
+            skills: vec![light, heavy],
+        },
+        "fixture: species id/affinity, kit speed/class/skills, argument level/stats"
+    );
+
+    let l = live();
+    let kits = live_kits(&l);
+    let tidalin = l
+        .species
+        .iter()
+        .find(|s| s.id == 2)
+        .expect("the live species 2 row");
+    let tidalin_kit = kits
+        .iter()
+        .find(|t| t.species_id == 2)
+        .expect("the live kit of species 2");
+    let live_stats = StatBlock {
+        hp: 177,
+        attack: 58,
+        defense: 81,
+        speed: 52,
+        sp_attack: 79,
+        sp_defense: 80,
+    };
+    assert_eq!(
+        unit_kit(tidalin, tidalin_kit, 31, live_stats),
+        UnitKit {
+            species_id: 2,
+            affinity: Affinity::Water,
+            level: 31,
+            stats: live_stats,
+            base_speed: 43,
+            class: MoveClass::Swim,
+            skills: vec![
+                SkillTactics {
+                    skill_id: 3,
+                    tier: Tier::Light,
+                    affinity: Affinity::Water,
+                    power: 20,
+                    accuracy: 100,
+                    applies_status: None,
+                    geometry: geom(1, 2, Shape::Single, 0),
+                },
+                SkillTactics {
+                    skill_id: 6,
+                    tier: Tier::Heavy,
+                    affinity: Affinity::Plant,
+                    power: 70,
+                    accuracy: 95,
+                    applies_status: None,
+                    geometry: geom(2, 3, Shape::Diamond, 1),
+                },
+            ],
+        },
+        "live species 2 (Tidalin): the content join at level 31 with non-species stats"
     );
 }

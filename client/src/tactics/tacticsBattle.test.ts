@@ -3049,7 +3049,10 @@ describe('TacticsBattle: the pre-queue (BT11.3)', () => {
     );
     expect(h.shell.selectedUnitId, 'fixture: the READY unit 2 is the active one').toBe(2);
     const hudPips = '.tactics-info-row[data-unit-id="2"] .tactics-pips .tactics-pip';
-    expect(h.root.querySelectorAll(hudPips), 'fixture: its HUD shows the AP pips').toHaveLength(6);
+    expect(
+      h.root.querySelectorAll(hudPips),
+      'fixture: its HUD shows the AP pips (the fake freshBudget ap 7)',
+    ).toHaveLength(7);
     expect(
       h.root.querySelectorAll('.tactics-info-row[data-unit-id="2"] .tactics-pip--drafted'),
       'a READY-only unit shows no drafted pip (its strip total is not a draft)',
@@ -4518,8 +4521,8 @@ describe('TacticsBattle: a live turn goes on after a commit (bt-12 B, BT12.5)', 
 const clockOn = (unitId: number, side: Side = 'A'): ClockVM => ({
   ring: { unitId, side, secondsLeft: 23, fraction: 0.77, band: 'ok' },
   players: [
-    { side: 'A', mine: true, name: 'Quill', strikes: 1 },
-    { side: 'B', mine: false, name: 'Marrow', strikes: 3 },
+    { side: 'A', mine: true, name: 'Quill', strikes: 1, strikesMax: 4 },
+    { side: 'B', mine: false, name: 'Marrow', strikes: 3, strikesMax: 4 },
   ],
 });
 /** Where each `.tactics-clock-ring` in the root sits: its chip's unit id, `ghost:<id>`, or `loose`. */
@@ -4829,5 +4832,70 @@ describe('TacticsBattle: Forfeit and the Surge badge (bt-15 B, BT15.3 / BT15.5)'
     ).toBe(en('tactics.turnbar.surgeIn', { n: 4 }));
     expect(badge(tacVm('pvp', { round: 6 })), 'round 6: no badge yet').toBe('');
     expect(badge(tacVm('wild', { round: 7 })), 'a wild battle at round 7: no badge').toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The active unit's AP pips are the rules port's fresh-budget AP
+// ---------------------------------------------------------------------------------------------
+
+describe('TacticsBattle: the HUD AP pips', () => {
+  it('the active unit`s info row shows as many AP pips as the rules port`s fresh budget has AP — seven for the fake (five live, two spent for a unit at 5 AP), nine for a port that answers nine — never the unit`s own AP and never six [ts-6b-4.4]', () => {
+    // WRONG IMPL KILLED: the unit's current AP passed as apMax (5 pips); a literal 6 (AP_PIPS); a
+    // fresh budget read once and cached across rules ports; the pips on a row other than the
+    // active unit's.
+    const pipStatesOf = (root: HTMLElement, unitId: number): string[] =>
+      [
+        ...root.querySelectorAll<HTMLElement>(
+          `.tactics-info-row[data-unit-id="${unitId}"] .tactics-pips .tactics-pip`,
+        ),
+      ].map(
+        (p) =>
+          (['full', 'drafted', 'spent'] as const).find((s) =>
+            p.classList.contains(`tactics-pip--${s}`),
+          ) ?? '?',
+      );
+    const live = tacUnits('wild');
+    expect(
+      live.find((u) => u.unitId === 1)?.ap,
+      'fixture: the active unit 1 holds 5 AP (not the fake`s fresh 7)',
+    ).toBe(5);
+    expect(FRESH.ap, 'fixture: the fake port`s fresh budget').toBe(7);
+
+    const k = make();
+    k.shell.render(tacVm('wild'));
+    expect(k.shell.selectedUnitId, 'fixture: unit 1 is the active one').toBe(1);
+    expect(pipStatesOf(k.root, 1), 'seven pips: five live, two spent').toEqual([
+      'full',
+      'full',
+      'full',
+      'full',
+      'full',
+      'spent',
+      'spent',
+    ]);
+    expect(
+      k.root.querySelectorAll('.tactics-info-row .tactics-pips .tactics-pip'),
+      'no other row has pips',
+    ).toHaveLength(7);
+
+    const base = fakeRules();
+    const nine: Fake = {
+      ...base,
+      rules: { ...base.rules, freshBudget: () => ({ ...FRESH, ap: 9 }) },
+    };
+    const k9 = make(false, 'A', nine);
+    k9.shell.render(tacVm('wild'));
+    expect(pipStatesOf(k9.root, 1), 'a port answering 9: nine pips, five live').toEqual([
+      'full',
+      'full',
+      'full',
+      'full',
+      'full',
+      'spent',
+      'spent',
+      'spent',
+      'spent',
+    ]);
   });
 });

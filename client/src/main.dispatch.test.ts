@@ -249,18 +249,25 @@ vi.mock('./ui/toast', async (importOriginal) => {
 vi.mock('./ui/profileView', () => ({ ProfileView: H.makeStub('ProfileView') }));
 
 // bt-12: what the stubbed `tactics_map` was asked for (every mapId, oldest first). Map 17 is the one
-// map the stub gives TWO spawn cells (every other map has the shipped three), so a deploy slot count
-// taken from anywhere but the tactical row's own map shows.
-// bt-12 B (named intentional change, plan REV B2.11): map 19 has FOUR spawn cells (the slot count is
-// `min(tuning.max_pack, spawn_a.length)`); `tuning` is what the stubbed `tactics_tuning` answers (a
-// case may lower `max_pack` before its first deploy render and must restore it); `nextInit` answers
-// `tactics_next_initiative` and `nextInitCalls` records its arguments; `overlayQueries` records every
-// `tactics_overlays` query (its `viewer` is the shell's `mySide`).
+// map the stub gives TWO spawn cells (every other map has the shipped three) and map 19 FOUR.
+// The wild deploy slot count is whatever the stubbed
+// `tactics_deploy_slots(mapId)` answers (game-core's `deploy_slots`, the count the server enforces),
+// never a count read off `tactics_map`. `slotCalls` records every
+// mapId it is asked; `slots` is its answer per map (any other map: 3) — map 17 answers 2, map 19
+// answers 2 (neither its four spawn cells nor a literal 3), map 23 (three stubbed spawn cells)
+// answers 1. A case may change `slots` before its first deploy render and must restore it.
+// `tuning` is what the stubbed `tactics_tuning` answers (`autopass_forfeit` 7: the PvP strike
+// pips); `nextInit` answers `tactics_next_initiative` and `nextInitCalls` records its
+// arguments; `overlayQueries` records every `tactics_overlays` query (its `viewer` is the shell's
+// `mySide`).
 const T12 = vi.hoisted(() => ({
   mapCalls: [] as number[],
+  slotCalls: [] as number[],
   twoSpawnMap: 17,
   fourSpawnMap: 19,
-  tuning: { surge_start_round: 11, wild_round_cap: 37, max_pack: 3 },
+  oneSlotMap: 23,
+  slots: { 17: 2, 19: 2, 23: 1 } as Record<number, number>,
+  tuning: { surge_start_round: 11, wild_round_cap: 37, autopass_forfeit: 7 },
   nextInitCalls: [] as unknown[][],
   nextInit: ((..._args: unknown[]): unknown => []) as (...args: unknown[]) => unknown,
   overlayQueries: [] as unknown[],
@@ -272,7 +279,8 @@ const T12 = vi.hoisted(() => ({
 // bt-12 (named intentional change, plan §5 / REV 2b B1): this file's OWN factory gains the 14
 // `tactics_*` exports the rules port binds (`bindTacticsRules` refuses a pkg missing any), so the
 // lazily bound port works in the BT12 cases below; `tactics_map` answers 3 `spawn_a` cells (2 on map
-// 17) and records the map asked for; the others answer minimal shapes nothing in increment A reads.
+// 17, 4 on map 19) and records the map asked for; `tactics_deploy_slots` answers
+// `T12.slots`; the others answer minimal shapes nothing in increment A reads.
 // The shared test-util harness is not edited.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
   ...wasmPkgIdentityMoveMock({ interact: (...args: unknown[]) => H.interact(...args) }),
@@ -362,6 +370,10 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
   tactics_next_initiative: (...args: unknown[]) => {
     T12.nextInitCalls.push(args);
     return T12.nextInit(...args);
+  },
+  tactics_deploy_slots: (mapId: number) => {
+    T12.slotCalls.push(mapId);
+    return T12.slots[mapId] ?? 3;
   },
 }));
 
@@ -5444,6 +5456,7 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     await bootReady();
     server(1000);
     T12.mapCalls.length = 0;
+    T12.slotCalls.length = 0;
     const B = 9_007_199_254_741_009n;
     const LEAD = 9_007_199_254_741_013n;
     const SECOND = 9_007_199_254_741_015n;
@@ -5480,7 +5493,8 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     const deployTitle = deploy.querySelector('[data-testid="battle-title"]');
     owner('Deploying', deployTitle, deploy);
     expect(deploy.getAttribute('role'), 'Deploying: the deploy root is the dialog').toBe('dialog');
-    expect(T12.mapCalls, 'the slot count is read off the tactical row`s own map (13)').toContain(
+    // The slot count is asked of `tactics_deploy_slots`, never read off `tactics_map`.
+    expect(T12.slotCalls, 'the slot count is asked for the tactical row`s own map (13)').toContain(
       13,
     );
     expect(stackNow(), 'the panel is the battle base`s own presentation, not a frame').toEqual([
@@ -5616,9 +5630,11 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     // BT12.2); a battle with nothing shown, or the 1v1 view kept at Active (B17, BT12.1); a rules
     // port bound or asked at boot (R7: the bind is lazy); a board sized off another map.
     T12.mapCalls.length = 0;
+    T12.slotCalls.length = 0;
     await bootReady();
     server(1000);
     expect(T12.mapCalls, 'nothing asked the rules port at boot').toEqual([]);
+    expect(T12.slotCalls, 'nor its deploy slot count').toEqual([]);
     const B = 9_007_199_254_741_027n;
     const P = 9_007_199_254_741_029n;
     opts.store.upsertMonster(bt12Monster(P, 0));
@@ -5658,6 +5674,10 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
       [...new Set(T12.mapCalls)],
       'every map the rules port was asked for is the battle`s own (13)',
     ).toEqual([13]);
+    expect(
+      T12.slotCalls.every((id) => id === 13),
+      'and any deploy slot count it was asked is the battle`s own map`s',
+    ).toBe(true);
   });
 
   it('after a confirmed deploy, the new my_formation row (an order that is not the party`s) is what the next Deploying battle`s A sends, slot by slot, and a two-spawn map takes its first two [BT12-3-BOOT-FORMATION-UPDATE]', async () => {
@@ -5992,9 +6012,10 @@ const bt12bCountdowns = (): HTMLElement[] => [
 describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
   sequential: true,
 }, () => {
-  const saved = { tuning: { ...T12.tuning }, nextInit: T12.nextInit };
+  const saved = { tuning: { ...T12.tuning }, slots: { ...T12.slots }, nextInit: T12.nextInit };
   afterEach(() => {
     T12.tuning = { ...saved.tuning };
+    T12.slots = { ...saved.slots };
     T12.nextInit = saved.nextInit;
     for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
     recorded = [];
@@ -6035,7 +6056,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     // on every identical batch (the open menu node is rebuilt: B2.2) or a `readyPlans` change that
     // does NOT repaint (a Map compares as {}); Start at the bare base opening the menu while the
     // shell owns the frame; hint chips not the shell's; the deploy slot count from spawn_a or a
-    // literal 3 (max_pack 2 on a 4-spawn map sends two picks); a throwing batch that demotes the
+    // literal 3 (a deploy slot count of 2 on a 4-spawn map sends two picks); a throwing batch that demotes the
     // visible shell to the 1v1 view; a render throw on a first sighting that advances the watermark
     // (the next good batch would lose the history); `tacticalOwnsStart` left true once the shell is
     // hidden (a legacy battle's Start would no longer open the menu).
@@ -6052,8 +6073,10 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
       return t;
     };
 
-    // --- the pack cap: max_pack 2 on a FOUR-spawn map sizes the deploy at two ------------------
-    T12.tuning = { ...T12.tuning, max_pack: 2 };
+    // --- the pack cap: a deploy slot count of 2 on a FOUR-spawn map sizes the deploy at two -----
+    // The cap is whatever `tactics_deploy_slots(mapId)` answers: 2 here, on a four-spawn map.
+    T12.slots = { ...T12.slots, [T12.fourSpawnMap]: 2 };
+    T12.slotCalls.length = 0;
     const S = 2n ** 60n + 1n;
     const SP = [2n ** 60n + 3n, 2n ** 60n + 5n, 2n ** 60n + 7n, 2n ** 60n + 9n];
     for (const [slot, id] of SP.entries()) opts.store.upsertMonster(bt12Monster(id, slot));
@@ -6064,9 +6087,10 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     H.calls = [];
     press('Enter', at());
     await flush();
-    expect(bt12Sends(), 'min(max_pack 2, four spawns): two picks').toEqual([
+    expect(bt12Sends(), 'deploy slots 2 on a four-spawn map: two picks').toEqual([
       { battleId: S, picks: [bt12Pick(SP[0] as bigint, 0), bt12Pick(SP[1] as bigint, 1)] },
     ]);
+    expect(T12.slotCalls, 'asked for the battle`s own map (19)').toContain(T12.fourSpawnMap);
     opts.store.removeBattle(S);
     opts.store.reconcileTacticalBattlesFromView([]);
     server(at());
@@ -6385,6 +6409,77 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     expect(bt12Frames(), 'Start opens the main menu (tacticalOwnsStart is false)').toEqual([
       'battle',
       'menuView',
+    ]);
+  });
+
+  it('a Deploying WILD battle offers and sends exactly as many picks as tactics_deploy_slots answers for the tactical row`s own map — two on the four-spawn map 19, one on the three-spawn map 23 — asking it with that mapId and never reading the map for the count [ts-6b-4.2]', async () => {
+    // WRONG IMPL KILLED: `Math.min(<any cap>, spawn_a.length)` or the spawn count alone (map 19 has
+    // four stubbed spawn cells, map 23 three: 3 or 4 picks); a literal 3; the count asked for
+    // another battle's map or cached from the first battle (the second answers 1, not 2); the
+    // panel offering more rows than it sends.
+    await bootReady();
+    server(1000);
+    let t = 1000;
+    const at = (): number => {
+      t += 100;
+      return t;
+    };
+    const formationNames = (): string[] =>
+      [
+        ...(bt12Root('tactics-deploy')?.querySelectorAll(
+          '.tactics-deploy-formation .tactics-deploy-name',
+        ) ?? []),
+      ].map((el) => el.textContent ?? '');
+    const PARTY = [2n ** 60n + 2003n, 2n ** 60n + 2005n, 2n ** 60n + 2007n, 2n ** 60n + 2009n];
+    for (const [slot, id] of PARTY.entries()) opts.store.upsertMonster(bt12Monster(id, slot));
+    const [M0, M1] = PARTY as [bigint, bigint, bigint, bigint];
+    expect(
+      [T12.slots[T12.fourSpawnMap], T12.slots[T12.oneSlotMap]],
+      'fixture: the stub answers 2 for map 19 and 1 for map 23',
+    ).toEqual([2, 1]);
+
+    const deployOn = (battleId: bigint, mapId: number): void => {
+      T12.slotCalls.length = 0;
+      T12.mapCalls.length = 0;
+      opts.store.upsertBattle(bt12bAnchor(battleId, 'Ongoing', PARTY));
+      opts.store.reconcileTacticalBattlesFromView([bt12Tactical(battleId, 'Deploying', mapId)]);
+      server(at());
+      expect(bt12Shown('tactics-deploy'), `map ${mapId}: the deploy panel is shown`).toBe(true);
+    };
+    const clear = (battleId: bigint): void => {
+      opts.store.removeBattle(battleId);
+      opts.store.reconcileTacticalBattlesFromView([]);
+      server(at());
+      expect(bt12Frames(), 'fixture: back at the world').toEqual(['world']);
+    };
+
+    const S1 = 2n ** 60n + 2011n;
+    deployOn(S1, T12.fourSpawnMap);
+    expect(formationNames(), 'map 19: two formation slots offered').toHaveLength(2);
+    expect([...new Set(T12.slotCalls)], 'asked with the row`s own map (19)').toEqual([
+      T12.fourSpawnMap,
+    ]);
+    expect(T12.mapCalls, 'the deploy count reads no map').toEqual([]);
+    H.calls = [];
+    press('Enter', at());
+    await flush();
+    expect(bt12Sends(), 'map 19: exactly two picks').toEqual([
+      { battleId: S1, picks: [bt12Pick(M0, 0), bt12Pick(M1, 1)] },
+    ]);
+    clear(S1);
+
+    const S2 = 2n ** 60n + 2013n;
+    deployOn(S2, T12.oneSlotMap);
+    expect(formationNames(), 'map 23: one formation slot offered').toHaveLength(1);
+    expect([...new Set(T12.slotCalls)], 'asked with the row`s own map (23)').toEqual([
+      T12.oneSlotMap,
+    ]);
+    expect(T12.mapCalls, 'the deploy count reads no map').toEqual([]);
+    H.calls = [];
+    press('Enter', at());
+    await flush();
+    expect(bt12Sends(), 'map 23: exactly one pick').toEqual([
+      { battleId: S2, picks: [bt12Pick(M0, 0)] },
     ]);
   });
 
@@ -6795,7 +6890,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
 // its send. Keys: A Enter, Start KeyM, Down ArrowDown. RED REASON: the `challenge` arm sends
 // `ownPartyIds()` (every party slot, store order, fainted and traded included) and ignores
 // `partySize`; the deploy panel's pvp branch does not exist (a Pvp Deploying battle builds the wild
-// panel: the opponent's roster as the pack, `min(max_pack, spawns)` slots, no lock, no countdown).
+// panel: the opponent's roster as the pack, the map's wild deploy slot count, no lock, no countdown).
 
 /** A trade session the booted player opened, its own side holding `ids` and CONFIRMED (a confirmed
  *  side locks its monsters: the deploy-X case's shape). */
@@ -6919,7 +7014,7 @@ describe('bt-15: the sized challenge and the PvP deploy panel (BT15.1)', {
   it('a Deploying PvP battle shows the deploy panel with pvpDeployCount(format, conscious) slots and NO opponent roster, A sends exactly those picks, the own locked my_battle_deploy row (and not the opponent`s) disables every row with the sending line, and the countdown paints 44 s on the panel with nothing announced [BT15-1]', async () => {
     // WRONG IMPL KILLED: the wild branch run for a PvP battle (`battle.sideB.team` — the OPPONENT's
     // roster, R-bt-14-ROSTERREVEAL — painted as the pack: the species line "#977" shows); the slot
-    // count from `min(max_pack, spawns)` (three slots for a format-2 battle: the server refuses a
+    // count from the wild deploy slot count (three slots for a format-2 battle: the server refuses a
     // third pick) or from the party length (a dead slot for the fainted member); the fainted member
     // offered; no lock reflection (a second A sends deploy_units again, "already locked"); a lock
     // read from ANY locked row (the opponent locking first would freeze this panel); the bt-12
@@ -7482,6 +7577,74 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
     tick(W0 + 45_000);
     expect(ringsNow(), 'the ring moved to unit 43 and left 52').toEqual(['43:ok:83']);
   });
+
+  it('the clock pump paints each PvP player as many strike pips as the loaded tuning`s autopass_forfeit (seven in this stub, not four), the hit count that player`s autopassCount clamped to it — 2 of 7 for me, 7 of 7 for a rival at 9 — and the pips follow a later count [ts-6b-4.3]', async () => {
+    // WRONG IMPL KILLED: a literal 4 (STRIKES_MAX) for the pip count or the clamp (four pips, the
+    // rival's 9 clamped to 4); `strikesMax` read off anything but `tactics_tuning()` (the stub
+    // answers 7, the shipped tuning 4); the max taken from the autopass count (2 or 9 pips); the
+    // strikes of one row painted for both players.
+    await bootReady();
+    server(1000);
+    const wall = { t: 1_750_000_000_000 };
+    vi.spyOn(Date, 'now').mockImplementation(() => wall.t);
+    let t = 1000;
+    const tick = (wallMs: number): void => {
+      wall.t = wallMs;
+      t += 50;
+      frame(t);
+    };
+    const W0 = wall.t;
+    const batch = (): void => {
+      t += 50;
+      server(t);
+    };
+    expect(T12.tuning.autopass_forfeit, 'fixture: the stubbed forfeit').toBe(7);
+    T12.nextInit = () => [52, 41, 54, 43];
+    opts.store.upsertPlayer({
+      identity: OTHER_IDENTITY,
+      entityId: 99n,
+      name: BT15B_RIVAL_NAME,
+      online: true,
+    });
+    const B = 2n ** 60n + 361n;
+    const [P1, P2] = [B + 2n, B + 4n];
+    opts.store.upsertMonster(bt12Monster(P1, 0));
+    opts.store.upsertMonster(bt12Monster(P2, 1));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [P1, P2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileBattleUnitsFromView(bt15bUnits(B, P1, P2));
+    opts.store.reconcileTacticalBattlesFromView([bt15bRow(B, 52, 1)]);
+    opts.store.reconcileBattleClocksFromView([
+      bt15bClock(B, 'A', null, null, 2),
+      bt15bClock(B, 'B', W0, W0 + 30_000, 9),
+    ]);
+    batch();
+    const shell = bt12bShell();
+    expect(shell !== null && bt12Displayed(shell), 'fixture: the shell is shown').toBe(true);
+    if (shell === null) return;
+    /** Each painted player as `<side>:<pips>:<hit pips>`. */
+    const pipsNow = (): string[] =>
+      [...shell.querySelectorAll<HTMLElement>('.tactics-players .tactics-player')].map(
+        (p) =>
+          `${p.getAttribute('data-side')}:${p.querySelectorAll('.tactics-strike').length}:${p.querySelectorAll('.tactics-strike--hit').length}`,
+      );
+
+    tick(W0 + 5_000);
+    expect(pipsNow(), 'seven pips each: A (me) 2 hit, B (the rival, 9 auto-passes) 7 hit').toEqual([
+      'A:7:2',
+      'B:7:7',
+    ]);
+
+    opts.store.reconcileBattleClocksFromView([
+      bt15bClock(B, 'A', null, null, 5),
+      bt15bClock(B, 'B', W0, W0 + 30_000, 0),
+    ]);
+    batch();
+    tick(W0 + 6_000);
+    expect(pipsNow(), 'later counts: still seven pips each, A 5 hit, B 0').toEqual([
+      'A:7:5',
+      'B:7:0',
+    ]);
+  });
 });
 
 // --- bt-17 increment A (BT17.1, BT17.2): the 1v1 renderer is gone; what a row-less anchor shows ----
@@ -7532,9 +7695,10 @@ const bt17Deploying = (
 describe('bt-17: no 1v1 renderer — a row-less anchor shows nothing (BT17.1, BT17.2)', {
   sequential: true,
 }, () => {
-  const saved = { tuning: { ...T12.tuning } };
+  const saved = { tuning: { ...T12.tuning }, slots: { ...T12.slots } };
   afterEach(() => {
     T12.tuning = { ...saved.tuning };
+    T12.slots = { ...saved.slots };
     teardownBoot();
   });
 
@@ -7676,7 +7840,8 @@ describe('bt-17: no 1v1 renderer — a row-less anchor shows nothing (BT17.1, BT
     // as a blank; `??` where `||` is needed (the empty species name never falls through); an
     // unknown species printed as "undefined"; the fallback id taken from the species id (#2, #3)
     // instead of the monster id.
-    T12.tuning = { ...T12.tuning, max_pack: 4 };
+    // Four deploy slots on the four-spawn map: `tactics_deploy_slots` answers 4 here.
+    T12.slots = { ...T12.slots, [T12.fourSpawnMap]: 4 };
     await bootReady();
     server(1000);
     opts.store.upsertSpecies(bt17Species(1, 'Mosshorn'));

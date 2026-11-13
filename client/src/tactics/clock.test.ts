@@ -7,8 +7,9 @@
 // unit, A radial clock ring on that unit's portrait SHALL be visible to both players, refill on
 // every accepted submit, turn amber at 10 s and red at 5 s, and strike pips (0–4) SHALL sit by each
 // player's name"); plan memory/projects/monster-realm-bt-15-plan.md REV 3 §1 BT15.2 as amended by
-// §8 REV 3.1 (fraction rounded to 2 decimals, `data-fraction` 0..100, STRIKES_MAX the disclosed
-// mirror of `tuning.autopass_forfeit`); the tester brief's API freeze (client/src/tactics/clock.ts).
+// §8 REV 3.1 (fraction rounded to 2 decimals, `data-fraction` 0..100); the tester brief's API freeze
+// (client/src/tactics/clock.ts). The pip count is the input's `strikesMax` (the loaded tuning's
+// `autopass_forfeit`), carried on every StrikesVM; no client constant.
 //
 // DOM CONTRACT PINNED HERE (the freeze): the ring is the ONE child
 // `span.tactics-clock-ring[role=img][data-band][data-fraction=<round(fraction*100)>]` of the one
@@ -17,7 +18,7 @@
 // every other ring under the bar is removed. The players element is `role=group` labelled
 // `tactics.players.label`, holding one `span.tactics-player[data-side][data-mine]` per player, each
 // `span.tactics-player-name` + `span.tactics-strikes[role=img]` (aria-label `tactics.clock.strikes
-// {name, n, max}`) with exactly STRIKES_MAX `span.tactics-strike`, the first n `--hit`; null or no
+// {name, n, max}`) with exactly `strikesMax` `span.tactics-strike`, the first n `--hit`; null or no
 // players empties it and sets `hidden`. An unchanged players VM leaves the same child nodes.
 //
 // FIXTURES (no monoculture): the local player is side B; A's player is "Marrow", B's "Quill"; A-
@@ -44,7 +45,6 @@ import {
   type ClockVM,
   clockVM,
   renderClock,
-  STRIKES_MAX,
 } from './clock';
 import type { RuleSide } from './wasm';
 
@@ -105,7 +105,8 @@ function row(
 }
 
 /** A PvP input: B's 30 s window open [W, W + 30 s] and A's closed, unit 19 (side B) waiting, the
- *  wall clock at `now` ms after W. Rows listed B first (the output is sorted A then B). */
+ *  wall clock at `now` ms after W, four strike pips (the shipped `autopass_forfeit`) unless
+ *  `strikesMax` says otherwise. Rows listed B first (the output is sorted A then B). */
 function input(o: Partial<ClockInput> & { readonly now?: number } = {}): ClockInput {
   const { now, ...rest } = o;
   return {
@@ -116,6 +117,7 @@ function input(o: Partial<ClockInput> & { readonly now?: number } = {}): ClockIn
     mySide: 'B',
     playerName,
     nowMs: W + (now ?? 1_000),
+    strikesMax: 4,
     ...rest,
   };
 }
@@ -185,9 +187,11 @@ describe('clock: the view model (bt-15 B, BT15.2)', () => {
       clockVM(input({ kind: 'wild', activeUnitId: null, clocks: [] })),
       'wild, empty',
     ).toBeNull();
-    expect([CLOCK_AMBER_MS, CLOCK_RED_MS, STRIKES_MAX], 'the frozen display constants').toEqual([
-      10_000, 5_000, 4,
-    ]);
+    expect([CLOCK_AMBER_MS, CLOCK_RED_MS], 'the frozen display constants').toEqual([10_000, 5_000]);
+    expect(
+      must(clockVM(input()), 'pvp').players.map((p) => p.strikesMax),
+      'four pips per player, given strikesMax: 4',
+    ).toEqual([4, 4]);
   });
 
   it('the ring is the waiting unit`s and reads its SIDE`s open window: whole seconds rounded up, the share of the window left to 2 decimals, ok above 10 s, amber from 10 s, red from 5 s, and 0 s / 0 / red once the deadline has passed [BT15-2]', () => {
@@ -300,8 +304,8 @@ describe('clock: the view model (bt-15 B, BT15.2)', () => {
     // player's; strikes unclamped (9 pips), or clamped to 3; a strike count read off the other row.
     const vm = must(clockVM(input()), 'A 1, B 3');
     expect(vm.players, 'A (Marrow, 1 strike) then B (Quill, mine, 3 strikes)').toEqual([
-      { side: 'A', mine: false, name: 'Marrow', strikes: 1 },
-      { side: 'B', mine: true, name: 'Quill', strikes: 3 },
+      { side: 'A', mine: false, name: 'Marrow', strikes: 1, strikesMax: 4 },
+      { side: 'B', mine: true, name: 'Quill', strikes: 3, strikesMax: 4 },
     ]);
     const clamped = must(
       clockVM(input({ clocks: [row('B', ME, 0, 30_000, 0), row('A', RIVAL, null, null, 9)] })),
@@ -338,8 +342,8 @@ describe('clock: the view model (bt-15 B, BT15.2)', () => {
       'Practice',
     );
     expect(practice.players, 'Practice: the same name twice, mine on side A only').toEqual([
-      { side: 'A', mine: true, name: 'Quill', strikes: 0 },
-      { side: 'B', mine: false, name: 'Quill', strikes: 2 },
+      { side: 'A', mine: true, name: 'Quill', strikes: 0, strikesMax: 4 },
+      { side: 'B', mine: false, name: 'Quill', strikes: 2, strikesMax: 4 },
     ]);
     expect(
       asked.every((id) => id === ME),
@@ -483,7 +487,7 @@ describe('clock: the DOM (bt-15 B, BT15.2)', () => {
         cat(EN, 'tactics.clock.strikes', { name, n, max: 4 }),
       );
       const each = [...pips.querySelectorAll('.tactics-strike')];
-      expect(each.length, `${side}: four pips`).toBe(STRIKES_MAX);
+      expect(each.length, `${side}: four pips (strikesMax: 4)`).toBe(4);
       expect(
         each.map((p) => p.classList.contains('tactics-strike--hit')),
         `${side}: the first ${n} hit`,
@@ -547,5 +551,123 @@ describe('clock: the DOM (bt-15 B, BT15.2)', () => {
       cat(FR, 'tactics.clock.strikes', { name: 'Quill', n: 3, max: 4 }),
       'fixture: French differs',
     ).not.toBe(cat(EN, 'tactics.clock.strikes', { name: 'Quill', n: 3, max: 4 }));
+  });
+
+  it('the strike pips number the input`s strikesMax: seven pips per player at strikesMax 7 (9 auto-passes clamp to seven hit, 5 hit five), three at strikesMax 3, a hand-built view painted at its own max, and a repaint of the same players at another max shows the new count [ts-6b-4.3]', () => {
+    // WRONG IMPL KILLED: a painter or clamp that keeps a literal 4 (STRIKES_MAX); the clamp at the
+    // input's max but the painter at another (or the reverse: 9 strikes painted 9 hit of 7); a
+    // painter that reads the max from module state set by clockVM instead of the view it paints
+    // (the hand-built view below never went through clockVM); a label with a stale max; a strip
+    // memoised on the players' names and strikes alone (the same players at a new max kept at 7).
+    const paintedPips = (
+      host: HTMLElement,
+    ): Array<[string | null, number, number, string | null]> =>
+      [...host.querySelectorAll<HTMLElement>('.tactics-player')].map((e) => {
+        const pips = e.querySelector('.tactics-strikes');
+        return [
+          e.getAttribute('data-side'),
+          e.querySelectorAll('.tactics-strike').length,
+          e.querySelectorAll('.tactics-strike--hit').length,
+          pips === null ? null : pips.getAttribute('aria-label'),
+        ];
+      });
+    const hitOrder = (host: HTMLElement): boolean[][] =>
+      [...host.querySelectorAll<HTMLElement>('.tactics-strikes')].map((p) =>
+        [...p.querySelectorAll('.tactics-strike')].map((pip) =>
+          pip.classList.contains('tactics-strike--hit'),
+        ),
+      );
+
+    // strikesMax 7: A has 9 auto-passes (clamped to 7), B has 5 (below the max).
+    const seven = must(
+      clockVM(
+        input({
+          clocks: [row('B', ME, 0, 30_000, 5), row('A', RIVAL, null, null, 9)],
+          strikesMax: 7,
+        }),
+      ),
+      'max 7',
+    );
+    expect(seven.players, 'the view carries the input max and clamps to it').toEqual([
+      { side: 'A', mine: false, name: 'Marrow', strikes: 7, strikesMax: 7 },
+      { side: 'B', mine: true, name: 'Quill', strikes: 5, strikesMax: 7 },
+    ]);
+    const s7 = strip();
+    renderClock(turnBar(), s7, seven);
+    expect(paintedPips(s7), 'seven pips each: A all seven hit, B five').toEqual([
+      ['A', 7, 7, cat(EN, 'tactics.clock.strikes', { name: 'Marrow', n: 7, max: 7 })],
+      ['B', 7, 5, cat(EN, 'tactics.clock.strikes', { name: 'Quill', n: 5, max: 7 })],
+    ]);
+    expect(hitOrder(s7), 'the hit pips come first').toEqual([
+      [true, true, true, true, true, true, true],
+      [true, true, true, true, true, false, false],
+    ]);
+    expect(
+      cat(EN, 'tactics.clock.strikes', { name: 'Marrow', n: 7, max: 7 }),
+      'fixture: the label names the max',
+    ).not.toBe(cat(EN, 'tactics.clock.strikes', { name: 'Marrow', n: 7, max: 4 }));
+
+    // strikesMax 3: the same 9 / 5 clamp to 3 / 3; a 2 stays 2.
+    const three = must(
+      clockVM(
+        input({
+          clocks: [row('B', ME, 0, 30_000, 2), row('A', RIVAL, null, null, 9)],
+          strikesMax: 3,
+        }),
+      ),
+      'max 3',
+    );
+    expect(
+      three.players.map((p) => [p.strikes, p.strikesMax]),
+      'clamped to 3, max 3',
+    ).toEqual([
+      [3, 3],
+      [2, 3],
+    ]);
+    const s3 = strip();
+    renderClock(turnBar(), s3, three);
+    expect(paintedPips(s3), 'three pips each').toEqual([
+      ['A', 3, 3, cat(EN, 'tactics.clock.strikes', { name: 'Marrow', n: 3, max: 3 })],
+      ['B', 3, 2, cat(EN, 'tactics.clock.strikes', { name: 'Quill', n: 2, max: 3 })],
+    ]);
+
+    // A hand-built view (never through clockVM): the painter reads each row's own max.
+    const hand: ClockVM = {
+      ring: null,
+      players: [
+        { side: 'A', mine: false, name: 'Marrow', strikes: 2, strikesMax: 5 },
+        { side: 'B', mine: true, name: 'Quill', strikes: 0, strikesMax: 5 },
+      ],
+    };
+    const sh = strip();
+    renderClock(turnBar(), sh, hand);
+    expect(paintedPips(sh), 'five pips each from the view itself').toEqual([
+      ['A', 5, 2, cat(EN, 'tactics.clock.strikes', { name: 'Marrow', n: 2, max: 5 })],
+      ['B', 5, 0, cat(EN, 'tactics.clock.strikes', { name: 'Quill', n: 0, max: 5 })],
+    ]);
+
+    // The same players and strikes, repainted into the SAME strip at another max.
+    const clocks = [row('B', ME, 0, 30_000, 2), row('A', RIVAL, null, null, 1)];
+    const atSeven = must(clockVM(input({ clocks, strikesMax: 7 })), 'A 1, B 2 at 7');
+    const atThree = must(clockVM(input({ clocks, strikesMax: 3 })), 'A 1, B 2 at 3');
+    expect(
+      atThree.players.map((p) => [p.name, p.strikes]),
+      'fixture: the same names and strikes at either max',
+    ).toEqual(atSeven.players.map((p) => [p.name, p.strikes]));
+    const same = strip();
+    const bar = turnBar();
+    renderClock(bar, same, atSeven);
+    expect(
+      paintedPips(same).map(([side, pips, hit]) => [side, pips, hit]),
+      'first paint: seven pips each',
+    ).toEqual([
+      ['A', 7, 1],
+      ['B', 7, 2],
+    ]);
+    renderClock(bar, same, atThree);
+    expect(paintedPips(same), 'repainted at 3: three pips each, the label at max 3').toEqual([
+      ['A', 3, 1, cat(EN, 'tactics.clock.strikes', { name: 'Marrow', n: 1, max: 3 })],
+      ['B', 3, 2, cat(EN, 'tactics.clock.strikes', { name: 'Quill', n: 2, max: 3 })],
+    ]);
   });
 });

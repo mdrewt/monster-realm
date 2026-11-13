@@ -70,7 +70,8 @@ const H = vi.hoisted(() => ({
 // bt-17 (named fixture change, BT17.1): the 1v1 view is purged, so a battle the player can SEE is a
 // tactical one (`putBattle` seeds a Deploying row; the deploy panel is the shown owner). Its slot
 // count is read through the lazily bound tactics rules port, which refuses a pkg missing any of its
-// exports: main.dispatch.test.ts's minimal shapes (three spawn cells, max_pack 3).
+// exports: main.dispatch.test.ts's minimal shapes (three spawn cells, three deploy slots from
+// `tactics_deploy_slots`, an auto-pass forfeit of 4).
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
   ...wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
   tactics_map: () => ({
@@ -107,8 +108,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
     shield: [],
     intents: [],
   }),
-  tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, max_pack: 3 }),
+  tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, autopass_forfeit: 4 }),
   tactics_next_initiative: () => [],
+  tactics_deploy_slots: () => 3,
 }));
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its

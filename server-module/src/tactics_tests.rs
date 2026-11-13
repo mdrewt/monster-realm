@@ -6967,6 +6967,63 @@ fn tactics_content_zone_finds_the_zone_with_that_id_mutw3() {
     );
 }
 
+/// The server's `battle_unit` join is game-core's `tactics::unit_kit` — for every
+/// content species with a kit (game-core's `build_kits` over the loaded registries is the roster),
+/// at a level and stats that are not the species' own; an unknown species is the documented `Err`.
+///
+/// WRONG IMPL KILLED: a server join that drifts from game-core's (game-core's own test pins that
+/// join to a literal) — light/heavy swapped, the species' base stats or a fixed level instead of
+/// the arguments, the movement class defaulted; an unknown species joined to a default kit or
+/// refused with a different message.
+#[test]
+fn unit_kit_of_a_content_species_equals_the_game_core_join() {
+    let content = super::content().expect("tactics content loads");
+    let species = game_core::load_species().expect("species RON");
+    let skills = game_core::load_skills().expect("skills RON");
+    let tskills = game_core::tactics::load_tactics_skills().expect("tactics_skills RON");
+    let tspecies = load_tactics_species().expect("tactics_species RON");
+    let kits = game_core::tactics::build_kits(&species, &skills, &tskills, &tspecies)
+        .expect("the live join");
+    assert!(
+        kits.len() >= 20,
+        "ANTI-VACUITY: the whole kit roster, got {}",
+        kits.len()
+    );
+    let mut joined = 0_usize;
+    for kit in &kits {
+        let sp = species
+            .iter()
+            .find(|s| s.id == kit.species_id)
+            .expect("a kit's species row");
+        let level = 47_u8;
+        let stats = StatBlock {
+            hp: sp.base_stats.hp + 101,
+            attack: sp.base_stats.attack + 3,
+            defense: sp.base_stats.defense + 5,
+            speed: sp.base_stats.speed + 7,
+            sp_attack: sp.base_stats.sp_attack + 11,
+            sp_defense: sp.base_stats.sp_defense + 13,
+        };
+        assert_ne!(
+            stats, sp.base_stats,
+            "fixture: the argument stats are not the species' own base stats"
+        );
+        assert_eq!(
+            content.unit_kit(kit.species_id, level, stats),
+            Ok(game_core::tactics::unit_kit(sp, kit, level, stats)),
+            "species {}: the server's join is game-core's",
+            kit.species_id
+        );
+        joined += 1;
+    }
+    assert_eq!(joined, kits.len(), "every kit species was joined");
+    assert_eq!(
+        content.unit_kit(9999, 5, species[0].base_stats).err(),
+        Some("species 9999 not in content".to_string()),
+        "an unknown species is refused"
+    );
+}
+
 /// A stored plan may hold exactly `MAX_STORED_ENTRIES` (3 actions + End): the bound is
 /// inclusive, one more is refused.
 #[test]

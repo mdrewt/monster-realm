@@ -11,10 +11,9 @@
 // shell state the frame pump writes — never part of the frame VM (a latch in a compute-then-write VM
 // would never repaint).
 //
-// STRIKES_MAX mirrors `tactics_tuning.ron` / game-core `TacticsTuning.autopass_forfeit` (4) — a
-// DISCLOSED deviation from "never copy a game-core constant into TypeScript" (R-bt-15-STRIKESMAX):
-// client-wasm's `tuning()` export does not carry it and client-wasm is outside bt-15's touches. The
-// pips are presentation only; the forfeit itself is the server's.
+// The pip count is an input: `strikesMax` is the loaded tuning's `autopass_forfeit`, which the caller
+// reads through the rules port. Each player's entry carries it to the painter. The pips are
+// presentation only; the forfeit itself is the server's.
 import type { StoreBattleClock } from '../net/store';
 import { structurallyEqual } from '../ui/battlePolicy';
 import * as s from './strings';
@@ -22,7 +21,6 @@ import type { RuleSide } from './wasm';
 
 export const CLOCK_AMBER_MS = 10_000;
 export const CLOCK_RED_MS = 5_000;
-export const STRIKES_MAX = 4;
 
 export type ClockBand = 'ok' | 'amber' | 'red';
 export interface ClockRingVM {
@@ -38,7 +36,10 @@ export interface StrikesVM {
   readonly side: RuleSide;
   readonly mine: boolean;
   readonly name: string;
+  /** Auto-passes so far, never above `strikesMax`. */
   readonly strikes: number;
+  /** The auto-pass count that forfeits the match: how many pips the row draws. */
+  readonly strikesMax: number;
 }
 export interface ClockVM {
   readonly ring: ClockRingVM | null;
@@ -56,6 +57,8 @@ export interface ClockInput {
   readonly mySide: RuleSide;
   readonly playerName: (identity: string) => string;
   readonly nowMs: number;
+  /** The loaded tuning's `autopass_forfeit`. */
+  readonly strikesMax: number;
 }
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
@@ -100,7 +103,8 @@ export function clockVM(input: ClockInput): ClockVM | null {
         side: c.side,
         mine: c.side === input.mySide,
         name: input.playerName(c.player),
-        strikes: clamp(c.autopassCount, 0, STRIKES_MAX),
+        strikes: clamp(c.autopassCount, 0, input.strikesMax),
+        strikesMax: input.strikesMax,
       }),
     );
   return { ring: ringOf(input), players };
@@ -147,8 +151,8 @@ function paintPlayer(p: StrikesVM): HTMLElement {
   name.textContent = p.name;
   const pips = el('span', 'tactics-strikes');
   pips.setAttribute('role', 'img');
-  pips.setAttribute('aria-label', s.clockStrikes(p.name, p.strikes, STRIKES_MAX));
-  for (let i = 0; i < STRIKES_MAX; i++) {
+  pips.setAttribute('aria-label', s.clockStrikes(p.name, p.strikes, p.strikesMax));
+  for (let i = 0; i < p.strikesMax; i++) {
     const pip = el('span', 'tactics-strike');
     if (i < p.strikes) pip.classList.add('tactics-strike--hit');
     pips.appendChild(pip);

@@ -85,7 +85,7 @@ interface DeployInputBase {
 }
 export interface WildDeployInput extends DeployInputBase {
   readonly mode: 'wild';
-  /** `min(tuning.max_pack, rules.map(mapId).spawn_a.length)` — never a literal. */
+  /** `rules.deploySlots(mapId)`: game-core's deploy slot count for the battle's map — never a literal. */
   readonly slotCount: number;
   /** The pack in `wild_index` order — the anchor's `sideB.team` (the server seats every wild there). */
   readonly wilds: readonly DeployWild[];

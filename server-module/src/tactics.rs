@@ -60,7 +60,7 @@ use game_core::tactics::queue::is_player_owned;
 use game_core::tactics::resolve::UnitState;
 use game_core::tactics::types::{ActionKind, Phase, QueuedAction, TurnState, MAX_STORED_ENTRIES};
 use game_core::tactics::{
-    deploy_unit, generate_encounter, recruit_preflight, resolve_recruit, splitmix64,
+    deploy_slots, deploy_unit, generate_encounter, recruit_preflight, resolve_recruit, splitmix64,
     stride_for_base_speed, validate_tactics_content, wild_seed, AdvancePin, BattleKind,
     BattleMapDef, BattleMapEntry, Cell, ClockState, EndHow, Entry, EventPayload, ExpireError,
     HaltReason, Hooks, MoveClass, ReadyPlan, RecruitError, Rules, Side, SpeciesTactics, Stance,
@@ -327,19 +327,12 @@ impl TacticsContent {
             .ok_or_else(|| format!("no encounter table for zone {zone_id}"))
     }
 
-    /// The battler of `species_id` at `level` with the given derived stats (bt-6's kit join).
+    /// The battler of `species_id` at `level` with the given derived stats: game-core's
+    /// `tactics::unit_kit` over this content's species and kit rows.
     fn unit_kit(&self, species_id: u32, level: u8, stats: StatBlock) -> Result<UnitKit, String> {
         let species = self.species(species_id)?;
         let kit = self.kit(species_id)?;
-        Ok(UnitKit {
-            species_id,
-            affinity: species.affinity,
-            level,
-            stats,
-            base_speed: kit.base_speed,
-            class: kit.movement,
-            skills: vec![kit.light.clone(), kit.heavy.clone()],
-        })
+        Ok(game_core::tactics::unit_kit(species, kit, level, stats))
     }
 
     fn rules(&self) -> Rules<'_> {
@@ -1977,7 +1970,7 @@ pub(crate) fn start_wild_tactical(
             .iter()
             .map(|m| (m.monster_id, m.current_hp > 0))
             .collect();
-        let cap = usize::from(MAX_PACK).min(map.spawn_a.len());
+        let cap = usize::from(deploy_slots(map));
         let picks: Vec<DeployPick> = resolve_formation(&remembered, &party_in_order, cap)
             .into_iter()
             .enumerate()
@@ -2354,7 +2347,7 @@ pub fn deploy_units(
         return stage_pvp(ctx, me, &anchor, &tactical, map, &picks)
             .inspect_err(|e| log_reject(NAME, me, e));
     }
-    if picks.len() > usize::from(MAX_PACK).min(map.spawn_a.len()) {
+    if picks.len() > usize::from(deploy_slots(map)) {
         return reject(NAME, me, "too many picks".to_string());
     }
     for (i, pick) in picks.iter().enumerate() {

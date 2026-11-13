@@ -48,9 +48,10 @@ const H = vi.hoisted(() => ({
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
 }));
 
-// bt-12 B (named intentional change, BT12.2 / R-bt-12-DEPLOYHINT): the factory gains the 16
-// `tactics_*` exports the rules port binds (`bindTacticsRules` refuses a pkg missing any), so a
-// Deploying battle's deploy panel can render here; nothing else in this file reads them.
+// The factory carries the 17 `tactics_*` exports the rules port binds (`bindTacticsRules` refuses
+// a pkg missing any), so a Deploying battle's deploy panel can render here; nothing else in this
+// file reads them. `tactics_deploy_slots` answers three slots and the tuning's `autopass_forfeit`
+// is 4.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
   ...wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
   tactics_map: () => ({
@@ -85,8 +86,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
     shield: [],
     intents: [],
   }),
-  tactics_tuning: () => ({ surge_start_round: 9, wild_round_cap: 30, max_pack: 3 }),
+  tactics_tuning: () => ({ surge_start_round: 9, wild_round_cap: 30, autopass_forfeit: 4 }),
   tactics_next_initiative: () => [],
+  tactics_deploy_slots: () => 3,
 }));
 
 vi.mock('./net/connection', () => connectionRecordingMock(H));

@@ -1,4 +1,5 @@
-//! Tactical content (bt-6) — the SIDECAR registries keyed by id, their join, and the content lints.
+//! Tactical content — the SIDECAR registries keyed by id, their join, a unit's kit ([`unit_kit`]),
+//! and the content lints.
 //!
 //! The tactical data does not add fields to `SkillDef` / `Species` / `ItemDef` / `ZoneDef`: a new
 //! field on those structs breaks ~100 hand-built struct literals and the `encounter` table round
@@ -23,7 +24,7 @@ use super::map::{validate_battle_map, BattleMapDef, MapError};
 use super::movement::stride_for_base_speed;
 use super::movement::MoveClass;
 use super::queue::min_action_cost;
-use super::resolve::SkillTactics;
+use super::resolve::{SkillTactics, UnitKit};
 use super::tuning::{TacticsTuning, TuningError};
 use crate::combat::damage::calc_damage;
 use crate::combat::type_chart::TypeChart;
@@ -426,6 +427,26 @@ pub fn build_kits(
             })
         })
         .collect()
+}
+
+/// The battler of one species at `level` with the given derived stats: the species row's id and
+/// affinity, the kit row's base speed, movement class and `[light, heavy]` skills, and the caller's
+/// level and stats. `species` and `kit` are the same species' rows.
+#[must_use]
+pub fn unit_kit(species: &Species, kit: &SpeciesTactics, level: u8, stats: StatBlock) -> UnitKit {
+    debug_assert_eq!(
+        species.id, kit.species_id,
+        "unit_kit joins the two rows of one species"
+    );
+    UnitKit {
+        species_id: species.id,
+        affinity: species.affinity,
+        level,
+        stats,
+        base_speed: kit.base_speed,
+        class: kit.movement,
+        skills: vec![kit.light.clone(), kit.heavy.clone()],
+    }
 }
 
 /// A sidecar keyed by id covers the loaded ids exactly once: no duplicate row, then no row for an

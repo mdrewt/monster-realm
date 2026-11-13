@@ -80,12 +80,13 @@ const SLOW = { timeout: 120_000 };
 
 // --- the contract's names -------------------------------------------------------------------------
 
-/** The 16 `tactics_*` exports (`TacticsWasmExports`, wasm.ts) and the `TacticsClientRules` method each
+/** The 17 `tactics_*` exports (`TacticsWasmExports`, wasm.ts) and the `TacticsClientRules` method each
  *  backs. bt-11 round 3 (named intentional change, plan REV 5 A26): +`tactics_recruit_targets`
  *  (`recruitTargets`), bound after `tactics_ai_plan`. Was: 13. bt-12 B (NAMED INTENTIONAL CHANGE,
  *  plan §2.2 "EXPORT_NAMES 14 → 16, a pkg missing either throws at bind"): +`tactics_tuning`
  *  (`tuning`) and +`tactics_next_initiative` (`nextInitiative`), bound last; the port's type is
  *  `TacticsClientRules`. Was: 14 (a fake pkg of the 14 no longer binds). */
+// `tactics_deploy_slots` (`deploySlots`) is bound last, after `tactics_next_initiative`.
 const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof TacticsClientRules])[] = [
   ['tactics_map', 'map'],
   ['tactics_fresh_budget', 'freshBudget'],
@@ -103,6 +104,7 @@ const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof Tactic
   ['tactics_overlays', 'overlays'],
   ['tactics_tuning', 'tuning'],
   ['tactics_next_initiative', 'nextInitiative'],
+  ['tactics_deploy_slots', 'deploySlots'],
 ];
 
 // --- content, transcribed (battle_maps/000-core.ron) -----------------------------------------------
@@ -922,6 +924,8 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
       // bt-12 B (named intentional change, plan §2.2): the two client-rules methods.
       ['tuning', () => tp.tuning()],
       ['nextInitiative', () => tp.nextInitiative(blank, 'A')],
+      // The deploy slot count.
+      ['deploySlots', () => tp.deploySlots(1)],
     ];
     expect(
       everyMethod.map(([m]) => m),
@@ -2769,30 +2773,28 @@ describe('tactics rules port: the recruit targets (BT11.1, REV 5 A26)', () => {
 // --- bt-12 B (BT12.1): the tuning, the next round's initiative, the view-model mappers -------------
 //
 // SOURCE OF TRUTH: plan memory/projects/monster-realm-bt-12-plan-b.md §2.1 / §2.2 as amended by REV B2.5
-// (`TacticsTuningOut` keeps `{ surge_start_round, wild_round_cap, max_pack }` only; the three pure
-// mappers live here). RED REASON: the pkg's `tactics_tuning` / `tactics_next_initiative` bodies are
-// `todo!()` (a call throws), and `shellKind` / `activeUnitOf` / `statusTagOf` throw.
+// (the three pure mappers live here). `TacticsTuningOut` is
+// `{ surge_start_round, wild_round_cap, autopass_forfeit }` and the deploy slot count is its own
+// export, `tactics_deploy_slots(map_id)`.
 
 describe('tactics rules port: the client rules (bt-12 B, BT12.1)', () => {
-  it('rules.tuning() is exactly the surge start, the wild round cap and the pack cap the shipped tuning and game-core carry (9, 30, 3), integers, no window fields; the port forwards tactics_tuning with no argument and a pkg without it fails to bind naming it [BT12-1-WASM-TUNING]', () => {
-    // WRONG IMPL KILLED: the `todo!()` body (the turn bar's Surge / retreat badges and the deploy
-    // slot count would have no source); the two u16 fields swapped (surge 30, cap 9); a literal
-    // `max_pack: 3` read from nowhere vs. game-core's MAX_PACK (pinned on the host by
-    // bt12_tuning_out_mirrors_the_loaded_tuning_and_max_pack — here the VALUE the pkg answers);
-    // the whole TacticsTuning serialised (window and deploy fields leaking: REV B2.5 drops them);
-    // a field as a string or a BigInt (serde_wasm_bindgen u16/u8 are numbers); a port that calls
-    // the export with an argument, or binds without it.
+  it('rules.tuning() is exactly the surge start, the wild round cap and the auto-pass forfeit the shipped tuning carries (9, 30, 4), integers, no window fields; the port forwards tactics_tuning with no argument and a pkg without it fails to bind naming it [BT12-1-WASM-TUNING]', () => {
+    // WRONG IMPL KILLED: the two u16 fields swapped (surge 30, cap 9); the forfeit missing or read
+    // from another u8 field (ap_turn 6, max_windows_per_turn 3); a stale `max_pack` still
+    // serialised; the whole TacticsTuning serialised (window and deploy fields leaking: REV B2.5
+    // drops them); a field as a string or a BigInt (serde_wasm_bindgen u16/u8 are numbers); a port
+    // that calls the export with an argument, rewrites its answer, or binds without it.
     const tuning = rules().tuning();
     expect(
       tuning,
-      'the three client-facing fields, exactly (tuning.rs DESIGN; MAX_PACK)',
-    ).toStrictEqual({ surge_start_round: 9, wild_round_cap: 30, max_pack: 3 });
+      'the three client-facing fields, exactly (tuning.rs DESIGN / tactics_tuning.ron)',
+    ).toStrictEqual({ surge_start_round: 9, wild_round_cap: 30, autopass_forfeit: 4 });
     for (const [field, value] of Object.entries(tuning)) {
       expect(Number.isInteger(value), `${field} is an integer number`).toBe(true);
     }
     expect(rules().tuning(), 'a second call answers the same').toStrictEqual(tuning);
 
-    const answer = { surge_start_round: 11, wild_round_cap: 13, max_pack: 2 };
+    const answer = { surge_start_round: 11, wild_round_cap: 13, autopass_forfeit: 7 };
     const { pkg: spy, calls } = fakePkg({ tactics_tuning: () => answer });
     expect(bindTacticsRules(spy).tuning(), 'the port returns the pkg answer').toBe(answer);
     expect(
@@ -2812,6 +2814,61 @@ describe('tactics rules port: the client rules (bt-12 B, BT12.1)', () => {
     expect(message, 'binding without tactics_tuning names it').toContain('tactics_tuning');
     const shellPort: TacticsRules = rules();
     expect(typeof shellPort.map, 'the client rules are still the shell`s port').toBe('function');
+  });
+
+  it('rules.deploySlots(mapId) answers 3 for every content map (1..8), refuses an unknown id by name, forwards exactly one in-range integer to tactics_deploy_slots and returns its answer unchanged, refuses -1, 1.5 and 2**32 with a RangeError before the pkg, and a pkg without the export fails to bind naming it', () => {
+    // WRONG IMPL KILLED: a port that computes the count in TypeScript (min of a tuning cap and the
+    // map's spawn_a — the fake below answers 5 for a map whose real count is 3); a constant 3; an
+    // unknown id answered (with 3 or with map 1's count) instead of refused; the id clamped or
+    // wrapped (`>>> 0`) instead of refused; an extra argument forwarded; a port that binds without
+    // the export or names another export when it is missing.
+    const r = rules();
+    for (let id = 1; id <= 8; id++) {
+      expect(r.deploySlots(id), `content map ${id}: three side-A spawns, MAX_PACK 3`).toBe(3);
+    }
+    rejects('deploySlots(unknown map 4242)', () => r.deploySlots(4242), '4242');
+    rejects('deploySlots(unknown map 2**32 - 1)', () => r.deploySlots(2 ** 32 - 1), '4294967295');
+    expect(r.deploySlots(2), 'a later valid call still answers').toBe(3);
+
+    const { pkg: spy, calls } = fakePkg({ tactics_deploy_slots: () => 5 });
+    const port = bindTacticsRules(spy);
+    expect(port.deploySlots(6), 'the pkg answer, unchanged').toBe(5);
+    expect(port.deploySlots(0), 'the lowest in-range id passes').toBe(5);
+    expect(port.deploySlots(2 ** 32 - 1), 'the highest in-range id passes').toBe(5);
+    expect(
+      calls.filter((x) => x.name === 'tactics_deploy_slots'),
+      'one integer argument per call, as given',
+    ).toEqual([
+      { name: 'tactics_deploy_slots', args: [6] },
+      { name: 'tactics_deploy_slots', args: [0] },
+      { name: 'tactics_deploy_slots', args: [4_294_967_295] },
+    ]);
+
+    const guarded = fakePkg({ tactics_deploy_slots: () => 5 });
+    const gp = bindTacticsRules(guarded.pkg);
+    for (const bad of [-1, 1.5, 2 ** 32, 2 ** 32 + 1, Number.NaN]) {
+      let caught: unknown;
+      try {
+        gp.deploySlots(bad);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught instanceof RangeError, `deploySlots(${bad}): a RangeError`).toBe(true);
+    }
+    expect(guarded.calls, 'no out-of-range id reached the pkg').toEqual([]);
+
+    const without = Object.fromEntries(
+      Object.entries(realPkg()).filter(([k]) => k !== 'tactics_deploy_slots'),
+    );
+    let message = '';
+    try {
+      bindTacticsRules(without as unknown as TacticsWasmExports);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message, 'binding without tactics_deploy_slots names it').toContain(
+      'tactics_deploy_slots',
+    );
   });
 
   it('rules.nextInitiative(board, thisRoundPriority) is game-core`s order under the OTHER side`s tie priority: speed first, base speed next, then the side that did not hold priority this round; a fainted unit is absent; a duplicate id and a bad side are refused; the port forwards board and side as given [BT12-1-WASM-NEXT-INITIATIVE]', () => {
