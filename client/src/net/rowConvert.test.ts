@@ -73,18 +73,18 @@ describe('rowConvert: character row -> store', () => {
 });
 
 describe('rowConvert: player row -> store', () => {
-  it('resolves identity to its hex key and keeps bigint entity id + seq', () => {
+  it('resolves identity to its hex key, keeps the bigint entity id, and carries name and online', () => {
     const store = playerRowToStore({
       identity: { toHexString: () => 'abc123' },
       entityId: 7n,
       name: 'Drew',
       online: true,
-      lastInputSeq: 9n,
     });
     expect(store.identity).toBe('abc123');
     expect(store.entityId).toBe(7n);
-    expect(typeof store.lastInputSeq).toBe('bigint');
-    expect(store.lastInputSeq).toBe(9n);
+    expect(typeof store.entityId).toBe('bigint'); // never downcast to number
+    expect(store.name).toBe('Drew');
+    expect(store.online).toBe(true);
   });
 });
 

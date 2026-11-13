@@ -1246,7 +1246,6 @@ const person = (identity: string, name: string, entityId: bigint, online = true)
   name,
   entityId,
   online,
-  lastInputSeq: 0n,
 });
 
 const at = (entityId: bigint, tileX: number, tileY: number, zoneId = 0): StoreCharacter => ({
@@ -1486,12 +1485,12 @@ describe('socialScreen — Players: the walk-up phase and the change signal (ctl
     }
   });
 
-  it('CTL8G-1-OBSERVE: init records the players` signature (`socialPeopleKey`) in state.people; observe answers the SAME state when nothing the Players tab shows changed (a rebuilt equal vm, a third party`s session or challenge, an offline player who is not listed, a player`s input counter ticking, a listed player moving without crossing the 12-tile line, a re-rated leaderboard) and a NEW state, with the new signature and a listed cursor, when a player joins, leaves, goes offline, is renamed, or crosses the line either way, or gains a character; the new state is then stable', () => {
+  it('CTL8G-1-OBSERVE: init records the players` signature (`socialPeopleKey`) in state.people; observe answers the SAME state when nothing the Players tab shows changed (a rebuilt equal vm, a third party`s session or challenge, an offline player who is not listed, the player rows rebuilt equal, a listed player moving without crossing the 12-tile line, a re-rated leaderboard) and a NEW state, with the new signature and a listed cursor, when a player joins, leaves, goes offline, is renamed, or crosses the line either way, or gains a character; the new state is then stable', () => {
     // WRONG IMPL KILLED: an observe that answers a new object at every batch (a repaint per batch,
     // and the host's same-object pin); one that answers the SAME object when a player joins, leaves,
     // is renamed or crosses the 12-tile line while the cursor row survives (the Players list the
     // player sees would be stale: nothing repaints until a button press); a signature that reads
-    // the raw player rows (lastInputSeq ticks every move: a repaint storm) or the raw characters
+    // the player row objects (every batch that rebuilds an equal row repaints) or the raw characters
     // (every step of a far player repaints); an init that leaves `people` unset (the first observe
     // would always look changed); a signature taken from the rows but never stored back, so the
     // new state is "changed" again at the next batch; and a cursor left on a row that went away.
@@ -1519,8 +1518,8 @@ describe('socialScreen — Players: the walk-up phase and the change signal (ctl
         swap({ players: [...base.players, person(EVE, 'Eve', 5n, false)] }),
       ],
       [
-        'a player`s input counter ticking',
-        swap({ players: base.players.map((p) => ({ ...p, lastInputSeq: p.lastInputSeq + 7n })) }),
+        'the player rows rebuilt, equal field by field',
+        swap({ players: base.players.map((p) => ({ ...p })) }),
       ],
       [
         'Carol takes a step, still far',

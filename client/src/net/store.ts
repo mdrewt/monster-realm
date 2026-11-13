@@ -59,7 +59,6 @@ export interface StorePlayer {
   readonly entityId: bigint;
   readonly name: string;
   readonly online: boolean;
-  readonly lastInputSeq: bigint;
 }
 
 // NOTE: StoreMonsterPub is a `type` alias (not `interface`) — store.test.ts and

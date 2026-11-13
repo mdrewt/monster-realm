@@ -94,7 +94,7 @@ function challenge(
 }
 
 function player(identity: string, name: string, entityId = 1n): StorePlayer {
-  return { identity, entityId, name, online: true, lastInputSeq: 0n };
+  return { identity, entityId, name, online: true };
 }
 
 const PLAYERS: readonly StorePlayer[] = [

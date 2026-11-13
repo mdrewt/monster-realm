@@ -166,7 +166,6 @@ function batch(): void {
     entityId: EID,
     name: 'P',
     online: true,
-    lastInputSeq: BigInt(H.sends.length),
   });
   opts.store.upsertCharacter(
     {
@@ -359,7 +358,6 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       entityId: 8n,
       name: 'Bob',
       online: true,
-      lastInputSeq: 0n,
     });
     // The waiting request is an incoming SESSION.
     opts.store.reconcileTradeSessionsFromView([incomingSession(BOB, 11n, 1_000n)]);
@@ -561,7 +559,6 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       entityId: 8n,
       name: 'Bob',
       online: true,
-      lastInputSeq: 0n,
     });
     // The waiting request is an incoming session.
     opts.store.reconcileTradeSessionsFromView([incomingSession(BOB, 11n, 1_000n)]);
@@ -667,7 +664,6 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       entityId: FACED_ENTITY,
       name: 'Zed',
       online: true,
-      lastInputSeq: 0n,
     });
     opts.store.upsertCharacter(
       {

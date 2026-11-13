@@ -211,8 +211,7 @@ async function bootReady(): Promise<void> {
 
 const EID = 7n;
 /** Deliver one authoritative batch: own player + character row at clock `t`. `ack` is the
- *  character row's `ackedSeq`; `playerSeq` is `player.lastInputSeq`, which the server writes
- *  to the same value unless a test separates them. */
+ *  character row's `ackedSeq`. */
 function server(
   t: number,
   s: {
@@ -221,7 +220,6 @@ function server(
     ack: number;
     zone?: number;
     queue?: WasmMoveInput[];
-    playerSeq?: number;
   },
 ): void {
   clock.t = t;
@@ -230,7 +228,6 @@ function server(
     entityId: EID,
     name: 'P',
     online: true,
-    lastInputSeq: BigInt(s.playerSeq ?? s.ack),
   });
   opts.store.upsertCharacter(
     {
@@ -431,22 +428,6 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     server(1300, { zone: 1, x: 5, y: 5, ack: 1 }); // warp; no frame ran since the press
     frame(1310);
     expect(H.sends.map(step)).toEqual(['East', 'East']);
-  });
-
-  it('ACK-ROW-SOURCE: the ack is the ackedSeq of the character row; player.lastInputSeq is not read', async () => {
-    await bootReady();
-    server(1000, { x: 2, y: 2, ack: 0 });
-    key('ArrowRight', 1000);
-    // The player row claims seq 1; the character row does not. Nothing is acked.
-    server(1050, { x: 2, y: 2, ack: 0, playerSeq: 1 });
-    frame(1200);
-    frame(1400);
-    expect(H.sends, 'an ack on the player row alone must not open the gate').toHaveLength(1);
-    // The character row acks seq 1 while the player row still reads 0: acked.
-    server(1450, { x: 3, y: 2, ack: 1, playerSeq: 0 });
-    frame(1460);
-    expect(H.sends.map(step)).toEqual(['East', 'East']);
-    expect(H.sends[1].seq).toBe(2n);
   });
 
   it('OWED-FRAME: an input in flight across a warp keeps the frame-loop continuation shut until the row acks it', async () => {

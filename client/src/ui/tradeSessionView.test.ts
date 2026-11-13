@@ -133,7 +133,7 @@ function vmOf(row: StoreTradeSession = sess(), over: Partial<TradeSessionInput> 
     sessions: [row],
     identity: ME,
     sessionId: row.sessionId,
-    players: [{ identity: BOB, entityId: 2n, name: 'Bob', online: true, lastInputSeq: 0n }],
+    players: [{ identity: BOB, entityId: 2n, name: 'Bob', online: true }],
     ownMonsters: [mon(21n, 0, 'Ash'), mon(22n, 1, 'Bry', 0), mon(23n, 2, 'Cyd')],
     speciesMap: new Map([
       [1, { name: 'Sprout' }],
