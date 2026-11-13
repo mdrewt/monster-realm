@@ -2518,7 +2518,8 @@ fn a_dialogue_reward_at_a_full_stack_is_refused_and_the_dialogue_does_not_advanc
 /// leaves the earlier `StartQuest` row behind; headroom computed on the stack net of
 /// trade locks (`item_count - escrowed_item_qty_of` admits the reward and the grant
 /// clamps it); a zero-quantity grant checked against the cap (an over-cap stack
-/// refuses the whole call).
+/// refuses the whole call); a per-item sum with `wrapping_add` (two item rewards of
+/// `u32::MAX / 2 + 1` wrap to 0, pass, and the grants clamp at the cap).
 #[test]
 fn a_reward_is_checked_against_the_caps_as_a_whole() {
     // Two GrantItems in one effect list.
@@ -2828,6 +2829,64 @@ fn a_reward_is_checked_against_the_caps_as_a_whole() {
             Some(RW_CAP + 7),
             "the over-cap stack is unchanged"
         );
+    }
+
+    // Item rewards whose sum would wrap a u32, onto no stack at all.
+    {
+        const HALF: u32 = u32::MAX / 2 + 1;
+        let fx = crate::native_host_tests::fixture();
+        let w = rw_world(&fx, RW_NPC_ID, "rw_no_tree");
+        let ctx = fx.ctx();
+        let defs = [
+            rw_quest("rw_qx", 1, &[(RW_ITEM, HALF)], 0),
+            rw_quest("rw_qy", 1, &[(RW_ITEM, HALF)], 0),
+        ];
+        w.wallet(7);
+        w.quest(1, "rw_qx", 0);
+        w.quest(2, "rw_qy", 0);
+        let mut state = rw_state(&["rw_qx", "rw_qy"]);
+        let state_before = state.clone();
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_quest_trigger(&ctx, RW_ME, &rw_talked(), &mut state, Ok(defs.as_slice())),
+            Err(rw_item_cap_err(0, u32::MAX, RW_ITEM)),
+            "two item rewards of u32::MAX / 2 + 1 onto no stack"
+        );
+        assert_eq!(state, state_before, "u32 wrap, quests: state unchanged");
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "u32 wrap, quests: every row unchanged"
+        );
+        rw_no_writes(&fx, "u32 wrap, quests");
+        assert_eq!(
+            w.quest_rows(),
+            vec![("rw_qx".to_string(), 0), ("rw_qy".to_string(), 0)],
+            "u32 wrap: both quest rows are still there"
+        );
+
+        let before = w.snapshot();
+        fx.reset_writes();
+        assert_eq!(
+            apply_effects_to_db(
+                &ctx,
+                RW_ME,
+                &PlayerDialogueState::default(),
+                &[
+                    DialogueEffect::GrantItem(RW_ITEM, HALF),
+                    DialogueEffect::GrantItem(RW_ITEM, HALF),
+                ]
+            ),
+            Err(rw_item_cap_err(0, u32::MAX, RW_ITEM)),
+            "two GrantItems of u32::MAX / 2 + 1 onto no stack"
+        );
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "u32 wrap, grants: every row unchanged"
+        );
+        rw_no_writes(&fx, "u32 wrap, grants");
     }
 
     // Currency rewards that would wrap a u64.

@@ -1884,7 +1884,8 @@ fn sell_debits_a_multi_unit_stack_in_one_inventory_write() {
 ///
 /// kills: the active-trade text for a plain shortfall (the funds check folded into
 /// the escrow-netted comparison); a refusal after the spend; `>=` for `>` (the exact
-/// balance refused).
+/// balance refused); the stack headroom checked before the spend rule (a short
+/// wallet buying onto a full stack gets the stack-cap text).
 #[test]
 fn buy_beyond_the_balance_with_nothing_in_trade_says_not_enough_currency() {
     let fx = ec_fixture();
@@ -1925,6 +1926,21 @@ fn buy_beyond_the_balance_with_nothing_in_trade_says_not_enough_currency() {
     assert_eq!(w.balance(ec_me()), Some(0), "charged 10");
     assert_eq!(w.count(ec_me(), 5), Some(1), "credited 1");
     assert_eq!(w.balance(ec_other()), Some(1000), "a stranger is untouched");
+
+    // The shortfall is judged before the stack cap: a full stack of item 5 and one
+    // less than the price.
+    assert_eq!(w.wallets.remove(ec_me()), 1, "fixture: the emptied wallet");
+    w.wallet(ec_me(), 9);
+    assert_eq!(w.stacks.remove(ec_me()), 1, "fixture: the bought stack");
+    w.stack(ec_me(), 5, game_core::MAX_ITEM_STACK);
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "9 in the wallet, a 10 purchase onto a full stack",
+        &|| buy_as(5, 1),
+        EC_NOT_ENOUGH_CURRENCY,
+    );
 }
 
 /// With nothing in any trade, selling more than the stack holds — and selling an item
@@ -1934,7 +1950,8 @@ fn buy_beyond_the_balance_with_nothing_in_trade_says_not_enough_currency() {
 ///
 /// kills: the active-trade text for a plain shortfall; a missing stack answered
 /// with another text; a stack read from the wrong owner (the stranger's 9 would
-/// cover the sale); `>=` for `>` (the whole stack refused).
+/// cover the sale); `>=` for `>` (the whole stack refused); the balance headroom
+/// checked before the spend rule (an over-sale with a full wallet gets the cap text).
 #[test]
 fn sell_beyond_the_stack_with_nothing_in_trade_says_not_enough_of_that_item() {
     let fx = ec_fixture();
@@ -1965,6 +1982,20 @@ fn sell_beyond_the_stack_with_nothing_in_trade_says_not_enough_of_that_item() {
     assert_eq!(w.count(ec_me(), 5), None, "the whole stack sold");
     assert_eq!(w.balance(ec_me()), Some(10 + 3 * 4), "credited 3 x 4");
     assert_eq!(w.count(ec_other(), 6), Some(9), "a stranger is untouched");
+
+    // The shortfall is judged before the proceeds cap: a full wallet and one more
+    // than the stack holds.
+    assert_eq!(w.wallets.remove(ec_me()), 1, "fixture: the caller's wallet");
+    w.wallet(ec_me(), MAX_BALANCE);
+    w.stack(ec_me(), 5, 3);
+    ec_refused(
+        &fx,
+        &w,
+        &sessions,
+        "4 of a stack of 3 with the wallet at MAX_BALANCE",
+        &|| sell_as(5, 4),
+        EC_NOT_ENOUGH_ITEM,
+    );
 }
 
 /// The spend rule, on both pure functions and through `buy` and `sell` over real lock
