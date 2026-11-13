@@ -1646,6 +1646,24 @@ fn nh_colocate(fx: &Fixture, w: &NhWorld<'_>) {
     }
 }
 
+/// A's and B's characters on one tile (`nh_colocate`) and a keeper of shop 3 one tile away,
+/// so A stands in reach of shop 3 (`buy` and `sell` refuse a caller who is not beside a shop).
+fn nh_shopfront(fx: &Fixture, w: &NhWorld<'_>) {
+    use crate::schema::Npc;
+    nh_colocate(fx, w);
+    let npcs = fx.table_keyed::<Npc, u32>("npc", "zone_id", |r| r.zone_id);
+    npcs.seed(&Npc {
+        entity_id: 900,
+        npc_id: "nh-shopkeeper".to_string(),
+        zone_id: crate::ZONE_0,
+        home_x: 1,
+        home_y: 2,
+        wander_radius: 0,
+        dialogue_tree_id: String::new(),
+        interaction: game_core::NpcInteraction::Shop(3),
+    });
+}
+
 /// hand-enumerated: the call sites of `reject_if_monster_in_trade` outside the tactical
 /// shell — 8 functions, 8 sites (the 1v1 `start_battle` x2, `start_pvp_battle` and
 /// `begin_encounter` rows left with their bodies in bt-17). The tactical sites are driven in
@@ -1752,9 +1770,10 @@ fn nh_escrowed_monster_is_refused_by_every_guarded_reducer() {
 
 /// EV-trade-escrow-guards (item/currency half): escrowed quantities shrink what the
 /// owner may spend. Each row escrows exactly the holding (refused, store untouched) and
-/// then one less, which runs to Ok on a writable store. `heal_party`'s currency-escrow branch is unreachable with shipped
-/// content (no heal location charges currency), so its guard rides on the
-/// `escrowed_currency_amount_*` unit tests above.
+/// then one less, which runs to Ok on a writable store. For `sell` and `buy`, A stands
+/// beside a keeper of shop 3 (`nh_shopfront`). `heal_party`'s currency-escrow branch is
+/// unreachable with shipped content (no heal location charges currency), so its guard
+/// rides on the `escrowed_currency_amount_*` unit tests above.
 #[test]
 fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
     const ITEM_REFUSAL: &str = "item is in an active trade";
@@ -1777,6 +1796,7 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
         let fx = fixture();
         let w = nh_world(&fx, true);
         nh_escrow_seed(&fx, &w);
+        nh_shopfront(&fx, &w);
         w.stack(nh_a(), 5, 5);
         w.wallet(nh_a(), 0);
         w.offers.seed(&item_offer(5, 3, true));
@@ -1801,6 +1821,7 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
         let fx = fixture();
         let w = nh_world(&fx, true);
         nh_escrow_seed(&fx, &w);
+        nh_shopfront(&fx, &w);
         w.wallet(nh_a(), 100);
         fx.table_keyed::<crate::schema::ShopItemRow, u32>("shop_item_row", "shop_id", |r| {
             r.shop_id

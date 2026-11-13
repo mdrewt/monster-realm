@@ -1172,27 +1172,39 @@ now); a module-scope copy of a live binding; a shell module that registers a lis
 faces (`pos.step(facing)`), or, if there are none, the entities on the character's own
 tile. Same zone only; ordered NPC, then heal, then player, then by id. An entity
 within range but not in front is never a candidate, even though `talk` accepts up to
-`TALK_RANGE` (2). The UI starts trades and challenges only from a player you face.
-The server is more permissive than the client: `talk` accepts `TALK_RANGE`, and
-`open_trade_session` and `challenge_pvp` refuse a partner outside
-`game_core::interact::within_interact_range` (same zone, Manhattan distance at most
-`TALK_RANGE`). Each has one message for every out-of-range case: another zone, too far
-and a missing character. The range is checked when the request is made, not when it is
-answered: a challenge can be accepted, declined or cancelled from anywhere, and a trade
-session edited, confirmed or cancelled from anywhere. In `challenge_pvp` the range
-check runs right after "target is joined and online" and before the checks that answer
-from the target's account, battles and pending challenges, so a caller out of range
-learns only whether the target is joined and online.
+`TALK_RANGE` (2). The UI starts trades and challenges only from a player you face, a
+shop only from its keeper's greeting, and a heal only from a faced heal tile or
+`Heal(_)` NPC. The server is more permissive than the client. `talk` accepts
+`TALK_RANGE` from the NPC's current tile. `open_trade_session` and `challenge_pvp`
+refuse a partner outside `game_core::interact::within_interact_range` (same zone,
+Manhattan distance at most `TALK_RANGE`), and `heal_party` refuses a caller outside
+that range of the heal location's tile. `buy` and `sell` refuse a caller outside
+`game_core::interact::within_npc_reach` of an NPC offering that shop (`sell`: any
+shop): the same zone and at most `TALK_RANGE + wander_radius` from the NPC's home tile.
+Each of those five has one message for every out-of-range case: another zone, too far
+and a missing character. A challenge or a trade session is answered from anywhere: its
+range is checked only when it is opened. In `challenge_pvp` the range check runs right
+after "target is joined and online" and before the checks that answer from the target's
+account, battles and pending challenges, so a caller out of range learns only whether
+the target is joined and online. In `buy`, `sell` and `heal_party` it runs after the
+deletion gate and before the battle guard and every read of the caller's wallet,
+inventory and cooldown.
 
 **Why.** Interaction follows what the character faces, as in console RPGs. The
 server's range is a latency margin for an NPC or a player that steps one tile before
-the reducer runs. It is not the player's reach. The order in `challenge_pvp` is not a
-privacy guarantee: a player who walks up to the target still gets those answers. The
-range refusal itself reveals nothing new, because `character` is a public table.
+the reducer runs. It is not the player's reach. A shop is measured from home plus the
+wander radius because its keeper wanders once the greeting ends while the shop frame
+stays open; measured from where the keeper stands, an open shop would strand its
+customer. The order in `challenge_pvp` is not a privacy guarantee: a player who walks up
+to the target still gets those answers. A range refusal itself reveals nothing new,
+because `character`, `npc` and `heal_location_row` are public tables.
 
 **Rules out.** A nearest-within-range target; widening the client rule to match
-`TALK_RANGE`; starting a trade or challenge remotely from a menu; re-checking range
-when a challenge is accepted or a trade session is confirmed.
+`TALK_RANGE`; starting a trade, a challenge, a purchase, a sale or a heal remotely from a
+menu; re-checking range when a challenge is accepted or a trade session is confirmed;
+measuring a shop from its keeper's current tile; content that leaves an NPC outside its
+wander disc, or lets a `Heal(_)` NPC stand or wander more than one tile from its
+location's tile (the reach rules assume neither, and that NPC's customers are refused).
 
 ## The battle frame has one owner per tactical phase
 

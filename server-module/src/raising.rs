@@ -15,19 +15,20 @@
 use crate::economy::{spend_currency, wallet_balance};
 use crate::evolution::check_and_evolve;
 use crate::guards::{
-    escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, reject_if_monster_locked,
-    require_owner, saturating_sub_u64,
+    character_of, escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, log_reject,
+    reject_if_monster_locked, require_owner, saturating_sub_u64,
 };
 use crate::inventory::consume_one;
-use crate::marshal::{now_ms, pub_from_monster};
+use crate::marshal::{char_state, now_ms, pub_from_monster};
 use crate::monster_mgmt::update_monster_synced;
 use crate::schema::{
-    character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub, player,
+    heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub, player,
     species_row, HealCooldown, Monster,
 };
+use game_core::interact::within_interact_range;
 use game_core::{
     focus_train, is_cooldown_ready, Affinity, EVs, FocusTrainError, FocusTrainResult, IVs, Level,
-    Nature, StatBlock, StatKind,
+    Nature, StatBlock, StatKind, TilePos,
 };
 // SSOT: the CARE cooldown magnitude lives in game-core. Re-exported
 // `pub(crate)` — and ONLY this name, not the whole `game_core` import above —
@@ -284,40 +285,52 @@ pub(crate) fn evaluate_heal_currency(
     Ok(None)
 }
 
+/// `heal_party` reject reason when the caller's character is not within interact range of the
+/// heal location's tile. One text for a caller with no character, one in another zone and one
+/// too far away.
+const ERR_HEAL_OUT_OF_REACH: &str = "the healer is not close enough";
+
 /// Restore all party monsters to full HP at a heal location.
 /// Reject-never-burns: all checks run BEFORE the first DB write.
-/// In-battle + cooldown + zone checked. Cost consumed before heal.
+/// Reach + in-battle + cooldown checked. Cost consumed before heal.
 #[spacetimedb::reducer]
 pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> {
     let me = ctx.sender();
 
-    // Step 1-2: player must be joined + have a character
-    let Some(p) = ctx.db.player().identity().find(me) else {
+    // Step 1: player must be joined
+    if ctx.db.player().identity().find(me).is_none() {
         return Err("not joined".to_string());
-    };
+    }
     // Deletion gate: right after the joined check, before any further read.
     crate::guards::require_not_deleting(ctx, "heal_party")?;
-    let Some(ch) = ctx.db.character().entity_id().find(p.entity_id) else {
-        return Err("character not found".to_string());
-    };
 
-    // Step 3: look up heal location
+    // Step 2: look up heal location
     let Some(loc) = ctx.db.heal_location_row().location_id().find(location_id) else {
         return Err("heal location not found".to_string());
     };
 
-    // Step 4: zone check
-    if ch.zone_id != loc.zone_id {
-        return Err("not in heal location zone".to_string());
+    // Step 3: reach — the caller's character stands in the location's zone, within interact
+    // range of its tile. Ahead of the battle guard and of every read of the caller's cooldown,
+    // wallet and inventory, so the refusal is the same whatever they hold.
+    let heal_tile = TilePos {
+        x: loc.tile_x,
+        y: loc.tile_y,
+    };
+    let in_reach = character_of(ctx, me).is_some_and(|ch| {
+        within_interact_range(ch.zone_id, char_state(&ch).pos, loc.zone_id, heal_tile)
+    });
+    if !in_reach {
+        log_reject("heal_party", me, ERR_HEAL_OUT_OF_REACH);
+        return Err(ERR_HEAL_OUT_OF_REACH.to_string());
     }
 
-    // Step 5: in-battle check — EITHER role: side-B of an ongoing
+    // Step 4: in-battle check — EITHER role: side-B of an ongoing
     // PvP battle cannot heal mid-battle.
     if is_in_ongoing_battle(ctx, me) {
         return Err("cannot heal during an ongoing battle".to_string());
     }
 
-    // Step 6: cooldown check (using location's cooldown_ms)
+    // Step 5: cooldown check (using location's cooldown_ms)
     let now = now_ms(ctx);
     let last_heal = ctx
         .db
@@ -328,7 +341,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         .unwrap_or(0);
     evaluate_heal(last_heal, now, loc.cooldown_ms)?;
 
-    // Step 6b: currency cost. Cost from the process-wide
+    // Step 5b: currency cost. Cost from the process-wide
     // heal-location cache — no per-call RON re-parse; a free location spends nothing.
     // The decision (incl. the trade escrow guard) is the pure seam
     // `evaluate_heal_currency`; the wallet/escrow reads stay lazy (only for a priced
@@ -342,7 +355,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         spend_currency(ctx, me, currency_cost)?;
     }
 
-    // Step 7: cost consume. consume_one is a DB write; if it fails mid-loop the
+    // Step 6: cost consume. consume_one is a DB write; if it fails mid-loop the
     // reducer transaction rolls back (ACID), so no items are permanently lost.
     // Batch consume (cost_qty > 1) is deferred to M13 — current content has None cost.
     if let Some(item_id) = loc.cost_item_id {
@@ -351,7 +364,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         }
     }
 
-    // Step 8: heal all party monsters (party_slot != PARTY_SLOT_NONE)
+    // Step 7: heal all party monsters (party_slot != PARTY_SLOT_NONE)
     use crate::PARTY_SLOT_NONE;
     let monster_ids: Vec<u64> = ctx
         .db
@@ -368,7 +381,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         }
     }
 
-    // Step 9: upsert heal_cooldown
+    // Step 8: upsert heal_cooldown
     match ctx.db.heal_cooldown().owner_identity().find(me) {
         Some(existing) => {
             ctx.db

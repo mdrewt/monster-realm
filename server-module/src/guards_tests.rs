@@ -3213,7 +3213,8 @@ const TS6B_DELETION_GATED_TEXT: &str =
 /// ordinary answer instead.
 ///
 /// The caller is joined (`talk` and `buy` check `not joined` before the gate) and has no
-/// character, NPC or shop stock, so every admitted call stops at a read.
+/// character, NPC or shop stock, so every admitted call stops at a read: `talk` at the character
+/// lookup, `buy` at the shop-reach guard (a caller without a character is not beside a shop).
 ///
 /// kills: a refusal that names specific actions (trades, battles, challenges or any other list);
 /// a per-reducer refusal text (move, talk or shop phrasing of its own); a reducer that formats the reason with its own name or
@@ -3240,7 +3241,7 @@ fn a_mid_grace_caller_gets_the_same_reason_from_move_talk_and_buy() {
     acct.seed(&active);
     for (what, ordinary) in [
         ("talk", "character not found"),
-        ("buy", "shop 1 does not stock item 1"),
+        ("buy", "the shop is not close enough"),
     ] {
         assert_eq!(
             call(what),
@@ -3261,4 +3262,134 @@ fn a_mid_grace_caller_gets_the_same_reason_from_move_talk_and_buy() {
              or one of its own"
         );
     }
+}
+
+/// A `character` row for `entity_id` standing on `(x, y)` in `zone_id`.
+fn ts6b2_character(entity_id: u64, zone_id: u32, x: i32, y: i32) -> crate::schema::Character {
+    crate::schema::Character {
+        entity_id,
+        zone_id,
+        tile_x: x,
+        tile_y: y,
+        facing: game_core::Direction::South,
+        action: game_core::ActionState::Idle,
+        move_started_at_ms: 0,
+        sprite_id: 0,
+        move_queue: vec![],
+        acked_seq: 0,
+    }
+}
+
+/// A joined `player` row for `who`, pointing at the character `entity_id`.
+fn ts6b2_player(who: spacetimedb::Identity, entity_id: u64) -> crate::schema::Player {
+    crate::schema::Player {
+        identity: who,
+        entity_id,
+        name: String::new(),
+        online: true,
+        last_input_seq: 0,
+    }
+}
+
+/// The one pair-range guard `open_trade_session` and `challenge_pvp` share: true exactly when
+/// both identities have a `player` row, both rows' `entity_id`s have a `character` row, and the
+/// two characters are in the same zone within Manhattan 2. A missing `player` or `character`
+/// row on either side is out of range (false), never an error. Every false case is undone in
+/// the same fixture and the pair reads true again, so each false differs from a true in one
+/// variable.
+///
+/// kills: a guard that reads only `a`'s rows (the `b`-side cases), or treats a missing row as
+/// in range; a guard that looks the character up by identity bytes rather than through the
+/// `player` row's `entity_id` (the re-pointed `entity_id` cases); `<` for `<=` (Manhattan 2);
+/// a Chebyshev distance (Manhattan 3 split 2 + 1); a missing zone check (another zone on the
+/// same coordinates); an asymmetric rule (both argument orders).
+#[test]
+fn characters_in_interact_range_treats_a_missing_player_or_character_as_out_of_range() {
+    use crate::guards::characters_in_interact_range;
+    use crate::schema::{Character, Player};
+    const ZONE: u32 = 4;
+    const OTHER_ZONE: u32 = 5;
+
+    let fx = crate::native_host_tests::fixture();
+    let players = fx.table::<Player>("player", "identity", |r| r.identity);
+    let chars = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
+    let (a, b) = (ts0b_id(0x61), ts0b_id(0x62));
+    let (a_entity, b_entity) = (61u64, 62u64);
+    players.seed(&ts6b2_player(a, a_entity));
+    players.seed(&ts6b2_player(b, b_entity));
+    chars.seed(&ts6b2_character(a_entity, ZONE, 10, 20));
+
+    let ctx = fx.ctx();
+    let both_orders = |want: bool, why: &str| {
+        assert_eq!(
+            characters_in_interact_range(&ctx, a, b),
+            want,
+            "(a, b): {why}; indexes asked: {:?}",
+            fx.requested_indexes()
+        );
+        assert_eq!(
+            characters_in_interact_range(&ctx, b, a),
+            want,
+            "(b, a): {why}"
+        );
+    };
+    let place_b = |zone: u32, x: i32, y: i32| {
+        chars.remove(b_entity);
+        chars.seed(&ts6b2_character(b_entity, zone, x, y));
+    };
+
+    // Distance and zone, with both rows of both sides present.
+    for (x, y, want, why) in [
+        (10, 20, true, "the same tile"),
+        (11, 20, true, "Manhattan 1"),
+        (12, 20, true, "Manhattan 2 on one axis"),
+        (9, 21, true, "Manhattan 2 split across both axes"),
+        (10, 18, true, "Manhattan 2, negative offset"),
+        (13, 20, false, "Manhattan 3 on one axis"),
+        (12, 21, false, "Manhattan 3 split 2 + 1 (Chebyshev 2)"),
+        (9, 18, false, "Manhattan 3 split 1 + 2, negative offsets"),
+    ] {
+        place_b(ZONE, x, y);
+        both_orders(want, why);
+    }
+    place_b(OTHER_ZONE, 10, 20);
+    both_orders(false, "another zone on the same coordinates");
+    place_b(ZONE, 12, 20);
+    both_orders(true, "control: back in the zone, at Manhattan 2");
+
+    // a has no player row; then b has none.
+    for (who, entity_id, side) in [(a, a_entity, "a"), (b, b_entity, "b")] {
+        assert_eq!(players.remove(who), 1, "fixture: {side}'s one player row");
+        both_orders(false, &format!("{side} has no player row"));
+        players.seed(&ts6b2_player(who, entity_id));
+        both_orders(true, &format!("control: {side}'s player row is back"));
+    }
+
+    // a's player row points at an entity_id with no character row; then b's does.
+    for (who, entity_id, side) in [(a, a_entity, "a"), (b, b_entity, "b")] {
+        assert_eq!(players.remove(who), 1, "fixture: {side}'s one player row");
+        players.seed(&ts6b2_player(who, 99));
+        both_orders(
+            false,
+            &format!("{side}'s player row points at entity 99, which has no character row"),
+        );
+        assert_eq!(players.remove(who), 1, "fixture: {side}'s player row");
+        players.seed(&ts6b2_player(who, entity_id));
+        both_orders(true, &format!("control: {side} points home again"));
+    }
+
+    // b's character row is gone outright (its player row stays).
+    assert_eq!(chars.remove(b_entity), 1, "fixture: b's character row");
+    both_orders(false, "b's character row is gone");
+
+    // A joined player with a character is in range of itself; without one it is not.
+    assert!(
+        characters_in_interact_range(&ctx, a, a),
+        "a joined player with a character is in range of itself"
+    );
+    assert_eq!(chars.remove(a_entity), 1, "fixture: a's character row");
+    assert!(
+        !characters_in_interact_range(&ctx, a, a),
+        "a player with no character row is out of range even of itself"
+    );
 }

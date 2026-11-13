@@ -1974,10 +1974,10 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 //
 // HONEST LIMITS, stated once for the block. The source pins read text, never
 // behaviour. The executed matrix reads behaviour but stops at the first guard
-// PAST the gate: `Fixture::table` keys rows by the indexed column, so the
-// `u64`-keyed `character` index is never seeded, an unregistered index yields
-// no rows in this host, and every write syscall ABORTS the process (uncatchable,
-// so `#[should_panic]` is not available). What it proves is that a
+// PAST the gate, the heal-location lookup: the `heal_location_row` index is
+// never registered, an unregistered index yields no rows in this host, and
+// every write syscall ABORTS the process (uncatchable, so `#[should_panic]` is
+// not available). What it proves is that a
 // deletion-gated caller is REFUSED exactly where an admitted one is let
 // through — not that a wallet moved.
 // ===========================================================================
@@ -2027,18 +2027,17 @@ fn rb80_seed_deleting_stranger(
 /// all five, so the admitted states additionally prove the gate keys on
 /// `ctx.sender()`.
 ///
-/// WHY THE ADMITTED STATES ERR, and why that is the honest claim. `Fixture::table`
-/// keys rows by the indexed column, so the `u64`-keyed `character` index is
-/// never registered; an unregistered index yields no rows in this host, so the
-/// character lookup finds nothing and the reducer stops there — ONE guard past
-/// the gate and well before the heal-location read, the spend, the consume and
-/// the cooldown upsert. Every write syscall ABORTS the process (uncatchable, so
-/// `#[should_panic]` is unavailable), which is exactly why this test can assert
+/// WHY THE ADMITTED STATES ERR, and why that is the honest claim. The
+/// `heal_location_row` index is never registered and an unregistered index
+/// yields no rows in this host, so the heal-location lookup finds nothing and the
+/// reducer stops there — ONE guard past the gate and well before the reach
+/// check, the spend, the consume and the cooldown upsert. Every write syscall
+/// ABORTS the process (uncatchable, so `#[should_panic]` is unavailable), which
+/// is exactly why this test can assert
 /// REFUSALS and admissions and nothing deeper. The ordinary error is pinned
 /// EXACTLY rather than as any-error: otherwise a regression in the joined check
 /// (which returns a different error) would masquerade as a pass in all three
 /// admitted states and the whole positive control would go quietly vacuous.
-/// Ordering relative to the spend is owned by the source pin above.
 ///
 /// kills: M1 (the dropped gate) · M5 (a discarded verdict) · M8 (an unreachable
 /// placement) · M11 (a constant reject in `guards` — the three admitted states)
@@ -2060,7 +2059,7 @@ fn rb80_heal_party_is_refused_only_while_the_caller_is_deletion_gated() {
 
     let call = || crate::raising::heal_party(&ctx, 1);
 
-    let ordinary: Result<(), String> = Err("character not found".to_string());
+    let ordinary: Result<(), String> = Err("heal location not found".to_string());
     let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
 
     let active = crate::accounts::new_account_row(me, String::new(), 0);
@@ -2077,8 +2076,8 @@ fn rb80_heal_party_is_refused_only_while_the_caller_is_deletion_gated() {
         "rb-80 E1 FAIL (admitted state, no account row): `heal_party` returned {got:?} for a \
          joined caller with NO account row, while a STRANGER's row is mid-grace. A caller who \
          never authenticated is not inside the deletion gate and must be admitted into the \
-         ordinary guard chain; the expected error is the character lookup's, and pinning it \
-         EXACTLY is what stops a regression in the joined check from masquerading as a pass. A \
+         ordinary guard chain; the expected error is the heal-location lookup's, and pinning \
+         it EXACTLY is what stops a regression in the joined check from masquerading as a pass. A \
          deletion reject here means the gate answers from the TABLE rather than from the \
          caller's own row. Indexes the generated code asked the host for: {:?}",
         fx.requested_indexes()
@@ -2931,15 +2930,19 @@ mod nh {
         assert_eq!(w.snapshot(), before, "a wrong item is never burnt");
     }
 
+    /// Heal location 1's tile, in zone 0 (`x != y`).
+    const HEAL_TILE: (i32, i32) = (8, 3);
+
     /// Heal location 1 (zone 0) re-seeded with an ITEM cost so the spend is
-    /// observable; the RON cache still prices it at 0 currency.
+    /// observable; the RON cache still prices it at 0 currency. A's and B's
+    /// characters stand on the heal tile.
     fn heal_world(fx: &Fixture) -> World<'_> {
         let w = world(fx, true);
         w.locs.seed(&HealLocationRow {
             location_id: 1,
             zone_id: 0,
-            tile_x: 8,
-            tile_y: 3,
+            tile_x: HEAL_TILE.0,
+            tile_y: HEAL_TILE.1,
             cost_item_id: Some(NOT_FOOD),
             cost_qty: 1,
             cooldown_ms: 30_000,
@@ -2947,6 +2950,9 @@ mod nh {
         });
         w.join(a(), 1, 0);
         w.join(b(), 2, 0);
+        for entity_id in [1, 2] {
+            w.place_char(entity_id, 0, HEAL_TILE.0, HEAL_TILE.1);
+        }
         w.seed_monster(&monster(11, a(), 0));
         w.seed_monster(&monster(12, a(), PARTY_SLOT_NONE));
         w.seed_monster(&monster(21, b(), 0));
@@ -2989,9 +2995,10 @@ mod nh {
         assert_eq!(w.cooldowns.rows()[0].last_heal_at_ms, T0 + 30_000);
     }
 
-    /// heal_party refusals, each before any write: unjoined caller, wrong zone,
-    /// in battle (PvP side B), one ms inside the location cooldown, and a caller
-    /// without the cost item (a stranger's stack is never spent).
+    /// heal_party refusals, each before any write: unjoined caller, the heal
+    /// tile's coordinates in another zone, in battle (PvP side B), one ms inside
+    /// the location cooldown, and a caller without the cost item (a stranger's
+    /// stack is never spent).
     #[test]
     fn nh_heal_party_refusals_write_nothing() {
         type Setup = fn(&World<'_>);
@@ -3001,11 +3008,8 @@ mod nh {
                 "wrong zone",
                 a(),
                 T0,
-                |w| {
-                    w.chars.remove(1);
-                    w.join_char_only(1, 5);
-                },
-                "not in heal location zone",
+                |w| w.place_char(1, 5, HEAL_TILE.0, HEAL_TILE.1),
+                "the healer is not close enough",
             ),
             (
                 "in battle as PvP side B",
@@ -3047,13 +3051,268 @@ mod nh {
         }
     }
 
+    /// The one refusal `heal_party` gives a caller who is not at the heal tile.
+    const HEALER_NOT_CLOSE: &str = "the healer is not close enough";
+
+    /// `heal_party` serves only a caller whose character stands in the heal
+    /// location's zone within TALK_RANGE (Manhattan 2, inclusive) of its tile; any
+    /// other caller — too far, another zone, no character — gets one refusal and
+    /// nothing is written (monsters, monster_pub, stacks, cooldowns and characters
+    /// byte-identical; the location charges no currency, so no wallet is read).
+    /// Each refused caller is then moved onto the tile in the same fixture and
+    /// healed, so every refusal is of a heal that would otherwise succeed. The
+    /// reach check comes after the location lookup and before the battle,
+    /// cooldown and cost guards.
+    ///
+    /// kills:
+    ///   - a reach check that compares only the zones: (3, 0), (0, -3), (2, 1) and
+    ///     (-1, -2) in the heal zone are healed.
+    ///   - `<` for `<=`: (2, 0) and (0, -2) are healed.
+    ///   - Chebyshev distance: (2, 1) and (-1, -2) are Chebyshev 2, Manhattan 3.
+    ///   - the zone dropped: the heal tile's coordinates and (1, 0) in zone 5.
+    ///   - the reach check after the battle, cooldown or cost guard: a caller off
+    ///     the tile who is also in battle, inside the cooldown or without the cost
+    ///     item gets the reach text, and on the tile gets that guard's own text.
+    ///   - the character read before the location lookup: an unknown location
+    ///     answers `heal location not found` with no character row too.
+    ///   - a text per cause: every off-tile caller is compared against the one
+    ///     literal.
+    #[test]
+    fn heal_party_is_refused_off_the_heal_tile() {
+        type Setup = fn(&World<'_>);
+        /// Every row a heal could write, plus the characters.
+        fn rows(w: &World<'_>) -> Vec<Vec<u8>> {
+            let mut all = w.snapshot();
+            all.push(to_vec(&w.chars.rows()).unwrap());
+            all
+        }
+        /// A heal at `now` that succeeds: party monster 11 back to 40 HP, one cost
+        /// item spent, A's cooldown stamped `now`.
+        fn healed(fx: &Fixture, w: &World<'_>, now: i64, label: &str) {
+            let held = w.count(a(), NOT_FOOD);
+            assert_eq!(
+                fx.run_as_at(a(), at(now), |ctx| heal_party(ctx, 1)),
+                Ok(()),
+                "{label}"
+            );
+            assert_eq!(w.monster(11).current_hp, 40, "{label}: party healed");
+            assert_eq!(
+                w.count(a(), NOT_FOOD),
+                held - 1,
+                "{label}: one cost item spent"
+            );
+            let cd: Vec<(Identity, i64)> = w
+                .cooldowns
+                .rows()
+                .iter()
+                .map(|r| (r.owner_identity, r.last_heal_at_ms))
+                .collect();
+            assert_eq!(cd, vec![(a(), now)], "{label}: cooldown stamped");
+        }
+        /// A heal of `location_id` at `now`, refused with exactly `want`, writing nothing.
+        fn refused(
+            fx: &Fixture,
+            w: &World<'_>,
+            location_id: u32,
+            now: i64,
+            want: &str,
+            label: &str,
+        ) {
+            let before = rows(w);
+            assert_eq!(
+                fx.run_as_at(a(), at(now), |ctx| heal_party(ctx, location_id)),
+                Err(want.to_string()),
+                "{label}"
+            );
+            assert_eq!(rows(w), before, "{label}: nothing written");
+        }
+        let (hx, hy) = HEAL_TILE;
+
+        // On the tile, and at Manhattan 1 and exactly 2 from it.
+        for (dx, dy) in [(0, 0), (1, 0), (0, -1), (2, 0), (0, -2), (-1, 1)] {
+            let fx = fixture();
+            let w = heal_world(&fx);
+            w.place_char(1, 0, hx + dx, hy + dy);
+            healed(&fx, &w, T0, &format!("({dx}, {dy}) from the heal tile"));
+        }
+
+        // (zone, offset from the tile); `None` is a caller with no character row.
+        let off_tile: [(u32, Option<(i32, i32)>); 7] = [
+            (0, Some((3, 0))),
+            (0, Some((0, -3))),
+            (0, Some((2, 1))),
+            (0, Some((-1, -2))),
+            (5, Some((0, 0))),
+            (5, Some((1, 0))),
+            (0, None),
+        ];
+        for (zone, offset) in off_tile {
+            let label = format!("zone {zone}, offset {offset:?}");
+            let fx = fixture();
+            let w = heal_world(&fx);
+            match offset {
+                Some((dx, dy)) => w.place_char(1, zone, hx + dx, hy + dy),
+                None => assert_eq!(w.chars.remove(1), 1, "fixture: A's character row"),
+            }
+            refused(&fx, &w, 1, T0, HEALER_NOT_CLOSE, &label);
+            w.place_char(1, 0, hx, hy);
+            healed(&fx, &w, T0, &format!("{label}, then on the tile"));
+        }
+
+        // Off the tile, the reach refusal comes before every later guard; on the
+        // tile, that guard refuses with its own text.
+        let armed: [(&str, i64, Setup, &str); 3] = [
+            (
+                "in battle as PvP side B",
+                T0,
+                |w| w.battles.seed(&battle(b(), a())),
+                "cannot heal during an ongoing battle",
+            ),
+            (
+                "inside the cooldown",
+                T0 + 29_999,
+                |w| {
+                    w.cooldowns.seed(&HealCooldown {
+                        owner_identity: a(),
+                        last_heal_at_ms: T0,
+                    })
+                },
+                "heal cooldown not yet elapsed",
+            ),
+            (
+                "without the cost item",
+                T0,
+                |w| {
+                    w.stacks.remove(a());
+                },
+                "item not in inventory",
+            ),
+        ];
+        for (label, now, setup, later) in armed {
+            let fx = fixture();
+            let w = heal_world(&fx);
+            setup(&w);
+            w.place_char(1, 0, hx + 3, hy);
+            let off = format!("{label}, off the tile");
+            refused(&fx, &w, 1, now, HEALER_NOT_CLOSE, &off);
+            w.place_char(1, 0, hx, hy);
+            let on = format!("{label}, on the tile");
+            refused(&fx, &w, 1, now, later, &on);
+        }
+
+        // An unknown location is answered before any look at the caller's character.
+        let fx = fixture();
+        let w = heal_world(&fx);
+        let lost = "heal location not found";
+        refused(&fx, &w, 77, T0, lost, "location 77, on the heal tile");
+        w.place_char(1, 0, hx + 3, hy);
+        refused(&fx, &w, 77, T0, lost, "location 77, off the heal tile");
+        assert_eq!(w.chars.remove(1), 1, "fixture: A's character row");
+        refused(&fx, &w, 77, T0, lost, "location 77, no character row");
+        w.place_char(1, 0, hx, hy);
+        healed(&fx, &w, T0, "location 1, on the heal tile");
+    }
+
+    /// `heal_party(location_id)` measures the caller against THE REQUESTED location's
+    /// tile. Three locations: 1 at `HEAL_TILE` (8, 3) in zone 0, 2 at (20, 12) in zone 0
+    /// (12 + 9 tiles away), and 3 on location 2's coordinates in zone 7; none charges
+    /// currency. On location 2's tile, location 1 and location 3 are refused with the
+    /// reach text and write nothing, then location 2 heals; on location 1's tile the
+    /// mirror holds, and location 2 stays refused for reach inside location 1's cooldown.
+    /// Standing on location 3's coordinates in zone 7, location 3 heals, so it is a live
+    /// location.
+    ///
+    /// kills: reach judged against any heal location in the caller's zone (location 1
+    /// is accepted from location 2's tile); against the nearest heal location (the same);
+    /// against the first `heal_location_row` row; against a location on the same
+    /// coordinates in another zone (location 3 accepted from location 2's tile).
+    #[test]
+    fn heal_party_measures_reach_against_the_requested_location() {
+        const B_TILE: (i32, i32) = (20, 12);
+        const OTHER_ZONE: u32 = 7;
+        fn sites(fx: &Fixture) -> World<'_> {
+            let w = heal_world(fx);
+            for (location_id, zone_id) in [(2, 0), (3, OTHER_ZONE)] {
+                w.locs.seed(&HealLocationRow {
+                    location_id,
+                    zone_id,
+                    tile_x: B_TILE.0,
+                    tile_y: B_TILE.1,
+                    cost_item_id: Some(NOT_FOOD),
+                    cost_qty: 1,
+                    cooldown_ms: 30_000,
+                    cost_currency: 0,
+                });
+            }
+            w
+        }
+        fn rows(w: &World<'_>) -> Vec<Vec<u8>> {
+            let mut all = w.snapshot();
+            all.push(to_vec(&w.chars.rows()).unwrap());
+            all
+        }
+        fn heal(fx: &Fixture, location_id: u32, now: i64) -> Result<(), String> {
+            fx.run_as_at(a(), at(now), |ctx| heal_party(ctx, location_id))
+        }
+        fn refused(fx: &Fixture, w: &World<'_>, location_id: u32, now: i64, label: &str) {
+            let before = rows(w);
+            assert_eq!(
+                heal(fx, location_id, now),
+                Err(HEALER_NOT_CLOSE.to_string()),
+                "{label}"
+            );
+            assert_eq!(rows(w), before, "{label}: nothing written");
+        }
+        fn healed(fx: &Fixture, w: &World<'_>, location_id: u32, label: &str) {
+            let held = w.count(a(), NOT_FOOD);
+            assert_eq!(heal(fx, location_id, T0), Ok(()), "{label}");
+            assert_eq!(w.monster(11).current_hp, 40, "{label}: party healed");
+            assert_eq!(w.count(a(), NOT_FOOD), held - 1, "{label}: cost spent");
+            let cd: Vec<(Identity, i64)> = w
+                .cooldowns
+                .rows()
+                .iter()
+                .map(|r| (r.owner_identity, r.last_heal_at_ms))
+                .collect();
+            assert_eq!(cd, vec![(a(), T0)], "{label}: cooldown written");
+        }
+
+        // On location 2's tile: 1 and 3 refused, then 2 heals.
+        let fx = fixture();
+        let w = sites(&fx);
+        w.place_char(1, 0, B_TILE.0, B_TILE.1);
+        refused(&fx, &w, 1, T0, "on 2's tile, asking for 1");
+        refused(&fx, &w, 3, T0, "on 2's tile, asking for 3 (zone 7)");
+        healed(&fx, &w, 2, "on 2's tile, asking for 2");
+        drop(fx);
+
+        // The mirror: on location 1's tile, 2 refused, then 1 heals; 2 is still refused
+        // for reach inside the cooldown that heal started.
+        let fx = fixture();
+        let w = sites(&fx);
+        w.place_char(1, 0, HEAL_TILE.0, HEAL_TILE.1);
+        refused(&fx, &w, 2, T0, "on 1's tile, asking for 2");
+        healed(&fx, &w, 1, "on 1's tile, asking for 1");
+        refused(&fx, &w, 2, T0 + 1, "in 1's cooldown, asking for 2");
+        drop(fx);
+
+        // Location 3 is live: from its own coordinates in its own zone it heals.
+        let fx = fixture();
+        let w = sites(&fx);
+        w.place_char(1, OTHER_ZONE, B_TILE.0, B_TILE.1);
+        refused(&fx, &w, 2, T0, "on 3's tile, asking for 2");
+        healed(&fx, &w, 3, "on 3's tile in zone 7, asking for 3");
+    }
+
     impl World<'_> {
-        fn join_char_only(&self, entity_id: u64, zone_id: u32) {
+        /// Stand character `entity_id` on `(x, y)` in `zone_id`, replacing any row it had.
+        fn place_char(&self, entity_id: u64, zone_id: u32, x: i32, y: i32) {
+            self.chars.remove(entity_id);
             self.chars.seed(&Character {
                 entity_id,
                 zone_id,
-                tile_x: 1,
-                tile_y: 1,
+                tile_x: x,
+                tile_y: y,
                 facing: Direction::South,
                 action: ActionState::Idle,
                 move_started_at_ms: 0,

@@ -15,17 +15,16 @@
 
 use crate::economy::{grant_currency, spend_currency, wallet_balance};
 use crate::guards::{
-    escrowed_currency_amount, escrowed_item_qty, json_escape, log_reject, offers_of,
-    reject_if_in_battle, reject_if_monster_in_trade, session_lists_monster,
+    characters_in_interact_range, escrowed_currency_amount, escrowed_item_qty, json_escape,
+    log_reject, offers_of, reject_if_in_battle, reject_if_monster_in_trade, session_lists_monster,
     session_locked_currency, session_locked_item_qty, sessions_of,
 };
 use crate::inventory::{consume_one, grant_item};
-use crate::marshal::{char_state, now_ms, pub_from_monster};
+use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{
-    battle, character, inventory, item_row, monster, monster_pub, player, trade_session,
+    battle, inventory, item_row, monster, monster_pub, player, trade_session,
     trade_session_snapshot, Battle, Monster, TradeOffer, TradeSession, TradeSessionSnapshot,
 };
-use game_core::interact::within_interact_range;
 use game_core::raising::rules::{reset_bond_on_trade, TrainerBond};
 use game_core::trading::{
     apply_edit, arrival_slots, can_confirm, check_offer_eligibility, check_offer_size,
@@ -971,29 +970,14 @@ fn read_side(
 #[spacetimedb::reducer]
 pub fn open_trade_session(ctx: &ReducerContext, partner: Identity) -> Result<(), String> {
     let me = ctx.sender();
-    let Some(my_player) = ctx.db.player().identity().find(me) else {
+    if ctx.db.player().identity().find(me).is_none() {
         return reject("open_trade_session", me, ERR_NOT_JOINED);
-    };
+    }
     crate::guards::require_not_deleting(ctx, "open_trade_session")?;
-    let Some(partner_player) = ctx.db.player().identity().find(partner) else {
+    if ctx.db.player().identity().find(partner).is_none() {
         return reject("open_trade_session", me, ERR_PARTNER_NOT_JOINED);
-    };
-    let in_range = match (
-        ctx.db.character().entity_id().find(my_player.entity_id),
-        ctx.db
-            .character()
-            .entity_id()
-            .find(partner_player.entity_id),
-    ) {
-        (Some(mine), Some(theirs)) => within_interact_range(
-            mine.zone_id,
-            char_state(&mine).pos,
-            theirs.zone_id,
-            char_state(&theirs).pos,
-        ),
-        _ => false,
-    };
-    if !in_range {
+    }
+    if !characters_in_interact_range(ctx, me, partner) {
         return reject("open_trade_session", me, ERR_OUT_OF_RANGE);
     }
     let mine: Vec<(Identity, Identity)> = sessions_of(ctx, me)

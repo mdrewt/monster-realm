@@ -5,17 +5,20 @@
 //! here so the single-surface discipline (no direct balance add-assign) is enforced
 //! in one place.
 //!
-//! server-priced, atomic, reject-not-clamp, with `require_owner` before every
-//! spend/consume call.
+//! `buy` and `sell` are server-priced, atomic and reject-not-clamp, call
+//! `require_owner` before every spend or consume, and serve only a caller standing
+//! within reach of a shop NPC.
 
 use crate::guards::{
-    escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, require_owner,
-    saturating_sub_u32, saturating_sub_u64,
+    character_of, escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, log_reject,
+    require_owner, saturating_sub_u32, saturating_sub_u64,
 };
 use crate::inventory::{consume_one, grant_item};
-use crate::schema::{inventory, item_row, player, player_wallet, shop_item_row, PlayerWallet};
+use crate::marshal::char_state;
+use crate::schema::{inventory, item_row, npc, player, player_wallet, shop_item_row, PlayerWallet};
 use game_core::currency::{apply_grant, apply_spend};
-use game_core::{check_currency_headroom, check_item_headroom};
+use game_core::interact::{npc_offers_shop, within_npc_reach};
+use game_core::{check_currency_headroom, check_item_headroom, TilePos};
 use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Grant `amount` of currency to `owner`. 0-amount is a no-op (never inserts
@@ -77,12 +80,45 @@ pub(crate) fn spend_currency(
 // M13b reducers: buy / sell
 // ---------------------------------------------------------------------------
 
+/// `buy` and `sell` reject reason when no NPC offering the shop stands within reach of the
+/// caller. One text for a caller with no character, one in another zone and one too far away.
+const ERR_SHOP_OUT_OF_REACH: &str = "the shop is not close enough";
+
+/// Refuse the caller unless their character is within reach of an NPC that offers a shop:
+/// the shop `shop_id` when it is `Some`, any shop when it is `None`
+/// (`game_core::interact::npc_offers_shop`). Reach is measured from each NPC's home tile
+/// (`game_core::interact::within_npc_reach`); only the NPCs of the caller's zone are read.
+fn require_shop_in_reach(
+    ctx: &ReducerContext,
+    reducer: &str,
+    shop_id: Option<u32>,
+) -> Result<(), String> {
+    let me = ctx.sender();
+    let in_reach = character_of(ctx, me).is_some_and(|ch| {
+        let pos = char_state(&ch).pos;
+        ctx.db.npc().zone_id().filter(ch.zone_id).any(|npc| {
+            let home = TilePos {
+                x: npc.home_x,
+                y: npc.home_y,
+            };
+            npc_offers_shop(npc.interaction, shop_id)
+                && within_npc_reach(ch.zone_id, pos, npc.zone_id, home, npc.wander_radius)
+        })
+    });
+    if !in_reach {
+        log_reject(reducer, me, ERR_SHOP_OUT_OF_REACH);
+        return Err(ERR_SHOP_OUT_OF_REACH.to_string());
+    }
+    Ok(())
+}
+
 /// Buy `qty` units of `item_id` from shop `shop_id`.
 ///
 /// Server flow (reject-not-clamp, server-priced, atomic):
 /// 1. Verify caller is a joined player (`require_owner` before any spend), then the
 ///    deletion gate — reject a mid-grace or terminal caller
-///    before any further read — then the ongoing-battle guard (either role).
+///    before any further read — then reach: an NPC offering `shop_id` stands within
+///    reach of the caller's character — then the ongoing-battle guard (either role).
 /// 2. Look up the `shop_item_row` for `(shop_id, item_id)` — reject if not stocked.
 /// 3. Compute total = `buy_price × qty` (server-side, checked_mul — no overflow).
 /// 4. Trade-escrow guard — reject if the currency is locked in
@@ -111,6 +147,10 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
     // mid-grace or terminal account is refused HERE — before the stock lookup, the
     // escrow/headroom reads and the spend.
     crate::guards::require_not_deleting(ctx, "buy")?;
+
+    // Reach: ahead of the battle guard and of every read of the caller's wallet and
+    // inventory, so the refusal is the same whatever they hold.
+    require_shop_in_reach(ctx, "buy", Some(shop_id))?;
 
     // Both-role ongoing-battle guard: no shopping mid-battle.
     if is_in_ongoing_battle(ctx, me) {
@@ -171,8 +211,9 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
 /// Server flow (reject-not-clamp, server-priced, atomic):
 /// 1. Verify caller is a joined player (`require_owner` before any consume/grant),
 ///    then the deletion gate — reject a mid-grace or
-///    terminal caller before any further read — then the ongoing-battle guard
-///    (either role).
+///    terminal caller before any further read — then reach: an NPC offering any
+///    shop stands within reach of the caller's character — then the ongoing-battle
+///    guard (either role).
 /// 2. Look up `sell_price` from `item_row` — reject if 0 ("item cannot be sold").
 /// 3. Compute total = `sell_price × qty` (server-side, checked_mul) — an
 ///    overflow rejects here, pre-filtering the headroom check in step 5
@@ -204,6 +245,9 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
     // mid-grace or terminal account is refused HERE — before the item lookup, the
     // escrow/headroom reads and the consume.
     crate::guards::require_not_deleting(ctx, "sell")?;
+
+    // Reach: any shop NPC buys, so no shop id is asked for. Same placement as `buy`.
+    require_shop_in_reach(ctx, "sell", None)?;
 
     // Both-role ongoing-battle guard: no shopping mid-battle.
     if is_in_ongoing_battle(ctx, me) {

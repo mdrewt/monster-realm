@@ -4,8 +4,13 @@
 
 use proptest::prelude::*;
 
-use crate::interact::{interact_candidates, within_interact_range, InteractEntity, InteractKind};
-use crate::types::{Direction, TilePos};
+use crate::interact::{
+    interact_candidates, npc_offers_shop, within_interact_range, within_npc_reach, InteractEntity,
+    InteractKind,
+};
+use crate::npc::rules::{in_talk_range, npc_decide};
+use crate::types::{Direction, NpcInteraction, TilePos};
+use crate::world::TileMap;
 use crate::TALK_RANGE;
 
 const ZONE: u32 = 3;
@@ -734,5 +739,384 @@ proptest! {
         let expected = zone_a == zone_b && manhattan(a, b) <= TALK_RANGE;
         prop_assert_eq!(within_interact_range(zone_a, a, zone_b, b), expected);
         prop_assert_eq!(within_interact_range(zone_b, b, zone_a, a), expected);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ts-6b-2.1 — `within_npc_reach`: the same zone AND Manhattan(pos, home) <=
+// TALK_RANGE + wander_radius, inclusive
+// ---------------------------------------------------------------------------
+
+/// An NPC's home tile: `x != y`, so a rule that reads `home.y` for `home.x` misses.
+const HOME: TilePos = TilePos { x: 7, y: -4 };
+
+/// `HOME + (dx, dy)`.
+fn from_home(dx: i32, dy: i32) -> TilePos {
+    TilePos {
+        x: HOME.x + dx,
+        y: HOME.y + dy,
+    }
+}
+
+/// `TALK_RANGE + r`, the reach of an NPC that wanders up to `r` tiles from home.
+fn reach_bound(r: u8) -> i32 {
+    i32::try_from(TALK_RANGE).expect("TALK_RANGE fits an i32") + i32::from(r)
+}
+
+/// For r = 0, 1, 2 and 9: every tile at Manhattan distance `TALK_RANGE + r` from
+/// home — on each axis, split across both axes and with negative offsets — is in
+/// reach, every tile at `TALK_RANGE + r + 1` is not, and over the whole block
+/// around home the answer is exactly `|dx| + |dy| <= TALK_RANGE + r`. At r = 0 the
+/// (+2, +1) diagonal (Manhattan 3) is refused while (+2, 0) is accepted.
+///
+/// kills: `<` for `<=` (the boundary tiles); the radius dropped or passed as 0 (r >=
+/// 1 boundary tiles); a bound one too wide (the `+ 1` tiles); a Chebyshev or
+/// single-axis distance (the split tiles and the r = 0 diagonal); `home.x` and
+/// `home.y` swapped (`HOME` has x != y, so every near tile moves out of reach).
+#[test]
+fn within_npc_reach_accepts_up_to_talk_range_plus_the_wander_radius_and_refuses_one_more() {
+    for r in [0u8, 1, 2, 9] {
+        let bound = reach_bound(r);
+        let at_bound = [
+            (bound, 0),
+            (0, bound),
+            (-bound, 0),
+            (0, -bound),
+            (bound - 1, 1),
+            (1, 1 - bound),
+            (1 - bound, -1),
+            (-1, bound - 1),
+        ];
+        for (dx, dy) in at_bound {
+            assert!(
+                within_npc_reach(ZONE, from_home(dx, dy), ZONE, HOME, r),
+                "radius {r}: offset ({dx}, {dy}) is at Manhattan {bound} = TALK_RANGE + radius, \
+                 which is in reach"
+            );
+        }
+        let past_bound = [
+            (bound + 1, 0),
+            (0, bound + 1),
+            (-(bound + 1), 0),
+            (0, -(bound + 1)),
+            (bound, 1),
+            (-1, -bound),
+            (bound - 1, -2),
+            (-2, bound - 1),
+        ];
+        for (dx, dy) in past_bound {
+            assert!(
+                !within_npc_reach(ZONE, from_home(dx, dy), ZONE, HOME, r),
+                "radius {r}: offset ({dx}, {dy}) is at Manhattan {} = TALK_RANGE + radius + 1, \
+                 which is out of reach",
+                bound + 1
+            );
+        }
+        for dx in -(bound + 2)..=(bound + 2) {
+            for dy in -(bound + 2)..=(bound + 2) {
+                assert_eq!(
+                    within_npc_reach(ZONE, from_home(dx, dy), ZONE, HOME, r),
+                    dx.abs() + dy.abs() <= bound,
+                    "radius {r}: offset ({dx}, {dy})"
+                );
+            }
+        }
+    }
+    assert!(
+        !within_npc_reach(ZONE, from_home(2, 1), ZONE, HOME, 0),
+        "radius 0: the (+2, +1) diagonal is Manhattan 3, out of reach"
+    );
+    assert!(
+        within_npc_reach(ZONE, from_home(2, 0), ZONE, HOME, 0),
+        "radius 0: (+2, 0) is Manhattan 2, in reach"
+    );
+}
+
+/// Another zone is never in reach — not on the home tile itself, not at Manhattan 1
+/// or 2, not anywhere a same-zone caller would be accepted — in either argument
+/// position; each same-zone twin of a refused call is accepted.
+///
+/// kills: a missing zone check; `&&` for `||`; a zone test reading one argument only.
+#[test]
+fn within_npc_reach_is_never_true_across_zones() {
+    for r in [0u8, 2, 255] {
+        for (dx, dy) in [(0, 0), (1, 0), (0, -2), (-1, 1), (2, 0)] {
+            let pos = from_home(dx, dy);
+            assert!(
+                within_npc_reach(ZONE, pos, ZONE, HOME, r),
+                "radius {r}: offset ({dx}, {dy}) in the same zone is in reach (the control)"
+            );
+            assert!(
+                !within_npc_reach(ZONE, pos, OTHER_ZONE, HOME, r),
+                "radius {r}: offset ({dx}, {dy}) with the NPC in another zone"
+            );
+            assert!(
+                !within_npc_reach(OTHER_ZONE, pos, ZONE, HOME, r),
+                "radius {r}: offset ({dx}, {dy}) with the caller in another zone"
+            );
+        }
+    }
+    let far = from_home(200, -57);
+    assert!(within_npc_reach(ZONE, far, ZONE, HOME, 255));
+    assert!(!within_npc_reach(ZONE, far, OTHER_ZONE, HOME, 255));
+    assert!(!within_npc_reach(0, HOME, u32::MAX, HOME, 255));
+    assert!(within_npc_reach(u32::MAX, HOME, u32::MAX, HOME, 0));
+}
+
+/// The reach of an NPC that never leaves home is the interact range of its home
+/// tile: at radius 0, over every offset in an 11 x 11 block and every zone pairing,
+/// `within_npc_reach` equals `within_interact_range` against the home tile.
+///
+/// kills: a constant extra margin; a zone rule or a distance that differs from the
+/// pair range's.
+#[test]
+fn within_npc_reach_of_a_stationary_npc_is_the_interact_range_of_its_home() {
+    for (zone, npc_zone) in [(ZONE, ZONE), (ZONE, OTHER_ZONE), (OTHER_ZONE, ZONE)] {
+        for dx in -5..=5 {
+            for dy in -5..=5 {
+                let pos = from_home(dx, dy);
+                assert_eq!(
+                    within_npc_reach(zone, pos, npc_zone, HOME, 0),
+                    within_interact_range(zone, pos, npc_zone, HOME),
+                    "zones ({zone}, {npc_zone}) offset ({dx}, {dy})"
+                );
+            }
+        }
+    }
+}
+
+/// The extremes: `i32::MIN` against `i32::MAX` on both axes at radius 255 is out of
+/// reach (in both argument orders) and does not panic; the same extreme tile is in
+/// reach of itself; at radius 255 a tile 257 away is in reach and one 258 away is
+/// not — at ordinary coordinates and against a home on the `i32` bounds.
+///
+/// kills: `TALK_RANGE + radius` added in `u8` (255 + 2 overflows, a panic in a debug
+/// build or a wrap to 1); a distance computed in `i32` (overflows at the extremes); a
+/// distance that wraps to a small number for opposite corners.
+#[test]
+fn within_npc_reach_at_the_coordinate_extremes_never_overflows() {
+    let min = TilePos {
+        x: i32::MIN,
+        y: i32::MIN,
+    };
+    let max = TilePos {
+        x: i32::MAX,
+        y: i32::MAX,
+    };
+    assert!(!within_npc_reach(ZONE, min, ZONE, max, 255));
+    assert!(!within_npc_reach(ZONE, max, ZONE, min, 255));
+    assert!(within_npc_reach(ZONE, max, ZONE, max, 0));
+    assert!(within_npc_reach(ZONE, min, ZONE, min, 255));
+
+    assert!(within_npc_reach(ZONE, from_home(257, 0), ZONE, HOME, 255));
+    assert!(within_npc_reach(
+        ZONE,
+        from_home(-100, -157),
+        ZONE,
+        HOME,
+        255
+    ));
+    assert!(!within_npc_reach(ZONE, from_home(258, 0), ZONE, HOME, 255));
+    assert!(!within_npc_reach(
+        ZONE,
+        from_home(-101, 157),
+        ZONE,
+        HOME,
+        255
+    ));
+
+    let edge_home = TilePos {
+        x: i32::MAX,
+        y: i32::MIN,
+    };
+    let inside = TilePos {
+        x: i32::MAX - 200,
+        y: i32::MIN + 57,
+    };
+    let outside = TilePos {
+        x: i32::MAX - 200,
+        y: i32::MIN + 58,
+    };
+    assert!(within_npc_reach(ZONE, inside, ZONE, edge_home, 255));
+    assert!(!within_npc_reach(ZONE, outside, ZONE, edge_home, 255));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// The rule exists so an open shop never strands its customer: for any home, any
+    /// radius, any tile `t` the NPC can wander to (Manhattan(t, home) <= radius) and
+    /// any `pos` in talk range of `t`, `pos` is in reach. `t` and `pos` are built
+    /// inside their discs by clamping, so no case is discarded.
+    ///
+    /// kills: a bound narrower than radius + TALK_RANGE (`<` for `<=`, the radius
+    /// dropped, a Chebyshev disc for the wander area).
+    #[test]
+    fn within_npc_reach_admits_the_talk_range_of_every_tile_the_npc_can_wander_to(
+        (hx, hy) in (-100_000i32..=100_000, -100_000i32..=100_000),
+        r in any::<u8>(),
+        (tx_raw, ty_raw) in (-255i32..=255, -255i32..=255),
+        (px, py_raw) in (-2i32..=2, -2i32..=2),
+        zone in 0u32..3,
+    ) {
+        let ri = i32::from(r);
+        let tx = tx_raw.clamp(-ri, ri);
+        let ty_room = ri - tx.abs();
+        let ty = ty_raw.clamp(-ty_room, ty_room);
+        let py_room = 2 - px.abs();
+        let py = py_raw.clamp(-py_room, py_room);
+        let home = TilePos { x: hx, y: hy };
+        let t = TilePos { x: hx + tx, y: hy + ty };
+        let pos = TilePos { x: t.x + px, y: t.y + py };
+        prop_assert!(manhattan(t, home) <= i64::from(r));
+        prop_assert!(in_talk_range(pos, t));
+        prop_assert!(
+            within_npc_reach(zone, pos, zone, home, r),
+            "pos {:?} is in talk range of {:?}, which is {} tiles from home {:?} (radius {})",
+            pos, t, manhattan(t, home), home, r
+        );
+    }
+
+    /// The bound is no wider than the wander disc plus the talk range: for small
+    /// radii and every tile near home, `pos` is in reach EXACTLY when some tile of the
+    /// wander disc (enumerated) has `pos` in talk range — both directions at once.
+    ///
+    /// kills: a bound one too wide; the radius counted twice; any margin beyond
+    /// TALK_RANGE.
+    #[test]
+    fn within_npc_reach_is_exactly_the_talk_range_of_some_tile_of_the_wander_disc(
+        (hx, hy) in (-1000i32..=1000, -1000i32..=1000),
+        r in 0u8..=6,
+        (dx, dy) in (-10i32..=10, -10i32..=10),
+        zone in 0u32..3,
+    ) {
+        let home = TilePos { x: hx, y: hy };
+        let pos = TilePos { x: hx + dx, y: hy + dy };
+        let ri = i32::from(r);
+        let mut talkable_from_the_disc = false;
+        for tx in -ri..=ri {
+            for ty in -ri..=ri {
+                let t = TilePos { x: hx + tx, y: hy + ty };
+                if tx.abs() + ty.abs() <= ri && in_talk_range(pos, t) {
+                    talkable_from_the_disc = true;
+                }
+            }
+        }
+        prop_assert_eq!(
+            within_npc_reach(zone, pos, zone, home, r),
+            talkable_from_the_disc,
+            "pos {:?} home {:?} radius {}", pos, home, r
+        );
+    }
+}
+
+/// The reach rule covers the real wander rule: an NPC walked by `npc_decide` itself
+/// (from home, on an open 41 x 41 floor, for 400 consecutive ticks, several NPC ids and
+/// radii 0, 1, 2 and 7) never stands on a tile from which some tile in talk range is out
+/// of `within_npc_reach` of its home. For every radius > 0 the walk visits more than one
+/// tile, so a frozen NPC cannot pass it.
+///
+/// kills: a reach bound narrower than the disc `npc_decide` actually lets an NPC wander
+/// (`<` for `<=`, the radius dropped), and a change to `npc_decide`'s own bound (a wider
+/// or differently shaped wander area) that the reach rule does not follow.
+#[test]
+fn within_npc_reach_covers_every_tile_npc_decide_walks_an_npc_to() {
+    let rows: Vec<String> = vec![".".repeat(41); 41];
+    let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let map = TileMap::from_rows(ZONE, &rows).expect("an all-floor map");
+    let home = TilePos { x: 20, y: 18 };
+    let talk = i32::try_from(TALK_RANGE).expect("TALK_RANGE fits an i32");
+    for radius in [0u8, 1, 2, 7] {
+        for npc_id in [1u64, 7, 42, 1_000_003] {
+            let mut current = home;
+            let mut facing = Direction::South;
+            let mut visited = std::collections::HashSet::new();
+            for tick in 0..400u64 {
+                visited.insert(current);
+                for dx in -talk..=talk {
+                    for dy in -talk..=talk {
+                        let tile = TilePos {
+                            x: current.x + dx,
+                            y: current.y + dy,
+                        };
+                        if in_talk_range(tile, current) {
+                            assert!(
+                                within_npc_reach(ZONE, tile, ZONE, home, radius),
+                                "npc {npc_id} radius {radius} tick {tick}: standing on \
+                                 {current:?}, talk-range tile {tile:?} is out of reach of \
+                                 home {home:?}"
+                            );
+                        }
+                    }
+                }
+                if let Some(d) = npc_decide(current, home, radius, facing, npc_id, tick, &map) {
+                    let next = current.step(d);
+                    if map.is_walkable(next) {
+                        current = next;
+                    }
+                    facing = d;
+                }
+            }
+            if radius > 0 {
+                assert!(
+                    visited.len() > 1,
+                    "npc {npc_id} radius {radius}: the walk never left home"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `npc_offers_shop`: `Shop(id)` offers shop `id` (and "any shop"); `Dialogue` and
+// `Heal(_)` offer no shop at all
+// ---------------------------------------------------------------------------
+
+/// `Shop(id)` offers exactly shop `id` and counts as "any shop", for ids 0, 3 and
+/// `u32::MAX`; it does not offer a neighbouring or distant id.
+///
+/// kills: always-false; `!=` for `==`; `None` treated as "no shop"; a comparison that
+/// ignores the id (always-true on `Shop`).
+#[test]
+fn npc_offers_shop_is_true_for_its_own_shop_id_and_for_any_shop() {
+    for id in [0u32, 3, u32::MAX] {
+        assert!(
+            npc_offers_shop(NpcInteraction::Shop(id), Some(id)),
+            "Shop({id}) offers shop {id}"
+        );
+        assert!(
+            npc_offers_shop(NpcInteraction::Shop(id), None),
+            "Shop({id}) offers some shop"
+        );
+        for other in [id.wrapping_add(1), id.wrapping_sub(1), id ^ 0x8000_0000] {
+            assert!(
+                !npc_offers_shop(NpcInteraction::Shop(id), Some(other)),
+                "Shop({id}) does not offer shop {other}"
+            );
+        }
+    }
+}
+
+/// `Dialogue` offers no shop, `None` included; `Heal(n)` offers no shop either, not
+/// even shop `n` (heal-location ids and shop ids are different id spaces), for ids 0, 3
+/// and `u32::MAX`.
+///
+/// kills: always-true; a `Heal(n)` arm that matches shop `n`; a `Dialogue` or `Heal`
+/// arm that offers on `None`.
+#[test]
+fn npc_offers_shop_is_false_for_dialogue_and_heal_npcs() {
+    for shop in [None, Some(0u32), Some(3), Some(u32::MAX)] {
+        assert!(
+            !npc_offers_shop(NpcInteraction::Dialogue, shop),
+            "Dialogue offers no shop ({shop:?})"
+        );
+    }
+    for n in [0u32, 3, u32::MAX] {
+        for shop in [None, Some(n), Some(n.wrapping_add(1))] {
+            assert!(
+                !npc_offers_shop(NpcInteraction::Heal(n), shop),
+                "Heal({n}) offers no shop ({shop:?})"
+            );
+        }
     }
 }
