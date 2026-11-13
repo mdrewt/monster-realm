@@ -403,13 +403,16 @@ functions: which sets are wanted, pending or applied, when an unwanted one is re
 rejected or never-applied set ends the connection. `connection.ts` executes its
 effects: it re-evaluates the scope after every change to the own `player` or
 `character` row, after each set's applied or error callback and on a 500 ms timer, and
-discards the scope with the connection. The wanted zone is the one the own row is in.
-On a warp the own row's update callback calls `onOwnWarp`, stores the row and
-subscribes the new zone, in that order. The scope is settled when the own-row set and
+discards the scope with the connection. The wanted zones are the one the own row is in
+and the destination of each warp within `PREFETCH_TILES` (4) of that row's tile;
+`main.ts` gives the connection each zone's warps (`zoneWarps`, from the content's zone
+map). A destination is thus held before the warp and drawn on the arrival's first
+frame. On a warp the own row's update callback calls `onOwnWarp`, stores the row and
+subscribes the new zone if it is not held yet, in that order. The scope is settled when the own-row set and
 the own zone's set are both applied; `main.ts` draws no character on a new connection
 until then, so a login or reconnect never shows the player alone in an empty zone. The
 store therefore holds the own character, the characters of the own zone, and those of
-a zone still lingering, which the render filter leaves out. The SDK fires per-row
+a zone behind a nearby warp or still lingering, which the render filter leaves out. The SDK fires per-row
 callbacks.
 `net/batch.ts` coalesces a transaction's callbacks within one microtask so the store
 flushes once per burst, and the predictor reconciles against a consistent snapshot.

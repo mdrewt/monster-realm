@@ -88,7 +88,7 @@ import {
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { OwedInputs } from './prediction/owedInputs';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
-import { TileMap } from './render/map';
+import { type RawWarpDef, TileMap } from './render/map';
 import { motionPreferenceFromWindow } from './render/motionPreference';
 import type { PostStackToggles } from './render/postStack';
 import { RenderResolver } from './render/renderResolver';
@@ -2605,6 +2605,23 @@ function resetPredictionState(): void {
 
 // e-2 (M13.5e): track consecutive zone-switch failures so stale content is surfaced.
 let zoneSyncFailureCount = 0;
+
+// The warps of a zone, from the same content switchZone draws (zone_map), kept per zone id: the
+// world scope asks on every run. The caller names the zone the authoritative own row is in,
+// never rawMap's. A zone the content does not hold has no warps to prefetch through.
+const zoneWarpsById = new Map<number, readonly RawWarpDef[]>();
+function zoneWarps(zoneId: number): readonly RawWarpDef[] {
+  const held = zoneWarpsById.get(zoneId);
+  if (held !== undefined) return held;
+  let warps: readonly RawWarpDef[] = [];
+  try {
+    warps = zone_map(zoneId).warps ?? [];
+  } catch {
+    // No such zone in the content: nothing to prefetch.
+  }
+  zoneWarpsById.set(zoneId, warps);
+  return warps;
+}
 
 function switchZone(newZoneId: number): void {
   if (newZoneId === rawMap.zone_id) return;
@@ -5143,6 +5160,7 @@ async function main(): Promise<void> {
     onOwnWarp: (newZoneId) => {
       switchZone(newZoneId);
     },
+    zoneWarps,
     onScopeSettled: (settled) => {
       worldRevealed = revealAfterScopeEdge(
         worldRevealed,

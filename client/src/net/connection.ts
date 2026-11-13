@@ -93,11 +93,14 @@ import {
   describeScope,
   INITIAL_SCOPE,
   onScopeEvent,
+  PREFETCH_TILES,
   type ScopeEffect,
   type ScopeKey,
   type ScopeState,
   type ScopeSummary,
+  type ScopeWarp,
   syncScope,
+  wantedZones,
 } from './worldScope';
 
 /** How often the world scope is re-evaluated with nothing else happening: it is what ends a
@@ -135,6 +138,10 @@ export interface ConnectionOptions {
    *  connection's scope has just opened, a warp into a zone not yet applied, a lost own row, a
    *  dropped or superseded connection). */
   readonly onScopeSettled?: (settled: boolean) => void;
+  /** The warps of a zone, by the content's zone map. The world scope also holds the destination
+   *  of each warp within `PREFETCH_TILES` of the own character. Absent: the own zone alone. MUST
+   *  be total and cheap: it is read on every scope run, inside row callbacks. */
+  readonly zoneWarps?: (zoneId: number) => readonly ScopeWarp[];
   /** dev-observability: outbound reducer-call sink. `undefined` (the default
    *  production build) makes wrapReducerLogging strict identity — no Proxy is installed. */
   readonly onSend?: SendLogger;
@@ -970,10 +977,15 @@ export function connect(opts: ConnectionOptions): Connection {
       const c = scopeConn;
       if (c === undefined || stale()) return;
       try {
+        const own = store.ownCharacter(identity)?.row;
+        // The own zone, plus the destination of each warp the own row stands near: that zone's
+        // rows are then in the store before the warp, so the arrival draws them on its first
+        // frame. Read from the authoritative row, never the predicted tile or the drawn map.
+        const warps = own === undefined ? [] : (opts.zoneWarps?.(own.zoneId) ?? []);
         const step = syncScope(scope, {
           wantEntity: store.ownEntityId(identity),
-          ownZone: store.ownCharacter(identity)?.row.zoneId,
-          wantZones: new Set(),
+          ownZone: own?.zoneId,
+          wantZones: wantedZones(own, warps, PREFETCH_TILES),
           now: performance.now(),
         });
         scope = step.state;

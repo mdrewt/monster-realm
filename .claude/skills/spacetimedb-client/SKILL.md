@@ -32,9 +32,11 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
 - `character` is never subscribed whole. Each connection holds one set for its own row
   (`WHERE entity_id = <E>`) and one per wanted zone (`WHERE zone_id = <Z>`).
   `net/worldScope.ts` builds both query strings and decides when a set is subscribed
-  and released; `connection.ts` executes that. A zone just left stays subscribed for
-  `LINGER_MS`, so the store can hold a zone that is not drawn; the render filter
-  leaves it out.
+  and released; `connection.ts` executes that. The wanted zones are the own row's zone
+  and the destination of each warp within `PREFETCH_TILES` of it, and a zone no longer
+  wanted stays subscribed for `LINGER_MS`, so the store can hold a zone that is not
+  drawn; the render filter leaves it out. Anything that reads `store` characters for
+  the world on screen filters by zone.
 - **Never subscribe to a private table.** It fails the whole batch, and `onApplied`
   never fires. Subscribe to its view.
 - `onApplied` fires once, for the initial snapshot. Treat it as a readiness gate, not

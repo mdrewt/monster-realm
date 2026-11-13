@@ -15,7 +15,8 @@ import {
 //              MUST call switchZone (not wait for an onUpdate edge trigger).
 //   12.5c-2 — A zone switch touches no character row. The store holds the rows of
 //              the zones the connection is subscribed to (the own row's zone, plus
-//              one it left within the linger); which rows it holds is decided by
+//              the zone behind a warp within four tiles and one it left within the
+//              linger); which rows it holds is decided by
 //              those subscriptions, never by switchZone. Idle characters of the
 //              destination zone are therefore still there after the switch.
 //   12.5c-3 — All fallible parsing (TileMap.fromRaw) happens BEFORE any state

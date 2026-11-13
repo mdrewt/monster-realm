@@ -13,6 +13,7 @@ import { claimCode } from './claimCode';
 import { type ConnectionOptions, connect } from './connection';
 import type { RenewalOutcome } from './credentialDecision';
 import { AuthoritativeStore } from './store';
+import { LINGER_MS } from './worldScope';
 
 type Cb = (...args: unknown[]) => void;
 /** One `subscriptionBuilder().subscribe(...)` call on the connection handed to onConnect. */
@@ -1265,7 +1266,7 @@ const wsLinkErrors = (w: WsOpts): unknown[][] => wsErrors(w, 'link');
 
 /** Connect, apply the base set, then deliver the own player row and the own character row, each
  *  set applied as it is issued: the login sequence, ending settled in `zone`. */
-async function wsSettled(zone = 0, w: WsOpts = wsOpts()) {
+async function wsSettled(zone = 0, w: WsOpts = wsOpts(), tileX = 2, tileY = 2) {
   const handle = connect(w.opts);
   await settle();
   const b = H.builds[0];
@@ -1273,9 +1274,21 @@ async function wsSettled(zone = 0, w: WsOpts = wsOpts()) {
   b.onApplied?.();
   wsFire('player', 'insert', [wsPlayer()]);
   wsApply(wsSubs(b)[0]);
-  wsFire('character', 'insert', [wsChar(WS_E, zone)]);
+  wsFire('character', 'insert', [wsChar(WS_E, zone, tileX, tileY)]);
   wsApply(wsSubs(b)[1]);
   return { handle, w, b };
+}
+/** Zones 0 and 1, each with one warp on (1,5) into the other, as the content has them. */
+const wsZoneWarps = (zoneId: number) =>
+  zoneId === 0 || zoneId === 1 ? [{ from: { x: 1, y: 5 }, to_zone: 1 - zoneId }] : [];
+/** Options as `wsOpts`, with the two-zone warp table. */
+function wsPrefetchOpts(): WsOpts {
+  const w = wsOpts();
+  return { ...w, opts: { ...w.opts, zoneWarps: wsZoneWarps } };
+}
+/** Move the own row one step inside its zone. */
+function wsStep(zone: number, from: [number, number], to: [number, number]): void {
+  wsFire('character', 'update', [wsChar(WS_E, zone, ...from), wsChar(WS_E, zone, ...to)]);
 }
 
 describe('connect(): the world scope', { sequential: true }, () => {
@@ -1436,6 +1449,150 @@ describe('connect(): the world scope', { sequential: true }, () => {
     expect(wsUnsubscribes(b), 'zone 0 is wanted again; zone 1 has lingered 4 s').toBe(0);
     await vi.advanceTimersByTimeAsync(1_500);
     expect(wsSubs(b).map((sub) => sub.unsubscribes)).toEqual([0, 0, 1]);
+  });
+
+  it('within four tiles of a warp the destination zone is subscribed, in the step that crossed the line; the warp is then one own-row update that subscribes nothing and never unsettles; both zones are held while the row stands by the return warp [WS-PREFETCH]', async () => {
+    // WRONG IMPL KILLED: no prefetch (the warp issues the destination's subscribe and the scope
+    // is unsettled for a round trip); a distance other than four; the prefetch left to the
+    // 500 ms timer; the warps of zone 0 read for a row that stands in zone 1 (zone 0 would be
+    // released while the player stands on the return warp); a prefetched set gating `settled`.
+    const w = wsPrefetchOpts();
+    // (6,5) is five tiles from the warp on (1,5).
+    const { b, handle } = await wsSettled(0, w, 6, 5);
+    expect(wsQueries(b), 'five tiles away: the own zone alone').toEqual([
+      WS_OWN_QUERY,
+      wsZoneQuery(0),
+    ]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(b.subs, 'standing five tiles away issues nothing').toHaveLength(3);
+    w.onScopeSettled.mockClear();
+
+    wsStep(0, [6, 5], [5, 5]);
+    expect(wsQueries(b), 'four tiles away: issued by the time the update callback returns').toEqual(
+      [WS_OWN_QUERY, wsZoneQuery(0), wsZoneQuery(1)],
+    );
+    expect(
+      handle.worldScope(),
+      'a prefetched set that is pending leaves the scope settled',
+    ).toEqual({
+      own: 'active',
+      zones: [
+        { zoneId: 0, state: 'active' },
+        { zoneId: 1, state: 'pending' },
+      ],
+      settled: true,
+    });
+    wsApply(wsSubs(b)[2]);
+    for (const x of [4, 3, 2]) wsStep(0, [x + 1, 5], [x, 5]);
+    expect(b.subs, 'walking on toward the warp issues nothing more').toHaveLength(4);
+
+    // The warp: the own row leaves zone 0's set and enters zone 1's, both held, so it is an update.
+    wsFire('character', 'update', [wsChar(WS_E, 0, 2, 5), wsChar(WS_E, 1, 1, 5)]);
+    expect(w.onOwnWarp.mock.calls).toEqual([[1]]);
+    expect(b.subs, 'the destination is already held: the warp subscribes nothing').toHaveLength(4);
+    expect(w.onScopeSettled.mock.calls, 'and the scope never left settled').toEqual([]);
+    expect(handle.worldScope()).toEqual({
+      own: 'active',
+      zones: [
+        { zoneId: 0, state: 'active' },
+        { zoneId: 1, state: 'active' },
+      ],
+      settled: true,
+    });
+
+    // Standing on the arrival tile is standing on zone 1's warp back: zone 0 stays wanted.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(wsUnsubscribes(b), 'zone 0 is held by the return warp, however long').toBe(0);
+
+    // Five tiles from the return warp zone 0 is no longer wanted; it goes after its linger.
+    for (const x of [2, 3, 4, 5, 6]) wsStep(1, [x - 1, 5], [x, 5]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(wsUnsubscribes(b)).toBe(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(wsSubs(b).map((sub) => sub.unsubscribes)).toEqual([0, 1, 0]);
+    expect(w.onScopeSettled.mock.calls).toEqual([]);
+    expect(b.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('pacing across the four-tile line costs the host at most one subscribe and one unsubscribe of the destination zone per linger [WS-PREFETCH-PACING]', async () => {
+    // WRONG IMPL KILLED: unsubscribe on leaving the range (a pair per crossing, 2.5 pairs a
+    // second at walking speed); a linger restarted or skipped by a re-entry.
+    const w = wsPrefetchOpts();
+    const { b } = await wsSettled(0, w, 6, 5);
+    const subscribedAt: number[] = [];
+    const unsubscribedAt: number[] = [];
+    let seenSubs = b.subs.length;
+    let seenUnsubs = 0;
+    /** Apply every set issued since the last look and stamp what the host was asked for. */
+    const look = (): void => {
+      for (const sub of b.subs.slice(seenSubs)) {
+        expect(sub.query, 'only the destination zone is ever issued').toBe(wsZoneQuery(1));
+        subscribedAt.push(performance.now());
+        wsApply(sub);
+      }
+      seenSubs = b.subs.length;
+      for (let n = wsUnsubscribes(b); seenUnsubs < n; seenUnsubs += 1) {
+        unsubscribedAt.push(performance.now());
+      }
+    };
+    /** One crossing in and one back out, then `outMs` standing outside, looked at every 100 ms. */
+    const cross = async (outMs: number): Promise<void> => {
+      wsStep(0, [6, 5], [5, 5]);
+      look();
+      await vi.advanceTimersByTimeAsync(200);
+      wsStep(0, [5, 5], [6, 5]);
+      look();
+      for (let waited = 0; waited < outMs; waited += 100) {
+        await vi.advanceTimersByTimeAsync(100);
+        look();
+      }
+    };
+    // Fast pacing (a crossing every 400 ms) for 12 s, then slow pacing whose stay outside is
+    // just over a linger, then fast again.
+    for (let i = 0; i < 30; i += 1) await cross(200);
+    expect(subscribedAt, 'fast pacing: one subscribe').toHaveLength(1);
+    expect(unsubscribedAt, 'fast pacing: the zone never lingers out').toHaveLength(0);
+    for (let i = 0; i < 4; i += 1) await cross(5_600);
+    for (let i = 0; i < 30; i += 1) await cross(200);
+
+    expect(subscribedAt.length, 'ANTI-VACUITY: the slow pacing re-subscribed').toBeGreaterThan(3);
+    expect(unsubscribedAt.length, 'ANTI-VACUITY: and unsubscribed').toBeGreaterThan(3);
+    const gaps = (at: number[]): number[] => at.slice(1).map((t, i) => t - (at[i] as number));
+    expect(Math.min(...gaps(subscribedAt)), 'subscribes are a linger apart').toBeGreaterThanOrEqual(
+      LINGER_MS,
+    );
+    expect(
+      Math.min(...gaps(unsubscribedAt)),
+      'unsubscribes are a linger apart',
+    ).toBeGreaterThanOrEqual(LINGER_MS);
+    expect(
+      wsSubs(b).every((sub) => sub.unsubscribes <= 1),
+      'no set is ended twice',
+    ).toBe(true);
+    expect(wsLinkErrors(w)).toEqual([]);
+  });
+
+  it('a prefetched zone that is rejected is reported, tried again no sooner than a second later, and never ends the connection; one that never applies does not either [WS-PREFETCH-FAILS]', async () => {
+    // WRONG IMPL KILLED: a prefetch failure on the own zone's ladder (a zone the player is not
+    // in respawns them at the zone 0 spawn); a rejected prefetch re-issued on every scope run.
+    const w = wsPrefetchOpts();
+    const { b, handle } = await wsSettled(0, w, 5, 5);
+    expect(wsQueries(b)).toEqual([WS_OWN_QUERY, wsZoneQuery(0), wsZoneQuery(1)]);
+    for (let round = 0; round < 6; round += 1) {
+      wsReject(b.subs[b.subs.length - 1]);
+      expect(wsErrors(w, 'subscribe')).toHaveLength(round + 1);
+      const held = b.subs.length;
+      await vi.advanceTimersByTimeAsync(900);
+      expect(b.subs, 'not re-issued inside the second').toHaveLength(held);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(b.subs, 'still wanted a second later: one more try').toHaveLength(held + 1);
+    }
+    // The last try is never answered.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(b.subs, 'the base set, the three first issued, six retries').toHaveLength(4 + 6);
+    expect(handle.worldScope().settled).toBe(true);
+    expect(wsLinkErrors(w)).toEqual([]);
+    expect(b.disconnect).not.toHaveBeenCalled();
   });
 
   it('a rebuilt connection starts with no world-scope set and nothing is unsubscribed on the way out; the dropped build issues nothing more [WS-REBUILD]', async () => {
