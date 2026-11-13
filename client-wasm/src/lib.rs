@@ -622,7 +622,7 @@ use game_core::tactics::{
     EventPayload, GeometryError, HaltReason, Hooks, MoveAction, MoveClass, Path, PathError,
     PipelineTrace, QueuedAction, RecruitAction, RecruitError, RecruitOdds, RollPair, Side,
     SkillGeometry, SkillTactics, SpeciesTactics, Stance, TacticalState, TacticalUnit,
-    TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState, Validated, MAX_PACK,
+    TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState, Validated,
 };
 use game_core::{
     accuracy_check, load_skills, load_species, load_type_chart, BattleOutcome, Effectiveness,
@@ -1683,14 +1683,14 @@ pub fn tactics_overlays(board: JsValue, q: JsValue) -> Result<JsValue, JsValue> 
 
 // --- bt-12 (BT12.1 / BT12.2): the tuning the client shows, the next round's initiative ------------
 
-/// The tuning the tactical client shows and sizes by (R-bt-12-TACTICSEXPORTS): the Surge start and
-/// the wild round cap (the turn bar's badges) and the pack cap (the deploy panel's slot count is
-/// `min(max_pack, spawn_a.len())`, the server's own cap). Read from the loaded content, never copied.
+/// The tuning the tactical client shows: the Surge start and the wild round cap (the turn bar's
+/// badges) and the PvP auto-pass count that forfeits a match (the strike pips). Read from the loaded
+/// content, never copied.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TacticsTuningOut {
     pub surge_start_round: u16,
     pub wild_round_cap: u16,
-    pub max_pack: u8,
+    pub autopass_forfeit: u8,
 }
 
 /// `TacticsTuningOut` of one tuning (pure; `tuning_out` applies it to the loaded content).
@@ -1699,7 +1699,7 @@ pub fn tuning_out_of(tuning: &TacticsTuning) -> TacticsTuningOut {
     TacticsTuningOut {
         surge_start_round: tuning.surge_start_round,
         wild_round_cap: tuning.wild_round_cap,
-        max_pack: MAX_PACK,
+        autopass_forfeit: 0,
     }
 }
 
@@ -1709,6 +1709,16 @@ pub fn tuning_out_of(tuning: &TacticsTuning) -> TacticsTuningOut {
 /// Content failed to load.
 pub fn tuning_out() -> Result<TacticsTuningOut, String> {
     Ok(tuning_out_of(&tactics_content()?.tuning))
+}
+
+/// How many units a side deploys on the content map `map_id` in a wild battle
+/// (`tactics::deploy_slots`, the count the server enforces).
+///
+/// # Errors
+/// Unknown map id.
+pub fn deploy_slots_of(map_id: u32) -> Result<u8, String> {
+    let _ = map_id;
+    todo!("ts-6b-4 API freeze")
 }
 
 /// The NEXT round's initiative over `board`'s conscious units — `initiative::order` under the side
@@ -1732,6 +1742,15 @@ pub fn next_initiative_of(board: &BoardIn, this_round_priority: Side) -> Result<
 #[wasm_bindgen]
 pub fn tactics_tuning() -> Result<JsValue, JsValue> {
     to_js(&tuning_out().map_err(js_err)?)
+}
+
+/// `deploy_slots_of` for the content map `map_id`.
+///
+/// # Errors
+/// Unknown map id.
+#[wasm_bindgen]
+pub fn tactics_deploy_slots(map_id: u32) -> Result<u8, JsValue> {
+    deploy_slots_of(map_id).map_err(js_err)
 }
 
 /// The next round's initiative for `board` given the side holding tie priority THIS round.

@@ -18,6 +18,14 @@ use super::resolve::splitmix64;
 /// three `spawn_b` slots).
 pub const MAX_PACK: u8 = 3;
 
+/// How many units a side deploys on `map` in a wild battle: [`MAX_PACK`], bounded by the map's
+/// side-A spawn cells.
+#[must_use]
+pub fn deploy_slots(map: &BattleMapDef) -> u8 {
+    let _ = map;
+    todo!("ts-6b-4 API freeze")
+}
+
 /// The per-mille scale the weights are expressed in (the carried `roll % 1000 < threshold` idiom).
 const PER_MILLE: u32 = 1000;
 

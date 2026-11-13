@@ -23,7 +23,7 @@ use super::map::{validate_battle_map, BattleMapDef, MapError};
 use super::movement::stride_for_base_speed;
 use super::movement::MoveClass;
 use super::queue::min_action_cost;
-use super::resolve::SkillTactics;
+use super::resolve::{SkillTactics, UnitKit};
 use super::tuning::{TacticsTuning, TuningError};
 use crate::combat::damage::calc_damage;
 use crate::combat::type_chart::TypeChart;
@@ -426,6 +426,15 @@ pub fn build_kits(
             })
         })
         .collect()
+}
+
+/// The battler of one species at `level` with the given derived stats: the species row's id and
+/// affinity, the kit row's base speed, movement class and `[light, heavy]` skills, and the caller's
+/// level and stats. `species` and `kit` are the same species' rows.
+#[must_use]
+pub fn unit_kit(species: &Species, kit: &SpeciesTactics, level: u8, stats: StatBlock) -> UnitKit {
+    let _ = (species, kit, level, stats);
+    todo!("ts-6b-4 API freeze")
 }
 
 /// A sidecar keyed by id covers the loaded ids exactly once: no duplicate row, then no row for an
