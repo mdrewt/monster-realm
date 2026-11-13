@@ -153,9 +153,8 @@ test.describe
     };
 
     const openControls = async (label: string): Promise<void> => {
-      // Start, Down to Controls, A: the Controls frame above the menu (remap.spec).
-      // uif-15c (UIF15C.4): Controls is a root entry of the menu, so there is no group and no
-      // Down-into-sub-list step.
+      // Start, Down to Controls, A: the Controls frame above the menu (remap.spec). Controls is a
+      // root entry of the menu (UIF15C.4), so there is no group and no Down-into-sub-list step.
       await pressButton(page, 'Start');
       await expect
         .poll(() => stackNames(page), { message: `${label}: Start opens the menu` })
