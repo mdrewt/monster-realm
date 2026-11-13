@@ -761,15 +761,12 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // how many chunks it deleted; the count is published
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
-    // The guest's finished battles are not re-keyed, and nothing else
-    // reliably removes what names the guest in them: every sweep and the 24 h
-    // GC keep `battle_summary`, a wild or practice anchor is swept only on its
-    // own player's next battle (a retired identity has none), and a PvP
-    // anchor waits on the opponent's next battle in the same role. So the
-    // claim erases them as the deletion cascade erases its subject's: the
-    // per-battle tactical rows go, and the guest's side of each `battle` and
-    // `battle_summary` row becomes the tombstone identity, the other side
-    // untouched. Both calls sit AFTER `rekey_all` (the erase deletes the
+    // The guest's finished battles are not re-keyed (why: docs/DECISIONS.md,
+    // "Accounts, guest identity and the claim flow"). The claim erases them as
+    // the deletion cascade erases its subject's: the per-battle tactical rows
+    // go, and the guest's side of each `battle` and `battle_summary` row
+    // becomes the tombstone identity, the other side untouched. The order is
+    // load-bearing: both calls AFTER `rekey_all` (the erase deletes the
     // formation under the identity it is handed, and the guest's has moved by
     // now), the erase BEFORE the tombstone swap (it finds battles through the
     // anchors that still name the guest). Guard 10 leaves no `Ongoing` row for

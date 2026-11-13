@@ -1596,11 +1596,11 @@ pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity
 /// included: the anchor is terminal for both sides by the end of the caller's
 /// transaction (the cascade forces it, the claim refuses without it) and the
 /// transcript is GC-bound. (3) Owner-keyed defence-in-depth deletes for rows
-/// naming the identity directly
-/// (`battle_queue.owner`, `battle_deploy.owner`, `battle_clock.player`,
-/// `player_formation`). (4) Every `battle_summary` row naming the owner on
-/// either side is UPDATED once with `crate::TOMBSTONE_IDENTITY` on the matching
-/// column(s) — both at once for a practice row — and survives (telemetry).
+/// naming the identity directly (`battle_queue.owner`, `battle_deploy.owner`,
+/// `battle_clock.player`, `player_formation`). (4) Every `battle_summary` row
+/// naming the owner on either side is UPDATED once with
+/// `crate::TOMBSTONE_IDENTITY` on the matching column(s) — both at once for a
+/// practice row — and survives (telemetry).
 pub(crate) fn erase_tactical_rows(ctx: &ReducerContext, owner: Identity) {
     // (1) The battle-id set: every path that still names the owner.
     let mut ids: Vec<u64> = ctx

@@ -75,8 +75,7 @@ pub(crate) fn require_owner(
 /// ONE message for every gated shape on purpose: a
 /// per-state message (mid-grace vs terminal) would require this module to
 /// re-derive the state split that `accounts` owns. It names no action, because
-/// the gate fronts every kind of reducer (movement, dialogue, the shop, care,
-/// party edits, trades, battles), and the player reads it verbatim.
+/// the gate fronts every kind of player action and the player reads it verbatim.
 pub(crate) const REJECT_DELETION_GATED: &str =
     "account deletion requested; this action is unavailable until the deletion is cancelled";
 
