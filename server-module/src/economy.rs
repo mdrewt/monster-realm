@@ -5,8 +5,9 @@
 //! here so the single-surface discipline (no direct balance add-assign) is enforced
 //! in one place.
 //!
-//! server-priced, atomic, reject-not-clamp, with `require_owner` before every
-//! spend/consume call, and only for a caller standing within reach of a shop NPC.
+//! `buy` and `sell` are server-priced, atomic and reject-not-clamp, call
+//! `require_owner` before every spend or consume, and serve only a caller standing
+//! within reach of a shop NPC.
 
 use crate::guards::{
     character_of, escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, log_reject,
@@ -16,8 +17,8 @@ use crate::inventory::{consume_one, grant_item};
 use crate::marshal::char_state;
 use crate::schema::{inventory, item_row, npc, player, player_wallet, shop_item_row, PlayerWallet};
 use game_core::currency::{apply_grant, apply_spend};
-use game_core::interact::within_npc_reach;
-use game_core::{check_currency_headroom, check_item_headroom, NpcInteraction, TilePos};
+use game_core::interact::{npc_offers_shop, within_npc_reach};
+use game_core::{check_currency_headroom, check_item_headroom, TilePos};
 use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Grant `amount` of currency to `owner`. 0-amount is a no-op (never inserts
@@ -84,9 +85,9 @@ pub(crate) fn spend_currency(
 const ERR_SHOP_OUT_OF_REACH: &str = "the shop is not close enough";
 
 /// Refuse the caller unless their character is within reach of an NPC that offers a shop:
-/// the shop `shop_id` when it is `Some`, any shop when it is `None`. Reach is measured from
-/// each NPC's home tile (`game_core::interact::within_npc_reach`); only the NPCs of the
-/// caller's zone are read.
+/// the shop `shop_id` when it is `Some`, any shop when it is `None`
+/// (`game_core::interact::npc_offers_shop`). Reach is measured from each NPC's home tile
+/// (`game_core::interact::within_npc_reach`); only the NPCs of the caller's zone are read.
 fn require_shop_in_reach(
     ctx: &ReducerContext,
     reducer: &str,
@@ -96,15 +97,12 @@ fn require_shop_in_reach(
     let in_reach = character_of(ctx, me).is_some_and(|ch| {
         let pos = char_state(&ch).pos;
         ctx.db.npc().zone_id().filter(ch.zone_id).any(|npc| {
-            let offers = match npc.interaction {
-                NpcInteraction::Shop(id) => shop_id.is_none_or(|wanted| wanted == id),
-                NpcInteraction::Dialogue | NpcInteraction::Heal(_) => false,
-            };
             let home = TilePos {
                 x: npc.home_x,
                 y: npc.home_y,
             };
-            offers && within_npc_reach(ch.zone_id, pos, npc.zone_id, home, npc.wander_radius)
+            npc_offers_shop(npc.interaction, shop_id)
+                && within_npc_reach(ch.zone_id, pos, npc.zone_id, home, npc.wander_radius)
         })
     });
     if !in_reach {

@@ -1,8 +1,8 @@
 //! World interaction rules: which entities the interact button acts on
-//! ([`interact_candidates`]), how far apart two characters may be for the
-//! server to accept an interaction between them ([`within_interact_range`]), and
-//! how far a character may stand from an NPC to use what it offers
-//! ([`within_npc_reach`]).
+//! ([`interact_candidates`]), how far a character may be from another character
+//! or a heal tile for the server to accept an interaction with it
+//! ([`within_interact_range`]), which NPCs offer a shop ([`npc_offers_shop`]) and
+//! how far a character may stand from one to use it ([`within_npc_reach`]).
 //!
 //! The target rule is "the tile in front, then your own tile": the first non-empty
 //! tier wins, and nothing else is a candidate (no nearest-within-range, no facing
@@ -11,7 +11,7 @@
 
 use crate::npc::rules::{in_talk_range, manhattan_distance};
 use crate::npc::TALK_RANGE;
-use crate::types::{Direction, TilePos};
+use crate::types::{Direction, NpcInteraction, TilePos};
 
 /// What an interactable is. Declaration order IS the within-tile priority
 /// (NPC before heal location before player), via the derived `Ord`.
@@ -66,9 +66,10 @@ fn on_tile(tile: TilePos, zone: u32, entities: &[InteractEntity]) -> Vec<usize> 
     hits
 }
 
-/// True when two characters are close enough for one to start an interaction
-/// with the other (open a trade, send a challenge): the same zone and within
-/// `TALK_RANGE` tiles, Manhattan, inclusive.
+/// True when a character at `pos_a` is close enough to start an interaction with
+/// what stands at `pos_b` — another character (open a trade, send a challenge) or
+/// a heal location's tile (heal the party): the same zone and within `TALK_RANGE`
+/// tiles, Manhattan, inclusive.
 ///
 /// The range is the NPC talk range on purpose. It is a latency margin for the
 /// server, not a reach: the client only ever targets the tile in front or its own
@@ -78,10 +79,20 @@ pub fn within_interact_range(zone_a: u32, pos_a: TilePos, zone_b: u32, pos_b: Ti
     zone_a == zone_b && in_talk_range(pos_a, pos_b)
 }
 
-/// True when a character at `pos` in `zone` is close enough to an NPC to use what
-/// it offers after the conversation that opened it has ended: the same zone and at
-/// most `TALK_RANGE + wander_radius` tiles from the NPC's home tile, Manhattan,
-/// inclusive.
+/// True when an NPC with this interaction role offers a shop: the shop `shop` when
+/// it is `Some`, any shop when it is `None`. A heal-provider's location id is not a
+/// shop id.
+#[must_use]
+pub fn npc_offers_shop(interaction: NpcInteraction, shop: Option<u32>) -> bool {
+    match interaction {
+        NpcInteraction::Shop(id) => shop.is_none_or(|wanted| wanted == id),
+        NpcInteraction::Dialogue | NpcInteraction::Heal(_) => false,
+    }
+}
+
+/// True when a character at `pos` in `zone` is close enough to an NPC to use its
+/// shop: the same zone and at most `TALK_RANGE + wander_radius` tiles from the
+/// NPC's home tile, Manhattan, inclusive.
 ///
 /// Measured from home, never from where the NPC stands: an NPC inside its wander
 /// disc is at most `wander_radius` from home, so every tile in talk range of it is
