@@ -360,6 +360,7 @@ export type MessageId =
   // questLog.* : the quest log overlay (questLogView.ts).
   | 'questLog.entry'
   // Heal.* : the heal overlay (healView.ts).
+  | 'heal.title'
   | 'heal.location'
   // ctl-8a: the heal frame's question and the reason it is disabled with no bound healer.
   | 'heal.prompt.question'

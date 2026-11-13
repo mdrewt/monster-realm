@@ -1152,6 +1152,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // "quest_001", not player text) and {step} the current step number counted from 0. One line.
   // questLogView.ts:45
   'questLog.entry': (p) => `${p.name} (étape ${p.step})`,
+  // @desc: The heal frame's title, the first line of its title bar. One or two words.
+  // healView.ts (render, the title bar)
+  'heal.title': 'Soins',
   // @desc: One row of the heal overlay offering a heal at this location; {cost} is the price
   // text the heal model produces (e.g. "Gratuit" or "25 or"). One short line.
   // healView.ts:47

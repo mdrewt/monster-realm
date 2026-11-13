@@ -622,11 +622,20 @@ describe('QuestLogView ctl-8f: the Journal cursor and detail (CTL8F.3)', () => {
 
     // Survives renders, including one that adds a quest.
     view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    // INTENTIONAL CHANGE (ts-6b-8, R-ci-fix-20261002T0901Z-VIEWREBUILD): the rows are keyed on
+    // [locale, vm.active] and an equal-vm render keeps them. Was: `view.render(questVm(3))` (an EQUAL
+    // vm) followed by `expect(ctl8fRows()[0], 'precondition: the rows were rebuilt').not.toBe(before[0])`.
+    // Kept: the cursor and detail survive a render that really rebuilds the rows; that precondition
+    // now runs on a vm that DIFFERS (questVm(4)), so the survival is still asserted across a rebuild.
     const before = ctl8fRows();
     view.render(questVm(3));
+    expect(ctl8fCursor(), 'the cursor survives an equal-vm render').toEqual(['quest_1']);
+    expect(ctl8fDetailShown(), 'the detail survives an equal-vm render').toBe(true);
+    view.render(questVm(4));
+    expect(ctl8fRows(), 'a new quest adds a row').toHaveLength(4);
     expect(ctl8fRows()[0], 'precondition: the rows were rebuilt').not.toBe(before[0]);
-    expect(ctl8fCursor(), 'the cursor survives a render').toEqual(['quest_1']);
-    expect(ctl8fDetailShown(), 'the detail survives a render').toBe(true);
+    expect(ctl8fCursor(), 'the cursor survives a rebuilding render').toEqual(['quest_1']);
+    expect(ctl8fDetailShown(), 'the detail survives a rebuilding render').toBe(true);
     expect(ctl8fDetailEl()?.textContent ?? '').toContain('quest_1');
     expect(document.getElementById(ctl8fListEl().getAttribute('aria-activedescendant') ?? '')).toBe(
       ctl8fRows()[1],

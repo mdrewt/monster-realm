@@ -28,9 +28,15 @@
 // screen (ui/screens/healScreen.ts) paints the cursor and the cost; the frame opens from a keydown
 // with no store batch, so the hidden→visible edge draws the opening state (Yes, the first row's
 // cost) itself, and the kept paint is re-applied after every batch `render(vm)`.
+//
+// THE TITLE AND THE KEPT ROWS. The frame opens with a title bar (`.mr-frame-titlebar`, the first
+// child of `#heal-overlay`) holding `#heal-title`, built here with no text; its `heal.title` text is
+// resolved on every `render(vm)`, so a locale switch applies. A batch `render(vm)` whose locations
+// and locale are what `#heal-list` already shows keeps its rows: a store batch arrives several times
+// a second, and a rebuilt row drops a pointer press that spans it.
 
 import { formatHealCostLine, type HealViewModel } from './healModel';
-import { t, tf } from './i18n/resolver';
+import { currentLocale, t, tf } from './i18n/resolver';
 import { list } from './nav';
 import { renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -59,9 +65,19 @@ function part(after: Element, id: string, tag: 'p' | 'div'): HTMLElement {
   return el;
 }
 
+/** The rows' render key: the locations and the locale their text resolves in. JSON, with bigints
+ *  as decimal strings. */
+const rowsKey = (vm: HealViewModel): string =>
+  JSON.stringify([currentLocale(), vm.locations], (_, v: unknown) =>
+    typeof v === 'bigint' ? `${v}` : v,
+  );
+
 export class HealView {
   private overlay: HTMLElement;
   private list: HTMLElement;
+  readonly #title: HTMLElement;
+  /** What `#heal-list` shows (`rowsKey`); null until the first render. */
+  #shownRows: string | null = null;
   readonly #question: HTMLElement;
   readonly #reason: HTMLElement;
   readonly #options: HTMLElement;
@@ -72,6 +88,19 @@ export class HealView {
     this.overlay = document.getElementById('heal-overlay')!;
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('heal-list')!;
+    // The title bar, first in the frame (uif-10 frame anatomy). Located before it is created.
+    const title = document.getElementById('heal-title');
+    if (title !== null) {
+      this.#title = title;
+    } else {
+      this.#title = document.createElement('h2');
+      this.#title.id = 'heal-title';
+      this.#title.className = 'mr-frame-title';
+      const bar = document.createElement('div');
+      bar.className = 'mr-frame-titlebar';
+      bar.append(this.#title);
+      this.overlay.prepend(bar);
+    }
     // Token spacing (uif-10, UIF10.3): no UA list indent, so the header line starts at the frame's
     // content edge like every other screen's first row.
     this.list.style.margin = '0';
@@ -96,14 +125,20 @@ export class HealView {
       const first = vm.locations[0];
       this.#paint = { active: 'yes', cost: first === undefined ? null : formatHealCostLine(first) };
     }
-    this.list.replaceChildren();
-    vm.locations.forEach((loc) => {
-      const li = document.createElement('li');
-      const cost = formatHealCostLine(loc);
-      li.textContent = tf('heal.location', { cost });
-      li.dataset.locationId = String(loc.locationId);
-      this.list.appendChild(li);
-    });
+    this.#title.textContent = t('heal.title');
+    const key = rowsKey(vm);
+    if (key !== this.#shownRows) {
+      this.#shownRows = null;
+      this.list.replaceChildren();
+      vm.locations.forEach((loc) => {
+        const li = document.createElement('li');
+        const cost = formatHealCostLine(loc);
+        li.textContent = tf('heal.location', { cost });
+        li.dataset.locationId = String(loc.locationId);
+        this.list.appendChild(li);
+      });
+      this.#shownRows = key;
+    }
     this.#apply(this.#paint);
     // The null->non-null EDGE, and only the edge -- paint first, then claim the
     // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
