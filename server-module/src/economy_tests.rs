@@ -219,16 +219,15 @@ fn rb46_seed_deleting_stranger(
 /// every one of the five states (see `rb46_seed_deleting_stranger`), so the
 /// admitted states additionally prove the gate keys on `ctx.sender()`.
 ///
-/// WHY THE ADMITTED STATES ERR, and why that is the honest claim. `Fixture::table`
-/// keys rows by `Identity` bytes, so the `u32`-keyed shop stock index can never be
-/// seeded; an unregistered index yields no rows in this host,
-/// so the stock lookup finds nothing and the reducer stops there — one guard past
-/// the gate, and well before any wallet write. Every write syscall ABORTS the
-/// process (uncatchable, so `#[should_panic]` is not available here). The RED this
-/// test proves is therefore: a deletion-gated caller is ADMITTED past the joined
-/// check, past the ownership guard and into content lookup — not that currency
+/// WHY THE ADMITTED STATES ERR, and why that is the honest claim. The caller is
+/// joined but has no `character` row (and no NPC offers any shop), so it is not
+/// beside a shop: the reducer stops at the shop-reach guard — the first guard past
+/// the gate, and well before the stock lookup and any wallet write. Every write
+/// syscall ABORTS the process (uncatchable, so `#[should_panic]` is not available
+/// here). The claim this test proves is therefore: a deletion-gated caller is
+/// refused by the gate, and every other caller is ADMITTED past the joined check,
+/// the ownership guard and the gate into the shop-reach guard — not that currency
 /// changed hands.
-/// Ordering relative to the spend is owned by `rb46_buy_carries_the_deletion_gate`.
 ///
 /// The ordinary error is pinned EXACTLY rather than as any-error: without that, a
 /// regression in the joined check (which would return a not-joined error instead)
@@ -268,7 +267,7 @@ fn rb46_buy_is_refused_only_while_the_caller_is_deletion_gated() {
 
     let call = || crate::economy::buy(&ctx, 1, 1, 1);
 
-    let ordinary: Result<(), String> = Err("shop 1 does not stock item 1".to_string());
+    let ordinary: Result<(), String> = Err("the shop is not close enough".to_string());
     let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
 
     let active = crate::accounts::new_account_row(me, String::new(), 0);
@@ -285,10 +284,10 @@ fn rb46_buy_is_refused_only_while_the_caller_is_deletion_gated() {
         "rb-46 R-m22-s5-X12 FAIL (admitted state, no account row): `buy` returned {got:?} \
          for a joined caller with NO account row, while a STRANGER's row is mid-grace. A \
          caller who never authenticated is not inside the deletion gate and must be admitted \
-         into the ordinary guard chain; the expected error is the stock lookup's, and pinning \
-         it EXACTLY is what stops a regression in the joined check from masquerading as a \
-         pass. A deletion reject here means the gate answers from the TABLE rather than from \
-         the caller's own row. Indexes the generated code asked the host for: {:?}",
+         into the ordinary guard chain; the expected error is the shop-reach guard's, and \
+         pinning it EXACTLY is what stops a regression in the joined check from masquerading \
+         as a pass. A deletion reject here means the gate answers from the TABLE rather than \
+         from the caller's own row. Indexes the generated code asked the host for: {:?}",
         fx.requested_indexes()
     );
 
@@ -373,10 +372,10 @@ fn rb46_buy_is_refused_only_while_the_caller_is_deletion_gated() {
 /// the CALLER's row.
 ///
 /// The same five-state progression the `buy` test above runs — mid-grace stranger
-/// included — applied to `sell`, whose ordinary next-guard error is the
-/// item-content lookup's: `item_row` is `u32`-keyed and the fixture keys rows by
-/// `Identity`, so the lookup finds nothing and the reducer stops one guard past
-/// the gate, before any consume. A separate `#[test]` from `buy` on purpose — the
+/// included — applied to `sell`, whose ordinary next-guard error is the same
+/// shop-reach refusal: the caller has no `character` row, so the reducer stops one
+/// guard past the gate, before the item lookup and any consume. A separate
+/// `#[test]` from `buy` on purpose — the
 /// two reducers carry separate call sites, so one dropped gate must fail with a
 /// message naming which.
 ///
@@ -397,7 +396,7 @@ fn rb46_sell_is_refused_only_while_the_caller_is_deletion_gated() {
 
     let call = || crate::economy::sell(&ctx, 1, 1);
 
-    let ordinary: Result<(), String> = Err("unknown item 1".to_string());
+    let ordinary: Result<(), String> = Err("the shop is not close enough".to_string());
     let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
 
     let active = crate::accounts::new_account_row(me, String::new(), 0);
@@ -414,7 +413,7 @@ fn rb46_sell_is_refused_only_while_the_caller_is_deletion_gated() {
         "rb-46 R-m22-s5-X12 FAIL (admitted state, no account row): `sell` returned {got:?} \
          for a joined caller with NO account row, while a STRANGER's row is mid-grace. A \
          caller who never authenticated is not inside the deletion gate and must be admitted \
-         into the ordinary guard chain; the expected error is the item-content lookup's, and \
+         into the ordinary guard chain; the expected error is the shop-reach guard's, and \
          pinning it EXACTLY is what stops a regression in the joined check from masquerading \
          as a pass. A deletion reject here means the gate answers from the TABLE rather than \
          from the caller's own row. Indexes the generated code asked the host for: {:?}",
@@ -503,10 +502,10 @@ fn rb46_sell_is_refused_only_while_the_caller_is_deletion_gated() {
 
 /// `buy`'s SUCCESS path, executed.
 ///
-/// the caller is set with `run_as` (not the all-zero dummy), the wallet is
-/// writable, and the inventory is registered under BOTH its owner index (the
-/// reducer's read) and its primary key (the update's lookup) with the auto-inc id
-/// modelled.
+/// the caller is set with `run_as` (not the all-zero dummy) and stands at the shop
+/// counter beside shop 3's keeper, the wallet is writable, and the inventory is
+/// registered under BOTH its owner index (the reducer's read) and its primary key
+/// (the update's lookup) with the auto-inc id modelled.
 ///
 /// Post-state is pinned in full: the caller pays exactly `price * qty`, a
 /// STRANGER's wallet is untouched (the debit keys on `ctx.sender()`), the first
@@ -521,6 +520,8 @@ fn nh_buy_success_spends_wallet_and_grants_one_stack() {
     let me = Identity::from_byte_array([21u8; 32]);
     let stranger = Identity::from_byte_array([22u8; 32]);
     rb46_seed_player(&fx, me);
+    let (chars, npcs) = ec_reach_tables(&fx);
+    ec_seed_counter(&chars, &npcs, 7);
     let stock = fx.table_keyed::<ShopItemRow, u32>("shop_item_row", "shop_id", |r| r.shop_id);
     stock.seed(&ShopItemRow {
         shop_item_id: 1,
@@ -614,13 +615,95 @@ fn nh_buy_success_spends_wallet_and_grants_one_stack() {
 // ===========================================================================
 
 use crate::native_host_tests::{fixture as ec_fixture, Fixture as EcFixture, Handle as EcHandle};
-use crate::schema::{Inventory, ItemRow, Player, PlayerWallet, ShopItemRow, TradeOffer};
+use crate::schema::{
+    Character, Inventory, ItemRow, Npc, Player, PlayerWallet, ShopItemRow, TradeOffer,
+};
+use game_core::NpcInteraction;
 
 fn ec_me() -> Identity {
     Identity::from_byte_array([0xE1; 32])
 }
 fn ec_other() -> Identity {
     Identity::from_byte_array([0xE2; 32])
+}
+/// The character `entity_id` the `ec_world` player row of `who` names.
+fn ec_entity(who: Identity) -> u64 {
+    u64::from(who.to_byte_array()[0])
+}
+
+/// The zone of the shop counter every ordinary economy test shops at.
+const EC_ZONE: u32 = 0;
+/// The counter: the keepers of shop 3 and of shop 4 both live on this tile (radius 0).
+const EC_COUNTER: (i32, i32) = (12, 4);
+
+/// A `character` row for `entity_id` standing on `(x, y)` in `zone_id`.
+fn ec_character(entity_id: u64, zone_id: u32, x: i32, y: i32) -> Character {
+    Character {
+        entity_id,
+        zone_id,
+        tile_x: x,
+        tile_y: y,
+        facing: game_core::Direction::South,
+        action: game_core::ActionState::Idle,
+        move_started_at_ms: 0,
+        sprite_id: 0,
+        move_queue: vec![],
+        acked_seq: 0,
+    }
+}
+
+/// An `npc` row whose home is `home` in `zone_id`.
+fn ec_npc(
+    entity_id: u64,
+    zone_id: u32,
+    home: (i32, i32),
+    wander_radius: u8,
+    interaction: NpcInteraction,
+) -> Npc {
+    Npc {
+        entity_id,
+        npc_id: format!("npc{entity_id}"),
+        zone_id,
+        home_x: home.0,
+        home_y: home.1,
+        wander_radius,
+        dialogue_tree_id: String::new(),
+        interaction,
+    }
+}
+
+/// The two tables the shop reach guard reads: `character` by `entity_id` (the caller's tile)
+/// and `npc` by `zone_id` (the keepers of the caller's zone).
+fn ec_reach_tables(fx: &EcFixture) -> (EcHandle<'_, Character, u64>, EcHandle<'_, Npc, u32>) {
+    (
+        fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id),
+        fx.table_keyed::<Npc, u32>("npc", "zone_id", |r| r.zone_id),
+    )
+}
+
+/// The shop counter: the keepers of shop 3 and shop 4 at `EC_COUNTER`, and the character
+/// `entity_id` one tile south of it, so its owner is in reach of both shops.
+fn ec_seed_counter(
+    chars: &EcHandle<'_, Character, u64>,
+    npcs: &EcHandle<'_, Npc, u32>,
+    entity_id: u64,
+) {
+    for (keeper, shop_id) in [(803, 3), (804, 4)] {
+        npcs.seed(&ec_npc(
+            keeper,
+            EC_ZONE,
+            EC_COUNTER,
+            0,
+            NpcInteraction::Shop(shop_id),
+        ));
+        chars.seed(&ec_character(keeper, EC_ZONE, EC_COUNTER.0, EC_COUNTER.1));
+    }
+    chars.seed(&ec_character(
+        entity_id,
+        EC_ZONE,
+        EC_COUNTER.0,
+        EC_COUNTER.1 + 1,
+    ));
 }
 
 /// Every table the economy surface reads or writes, under the indexes it uses.
@@ -630,19 +713,32 @@ struct EcWorld<'a> {
     stock: EcHandle<'a, ShopItemRow, u32>,
     items: EcHandle<'a, ItemRow, u32>,
     offers: EcHandle<'a, TradeOffer, u64>,
+    chars: EcHandle<'a, Character, u64>,
+    npcs: EcHandle<'a, Npc, u32>,
 }
 
+/// `ec_bare_world` with the caller (`ec_me()`) standing at the shop counter, in reach of the
+/// keepers of shop 3 and shop 4.
 fn ec_world(fx: &EcFixture) -> EcWorld<'_> {
+    let w = ec_bare_world(fx);
+    ec_seed_counter(&w.chars, &w.npcs, ec_entity(ec_me()));
+    w
+}
+
+/// Players, wallets, stacks, stock, items and offers, with the `character` and `npc` tables
+/// registered but empty: nobody stands anywhere and no NPC offers anything.
+fn ec_bare_world(fx: &EcFixture) -> EcWorld<'_> {
     let players = fx.table::<Player>("player", "identity", |r| r.identity);
     for who in [ec_me(), ec_other()] {
         players.seed(&Player {
             identity: who,
-            entity_id: u64::from(who.to_byte_array()[0]),
+            entity_id: ec_entity(who),
             name: String::new(),
             online: true,
             last_input_seq: 0,
         });
     }
+    let (chars, npcs) = ec_reach_tables(fx);
     let wallets = fx
         .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
         .writable()
@@ -688,6 +784,8 @@ fn ec_world(fx: &EcFixture) -> EcWorld<'_> {
         stock,
         items,
         offers,
+        chars,
+        npcs,
     }
 }
 
@@ -728,7 +826,15 @@ impl EcWorld<'_> {
             to_vec(&self.stacks.rows()).unwrap(),
             to_vec(&self.stock.rows()).unwrap(),
             to_vec(&self.items.rows()).unwrap(),
+            to_vec(&self.chars.rows()).unwrap(),
+            to_vec(&self.npcs.rows()).unwrap(),
         ]
+    }
+    /// Stand `who`'s character on `(x, y)` in `zone_id`, replacing any row it had.
+    fn place(&self, who: Identity, zone_id: u32, x: i32, y: i32) {
+        let entity_id = ec_entity(who);
+        self.chars.remove(entity_id);
+        self.chars.seed(&ec_character(entity_id, zone_id, x, y));
     }
     /// A Pending offer from `ec_me()` listing `currency` and item 5 x `qty`.
     fn escrow(&self, currency: u64, qty: u32) {
@@ -1139,7 +1245,7 @@ mod ctl16_shop_battle_guard {
     }
 
     /// A battle row in `outcome`, `player` on side A and `opponent` on side B.
-    fn battle(
+    pub(super) fn battle(
         battle_id: u64,
         player: Identity,
         opponent: Identity,
@@ -1313,4 +1419,328 @@ mod ctl16_shop_battle_guard {
             assert_eq!(w.count(ec_me(), 5), Some(3), "{label}: sold 2");
         }
     }
+}
+
+// ===========================================================================
+// ts-6b-2.1 — shop reach. `buy` and `sell` serve only a caller whose character stands in
+// the zone of an NPC that offers the shop, within TALK_RANGE + that NPC's wander_radius
+// (Manhattan, inclusive) of the NPC's HOME tile: `buy` needs the keeper of the named
+// shop, `sell` the keeper of any shop. Every other caller (another zone, too far, no
+// character) gets one refusal, checked right after the deletion gate and before the
+// battle, quantity, stock, escrow, wallet and inventory guards, and nothing is written.
+// ===========================================================================
+
+/// The one refusal `buy` and `sell` give a caller who is not beside a shop.
+const SHOP_NOT_CLOSE: &str = "the shop is not close enough";
+/// The reach world's zone, and another zone.
+const RC_ZONE: u32 = 1;
+const RC_OTHER_ZONE: u32 = 2;
+/// Shop 3's keeper: home (40, 10), x != y; wanders 3 tiles, so its reach is 2 + 3 = 5. Its
+/// `character` row stands AWAY from home, outside its wander disc, at (50, 10).
+const RC_X_HOME: (i32, i32) = (40, 10);
+const RC_X_RADIUS: u8 = 3;
+const RC_X_NOW: (i32, i32) = (50, 10);
+/// Shop 4's keeper: home (-60, 70); wanders 2 tiles, so its reach is 4.
+const RC_Y_HOME: (i32, i32) = (-60, 70);
+/// A `Dialogue` NPC and a `Heal(1)` NPC, radius 0.
+const RC_TALKER_HOME: (i32, i32) = (100, -20);
+const RC_HEALER_HOME: (i32, i32) = (-100, -40);
+/// A keeper of shop 3 in `RC_OTHER_ZONE`, radius 0.
+const RC_ELSEWHERE_HOME: (i32, i32) = (-200, 30);
+
+/// One shop call, run as the caller.
+type RcCall<'a> = &'a dyn Fn() -> Result<(), String>;
+
+impl EcWorld<'_> {
+    /// Seed `npc` with its `character` row standing on `now`.
+    fn npc_at(&self, npc: Npc, now: (i32, i32)) {
+        self.chars
+            .seed(&ec_character(npc.entity_id, npc.zone_id, now.0, now.1));
+        self.npcs.seed(&npc);
+    }
+}
+
+/// `ec_bare_world` plus the five NPCs above, 1000 in the caller's wallet, 30 of item 5 in
+/// its inventory and 7 in a bystander's wallet. The caller stands nowhere until placed.
+fn rc_world(fx: &EcFixture) -> EcWorld<'_> {
+    use game_core::NpcInteraction::{Dialogue, Heal, Shop};
+    let w = ec_bare_world(fx);
+    let keeper_x = ec_npc(901, RC_ZONE, RC_X_HOME, RC_X_RADIUS, Shop(3));
+    w.npc_at(keeper_x, RC_X_NOW);
+    w.npc_at(ec_npc(902, RC_ZONE, RC_Y_HOME, 2, Shop(4)), RC_Y_HOME);
+    let talker = ec_npc(903, RC_ZONE, RC_TALKER_HOME, 0, Dialogue);
+    w.npc_at(talker, RC_TALKER_HOME);
+    let healer = ec_npc(904, RC_ZONE, RC_HEALER_HOME, 0, Heal(1));
+    w.npc_at(healer, RC_HEALER_HOME);
+    let keeper_elsewhere = ec_npc(905, RC_OTHER_ZONE, RC_ELSEWHERE_HOME, 0, Shop(3));
+    w.npc_at(keeper_elsewhere, RC_ELSEWHERE_HOME);
+    w.wallet(ec_me(), 1000);
+    w.stack(ec_me(), 5, 30);
+    w.wallet(ec_other(), 7);
+    w
+}
+
+/// `buy` and `sell` run for a caller beside a keeper of the shop and are refused, with one
+/// text and nothing written, for every other caller — whatever its battle, quantity, item,
+/// wallet, escrow or inventory would say. One world, one fixture: every accepted call is
+/// asserted to move exactly the server price and one item, so the refusals around it are
+/// refusals of a call that would otherwise succeed.
+///
+/// kills:
+///   - reach never checked (the shipped code before this slice): the first far tile around
+///     shop 3's keeper buys and sells.
+///   - `<` for `<=`: (5, 0), (-4, -1), (2, -3) and (-1, 4) from home are at exactly reach 5
+///     and must be accepted.
+///   - the wander radius dropped or passed as 0 (reach 2): the same four tiles.
+///   - `home_x` / `home_y` swapped: home (40, 10) becomes (10, 40), every accepted tile
+///     is refused.
+///   - the NPC's current tile (its `character` row) used instead of home: the accepted
+///     tiles are all more than 2 from (50, 10), and (50, 10) / (51, 11) — beside the
+///     current tile, out of reach of home — must be refused.
+///   - a bound one too wide: (6, 0), (4, 2), (-2, -4), (-1, 5), (0, -6), and one past shop
+///     4's keeper.
+///   - the zone ignored: the accepted tile (45, 10) in the other zone, and a tile beside
+///     the other zone's shop 3 keeper's coordinates in this zone, must be refused; the
+///     same tile in the keeper's zone is accepted.
+///   - `buy` accepting any shop's keeper: beside shop 4's keeper `buy` from 3 is refused
+///     and from 4 succeeds at 99; beside shop 3's keeper `buy` from 4 and from 9 (offered
+///     by nobody) are refused; beside the `Heal(1)` NPC `buy` from 1 is refused.
+///   - `sell` accepting any NPC: beside only the `Dialogue` NPC or the `Heal(1)` NPC `sell`
+///     is refused; beside shop 4's keeper (not shop 3's) it succeeds.
+///   - a text per cause: no `character` row, another zone and too far are compared against
+///     the one literal, from `buy` and from `sell`.
+///   - the reach check placed after a later guard: one tile out of reach, a caller in an
+///     ongoing battle, at qty 0, naming an unstocked, unsellable or unknown item, with too
+///     little or escrowed currency, a full stack, or too few or escrowed items gets the
+///     reach text; one tile back in reach the same call gets that later guard's own text
+///     (the control that proves the later guard was armed).
+///   - a refusal that writes: wallets, stacks, stock, items, characters, NPCs, offers and
+///     battles are byte-identical across every refusal.
+#[test]
+fn buy_and_sell_are_refused_away_from_a_shop_npc_and_accepted_beside_it() {
+    use crate::schema::Battle;
+    use ctl16_shop_battle_guard::battle;
+    use game_core::BattleOutcome;
+    use spacetimedb::sats::bsatn::to_vec;
+    const CAP: u32 = game_core::MAX_ITEM_STACK;
+
+    let fx = ec_fixture();
+    let w = rc_world(&fx);
+    let battles = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
+    let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+    let me = ec_me();
+    let (hx, hy) = RC_X_HOME;
+
+    let all = || {
+        let mut rows = w.snapshot();
+        rows.push(to_vec(&w.offers.rows()).unwrap());
+        rows.push(to_vec(&battles.rows()).unwrap());
+        rows
+    };
+    let buy_as = |shop: u32, item: u32, qty: u32| fx.run_as(me, |ctx| buy(ctx, shop, item, qty));
+    let sell_as = |item: u32, qty: u32| fx.run_as(me, |ctx| sell(ctx, item, qty));
+    // The one refusal, word for word, with every row the world holds unchanged.
+    let refused = |label: &str, call: RcCall<'_>| {
+        let before = all();
+        assert_eq!(
+            call(),
+            Err(SHOP_NOT_CLOSE.to_string()),
+            "{label}; indexes asked: {:?}",
+            fx.requested_indexes()
+        );
+        assert_eq!(all(), before, "{label}: a refused call writes nothing");
+    };
+    // Buy 1 x item 5 from `shop`: Ok, exactly `price` paid, exactly one item gained.
+    let bought = |label: &str, shop: u32, price: u64| {
+        let (balance, held) = (w.balance(me), w.count(me, 5));
+        assert_eq!(
+            buy_as(shop, 5, 1),
+            Ok(()),
+            "{label}: buy 1 x item 5 from shop {shop}"
+        );
+        assert_eq!(
+            w.balance(me),
+            balance.map(|b| b - price),
+            "{label}: paid {price}"
+        );
+        assert_eq!(
+            w.count(me, 5),
+            held.map(|n| n + 1),
+            "{label}: got one item 5"
+        );
+    };
+    // Sell 1 x item 5: Ok, exactly 4 credited, exactly one item gone.
+    let sold = |label: &str| {
+        let (balance, held) = (w.balance(me), w.count(me, 5));
+        assert_eq!(sell_as(5, 1), Ok(()), "{label}: sell 1 x item 5");
+        assert_eq!(w.balance(me), balance.map(|b| b + 4), "{label}: got 4");
+        assert_eq!(
+            w.count(me, 5),
+            held.map(|n| n - 1),
+            "{label}: one item 5 gone"
+        );
+    };
+    // One tile out of reach the call gets the reach text; one tile back in reach, the
+    // same call gets `later` — the guard that would have refused it anyway.
+    let reach_first = |label: &str, call: RcCall<'_>, later: &str| {
+        w.place(me, RC_ZONE, hx + 6, hy);
+        refused(&format!("{label}, out of reach"), call);
+        w.place(me, RC_ZONE, hx + 5, hy);
+        let before = all();
+        assert_eq!(
+            call(),
+            Err(later.to_string()),
+            "{label}, in reach: the later guard's own refusal"
+        );
+        assert_eq!(all(), before, "{label}, in reach: nothing written");
+    };
+
+    // Around shop 3's keeper (home (40, 10), reach 5): accepted from Manhattan 0 to exactly
+    // 5 — none of these tiles is within 2 of its current tile (50, 10) — refused at 6.
+    for (dx, dy) in [(0, 0), (5, 0), (-4, -1), (2, -3), (-1, 4)] {
+        w.place(me, RC_ZONE, hx + dx, hy + dy);
+        let at = format!("({dx}, {dy}) from shop 3's home");
+        bought(&at, 3, 10);
+        sold(&at);
+    }
+    for (dx, dy) in [(6, 0), (4, 2), (-2, -4), (-1, 5), (0, -6)] {
+        w.place(me, RC_ZONE, hx + dx, hy + dy);
+        let at = format!("({dx}, {dy}) from shop 3's home");
+        refused(&format!("{at}: buy"), &|| buy_as(3, 5, 1));
+        refused(&format!("{at}: sell"), &|| sell_as(5, 1));
+    }
+
+    // The keeper's current tile is not consulted: on it, or beside it, but out of reach
+    // of its home, is refused.
+    for (x, y) in [RC_X_NOW, (RC_X_NOW.0 + 1, RC_X_NOW.1 + 1)] {
+        w.place(me, RC_ZONE, x, y);
+        let at = format!("({x}, {y}), by shop 3's current tile");
+        refused(&format!("{at}: buy"), &|| buy_as(3, 5, 1));
+        refused(&format!("{at}: sell"), &|| sell_as(5, 1));
+    }
+
+    // Another zone: the accepted tile (45, 10) in the other zone is refused; beside the
+    // other zone's shop 3 keeper's coordinates, but in this zone, is refused; the same tile
+    // in the keeper's own zone is the control.
+    w.place(me, RC_OTHER_ZONE, hx + 5, hy);
+    refused("other zone, (45, 10): buy", &|| buy_as(3, 5, 1));
+    refused("other zone, (45, 10): sell", &|| sell_as(5, 1));
+    let (ex, ey) = RC_ELSEWHERE_HOME;
+    w.place(me, RC_ZONE, ex, ey + 1);
+    refused("zone 1 by zone 2's keeper: buy", &|| buy_as(3, 5, 1));
+    refused("zone 1 by zone 2's keeper: sell", &|| sell_as(5, 1));
+    w.place(me, RC_OTHER_ZONE, ex, ey + 1);
+    bought("zone 2 by zone 2's keeper", 3, 10);
+    sold("zone 2 by zone 2's keeper");
+
+    // `buy` needs the keeper of the NAMED shop. Beside shop 4's keeper (home (-60, 70),
+    // reach 4): shop 3 is refused, shop 4 sells at its own price, `sell` is served; one
+    // tile further, shop 4 is refused too.
+    let (yx, yy) = RC_Y_HOME;
+    w.place(me, RC_ZONE, yx + 3, yy - 1);
+    refused("by shop 4: buy from 3", &|| buy_as(3, 5, 1));
+    bought("by shop 4: buy from 4", 4, 99);
+    sold("by shop 4: sell");
+    w.place(me, RC_ZONE, yx + 3, yy - 2);
+    refused("past shop 4: buy from 4", &|| buy_as(4, 5, 1));
+    refused("past shop 4: sell", &|| sell_as(5, 1));
+    // Beside shop 3's keeper: shop 4, and shop 9 that no NPC offers, are refused.
+    w.place(me, RC_ZONE, hx + 1, hy);
+    refused("by shop 3: buy from 4", &|| buy_as(4, 5, 1));
+    refused("by shop 3: buy from 9", &|| buy_as(9, 5, 1));
+    bought("by shop 3: buy from 3", 3, 10);
+
+    // `sell` needs a shop keeper: a `Dialogue` NPC or a `Heal(1)` NPC is not one.
+    let (tx, ty) = RC_TALKER_HOME;
+    w.place(me, RC_ZONE, tx + 1, ty);
+    refused("by a Dialogue NPC: sell", &|| sell_as(5, 1));
+    refused("by a Dialogue NPC: buy", &|| buy_as(3, 5, 1));
+    let (lx, ly) = RC_HEALER_HOME;
+    w.place(me, RC_ZONE, lx, ly - 2);
+    refused("by a Heal(1) NPC: sell", &|| sell_as(5, 1));
+    refused("by a Heal(1) NPC: buy from 1", &|| buy_as(1, 5, 1));
+
+    // No `character` row (the `player` row stays): the same refusal.
+    assert_eq!(
+        w.chars.remove(ec_entity(me)),
+        1,
+        "fixture: the caller's character"
+    );
+    refused("no character: buy", &|| buy_as(3, 5, 1));
+    refused("no character: sell", &|| sell_as(5, 1));
+    w.place(me, RC_ZONE, hx, hy);
+    bought("a character again: buy", 3, 10);
+    sold("a character again: sell");
+
+    // The reach check comes before every later guard.
+    let live = battle(1, me, crate::WILD_IDENTITY, BattleOutcome::Ongoing);
+    battles.seed(&live);
+    reach_first(
+        "in an ongoing battle: buy",
+        &|| buy_as(3, 5, 1),
+        "cannot buy during an ongoing battle",
+    );
+    reach_first(
+        "in an ongoing battle: sell",
+        &|| sell_as(5, 1),
+        "cannot sell during an ongoing battle",
+    );
+    assert_eq!(battles.remove(me), 1, "fixture: the one battle row");
+    reach_first("qty 0: buy", &|| buy_as(3, 5, 0), "qty must be > 0");
+    reach_first("qty 0: sell", &|| sell_as(5, 0), "qty must be > 0");
+    reach_first(
+        "an item shop 3 does not stock",
+        &|| buy_as(3, 8, 1),
+        "shop 3 does not stock item 8",
+    );
+    reach_first(
+        "an unsellable item",
+        &|| sell_as(8, 1),
+        "item cannot be sold",
+    );
+    reach_first("an unknown item", &|| sell_as(404, 1), "unknown item 404");
+
+    let balance = w.balance(me).expect("the caller's wallet");
+    assert_eq!(w.wallets.remove(me), 1, "fixture: the caller's wallet");
+    w.wallet(me, 9);
+    reach_first(
+        "9 in the wallet for a 10 purchase",
+        &|| buy_as(3, 5, 1),
+        "currency is in an active trade",
+    );
+    assert_eq!(w.wallets.remove(me), 1, "fixture: the 9 wallet");
+    w.wallet(me, balance);
+    w.escrow(balance - 5, 0);
+    reach_first(
+        "all but 5 escrowed for a 10 purchase",
+        &|| buy_as(3, 5, 1),
+        "currency is in an active trade",
+    );
+    assert_eq!(w.offers.remove(77), 1, "fixture: the currency escrow");
+
+    w.stack(me, 6, CAP);
+    let full = game_core::check_item_headroom(CAP, 1, 6)
+        .unwrap_err()
+        .to_string();
+    reach_first("a full stack of item 6", &|| buy_as(3, 6, 1), &full);
+
+    let held = w.count(me, 5).expect("the caller's item 5 stack");
+    reach_first(
+        "selling one more than held",
+        &|| sell_as(5, held + 1),
+        "item is in an active trade",
+    );
+    w.escrow(0, held);
+    reach_first(
+        "every held item 5 escrowed",
+        &|| sell_as(5, 1),
+        "item is in an active trade",
+    );
+    assert_eq!(w.offers.remove(77), 1, "fixture: the item escrow");
+
+    assert_eq!(
+        w.balance(ec_other()),
+        Some(7),
+        "a bystander is never touched"
+    );
 }
