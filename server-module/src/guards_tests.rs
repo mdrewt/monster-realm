@@ -3215,8 +3215,8 @@ const TS6B_DELETION_GATED_TEXT: &str =
 /// The caller is joined (`talk` and `buy` check `not joined` before the gate) and has no
 /// character, NPC or shop stock, so every admitted call stops at a read.
 ///
-/// kills: the old trades-battles-and-challenges wording kept; a per-reducer refusal text (move,
-/// talk or shop phrasing of its own); a reducer that formats the reason with its own name or
+/// kills: a refusal that names specific actions (trades, battles, challenges or any other list);
+/// a per-reducer refusal text (move, talk or shop phrasing of its own); a reducer that formats the reason with its own name or
 /// prefix; a constant refusal (the `Active` control answers with the ordinary errors).
 #[test]
 fn a_mid_grace_caller_gets_the_same_reason_from_move_talk_and_buy() {
@@ -3257,8 +3257,8 @@ fn a_mid_grace_caller_gets_the_same_reason_from_move_talk_and_buy() {
             call(what),
             Err(TS6B_DELETION_GATED_TEXT.to_string()),
             "`{what}` refused a mid-grace caller with the wrong text: every gated reducer gives \
-             the one sentence that holds for any action, not one about trades, battles and \
-             challenges"
+             the one sentence that holds for any action, never a text naming specific actions \
+             or one of its own"
         );
     }
 }

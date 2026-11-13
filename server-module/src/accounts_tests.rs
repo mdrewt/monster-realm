@@ -10496,6 +10496,258 @@ mod acct_nh {
         );
     }
 
+    /// A guest who only ever accepted challenges — `opponent_identity` in every `battle` and
+    /// `battle_summary` row that names it, `player_identity` in none — and who holds an export
+    /// chunk at claim time: a completed claim leaves no `battle` or `battle_summary` row naming
+    /// it (each survives with the guest's side holding the tombstone identity, the other side
+    /// untouched, the claimer's included), erases every per-battle tactical row of those
+    /// battles (the guest's own unit, queue, deploy and clock rows among them), keeps every row
+    /// of a bystander's battles byte-identical and purges the guest's export chunks.
+    ///
+    /// Kills: the erase and the tombstone run only when some battle names the guest as
+    /// `player_identity` (no row here does, so every row keeps naming the guest); the erase
+    /// and the tombstone run only when the export purge deleted nothing (the guest's chunk
+    /// makes that count non-zero).
+    #[test]
+    fn guest_claim_tombstones_an_opponent_only_guest_who_holds_an_export() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x99);
+        let c = id(0x9A);
+        let p = id(0x9B);
+        let x = id(0x9C);
+        let tomb = crate::TOMBSTONE_IDENTITY;
+        let secret = code('9');
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest disconnects");
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+
+        // The guest's battles: side B of two PvP battles `p` opened and of one the claimer
+        // opened, each with its staging (the guest's side-B units, plan, deploy and clock),
+        // plus an anchor-only battle in which the guest is the opponent.
+        for (battle_id, side_a) in [(2051, p), (2052, p), (2053, c)] {
+            seed_tactical_battle(&w, battle_id, side_a, Some(g));
+            seed_staging(&w, battle_id, side_a, Some(g));
+        }
+        let mut anchor = battle_row(p, g);
+        anchor.battle_id = 2056;
+        anchor.state.outcome = game_core::BattleOutcome::SideAWins;
+        w.battle.seed(&anchor);
+        w.tactical.seed(&tactical_row(2056, BattleKind::Pvp));
+        w.secret.seed(&secret_row(2056));
+        w.deploy.seed(&deploy_row(2056, SideRow::A, p));
+        w.clock.seed(&clock_row(2056, SideRow::A, p));
+        let guest_battles: [u64; 4] = [2051, 2052, 2053, 2056];
+        // A bystander's battles: a PvP battle without the guest and a wild one.
+        seed_tactical_battle(&w, 2061, p, Some(x));
+        seed_staging(&w, 2061, p, Some(x));
+        seed_tactical_battle(&w, 2063, x, None);
+        seed_staging(&w, 2063, x, None);
+        let bystander_battles: [u64; 2] = [2061, 2063];
+        w.export.seed(&export_row(1, g, T0 - 5));
+        w.export.seed(&export_row(2, x, T0 - 5));
+
+        assert!(
+            w.battle.rows().iter().all(|b| b.player_identity != g)
+                && w.summary.rows().iter().all(|s| s.player_identity != g),
+            "fixture: the guest must be `player_identity` in no battle or summary row"
+        );
+        let mut battles_naming_guest: Vec<u64> = w
+            .battle
+            .rows()
+            .iter()
+            .filter(|b| b.opponent_identity == g)
+            .map(|b| b.battle_id)
+            .collect();
+        battles_naming_guest.sort_unstable();
+        assert_eq!(
+            battles_naming_guest, guest_battles,
+            "fixture: the guest is the opponent in exactly its four battles"
+        );
+        assert_eq!(
+            w.summary
+                .rows()
+                .iter()
+                .filter(|s| s.opponent_identity == g)
+                .count(),
+            3,
+            "fixture: the guest is the opponent in its three summarised battles"
+        );
+        assert!(
+            w.unit.rows().iter().any(|u| u.owner == Some(g))
+                && w.queue.rows().iter().any(|q| q.owner == g)
+                && w.deploy.rows().iter().any(|d| d.owner == g)
+                && w.clock.rows().iter().any(|k| k.player == g),
+            "fixture: the guest must own unit, queue, deploy and clock rows, or the erase \
+             half below is vacuous"
+        );
+        assert!(
+            w.export.rows().iter().any(|e| e.owner_identity == g),
+            "fixture: the guest must hold an export chunk at claim time"
+        );
+        let before = per_battle_rows(&w);
+        for (table, rows) in &before {
+            if *table != "battle_wild_unit" {
+                assert!(
+                    rows.iter().any(|(bid, _)| guest_battles.contains(bid)),
+                    "fixture: `{table}` must hold rows of the guest's battles"
+                );
+            }
+            assert!(
+                rows.iter().any(|(bid, _)| bystander_battles.contains(bid)),
+                "fixture: `{table}` must hold rows of a bystander's battle"
+            );
+        }
+        let swap = |who: Identity| if who == g { tomb } else { who };
+        let battles_want: Vec<crate::schema::Battle> = w
+            .battle
+            .rows()
+            .into_iter()
+            .map(|mut b| {
+                b.player_identity = swap(b.player_identity);
+                b.opponent_identity = swap(b.opponent_identity);
+                b
+            })
+            .collect();
+        let summaries_want: Vec<BattleSummary> = w
+            .summary
+            .rows()
+            .into_iter()
+            .map(|mut s| {
+                s.player_identity = swap(s.player_identity);
+                s.opponent_identity = swap(s.opponent_identity);
+                s
+            })
+            .collect();
+        let bystander_battle_rows = |w: &W<'_>| {
+            encs(
+                &w.battle
+                    .rows()
+                    .into_iter()
+                    .filter(|b| bystander_battles.contains(&b.battle_id))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let bystander_before = bystander_battle_rows(&w);
+        let bystander_export = encs(
+            &w.export
+                .rows()
+                .into_iter()
+                .filter(|e| e.owner_identity == x)
+                .collect::<Vec<_>>(),
+        );
+
+        assert_eq!(
+            signed_in(&fx, c, T0 + 1_000, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "a destination with no game data completes the claim of an opponent-only guest"
+        );
+
+        let battles_naming: Vec<u64> = w
+            .battle
+            .rows()
+            .iter()
+            .filter(|b| b.player_identity == g || b.opponent_identity == g)
+            .map(|b| b.battle_id)
+            .collect();
+        assert!(
+            battles_naming.is_empty(),
+            "[claim-opponent-only] battles {battles_naming:?} still name the retired guest, who \
+             was only ever their opponent and held an export chunk at claim time"
+        );
+        let summaries_naming: Vec<u64> = w
+            .summary
+            .rows()
+            .iter()
+            .filter(|s| s.player_identity == g || s.opponent_identity == g)
+            .map(|s| s.battle_id)
+            .collect();
+        assert!(
+            summaries_naming.is_empty(),
+            "[claim-opponent-only] summaries {summaries_naming:?} still name the retired guest"
+        );
+        for (battle_id, side_a) in [(2051, p), (2052, p), (2053, c), (2056, p)] {
+            let sides: Vec<(Identity, Identity)> = w
+                .battle
+                .rows()
+                .into_iter()
+                .filter(|b| b.battle_id == battle_id)
+                .map(|b| (b.player_identity, b.opponent_identity))
+                .collect();
+            assert_eq!(
+                sides,
+                vec![(side_a, tomb)],
+                "[claim-opponent-only] battle {battle_id}'s anchor survives once, the guest's \
+                 side holding the tombstone and side A untouched"
+            );
+        }
+        assert_eq!(
+            encs(&w.battle.rows()),
+            encs(&battles_want),
+            "[claim-opponent-only] the battle rows survive with only the guest's column \
+             rewritten to the tombstone"
+        );
+        assert_eq!(
+            encs(&w.summary.rows()),
+            encs(&summaries_want),
+            "[claim-opponent-only] the summary rows survive with only the guest's column \
+             rewritten to the tombstone"
+        );
+
+        let after = per_battle_rows(&w);
+        for ((table, was), (_, now)) in before.iter().zip(after.iter()) {
+            let survivors: Vec<u64> = now
+                .iter()
+                .map(|(bid, _)| *bid)
+                .filter(|bid| guest_battles.contains(bid))
+                .collect();
+            assert!(
+                survivors.is_empty(),
+                "[claim-opponent-only] `{table}` still holds rows of the retired guest's battles \
+                 {survivors:?}"
+            );
+            let kept: Vec<&(u64, Vec<u8>)> = was
+                .iter()
+                .filter(|(bid, _)| !guest_battles.contains(bid))
+                .collect();
+            let now_refs: Vec<&(u64, Vec<u8>)> = now.iter().collect();
+            assert_eq!(
+                now_refs, kept,
+                "[claim-opponent-only] `{table}`: every row of a bystander's battle must be \
+                 byte-identical after the claim"
+            );
+        }
+        assert_eq!(
+            bystander_battle_rows(&w),
+            bystander_before,
+            "[claim-opponent-only] a bystander's battle rows are byte-identical"
+        );
+
+        assert!(
+            w.export.rows().iter().all(|e| e.owner_identity != g),
+            "[claim-opponent-only] the guest's export chunks are purged"
+        );
+        assert_eq!(
+            encs(&w.export.rows()),
+            bystander_export,
+            "[claim-opponent-only] a bystander's export chunk is untouched"
+        );
+        assert!(
+            w.claim.rows().is_empty(),
+            "[claim-opponent-only] the claim code is consumed"
+        );
+    }
+
     /// BT7.4 — a `player_formation` row is game data: `account_has_game_data`
     /// is true for an identity whose ONLY row is a formation and false again
     /// once it is gone; a stranger's formation is not the caller's data; and

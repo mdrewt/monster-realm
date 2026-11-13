@@ -1422,31 +1422,57 @@ fn accept_challenge_ends_both_parties_open_conversations() {
 /// A refused accept starts no battle and ends nobody's conversation: refusals by the accept's own
 /// guards (the acceptor busy, an empty party) and by the tactical writer after them (a format-0
 /// challenge, a deletion-gated challenger) all leave every `player_conversation` row in place.
+/// Each arm is refused with the reason of the step it targets, so the two writer arms are known
+/// to reach the tactical writer.
 ///
 /// kills: the conversations deleted before the guards; deleted before the battle start, where
 /// the writer's own refusal (no rollback on this host) leaves them gone.
 #[test]
 fn a_refused_accept_challenge_keeps_both_parties_conversations() {
-    type Arm = (&'static str, u8, Vec<u64>, PvSetup);
+    type Arm = (&'static str, u8, Vec<u64>, PvSetup, &'static str);
     let arms: Vec<Arm> = vec![
-        ("an empty party", 1, vec![], |_| {}),
-        ("a pre-bt-14 format 0 challenge", 0, vec![21], |_| {}),
-        ("a deletion-gated challenger", 1, vec![21], |w| {
-            assert_eq!(w.accounts.remove(pv_a()), 1);
-            w.deleting(pv_a());
-        }),
-        ("the acceptor busy", 1, vec![21], |w| {
-            w.battles.seed(&pv_battle(
-                900,
-                pv_b(),
-                PV_WILD,
-                PvOutcome::Ongoing,
-                &[30],
-                &[30],
-            ))
-        }),
+        (
+            "an empty party",
+            1,
+            vec![],
+            |_| {},
+            "party must contain at least one monster",
+        ),
+        (
+            "a pre-bt-14 format 0 challenge",
+            0,
+            vec![21],
+            |_| {},
+            "format must be 1..=3",
+        ),
+        (
+            "a deletion-gated challenger",
+            1,
+            vec![21],
+            |w| {
+                assert_eq!(w.accounts.remove(pv_a()), 1);
+                w.deleting(pv_a());
+            },
+            "challenge is no longer available",
+        ),
+        (
+            "the acceptor busy",
+            1,
+            vec![21],
+            |w| {
+                w.battles.seed(&pv_battle(
+                    900,
+                    pv_b(),
+                    PV_WILD,
+                    PvOutcome::Ongoing,
+                    &[30],
+                    &[30],
+                ))
+            },
+            "already in an ongoing battle",
+        ),
     ];
-    for (label, format, party, extra) in arms {
+    for (label, format, party, extra, want) in arms {
         let fx = pv_fixture();
         let (w, t) = pv_accept_world(&fx, format);
         pv_seed_ranked_accounts(&w);
@@ -1463,6 +1489,11 @@ fn a_refused_accept_challenge_keeps_both_parties_conversations() {
             super::accept_challenge(ctx, 100, party.clone())
         });
         assert!(got.is_err(), "{label}: the accept must be refused");
+        assert_eq!(
+            got,
+            Err(want.to_string()),
+            "{label}: the accept must be refused at the step this arm targets, with its reason"
+        );
         assert_eq!(
             pv_conversation_rows(&t),
             before,
