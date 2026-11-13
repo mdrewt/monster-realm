@@ -74,9 +74,11 @@ pub(crate) fn require_owner(
 
 /// ONE message for every gated shape on purpose: a
 /// per-state message (mid-grace vs terminal) would require this module to
-/// re-derive the state split that `accounts` owns.
+/// re-derive the state split that `accounts` owns. It names no action, because
+/// the gate fronts every kind of reducer (movement, dialogue, the shop, care,
+/// party edits, trades, battles), and the player reads it verbatim.
 pub(crate) const REJECT_DELETION_GATED: &str =
-    "account deletion requested; new trades, battles and challenges are unavailable";
+    "account deletion requested; this action is unavailable until the deletion is cancelled";
 
 /// Pure decision seam:
 /// maps an already-derived verdict to `Err(REJECT_DELETION_GATED)` or `Ok`.
@@ -121,8 +123,9 @@ pub(crate) fn require_not_deleting(ctx: &ReducerContext, reducer: &str) -> Resul
 /// shape as its sibling on purpose: caller-only by signature (no identity
 /// parameter), one fused expression delegating transitively through the
 /// accounts predicate into the pure SSOT decision, no account state re-derived
-/// here, the same single static reason (an accepting response consummates a
-/// NEW trade, so the text is true), and `log_reject` on the refuse path.
+/// here, the same single static reason (it names no action, so it is as true
+/// of an accepting response as of anything else), and `log_reject` on the
+/// refuse path.
 pub(crate) fn require_commitment_predates_deletion(
     ctx: &ReducerContext,
     reducer: &str,

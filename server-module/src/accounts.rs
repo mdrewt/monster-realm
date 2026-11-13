@@ -7,7 +7,9 @@
 //! family (monster_mgmt / inventory / npc / raising / economy / ranking /
 //! `schema::rekey_formation`), `privacy::purge_export_bundles`, and the
 //! `erase_*` / `anonymize_*` cascade family the deletion reaper delegates to
-//! (the tactical tables' `schema::erase_tactical_rows` included). Bare reads of
+//! (the tactical tables' `schema::erase_tactical_rows` included). The guest
+//! claim delegates to two of that family, `schema::erase_tactical_rows` and
+//! `battle::anonymize_battles`, for the guest identity it retires. Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read
 //! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
@@ -678,7 +680,9 @@ pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), Strin
 }
 
 /// Complete a guest→account claim: re-key the guest's game data onto the caller,
-/// consume the code (single-use), stamp provenance (AUTH-12..21, 26, 34, 35).
+/// erase what stays behind under the retired guest identity (its export bundles
+/// and its finished battles), consume the code (single-use), stamp provenance
+/// (AUTH-12..21, 26, 34, 35).
 ///
 /// Guard ordering: all caller-state checks (1–4) run BEFORE any code resolution
 /// (5+), so an unauthorized caller can never use this reducer as a claim-code
@@ -757,6 +761,20 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // how many chunks it deleted; the count is published
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
+    // The guest's finished battles are not re-keyed, and nothing else would
+    // ever reach them: the 24 h GC keeps the anchor, the tactical row and the
+    // summary, and the prior-terminal sweep runs on an identity's NEXT battle,
+    // which a retired identity never has. So the claim erases them as the
+    // deletion cascade erases its subject's: the per-battle tactical rows go
+    // and the guest's side of each `battle` and `battle_summary` row becomes
+    // the tombstone identity, the other side untouched. Both calls sit AFTER
+    // `rekey_all` (the erase deletes the formation under the identity it is
+    // handed, and the guest's has moved by now), the erase BEFORE the
+    // tombstone swap (it finds battles through the anchors that still name
+    // the guest). Guard 10 leaves no `Ongoing` row for the swap to force, so
+    // it logs nothing here.
+    crate::schema::erase_tactical_rows(ctx, guest);
+    crate::battle::anonymize_battles(ctx, guest);
     consume_claim_and_disarm(ctx, guest);
     ctx.db
         .account()

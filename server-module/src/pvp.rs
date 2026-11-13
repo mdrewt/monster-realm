@@ -39,8 +39,8 @@ use crate::marshal::{char_state, now_ms};
 use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, battle_tactical, character, monster, player, Battle,
-    BattleAction, BattleChallenge, ChallengeStatus, Player,
+    battle, battle_action, battle_challenge, battle_tactical, character, monster, player,
+    player_conversation, Battle, BattleAction, BattleChallenge, ChallengeStatus, Player,
 };
 use crate::WILD_IDENTITY;
 use game_core::interact::within_interact_range;
@@ -743,6 +743,8 @@ pub fn challenge_pvp(
 ///    longer available" (the acceptor passed 2a, so the bare gate reason would disclose a
 ///    third party's account state).
 /// 7. Delete the challenge row and disarm its reaper.
+/// 8. Delete the `player_conversation` row of the acceptor and of the challenger: the battle
+///    that just started ends any NPC conversation either had open.
 #[spacetimedb::reducer]
 pub fn accept_challenge(
     ctx: &ReducerContext,
@@ -858,6 +860,13 @@ pub fn accept_challenge(
         .challenge_id()
         .delete(challenge_id);
     disarm_challenge_reaper(ctx, challenge_id);
+
+    // Guard 8: the battle has started, so an open NPC conversation of either party ends with
+    // it. `talk` and `advance_dialogue` refuse in a battle, so the row could never advance,
+    // and the client keeps its dialogue frame above the battle for as long as the row exists.
+    for who in [me, challenge.challenger] {
+        ctx.db.player_conversation().owner_identity().delete(who);
+    }
 
     log::info!(
         "{{\"evt\":\"pvp_accept\",\"challenge_id\":{challenge_id},\"battle_id\":{battle_id},\"target\":\"{me}\"}}"

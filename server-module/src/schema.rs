@@ -1572,10 +1572,13 @@ pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity
     });
 }
 
-/// The tactical half of the deletion cascade, called by
-/// `accounts::account_deletion_reaper` immediately BEFORE
-/// `battle::anonymize_battles` (after it the owner's anchors are no longer
-/// findable by identity).
+/// The tactical half of an identity's erasure, always called immediately
+/// BEFORE `battle::anonymize_battles` (after it the owner's anchors are no
+/// longer findable by identity). Two callers: `accounts::account_deletion_reaper`
+/// for the account its cascade erases, and `accounts::complete_guest_claim` for
+/// the guest identity a claim retires. The claim calls it after `rekey_all` has
+/// moved the guest's `player_formation` onto the claimer, so step (3) finds no
+/// formation to delete there.
 ///
 /// (1) The battle-id set is the UNION of every path that still names the
 /// owner: the `battle` anchor chain (`anonymize_battles`'s two index scans),
@@ -1588,8 +1591,9 @@ pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity
 /// in the set: delete the `battle_tactical`, `battle_secret`,
 /// `battle_wild_unit`, `battle_event`, `battle_unit`, `battle_queue`,
 /// `battle_deploy` and `battle_clock` rows by `battle_id` — the whole battle's
-/// tactical rows go, the other participant's included: the anchor is forced
-/// terminal for both sides and the transcript is GC-bound. (3) Owner-keyed
+/// tactical rows go, the other participant's included: the anchor is terminal
+/// for both sides by the end of the caller's transaction (the cascade forces
+/// it, the claim refuses without it) and the transcript is GC-bound. (3) Owner-keyed
 /// defence-in-depth deletes for rows naming the identity directly
 /// (`battle_queue.owner`, `battle_deploy.owner`, `battle_clock.player`,
 /// `player_formation`). (4) Every `battle_summary` row naming the owner on
