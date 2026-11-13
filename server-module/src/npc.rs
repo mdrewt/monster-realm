@@ -4,18 +4,20 @@
 //! reducers (`talk`, `advance_dialogue`, `dismiss_dialogue`), quest trigger
 //! application, and dialogue state marshal helpers.
 
-use crate::economy::grant_currency;
-use crate::inventory::grant_item;
+use crate::economy::{grant_currency, wallet_balance};
+use crate::inventory::{grant_item, item_count};
 use crate::schema::{
-    character, npc, player, player_conversation, player_dialogue_state, player_quest,
+    character, npc, player, player_conversation, player_dialogue_state, player_quest, Npc,
     PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
 };
 use game_core::npc::rules::in_talk_range;
 use game_core::{
-    apply_choice, apply_effects, apply_node_auto_effects, find_entry_node, process_trigger,
-    DialogueEffect, PlayerDialogueState, PlayerQuestProgress, QuestAdvance, TriggerEvent,
+    apply_choice, apply_effects, apply_node_auto_effects, check_currency_headroom,
+    check_item_headroom, find_entry_node, process_trigger, DialogueEffect, DialogueTree,
+    PlayerDialogueState, PlayerQuestProgress, QuestAdvance, QuestDef, TriggerEvent,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
+use std::collections::BTreeMap;
 
 use crate::marshal::char_state;
 
@@ -126,18 +128,68 @@ fn write_player_dialogue_state(ctx: &ReducerContext, owner: Identity, state: &Pl
     }
 }
 
+/// The item and currency credits one call is about to make, summed so the cap checks see
+/// the whole reward rather than one grant at a time.
+#[derive(Default)]
+struct RewardCredits {
+    /// Quantity per item id. The sums saturate, and a saturated sum is over any cap.
+    items: BTreeMap<u32, u32>,
+    currency: u64,
+}
+
+impl RewardCredits {
+    /// A zero quantity credits nothing (`grant_item` skips it), so it asks for no room.
+    fn add_item(&mut self, item_id: u32, qty: u32) {
+        if qty > 0 {
+            let total = self.items.entry(item_id).or_default();
+            *total = total.saturating_add(qty);
+        }
+    }
+
+    fn add_currency(&mut self, amount: u64) {
+        self.currency = self.currency.saturating_add(amount);
+    }
+}
+
+/// Refuse unless every credit in `credits` fits under `owner`'s stack and balance caps.
+/// Reads only. The counts are raw: a trade lock holds units back from spending, it makes
+/// no room.
+fn check_reward_headroom(
+    ctx: &ReducerContext,
+    owner: Identity,
+    credits: &RewardCredits,
+) -> Result<(), String> {
+    for (&item_id, &qty) in &credits.items {
+        check_item_headroom(item_count(ctx, owner, item_id), qty, item_id)
+            .map_err(|e| e.to_string())?;
+    }
+    check_currency_headroom(wallet_balance(ctx, owner), credits.currency).map_err(|e| e.to_string())
+}
+
 /// Route DB-side effects from a dialogue effect slice.
 /// `SetFlag`/`ClearFlag` are no-ops here (caller already applied them via
 /// `apply_node_auto_effects` or `apply_effects`).
 /// `StartQuest` → inserts a `player_quest` row if not already active/done.
 /// `GrantItem` → calls `grant_item`.
 /// `GrantXp` → no-op.
+///
+/// Reject, never clamp: every `GrantItem` in `effects` is first checked against the
+/// owner's stack caps, summed per item. A grant that does not fit refuses the call
+/// (`Err`) before anything is written.
 fn apply_effects_to_db(
     ctx: &ReducerContext,
     owner: Identity,
     state: &PlayerDialogueState,
     effects: &[DialogueEffect],
 ) -> Result<(), String> {
+    let mut credits = RewardCredits::default();
+    for effect in effects {
+        if let DialogueEffect::GrantItem(item_id, qty) = effect {
+            credits.add_item(*item_id, *qty);
+        }
+    }
+    check_reward_headroom(ctx, owner, &credits)?;
+
     for effect in effects {
         match effect {
             DialogueEffect::StartQuest(q) => {
@@ -168,7 +220,14 @@ fn apply_effects_to_db(
     Ok(())
 }
 
-/// Apply a `TriggerEvent` to all of the player's active quests.
+/// Apply a `TriggerEvent` to all of the player's active quests. `quest_defs` is the
+/// quest-content cache's answer; a load error is logged and advances nothing.
+///
+/// Reject, never clamp: every advance is decided first, on a copy of `state`, and the
+/// rewards of every quest completing in this call are summed and checked against the
+/// owner's stack and balance caps. If they do not fit, the call is refused (`Err`) with
+/// nothing written and `state` untouched, so the quests stay completable. Otherwise the
+/// advances are written and `state` takes the copy.
 ///
 /// MUST accept `state: &mut PlayerDialogueState` — MUST NOT call
 /// `load_player_dialogue_state` internally. The caller owns the in-memory state
@@ -178,7 +237,7 @@ fn apply_quest_trigger(
     owner: Identity,
     event: &TriggerEvent,
     state: &mut PlayerDialogueState,
-    quest_defs: Result<&[game_core::QuestDef], String>,
+    quest_defs: Result<&[QuestDef], String>,
 ) -> Result<(), String> {
     let quest_defs = match quest_defs {
         Ok(q) => q,
@@ -207,6 +266,11 @@ fn apply_quest_trigger(
         .owner_identity()
         .filter(owner)
         .collect();
+
+    // Decide: no write happens in this loop.
+    let mut next = state.clone();
+    let mut advances: Vec<(PlayerQuestRow, QuestAdvance)> = Vec::new();
+    let mut credits = RewardCredits::default();
     for row in active_rows {
         let Some(def) = quest_defs.iter().find(|d| d.id == row.quest_id) else {
             // A `player_quest` row whose id no longer resolves to a loaded
@@ -231,14 +295,28 @@ fn apply_quest_trigger(
             quest_id: row.quest_id.clone(),
             step_index: row.step_index,
         };
-        let Some(advance) = process_trigger(def, &progress, state, event) else {
+        let Some(advance) = process_trigger(def, &progress, &next, event) else {
             continue;
         };
+        if let QuestAdvance::QuestComplete { reward } = &advance {
+            // Moved to done on the copy at once, so a later quest's step conditions see it.
+            next.active_quests.remove(&row.quest_id);
+            next.done_quests.insert(row.quest_id.clone());
+            for item in &reward.items {
+                credits.add_item(item.item_id, item.qty);
+            }
+            credits.add_currency(reward.currency);
+        }
+        advances.push((row, advance));
+    }
+    check_reward_headroom(ctx, owner, &credits)?;
+
+    // Apply: every reward fits, so no grant below clamps.
+    for (mut row, advance) in advances {
         match advance {
             QuestAdvance::StepComplete { new_step } => {
-                let mut updated = row.clone();
-                updated.step_index = new_step;
-                ctx.db.player_quest().pq_id().update(updated);
+                row.step_index = new_step;
+                ctx.db.player_quest().pq_id().update(row);
             }
             QuestAdvance::QuestComplete { reward } => {
                 // qf-6: the client acknowledges a completion as "one of my player_quest
@@ -250,8 +328,6 @@ fn apply_quest_trigger(
                 // row survives it would read as a completion — such a path (an abandon, a
                 // reset) needs a real acknowledgement channel first.
                 ctx.db.player_quest().pq_id().delete(row.pq_id);
-                state.active_quests.remove(&row.quest_id);
-                state.done_quests.insert(row.quest_id.clone());
                 for item in &reward.items {
                     grant_item(ctx, owner, item.item_id, item.qty);
                 }
@@ -260,6 +336,7 @@ fn apply_quest_trigger(
             }
         }
     }
+    *state = next;
     Ok(())
 }
 
@@ -270,20 +347,11 @@ fn apply_quest_trigger(
 /// Initiate a dialogue with an NPC. Creates/replaces the player_conversation row.
 /// Refused during an ongoing battle. Zone + range checked. auto_effects applied.
 /// quest trigger fired for Talk event.
+///
+/// A reward that would pass a stack or balance cap refuses the call: nothing is granted
+/// short, and the quest or once-only grant stays available for a later talk.
 #[spacetimedb::reducer]
 pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
-    talk_with_content(
-        ctx,
-        npc_entity_id,
-        crate::content_cache::cached_dialogue_trees().map(Vec::as_slice),
-    )
-}
-
-fn talk_with_content(
-    ctx: &ReducerContext,
-    npc_entity_id: u64,
-    trees: Result<&[game_core::DialogueTree], String>,
-) -> Result<(), String> {
     let me = ctx.sender();
 
     // Step 1: player must be joined
@@ -323,10 +391,24 @@ fn talk_with_content(
 
     // Step 6: load dialogue tree
     // Dialogue-trees cache: compile-time-embedded RON, parsed once per process.
-    let trees = trees?;
+    let trees = crate::content_cache::cached_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
+
+    open_dialogue(ctx, me, &npc_row, tree)
+}
+
+/// The dialogue half of `talk`, over the tree the reducer resolved for `npc_row`: enter
+/// the tree, apply the entry node's effects, fire the Talk trigger and record the
+/// conversation. `talk` has already judged the caller, the NPC, the zone and the range.
+fn open_dialogue(
+    ctx: &ReducerContext,
+    me: Identity,
+    npc_row: &Npc,
+    tree: &DialogueTree,
+) -> Result<(), String> {
+    let npc_entity_id = npc_row.entity_id;
 
     // Step 7: load player dialogue state
     let mut state = load_player_dialogue_state(ctx, me);
@@ -339,14 +421,28 @@ fn talk_with_content(
     // Step 9: apply auto_effects BEFORE writing state
     apply_node_auto_effects(node, &mut state);
 
-    // Step 10: route DB-side effects (StartQuest → player_quest row, GrantItem).
+    // Step 10: route DB-side effects (StartQuest → player_quest row, GrantItem). A grant
+    // that does not fit under the stack cap refuses the call here, before any write.
     // SECURITY: auto_effects are re-applied on EVERY talk() call because find_entry_node
     // re-runs each time. A GrantItem in auto_effects without a NotFlag+SetFlag once-only
     // gate is therefore an unlimited item farm. validate_npc_content (game-core) rejects
     // such content at seed time — this is the enforcement point.
     apply_effects_to_db(ctx, me, &state, &node.auto_effects)?;
 
-    // Step 11: upsert player_conversation
+    // Step 11: fire quest trigger (Talk event); state is updated in-memory. A quest
+    // reward that does not fit under a cap refuses the call here: the `Err` aborts the
+    // transaction, which also undoes anything step 10 wrote.
+    apply_quest_trigger(
+        ctx,
+        me,
+        &TriggerEvent::Talked {
+            npc_id: npc_row.npc_id.clone(),
+        },
+        &mut state,
+        crate::content_cache::cached_quest_defs().map(Vec::as_slice),
+    )?;
+
+    // Step 12: upsert player_conversation
     match ctx.db.player_conversation().owner_identity().find(me) {
         Some(mut conv) => {
             conv.npc_entity_id = npc_entity_id;
@@ -361,17 +457,6 @@ fn talk_with_content(
             });
         }
     }
-
-    // Step 12: fire quest trigger (Talk event); state is updated in-memory
-    apply_quest_trigger(
-        ctx,
-        me,
-        &TriggerEvent::Talked {
-            npc_id: npc_row.npc_id.clone(),
-        },
-        &mut state,
-        crate::content_cache::cached_quest_defs().map(Vec::as_slice),
-    )?;
 
     // Step 13: write state ONCE (flags + done_quests; active_quests in player_quest)
     write_player_dialogue_state(ctx, me, &state);
@@ -389,20 +474,11 @@ fn talk_with_content(
 /// below are a server→client contract: the client maps each exact string to catalogued
 /// copy and ends the conversation itself with `dismiss_dialogue`, whose delete commits
 /// (pinned by the client's statusModel and booted main tests and the dialogue e2e).
+///
+/// A choice whose item grant would pass the stack cap is refused the same way: the
+/// conversation stays on its node and the grant stays available.
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
-    advance_dialogue_with_content(
-        ctx,
-        choice_idx,
-        crate::content_cache::cached_dialogue_trees().map(Vec::as_slice),
-    )
-}
-
-fn advance_dialogue_with_content(
-    ctx: &ReducerContext,
-    choice_idx: u32,
-    trees: Result<&[game_core::DialogueTree], String>,
-) -> Result<(), String> {
     let me = ctx.sender();
 
     // Step 1: PK-scoped lookup (F1: Player A cannot advance Player B's conversation)
@@ -447,11 +523,25 @@ fn advance_dialogue_with_content(
 
     // Step 2: load NPC + dialogue tree
     // Dialogue-trees cache: compile-time-embedded RON, parsed once per process.
-    let trees = trees?;
+    let trees = crate::content_cache::cached_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
 
+    choose_in_dialogue(ctx, me, conv, tree, choice_idx)
+}
+
+/// The dialogue half of `advance_dialogue`, over the tree the reducer resolved for the
+/// conversation's NPC: take choice `choice_idx` of the conversation's current node, apply
+/// its effects and move or end the conversation. `advance_dialogue` has already judged the
+/// caller, the NPC, the zone and the range.
+fn choose_in_dialogue(
+    ctx: &ReducerContext,
+    me: Identity,
+    conv: PlayerConversation,
+    tree: &DialogueTree,
+    choice_idx: u32,
+) -> Result<(), String> {
     // Step 3: find current node
     let Some(node) = tree.nodes.iter().find(|n| n.id == conv.current_node_id) else {
         return Err("node not found".to_string());
@@ -466,9 +556,11 @@ fn advance_dialogue_with_content(
     // Step 6: apply effects to in-memory state
     apply_effects(result.effects, &mut state);
 
-    // Step 7: persist state + DB-side effects (BEFORE conversation update)
-    write_player_dialogue_state(ctx, me, &state);
+    // Step 7: DB-side effects, then persist state (BEFORE conversation update). The
+    // effects go first: a grant that does not fit under the stack cap refuses the call
+    // there, before anything is written.
     apply_effects_to_db(ctx, me, &state, result.effects)?;
+    write_player_dialogue_state(ctx, me, &state);
 
     // Step 8: update or delete conversation row
     match result.next_node_id {

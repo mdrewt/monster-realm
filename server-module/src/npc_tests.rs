@@ -2107,6 +2107,20 @@ struct RwWorld<'a> {
     convs: RwHandle<'a, PlayerConversation>,
 }
 
+/// NPC `RW_NPC` at home (6, 5) in zone 0, with `npc_id` and dialogue tree `tree_id`.
+fn rw_npc_row(npc_id: &str, tree_id: &str) -> crate::schema::Npc {
+    crate::schema::Npc {
+        entity_id: RW_NPC,
+        npc_id: npc_id.to_string(),
+        zone_id: 0,
+        home_x: 6,
+        home_y: 5,
+        wander_radius: 0,
+        dialogue_tree_id: tree_id.to_string(),
+        interaction: game_core::NpcInteraction::Dialogue,
+    }
+}
+
 /// The caller (`RW_ME`) is joined and stands at (5, 5) in zone 0 beside NPC `RW_NPC`
 /// at (6, 5), whose `npc_id` is `npc_id` and whose dialogue tree is `tree_id`; no
 /// battle, no deletion state. The five reward tables are registered and empty.
@@ -2136,16 +2150,7 @@ fn rw_world<'a>(fx: &'a RwFixture, npc_id: &str, tree_id: &str) -> RwWorld<'a> {
         });
     }
     fx.table_keyed::<crate::schema::Npc, u64>("npc", "entity_id", |r| r.entity_id)
-        .seed(&crate::schema::Npc {
-            entity_id: RW_NPC,
-            npc_id: npc_id.to_string(),
-            zone_id: 0,
-            home_x: 6,
-            home_y: 5,
-            wander_radius: 0,
-            dialogue_tree_id: tree_id.to_string(),
-            interaction: game_core::NpcInteraction::Dialogue,
-        });
+        .seed(&rw_npc_row(npc_id, tree_id));
     let _ = fx
         .table_keyed::<PlayerQuestRow, u64>("player_quest", "pq_id", |r| r.pq_id)
         .unique();
@@ -2399,7 +2404,8 @@ fn quest_completion_at_a_full_stack_is_refused_and_the_quest_stays_active() {
     );
 }
 
-/// A dialogue choice whose `GrantItem` would overflow the caller's stack is refused
+/// A dialogue choice (taken through `choose_in_dialogue`, the dialogue half of
+/// `advance_dialogue`) whose `GrantItem` would overflow the caller's stack is refused
 /// with the stack-cap text before any write: the conversation row byte-identical
 /// (still at the choosing node), no dialogue-state, quest, stack or wallet change and
 /// no write to any of the five tables. `dismiss_dialogue` still ends the
@@ -2443,7 +2449,7 @@ fn a_dialogue_reward_at_a_full_stack_is_refused_and_the_dialogue_does_not_advanc
     w.wallet(7);
     let advance = || {
         fx.run_as(RW_ME, |ctx| {
-            advance_dialogue_with_content(ctx, 0, Ok(trees.as_slice()))
+            choose_in_dialogue(ctx, RW_ME, rw_conv("start"), &trees[0], 0)
         })
     };
 
@@ -2805,9 +2811,9 @@ fn a_refused_quest_reward_advances_no_other_quest() {
 /// text and NOTHING is written — no conversation, no dialogue state, no quest, wallet
 /// or stack change. With exactly room, talk completes the quest: the balance lands on
 /// `MAX_BALANCE`, the quest row is gone and the conversation row is present (the
-/// completion acknowledgement). Through `talk_with_content` with a tree whose entry
-/// node auto-grants one item onto a full stack, the talk is refused with zero writes;
-/// with room it opens the conversation and grants exactly.
+/// completion acknowledgement). Through `open_dialogue` (the dialogue half of `talk`)
+/// with a tree whose entry node auto-grants one item onto a full stack, the talk is
+/// refused with zero writes; with room it opens the conversation and grants exactly.
 ///
 /// kills: a clamping quest reward in `talk` (the quest completes and the balance
 /// saturates); the conversation upsert or the state write before the reward check;
@@ -2872,14 +2878,11 @@ fn talk_refuses_a_reward_over_the_cap_before_any_write() {
     let w = rw_world(&fx, RW_NPC_ID, TREE);
     w.wallet(7);
     w.only_stack(RW_ME, RW_ITEM, RW_CAP);
+    let npc_row = rw_npc_row(RW_NPC_ID, TREE);
     let before = w.snapshot();
     fx.reset_writes();
     assert_eq!(
-        fx.run_as(RW_ME, |ctx| talk_with_content(
-            ctx,
-            RW_NPC,
-            Ok(trees.as_slice())
-        )),
+        fx.run_as(RW_ME, |ctx| open_dialogue(ctx, RW_ME, &npc_row, &trees[0])),
         Err(rw_item_cap_err(RW_CAP, 1, RW_ITEM)),
         "an auto-granted item onto a full stack"
     );
@@ -2892,11 +2895,7 @@ fn talk_refuses_a_reward_over_the_cap_before_any_write() {
 
     w.only_stack(RW_ME, RW_ITEM, RW_CAP - 1);
     assert_eq!(
-        fx.run_as(RW_ME, |ctx| talk_with_content(
-            ctx,
-            RW_NPC,
-            Ok(trees.as_slice())
-        )),
+        fx.run_as(RW_ME, |ctx| open_dialogue(ctx, RW_ME, &npc_row, &trees[0])),
         Ok(())
     );
     assert_eq!(w.count(RW_ME, RW_ITEM), Some(RW_CAP), "granted exactly 1");

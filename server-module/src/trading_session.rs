@@ -19,7 +19,7 @@ use crate::guards::{
     log_reject, offers_of, reject_if_in_battle, reject_if_monster_in_trade, session_lists_monster,
     session_locked_currency, session_locked_item_qty, sessions_of,
 };
-use crate::inventory::{consume_one, grant_item};
+use crate::inventory::{consume_n, grant_item, item_count};
 use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{
     battle, inventory, item_row, monster, monster_pub, player, trade_session,
@@ -104,14 +104,7 @@ pub(crate) fn netted_receiver_stacks(
     receiving
         .iter()
         .map(|ti| {
-            let raw_count = ctx
-                .db
-                .inventory()
-                .owner_identity()
-                .filter(receiver)
-                .find(|r| r.item_id == ti.item_id)
-                .map(|r| r.count)
-                .unwrap_or(0);
+            let raw_count = item_count(ctx, receiver, ti.item_id);
             let sending_qty = sending
                 .iter()
                 .find(|si| si.item_id == ti.item_id)
@@ -197,10 +190,8 @@ pub(crate) fn apply_swap(
                 } else {
                     counterparty
                 };
-                // consume_one returns Err if insufficient — the whole transaction rolls back.
-                for _ in 0..qty {
-                    consume_one(ctx, from, item_id)?;
-                }
+                // consume_n returns Err if the stack is short — the whole transaction rolls back.
+                consume_n(ctx, from, item_id, qty)?;
             }
             ApplyStep::CurrencyDebit {
                 from_initiator,

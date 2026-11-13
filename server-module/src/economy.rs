@@ -8,14 +8,18 @@
 //! `buy` and `sell` are server-priced, atomic and reject-not-clamp, call
 //! `require_owner` before every spend or consume, and serve only a caller standing
 //! within reach of a shop NPC.
+//!
+//! The spend rule for an asset a trade can lock (`check_currency_spend`,
+//! `check_item_spend`) lives here too: a plain shortfall is told apart from a holding
+//! a trade has locked.
 
 use crate::guards::{
     character_of, escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, log_reject,
     require_owner, saturating_sub_u32, saturating_sub_u64,
 };
-use crate::inventory::{consume_one, grant_item};
+use crate::inventory::{consume_n, grant_item, item_count, ERR_NOT_ENOUGH_ITEM};
 use crate::marshal::char_state;
-use crate::schema::{inventory, item_row, npc, player, player_wallet, shop_item_row, PlayerWallet};
+use crate::schema::{item_row, npc, player, player_wallet, shop_item_row, PlayerWallet};
 use game_core::currency::{apply_grant, apply_spend};
 use game_core::interact::{npc_offers_shop, within_npc_reach};
 use game_core::{check_currency_headroom, check_item_headroom, TilePos};
@@ -76,22 +80,59 @@ pub(crate) fn spend_currency(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// The spend rule
+// ---------------------------------------------------------------------------
+
+/// Refusal when a currency spend exceeds the wallet balance.
 pub(crate) const ERR_NOT_ENOUGH_CURRENCY: &str = "not enough currency";
+/// Refusal when the balance covers a spend but the part not locked in trades does not.
 pub(crate) const ERR_CURRENCY_IN_TRADE: &str = "currency is in an active trade";
+/// Refusal when a stack covers a spend but the part not locked in trades does not.
 pub(crate) const ERR_ITEM_IN_TRADE: &str = "item is in an active trade";
 
-pub(crate) fn check_currency_spend(want: u64, balance: u64, escrowed: u64) -> Result<(), String> {
-    if want > saturating_sub_u64(balance, escrowed) {
-        return Err(ERR_CURRENCY_IN_TRADE.to_string());
+/// The spend rule for an asset a trade can lock. `held` is the raw holding and `free` the
+/// part of it no trade locks. A request beyond `held` is a plain shortfall (`short`),
+/// whatever is locked; a request `held` covers but `free` does not names the trade
+/// (`in_trade`). Spending exactly `free` is allowed.
+fn check_spend<T: PartialOrd>(
+    want: T,
+    held: T,
+    free: T,
+    short: &str,
+    in_trade: &str,
+) -> Result<(), String> {
+    if want > held {
+        return Err(short.to_string());
+    }
+    if want > free {
+        return Err(in_trade.to_string());
     }
     Ok(())
 }
 
+/// The spend rule for currency: `balance` is the raw wallet balance and `escrowed` the
+/// amount the owner's trades lock (`guards::escrowed_currency_of`).
+pub(crate) fn check_currency_spend(want: u64, balance: u64, escrowed: u64) -> Result<(), String> {
+    check_spend(
+        want,
+        balance,
+        saturating_sub_u64(balance, escrowed),
+        ERR_NOT_ENOUGH_CURRENCY,
+        ERR_CURRENCY_IN_TRADE,
+    )
+}
+
+/// The spend rule for one item: `count` is the raw stack count (`inventory::item_count`)
+/// and `escrowed` the quantity the owner's trades lock (`guards::escrowed_item_qty_of`).
 pub(crate) fn check_item_spend(want: u32, count: u32, escrowed: u32) -> Result<(), String> {
-    if want > saturating_sub_u32(count, escrowed) {
-        return Err(ERR_ITEM_IN_TRADE.to_string());
-    }
-    Ok(())
+    check_spend(
+        want,
+        count,
+        saturating_sub_u32(count, escrowed),
+        ERR_NOT_ENOUGH_ITEM,
+        ERR_ITEM_IN_TRADE,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +180,8 @@ fn require_shop_in_reach(
 ///    reach of the caller's character — then the ongoing-battle guard (either role).
 /// 2. Look up the `shop_item_row` for `(shop_id, item_id)` — reject if not stocked.
 /// 3. Compute total = `buy_price × qty` (server-side, checked_mul — no overflow).
-/// 4. Trade-escrow guard — reject if the currency is locked in
-///    an active offer.
+/// 4. Spend rule (`check_currency_spend`) — reject a total beyond the balance as a
+///    shortfall, and one the balance covers but a trade has locked as in a trade.
 /// 5. Receiver-cap headroom — `check_item_headroom` on the
 ///    RAW stack count, reject-not-destroy BEFORE the spend.
 /// 6. `spend_currency` — reject if insufficient funds or no wallet.
@@ -194,26 +235,17 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
         .checked_mul(u64::from(qty))
         .ok_or_else(|| "total overflow".to_string())?;
 
-    // Trade escrow guard: reject if currency is locked in an active offer.
-    let escrowed = escrowed_currency_of(ctx, me);
-    let balance = wallet_balance(ctx, me);
-    let available = saturating_sub_u64(balance, escrowed);
-    if total > available {
-        return Err("currency is in an active trade".to_string());
-    }
+    // Spend rule: a total beyond the balance is a shortfall; one a trade has locked says so.
+    check_currency_spend(
+        total,
+        wallet_balance(ctx, me),
+        escrowed_currency_of(ctx, me),
+    )?;
 
     // receiver-cap reject BEFORE the spend.
     // RAW stack count, not escrow-netted — grant_item credits the raw stack;
     // escrow is a spend-lock, not a receive-lock.
-    let current_count = ctx
-        .db
-        .inventory()
-        .owner_identity()
-        .filter(me)
-        .find(|r| r.item_id == item_id)
-        .map(|r| r.count)
-        .unwrap_or(0);
-    check_item_headroom(current_count, qty, item_id).map_err(|e| e.to_string())?;
+    check_item_headroom(item_count(ctx, me, item_id), qty, item_id).map_err(|e| e.to_string())?;
 
     // Spend first — if this fails the whole reducer transaction rolls back.
     spend_currency(ctx, me, total)?;
@@ -236,12 +268,11 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
 /// 3. Compute total = `sell_price × qty` (server-side, checked_mul) — an
 ///    overflow rejects here, pre-filtering the headroom check in step 5
 ///    (defense-in-depth).
-/// 4. Trade-escrow guard — reject if the item is locked in an
-///    active offer.
+/// 4. Spend rule (`check_item_spend`) — reject a quantity beyond the stack as a
+///    shortfall, and one the stack covers but a trade has locked as in a trade.
 /// 5. Proceeds-cap headroom — `check_currency_headroom` on
 ///    the RAW balance, reject-not-destroy BEFORE any consume.
-/// 6. `consume_one × qty` — reject if any call fails (insufficient items).
-///    Transaction atomicity: a partial-loop `Err` rolls back ALL prior consume_ones.
+/// 6. `consume_n` — debit the whole quantity in one write.
 /// 7. `grant_currency` — credit the proceeds.
 ///
 /// sell_price comes from the `item_row` content table; the client never provides
@@ -294,20 +325,12 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
         .checked_mul(u64::from(qty))
         .ok_or_else(|| "total overflow".to_string())?;
 
-    // Trade escrow guard: reject if the item is locked in an active offer.
-    let escrowed = escrowed_item_qty_of(ctx, me, item_id);
-    let current_count = ctx
-        .db
-        .inventory()
-        .owner_identity()
-        .filter(me)
-        .find(|r| r.item_id == item_id)
-        .map(|r| r.count)
-        .unwrap_or(0);
-    let available_count = saturating_sub_u32(current_count, escrowed);
-    if qty > available_count {
-        return Err("item is in an active trade".to_string());
-    }
+    // Spend rule: a quantity beyond the stack is a shortfall; one a trade has locked says so.
+    check_item_spend(
+        qty,
+        item_count(ctx, me, item_id),
+        escrowed_item_qty_of(ctx, me, item_id),
+    )?;
 
     // proceeds-cap reject BEFORE consuming — the sell side is value-destruction
     // with no rollback backstop, because grant_currency is infallible and
@@ -317,10 +340,7 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
     let balance = wallet_balance(ctx, me);
     check_currency_headroom(balance, total).map_err(|e| e.to_string())?;
 
-    // Consume qty units — each consume_one is checked; an Err rolls back the txn.
-    for _ in 0..qty {
-        consume_one(ctx, me, item_id)?;
-    }
+    consume_n(ctx, me, item_id, qty)?;
 
     grant_currency(ctx, me, total);
 

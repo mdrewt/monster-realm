@@ -4089,7 +4089,9 @@ mod heal_currency {
     #[test]
     fn heal_cost_beyond_the_balance_with_nothing_in_trade_says_not_enough_currency() {
         let defs = [def(1, 50)];
-        let rows: [(u64, u64, Result<Option<u64>, &str>); 9] = [
+        /// `(balance, escrowed, expected result)` for a heal costing 50.
+        type Row = (u64, u64, Result<Option<u64>, &'static str>);
+        let rows: [Row; 9] = [
             (49, 0, Err(SHORT_ERR)),
             (0, 0, Err(SHORT_ERR)),
             (50, 0, Ok(Some(50))),
