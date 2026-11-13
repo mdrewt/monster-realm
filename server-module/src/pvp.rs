@@ -32,18 +32,17 @@
 
 use crate::battle::{write_back_battle_results, write_back_party_hp};
 use crate::guards::{
-    check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
-    reject_if_monster_locked,
+    characters_in_interact_range, check_monster_in_party, check_party_size, is_in_ongoing_battle,
+    log_reject, reject_if_monster_locked,
 };
-use crate::marshal::{char_state, now_ms};
+use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, battle_tactical, character, monster, player,
-    player_conversation, Battle, BattleAction, BattleChallenge, ChallengeStatus, Player,
+    battle, battle_action, battle_challenge, battle_tactical, monster, player, player_conversation,
+    Battle, BattleAction, BattleChallenge, ChallengeStatus,
 };
 use crate::WILD_IDENTITY;
-use game_core::interact::within_interact_range;
 use game_core::{
     is_challenge_stale, pvp_deadline_forfeit_side, pvp_forfeit_outcome, BattleOutcome, SideId,
     CHALLENGE_TTL_MS,
@@ -524,19 +523,6 @@ pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
 /// text for a character in another zone, one too far away and a missing one.
 const ERR_OUT_OF_RANGE: &str = "that player is not close enough to challenge";
 
-/// True when the characters of `a` and `b` (each found through its `player` row's
-/// `entity_id`) are within interact range of each other. A player with no character row is
-/// out of range.
-fn characters_in_interact_range(ctx: &ReducerContext, a: &Player, b: &Player) -> bool {
-    let (Some(a), Some(b)) = (
-        ctx.db.character().entity_id().find(a.entity_id),
-        ctx.db.character().entity_id().find(b.entity_id),
-    ) else {
-        return false;
-    };
-    within_interact_range(a.zone_id, char_state(&a).pos, b.zone_id, char_state(&b).pos)
-}
-
 // ===========================================================================
 // Reducers
 // ===========================================================================
@@ -568,11 +554,11 @@ pub fn challenge_pvp(
     let me = ctx.sender();
 
     // Guard 1: joined.
-    let Some(my_player) = ctx.db.player().identity().find(me) else {
+    if ctx.db.player().identity().find(me).is_none() {
         let e = "not joined".to_string();
         log_reject("challenge_pvp", me, &e);
         return Err(e);
-    };
+    }
 
     // Guard 1a: a deletion-gated caller cannot OPEN a new challenge.
     // Earlier than guard 3b on purpose: 3b's late placement bounds disclosure of a
@@ -588,7 +574,7 @@ pub fn challenge_pvp(
     }
 
     // Guard 3: target must be joined and online.
-    let target_player = match ctx.db.player().identity().find(target) {
+    match ctx.db.player().identity().find(target) {
         None => {
             let e = "target player not found".to_string();
             log_reject("challenge_pvp", me, &e);
@@ -599,14 +585,14 @@ pub fn challenge_pvp(
             log_reject("challenge_pvp", me, &e);
             return Err(e);
         }
-        Some(p) => p,
-    };
+        Some(_) => {}
+    }
 
     // Guard 3a: both characters stand within interact range. Ahead of every guard that
     // answers from the target's account, battles or challenges, so those answer only a
     // caller within interact range of the target; a caller out of range learns guard 3 and
     // no more.
-    if !characters_in_interact_range(ctx, &my_player, &target_player) {
+    if !characters_in_interact_range(ctx, me, target) {
         let e = ERR_OUT_OF_RANGE.to_string();
         log_reject("challenge_pvp", me, &e);
         return Err(e);

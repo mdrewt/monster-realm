@@ -1,13 +1,16 @@
 //! World interaction rules: which entities the interact button acts on
-//! ([`interact_candidates`]) and how far apart two characters may be for the
-//! server to accept an interaction between them ([`within_interact_range`]).
+//! ([`interact_candidates`]), how far apart two characters may be for the
+//! server to accept an interaction between them ([`within_interact_range`]), and
+//! how far a character may stand from an NPC to use what it offers
+//! ([`within_npc_reach`]).
 //!
 //! The target rule is "the tile in front, then your own tile": the first non-empty
 //! tier wins, and nothing else is a candidate (no nearest-within-range, no facing
 //! ray). The server's `TALK_RANGE` is a latency margin, not a reach, so the target
 //! rule is deliberately narrower than the range the server accepts.
 
-use crate::npc::rules::in_talk_range;
+use crate::npc::rules::{in_talk_range, manhattan_distance};
+use crate::npc::TALK_RANGE;
 use crate::types::{Direction, TilePos};
 
 /// What an interactable is. Declaration order IS the within-tile priority
@@ -73,4 +76,23 @@ fn on_tile(tile: TilePos, zone: u32, entities: &[InteractEntity]) -> Vec<usize> 
 #[must_use]
 pub fn within_interact_range(zone_a: u32, pos_a: TilePos, zone_b: u32, pos_b: TilePos) -> bool {
     zone_a == zone_b && in_talk_range(pos_a, pos_b)
+}
+
+/// True when a character at `pos` in `zone` is close enough to an NPC to use what
+/// it offers after the conversation that opened it has ended: the same zone and at
+/// most `TALK_RANGE + wander_radius` tiles from the NPC's home tile, Manhattan,
+/// inclusive.
+///
+/// Measured from home, never from where the NPC stands: an NPC inside its wander
+/// disc is at most `wander_radius` from home, so every tile in talk range of it is
+/// in reach, and it stays in reach wherever the NPC wanders next.
+#[must_use]
+pub fn within_npc_reach(
+    zone: u32,
+    pos: TilePos,
+    npc_zone: u32,
+    npc_home: TilePos,
+    wander_radius: u8,
+) -> bool {
+    zone == npc_zone && manhattan_distance(pos, npc_home) <= TALK_RANGE + i64::from(wander_radius)
 }

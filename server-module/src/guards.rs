@@ -1,14 +1,16 @@
 //! `guards` — server-module domain submodule.
 //!
 //! Validation/authorization helpers shared by the reducer modules: the reject
-//! logger, the name validator, the move authorizer, and the pure battle-input
-//! validators.
+//! logger, the name validator, the move authorizer, the character lookup and the
+//! pair range guard, and the pure battle-input validators.
 
+use crate::marshal::char_state;
 use crate::schema::{
-    battle, character, move_intent, player, trade_offer, trade_session, Battle, MoveIntent,
-    TradeOffer, TradeSession,
+    battle, character, move_intent, player, trade_offer, trade_session, Battle, Character,
+    MoveIntent, TradeOffer, TradeSession,
 };
 use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
+use game_core::interact::within_interact_range;
 use game_core::trading::TradeSessionOffer;
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -239,6 +241,24 @@ pub(crate) fn authorize_move(
     }
     intent.last_input_seq = seq;
     Ok(intent)
+}
+
+// --- Where a player stands ----------------------------------
+
+/// The character of player `who`, found through its `player` row's `entity_id`.
+/// `None` when either row is missing.
+pub(crate) fn character_of(ctx: &ReducerContext, who: Identity) -> Option<Character> {
+    let player = ctx.db.player().identity().find(who)?;
+    ctx.db.character().entity_id().find(player.entity_id)
+}
+
+/// True when the characters of players `a` and `b` are within interact range of each
+/// other. A player with no `player` row or no character row is out of range.
+pub(crate) fn characters_in_interact_range(ctx: &ReducerContext, a: Identity, b: Identity) -> bool {
+    let (Some(a), Some(b)) = (character_of(ctx, a), character_of(ctx, b)) else {
+        return false;
+    };
+    within_interact_range(a.zone_id, char_state(&a).pos, b.zone_id, char_state(&b).pos)
 }
 
 // --- Battle-input validators -------------------------------

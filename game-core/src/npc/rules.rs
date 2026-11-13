@@ -34,7 +34,7 @@ fn npc_hash(npc_id: u64, tick: u64) -> u64 {
 /// Uses `i64` arithmetic to avoid overflow when coordinates span the full
 /// `i32` range (proptest generates extreme values; `i32::MAX - i32::MIN`
 /// overflows `i32` but fits `i64`).
-fn manhattan_distance(a: TilePos, b: TilePos) -> i64 {
+pub(crate) fn manhattan_distance(a: TilePos, b: TilePos) -> i64 {
     let dx = (i64::from(a.x) - i64::from(b.x)).abs();
     let dy = (i64::from(a.y) - i64::from(b.y)).abs();
     dx + dy
