@@ -5,7 +5,9 @@
 //   the ts-4 plan "Resume 2": `new TradeView()` takes no argument and has no `render`; the
 //   constructor needs only `#trade-overlay` and `#trade-status`; it never reads or writes
 //   `#trade-my-side`, `#trade-their-side`, `#trade-actions` or `#trade-feedback`. The status line is
-//   a function of the kept Social paint alone: Players -> `social.players.placeholder`; Trades with
+//   a function of the kept Social paint alone (ts-6b-10 (named intentional change): Players reads
+//   the trade status like every other tab, the placeholder is gone; was: Players ->
+//   `social.players.placeholder`); Trades with
 //   at least one session row -> `trade.status.open`; otherwise (no paint kept, or no session row)
 //   -> `trade.status.none`. `#trade-status` never carries `mr-nav-item`, `is-active` or
 //   `aria-current`. `show` / `hide` / `toggle` / `visible` / `hostChrome` / `paintSocial` and the
@@ -36,7 +38,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import type { SocialTab } from './screens/types';
 import type { SocialAction } from './socialModel';
-import type { SocialPaint, SocialQuestion, SocialSessionRow } from './tradeView';
+import type { SocialPaint, SocialQuestion, SocialSessionRow, SocialSheetKey } from './tradeView';
 import { TradeView } from './tradeView';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
@@ -152,8 +154,6 @@ const SOCIAL_PART_IDS = [
   'social-tab-challenges',
   'social-tab-rankings',
   'social-sheet',
-  'social-prompt',
-  'social-prompt-text',
   'social-confirm',
 ];
 
@@ -431,7 +431,6 @@ function m24s4Replacer(_key: string, value: unknown): unknown {
 const M24S4_TV_PLAIN_KEYS = new Set([
   'trade.status.none',
   'trade.status.open',
-  'social.players.placeholder',
   'tradeSession.mark.confirmed',
   'tradeSession.mark.unconfirmed',
 ]);
@@ -535,9 +534,13 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its sinks through t()/tf()', () 
       theirs: confirmed,
     });
 
+    // ts-6b-10 (named intentional change): Players reads the trade status, no placeholder key is
+    // resolved. Was: expect(i18nT).toHaveBeenCalledWith('social.players.placeholder').
     vi.mocked(i18nT).mockClear();
     view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
-    expect(i18nT).toHaveBeenCalledWith('social.players.placeholder');
+    expect(i18nT).toHaveBeenCalledWith('trade.status.none');
+    expect(i18nT).not.toHaveBeenCalledWith('social.players.placeholder');
+    expect(byId('trade-status').textContent).toBe('No active trade');
     expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
 
     removeOverlay(overlay);
@@ -552,7 +555,6 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its sinks through t()/tf()', () 
     const roster = [
       'No active trade',
       i18nT('trade.status.open'),
-      i18nT('social.players.placeholder'),
       i18nT('tradeSession.mark.confirmed'),
       i18nT('tradeSession.mark.unconfirmed'),
       'You offer',
@@ -593,7 +595,11 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its sinks through t()/tf()', () 
         '«trade.row.marks|{"mine":"<tradeSession.mark.unconfirmed>","theirs":"<tradeSession.mark.confirmed>"}»',
       );
       view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
-      expect(scan('Players')).toContain('«social.players.placeholder»');
+      // ts-6b-10 (named intentional change): Players reads the trade status. Was: the
+      // «social.players.placeholder» sentinel.
+      const players = scan('Players');
+      expect(players).toContain('«trade.status.none»');
+      expect(players).not.toContain('social.players.placeholder');
     } finally {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
@@ -702,10 +708,20 @@ function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): voi
     strip.classList.contains('mr-frame-tabstrip'),
     `${label}: the strip carries the frame's tab-strip class`,
   ).toBe(true);
+  // ts-6b-10 (named intentional change): the chrome is the TabBar, then the ONE kit sheet root.
+  // Was: the TabBar, `#social-sheet`, `#social-prompt` (ids ['', 'social-sheet', 'social-prompt']).
   expect(
     [...chrome.children].map((c) => c.id),
-    `${label}: the chrome holds the TabBar (no id), then the sheet, then the prompt`,
-  ).toEqual(['', 'social-sheet', 'social-prompt']);
+    `${label}: the chrome holds the TabBar (no id), then the kit sheet root (no id)`,
+  ).toEqual(['', '']);
+  expect(
+    chrome.children[1]?.hasAttribute('data-context-sheet'),
+    `${label}: the chrome's second child is the kit sheet root`,
+  ).toBe(true);
+  expect(
+    chrome.querySelector('#social-prompt, #social-prompt-text'),
+    `${label}: no #social-prompt part`,
+  ).toBeNull();
   expect(
     chrome.firstElementChild?.classList.contains('mr-tabbar'),
     `${label}: the chrome's first child is the kit TabBar`,
@@ -751,8 +767,16 @@ function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): voi
 
 interface SheetCase {
   readonly tab: SocialTab;
+  /** The legal actions (SocialPaint.sheet.actions): the view appends the Back row itself. */
   readonly actions: readonly SocialAction[];
-  readonly active: SocialAction;
+  readonly active: SocialSheetKey;
+}
+
+/** The kit sheet's root in `chrome` (ts-6b-10: one `[data-context-sheet]` root per chrome). */
+function sheetRoot(chrome: HTMLElement): HTMLElement {
+  const root = chrome.querySelector<HTMLElement>('[data-context-sheet]');
+  if (root === null) throw new Error('the chrome must hold the kit sheet root');
+  return root;
 }
 
 interface PromptCase extends SheetCase {
@@ -763,33 +787,43 @@ interface PromptCase extends SheetCase {
 /** The action sheet shows `c.actions` in order, labelled from the catalog, the cursor on
  *  `c.active` alone. */
 function expectSheet(chrome: HTMLElement, c: SheetCase, label: string): void {
+  // ts-6b-10 (named intentional change): the sheet is the kit ContextSheet: its rows container
+  // `#social-sheet` is named by the sheet's heading (the painted tab's label), and the rows are
+  // the legal actions then Back. Was: `#social-sheet` named by the tab, one row per legal action.
   const sheet = byId('social-sheet');
+  const root = sheetRoot(chrome);
+  expect(root.contains(sheet), `${label}: #social-sheet is in the kit sheet root`).toBe(true);
   expect(chrome.contains(sheet), `${label}: #social-sheet is in the chrome`).toBe(true);
-  expect(sheet.hidden, `${label}: the sheet shows`).toBe(false);
-  expect(sheet.getAttribute('aria-labelledby'), `${label}: the sheet is named by its tab`).toBe(
-    `social-tab-${c.tab}`,
+  expect(root.hidden, `${label}: the sheet shows`).toBe(false);
+  expect(root.dataset.sheetVariant, `${label}: the list variant`).toBe('list');
+  const heading = root.querySelector<HTMLElement>('.mr-sheet-title');
+  expect(heading?.textContent, `${label}: the sheet is titled by its tab`).toBe(
+    SOCIAL_TAB_LABEL[c.tab](),
   );
-  const namingTab = document.getElementById(`social-tab-${c.tab}`);
+  expect(sheet.getAttribute('aria-labelledby'), `${label}: the rows are named by the title`).toBe(
+    heading?.id,
+  );
+  expect(heading?.id, `${label}: the title id`).toBe('socialSheet-sheet-title');
   expect(
-    namingTab !== null && chrome.contains(namingTab),
-    `${label}: the tab naming the sheet is in the chrome`,
-  ).toBe(true);
-  expect(navRows(sheet), `${label}: one row per legal action, the cursor on ${c.active}`).toEqual({
-    keys: [...c.actions],
-    texts: c.actions.map((a) => SOCIAL_ACTION_LABEL[a]()),
+    navRows(sheet),
+    `${label}: the legal actions then Back, the cursor on ${c.active}`,
+  ).toEqual({
+    keys: [...c.actions, 'back'],
+    texts: [...c.actions.map((a) => SOCIAL_ACTION_LABEL[a]()), i18nT('kit.sheet.back')],
     activeByClass: [c.active],
     activeByAria: [c.active],
   });
 }
 
-/** No prompt: `#social-prompt` hidden and empty, or not created yet (before any prompt). */
+/** No prompt: the sheet root is not the confirm variant, and no Yes / No container is left. */
 function expectNoPrompt(label: string): void {
-  const prompt = document.getElementById('social-prompt');
-  if (prompt === null) return;
-  expect(prompt.hidden, `${label}: #social-prompt is hidden`).toBe(true);
-  expect(prompt.textContent, `${label}: #social-prompt is empty`).toBe('');
+  expect(document.getElementById('social-prompt'), `${label}: no #social-prompt`).toBeNull();
+  expect(document.getElementById('social-confirm'), `${label}: no #social-confirm`).toBeNull();
+  const root = document.querySelector<HTMLElement>('[data-context-sheet]');
+  if (root === null) return;
+  expect(root.dataset.sheetVariant, `${label}: not the confirm variant`).not.toBe('confirm');
   expect(
-    prompt.querySelectorAll('[data-nav-key]').length,
+    root.querySelectorAll('[data-nav-key="yes"], [data-nav-key="no"]').length,
     `${label}: no Yes / No row is left`,
   ).toBe(0);
 }
@@ -855,8 +889,7 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     const status = byId('trade-status');
     const none = i18nT('trade.status.none');
     const open = i18nT('trade.status.open');
-    const placeholder = i18nT('social.players.placeholder');
-    expect(new Set([none, open, placeholder]).size, 'fixture: three distinct status texts').toBe(3);
+    expect(new Set([none, open]).size, 'fixture: two distinct status texts').toBe(2);
 
     view.show();
     const chrome = document.createElement('div');
@@ -895,8 +928,9 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
       outside,
     );
 
-    // Players: the placeholder, no shell part hidden.
-    expect(status.textContent, 'Players: the placeholder').toBe(placeholder);
+    // ts-6b-10 (named intentional change): Players reads the trade status, not a placeholder.
+    // Was: the catalogued `social.players.placeholder` text.
+    expect(status.textContent, 'Players: the trade status').toBe(none);
     expect(hiddenTradeParts(), 'Players: no shell part hidden').toEqual([]);
     expectNoSessionRows('Players');
 
@@ -909,7 +943,9 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
 
     // hide() drops the paint: the hidden root holds no placeholder, and a reopen starts clean.
     view.paintSocial(chrome, socialPaint({ tab: 'players' }));
-    expect(status.textContent, 'precondition: Players again').toBe(placeholder);
+    expect(status.textContent, 'precondition: Players again').toBe(none);
+    view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
+    expect(status.textContent, 'Players ignores the session rows: no open status').toBe(none);
     view.hide();
     expect(status.textContent, 'hidden: no placeholder left').toBe(none);
     expect(hiddenTradeParts(), 'hidden: nothing hidden').toEqual([]);
@@ -947,6 +983,9 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
       { tab: 'challenges', actions: ['accept', 'decline'], active: 'decline' },
       { tab: 'challenges', actions: ['cancel'], active: 'cancel' },
       { tab: 'trades', actions: ['accept', 'decline'], active: 'decline' },
+      // ts-6b-10: the Back row is reachable as the cursor row.
+      { tab: 'challenges', actions: ['accept', 'decline'], active: 'back' },
+      { tab: 'challenges', actions: ['cancel'], active: 'back' },
     ];
     for (const c of sheets) {
       const label = `sheet ${c.actions.join('/')} on ${c.active}`;
@@ -985,22 +1024,30 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
           confirm: { question: c.question, yes: c.yes },
         }),
       );
-      const prompt = byId('social-prompt');
-      const text = byId('social-prompt-text');
+      // ts-6b-10 (named intentional change): the prompt is the SAME kit root's confirm variant:
+      // the question is its heading, the Yes / No rows are the rows container (id
+      // `social-confirm`), and the action rows are not painted beneath it. Was: `#social-prompt`
+      // holding `#social-prompt-text` and `#social-confirm`, with `#social-sheet` painted beneath.
+      const root = sheetRoot(chrome);
+      const text = root.querySelector<HTMLElement>('.mr-sheet-title');
       const confirm = byId('social-confirm');
-      expect(chrome.contains(prompt), `${label}: #social-prompt is in the chrome`).toBe(true);
-      expect(prompt.hidden, `${label}: the prompt shows`).toBe(false);
+      expect(root.hidden, `${label}: the prompt shows`).toBe(false);
+      expect(root.dataset.sheetVariant, `${label}: the confirm variant`).toBe('confirm');
+      expect(root.contains(confirm), `${label}: the Yes / No rows are in the sheet root`).toBe(
+        true,
+      );
+      expect(document.getElementById('social-prompt'), `${label}: no #social-prompt`).toBeNull();
       expect(
-        prompt.contains(text) && prompt.contains(confirm),
-        `${label}: the question and the Yes / No rows are in #social-prompt`,
-      ).toBe(true);
-      expect(text.textContent, `${label}: the catalogued question`).toBe(
+        document.getElementById('social-prompt-text'),
+        `${label}: no #social-prompt-text`,
+      ).toBeNull();
+      expect(text?.textContent, `${label}: the catalogued question`).toBe(
         SOCIAL_QUESTION_TEXT[c.question](),
       );
       expect(
         confirm.getAttribute('aria-labelledby'),
         `${label}: the Yes / No rows are named by the question`,
-      ).toBe('social-prompt-text');
+      ).toBe(text?.id);
       const cursor = c.yes ? 'yes' : 'no';
       expect(navRows(confirm), `${label}: Yes then No, the cursor on ${cursor}`).toEqual({
         keys: ['yes', 'no'],
@@ -1008,7 +1055,14 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
         activeByClass: [cursor],
         activeByAria: [cursor],
       });
-      expectSheet(chrome, c, `${label}: the sheet beneath`);
+      expect(
+        navRows(root).keys,
+        `${label}: only Yes / No rows in the root, no action row beneath`,
+      ).toEqual(['yes', 'no']);
+      expect(
+        document.getElementById('social-sheet'),
+        `${label}: the rows container is #social-confirm now, not #social-sheet`,
+      ).toBeNull();
     }
 
     // The prompt closes; the sheet stays on its action.
@@ -1024,19 +1078,37 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
         sheet: { actions: decline.actions, active: decline.active },
       }),
     );
-    expect(document.getElementById('social-prompt'), 'precondition: a prompt was painted').not.toBe(
-      null,
-    );
     expectNoPrompt('the prompt closed');
     expectSheet(chrome, decline, 'the sheet after the prompt closed');
 
-    // No sheet: hidden and empty.
+    // No sheet: the root is hidden and empty, and the rows container is back to #social-sheet,
+    // itself hidden (e2e ranked-forfeit.spec.ts reads `#social-sheet`.hidden).
     view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
     const sheet = byId('social-sheet');
+    const closedRoot = sheetRoot(chrome);
+    expect(closedRoot.hidden, 'no sheet: the sheet root is hidden').toBe(true);
+    expect(closedRoot.textContent, 'no sheet: no text is left in the root').toBe('');
     expect(sheet.hidden, 'no sheet: #social-sheet is hidden').toBe(true);
     expect(sheet.childElementCount, 'no sheet: no row is left').toBe(0);
     expect(sheet.textContent, 'no sheet: no text is left').toBe('');
     expectNoPrompt('no sheet');
+    // A closed Decline prompt also leaves #social-sheet findable and hidden.
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline'], active: 'decline' },
+        confirm: { question: 'declineChallenge', yes: false },
+      }),
+    );
+    expect(document.getElementById('social-sheet'), 'precondition: the prompt took the id').toBe(
+      null,
+    );
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expect(byId('social-sheet').hidden, 'prompt then no sheet: #social-sheet found, hidden').toBe(
+      true,
+    );
+    expect(document.getElementById('social-confirm'), 'and #social-confirm is gone').toBeNull();
 
     // A part hidden while it holds the focus hands it to the trade root's [tabindex="-1"] anchor.
     view.paintSocial(
@@ -1059,14 +1131,24 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
       }),
     );
     byId('social-confirm').focus();
+    const sharedRows = byId('social-confirm');
     expect(document.activeElement, 'precondition: the Yes / No rows hold the focus').toBe(
-      byId('social-confirm'),
+      sharedRows,
     );
+    // ts-6b-10 (named intentional change): list and confirm share ONE rows element, so a prompt
+    // closing back to the list keeps the focus on it (it holds `#social-sheet` again). Was: the
+    // closed prompt handed the focus to the anchor.
     view.paintSocial(
       chrome,
       socialPaint({ tab: 'trades', sheet: { actions: ['accept', 'decline'], active: 'decline' } }),
     );
-    expect(document.activeElement, 'the closed prompt hands the focus to the anchor').toBe(anchor);
+    expect(byId('social-sheet'), 'the same rows element, the id back').toBe(sharedRows);
+    expect(document.activeElement, 'the prompt closing into the list keeps the focus').toBe(
+      sharedRows,
+    );
+    // The sheet itself closing while it holds the focus hands it to the anchor.
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    expect(document.activeElement, 'the closed sheet hands the focus to the anchor').toBe(anchor);
 
     // Control: a part hidden while the focus is elsewhere in the root moves nothing.
     const elsewhere = s3InsideSentinel(overlay);
@@ -1113,7 +1195,7 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
 // ---------------------------------------------------------------------------
 
 describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
-  it('UIF9.1 the chrome`s first child is the TabBar root (class mr-tabbar, not hidden) holding, in order, an LB chip, the #social-tabs tablist and an RB chip (chips aria-hidden, data-button, no text); the four tabs in order carry the catalogued labels with the painted one aria-selected and is-selected and never is-active; a repaint, on any tab and on a moved chrome, reuses the same bar and strip nodes; the chrome is [TabBar, #social-sheet, #social-prompt] and the trade root gains only the hosted chrome', () => {
+  it('UIF9.1 the chrome`s first child is the TabBar root (class mr-tabbar, not hidden) holding, in order, an LB chip, the #social-tabs tablist and an RB chip (chips aria-hidden, data-button, no text); the four tabs in order carry the catalogued labels with the painted one aria-selected and is-selected and never is-active; a repaint, on any tab and on a moved chrome, reuses the same bar and strip nodes; the chrome is [TabBar, the kit sheet root] and the trade root gains only the hosted chrome', () => {
     // WRONG IMPL KILLED: the bare strip left as the chrome's first child (no `.mr-tabbar` root, no
     // chips); a TabBar appended after the sheet or the prompt (not top-anchored); a second bar
     // created on every paint or per panel; chips that carry text or are not aria-hidden; the
@@ -1324,7 +1406,7 @@ function paintMatrix(): readonly SocialPaint[] {
 /** The status line the contract derives from a kept paint (null: no paint kept). */
 function expectedStatus(p: SocialPaint | null): string {
   if (p === null) return i18nT('trade.status.none');
-  if (p.tab === 'players') return i18nT('social.players.placeholder');
+  // ts-6b-10 (named intentional change): Players reads the trade status. Was: the placeholder.
   return p.tab === 'trades' && p.sessions.length > 0
     ? i18nT('trade.status.open')
     : i18nT('trade.status.none');
@@ -1378,7 +1460,7 @@ describe('TradeView — only session rows on the trade root (ts-4, ts-4.6)', () 
     expect(() => new TradeView(), 'no status line: a throw').toThrow();
   });
 
-  it('ts-4.6 the status line is a function of the kept Social paint alone: Players reads the placeholder, Trades with a session row reads trade.status.open, Trades with none and every other tab read trade.status.none, and with no paint kept (never painted, after hide, a paint on the hidden root) it reads trade.status.none', () => {
+  it('ts-4.6 the status line is a function of the kept Social paint alone: Players reads trade.status.none (ts-6b-10: no placeholder), Trades with a session row reads trade.status.open, Trades with none and every other tab read trade.status.none, and with no paint kept (never painted, after hide, a paint on the hidden root) it reads trade.status.none', () => {
     // WRONG IMPL KILLED: a status kept from an earlier paint or render (a stale "Open trades"
     // after the last session closed, or "No active trade" over open sessions); a status that is
     // '' or the shell's text before any paint is kept; the session count read on the Challenges or
@@ -1495,6 +1577,43 @@ describe('TradeView — only session rows on the trade root (ts-4, ts-4.6)', () 
     view.show();
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
+    // ts-6b-10 (named intentional change): the sheet and its prompt are the two variants of ONE
+    // kit root, so they are painted by two paints (the prompt replaces the action rows) and the
+    // sheet carries the Back row (`kit.sheet.back`). Was: one paint with both, the labels read off
+    // `#social-sheet` and the question off `#social-prompt-text`.
+    vi.mocked(i18nT).mockClear();
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline', 'cancel'], active: 'cancel' },
+      }),
+    );
+    // Read off the spy before the assertions below resolve their expected labels through it.
+    const sheetIds = new Set(vi.mocked(i18nT).mock.calls.map(([id]) => String(id)));
+    expect(
+      [...sheetIds]
+        .filter(
+          (id) =>
+            id.startsWith('social.action.') ||
+            id.startsWith('social.confirm.') ||
+            id.startsWith('kit.sheet.'),
+        )
+        .sort(),
+      'the action ids and the Back label the sheet paint read, no question',
+    ).toEqual([
+      'kit.sheet.back',
+      'social.action.accept',
+      'social.action.cancel',
+      'social.action.decline',
+    ]);
+    expect(navRows(byId('social-sheet')).texts, 'the three labels then Back, in order').toEqual([
+      SOCIAL_ACTION_LABEL.accept(),
+      SOCIAL_ACTION_LABEL.decline(),
+      SOCIAL_ACTION_LABEL.cancel(),
+      i18nT('kit.sheet.back'),
+    ]);
+
     vi.mocked(i18nT).mockClear();
     view.paintSocial(
       chrome,
@@ -1504,24 +1623,114 @@ describe('TradeView — only session rows on the trade root (ts-4, ts-4.6)', () 
         confirm: { question: 'declineChallenge', yes: true },
       }),
     );
-    // Read off the spy before the assertions below resolve their expected labels through it.
-    const ids = new Set(vi.mocked(i18nT).mock.calls.map(([id]) => String(id)));
+    const promptIds = new Set(vi.mocked(i18nT).mock.calls.map(([id]) => String(id)));
     expect(
-      [...ids]
-        .filter((id) => id.startsWith('social.action.') || id.startsWith('social.confirm.'))
-        .sort(),
-      'the action and question ids the paint read',
-    ).toEqual([
-      'social.action.accept',
-      'social.action.cancel',
-      'social.action.decline',
-      'social.confirm.declineChallenge',
+      [...promptIds].filter(
+        (id) => id.startsWith('social.action.') || id.startsWith('social.confirm.'),
+      ),
+      'the prompt paint reads the question and no action label',
+    ).toEqual(['social.confirm.declineChallenge']);
+    expect(sheetRoot(chrome).querySelector('.mr-sheet-title')?.textContent).toBe(
+      SOCIAL_QUESTION_TEXT.declineChallenge(),
+    );
+  });
+
+  it('the Social sheet is the kit sheet: one [data-context-sheet] root in the chrome whose rows container #social-sheet is a focusable listbox of Accept, Decline, Back; the Decline prompt renders in the same root as the confirm variant with the rows container #social-confirm; closed, the root is hidden and empty and #social-sheet is back and hidden', () => {
+    // WRONG IMPL KILLED: today's two separate parts (`#social-sheet` and a `#social-prompt` with
+    // its own `p`); a second sheet root created per variant; a sheet with no Back row or a Back
+    // label that is not the catalogued `kit.sheet.back`; a rows container that is not the one
+    // tab stop (no listbox role, no tabindex 0); a prompt whose question is not the root's
+    // heading; a closed sheet that leaves the root visible or its rows behind, or a rows
+    // container that keeps the id `social-confirm` (e2e ranked-forfeit reads `#social-sheet`).
+    mountTradeOverlay();
+    const view = new TradeView();
+    view.show();
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expect(chrome.querySelectorAll('[data-context-sheet]').length, 'one kit root').toBe(1);
+    const root = sheetRoot(chrome);
+    expect(root.classList.contains('mr-sheet'), 'the kit root class').toBe(true);
+    expect(root.hidden, 'closed: the root is hidden').toBe(true);
+    expect(root.textContent, 'closed: the root is empty').toBe('');
+    expect(byId('social-sheet').hidden, 'closed: the rows container is hidden').toBe(true);
+    expect(chrome.children.length, 'the chrome is the TabBar and the one root').toBe(2);
+    expect(chrome.children[1], 'the root follows the TabBar').toBe(root);
+
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline'], active: 'accept' },
+      }),
+    );
+    expect(sheetRoot(chrome), 'the same root is reused').toBe(root);
+    expect(root.hidden, 'open: the root shows').toBe(false);
+    expect(root.dataset.sheetVariant).toBe('list');
+    const rows = byId('social-sheet');
+    expect(root.querySelector('.mr-sheet-rows'), 'the rows container is the kit rows').toBe(rows);
+    expect(rows.getAttribute('role'), 'a listbox').toBe('listbox');
+    expect(rows.getAttribute('tabindex'), 'the one tab stop').toBe('0');
+    expect(navRows(rows).texts, 'Accept, Decline, Back').toEqual([
+      i18nT('social.action.accept'),
+      i18nT('social.action.decline'),
+      i18nT('kit.sheet.back'),
     ]);
-    expect(navRows(byId('social-sheet')).texts, 'the three labels, in order').toEqual([
-      SOCIAL_ACTION_LABEL.accept(),
-      SOCIAL_ACTION_LABEL.decline(),
-      SOCIAL_ACTION_LABEL.cancel(),
-    ]);
-    expect(byId('social-prompt-text').textContent).toBe(SOCIAL_QUESTION_TEXT.declineChallenge());
+    expect(navRows(rows).keys, 'the Back row key').toEqual(['accept', 'decline', 'back']);
+
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline'], active: 'decline' },
+        confirm: { question: 'declineChallenge', yes: false },
+      }),
+    );
+    expect(sheetRoot(chrome), 'still the same root').toBe(root);
+    expect(chrome.querySelectorAll('[data-context-sheet]').length, 'still one root').toBe(1);
+    expect(root.dataset.sheetVariant, 'the confirm variant').toBe('confirm');
+    expect(root.querySelector('.mr-sheet-title')?.textContent, 'the question is the heading').toBe(
+      i18nT('social.confirm.declineChallenge'),
+    );
+    expect(byId('social-confirm'), 'the same rows element, renamed').toBe(rows);
+    expect(navRows(rows).texts, 'Yes, No').toEqual([i18nT('prompt.yes'), i18nT('prompt.no')]);
+
+    // Answered or closed: the sheet again, then nothing; #social-sheet is found each time.
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline'], active: 'decline' },
+      }),
+    );
+    expect(byId('social-sheet'), 'prompt answered: #social-sheet is found again').toBe(rows);
+    expect(root.dataset.sheetVariant).toBe('list');
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expect(root.hidden, 'closed again: the root is hidden').toBe(true);
+    expect(root.textContent, 'closed again: the root is empty').toBe('');
+    expect(byId('social-sheet'), 'closed again: #social-sheet is found').toBe(rows);
+    expect(rows.hidden, 'closed again: the rows container is hidden').toBe(true);
+    expect(document.getElementById('social-confirm')).toBeNull();
+  });
+
+  it('the Players tab never writes the placeholder text: its status reads the trade status, with and without a session row', () => {
+    // WRONG IMPL KILLED: today's Players branch writing `social.players.placeholder` into
+    // #trade-status; a Players status that follows the session rows ("open") when the rows are
+    // not Players' to show.
+    mountTradeOverlay();
+    const view = new TradeView();
+    view.show();
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    vi.mocked(i18nT).mockClear();
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(byId('trade-status').textContent).toBe(i18nT('trade.status.none'));
+    view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
+    expect(byId('trade-status').textContent).toBe(i18nT('trade.status.none'));
+    expect(
+      vi.mocked(i18nT).mock.calls.some(([id]) => String(id) === 'social.players.placeholder'),
+      'the placeholder key is never resolved',
+    ).toBe(false);
   });
 });

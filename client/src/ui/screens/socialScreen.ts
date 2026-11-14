@@ -6,12 +6,14 @@
 // The frame opens on the tab its open path asked for (`ctx.socialTab`: U, P, L, the menu leaves,
 // the challenge auto-show), else on the oldest waiting request's tab, else on the tab it was left
 // on (the host remembers the state), else on Players; the cursor goes to the opened tab's waiting
-// request. A on a challenge row opens a sheet of its legal actions, the cursor on the first
-// (Accept, for a request): Accept and Cancel send at once, Decline asks Yes / No on No. A on a
-// trade session row opens that session's editor at once: it has no sheet. B backs out one level
-// and pops the frame from the list.
+// request. A on a challenge row opens a sheet of its legal actions and a last Back row, the cursor
+// on the first (Accept, for a request): Accept and Cancel send at once, Decline asks Yes / No on
+// No, and A on Back is B's step (back to the list, nothing sent). A on a trade session row opens
+// that session's editor at once: it has no sheet. B backs out one level and pops the frame from
+// the list.
 //
-// Players and Rankings (CTL8G.1-.2) are painted over the leaderboard root (`leaderboardView.ts`).
+// Players and Rankings (CTL8G.1-.2) are painted over the leaderboard root (`leaderboardView.ts`),
+// the panel `socialPanel` names for both.
 // A on a player shows "Walk up to {name} and press A" (the `walkUp` phase; no remote action
 // exists) until B or a move; Rankings is read-only, so A there does nothing.
 //
@@ -26,6 +28,7 @@
 // A sent command has no in-flight lock here (the views' locks guard their own buttons): the
 // reducers are the authority and refuse a duplicate.
 import { socialPanel } from '../contextStack';
+import { BACK_KEY } from '../monstersModel';
 import { list, type NavState, navFocus, navInit, navReconcile, navStep } from '../nav';
 import {
   buildSocialVm,
@@ -39,7 +42,7 @@ import {
   socialRows,
   socialSessionsKey,
 } from '../socialModel';
-import type { SocialPaint, SocialQuestion } from '../tradeView';
+import type { SocialPaint, SocialQuestion, SocialSheetKey } from '../tradeView';
 import type {
   ButtonStep,
   Command,
@@ -55,9 +58,11 @@ export type SocialPhase =
       readonly kind: 'sheet';
       /** The row's key. */
       readonly row: string;
-      /** The row's legal actions as painted: a batch that changes them closes the sheet. */
+      /** The row's legal actions as painted: a batch that changes them closes the sheet. The
+       *  sheet lists them, then Back. */
       readonly actions: readonly SocialAction[];
-      readonly action: SocialAction;
+      /** The sheet's cursor: an action, or Back. */
+      readonly action: SocialSheetKey;
       /** The Yes / No prompt over `action`, its cursor on Yes or No; null: no prompt. */
       readonly confirm: { readonly yes: boolean } | null;
     }
@@ -86,12 +91,13 @@ const sameActions = (a: readonly SocialAction[], b: readonly SocialAction[]): bo
   a.length === b.length && a.every((action, i) => action === b[i]);
 
 /** The question `action` asks before it is sent, else null (it sends at once). */
-function questionOf(action: SocialAction): SocialQuestion | null {
+function questionOf(action: SocialSheetKey): SocialQuestion | null {
   return action === 'decline' ? 'declineChallenge' : null;
 }
 
-/** The command `action` sends for `row`; null for an action that kind of row never offers. */
-function commandOf(row: SocialRow, action: SocialAction): Command | null {
+/** The command `action` sends for `row`; null for Back and for an action that kind of row never
+ *  offers. */
+function commandOf(row: SocialRow, action: SocialSheetKey): Command | null {
   const { id } = row;
   if (row.kind === 'incoming') {
     if (action === 'accept') return { kind: 'acceptChallenge', challengeId: id };
@@ -270,15 +276,18 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     switch (btn.button) {
       case 'Up':
       case 'Down': {
-        // A fresh press wraps and a held one clamps: it never slides from Decline onto Accept.
-        const actions = list(phase.actions.map((key) => ({ key, enabled: true })));
-        const moved = navStep(actions, { tab: null, item: phase.action, perTab: {} }, btn).state;
-        const action = phase.actions.find((a) => a === moved.item);
+        // A fresh press wraps and a held one clamps: it never slides from Back onto Accept.
+        const keys: readonly SocialSheetKey[] = [...phase.actions, BACK_KEY];
+        const rows = list(keys.map((key) => ({ key, enabled: true })));
+        const moved = navStep(rows, { tab: null, item: phase.action, perTab: {} }, btn).state;
+        const action = keys.find((a) => a === moved.item);
         if (action === undefined || action === phase.action) return done('consumed');
         return to({ ...phase, action });
       }
       case 'A':
         if (btn.repeat) return done('consumed');
+        // Back is B's step: the sheet closes and nothing is sent.
+        if (phase.action === BACK_KEY) return to(LIST);
         return questionOf(phase.action) === null
           ? send()
           : to({ ...phase, confirm: { yes: false } });
@@ -293,11 +302,14 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
 
   paint(view, vm, state): void {
     const tab = tabOf(state.nav);
-    // The panel first: a paint that throws below still leaves the right one up. Players moves off
-    // the trade root's placeholder onto the leaderboard root, beside Rankings.
-    view.show(tab === 'players' ? 'leaderboardView' : socialPanel(tab));
+    // The panel first: a paint that throws below still leaves the right one up.
+    view.show(socialPanel(tab));
     const cursor = rowAt(vm, tab, state.nav.item);
     const { phase } = state;
+    // The cursor before the chrome: the sheet is placed away from the marked row.
+    view.challenges?.paintCursor(
+      cursor?.kind === 'incoming' || cursor?.kind === 'outgoing' ? cursor.kind : null,
+    );
     view.trades?.paintSocial(view.chrome, {
       tab,
       sessions: vm.trades.flatMap((row) =>
@@ -308,9 +320,6 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
       sheet: phase.kind === 'sheet' ? { actions: phase.actions, active: phase.action } : null,
       confirm: promptOf(vm, tab, phase),
     });
-    view.challenges?.paintCursor(
-      cursor?.kind === 'incoming' || cursor?.kind === 'outgoing' ? cursor.kind : null,
-    );
     if (tab === 'players' || tab === 'rankings') {
       view.rankings?.paintSocial({
         tab,
