@@ -970,5 +970,11 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
         expect(chip.hasAttribute(banned), `#${id} must not carry ${banned}`).toBe(false);
       }
     }
+    // Page-wide: no element anywhere carries a launcher attribute no code reads (the chips' exact
+    // attribute set above does not cover #hint-bar or any other node).
+    expect(
+      doc.querySelectorAll('[data-menu-launcher], [data-help-launcher]'),
+      'no element in index.html carries a launcher attribute',
+    ).toHaveLength(0);
   });
 });

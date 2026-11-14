@@ -334,8 +334,9 @@ describe('tradeSessionModel — both sides, both marks, the pickers (ts-3.2)', (
   });
 
   it('ts-3.2 a monster the rule refuses is blocked with its reason, first match in the order fainted, inAnotherTrade, inBattle: one case per reason, a monster fainted AND in battle reads fainted, one in another trade AND in battle reads inAnotherTrade; a monster offered in ANOTHER session is refused while the same monster in THIS session is not; the viewer`s side of THIS session and a foreign session block nothing', () => {
-    // WRONG IMPL KILLED: the reasons checked in another order (26 would read inBattle, 20 would
-    // read inBattle); a fainted test on `statHp` or `<= 1`; the current session counted as
+    // WRONG IMPL KILLED: the reasons checked in another order (fainted must come before
+    // inAnotherTrade: 26, fainted AND offered in session 104 AND in battle, would read
+    // inAnotherTrade; 20 would read inBattle); a fainted test on `statHp` or `<= 1`; the current session counted as
     // "another" trade (the viewer's own offered monsters 21 and 27 would be blocked, and could
     // never be re-offered after an edit); the PARTNER's side or a foreign session counted (21 and
     // 32 sit on Bob's side of session 103); a monster offered in no session blocked (24 free);
@@ -354,6 +355,19 @@ describe('tradeSessionModel — both sides, both marks, the pickers (ts-3.2)', (
       '20': 'inAnotherTrade',
       '27': null,
       '32': null,
+    });
+    // A monster that is fainted, offered in ANOTHER session AND in battle reads fainted: the first
+    // match wins. Session 104 (ME opened with Carol) offers 26 on ME's side; viewed from 101, 26
+    // is in another trade, in battle and fainted. The other expectations are unchanged.
+    const S4 = session(104n, ME, CAROL, { openerOffer: side([26n]) });
+    const withS4 = sessionVm({ sessions: [S3, S2, S1, S4] });
+    const s4Blocks = Object.fromEntries(
+      withS4.monsters.map((m) => [m.monsterId.toString(), m.blocked]),
+    );
+    expect(s4Blocks['26'], 'fainted AND inAnotherTrade AND inBattle reads fainted').toBe('fainted');
+    expect(s4Blocks, 'session 104 changes no other monster`s block').toEqual({
+      ...blocks,
+      '26': 'fainted',
     });
     // Seen from session 102, ME's monsters in session 101 are the ones in ANOTHER trade, and 23
     // (offered here) is free; 20 is still in battle.

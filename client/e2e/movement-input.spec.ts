@@ -372,8 +372,8 @@ test.describe
       // an unfocused page silently swallows every synthetic key (which would make the whole
       // suite pass or fail for the wrong reason). The click lands on the canvas, which owns
       // no click handler of its own: clicks are routed by the #game-screen pointer dispatcher
-      // (input/pointerSource.ts), which presses a button only for a hint chip (data-button) or a
-      // nav row (data-nav-key), so a click on the bare canvas presses nothing.
+      // (input/pointerSource.ts). At the bare world it presses A for a click inside the world
+      // canvas; that is harmless here, because nothing is in front of the character to act on.
       await page.mouse.click(400, 200);
       stepMs = (await snap(page)).stepMs;
       expect(stepMs, 'the hook must report the real STEP_MS cadence').toBeGreaterThan(0);

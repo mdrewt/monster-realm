@@ -13,8 +13,10 @@
 // expected string is resolved through the real resolver from its catalog id (the tradeView.test.ts
 // idiom), never hand-typed English.
 //
-// The shell is index.html's `#tradepropose-overlay` (the smoke test pins its five static children;
-// the view adopts the root, removes the four static wizard controls once at construction, builds
+// The shell is index.html's `#tradepropose-overlay`, which now ships only `#tradepropose-submit`.
+// This fixture DELIBERATELY keeps the four retired wizard controls as extra static children, to
+// prove the view removes any other static child once at construction. The view adopts the root,
+// removes those controls, builds
 // the `tradesession-*` parts before the kept static `#tradepropose-submit` button, which becomes
 // the always-enabled Close button and the registry's focus anchor).
 //
@@ -55,7 +57,8 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-/** index.html's static shell, byte-for-byte in shape (ids, roles, hidden). */
+/** index.html's shell root (ids, roles, hidden) plus the four retired wizard controls, which
+ *  index.html no longer ships: kept here so the constructor's removal of them is proven. */
 function mountShell(): HTMLElement {
   document.body.innerHTML = `
     <div id="tradepropose-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">

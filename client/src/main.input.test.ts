@@ -1135,7 +1135,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
 
     // ctl-15 (named intentional change, CTL15.5): the Start chip click is now a Start PRESS through
     // the router (the #game-screen pointer dispatcher), which syncs the stack on both sides like a
-    // keydown, so the click-opened menu is mirrored AT ONCE (keyboard parity). Was: the old
+    // keydown, so the click-opened menu is mirrored AT ONCE (keyboard parity). Was: the
     // old Start-chip delegate opened the menu outside the input path, the stack saw it only
     // on the next frame, and two hook reads in between proved a read never syncs. No non-press
     // opener is left in this harness, so that half has no subject any more; the reads below still
