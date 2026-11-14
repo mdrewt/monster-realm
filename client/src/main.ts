@@ -14,20 +14,15 @@
 
 import { Identity } from 'spacetimedb';
 // bt-12: the tactics rules port is bound from the whole pkg namespace, LAZILY (`tacticsRules()`): the
-// test mocks of this module carry only the names main.ts imports by name, and `bindTacticsRules`
+// test mocks of this module carry only the names main.ts and shell/config.ts import by name, and `bindTacticsRules`
 // refuses a pkg missing a tactics export — so the bind happens on the first deploy render only.
 import * as wasmPkg from '../../client-wasm/pkg/client_wasm.js';
 // client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
 // vite-plugin-wasm, awaited at module top level — see vite.config.ts / server.fs.allow).
 import {
   apply_move,
-  deletion_grace_ms_default,
   interact_candidates_coded,
-  move_queue_cap,
-  party_size,
-  party_slot_none,
   set_active_zone,
-  step_ms,
   zone_map,
 } from '../../client-wasm/pkg/client_wasm.js';
 import {
@@ -59,14 +54,7 @@ import {
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
-import { resolveConnectionConfig } from './net/connectionConfig';
-import {
-  makeFateLogger,
-  makeSendLogger,
-  RATE_LIMIT_INITIAL,
-  rateLimitTick,
-  resolveDevLogLevel,
-} from './net/devLog';
+import { RATE_LIMIT_INITIAL, rateLimitTick } from './net/devLog';
 import {
   AuthoritativeStore,
   ownPerspective,
@@ -94,6 +82,19 @@ import type { PostStackToggles } from './render/postStack';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { type RenderEntity, WorldRenderer } from './render/world';
+import {
+  DB,
+  DELETION_GRACE_MS_DEFAULT,
+  fateLogger,
+  PARTY_SIZE,
+  PARTY_SLOT_NONE,
+  QUEUE_CAP,
+  STEP_MS,
+  sendLogger,
+  URI,
+  WASM_READY_MS,
+  ZONE_ID,
+} from './shell/config';
 import { clockVM } from './tactics/clock';
 import { DeployPanel, type DeployVM, deployVM } from './tactics/deployPanel';
 import { isAlreadyActing } from './tactics/draft';
@@ -342,36 +343,6 @@ import {
 import type { TradeSessionView } from './ui/tradeSessionView';
 import type { TradeView } from './ui/tradeView';
 
-// resolve the SpacetimeDB target at MODULE scope (eager, like the old
-// URI/DB consts) so a misconfigured PRODUCTION build fails loud here — before connect() is
-// reachable — rather than silently writing to the dev-default database `monster-realm`.
-// Kept at module scope on purpose: moving it inside main() could let a try/catch
-// swallow the throw.
-const { uri: URI, db: DB } = resolveConnectionConfig(
-  {
-    uri: import.meta.env.VITE_STDB_URI as string | undefined,
-    db: import.meta.env.VITE_STDB_DB as string | undefined,
-  },
-  import.meta.env.DEV,
-);
-// dev-observability: resolve VITE_MR_DEVLOG at MODULE scope too, for the same
-// F-3 reason — the resolver RETHROWS in dev, and a throw from inside main() could be
-// swallowed by a try/catch there. Asymmetric on purpose (inverted vs the other resolvers): dev rethrows,
-// prod degrades to 'off' with one console.error, because this line runs BEFORE the
-// window.onerror / unhandledrejection listeners below. `sendLogger` is undefined at level
-// 'off', which is what keeps wrapReducerLogging strict identity in the default prod build.
-// console.log, NOT console.debug (Chrome hides debug behind the Verbose level).
-const DEV_LOG_LEVEL = resolveDevLogLevel(
-  import.meta.env.VITE_MR_DEVLOG as string | undefined,
-  import.meta.env.DEV,
-  (m) => console.error(m),
-);
-const sendLogger = makeSendLogger(DEV_LOG_LEVEL, (line) => console.log(line));
-// The INBOUND fate line, same level/sink/undefined-at-'off' discipline as
-// sendLogger. CONSOLE-ONLY — a ring push smuggled into this sink would ship reducer args
-// (player free text) into the shared F9 bundle.
-const fateLogger = makeFateLogger(DEV_LOG_LEVEL, (line) => console.log(line));
-
 // negotiate the boot locale once, before any consumer.
 const LOCALE = negotiateLocale(
   [...new URLSearchParams(window.location.search).getAll('locale'), ...navigator.languages],
@@ -380,23 +351,9 @@ const LOCALE = negotiateLocale(
 setLocale(LOCALE);
 document.documentElement.lang = LOCALE;
 document.documentElement.dir = isRtl(LOCALE) ? 'rtl' : 'ltr';
-
-const ZONE_ID = 0;
-
-// Content is single-sourced from game-core via the wasm exports (never duplicated).
-const STEP_MS = step_ms();
-const QUEUE_CAP = move_queue_cap();
-const PARTY_SIZE = party_size();
-const PARTY_SLOT_NONE = party_slot_none();
-// The deletion grace window, read ONCE per session — it is a build constant, and
-// re-reading it per frame would cross the wasm boundary ~60x/s for a value that cannot change.
-const DELETION_GRACE_MS_DEFAULT = deletion_grace_ms_default();
 // rawMap is `let` — replaced on zone warp (zone_map() re-called for the new zone id).
 let rawMap = zone_map(ZONE_ID);
 
-// wasm-ready mark — the import above is top-level-awaited, so the exports are
-// callable here (the metric's definition: ms from timeOrigin), captured once per session.
-const WASM_READY_MS = performance.now();
 // module-scope resolve (F-3 pattern); jitter injected so the resolver stays pure (AM12).
 const TELEMETRY_CONFIG = resolveTelemetryConfig(
   {
