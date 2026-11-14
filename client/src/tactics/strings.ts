@@ -144,6 +144,11 @@ export const tickerRoundEnded = (round: number): string =>
 // --- banner ----------------------------------------------------------------------------------
 
 export const bannerTurn = (unit: string): string => tf('tactics.banner.turn', { unit });
+/** The own-turn announcement (ts-6b-7.1): the round chip's text and the banner's, joined like a ticker
+ *  batch line (space, U+2014, space). The round keeps two turns of one unit distinct: the live region
+ *  drops a message identical to the last one it painted. */
+export const announceTurn = (round: number, unit: string): string =>
+  `${turnbarRound(round)} ${String.fromCharCode(0x2014)} ${bannerTurn(unit)}`;
 
 // --- command menu (bt-11, BT11.1) -------------------------------------------------------------
 

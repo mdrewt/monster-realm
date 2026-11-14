@@ -140,6 +140,8 @@ export interface TacticsBattleDeps {
   readonly onCancelQueue: (battleId: bigint, unitId: number) => void;
   /** bt-15 (BT15.3): the confirmed Forfeit row → `forfeit` (not a queue entry, 0 AP). */
   readonly onForfeit: (battleId: bigint) => void;
+  /** ts-6b-7.1: one utterance for the live region (main.ts: the status-notice queue). */
+  readonly announce: (text: string) => void;
 }
 
 /** The menu's levels: the root, the two sub-lists and the two confirms (`clear` and, bt-15, `forfeit`). */
@@ -363,6 +365,11 @@ export class TacticsBattle implements BattleOpsView {
   #countdownValue: number | null = null;
   /** bt-15: the last clock VM the pump set (the ring + the strip); null when none shows. */
   #clock: ClockVM | null = null;
+  /** ts-6b-7.1: the event lines and the own-turn line waiting for `tick()` to speak them as one
+   *  utterance (events first), and the last own turn spoken (`round:turnIdx:unitId`). */
+  #saidEvents: string[] = [];
+  #saidTurn: string | null = null;
+  #heardTurn: string | null = null;
 
   constructor(parent: HTMLElement, deps: TacticsBattleDeps) {
     this.#deps = deps;
@@ -402,6 +409,17 @@ export class TacticsBattle implements BattleOpsView {
     return this.#visible;
   }
 
+  /** Whether the playback queue holds beats (the `tactics-battle--playing` root class). */
+  get playing(): boolean {
+    return this.#playback.playing();
+  }
+
+  /** Drains the playback at once (what B does while a beat plays). */
+  skip(): void {
+    this.#playback.skip();
+    this.#syncPlaying();
+  }
+
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
@@ -409,6 +427,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#titleEl.textContent = s.battleTitle();
     this.#paint();
     this.#root.style.display = 'flex';
+    this.#noteTurn();
     if (!wasVisible) openOverlayA11y('battleView', this.#root);
   }
 
@@ -417,6 +436,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#root.style.display = 'none';
     this.#playback.skip();
     this.#syncPlaying();
+    this.#dropSpeech();
     this.setCountdown(null);
     this.setClock(null);
     closeOverlayA11y('battleView', null);
@@ -430,6 +450,7 @@ export class TacticsBattle implements BattleOpsView {
     const frame = this.#compute(vm);
     this.#vm = vm;
     this.#commit(frame);
+    this.#noteTurn();
   }
 
   /** Every event is a ticker line NOW (whatever the motion mode); its beats queue for playback. */
@@ -440,15 +461,25 @@ export class TacticsBattle implements BattleOpsView {
     const lines = events.map((ev) => tickerLine(ev, this.#deps.names));
     const beats = planBeats(events, { reduceMotion: this.#deps.reduceMotion() });
     for (const line of lines) this.#ticker.push(line);
-    // A hidden view plays nothing (the log above is still complete for when it returns).
-    if (this.#visible) this.#playback.enqueue(beats);
+    // A hidden view plays nothing and says nothing (the log above is still complete for when it
+    // returns): a first sighting's history is fed hidden.
+    if (this.#visible) {
+      this.#playback.enqueue(beats);
+      events.forEach((ev, i) => {
+        if (this.#spoken(ev)) this.#saidEvents.push(lines[i] as string);
+      });
+    }
     this.#syncPlaying();
   }
 
-  /** Advances the playback queue (the caller's frame loop). */
+  /** Advances the playback queue and speaks what render / show / ingest queued since the last tick,
+   *  as ONE utterance (the caller's frame loop). */
   tick(): void {
     this.#playback.tick();
     this.#syncPlaying();
+    const said = this.#saidTurn === null ? this.#saidEvents : [...this.#saidEvents, this.#saidTurn];
+    this.#dropSpeech();
+    if (said.length > 0) this.#deps.announce(said.join(' '));
   }
 
   /** The "Still there?" countdown (bt-12 B, BT12.2): `n` seconds paints one `.tactics-countdown` line in
@@ -976,6 +1007,43 @@ export class TacticsBattle implements BattleOpsView {
     this.#paint();
   }
 
+  /** The events spoken (ts-6b-7.1): a KO, the battle's end and an OWN unit's halted plan. Damage,
+   *  moves and the rest stay in the ticker only. */
+  #spoken(ev: EventPayload): boolean {
+    switch (ev.tag) {
+      case 'Ko':
+      case 'BattleEnd':
+        return true;
+      case 'PlanHalted': {
+        const unitId = ev.value.unit;
+        return this.#vm?.units.some((u) => u.unitId === unitId && u.mine) === true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** While shown: the unit the battle waits on is an own Active unit without a READY plan, on a turn
+   *  not yet spoken → its turn line is queued. A hidden render decides nothing, so the turn already up
+   *  when the shell first shows is spoken on that show. */
+  #noteTurn(): void {
+    const vm = this.#vm;
+    if (!this.#visible || vm === null) return;
+    const unitId = vm.activeUnitId;
+    const unit = vm.units.find((u) => u.unitId === unitId);
+    if (unit === undefined || !unit.mine || unit.ai || unit.state !== 'Active') return;
+    if (vm.readyPlans.has(unit.unitId)) return;
+    const key = `${vm.round}:${vm.turnIdx}:${unit.unitId}`;
+    if (key === this.#heardTurn) return;
+    this.#heardTurn = key;
+    this.#saidTurn = s.announceTurn(vm.round, this.#deps.names.unit(unit.unitId));
+  }
+
+  #dropSpeech(): void {
+    this.#saidEvents = [];
+    this.#saidTurn = null;
+  }
+
   /** A different battle starts from scratch: nothing of the last one may leak into it. */
   #startBattle(battleId: bigint): void {
     this.#forget();
@@ -997,6 +1065,8 @@ export class TacticsBattle implements BattleOpsView {
     this.#ticker.clear();
     this.#playback.skip();
     this.#syncPlaying();
+    this.#dropSpeech();
+    this.#heardTurn = null;
     this.setCountdown(null);
     this.setClock(null);
   }

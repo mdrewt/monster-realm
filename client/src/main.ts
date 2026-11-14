@@ -62,6 +62,7 @@ import {
   type StoreTacticalBattle,
   type StoreTradeSessionOffer,
 } from './net/store';
+import { ServerClock } from './net/serverClock';
 import { describeScope, INITIAL_SCOPE, revealAfterScopeEdge } from './net/worldScope';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';
@@ -462,6 +463,10 @@ let tacticsIngested: { readonly battleId: bigint; readonly seq: number } | null 
 let lastTacticsVM: TacticsBattleVM | null = null;
 /** The deadline whose "Still there?" countdown the live region already announced (once per window). */
 let stillThereAnnouncedFor: bigint | null = null;
+/** ts-6b-7.3: the battle whose results wait for the shell's playback to drain (null: none waits). */
+let resultsAwaitDrain: bigint | null = null;
+/** ts-6b-7.2: the server-time estimate the battle countdowns read (fed by live clock windows). */
+const serverClock = new ServerClock();
 /** The three views that can own the battle frame, in a fixed order (undefined until built). */
 const battleViews = (): readonly (DeployPanel | ResultsPanel | TacticsBattle | undefined)[] => [
   deployPanel,
@@ -474,6 +479,7 @@ const battleFrameShown = (): boolean => battleViews().some((v) => v?.visible ===
 const hideAllBattleViews = (): void => {
   for (const v of battleViews()) v?.hide();
   tacticsShown = null;
+  resultsAwaitDrain = null;
 };
 /** The view the screen host lends the battle adapter: the tactical shell while it shows, else the
  *  deploy panel while it shows, else nothing (the results panel takes no ops; its Continue is a click
@@ -760,7 +766,9 @@ function syncStack(): void {
     inputRouter.resetRepeat();
   }
   const outcomeUp = outcomeOnTop(contextStack);
-  if (!outcomeUp) {
+  // ts-6b-7.3: while the results wait for the shell's playback the outcome is not yet shown — A's
+  // grace and the auto-advance start when the results panel does (the frame pump).
+  if (!outcomeUp || resultsAwaitDrain !== null) {
     outcomeShownAtMs = null;
     autoContinuedAtMs = null;
   } else outcomeShownAtMs ??= performance.now();
@@ -2286,7 +2294,12 @@ function reportError(kind: SinkKind, text: string, line?: OutcomeLine): void {
 /** Paint a toast and queue it for the live region: spoken once by the frame pump, clear of the
  *  announcements that land beside it (qf-6, ui/statusModel.ts statusNoticeStep). */
 function showToast(text: string): void {
-  const nowMs = paintToast(text);
+  queueNotice(text, paintToast(text));
+}
+
+/** Queue `text` for the live region: the frame pump speaks it clear of the announcements that land
+ *  beside it (qf-6, ui/statusModel.ts statusNoticeStep). */
+function queueNotice(text: string, nowMs: number): void {
   statusNotice = statusNoticeStep(
     statusNotice,
     { kind: 'queue', text, nowMs },
@@ -2551,6 +2564,9 @@ function resetPredictionState(): void {
   tacticsShown = null;
   lastTacticsVM = null;
   stillThereAnnouncedFor = null;
+  resultsAwaitDrain = null;
+  // The rows after a reconnect are a snapshot: their windows may have opened long ago.
+  serverClock.forgetWindows();
   // Reset camera hold so a fresh zone/reconnect starts at origin rather than
   // holding a position from a prior zone.
   lastCamX = 0;
@@ -2859,6 +2875,15 @@ const routeCtx = (): RouteContext => {
     nav,
     // The battle's own rules first (Start opens the menu over it, A continues its outcome).
     screen: (btn) => {
+      // ts-6b-7.3: while the results wait for the shell's playback, A, B and Start skip it — none of
+      // them continues an outcome the player has not been shown yet.
+      if (
+        resultsAwaitDrain !== null &&
+        (btn.button === 'A' || btn.button === 'B' || btn.button === 'Start')
+      ) {
+        tacticsBattle?.skip();
+        return 'consumed';
+      }
       // Every button ends the Monsters frame's last outcome line (qf-2), as it ends the screen's.
       boxView?.clearOutcome();
       const sheetWas = screenHost.sheetOpen;
@@ -3351,6 +3376,7 @@ function refreshBattle(): void {
       // (B17); otherwise nothing below shows it either.
       if (tacticsBattle?.visible === true) return;
     }
+    if (renderer === 'results' && holdResultsForPlayback(battle.battleId)) return;
     const panel =
       renderer === 'deploy' && tacticalRow !== undefined
         ? buildDeployPanel(battle, tacticalRow) // sets `tacticsShown`
@@ -3589,11 +3615,7 @@ function refreshTacticsShell(row: StoreTacticalBattle): boolean {
     tacticsBattle = new TacticsBattle(battleMount, tacticsShellDeps());
   }
   const view = tacticsBattle;
-  const mark = tacticsIngested;
-  const first = mark === null || mark.battleId !== row.battleId;
-  const since = first ? -1 : mark.seq;
-  const fresh = store.battleEvents(row.battleId).filter((e) => e.seq > since);
-  const last = fresh.at(-1)?.seq ?? since;
+  const first = tacticsIngested?.battleId !== row.battleId;
   if (!(view.visible && lastTacticsVM !== null && tacticsVMEqual(lastTacticsVM, vm))) {
     try {
       view.render(vm);
@@ -3603,32 +3625,61 @@ function refreshTacticsShell(row: StoreTacticalBattle): boolean {
     }
     lastTacticsVM = vm;
   }
-  const feed = (): void => {
-    if (fresh.length > 0) {
-      try {
-        view.ingest(fresh.map((e) => e.payload));
-      } catch (err) {
-        // `ingest` is atomic, so the batch left no line: feed the events one by one, and only the
-        // unrenderable one drops (reported once); the mark still moves past the whole batch.
-        reportPaintError(err);
-        for (const e of fresh) {
-          try {
-            view.ingest([e.payload]);
-          } catch (bad) {
-            console.warn('[tactics] event dropped from the log', e.seq, bad);
-          }
-        }
-      }
-    }
-    tacticsIngested = { battleId: row.battleId, seq: last };
-  };
   // A first sighting feeds the history while HIDDEN (the render of a new battle cleared the ticker;
   // a hidden view plays no beats) and then shows; a later batch shows first, so only live events play.
-  if (first) feed();
+  if (first) feedTacticsShell(view, row.battleId);
   popOverBattleBeforeSwitch(view);
   hideOtherBattleViews(battleViews(), view);
   if (!view.visible) view.show();
-  if (!first) feed();
+  if (!first) feedTacticsShell(view, row.battleId);
+  return true;
+}
+
+/** The battle's transcript past the shell's per-battle watermark (REV B2.4) → `ingest`; the mark
+ *  then moves past it. */
+function feedTacticsShell(view: TacticsBattle, battleId: bigint): void {
+  const mark = tacticsIngested;
+  const since = mark === null || mark.battleId !== battleId ? -1 : mark.seq;
+  const fresh = store.battleEvents(battleId).filter((e) => e.seq > since);
+  if (fresh.length > 0) {
+    try {
+      view.ingest(fresh.map((e) => e.payload));
+    } catch (err) {
+      // `ingest` is atomic, so the batch left no line: feed the events one by one, and only the
+      // unrenderable one drops (reported once); the mark still moves past the whole batch.
+      reportPaintError(err);
+      for (const e of fresh) {
+        try {
+          view.ingest([e.payload]);
+        } catch (bad) {
+          console.warn('[tactics] event dropped from the log', e.seq, bad);
+        }
+      }
+    }
+  }
+  tacticsIngested = { battleId, seq: fresh.at(-1)?.seq ?? since };
+}
+
+/** ts-6b-7.3: the Finished batch of the battle the VISIBLE shell already plays (fed before — never a
+ *  first sighting, so a reconnect replays nothing live) feeds the shell its last events, and while
+ *  their beats play the shell keeps the frame, its only owner: the frame pump re-runs `refreshBattle`
+ *  once the playback drains (each beat is capped, so the wait is bounded) and the results panel takes
+ *  the frame then. True while the results wait. */
+function holdResultsForPlayback(battleId: bigint): boolean {
+  const view = tacticsBattle;
+  if (view === undefined || !view.visible || tacticsIngested?.battleId !== battleId) {
+    resultsAwaitDrain = null;
+    return false;
+  }
+  feedTacticsShell(view, battleId);
+  if (!view.playing) {
+    resultsAwaitDrain = null;
+    return false;
+  }
+  resultsAwaitDrain = battleId;
+  // The outcome is not shown until the results are: A's grace and the auto-advance wait for them.
+  outcomeShownAtMs = null;
+  autoContinuedAtMs = null;
   return true;
 }
 
@@ -3731,14 +3782,15 @@ function tacticsShellDeps(): TacticsBattleDeps {
       void dispatch({ kind: 'submitQueue', battleId, unitId, entries }),
     onCancelQueue: (battleId, unitId) => void dispatch({ kind: 'cancelQueue', battleId, unitId }),
     onForfeit: (battleId) => void dispatch({ kind: 'forfeit', battleId }),
+    announce: (text) => queueNotice(text, performance.now()),
   };
 }
 
-/** The "Still there?" countdown (BT12.2), pumped on the WALL clock: the shown tactical view's own
- *  clock deadline — a WILD battle's only — through `stillThereSeconds`; the view memoises the second,
- *  so an unchanged value writes nothing. Returns the line to announce the first time a window's
- *  countdown shows, else null. */
-function pumpStillThere(wallNowMs: number): string | null {
+/** The "Still there?" countdown (BT12.2), pumped on the server-time estimate `serverNowMs` (ts-6b-7.2):
+ *  the shown tactical view's own clock deadline — a WILD battle's only — through `stillThereSeconds`;
+ *  the view memoises the second, so an unchanged value writes nothing. Returns the line to announce the
+ *  first time a window's countdown shows, else null. */
+function pumpStillThere(serverNowMs: number): string | null {
   const shown = tacticsShown;
   const view =
     tacticsBattle?.visible === true
@@ -3752,7 +3804,7 @@ function pumpStillThere(wallNowMs: number): string | null {
   // bt-15 (BT15.1): a wild battle's own deadline always; a PvP / Practice battle's only while the
   // deploy panel shows (the 45 s deploy window), never an Active turn's.
   const deadline = countdownDeadline(shown.kind, view === deployPanel, own);
-  const seconds = stillThereSeconds(deadline, wallNowMs);
+  const seconds = stillThereSeconds(deadline, serverNowMs);
   view.setCountdown(seconds);
   // The live-region announcement stays the WILD "Still there?" nudge: a PvP deploy window paints
   // its countdown and announces nothing (bt-15 interim; the continuation words it as a deploy one).
@@ -3762,12 +3814,12 @@ function pumpStillThere(wallNowMs: number): string | null {
   return stillThere(seconds);
 }
 
-/** The PvP clock ring and strike pips (bt-15 increment B, BT15.2), pumped on the WALL clock like the
- *  countdown: the shown tactical shell's battle rows → `clockVM` → `setClock` (the shell memoises an
+/** The PvP clock ring and strike pips (bt-15 increment B, BT15.2), pumped on the server-time estimate
+ *  like the countdown: the shown tactical shell's battle rows → `clockVM` → `setClock` (the shell memoises an
  *  equal VM). A frame the VM cannot be built on (no shown battle, no tactical row) clears it, so a
  *  stale ring never outlives its window. Both players see both rings and strike counts: the clock rows
  *  are public match state (design §6.2). */
-function pumpClock(wallNowMs: number): void {
+function pumpClock(serverNowMs: number): void {
   const view = tacticsBattle;
   if (view === undefined || !view.visible) return;
   const shown = tacticsShown;
@@ -3786,13 +3838,19 @@ function pumpClock(wallNowMs: number): void {
       units: store.battleUnits(row.battleId).map((u) => ({ unitId: u.unitId, side: u.row.side })),
       mySide: shown.mySide,
       playerName: (id) => store.player(id)?.name ?? store.profile(id)?.name ?? '',
-      nowMs: wallNowMs,
+      nowMs: serverNowMs,
       strikesMax: tuningOf().autopass_forfeit,
     }),
   );
 }
 
 store.onBatchApplied(() => refreshBattle());
+// ts-6b-7.2: the shown battle's clock rows feed the server-time estimate — after `refreshBattle`, which
+// sets the shown battle, so a battle's first batch is already remembered.
+store.onBatchApplied(() => {
+  const shown = tacticsShown;
+  if (shown !== null) serverClock.observeWindows(store.battleClocks(shown.battleId), Date.now());
+});
 
 // --- dialogue dismiss + deferred shop open (ui/shopOpenModel.ts) ----------------------
 function stepShopOpen(event: ShopOpenEvent): void {
@@ -5328,12 +5386,20 @@ async function main(): Promise<void> {
       // Menu auto-repeat: the router synthesizes the held D-pad's repeat edges on this clock.
       for (const effect of inputRouter.tick(routeCtx())) applyRouterEffect(effect);
       // bt-12 B: the tactical shell's playback on the frame clock; the "Still there?" countdown on
-      // the WALL clock (the deadline is a server epoch instant; a batch-driven countdown would
-      // freeze between batches, R5). Its first second is announced below, after the transitions.
+      // the server-time estimate (the deadline is a server epoch instant; a batch-driven countdown
+      // would freeze between batches, R5). Its first second is announced below, after the transitions.
       tacticsBattle?.tick();
-      const wallNow = Date.now();
-      const countdownSaid = pumpStillThere(wallNow);
-      pumpClock(wallNow);
+      // ts-6b-7.3: the results that waited for the playback take the frame once it drains; the
+      // outcome counts as shown from here (A's grace, the auto-advance).
+      if (resultsAwaitDrain !== null && tacticsBattle?.playing !== true) {
+        refreshBattle();
+        if (resultsAwaitDrain === null && outcomeOnTop(contextStack)) {
+          outcomeShownAtMs ??= performance.now();
+        }
+      }
+      const serverNow = serverClock.now(Date.now());
+      const countdownSaid = pumpStillThere(serverNow);
+      pumpClock(serverNow);
       if (now - lastCareTickAtMs >= CARE_READINESS_TICK_MS && upperIds().includes('boxView')) {
         lastCareTickAtMs = now;
         screenHost.observe(contextStack, screenCtx);
