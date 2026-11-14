@@ -21,7 +21,6 @@ import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Same path as
 // ui/i18n/catalog.test.ts:31.
 import { stripComments } from '../../../test-util/stripComments';
-import { a11yCopy } from '../a11yCopy';
 import { CATALOGS } from './resolver';
 
 const I18N_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -512,7 +511,7 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
   // SHAPE-04 — a11y isolation.
   // -------------------------------------------------------------------------
 
-  it('m24s6 SHAPE-04: a11y.* keys stay out of tf(), out of CATALOGS, brace-free', () => {
+  it('m24s6 SHAPE-04: a11y.* keys stay out of tf(); in CATALOGS (ts-6b-9) they are plain, brace-free strings in every locale', () => {
     discoverAndVerifyCatalogs();
     const { files, tfHitsByFile, a11yHits } = scanTfCalls();
     expect(
@@ -539,16 +538,29 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
       ).toBeGreaterThan(0);
     }
 
+    // ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): the a11y.* keys now LIVE in
+    // the catalogs (`A11yKey`, plain strings, still never passed to tf), and `a11yCopy` is a view
+    // of CATALOG_EN — feeding it to the brace check would be circular. The check runs over every
+    // registered catalog's a11y.* values (en AND fr), with an anti-vacuity count per locale.
     const catalogs: Readonly<Record<string, Readonly<Record<string, unknown>>>> = CATALOGS;
-    const braceViolations = checkA11yBraceFree(catalogs, a11yCopy);
+    const braceViolations = checkA11yBraceFree(catalogs, {});
     expect(braceViolations, `a11y.* brace violations: ${JSON.stringify(braceViolations)}`).toEqual(
       [],
     );
-    const a11yKeyCount = Object.keys(a11yCopy).filter((k) => startsWith(k, 'a11y.')).length;
-    expect(
-      a11yKeyCount,
-      'anti-vacuity: a11yCopy must have >=1 a11y.* key or the brace check runs on nothing',
-    ).toBeGreaterThan(0);
+    expect(Object.keys(catalogs).sort(), 'both locales are registered').toEqual(['en', 'fr']);
+    for (const locale of Object.keys(catalogs)) {
+      const a11yEntries = Object.entries(catalogs[locale]).filter(([k]) => startsWith(k, 'a11y.'));
+      expect(
+        a11yEntries.length,
+        `anti-vacuity: CATALOGS.${locale} must hold >=17 a11y.* keys or the brace check runs on nothing`,
+      ).toBeGreaterThanOrEqual(17);
+      for (const [key, value] of a11yEntries) {
+        expect(
+          typeof value,
+          `CATALOGS.${locale}['${key}'] is a plain string, never a closure`,
+        ).toBe('string');
+      }
+    }
   });
 
   it('m24s6 SHAPE-04: fixtures — proof-of-teeth for the tf( scanner and brace check', () => {
@@ -587,7 +599,7 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
     // `AssertNoA11yParamKey` is the compile-time half of that guarantee.
     // Also out of scope, same reason: FUNCTION-VALUE indirection (`[tf][0]('a11y.x', …)`,
     // `const f = tf; f('a11y.x', …)`) is not a text-scannable call site — I18N-27's census and
-    // tsc's totality (`A11yKey = never`, so only an `as never` cast compiles) are the backstops.
+    // tsc's totality (ts-6b-9: `A11yKey` is a literal union that `tf`'s `ParamMessageId` parameter excludes, so only an `as never` cast compiles) are the backstops.
     expect(
       findTfCalls("const k = 'a11y.x' as const; tf(k, {});").filter(
         (c) => c.firstArgLiteral !== undefined,

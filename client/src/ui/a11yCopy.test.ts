@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import { a11yCopy, t } from './a11yCopy';
 import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
 import { OVERLAY_A11Y, OVERLAY_IDS } from './overlayRegistry';
 
 const A11Y_KEY_SHAPE_RE = /^a11y\.[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*$/;
@@ -304,9 +306,10 @@ describe('a11yCopy — qf-10: the overlay names match the visible titles', () =>
   });
 });
 
-// uif-15a (UIF15A.2): the Help overlay's accessible name follows the new visible title. The a11y
-// catalog is a flat en-only Record (`t(key)` takes no locale), so only the en name is pinned here;
-// the localized visible title (en + fr) is pinned in helpView.i18n.test.ts.
+// uif-15a (UIF15A.2): the Help overlay's accessible name follows the new visible title. `a11yCopy`
+// is the frozen EN view of the catalog (ts-6b-9), so only the en name is pinned here; the localized
+// names are pinned in overlayA11y.test.ts (fr) and the visible title (en + fr) in
+// helpView.i18n.test.ts.
 describe('a11yCopy — uif-15a: the Help overlay name', () => {
   it('UIF15A.2 the helpView accessible name reads How to Play, is the name the registry resolves, and equals the visible help title', () => {
     // WRONG IMPL KILLED: a name left on 'Controls & Goals' while the visible title changed; a
@@ -317,6 +320,38 @@ describe('a11yCopy — uif-15a: the Help overlay name', () => {
     expect(t(OVERLAY_A11Y.helpView.labelKey)).toBe(
       (CATALOG_EN as Record<string, unknown>)['chrome.help.title'],
     );
+  });
+});
+
+// ts-6b-9 (R-weekly-review-2026-10-02-F4): a11yCopy is the en view of the catalogs, t follows the locale.
+describe('a11yCopy — ts-6b-9: a delegate over the i18n catalogs', () => {
+  it('a11yCopy is exactly the a11y.* entries of CATALOG_EN, and t() resolves in the current locale, still throwing on a non-a11y key', () => {
+    // WRONG IMPL KILLED: a second hand-kept literal map left in a11yCopy.ts (two SSOTs that drift);
+    // a `t` that always answers en; a `t` that no longer throws for a key outside the a11y set
+    // (a plain MessageId such as box.title must not resolve through the accessible-name seam).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const enA11y = Object.fromEntries(
+      Object.entries(en).filter(([k]) => k.startsWith('a11y.')),
+    ) as Record<string, string>;
+    expect(Object.keys(enA11y), 'ANTI-VACUITY: 17 a11y.* keys in CATALOG_EN').toHaveLength(17);
+    expect({ ...a11yCopy }).toEqual(enA11y);
+    expect(Object.isFrozen(a11yCopy)).toBe(true);
+
+    setLocale('fr');
+    try {
+      for (const key of Object.keys(enA11y)) {
+        expect(t(key), `t('${key}') under fr`).toBe(fr[key]);
+      }
+      expect(a11yCopy['a11y.overlay.boxView.title'], 'the view stays en under fr').toBe('Monsters');
+      expect(() => t('box.title')).toThrow();
+    } finally {
+      setLocale('en');
+    }
+    for (const key of Object.keys(enA11y)) {
+      expect(t(key), `t('${key}') back under en`).toBe(enA11y[key]);
+    }
+    expect(() => t('box.title'), 'a plain MessageId is not an accessible-name key').toThrow();
   });
 });
 

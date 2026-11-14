@@ -2145,10 +2145,36 @@ const UIF14B_PLAIN_IDS: readonly string[] = ['help.intro.report'];
  *  frame's title. Its en and fr bytes are pinned by the 'ts-6b-8' describe below. */
 const TS6B8_PLAIN_IDS: readonly string[] = ['heal.title'];
 
+/** ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): the 17 `a11y.*` keys move into
+ *  the catalogs (16 overlay titles + the world region), 528 -> 545. The en values are byte-identical
+ *  to the literals `ui/a11yCopy.ts` held before the move (so the accessible names do not change);
+ *  the fr values are pinned by the 'ts-6b-9' describe below. */
+const TS6B9_A11Y_EN: Readonly<Record<string, string>> = {
+  'a11y.overlay.battleView.title': 'Battle',
+  'a11y.overlay.boxView.title': 'Monsters',
+  'a11y.overlay.raisingView.title': 'Inventory',
+  'a11y.overlay.evolutionView.title': 'Evolution',
+  'a11y.overlay.dialogueView.title': 'Conversation',
+  'a11y.overlay.questLogView.title': 'Journal (Quests)',
+  'a11y.overlay.healView.title': 'Heal',
+  'a11y.overlay.shopView.title': 'Shop',
+  'a11y.overlay.tradeView.title': 'Incoming Trade',
+  'a11y.overlay.pvpView.title': 'PvP Challenge',
+  'a11y.overlay.leaderboardView.title': 'Leaderboard',
+  'a11y.overlay.profileView.title': 'Profile',
+  'a11y.overlay.tradeSessionView.title': 'Trade',
+  'a11y.overlay.helpView.title': 'How to Play',
+  'a11y.overlay.menuView.title': 'Menu',
+  'a11y.overlay.controlsView.title': 'Controls',
+  'a11y.world.region': 'World map',
+};
+const TS6B9_A11Y_IDS: readonly string[] = Object.keys(TS6B9_A11Y_EN);
+
 const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN)
   .concat(UIF14_PLAIN_IDS)
   .concat(UIF14B_PLAIN_IDS)
   .concat(TS6B8_PLAIN_IDS)
+  .concat(TS6B9_A11Y_IDS)
   .concat(Object.keys(SAMPLE_PARAMS))
   .sort();
 
@@ -2347,7 +2373,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // (`trade.side.{offer,receive}`, `trade.feedback.{accepted,rejected,completed,cancelled}`,
     // `social.action.confirm`, `social.confirm.{declineTrade,confirmTrade}`).
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-6b-8 roster is 528 keys').toHaveLength(528);
+    // ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): 528 -> 545, +17 `a11y.*`
+    // keys (16 overlay titles + the world region) moved in from ui/a11yCopy.ts.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-6b-9 roster is 545 keys').toHaveLength(545);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -2799,6 +2827,43 @@ describe('ts-6b-8: the Heal title in both catalogs', () => {
     expect(en['heal.title']).toBe('Heal');
     expect(fr['heal.title']).toBe('Soins');
     expect(fr['heal.title']).not.toBe(en['heal.title']);
+  });
+});
+
+describe('ts-6b-9: the 17 a11y.* accessible names in both catalogs', () => {
+  it('ts-6b-9 the en a11y.* values are byte-identical to the pre-move a11yCopy literals; every fr one is a plain non-empty string, translated except the cognate Menu / Conversation', () => {
+    // WRONG IMPL KILLED: a key added to en only (a French boot throws on the first overlay open); an
+    // en value reworded in the move (the accessible names would change under en); an fr value
+    // copied through from en.
+    // ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): 528 -> 545, +17 a11y.*.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(Object.keys(TS6B9_A11Y_EN), 'ANTI-VACUITY: 17 pinned a11y keys').toHaveLength(17);
+    let differing = 0;
+    for (const [key, expected] of Object.entries(TS6B9_A11Y_EN)) {
+      expect(en[key], `en ${key}`).toBe(expected);
+      const frValue = fr[key];
+      expect(typeof frValue, `fr ${key} is a plain string`).toBe('string');
+      expect((frValue as string).trim().length > 0, `fr ${key} is non-empty`).toBe(true);
+      if (frValue !== expected) differing += 1;
+      else {
+        expect(
+          ['a11y.overlay.menuView.title', 'a11y.overlay.dialogueView.title'],
+          `${key}: only the cognates may equal the English copy`,
+        ).toContain(key);
+      }
+    }
+    expect(differing, 'at least 15 of the 17 French names are translations').toBeGreaterThanOrEqual(
+      15,
+    );
+    const a11yKeysIn = (c: Record<string, unknown>) =>
+      Object.keys(c)
+        .filter((k) => k.startsWith('a11y.'))
+        .sort();
+    expect(a11yKeysIn(en), 'en holds exactly the 17 a11y.* keys').toEqual(
+      Object.keys(TS6B9_A11Y_EN).sort(),
+    );
+    expect(a11yKeysIn(fr), 'fr holds exactly the same 17').toEqual(a11yKeysIn(en));
   });
 });
 
@@ -3463,8 +3528,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 528 keys').toBe(528);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(528);
+    // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
   });
 });
 
@@ -3586,8 +3652,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 528 keys').toBe(528);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(528);
+    // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3900,9 +3967,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 528 keys').toBe(528);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(528);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(528);
+    // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(545);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4586,8 +4654,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
-    expect(Object.keys(en), 'the English roster is 528 keys (ts-6b-8 +1)').toHaveLength(528);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(528);
+    // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    expect(Object.keys(en), 'the English roster is 545 keys (ts-6b-9 +17)').toHaveLength(545);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(545);
   });
 });
 
@@ -4705,7 +4774,8 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
-    expect(Object.keys(en), 'the English roster is 528 keys').toHaveLength(528);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(528);
+    // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    expect(Object.keys(en), 'the English roster is 545 keys').toHaveLength(545);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(545);
   });
 });

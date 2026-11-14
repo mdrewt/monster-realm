@@ -339,6 +339,70 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     expect(opts.onClaimAwaitingAccount).toHaveBeenCalledTimes(1);
   });
 
+  /** Drives an ACCOUNT build into the AUTH-53 claim re-issue path (unconsumed code + an own
+   *  account row), with `completeGuestClaim` scripted by `impl` and `onClaimResult` by `onResult`. */
+  async function driveClaimReissue(
+    impl: () => Promise<void>,
+    onResult: (r: { ok: boolean; message: string }) => void,
+  ): Promise<{ opts: ConnectionOptions & Record<string, ReturnType<typeof vi.fn>>; code: string }> {
+    claimCode.mint(globalThis, URI, DB);
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const opts = makeOpts();
+    opts.onClaimResult = vi.fn(onResult);
+    vi.spyOn(opts.store, 'ownAccount').mockReturnValue({} as never);
+    connect(opts);
+    await settle();
+    const acct = H.builds[0];
+    acct.completeGuestClaim.mockImplementation(impl);
+    acct.onConnect?.(conn0(acct), ID, 'acct-jwt');
+    acct.onApplied?.();
+    await settle();
+    return { opts, code: claimCode.read(globalThis, URI, DB) as string };
+  }
+
+  // ts-6b-9.6 (R-polish-1-CLAIMRESULTCATCHREENTRY).
+  it('a throw in the claim-success handler is not reported as a claim rejection', async () => {
+    // WRONG IMPL KILLED: `.then(ok).catch(fail)` — a throwing ok-handler lands in the catch and the
+    // same claim is reported twice (ok:true, then ok:false: "claim failed" after it succeeded).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const calls: { ok: boolean; message: string }[] = [];
+    // (An unhandled rejection fails the whole vitest run on its own; the logging half is asserted.)
+    try {
+      const { opts } = await driveClaimReissue(
+        () => Promise.resolve(),
+        (r) => {
+          calls.push(r);
+          if (r.ok) throw new Error('handler blew up');
+        },
+      );
+      expect(H.builds[0].completeGuestClaim).toHaveBeenCalledTimes(1);
+      expect(opts.onClaimResult).toHaveBeenCalledTimes(1);
+      expect(calls).toEqual([{ ok: true, message: '' }]);
+      expect(
+        calls.some((c) => !c.ok),
+        'never reported as a rejection',
+      ).toBe(false);
+      expect(errorSpy, 'the handler error is logged, not swallowed silently').toHaveBeenCalled();
+      await settle();
+      expect(calls, 'still exactly one call after the chain fully settles').toHaveLength(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a rejected claim reducer is reported as exactly one ok:false', async () => {
+    const calls: { ok: boolean; message: string }[] = [];
+    const { opts } = await driveClaimReissue(
+      () => Promise.reject(new Error('code unknown')),
+      (r) => {
+        calls.push(r);
+      },
+    );
+    expect(opts.onClaimResult).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([{ ok: false, message: 'code unknown' }]);
+  });
+
   // BUG-client-never-starts-guest-claim. ADR-0179 D3: the client mints the code, stores it,
   // and registers it with start_guest_claim WHILE STILL CONNECTED AS THE GUEST — only that
   // reducer inserts the guest_claim row complete_guest_claim later resolves. The OIDC

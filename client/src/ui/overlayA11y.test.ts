@@ -52,7 +52,11 @@
 // assertion to be added alongside it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { a11yCopy } from './a11yCopy';
+import { a11yCopy, t as a11yT } from './a11yCopy';
+import { announcementsFor } from './announcements';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
 import { LIVE_REGION_ID } from './liveRegion';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
@@ -1046,5 +1050,72 @@ describe('openOverlayA11y — the deferred focus skips a move that would steal i
     expect(document.activeElement, 'a disconnected ex-descendant is not "inside"').toBe(
       gone.target,
     );
+  });
+});
+
+// ts-6b-9.5 (R-ci-fix-20261109T0400-LATEFOCUS-SCROLL): the late focus must not scroll the frame.
+describe('openOverlayA11y — the deferred focus is scroll-free (ts-6b-9.5)', () => {
+  it('the deferred initial focus does not scroll the frame', async () => {
+    // WRONG IMPL KILLED: a bare `.focus()` (scrolls the frame to the anchor, a visible jump when
+    // the overlay is taller than the viewport), and a synchronous focus call at open.
+    const { root, target } = mountRootFor('boxView');
+    const focusSpy = vi.spyOn(target, 'focus');
+    openOverlayA11y('boxView', root);
+    expect(focusSpy, 'not called synchronously at open').not.toHaveBeenCalled();
+    await flushMacrotask();
+    expect(focusSpy, 'the deferred call focuses the anchor exactly once').toHaveBeenCalledTimes(1);
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+  });
+});
+
+// ts-6b-9.4 (R-weekly-review-2026-10-02-F4): overlay names resolve through the i18n catalogs.
+describe('openOverlayA11y — overlay names follow the locale (ts-6b-9.4)', () => {
+  it('under the fr locale an opened overlay is named and announced in French', () => {
+    // WRONG IMPL KILLED: a11yCopy still an en-only literal map (the fr locale never reaches an
+    // accessible name); a catalog whose fr a11y values are copies of en; a `t` that caches the
+    // locale at import time; a world-region name left in English.
+    const frCatalog = CATALOG_FR as Record<string, unknown>;
+    const enCatalog = CATALOG_EN as Record<string, unknown>;
+    setLocale('fr');
+    try {
+      expect(OVERLAY_IDS.length).toBe(16);
+      let checked = 0;
+      for (const id of OVERLAY_IDS) {
+        const key = `a11y.overlay.${id}.title`;
+        const expected = frCatalog[key];
+        expect(typeof expected, `CATALOG_FR has ${key}`).toBe('string');
+        const { root } = mountRootFor(id);
+        openOverlayA11y(id, root);
+        expect(root.getAttribute('aria-label'), `${id} aria-label in fr`).toBe(expected);
+        expect(
+          announcementsFor({ topOverlay: null, message: '' }, { topOverlay: id, message: '' }),
+          `${id} announcement in fr`,
+        ).toEqual([expected]);
+        closeOverlayA11y(id, null);
+        document.body.innerHTML = '';
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 16 overlays were exercised').toBe(16);
+
+      expect(a11yT('a11y.world.region')).toBe(frCatalog['a11y.world.region']);
+      expect(typeof frCatalog['a11y.world.region']).toBe('string');
+
+      // Anti-copy-through: French is not the English text carried over.
+      for (const key of [
+        'a11y.overlay.boxView.title',
+        'a11y.overlay.shopView.title',
+        'a11y.world.region',
+      ]) {
+        expect(frCatalog[key], `${key} must be translated, not copied from en`).not.toBe(
+          enCatalog[key],
+        );
+        expect(a11yT(key)).toBe(frCatalog[key]);
+      }
+    } finally {
+      setLocale('en');
+    }
+    // Back under en the same key resolves to the en text again (the resolver is read per call).
+    expect(a11yT('a11y.overlay.boxView.title')).toBe('Monsters');
+    expect(a11yCopy['a11y.overlay.boxView.title']).toBe('Monsters');
   });
 });

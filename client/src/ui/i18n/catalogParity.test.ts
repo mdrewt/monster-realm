@@ -519,8 +519,18 @@ function computeCensus(): FileCensus[] {
  *  parsed) — collecting every `| '<key>'` line. Runs on comment-STRIPPED source, so a commented
  *  `| 'dead.x'` row was already removed and is never seen. */
 function parseMessageIdUnion(src: string): string[] {
+  return parseUnionAfter(src, 'export type MessageId =');
+}
+
+/** ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): `A11yKey` is now a literal
+ *  union of the 17 `a11y.*` keys, kept OUT of `MessageId` (so the `tf`/ParamMessageId/DEAD-KEY
+ *  machinery over MessageId is untouched). Same first-occurrence-only, comment-stripped rule. */
+function parseA11yKeyUnion(src: string): string[] {
+  return parseUnionAfter(src, 'export type A11yKey =');
+}
+
+function parseUnionAfter(src: string, marker: string): string[] {
   const stripped = stripComments(src);
-  const marker = 'export type MessageId =';
   const startIdx = stripped.indexOf(marker);
   if (startIdx === -1) return [];
   const endIdx = stripped.indexOf(';', startIdx);
@@ -670,10 +680,24 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
   it('m24s7 PARITY-01: I18N-26 — key-set parity, both directions, every registered locale', () => {
     const messageIds = parseMessageIdUnion(readFileSync(MESSAGE_IDS_PATH, 'utf8'));
     expect(messageIds.length, 'the MessageId belt must parse >100 entries').toBeGreaterThan(100);
+    // ts-6b-9 (named intentional change): the catalogs are total over `MessageId | A11yKey`, so the
+    // expected key set is the union of BOTH parsed unions (the a11y keys are plain strings and are
+    // not MessageIds; they are reached dynamically through OVERLAY_A11Y[id].labelKey).
+    const a11yIds = parseA11yKeyUnion(readFileSync(MESSAGE_IDS_PATH, 'utf8'));
+    expect(a11yIds.length, 'the A11yKey belt must parse the 17 a11y.* keys').toBe(17);
     expect(
-      messageIds.length,
-      'the MessageId belt must equal Object.keys(CATALOG_EN).length — a parser that stops early ' +
-        'or double-counts a line diverges from the real catalog roster',
+      a11yIds.filter((k) => !startsWith(k, 'a11y.')),
+      'every A11yKey is in the a11y.* namespace',
+    ).toEqual([]);
+    expect(
+      a11yIds.filter((k) => messageIds.includes(k)),
+      'A11yKey stays OUT of MessageId (no key in both unions)',
+    ).toEqual([]);
+    const allIds = [...messageIds, ...a11yIds];
+    expect(
+      allIds.length,
+      'the MessageId + A11yKey belts must equal Object.keys(CATALOG_EN).length — a parser that ' +
+        'stops early or double-counts a line diverges from the real catalog roster',
     ).toBe(Object.keys(CATALOG_EN as Record<string, unknown>).length);
 
     // WRONG IMPL KILLED: a registry that never widens past `{ en: CATALOG_EN }`.
@@ -685,8 +709,16 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     const catalogs = CATALOGS as unknown as Readonly<
       Record<string, Readonly<Record<string, unknown>>>
     >;
-    const findings = checkKeyParity(messageIds, catalogs);
+    const findings = checkKeyParity(allIds, catalogs);
     expect(findings, `key-parity findings: ${JSON.stringify(findings)}`).toEqual([]);
+    // Stowaway teeth survive the widening: a key in NEITHER union is still an `extra` gap.
+    const withStowaway = checkKeyParity(allIds, {
+      en: { ...(catalogs.en as Record<string, unknown>), 'a11y.ghost.title': 'x' },
+    });
+    expect(
+      withStowaway.filter((f) => f.direction === 'extra'),
+      'an a11y.* key in neither union must be reported as extra',
+    ).toEqual([{ kind: 'PARITY-GAP', locale: 'en', key: 'a11y.ghost.title', direction: 'extra' }]);
   });
 
   it('m24s7 PARITY-01: fixtures — proof-of-teeth for key-set parity + the union parser', () => {
@@ -748,6 +780,26 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       parseMessageIdUnion(withCommentedRow),
       'a commented-out union member must never be parsed',
     ).toEqual(['alive.one', 'alive.two']);
+
+    // ts-6b-9: the A11yKey parser reads ONLY its own union (never MessageId's rows) and ignores a
+    // decoy second block / a commented row.
+    const both = [
+      'export type MessageId =',
+      "  | 'real.one';",
+      'export type A11yKey =',
+      "  | 'a11y.one'",
+      "  // | 'a11y.dead'",
+      "  | 'a11y.two';",
+      'export type A11yKey =',
+      "  | 'a11y.decoy';",
+    ].join('\n');
+    expect(parseA11yKeyUnion(both), 'only the first A11yKey block, no MessageId rows').toEqual([
+      'a11y.one',
+      'a11y.two',
+    ]);
+    expect(parseMessageIdUnion(both), 'MessageId parse ignores the A11yKey rows').toEqual([
+      'real.one',
+    ]);
   });
 
   it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 28-file resolver roster + main.ts dual bindings', () => {
@@ -1078,8 +1130,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       "a11y t('a11y.nope') must produce exactly one UNDEFINED-KEY",
     ).toEqual([{ kind: 'UNDEFINED-KEY', module: 'a11y', key: 'a11y.nope' }]);
 
-    // i18nT('a11y.world.region') — the key EXISTS, but only in a11yCopy, and this call is the
-    // i18n binding — proves per-binding checking, not "known anywhere across both catalogs".
+    // i18nT('a11y.world.region') — the key is an a11y key (ts-6b-9: it now lives in the catalogs
+    // too, as an `A11yKey`, not a `MessageId`), and this call is the i18n binding checked against the
+    // MessageId set — proves per-binding checking, not "known anywhere across both catalogs".
     const f3 = censusOfSource(
       "import { t as i18nT } from './i18n/resolver';\ni18nT('a11y.world.region');",
     );

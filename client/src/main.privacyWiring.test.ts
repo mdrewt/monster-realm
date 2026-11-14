@@ -1014,6 +1014,276 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// ts-6b-9.1 / ts-6b-9.2 — the two privacy edges a screen-reader user was never told about.
+//
+//   .1 (R-rb-52-GRACEANNOUNCE) the account entering deletion grace is announced once;
+//   .2 (R-rb-53-E1) a data export that finishes assembling is announced once.
+//
+// Both are read where a screen-reader user reads them: the `#a11y-live` node's textContent writes
+// (a spy on its setter), with the line compared to what the visible surface says. `Date.now()` is
+// stubbed per frame through `runFrameAt` (a discriminating pair with `performance.now`). The export
+// tests drive the REAL store the connect mock handed main.ts (`reconcileExportChunksFromView` +
+// `flushBatch`), so the listener is exercised through the same seam the connection uses.
+// ---------------------------------------------------------------------------------------------
+
+const NBSP = String.fromCharCode(0x00a0);
+const stripNbsp = (s: string): string => (s.endsWith(NBSP) ? s.slice(0, -1) : s);
+
+/** Start recording every textContent write to the live region; returns the written strings (a
+ *  trailing NBSP removed: the repeat marker is not part of the spoken text). */
+function watchLiveRegion(): () => string[] {
+  const node = byId('a11y-live');
+  const spy = vi.spyOn(node, 'textContent', 'set');
+  return () => spy.mock.calls.map((c) => stripNbsp(String(c[0])));
+}
+
+/** Run `fn` with `performance.now()` pinned to `perfMs`, so an announcement made outside the frame
+ *  pump (the export listener) opens its coalescing window at a known time. */
+function atPerf(perfMs: number, fn: () => void): void {
+  const spy = vi.spyOn(performance, 'now').mockReturnValue(perfMs);
+  try {
+    fn();
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+const OTHER_IDENTITY = 'ff'.repeat(32);
+
+function exportChunk(
+  chunkId: bigint,
+  requestId: bigint,
+  chunkIndex: number,
+  totalChunks: number,
+  owner: string = H.identity,
+): Record<string, unknown> {
+  return {
+    chunkId,
+    ownerIdentity: owner,
+    requestId,
+    tableName: 'player',
+    chunkIndex,
+    totalChunks,
+    payloadJson: '{}',
+    createdAtMs: 1n,
+  };
+}
+
+/** The real store main.ts handed the connect mock. */
+function realStore(): {
+  reconcileExportChunksFromView: (rows: readonly unknown[]) => void;
+  flushBatch: () => void;
+} {
+  return (H.connectOpts as unknown as { store: ReturnType<typeof realStore> }).store;
+}
+
+/** One applied batch whose whole export-chunk view is `rows`. */
+function applyBatch(rows: readonly Record<string, unknown>[]): void {
+  realStore().reconcileExportChunksFromView(rows);
+  realStore().flushBatch();
+}
+
+const exportCompleteLine = (received: number): string =>
+  (EN_CATALOG['privacy.export.complete'] as (p: { received: number }) => string)({ received });
+
+/** A foreign-owner chunk: dirties the store (so the batch fires) yet assembles to `none` for us. */
+const FOREIGN = exportChunk(900n, 1n, 0, 1, OTHER_IDENTITY);
+
+describe('main.ts announces the account entering grace (ts-6b-9.1)', () => {
+  beforeEach(async () => {
+    setUpHarness();
+    await bootMain('/');
+  });
+  afterEach(() => {
+    tearDownHarness();
+  });
+
+  const GRACE_PREFIX = (
+    EN_CATALOG['privacy.countdown.grace'] as (p: { duration: string }) => string
+  )({ duration: '' }).trim();
+
+  it('an account entering deletion grace is announced once', () => {
+    // WRONG IMPL KILLED: no announcement at all (the banner appears silently); an announcement on
+    // EVERY frame of the grace window (the line rewritten as the countdown ticks); a line that
+    // differs from what the HUD banner shows that frame.
+    const writes = watchLiveRegion();
+    H.account = ACCOUNT_ACTIVE;
+    runFrameAt(0, WALL_T0);
+    runFrameAt(50, WALL_T0);
+    expect(writes().filter((w) => w.startsWith(GRACE_PREFIX))).toEqual([]);
+
+    H.account = ACCOUNT_PENDING_FUTURE; // active -> grace
+    runFrameAt(100, WALL_T0);
+    const banner = byId('privacy-countdown');
+    const shown = banner.textContent ?? '';
+    expect(
+      shown.startsWith(GRACE_PREFIX),
+      'ANTI-VACUITY: the HUD banner shows the grace line this frame',
+    ).toBe(true);
+
+    // One coalescing window later the line is in the live region; the wall clock advances so the
+    // banner's own text moves on, which must NOT produce a second announcement.
+    runFrameAt(700, WALL_T0);
+    for (let i = 1; i <= 6; i += 1) {
+      runFrameAt(700 + i * 800, WALL_T0 + i * WALL_STEP_MS);
+    }
+    expect(
+      banner.textContent,
+      'ANTI-VACUITY: the banner text moved on, so a per-frame announcer would show up below',
+    ).not.toBe(shown);
+
+    const graceWrites = writes().filter((w) => w.startsWith(GRACE_PREFIX));
+    expect(graceWrites, 'exactly one grace write, equal to the banner line of that frame').toEqual([
+      shown,
+    ]);
+    expect(stripNbsp(byId('a11y-live').textContent ?? '')).toBe(shown);
+  });
+
+  it('a boot straight into grace announces no grace line', () => {
+    // WRONG IMPL KILLED: an announcer keyed on `phase === grace` instead of the active -> grace edge
+    // (every page load / reconnect into a pending deletion would re-announce it).
+    const writes = watchLiveRegion();
+    H.account = ACCOUNT_PENDING_FUTURE;
+    runFrameAt(0, WALL_T0);
+    for (let i = 1; i <= 6; i += 1) runFrameAt(i * 800, WALL_T0 + i * WALL_STEP_MS);
+    expect(
+      byId('privacy-countdown').textContent?.startsWith(GRACE_PREFIX),
+      'ANTI-VACUITY: the account really is in grace and the banner shows it',
+    ).toBe(true);
+    expect(writes().filter((w) => w.startsWith(GRACE_PREFIX))).toEqual([]);
+  });
+
+  it('a reconnect while already in grace does not announce the grace line again', () => {
+    const writes = watchLiveRegion();
+    H.account = ACCOUNT_PENDING_FUTURE;
+    runFrameAt(0, WALL_T0);
+    (H.connectOpts as unknown as ConnectionOptions).onReconnect(H.identity);
+    for (let i = 1; i <= 6; i += 1) runFrameAt(i * 800, WALL_T0 + i * WALL_STEP_MS);
+    expect(writes().filter((w) => w.startsWith(GRACE_PREFIX))).toEqual([]);
+  });
+});
+
+describe('main.ts announces a data export that finishes assembling (ts-6b-9.2)', () => {
+  beforeEach(async () => {
+    setUpHarness();
+    await bootMain('/');
+  });
+  afterEach(() => {
+    tearDownHarness();
+  });
+
+  const lineWrites = (writes: () => string[], received: number): string[] =>
+    writes().filter((w) => w === exportCompleteLine(received));
+
+  it('a data export that finishes assembling is announced once', () => {
+    // WRONG IMPL KILLED: no announcement; an announcement per batch while the assembly stays
+    // complete; a listener that only fires on incomplete -> complete (the server inserts every
+    // chunk in ONE transaction, so none -> complete is the shape that actually happens).
+    const writes = watchLiveRegion();
+    runFrame(0);
+    atPerf(10, () => applyBatch([FOREIGN])); // first assembly: `none` (nothing of ours)
+    runFrame(700);
+    expect(lineWrites(writes, 2), 'nothing complete yet').toEqual([]);
+
+    atPerf(1_000, () =>
+      applyBatch([FOREIGN, exportChunk(1n, 5n, 0, 2), exportChunk(2n, 5n, 1, 2)]),
+    ); // none -> complete
+    runFrame(1_700);
+    expect(lineWrites(writes, 2), 'one announcement, with the received-chunk count').toEqual([
+      exportCompleteLine(2),
+    ]);
+    expect(stripNbsp(byId('a11y-live').textContent ?? '')).toBe(exportCompleteLine(2));
+
+    // Later batches that leave the SAME complete assembly in place are silent.
+    atPerf(2_000, () =>
+      applyBatch([
+        FOREIGN,
+        exportChunk(1n, 5n, 0, 2),
+        exportChunk(2n, 5n, 1, 2),
+        exportChunk(901n, 1n, 0, 1, OTHER_IDENTITY),
+      ]),
+    );
+    atPerf(2_100, () => applyBatch([exportChunk(1n, 5n, 0, 2), exportChunk(2n, 5n, 1, 2)]));
+    runFrame(2_800);
+    runFrame(3_600);
+    expect(lineWrites(writes, 2)).toHaveLength(1);
+  });
+
+  it('an export that streams in over several batches is announced once, when it completes', () => {
+    const writes = watchLiveRegion();
+    runFrame(0);
+    atPerf(10, () => applyBatch([exportChunk(1n, 5n, 0, 3)]));
+    atPerf(20, () => applyBatch([exportChunk(1n, 5n, 0, 3), exportChunk(2n, 5n, 1, 3)]));
+    runFrame(700);
+    expect(writes().filter((w) => w.startsWith('Data export ready'))).toEqual([]);
+    atPerf(1_000, () =>
+      applyBatch([exportChunk(1n, 5n, 0, 3), exportChunk(2n, 5n, 1, 3), exportChunk(3n, 5n, 2, 3)]),
+    ); // incomplete -> complete
+    runFrame(1_700);
+    expect(lineWrites(writes, 3)).toEqual([exportCompleteLine(3)]);
+  });
+
+  it('a newer complete export replacing an older complete one is announced again', () => {
+    const writes = watchLiveRegion();
+    runFrame(0);
+    atPerf(10, () => applyBatch([FOREIGN]));
+    atPerf(1_000, () => applyBatch([FOREIGN, exportChunk(1n, 5n, 0, 1)]));
+    runFrame(1_700);
+    expect(lineWrites(writes, 1)).toHaveLength(1);
+    atPerf(2_000, () => applyBatch([FOREIGN, exportChunk(2n, 6n, 0, 1)])); // request 5 -> 6
+    runFrame(2_700);
+    expect(lineWrites(writes, 1), 'the re-export is a new completion, said again').toHaveLength(2);
+  });
+
+  it('a boot whose first batch already holds a complete export announces nothing', () => {
+    // WRONG IMPL KILLED: announcing the first assembly after boot (every page load into an existing
+    // export would speak "ready"; the same shape as a reconnect's snapshot replay).
+    const writes = watchLiveRegion();
+    runFrame(0);
+    atPerf(10, () => applyBatch([exportChunk(1n, 5n, 0, 2), exportChunk(2n, 5n, 1, 2)]));
+    runFrame(700);
+    runFrame(1_500);
+    expect(
+      byId('a11y-live').textContent,
+      'ANTI-VACUITY: no export line was ever painted',
+    ).not.toContain('Data export ready');
+    expect(lineWrites(writes, 2)).toEqual([]);
+    // and a later batch holding the same complete assembly stays silent too
+    atPerf(2_000, () =>
+      applyBatch([exportChunk(1n, 5n, 0, 2), exportChunk(2n, 5n, 1, 2), FOREIGN]),
+    );
+    runFrame(2_700);
+    expect(lineWrites(writes, 2)).toEqual([]);
+  });
+
+  it('a reconnect that replays the complete export does not announce it again', () => {
+    const writes = watchLiveRegion();
+    runFrame(0);
+    atPerf(10, () => applyBatch([FOREIGN]));
+    atPerf(1_000, () =>
+      applyBatch([FOREIGN, exportChunk(1n, 5n, 0, 2), exportChunk(2n, 5n, 1, 2)]),
+    );
+    runFrame(1_700);
+    expect(lineWrites(writes, 2)).toHaveLength(1);
+
+    (H.connectOpts as unknown as ConnectionOptions).onReconnect(H.identity);
+    // The snapshot replay: the same complete chunks arrive as the first assembly of the new link.
+    atPerf(3_000, () =>
+      applyBatch([
+        exportChunk(1n, 5n, 0, 2),
+        exportChunk(2n, 5n, 1, 2),
+        exportChunk(902n, 1n, 0, 1, OTHER_IDENTITY),
+      ]),
+    );
+    runFrame(3_700);
+    runFrame(4_500);
+    expect(lineWrites(writes, 2), 'still exactly the one pre-reconnect announcement').toHaveLength(
+      1,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
 // 21r-b2 — the privacy surface renders the FRENCH catalog when main.ts boots under fr.
 //
 // SOURCE OF TRUTH — spec 21r-b2: "WHEN any claim-overlay or privacy-surface text renders THE
