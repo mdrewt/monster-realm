@@ -1618,3 +1618,34 @@ stands still.
 machine, without the constraints, or in another condition to these numbers (clock and disk speed are not
 modelled; a run on real low-end hardware replaces the profile and the numbers together); reading the
 friends-server memory and disk numbers as a ceiling for play with battles and trades.
+
+## A target's kind gates telemetry and account sign-in: only servers we operate get either
+
+**Decision.** The shell document names the target's kind (`official`, `test`, `local` or `private`;
+`TARGET_KIND` in `client/src/shell/config.ts`). `resolveTelemetryConfig` takes it as a required
+parameter and runs an exhaustive `switch` before it reads any env value: only `official` and `test`
+reach the endpoint and interval rules, and `local` and `private` resolve `disabled`, so the
+OpenTelemetry SDK never loads. `main.ts` passes `connect` the build's `VITE_MR_OIDC_ISSUER` and
+`VITE_MR_OIDC_CLIENT_ID` only for `official` or `test`; any other kind gets the empty string for both.
+A production document that omits `kind` resolves to `private`, so it gets neither. The OTLP endpoint
+stays a build value; the run-time decision is only whether to use it. Two tests hold both gates:
+`client/src/observability/config.test.ts` (every kind but `official` and `test` resolves disabled)
+and `client/src/main.targetKindGate.test.ts` (boots `main.ts` under each kind).
+
+**Why.** The same build joins worlds we do not operate (see "One game, three ways to play: no code may
+assume we run the server"). Metrics from a friend's or a single-player world would reach our ingest
+carrying the client's address, timing, build and device class though the player never used our
+service. The account token is our issuer's id_token addressed to the build-wide client id, so a host
+that received it could replay it against the official server. Both gates are allow-lists, so a kind
+added later is off until someone classifies it. The kind is the host's claim and is trusted exactly as
+far as the client code the host serves; a host that claims `official` or `test` can send its players'
+metrics to our ingest, which is accepted (the metrics carry no account identity).
+
+**Rules out.** Gating either on a build-time flag or on the page's `location` (the build must not know
+its server; a desktop shell's page origin is not the server); a deny-list of `local` and `private`;
+moving the telemetry endpoint into the shell document (a friends host copying our document would carry
+it); reading `import.meta.env.VITE_MR_OIDC_ISSUER` anywhere but that one `connect` call; treating the
+empty issuer as a complete off switch (the Account section's Sign in control still shows there;
+pressing it registers a claim code with that world's server and then fetches discovery from the page's
+own origin, which fails unless that origin serves one). A per-world telemetry opt-in or per-world
+sign-in changes these two gates and their tests, not a side path.

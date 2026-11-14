@@ -485,7 +485,9 @@ successful connect, the client stops sending the stored token (it never deletes 
 connects anonymously. If that connect succeeds, `onConnected` stores the new token over
 the old one; a network failure never counts as a rejection, so an outage cannot cost
 the player their identity. Sign-in is OIDC (authorization code with
-PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`.
+PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`. `main.ts` hands
+`connect` the issuer and client id only for a target of kind `official` or `test`; a
+`local` or `private` target gets both empty and connects under the anonymous token.
 
 ### Prediction and reconciliation
 
@@ -680,15 +682,20 @@ root, so opening one never closes a sibling.
 - `VITE_MR_DEVLOG` enables a DEV console log of outbound reducer calls
   (`net/devLog.ts`).
 - Client telemetry (`observability/`) exports OpenTelemetry metrics over OTLP/HTTP to
-  `VITE_MR_OTLP_ENDPOINT` when set. It fails silently, loads the SDK only when
+  `VITE_MR_OTLP_ENDPOINT` when set and the target kind is `official` or `test`
+  (`resolveTelemetryConfig` decides on the kind first; a `local` or `private` target
+  never loads the SDK). It fails silently, loads the SDK only when
   enabled, and labels metrics with a small allowlist of attributes.
 
 ## Accounts lifecycle
 
 - **Anonymous by default.** Every connection has a SpacetimeDB identity. Game data is
   keyed by that identity; there is no account row and no PII.
-- **Signing in.** With OIDC configured on the client, sign-in redirects to the issuer
-  and reconnects with the resulting JWT. `on_connect` creates an `account` row only
+- **Signing in.** With OIDC configured on the client and a target of kind `official` or
+  `test`, sign-in redirects to the issuer and reconnects with the resulting JWT. Toward a
+  `local` or `private` world `connect` is given no issuer or client id; the Sign in
+  control still shows there, and with no issuer its discovery request goes to the page's
+  own origin and fails unless that origin serves one. `on_connect` creates an `account` row only
   when the token's issuer and audience match `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE`
   (`server-module/src/accounts.rs`). Those constants still hold the fail-closed
   `.invalid` placeholder, so no account can be created until a real issuer is
