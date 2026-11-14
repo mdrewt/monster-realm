@@ -88,11 +88,14 @@ function reasonText(reason: string | undefined): string {
   }
 }
 
-/** The Yes / No question a prompt asks; '' with no prompt. */
-function promptQuestion(prompt: TradeSessionPrompt | null): string {
+/** The Yes / No question a prompt asks; '' with no prompt. Confirming a side that offers a
+ *  monster also says the bond reset: the trade resets each traded monster's trust and quality time,
+ *  and trading it back does not restore them. */
+function promptQuestion(prompt: TradeSessionPrompt | null, offersMonster: boolean): string {
   if (prompt === null) return '';
-  return prompt.action === 'cancel'
-    ? t('tradeSession.prompt.cancel')
+  if (prompt.action === 'cancel') return t('tradeSession.prompt.cancel');
+  return offersMonster
+    ? t('tradeSession.prompt.confirmMonsters')
     : t('tradeSession.prompt.confirm');
 }
 
@@ -236,7 +239,8 @@ export class TradeSessionView {
     this.#paintSide(this.#mine, vm.mine, t('tradeSession.side.mine'));
     this.#paintSide(this.#theirs, vm.theirs, t('tradeSession.side.theirs'));
     this.#paintRows(p.rows, p.cursor, vm, p.draft);
-    this.#paintPrompt(p.prompt);
+    // The viewer's stored side is what a confirm settles.
+    this.#paintPrompt(p.prompt, vm.offer.monsterIds.length > 0);
     this.#painted = true;
     if (this.#focusRows) {
       this.#focusRows = false;
@@ -360,11 +364,11 @@ export class TradeSessionView {
     }
   }
 
-  #paintPrompt(prompt: TradeSessionPrompt | null): void {
+  #paintPrompt(prompt: TradeSessionPrompt | null, offersMonster: boolean): void {
     // A part hidden under the focus would strand it on <body>, outside the dialog's focus trap.
     if (prompt === null && this.#prompt.contains(document.activeElement)) this.#rows.focus();
     this.#prompt.hidden = prompt === null;
-    this.#promptText.textContent = promptQuestion(prompt);
+    this.#promptText.textContent = promptQuestion(prompt, offersMonster);
     renderNav(
       this.#answers,
       prompt === null ? NO_ROWS : YES_NO,
@@ -381,7 +385,7 @@ export class TradeSessionView {
     // dialog: its answers are a listbox of their own. A flip of the answer is neither.
     const action = prompt?.action ?? null;
     if (action !== null && action !== this.#promptAction) {
-      this.#deps.announce(promptQuestion(prompt));
+      this.#deps.announce(promptQuestion(prompt, offersMonster));
       if (this.#root.contains(document.activeElement)) this.#answers.focus();
     }
     this.#promptAction = action;

@@ -10,17 +10,29 @@
 // THE SOCIAL FRAME'S PAINTER (ctl-8d, CTL8D.1-.2). The Social screen (ui/screens/socialScreen.ts)
 // paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the kit TabBar (uif-9,
 // UIF9.1: LB chip, the `#social-tabs` strip, RB chip; the chrome's first child, so it tops whichever
-// panel shows), the action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
-// child of whichever panel shows) on every paint, whether or not this root shows. Its root half is
-// the status line (`#trade-status`) and the trade session rows (one per session the viewer is in,
-// in `#trade-sessions`): kept only while this root is visible and dropped by `hide()`. The session
+// panel shows) and the row sheet, written into the frame's shared chrome element (the first child
+// of whichever panel shows) on every paint, whether or not this root shows. The row sheet is the
+// kit's one ContextSheet (ui/contextSheet.ts): the row's actions then a Back row, or, in the same
+// root, the Yes / No confirm; it is placed away from the shown panel's cursor row. Its rows
+// container is `#social-sheet` while the actions show and `#social-confirm` while the confirm does.
+// Its root half is the status line (`#trade-status`) and the trade session rows (one per session
+// the viewer is in, in `#trade-sessions`): kept only while this root is visible and dropped by
+// `hide()`. The session
 // list is the one part this view adds to the root, created by the first paint that has a session
 // row; a root that never had one keeps exactly the shell's children.
 //
 // NO CONTROL OF ITS OWN: a session row opens its editor (ui/tradeSessionView.ts), by D-pad and by
 // pointer. The view reads `#trade-overlay` and `#trade-status` only; the shell's other children
 // are never read or written.
+import {
+  type ContextSheet,
+  closeContextSheet,
+  createContextSheet,
+  placeContextSheet,
+  renderContextSheet,
+} from './contextSheet';
 import { t, tf } from './i18n/resolver';
+import { BACK_KEY } from './monstersModel';
 import { list, tabs } from './nav';
 import { navTabId, renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -30,6 +42,9 @@ import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 
 /** The Yes / No question a Social action asks before it is sent. */
 export type SocialQuestion = 'declineChallenge';
+
+/** A row of the Social sheet: one of the row's actions, or the last row, Back. */
+export type SocialSheetKey = SocialAction | typeof BACK_KEY;
 
 /** One trade session row as the Trades tab paints it: its nav key and its painted facts. */
 export type SocialSessionRow = SocialSessionFacts & { readonly key: string };
@@ -41,10 +56,11 @@ export interface SocialPaint {
   readonly sessions: readonly SocialSessionRow[];
   /** The session row key under the cursor, else null. */
   readonly sessionCursor: string | null;
-  /** The action sheet: the row's legal actions and the cursor. It stays painted under its prompt. */
+  /** The row sheet: the row's legal actions (the view adds the Back row) and the cursor. Its
+   *  prompt replaces its rows while it is asked. */
   readonly sheet: {
     readonly actions: readonly SocialAction[];
-    readonly active: SocialAction;
+    readonly active: SocialSheetKey;
   } | null;
   readonly confirm: { readonly question: SocialQuestion; readonly yes: boolean } | null;
 }
@@ -53,7 +69,6 @@ export interface SocialPaint {
 const SOCIAL_FRAME_ID = 'social';
 /** The tab strip's layout: the four tabs, no rows (renderTabs reads only the keys). */
 const SOCIAL_TAB_STRIP = tabs(SOCIAL_TABS.map((key) => ({ key, layout: list([]) })));
-const NO_ROWS = list([]);
 /** The Yes / No rows' nav keys (constants: the sheet's fill compares one, and a sink holds no
  *  string literal). */
 const YES = 'yes';
@@ -69,23 +84,38 @@ const SOCIAL_TAB_LABELS: Readonly<Record<SocialTab, () => string>> = {
   challenges: () => t('social.tab.challenges'),
   rankings: () => t('social.tab.rankings'),
 };
-const SOCIAL_ACTION_LABELS: Readonly<Record<SocialAction, () => string>> = {
+const SOCIAL_SHEET_LABELS: Readonly<Record<SocialSheetKey, () => string>> = {
   accept: () => t('social.action.accept'),
   decline: () => t('social.action.decline'),
   cancel: () => t('social.action.cancel'),
+  back: () => t('kit.sheet.back'),
 };
 const SOCIAL_QUESTIONS: Readonly<Record<SocialQuestion, () => string>> = {
   declineChallenge: () => t('social.confirm.declineChallenge'),
 };
 
-/** Locate-or-create `#id` inside `parent` (a repaint creates nothing). */
-function socialPart(parent: HTMLElement, id: string, tag: 'div' | 'p'): HTMLElement {
-  const found = parent.querySelector<HTMLElement>(`#${id}`);
-  if (found !== null) return found;
-  const el = document.createElement(tag);
-  el.id = id;
-  parent.appendChild(el);
-  return el;
+/** The row sheet's frame id: its row ids are `socialSheet-…`. */
+const SHEET_FRAME = 'socialSheet';
+/** Each chrome's row sheet, made by its first paint (a repaint creates nothing). */
+const sheets = new WeakMap<HTMLElement, ContextSheet>();
+
+/** The chrome's row sheet: found again, else created after the TabBar. */
+function socialSheet(chrome: HTMLElement): ContextSheet {
+  const found = sheets.get(chrome);
+  if (found !== undefined && found.root.parentElement === chrome) return found;
+  const sheet = createContextSheet(document, { frame: SHEET_FRAME });
+  chrome.appendChild(sheet.root);
+  sheets.set(chrome, sheet);
+  return sheet;
+}
+
+/** Anchor the shown sheet away from the hosting panel's cursor row (the kit's rule). Nothing to
+ *  place while the panel has no box (hidden, or no layout engine) or no row is under the cursor. */
+function placeSocialSheet(sheet: ContextSheet, chrome: HTMLElement): void {
+  const host = chrome.parentElement;
+  if (host === null || host.getBoundingClientRect().width <= 0) return;
+  const slot = host.querySelector<HTMLElement>(':scope > [aria-current="true"]');
+  if (slot !== null) placeContextSheet(sheet, host, slot);
 }
 
 /** The chrome's TabBar: found again by its strip, else created as the chrome's first child (the
@@ -99,8 +129,8 @@ function socialTabBar(chrome: HTMLElement): TabBar {
   return bar;
 }
 
-/** Paint the Social frame's chrome: the TabBar, the sheet and the prompt. A closed sheet or
- *  prompt is rendered EMPTY as well as hidden (the e2e helpers read a root's textContent). */
+/** Paint the Social frame's chrome: the TabBar and the row sheet. A closed sheet is rendered
+ *  EMPTY as well as hidden (the e2e helpers read a root's textContent). */
 function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
   renderTabBar(
     socialTabBar(chrome),
@@ -109,49 +139,42 @@ function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
     { frame: SOCIAL_FRAME_ID, label: (tab) => SOCIAL_TAB_LABELS[tab.key as SocialTab]() },
   );
 
-  const sheet = socialPart(chrome, 'social-sheet', 'div');
-  const prompt = socialPart(chrome, 'social-prompt', 'div');
-  const question = socialPart(prompt, 'social-prompt-text', 'p');
-  const answers = socialPart(prompt, 'social-confirm', 'div');
-  // A part hidden under the focus would strand it on <body>, outside the dialog's focus trap: hand
+  const sheet = socialSheet(chrome);
+  // A sheet hidden under the focus would strand it on <body>, outside the dialog's focus trap: hand
   // it to the hosting panel's anchor first (boxView's rule).
-  const focused = document.activeElement;
-  if (
-    (p.sheet === null && sheet.contains(focused)) ||
-    (p.confirm === null && prompt.contains(focused))
-  ) {
+  if (p.sheet === null && sheet.root.contains(document.activeElement)) {
     chrome.parentElement?.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
   }
-
-  sheet.hidden = p.sheet === null;
-  renderNav(
-    sheet,
-    p.sheet === null ? NO_ROWS : list(p.sheet.actions.map((key) => ({ key, enabled: true }))),
-    { tab: null, item: p.sheet?.active ?? null, perTab: {} },
-    {
-      frame: 'socialSheet',
-      labelledBy: navTabId(SOCIAL_FRAME_ID, p.tab),
-      fill: (el, item) => {
-        el.textContent = SOCIAL_ACTION_LABELS[item.key as SocialAction]();
-      },
-    },
-  );
-
-  const confirm = p.confirm;
-  prompt.hidden = confirm === null;
-  question.textContent = confirm === null ? '' : SOCIAL_QUESTIONS[confirm.question]();
-  renderNav(
-    answers,
-    confirm === null ? NO_ROWS : YES_NO,
-    { tab: null, item: confirm === null ? null : confirm.yes ? YES : NO, perTab: {} },
-    {
-      frame: 'socialConfirm',
-      labelledBy: question.id,
+  const confirm = p.sheet === null ? null : p.confirm;
+  sheet.rows.id = confirm === null ? 'social-sheet' : 'social-confirm';
+  sheet.rows.hidden = p.sheet === null;
+  if (p.sheet === null) {
+    closeContextSheet(sheet);
+    return;
+  }
+  if (confirm !== null) {
+    renderContextSheet(sheet, {
+      variant: 'confirm',
+      question: SOCIAL_QUESTIONS[confirm.question](),
+      layout: YES_NO,
+      state: { tab: null, item: confirm.yes ? YES : NO, perTab: {} },
       fill: (el, item) => {
         el.textContent = item.key === YES ? t('prompt.yes') : t('prompt.no');
       },
-    },
-  );
+    });
+  } else {
+    const keys: readonly SocialSheetKey[] = [...p.sheet.actions, BACK_KEY];
+    renderContextSheet(sheet, {
+      variant: 'list',
+      title: SOCIAL_TAB_LABELS[p.tab](),
+      layout: list(keys.map((key) => ({ key, enabled: true }))),
+      state: { tab: null, item: p.sheet.active, perTab: {} },
+      fill: (el, item) => {
+        el.textContent = SOCIAL_SHEET_LABELS[item.key as SocialSheetKey]();
+      },
+    });
+  }
+  placeSocialSheet(sheet, chrome);
 }
 
 export class TradeView {
@@ -189,7 +212,7 @@ export class TradeView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    // A hidden root keeps no paint: no placeholder and no session row.
+    // A hidden root keeps no paint: no session row.
     this.#social = null;
     this.#applySocial();
     // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
@@ -217,18 +240,14 @@ export class TradeView {
     this.#applySocial();
   }
 
-  /** Write the status line and apply the kept Social paint to this root. The status reads the
-   *  placeholder on the Players tab, names the session rows when the Trades tab lists any, and
-   *  otherwise says there is no trade; it stays shown (it is the dialog's focus anchor). */
+  /** Write the status line and apply the kept Social paint to this root. The status names the
+   *  session rows when the Trades tab lists any, and otherwise says there is no trade; it stays
+   *  shown (it is the dialog's focus anchor). */
   #applySocial(): void {
     const p = this.#social;
-    const players = p?.tab === 'players';
     const sessions = p?.tab === 'trades' ? p.sessions : [];
-    this.#statusEl.textContent = players
-      ? t('social.players.placeholder')
-      : sessions.length > 0
-        ? t('trade.status.open')
-        : t('trade.status.none');
+    this.#statusEl.textContent =
+      sessions.length > 0 ? t('trade.status.open') : t('trade.status.none');
     this.#paintSessions(sessions, p?.sessionCursor ?? null);
   }
 

@@ -700,8 +700,10 @@ describe('TradeSessionView — the notice and the prompt (ts-3.3, ts-3.4)', () =
     expect(byId('tradesession-prompt').hidden).toBe(true);
     const answer = (key: 'yes' | 'no') => byId(navItemId('tradeSessionConfirm', null, key));
     for (const [action, yes, text] of [
-      ['confirm', false, 'tradeSession.prompt.confirm'],
-      ['confirm', true, 'tradeSession.prompt.confirm'],
+      // ts-6b-10 (named intentional change): the fixture's own side offers monster 21, so the
+      // confirm question is the monsters wording. Was: 'tradeSession.prompt.confirm'.
+      ['confirm', false, 'tradeSession.prompt.confirmMonsters'],
+      ['confirm', true, 'tradeSession.prompt.confirmMonsters'],
       ['cancel', false, 'tradeSession.prompt.cancel'],
     ] as const) {
       view.paint(paintOf(vm, { prompt: { action, yes } }));
@@ -733,7 +735,10 @@ describe('TradeSessionView — the notice and the prompt (ts-3.3, ts-3.4)', () =
     expect(announce, 'fixture: nothing announced yet').not.toHaveBeenCalled();
 
     view.paint(paintOf(vm, { prompt: { action: 'confirm', yes: false } }));
-    expect(announce.mock.calls, 'the question, once').toEqual([[t('tradeSession.prompt.confirm')]]);
+    // ts-6b-10 (named intentional change): own side offers a monster. Was: prompt.confirm.
+    expect(announce.mock.calls, 'the question, once').toEqual([
+      [t('tradeSession.prompt.confirmMonsters')],
+    ]);
     expect(document.activeElement, 'focus moves to the answers').toBe(confirm);
 
     rows.focus();
@@ -745,7 +750,8 @@ describe('TradeSessionView — the notice and the prompt (ts-3.3, ts-3.4)', () =
 
     view.paint(paintOf(vm, { prompt: { action: 'cancel', yes: false } }));
     expect(announce.mock.calls, 'a new action: its own question, once').toEqual([
-      [t('tradeSession.prompt.confirm')],
+      // ts-6b-10 (named intentional change): own side offers a monster. Was: prompt.confirm.
+      [t('tradeSession.prompt.confirmMonsters')],
       [t('tradeSession.prompt.cancel')],
     ]);
     expect(document.activeElement, 'a new action: focus to the answers').toBe(confirm);
@@ -770,8 +776,49 @@ describe('TradeSessionView — the notice and the prompt (ts-3.3, ts-3.4)', () =
     outside.focus();
     expect(document.activeElement, 'fixture: focus is outside the dialog').toBe(outside);
     view.paint(paintOf(vm, { prompt: { action: 'confirm', yes: false } }));
-    expect(announce.mock.calls).toEqual([[t('tradeSession.prompt.confirm')]]);
+    // ts-6b-10 (named intentional change): own side offers a monster. Was: prompt.confirm.
+    expect(announce.mock.calls).toEqual([[t('tradeSession.prompt.confirmMonsters')]]);
     expect(document.activeElement, 'focus stays where it was').toBe(outside);
+  });
+
+  it('the confirm prompt warns of the bond reset only when your offer includes a monster', () => {
+    // WRONG IMPL KILLED: today's single confirm wording (no warning at all); a warning keyed on
+    // the PARTNER's monsters (Bob offers monster 91 in both cases); a warning on every confirm
+    // (a coins-only offer is told its monsters reset); a painted question that disagrees with
+    // the announced line; the cancel question changed.
+    const noMonsterOffer = {
+      monsterIds: [],
+      items: [{ itemId: 3, qty: 1 }],
+      currency: 50n,
+      cards: [],
+    };
+    const cases = [
+      ['own monster', sess(), 'tradeSession.prompt.confirmMonsters'],
+      [
+        'no own monster, partner offers one',
+        sess({ openerOffer: noMonsterOffer }),
+        'tradeSession.prompt.confirm',
+      ],
+    ] as const;
+    for (const [label, row, key] of cases) {
+      const { view, announce } = makeView();
+      const vm = vmOf(row);
+      expect(vm.theirs.cards.length, `${label}: fixture: the partner offers a monster`).toBe(1);
+      view.show();
+      view.paint(paintOf(vm, { prompt: { action: 'confirm', yes: false } }));
+      expect(byId('tradesession-prompt-text').textContent, `${label}: painted`).toBe(t(key));
+      expect(announce.mock.calls, `${label}: announced`).toEqual([[t(key)]]);
+      view.paint(paintOf(vm, { prompt: { action: 'cancel', yes: false } }));
+      expect(byId('tradesession-prompt-text').textContent, `${label}: cancel unchanged`).toBe(
+        t('tradeSession.prompt.cancel'),
+      );
+      document.body.innerHTML = '';
+    }
+    // The warning text itself names the reset and that trading back does not restore it.
+    setLocale('en');
+    expect(t('tradeSession.prompt.confirmMonsters')).toContain('trust and quality time');
+    expect(t('tradeSession.prompt.confirmMonsters')).toContain('even if traded back');
+    expect(t('tradeSession.prompt.confirm')).not.toContain('trust');
   });
 
   it('ts-3.4 (contract B) when the prompt closes with focus inside #tradesession-prompt, focus returns to #tradesession-rows; with focus elsewhere in the dialog it is not moved', () => {

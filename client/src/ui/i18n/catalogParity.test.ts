@@ -1463,6 +1463,35 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       ['notice.request.trades', { count: 3 }, '3 trade requests'],
     ];
 
+    it('ts-6b-10 the bond-reset confirm key is a MessageId resolving in en and fr to the exact warning, and the retired Players placeholder is in neither catalog nor the union', () => {
+      // WRONG IMPL KILLED: the new key added to one catalog only, or missing from the union; a fr
+      // copy-through of the en text; a fr string that drops the bond-reset warning; the
+      // placeholder key left behind in messageIds or either catalog (a dead key nothing requests).
+      const E_ACUTE = String.fromCharCode(0x00e9);
+      const RIGHT = String.fromCharCode(0x2019);
+      const key = 'tradeSession.prompt.confirmMonsters';
+      const enText =
+        'Confirm this trade? A completed trade cannot be undone. Traded monsters lose their trust and quality time with you, even if traded back.';
+      const E_CIRC = String.fromCharCode(0x00ea);
+      const frText =
+        `Confirmer cet ${E_ACUTE}change ? Un ${E_ACUTE}change conclu est d${E_ACUTE}finitif. ` +
+        `Les monstres ${E_ACUTE}chang${E_ACUTE}s perdent leur confiance et leur temps de ` +
+        `qualit${E_ACUTE} avec vous, m${E_CIRC}me s${RIGHT}ils vous reviennent.`;
+      const messageIds = parseMessageIdUnion(readFileSync(MESSAGE_IDS_PATH, 'utf8'));
+      const en = CATALOG_EN as Record<string, unknown>;
+      const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
+      expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
+      const safeFr = fr as Record<string, unknown>;
+      expect(messageIds.includes(key), `${key} is a MessageId`).toBe(true);
+      expect(en[key], 'en: the exact warning').toBe(enText);
+      expect(safeFr[key], 'fr: the exact warning').toBe(frText);
+      expect(safeFr[key], 'fr differs from en').not.toBe(en[key]);
+      const retired = 'social.players.placeholder';
+      expect(messageIds.includes(retired), 'retired from messageIds').toBe(false);
+      expect(retired in en, 'retired from en').toBe(false);
+      expect(retired in safeFr, 'retired from fr').toBe(false);
+    });
+
     it('ts-3.7 TS3-I18N: no tradePropose.* / chrome.tradePropose.* id survives in messageIds or either catalog, and every key of the ts-3 ADDED table is a MessageId resolving in en (exact bytes) and fr (distinct from en, every param interpolated)', () => {
       // WRONG IMPL KILLED: (1) a wizard key left behind (`tradePropose.step.review`,
       // `chrome.tradePropose.submit`, ...) in messageIds.ts or in one catalog; (2) a new key added

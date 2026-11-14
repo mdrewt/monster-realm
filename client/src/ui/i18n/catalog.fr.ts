@@ -856,6 +856,12 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The Yes / No question before the player confirms a trade; No is the default answer.
   // tradeSessionView.ts
   'tradeSession.prompt.confirm': 'Confirmer cet échange ? Un échange conclu est définitif.',
+  // @desc: The Yes / No question before the player confirms a trade whose own side offers a
+  // monster: a traded monster's trust and quality time start over, and trading it back does not
+  // restore them. No is the default answer.
+  // tradeSessionView.ts
+  'tradeSession.prompt.confirmMonsters':
+    'Confirmer cet échange ? Un échange conclu est définitif. Les monstres échangés perdent leur confiance et leur temps de qualité avec vous, même s’ils vous reviennent.',
   // @desc: The Yes / No question before the player cancels a trade; No is the default answer.
   // tradeSessionView.ts
   'tradeSession.prompt.cancel': 'Annuler cet échange ?',
@@ -972,10 +978,6 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Tab of the Social screen showing the ranked leaderboard. One word, fits a narrow tab.
   // tradeView.ts (the Social tab strip)
   'social.tab.rankings': 'Classement',
-  // @desc: Line shown on the Social screen's Players tab while the player list is not built yet. One
-  // short sentence.
-  // tradeView.ts (the Players tab)
-  'social.players.placeholder': 'La liste des joueurs n’est pas encore disponible.',
   // @desc: Badge after a player's name on the Social screen's Players tab: that player is in the
   // same zone, a short walk away. One short word, fits a narrow badge.
   // leaderboardView.ts (the Players tab)

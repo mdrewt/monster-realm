@@ -1699,7 +1699,9 @@ function qf8RenderTrade(): Qf8Rendered {
       {
         name: 'the Players tab',
         apply: paint('players', QF8_SESSION_ROWS),
-        anchors: () => [i18nT('social.players.placeholder')],
+        // ts-6b-10 (named intentional change): Players reads the trade status. Was: the
+        // `social.players.placeholder` line.
+        anchors: () => [i18nT('trade.status.none')],
       },
     ],
     dispose: () => {
@@ -2086,11 +2088,14 @@ const QF8_RETIRED: readonly Qf8Row[] = [
     // rendered but never shown, so it traps nothing). The sheet's rows are answered through the
     // Social screen's commands, which hold no listener here.
     ownRegistrations: ['div#pvp-challenge-overlay keydown capture'],
-    // `renderNav` makes the sheet and the Yes / No list tab stops (the frame's nav containers),
-    // the prompt's even while hidden; the tab strip's tabs never are.
+    // `renderNav` makes the sheet's rows container a tab stop (the frame's nav container); the tab
+    // strip's tabs never are.
+    // ts-6b-10 (named intentional change): the sheet and its Yes / No prompt are ONE kit root with
+    // ONE rows container (id `social-sheet` in the list variant), so exactly one tab stop is
+    // added. Was: two, `div#social-sheet[...]` and `div#social-confirm[...]` (the prompt's even
+    // while hidden).
     allowedDelta: {
       'div#social-sheet[role="listbox"][tabindex="0"]': 1,
-      'div#social-confirm[role="listbox"][tabindex="0"]': 1,
     },
     render: qf8RenderSocialSheet,
   },
@@ -3147,9 +3152,12 @@ describe('the Social sheet answers trades and challenges by pointer (qf-8, QF8.1
         'precondition: the Social cursor is on the incoming challenge',
       ).toBe('true');
       incoming.clickChip();
+      // ts-6b-10 (named intentional change): the sheet ends with a Back row. Was: rows
+      // ['accept:true', 'decline:false'].
       expect(qf8NavRows('#social-sheet'), 'the chip opened the sheet, Accept selected').toEqual([
         'accept:true',
         'decline:false',
+        'back:false',
       ]);
       expect(incoming.fired, 'opening the sheet sends nothing').toEqual([]);
       incoming.click('#social-sheet [data-nav-key="accept"]');
@@ -3159,8 +3167,13 @@ describe('the Social sheet answers trades and challenges by pointer (qf-8, QF8.1
 
       incoming.clickChip();
       incoming.click('#social-sheet [data-nav-key="decline"]');
+      // ts-6b-10 (named intentional change): the question is the kit sheet's heading. Was:
+      // `#social-prompt-text`.
       expect(
-        document.getElementById('social-prompt-text')?.textContent,
+        document
+          .getElementById('social-confirm')
+          ?.closest('[data-context-sheet]')
+          ?.querySelector('.mr-sheet-title')?.textContent,
         'a click on Decline asks the catalogued question',
       ).toBe(i18nT('social.confirm.declineChallenge'));
       expect(qf8NavRows('#social-confirm'), 'No selected').toEqual(['yes:false', 'no:true']);
@@ -3185,7 +3198,21 @@ describe('the Social sheet answers trades and challenges by pointer (qf-8, QF8.1
         'precondition: the Social cursor is on the sent challenge',
       ).toBe('true');
       outgoing.clickChip();
-      expect(qf8NavRows('#social-sheet'), 'a one-row sheet: Cancel').toEqual(['cancel:true']);
+      // ts-6b-10 (named intentional change): Cancel is followed by the Back row. Was: a one-row
+      // sheet, ['cancel:true'].
+      expect(qf8NavRows('#social-sheet'), 'a sheet: Cancel, Back').toEqual([
+        'cancel:true',
+        'back:false',
+      ]);
+      // A click on Back closes the sheet and sends nothing; the chip opens it again.
+      outgoing.click('#social-sheet [data-nav-key="back"]');
+      expect(outgoing.fired, 'a click on Back sends nothing').toEqual([]);
+      expect(outgoing.phase(), 'a click on Back closes the sheet').toEqual({ kind: 'list' });
+      outgoing.clickChip();
+      expect(qf8NavRows('#social-sheet'), 'reopened on Cancel').toEqual([
+        'cancel:true',
+        'back:false',
+      ]);
       outgoing.click('#social-sheet [data-nav-key="cancel"]');
       expect(outgoing.fired, 'the one-row Cancel is proven driven and cancels, once').toEqual([
         { kind: 'cancelChallenge', challengeId: 22n },
