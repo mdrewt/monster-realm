@@ -98,7 +98,6 @@ const CLAIM_HANDLERS = [
   'onDeclineRequested',
   'onDeclineConfirmed',
   'onDeclineCancelled',
-  'onPrivacy',
   'onDismissed',
 ] as const;
 type ClaimHandlerName = (typeof CLAIM_HANDLERS)[number];
@@ -513,6 +512,9 @@ describe('ProfileView (uif-16b): one frame holding the Name, Account and Privacy
     // a hide() that only hides the root (a section left `display:block` re-appears alone the
     // next time its view is shown); a `visible` that reads a shadow field.
     const b = build();
+    // The sections' controls show once painted: the claim prompt's rows, the privacy controls.
+    b.claim.render(PROMPT_VM);
+    b.privacy.render(pvm());
     expect(b.profile.visible, 'constructed hidden').toBe(false);
     for (const section of ['name', 'account', 'privacy'] as const) {
       b.profile.show(section);
@@ -529,7 +531,12 @@ describe('ProfileView (uif-16b): one frame holding the Name, Account and Privacy
       ]) {
         expect(hiddenAncestorOf(byId(id)), `${section}: #${id} on screen`).toBeNull();
       }
-      for (const id of ['rename-input', 'claim-privacy-btn', 'profile-close-btn']) {
+      for (const id of [
+        'rename-input',
+        'claim-signin-btn',
+        'privacy-export-btn',
+        'profile-close-btn',
+      ]) {
         expect(hiddenAncestorOf(byId(id)), `${section}: #${id} on screen`).toBeNull();
       }
       await flush();
@@ -570,7 +577,6 @@ describe('ProfileView (uif-16b): one column of rows', () => {
           'rename-input',
           'claim-signin-btn',
           'claim-decline-btn',
-          'claim-privacy-btn',
           'privacy-delete-btn',
           'privacy-cancel-btn',
           'privacy-export-btn',
@@ -587,7 +593,6 @@ describe('ProfileView (uif-16b): one column of rows', () => {
           'rename-submit',
           'claim-decline-confirm-btn',
           'claim-decline-cancel-btn',
-          'claim-privacy-btn',
           'privacy-delete-btn',
           'privacy-confirm-btn',
           'privacy-confirm-cancel-btn',
@@ -602,7 +607,7 @@ describe('ProfileView (uif-16b): one column of rows', () => {
         draft: '   ',
         claim: CLAIMED_VM,
         privacy: P_REFUSED,
-        want: ['rename-input', 'claim-join-btn', 'claim-privacy-btn', 'profile-close-btn'],
+        want: ['rename-input', 'claim-join-btn', 'profile-close-btn'],
       },
     ];
     for (const { label, draft, claim, privacy, want } of cases) {
@@ -638,8 +643,8 @@ describe('ProfileView (uif-16b): one column of rows', () => {
   });
 
   it('UIF16B.2 Down walks the whole column top to bottom across the section boundaries and clamps on Close; Up walks back and clamps on the field (no wrap at either end)', async () => {
-    // WRONG IMPL KILLED: a walk that stops at a section boundary (Down from the privacy door does
-    // nothing); a wrap (Down on Close lands on the field, Up on the field lands on Close); a walk
+    // WRONG IMPL KILLED: a walk that stops at a section boundary (Down from the last Account row
+    // does nothing); a wrap (Down on Close lands on the field, Up on the field lands on Close); a walk
     // that skips a row or visits a hidden one.
     const b = build();
     paintName(b, '');
@@ -765,7 +770,7 @@ describe('ProfileView (uif-16b): one column of rows', () => {
   });
 
   it('UIF16B.2 sectionOf() names the section that holds an element, and none for Close or the page', () => {
-    // WRONG IMPL KILLED: a lookup by id prefix (a privacy door inside Account reads as Privacy);
+    // WRONG IMPL KILLED: a lookup by id prefix (a claim row reads as Privacy);
     // Close attributed to Privacy (the accelerator rule would read focus "in Privacy").
     const b = build();
     b.claim.render(PROMPT_VM);
@@ -773,9 +778,7 @@ describe('ProfileView (uif-16b): one column of rows', () => {
     b.profile.show('account');
     expect(b.profile.sectionOf(byId('rename-input'))).toBe('name');
     expect(b.profile.sectionOf(byId('rename-submit'))).toBe('name');
-    expect(b.profile.sectionOf(byId('claim-privacy-btn')), 'the door is in Account').toBe(
-      'account',
-    );
+    expect(b.profile.sectionOf(byId('claim-decline-btn')), 'Decline is in Account').toBe('account');
     expect(b.profile.sectionOf(byId('privacy-export-btn'))).toBe('privacy');
     expect(b.profile.sectionOf(b.profile.closeRow), 'Close is no section').toBeUndefined();
     expect(b.profile.sectionOf(b.outside), 'the page is no section').toBeUndefined();
@@ -964,7 +967,7 @@ describe('ProfileView (uif-16b): one dialog, one trap, one anchor', () => {
 // =============================================================================================
 
 describe('ProfileView (uif-16b): the same commands through the same handlers', () => {
-  it('UIF16B.4 clicking each control fires its own handler once and nothing else: Save (trimmed draft), the five claim actions and the privacy door, the six privacy actions', async () => {
+  it('UIF16B.4 clicking each control fires its own handler once and nothing else: Save (trimmed draft), the five claim actions, the six privacy actions', async () => {
     // WRONG IMPL KILLED: a frame that rebuilds the controls and drops their listeners; two
     // controls wired to one handler (Keep confirming the deletion); a Save that sends the raw
     // draft.
@@ -989,7 +992,6 @@ describe('ProfileView (uif-16b): the same commands through the same handlers', (
     press('claim-join-btn', 'claim.onJoin', claimShows(CLAIMED_VM));
     press('claim-decline-confirm-btn', 'claim.onDeclineConfirmed', claimShows(ARMED_VM));
     press('claim-decline-cancel-btn', 'claim.onDeclineCancelled', claimShows(ARMED_VM));
-    press('claim-privacy-btn', 'claim.onPrivacy', claimShows(PROMPT_VM));
     const privacyShows = (vm: PrivacyViewModel) => () => b.privacy.render(vm);
     press('privacy-delete-btn', 'privacy.onDeleteRequested', privacyShows(pvm()));
     press(
@@ -1160,7 +1162,7 @@ describe('ProfileView (uif-16b): red-team round', () => {
   it('UIF16B.4 a move that crosses INTO a section whose confirm is armed lands on its No / Keep, never its Yes; inside the section the walk is the plain row order; unarmed, a crossing lands on the first row', async () => {
     // WRONG IMPL KILLED: the plain column walk across an armed boundary (Down from Save lands on
     // the armed decline's Yes, so one more A confirms a decline the player never looked at; Down
-    // from the privacy door lands on Delete's Confirm); a re-seat applied to every move (inside
+    // from the last Account row lands on Delete's Confirm); a re-seat applied to every move (inside
     // an armed section Up from No must reach Yes); a blanket jump on every crossing (unarmed,
     // Down from Save must land on the first Account row).
     const armedClaim = buildClaimViewModel(claimAfter(OPENED, { kind: 'decline-requested' }));
@@ -1191,14 +1193,15 @@ describe('ProfileView (uif-16b): red-team round', () => {
     );
     byId('claim-decline-cancel-btn').focus();
     b.profile.applyRowOp(move(1));
-    expect(focusedId(), 'inside the section, Down from No reaches the privacy door').toBe(
-      'claim-privacy-btn',
-    );
+    expect(
+      focusedId(),
+      'Down from No, the last Account row, crosses into Privacy: its first row, Delete',
+    ).toBe('privacy-delete-btn');
 
-    // Delete armed too: Down from the door into Privacy lands on Keep.
+    // Delete armed too: Down from the last Account row into Privacy lands on Keep.
     b.privacy.render(armedPrivacy);
     expect(b.privacy.armed, 'ANTI-VACUITY: delete is armed').toBe(true);
-    byId('claim-privacy-btn').focus();
+    byId('claim-decline-cancel-btn').focus();
     b.profile.applyRowOp(move(1));
     expect(focusedId(), 'Down into the armed Privacy: Keep').toBe('privacy-confirm-cancel-btn');
     expect(focusedId(), 'never Confirm').not.toBe('privacy-confirm-btn');

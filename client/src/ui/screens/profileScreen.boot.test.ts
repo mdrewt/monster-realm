@@ -11,10 +11,10 @@
  * Profile sub-list. Each ctl-8h case is REPLACED by its frame-level equivalent, named in the case:
  * - UIF16B.1: one A on Profile opens the one frame, the three sections shown inside it, with their
  *   section headers, the Close row last and the retired `#privacy-close-btn` gone.
- * - UIF16B.2: the D-pad walks one column (Name field, Save, the Account rows, the privacy door, the
- *   enabled Privacy rows, Close), clamped; B pops the frame to the menu on Profile, Start to the base.
- * - UIF16B.3: exactly one live aria-modal root (the frame); the privacy door moves focus and opens
- *   nothing.
+ * - UIF16B.2: the D-pad walks one column (Name field, Save, the Account rows, the enabled Privacy
+ *   rows, Close), clamped; B pops the frame to the menu on Profile, Start to the base.
+ * - UIF16B.3: exactly one live aria-modal root (the frame); Down from the Account rows moves focus
+ *   into Privacy and opens nothing.
  * - UIF16B.4: the commands and guards of the three surfaces (replaces CTL8H-2, -3, -4): a saved
  *   name, Sign in, the two-step decline and delete; every close disarms both confirms; the Name
  *   field's typing rule and its Escape (focus lands on a SHOWN, ENABLED control in the frame, the
@@ -459,13 +459,19 @@ function armDecline(label: string): void {
   expect(shown('claim-decline-confirm-btn'), `${label}: Yes is shown`).toBe(true);
 }
 
-/** KeyC, the privacy door, Enter on Delete: the deletion is armed and focus is on Keep (an Active
- *  account must be injected and pumped first). */
+/** From the Account section's rows, Down walks the one column into the Privacy section: the
+ *  Account rows end and the first Privacy row is next. */
+function downIntoPrivacy(label: string): void {
+  for (let i = 0; i < 4 && focusSection() !== 'privacy'; i += 1) press('ArrowDown');
+  expect(focusSection(), `${label}: Down from the Account rows reaches Privacy`).toBe('privacy');
+}
+
+/** KeyC, Down into the Privacy section, Enter on Delete: the deletion is armed and focus is on
+ *  Keep (an Active account must be injected and pumped first). */
 function armDelete(label: string): void {
   pressWindow('KeyC');
-  el('claim-privacy-btn').focus();
-  press('Enter');
-  expect(focusedId(), `${label}: the door seats Delete`).toBe('privacy-delete-btn');
+  downIntoPrivacy(label);
+  expect(focusedId(), `${label}: the walk seats Delete`).toBe('privacy-delete-btn');
   press('Enter');
   expect(focusedId(), `${label}: armed, focus on Keep`).toBe('privacy-confirm-cancel-btn');
   expect((el('privacy-confirm').textContent ?? '').length, `${label}: the prompt`).toBeGreaterThan(
@@ -531,7 +537,7 @@ describe('the one Profile frame booted through main.ts over the real views and a
     // paint reads that as the claim auto-open and opens Profile on ACCOUNT first, so focus lands on
     // Sign in and the deferred Name anchor is skipped (focus already inside the root); and an open
     // that never steps the model at all (the Account section shows no action rows on a fresh
-    // session: an empty section with only the privacy door).
+    // session: an empty section with no action rows).
     await bootReady();
     server();
     expect(frameShown(), 'precondition: nothing is open').toEqual(ALL_HIDDEN);
@@ -550,7 +556,7 @@ describe('the one Profile frame booted through main.ts over the real views and a
   // UIF16B.2: one column, B and Start
   // ------------------------------------------------------------------------------------------
 
-  it('UIF16B.2 the D-pad walks ONE column in visual order (Name field, Save with a valid draft, the Account rows, the privacy door, the enabled Privacy rows, Close), clamped at Close, and back up to the field; with no account the Privacy rows are Export alone, with an Active account Delete then Export', async () => {
+  it('UIF16B.2 the D-pad walks ONE column in visual order (Name field, Save with a valid draft, the Account rows, the enabled Privacy rows, Close), clamped at Close, and back up to the field; with no account the Privacy rows are Export alone, with an Active account Delete then Export', async () => {
     // WRONG IMPL KILLED: a walk confined to one section (Down at the last Account row stays put);
     // a column in another order (Privacy before Account, Close first); rows that include a hidden
     // or disabled control (the disabled Cancel or Download, the hidden decline confirm, a disabled
@@ -582,7 +588,7 @@ describe('the one Profile frame booted through main.ts over the real views and a
       press('Escape');
       expect(focusedId(), `${fx.label}: Escape with a draft lands on Save`).toBe('rename-submit');
 
-      const account = ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'];
+      const account = ['claim-signin-btn', 'claim-decline-btn'];
       const down = [...account, ...fx.privacy, 'profile-close-btn'];
       expect(walk('ArrowDown', down.length + 1), `${fx.label}: Down from Save, clamped`).toEqual([
         ...down,
@@ -641,11 +647,12 @@ describe('the one Profile frame booted through main.ts over the real views and a
   // UIF16B.3: one dialog, one trap
   // ------------------------------------------------------------------------------------------
 
-  it('UIF16B.3 with Profile open exactly one live [role="dialog"][aria-modal="true"] exists (the frame; the menu beneath is suspended), no section carries a dialog role, and the privacy door moves focus into the Privacy section (Delete, for an Active account) and opens nothing', async () => {
+  it('UIF16B.3 with Profile open exactly one live [role="dialog"][aria-modal="true"] exists (the frame; the menu beneath is suspended), no section carries a dialog role, and Down from the Account rows moves focus into the Privacy section (Delete, for an Active account) and opens nothing', async () => {
     // WRONG IMPL KILLED: a section that kept its own dialog role or aria-modal (the static
     // `#rename-overlay` markup left as it was: two live modal roots); a menu beneath that stays a
-    // live modal; a door that hides Account or pushes a frame (the old openPrivacy verdict); a door
-    // that focuses the Privacy section's first DOM button whatever its state, or nothing.
+    // live modal; a walk that hides Account or pushes a frame; a walk that lands on the Privacy
+    // section's first DOM button whatever its state, or nowhere; a separate privacy door left in
+    // the Account section.
     await bootReady();
     H.account = accountActive();
     server();
@@ -659,10 +666,13 @@ describe('the one Profile frame booted through main.ts over the real views and a
       expect(el(id).getAttribute('aria-modal'), `#${id} is not modal`).toBe(null);
     }
 
-    el('claim-privacy-btn').focus();
-    press('Enter');
-    expect(focusSection(), 'the door moved focus into Privacy').toBe('privacy');
-    expect(expectSafeFocus('the door').id, 'onto Delete').toBe('privacy-delete-btn');
+    expect(focusSection(), 'precondition: KeyC seats the Account section').toBe('account');
+    downIntoPrivacy('Account to Privacy');
+    expect(expectSafeFocus('the walk').id, 'onto Delete').toBe('privacy-delete-btn');
+    expect(
+      document.getElementById('claim-privacy-btn'),
+      'there is no separate privacy door',
+    ).toBeNull();
     expect(stackNames(), 'it opened nothing').toEqual(OVER_MENU);
     expect(frameShown(), 'and hid nothing').toEqual(ALL_SHOWN);
     expect(liveModalDialogs(), 'still one live modal root').toEqual(['profile-overlay']);
@@ -812,8 +822,8 @@ describe('the one Profile frame booted through main.ts over the real views and a
   });
 
   it('UIF16B.4 the two-step delete: Delete arms with focus on Keep, Keep sends nothing and returns to Delete, armed again Confirm sends deleteAccount exactly once', async () => {
-    // Replaces CTL8H-4-BOOT-TWO-STEP (named intentional change: the open is KeyC then the privacy
-    // door; was the Profile sub-list's Privacy leaf, with focus on the retired Close anchor).
+    // Replaces CTL8H-4-BOOT-TWO-STEP: the open is KeyC, then Down from the Account rows into the
+    // Privacy section.
     // WRONG IMPL KILLED: an arm that leaves focus on the button it armed from, or on Confirm (one
     // more Enter would delete the account); a Keep that does not disarm or that calls a reducer; a
     // Confirm that never reaches the reducer, or reaches it twice.
@@ -885,9 +895,8 @@ describe('the one Profile frame booted through main.ts over the real views and a
       expect(frameShown(), `${how} / delete: the frame closed`).toEqual(ALL_HIDDEN);
       expect(el('privacy-confirm').textContent, `${how}: the delete prompt is cleared`).toBe('');
       pressWindow('KeyC');
-      el('claim-privacy-btn').focus();
-      press('Enter');
-      expect(focusedId(), `${how}: the reopened door seats Delete, not Keep`).toBe(
+      downIntoPrivacy(`${how} / reopened`);
+      expect(focusedId(), `${how}: the reopened walk seats Delete, not Keep`).toBe(
         'privacy-delete-btn',
       );
       expect(

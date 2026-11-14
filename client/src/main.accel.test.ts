@@ -1521,8 +1521,11 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     server(1000);
     press('KeyC');
     expectLeafOpen(ROW('C'), 'C');
-    byId('claim-privacy-btn').click();
+    // Down from the Account rows walks the one column into the Privacy section.
     const privacyRoot = byId('privacy-overlay');
+    for (let i = 0; i < 4 && !privacyRoot.contains(document.activeElement); i += 1) {
+      press('ArrowDown', document.activeElement ?? undefined);
+    }
     expect(privacyRoot.contains(document.activeElement), 'precondition: focus in Privacy').toBe(
       true,
     );

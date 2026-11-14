@@ -2175,9 +2175,15 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       {
         name: 'privacyView',
         rootId: 'profile-overlay',
-        open: () => {
+        open: (t) => {
           opts.onSignInFailed?.('denied');
-          rootOf('claim-privacy-btn').click();
+          // The frame opens on Account; Down walks the one column into its Privacy section.
+          const privacy = rootOf('privacy-overlay');
+          for (let i = 0; i < 4 && !privacy.contains(document.activeElement); i += 1) {
+            const target = document.activeElement ?? window;
+            fire('keydown', 'ArrowDown', t + 10 * (i + 1), { target });
+            fire('keyup', 'ArrowDown', t + 10 * (i + 1) + 5, { target });
+          }
         },
         shown: () => shownById('privacy-overlay'),
       },

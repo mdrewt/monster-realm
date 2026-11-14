@@ -397,7 +397,6 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onDeclineRequested: noop,
       onDeclineConfirmed: noop,
       onDeclineCancelled: noop,
-      onPrivacy: noop,
       onDismissed: noop,
     } as ConstructorParameters<typeof ClaimView>[0]);
     let frame: ProfileView | undefined;

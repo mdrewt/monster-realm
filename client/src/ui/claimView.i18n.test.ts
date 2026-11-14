@@ -1,14 +1,9 @@
 // @vitest-environment happy-dom
-// ui/claimView.i18n.test.ts — m24-s5 RED gating tests: CV-01/02.
+// ui/claimView.i18n.test.ts — the claim section's labels route through t() from BOTH open doors:
+// CV-01/02 for the five action buttons, and the Account frame title.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster claim.*,
-// D2), plan-revisions.md MAJOR-1 (BOTH doors — show() AND render() — write the label),
-//
-// RED REASON AT HEAD: claimView.ts's constructor still writes the bare literal
-// 'Privacy & Account Data' into #claim-privacy-btn (claimView.ts:96) and neither show() nor
-// render() calls t()/tf() at all. CV-01 fails on its very first assertion (the constructor DOES
-// write the English text today, so `privacyBtn.textContent === ''` pre-construction-write is
-// false); CV-02 fails because the label is never wrapped in a «sentinel».
+// D2), plan-revisions.md MAJOR-1 (BOTH doors — show() AND render() — write the label).
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the
 // plan/plan-revisions/ADR-0261 only.
@@ -54,8 +49,7 @@ function makeHandlers(): ClaimViewHandlers {
     onDeclineRequested: vi.fn(),
     onDeclineConfirmed: vi.fn(),
     onDeclineCancelled: vi.fn(),
-    onPrivacy: vi.fn(),
-    // uif-16b: the new REQUIRED dismissal, called from every hide().
+    // The required dismissal, called from every hide().
     onDismissed: vi.fn(),
   };
 }
@@ -66,7 +60,7 @@ function sweepA11y(): void {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
 }
 
-/** vm strings deliberately avoid the roster word "Privacy". */
+/** vm strings deliberately avoid every roster word (the English action labels). */
 function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
   return {
     visible: true,
@@ -91,7 +85,6 @@ function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
 // ---------------------------------------------------------------------------
 
 const M24S5_CV_PLAIN_KEYS = new Set([
-  'claim.privacyButton',
   'claim.signInButton',
   'claim.joinButton',
   'claim.declineButton',
@@ -144,7 +137,23 @@ function m24s5CvWalkSubtree(root: HTMLElement): string[] {
   return texts;
 }
 
-const M24S5_CV_ROSTER = ['Privacy & Account Data'];
+/** The English action labels (the vm strings above avoid all of them). */
+const M24S5_CV_ROSTER = ['Continue playing', 'Yes, decline', 'Keep my code', 'Decline'];
+
+/** Each action button's id and the plain catalog key its label resolves through. */
+const ACTION_LABELS = [
+  ['claim-signin-btn', 'claim.signInButton'],
+  ['claim-join-btn', 'claim.joinButton'],
+  ['claim-decline-btn', 'claim.declineButton'],
+  ['claim-decline-confirm-btn', 'claim.declineConfirmButton'],
+  ['claim-decline-cancel-btn', 'claim.declineCancelButton'],
+] as const;
+
+const enLabel = (key: (typeof ACTION_LABELS)[number][1]): string => {
+  const entry = (CATALOG_EN as Record<string, unknown>)[key];
+  if (typeof entry !== 'string') throw new Error(`${key} must be a plain message`);
+  return entry;
+};
 
 function m24s5CvAssertNoRosterWord(texts: readonly string[], label: string): void {
   const { stripped, unexpectedSpans } = m24s5CvSplitSentinels(texts.join('\n'));
@@ -160,27 +169,29 @@ function m24s5CvAssertNoRosterWord(texts: readonly string[], label: string): voi
   }
 }
 
-describe('m24s5 (ADR-0261): claimView.ts routes claim.privacyButton through t() from BOTH open doors', () => {
-  it('m24s5 CV-01: claim.privacyButton resolves in show() AND render(), is never written by the constructor, unconditional repeat-request from each door, and is never confused with the coincident-English privacy.title key', async () => {
+describe('m24s5 (ADR-0261): claimView.ts routes the action labels through t() from BOTH open doors', () => {
+  it('m24s5 CV-01: each action label resolves in show() AND render(), is never written by the constructor, is requested again on every call from each door, and the retired privacy label is never requested', async () => {
     const view = new ClaimView(makeHandlers());
-    const privacyBtn = document.getElementById('claim-privacy-btn') as HTMLButtonElement;
+    const btn = (id: string): HTMLButtonElement => document.getElementById(id) as HTMLButtonElement;
 
-    expect(privacyBtn.textContent, 'the constructor must no longer write the label').toBe('');
-    expect(privacyBtn.style.display, 'the anchor invariant stays in the constructor').toBe('');
-    expect(i18nT).not.toHaveBeenCalledWith('claim.privacyButton');
+    for (const [id, key] of ACTION_LABELS) {
+      expect(btn(id).textContent, `${id}: the constructor writes no label`).toBe('');
+      expect(i18nT).not.toHaveBeenCalledWith(key);
+    }
 
     // Door 1: show() alone, no render().
     view.show();
-    expect(i18nT).toHaveBeenCalledWith('claim.privacyButton');
-    expect(privacyBtn.textContent).toBe('Privacy & Account Data');
+    for (const [id, key] of ACTION_LABELS) {
+      expect(i18nT, `show() resolves ${key}`).toHaveBeenCalledWith(key);
+      expect(btn(id).textContent, `${id}: the English bytes`).toBe(enLabel(key));
+    }
 
-    // RT2: a repeat show() on an already-open overlay re-resolves the key.
+    // RT2: a repeat show() on an already-open overlay re-resolves the keys.
     vi.mocked(i18nT).mockClear();
     view.show();
-    expect(
-      i18nT,
-      'm24s5 CV-01 RT2 (show door): repeat show() must re-resolve claim.privacyButton',
-    ).toHaveBeenCalledWith('claim.privacyButton');
+    for (const [, key] of ACTION_LABELS) {
+      expect(i18nT, `repeat show() must re-resolve ${key}`).toHaveBeenCalledWith(key);
+    }
 
     // Clean DOM + overlay-a11y record before a second, FRESH view (claimView.test.ts idiom).
     sweepA11y();
@@ -189,31 +200,33 @@ describe('m24s5 (ADR-0261): claimView.ts routes claim.privacyButton through t() 
 
     // Door 2: render(visible vm) alone, no show().
     const freshView = new ClaimView(makeHandlers());
-    const freshBtn = document.getElementById('claim-privacy-btn') as HTMLButtonElement;
-    expect(freshBtn.textContent).toBe('');
+    for (const [id] of ACTION_LABELS) expect(btn(id).textContent).toBe('');
     vi.mocked(i18nT).mockClear();
 
     freshView.render(makeVm());
-    expect(i18nT).toHaveBeenCalledWith('claim.privacyButton');
-    expect(freshBtn.textContent).toBe('Privacy & Account Data');
+    for (const [id, key] of ACTION_LABELS) {
+      expect(i18nT, `render() resolves ${key}`).toHaveBeenCalledWith(key);
+      expect(btn(id).textContent, `${id}: the English bytes`).toBe(enLabel(key));
+    }
 
-    // RT2 (render door): a repeat render() re-resolves the key.
+    // RT2 (render door): a repeat render() re-resolves the keys.
     vi.mocked(i18nT).mockClear();
     freshView.render(makeVm());
-    expect(
-      i18nT,
-      'm24s5 CV-01 RT2 (render door): repeat render() must re-resolve claim.privacyButton',
-    ).toHaveBeenCalledWith('claim.privacyButton');
+    for (const [, key] of ACTION_LABELS) {
+      expect(i18nT, `repeat render() must re-resolve ${key}`).toHaveBeenCalledWith(key);
+    }
 
-    // NEGATIVE (D2 cross-alias tooth): the coincident English never routes through the
-    // privacyView key from claimView.ts.
+    // NEGATIVE: the retired privacy label is requested by no door, and the Privacy title never
+    // routes through this view.
+    expect(i18nT).not.toHaveBeenCalledWith('claim.privacyButton');
     expect(i18nT).not.toHaveBeenCalledWith('privacy.title');
+    expect(document.getElementById('claim-privacy-btn'), 'no privacy door in the DOM').toBeNull();
 
     sweepA11y();
     await flushMacrotask();
   });
 
-  it('m24s5 CV-02: under «key» sentinel claim.privacyButton shows resolver output via BOTH doors, and never the raw English label outside a sentinel; vm strings avoid "Privacy"', () => {
+  it('m24s5 CV-02: under «key» sentinel every action label shows resolver output via BOTH doors, and never the raw English label outside a sentinel; vm strings avoid the roster words', () => {
     // Constructed BEFORE the sentinel mockImplementation.
     const view = new ClaimView(makeHandlers());
     const overlay = document.getElementById('claim-overlay') as HTMLElement;
@@ -224,13 +237,18 @@ describe('m24s5 (ADR-0261): claimView.ts routes claim.privacyButton through t() 
       view.show();
       let texts = m24s5CvWalkSubtree(overlay);
       m24s5CvAssertNoRosterWord(texts, 'show() door');
-      expect(texts.join('\n')).toContain('«claim.privacyButton»');
+      for (const [, key] of ACTION_LABELS) {
+        expect(texts.join('\n')).toContain(`«${key}»`);
+      }
 
       view.render(makeVm({ title: 'Keep your session', body: 'Sign in to keep it.' }));
       texts = m24s5CvWalkSubtree(overlay);
       m24s5CvAssertNoRosterWord(texts, 'render() door');
       const joined = texts.join('\n');
-      expect(joined).toContain('«claim.privacyButton»');
+      for (const [, key] of ACTION_LABELS) {
+        expect(joined).toContain(`«${key}»`);
+      }
+      expect(joined, 'no retired privacy sentinel').not.toContain('«claim.privacyButton»');
       expect(joined, 'vm.title stays raw').toContain('Keep your session');
     } finally {
       vi.mocked(i18nT).mockRestore();
