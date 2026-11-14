@@ -527,8 +527,12 @@ const sheetShown = (): boolean => {
 // ts-6b-10 (named intentional change): the Yes / No prompt is the kit sheet root's confirm variant,
 // its rows container `#social-confirm` (the root's one rows element is renamed while it asks).
 // Was: a separate `#social-prompt` part, shown or hidden.
+// Scoped to Social's own root: the closest kit sheet of its rows container (other frames build
+// their own `[data-context-sheet]` roots in the booted document).
 const sheetRootEl = (): HTMLElement | null =>
-  document.querySelector<HTMLElement>('[data-context-sheet]');
+  (
+    document.getElementById('social-sheet') ?? document.getElementById('social-confirm')
+  )?.closest<HTMLElement>('[data-context-sheet]') ?? null;
 const promptShown = (): boolean => {
   const root = sheetRootEl();
   const confirm = document.getElementById('social-confirm');

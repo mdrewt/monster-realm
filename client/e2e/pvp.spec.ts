@@ -329,7 +329,9 @@ test.describe
       await pageB.keyboard.press('Enter');
       // ts-6b-10 (named intentional change): the question is the sheet's heading (the same kit
       // root in its confirm variant). Was: `#social-prompt-text`.
-      const sheetHeading = pageB.locator('[data-context-sheet] .mr-sheet-title');
+      const sheetHeading = pageB.locator(
+        '[data-context-sheet]:has(#social-confirm) .mr-sheet-title',
+      );
       await expect(sheetHeading).toBeVisible();
       await expect(sheetHeading).toHaveText('Decline this challenge?');
       await expect(pageB.locator('#social-confirm [aria-selected="true"]')).toHaveText('No');

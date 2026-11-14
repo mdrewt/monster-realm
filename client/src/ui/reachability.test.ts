@@ -3170,7 +3170,10 @@ describe('the Social sheet answers trades and challenges by pointer (qf-8, QF8.1
       // ts-6b-10 (named intentional change): the question is the kit sheet's heading. Was:
       // `#social-prompt-text`.
       expect(
-        document.querySelector('[data-context-sheet] .mr-sheet-title')?.textContent,
+        document
+          .getElementById('social-confirm')
+          ?.closest('[data-context-sheet]')
+          ?.querySelector('.mr-sheet-title')?.textContent,
         'a click on Decline asks the catalogued question',
       ).toBe(i18nT('social.confirm.declineChallenge'));
       expect(qf8NavRows('#social-confirm'), 'No selected').toEqual(['yes:false', 'no:true']);
