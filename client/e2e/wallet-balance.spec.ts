@@ -925,7 +925,6 @@ test.describe
       const done = await snap(a);
       expect(done.ownAuthTile).toEqual(ELDER_POST);
       expect(done.ongoingBattle, 'the post path is grass-free').toBeNull();
-      expect(1, 'TEMPORARY deliberate failure: the e2e failure-artifact proof').toBe(2);
     });
 
     // -------------------------------------------------------------------------
