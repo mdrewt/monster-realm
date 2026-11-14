@@ -508,8 +508,8 @@ fn check_deep_water_shore(zone_id: u32, map: &TileMap) -> Result<(), String> {
 ///
 /// `Face(dir)` is a press: a character that does not face `dir` turns to it and
 /// stays on its tile, `Idle`; one that already faces `dir` takes exactly the
-/// `Step(dir)` path. The choice is made here, against the facing the inputs
-/// applied before this one left, so the server's drain and the client's replay
+/// `Step(dir)` path. The choice is made here, against the facing left by the
+/// inputs applied ahead of it, so the server's drain and the client's replay
 /// decide it alike.
 #[must_use]
 pub fn apply_move(
@@ -1374,10 +1374,11 @@ mod tests {
     }
 
     /// For all 12 ordered pairs of distinct directions, from `Walking`
-    /// and from `Jumping` with an old stamp, toward a walkable, a blocked and an
-    /// off-map neighbour, `Face(d)` keeps the tile, faces `d`, idles and stamps
-    /// `now`. Kills: Face == Step (moves onto the walkable neighbour); action left
-    /// unchanged; the old stamp kept; turning only when blocked; a fixed direction.
+    /// and from `Jumping` with a stamp other than `now`, toward a walkable, a
+    /// blocked and an off-map neighbour, `Face(d)` keeps the tile, faces `d`,
+    /// idles and stamps `now`. Kills: Face == Step (moves onto the walkable
+    /// neighbour); action left unchanged; the stamp not set to `now`; turning
+    /// only when blocked; a fixed direction.
     #[test]
     fn face_toward_a_direction_not_faced_turns_in_place_and_idles_np_c1_1() {
         let now = Millis(4_321);

@@ -2323,7 +2323,7 @@ mod nh {
         assert_eq!(w.published(1), (vec![], 2), "tick 2: drained");
     }
 
-    /// The ADR-0168 D2 intake lock applies to `Face`, in each of
+    /// The intake battle lock applies to `Face`, in each of
     /// the three battle roles: `enqueue_move(Face)` and `set_move(Face)` are
     /// refused with the battle-lock error and write nothing. Control: once the
     /// battle is decided the same `enqueue_move(Face)` is admitted and the
@@ -2509,7 +2509,7 @@ mod nh {
         assert_eq!(w.published(1), (vec![], 4), "drained and acked");
     }
 
-    /// ADR-0168 D1 drain lock with a `Face` at the head of the queue: a
+    /// The drain-time battle lock with a `Face` at the head of the queue: a
     /// character facing South in an Ongoing battle (either role) does not turn
     /// — facing and tile unchanged, the private queue still holding the `Face`.
     /// Control: once the battle is decided the same queue turns it East.
