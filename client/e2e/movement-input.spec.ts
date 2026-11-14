@@ -254,8 +254,8 @@ const ownFacing = (p: Page): Promise<string | null> =>
  *  scenario's first tap or hold in the faced direction steps on its first input (a press of
  *  another direction is a turn: tap-to-turn.spec.ts). East is the default because every
  *  scenario that names no facing presses East first.
- *  The column is reached with `__game().step()`, which bypasses `held` entirely (ADR-0158
- *  residual 9), so it proves NOTHING about keyboard input. CLOSED LOOP: every decision is made
+ *  The column is reached with `__game().step()`, which bypasses `held` entirely, so it proves
+ *  NOTHING about keyboard input. CLOSED LOOP: every decision is made
  *  from a SETTLED tile (prediction equal to authority, see `converged`), so neither a step of
  *  its own nor a scenario's tap still in flight can be mistaken for the current column. A
  *  fixed sleep, or a read of the authoritative tile alone, sees a stale column on a slow

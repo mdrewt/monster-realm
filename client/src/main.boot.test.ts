@@ -7,7 +7,7 @@
  * (ledger CT-src-main.wiring#netcode-seams). What it drives:
  *   - boot: connect() receives the real store and the status line surfaces onError;
  *   - keydown sends one enqueueMove (a Face; the rows face East, so an ArrowRight press steps),
- *     and a second key for a held direction does not (14r-e);
+ *     and a second key for a held direction does not;
  *   - both continuation emitters (frame loop and reconcile divergence) respect the
  *     hold-commit threshold (mvi) and the outstanding-steps gate (nh2);
  *   - the post-warp seq floor, and same-epoch rejection repair (nh3);

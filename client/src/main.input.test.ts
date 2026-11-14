@@ -112,7 +112,7 @@ const H = vi.hoisted(() => ({
 // `Step(d)` turns to `d` and moves one tile; `Face(d)` for a character not facing `d` turns it in
 // place (same tile, Idle, stamped); `Face(d)` for a character already facing `d` is exactly
 // `Step(d)` (one shared step path). `Jump` only stamps the jump.
-// ctl-10a: named fixture change. The interact export is a recording stub driven by `H.interact`.
+// The interact export is a recording stub driven by `H.interact`.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 8;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
@@ -1013,7 +1013,7 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
 
   it('the other key of a held direction buried under a newer press sends nothing [np-c2.1]', async () => {
     // WRONG IMPL KILLED: a dedup written against the top of the held stack instead of membership
-    // (North is held but no longer the newest press once D is down, so ArrowUp would send a third
+    // (once D is down North is held but is not the newest press, so ArrowUp would send a third
     // Face).
     await bootReady();
     server(1000, { x: 2, y: 6, ack: 0, facing: 'South' });
