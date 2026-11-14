@@ -17,17 +17,19 @@ import {
 // a tile and for at most JITTER_IDLE_GAP_STEPS (3) x STEP_MS after the newest step arrived, so
 // a late step does not stop it; when the walk ends it settles back onto its last tile.
 //
-// 1. DELAYED walk (east). The walker's WebSocket is routed through a delay of WALKER_DELAY_MS in
-//    both directions. The client sends its next step only once the server has acknowledged the
-//    previous one, so each step reaches the server 2 x WALKER_DELAY_MS after the tick that
-//    acknowledged the last: past one tick, short of two. Every step then misses exactly one
-//    tick, and the watcher receives the stream players reported: position change, a same-tile
-//    Idle row one step later, the next position change two steps after the previous one.
-//    Asserted as a precondition, so a run where the delay did not bite cannot pass.
-// 2. UNDELAYED walk (back west). Localhost: a step on every tick, no Idle row between steps.
+// 1. HELD walk (east). The walker's outgoing WebSocket messages are held, and released by the
+//    walker's own Idle row. The client sends its next step only once the row acknowledging the
+//    previous one arrives; that tick writes the row with action Walking, and the NEXT tick,
+//    finding the queue empty (the step is held), writes the same-tile Idle row. Releasing on
+//    that Idle row puts the step on the server just after one tick and a whole step before the
+//    next, so every step misses exactly one tick on any machine, and the watcher receives the
+//    stream players reported: position change, a same-tile Idle row one step later, the next
+//    position change two steps after the previous one. Asserted as a precondition, so a run
+//    where the hold did not shape the stream cannot pass.
+// 2. UNHELD walk (back west). Localhost: a step on every tick, no Idle row between steps.
 //    It protects the one-step-per-tick stream: the ring, the order, the glide, no snap, the
 //    settle.
-// Both walks share the two contexts and the corridor; the delay is a switch the route reads.
+// Both walks share the two contexts and the corridor; the hold is a switch the route reads.
 //
 // The walker is driven by a held key (main.ts's real input path); the watcher never moves.
 // Everything is read from the watcher's `window.__game()` once per animation frame:
@@ -81,46 +83,22 @@ const WINDOW_STEPS = 3;
 /** The adaptive interpolation delay's cap, in steps: INTERP_MAX_DELAY_STEPS (render/config.ts). */
 const MAX_DELAY_STEPS = 2.5;
 /**
- * One-way delay on the walker's WebSocket for the delayed walk, in ms. A step goes out when the
- * previous one is acknowledged, so it reaches the server 2 x 150 = 300 ms after the
- * acknowledging tick: more than one STEP_MS (200), less than two. Every step misses exactly one
- * tick, which is the stream with a same-tile Idle row between position changes. 150 centres the
- * 100..200 ms band where that holds (measured: 130 ms already gives it on every step).
+ * Read by the walker's WebSocket route on every message the page sends: when set, the message
+ * is held in `heldWalkerSends` instead of reaching the server. Rows from the server always reach
+ * the walker undelayed. The held walk sets it, and a walker-page observer releases the held step
+ * on the walker's own same-tile Idle row, so the step lands on the server just after the tick
+ * that wrote that row. A fixed delay cannot give this stream: the walker's frame time adds to
+ * it, so on a slow machine a step misses two ticks and arrives a whole continuation window
+ * after the one before.
  */
-const WALKER_DELAY_MS = 150;
+let holdWalkerSends = false;
 
-/** Read by the walker's WebSocket route on every message; 0 passes messages straight through. */
-let walkerDelayMs = 0;
+/** The walker's held sends, oldest first; each forwards one message to the server. */
+const heldWalkerSends: (() => void)[] = [];
 
-/**
- * A FIFO relay: each message is delivered `walkerDelayMs` after it was sent, and never before a
- * message sent earlier on the same direction (so switching the delay never reorders traffic).
- */
-function fifoRelay(): (deliver: () => void) => void {
-  const queue: { due: number; deliver: () => void }[] = [];
-  let armed = false;
-  const pump = (): void => {
-    armed = false;
-    const now = Date.now();
-    while (queue.length > 0 && (queue[0] as { due: number }).due <= now) {
-      (queue.shift() as { deliver: () => void }).deliver();
-    }
-    if (queue.length > 0) {
-      armed = true;
-      setTimeout(pump, Math.max(0, (queue[0] as { due: number }).due - now));
-    }
-  };
-  return (deliver) => {
-    if (walkerDelayMs === 0 && queue.length === 0) {
-      deliver();
-      return;
-    }
-    queue.push({ due: Date.now() + walkerDelayMs, deliver });
-    if (!armed) {
-      armed = true;
-      setTimeout(pump, Math.max(0, (queue[0] as { due: number }).due - Date.now()));
-    }
-  };
+/** Forward every held send to the server, in the order the page sent them. */
+function releaseHeldWalkerSends(): void {
+  for (const send of heldWalkerSends.splice(0)) send();
 }
 
 const snap = (p: Page): Promise<Snap> =>
@@ -177,13 +155,17 @@ test.describe
       ctxWatcher = await browser.newContext();
       walker = await ctxWalker.newPage();
       watcher = await ctxWatcher.newPage();
-      // Installed before the walker navigates, so its SpacetimeDB connection goes through it.
+      // Installed before the walker navigates, so its SpacetimeDB connection goes through the
+      // route, and the walker page can call the release. The route holds what the page sends
+      // while `holdWalkerSends` is set and forwards it at once otherwise. It installs no
+      // server-side handler, so Playwright forwards every server message to the page unchanged.
+      await walker.exposeFunction('__releaseWalkerSends', releaseHeldWalkerSends);
       await walker.routeWebSocket(/.*/, (ws) => {
         const server = ws.connectToServer();
-        const up = fifoRelay();
-        const down = fifoRelay();
-        ws.onMessage((m) => up(() => server.send(m)));
-        server.onMessage((m) => down(() => ws.send(m)));
+        ws.onMessage((m) => {
+          if (holdWalkerSends) heldWalkerSends.push(() => server.send(m));
+          else server.send(m);
+        });
       });
       await walker.goto('/');
       await watcher.goto('/');
@@ -499,15 +481,61 @@ test.describe
     }
 
     test('with a step every other tick and an Idle row between steps, the remote keeps walking, never pausing 100 ms, and settles on the last tile [np-a.9]', async () => {
-      walkerDelayMs = WALKER_DELAY_MS;
-      const w = await walk('ArrowRight', 6); // (1,1) -> (7,1); (8,1) ahead is walkable
-      walkerDelayMs = 0;
+      // The walker's sends are held for the whole walk. Once per walker frame the observer
+      // notices a new send and remembers the ack the walker held when it went out; the walker's
+      // own row turning Idle with that same ack is the tick that found the queue empty, and the
+      // observer releases the held step then. A row that is already Idle when the send goes out
+      // (the standing start, a turn in place) releases it at once.
+      holdWalkerSends = true;
+      let w: Walk;
+      try {
+        await walker.evaluate(() => {
+          const win = window as unknown as {
+            __game: () => {
+              moveSendCount: number;
+              ownSync: { ackedSeq: string } | null;
+              ownEntityId: string | null;
+              characters: { entityId: string; action: string }[];
+            };
+            __releaseWalkerSends: () => Promise<void>;
+            __holdObserving: boolean;
+          };
+          win.__holdObserving = true;
+          let sent = win.__game().moveSendCount;
+          let pending = false;
+          let ackAtSend: string | undefined;
+          const observe = (): void => {
+            if (!win.__holdObserving) return;
+            const g = win.__game();
+            if (g.moveSendCount !== sent) {
+              sent = g.moveSendCount;
+              ackAtSend = g.ownSync?.ackedSeq;
+              pending = true;
+            }
+            const me = g.characters.find((c) => c.entityId === g.ownEntityId);
+            if (pending && me?.action === 'Idle' && g.ownSync?.ackedSeq === ackAtSend) {
+              pending = false;
+              void win.__releaseWalkerSends();
+            }
+            requestAnimationFrame(observe);
+          };
+          requestAnimationFrame(observe);
+        });
+        w = await walk('ArrowRight', 6); // (1,1) -> (7,1); (8,1) ahead is walkable
+      } finally {
+        holdWalkerSends = false;
+        releaseHeldWalkerSends();
+        await walker.evaluate(() => {
+          (window as unknown as { __holdObserving: boolean }).__holdObserving = false;
+        });
+      }
       const { frames, releaseAt, stepMs } = w;
       const { tiles, arrivals, log } = arrivalsOf(w);
 
-      // PRECONDITION — the delay bit: the watcher received the reported stream. Between
-      // consecutive position changes it saw a same-tile Idle row, and the changes came about two
-      // steps apart. Without it this test would only repeat the undelayed one.
+      // PRECONDITION — the hold shaped the stream: the watcher received the reported stream.
+      // Between consecutive position changes it saw a same-tile Idle row, and the changes came
+      // about two steps apart, not three. Without it this test would only repeat the unheld one,
+      // or test a stream where every step misses two ticks.
       let withIdle = 0;
       const gaps: number[] = [];
       for (let k = 2; k < arrivals.length; k += 1) {
@@ -533,6 +561,10 @@ test.describe
         median,
         `PRECONDITION: position changes about two steps apart (arrivals ${log})`,
       ).toBeGreaterThanOrEqual(1.5 * stepMs);
+      expect(
+        median,
+        `PRECONDITION: position changes about two steps apart, not three (arrivals ${log})`,
+      ).toBeLessThan(2.5 * stepMs);
 
       // np-a.9 for this stream. np-a.3 states the bound for exactly this stream (steps two
       // STEP_MS apart with same-tile Idle rows between them): no interval of 100 ms (STEP_MS / 2)
@@ -553,7 +585,7 @@ test.describe
     });
 
     test('with a step every tick, the remote advances one tile per step, gliding, the ring holds four consecutive tiles, and it settles on the last tile [np-a.9]', async () => {
-      walkerDelayMs = 0;
+      holdWalkerSends = false;
       const w = await walk('ArrowLeft', 5); // (7,1) -> (2,1); (1,1) ahead is walkable
       checkWalk(w, 5);
     });
