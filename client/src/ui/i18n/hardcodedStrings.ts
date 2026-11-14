@@ -55,14 +55,9 @@
 
 /** Fewer sinks than this across the whole non-test client tree means the scanner stopped
  *  seeing the tree — a scanner failure, never a clean tree (`>=`). An anti-vacuity guard, not a
- *  ratchet: re-measured in ts-6b-10 after the Social row sheet and its Decline question moved into
- *  the kit's ContextSheet (249 sinks on 2026-11-13; 254 in uif-12 after the request heading and the
- *  Challenge question moved into the kit's ContextSheet heading, which writes that text once; 255
- *  from 257 in uif-8, after the Inventory's sheet, picker title, description and empty line moved
- *  into the kit's ContextSheet and EmptyState; 260 from 264 sinks in uif-4b, after five views'
- *  message lines retired to the toast seam; 275 from 277 sinks in bt-17 on 2026-11-07, and 235
- *  from 246 on 2026-10-29) and set to that total rounded down to a multiple of 5; lower it
- *  consciously when UI text legitimately shrinks, never auto-tighten it. */
+ *  ratchet: it is the measured total (249 sinks on 2026-11-13) rounded down to a multiple of 5;
+ *  lower it consciously when UI text legitimately shrinks (text moving into the kit's ContextSheet
+ *  heading is the usual cause), never auto-tighten it. */
 export const SINK_FLOOR = 245;
 
 /** The 19 target files (the 18 spec-named ones, E6, plan R9, and since uif-16b the Profile frame
