@@ -2776,7 +2776,7 @@ function noteMoveRejection(seq: number, dropped: boolean): void {
   }
 }
 function sendIntent(input: WasmMoveInput): void {
-  // Single choke point for the movement freeze: the keydown press (a Face),
+  // Single choke point for the movement freeze: a D-pad press (a Face),
   // the frame-loop held re-issue, AND the reconcile-listener divergence
   // re-issue all route through here, so this one gate covers every movement path.
   // No prediction against a dead link either — enqueue is skipped, not just the send.

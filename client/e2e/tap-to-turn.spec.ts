@@ -1,4 +1,8 @@
 import { type Browser, chromium, expect, type Page, test } from '@playwright/test';
+// Both modules are pure constants (render/config.ts only re-exports from shared/interpConfig.ts,
+// which imports nothing), so they load under Playwright as controls.ts's ../src imports do.
+import { INTERP_MAX_DELAY_STEPS } from '../src/render/config';
+import { JITTER_IDLE_GAP_STEPS } from '../src/shared/interpConfig';
 import {
   type Dir,
   DPAD_BUTTON,
@@ -34,12 +38,14 @@ import {
 // joined for the next spec file (playwright.config.ts: specs assert the exact live population).
 // No dev reducer is called. `__game().step` (a `Step`) is used for setup walks only.
 //
-// WORLD FACTS (asserted at runtime, loudly): a new player spawns in zone 0 on (1,1) facing
-// South; row y=1 of zone 0 is grass-free and walkable for x=1..8 (walls at x=0 and x=9). Column
-// x=1 is grass-free from y=1 to the warp source (1,5), which lands on zone 1 (1,5)
-// (shop-npc.spec.ts WORLD FACTS). In zone 1 the shopkeeper `tideglass_shopkeeper` is pinned on
-// her home (8,1) (wander_radius 0) and greets with "Hello, customer!"; (7,1) is her one safe
-// 4-neighbour. The post and the facings are derived from the live map and her row.
+// WORLD FACTS. Asserted at runtime, loudly: a new player stands in zone 0 on (1,1) facing South;
+// (1,1)..(8,1) are safe (walkable, grass-free, no warp) in the live zone-0 map; (1,2)..(1,4) are
+// safe and (1,5) is a warp source; walking onto it puts the player in zone 1; a character other
+// than the player stands on (8,1) in zone 1; and the conversation A opens there is
+// `tideglass_shopkeeper`'s, reading "Hello, customer!". Taken from content, not asserted: (8,1) is
+// her pinned home (npcs/000-core.ron, wander_radius 0). Derived, not asserted: np-c2.5's post is
+// the first of her four neighbours (south, north, west, east of (8,1), in DIRS order) that is safe
+// in the live zone-1 map; `toward` faces her from the post and `away` is its opposite.
 //
 // NO BigInt crosses page.evaluate: the hook's entity ids are decimal strings.
 
@@ -92,10 +98,10 @@ const CORRIDOR_Y = 1;
 const CORRIDOR_MIN_X = 1;
 const CORRIDOR_MAX_X = 8;
 const SPAWN: Tile = { x: 1, y: 1 };
-/** The continuation window, in steps: JITTER_IDLE_GAP_STEPS (client/src/shared/interpConfig.ts). */
-const WINDOW_STEPS = 3;
-/** The adaptive interpolation delay's cap, in steps: INTERP_MAX_DELAY_STEPS (render/config.ts). */
-const MAX_DELAY_STEPS = 2.5;
+/** The continuation window, in steps: the client's own JITTER_IDLE_GAP_STEPS. */
+const WINDOW_STEPS = JITTER_IDLE_GAP_STEPS;
+/** The adaptive interpolation delay's cap, in steps: the client's own INTERP_MAX_DELAY_STEPS. */
+const MAX_DELAY_STEPS = INTERP_MAX_DELAY_STEPS;
 /** "Drawn on the tile": remote-walk.spec.ts's `toBeCloseTo(tile, 6)`, i.e. |drawn - tile| < 5e-7. */
 const ON_TILE_EPS = 5e-7;
 /** The fewest watcher frames the turn window must hold for np-c2.6 to have measured anything. */

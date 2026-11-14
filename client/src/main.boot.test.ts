@@ -47,6 +47,9 @@ const H = vi.hoisted(() => ({
   sends: [] as Sent[],
   /** The predicted position main.ts handed the resolver on each frame. */
   predicted: [] as Array<{ x: number; y: number } | undefined>,
+  /** The predicted facing main.ts handed the resolver on each frame (index-aligned with
+   *  `predicted`). */
+  predictedFacing: [] as Array<string | undefined>,
   /** Every renderer.resize(w, h, dpr) main.ts's resize seam issued (uif-2). */
   resizes: [] as Array<{ w: number; h: number; dpr: number }>,
 }));
@@ -126,6 +129,7 @@ vi.mock('./render/renderResolver', async (importOriginal) => {
     override resolve(input: ResolveInput) {
       const p = input.predicted?.pos;
       H.predicted.push(p === undefined ? undefined : { x: p.x, y: p.y });
+      H.predictedFacing.push(input.predicted?.facing);
       return super.resolve(input);
     }
   }
@@ -187,6 +191,7 @@ async function boot(): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
   H.predicted = [];
+  H.predictedFacing = [];
   H.resizes = [];
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
@@ -336,6 +341,25 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     expect(H.sends[0].seq).toBe(1n);
     frame(1010);
     expect(lastPredicted()).toEqual({ x: 3, y: 2 });
+  });
+
+  it('a movement keydown from a character facing another way sends ONE Face and the predictor turns it on its tile', async () => {
+    // WRONG IMPL KILLED: a press that sends Step (the predictor would walk to (3, 2)), a predictor
+    // or rule that treats every Face as a step, and one that drops the Face without turning (the
+    // facing would stay North). BOOT-MOVE's twin from a row facing North: the batch at 1000
+    // rebases the baseline to 600, so the Face is due at 800 and the frame at 1010 drains it.
+    await bootReady();
+    server(1000, { x: 2, y: 2, ack: 0, facing: 'North' });
+    key('ArrowRight', 1000);
+    expect(H.sends.map(step)).toEqual(['Face:East']);
+    expect(H.sends[0].seq).toBe(1n);
+    frame(1010);
+    expect(H.sends.map(step), 'the frame sends nothing more').toEqual(['Face:East']);
+    expect(lastPredicted(), 'the predicted tile is unchanged: a turn in place').toEqual({
+      x: 2,
+      y: 2,
+    });
+    expect(H.predictedFacing.at(-1), 'and the predicted facing turned to East').toBe('East');
   });
 
   it('14R-E: a second key code for an already-held direction sends nothing; a re-press after release does', async () => {

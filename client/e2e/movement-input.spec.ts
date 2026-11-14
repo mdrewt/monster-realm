@@ -505,7 +505,8 @@ test.describe
             t1.x - t0.x,
             `a ${Math.round(pressedMs)}ms ${code} tap must move EXACTLY one tile (ADR-0158: taps ` +
               '<= 140ms are contractually one tile at every fps and tick phase). 2 means a ' +
-              'continuation fired inside the tap; 0 means the ungated first step was lost',
+              'continuation fired inside the tap; 0 means the press did not step: its Face was ' +
+              'lost, or the character was not facing the tap`s direction',
           ).toBe(dx);
           expect(t1.y, 'a horizontal tap must not change the row').toBe(t0.y);
           expect(

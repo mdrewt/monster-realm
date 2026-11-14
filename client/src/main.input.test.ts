@@ -96,9 +96,9 @@ const H = vi.hoisted(() => ({
   /** ctl-10a: what the stubbed export answers. The stub IS the interaction rule (CTL10A.1): each
    *  case installs its own through `useRule`. Reset to "no candidate" by every boot. */
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
-  /** ctl-10a: tiles ("x,y") the stubbed apply_move will not enter: a step into one turns the
-   *  character to face it and moves nothing (a facing-only change). Reset by every boot. */
-  blocked: new Set<string>(),
+  /** What the connection stub's `linkFrozen()` answers. Reset to false by every boot, so only
+   *  the case that sets it sees a frozen link. */
+  frozen: false,
   /** ctl-11a: the EvolutionView instance main.ts built (recorded by the transparent subclass in the
    *  module mock below). The Evolution screen has no key, so CTL3-3-BOOT-HIDE-ALL opens it through
    *  the view's own `show()`. Reset to null by every boot. */
@@ -111,9 +111,8 @@ const H = vi.hoisted(() => ({
 // wasm pkg: every name main.ts imports. apply_move is game-core's movement rule on an open grid:
 // `Step(d)` turns to `d` and moves one tile; `Face(d)` for a character not facing `d` turns it in
 // place (same tile, Idle, stamped); `Face(d)` for a character already facing `d` is exactly
-// `Step(d)` (one shared step path). A step into an `H.blocked` tile only turns the character.
-// ctl-10a: named fixture change. The `H.blocked` turn, and the new interact export is a recording
-// stub driven by `H.interact`.
+// `Step(d)` (one shared step path). `Jump` only stamps the jump.
+// ctl-10a: named fixture change. The interact export is a recording stub driven by `H.interact`.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 8;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
@@ -138,15 +137,11 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
       // Step(d), and Face(d) while already facing d: the one step path.
       const dir = 'Face' in input ? input.Face : input.Step;
       const [dx, dy] = DELTA[dir];
-      const to = { x: state.pos.x + dx, y: state.pos.y + dy };
-      if (H.blocked.has(`${to.x},${to.y}`)) {
-        return { ...state, facing: dir, move_started_at: stamp };
-      }
       return {
         ...state,
         facing: dir,
         action: 'Walking',
-        pos: to,
+        pos: { x: state.pos.x + dx, y: state.pos.y + dy },
         move_started_at: stamp,
       };
     },
@@ -252,7 +247,7 @@ vi.mock('./net/connection', () => {
     conn: undefined,
     live: () => live,
     identity: () => H.identity,
-    linkFrozen: () => false,
+    linkFrozen: () => H.frozen,
     worldScope: () => ({ own: null, zones: [], settled: false }),
     continueAnonymously: () => undefined,
     sessionState: () => H.sessionState,
@@ -362,7 +357,7 @@ async function boot(): Promise<void> {
   H.callArgs = [];
   H.interactCalls = [];
   H.interact = () => [];
-  H.blocked = new Set<string>();
+  H.frozen = false;
   H.evolution = null;
   H.rejectTalk = null;
   clock.t = 1000;
@@ -447,6 +442,12 @@ const step = (s: Sent): string | undefined => {
   return s.input.tag;
 };
 const dirs = (): Array<string | undefined> => H.sends.map(step);
+
+/** The DEV hook's read-only predicted own tile (main.ts `snapshot().ownPredictedTile`). */
+const predictedTile = (): { x: number; y: number } | null =>
+  (
+    window as unknown as { __game: () => { ownPredictedTile: { x: number; y: number } | null } }
+  ).__game().ownPredictedTile;
 
 const overlayShown = (id: string): boolean => {
   const el = document.getElementById(id);
@@ -793,18 +794,20 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // WRONG IMPL KILLED: a release-all that clears the shell's held set and the source but
     // not the router's counts (the pre-blur press stays counted, so the one release after the
     // post-blur press leaves the direction held forever).
+    // The row faces North, so each W press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the blur, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    ackAllNorth(1005);
+    ackAllNorth(1005, 6, 'North');
     window.dispatchEvent(new Event('blur'));
     fire('keydown', 'KeyW', 1100);
-    ackAllNorth(1105);
+    ackAllNorth(1105, 6, 'North');
     fire('keyup', 'KeyW', 1110);
     const sent = H.sends.length;
     expect(sent, 'the post-blur press stepped').toBeGreaterThan(1);
     frame(1400);
-    ackAllNorth(1410);
+    ackAllNorth(1410, 6, 'North');
     frame(1600);
     expect(H.sends.length, 'the release after the blur must end the walk').toBe(sent);
   });
@@ -812,24 +815,26 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
   it('a keyup carrying Meta or Ctrl still releases the key it presses up', async () => {
     // WRONG IMPL KILLED: a keyup handler that drops chorded events (macOS reports Cmd while
     // a key is released; the direction would stay held and the character walk on).
+    // The row faces North, so each W press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the chorded keyup, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 7, ack: 0 });
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    ackAllNorth(1005, 7);
+    ackAllNorth(1005, 7, 'North');
     fire('keyup', 'KeyW', 1010, { init: { metaKey: true } });
     const afterMeta = H.sends.length;
     frame(1400);
-    ackAllNorth(1410, 7);
+    ackAllNorth(1410, 7, 'North');
     frame(1600);
     expect(H.sends.length, 'a Meta keyup must release').toBe(afterMeta);
 
     fire('keydown', 'KeyW', 1700);
     expect(H.sends.length, 'a fresh press after the release steps').toBe(afterMeta + 1);
-    ackAllNorth(1705, 7);
+    ackAllNorth(1705, 7, 'North');
     fire('keyup', 'KeyW', 1710, { init: { ctrlKey: true } });
     const afterCtrl = H.sends.length;
     frame(2000);
-    ackAllNorth(2010, 7);
+    ackAllNorth(2010, 7, 'North');
     frame(2200);
     expect(H.sends.length, 'a Ctrl keyup must release').toBe(afterCtrl);
   });
@@ -846,14 +851,14 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     fire('keyup', 'KeyD', 1010);
     // np-c2 (named intentional change): each press sends a Face of its direction. Was:
     // ['North', 'East'].
-    expect(dirs(), 'both presses stepped').toEqual(['Face:North', 'Face:East']);
+    expect(dirs(), 'both presses sent').toEqual(['Face:North', 'Face:East']);
     // np-c2 (named intentional change): the Face of North steps, the Face of East turns in place,
     // so the row stands on (2, 5) facing East. Was: { x: 3, y: 5, ack: 2 } (North then East).
     server(1020, { x: 2, y: 5, ack: 2, facing: 'East' });
     frame(1200); // W has been held 200 ms: committed
     // np-c2 (named intentional change): the presses' two Faces, then exactly one continuation
-    // Step of North from the one frame (the presses no longer read 'North'). Was: more than one
-    // 'North' in the list.
+    // Step of North from the one frame. Was: more than one 'North' in the list (the W press read
+    // 'North' too).
     expect(dirs(), 'W is still held: North continues').toEqual([
       'Face:North',
       'Face:East',
@@ -1139,6 +1144,65 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     fire('keydown', 'KeyW', 2010);
     expect(dirs(), 'a fresh press sends Face again').toEqual(['Face:North', 'North', 'Face:North']);
   });
+
+  it('a direction press against a frozen link sends nothing and predicts nothing; once the link is live a fresh press sends its Face as seq 1', async () => {
+    // WRONG IMPL KILLED: a press that bypasses the freeze gate (an enqueueMove on a frozen link), a
+    // gate on the send alone (the predictor would record the Face, step the character to (2, 5)
+    // on the next frame, and consume seq 1), and a held continuation that sends on a frozen link.
+    // Timing (predictor.ts): the batch at 1000 rebases the baseline to 600, so any queued input is
+    // due at 800 and the first frame after it drains it. The row faces North, so a recorded Face
+    // of North would step to (2, 5); sendIntent returns before predictor.enqueue while the link is
+    // frozen, so the queue stays empty, the tile stays (2, 6) and no seq is consumed.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    H.frozen = true;
+    fire('keydown', 'KeyW', 1010);
+    expect(H.sends, 'a press on a frozen link sends nothing').toHaveLength(0);
+    // 1300 is past HOLD_COMMIT_MS with W still down: the continuation is gated too.
+    for (const t of [1100, 1010 + HOLD_COMMIT_MS + 10, 1300]) frame(t);
+    expect(H.sends, 'a committed hold on a frozen link sends nothing').toHaveLength(0);
+    expect(predictedTile(), 'and nothing was predicted: the character stays on (2, 6)').toEqual({
+      x: 2,
+      y: 6,
+    });
+    fire('keyup', 'KeyW', 1350);
+
+    H.frozen = false;
+    fire('keydown', 'KeyW', 1400);
+    expect(H.sends, 'once live, a fresh press sends exactly one input').toHaveLength(1);
+    expect(H.sends[0].input, 'its Face of North').toEqual({ tag: 'Face', value: { tag: 'North' } });
+    expect(H.sends[0].seq, 'the frozen press consumed no seq').toBe(1n);
+    frame(1410);
+    expect(predictedTile(), 'control: the live Face, facing North, steps to (2, 5)').toEqual({
+      x: 2,
+      y: 5,
+    });
+  });
+
+  it('the DEV hook`s step sends a Step, not a Face: from a character facing East, step(North) turns and moves it one tile', async () => {
+    // WRONG IMPL KILLED: a hook routed through the press path (a Face of North from a row facing
+    // East is a turn in place, so the setup walks the e2e specs make with `__game().step` would
+    // stall on their first tile).
+    // Timing (predictor.ts): the batch at 1000 rebases the baseline to 600, so the Step is due at
+    // 800 and the frame at 1020 drains it to (2, 5); the batch at 1050 acks it there, so the
+    // reconcile does not diverge and nothing is held, so nothing more is sent.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' });
+    clock.t = 1010;
+    (window as unknown as { __game: () => { step: (dir: Dir) => void } }).__game().step('North');
+    expect(dirs(), 'exactly one send, a Step of North').toEqual(['North']);
+    expect(H.sends[0].input).toEqual({ tag: 'Step', value: { tag: 'North' } });
+    expect(H.sends[0].seq).toBe(1n);
+    frame(1020);
+    expect(predictedTile(), 'the Step turns and moves the character to (2, 5)').toEqual({
+      x: 2,
+      y: 5,
+    });
+    server(1050, { x: 2, y: 5, ack: 1, facing: 'North' });
+    frame(1060);
+    expect(predictedTile(), 'the acknowledging batch agrees: (2, 5)').toEqual({ x: 2, y: 5 });
+    expect(dirs(), 'and nothing more is sent').toEqual(['North']);
+  });
 });
 
 // ==========================================================================================
@@ -1310,14 +1374,14 @@ function settle(t: number): void {
 }
 
 /** Start a FRESH committed hold of W at the world and return the time it is settled at. The keyup
- *  first clears any hold an earlier phase left behind; the fresh press steps at once; the hold
+ *  first clears any hold an earlier phase left behind; the fresh press sends at once; the hold
  *  then commits and takes exactly one continuation step; both are acked. Every precondition is
  *  asserted, so a later "no further step" cannot be vacuous. */
 function committedHold(t: number): number {
   fire('keyup', 'KeyW', t);
   const before = H.sends.length;
   fire('keydown', 'KeyW', t + 1);
-  expect(H.sends.length, 'precondition: a fresh W press at the world steps at once').toBe(
+  expect(H.sends.length, 'precondition: a fresh W press at the world sends at once').toBe(
     before + 1,
   );
   settle(t + 20);
@@ -1534,7 +1598,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     fire('keydown', 'KeyW', 2510);
     // np-c2 (named intentional change): the first press's Face, the continuation's Step, then the
     // fresh press's Face. Was: ['North', 'North', 'North'].
-    expect(dirs(), 'a fresh W press at the world steps once').toEqual([
+    expect(dirs(), 'a fresh W press at the world sends once').toEqual([
       'Face:North',
       'North',
       'Face:North',
@@ -1607,7 +1671,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     fire('keyup', 'KeyW', 2500);
     fire('keydown', 'KeyW', 2510);
     // np-c2 (named intentional change): the fresh press sends a Face of North. Was: ['North'].
-    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['Face:North']);
+    expect(dirs(), 'a fresh W press at the world sends once').toEqual(['Face:North']);
   });
 
   it('CTL2-3-BOOT-SESSION: a server pullback sends no re-issued step while a session terminal owns the screen', async () => {
@@ -1785,7 +1849,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(H.sends.length, 'precondition: nothing has been sent yet').toBe(0);
     fire('keydown', 'KeyW', 1200);
     // np-c2 (named intentional change): the press sends a Face of North. Was: ['North'].
-    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['Face:North']);
+    expect(dirs(), 'a fresh W press at the world sends once').toEqual(['Face:North']);
   });
 
   it('CTL2-4-BOOT-CLICK-OPEN: an overlay opened by a connection callback (no key, no batch) still clears the held direction when it is closed before any frame', async () => {
@@ -3692,8 +3756,7 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     // turns it on (2, 6) and moves nothing (game-core's rule; no tile needs blocking).
     tapKey('KeyW', 1100);
     // np-c2 (named intentional change): the turn is the press's own Face of North, from a row
-    // facing East; the North tile is no longer blocked to make a Step turn. Was: ['North'] with
-    // H.blocked holding (2, 5).
+    // facing East, with no tile blocked. Was: ['North'], a Step turned by a blocked (2, 5).
     expect(dirs(), 'precondition: the turn was sent as a Face').toEqual(['Face:North']);
     for (const t of [1110, 1120, 1130]) frame(t);
     expect(calls(), 'the predicted facing changed, the position did not: one more call').toBe(2);
