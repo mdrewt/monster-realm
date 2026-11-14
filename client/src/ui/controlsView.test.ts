@@ -859,6 +859,65 @@ describe('ControlsView — capture state, focus and announcements (ctl-12b)', ()
   });
 });
 
+describe('ControlsView ts-6b-11: the Controls title sits in the kit title bar', () => {
+  it('the Controls frame has one title bar and no in-panel heading', () => {
+    // WRONG IMPLS KILLED: the bare h2 appended straight into the overlay (no `.mr-frame-titlebar`);
+    // a title bar that is not the overlay's first element child; a title without
+    // `.mr-frame-title`; a title that is not an h2; a title bar created unconditionally, so a
+    // second view duplicates it (parts are located before they are created); a heading left in
+    // the panel body outside the bar and the context sheet.
+    const { view, onCancelCapture } = rig();
+    view.show();
+    view.paint(paintOf());
+    const overlay = el(OVERLAY_ID);
+
+    const bars = overlay.querySelectorAll<HTMLElement>('.mr-frame-titlebar');
+    expect(bars, 'exactly one title bar in the frame').toHaveLength(1);
+    const bar = bars[0] as HTMLElement;
+    expect(overlay.firstElementChild, 'the title bar is the overlay first element child').toBe(bar);
+    expect(bar.tagName, 'the title bar is a div').toBe('DIV');
+
+    const title = el(TITLE_ID);
+    expect(title.tagName, 'the title stays an h2').toBe('H2');
+    expect(bar.contains(title), 'the title is inside the title bar').toBe(true);
+    expect(title.classList.contains('mr-frame-title'), 'the title wears .mr-frame-title').toBe(
+      true,
+    );
+    expect(title.style.color, 'the kit paints the title: no inline colour').toBe('');
+    expect(['0', '0px'], 'the bar owns the spacing: the title margin is 0').toContain(
+      title.style.margin,
+    );
+    expect(isHidden(title), 'the title is on screen').toBe(false);
+    expect(isHidden(bar), 'the title bar is on screen').toBe(false);
+
+    const stray = [...overlay.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')].filter(
+      (h) => !bar.contains(h) && h.closest('[data-context-sheet]') === null,
+    );
+    expect(
+      stray.map((h) => `${h.tagName.toLowerCase()}:${h.id}`),
+      'no heading outside the title bar and the context sheet',
+    ).toEqual([]);
+
+    // A second view over the same document finds the bar and creates none.
+    new ControlsView({
+      bindings: () => DEFAULT_BINDINGS,
+      onClear: () => true,
+      onReset: () => true,
+      onCancelCapture,
+      announce: vi.fn(),
+      onOutcome: vi.fn(),
+      textStep: () => 'normal',
+      onTextStep: () => true,
+    } as Handlers);
+    expect(
+      overlay.querySelectorAll('.mr-frame-titlebar'),
+      'a second view duplicates no title bar',
+    ).toHaveLength(1);
+    expect(document.querySelectorAll(`#${TITLE_ID}`), 'nor the title').toHaveLength(1);
+    expect(overlay.firstElementChild, 'the bar is still first').toBe(bar);
+  });
+});
+
 describe('ControlsView — the frame (ctl-12b)', () => {
   it('#controls-rows is the focus anchor with tabindex 0 right after construction, before any paint', () => {
     // WRONG IMPL KILLED: a tabindex set only at the first paint (overlayA11y's deferred focus on

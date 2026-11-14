@@ -214,7 +214,6 @@ export type MessageId =
   | 'evolution.gate.unmetRow'
   // Raising.* : the raising / inventory screen (raisingView.ts).
   | 'raising.title'
-  | 'raising.inventory.heading'
   | 'raising.inventory.empty'
   | 'raising.inventory.item'
   | 'raising.feedback.cared'
@@ -321,9 +320,7 @@ export type MessageId =
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
   // Claim.* : the guest-claim overlay — its buttons (claimView.ts) and, since 21r-b2, its
-  // titles, bodies, prompts and feedback lines (claimModel.ts). The privacy button and the
-  // privacy heading below share English bytes today but are TWO keys.
-  | 'claim.privacyButton'
+  // titles, bodies, prompts and feedback lines (claimModel.ts).
   | 'claim.signInButton'
   | 'claim.joinButton'
   | 'claim.declineButton'
@@ -369,6 +366,7 @@ export type MessageId =
   // 21r-b2, its copy layer (privacyBanner.ts): the HUD countdown, status/notice lines, export
   // status lines and control labels.
   | 'privacy.title'
+  | 'privacy.disclosure'
   | 'privacy.close'
   | 'privacy.confirm.delete'
   | 'privacy.confirm.keep'

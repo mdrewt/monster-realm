@@ -174,7 +174,16 @@ export class ControlsView implements ControlsScreenView {
     this.#overlay = ensureElement('controls-overlay', 'div', frameAnchor());
     this.#overlay.classList.add('mr-frame', 'mr-shell');
     this.#title = ensureElement('controls-title', 'h2');
-    // Every kit part is located before it is created, so a second view duplicates nothing.
+    this.#title.classList.add('mr-frame-title');
+    this.#title.style.margin = '0';
+    // Every kit part is located before it is created, so a second view duplicates nothing. The
+    // title sits in the kit title bar (`ui/frame.ts`), first in the frame.
+    let titleBar = this.#title.parentElement;
+    if (titleBar?.classList.contains('mr-frame-titlebar') !== true) {
+      titleBar = document.createElement('div');
+      titleBar.className = 'mr-frame-titlebar';
+      titleBar.appendChild(this.#title);
+    }
     const strip = document.getElementById('controls-tabs');
     const stripRoot = strip?.parentElement;
     this.#tabBar =
@@ -189,7 +198,7 @@ export class ControlsView implements ControlsScreenView {
     this.#feedback.classList.add('mr-frame-feedback');
     // DOM order is Tab order: the rows, then the Cancel chip while a slot waits for a key.
     for (const child of [
-      this.#title,
+      titleBar,
       this.#tabBar.root,
       this.#rows,
       this.#capture,

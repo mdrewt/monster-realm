@@ -1971,6 +1971,51 @@ function ctl7bExpectReadableEmpties(emptyEls: readonly Element[], root: HTMLElem
   }
 }
 
+describe('BoxView ts-6b-11: the Monsters title sits in the kit title bar', () => {
+  it('the Monsters frame has one title bar and no in-panel heading', () => {
+    // WRONG IMPLS KILLED: the plain header div holding the h2 (no `.mr-frame-titlebar`, so the
+    // kit's bar paint never applies); a title bar that is not the frame root's first element
+    // child; a title without `.mr-frame-title`; a title keeping the inline `color:#fff` (the kit
+    // paints it) or a non-zero inline margin (the bar owns the spacing); a second title bar; a
+    // heading repeated in the panel body outside the bar and the context sheet; a title that lost
+    // its testid or its `tabindex="-1"` focus anchor; a title text not resolved at show().
+    const { parent, view } = mount();
+    view.refresh(makePartySlots(), [makeBoxRecruitCard()]);
+    view.show();
+    const root = parent.firstElementChild as HTMLElement;
+    expect(root.classList.contains('mr-frame'), 'the root is the kit frame').toBe(true);
+
+    const bars = root.querySelectorAll<HTMLElement>('.mr-frame-titlebar');
+    expect(bars, 'exactly one title bar in the frame').toHaveLength(1);
+    const bar = bars[0] as HTMLElement;
+    expect(root.firstElementChild, 'the title bar is the frame root first element child').toBe(bar);
+    expect(bar.tagName, 'the title bar is a div').toBe('DIV');
+
+    const title = root.querySelector<HTMLElement>('h2[data-testid="box-title"]');
+    expect(title, 'the box-title h2 exists').not.toBeNull();
+    expect(bar.contains(title), 'the title is inside the title bar').toBe(true);
+    expect(title?.classList.contains('mr-frame-title'), 'the title wears .mr-frame-title').toBe(
+      true,
+    );
+    expect(title?.getAttribute('tabindex'), 'the title stays the programmatic focus anchor').toBe(
+      '-1',
+    );
+    expect(title?.style.color, 'the kit paints the title: no inline colour').toBe('');
+    expect(['0', '0px'], 'the bar owns the spacing: the title margin is 0').toContain(
+      title?.style.margin,
+    );
+    expect(title?.textContent, 'the title text resolves at show()').toBe(i18nT('box.title'));
+
+    const stray = [...root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')].filter(
+      (h) => !bar.contains(h) && h.closest('[data-context-sheet]') === null,
+    );
+    expect(
+      stray.map((h) => `${h.tagName.toLowerCase()}:${h.textContent}`),
+      'no heading outside the title bar and the context sheet',
+    ).toEqual([]);
+  });
+});
+
 describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for visibility', () => {
   it('CTL7B-1-BOX-FRAME BITES: the box root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display and align-items inline in every state, and toggles display flex/none', async () => {
     // WRONG IMPLS KILLED:

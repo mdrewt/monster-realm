@@ -18,7 +18,7 @@ import { closeAll, pressAccel } from './controls';
 // file pins what a real player sees and what a real browser stores; server-side claim
 // registration (startSignIn -> start_guest_claim before the redirect) is gated by
 // client/src/net/connection.runtime.test.ts (CLAIM-START*):
-//   A1  C opens the claim overlay (prompt copy, sign-in button, privacy door, first-run nudge);
+//   A1  C opens the claim overlay (prompt copy, sign-in button, no privacy door, first-run nudge);
 //       uif-16b: through the main menu's Profile LEAF, opening the one Profile dialog
 //       (#profile-overlay) with focus in its Account section (#claim-overlay); C again, with focus
 //       already in Account, acts as Start (A2 closes it that way)
@@ -26,7 +26,7 @@ import { closeAll, pressAccel } from './controls';
 //       code minted into per-tab sessionStorage (claimCode.ts), identity/party/presence
 //       unchanged, the world still plays
 //   A3  Declining is two-step: arm -> cancel keeps the code; arm -> confirm deletes it
-//   A4  (uif-16b, UIF16B.3) the privacy door moves the cursor into the Privacy section of the SAME
+//   A4  (uif-16b, UIF16B.3) Down from the Account rows moves the cursor into the Privacy section of the SAME
 //       dialog (the Account section stays shown; no second dialog); the frame's Close row closes it
 //
 // The claim copy is model English in client/src/ui/claimModel.ts (NOT in the i18n catalog), so
@@ -132,7 +132,7 @@ test.describe
       await browser.close();
     });
 
-    test('A1: KeyC opens the claim overlay with the guest prompt, a sign-in button, the privacy door and the first-run nudge', async () => {
+    test('A1: KeyC opens the claim overlay with the guest prompt, a sign-in button, no privacy door and the first-run nudge', async () => {
       expect(await storedCodes(page), 'a fresh guest holds no claim code').toEqual([]);
       await focusWorld(page);
       await pressAccel(page, 'C');
@@ -154,7 +154,8 @@ test.describe
       await expect(page.locator('#claim-signin-btn')).toBeFocused();
       await expect(page.locator('#claim-decline-btn')).toHaveText(t('claim.declineButton'));
       await expect(page.locator('#claim-join-btn')).toBeHidden();
-      await expect(page.locator('#claim-privacy-btn')).toHaveText(t('claim.privacyButton'));
+      // The Account section offers its claim actions only: no separate privacy door.
+      await expect(page.locator('#claim-privacy-btn')).toHaveCount(0);
     });
 
     test('A2: sign-in with an unreachable auth service fails safe — failure copy, a minted claim code, and the guest session untouched', async () => {
@@ -227,19 +228,29 @@ test.describe
       await expect.poll(() => storedCodes(page), { timeout: 5_000 }).toEqual([]);
     });
 
-    // uif-16b (named intentional change): the privacy door used to open a separate privacy overlay
-    // (and close the claim overlay); `#privacy-close-btn` closed it. Both retire: the door is a jump
-    // row inside the ONE Profile dialog, and the frame's own Close row closes it.
-    test('UIF16B.3 the privacy door moves focus into the Privacy section of the same Profile dialog, the Account section stays shown, and the frame Close row closes it', async () => {
+    // Privacy is its own section of the ONE Profile dialog, reached by the D-pad column; the
+    // frame's own Close row closes the dialog.
+    test('UIF16B.3 Down from the Account rows moves focus into the Privacy section of the same Profile dialog, the Account section stays shown, and the frame Close row closes it', async () => {
       await closeAll(page);
       await focusWorld(page);
       await pressAccel(page, 'C');
       await expect(page.locator('#profile-overlay')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#claim-overlay :focus')).toHaveCount(1);
 
-      await page.locator('#claim-privacy-btn').click();
-      // Where the door lands (ProfileView.focusSection('privacy')): the Privacy section's first
-      // shown, enabled button, or the frame's Close row when that account state refuses them all.
+      for (let i = 0; i < 6; i += 1) {
+        const there = await page.evaluate(() => {
+          const el = document.activeElement;
+          return (
+            el !== null &&
+            (document.getElementById('privacy-overlay')?.contains(el) === true ||
+              el.id === 'profile-close-btn')
+          );
+        });
+        if (there) break;
+        await page.keyboard.press('ArrowDown');
+      }
+      // Where the walk lands: the Privacy section's first shown, enabled button, or the frame's
+      // Close row when that account state refuses them all.
       const landing = await page.evaluate(() => {
         const rows = [...document.querySelectorAll('#privacy-overlay button')].filter(
           (b) =>

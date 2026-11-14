@@ -61,6 +61,7 @@ import {
 } from './claimModel';
 import { ClaimView, type ClaimViewHandlers } from './claimView';
 import { CATALOG_EN } from './i18n/catalog.en';
+import { t as i18nT } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
 import { type RowOp, type RowSection, walkSection } from './screens/profileScreen';
@@ -69,6 +70,8 @@ import { type RowOp, type RowSection, walkSection } from './screens/profileScree
 // to the real implementation, so the VALUE oracle (real attribute writes, real focus
 // moves) still works.
 vi.mock('./overlayA11y', { spy: true });
+// The resolver is spied the same way: every t() request is recorded and answered by the real one.
+vi.mock('./i18n/resolver', { spy: true });
 
 /** ONE real macrotask boundary — never vi.useFakeTimers() (plan anti-pattern #10). */
 async function flushMacrotask(): Promise<void> {
@@ -122,10 +125,9 @@ function makeHandlers(): ClaimViewHandlers {
     onDeclineRequested: vi.fn(),
     onDeclineConfirmed: vi.fn(),
     onDeclineCancelled: vi.fn(),
-    // Every required handler is spelled out: vitest does not typecheck, so a missing one would
-    // stay silent in the test run until something clicks the button and calls `undefined()`.
-    onPrivacy: vi.fn(),
-    // uif-16b: the new REQUIRED dismissal, called from every hide().
+    // Every required handler is spelled out so a missing one cannot stay silent until something
+    // clicks the button and calls `undefined()`.
+    // The required dismissal, called from every hide().
     onDismissed: vi.fn(),
   };
 }
@@ -323,7 +325,7 @@ describe('ClaimView — action buttons are shown per vm.actions and labelled', (
 // ===========================================================================================
 // ctl-8h (CTL8H.3): the claim frame's rows, its default-No, B2 and B3.
 //
-// The rows are the overlay's real shown action buttons plus #claim-privacy-btn, in DOM order; the
+// The rows are the overlay's real shown action buttons, in DOM order; the
 // cursor IS document.activeElement. accountScreen hands the view one-shot row tokens through
 // `walk(view,op)` (see renameView.test.ts for the contract's wording). Re-seating on a
 // render happens ONLY when the overlay was already visible before it: the arm edge (confirmPrompt
@@ -351,7 +353,7 @@ function stateAfter(...events: ClaimEvent[]): ClaimModelState {
 }
 
 /** Every visible ClaimPhase, reached by running events, with the buttons it shows (ids, DOM
- *  order, the privacy door last). */
+ *  order). */
 const CLAIM_PHASES: ReadonlyArray<{
   readonly label: string;
   readonly state: ClaimModelState;
@@ -360,22 +362,22 @@ const CLAIM_PHASES: ReadonlyArray<{
   {
     label: 'prompt',
     state: stateAfter(OPENED),
-    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-signin-btn', 'claim-decline-btn'],
   },
   {
     label: 'prompt with the first-run nudge',
     state: stateAfter({ kind: 'claim-ui-opened', nudgeAlreadySeen: false }),
-    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-signin-btn', 'claim-decline-btn'],
   },
   {
     label: 'code-pending',
     state: stateAfter(OPENED, { kind: 'claim-pending', code: 'c0de' }),
-    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-decline-btn'],
   },
   {
     label: 'awaiting-account',
     state: stateAfter(OPENED, { kind: 'claim-awaiting-account' }),
-    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-decline-btn'],
   },
   {
     label: 'rejected: a dead code lifts the veto',
@@ -384,7 +386,7 @@ const CLAIM_PHASES: ReadonlyArray<{
       message: 'code expired',
       claimedFrom: undefined,
     }),
-    rows: ['claim-join-btn', 'claim-privacy-btn'],
+    rows: ['claim-join-btn'],
   },
   {
     label: 'rejected: the destination is terminal',
@@ -393,7 +395,7 @@ const CLAIM_PHASES: ReadonlyArray<{
       message: 'account already claimed',
       claimedFrom: undefined,
     }),
-    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-decline-btn'],
   },
   {
     label: 'rejected: transient',
@@ -402,7 +404,7 @@ const CLAIM_PHASES: ReadonlyArray<{
       message: 'close your other tab, then retry',
       claimedFrom: undefined,
     }),
-    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-decline-btn'],
   },
   {
     label: 'rejected: not claim specific',
@@ -411,27 +413,27 @@ const CLAIM_PHASES: ReadonlyArray<{
       message: 'sign in required',
       claimedFrom: undefined,
     }),
-    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-decline-btn'],
   },
   {
     label: 'sign-in-failed',
     state: stateAfter(OPENED, { kind: 'sign-in-failed', reason: 'sign-in-rejected' }),
-    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-signin-btn', 'claim-decline-btn'],
   },
   {
     label: 'sign-in-failed, an unrecognised reason',
     state: stateAfter(OPENED, { kind: 'sign-in-failed', reason: 'something-new' }),
-    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+    rows: ['claim-signin-btn', 'claim-decline-btn'],
   },
   {
     label: 'claimed',
     state: stateAfter(OPENED, { kind: 'claim-succeeded' }),
-    rows: ['claim-join-btn', 'claim-privacy-btn'],
+    rows: ['claim-join-btn'],
   },
   {
     label: 'decline armed',
     state: stateAfter(OPENED, { kind: 'decline-requested' }),
-    rows: ['claim-decline-confirm-btn', 'claim-decline-cancel-btn', 'claim-privacy-btn'],
+    rows: ['claim-decline-confirm-btn', 'claim-decline-cancel-btn'],
   },
 ];
 
@@ -579,7 +581,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       expect(overlay.classList.contains('mr-frame'), 'no class mr-frame').toBe(false);
       expect(overlay.classList.contains('mr-shell'), 'no class mr-shell').toBe(false);
       expect(overlay.classList.contains('mr-button-rows'), 'class mr-button-rows').toBe(true);
-      for (const id of ['claim-title', 'claim-body', 'claim-signin-btn', 'claim-privacy-btn']) {
+      for (const id of ['claim-title', 'claim-body', 'claim-signin-btn', 'claim-decline-btn']) {
         expect(overlay.contains(document.getElementById(id)), `#${id} is inside the overlay`).toBe(
           true,
         );
@@ -635,11 +637,11 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       walk(view, moveOp(1));
       down.push(focusedId());
     }
-    expect(down, 'down, then clamped on the privacy door').toEqual([
+    expect(down, 'down, then clamped on the last row').toEqual([
       'claim-decline-btn',
-      'claim-privacy-btn',
-      'claim-privacy-btn',
-      'claim-privacy-btn',
+      'claim-decline-btn',
+      'claim-decline-btn',
+      'claim-decline-btn',
     ]);
     const up: string[] = [];
     for (let i = 0; i < 4; i += 1) {
@@ -647,7 +649,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       up.push(focusedId());
     }
     expect(up, 'up, then clamped on the first row').toEqual([
-      'claim-decline-btn',
+      'claim-signin-btn',
       'claim-signin-btn',
       'claim-signin-btn',
       'claim-signin-btn',
@@ -659,11 +661,6 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     walk(view, activateOp());
     expect(firedNames(handlers), 'A on Decline').toEqual(['onDeclineRequested']);
     expect(handlers.onDeclineRequested).toHaveBeenCalledTimes(1);
-    walk(view, moveOp(1));
-    expect(focusedId()).toBe('claim-privacy-btn');
-    walk(view, activateOp());
-    expect(handlers.onPrivacy, 'A on the privacy door').toHaveBeenCalledTimes(1);
-    expect(handlers.onDeclineRequested, 'and nothing else fired again').toHaveBeenCalledTimes(1);
 
     // --- activate with no row focused: seat the default row, fire nothing ------------------------
     for (const name of Object.keys(handlers) as (keyof ClaimViewHandlers)[]) {
@@ -689,17 +686,18 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     expect(focusedId(), 'up from No: Confirm').toBe('claim-decline-confirm-btn');
     walk(view, moveOp(1));
     walk(view, moveOp(1));
-    expect(focusedId(), 'down past No: the privacy door').toBe('claim-privacy-btn');
+    expect(focusedId(), 'down past No: clamped on No, the last row').toBe(
+      'claim-decline-cancel-btn',
+    );
 
     // uif-16b: the identity-memo segment that stood here moved with `applyRowOp` to the frame:
     // ui/profileView.test.ts UIF16B.2 "a token is applied once".
   });
 
-  it('CTL8H-3-ROWS: in every claim phase the rows the D-pad walks are exactly the shown buttons in DOM order, the privacy door last', () => {
+  it('CTL8H-3-ROWS: in every claim phase the rows the D-pad walks are exactly the shown buttons in DOM order', () => {
     // WRONG IMPL KILLED: a fixed row list (the armed phase swaps Decline for Confirm / Cancel; a
     // claimed account shows Join; a dead code shows Join, not Decline); rows that include a hidden
-    // button or omit the always-shown privacy door; privacy not last; and rows derived from a
-    // stale vm instead of the DOM the last render painted.
+    // button; and rows derived from a stale vm instead of the DOM the last render painted.
     let checked = 0;
     for (const { label, state, rows } of CLAIM_PHASES) {
       const { view } = freshVisible(buildClaimViewModel(state));
@@ -711,13 +709,60 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
         rows,
       );
       expect(walkRows(view), `${label}: the D-pad rows`).toEqual(rows);
-      expect(rows[rows.length - 1], `${label}: the privacy door is last`).toBe('claim-privacy-btn');
       checked += 1;
     }
     expect(checked, 'ANTI-VACUITY: every phase case was walked').toBe(CLAIM_PHASES.length);
   });
 
-  it('CTL8H-3-DEFAULT-NO: when the overlay is already visible, arming focuses No (from a focused Decline, the privacy door or the page), disarming focuses the Decline button, a focused control the render hid goes to the default row, and a re-render with the same vm moves nothing; the open edge moves nothing; a re-shown armed overlay with focus on the page seats No on A and never confirms', () => {
+  it("the Account section's rows are its claim actions only, with no privacy door", () => {
+    // WRONG IMPL KILLED: the shipped section (a `#claim-privacy-btn` row always shown last, so the
+    // Account column ends with a second way into Privacy that duplicates the Privacy section); the
+    // button kept but hidden (it still exists in the DOM); the button removed from the rows but
+    // left in the DOM; its `claim.privacyButton` label still resolved at render or show (a retired
+    // key requested by a view that no longer has the button); a rows list that adds any element
+    // that is not one of the five claim action buttons.
+    const ACTION_IDS: Readonly<Record<keyof ClaimViewModel['actions'], string>> = {
+      signIn: 'claim-signin-btn',
+      join: 'claim-join-btn',
+      decline: 'claim-decline-btn',
+      declineConfirm: 'claim-decline-confirm-btn',
+      declineCancel: 'claim-decline-cancel-btn',
+    };
+    const order = Object.keys(ACTION_IDS) as (keyof ClaimViewModel['actions'])[];
+    vi.mocked(i18nT).mockClear();
+    let checked = 0;
+    for (const { label, state, rows } of CLAIM_PHASES) {
+      const vm = buildClaimViewModel(state);
+      const { view } = freshVisible(vm);
+      const shownActions = order.filter((k) => vm.actions[k]).map((k) => ACTION_IDS[k]);
+      expect(shownActions, `${label}: the table names the vm's shown actions`).toEqual(rows);
+      expect(
+        view.sectionRows().map((el) => el.id),
+        `${label}: the rows are the shown claim action buttons, in DOM order, and nothing else`,
+      ).toEqual(shownActions);
+      expect(
+        document.getElementById('claim-privacy-btn'),
+        `${label}: no privacy door exists in the DOM`,
+      ).toBeNull();
+      const overlay = document.getElementById('claim-overlay') as HTMLElement;
+      expect(
+        [...overlay.querySelectorAll('button')].map((b) => b.id).sort(),
+        `${label}: the section holds the five action buttons and no other`,
+      ).toEqual(Object.values(ACTION_IDS).sort());
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: every phase case was checked').toBe(CLAIM_PHASES.length);
+    expect(
+      vi.mocked(i18nT).mock.calls.map((c) => c[0]),
+      'the retired privacy label is never requested',
+    ).not.toContain('claim.privacyButton');
+    expect(
+      vi.mocked(i18nT).mock.calls.length,
+      'ANTI-VACUITY: the spy saw the section resolve its labels',
+    ).toBeGreaterThan(0);
+  });
+
+  it('CTL8H-3-DEFAULT-NO: when the overlay is already visible, arming focuses No (from a focused Decline, a focused Sign in or the page), disarming focuses the Decline button, a focused control the render hid goes to the default row, and a re-render with the same vm moves nothing; the open edge moves nothing; a re-shown armed overlay with focus on the page seats No on A and never confirms', () => {
     // WRONG IMPL KILLED: a default-No that only runs on the click edge (the arm edge is a render:
     // the Decline button is hidden under focus and focus falls to the page, where the next A /
     // Enter is a stray key); a Confirm that takes the focus (one Enter confirms a deletion of the
@@ -744,12 +789,12 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       expect(focusedId(), 'armed from Decline: focus on No').toBe('claim-decline-cancel-btn');
       expect(focusedId(), 'never Confirm').not.toBe('claim-decline-confirm-btn');
     }
-    // --- the arm edge: from a control the render keeps (the privacy door) --------------------
+    // --- the arm edge: from Sign in (also hidden by the render) -------------------------------
     {
       const { view } = freshVisible(PROMPT_VM);
-      id('claim-privacy-btn').focus();
+      id('claim-signin-btn').focus();
       view.render(ARMED_VM);
-      expect(focusedId(), 'armed with focus elsewhere in the overlay: focus on No').toBe(
+      expect(focusedId(), 'armed with focus on Sign in: focus on No').toBe(
         'claim-decline-cancel-btn',
       );
     }
@@ -775,11 +820,11 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     }
     {
       const { view } = freshVisible(PROMPT_VM);
-      id('claim-privacy-btn').focus();
+      id('claim-decline-btn').focus();
       view.render(PROMPT_VM);
       view.render(makeVm({ feedback: 'Something happened' }));
       expect(focusedId(), 'unarmed re-renders leave the focus where it is').toBe(
-        'claim-privacy-btn',
+        'claim-decline-btn',
       );
     }
     // --- the disarm edge: back to the Decline button ---------------------------------------------
@@ -903,7 +948,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
   });
 
   it('CTL8H-RT-CLAIM-CONFIRM-SEATS-NOTHING: once the decline is CONFIRMED (the confirm row gone, Decline hidden, Join shown) the disarm-edge render seats no row, whether focus was on the hidden Confirm or on the page, and an A with no row focused then seats Join without pressing it', () => {
-    // WRONG IMPL KILLED: a disarm that falls back to the last row (the privacy door) or the first
+    // WRONG IMPL KILLED: a disarm that falls back to the last row or the first
     // row (Join: a second Enter would press it and re-enter the game the player just declined)
     // when the arming Decline is no longer a row; a disarm that seats the hidden Decline without
     // asking whether it is still a row; and an A that presses the row it seated.
@@ -947,7 +992,6 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       expect(focusedId(), `${where}: the disarm edge does not seat Join`).not.toBe(
         'claim-join-btn',
       );
-      expect(focusedId(), `${where}: nor the privacy door`).not.toBe('claim-privacy-btn');
       expect(focusedId(), `${where}: nor the hidden Decline`).not.toBe('claim-decline-btn');
       if (where === 'on the page') {
         expect(document.activeElement, `${where}: focus is still on the page`).toBe(document.body);
@@ -1207,7 +1251,6 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
         'claim-decline-btn',
         'claim-decline-confirm-btn',
         'claim-decline-cancel-btn',
-        'claim-privacy-btn',
       ];
       const cases: ReadonlyArray<{
         label: string;
@@ -1218,13 +1261,13 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
         {
           label: 'sign-in prompt',
           vm: PROMPT_VM,
-          shown: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+          shown: ['claim-signin-btn', 'claim-decline-btn'],
           hidden: ['claim-join-btn', 'claim-decline-confirm-btn', 'claim-decline-cancel-btn'],
         },
         {
           label: 'armed decline',
           vm: ARMED_VM,
-          shown: ['claim-decline-confirm-btn', 'claim-decline-cancel-btn', 'claim-privacy-btn'],
+          shown: ['claim-decline-confirm-btn', 'claim-decline-cancel-btn'],
           hidden: ['claim-signin-btn', 'claim-join-btn', 'claim-decline-btn'],
         },
         // EVERY visible claim phase (a rule or class that applies in some phases only fails here).
@@ -1273,14 +1316,15 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
         }
       }
 
-      // The class that stacks the buttons is on from construction: show() alone (no render at all)
-      // already stacks the one always-shown button.
+      // The class that stacks the buttons is on from construction: after a render a shown button
+      // stacks as a block under the overlay's class, whatever order show() and render ran in.
       const opened = qf13Fresh();
       opened.view.show();
-      const privacy = document.getElementById('claim-privacy-btn') as HTMLElement;
+      opened.view.render(PROMPT_VM);
+      const signIn = document.getElementById('claim-signin-btn') as HTMLElement;
       expect(
-        getComputedStyle(privacy).display,
-        'show() alone: the privacy button stacks as a block',
+        getComputedStyle(signIn).display,
+        'show() then render: the Sign in button stacks as a block',
       ).toBe('block');
 
       // The rule must not leak: buttons outside the Account overlay keep the UA default.
@@ -1432,31 +1476,28 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     expect(section.sectionRoot).toBe(document.getElementById('claim-overlay'));
   });
 
-  it('UIF16A.1 sectionRows is the shown buttons in DOM order, the privacy door last, per phase', () => {
+  it('UIF16A.1 sectionRows is the shown buttons in DOM order, per phase', () => {
     const { view: prompt } = open16(PROMPT16);
     expect(ids16(prompt.sectionRows()), 'sign-in prompt').toEqual([
       'claim-signin-btn',
       'claim-decline-btn',
-      'claim-privacy-btn',
     ]);
     prompt.render(ARMED16);
     expect(ids16(prompt.sectionRows()), 'armed decline').toEqual([
       'claim-decline-confirm-btn',
       'claim-decline-cancel-btn',
-      'claim-privacy-btn',
     ]);
     prompt.render(JOIN16);
     expect(ids16(prompt.sectionRows()), 'a different action set').toEqual([
       'claim-join-btn',
       'claim-decline-btn',
-      'claim-privacy-btn',
     ]);
   });
 
   it('UIF16A.1 a disabled shown button is not a row', () => {
     const { view } = open16(PROMPT16);
     (byId16('claim-decline-btn') as HTMLButtonElement).disabled = true;
-    expect(ids16(view.sectionRows())).toEqual(['claim-signin-btn', 'claim-privacy-btn']);
+    expect(ids16(view.sectionRows())).toEqual(['claim-signin-btn']);
   });
 
   it('UIF16A.1 defaultRow is No while the decline is armed, else the first row', () => {
@@ -1475,25 +1516,25 @@ describe('ClaimView uif-16a: the shared section interface', () => {
   // frame-level walk is gated in ui/profileView.test.ts UIF16B.2.
   it('UIF16A.2 the section walk seats defaultRow() when no row is focused: an overridden default wins', () => {
     const { view, handlers } = open16(PROMPT16);
-    override16(view, { defaultRow: () => byId16('claim-privacy-btn') });
+    override16(view, { defaultRow: () => byId16('claim-decline-btn') });
     blur16();
     walk(view, move16(1));
     expect(focusedId16(), 'the override, not a private No / first-row fallback').toBe(
-      'claim-privacy-btn',
+      'claim-decline-btn',
     );
     blur16();
     walk(view, activate16());
-    expect(focusedId16()).toBe('claim-privacy-btn');
-    expect(handlers.onPrivacy, 'seating presses nothing').not.toHaveBeenCalled();
+    expect(focusedId16()).toBe('claim-decline-btn');
+    expect(handlers.onDeclineRequested, 'seating presses nothing').not.toHaveBeenCalled();
   });
 
   it('UIF16A.2 the section walk follows the rows sectionRows() returns: an overridden list sets the order, the clamp and what A presses', () => {
     const { view, handlers } = open16(PROMPT16);
-    // Real rows: [signin, decline, privacy]. Override: privacy first, signin last.
+    // Real rows: [signin, decline]. Override: decline first, signin last.
     override16(view, {
-      sectionRows: () => [byId16('claim-privacy-btn'), byId16('claim-signin-btn')],
+      sectionRows: () => [byId16('claim-decline-btn'), byId16('claim-signin-btn')],
     });
-    byId16('claim-privacy-btn').focus();
+    byId16('claim-decline-btn').focus();
     walk(view, move16(1));
     expect(focusedId16(), 'down from the first overridden row').toBe('claim-signin-btn');
     walk(view, move16(1));
@@ -1502,6 +1543,7 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     expect(handlers.onSignIn, 'A presses the focused overridden row once').toHaveBeenCalledTimes(1);
 
     // A real row the interface does not list is not a row: no press, the default is seated.
+    override16(view, { sectionRows: () => [byId16('claim-signin-btn')] });
     byId16('claim-decline-btn').focus();
     walk(view, activate16());
     expect(
@@ -1519,9 +1561,9 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     expect(handlers.onDeclineConfirmed, 'and confirms nothing').not.toHaveBeenCalled();
     expect(handlers.onDeclineCancelled, 'and does not press No either').not.toHaveBeenCalled();
 
-    byId16('claim-privacy-btn').focus();
+    byId16('claim-decline-cancel-btn').focus();
     walk(view, move16(1));
-    expect(focusedId16(), 'no wrap past the last row').toBe('claim-privacy-btn');
+    expect(focusedId16(), 'no wrap past the last row').toBe('claim-decline-cancel-btn');
     byId16('claim-decline-confirm-btn').focus();
     walk(view, move16(-1));
     expect(focusedId16(), 'no wrap past the first row').toBe('claim-decline-confirm-btn');
@@ -1536,7 +1578,7 @@ describe('ClaimView uif-16a: the shared section interface', () => {
       'precondition: the real rows keep Decline, so a plain re-render moves nothing',
     ).toBe('claim-decline-btn');
     override16(view, {
-      sectionRows: () => [byId16('claim-signin-btn'), byId16('claim-privacy-btn')],
+      sectionRows: () => [byId16('claim-signin-btn')],
     });
     view.render(PROMPT16);
     expect(focusedId16(), 'the render hid nothing, but the interface does not list Decline').toBe(

@@ -369,29 +369,10 @@ function privacyOverlayVisible(): boolean {
   return overlay !== null && overlay.style.display !== 'none' && overlay.style.display !== '';
 }
 
-/**
- * The front door: the ONE button inside the Account & Sign-in overlay that opens the privacy
- * surface. DISCOVERED BY ROLE, not by a hard-coded id, and the count is
- * asserted — "exactly one privacy door" is the contract-level statement.
- */
-function privacyOpener(): HTMLButtonElement {
-  const claim = byId('claim-overlay');
-  const doors = Array.from(claim.querySelectorAll('button')).filter((b) =>
-    b.id.includes('privacy'),
-  );
-  expect(
-    doors.length,
-    'the Account & Sign-in overlay must contain EXACTLY ONE button whose id names the privacy ' +
-      `surface; found ${doors.length} (${doors.map((b) => b.id).join(', ')})`,
-  ).toBe(1);
-  return doors[0] as HTMLButtonElement;
-}
-
-/** Open the surface through the real production path and assert it actually opened.
- *  uif-16b (named intentional change): the privacy surface is the Privacy SECTION of the one
- *  Profile frame, shown whenever the frame is, so the production path is KeyC (Profile, on
- *  Account) and then the Account section's privacy door, which moves focus into the section. Was:
- *  the door alone opened a separate privacy dialog. */
+/** Open the surface through the real production path and assert it actually opened. The privacy
+ *  surface is the Privacy SECTION of the one Profile frame, shown whenever the frame is: KeyC opens
+ *  Profile on its Account section, and Down walks the one column from the Account rows into the
+ *  Privacy section. */
 function openPrivacySurface(): void {
   const frame = document.getElementById('profile-overlay');
   const frameOpen = frame !== null && frame.style.display !== 'none' && frame.style.display !== '';
@@ -403,14 +384,22 @@ function openPrivacySurface(): void {
       new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true, cancelable: true }),
     );
   }
-  privacyOpener().click();
+  const privacy = byId('privacy-overlay');
+  for (let i = 0; i < 6 && !privacy.contains(document.activeElement); i += 1) {
+    const target = document.activeElement ?? window;
+    for (const type of ['keydown', 'keyup']) {
+      target.dispatchEvent(
+        new KeyboardEvent(type, { code: 'ArrowDown', bubbles: true, cancelable: true }),
+      );
+    }
+  }
   expect(
     privacyOverlayVisible(),
     'with the Profile frame open its Privacy section must be on screen',
   ).toBe(true);
   expect(
-    byId('privacy-overlay').contains(document.activeElement),
-    'the privacy door must move focus INTO the Privacy section',
+    privacy.contains(document.activeElement),
+    'Down from the Account rows must move focus INTO the Privacy section',
   ).toBe(true);
 }
 

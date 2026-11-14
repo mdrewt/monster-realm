@@ -27,16 +27,16 @@
 // NO aria-live / role="status" / role="alert" on the notice: exactly one live region exists and
 // `ui/liveRegion.ts` owns it (this applies to the notice too).
 //
-// The three strings this view owns are resolved through the i18n resolver
+// The four strings this view owns are resolved through the i18n resolver
 // (`t()`, ui/i18n/resolver.ts), never in the constructor (S6 may negotiate the locale after this
-// view is constructed): the section header (`privacy.title`) in show(), and the two second-step
-// labels (`privacy.confirm.delete` / `privacy.confirm.keep`) in render(). `privacy.title` shares
-// its English bytes with `claim.privacyButton` today but is a DIFFERENT key (a heading, not a
-// button). Every vm label and `PRIVACY_PSEUDONYMIZATION_DISCLOSURE` are `privacyBanner.ts` copy,
-// rendered raw.
+// view is constructed): the section header (`privacy.title`) and the pseudonymization disclosure
+// (`privacy.disclosure`, whose English is `privacyBanner.ts`'s pinned
+// `PRIVACY_PSEUDONYMIZATION_DISCLOSURE`) in show(), and the two second-step labels
+// (`privacy.confirm.delete` / `privacy.confirm.keep`) in render(). Every vm label is
+// `privacyBanner.ts` copy, rendered raw.
 
 import { t } from './i18n/resolver';
-import { PRIVACY_PSEUDONYMIZATION_DISCLOSURE, type PrivacyViewModel } from './privacyBanner';
+import type { PrivacyViewModel } from './privacyBanner';
 import { type RowSection, reseatRow } from './screens/profileScreen';
 
 export interface PrivacyViewHandlers {
@@ -141,13 +141,11 @@ export class PrivacyView implements RowSection {
       if (child.parentElement !== this.#overlay) this.#overlay.appendChild(child);
     }
 
-    // The disclosure never varies and is not catalogued (privacyBanner.ts copy, M24 §2.5), so it
-    // is written ONCE here rather than on every render. It must be present in EVERY state — it
-    // is the §9 language, and a render path that blanked it on the terminal branch would drop it
-    // exactly when it matters most. The title is un-hidden here but its TEXT is resolved in
-    // show() (header).
+    // The title and the disclosure are un-hidden here but their TEXT is resolved in show()
+    // (header). No render writes the disclosure: it is present in EVERY state of the shown
+    // section — it is the §9 language, and a render path that blanked it on the terminal branch
+    // would drop it exactly when it matters most.
     this.#title.style.display = '';
-    this.#disclosure.textContent = PRIVACY_PSEUDONYMIZATION_DISCLOSURE;
     this.#disclosure.style.display = '';
   }
 
@@ -243,8 +241,9 @@ export class PrivacyView implements RowSection {
   }
 
   show(): void {
-    // The header is resolved HERE, on EVERY show(), before the display write.
+    // The header and the disclosure are resolved HERE, on EVERY show(), before the display write.
     this.#title.textContent = t('privacy.title');
+    this.#disclosure.textContent = t('privacy.disclosure');
     this.#overlay.style.display = 'block';
   }
 

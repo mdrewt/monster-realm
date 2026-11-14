@@ -1072,9 +1072,20 @@ test.describe
       await blurFocus();
       await pressAccel(page, 'C');
       await expectProfileDialog();
-      // The door moves the cursor into the Privacy section of the same dialog (or onto Close when
-      // this account state refuses every privacy control).
-      await page.locator('#claim-privacy-btn').click();
+      // Down through the one column moves the cursor into the Privacy section of the same dialog
+      // (or onto Close when this account state refuses every privacy control).
+      for (let i = 0; i < 6; i += 1) {
+        const there = await page.evaluate(() => {
+          const el = document.activeElement;
+          return (
+            el !== null &&
+            (document.getElementById('privacy-overlay')?.contains(el) === true ||
+              el.id === 'profile-close-btn')
+          );
+        });
+        if (there) break;
+        await page.keyboard.press('ArrowDown');
+      }
       await expect
         .poll(() =>
           page.evaluate(() => {

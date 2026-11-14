@@ -1452,7 +1452,6 @@ function qf8RenderRaising(): Qf8Rendered {
           });
         },
         anchors: () => [
-          i18nT('raising.inventory.heading'),
           i18nTf('raising.inventory.item', { name: 'Protein', count: 2 }),
           i18nTf('raising.inventory.item', { name: 'Iron', count: 1 }),
           i18nTf('raising.inventory.item', { name: 'Lure Berry', count: 4 }),

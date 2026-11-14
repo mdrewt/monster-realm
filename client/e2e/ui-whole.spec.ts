@@ -35,8 +35,7 @@ import { countMatching, expectNear, expectRect, measuredContrast, sampleStyle } 
 // (M-ui-foundation-wireframes.md, "Token table (WF1.5)") or from the shipped chip catalog, written
 // as the computed value Chromium reports (`20px`, `700`, `rgb(224, 224, 224)`). Nothing is read back
 // from the stylesheet, from a token or from the hint-bar model. Where a shipped screen DELIBERATELY
-// differs from the wf-1 number (the h2 titles of Monsters, Inventory and Controls compute the UA's
-// 1.5em of the 14px shell = 21px, How to Play's heading is a bare div at the shell's 14px, Social has
+// differs from the wf-1 number (How to Play's heading is a bare div at the shell's 14px, Social has
 // no title at all), the AS-SHIPPED value is the literal, marked `AS SHIPPED` where it is written: it
 // pins the screens against regression and the difference is recorded in the PR (a cosmetic gap that
 // fails nothing), not asserted as a defect.
@@ -278,8 +277,6 @@ interface Stop {
   readonly scroller: string;
   /** Where the `.mr-nav-item` rows of this stop live; null when it shows none. */
   readonly rowScope: string | null;
-  /** Exact title-to-bar gap in px where the shipped layout differs from "hugs the title". */
-  readonly titleGap?: number;
   readonly extra?: (p: Page) => Promise<void>;
 }
 interface Screen {
@@ -296,16 +293,7 @@ const SHEET = '[data-context-sheet]:not([hidden])';
 
 const MONSTERS_ROOT = '.mr-frame:has([data-testid="box-title"])';
 const BAG_ROOT = '.mr-frame:has([data-testid="raising-title"])';
-// AS SHIPPED: Monsters, Inventory and Controls head their frame with a plain h2 (UA 1.5em of the
-// 14px shell = 21px bold); Monsters and Inventory also paint it #fff inline.
-const h2Title = (sel: string, color: string): TitleCfg => ({
-  sel,
-  px: '21px',
-  weight: '700',
-  color,
-  bar: null,
-});
-const WHITE = 'rgb(255, 255, 255)';
+/** A frame title in the kit title bar: 20px, 700, the frame foreground, the bar measured. */
 const kitTitle = (sel: string, bar: string): TitleCfg => ({
   sel,
   px: '20px',
@@ -448,7 +436,7 @@ const controlsStop = (tab: string): Stop => ({
   id: `controls/${tab}`,
   shot: `controls-${tab}`,
   root: '#controls-overlay',
-  title: h2Title('#controls-title', FG),
+  title: kitTitle('#controls-title', '#controls-overlay .mr-frame-titlebar'),
   tab,
   content: '#controls-rows',
   focus: focusOn('#controls-rows .mr-nav-item.is-active'),
@@ -459,16 +447,13 @@ const bagStop = (tab: string, food: boolean): Stop => ({
   id: `bag/${tab}`,
   shot: 'inventory',
   root: BAG_ROOT,
-  title: h2Title('[data-testid="raising-title"]', WHITE),
+  title: kitTitle('[data-testid="raising-title"]', `${BAG_ROOT} .mr-frame-titlebar`),
   tab,
   content: '#bag-panel',
   // Only the Food pocket holds the seeded item; the other pockets show their EmptyState.
   focus: food ? focusOn('#bag-list .mr-nav-item.is-active') : NO_FOCUS,
   scroller: '#bag-panel',
   rowScope: food ? '#bag-list' : null,
-  // AS SHIPPED: in-panel h3 heading between title and TabBar (cosmetic, wf-1 dropped such
-  // headings; recorded in the PR). Measured 50.1875.
-  titleGap: 50.19,
 });
 
 const MENU_STOP: Stop = {
@@ -493,7 +478,7 @@ const SCREENS: readonly Screen[] = [
         id: 'monsters/party',
         shot: 'monsters-party',
         root: MONSTERS_ROOT,
-        title: h2Title('[data-testid="box-title"]', WHITE),
+        title: kitTitle('[data-testid="box-title"]', `${MONSTERS_ROOT} .mr-frame-titlebar`),
         tab: 'party',
         content: '#monsters-panel',
         // Party cells are inline-styled cards, not `.mr-nav-item` rows; the cursor is aria-current.
@@ -506,7 +491,7 @@ const SCREENS: readonly Screen[] = [
         id: 'monsters/storage',
         shot: 'monsters-storage',
         root: MONSTERS_ROOT,
-        title: h2Title('[data-testid="box-title"]', WHITE),
+        title: kitTitle('[data-testid="box-title"]', `${MONSTERS_ROOT} .mr-frame-titlebar`),
         tab: 'storage',
         content: '#monsters-panel',
         focus: NO_FOCUS, // an empty Storage shows the EmptyState
@@ -904,11 +889,7 @@ async function checkStop(p: Page, screen: Screen, stop: Stop, ctx: WalkCtx): Pro
     } else {
       const gap = b.row.y - (s.title.box.y + s.title.box.height);
       expect(gap, `${label}: the bar is below the title`).toBeGreaterThanOrEqual(-0.5);
-      if (stop.titleGap === undefined) {
-        expect(gap, `${label}: the bar hugs the title`).toBeLessThanOrEqual(24);
-      } else {
-        expectNear(gap, stop.titleGap, 0.5, `${label}: the title-to-bar gap, as shipped`);
-      }
+      expect(gap, `${label}: the bar hugs the title`).toBeLessThanOrEqual(24);
     }
     if (s.content !== null) {
       expect(s.content.y, `${label}: the body is below the bar`).toBeGreaterThanOrEqual(

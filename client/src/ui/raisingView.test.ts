@@ -455,8 +455,8 @@ describe('RaisingView qf-9: the raising root is inventory-only (QF9.2)', () => {
     }
     expect(
       [...root.querySelectorAll('h3')].map((h) => h.textContent),
-      'the only section heading is the Inventory one',
-    ).toEqual([i18nT('raising.inventory.heading')]);
+      'no section heading: the title bar names the frame',
+    ).toEqual([]);
 
     // The same holds with the Bag open (the status line is a div, not a control) and after a
     // reopen.
@@ -500,9 +500,10 @@ describe('RaisingView qf-9: the raising root is inventory-only (QF9.2)', () => {
       'one card per item: a name line and a description line each',
     ).toEqual([2, 2, 2]);
     expect(
-      [...root.querySelectorAll('h3')].map((h) => h.textContent),
-      'the Inventory heading is resolved by show()',
-    ).toEqual([i18nT('raising.inventory.heading')]);
+      root.querySelector('[data-testid="raising-title"]')?.textContent,
+      'the frame title is resolved by show()',
+    ).toBe(i18nT('raising.title'));
+    expect(root.querySelectorAll('h3'), 'no section heading under the title').toHaveLength(0);
 
     for (const id of QF9_BAG_PART_IDS) {
       const part = document.getElementById(id);
@@ -1168,11 +1169,7 @@ describe('RaisingView ctl-7b: a refresh re-renders only when the inventory chang
 // sentinel).
 // =============================================================================
 
-const M24S4_RV_PLAIN_KEYS = new Set([
-  'raising.title',
-  'raising.inventory.heading',
-  'raising.inventory.empty',
-]);
+const M24S4_RV_PLAIN_KEYS = new Set(['raising.title', 'raising.inventory.empty']);
 
 const M24S4_RV_PARAM_KEYS = new Set(['raising.inventory.item']);
 
@@ -1300,16 +1297,13 @@ describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()
       i18nT,
       'm24s4 RV-01: raising.title must resolve in show(), not the constructor',
     ).not.toHaveBeenCalledWith('raising.title');
-    expect(i18nT).not.toHaveBeenCalledWith('raising.inventory.heading');
 
     // --- empty monsters + empty inventory ---
     view.refresh({ monsters: [], items: [] });
     view.show();
     expect(i18nT).toHaveBeenCalledWith('raising.title');
-    expect(i18nT).toHaveBeenCalledWith('raising.inventory.heading');
     expect(i18nT).toHaveBeenCalledWith('raising.inventory.empty');
-    // NAMED INTENTIONAL CHANGE (qf-10, QF10.4): was 'Raising & Inventory'. Located by testid: the
-    // section heading (raising.inventory.heading) also reads 'Inventory'.
+    // Located by testid: the title is the frame's one heading.
     expect(root.querySelector('[data-testid="raising-title"]')?.textContent).toBe('Inventory');
     expect(root.textContent ?? '').toContain('No items.');
     expect(root.textContent ?? '', 'no empty-monsters line').not.toContain('No monsters.');
@@ -1399,8 +1393,11 @@ describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()
       i18nT,
       'm24s4 RV-01 RT2: a repeat show() on an already-open overlay must re-resolve raising.title',
     ).toHaveBeenCalledWith('raising.title');
-    expect(i18nT).toHaveBeenCalledWith('raising.inventory.heading');
     expect(i18nT).not.toHaveBeenCalledWith('raising.monsters.heading');
+    expect(
+      i18nT,
+      'the retired section heading key is requested by nothing',
+    ).not.toHaveBeenCalledWith('raising.inventory.heading');
   });
 
   it('m24s4 RV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel, and no retired sentinel appears [QF9-2-I18N-RV02]', () => {
@@ -1420,7 +1417,6 @@ describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()
       m24s4RvAssertNoRosterWord(texts, 'monsters+items empty');
       let joined = texts.join('\n');
       expect(joined).toContain('«raising.title»');
-      expect(joined).toContain('«raising.inventory.heading»');
       expect(joined).toContain('«raising.inventory.empty»');
       expect(joined, 'no retired heading sentinel').not.toContain('«raising.monsters.heading»');
       expect(joined, 'no retired empty sentinel').not.toContain('«raising.monsters.empty»');
@@ -2586,6 +2582,60 @@ function uif8WithScrollSpy(
     else delete proto.scrollIntoView;
   }
 }
+
+describe('RaisingView ts-6b-11: the Inventory title sits in the kit title bar', () => {
+  it('the Inventory frame has one title bar and no in-panel heading', () => {
+    // WRONG IMPLS KILLED: the plain header div holding the h2 (no `.mr-frame-titlebar`); a title
+    // bar that is not the root's first element child; a title without `.mr-frame-title`; a title
+    // keeping the inline `color:#fff` or a non-zero margin; a second title bar; the in-panel h3
+    // (`raising.inventory.heading`) left under the bar, or the same text re-rendered as a div
+    // (the frame would name itself twice); the h3 hidden rather than deleted.
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    view.refresh(raTrainVm());
+    view.paint(ctl8fPaint(ctl8fVm()));
+    expect(root.classList.contains('mr-frame'), 'the root is the kit frame').toBe(true);
+
+    const bars = root.querySelectorAll<HTMLElement>('.mr-frame-titlebar');
+    expect(bars, 'exactly one title bar in the frame').toHaveLength(1);
+    const bar = bars[0] as HTMLElement;
+    expect(root.firstElementChild, 'the title bar is the root first element child').toBe(bar);
+    expect(bar.tagName, 'the title bar is a div').toBe('DIV');
+
+    const title = root.querySelector<HTMLElement>('h2[data-testid="raising-title"]');
+    expect(title, 'the raising-title h2 exists').not.toBeNull();
+    expect(bar.contains(title), 'the title is inside the title bar').toBe(true);
+    expect(title?.classList.contains('mr-frame-title'), 'the title wears .mr-frame-title').toBe(
+      true,
+    );
+    expect(title?.getAttribute('tabindex'), 'the title stays the programmatic focus anchor').toBe(
+      '-1',
+    );
+    expect(title?.style.color, 'the kit paints the title: no inline colour').toBe('');
+    expect(['0', '0px'], 'the bar owns the spacing: the title margin is 0').toContain(
+      title?.style.margin,
+    );
+    expect(title?.textContent, 'the title text resolves at show()').toBe(i18nT('raising.title'));
+
+    expect(root.querySelectorAll('h3'), 'no in-panel h3 anywhere in the frame').toHaveLength(0);
+    const stray = [...root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')].filter(
+      (h) => !bar.contains(h) && h.closest('[data-context-sheet]') === null,
+    );
+    expect(
+      stray.map((h) => `${h.tagName.toLowerCase()}:${h.textContent}`),
+      'no heading outside the title bar and the context sheet',
+    ).toEqual([]);
+
+    const titleText = i18nT('raising.title');
+    const naming = [...root.querySelectorAll<HTMLElement>('*')].filter(
+      (el) =>
+        el.closest('[data-context-sheet]') === null &&
+        [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent === titleText),
+    );
+    expect(naming, 'the title text appears exactly once outside the context sheet').toHaveLength(1);
+  });
+});
 
 describe('RaisingView uif-8: Inventory on the UI kit', () => {
   it('UIF8.1 after a paint the pockets are the kit TabBar row (LB chip, tablist strip #bag-tabs, RB chip) placed after the title and before #bag-panel, the selected tab is is-selected and never is-active, and the root writes no align-items', () => {

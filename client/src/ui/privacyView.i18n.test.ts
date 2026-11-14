@@ -105,6 +105,7 @@ afterEach(async () => {
 
 const PV_PLAIN_KEYS = new Set([
   'privacy.title',
+  'privacy.disclosure',
   'privacy.close',
   'privacy.confirm.delete',
   'privacy.confirm.keep',
@@ -173,10 +174,9 @@ function pvAssertNoRosterWord(texts: readonly string[], label: string): void {
 }
 
 describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and confirm-row through render()', () => {
-  it('m24s5 PV-01: privacy.title resolves ONLY in show() and privacy.close NOT AT ALL (uif-16b: the frame owns Close); privacy.confirm.delete/.keep resolve in render() unconditionally; render() alone is not a door; model strings and the disclosure stay raw; repeat calls re-request; no cross-alias to claim.privacyButton', () => {
-    // uif-16b (named key move): the close-anchor half of this test retires with
-    // #privacy-close-btn; `privacy.close` is asserted NEVER requested by this view (the frame's
-    // describe below owns it). Was: the anchor's pre-show invariants and its 'Close' label.
+  it('m24s5 PV-01: privacy.title resolves ONLY in show() and privacy.close NOT AT ALL (the frame owns Close); privacy.confirm.delete/.keep resolve in render() unconditionally; render() alone is not a door; model strings stay raw; repeat calls re-request', () => {
+    // `privacy.close` is asserted NEVER requested by this view (the frame's describe below owns
+    // it); the disclosure follows the locale (the last case of this describe).
     const view = new PrivacyView(freshHandlers());
     const title = document.getElementById('privacy-title')!;
     expect(document.getElementById('privacy-close-btn'), 'the close anchor retired').toBeNull();
@@ -232,9 +232,10 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
       document.getElementById('privacy-notice')!.textContent,
       'noticeLabel is raw model data',
     ).toBe('SYNTHETIC NOTICE A');
-    expect(document.getElementById('privacy-disclosure')!.textContent).toBe(
-      PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
-    );
+    expect(
+      document.getElementById('privacy-disclosure')!.textContent,
+      'render() never writes the disclosure: show() is its door',
+    ).toBe('');
     expect(i18nT).not.toHaveBeenCalledWith('SYNTHETIC STATUS A');
     expect(i18nT).not.toHaveBeenCalledWith('SYNTHETIC PROMPT A');
 
@@ -253,10 +254,6 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
     view.show();
     expect(i18nT).toHaveBeenCalledWith('privacy.title');
     expect(i18nT).not.toHaveBeenCalledWith('privacy.close');
-
-    // D2 cross-alias tooth: the coincident English 'Privacy & Account Data' must never satisfy
-    // claim.privacyButton from this file's call sites.
-    expect(i18nT).not.toHaveBeenCalledWith('claim.privacyButton');
   });
 
   it('m24s5 PV-02: under «key» sentinels, every migrated surface shows resolver output and no English roster phrase survives outside a sentinel', () => {
@@ -278,7 +275,8 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
       expect(joined).not.toContain('«privacy.close»');
       expect(joined).toContain('«privacy.confirm.delete»');
       expect(joined).toContain('«privacy.confirm.keep»');
-      expect(joined, 'PRIVACY_PSEUDONYMIZATION_DISCLOSURE stays raw').toContain(
+      expect(joined, 'the disclosure is the resolver output').toContain('«privacy.disclosure»');
+      expect(joined, 'and the raw English constant is not written').not.toContain(
         PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
       );
       expect(joined, 'statusLabel stays raw').toContain('SYNTHETIC STATUS B');
@@ -296,6 +294,70 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('How to Play');
+  });
+
+  it('the privacy disclosure follows the locale', () => {
+    // WRONG IMPLS KILLED: the disclosure written raw from PRIVACY_PSEUDONYMIZATION_DISCLOSURE (in
+    // the constructor or in show()), so a French player reads English; a write in the constructor
+    // only (stale after a locale switch, empty if the locale is negotiated after boot); a write
+    // gated on the open edge (a repeat show() would not re-resolve); a write that blanks or
+    // hides the paragraph; an fr value equal to the English text or one that drops the literal
+    // `Identity` token; an en catalog value that drifts from the pinned compliance wording by a
+    // byte.
+    const KEY = 'privacy.disclosure' as const;
+    const plain = (catalog: object): string => {
+      const entry = (catalog as Record<string, unknown>)[KEY];
+      if (typeof entry !== 'string') throw new Error(`${KEY} must be a plain message`);
+      return entry;
+    };
+    const view = new PrivacyView(freshHandlers());
+    const disclosure = document.getElementById('privacy-disclosure') as HTMLElement;
+
+    // (a) the constructor writes nothing and requests nothing.
+    expect(disclosure.textContent, 'the constructor writes no disclosure text').toBe('');
+    expect(i18nT, 'the constructor does not request the disclosure').not.toHaveBeenCalledWith(KEY);
+
+    // (e) the catalog pins: en is the compliance constant byte for byte; fr is a translation.
+    expect(plain(CATALOG_EN), 'the en value is the pinned wording').toBe(
+      PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
+    );
+    const fr = plain(CATALOG_FR);
+    expect(fr.length, 'the fr value is non-empty').toBeGreaterThan(0);
+    expect(fr, 'the fr value is not the English text').not.toBe(
+      PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
+    );
+    expect(fr, 'the fr value keeps the literal Identity token').toContain('`Identity`');
+
+    // (b) show() requests the key, and a repeat show() requests it again.
+    view.show();
+    expect(i18nT, 'show() requests the disclosure').toHaveBeenCalledWith(KEY);
+    // (d) under en the paragraph is the constant, byte for byte, and stays displayed.
+    expect(disclosure.textContent, 'en: the constant byte for byte').toBe(
+      PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
+    );
+    expect(disclosure.style.display, 'the disclosure stays displayed').toBe('');
+    vi.mocked(i18nT).mockClear();
+    view.show();
+    expect(i18nT, 'a repeat show() requests the disclosure again').toHaveBeenCalledWith(KEY);
+
+    // (c) under fr the very next show() paints the French value.
+    try {
+      setLocale('fr');
+      view.show();
+      expect(disclosure.textContent, 'fr: the French catalogue value').toBe(fr);
+      expect(disclosure.textContent, 'fr: not the English text').not.toBe(
+        PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
+      );
+      expect(disclosure.style.display, 'fr: still displayed').toBe('');
+    } finally {
+      setLocale('en');
+    }
+
+    // Back under en the next show() paints the constant again.
+    view.show();
+    expect(disclosure.textContent, 'en again: the constant').toBe(
+      PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
+    );
   });
 });
 
@@ -322,7 +384,6 @@ describe('uif-16b: ProfileView paints privacy.close on #profile-close-btn and me
       onDeclineRequested: vi.fn(),
       onDeclineConfirmed: vi.fn(),
       onDeclineCancelled: vi.fn(),
-      onPrivacy: vi.fn(),
       onDismissed: vi.fn(),
     });
     let frame: ProfileView | undefined;

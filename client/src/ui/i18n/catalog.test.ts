@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule).
 import { stripComments } from '../../../test-util/stripComments';
+import { PRIVACY_PSEUDONYMIZATION_DISCLOSURE } from '../privacyBanner';
 import { CATALOG_EN } from './catalog.en';
 import { CATALOG_FR } from './catalog.fr';
 import { setLocale, tf } from './resolver';
@@ -673,7 +674,6 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // 373 keys. Their absence is pinned by the 'qf-9' describe at the end of this file.
   // qf-10 (named intentional change, QF10.4): the value was 'Raising & Inventory'; the id is unchanged.
   'raising.title': 'Inventory', // raisingView.ts
-  'raising.inventory.heading': 'Inventory', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
   // Box.* (18 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys, -box.heal ctl-10a,
   // -box.card.{toBox,toParty} qf-8)
@@ -731,7 +731,6 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // The tail batch's 10 plain keys. ts-3 (named intentional change, the Strangler):
   // 'tradePropose.target.placeholder' ('Select a player…') is DELETED with the wizard; 9 remain.
   'dialogue.action.shop': 'Shop', // dialogueView.ts:72
-  'claim.privacyButton': 'Privacy & Account Data', // claimView.ts (resolved in render()/show())
   'claim.signInButton': 'Sign in', // claimView.ts (resolved in render()/show())
   'claim.joinButton': 'Continue playing', // claimView.ts (resolved in render()/show())
   'claim.declineButton': 'Decline', // claimView.ts (resolved in render()/show())
@@ -743,6 +742,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'errorOverlay.footer': `B or F8 dismiss ${CELL_DOT} F9 bug report`, // errorOverlayView.ts (resolved in show())
   'privacy.title': 'Privacy & Account Data', // privacyView.ts (resolved in show())
   'privacy.close': 'Close', // privacyView.ts (resolved in show())
+  // The pinned compliance wording, read from its one definition: the en value is that constant
+  // byte for byte (the French twin is a translation, pinned by privacyView.i18n.test.ts).
+  'privacy.disclosure': PRIVACY_PSEUDONYMIZATION_DISCLOSURE, // privacyView.ts (resolved in show())
   'privacy.confirm.delete': 'Confirm deletion', // privacyView.ts
   'privacy.confirm.keep': 'Keep my account', // privacyView.ts
   'evolutionNotice.ok': 'OK', // evolutionNotice.ts (resolved in render())
@@ -2382,7 +2384,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): 528 -> 545, +17 `a11y.*`
     // keys (16 overlay titles + the world region) moved in from ui/a11yCopy.ts.
     // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-6b-9 roster is 545 keys').toHaveLength(545);
+    // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
+    // +privacy.disclosure, 545 -> 544.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 544 keys').toHaveLength(544);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3377,6 +3381,63 @@ describe('qf-6: the conversation-ended and quest-completion lines in both catalo
 });
 
 // =============================================================================
+// ts-6b-11: the ids left with no requester (the Account section's privacy door, the Inventory
+// in-panel heading) are retired, and the pseudonymization disclosure is catalogued.
+// =============================================================================
+
+describe('ts-6b-11: the two ids with no requester left are retired and the disclosure id is catalogued', () => {
+  it('claim.privacyButton and raising.inventory.heading are in neither catalog nor the pinned roster, while privacy.disclosure is in both, plain, with en equal to the pinned constant and fr a different non-empty translation', () => {
+    // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
+    // DEAD-KEY), or retired from en only (a French boot still carries it); the disclosure id added
+    // to one catalog only, parameterised, or missing from the roster; an en value that drifts from
+    // the pinned wording by a byte; a fr value that is the English text copied across, empty, or
+    // missing the literal `Identity` token.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const RETIRED = ['claim.privacyButton', 'raising.inventory.heading'] as const;
+    for (const retired of RETIRED) {
+      expect(Object.hasOwn(en, retired), `en ${retired} is retired`).toBe(false);
+      expect(Object.hasOwn(fr, retired), `fr ${retired} is retired`).toBe(false);
+      expect(EXPECTED_KEYS.includes(retired), `the pinned roster no longer lists ${retired}`).toBe(
+        false,
+      );
+    }
+    expect(RETIRED, 'ANTI-VACUITY: two ids').toHaveLength(2);
+
+    const KEY = 'privacy.disclosure';
+    expect(Object.hasOwn(en, KEY), 'en carries the id').toBe(true);
+    expect(Object.hasOwn(fr, KEY), 'fr carries the id').toBe(true);
+    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the id').toBe(true);
+    expect(en[KEY], 'en is the pinned constant, byte for byte').toBe(
+      PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
+    );
+    const french = fr[KEY];
+    expect(typeof french, 'fr is a plain string').toBe('string');
+    expect((french as string).length, 'fr is non-empty').toBeGreaterThan(0);
+    expect(french, 'fr is not the English text').not.toBe(PRIVACY_PSEUDONYMIZATION_DISCLOSURE);
+    expect(french as string, 'fr keeps the literal Identity token').toContain('`Identity`');
+  });
+
+  it('the fr disclosure names purging and erasure only to deny them', () => {
+    // The English is pinned byte for byte; the French is compliance copy too, and the legally false
+    // claim is a French line that says the Identity history IS purged or that deletion IS erasure.
+    // WRONG IMPL KILLED: a translation that drops the negation ("sont purgés des lignes", "et un
+    // effacement"), says either word a second time, or leaves the English word in.
+    const french = String((CATALOG_FR as Record<string, unknown>)['privacy.disclosure']);
+    const count = (text: string, needle: string): number => {
+      let n = 0;
+      for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + 1)) n += 1;
+      return n;
+    };
+    expect(count(french, 'purg'), 'the stem purg occurs once').toBe(1);
+    expect(french, 'and only in the denial').toContain('ne sont pas purgés');
+    expect(count(french, 'effac'), 'the stem effac occurs once').toBe(1);
+    expect(french, 'and only in the denial').toContain('et non d\u2019un effacement');
+    expect(count(french, 'erasure'), 'no English word left in').toBe(0);
+  });
+});
+
+// =============================================================================
 // qf-9 (QF9.1, QF9.2): the Summary's full-stats line in BOTH catalogs (exact bytes, two differing
 // sample sets and a third), and the six raising ids retired with the raising screen's Monsters
 // section. Every expected byte is typed here (the separator and the French capitals by code point);
@@ -3492,7 +3553,6 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
 
     for (const kept of [
       'raising.title',
-      'raising.inventory.heading',
       'raising.inventory.empty',
       'raising.inventory.item',
       'raising.feedback.cared',
@@ -3538,8 +3598,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
     // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
-    expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
+    // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
+    // +privacy.disclosure, 545 -> 544.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
   });
 });
 
@@ -3663,8 +3725,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
     // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
-    expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
+    // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
+    // +privacy.disclosure, 545 -> 544.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3982,9 +4046,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
     // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
-    expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(545);
+    // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
+    // +privacy.disclosure, 545 -> 544.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(544);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4670,8 +4736,10 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
     // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
-    expect(Object.keys(en), 'the English roster is 545 keys (ts-6b-9 +17)').toHaveLength(545);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(545);
+    // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
+    // +privacy.disclosure, 545 -> 544.
+    expect(Object.keys(en), 'the English roster is 544 keys').toHaveLength(544);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(544);
   });
 });
 
@@ -4791,7 +4859,9 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
     // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
-    expect(Object.keys(en), 'the English roster is 545 keys').toHaveLength(545);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(545);
+    // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
+    // +privacy.disclosure, 545 -> 544.
+    expect(Object.keys(en), 'the English roster is 544 keys').toHaveLength(544);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(544);
   });
 });

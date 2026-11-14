@@ -637,9 +637,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // monster stats live on the Monsters Summary). One short line.
   // raisingView.ts:104 (resolved in show())
   'raising.title': 'Inventory',
-  // @desc: Section heading above the item cards in the raising overlay. One word.
-  // raisingView.ts:134 (resolved in show())
-  'raising.inventory.heading': 'Inventory',
   // @desc: Empty-state line of the raising overlay's inventory section when the player carries
   // nothing. One short line.
   // raisingView.ts:308
@@ -996,11 +993,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72
   'dialogue.action.shop': 'Shop',
-  // @desc: Button on the guest-claim overlay that opens the privacy & account-data surface
-  // (account deletion, data export). Same English as privacy.title today, but a different key:
-  // this is a BUTTON label. One short line.
-  // claimView.ts:96 (resolved in show() and render())
-  'claim.privacyButton': 'Privacy & Account Data',
   // @desc: Button on the guest-claim overlay that starts sign-in so guest progress can be claimed onto an account. Short verb phrase.
   'claim.signInButton': 'Sign in',
   // @desc: Button on the guest-claim overlay that returns to the game once the claim is settled or declined. Short phrase.
@@ -1148,10 +1140,19 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // across a reconnect). One short sentence.
   // healView.ts (paint, the reason)
   'heal.prompt.unavailable': 'No healer in reach. Healing is unavailable.',
-  // @desc: Heading of the privacy & account-data overlay (account deletion, data export). Same
-  // English as claim.privacyButton today, but a different key: this is a HEADING. One short line.
-  // privacyView.ts:145 (resolved in show())
+  // @desc: Heading of the privacy & account-data overlay (account deletion, data export). One
+  // short line.
+  // privacyView.ts (resolved in show())
   'privacy.title': 'Privacy & Account Data',
+  // @desc: The pseudonymization disclosure under the Privacy section's controls: what account
+  // deletion removes and what it keeps. Compliance text: the English is the exact mandated wording
+  // (privacyBanner.ts PRIVACY_PSEUDONYMIZATION_DISCLOSURE, pinned byte for byte); translate it
+  // faithfully, keep `Identity` in backticks, and never promise erasure. A paragraph.
+  // privacyView.ts (resolved in show())
+  'privacy.disclosure':
+    'Direct name/display fields are severed on deletion. The `Identity` key and its associated ' +
+    'timestamps/behavioral history are not purged from multi-user or historical rows; this is a ' +
+    'documented, accepted pseudonymization limitation, not erasure.',
   // @desc: Button that closes the Profile screen; it is the last row and always enabled. Short
   // verb, fits a very narrow button.
   // ui/profileView.ts (resolved in show())
