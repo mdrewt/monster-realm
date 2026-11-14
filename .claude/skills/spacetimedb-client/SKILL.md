@@ -31,9 +31,10 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
   Views: `my_monster_pub`, `my_battle`, `my_inventory`, `my_wallet`, `my_conversation`,
   `my_account`, `my_export_bundle`, `my_pending_evolution_notices`, `my_trade_session`, and
   the tactical-battle views (`my_tactical_battle`, `my_battle_units`, `my_battle_queue`,
-  `my_battle_deploy`, `my_battle_clock`, `my_battle_events`, `my_formation`). Two public
-  tables are not in it: the drain-only `trade_offer` (trades are read through
-  `my_trade_session`) and `character` (next bullet).
+  `my_battle_deploy`, `my_battle_clock`, `my_battle_events`, `my_formation`). Public tables
+  the client does not render are left out: the drain-only `trade_offer` (trades are read
+  through `my_trade_session`), `config` and `type_relation_row`. `character` is not in the
+  batch either (next bullet).
 - `character` is never subscribed whole. Each connection holds one set for its own row
   (`WHERE entity_id = <E>`) and one per wanted zone (`WHERE zone_id = <Z>`).
   `net/worldScope.ts` builds both query strings and decides when a set is subscribed

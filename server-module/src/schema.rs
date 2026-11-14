@@ -740,8 +740,8 @@ pub struct HealCooldown {
 
 /// A legacy trade offer between two players. DRAIN-ONLY: no reducer inserts a
 /// row (trades run through `trade_session` below). A row still in the table
-/// keeps its assets guarded until `cancel_trade`, the TTL reaper, a disconnect
-/// or account deletion deletes it.
+/// keeps its assets guarded until `cancel_trade`, the TTL reaper, a disconnect,
+/// account deletion or a cancelled deletion request deletes it.
 ///
 /// PUBLIC; the client does not subscribe to it. The display data
 /// (`initiator_cards` / `counterparty_cards`) contains only the public-projection

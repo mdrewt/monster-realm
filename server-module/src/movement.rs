@@ -350,10 +350,10 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
     // check LAST. No party -> credit nothing.
     if let Some(party_ids) = lead_party_ids(ctx, ctx.sender()) {
         // Trade escrow: a party monster a trade holds (an active offer, or a
-        // session side its owner has confirmed) keeps its party slot until the
+        // session side its owner has confirmed) stays in the party until the
         // trade ends, so without this it would keep accruing Quality Time and
-        // could AUTO-EVOLVE under the trade. The owner's own reducers refuse a
-        // held monster (`reject_if_monster_locked` in care, train and evolve).
+        // could AUTO-EVOLVE under the trade. care, train and evolve refuse a
+        // held monster (`reject_if_monster_locked`).
         // Collect the caller's held ids ONCE, from BOTH trade roles (the
         // guards wrapper owns that read), and SKIP those monsters — never
         // reject the move (a pending trade must not freeze the player).
