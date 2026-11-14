@@ -147,6 +147,12 @@
          puts it back here on close. The markup below is unchanged and must stay that way: the
          placement rule is what makes the node survive a view rebuild between overlays. -->
     <div id="a11y-live" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+    <!-- The shell document: the page's host serves /shell-config.js, a classic script that sets
+         globalThis.__MR_SHELL_CONFIG__ to the server address, database and kind this client
+         joins (src/net/shellDocument.ts). A classic script runs before any module script, so
+         the client reads the document at import. Never type="module" (Vite would bundle it and
+         fix the target at build time); `vite-ignore` tells Vite to leave the tag as written. -->
+    <script vite-ignore src="/shell-config.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
