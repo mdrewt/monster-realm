@@ -14,11 +14,10 @@
 // shell for a surface that is not modal. The cutscene/registry route is the disclosed residual
 // (that route was measured before choosing this one).
 //
-// WHY z-index 60. `#help-hint` sits at 50 at the bottom of the screen and every overlay sits at
-// 100. 60 is therefore above the hint — so the banner is never painted over or click-stolen at
-// narrow widths — and below every overlay, so an open modal's opaque `inset: 0` backdrop covers
-// the OK button. That is what makes "no focus trap, no registry membership" SAFE rather than
-// merely cheap: while a modal is open this banner is neither visible nor reachable.
+// WHY z-index 60. The hint bar (`#hint-bar`) sits at 50 at the bottom of the screen and every
+// overlay shell sits at 100 or above. 60 is therefore above the hint bar — so the banner is never
+// painted over or click-stolen at narrow widths — and below every overlay shell, so an open
+// screen is painted over the banner wherever the two overlap, the OK button included.
 //
 // WHY NO aria-live ON THIS ELEMENT, AND WHY THE ANNOUNCEMENT IS INJECTED. The AT
 // gap is closed, but not by turning this banner into a second announcement

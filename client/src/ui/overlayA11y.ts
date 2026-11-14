@@ -69,10 +69,10 @@
 //       Not reachable today (`main.ts`'s `overlayHandles` table routes every force-hide through
 //       `hide()`), and this comment is the record of why it must stay that way.
 //   (c) The "no focus call at all" branch of `closeOverlayA11y` leaves focus wherever the browser's
-//       natural blur put it, i.e. `<body>`. M23 §2.3 PROPOSES a `worldHasFocus()` predicate to read
-//       that state as "the world has focus" — it is S5's to write and does NOT exist in this
-//       codebase today (grep-verified at S1). Named here so the forward reference is not mistaken
-//       for a claim about existing code.
+//       natural blur put it, i.e. `<body>`. A key pressed there still reaches the game: only a
+//       target outside `#game-screen` keeps every key (`outsideGameScreen`, input/router.ts), and
+//       main.ts's frame loop returns focus to the world canvas when the last overlay's close left
+//       it adrift.
 
 import { t } from './a11yCopy';
 import { installTrap } from './focusTrap';
@@ -191,13 +191,12 @@ export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
  *
  * Restore order: the recorded pre-overlay element if it is still connected, else `fallbackFocus` if
  * it is non-null and connected, else NO focus call at all — forcing focus onto some arbitrary node
- * is worse than letting the browser's natural blur to `<body>` stand. FORWARD REFERENCE, NOT
- * EXISTING CODE: M23 §2.3 proposes a `worldHasFocus()` predicate that would read that `<body>`
- * state as "the world has focus"; it is S5's to write and does NOT exist in this codebase today
- * (verified by grep at S1). If S5 implements it differently, this branch is the caller it must
- * agree with. `fallbackFocus` is a REQUIRED parameter (adjudication
- * A3): S3/S4 views have no canvas handle and pass `null`; only S5 has a real value, and a required
- * parameter makes that obligation visible at each call site instead of hiding it in a module global.
+ * is worse than letting the browser's natural blur to `<body>` stand. A key at `<body>` still
+ * reaches the game (input/router.ts gives up only a target outside `#game-screen`), and main.ts's
+ * frame loop returns focus to the world canvas when the last overlay's close left it adrift.
+ * `fallbackFocus` is a REQUIRED parameter: every view passes `null` (none holds a canvas handle),
+ * and a required parameter keeps that choice visible at each call site instead of hiding it in a
+ * module global.
  *
  * A no-op when `id` was never opened, or was already closed.
  */

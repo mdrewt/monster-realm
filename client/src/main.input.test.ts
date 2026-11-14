@@ -1589,7 +1589,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
 // "not shown, so not hidden" half is a sentinel text in a feedback node that `hide()` clears.
 //
 // Every case is synchronous after boot (no awaits), so no overlay's deferred initial focus ever
-// fires and `worldHasFocus()` stays true for the next open.
+// runs and focus stays on `<body>` for the next open.
 
 /** The server opens a conversation with the NPC, in one batch at clock `t`. */
 function startConversation(t: number): void {
@@ -2338,7 +2338,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
 // main menu (ctl-11a), as does the menu's own Journal entry. Observed: the buttons the
 // stand-in is asked, the menu cursor (`__game().navActive`, read-only), the intents sent to the
 // stubbed enqueueMove reducer, and `defaultPrevented`. Every case is synchronous after boot, so no
-// overlay's deferred focus runs and `worldHasFocus()` stays true for the next open.
+// overlay's deferred focus runs and focus stays on `<body>` for the next open.
 
 /** Swap one frame's adapter for this boot; afterEach (the `restorers` drain) puts it back. */
 function swapAdapter(id: string, adapter: unknown): void {

@@ -4,10 +4,11 @@
 //! shared fixture `game-core/tests/fixtures/tactics_golden.json` is asserted natively
 //! (`golden_tests.rs`) and through the `tactics_golden` wasm export
 //! (`client/src/tactics/golden.parity.test.ts`); both compare the same canonical JSON.
-//! Every later tactics module adds its case kinds here (bt-2 joined with the roll stream, economy,
-//! initiative, priority, pipeline, Surge/status-tick and adjudication kinds; bt-4 with the `AiPlan` kind; BT11.7 follows). No rule lives in this
-//! file — it only adapts fixture data to the rule functions. Every result value is ≤ u32 so the JS
-//! side compares exact Numbers; u64 INPUTS (seeds) stay below 2^53 in the fixture.
+//! Each tactics module adds its case kinds here: geometry, movement, the roll stream, economy,
+//! initiative, priority, the damage pipeline, Surge and status ticks, adjudication and the wild
+//! planner's `AiPlan`. No rule lives in this file — it only adapts fixture data to the rule
+//! functions. Every result value is ≤ u32 so the JS side compares exact Numbers; u64 INPUTS
+//! (seeds) stay below 2^53 in the fixture.
 
 use serde::{Deserialize, Serialize};
 

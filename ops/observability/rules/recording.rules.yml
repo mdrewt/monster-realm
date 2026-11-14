@@ -26,10 +26,10 @@ groups:
       # hand-maintained copy of the list.
       - record: mr:slo_set_txns_committed:rate5m
         expr: |
-          sum by (reducer) (rate(spacetime_num_txns_total{committed="true",reducer=~"move_player|create_player|sync_content|accept_trade|propose_trade|challenge_player|evolve_monster"}[5m]))
+          sum by (reducer) (rate(spacetime_num_txns_total{committed="true",reducer=~"move_player|create_player|sync_content|open_trade_session|set_trade_offer|confirm_trade_session|challenge_player|evolve_monster"}[5m]))
       - record: mr:slo_set_txns_total:rate5m
         expr: |
-          sum by (reducer) (rate(spacetime_num_txns_total{reducer=~"move_player|create_player|sync_content|accept_trade|propose_trade|challenge_player|evolve_monster"}[5m]))
+          sum by (reducer) (rate(spacetime_num_txns_total{reducer=~"move_player|create_player|sync_content|open_trade_session|set_trade_offer|confirm_trade_session|challenge_player|evolve_monster"}[5m]))
       - record: mr:reducer_success_ratio:rate5m
         expr: |
           sum(mr:slo_set_txns_committed:rate5m) / clamp_min(sum(mr:slo_set_txns_total:rate5m), 1)

@@ -33,7 +33,21 @@ export default defineConfig({
   // become visible without scraping logs. The JSON holds titles, durations and error
   // text, so an assertion message must never embed a token.
   reporter: process.env.CI ? [['dot'], ['json', { outputFile: 'test-results/e2e.json' }]] : 'list',
-  use: { baseURL: e2eBaseUrl, headless: true },
+  // A failed test keeps its trace (<outputDir>/<test>/trace.zip; `npx playwright show-trace`
+  // opens it) and a passing test's is discarded. Tracing covers every open context, including
+  // the ones a spec creates itself in `beforeAll` on a browser it launched. The trace holds the
+  // action log, the console, the network log and a screenshot film strip.
+  // `snapshots: false` is load-bearing: a DOM snapshot is taken around every action, inside the
+  // awaited call, which stretches the 90 ms key tap of movement-input.spec.ts past its 140 ms
+  // budget. Measured on one core: 151-189 ms with snapshots (all five attempts over budget),
+  // 104-116 ms with the film strip alone, 101-117 ms with tracing off.
+  // The network log holds the client's SpacetimeDB token for the database under test; on CI
+  // that database is in memory and ends with the job.
+  use: {
+    baseURL: e2eBaseUrl,
+    headless: true,
+    trace: { mode: 'retain-on-failure', snapshots: false },
+  },
   webServer: {
     command: 'npm run dev',
     url: e2eBaseUrl,

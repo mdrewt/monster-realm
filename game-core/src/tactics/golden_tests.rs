@@ -96,8 +96,8 @@ use super::types::{ActionTarget, MoveAction, QueuedAction, SkillAction};
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/tactics_golden.json");
 
-/// The pinned size of the fixture. Growing it (BT2.5, BT4.8, BT11.7 join the harness) is a
-/// deliberate edit here AND in the vitest.
+/// The pinned size of the fixture. Growing the fixture is a deliberate edit to this constant
+/// AND to the matching literal in the vitest (`client/src/tactics/golden.parity.test.ts`).
 const CASE_COUNT: usize = 306;
 /// Cases that must come back `BadCase`: a malformed board (no rows / too large / ragged / bad
 /// glyph) or, since bt-2, a Pipeline unit that fails `validate_unit`.

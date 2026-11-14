@@ -40,7 +40,8 @@ pub struct ProposalSide<'a> {
     pub currency: u64,
 }
 
-/// Validate the inputs to a `propose_trade` call (pure, no DB access).
+/// Validate a legacy offer proposal (pure, no DB access). No reducer calls it:
+/// `propose_trade` returns one fixed error.
 ///
 /// Checks:
 /// 1. initiator != counterparty (no self-trade)
@@ -177,8 +178,8 @@ pub enum TradeSide {
     Counterparty,
 }
 
-/// The mutation plan for `atomic_swap`. The server applies all transfers in a
-/// single SpacetimeDB transaction. Pure — no DB access here.
+/// The mutation plan the server's `trading_session::apply_swap` applies, all
+/// transfers in a single SpacetimeDB transaction. Pure — no DB access here.
 #[derive(Clone, Debug)]
 pub struct SwapPlan {
     pub monster_transfers: Vec<MonsterTransfer>,
@@ -215,8 +216,8 @@ pub enum ApplyStep {
 
 impl SwapPlan {
     /// Produce this plan's item/currency mutations as a debits-before-credits
-    /// sequence — the first-class published ordering contract consumed by
-    /// `confirm_trade` (same SSOT standing as `check_headroom`).
+    /// sequence — the first-class published ordering contract consumed by the
+    /// server's `trading_session::apply_swap` (same SSOT standing as `check_headroom`).
     ///
     /// ALL `ItemDebit`/`CurrencyDebit` steps strictly precede ANY `ItemCredit`/
     /// `CurrencyCredit` step. Every transfer in the plan yields exactly one debit
@@ -277,8 +278,8 @@ impl SwapPlan {
 
 /// Validate ownership at swap time and produce a `SwapPlan`.
 ///
-/// Called by `confirm_trade` after re-reading live rows. Fails if any monster
-/// no longer belongs to its expected party.
+/// Called by the server's `trading_session::execute_swap` after re-reading live
+/// rows. Fails if any monster does not belong to its expected party.
 pub fn build_swap_plan(
     initiator_monsters: &[LiveMonsterOwner],
     counterparty_monsters: &[LiveMonsterOwner],
@@ -391,9 +392,9 @@ pub fn check_currency_headroom(balance: u64, incoming: u64) -> Result<(), TradeE
 }
 
 /// Check that crediting the negotiated assets to each receiver won't exceed their
-/// stack/balance caps. Called by `confirm_trade` BEFORE applying any transfers so
-/// the transaction aborts cleanly with `Err` if a receiver is at or near their cap —
-/// reject-not-clamp.
+/// stack/balance caps. Called by the server's `trading_session::execute_swap`
+/// BEFORE applying any transfers so the transaction aborts cleanly with `Err` if a
+/// receiver is at or near their cap — reject-not-clamp.
 ///
 /// The per-axis cap comparisons are DELEGATED to the
 /// single-receiver primitives `check_item_headroom` / `check_currency_headroom`
@@ -446,7 +447,8 @@ pub fn check_headroom(
     Ok(())
 }
 
-/// Authorize a `respond_trade` call.
+/// Authorize the counterparty's response to a legacy offer. No reducer calls it:
+/// `respond_trade` returns one fixed error.
 ///
 /// Role is checked BEFORE status: a non-counterparty caller gets `NotCounterparty`
 /// regardless of the offer's state, so the offer status never leaks to a non-party
@@ -461,7 +463,8 @@ pub fn authorize_respond(status: &TradeStatus, is_counterparty: bool) -> Result<
     Ok(())
 }
 
-/// Authorize a `confirm_trade` call.
+/// Authorize the initiator's confirm of a legacy offer. No reducer calls it:
+/// `confirm_trade` returns one fixed error.
 ///
 /// Role is checked BEFORE status: a non-initiator caller gets `NotInitiator`
 /// regardless of the offer's state (same no-status-leak ordering as
@@ -858,25 +861,20 @@ mod tests {
         );
     }
 
-    /// FINDING-2 (MEDIUM — FIXED in M16.5f): counterparty_currency was not
-    /// balance-checked at propose time. The initiator could name any
-    /// counterparty_currency value regardless of the counterparty's actual wallet;
-    /// the only backstop was spend_currency at confirm time, so if Bob had 0 currency
-    /// Alice could name counterparty_currency=999999, confirm_trade would Err, and
-    /// Alice could DoS Bob's trade slot (a MEDIUM-severity griefing vector).
-    ///
-    /// The propose_trade reducer now balance-checks BOTH parties at propose time
-    /// (server-module/src/trading.rs), so an inflated counterparty_currency
-    /// is rejected before a row is inserted. This test still documents that the PURE
-    /// layer, by design, cannot see the live wallet — validate_proposal takes no DB
-    /// access, and the enforcement lives in the reducer shell.
+    /// validate_proposal is pure and takes no wallet, so it accepts any
+    /// counterparty_currency, however far past the counterparty's live balance. No
+    /// reducer calls this rule. On the live trade path a broke sender is refused
+    /// server-side, at the latest by `spend_currency` inside
+    /// `trading_session::apply_swap`, which rolls back the whole
+    /// `confirm_trade_session` call. This test documents that the PURE layer, by
+    /// design, cannot see the live wallet.
     ///
     /// kills: impl that silently allows inflated counterparty_currency at propose time.
     #[test]
     fn validate_proposal_does_not_check_counterparty_currency_balance() {
         // validate_proposal is pure (no DB access) so it CANNOT check the live wallet.
         // This test documents that the pure layer accepts arbitrary counterparty_currency.
-        // The wallet balance check EXISTS in the propose_trade reducer (server shell), not here.
+        // No reducer calls this rule; a broke sender is refused server-side, not here.
         let result = validate_proposal(
             false,
             false,
@@ -893,13 +891,13 @@ mod tests {
             },
         );
         // Documents that validate_proposal returns Ok (no pure-layer wallet check);
-        // the actual balance enforcement is in propose_trade (server shell).
+        // a broke sender is refused by `spend_currency` in `trading_session::apply_swap`.
         // If this ever becomes Err, that means the pure layer gained a wallet check
         // (which would require a DB-backed argument — at which point remove this test).
         assert!(
             result.is_ok(),
             "pure validate_proposal cannot check live wallet balance — \
-             this documents the gap; the fix belongs in propose_trade reducer"
+             this documents the gap; no reducer calls this rule"
         );
     }
 
@@ -1075,7 +1073,8 @@ mod tests {
     ///
     /// kills: impl that uses grant_currency's silent clamp — grant_currency saturates at
     ///        MAX_BALANCE, destroying 1 unit; check_headroom must detect the overflow and
-    ///        return Err so confirm_trade rolls back and the sender is not debited.
+    ///        return Err so `trading_session::execute_swap` fails, the whole
+    ///        `confirm_trade_session` call rolls back and the sender is not debited.
     #[test]
     fn check_headroom_rejects_initiator_currency_at_cap() {
         use crate::currency::MAX_BALANCE;
@@ -1089,9 +1088,10 @@ mod tests {
 
     /// Counterparty (receiver) at 9,980 of item_id=3, receiving 50 → Err.
     ///
-    /// kills: impl that only checks headroom for the initiator side (the initiator is
-    ///        the one calling confirm_trade, so a lazy impl might only verify the
-    ///        initiator's side); both parties must be checked.
+    /// kills: impl that only checks headroom for the initiator side (the
+    ///        `trading_session::execute_swap` caller passes the session opener as the
+    ///        initiator, so a lazy impl might only verify the opener's side); both
+    ///        parties must be checked.
     #[test]
     fn check_headroom_rejects_counterparty_item_at_cap() {
         use crate::currency::MAX_BALANCE;
@@ -1398,7 +1398,7 @@ mod tests {
     /// any future fix can be validated by flipping the assertion to is_ok().
     ///
     // check_headroom is a pure function: it trusts whatever current_count is passed.
-    // The CALL SITE (confirm_trade in trading.rs) is responsible for computing the
+    // The CALL SITE (`trading_session::execute_swap`, via `netted_receiver_stacks`) computes the
     // effective (post-debit) count: raw_count.saturating_sub(sending_qty).
     // These two tests document that contract:
 
@@ -1433,7 +1433,7 @@ mod tests {
     fn check_headroom_accepts_effective_count_same_item() {
         use crate::currency::MAX_BALANCE;
         // Effective count after subtracting 15 sent: 9990-15=9975; incoming=20 → 9975+20=9995 ≤ 9999 → Ok.
-        // This is the value confirm_trade passes after the net-quantity fix.
+        // This is the value `trading_session::execute_swap` passes (`netted_receiver_stacks`).
         let initiator_receives = [TradeItem {
             item_id: 5,
             qty: 20,
@@ -1479,7 +1479,7 @@ mod tests {
     /// ROLE CHECK: (Pending, is_counterparty=false) → Err(NotCounterparty).
     ///
     /// kills: impl that skips the role check and only checks status — allows the
-    ///        initiator to call respond_trade on their own offer.
+    ///        initiator to respond to their own offer (no reducer calls this rule).
     #[test]
     fn authorize_respond_err_not_counterparty_on_false() {
         let result = authorize_respond(&TradeStatus::Pending, false);
@@ -1539,8 +1539,9 @@ mod tests {
     /// ROLE CHECK: (ConfirmedByCounterparty, is_initiator=false) →
     /// Err(NotInitiator).
     ///
-    /// kills: impl that skips the role check — allows the counterparty to call
-    ///        confirm_trade and execute the atomic swap without the initiator's consent.
+    /// kills: impl that skips the role check — allows the counterparty to confirm
+    ///        and execute the atomic swap without the initiator's consent (no reducer
+    ///        calls this rule).
     #[test]
     fn authorize_confirm_err_not_initiator_on_false() {
         let result = authorize_confirm(&TradeStatus::ConfirmedByCounterparty, false);

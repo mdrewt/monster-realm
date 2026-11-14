@@ -368,9 +368,8 @@ describe('worldButton: everything else (ctl-10a, CTL10A.3)', () => {
 // `WorldNotices = { notices, pending, request }`. Without it every case above is as it was.
 // ==========================================================================================
 
-// ts-3 (named intentional change, C): a trade request is an incoming SESSION: key
-// `session-<sessionId>`; Accept is `openTradeEditor`, Decline `cancelTradeSession`. Was:
-// `trade-<tradeId>` answered with respondTrade accepted true / false.
+// A trade request is an incoming SESSION: its key is `session-<sessionId>`, Accept opens the
+// editor (`openTradeEditor`) and Decline cancels the session (`cancelTradeSession`).
 const TRADE_REQ: RequestNotice = {
   kind: 'request',
   key: 'session-11',

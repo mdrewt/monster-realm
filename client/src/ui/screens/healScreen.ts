@@ -2,8 +2,9 @@
 // default, at the BOUND location (design §5, CTL8A.3; defect B13). No DOM, SDK, module state or
 // clock; `healView.ts` paints what `paint` hands it.
 //
-// The bound location is `ctx.healLocationId`, read live: the healer T last interacted with, null
-// after a reconnect (the frame can stay open then). With no bound row Yes is disabled and the view
+// The bound location is `ctx.healLocationId`, read live: the heal location whose Heal action last
+// ran (A on the faced healer, or its row in Y's action sheet), null after a reconnect (the frame
+// can stay open then). With no bound row Yes is disabled and the view
 // shows the reason. A on Yes heals there and moves the cursor to No, so a second A closes the frame
 // instead of paying twice; No and B close it. The frame opens from a keydown with no store batch,
 // so the view draws the opening state itself from the same facts `init` uses, and `observe` only

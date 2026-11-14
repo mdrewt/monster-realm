@@ -18,9 +18,9 @@
  *     EARS-e: WHEN a reconnect completes THE module-local identity in main.ts SHALL equal the
  *             SDK identity of the new connection.
  *
- * WHY A RUNTIME IMPORT HERE — main.wiring.test.ts:20-21 says "source-scan (NOT import)":
- * the 16r-f defect is a latch burned by an ORDERING OF STORE FLUSHES, which no text scan
- * can observe. The crash that docblock warns about is avoided by mocking the wasm pkg,
+ * WHY A RUNTIME IMPORT HERE: main.ts has side effects at import (DOM, wasm, the connection),
+ * but the defect under test is a latch burned by an ORDERING OF STORE FLUSHES, which no text
+ * scan can observe. Those side effects are contained by mocking the wasm pkg,
  * net/connection, render/world (Pixi) and the telemetry bootstrap, and by never putting an
  * `#app` element in the DOM (main() then constructs no view shells at all). This file is
  * the sanctioned, SCOPED exception. Do NOT copy the pattern without the listener-cleanup
@@ -53,7 +53,7 @@
  * tSeq, which come from a real Date.now() clock.
  *
  * SECOND OBSERVATION CHANNEL (17r-b, plan §7 reviewer B1 / red-team F1): console.error.
- * The battle listener's body is wrapped in try/catch (main.ts:1828-1830), so a THROW inside
+ * main.ts's battle-emit listener wraps its body in try/catch, so a THROW inside
  * it is swallowed and surfaces ONLY as a `console.error('[obs] battle', err)`. A listener
  * that crashes on every flush can therefore leave a ring that still matches the expected
  * projection — the ORPHAN and NOBATTLE fixtures both exercise that exact shape. Every test
@@ -81,7 +81,8 @@
  *                             stickiness: the stale B1 terminal row burns the latch and B2's
  *                             re-sighting emits a spurious battleStart.
  *         RSD17B-ONGOINGROW — same defect via an Ongoing NON-survivor row (a second
- *                             participant-scoped row is legal, store.ts:895-900).
+ *                             participant-scoped row is legal: `latestPlayerBattle` in
+ *                             net/store.ts matches either role).
  *         RSD17B-TWOFLUSH   — GREEN at the shipped implementation, and a CHEAT-KILL rather
  *                             than a defect witness. It is the ONLY fixture with TWO
  *                             pre-hydration flushes, which is what separates "wait for the
@@ -171,8 +172,8 @@ vi.mock('./observability/telemetry', async (importOriginal) =>
   telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
 );
 
-// The renderer: constructed UNCONDITIONALLY at main.ts:2174, before the #app guard. Pixi
-// under happy-dom is out of scope for this gate, so it is stubbed rather than trusted.
+// The renderer: main.ts constructs its `WorldRenderer` UNCONDITIONALLY, before the #app
+// guard. Pixi under happy-dom is out of scope for this gate, so it is stubbed rather than trusted.
 vi.mock('./render/world', () => worldRendererNoCanvasMock());
 
 // --- listener-cleanup harness ------------------------------------------------------------
@@ -301,7 +302,8 @@ function battleEvents(events: readonly PlaytestEvent[]): BattleProjection[] {
 type ConnectEvent = Extract<PlaytestEvent, { readonly kind: 'connect' }>;
 
 /** 17r-b / residual (e): the identity-hex of every `connect` event, oldest→newest.
- *  eventRing.ts:19,53 — `connect` is the ONE payload carrying an identity (U-3 allows it). */
+ *  In ui/eventRing.ts `connect` (built by `makeConnect`) is the ONE payload carrying an
+ *  identity (U-3 allows it). */
 function connectIdentities(events: readonly PlaytestEvent[]): string[] {
   return events.filter((e): e is ConnectEvent => e.kind === 'connect').map((e) => e.identity);
 }
@@ -374,7 +376,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   });
 
   afterEach(() => {
-    // THE CONSOLE CONTROL (plan §7 reviewer B1 / red-team F1). main.ts:1828-1830
+    // THE CONSOLE CONTROL. main.ts's battle-emit listener
     // catches EVERY throw out of the battle-emit listener and reports it only here, so a
     // listener crashing on every flush can still leave a ring that matches the expected
     // projection (mutant #12 does exactly that). Asserted FIRST — before teardown — so it
@@ -387,7 +389,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
       expect(
         calls.length,
         'console.error must not be called during this test. The battle-emit listener wraps ' +
-          'its whole body in try/catch (main.ts:1828), so a throw inside it is SWALLOWED and ' +
+          'its whole body in try/catch in main.ts, so a throw inside it is SWALLOWED and ' +
           'surfaces only as a console.error — every toEqual assertion in this file can pass ' +
           'while the listener is crashing on each flush. Do not delete this control to make a ' +
           `tooth green; fix the throw. logged: ${describeConsoleCalls(calls)}`,
@@ -437,7 +439,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
    *  upsertBattle sets `#dirty = true` unconditionally, so the second call
    *  really does run a second batch. The id set — not the call count — is asserted, because
    *  the number of listeners that happen to read latestPlayerBattle in one batch is not this
-   *  gate's business (main.ts:1852's ranked listener also can, when a profile row exists). */
+   *  gate's business (main.ts's ranked-match listener also can, when a profile row exists). */
   function flushObservingBattleId(battle: StoreBattle, expectedId: bigint): void {
     latestSpy.mockClear();
     store.upsertBattle(battle);
@@ -477,7 +479,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
 
   // the empty flush stays BEFORE the signal on purpose — it now models a
   // flush landing ahead of the hydration edge, which is the strongest form of EARS-1.
-  // WRONG IMPL KILLED: a branch that burns `battleReseedPending` on a flush where
+  // WRONG IMPL KILLED: a branch that clears `BattleEmitState.reseedPending` on a flush where
   // latestPlayerBattle() returned undefined, so the battle rows that arrive on the NEXT flush
   // are treated as a brand-new battle and a second battleStart(B1) lands in the ring. Also
   // kills 17r-b mutant #2 (delete the hydration check and resolve on ANY post-reconnect
@@ -638,8 +640,8 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   //   (a) "capture the drop-time battle id only on the first reconnect ever, never update it":
   //       the captured id stays B1, so episode 2's re-sight of B2 does not match, falls through
   //       to the emit logic and duplicates startOf(B2).
-  //   (b) "resolution never clears battleReseedPending (and/or the captured id)": the latch is
-  //       still pending at step 6, so the `if (!battleReseedPending)` guard SKIPS episode 2's
+  //   (b) "resolution never clears `reseedPending` (and/or `reseedPrevBattleId`)": the latch is
+  //       still pending at step 6, so `armReseed`'s first-capture rule SKIPS episode 2's
   //       capture, the captured id is stale/null, and step 7 duplicates startOf(B2) the same way.
   it('T10: two fully-resolved reseed episodes re-capture per episode (no duplicate start)', () => {
     flushBattles(makeBattle(B1, 'Ongoing')); // start B1
@@ -706,7 +708,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // WHY A SECOND FIXTURE: STALEROW's wrong-first row is TERMINAL, so under the 16r-f clause it
   // burns the latch SILENTLY (a terminal row with activeBattleId === null emits nothing) and
   // the spurious start only appears one flush later. Here the wrong-first row is ONGOING — a
-  // legal shape (store.ts:895-900: participants match in EITHER role, so a player can hold two
+  // legal shape (`latestPlayerBattle` in net/store.ts matches EITHER role: a player can hold two
   // simultaneous Ongoing rows) — and the 16r-f clause emits a battleStart for a battle the
   // player is not in, IMMEDIATELY. Different emission site, different mutant signature.
   //
@@ -737,9 +739,9 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // THE SURVIVOR THIS CLOSES (artifact red-team, MEASURED: 260/260 tests green and the
   // acceptance gate green with this cheat in the tree). A listener that SELF-ARMS on its first
   // pre-hydration sight —
-  //     if (battleReseedPending) {
-  //       if (!hydratedSinceReconnect) { hydratedSinceReconnect = true; return; }
-  //       battleReseedPending = false;  … }
+  //     if (battleEmit.reseedPending && !hydratedSinceReconnect) {
+  //       hydratedSinceReconnect = true; return; }
+  //     battleEmitStep(battleEmit, { hydrated: hydratedSinceReconnect, latest })  …
   // — never consults the signal at all; it just SKIPS ONE FLUSH per reconnect and calls that
   // hydration. Every other fixture in this file has EXACTLY ONE flush between
   // simulateReconnect() and signalHydrated(), and on that single flush "arm and return" is
@@ -750,7 +752,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   //
   // SEQUENCE: B2 Ongoing (start B2; the survivor is the HIGHER id) -> reconnect (captures B2)
   //   -> pre-hydration flush #1 = B1 SideAWins,4 ONLY -> pre-hydration flush #2 = the SAME row
-  //   again (upsertBattle sets `#dirty` unconditionally, store.ts:602-605, so the second batch
+  //   again (`upsertBattle` in net/store.ts sets `#dirty` unconditionally, so the second batch
   //   really runs; BOTH flushes assert the listener observed a DEFINED B1) -> hydrated
   //   -> flush(B1 terminal + B2 Ongoing) -> flush B2 SideBWins,6.
   //
@@ -789,9 +791,9 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     ).toEqual([startOf(B2), endOf(B2, 'SideBWins', 6)]);
   });
 
-  // this is the tooth for plan §7 mutant #11: `hydratedSinceReconnect = false` must be reset
-  // UNCONDITIONALLY in onReconnect, OUTSIDE the `if (!battleReseedPending)` guard that still
-  // protects only the `reseedPrevBattleId` capture.
+  // this is the tooth for mutant #11: onReconnect must set `hydratedSinceReconnect = false`
+  // UNCONDITIONALLY, even when `armReseed`'s first-capture rule keeps the pending
+  // `reseedPrevBattleId` capture.
   //
   // SEQUENCE: B2 Ongoing (start B2) -> reconnect#1 (captures B2, arms) -> hydrated (episode 1
   //   hydrates, NO flush) -> reconnect#2 (latch still pending: the capture is correctly
@@ -802,8 +804,8 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // CORRECT IMPL ring:            [start B2]
   //   Episode 2's pre-hydration flush returns; the post-hydration flush reads B2 == survivor
   //   and re-baselines silently.
-  // WRONG IMPL KILLED — mutant #11 / #4 (the reset moved inside the capture guard): reconnect
-  //   #2 skips the guard body, so hydratedSinceReconnect is STILL true from episode 1. The B1
+  // WRONG IMPL KILLED — mutant #11 / #4 (the reset done only when no reseed is pending):
+  //   reconnect #2 skips it, so hydratedSinceReconnect is STILL true from episode 1. The B1
   //   pre-hydration flush then resolves the latch (B1 is terminal and does not match the
   //   survivor, so it emits nothing — the burn is silent), and the final flush sees an
   //   un-armed latch with a brand-new-looking B2  ->  [start B2, START B2].
@@ -837,7 +839,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // WRONG IMPL KILLED — mutant #12, dropping the optional chain:
   //   `if (latest.outcome === 'Ongoing' && latest.battleId === survivedId)` throws
   //   `TypeError: Cannot read properties of undefined (reading 'outcome')` on the no-rows
-  //   flush. main.ts:1828 SWALLOWS it into console.error, the latch is left resolved-ish, and
+  //   flush. main.ts's battle-emit listener SWALLOWS it into console.error, the latch is left resolved-ish, and
   //   the next flush still starts B2 — so the RING IS UNCHANGED and the toEqual below passes.
   //   The console assertion is the ONLY thing that catches it. Asserted in-test (not only in
   //   the global afterEach control) so the mutation bite-proof can pin this mutant to THIS
@@ -853,7 +855,8 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
       describeConsoleCalls(errorSpy?.mock.calls ?? []),
       'the battle listener must not THROW on a post-hydration flush that observes no battle ' +
         'rows at all — the resolved reseed branch reads `latest?.outcome`, and a player with ' +
-        'no battle rows is the COMMON reconnect. main.ts:1828 catches the throw, so the ring ' +
+        'no battle rows is the COMMON reconnect. main.ts`s battle-emit listener catches the ' +
+        'throw, so the ring ' +
         'above stays correct and this assertion is the only witness',
     ).toBe('(nothing)');
   });
@@ -861,7 +864,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // ==========================================================================================
   // ADR-0130 residual (e): a reconnect can MINT a new anon identity
   // (continueAnonymously() after a session-expired terminal, or the nh4 token-rejection
-  // suppression path) while `hadSession` is already true. connection.ts:659 reassigns its own
+  // suppression path) with `hadSession` already true. net/connection.ts `connect()` reassigns its
   // module-local identity on EVERY connect; before this slice `opts.onReconnect()` carried no
   // identity and main.ts kept the stale one, deafening every identity-gated listener —
   // INCLUDING this reseed listener.
@@ -900,7 +903,8 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     ).toEqual([startOf(B2)]);
     expect(
       connectIdentities(events),
-      'the reconnect`s `connect` ring event must carry the NEW identity hex (eventRing.ts:53). ' +
+      'the reconnect`s `connect` ring event must carry the NEW identity hex (`makeConnect` in ' +
+        'ui/eventRing.ts). ' +
         'main.ts pushes makeConnect(identity) at the TAIL of the onReconnect body, so the ' +
         'reassignment must happen BEFORE it — otherwise the F9 bundle records the session as ' +
         'still belonging to the old identity and the H3 correlation silently points at a ' +

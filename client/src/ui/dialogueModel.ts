@@ -1,7 +1,7 @@
 // ui/dialogueModel.ts — pure dialogue view model.
 // TOTAL: never throws. All error paths return null or a safe default.
-// the nearest-NPC resolver moved to interactModel.ts
-// (nearestInteractable) — this module is view-model derivation only.
+// Which NPC a press targets is decided in ui/interactModel.ts (`resolveCandidates`, over the
+// game-core rule); this module is view-model derivation only.
 import type { StoreNpcRow, StorePlayerConversation } from '../net/store';
 import type { ClientDialogueTree } from './dialogueContent';
 

@@ -581,10 +581,11 @@ export function playerConversationRowToStore(row: SdkPlayerConversation): StoreP
  *
  * KNOWN EDGE (RT-M13.5C-03): an UPDATE to IDENTICAL values is
  * indistinguishable from a genuine delete here (insert-first ordering would
- * remove the live row). Unreachable from this client — KeyT is overlay-guarded,
- * so `talk` is never sent while a conversation exists, and no current dialogue
- * tree self-loops — the durable fix is a server-side no-op-skip in the talk /
- * advance_dialogue upserts (npc.rs, outside this slice's touch-set).
+ * remove the live row). Narrow from this client: the dialogue frame covers the
+ * world while the store holds a conversation, so a second `talk` for the same
+ * NPC needs a press before the first one's row arrives (or a second tab), and no
+ * current dialogue tree self-loops. The durable fix is a server-side no-op-skip
+ * in the talk / advance_dialogue upserts (npc.rs).
  */
 export function shouldRemoveOnViewDelete(
   stored: StorePlayerConversation | undefined,
