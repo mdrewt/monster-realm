@@ -57,16 +57,22 @@ function hasAsciiControlOrSpace(s: string): boolean {
 // path that ends in `/` and holds no `?` or `#`.
 const WS_URL = /^wss?:\/\/[^/\\?#@]+(?:\/(?:[^?#]*\/)?)?$/i;
 
+// A `.` or `..` path segment, a dot optionally spelled `%2e`; the URL parser also reads a
+// backslash as a segment separator.
+const DOT_SEGMENT = /[/\\](?:\.|%2e){1,2}[/\\]/i;
+
 /**
- * Whether `uri` is a WebSocket URL the SDK dials exactly as written. The SDK resolves its
- * endpoints relative to the `uri` and keys nothing on it, while this client keys the reconnect
- * token and the claim code on the raw string; so every spelling the URL parser would silently
- * rewrite into another target is refused: userinfo, a query or a fragment (even empty), a path
- * whose last segment lacks its `/` (the SDK would drop that segment), a backslash in the
- * authority, and any space or ASCII control character (the parser deletes or strips some).
+ * Whether `uri` is a WebSocket URL whose path the SDK dials as written. The SDK resolves
+ * `v1/database/<db>/subscribe` relative to the `uri`, while this client keys the reconnect token
+ * and the claim code on the raw string, so a string that names one endpoint and dials another
+ * is refused: userinfo, a query or a fragment (even empty), a backslash in the authority, a path
+ * whose last segment lacks its `/` (the SDK would drop that segment), a `.` or `..` segment (the
+ * parser resolves it away), and any space or ASCII control character (the parser deletes or
+ * strips some). The host is not canonicalized: two spellings the parser reads as one host (letter
+ * case, a default port) are accepted and are two different keys.
  */
 function isWsUrl(uri: string): boolean {
-  if (!WS_URL.test(uri) || hasAsciiControlOrSpace(uri)) return false;
+  if (!WS_URL.test(uri) || DOT_SEGMENT.test(uri) || hasAsciiControlOrSpace(uri)) return false;
   try {
     new URL(uri); // refuses a host or port the parser cannot read
     return true;
@@ -83,8 +89,8 @@ function uriOf(connection: Fields): string {
   if (!isWsUrl(uri)) {
     throw refusal(
       'connection.uri',
-      'must be an absolute ws: or wss: URL with no userinfo, query, fragment or whitespace, ' +
-        'and a path, if it has one, must end in "/"',
+      'must be an absolute ws: or wss: URL with no userinfo, query, fragment or whitespace; ' +
+        'a path, if it has one, must end in "/" and hold no "." or ".." segment',
     );
   }
   return uri;

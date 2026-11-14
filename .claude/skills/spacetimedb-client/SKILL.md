@@ -27,7 +27,7 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
   clamp; a production build refuses a missing document and the dev database `monster-realm`).
   `shell/config.ts` exports the result as `URI`, `DB` and `TARGET_KIND`. `VITE_STDB_URI` and
   `VITE_STDB_DB` are inputs of the Vite plugin that serves that script in `vite dev` and
-  writes it on a build; client code never reads them.
+  writes it on a build when `VITE_STDB_DB` is set; client code never reads them.
 - The base subscription batch is the public tables the client renders and the
   owner-scoped views. Public: `player` (every player, unfiltered), the content and world
   tables (`species_row`, `skill_row`, `item_row`, `evolution_path`, `heal_location_row`, `npc`,

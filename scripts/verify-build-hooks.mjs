@@ -25,6 +25,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { types } from 'node:util';
 import vm from 'node:vm';
 
 // The canonical DEV-hook fingerprint set. The window-
@@ -78,10 +79,11 @@ const SHELL_CONFIG_TIMEOUT_MS = 1000;
 
 // readShellConfigDb(scriptText) -> { db: string } | { problem: string }
 //
-// Run the built `shell-config.js` and read the database its document names. The script runs in
-// an empty `node:vm` context with nothing of this process in reach. Both runs are time-bounded
-// and microtasks drain inside the bound, and the document crosses back as JSON text, so a loop,
-// a getter or a queued microtask in the script can neither hang nor run in this process.
+// Run the built `shell-config.js` and read the database its document names. The script is this
+// repository's own build output; it runs in an empty `node:vm` context that is handed no object
+// of this process. Both runs are time-bounded with microtasks drained inside the bound, and the
+// document comes back as JSON text. Nothing here calls into a value the script made: a thrown
+// value is described only when it is a native Error with an own string `message`.
 function readShellConfigDb(scriptText) {
   let json;
   try {
@@ -91,17 +93,39 @@ function readShellConfigDb(scriptText) {
       timeout: SHELL_CONFIG_TIMEOUT_MS,
     });
   } catch (err) {
-    const why = String(err instanceof Error ? err.message : err).split('\n')[0];
+    const message = types.isNativeError(err)
+      ? Object.getOwnPropertyDescriptor(err, 'message')?.value
+      : undefined;
+    const why = typeof message === 'string' ? message.split('\n')[0] : 'it threw';
     return { problem: `running it failed (${why})` };
   }
   if (typeof json !== 'string') return { problem: 'it sets no document' };
-  const doc = JSON.parse(json);
+  let doc;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return { problem: 'its document does not read back as JSON' };
+  }
   const db = doc?.connection?.db;
   if (typeof db !== 'string') return { problem: 'its document has no string connection.db' };
   return { db };
 }
 
-// Every regular file under `dir`, at any depth.
+// loadsShellConfig(html) -> boolean
+//
+// True when `html` holds, outside comments, a <script> start tag that loads the shell document
+// as a classic script, which the browser runs before any module script: it carries
+// `src="/shell-config.js"` and none of `async`, `defer`, `nomodule` or `type`.
+function loadsShellConfig(html) {
+  const tags = html.replace(/<!--[\s\S]*?-->/g, '').match(/<script\b[^>]*>/gi) ?? [];
+  return tags.some(
+    (tag) =>
+      tag.includes(`src="/${SHELL_CONFIG_SCRIPT}"`) &&
+      !/\s(?:async|defer|nomodule|type)\b/i.test(tag),
+  );
+}
+
+// Every regular file under `dir`, at any depth. Links are not followed: Vite writes none.
 function collectFiles(dir) {
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -177,10 +201,10 @@ function verifyBuild(distDir, playtestDb) {
   const indexHtml = texts.get(indexHtmlPath);
   if (indexHtml === undefined) {
     failures.push(`${indexHtmlPath} is missing — nothing loads /${SHELL_CONFIG_SCRIPT}`);
-  } else if (!indexHtml.includes(`src="/${SHELL_CONFIG_SCRIPT}"`)) {
+  } else if (!loadsShellConfig(indexHtml)) {
     failures.push(
-      `${indexHtmlPath} does not load /${SHELL_CONFIG_SCRIPT} from a <script> — the client ` +
-        'would start with no shell document',
+      `${indexHtmlPath} does not load /${SHELL_CONFIG_SCRIPT} from a classic <script> — the ` +
+        'client would start with no shell document',
     );
   }
   return failures;

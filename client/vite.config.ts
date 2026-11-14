@@ -42,25 +42,34 @@ function shellConfigPlugin(): Plugin {
   const trimmed = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
   const local = resolveConnectionConfig(undefined, true);
   // Both are set by `configResolved`, which Vite runs before the other two hooks.
-  let doc: ShellDocument = { connection: local };
-  let dbIsSet = false;
+  let uri = '';
+  let db = '';
+  const shellDocument = (): ShellDocument => ({
+    connection: { uri: uri || local.uri, db: db || local.db, kind: 'test' },
+  });
   return {
     name: 'mr-shell-config',
     configResolved(config) {
-      const uri = trimmed(config.env.VITE_STDB_URI);
-      const db = trimmed(config.env.VITE_STDB_DB);
-      dbIsSet = db !== '';
-      doc = { connection: { uri: uri || local.uri, db: db || local.db, kind: 'test' } };
+      uri = trimmed(config.env.VITE_STDB_URI);
+      db = trimmed(config.env.VITE_STDB_DB);
     },
     configureServer(server) {
       server.middlewares.use(`/${SHELL_CONFIG_SCRIPT}`, (_req, res) => {
         res.setHeader('Content-Type', 'text/javascript');
         res.setHeader('Cache-Control', 'no-store');
-        res.end(renderShellConfigScript(doc));
+        res.end(renderShellConfigScript(shellDocument()));
       });
     },
     generateBundle() {
-      if (!dbIsSet) return;
+      if (db === '') {
+        if (uri !== '') {
+          this.warn(
+            `VITE_STDB_URI is set but VITE_STDB_DB is not: no ${SHELL_CONFIG_SCRIPT} is written`,
+          );
+        }
+        return;
+      }
+      const doc = shellDocument();
       resolveConnectionConfig(doc, false);
       this.emitFile({
         type: 'asset',
