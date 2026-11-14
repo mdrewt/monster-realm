@@ -1,7 +1,8 @@
 set windows-shell := ["cmd.exe", "/c"]
 
-# Published db name; env-driven (matches the client's VITE_STDB_DB) so concurrent local
-# integration/e2e runs can use distinct databases on one SpacetimeDB instance.
+# Published db name; env-driven (VITE_STDB_DB, the name the dev server's shell document also
+# gives the client) so concurrent local integration/e2e runs can use distinct databases on one
+# SpacetimeDB instance.
 db := env_var_or_default("VITE_STDB_DB", "monster-realm")
 
 setup:
@@ -86,8 +87,9 @@ client-typecheck:
 client-test:
     cd client && npm test
 
-# Build the production client with the playtest DB baked in and prove client/dist ships no
-# DEV debug hooks (__game/__mrTrade/__mrPvp).
+# Build the production client for the playtest DB (VITE_STDB_DB makes the build write
+# dist/shell-config.js naming it) and prove client/dist ships no DEV debug hooks
+# (__game/__mrTrade/__mrPvp/__mrTactics) and names that DB in shell-config.js only.
 client-verify-build: wasm
     cd client && VITE_STDB_DB=monster-realm-playtest npm run build
     MR_PLAYTEST_DB=monster-realm-playtest node scripts/verify-build-hooks.mjs
@@ -349,7 +351,8 @@ playtest-up: wasm
         exit 1
     fi
     just playtest-verify-release
-    # The production build refuses an unset/dev-default DB, so bake the playtest DB in.
+    # A production client needs a shell document: VITE_STDB_DB makes the build write
+    # dist/shell-config.js naming the playtest DB, which `vite preview` then serves.
     ( cd client && VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build )
     just playtest-verify-build
     # `exec` makes $! vite's own PID so playtest-down can stop it; `disown` survives recipe exit.
@@ -371,7 +374,8 @@ playtest-down:
 playtest-verify-release:
     node scripts/verify-release-reducers.mjs
 
-# Prove the built client/dist carries no DEV debug hooks.
+# Prove the built client/dist carries no DEV debug hooks and that its shell-config.js, and no
+# other file, names $MR_PLAYTEST_DB.
 playtest-verify-build:
     node scripts/verify-build-hooks.mjs
 

@@ -916,7 +916,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // WRONG IMPL KILLED: shipping the chip as a native <button> WITHOUT the
     // `targetOwnsKey(e)` guard on the terminal Space branch — A11Y-23's activation half
     // ships silently dead (Enter-only), invisible to every source scan (main.ts is
-    // coverage-excluded, client/vite.config.ts:97).
+    // coverage-excluded, coverage.exclude in client/vite.config.ts).
     const chip = document.getElementById('chip-start') as HTMLElement | null;
     expect(chip, '#chip-start must exist (client/index.html)').not.toBeNull();
     chip!.focus();

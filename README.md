@@ -73,8 +73,9 @@ just playtest-up                              # publish, seed, verify, build, se
 
 `just playtest-up` publishes the release module to the database
 `monster-realm-playtest`, seeds content, checks that the published module has no dev
-reducers and that the client bundle has no debug hooks, builds the production client,
-and serves it with `vite preview` (it prints the URL, by default
+reducers and that the client bundle has no debug hooks, builds the production client
+(its `shell-config.js` names the playtest database), and serves it with `vite preview` (it
+prints the URL, by default
 `http://localhost:4173`). Stop the preview with `just playtest-down`; the database
 keeps its data. The tester guide is [`docs/PLAYTEST.md`](docs/PLAYTEST.md), and the
 operator runbook is [`docs/runbooks/playtest-ops.md`](docs/runbooks/playtest-ops.md).
@@ -99,8 +100,9 @@ spacetime publish -s local --module-path server-module -y monster-realm
 cd client && npm run dev                        # Vite dev server on http://localhost:5290
 ```
 
-The dev client connects to `ws://127.0.0.1:3000`, database `monster-realm`, unless
-`VITE_STDB_URI`/`VITE_STDB_DB` say otherwise. **`just publish` passes no `-s`**, so it
+The dev server serves `/shell-config.js`, which names `ws://127.0.0.1:3000` and database
+`monster-realm` unless `VITE_STDB_URI`/`VITE_STDB_DB` say otherwise; the client reads it
+when the page loads. **`just publish` passes no `-s`**, so it
 publishes to the spacetime CLI's *default* server, whatever that is. Check it with
 `spacetime server list` (the default is starred; a stale default made `just publish`
 fail on a connection error while a local server was running) and set it with
@@ -120,6 +122,34 @@ as that same identity; other callers are refused.
 | `just e2e` | Playwright two-window e2e against a running SpacetimeDB (needs the `dev_reducers` build; see `client/e2e/global-setup.ts`) |
 | `just e2e-shards` | The same suite as `MR_E2E_SHARDS` concurrent Playwright shards (default 8) against the one running SpacetimeDB, each shard with its own database and vite port; builds the `dev_reducers` module itself. See below |
 | `just mutate-core` / `just mutate-server` / `just coverage` / `just perf-budget` / `just smoke-republish` | The nightly checks |
+
+### Where the client connects
+
+The client takes its SpacetimeDB target from the page, not from the build. `index.html` loads
+a classic script, `/shell-config.js`, before the client module. It sets
+`globalThis.__MR_SHELL_CONFIG__` to the shell document, `{ connection: { uri, db, kind } }`
+(`kind` is optional). A `shell-config.js` for a friends server is one line:
+
+```js
+globalThis.__MR_SHELL_CONFIG__={"connection":{"uri":"wss://play.example/","db":"my-realm","kind":"private"}};
+```
+
+`kind` says what the host's server is: `official` (ours, public), `test` (a server we run for
+development, CI or playtests), `local` (a single-player world the game started) or `private`
+(a friends server). A document without a `kind` is `test` in a development build and `private`
+in a production build.
+
+A production build made with `VITE_STDB_DB` set writes `shell-config.js` into `dist/`. One made
+without it ships none: its host must serve the file beside `index.html` (or set the global
+itself before the client module runs), or the client throws at start-up. Replacing the file
+points a built client at another server without a rebuild. Serve it
+so a changed copy is picked up (for example `Cache-Control: no-cache`); a stale cached copy
+keeps clients on the target it names.
+
+The reconnect token and the guest-claim code are stored under keys derived from the exact `uri`
+and `db` strings. A host that changes the spelling of its target (letter case, a trailing slash,
+a port) gives every returning anonymous player a new identity. The resolution rules and the
+Vite plugin are in `ARCHITECTURE.md`, "Connection and store".
 
 ### Running the e2e suite locally
 

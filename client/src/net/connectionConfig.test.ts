@@ -1,260 +1,528 @@
-// net/connectionConfig.test.ts — connection config resolver.
+// net/connectionConfig.test.ts — the connection-target resolver over the page's shell document.
 //
-// EARS criterion:
-//   WHILE isDev===true: resolveConnectionConfig returns
-//     { uri: trimmedUri || 'ws://127.0.0.1:3000', db: trimmedDb || 'monster-realm' }
-//     and NEVER throws.
-//   WHEN isDev===false (production): IF trimmed db is empty/unset OR exactly equals
-//     the dev-default 'monster-realm', THEN throws a descriptive Error (reject-not-clamp).
-//     OTHERWISE returns { uri: trimmedUri || 'ws://127.0.0.1:3000', db: trimmedDb }.
-//     The URI is NOT guarded — only the DB name is the corruption vector.
+// `resolveConnectionConfig(doc, isDev)` takes whatever the page global holds. An absent document
+// is the development defaults in a development build and a throw in a production build; a present
+// document is either accepted exactly (trimmed, otherwise unchanged) or refused with a
+// `shell document: <subject> <reason>` Error, in both builds alike, and never replaced by a
+// default. A production build also refuses the development database in any letter case.
 //
-// WRONG IMPL KILLED (each test states which wrong impl it kills):
-//   [T1] A naive `?? default` that silently connects prod to the dev DB (no throw at all).
-//   [T2] An unset-only check that misses the equals-dev-default case.
-//   [T3] A check that treats empty-string as "set"; empty must be treated like unset.
-//   [T4] A no-trim impl — a whitespace-padded dev-default must still be rejected.
-//   [T5] An impl that throws on ALL prod calls, breaking the real playtest publish.
-//   [T6] A startsWith('monster-realm') / prefix impl — guard is exact equality only.
-//   [T7] An impl that fail-louds in dev mode.
-//   [T8] An impl that rejects the dev DB even in dev mode.
-//   [T9/T10] An impl that guards URI instead of (or in addition to) DB name.
-//   [T11] Property: encodes the exact fail-loud condition + trimming rule end-to-end.
+// Each rejection row carries exactly one fault, and every row runs with isDev true and false.
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { resolveConnectionConfig } from './connectionConfig';
+import { TARGET_KINDS } from './shellDocument';
 
 const DEV_URI = 'ws://127.0.0.1:3000';
 const DEV_DB = 'monster-realm';
+const E_ACUTE = String.fromCharCode(0xe9);
+const DEL = String.fromCharCode(0x7f);
+const BACKSLASH = String.fromCharCode(92);
 
-// ---------------------------------------------------------------------------
-// Production (isDev === false) — guarded cases that MUST throw
-// ---------------------------------------------------------------------------
+/** A valid connection: every rejection row below changes exactly one thing about it. */
+const GOOD = { uri: 'wss://play.example/', db: 'realm-one' } as const;
 
-describe('resolveConnectionConfig: production — throws when db is absent or dev-default', () => {
-  it('T1: {} + isDev=false MUST throw — kills naive ?? default that silently uses dev DB', () => {
-    // WRONG IMPL KILLED: any impl that returns a config instead of throwing
-    // when no env vars are provided in production.
-    expect(() => resolveConnectionConfig({}, false)).toThrow();
+type Subject =
+  | '__MR_SHELL_CONFIG__'
+  | 'connection'
+  | 'connection.uri'
+  | 'connection.db'
+  | 'connection.kind';
+
+/** The thrown value of `fn`, or a marker object when it returns. */
+function thrown(fn: () => unknown): unknown {
+  try {
+    const value = fn();
+    return { returned: value };
+  } catch (err) {
+    return err;
+  }
+}
+
+/** Assert `doc` is refused under `isDev` with an Error naming `subject` as the message prefix. */
+function expectRefused(doc: unknown, isDev: boolean, subject: Subject): Error {
+  const err = thrown(() => resolveConnectionConfig(doc, isDev));
+  expect(err, `isDev=${isDev}: refused with an Error, not returned`).toBeInstanceOf(Error);
+  const message = (err as Error).message;
+  const prefix = `shell document: ${subject} `;
+  expect(
+    message.slice(0, prefix.length),
+    `isDev=${isDev}: message ${JSON.stringify(message)}`,
+  ).toBe(prefix);
+  return err as Error;
+}
+
+const withConnection = (connection: unknown): unknown => ({ connection });
+const withField = (key: string, value: unknown): unknown =>
+  withConnection({ ...GOOD, [key]: value });
+
+const REJECTED_URIS: readonly string[] = [
+  '',
+  '   ',
+  'http://h',
+  'https://h',
+  '//h:3000',
+  'h:3000',
+  '/path',
+  'ws:',
+  'ws://',
+  'ws:h',
+  'ws:/h',
+  'ws://u@h',
+  'ws://u:p@h',
+  'ws://@h',
+  'ws://h?x=1',
+  'ws://h/?',
+  'ws://h#f',
+  'ws://h/#',
+  'ws://h/stdb',
+  'ws://h:99999',
+  'ws://h/a b/',
+  'ws://h/a\tb/',
+  `ws://h/a${DEL}b/`,
+  `ws://h${BACKSLASH}x/`,
+  'ws://h/a?b/',
+  'ftp://h/',
+  // A dot segment the URL parser would resolve away, so the SDK would dial another prefix.
+  'ws://h/stdb/../',
+  'ws://h/./',
+  'ws://h/a/%2e%2e/',
+  'ws://h/a/.%2E/',
+  'ws://h/%2e/',
+  // An empty authority: the URL parser would read `h` as the host, but the string names none.
+  'ws:///h/',
+];
+
+const REJECTED_DBS: readonly string[] = ['', '   ', 'a b', 'a/b', 'a.b', 'a?b', `caf${E_ACUTE}`];
+
+const REJECTED_KINDS: readonly unknown[] = [
+  'Test',
+  ' test',
+  'public',
+  '',
+  1,
+  null,
+  undefined,
+  'toString',
+  'constructor',
+  '__proto__',
+];
+
+type Row = readonly [label: string, make: () => unknown, subject: Subject];
+
+const ROWS: readonly Row[] = [
+  // The document itself.
+  ['null', () => null, '__MR_SHELL_CONFIG__'],
+  ['an array', () => [withConnection(GOOD)], '__MR_SHELL_CONFIG__'],
+  ['a string', () => JSON.stringify(withConnection(GOOD)), '__MR_SHELL_CONFIG__'],
+  ['a number', () => 7, '__MR_SHELL_CONFIG__'],
+  ['a boolean', () => true, '__MR_SHELL_CONFIG__'],
+  [
+    'a function',
+    () => Object.assign(() => undefined, { connection: { ...GOOD } }),
+    '__MR_SHELL_CONFIG__',
+  ],
+  [
+    'an unknown top-level key',
+    () => ({ connection: { ...GOOD }, extra: 1 }),
+    '__MR_SHELL_CONFIG__',
+  ],
+  [
+    'an own __proto__ top-level key',
+    () => JSON.parse(`{"connection":${JSON.stringify(GOOD)},"__proto__":{}}`),
+    '__MR_SHELL_CONFIG__',
+  ],
+  [
+    'a symbol top-level key',
+    () => ({ connection: { ...GOOD }, [Symbol('extra')]: 1 }),
+    '__MR_SHELL_CONFIG__',
+  ],
+  [
+    'a non-enumerable unknown top-level key',
+    () => Object.defineProperty({ connection: { ...GOOD } }, 'hidden', { value: 1 }),
+    '__MR_SHELL_CONFIG__',
+  ],
+  // The connection object.
+  ['connection missing', () => ({}), 'connection'],
+  ['connection null', () => withConnection(null), 'connection'],
+  ['connection an array', () => withConnection([GOOD.uri, GOOD.db]), 'connection'],
+  ['connection a string', () => withConnection(GOOD.uri), 'connection'],
+  ['connection inherited', () => Object.create({ connection: { ...GOOD } }), 'connection'],
+  ['an unknown key in connection', () => withField('port', 3000), 'connection'],
+  [
+    'an own __proto__ key in connection',
+    () => withConnection(JSON.parse(`{"uri":"${GOOD.uri}","db":"${GOOD.db}","__proto__":{}}`)),
+    'connection',
+  ],
+  [
+    'a symbol key in connection',
+    () => withConnection({ ...GOOD, [Symbol('extra')]: 1 }),
+    'connection',
+  ],
+  [
+    'a non-enumerable unknown key in connection',
+    () => withConnection(Object.defineProperty({ ...GOOD }, 'hidden', { value: 1 })),
+    'connection',
+  ],
+  // uri.
+  ['uri missing', () => withConnection({ db: GOOD.db }), 'connection.uri'],
+  [
+    'uri inherited',
+    () => withConnection(Object.assign(Object.create({ uri: GOOD.uri }), { db: GOOD.db })),
+    'connection.uri',
+  ],
+  ['uri a number', () => withField('uri', 3000), 'connection.uri'],
+  ['uri null', () => withField('uri', null), 'connection.uri'],
+  ['uri an object', () => withField('uri', { href: GOOD.uri }), 'connection.uri'],
+  ...REJECTED_URIS.map(
+    (uri): Row => [`uri ${JSON.stringify(uri)}`, () => withField('uri', uri), 'connection.uri'],
+  ),
+  // db.
+  ['db missing', () => withConnection({ uri: GOOD.uri }), 'connection.db'],
+  [
+    'db inherited',
+    () => withConnection(Object.assign(Object.create({ db: GOOD.db }), { uri: GOOD.uri })),
+    'connection.db',
+  ],
+  ['db a number', () => withField('db', 42), 'connection.db'],
+  ['db null', () => withField('db', null), 'connection.db'],
+  ['db an object', () => withField('db', { name: GOOD.db }), 'connection.db'],
+  ...REJECTED_DBS.map(
+    (db): Row => [`db ${JSON.stringify(db)}`, () => withField('db', db), 'connection.db'],
+  ),
+  // kind.
+  ...REJECTED_KINDS.map(
+    (kind): Row => [
+      `kind ${kind === undefined ? 'undefined (own key)' : JSON.stringify(kind)}`,
+      () => withField('kind', kind),
+      'connection.kind',
+    ],
+  ),
+];
+
+const ROW_CASES = ROWS.flatMap(([label, make, subject]) =>
+  [true, false].map((isDev) => [label, isDev, make, subject] as const),
+);
+
+describe('resolveConnectionConfig refuses a malformed document in every build', () => {
+  it.each(
+    ROW_CASES,
+  )('%s (isDev=%s) throws, naming its field, and never returns a default', (_label, isDev, make, subject) => {
+    expectRefused(make(), isDev, subject);
   });
 
-  it('T2: { db: "monster-realm" } + isDev=false MUST throw — kills unset-only check', () => {
-    // WRONG IMPL KILLED: an impl that only throws when db is unset, but allows
-    // the literal dev-default string 'monster-realm' through.
-    expect(() => resolveConnectionConfig({ db: DEV_DB }, false)).toThrow();
-  });
-
-  it('T3: { db: "" } + isDev=false MUST throw — kills impl that treats empty-string as set', () => {
-    // WRONG IMPL KILLED: an impl that only checks `db === undefined` or
-    // `db == null`; empty string must be treated as unset.
-    expect(() => resolveConnectionConfig({ db: '' }, false)).toThrow();
-  });
-
-  it('T4: { db: "  monster-realm  " } + isDev=false MUST throw — kills no-trim impl', () => {
-    // WRONG IMPL KILLED: an impl that compares before trimming, so a
-    // whitespace-padded dev-default sneaks through to production.
-    expect(() => resolveConnectionConfig({ db: '  monster-realm  ' }, false)).toThrow();
-  });
-
-  it('T3b: { db: "   " } (whitespace-only) + isDev=false MUST throw — trims to empty', () => {
-    // WRONG IMPL KILLED: an impl that only checks `db === ''` without trimming;
-    // a whitespace-only string trims to empty and must be rejected.
-    expect(() => resolveConnectionConfig({ db: '   ' }, false)).toThrow();
+  it('accepts, in both builds, the base document every rejection row edits', () => {
+    // The base the rows edit is itself accepted in both builds, so each row's throw is its fault.
+    for (const isDev of [true, false]) {
+      expect(resolveConnectionConfig(withConnection(GOOD), isDev)).toEqual({
+        uri: GOOD.uri,
+        db: GOOD.db,
+        kind: isDev ? 'test' : 'private',
+      });
+    }
   });
 });
 
-// ---------------------------------------------------------------------------
-// Production (isDev === false) — valid cases that MUST return a config
-// ---------------------------------------------------------------------------
+describe('resolveConnectionConfig accepts a valid document exactly', () => {
+  const ACCEPTED_URIS = [
+    'ws://127.0.0.1:3000',
+    'wss://play.example',
+    'wss://play.example:443/',
+    'ws://[::1]:3000',
+    'ws://localhost:3000',
+    'wss://play.example/stdb/',
+    'WSS://Play.Example/',
+    `wss://play.example/a"b'c${BACKSLASH}d<e@f%g${E_ACUTE}/`,
+    // Dots inside a segment that is not exactly `.` or `..`.
+    'wss://play.example/a.b/',
+    'wss://play.example/.../',
+    'wss://play.example/.hidden/',
+  ];
 
-describe('resolveConnectionConfig: production — returns config for valid db names', () => {
-  it('T5: { db: "monster-realm-playtest" } + isDev=false MUST return, NOT throw', () => {
-    // WRONG IMPL KILLED: an impl that throws on ALL prod calls regardless of db name,
-    // which would break the real playtest publish target.
-    const result = resolveConnectionConfig({ db: 'monster-realm-playtest' }, false);
-    expect(result).toEqual({ uri: DEV_URI, db: 'monster-realm-playtest' });
-  });
-
-  it('T6: { db: "monster-realm-old" } + isDev=false MUST return — kills prefix/startsWith guard', () => {
-    // WRONG IMPL KILLED: an impl using startsWith('monster-realm') or
-    // includes('monster-realm') — the guard must be exact equality, not a prefix match.
-    const result = resolveConnectionConfig({ db: 'monster-realm-old' }, false);
-    expect(result).toEqual({ uri: DEV_URI, db: 'monster-realm-old' });
-  });
-
-  it('T9: { uri: undefined, db: "monster-realm-playtest" } — uri falls back, db is used', () => {
-    // WRONG IMPL KILLED: an impl that guards URI in production (URI must fall back
-    // to dev default; only DB name is the corruption vector).
-    const result = resolveConnectionConfig({ uri: undefined, db: 'monster-realm-playtest' }, false);
-    expect(result).toEqual({ uri: DEV_URI, db: 'monster-realm-playtest' });
-  });
-
-  it('T10: { uri: "wss://play.example:3000", db: "monster-realm-playtest" } — custom uri passes through', () => {
-    // WRONG IMPL KILLED: an impl that throws because the URI is localhost,
-    // or that clamps the URI to the dev default despite an explicit value.
-    const result = resolveConnectionConfig(
-      { uri: 'wss://play.example:3000', db: 'monster-realm-playtest' },
-      false,
-    );
-    expect(result).toEqual({ uri: 'wss://play.example:3000', db: 'monster-realm-playtest' });
-  });
-
-  it('trimmed db is returned (not the raw padded value)', () => {
-    // WRONG IMPL KILLED: an impl that returns the raw (untrimmed) db value.
-    const result = resolveConnectionConfig({ db: '  prod-realm  ' }, false);
-    expect(result.db).toBe('prod-realm');
-  });
-
-  it('trimmed uri is returned (not the raw padded value)', () => {
-    // WRONG IMPL KILLED: an impl that returns the raw (untrimmed) uri value.
-    const result = resolveConnectionConfig(
-      { uri: '  wss://prod.example:3000  ', db: 'prod-realm' },
-      false,
-    );
-    expect(result.uri).toBe('wss://prod.example:3000');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Dev mode (isDev === true) — MUST NEVER throw
-// ---------------------------------------------------------------------------
-
-describe('resolveConnectionConfig: dev mode — never throws, applies dev defaults', () => {
-  it('T7: {} + isDev=true returns exactly the dev defaults', () => {
-    // WRONG IMPL KILLED: an impl that fail-louds even in dev when no env vars are set.
-    expect(resolveConnectionConfig({}, true)).toEqual({ uri: DEV_URI, db: DEV_DB });
-  });
-
-  it('T8: { db: "monster-realm" } + isDev=true returns that db — dev legitimately uses dev DB', () => {
-    // WRONG IMPL KILLED: an impl that throws on the dev-default DB name regardless
-    // of isDev, which would break local development.
-    expect(resolveConnectionConfig({ db: DEV_DB }, true)).toEqual({ uri: DEV_URI, db: DEV_DB });
-  });
-
-  it('dev with explicit uri uses that uri, falls back db to default', () => {
-    // WRONG IMPL KILLED: an impl that ignores explicit uri in dev mode.
-    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint.
-    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-    expect(resolveConnectionConfig({ uri: 'ws://0.0.0.0:3000' }, true)).toEqual({
-      // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-      uri: 'ws://0.0.0.0:3000',
-      db: DEV_DB,
-    });
-  });
-
-  it('dev with explicit db uses that db, falls back uri to default', () => {
-    // WRONG IMPL KILLED: an impl that ignores explicit db in dev mode.
-    expect(resolveConnectionConfig({ db: 'my-test-realm' }, true)).toEqual({
-      uri: DEV_URI,
-      db: 'my-test-realm',
-    });
-  });
-
-  it('dev trims whitespace-padded uri and db', () => {
-    // WRONG IMPL KILLED: a no-trim impl that returns raw strings in dev mode.
-    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint.
-    expect(
-      // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-      resolveConnectionConfig({ uri: '  ws://local:3000  ', db: '  dev-realm  ' }, true),
-    ).toEqual({
-      // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-      uri: 'ws://local:3000',
-      db: 'dev-realm',
-    });
-  });
-
-  it('dev with whitespace-only uri falls back to default', () => {
-    // WRONG IMPL KILLED: an impl that uses the whitespace-only string as a uri.
-    expect(resolveConnectionConfig({ uri: '   ' }, true)).toEqual({ uri: DEV_URI, db: DEV_DB });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// F-2: Case-insensitive dev-default guard
-// The guard comparison is case-insensitive: db.trim().toLowerCase() === 'monster-realm'
-// so a case-variant of the dev DB name cannot slip past in production.
-// The RETURNED db value is still case-preserving — only the comparison is case-folded.
-// ---------------------------------------------------------------------------
-
-describe('resolveConnectionConfig: production — case-insensitive dev-default guard (F-2)', () => {
-  it('F-2a: { db: "Monster-Realm" } + isDev=false MUST throw — kills case-sensitive === check', () => {
-    // WRONG IMPL KILLED: a case-sensitive `=== 'monster-realm'` check that lets a
-    // case-variant of the dev DB through to production.
-    expect(() => resolveConnectionConfig({ db: 'Monster-Realm' }, false)).toThrow();
-  });
-
-  it('F-2b: { db: "MONSTER-REALM" } + isDev=false MUST throw — kills case-sensitive check', () => {
-    // WRONG IMPL KILLED: same — all-caps variant of the dev DB must also be rejected.
-    expect(() => resolveConnectionConfig({ db: 'MONSTER-REALM' }, false)).toThrow();
-  });
-
-  it('F-2c: { db: "Monster-Realm-Playtest" } + isDev=false MUST return (positive control — no over-folding)', () => {
-    // WRONG IMPL KILLED: an impl that does a case-insensitive PREFIX check rather than
-    // exact equality, or an impl that lower-cases the returned value.
-    // 'monster-realm-playtest' !== 'monster-realm' under case-insensitive exact equality,
-    // so this MUST pass through. The returned db must be the trimmed raw value, NOT lowercased.
-    const result = resolveConnectionConfig({ db: 'Monster-Realm-Playtest' }, false);
-    expect(result.db).toBe('Monster-Realm-Playtest');
-  });
-
-  it('F-2d: { db: "  Monster-Realm  " } + isDev=false MUST throw — case-insensitive + trim combined', () => {
-    // WRONG IMPL KILLED: an impl that only case-folds without trimming, or only trims
-    // without case-folding — both must apply together.
-    expect(() => resolveConnectionConfig({ db: '  Monster-Realm  ' }, false)).toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// T11: Property test — encodes the exact fail-loud condition + trimming rule
-// ---------------------------------------------------------------------------
-
-describe('resolveConnectionConfig property (T11): exact fail-loud condition + trim semantics', () => {
-  it(
-    'for any db string d: throws IFF d.trim()==="" or d.trim().toLowerCase()==="monster-realm"; ' +
-      'when it does NOT throw, returned db === d.trim() (case-preserving)',
-    () => {
-      // WRONG IMPL KILLED: any impl that diverges from the two-clause condition —
-      // a prefix check, a case-sensitive-only check, a missing-trim, or an inverted
-      // condition all fail here. The case-insensitive guard (F-2) means
-      // 'Monster-Realm' must throw; the case-preserving return means 'Monster-Realm-Playtest'
-      // must come back exactly as 'Monster-Realm-Playtest'.
-      fc.assert(
-        fc.property(
-          // Generate a range of db strings including the critical boundary values
-          fc.oneof(
-            fc.constant(''),
-            fc.constant('monster-realm'),
-            fc.constant('Monster-Realm'),
-            fc.constant('MONSTER-REALM'),
-            fc.constant('  monster-realm  '),
-            fc.constant('  Monster-Realm  '),
-            fc.constant('monster-realm-playtest'),
-            fc.constant('Monster-Realm-Playtest'),
-            fc.constant('monster-realm-old'),
-            fc.string({ minLength: 0, maxLength: 30 }),
-          ),
-          (d) => {
-            const shouldThrow = d.trim() === '' || d.trim().toLowerCase() === 'monster-realm';
-            if (shouldThrow) {
-              expect(() => resolveConnectionConfig({ db: d }, false)).toThrow();
-            } else {
-              const result = resolveConnectionConfig({ db: d }, false);
-              // Case-preserving: returned db is the trimmed raw value, NOT lowercased.
-              expect(result.db).toBe(d.trim());
-            }
-          },
-        ),
+  it.each(ACCEPTED_URIS)('returns uri %j unchanged apart from the trim, in both builds', (uri) => {
+    for (const isDev of [true, false]) {
+      const result = resolveConnectionConfig(
+        withConnection({ uri: `  ${uri}\t`, db: ' realm-one ', kind: 'official' }),
+        isDev,
       );
-    },
-  );
+      expect(result).toStrictEqual({ uri, db: 'realm-one', kind: 'official' });
+    }
+  });
 
-  it('in dev mode: never throws for any db string', () => {
-    // WRONG IMPL KILLED: any impl that throws in dev regardless of the db value.
+  it('accepts a null-prototype document and connection', () => {
+    const connection = Object.assign(Object.create(null) as object, GOOD);
+    const doc = Object.assign(Object.create(null) as object, { connection });
+    expect(resolveConnectionConfig(doc, false)).toStrictEqual({
+      uri: GOOD.uri,
+      db: GOOD.db,
+      kind: 'private',
+    });
+  });
+
+  it.each([...TARGET_KINDS])('returns kind %s as given, in both builds', (kind) => {
+    for (const isDev of [true, false]) {
+      expect(resolveConnectionConfig(withField('kind', kind), isDev).kind).toBe(kind);
+    }
+  });
+
+  it('ignores an inherited kind: the build default is returned, never the inherited value', () => {
+    for (const isDev of [true, false]) {
+      const connection = Object.assign(Object.create({ kind: 'official' }) as object, GOOD);
+      expect(resolveConnectionConfig(withConnection(connection), isDev)).toStrictEqual({
+        uri: GOOD.uri,
+        db: GOOD.db,
+        kind: isDev ? 'test' : 'private',
+      });
+    }
+  });
+
+  it('returns a new object, not the document`s connection', () => {
+    const connection = { ...GOOD, kind: 'test' };
+    const result = resolveConnectionConfig(withConnection(connection), true);
+    expect(result).not.toBe(connection);
+    expect(result).toStrictEqual(connection);
+  });
+
+  it('a production build accepts names that merely start with the development database, case kept', () => {
+    for (const db of ['monster-realm-playtest', 'Monster-Realm-Playtest', 'monster-realm-old']) {
+      expect(resolveConnectionConfig(withField('db', db), false).db).toBe(db);
+    }
+  });
+
+  it('trims uri and db in both builds', () => {
+    for (const isDev of [true, false]) {
+      expect(
+        resolveConnectionConfig(
+          withConnection({ uri: '  wss://prod.example:3000  ', db: '  prod-realm  ' }),
+          isDev,
+        ),
+      ).toStrictEqual({
+        uri: 'wss://prod.example:3000',
+        db: 'prod-realm',
+        kind: isDev ? 'test' : 'private',
+      });
+    }
+  });
+});
+
+describe('resolveConnectionConfig with no document, and the kind default', () => {
+  it('a development build with no document returns exactly the development target', () => {
+    expect(resolveConnectionConfig(undefined, true)).toStrictEqual({
+      uri: DEV_URI,
+      db: DEV_DB,
+      kind: 'test',
+    });
+  });
+
+  it('a production build with no document throws, naming the page global', () => {
+    expectRefused(undefined, false, '__MR_SHELL_CONFIG__');
+  });
+
+  it('a valid document without kind resolves to test in development and private in production', () => {
+    const doc = withConnection({ uri: 'wss://play.example/', db: 'realm-two' });
+    expect(resolveConnectionConfig(doc, true).kind).toBe('test');
+    expect(resolveConnectionConfig(doc, false).kind).toBe('private');
+  });
+});
+
+describe('a production build refuses the development database in any letter case', () => {
+  it.each([
+    'monster-realm',
+    'Monster-Realm',
+    'MONSTER-REALM',
+    '  monster-realm  ',
+    '  Monster-Realm  ',
+  ])('db %j throws in production, naming connection.db, and is accepted in development', (db) => {
+    expectRefused(withField('db', db), false, 'connection.db');
+    expect(resolveConnectionConfig(withField('db', db), true)).toStrictEqual({
+      uri: GOOD.uri,
+      db: db.trim(),
+      kind: 'test',
+    });
+  });
+});
+
+describe('resolveConnectionConfig error messages', () => {
+  it('never carry a refused uri, db or kind value', () => {
+    const cases: ReadonlyArray<readonly [unknown, Subject, readonly string[]]> = [
+      [
+        withField('uri', 'ws://user-SENTINELQ7:pw-SENTINELZ8@play.example/'),
+        'connection.uri',
+        ['SENTINELQ7', 'SENTINELZ8'],
+      ],
+      [withField('uri', 'ws://play.example/?token=SENTINELK3'), 'connection.uri', ['SENTINELK3']],
+      [withField('uri', 'https://SENTINELH4.example/'), 'connection.uri', ['SENTINELH4']],
+      [withField('db', 'realm SENTINELD9'), 'connection.db', ['SENTINELD9']],
+      [withField('kind', 'kind-SENTINELK5'), 'connection.kind', ['SENTINELK5']],
+    ];
+    for (const [doc, subject, sentinels] of cases) {
+      for (const isDev of [true, false]) {
+        const { message } = expectRefused(doc, isDev, subject);
+        for (const s of sentinels) {
+          expect(message.includes(s), `isDev=${isDev}: ${JSON.stringify(message)} names ${s}`).toBe(
+            false,
+          );
+        }
+      }
+    }
+  });
+
+  it('a production refusal of a valid-looking database names no other database', () => {
+    const { message } = expectRefused(withField('db', 'Monster-Realm'), false, 'connection.db');
+    expect(message.includes('Monster-Realm')).toBe(false);
+    expect(message.includes('playtest')).toBe(false);
+  });
+
+  it('name an unknown key as the JSON of its first 32 characters', () => {
+    const long = `k${'x'.repeat(39)}`;
+    const top = expectRefused({ connection: { ...GOOD }, [long]: 1 }, true, '__MR_SHELL_CONFIG__');
+    expect(top.message).toContain(JSON.stringify(long.slice(0, 32)));
+    expect(top.message.includes(long.slice(0, 33))).toBe(false);
+
+    const inner = expectRefused(withField('port', 1), false, 'connection');
+    expect(inner.message).toContain('"port"');
+
+    const sym = expectRefused(withConnection({ ...GOOD, [Symbol('k')]: 1 }), true, 'connection');
+    expect(sym.message).toContain('"Symbol(k)"');
+  });
+});
+
+describe('resolveConnectionConfig reads each field once and returns what it validated', () => {
+  it('a uri accessor that changes after its first read resolves to the first value', () => {
+    let reads = 0;
+    const connection = { db: GOOD.db };
+    Object.defineProperty(connection, 'uri', {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'wss://first.example/' : 'not a uri';
+      },
+    });
+    expect(resolveConnectionConfig(withConnection(connection), false).uri).toBe(
+      'wss://first.example/',
+    );
+    expect(reads).toBe(1);
+  });
+
+  it('reads connection, db and kind exactly once each', () => {
+    const counts = { connection: 0, db: 0, kind: 0 };
+    const connection = { uri: GOOD.uri };
+    Object.defineProperty(connection, 'db', {
+      enumerable: true,
+      get: () => {
+        counts.db += 1;
+        return counts.db === 1 ? 'realm-first' : 'monster-realm';
+      },
+    });
+    Object.defineProperty(connection, 'kind', {
+      enumerable: true,
+      get: () => {
+        counts.kind += 1;
+        return counts.kind === 1 ? 'local' : 'nonsense';
+      },
+    });
+    const doc = {};
+    Object.defineProperty(doc, 'connection', {
+      enumerable: true,
+      get: () => {
+        counts.connection += 1;
+        return connection;
+      },
+    });
+    expect(resolveConnectionConfig(doc, false)).toStrictEqual({
+      uri: GOOD.uri,
+      db: 'realm-first',
+      kind: 'local',
+    });
+    expect(counts).toEqual({ connection: 1, db: 1, kind: 1 });
+  });
+
+  it('an accessor`s or a proxy trap`s own error propagates unchanged', () => {
+    const boom = new Error('accessor refused');
+    const connection = { db: GOOD.db };
+    Object.defineProperty(connection, 'uri', {
+      enumerable: true,
+      get: () => {
+        throw boom;
+      },
+    });
+    expect(thrown(() => resolveConnectionConfig(withConnection(connection), true))).toBe(boom);
+
+    const trap = new Error('ownKeys refused');
+    const proxy = new Proxy(
+      { connection: { ...GOOD } },
+      {
+        ownKeys: () => {
+          throw trap;
+        },
+      },
+    );
+    expect(thrown(() => resolveConnectionConfig(proxy, true))).toBe(trap);
+  });
+});
+
+describe('resolveConnectionConfig properties', () => {
+  const DB_CHARSET = /^[A-Za-z0-9_-]+$/;
+
+  it('for any db string: throws (naming connection.db) exactly when the trimmed value is outside the charset or, in production, is the development database; otherwise returns it trimmed', () => {
     fc.assert(
-      fc.property(fc.string({ minLength: 0, maxLength: 30 }), (d) => {
-        expect(() => resolveConnectionConfig({ db: d }, true)).not.toThrow();
-      }),
+      fc.property(
+        fc.oneof(
+          fc.constantFrom(
+            '',
+            ' ',
+            'monster-realm',
+            'Monster-Realm',
+            '  MONSTER-REALM  ',
+            'monster-realm-playtest',
+            'Monster-Realm-Playtest',
+            'a.b',
+            `caf${E_ACUTE}`,
+          ),
+          fc.string({ maxLength: 20 }),
+          fc.string({ unit: 'binary', maxLength: 8 }),
+          fc.stringMatching(/^[ \t]{0,2}[A-Za-z0-9_-]{1,16}[ \t]{0,2}$/),
+        ),
+        fc.boolean(),
+        (db, isDev) => {
+          const trimmed = db.trim();
+          const refused = !DB_CHARSET.test(trimmed) || (!isDev && trimmed.toLowerCase() === DEV_DB);
+          if (refused) {
+            expectRefused(withField('db', db), isDev, 'connection.db');
+          } else {
+            expect(resolveConnectionConfig(withField('db', db), isDev).db).toBe(trimmed);
+          }
+        },
+      ),
+      { numRuns: 400 },
+    );
+  });
+
+  it('for any accepted document: the result is its trimmed uri and db and its kind or the build default', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('ws', 'wss', 'WS'),
+        fc.constantFrom('h.example', '10.0.0.1:3000', 'Host.Example:8443'),
+        fc.constantFrom('', '/', '/stdb/', '/a/b/'),
+        fc.stringMatching(/^[A-Za-z0-9_-]{1,16}$/).filter((d) => d.toLowerCase() !== DEV_DB),
+        fc.option(fc.constantFrom(...TARGET_KINDS), { nil: undefined }),
+        fc.constantFrom('', ' ', '\t\n'),
+        fc.boolean(),
+        (scheme, host, path, db, kind, pad, isDev) => {
+          const uri = `${scheme}://${host}${path}`;
+          const connection: Record<string, unknown> = {
+            uri: `${pad}${uri}${pad}`,
+            db: `${pad}${db}`,
+          };
+          if (kind !== undefined) connection.kind = kind;
+          expect(resolveConnectionConfig(withConnection(connection), isDev)).toStrictEqual({
+            uri,
+            db,
+            kind: kind ?? (isDev ? 'test' : 'private'),
+          });
+        },
+      ),
+      { numRuns: 300 },
     );
   });
 });

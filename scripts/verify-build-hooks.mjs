@@ -1,20 +1,23 @@
-// verify-build-hooks.mjs — prove a production client bundle carries no DEV debug hooks.
+// verify-build-hooks.mjs — check a production client build before it is served.
 //
-// Scans the emitted `client/dist/**/*.js` production bundle and fails loud
-// (non-zero exit) if any DEV debug-hook `window`-binding survives into the
-// honest build. It matches the BINDING form (`.__game=`/`.__mrTrade=`/
-// `.__mrPvp=`/`.__mrTactics=`, plus the `defineProperty(window,"__x"` escape),
-// NOT a bare substring (bar `__mrTactics`, whose name occurs nowhere else): an
-// unminified build legitimately retains dead object literals
-// (`{challengePvp,proposeTrade}`) not attached to `window`, and
-// the ungated prod build stamp `window.__mrBuild=` must NOT be flagged.
+// Two things must hold of `client/dist` (or the directory given as the first argument):
 //
-// It fails loud when `client/dist` is absent or contains zero `.js` files —
-// scanning nothing must never read as green (§K B-2/F3).
+//   1. No DEV debug hook survives in the bundle. It matches the BINDING form (`.__game=`/
+//      `.__mrTrade=`/`.__mrPvp=`/`.__mrTactics=`, plus the `defineProperty(window,"__x"` escape),
+//      NOT a bare substring (bar `__mrTactics`, whose name occurs nowhere else): an unminified
+//      build legitimately retains dead object literals (`{challengePvp,proposeTrade}`) not
+//      attached to `window`, and the ungated prod build stamp `window.__mrBuild=` must NOT be
+//      flagged.
+//   2. The connection target is run-time configuration. `shell-config.js` sets the shell
+//      document, the document names the playtest database (`MR_PLAYTEST_DB`), `index.html` loads
+//      that script, and no other file in the build contains the database name: a name found
+//      anywhere else is an address baked back into the build, which a host could not change.
 //
-// Functional-core / imperative-shell: `findDevHooks` is exported and unit-gated
-// by evals/playtest-verify.eval.mjs; the file I/O runs only in the main-guarded
-// driver at the bottom.
+// It fails loud when the directory is absent or holds no bundle — scanning nothing must never
+// read as green.
+//
+// `findDevHooks` is exported for its unit tests; everything that touches the file system runs
+// from the main-guarded driver at the bottom.
 //
 // NO `new RegExp(...)` anywhere (Semgrep detect-non-literal-regexp): literal
 // patterns + String methods only.
@@ -22,6 +25,8 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { types } from 'node:util';
+import vm from 'node:vm';
 
 // The canonical DEV-hook fingerprint set. The window-
 // binding assignment form (leading `.` also catches `w.`/`globalThis.`/`self.`
@@ -64,40 +69,145 @@ export function findDevHooks(bundleText, fingerprints) {
   return fingerprints.filter((fp) => bundleText.includes(fp));
 }
 
-// bundleBakesDb(bundleText, dbName) -> boolean
+// The page global the shell document is assigned to, and the script that assigns it. Both names
+// are repeated from client/src/net/shellDocument.ts: this script runs under plain Node and
+// cannot import client TypeScript.
+const SHELL_CONFIG_GLOBAL = '__MR_SHELL_CONFIG__';
+const SHELL_CONFIG_SCRIPT = 'shell-config.js';
+const DEV_DEFAULT_DB = 'monster-realm';
+const SHELL_CONFIG_TIMEOUT_MS = 1000;
+
+// readShellConfigDb(scriptText) -> { db: string } | { problem: string }
 //
-// True iff the production bundle bakes `dbName` as the resolved connection DATABASE —
-// i.e. it appears as a `db:` object-property VALUE (the argument main.ts passes to
-// resolveConnectionConfig), NOT merely inside the connectionConfig guard's error
-// message, which hardcodes the example "monster-realm-playtest" via `e.g.` and is thus
-// present in EVERY build regardless of what was baked. Keying on the `db:` property
-// prefix rules out that guard-example false positive (a bare DB-name substring search
-// would fail OPEN — always green even for a misconfigured build).
-//
-// A build that forgot VITE_STDB_DB bakes `db: void 0` (undefined), so no `db:"<name>"`
-// value is present → returns false. Accepts the pretty (`db: "x"`) and minified
-// (`db:"x"`) shapes — the honest build is minified, and the pretty shape is
-// accepted too, like DEV_HOOK_FINGERPRINTS. String methods + literal concatenation only (NO
-// `new RegExp(...)` — Semgrep detect-non-literal-regexp).
-export function bundleBakesDb(bundleText, dbName) {
-  return bundleText.includes(`db:"${dbName}"`) || bundleText.includes(`db: "${dbName}"`);
+// Run the built `shell-config.js` and read the database its document names. The script is this
+// repository's own build output; it runs in an empty `node:vm` context that is handed no object
+// of this process. Both runs are time-bounded with microtasks drained inside the bound, and the
+// document comes back as JSON text. Nothing here calls into a value the script made: a thrown
+// value is described only when it is a native Error with an own string `message`.
+function readShellConfigDb(scriptText) {
+  let json;
+  try {
+    const context = vm.createContext(Object.create(null), { microtaskMode: 'afterEvaluate' });
+    vm.runInContext(scriptText, context, { timeout: SHELL_CONFIG_TIMEOUT_MS });
+    json = vm.runInContext(`JSON.stringify(globalThis.${SHELL_CONFIG_GLOBAL})`, context, {
+      timeout: SHELL_CONFIG_TIMEOUT_MS,
+    });
+  } catch (err) {
+    const message = types.isNativeError(err)
+      ? Object.getOwnPropertyDescriptor(err, 'message')?.value
+      : undefined;
+    const why = typeof message === 'string' ? message.split('\n')[0] : 'it threw';
+    return { problem: `running it failed (${why})` };
+  }
+  if (typeof json !== 'string') return { problem: 'it sets no document' };
+  let doc;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return { problem: 'its document does not read back as JSON' };
+  }
+  const db = doc?.connection?.db;
+  if (typeof db !== 'string') return { problem: 'its document has no string connection.db' };
+  return { db };
 }
 
-// ---------------------------------------------------------------------------
-// Driver helper: recursively collect *.js files under a directory.
-// ---------------------------------------------------------------------------
-function collectJsFiles(dir) {
+// loadsShellConfig(html) -> boolean
+//
+// True when `html` holds, outside comments, a <script> start tag that loads the shell document
+// as a classic script, which the browser runs before any module script: it carries the
+// attribute `src="/shell-config.js"` and none of `async`, `defer`, `nomodule` or `type` (any
+// `type` is refused: Vite writes none on a classic script).
+function loadsShellConfig(html) {
+  const tags = html.replace(/<!--[\s\S]*?-->/g, '').match(/<script\b[^>]*>/gi) ?? [];
+  return tags.some(
+    (tag) =>
+      /\ssrc="\/shell-config\.js"/.test(tag) && !/\s(?:async|defer|nomodule|type)\b/i.test(tag),
+  );
+}
+
+// Every regular file under `dir`, at any depth. Symbolic links are skipped: Vite writes none.
+function collectFiles(dir) {
   const found = [];
-  const entries = readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      found.push(...collectJsFiles(full));
-    } else if (entry.isFile() && entry.name.endsWith('.js')) {
-      found.push(full);
-    }
+    if (entry.isDirectory()) found.push(...collectFiles(full));
+    else if (entry.isFile()) found.push(full);
   }
   return found;
+}
+
+// verifyBuild(distDir, playtestDb) -> string[]
+//
+// Every reason the build under `distDir` must not be served; empty when it may.
+function verifyBuild(distDir, playtestDb) {
+  if (!existsSync(distDir)) {
+    return [`"${distDir}" does not exist — run \`just playtest-up\` / vite build first`];
+  }
+  const shellConfigPath = path.join(distDir, SHELL_CONFIG_SCRIPT);
+  const texts = new Map(collectFiles(distDir).map((file) => [file, readFileSync(file, 'utf8')]));
+  const scripts = [...texts.keys()].filter((file) => file.endsWith('.js'));
+  if (scripts.every((file) => file === shellConfigPath)) {
+    return [`no .js bundle found under "${distDir}" — run \`just playtest-up\` / vite build first`];
+  }
+
+  const failures = [];
+  for (const file of scripts) {
+    for (const hook of findDevHooks(texts.get(file), DEV_HOOK_FINGERPRINTS)) {
+      failures.push(
+        `DEV hook "${hook}" present in ${file} — the production build must strip ` +
+          '__game/__mrTrade/__mrPvp/__mrTactics',
+      );
+    }
+  }
+
+  // The checks below compare against the playtest database, so they need a usable name.
+  if (playtestDb === '' || playtestDb.toLowerCase() === DEV_DEFAULT_DB) {
+    failures.push(
+      `MR_PLAYTEST_DB is empty or the dev-default ("${playtestDb}") — set an isolated playtest ` +
+        'DB before building',
+    );
+    return failures;
+  }
+
+  const shellConfig = texts.get(shellConfigPath);
+  if (shellConfig === undefined) {
+    failures.push(
+      `${shellConfigPath} is missing — the build wrote no shell document. Build with ` +
+        '`VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build` (as `just playtest-up` does), else the ' +
+        'served client has no server to join and throws at start-up',
+    );
+  } else {
+    const read = readShellConfigDb(shellConfig);
+    if (read.problem !== undefined) {
+      failures.push(`${shellConfigPath} sets no readable ${SHELL_CONFIG_GLOBAL}: ${read.problem}`);
+    } else if (read.db !== playtestDb) {
+      failures.push(
+        `${shellConfigPath} names the database "${read.db}", not the playtest database ` +
+          `"${playtestDb}" — the build and MR_PLAYTEST_DB disagree`,
+      );
+    }
+  }
+
+  for (const [file, text] of texts) {
+    if (file !== shellConfigPath && text.includes(playtestDb)) {
+      failures.push(
+        `${file} contains the playtest database name "${playtestDb}" — only ` +
+          `${SHELL_CONFIG_SCRIPT} may name the server, or a host cannot change it`,
+      );
+    }
+  }
+
+  const indexHtmlPath = path.join(distDir, 'index.html');
+  const indexHtml = texts.get(indexHtmlPath);
+  if (indexHtml === undefined) {
+    failures.push(`${indexHtmlPath} is missing — nothing loads /${SHELL_CONFIG_SCRIPT}`);
+  } else if (!loadsShellConfig(indexHtml)) {
+    failures.push(
+      `${indexHtmlPath} does not load /${SHELL_CONFIG_SCRIPT} from a classic <script> — the ` +
+        'client would start with no shell document',
+    );
+  }
+  return failures;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,74 +216,18 @@ function collectJsFiles(dir) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   // Optional explicit dir override (argv[2]) for local checks; default dist.
   const distDir = process.argv[2] || path.join('client', 'dist');
+  // The database `playtest-up` published to; the default matches that recipe's.
+  const playtestDb = (process.env.MR_PLAYTEST_DB || 'monster-realm-playtest').trim();
 
-  if (!existsSync(distDir)) {
-    console.error(
-      `verify-build-hooks: "${distDir}" does not exist — run \`just playtest-up\` / vite build first`,
-    );
+  const failures = verifyBuild(distDir, playtestDb);
+  if (failures.length > 0) {
+    for (const failure of failures) console.error(`verify-build-hooks: FAIL — ${failure}`);
     process.exit(1);
   }
-
-  const jsFiles = collectJsFiles(distDir);
-  if (jsFiles.length === 0) {
-    console.error(
-      `verify-build-hooks: no .js files found under "${distDir}" — run \`just playtest-up\` / vite build first`,
-    );
-    process.exit(1);
-  }
-
-  let concat = '';
-  const perFile = new Map();
-  for (const file of jsFiles) {
-    const text = readFileSync(file, 'utf8');
-    concat += `\n${text}`;
-    perFile.set(file, text);
-  }
-
-  const offenders = findDevHooks(concat, DEV_HOOK_FINGERPRINTS);
-  if (offenders.length > 0) {
-    // Attribute each offender to a file for a clear diagnostic.
-    for (const fp of offenders) {
-      for (const [file, text] of perFile) {
-        if (findDevHooks(text, [fp]).length > 0) {
-          console.error(`verify-build-hooks: FAIL — DEV hook "${fp}" present in ${file}`);
-          break;
-        }
-      }
-    }
-    console.error(
-      `verify-build-hooks: ${offenders.length} DEV hook fingerprint(s) leaked into the production build — the honest build must strip __game/__mrTrade/__mrPvp/__mrTactics.`,
-    );
-    process.exit(1);
-  }
-
-  // pt-a2: also verify the bundle baked a VALID playtest database.
-  // A client build that never received VITE_STDB_DB bakes `db: undefined`, and the
-  // served production bundle then throws the connectionConfig dev-default guard in the
-  // user's browser. Catch that misconfiguration HERE, at build time, instead. The
-  // intended DB is MR_PLAYTEST_DB (the name playtest-up published to); the default
-  // matches the playtest-up recipe default.
-  const DEV_DEFAULT_DB = 'monster-realm';
-  const expectedDb = (process.env.MR_PLAYTEST_DB || 'monster-realm-playtest').trim();
-  if (expectedDb === '' || expectedDb.toLowerCase() === DEV_DEFAULT_DB) {
-    console.error(
-      `verify-build-hooks: MR_PLAYTEST_DB is empty or the dev-default ("${expectedDb}") — set an isolated playtest DB before building`,
-    );
-    process.exit(1);
-  }
-  if (!bundleBakesDb(concat, expectedDb)) {
-    console.error(
-      `verify-build-hooks: FAIL — the production build under "${distDir}" does not bake the playtest ` +
-        `database "${expectedDb}" (no db:"${expectedDb}" value in the bundle). The client build did not ` +
-        `receive VITE_STDB_DB — build with \`VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build\` (as ` +
-        `\`just playtest-up\` does), else the served bundle throws "production build refuses the ` +
-        `dev-default database" at runtime.`,
-    );
-    process.exit(1);
-  }
-
   console.log(
-    `verify-build-hooks: OK — scanned ${jsFiles.length} .js file(s) under "${distDir}"; no DEV hooks (__game/__mrTrade/__mrPvp/__mrTactics) present; bundle bakes playtest DB "${expectedDb}".`,
+    `verify-build-hooks: OK — "${distDir}" carries no DEV hooks ` +
+      `(__game/__mrTrade/__mrPvp/__mrTactics); ${SHELL_CONFIG_SCRIPT} names the playtest DB ` +
+      `"${playtestDb}" and no other file does.`,
   );
   process.exit(0);
 }

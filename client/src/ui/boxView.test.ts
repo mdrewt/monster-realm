@@ -5,8 +5,7 @@
 // SOURCE OF TRUTH: the reconciled ux4 plan (three lenses), sections B / PROOF-OF-TEETH.
 //
 // WHY THIS FILE EXISTS AT ALL
-//   `src/ui/boxView.ts` is in `client/vite.config.ts:103` `coverage.exclude` (an exact
-//   set guarded by `evals/dom-shell-coverage-exclusion.eval.mjs:40-41`) and there is no
+//   `src/ui/boxView.ts` is in `coverage.exclude` in `client/vite.config.ts` and there is no
 //   TS mutation harness (cargo-mutants is Rust-only). So this shell is neither
 //   coverage-measured nor mutation-measured: these cases are its ONLY automated defense,
 //   and VACUITY is the primary risk. Every positive case therefore ships a control or a

@@ -13,19 +13,18 @@ import {
 } from '../../../client-wasm/pkg/client_wasm.js';
 import { resolveConnectionConfig } from '../net/connectionConfig';
 import { makeFateLogger, makeSendLogger, resolveDevLogLevel } from '../net/devLog';
+import { readShellDocument } from '../net/shellDocument';
 
-// resolve the SpacetimeDB target at MODULE scope (eagerly, at import) so a misconfigured
-// PRODUCTION build fails loud here — before connect() is reachable — rather than silently
-// writing to the dev-default database `monster-realm`.
-// Kept at module scope on purpose: moving it inside main() could let a try/catch
-// swallow the throw.
-export const { uri: URI, db: DB } = resolveConnectionConfig(
-  {
-    uri: import.meta.env.VITE_STDB_URI as string | undefined,
-    db: import.meta.env.VITE_STDB_DB as string | undefined,
-  },
-  import.meta.env.DEV,
-);
+// The SpacetimeDB target comes from the shell document, which the page's host sets on
+// `globalThis` ahead of the client module (`net/shellDocument.ts`); nothing here is fixed at
+// build time. It is resolved at MODULE scope (eagerly, at import) so a missing or refused
+// document fails loud here, ahead of any connect() call. Kept at module scope on purpose:
+// inside main() a try/catch could swallow the throw.
+export const {
+  uri: URI,
+  db: DB,
+  kind: TARGET_KIND,
+} = resolveConnectionConfig(readShellDocument(globalThis), import.meta.env.DEV);
 // dev-observability: resolve VITE_MR_DEVLOG at MODULE scope too, for the same
 // F-3 reason — the resolver RETHROWS in dev, and a throw from inside main() could be
 // swallowed by a try/catch there. Asymmetric on purpose (inverted vs the other resolvers): dev rethrows,
