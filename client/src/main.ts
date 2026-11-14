@@ -14,7 +14,7 @@
 
 import { Identity } from 'spacetimedb';
 // bt-12: the tactics rules port is bound from the whole pkg namespace, LAZILY (`tacticsRules()`): the
-// test mocks of this module carry only the names main.ts imports by name, and `bindTacticsRules`
+// test mocks of this module carry only the names main.ts and shell/config.ts import by name, and `bindTacticsRules`
 // refuses a pkg missing a tactics export — so the bind happens on the first deploy render only.
 import * as wasmPkg from '../../client-wasm/pkg/client_wasm.js';
 // client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by

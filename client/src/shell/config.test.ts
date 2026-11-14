@@ -47,7 +47,7 @@ describe('shell config constants', () => {
     expect(c.DB).toBe(expected.db);
   });
 
-  it('resolves DEV_LOG_LEVEL from the run env and builds loggers only when it is not off', async () => {
+  it('resolves DEV_LOG_LEVEL from the run env through resolveDevLogLevel', async () => {
     const c = await loadConfig();
     const level = resolveDevLogLevel(
       import.meta.env.VITE_MR_DEVLOG as string | undefined,
@@ -55,13 +55,6 @@ describe('shell config constants', () => {
       () => {},
     );
     expect(c.DEV_LOG_LEVEL).toBe(level);
-    if (level === 'off') {
-      expect(c.sendLogger).toBeUndefined();
-      expect(c.fateLogger).toBeUndefined();
-    } else {
-      expect(typeof c.sendLogger).toBe('function');
-      expect(typeof c.fateLogger).toBe('function');
-    }
   });
 
   it('builds the send and fate loggers when VITE_MR_DEVLOG names a level and leaves them off otherwise', async () => {
@@ -78,11 +71,13 @@ describe('shell config constants', () => {
     expect(typeof on.fateLogger).toBe('function');
   });
 
-  it('captures WASM_READY_MS once at import as a finite non-negative timestamp', async () => {
-    const c = await loadConfig();
+  it('marks WASM_READY_MS at the moment the module is imported', async () => {
+    vi.resetModules();
+    const before = performance.now();
+    const c = await import('./config');
     const after = performance.now();
     expect(Number.isFinite(c.WASM_READY_MS)).toBe(true);
-    expect(c.WASM_READY_MS).toBeGreaterThanOrEqual(0);
+    expect(c.WASM_READY_MS).toBeGreaterThanOrEqual(before);
     expect(c.WASM_READY_MS).toBeLessThanOrEqual(after);
   });
 });
