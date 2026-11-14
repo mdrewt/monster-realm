@@ -312,8 +312,8 @@ export function continueWalk(
 const SLEW_EPSILON = 1e-9;
 
 /**
- * Move `from` toward `to` by at most `maxTiles` (Manhattan), one axis at a time; `to` itself
- * when it is within reach.
+ * Move `from` toward `to` by at most `maxTiles` (Manhattan, not negative), one axis at a time;
+ * `to` itself when it is within reach.
  *
  * Tile paths are axis-aligned, so of the two corners between the points the one that is a tile
  * centre is on the path: `x` closes first when the corner (`to.x`, `from.y`) is one, else `y`.
@@ -325,10 +325,9 @@ export function slewToward(from: RenderPos, to: RenderPos, maxTiles: number): Re
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   if (Math.abs(dx) + Math.abs(dy) <= maxTiles + SLEW_EPSILON) return to;
-  const budget = Math.max(0, maxTiles);
   const xFirst = Number.isInteger(to.x) && Number.isInteger(from.y);
-  const first = Math.min(Math.abs(xFirst ? dx : dy), budget);
-  const rest = budget - first;
+  const first = Math.min(Math.abs(xFirst ? dx : dy), maxTiles);
+  const rest = maxTiles - first;
   return xFirst
     ? { x: from.x + Math.sign(dx) * first, y: from.y + Math.sign(dy) * rest }
     : { x: from.x + Math.sign(dx) * rest, y: from.y + Math.sign(dy) * first };

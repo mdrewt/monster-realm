@@ -605,17 +605,18 @@ earlier ones are still in flight; resuming a held walk after a frame closes.
 **Decision.** Other characters render at `now − delay` between buffered snapshots
 (`client/src/render/interpolation.ts`). The delay adapts per character from a jitter
 estimate that ignores intervals longer than three steps (idleness), bounded between 0.5
-and 2.5 steps (`client/src/render/config.ts`). The store keeps one snapshot per
-position: a row update on the same tile replaces the row and is neither a snapshot nor
-a jitter sample (`client/src/net/store.ts`). At the newest snapshot a remote holds
-position, with one exception: a remote whose last two position changes were the same
-one-tile step, at most three steps apart, the newer at most three steps ago, and which
-has not turned in place since, is drawn on past its newest tile at the walk's cadence,
-at most half a tile and only toward a walkable tile. The remote arm
-(`client/src/render/renderResolver.ts`) walks each remote's drawn position to its
-target at no more than one tile per step, and draws it at the target once it is two
-tiles behind. The own character snaps instead of sliding when the server correction is
-more than one tile away.
+and 2.5 steps. The store keeps one snapshot per position: a row update on the same tile
+replaces the row and is neither a snapshot nor a jitter sample
+(`client/src/net/store.ts`). At the newest snapshot a remote holds position, with one
+exception: a remote whose last two position changes were the same one-tile step, at
+most three steps apart, the newer at most three steps ago, and which has not turned in
+place since, is drawn on past its newest tile at the walk's cadence, at most half a
+tile and only toward a walkable tile. A gap of up to three steps between two steps of a
+walking remote is crossed at the walk's pace, not held and then slid. The remote arm
+(`client/src/render/renderResolver.ts`) walks each drawn position to its target at no
+more than one tile per step, and draws it at the target once it is two tiles behind.
+The own character snaps instead of sliding when the server correction is more than one
+tile away.
 
 **Why.** Snapshots arrive in bursts: a fixed delay either pops under jitter or lags all
 the time, and treating a pause as jitter would inflate the delay after every stop. The

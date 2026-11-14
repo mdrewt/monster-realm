@@ -95,9 +95,7 @@ export function walkableIn(grid: {
 }
 
 /** Where a remote was last drawn, and when. */
-interface RemoteRender {
-  readonly x: number;
-  readonly y: number;
+interface RemoteRender extends RenderPos {
   readonly at: number;
 }
 
@@ -171,15 +169,14 @@ export class RenderResolver {
         // The reduced-motion arm comes FIRST and bypasses BOTH
         // interpolation paths — the remote is drawn at its authoritative row tile,
         // and `now` is not even referenced, so clock-independence holds by
-        // construction. Otherwise:
-        // Per-character adaptive render time derived from EWMA jitter.
-        // WHY per-character: NPCs and remote players have different jitter profiles;
-        // a single global renderTime would over-buffer smooth entities.
-        // Backward compat: when snapshots is empty (older fixtures / tests that
-        // only supply prev+latest), fall back to the fixed delay + 2-snapshot interpolate.
-        const pos = reduceMotion
-          ? interpolateReducedMotion(c.row)
-          : this.#remotePosition(c, now, walkable, drawn);
+        // construction. It records no drawn position either.
+        let pos: RenderPos;
+        if (reduceMotion) {
+          pos = interpolateReducedMotion(c.row);
+        } else {
+          pos = this.#remotePosition(c, now, walkable);
+          drawn.set(c.row.entityId, { x: pos.x, y: pos.y, at: now });
+        }
         // The server writes `Idle` whenever a tick finds the queue empty, between the steps of
         // a walk too. A remote that is not yet drawn on the row's tile is still walking.
         const arrived = pos.x === c.row.tileX && pos.y === c.row.tileY;
@@ -198,20 +195,19 @@ export class RenderResolver {
   }
 
   /** One remote's position this frame: its target, approached from where it was last drawn. */
-  #remotePosition(
-    c: StoredCharacter,
-    now: number,
-    walkable: ResolveInput['walkable'],
-    drawn: Map<bigint, RemoteRender>,
-  ): RenderPos {
+  #remotePosition(c: StoredCharacter, now: number, walkable: ResolveInput['walkable']): RenderPos {
     const stepMs = this.#stepMs;
     let target: RenderPos;
-    let ahead: Walk['ahead'];
+    let walk: Walk | undefined;
+    // Per-character adaptive render time derived from EWMA jitter.
+    // WHY per-character: NPCs and remote players have different jitter profiles;
+    // a single global renderTime would over-buffer smooth entities.
+    // Backward compat: when snapshots is empty (older fixtures / tests that
+    // only supply prev+latest), fall back to the fixed delay + 2-snapshot interpolate.
     if (c.snapshots.length > 0) {
       const windowMs = JITTER_IDLE_GAP_STEPS * stepMs;
       const renderTime = now - adaptiveInterpDelayMs(c.jitterEwma, stepMs);
-      const walk = walkOf(c.positionChanges ?? [], c.turnedInPlace === true, now, stepMs, windowMs);
-      ahead = walk?.ahead;
+      walk = walkOf(c.positionChanges ?? [], c.turnedInPlace === true, now, stepMs, windowMs);
       // The stepMs argument arms the idle-gap re-anchor — without it the
       // resume-from-idle fix is inert in production (renderResolver.test.ts pins it). A
       // walking remote's steps arrive up to the window apart, so for it only a longer gap is
@@ -223,17 +219,17 @@ export class RenderResolver {
         walk === undefined ? undefined : windowMs,
       );
       if (
-        walk !== undefined &&
-        ahead !== undefined &&
+        walk?.ahead !== undefined &&
         renderTime > c.latest.receivedAt &&
-        walkable?.(c.latest.tileX + ahead.dx, c.latest.tileY + ahead.dy) === true
+        walkable?.(c.latest.tileX + walk.ahead.dx, c.latest.tileY + walk.ahead.dy) === true
       ) {
-        target = continueWalk(c.latest, ahead, walk.cadenceMs, renderTime);
+        target = continueWalk(c.latest, walk.ahead, walk.cadenceMs, renderTime);
       }
     } else {
       target = interpolate(c.prev, c.latest, now - interpDelayMs(stepMs));
     }
 
+    const ahead = walk?.ahead;
     const last = this.#remotes.get(c.row.entityId);
     let pos = target;
     // The remote is drawn AT its target when there is nowhere to walk from: no last position,
@@ -251,7 +247,6 @@ export class RenderResolver {
         if (along < 0) pos = { x: pos.x - along * ahead.dx, y: pos.y - along * ahead.dy };
       }
     }
-    drawn.set(c.row.entityId, { x: pos.x, y: pos.y, at: now });
     return pos;
   }
 
