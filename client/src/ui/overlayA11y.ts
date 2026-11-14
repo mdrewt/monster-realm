@@ -177,7 +177,8 @@ export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
     // R-rb-121 (CTL5.7): a click inside the frame in the same macrotask already put focus where
     // the player wants it; pulling it to the anchor would undo that.
     if (connectedInside(root, document.activeElement)) return;
-    root.querySelector<HTMLElement>(meta.initialFocusSelector)?.focus();
+    // The frame is already laid out where it belongs; focusing must not scroll it into view.
+    root.querySelector<HTMLElement>(meta.initialFocusSelector)?.focus({ preventScroll: true });
   }, 0);
 
   OPEN_OVERLAYS.set(id, { root, returnFocus, timer, uninstall, releaseLive });

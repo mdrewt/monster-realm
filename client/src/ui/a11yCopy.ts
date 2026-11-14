@@ -1,93 +1,53 @@
-// ui/a11yCopy.ts — the flat accessible-name copy catalog and its resolver.
+// ui/a11yCopy.ts — the accessible-name resolver the overlays, the announcements and the world
+// region read their names through.
 //
-// A typed SSOT `const` (the `dialogueContent` / `renameModel` precedent) — NOT a
-// RON data file (YAGNI: this is client chrome, not game content). Pure and total in the shape
-// that matters: no DOM, no SDK, no module state, no IO. `t()` returns a primitive, so there is
-// nothing here a caller could mutate and poison for the next call — the catalog itself is never
-// handed out.
-//
-// THE M24 SEAM. Accessible names are CATALOG KEYS from the first commit,
-// never string literals at the call site, so M24 swaps the resolver — this `t` for a real i18n
-// one — and M23's keys become catalog entries with ZERO renaming. What M23 deliberately does NOT
-// ship, because nothing consumes it yet: no ICU syntax (`{`/`}` are banned in a key AND in a
-// value, and that ban is mechanically gated), no placeholders, no plural rules, no fallback
-// chain, no locale switching. The key shape is `a11y.<namespace>.<…>` with the OverlayId kept
-// VERBATIM — `a11y.overlay.boxView.title`, capital V — so the key is DERIVABLE from `OverlayId`
-// with zero mapping table. A kebab-cased key would reintroduce exactly the
-// hand-kept id↔key correspondence the derivation exists to kill.
+// THE COPY LIVES IN THE I18N CATALOGS. The `a11y.*` entries are part of `catalog.en.ts` and
+// `catalog.fr.ts` (typed by `A11yKey` in `i18n/messageIds.ts`), so every registered locale is
+// total over them and `t` here answers in the current locale. The key shape is
+// `a11y.<namespace>.<…>` with the OverlayId kept VERBATIM — `a11y.overlay.boxView.title`, capital
+// V — so the key is DERIVABLE from `OverlayId` with zero mapping table. No ICU syntax: `{`/`}` are
+// banned in an a11y value, and that ban is gated in catalogShape.test.ts.
 //
 // WHY `t` THROWS RATHER THAN RETURNING THE KEY (reject, do not clamp; the same
 // reasoning as `anyVisible`'s deliberate absence of a try/catch, ui/overlayRegistry.ts:366).
 // Both silent alternatives have a user-visible cost:
 //   - returning the key announces the literal "a11y.overlay.boxView.title" to a screen-reader
-//     user, and it makes an UNWIRED catalog look wired — the precise vacuity M23 §5.1 kills;
+//     user, and it makes an UNWIRED catalog look wired;
 //   - returning '' ships an UNLABELLED dialog, a WORSE WCAG failure than shipping no dialog
 //     role at all.
-// `t` is partial on `string` but TOTAL on the domain CI guarantees: A11Y-4 makes an unresolvable
-// `labelKey` a CI failure, so in shipped code the throw is unreachable. It is a fail-loud
-// backstop, and its message names the key so a caller can tell WHICH entry is unwired.
+// `t` takes a plain `string` because `OVERLAY_A11Y[id].labelKey` is one; it is TOTAL on the
+// domain CI guarantees (A11Y-4 makes an unresolvable `labelKey` a CI failure), so in shipped code
+// the throw is unreachable. Its message names the key so a caller can tell WHICH entry is unwired.
+
+import { CATALOG_EN } from './i18n/catalog.en';
+import type { A11yKey } from './i18n/messageIds';
+import { CATALOGS, currentLocale } from './i18n/resolver';
+
+/** True for a key of the `a11y.*` namespace that the catalogs define. `Object.hasOwn`, NOT `in`:
+ *  `in` is true for `toString`, `constructor` and the other `Object.prototype` names. */
+const isA11yKey = (key: string): key is A11yKey =>
+  key.startsWith('a11y.') && Object.hasOwn(CATALOG_EN, key);
 
 /**
- * The catalog. Flat `Record<string, string>` — no nesting, no interpolation, one key per
- * announced string. The sixteen `a11y.overlay.<OverlayId>.title` entries are the accessible
- * NAMES of the sixteen mutual-exclusion overlays (`ui/overlayRegistry.ts` OVERLAY_A11Y), so each
- * one reads as a dialog name: short, title-cased, no trailing punctuation. Each is the wording
- * the overlay already shows the player, so what an AT announces and what is on screen agree.
- *
- * FROZEN, not merely `Readonly<>`. The type annotation is erased at runtime, so a caller that
- * casts it away could rewrite this shared module singleton for every later importer — and `t`
- * would then resolve the corrupted value. `Object.freeze` makes the declared invariant real.
- *
- * The set of `a11y.overlay.*` keys here is gated for SET EQUALITY against the keys derived from
- * OVERLAY_IDS, in both directions — a missing entry and a stowaway are each a red. It is
- * deliberately NOT gated as "only this namespace" or "exactly N keys": S1 lands `a11y.world.*`
- * and `a11y.announce.*` the moment it starts, and each namespace is orphan-checked by the slice
- * that owns its consumer.
+ * The English `a11y.*` entries, as a flat frozen record — a read-only view of `CATALOG_EN` for
+ * tests and gates that enumerate the namespace (the set-equality gate against `OVERLAY_IDS`, the
+ * brace check). Runtime names never come from here: they come from `t`, in the current locale.
  */
-export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
-  // Constructed overlays — the wording is the <h2> each view builds today.
-  'a11y.overlay.battleView.title': 'Battle', // ui/battleView.ts:60
-  'a11y.overlay.boxView.title': 'Monsters', // ui/boxView.ts:41
-  'a11y.overlay.raisingView.title': 'Inventory', // ui/raisingView.ts:56
-  'a11y.overlay.evolutionView.title': 'Evolution', // ui/evolutionView.ts:47
-  // Static-shell overlays. Where the shell has a menu leaf, the wording is that leaf's own label
-  // (ui/menuModel.ts) so the announced name matches what the player picked to get here.
-  // `dialogueView` and `healView` have NO menu leaf and no static heading — both are reached by
-  // walking up to something in the world and pressing T — so their names are authored here, from
-  // the domain vocabulary (`player_conversation`) and the heal action respectively.
-  'a11y.overlay.dialogueView.title': 'Conversation',
-  'a11y.overlay.questLogView.title': 'Journal (Quests)',
-  'a11y.overlay.healView.title': 'Heal',
-  'a11y.overlay.shopView.title': 'Shop', // ui/shopView.ts:103
-  'a11y.overlay.tradeView.title': 'Incoming Trade', // ui/menuModel.ts:83
-  'a11y.overlay.pvpView.title': 'PvP Challenge', // ui/pvpView.ts:103
-  'a11y.overlay.leaderboardView.title': 'Leaderboard', // ui/menuModel.ts:92
-  'a11y.overlay.profileView.title': 'Profile', // ui/menuModel.ts: the Profile leaf
-  'a11y.overlay.tradeSessionView.title': 'Trade', // ui/tradeSessionView.ts
-  'a11y.overlay.helpView.title': 'How to Play', // index.html #help-overlay
-  'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
-  'a11y.overlay.controlsView.title': 'Controls', // ui/menuModel.ts: the Options › Controls leaf
-  // The canvas world region. NOT an overlay: `render/world.ts` sets
-  // role="application" + tabindex="0" on `app.canvas` itself and labels it from here, so the
-  // hotkey-vs-quick-nav collision has a named landing place a screen reader can reach. The S0
-  // header predicted this `a11y.world.*` namespace; the set-equality gate is scoped to
-  // `a11y.overlay.*` on BOTH sides precisely so it could be added without weakening that gate,
-  // and its orphan check belongs to the slice owning the consumer (D5) — here, world.test.ts.
-  'a11y.world.region': 'World map',
-});
+export const a11yCopy: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    Object.keys(CATALOG_EN)
+      .filter(isA11yKey)
+      .map((key) => [key, CATALOG_EN[key]]),
+  ),
+);
 
 /**
- * Resolve one catalog key. Pure and total on the catalog's own domain; THROWS on a miss, naming
- * the key. Never returns the key, never returns '', never caches, never mutates.
- *
- * `Object.hasOwn`, NOT `key in a11yCopy`: an object literal inherits `toString`, `constructor`,
- * `hasOwnProperty` and `valueOf` from `Object.prototype`, and `in` is true for every one of
- * them — an `in`-guarded resolver hands back an inherited FUNCTION for `t('toString')` instead
- * of throwing.
+ * Resolve one `a11y.*` key in the current locale. THROWS on any other key, naming it. Never returns
+ * the key, never returns '', never caches, never mutates.
  */
 export function t(key: string): string {
-  if (!Object.hasOwn(a11yCopy, key)) {
+  if (!isA11yKey(key)) {
     throw new Error(`a11yCopy: no entry for key '${key}' — the catalog is unwired for this key`);
   }
-  return a11yCopy[key];
+  return CATALOGS[currentLocale()][key];
 }

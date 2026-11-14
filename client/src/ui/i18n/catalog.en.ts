@@ -1,6 +1,6 @@
 // ui/i18n/catalog.en.ts — the English (source-locale) catalog.
 //
-// ONE ENTRY PER `MessageId`, and the type makes that total: `satisfies Catalog` is load-bearing
+// ONE ENTRY PER `MessageId` AND `A11yKey`, and the type makes that total: `satisfies Catalog` is load-bearing
 // — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
 // into `T`; `satisfies` restores the excess-property check, and the mapped type reports an
 // omitted key by name (TS2741). Frozen for the same reason `a11yCopy` is: the type annotation is
@@ -1807,4 +1807,55 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // returns to the sheet's own rows. One word.
   // boxView.ts (the Monsters Feed and Evolve lists)
   'kit.sheet.back': 'Back',
+  // @desc: Accessible name a screen reader announces for the tactical battle frame when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.battleView.title': 'Battle',
+  // @desc: Accessible name a screen reader announces for the Monsters frame (party and box) when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.boxView.title': 'Monsters',
+  // @desc: Accessible name a screen reader announces for the Inventory (bag) frame when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.raisingView.title': 'Inventory',
+  // @desc: Accessible name a screen reader announces for the evolution screen when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.evolutionView.title': 'Evolution',
+  // @desc: Accessible name a screen reader announces for a conversation with a character in the world when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.dialogueView.title': 'Conversation',
+  // @desc: Accessible name a screen reader announces for the quest journal when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.questLogView.title': 'Journal (Quests)',
+  // @desc: Accessible name a screen reader announces for the healing station screen when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.healView.title': 'Heal',
+  // @desc: Accessible name a screen reader announces for a shop when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.shopView.title': 'Shop',
+  // @desc: Accessible name a screen reader announces for an incoming trade offer when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.tradeView.title': 'Incoming Trade',
+  // @desc: Accessible name a screen reader announces for a player-versus-player challenge when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.pvpView.title': 'PvP Challenge',
+  // @desc: Accessible name a screen reader announces for the rankings board when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.leaderboardView.title': 'Leaderboard',
+  // @desc: Accessible name a screen reader announces for the player's profile frame when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.profileView.title': 'Profile',
+  // @desc: Accessible name a screen reader announces for a live trade with another player when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.tradeSessionView.title': 'Trade',
+  // @desc: Accessible name a screen reader announces for the help screen when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.helpView.title': 'How to Play',
+  // @desc: Accessible name a screen reader announces for the main menu when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.menuView.title': 'Menu',
+  // @desc: Accessible name a screen reader announces for the key-binding settings screen when it opens; a short
+  // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
+  'a11y.overlay.controlsView.title': 'Controls',
+  // @desc: Accessible name of the game world canvas (the map the player walks on), announced
+  // when the last open frame closes. render/world.ts (aria-label) and main.ts
+  'a11y.world.region': 'World map',
 } satisfies Catalog);

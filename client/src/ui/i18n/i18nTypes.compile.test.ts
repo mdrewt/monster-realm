@@ -101,6 +101,12 @@ const FIXTURES: readonly Fixture[] = [
       "export const goodParamMessageId: ParamMessageId = 'chrome.status.disconnected';",
       "export const goodParams: MessageParams['chrome.status.disconnected'] = { where: 'y' };",
       'export const goodA11yList: A11yKey[] = [];',
+      // ts-6b-9 (named intentional change): A11yKey is the literal union of the 17 a11y.* keys, and
+      // t() accepts them. (Was `never`; this line could not compile.)
+      "export const goodA11yKey: A11yKey = 'a11y.overlay.boxView.title';",
+      "export const goodA11yT: string = t('a11y.overlay.boxView.title');",
+      "export const goodA11yWorld: string = t('a11y.world.region');",
+      'export const goodCatalogA11y: string = CATALOG_EN[goodA11yKey];',
       "export const goodFmt: string = fmtNumber('en', 1);",
       '',
     ],
@@ -114,6 +120,19 @@ const FIXTURES: readonly Fixture[] = [
       '',
       "declare const p: Omit<Catalog, 'chrome.help.title'>;",
       'export const badOmit: Catalog = p;',
+      '',
+    ],
+  },
+  {
+    // ts-6b-9: Catalog is total over MessageId | A11yKey, so a catalog omitting ONE a11y key must not
+    // compile — TS2741, naming the omitted key. (Before ts-6b-9 the key was not in Catalog, so the
+    // Omit was a no-op and this fixture compiled clean.)
+    name: 'bad-omit-a11y',
+    lines: [
+      importFrom('type { Catalog }', MESSAGE_IDS_SPEC),
+      '',
+      "declare const p: Omit<Catalog, 'a11y.world.region'>;",
+      'export const badOmitA11y: Catalog = p;',
       '',
     ],
   },
@@ -170,10 +189,10 @@ const FIXTURES: readonly Fixture[] = [
   {
     // I18N-8 half 1: an a11y.* key handed to tf() — TS2345 (A11yKey is barred from tf's domain
     // by the type).
-    // HONEST LIMIT: not yet load-bearing FOR THE A11Y-SPECIFIC EXCLUSION while A11yKey = never —
-    // any string that is not a ParamMessageId produces the same TS2345 today, so this fixture
-    // currently overlaps bad-plain-tf; it becomes load-bearing for the a11y case specifically the
-    // moment a real a11y.* id joins MessageId (ADR-0256 D4 follow-up).
+    // ts-6b-9 (named intentional change): `A11yKey` is now the literal union of the 17 real a11y.*
+    // keys (and `'a11y.overlay.boxView.title'` IS one of them, see `goodA11yT` above), so this fixture
+    // is load-bearing for the a11y case specifically: a REAL a11y key still cannot reach tf(), because
+    // tf's domain is ParamMessageId and A11yKey stays out of MessageId.
     name: 'bad-a11y-tf',
     lines: [
       importFrom('{ tf }', RESOLVER_SPEC),
@@ -217,7 +236,8 @@ const FIXTURES: readonly Fixture[] = [
   },
   {
     // SHAPE-05: t is pinned to `(key: A11yKey | PlainMessageId) => string`, i.e. today
-    // `(key: PlainMessageId) => string` since A11yKey = never. Widening the parameter to `string`
+    // `(key: A11yKey | PlainMessageId) => string` (ts-6b-9: A11yKey is the 17-key literal union, so t
+    // accepts exactly those plus the plain ids). Widening the parameter to `string`
     // must not compile — TS2322. This is the TRANSITIVE ORACLE for the "importing a11yCopy
     // widens A11yKey to string" hazard — never delete this fixture as redundant.
     name: 'bad-t-wide',
@@ -396,6 +416,15 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     expect(
       omitLines.some((l) => l.includes('chrome.help.title')),
       `bad-omit.ts's TS2741 message must name the omitted key 'chrome.help.title':\n${omitLines.join('\n')}`,
+    ).toBe(true);
+
+    // ts-6b-9: the totality now covers the a11y.* keys too.
+    const omitA11yCodes = result.codesByFile.get('bad-omit-a11y.ts') ?? [];
+    expect(omitA11yCodes, `full tsc output:\n${result.output}`).toEqual(['TS2741']);
+    const omitA11yLines = result.linesByFile.get('bad-omit-a11y.ts') ?? [];
+    expect(
+      omitA11yLines.some((l) => l.includes('a11y.world.region')),
+      `bad-omit-a11y.ts's TS2741 message must name the omitted key 'a11y.world.region':\n${omitA11yLines.join('\n')}`,
     ).toBe(true);
 
     const partialCodes = result.codesByFile.get('bad-partial.ts') ?? [];

@@ -12,7 +12,7 @@
 // `en` would make an unwired locale look wired — exactly the vacuity to avoid. The cell
 // is left unchanged on the throw. There is no per-call fallback to `en` in `t`/`tf` either: the
 // `Catalog` type makes every registered locale total, so a miss can only be a key
-// that is not a `MessageId` at all, and that is a bug to surface, not paper over.
+// that is neither a `MessageId` nor an `A11yKey`, and that is a bug to surface, not paper over.
 //
 // WHY `t`/`tf` THROW RATHER THAN RETURNING THE KEY OR '' — the `a11yCopy.t` reasoning verbatim:
 // the key text on screen makes an unwired catalog look wired, and '' ships a blank
@@ -63,14 +63,14 @@ export function currentLocale(): string {
  *  catalog` is TRUE via Object.prototype, and the test suite pins that a prototype name throws
  *  the SAME message as an ordinary absent key. Checked before any `typeof` so the miss message is
  *  a pure function of the key. */
-function lookup(key: string): Catalog[MessageId] {
+function lookup(key: string): Catalog[MessageId | A11yKey] {
   const catalog = CATALOGS[current];
   if (!Object.hasOwn(catalog, key)) {
     throw new Error(
       `i18n: no entry for key '${key}' in locale '${current}' — the catalog is unwired for this key`,
     );
   }
-  return catalog[key as MessageId];
+  return catalog[key as MessageId | A11yKey];
 }
 
 /** Resolve a plain (parameterless) message in the current locale. */

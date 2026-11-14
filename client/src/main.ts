@@ -1020,9 +1020,22 @@ let exportAssembly: ExportAssembly | undefined;
 // closed must still be picked up — the Profile open renders from current state, so the offer is
 // there on open. Only the REPAINT is conditional.
 store.onBatchApplied(() => {
+  const before = exportAssembly;
   // Both owner filters run: the store's client-side one and the assembler's own
   // filter-first rule. Neither is redundant — the second decides which bytes reach the file.
-  exportAssembly = assembleExportBundle(store.ownExportChunks(identity), identity);
+  const after = assembleExportBundle(store.ownExportChunks(identity), identity);
+  exportAssembly = after;
+  // An export becoming ready is said once. The server writes every chunk in one transaction, so
+  // the edge is usually `none` → `complete` in one batch; an older complete request replaced by a
+  // newer one is a new edge too. The first assembly since boot or since a reconnect (`before`
+  // undefined) is the snapshot replaying chunks the player already had, and stays silent.
+  if (
+    before !== undefined &&
+    after.status === 'complete' &&
+    !(before.status === 'complete' && before.requestId === after.requestId)
+  ) {
+    announceNow(tf('privacy.export.complete', { received: after.receivedChunks }));
+  }
   if (privacyView?.visible) renderPrivacy();
 });
 
@@ -5476,6 +5489,13 @@ async function main(): Promise<void> {
         lastPrivacyCountdown.deletePermitted !== privacyCountdown.deletePermitted ||
         lastPrivacyCountdown.exportPermitted !== privacyCountdown.exportPermitted
       ) {
+        // The account entering deletion grace — this session's request or another's — is said
+        // once, with the deadline the banner shows. A boot or reconnect into an existing grace
+        // reads (no memo or `unknown`) → `grace` here and stays silent.
+        if (lastPrivacyCountdown?.phase === 'active' && privacyCountdown.phase === 'grace') {
+          const graceSaid = privacyBannerLabel(privacyCountdown);
+          if (graceSaid !== null) announceNow(graceSaid);
+        }
         lastPrivacyCountdown = privacyCountdown;
         applyPrivacy({ kind: 'account-changed', countdown: privacyCountdown });
       }

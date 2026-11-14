@@ -1048,11 +1048,15 @@ export function connect(opts: ConnectionOptions): Connection {
               // `.reducers.completeGuestClaim({ code })` call stays contiguous (biome breaks a short
               // receiver's method chain otherwise) — G18 pins that exact needle.
               const pendingClaim = c.reducers.completeGuestClaim({ code });
+              // Two-argument `then`: the reject arm sees only the reducer's rejection, so a throw
+              // inside the success handler is logged and never reported as a refused claim.
               pendingClaim
-                .then(() => opts.onClaimResult?.({ ok: true, message: '' }))
-                .catch((err) =>
-                  opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),
-                );
+                .then(
+                  () => opts.onClaimResult?.({ ok: true, message: '' }),
+                  (err) =>
+                    opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),
+                )
+                .catch((err) => console.error('[claim] result handler error', err));
               opts.onClaimPending?.(code);
             } else {
               opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe

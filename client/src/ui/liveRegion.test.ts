@@ -40,6 +40,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const NBSP = String.fromCharCode(0x00a0);
+
+function stripTrailingNbsp(s: string): string {
+  return s.endsWith(NBSP) ? s.slice(0, -1) : s;
+}
+
 function mountLiveNode(): HTMLElement {
   document.body.innerHTML = `<div id="${LIVE_REGION_ID}"></div>`;
   return document.getElementById(LIVE_REGION_ID) as HTMLElement;
@@ -117,14 +123,35 @@ describe('LiveRegion — re-announce and consecutive-dedup edge cases (S1-LIVE)'
     region.announce('Box', 600);
     region.flush(1200);
 
+    // NAMED INTENTIONAL CHANGE (ts-6b-9.3): the node already shows 'Box', so the repeat is painted
+    // with a trailing U+00A0 (a content change AT can see). The SPOKEN text is still 'Box'.
     expect(
-      node.textContent,
+      stripTrailingNbsp(node.textContent ?? ''),
       "the second 'Box' announcement must win — a #lastWritten-only dedup leaves " +
         "'Raising & Inventory' painted instead",
     ).toBe('Box');
   });
 
-  it('S1-LIVE-DEDUP-CONSECUTIVE BITES: the SAME message announced twice in a row with nothing else in between writes only ONCE', () => {
+  it('S1-LIVE-DEDUP-CONSECUTIVE BITES: the SAME message announced twice inside ONE window writes only ONCE (ts-6b-9.3: dedup is per window, not across paints)', () => {
+    // NAMED INTENTIONAL CHANGE (ts-6b-9.3): this case used to pin "a repeat after the first was
+    // painted is dropped" (#lastWritten dedup). That is the defect R-uif-4-REPEATSAY /
+    // R-ctl-13-REANNOUNCE report; the surviving rule is merge-within-a-window only.
+    const node = mountLiveNode();
+    const setSpy = vi.spyOn(node, 'textContent', 'set');
+    const region = new LiveRegion();
+
+    region.announce('Party & Box', 0);
+    region.announce('Party & Box', 100);
+    region.announce('Party & Box', 400);
+    region.flush(520);
+
+    expect(setSpy, 'identical announcements inside one window are one write').toHaveBeenCalledTimes(
+      1,
+    );
+    expect(node.textContent).toBe('Party & Box');
+  });
+
+  it('a repeated identical announcement after the first was painted is written again', () => {
     const node = mountLiveNode();
     const setSpy = vi.spyOn(node, 'textContent', 'set');
     const region = new LiveRegion();
@@ -132,16 +159,47 @@ describe('LiveRegion — re-announce and consecutive-dedup edge cases (S1-LIVE)'
     region.announce('Party & Box', 0);
     region.flush(520);
     expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(node.textContent).toBe('Party & Box');
 
-    // Nothing else was announced in between — this is a legitimate repeat, not a burst.
+    // The first was painted; the same words announced again are a NEW announcement.
     region.announce('Party & Box', 600);
     region.flush(1200);
 
+    expect(setSpy, 'the repeat must be written, not dropped').toHaveBeenCalledTimes(2);
     expect(
-      setSpy,
-      'a consecutive identical announce must not trigger a second write',
-    ).toHaveBeenCalledTimes(1);
+      node.textContent,
+      'the node content must CHANGE on a repeat (so AT re-speaks it)',
+    ).not.toBe('Party & Box');
+    expect(node.textContent, 'the repeat carries exactly one trailing NBSP').toBe(
+      `Party & Box${NBSP}`,
+    );
+    expect(stripTrailingNbsp(node.textContent ?? '')).toBe('Party & Box');
+
+    // A further repeat writes it bare again, so the content changes every time.
+    region.announce('Party & Box', 1300);
+    region.flush(1900);
+    expect(setSpy).toHaveBeenCalledTimes(3);
     expect(node.textContent).toBe('Party & Box');
+
+    // And a different message after a repeat is written bare, with no stray NBSP.
+    region.announce('Raising & Inventory', 2000);
+    region.flush(2600);
+    expect(node.textContent).toBe('Raising & Inventory');
+  });
+
+  it('a repeat announced inside the window of a different pending message still merges into one write', () => {
+    const node = mountLiveNode();
+    const setSpy = vi.spyOn(node, 'textContent', 'set');
+    const region = new LiveRegion();
+
+    region.announce('Box', 0);
+    region.flush(520);
+    region.announce('Other', 600);
+    region.announce('Box', 700);
+    region.flush(1200);
+
+    expect(setSpy).toHaveBeenCalledTimes(2);
+    expect(stripTrailingNbsp(node.textContent ?? '')).toBe('Box');
   });
 });
 
