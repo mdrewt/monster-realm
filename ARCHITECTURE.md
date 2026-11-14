@@ -395,7 +395,12 @@ reducers (`evals/baselines/client-visible-tables.json`,
 ## Client
 
 `client/src/main.ts` wires everything; the logic lives in small modules, mostly pure
-with thin shells.
+with thin shells. The shell is splitting into owner modules under `client/src/shell/`, on the
+plan in `docs/refactors/client-shell.md`. `shell/config.ts` holds the values fixed for the
+session, all resolved at import: the connection target (`URI`, `DB`; a production build
+configured with the dev database throws at import), the dev-log level and its send and fate
+loggers, the zone id, the game-core constants read from the wasm exports, and the wasm-ready
+mark. It writes nothing to the document and registers nothing.
 
 ### Connection and store
 
