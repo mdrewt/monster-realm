@@ -114,18 +114,19 @@ pub(crate) fn require_not_deleting(ctx: &ReducerContext, reducer: &str) -> Resul
     })
 }
 
-/// The stamp-aware sibling of `require_not_deleting`, for a
-/// reducer that ACCEPTS a commitment somebody else opened — `respond_trade` on
-/// the counterparty side: refuse the CALLER only while their account is
-/// deletion-gated AND the commitment was opened at or after their own deletion
-/// request (`opened_at_ms` is the offer's creation stamp). Commitments that
+/// The stamp-aware sibling of `require_not_deleting`, for a reducer that acts
+/// inside a commitment already open — `confirm_trade_session` and the tactical
+/// battle reducers (`deploy_units`, `submit_queue`, `cancel_queue`, `forfeit`):
+/// refuse the CALLER only while their account is deletion-gated AND the
+/// commitment was opened at or after their own deletion request (`opened_at_ms`
+/// is the session's or the battle's creation stamp). Commitments that
 /// predate the request stay completable, which is why this is not,
 /// and must never become, a blanket gate on an already-open interaction. Same
 /// shape as its sibling on purpose: caller-only by signature (no identity
 /// parameter), one fused expression delegating transitively through the
 /// accounts predicate into the pure SSOT decision, no account state re-derived
 /// here, the same single static reason (it names no action, so it is as true
-/// of an accepting response as of anything else), and `log_reject` on the
+/// of a confirm or a battle move as of anything else), and `log_reject` on the
 /// refuse path.
 pub(crate) fn require_commitment_predates_deletion(
     ctx: &ReducerContext,
@@ -318,10 +319,11 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 // `sessions_of` and combine the two sources. A reducer calls a wrapper, so
 // what counts as locked is decided in this file — unless it must judge one
 // source alone or leave one trade out, in which case it reads the rows itself
-// and calls the pure predicates. `trading::propose_trade` is one such reader:
-// it judges offers alone and does not see a session lock, and a session's
-// swap re-checks both sides' live rows before anything moves. An active offer
-// is Pending OR ConfirmedByCounterparty.
+// and calls the pure predicates. `monster_mgmt::set_party_slot` judges offers
+// alone (a session never refuses a party move: boxing an offered monster ends
+// the session), and `trading_session::read_side` leaves out the session it is
+// judging, whose own confirmed side must not count against itself. An active
+// offer is Pending OR ConfirmedByCounterparty.
 //
 // SpacetimeDB reducers are single-threaded WASM: read-check-write within one
 // reducer is atomic w.r.t. all other reducers — no TOCTOU possible.

@@ -37,7 +37,8 @@
           <ul id="shop-for-sale" class="mr-nav-list"></ul>
           <ul id="shop-inventory" class="mr-nav-list"></ul>
         </div>
-        <!-- m15b trade overlay shell — hidden by default; managed by TradeView. -->
+        <!-- The Social frame's Trades root — hidden by default; TradeView paints the status line and
+             the trade session rows into it. -->
         <div id="trade-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
           <div id="trade-status" tabindex="-1"></div>
         </div>
@@ -65,9 +66,10 @@
         <div id="tradepropose-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
           <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button"></button>
         </div>
-        <!-- pt-c2b help overlay shell (How to Play) — hidden by default; managed by HelpView, which
-             fills the two panels and adds the TabBar and the detail sheet. ctl-6c: .mr-shell--top puts it above the battle
-             overlay's z-index 110 (ui/battleView.ts), because the main menu opens help over a battle. -->
+        <!-- The help overlay shell (How to Play) — hidden by default; managed by HelpView, which
+             fills the two panels and adds the TabBar and the detail sheet. .mr-shell--top puts it
+             above the battle roots' z-index 110 (client/src/tactics), because the main menu opens
+             help over a battle. -->
         <div
           id="help-overlay"
           class="mr-frame mr-shell mr-shell--top"

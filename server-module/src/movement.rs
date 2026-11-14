@@ -349,15 +349,16 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
     // FULL id list (not just the lead); accrual first, auto-evolution
     // check LAST. No party -> credit nothing.
     if let Some(party_ids) = lead_party_ids(ctx, ctx.sender()) {
-        // Trade escrow: an escrowed party monster keeps its
-        // party slot until settlement, so without this it would keep accruing
-        // Quality Time and could AUTO-EVOLVE out from under the counterparty's
-        // propose-time card snapshot (confirm_trade never revalidates it).
-        // Collect the caller's escrowed ids ONCE, from BOTH trade roles (the
+        // Trade escrow: a party monster a trade holds (an active offer, or a
+        // session side its owner has confirmed) keeps its party slot until the
+        // trade ends, so without this it would keep accruing Quality Time and
+        // could AUTO-EVOLVE under the trade. The owner's own reducers refuse a
+        // held monster (`reject_if_monster_locked` in care, train and evolve).
+        // Collect the caller's held ids ONCE, from BOTH trade roles (the
         // guards wrapper owns that read), and SKIP those monsters — never
-        // reject the move (a pending offer must not freeze the player).
+        // reject the move (a pending trade must not freeze the player).
         // Collected inside this arm on purpose: a caller with no party pays
-        // zero trade-offer index reads on the hottest reducer in the game.
+        // zero trade index reads on the hottest reducer in the game.
         let escrowed = escrowed_monster_ids_of(ctx, ctx.sender());
         for mid in party_ids {
             if escrowed.contains(&mid) {
@@ -787,8 +788,9 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         };
         let next_state = apply_move(&st, MoveInput::Step(dir), map, now);
         apply_state(&mut ch, &next_state);
-        // NOTE (F5): apply_state writes ONLY tile_x/tile_y/facing/action/move_started_at.
-        // It does NOT write zone_id. NPC zone crossings deferred to M12c.
+        // apply_state writes ONLY tile_x/tile_y/facing/action/move_started_at, never
+        // zone_id: an NPC stays in its home zone. The wander step resolves no warp,
+        // so npc.zone_id and character.zone_id stay equal.
         ctx.db.character().entity_id().update(ch);
     }
 

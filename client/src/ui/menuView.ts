@@ -99,11 +99,11 @@ export class MenuView {
     closeOverlayA11y('menuView', null);
   }
 
-  /** A child screen sits above the menu: stop painting the menu (most child shells are in-flow,
-   *  so a fixed full-screen menu would cover them) while it stays open beneath. On uncover, focus
-   *  returns to the list: the pop's own focus move ran while the menu was still `visibility:
-   *  hidden`, which a browser refuses, so focus would otherwise sit on `<body>` or in the closed
-   *  child. A menu closed while covered takes no focus: its list is not on screen. */
+  /** A child screen sits above the menu: stop painting the menu (its shell is the top layer,
+   *  above every child shell, so a painted menu would cover them) while it stays open beneath.
+   *  On uncover, focus returns to the list: the pop's own focus move ran while the menu was still
+   *  `visibility: hidden`, which a browser refuses, so focus would otherwise sit on `<body>` or in
+   *  the closed child. A menu closed while covered takes no focus: its list is not on screen. */
   setCovered(covered: boolean): void {
     const wasCovered = this.#overlay.style.visibility === 'hidden';
     this.#overlay.style.visibility = covered ? 'hidden' : '';

@@ -10,7 +10,7 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
 
 > **Versions.** CLI/host, Rust crate and npm `spacetimedb` all 2.11.0 (`^2.11.0`,
 > locked, in lockstep since 2026-10-15). The committed bindings are 2.11.0-generated, which means:
-> 1. **Table and view handles are camelCase** (`conn.db.tradeOffer`,
+> 1. **Table and view handles are camelCase** (`conn.db.myTradeSession`,
 >    `conn.db.myMonsterPub`). The snake_case spellings still work as `@deprecated`
 >    aliases; write camelCase in new code.
 > 2. **`Option<T>` fields are optional keys** (`{ foo?: T | undefined }`).
@@ -24,11 +24,16 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
 - The builder takes the URI and database from `VITE_STDB_URI`/`VITE_STDB_DB`
   (`net/connectionConfig.ts`); a production build refuses the dev database
   `monster-realm`.
-- The base subscription batch covers everything except `character`: `player` (every
-  player, unfiltered), public content, `trade_offer`, `battle_challenge`, `profile`,
-  `player_quest`, and the owner-scoped views (`my_monster_pub`, `my_battle`,
-  `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_export_bundle`,
-  `my_pending_evolution_notices`).
+- The base subscription batch is the public tables the client renders and the
+  owner-scoped views. Public: `player` (every player, unfiltered), the content and world
+  tables (`species_row`, `skill_row`, `item_row`, `evolution_path`, `heal_location_row`, `npc`,
+  `zone_def`, `shop_row`, `shop_item_row`), `player_quest`, `battle_challenge`, `profile`.
+  Views: `my_monster_pub`, `my_battle`, `my_inventory`, `my_wallet`, `my_conversation`,
+  `my_account`, `my_export_bundle`, `my_pending_evolution_notices`, `my_trade_session`, and
+  the tactical-battle views (`my_tactical_battle`, `my_battle_units`, `my_battle_queue`,
+  `my_battle_deploy`, `my_battle_clock`, `my_battle_events`, `my_formation`). Two public
+  tables are not in it: the drain-only `trade_offer` (trades are read through
+  `my_trade_session`) and `character` (next bullet).
 - `character` is never subscribed whole. Each connection holds one set for its own row
   (`WHERE entity_id = <E>`) and one per wanted zone (`WHERE zone_id = <Z>`).
   `net/worldScope.ts` builds both query strings and decides when a set is subscribed

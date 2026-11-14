@@ -40,7 +40,8 @@ pub struct ProposalSide<'a> {
     pub currency: u64,
 }
 
-/// Validate the inputs to a `propose_trade` call (pure, no DB access).
+/// Validate a legacy offer proposal (pure, no DB access). No reducer calls it:
+/// `propose_trade` returns one fixed error.
 ///
 /// Checks:
 /// 1. initiator != counterparty (no self-trade)
@@ -177,8 +178,8 @@ pub enum TradeSide {
     Counterparty,
 }
 
-/// The mutation plan for `atomic_swap`. The server applies all transfers in a
-/// single SpacetimeDB transaction. Pure — no DB access here.
+/// The mutation plan the server's `trading_session::apply_swap` applies, all
+/// transfers in a single SpacetimeDB transaction. Pure — no DB access here.
 #[derive(Clone, Debug)]
 pub struct SwapPlan {
     pub monster_transfers: Vec<MonsterTransfer>,
@@ -215,8 +216,8 @@ pub enum ApplyStep {
 
 impl SwapPlan {
     /// Produce this plan's item/currency mutations as a debits-before-credits
-    /// sequence — the first-class published ordering contract consumed by
-    /// `confirm_trade` (same SSOT standing as `check_headroom`).
+    /// sequence — the first-class published ordering contract consumed by the
+    /// server's `trading_session::apply_swap` (same SSOT standing as `check_headroom`).
     ///
     /// ALL `ItemDebit`/`CurrencyDebit` steps strictly precede ANY `ItemCredit`/
     /// `CurrencyCredit` step. Every transfer in the plan yields exactly one debit
@@ -277,8 +278,8 @@ impl SwapPlan {
 
 /// Validate ownership at swap time and produce a `SwapPlan`.
 ///
-/// Called by `confirm_trade` after re-reading live rows. Fails if any monster
-/// no longer belongs to its expected party.
+/// Called by the server's `trading_session::execute_swap` after re-reading live
+/// rows. Fails if any monster does not belong to its expected party.
 pub fn build_swap_plan(
     initiator_monsters: &[LiveMonsterOwner],
     counterparty_monsters: &[LiveMonsterOwner],
@@ -391,9 +392,9 @@ pub fn check_currency_headroom(balance: u64, incoming: u64) -> Result<(), TradeE
 }
 
 /// Check that crediting the negotiated assets to each receiver won't exceed their
-/// stack/balance caps. Called by `confirm_trade` BEFORE applying any transfers so
-/// the transaction aborts cleanly with `Err` if a receiver is at or near their cap —
-/// reject-not-clamp.
+/// stack/balance caps. Called by the server's `trading_session::execute_swap`
+/// BEFORE applying any transfers so the transaction aborts cleanly with `Err` if a
+/// receiver is at or near their cap — reject-not-clamp.
 ///
 /// The per-axis cap comparisons are DELEGATED to the
 /// single-receiver primitives `check_item_headroom` / `check_currency_headroom`
@@ -446,7 +447,8 @@ pub fn check_headroom(
     Ok(())
 }
 
-/// Authorize a `respond_trade` call.
+/// Authorize the counterparty's response to a legacy offer. No reducer calls it:
+/// `respond_trade` returns one fixed error.
 ///
 /// Role is checked BEFORE status: a non-counterparty caller gets `NotCounterparty`
 /// regardless of the offer's state, so the offer status never leaks to a non-party
@@ -461,7 +463,8 @@ pub fn authorize_respond(status: &TradeStatus, is_counterparty: bool) -> Result<
     Ok(())
 }
 
-/// Authorize a `confirm_trade` call.
+/// Authorize the initiator's confirm of a legacy offer. No reducer calls it:
+/// `confirm_trade` returns one fixed error.
 ///
 /// Role is checked BEFORE status: a non-initiator caller gets `NotInitiator`
 /// regardless of the offer's state (same no-status-leak ordering as

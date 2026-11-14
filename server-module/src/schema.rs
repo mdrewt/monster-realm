@@ -637,7 +637,8 @@ fn my_pending_evolution_notices(ctx: &spacetimedb::ViewContext) -> Option<Pendin
 // --- M12b tables: NPC, dialogue, quest, healing -------------------
 
 /// NPC entity role row. Entity/component: an NPC is a `character` row + this.
-/// `zone_id` mirrors `character.zone_id` (kept in sync on zone crossings, M12c).
+/// `zone_id` equals `character.zone_id`: an NPC never leaves its home zone, and
+/// content sync writes the two columns together.
 #[spacetimedb::table(accessor = npc, public)]
 pub struct Npc {
     #[primary_key]
@@ -737,33 +738,31 @@ pub struct HealCooldown {
 
 // --- M15a trade tables --------------------------------------------
 
-/// An active trade offer between two players.
+/// A legacy trade offer between two players. DRAIN-ONLY: no reducer inserts a
+/// row (trades run through `trade_session` below). A row still in the table
+/// keeps its assets guarded until `cancel_trade`, the TTL reaper, a disconnect
+/// or account deletion deletes it.
 ///
-/// PUBLIC so both parties can subscribe and see the offer. The display data
+/// PUBLIC; the client does not subscribe to it. The display data
 /// (`initiator_cards` / `counterparty_cards`) contains only the public-projection
 /// field set of the offered monsters — no IVs/EVs/nature.
-/// The public `initiator_currency` / `counterparty_currency` fields leak a LOWER
-/// BOUND on the offering party's private balance to all subscribers — an accepted
+/// The public `initiator_currency` / `counterparty_currency` fields expose a LOWER
+/// BOUND on the offering party's private balance to any subscriber — an accepted
 /// bounded exposure (offered amounts only, never the full balance).
-/// `inventory` is a genuine precedent (world-readable
-/// pending transport RLS); `player_wallet` is NOT a precedent — it is PRIVATE
-/// must-never-leak. `trade_offer` is flagged for the same
-/// transport-RLS treatment as `inventory` / `player_wallet` when per-row RLS lands.
 ///
-/// SpacetimeDB reducers execute serially (single-threaded WASM): a `confirm_trade`
+/// SpacetimeDB reducers execute serially (single-threaded WASM): a `cancel_trade`
 /// read-check-delete is atomic w.r.t. all other reducers — no TOCTOU possible.
 /// Do NOT add physical escrow rows; the guard-in-place pattern is
 /// the SSOT invariant.
 ///
-/// Terminal state: the row is DELETED (not updated to Cancelled) — mirrors battle
-/// terminal GC. This means no trade history is retained; a
-/// history table is a follow-up concern.
+/// Terminal state: the row is DELETED (not updated to Cancelled), so no trade
+/// history is kept.
 #[spacetimedb::table(accessor = trade_offer, public)]
 pub struct TradeOffer {
     #[primary_key]
     #[auto_inc]
     pub trade_id: u64,
-    /// Trade initiator (the player who called `propose_trade`).
+    /// The player who proposed the offer.
     #[index(btree)]
     pub initiator: Identity,
     /// Designated counterparty.
@@ -785,7 +784,8 @@ pub struct TradeOffer {
     pub initiator_cards: Vec<game_core::MonsterCard>,
     /// Display-only snapshots of the counterparty's offered monsters (no hidden genes).
     pub counterparty_cards: Vec<game_core::MonsterCard>,
-    /// Lifecycle state. Pending → ConfirmedByCounterparty → (deleted on swap or cancel).
+    /// Lifecycle state: Pending or ConfirmedByCounterparty. No reducer advances it;
+    /// the row is deleted when the offer ends.
     pub status: game_core::TradeStatus,
     /// Timestamp (server clock ms) when the offer was created.
     pub created_at_ms: i64,
