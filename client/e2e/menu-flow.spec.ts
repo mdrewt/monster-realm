@@ -9,7 +9,7 @@ import {
 } from '@playwright/test';
 import { t, tf } from '../src/ui/i18n/resolver';
 import { navItemId } from '../src/ui/navRender';
-import { closeAll, pressButton, readWorld, safeTile, stepTile, walkTo } from './controls';
+import { closeAll, faceTile, pressButton, readWorld, safeTile, stepTile } from './controls';
 import { ownerSql } from './stdb';
 
 // menu-flow.spec.ts — the operator's required menu flow, played with the KEYBOARD ONLY
@@ -52,12 +52,14 @@ import { ownerSql } from './stdb';
 //  - THE BAG OPENS ON ITS FIRST POCKET (Bait, the lowest item id), so RB reaches Food as designed.
 //  - A SETUP WALK BEFORE THE FLOW. The final press is Up (W, North), as the criterion says. At the
 //    zone-0 spawn (1,1) the tile to the north is a wall (a bump changes no position), so before
-//    the first Start the character walks (controls.ts `walkTo`, a grass-free, warp-free
-//    `safePath` over the zone map the page reports) to (6,2): the lane x=6 is the suite's
-//    measured clean northward lane (wallet-balance.spec.ts WORLD FACTS), (6,2) and its north
-//    neighbour (6,1) are both asserted `safeTile` (walkable, not grass, not a warp) from the live
-//    map, and no NPC wanders there (elder_oak's disc is Manhattan <= 2 of (5,5): its nearest tile
-//    to the lane is (6,4)). The walk happens before any menu press, so the flow itself is untouched.
+//    the first Start the character walks (controls.ts `faceTile`: a grass-free, warp-free
+//    `safePath` over the zone map the page reports to (6,3), then one step North) onto (6,2)
+//    facing North, so the final Up is a press of the faced direction and steps: the lane x=6 is
+//    the suite's measured clean northward lane (wallet-balance.spec.ts WORLD FACTS), (6,2), its
+//    north neighbour (6,1) and its approach (6,3) are asserted `safeTile` (walkable, not grass,
+//    not a warp) from the live map, and no NPC wanders there (elder_oak's disc is Manhattan <= 2
+//    of (5,5): its nearest tile to the lane is (6,4)). The walk happens before any menu press, so
+//    the flow itself is untouched.
 //
 
 // SEEDING (owner SQL, the evolution.spec.ts / battle-dpad.spec.ts precedent): the starter has no
@@ -240,7 +242,9 @@ test.describe
 
       // ---- setup walk (before any menu press): a post whose NORTH neighbour is walkable ----------
       // The spawn's north is a wall, and the flow's last press is Up. (6,2) sits on the clean x=6
-      // lane; both it and (6,1) are asserted safe (walkable, no grass, no warp) from the live map.
+      // lane; it, (6,1) and its approach (6,3) are asserted safe (walkable, no grass, no warp) from
+      // the live map. The walk arrives on the post FACING North (`faceTile`: from (6,3), a step
+      // North), so the flow's last Up press, a press of the faced direction, steps.
       const POST: Tile = { x: 6, y: 2 };
       const world = await readWorld(page);
       expect(safeTile(world.map, POST), 'the setup post is a safe tile').toBe(true);
@@ -249,7 +253,11 @@ test.describe
         'and so is the tile north of it, which the final Up must walk onto',
       ).toBe(true);
       expect(
-        await walkTo(page, POST, 'menu-flow setup walk'),
+        safeTile(world.map, stepTile(POST, 'South')),
+        'and so is its approach south of it, from which the walk arrives facing North',
+      ).toBe(true);
+      expect(
+        await faceTile(page, POST, 'North', 'menu-flow setup walk'),
         'the setup walk meets no battle',
       ).toBe('arrived');
       expect((await snap(page)).ownAuthTile, 'the character stands on the post').toEqual(POST);

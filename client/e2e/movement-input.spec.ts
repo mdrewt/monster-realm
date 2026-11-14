@@ -20,7 +20,8 @@ import {
 // into a continuation guard; a second ungated emitter outside the scanned region).
 //
 // THE FIRST FOUR SCENARIOS AND WHAT EACH ONE IS FOR (E, F and G say so at each test):
-//   A  GREEN GUARD  single-code taps -> exactly 1 tile. Passes on the pre-fix tree; it is a
+//   A  GREEN GUARD  single-code taps -> exactly 1 tile, each made in the direction the
+//                   character is parked facing. Passes on the pre-fix tree; it is a
 //                   runtime mutant-guard for `committedActive` -> `active` reverts and
 //                   HOLD_COMMIT_MS -> 0, NOT a defect tooth. (Labelled per the
 //                   W-NH2-NO-CANCEL precedent: mislabelling a green guard as RED is itself
@@ -224,14 +225,46 @@ async function corridorEastWest(p: Page, minX: number, maxX: number): Promise<Ti
   return t;
 }
 
-/** SETUP ONLY. `__game().step()` bypasses `held` entirely (ADR-0158 residual 9), so it can
- *  prove NOTHING about keyboard input — it is used here purely to park the character in a
- *  known column before a keyboard-driven scenario begins. CLOSED LOOP: every decision is made
+type Facing = 'North' | 'South' | 'East' | 'West';
+
+/** The arrow key that presses each direction (the default bindings' first-class D-pad keys). */
+const ARROW: Readonly<Record<Facing, string>> = {
+  North: 'ArrowUp',
+  South: 'ArrowDown',
+  East: 'ArrowRight',
+  West: 'ArrowLeft',
+};
+
+/** The own character row's AUTHORITATIVE facing (`__game().characters` + `ownEntityId`, as
+ *  controls.ts `readWorld` reads it), or null while the row is not live. */
+const ownFacing = (p: Page): Promise<string | null> =>
+  p.evaluate(() => {
+    const g = (
+      window as unknown as {
+        __game: () => {
+          ownEntityId: string | null;
+          characters: { entityId: string; facing: string }[];
+        };
+      }
+    ).__game();
+    return g.characters.find((c) => c.entityId === g.ownEntityId)?.facing ?? null;
+  });
+
+/** SETUP ONLY. Parks the character in column `targetX` of the corridor FACING `facing`, so a
+ *  scenario's first tap or hold in the faced direction steps on its first input (a press of
+ *  another direction is a turn: tap-to-turn.spec.ts). East is the default because every
+ *  scenario that names no facing presses East first.
+ *  The column is reached with `__game().step()`, which bypasses `held` entirely (ADR-0158
+ *  residual 9), so it proves NOTHING about keyboard input. CLOSED LOOP: every decision is made
  *  from a SETTLED tile (prediction equal to authority, see `converged`), so neither a step of
  *  its own nor a scenario's tap still in flight can be mistaken for the current column. A
  *  fixed sleep, or a read of the authoritative tile alone, sees a stale column on a slow
- *  runner and lands one tile off the target. */
-async function recenter(p: Page, targetX: number): Promise<void> {
+ *  runner and lands one tile off the target.
+ *  The facing is then set with ONE keyboard tap of that direction's arrow key when the own
+ *  row faces another way: a turn in place, asserted by the authoritative row (it faces
+ *  `facing`) and by the settled tile (the column and the row are unchanged). A client whose
+ *  press steps fails here, in setup, rather than parking the character one tile off. */
+async function recenter(p: Page, targetX: number, facing: Facing = 'East'): Promise<void> {
   const settledTile = async (): Promise<Tile> => {
     await converged(p);
     return tile(p);
@@ -248,6 +281,25 @@ async function recenter(p: Page, targetX: number): Promise<void> {
     targetX,
   );
   expect(t.y, 'recenter must never leave the y=1 corridor').toBe(CORRIDOR_Y);
+
+  if ((await ownFacing(p)) !== facing) {
+    await p.keyboard.press(ARROW[facing]);
+    await expect
+      .poll(() => ownFacing(p), {
+        message: `recenter(${targetX}, ${facing}): one ${ARROW[facing]} tap must turn the row`,
+        timeout: 8_000,
+      })
+      .toBe(facing);
+    const turned = await settledTile();
+    expect(
+      turned,
+      `recenter(${targetX}, ${facing}): the turning tap must leave the character on ` +
+        `(${t.x}, ${t.y}): a press of a direction the character does not face turns it in place`,
+    ).toEqual(t);
+  }
+  expect(await ownFacing(p), `recenter(${targetX}, ${facing}) leaves the row facing it`).toBe(
+    facing,
+  );
 }
 
 async function resetKeyLog(p: Page): Promise<void> {
@@ -404,16 +456,18 @@ test.describe
       // attempt has still physically moved the character >= 1 tile, so uncorrected drift
       // across MAX_ATTEMPTS retries can walk x out of the [2, 7] corridor window and turn
       // a harness-timing exhaustion into a MISLEADING corridor-precondition error. Each
-      // attempt therefore re-centers to column 4 first (recenter ends with converged(),
-      // so it subsumes the per-attempt convergence gate). Budget: 5 attempts of
-      // recenter + settle can brush the 45s default test timeout on a loaded runner —
-      // test.slow() buys the harness room without touching any behaviour assertion.
+      // attempt therefore re-centers to column 4 FACING the tap's direction first (recenter
+      // ends with converged(), so it subsumes the per-attempt convergence gate). Every tap
+      // here is made in the faced direction, so it steps; a tap of a direction the character
+      // does not face is a turn in place, and belongs to tap-to-turn.spec.ts. Budget: 5
+      // attempts of recenter + settle can brush the 45s default test timeout on a loaded
+      // runner — test.slow() buys the harness room without touching any behaviour assertion.
       test.slow();
       for (const code of ['ArrowRight', 'ArrowLeft', 'ArrowRight'] as const) {
         const dx = code === 'ArrowRight' ? 1 : -1;
         let scoredAttempt = 0;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-          await recenter(page, 4);
+          await recenter(page, 4, dx === 1 ? 'East' : 'West');
           const t0 = await corridorEastWest(page, 2, 7);
           await resetKeyLog(page);
           await page.keyboard.down(code);
@@ -500,7 +554,7 @@ test.describe
         let overBudget = 0;
         let sameFrame = 0;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-          await recenter(page, 4);
+          await recenter(page, 4, rep.dx === 1 ? 'East' : 'West');
           const t0 = await corridorEastWest(page, 2, 7);
           await resetKeyLog(page);
           // THE FIRST KEYDOWN IS AWAITED; THE REST RUN ON ONE NODE-SIDE TIMELINE anchored at
@@ -857,7 +911,7 @@ test.describe
       // server's write cadence, and keeps every distinct state it sees.
       //
       // The path: (1,1) south down the zone-0 x=1 column to (1,5), the warp tile to zone 1.
-      await recenter(page, 1);
+      await recenter(page, 1, 'South');
       const start = await snap(page);
       expect(start.map.zone_id, 'precondition: the walk starts in zone 0').toBe(0);
       for (let y = CORRIDOR_Y; y <= 5; y += 1) {

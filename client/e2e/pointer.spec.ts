@@ -9,7 +9,15 @@ import {
 } from '@playwright/test';
 import { t, tf } from '../src/ui/i18n/resolver';
 import { navItemId, navTabId } from '../src/ui/navRender';
-import { closeAll, pressButton, readChip, readWorld, safeTile, stepTile, walkTo } from './controls';
+import {
+  closeAll,
+  faceTile,
+  pressButton,
+  readChip,
+  readWorld,
+  safeTile,
+  stepTile,
+} from './controls';
 import { ownerSql } from './stdb';
 
 // pointer.spec.ts — the operator's required flow, played with the MOUSE ONLY (ctl-15, CTL15.6).
@@ -52,8 +60,10 @@ import { ownerSql } from './stdb';
 //    "OK", ui/hintBarModel.ts case 'screen'), which presses A and feeds it: still mouse only, and
 //    still "Fed ...", the picker closes. The refusal itself is not pinned here.
 //  - THE SETUP WALK (menu-flow.spec.ts's): the final W must walk, and the spawn's north is a wall,
-//    so the character first walks a grass-free, warp-free path to (6,2) (via `__game().step`, not
-//    the keyboard or the mouse), before the first click.
+//    so the character first walks a grass-free, warp-free path to (6,3) and steps North onto
+//    (6,2) (controls.ts `faceTile`, via `__game().step`, not the keyboard or the mouse), before
+//    the first click. It stands on the post FACING North, so the final W, a press of the faced
+//    direction, steps.
 //  - A CLICK ON AN ALREADY-ACTIVE ROW. Playwright moves the mouse onto an element before it clicks,
 //    so the hover (CTL15.4) may already have moved the cursor to that row; the click then proves
 //    the row driven (probe and undo) before A. The assertions are on outcomes, never on the presses.
@@ -221,9 +231,14 @@ test.describe
         safeTile(world.map, stepTile(POST, 'North')),
         'and so is the tile north of it, which the final W must walk onto',
       ).toBe(true);
-      expect(await walkTo(page, POST, 'pointer setup walk'), 'the setup walk meets no battle').toBe(
-        'arrived',
-      );
+      expect(
+        safeTile(world.map, stepTile(POST, 'South')),
+        'and so is its approach south of it, from which the walk arrives facing North',
+      ).toBe(true);
+      expect(
+        await faceTile(page, POST, 'North', 'pointer setup walk'),
+        'the setup walk meets no battle',
+      ).toBe('arrived');
       expect((await snap(page)).ownAuthTile, 'the character stands on the post').toEqual(POST);
       expect(await stackNames(page), 'the setup walk opened nothing').toEqual(['world']);
 

@@ -6,7 +6,8 @@
  * Replaces the source-scan pins in the deleted main.wiring.test.ts
  * (ledger CT-src-main.wiring#netcode-seams). What it drives:
  *   - boot: connect() receives the real store and the status line surfaces onError;
- *   - keydown sends one enqueueMove, and a second key for a held direction does not (14r-e);
+ *   - keydown sends one enqueueMove (a Face; the rows face East, so an ArrowRight press steps),
+ *     and a second key for a held direction does not (14r-e);
  *   - both continuation emitters (frame loop and reconcile divergence) respect the
  *     hold-commit threshold (mvi) and the outstanding-steps gate (nh2);
  *   - the post-warp seq floor, and same-epoch rejection repair (nh3);
@@ -211,7 +212,8 @@ async function bootReady(): Promise<void> {
 
 const EID = 7n;
 /** Deliver one authoritative batch: own player + character row at clock `t`. `ack` is the
- *  character row's `ackedSeq`. */
+ *  character row's `ackedSeq`; the row faces `facing` (East when omitted, so an ArrowRight press,
+ *  a Face of East, steps exactly as a Step does). */
 function server(
   t: number,
   s: {
@@ -220,6 +222,7 @@ function server(
     ack: number;
     zone?: number;
     queue?: WasmMoveInput[];
+    facing?: 'North' | 'South' | 'East' | 'West';
   },
 ): void {
   clock.t = t;
@@ -235,7 +238,7 @@ function server(
       zoneId: s.zone ?? 0,
       tileX: s.x,
       tileY: s.y,
-      facing: 'East',
+      facing: s.facing ?? 'East',
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: s.queue ?? [],
@@ -251,8 +254,13 @@ function key(code: string, t: number, type: 'keydown' | 'keyup' = 'keydown'): vo
   window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
 }
 
-const step = (s: Sent): string | undefined =>
-  s.input.tag === 'Step' ? s.input.value?.tag : s.input.tag;
+/** One send as text: a Step reads as its direction ('East'), a Jump as 'Jump', and a Face as
+ *  'Face:' + its direction ('Face:East'), so a list tells the three inputs apart. */
+const step = (s: Sent): string | undefined => {
+  if (s.input.tag === 'Step') return s.input.value?.tag;
+  if (s.input.tag === 'Face') return `Face:${s.input.value?.tag}`;
+  return s.input.tag;
+};
 const lastPredicted = () => H.predicted[H.predicted.length - 1];
 const flushMicrotasks = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -320,9 +328,11 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
 
   it('BOOT-MOVE: a movement keydown sends ONE enqueueMove and the predictor walks the tile', async () => {
     await bootReady();
-    server(1000, { x: 2, y: 2, ack: 0 });
+    server(1000, { x: 2, y: 2, ack: 0, facing: 'East' });
     key('ArrowRight', 1000);
-    expect(H.sends.map(step)).toEqual(['East']);
+    // np-c2 (named intentional change): the press sends a Face of East; the row faces East, so
+    // the predictor still walks the tile below. Was: ['East'].
+    expect(H.sends.map(step)).toEqual(['Face:East']);
     expect(H.sends[0].seq).toBe(1n);
     frame(1010);
     expect(lastPredicted()).toEqual({ x: 3, y: 2 });
@@ -349,7 +359,9 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     frame(1149);
     expect(H.sends, 'held < 150 ms is still a tap: no continuation').toHaveLength(1);
     frame(1150);
-    expect(H.sends.map(step)).toEqual(['East', 'East']);
+    // np-c2 (named intentional change): the press's Face of East (the row faces East, so it
+    // stepped), then the continuation's Step. Was: ['East', 'East'].
+    expect(H.sends.map(step)).toEqual(['Face:East', 'East']);
     expect(H.sends[1].seq).toBe(2n);
   });
 
@@ -362,7 +374,9 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     expect(H.sends).toHaveLength(1);
     server(1450, { x: 3, y: 2, ack: 1 });
     frame(1460);
-    expect(H.sends.map(step)).toEqual(['East', 'East']);
+    // np-c2 (named intentional change): the press's Face of East (the row faces East, so it
+    // stepped), then the continuation's Step. Was: ['East', 'East'].
+    expect(H.sends.map(step)).toEqual(['Face:East', 'East']);
   });
 
   it('MVI-RECONCILE: a divergence re-issue waits for the hold-commit threshold too', async () => {
@@ -382,7 +396,9 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     server(1200, { x: 2, y: 2, ack: 1, queue: [{ Step: 'North' }] }); // diverged, 1 step owed
     expect(H.sends, 'outstanding authoritative step must block the re-issue').toHaveLength(1);
     server(1210, { x: 2, y: 2, ack: 1 }); // queue drained server-side: now diverged + free
-    expect(H.sends.map(step)).toEqual(['East', 'East']);
+    // np-c2 (named intentional change): the press's Face of East (the row faces East, so the
+    // predictor stepped it to (3, 2)), then the divergence re-issue's Step. Was: ['East', 'East'].
+    expect(H.sends.map(step)).toEqual(['Face:East', 'East']);
   });
 
   it('NH3-SAME-EPOCH: a rejected move is dropped and the prediction snaps back to the server, silently', async () => {
@@ -407,7 +423,10 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     server(1000, { x: 2, y: 2, ack: 0 });
     key('ArrowRight', 1000);
     key('ArrowRight', 1001, 'keyup');
-    server(1100, { zone: 1, x: 5, y: 5, ack: 0 }); // warp while seq 1 is still in flight
+    // np-c2 (named intentional change): the warp row faces North, so the post-warp ArrowUp press (a
+    // Face of North) steps to (5, 4) exactly as a Step did; the subject is the seq floor, not the
+    // turn. Was: the warp row faced East (the default).
+    server(1100, { zone: 1, x: 5, y: 5, ack: 0, facing: 'North' }); // warp while seq 1 in flight
     key('ArrowUp', 1110);
     expect(H.sends.map((s) => s.seq)).toEqual([1n, 2n]);
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -427,7 +446,9 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     server(1100, { x: 3, y: 2, ack: 1 });
     server(1300, { zone: 1, x: 5, y: 5, ack: 1 }); // warp; no frame ran since the press
     frame(1310);
-    expect(H.sends.map(step)).toEqual(['East', 'East']);
+    // np-c2 (named intentional change): the press's Face of East (the row faces East, so it
+    // stepped), then the continuation's Step across the warp. Was: ['East', 'East'].
+    expect(H.sends.map(step)).toEqual(['Face:East', 'East']);
   });
 
   it('OWED-FRAME: an input in flight across a warp keeps the frame-loop continuation shut until the row acks it', async () => {
@@ -447,7 +468,9 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     expect(H.sends, 'acked, and now the server queue holds the step').toHaveLength(1);
     server(1700, { zone: 1, x: 6, y: 5, ack: 1 });
     frame(1710);
-    expect(H.sends.map(step)).toEqual(['East', 'East']);
+    // np-c2 (named intentional change): the press's Face of East, then the continuation's Step.
+    // Was: ['East', 'East'].
+    expect(H.sends.map(step)).toEqual(['Face:East', 'East']);
     expect(H.sends[1].seq, 'the continuation is issued above the in-flight seq').toBe(2n);
   });
 
@@ -462,10 +485,12 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     H.sends[0].reject(new Error('rejected')); // addressed to the pre-warp predictor
     await flushMicrotasks();
     frame(1320);
+    // np-c2 (named intentional change): the press's Face of East, then the continuation's Step.
+    // Was: ['East', 'East'].
     expect(
       H.sends.map(step),
       'nothing is owed once the call has rejected, so the held key continues',
-    ).toEqual(['East', 'East']);
+    ).toEqual(['Face:East', 'East']);
   });
 
   it('OWED-RECONCILE: the divergence re-issue stays shut while an input is owed', async () => {
@@ -479,10 +504,12 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     server(1320, { zone: 1, x: 7, y: 5, ack: 0 });
     expect(H.sends, 'diverged with an input still owed: no re-issue').toHaveLength(1);
     server(1330, { zone: 1, x: 9, y: 5, ack: 1 });
+    // np-c2 (named intentional change): the press's Face of East, then the divergence re-issue's
+    // Step. Was: ['East', 'East'].
     expect(
       H.sends.map(step),
       'the same divergence with the input acked re-issues from the reconcile, no frame needed',
-    ).toEqual(['East', 'East']);
+    ).toEqual(['Face:East', 'East']);
   });
 
   it('NH5-RECONNECT: a reconnect rebuild clears the hold (only the warp path preserves it)', async () => {
@@ -512,10 +539,12 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     frame(1459);
     expect(H.sends, 'held < 150 ms is still a tap: no continuation').toHaveLength(2);
     frame(1460);
+    // np-c2 (named intentional change): the two presses' Faces of East (the rows face East), then
+    // the continuation's Step. Was: ['East', 'East', 'East'].
     expect(
       H.sends.map(step),
       'seq 1 was sent on the dropped socket; it must not keep the held key from continuing',
-    ).toEqual(['East', 'East', 'East']);
+    ).toEqual(['Face:East', 'Face:East', 'East']);
     expect(H.sends[2].seq).toBe(3n);
   });
 });

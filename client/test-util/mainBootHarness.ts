@@ -85,8 +85,11 @@ export type InteractStub = (...args: unknown[]) => unknown;
 export type CareRemainingStub = (lastCareAtMs: bigint, nowMs: bigint) => bigint;
 
 /**
- * wasm pkg factory: every name main.ts imports. apply_move is a real one-tile step on an open
- * 8x8 grid. `interact` (when given) becomes the `interact_candidates_coded` export; when absent
+ * wasm pkg factory: every name main.ts imports. apply_move is game-core's movement rule on an
+ * open 8x8 grid: `Step(d)` turns to `d` and moves one tile; `Face(d)` for a character not facing
+ * `d` turns it in place (same tile, `facing` = d, Idle, stamped); `Face(d)` for a character
+ * already facing `d` is exactly `Step(d)` (one shared step path, so the two cannot drift); `Jump`
+ * stamps a jump. `interact` (when given) becomes the `interact_candidates_coded` export; when absent
  * the key is absent, exactly as in the files that predate the ctl-10a interact export.
  * qf-3: `careRemaining` (when given) becomes the `care_remaining_ms` export, so a boot test can
  * observe the arguments the Monsters sheet passes it; absent, the export answers 0n (ready).
@@ -108,16 +111,22 @@ export function wasmPkgWalkingMock(
   };
   return {
     apply_move: (
-      state: { pos: { x: number; y: number } },
-      input: 'Jump' | { Step: string },
+      state: { pos: { x: number; y: number }; facing: string },
+      input: 'Jump' | { Step: string } | { Face: string },
       now: number,
     ) => {
       const stamp = Math.floor(now);
       if (input === 'Jump') return { ...state, action: 'Jumping', move_started_at: stamp };
-      const [dx, dy] = DELTA[input.Step];
+      // A Face of a direction the character does not face is a turn in place.
+      if ('Face' in input && state.facing !== input.Face) {
+        return { ...state, facing: input.Face, action: 'Idle', move_started_at: stamp };
+      }
+      // Step(d), and Face(d) while already facing d: the one step path.
+      const dir = 'Face' in input ? input.Face : input.Step;
+      const [dx, dy] = DELTA[dir];
       return {
         ...state,
-        facing: input.Step,
+        facing: dir,
         action: 'Walking',
         pos: { x: state.pos.x + dx, y: state.pos.y + dy },
         move_started_at: stamp,
