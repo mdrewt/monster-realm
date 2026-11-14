@@ -6802,8 +6802,13 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     ]);
     const W1 = deadline + 10_000;
     const activeDeadline = W1 + 45_000;
+    // ts-6b-7 (named intentional change): the window's `windowOpenMs` arrives on a KNOWN clock id
+    // (null -> value), which the server-time estimate now reads as a newly opened window at the
+    // receipt instant, so the fixture is physically consistent: the window opens at the wall clock of
+    // the batch (`deadline`, where the last tick left the spied Date.now), not 75 s before it. Every
+    // assertion below (the 45 s, the deadline-not-open rule) stands unchanged.
     opts.store.reconcileBattleClocksFromView([
-      bt12bClock(B, BigInt(activeDeadline), BigInt(activeDeadline - 120_000)),
+      bt12bClock(B, BigInt(activeDeadline), BigInt(deadline)),
     ]);
     t += 50;
     server(t);
@@ -6834,8 +6839,10 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
         tiePrioritySide: 'A',
       }),
     ]);
+    // ts-6b-7 (named intentional change): the same window row as above (opened at `deadline`), so a
+    // reconnect re-delivers it as a FIRST sighting of a known-open window and observes nothing.
     opts.store.reconcileBattleClocksFromView([
-      bt12bClock(B, BigInt(activeDeadline), BigInt(activeDeadline - 120_000)),
+      bt12bClock(B, BigInt(activeDeadline), BigInt(deadline)),
     ]);
     t += 50;
     server(t);
@@ -7668,6 +7675,11 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
     expect(ringsNow(), '4 s left: red').toEqual(['52:red:13']);
 
     // The turn moves to my unit 43 (turnIdx 2): A's window opens, B's closes.
+    // ts-6b-7 (named intentional change): A's clock row goes null -> W0 + 40_000 on a KNOWN clock id,
+    // which the server-time estimate reads as a window opened at the receipt instant; the batch now
+    // arrives at the wall clock W0 + 40_000 (was: still at the last tick, W0 + 38_000), so the
+    // fixture is physically consistent and the ring assertions below stand unchanged.
+    wall.t = W0 + 40_000;
     opts.store.reconcileTacticalBattlesFromView([bt15bRow(B, 43, 2)]);
     opts.store.reconcileBattleClocksFromView([
       bt15bClock(B, 'A', W0 + 40_000, W0 + 70_000, 1),
@@ -9254,6 +9266,398 @@ describe('main.ts session locks and __mrTrade (runtime, ts-4)', { sequential: tr
       expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
     } finally {
       H.identity = OLD_IDENTITY;
+    }
+  });
+});
+
+// --- ts-6b-7: the server-time estimate and the results drain (ts-6b-7.2, ts-6b-7.3) -------------------
+//
+// Fixtures: a WILD battle (own unit 61 on side A, the wild 62 on side B, 61 waiting) whose transcript
+// the tests write row by row; the bt-12 B / bt-15 B helpers build every store row. The shell is the REAL
+// class here. Playback caps (presentation.ts CAPS): Executed 400 ms (a Ko joins its beat), BattleEnd
+// 3000 ms, so the Finished batch below plays 3400 ms from its receipt; the device frame clock is
+// `clock.t` (performance.now), the wall clock `Date.now` is spied where a test needs it.
+
+/** A transcript row with an arbitrary payload (the three payloads below are not in the bt-12 helpers). */
+function ts7Event(battleId: bigint, seq: number, payload: unknown): StoreBattleEvent {
+  return {
+    eventId: battleId * 100n + BigInt(seq),
+    battleId,
+    seq,
+    round: 1,
+    payload,
+  } as unknown as StoreBattleEvent;
+}
+const ts7Executed = (battleId: bigint, seq: number): StoreBattleEvent =>
+  ts7Event(battleId, seq, {
+    tag: 'Executed',
+    value: {
+      attacker: 61,
+      skillId: 7,
+      results: [
+        {
+          unit: 62,
+          hit: true,
+          damage: 12,
+          effectiveness: undefined,
+          flank: false,
+          guard: false,
+          ko: true,
+        },
+      ],
+    },
+  });
+const ts7Ko = (battleId: bigint, seq: number): StoreBattleEvent =>
+  ts7Event(battleId, seq, { tag: 'Ko', value: { unit: 62 } });
+
+/** The wild battle's row: unit 61 waiting (Active) or the battle Finished. */
+const ts7Row = (battleId: bigint, phase: 'Active' | 'Finished'): StoreTacticalBattle =>
+  bt12bTactical(battleId, 'Wild', {
+    initiative: [62, 61],
+    turnIdx: 1,
+    turnState: phase === 'Finished' ? { kind: 'NotActive' } : { kind: 'Waiting', unitId: 61 },
+    tiePrioritySide: 'A',
+    phase,
+  });
+
+/** An Active wild battle (monster `P` on side A) whose transcript so far is `history`. */
+function ts7SeedWild(battleId: bigint, P: bigint, history: readonly StoreBattleEvent[]): void {
+  opts.store.upsertMonster(bt12Monster(P, 0));
+  opts.store.upsertBattle(bt12bAnchor(battleId, 'Ongoing', [P]));
+  opts.store.reconcileBattleUnitsFromView([
+    bt12bUnit(battleId, 61, {
+      owner: H.identity,
+      monsterId: P,
+      side: 'A',
+      slot: 0,
+      x: 1,
+      y: 1,
+    }),
+    bt12bUnit(battleId, 62, {
+      owner: null,
+      monsterId: null,
+      side: 'B',
+      slot: 0,
+      x: 5,
+      y: 4,
+      wild: 0,
+    }),
+  ]);
+  opts.store.reconcileTacticalBattlesFromView([ts7Row(battleId, 'Active')]);
+  opts.store.reconcileBattleEventsFromView([...history]);
+}
+
+/** The ONE batch that turns the battle Finished (won by side A) and carries the whole transcript. */
+function ts7Finish(
+  battleId: bigint,
+  P: bigint,
+  transcript: readonly StoreBattleEvent[],
+  t: number,
+): void {
+  opts.store.upsertBattle(bt12bAnchor(battleId, 'SideAWins', [P]));
+  opts.store.reconcileTacticalBattlesFromView([ts7Row(battleId, 'Finished')]);
+  opts.store.reconcileBattleEventsFromView([...transcript]);
+  server(t);
+}
+
+/** The battle's rows leave the store (a clean slate for the next case). */
+function ts7Clear(battleId: bigint, t: number): void {
+  opts.store.removeBattle(battleId);
+  opts.store.reconcileTacticalBattlesFromView([]);
+  opts.store.reconcileBattleUnitsFromView([]);
+  opts.store.reconcileBattleEventsFromView([]);
+  opts.store.reconcileBattleClocksFromView([]);
+  server(t);
+}
+
+const ts7Playing = (): boolean =>
+  bt12bShell()?.classList.contains('tactics-battle--playing') === true;
+
+describe('ts-6b-7: the server-time estimate and the results drain', { sequential: true }, () => {
+  const saved = { nextInit: T12.nextInit };
+  afterEach(() => {
+    T12.nextInit = saved.nextInit;
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('the Still-there countdown and the PvP clock ring both read the server-time estimate, not the raw device clock', async () => {
+    // WRONG IMPL KILLED: pumpStillThere / pumpClock still handed the raw Date.now() (the device is
+    // 60 s behind: the wild countdown never shows, the ring reads a window that has not opened); the
+    // estimate fed to only ONE of the two pumps; no observation at all (an estimate that stays the
+    // device clock); observing the FIRST sighting's row (a stale windowOpenMs: the countdown would
+    // start 200 s off); the observation taken at the wrong batch instant; a PvP phase that keeps the
+    // wild phase's 60 s skew instead of the latest window's (the device clock is stepped to 30 s
+    // behind between the two phases, and the next window must win).
+    await bootReady();
+    server(1000);
+    const wall = { t: 1_750_000_000_000 };
+    vi.spyOn(Date, 'now').mockImplementation(() => wall.t);
+    let t = 1000;
+    const tick = (wallMs: number): void => {
+      wall.t = wallMs;
+      t += 50;
+      frame(t);
+    };
+    const batch = (): void => {
+      t += 50;
+      server(t);
+    };
+    const S0 = wall.t; // the server's "now" at the wild window's open
+    const line = (s: number): string => i18n.tf('tactics.clock.stillThere', { s });
+    const shownIn = (root: Element | null): string[] =>
+      bt12bCountdowns().map((n) =>
+        root !== null && root.contains(n) ? (n.textContent ?? '') : 'OUTSIDE',
+      );
+
+    // --- a WILD battle, the device clock 60 s BEHIND the server ---------------------------------
+    const behind = (serverMs: number): number => serverMs - 60_000;
+    const P = 2n ** 60n + 441n;
+    const W = 2n ** 60n + 443n;
+    const deadline = BigInt(S0 + 50_000);
+    ts7SeedWild(W, P, []);
+    // First sighting of the clock row: a window that opened long ago (stale value, never observed).
+    opts.store.reconcileBattleClocksFromView([bt12bClock(W, deadline, BigInt(S0 - 200_000))]);
+    wall.t = behind(S0 - 5_000);
+    batch();
+    const shell = bt12bShell();
+    expect(shell !== null && bt12Displayed(shell), 'fixture: the shell is shown').toBe(true);
+    tick(behind(S0 - 5_000));
+    expect(bt12bCountdowns(), 'before the live window: 55 s out by the server, none shown').toEqual(
+      [],
+    );
+    // The live transition: the same clock id, a new window opened at the server's "now".
+    opts.store.reconcileBattleClocksFromView([bt12bClock(W, deadline, BigInt(S0))]);
+    wall.t = behind(S0);
+    batch();
+    tick(behind(S0));
+    expect(
+      shownIn(shell),
+      'the device says 110 s are left; the server estimate says 50: the countdown shows 50',
+    ).toEqual([line(50)]);
+    tick(behind(S0 + 10_000));
+    expect(shownIn(shell), 'it ticks down with the device clock').toEqual([line(40)]);
+    tick(behind(S0 + 49_500));
+    expect(shownIn(shell), 'the last half second: 1').toEqual([line(1)]);
+    tick(behind(S0 + 50_000));
+    expect(bt12bCountdowns(), 'gone at the SERVER deadline').toEqual([]);
+    ts7Clear(W, (t += 50));
+
+    // --- a PvP battle, the device clock stepped to 30 s behind ----------------------------------
+    const stepped = (serverMs: number): number => serverMs - 30_000;
+    const S1 = S0 + 1_000_000;
+    T12.nextInit = () => [52, 41, 54, 43];
+    opts.store.upsertPlayer({
+      identity: OTHER_IDENTITY,
+      entityId: 99n,
+      name: BT15B_RIVAL_NAME,
+      online: true,
+    });
+    const V = 2n ** 60n + 451n;
+    const [V1, V2] = [V + 2n, V + 4n];
+    opts.store.upsertMonster(bt12Monster(V1, 0));
+    opts.store.upsertMonster(bt12Monster(V2, 1));
+    opts.store.upsertBattle(bt12bAnchor(V, 'Ongoing', [V1, V2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileBattleUnitsFromView(bt15bUnits(V, V1, V2));
+    opts.store.reconcileTacticalBattlesFromView([bt15bRow(V, 52, 1)]);
+    opts.store.reconcileBattleClocksFromView([
+      bt15bClock(V, 'A', null, null, 1),
+      bt15bClock(V, 'B', S1 - 100_000, S1 + 30_000, 3),
+    ]);
+    wall.t = stepped(S1 - 1_000);
+    batch();
+    const pvpShell = bt12bShell();
+    expect(pvpShell !== null && bt12Displayed(pvpShell), 'fixture: the PvP shell is shown').toBe(
+      true,
+    );
+    // B's next window opens at the server's "now".
+    opts.store.reconcileBattleClocksFromView([
+      bt15bClock(V, 'A', null, null, 1),
+      bt15bClock(V, 'B', S1, S1 + 30_000, 3),
+    ]);
+    wall.t = stepped(S1);
+    batch();
+    tick(stepped(S1 + 12_000));
+    const rings = [...document.querySelectorAll<HTMLElement>('.tactics-clock-ring')].map((r) => {
+      const id = r.parentElement?.getAttribute('data-unit-id') ?? '?';
+      return `${id}:${r.getAttribute('data-band')}:${r.getAttribute('data-fraction')}`;
+    });
+    expect(
+      rings,
+      '18 s of 30 left by the server estimate: one ring on unit 52, ok, 60 (the raw clock reads a window not yet open)',
+    ).toEqual(['52:ok:60']);
+  });
+
+  it('a Finished batch waits for the shell playback to drain before the results panel takes the frame', async () => {
+    // WRONG IMPL KILLED: the results panel shown at the Finished batch over the playing beats (the
+    // KO / finish never plays); the Finished batch's new events never fed to the shell (no KO line in
+    // the ticker, nothing to wait for); a wait that never ends (no frame-pump re-run) or ends at the
+    // first frame (the beats' 3400 ms cut); the shell hidden while it still plays; two modal roots;
+    // the results' 3000 ms countdown counted from the Finished batch instead of from the show (the
+    // panel would pop at once); the wait applied when nothing plays (the control batch).
+    await bootReady();
+    server(1000);
+    let t = 1000;
+    const at = (ms = 100): number => {
+      t += ms;
+      return t;
+    };
+    const P = 2n ** 60n + 461n;
+    const KO = i18n.tf('tactics.ticker.ko', { unit: '#62' });
+    const WON = i18n.t('tactics.ticker.won');
+    const SHELL_AND_OUTCOME = ['world', 'battleView'];
+    const lone = (what: string, root: Element | null): void => {
+      const modal = bt12ModalRoots();
+      expect(modal.length, `${what}: exactly one displayed aria-modal root`).toBe(1);
+      expect(modal[0] === root, `${what}: and it is the owner's`).toBe(true);
+    };
+
+    // (1) an Active battle shown and fed, then ONE batch: the Finished row, the terminal anchor and
+    // three new events (Executed 400 ms, Ko joining it, BattleEnd 3000 ms).
+    const B1 = 2n ** 60n + 463n;
+    ts7SeedWild(B1, P, [bt12bEvent(B1, 0)]);
+    server(at());
+    const shell = bt12bShell();
+    expect(shell !== null && bt12Displayed(shell), 'fixture: the shell is shown').toBe(true);
+    expect(bt12bTicker(), 'fixture: the history is in the ticker').toEqual(bt12bRoundLines([1]));
+    expect(ts7Playing(), 'fixture: nothing plays').toBe(false);
+    const Tb = at();
+    ts7Finish(
+      B1,
+      P,
+      [
+        bt12bEvent(B1, 0),
+        ts7Executed(B1, 1),
+        ts7Ko(B1, 2),
+        bt15bEnd(B1, 3, 'SideAWins', 'SideEmpty'),
+      ],
+      Tb,
+    );
+    expect(bt12Frames(), 'the outcome frame is on the stack').toEqual(SHELL_AND_OUTCOME);
+    expect(bt12Shown('tactics-results'), 'the results panel is NOT shown yet').toBe(false);
+    expect(shell !== null && bt12Displayed(shell), 'the shell is still the displayed owner').toBe(
+      true,
+    );
+    lone('right after the Finished batch', shell);
+    expect(ts7Playing(), 'the beats are playing').toBe(true);
+    const ticker = bt12bTicker();
+    expect(ticker.length, 'history + Executed + Ko + BattleEnd lines').toBe(4);
+    expect(ticker.slice(-2), 'the KO line and the finish line are in the ticker').toEqual([
+      KO,
+      WON,
+    ]);
+
+    frame(Tb + 400);
+    expect(bt12Shown('tactics-results'), 'after the Executed beat: still waiting').toBe(false);
+    frame(Tb + 3_399);
+    expect(bt12Shown('tactics-results'), 'one ms before the beats end: still waiting').toBe(false);
+    expect(shell !== null && bt12Displayed(shell), 'and the shell still owns the frame').toBe(true);
+    lone('before the beats end', shell);
+    const S = Tb + 3_500;
+    frame(S);
+    expect(bt12Shown('tactics-results'), 'a frame past the beats: the results panel').toBe(true);
+    expect(shell !== null && bt12Displayed(shell), 'the shell is hidden').toBe(false);
+    lone('the results', bt12Root('tactics-results'));
+    expect(bt12Frames(), 'the outcome frame still holds the stack').toEqual(SHELL_AND_OUTCOME);
+    // The results' own countdown runs from THEIR show (S), not from the Finished batch (Tb).
+    frame(S + CAPS.resultsMs - 1);
+    await flush();
+    expect(bt12Frames(), 'one ms before the results cap from the show: still up').toEqual(
+      SHELL_AND_OUTCOME,
+    );
+    frame(S + CAPS.resultsMs);
+    await flush();
+    expect(bt12Frames(), 'at the cap from the show: continued').toEqual(['world']);
+    t = S + CAPS.resultsMs + 10;
+    ts7Clear(B1, at());
+
+    // (2) CONTROL: a Finished batch with nothing playing shows the results at once.
+    const B2 = 2n ** 60n + 465n;
+    ts7SeedWild(B2, P, [bt12bEvent(B2, 0)]);
+    server(at());
+    const shell2 = bt12bShell();
+    expect(shell2 !== null && bt12Displayed(shell2), 'control: the shell is shown').toBe(true);
+    ts7Finish(B2, P, [bt12bEvent(B2, 0)], at());
+    expect(
+      bt12Shown('tactics-results'),
+      'control: nothing plays, so the results show at once',
+    ).toBe(true);
+    expect(shell2 !== null && bt12Displayed(shell2), 'control: the shell is hidden').toBe(false);
+    lone('control', bt12Root('tactics-results'));
+  });
+
+  it('B, A and Start pressed while a Finished batch waits for the playback skip it and are consumed: the next frame shows the results and an A inside the grace does not continue them', async () => {
+    // WRONG IMPL KILLED: B / A / Start popping or continuing the outcome during the wait (the battle
+    // is dismissed with the KO and the finish unplayed); the key passing through to the shell after
+    // the skip (A opening the unit's menu, Start sending End Turn); the key not consumed; the skip
+    // not draining the playback (the next frame still waits); the A-grace anchored to the Finished
+    // batch (the grace long gone when the results show, so a mashed A continues them at once).
+    await bootReady();
+    server(1000);
+    let t = 1000;
+    const at = (ms = 100): number => {
+      t += ms;
+      return t;
+    };
+    const P = 2n ** 60n + 471n;
+    const OUTCOME_ON_TOP = ['world', 'battleView'];
+    let n = 0;
+    for (const key of ['Backspace', 'Enter', 'KeyM']) {
+      const B = 2n ** 60n + 473n + BigInt(n) * 2n;
+      n += 1;
+      ts7SeedWild(B, P, [bt12bEvent(B, 0)]);
+      server(at());
+      H.calls = [];
+      const Tb = at();
+      ts7Finish(
+        B,
+        P,
+        [
+          bt12bEvent(B, 0),
+          ts7Executed(B, 1),
+          ts7Ko(B, 2),
+          bt15bEnd(B, 3, 'SideAWins', 'SideEmpty'),
+        ],
+        Tb,
+      );
+      const shell = bt12bShell();
+      expect(ts7Playing(), `${key}: fixture: the beats are playing`).toBe(true);
+      expect(bt12Shown('tactics-results'), `${key}: fixture: waiting`).toBe(false);
+
+      const down = press(key, Tb + 100);
+      await flush();
+      expect(down.defaultPrevented, `${key}: consumed`).toBe(true);
+      expect(bt12Frames(), `${key}: the outcome was not popped or continued`).toEqual(
+        OUTCOME_ON_TOP,
+      );
+      expect(ts7Playing(), `${key}: the playback was skipped`).toBe(false);
+      expect(shell?.querySelector('.tactics-menu'), `${key}: nothing reached the shell`).toBeNull();
+      expect(bt12bSubmits(), `${key}: no End Turn went out`).toEqual([]);
+
+      const S = Tb + 200;
+      frame(S);
+      expect(bt12Shown('tactics-results'), `${key}: the next frame shows the results`).toBe(true);
+      expect(shell !== null && bt12Displayed(shell), `${key}: and the shell is hidden`).toBe(false);
+      expect(bt12ModalRoots().length, `${key}: one modal root`).toBe(1);
+
+      press('Enter', S + OUTCOME_CONTINUE_GRACE_MS - 1);
+      await flush();
+      expect(bt12Frames(), `${key}: an A inside the grace of the SHOW is swallowed`).toEqual(
+        OUTCOME_ON_TOP,
+      );
+      press('Enter', S + OUTCOME_CONTINUE_GRACE_MS + 1);
+      await flush();
+      expect(bt12Frames(), `${key}: an A after the grace continues the results`).toEqual(['world']);
+      t = S + OUTCOME_CONTINUE_GRACE_MS + 50;
+      ts7Clear(B, at());
     }
   });
 });

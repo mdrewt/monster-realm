@@ -107,6 +107,7 @@ import { setLocale } from '../ui/i18n/resolver';
 import type { BattleOp } from '../ui/screens/battleScreen';
 import type { Side, TacticalUnit } from './boardModel';
 import type { ClockVM } from './clock';
+import { announceTurn } from './strings';
 import {
   type BaitOption,
   TacticsBattle,
@@ -605,19 +606,27 @@ interface DepsOpts {
   readonly failSubmit?: { on: boolean };
   /** bt-15 increment B: the battle ids `onForfeit` was called with, oldest first. */
   readonly forfeits?: bigint[];
+  /** ts-6b-7: every utterance `deps.announce` was handed, oldest first. */
+  readonly announced?: string[];
 }
 
 /** The shell's deps: the fake rules (lazily handed out, as main.ts will), recording submit / cancel
  *  sinks (a submit records first, then throws while `failSubmit.on`). bt-15 increment B (named
  *  intentional change, BT15.3): `onForfeit` is a REQUIRED dep of the freeze, so every shell gets a
- *  recorder pushing the battle id into `forfeits`. */
+ *  recorder pushing the battle id into `forfeits`. ts-6b-7 (named intentional change of the deps
+ *  freeze, ts-6b-7.1): `announce` is a REQUIRED dep too, so every shell gets a recorder pushing each
+ *  utterance into `announced`. */
 function depsOf(o: DepsOpts = {}): TacticsBattleDeps {
   const fake = o.fake ?? fakeRules();
   const sent = o.sent ?? [];
   const cancels = o.cancels ?? [];
   const fail = o.failSubmit ?? { on: false };
   const forfeits = o.forfeits ?? [];
+  const announced = o.announced ?? [];
   return {
+    announce: (text) => {
+      announced.push(text);
+    },
     now: o.now ?? (() => 0),
     reduceMotion: o.reduceMotion ?? (() => false),
     names: o.names ?? makeNames(),
@@ -647,6 +656,8 @@ interface Kit {
   readonly failSubmit: { on: boolean };
   /** bt-15 increment B: every `onForfeit(battleId)` the shell made. */
   readonly forfeits: bigint[];
+  /** ts-6b-7: every utterance the shell announced, oldest first. */
+  readonly announced: string[];
 }
 
 /** A constructed, shown shell on a fresh parent. */
@@ -659,6 +670,7 @@ function make(reduce = false, mySide: Side = 'A', fake: Fake = fakeRules()): Kit
   const cancels: Cancel[] = [];
   const failSubmit = { on: false };
   const forfeits: bigint[] = [];
+  const announced: string[] = [];
   const shell = new TacticsBattle(
     parent,
     depsOf({
@@ -670,12 +682,25 @@ function make(reduce = false, mySide: Side = 'A', fake: Fake = fakeRules()): Kit
       cancels,
       failSubmit,
       forfeits,
+      announced,
     }),
   );
   shell.show();
   const root = parent.querySelector<HTMLElement>('.tactics-battle');
   if (root === null) throw new Error('the shell painted no .tactics-battle root');
-  return { parent, shell, root, clock, motion, fake, sent, cancels, failSubmit, forfeits };
+  return {
+    parent,
+    shell,
+    root,
+    clock,
+    motion,
+    fake,
+    sent,
+    cancels,
+    failSubmit,
+    forfeits,
+    announced,
+  };
 }
 
 function q<E extends Element = HTMLElement>(root: ParentNode, selector: string): E {
@@ -4897,5 +4922,223 @@ describe('TacticsBattle: the HUD AP pips', () => {
       'spent',
       'spent',
     ]);
+  });
+});
+
+// =============================================================================================
+// ts-6b-7 — the shell speaks the own turn, a KO and the finish through deps.announce (ts-6b-7.1)
+// =============================================================================================
+
+const EM_DASH_ANNOUNCE = String.fromCharCode(0x2014);
+/** The own-turn utterance: the round chip text, an em dash, the banner text (catalog-built). */
+const turnLine = (round: number, name: string): string =>
+  `${en('tactics.turnbar.round', { round })} ${EM_DASH_ANNOUNCE} ${en('tactics.banner.turn', { unit: name })}`;
+const koEvent = (unitId: number): EventPayload => ({ tag: 'Ko', value: { unit: unitId } });
+const battleEndEvent = (): EventPayload =>
+  ({
+    tag: 'BattleEnd',
+    value: { outcome: { tag: 'SideAWins' }, how: { tag: 'SideEmpty' } },
+  }) as unknown as EventPayload;
+const damageEvent = (): EventPayload => ({
+  tag: 'Executed',
+  value: {
+    attacker: 1,
+    skillId: 7,
+    results: [
+      {
+        unit: 3,
+        hit: true,
+        damage: 12,
+        effectiveness: undefined,
+        flank: false,
+        guard: false,
+        ko: false,
+      },
+    ],
+  },
+});
+const haltedEvent = (unitId: number): EventPayload =>
+  ({
+    tag: 'PlanHalted',
+    value: { unit: unitId, idx: 0, reasonKind: { tag: 'TargetGone' } },
+  }) as unknown as EventPayload;
+const koLine = (name: string): string => en('tactics.ticker.ko', { unit: name });
+
+describe('ts-6b-7: the tactical shell announces through deps.announce', () => {
+  it('announces own turn start, a KO and the finish through the announce dep but not damage lines or replayed history', () => {
+    // WRONG IMPL KILLED: no announce call at all; speaking at render/ingest time instead of at tick();
+    // one call per line instead of one joined utterance; speaking every ticker line (damage, moves,
+    // round ends); speaking an opponent's / AI / READY turn; repeating the same turn key on every
+    // re-render; recording the key for a READY turn (so the turn after its plan lands is silent);
+    // speaking on a HIDDEN render and forgetting to decide on show() (turn 1 after Deploying silent);
+    // speaking hidden-ingested history on show(); speaking a foe's halted plan; event lines after
+    // the turn line.
+    const k = make();
+    const said = k.announced;
+
+    // A visible own-turn start: nothing before tick(), then once.
+    k.shell.render(vmOf());
+    expect(said, 'nothing is spoken before tick()').toEqual([]);
+    k.shell.tick();
+    expect(said, 'the own turn is spoken once at the tick').toEqual([turnLine(1, 'unit#1')]);
+    k.shell.tick();
+    expect(said, 'a second tick with nothing queued speaks nothing').toHaveLength(1);
+
+    // The same turn key re-rendered (even with other numbers moved) speaks nothing.
+    k.shell.render(vmOf());
+    k.shell.render(
+      vmOf({
+        units: UNITS.map((u) => (u.unitId === 3 ? { ...u, curHp: 4 } : u)),
+      }),
+    );
+    k.shell.tick();
+    expect(said, 'the same turn key again: silent').toHaveLength(1);
+
+    // An opponent's turn, a READY own turn and a fainted own unit's slot speak nothing.
+    k.shell.render(vmOf({ round: 2, turnIdx: 1, activeUnitId: 3 }));
+    k.shell.tick();
+    expect(said, "a wild's turn: silent").toHaveLength(1);
+    const ready = readyOf([[2, ['EndTurn']]]);
+    k.shell.render(vmOf({ round: 2, turnIdx: 2, activeUnitId: 2, readyPlans: ready }));
+    k.shell.tick();
+    expect(said, 'an own turn with a READY plan: silent').toHaveLength(1);
+    k.shell.render(vmOf({ round: 2, turnIdx: 4, activeUnitId: 5, initiative: [1, 3, 2, 4, 5] }));
+    k.shell.tick();
+    expect(said, 'a fainted unit holding the turn: silent').toHaveLength(1);
+    // The READY plan landing: the same turn without the plan IS the unit's turn (the key was not
+    // recorded while it was READY).
+    k.shell.render(vmOf({ round: 2, turnIdx: 2, activeUnitId: 2 }));
+    k.shell.tick();
+    expect(said, 'the READY turn becomes live: spoken once').toEqual([
+      turnLine(1, 'unit#1'),
+      turnLine(2, 'unit#2'),
+    ]);
+    // A new round for the same unit is a new key.
+    k.shell.render(vmOf({ round: 3 }));
+    k.shell.tick();
+    expect(said[2], 'round 3 turn 0: spoken').toBe(turnLine(3, 'unit#1'));
+    expect(said, 'three utterances so far').toHaveLength(3);
+
+    // Damage is never spoken (and nothing else of the ticker is).
+    const quiet: EventPayload[] = [
+      damageEvent(),
+      { tag: 'Missed', value: { attacker: 1, target: 3 } } as unknown as EventPayload,
+      { tag: 'Moved', value: { unit: 1, tiles: 2 } } as unknown as EventPayload,
+      { tag: 'TurnEnded', value: { unit: 1, guard: false } } as unknown as EventPayload,
+      roundEnded(3),
+    ];
+    k.shell.ingest(quiet);
+    k.shell.tick();
+    expect(said, 'damage, a miss, a move, a turn end and a round end: silent').toHaveLength(3);
+
+    // A KO and the finish, ingested visible: ONE joined utterance, in event order.
+    k.shell.ingest([damageEvent(), koEvent(3), battleEndEvent()]);
+    expect(said, 'a KO is not spoken before tick()').toHaveLength(3);
+    k.shell.tick();
+    expect(said, 'the KO and the finish are one call, damage excluded').toHaveLength(4);
+    expect(said[3]).toBe(`${koLine('unit#3')} ${en('tactics.ticker.won')}`);
+    k.shell.tick();
+    expect(said, 'a spoken queue is cleared').toHaveLength(4);
+
+    // PlanHalted: an own unit's is spoken, a foe's is not.
+    k.shell.ingest([haltedEvent(3)]);
+    k.shell.tick();
+    expect(said, "a foe's halted plan: silent").toHaveLength(4);
+    k.shell.ingest([haltedEvent(2)]);
+    k.shell.tick();
+    expect(said, "an own unit's halted plan: spoken").toHaveLength(5);
+    expect(said[4]).toBe(tickerTexts(k.root).at(-1));
+
+    // Event lines come first, then the turn line, whatever the call order.
+    k.shell.ingest([koEvent(4)]);
+    k.shell.render(vmOf({ round: 4 }));
+    k.shell.tick();
+    expect(said[5], 'ingest then render: the KO, then the turn').toBe(
+      `${koLine('unit#4')} ${turnLine(4, 'unit#1')}`,
+    );
+    k.shell.render(vmOf({ round: 5 }));
+    k.shell.ingest([koEvent(4)]);
+    k.shell.tick();
+    expect(said[6], 'render then ingest: the KO still comes first').toBe(
+      `${koLine('unit#4')} ${turnLine(5, 'unit#1')}`,
+    );
+    expect(said, 'seven utterances in all').toHaveLength(7);
+  });
+
+  it('a battle rendered hidden then shown speaks its current own turn once on show, and replayed history never', () => {
+    // WRONG IMPL KILLED: a hidden render that speaks or records the key (turn 1 right after
+    // Deploying silent on show); show() that never decides the turn; show() repeating the turn on
+    // every re-show; a hidden ingest that queues lines (history replay spoken on show()); hide()
+    // keeping a queued line alive for the next show().
+    const k = make();
+    k.shell.hide();
+    k.shell.render(vmOf({ round: 7 }));
+    k.shell.ingest([koEvent(3), battleEndEvent(), haltedEvent(1)]);
+    k.shell.tick();
+    expect(k.announced, 'hidden render and ingest speak nothing').toEqual([]);
+
+    k.shell.show();
+    expect(k.announced, 'show() itself does not speak before tick()').toEqual([]);
+    k.shell.tick();
+    expect(k.announced, 'show() speaks the current own turn once, and no history').toEqual([
+      turnLine(7, 'unit#1'),
+    ]);
+
+    k.shell.show();
+    k.shell.tick();
+    expect(k.announced, 'a second show() of the same turn repeats nothing').toHaveLength(1);
+    k.shell.hide();
+    k.shell.show();
+    k.shell.tick();
+    expect(k.announced, 're-showing after a hide repeats nothing').toHaveLength(1);
+
+    // hide() drops anything queued but not yet spoken.
+    k.shell.ingest([koEvent(3)]);
+    k.shell.hide();
+    k.shell.show();
+    k.shell.tick();
+    expect(k.announced, 'a line queued before hide() is dropped').toHaveLength(1);
+  });
+
+  it('a new battle id and reset() forget the heard own turn', () => {
+    // WRONG IMPL KILLED: a heard key that survives a new battle with the same round/turn/unit (the
+    // next battle opens in silence); reset() (a reconnect) leaving the key heard.
+    const k = make();
+    k.shell.render(vmOf());
+    k.shell.tick();
+    expect(k.announced).toHaveLength(1);
+    k.shell.render(vmOf({ battleId: 2n }));
+    k.shell.tick();
+    expect(k.announced, 'a new battle id: the same key speaks again').toHaveLength(2);
+    k.shell.reset();
+    k.shell.render(vmOf({ battleId: 2n }));
+    k.shell.tick();
+    expect(k.announced, 'after reset(): the same key speaks again').toHaveLength(3);
+    expect(k.announced[2]).toBe(turnLine(1, 'unit#1'));
+  });
+
+  it('playing is true while beats are queued and skip drains them at once', () => {
+    // WRONG IMPL KILLED: `playing` constant false/true; `playing` out of step with the root class;
+    // skip() that leaves the queue (the frame never frees); skip() throwing when nothing plays.
+    const k = make();
+    k.shell.render(vmOf());
+    expect(k.shell.playing, 'nothing queued').toBe(false);
+    k.shell.ingest([damageEvent()]);
+    expect(k.shell.playing, 'a beat is queued').toBe(true);
+    expect(isPlaying(k.root), 'the root class shows the same state').toBe(true);
+    k.shell.skip();
+    expect(k.shell.playing, 'skip() drains at once').toBe(false);
+    expect(isPlaying(k.root)).toBe(false);
+    expect(() => k.shell.skip(), 'skip() while idle').not.toThrow();
+    k.shell.ingest([damageEvent()]);
+    k.clock.t = 1_000_000;
+    k.shell.tick();
+    expect(k.shell.playing, 'a late tick ends the beat').toBe(false);
+  });
+
+  it('announceTurn composes the round chip text, an em dash and the banner text', () => {
+    // WRONG IMPL KILLED: a hyphen or en dash for the em dash; the unit before the round; a missing
+    // separator space; the round omitted.
+    expect(announceTurn(3, 'Mira')).toBe(`Round 3 ${EM_DASH_ANNOUNCE} Mira's turn`);
   });
 });
