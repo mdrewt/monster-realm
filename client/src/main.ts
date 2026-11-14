@@ -5392,15 +5392,9 @@ async function main(): Promise<void> {
       // the server-time estimate (the deadline is a server epoch instant; a batch-driven countdown
       // would freeze between batches, R5). Its first second is announced below, after the transitions.
       tacticsBattle?.tick();
-      // ts-6b-7.3: the results that waited for the playback take the frame once it drains; the
-      // outcome counts as shown from here (A's grace, the auto-advance) — no batch or key may follow
-      // to run `syncStack`.
-      if (resultsAwaitDrain !== null && tacticsBattle?.playing !== true) {
-        refreshBattle();
-        if (resultsAwaitDrain === null && outcomeOnTop(contextStack)) {
-          outcomeShownAtMs ??= performance.now();
-        }
-      }
+      // ts-6b-7.3: the results that waited for the playback take the frame once it drains (the
+      // switch's `syncStack` starts the outcome edge: A's grace, the auto-advance).
+      if (resultsAwaitDrain !== null && tacticsBattle?.playing !== true) refreshBattle();
       const serverNow = serverClock.now(Date.now());
       const countdownSaid = pumpStillThere(serverNow);
       pumpClock(serverNow);
