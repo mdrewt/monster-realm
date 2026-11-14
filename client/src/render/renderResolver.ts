@@ -233,8 +233,8 @@ export class RenderResolver {
     const last = this.#remotes.get(c.row.entityId);
     let pos = target;
     // The remote is drawn AT its target when there is nowhere to walk from: no last position,
-    // a clock that did not move forward, or `prev` undefined (first sight, or the store's snap
-    // on a zone change or a teleport).
+    // a clock that moved backward, or `prev` undefined (first sight, or the store's snap on a
+    // zone change or a teleport).
     if (last !== undefined && c.prev !== undefined && now - last.at >= 0) {
       // Otherwise it is walked there, unless it has fallen REMOTE_SNAP_TILES behind.
       if (Math.abs(target.x - last.x) + Math.abs(target.y - last.y) < REMOTE_SNAP_TILES)

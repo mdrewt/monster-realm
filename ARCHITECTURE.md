@@ -476,8 +476,8 @@ the SDK's cache rather than applying those row events one by one.
 writes to it; the predictor and renderer only read (`server → store → render`). It
 keeps up to four timestamped snapshots per character for interpolation, one per
 position (a row update on the same tile replaces the row and adds no snapshot), the
-character's last two position changes, and a per-character jitter estimate taken from
-the intervals between position changes.
+character's last two position changes and whether it has turned in place since, and a
+per-character jitter estimate taken from the intervals between position changes.
 
 Reconnect uses exponential backoff from 1 s to 30 s (`prediction/reconnectPolicy.ts`).
 The SpacetimeDB token for an anonymous identity is stored in `sessionStorage`
@@ -539,9 +539,10 @@ it or its reducer call rejects, and a reconnect clears the set.
 - `renderResolver.ts` sends each character to the right one of those two and snaps
   the own character when the authoritative target is more than one tile away. For
   remotes it keeps each one's last drawn position and moves it toward the frame's
-  target at no more than one tile per step. It continues a walk only for three steps
-  after the remote's newest step and only toward a tile the zone map allows; `main.ts`
-  passes that map's walkability in every frame.
+  target at no more than one tile per step, or draws it at the target once that is two
+  tiles or more away. It continues a walk only for three steps after the remote's
+  newest step and only toward a tile the zone map allows; `main.ts` passes that map's
+  walkability in every frame.
 - `map.ts` parses the tile map once from the wasm `zone_map()` value; `camera.ts`
   follows the player and centres maps smaller than the viewport; `viewport.ts` picks
   an integer device scale; `viewRegistry.ts` pools one sprite per entity and tears it

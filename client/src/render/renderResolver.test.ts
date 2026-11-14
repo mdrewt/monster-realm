@@ -1479,10 +1479,11 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
 //   target: interpolateHistory(snapshots, renderTime, 200, walk ? 600 : undefined); when the
 //     walk is straight, renderTime > latest.receivedAt and `walkable(latest + ahead)`, instead
 //     latest + min(0.5, (renderTime - latest.receivedAt) / cadence) along the walk
-//   position: the target on first sight / after a snap / on a clock that did not move / when it
-//     is REMOTE_SNAP_TILES (2) or more (Manhattan) from the last drawn position, else the last
-//     drawn position moved toward it by at most (now - lastNow) / 200 tiles; then, on a straight
-//     walk, any component of the move backward along the walk is removed
+//   position: the target on first sight / after a snap / after reset() / on a clock earlier than
+//     the last frame's / when it is REMOTE_SNAP_TILES (2) or more (Manhattan) from the last drawn
+//     position, else the last drawn position moved toward it by at most (now - lastNow) / 200
+//     tiles (a frame at the same `now` stays put); then, on a straight walk, any component of
+//     the move backward along the walk is removed
 //   action: 'Walking' for an Idle row while the remote is not drawn on the row's tile
 // "Timing facts" for the base walk A@1000 (0,0), B@1200 (1,0), C@1400 (2,0), all East, delay
 // 200: the render clock passes C at now 1600; continuation adds one tile per 200 ms up to +0.5
@@ -2144,15 +2145,18 @@ describe('np-a remote continuation and slew (real store into the resolver)', () 
 
   it('after a turn in place and back, the remote is never drawn off its tile again [np-a.5]', () => {
     // The base walk to (2,0) at 1400, then same-tile Idle rows facing South at 1600 and East
-    // again at 1800. The render clock passes C at 1600, the frame the South row lands: from then
-    // the walk is a turn in place (not continuable), and facing East again does not undo it.
-    // The target holds (2,0); the drawn position is on it from 1600 on.
+    // again at 1800, and one more East row at 1900 (an ordinary write with an unchanged facing,
+    // inside the window that ends at 2000). The render clock passes C at 1600, the frame the
+    // South row lands: from then the walk is a turn in place (not continuable); neither facing
+    // East again nor a later row with the same facing undoes it. The target holds (2,0); the
+    // drawn position is on it from 1600 on.
     const t = track(
       run(
         [
           ...walkEast(9n, [1000, 1200, 1400]),
           { at: 1600, row: row(9n, 2, 0, 'South', 'Idle') },
           { at: 1800, row: row(9n, 2, 0, 'East', 'Idle') },
+          { at: 1900, row: row(9n, 2, 0, 'East', 'Idle') },
         ],
         { from: 1000, to: 2400, frameMs: 10, walkable: OPEN },
       ),
@@ -2163,6 +2167,61 @@ describe('np-a remote continuation and slew (real store into the resolver)', () 
       expect(f.y).toBeCloseTo(0, 12);
       expect(f.action, `action at ${f.now}`).toBe('Idle');
     }
+  });
+
+  // --- reset() and a clock that moves backward ---------------------------------------------
+
+  /** The base walk through a real store, frames every 10 ms from 1000 to `until` (continued to
+   *  2.5 by 1700; the window ends at 2000, then it settles back: 2.45 at 2010). Returns the
+   *  store, the resolver and a one-frame resolver for remote 9n. */
+  function baseWalkUntil(until: number): {
+    readonly frame: (now: number) => number;
+    readonly resolver: RenderResolver;
+  } {
+    const store = new AuthoritativeStore(STEP_MS);
+    const resolver = new RenderResolver(STEP_MS);
+    const queue = walkEast(9n, [1000, 1200, 1400]);
+    const frame = (now: number): number => {
+      while (queue.length > 0 && queue[0]!.at <= now) {
+        const a = queue.shift()!;
+        store.upsertCharacter(a.row, a.at);
+      }
+      const out = resolver.resolve({
+        characters: [...store.characters()],
+        ownEntityId: undefined,
+        predicted: undefined,
+        snapped: false,
+        now,
+        walkable: OPEN,
+      });
+      const e = out.find((d) => d.entityId === 9n);
+      expect(e, `drawn at ${now}`).toBeDefined();
+      return e!.x;
+    };
+    for (let now = 1000; now <= until; now += 10) frame(now);
+    return { frame, resolver };
+  }
+
+  it('after reset(), the next frame draws a remote at its target instead of walking it there [np-a.4]', () => {
+    // At 2010 the window has ended (2010 - 1400 > 600): the target is (2,0) and the drawn
+    // position, walking back from 2.5 at 0.05 per frame, is 2.45. After reset() the 2020 frame
+    // has no last drawn position, so it draws the target, 2 (walking on would give 2.40).
+    const w = baseWalkUntil(2000);
+    expect(w.frame(2010), 'precondition: settling back from 2.5').toBeCloseTo(2.45, 9);
+    w.resolver.reset();
+    expect(w.frame(2020), 'drawn at the target after reset()').toBeCloseTo(2, 9);
+    expect(w.frame(2030)).toBeCloseTo(2, 9);
+  });
+
+  it('a frame whose clock is earlier than the last frame draws the remote at its target, and later frames walk on [np-a.4]', () => {
+    // At 2010 the target is (2,0) and the drawn position 2.45. A frame at 2005 (a clock 5 ms
+    // earlier): 2005 - 1400 = 605 > 600, so the target is still (2,0), and the frame draws it
+    // exactly. A negative travel budget, (2005 - 2010) / 200 = -0.025, would instead move the
+    // remote away from its target, to 2.475. The next forward frame (2015) stays on (2,0).
+    const w = baseWalkUntil(2000);
+    expect(w.frame(2010), 'precondition: settling back from 2.5').toBeCloseTo(2.45, 9);
+    expect(w.frame(2005), 'drawn at the target for the earlier clock').toBeCloseTo(2, 9);
+    expect(w.frame(2015), 'later frames walk on from there').toBeCloseTo(2, 9);
   });
 
   // --- a walk that turns every step ----------------------------------------------------------

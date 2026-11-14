@@ -38,7 +38,8 @@ description: Working on client prediction, reconciliation, movement, or renderin
    steps after its newest step, and then walks it back. The store adds a snapshot only
    when the tile changes, so the `Idle` row the server writes on an empty tick between
    steps is not drawn as a stop. A remote's drawn position moves toward its target at
-   no more than one tile per step.
+   no more than one tile per step, and is drawn at the target once that is two tiles or
+   more away.
 4. **Divergence blowups ← unbounded prediction.** The predictor refuses enqueues past
    `MOVE_QUEUE_CAP` and backs off at 16 unacknowledged ops. A long frame gap reports
    `snapped`, and a correction of more than one tile snaps instead of gliding

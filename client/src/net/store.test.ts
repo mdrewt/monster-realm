@@ -386,6 +386,10 @@ describe('AuthoritativeStore np-a: same-tile debounce and the position-change re
     // Facing East again: still a turn (it is sticky until the next position change).
     s.upsertCharacter(rowAt(1, 0, { facing: 'East', action: 'Idle' }), 1500);
     expect(turned(), 'faced back the original way').toBe(true);
+    // A further same-tile row facing the same way as the one before it (an ordinary Idle /
+    // queue / ack write): still a turn.
+    s.upsertCharacter(rowAt(1, 0, { facing: 'East', action: 'Idle', ackedSeq: 3n }), 1550);
+    expect(turned(), 'a later row with an unchanged facing').toBe(true);
     expect(s.character(1n)!.positionChanges).toEqual([{ dx: 1, dy: 0, arrivedAt: 1200 }]);
     // The next position change clears it.
     s.upsertCharacter(rowAt(2, 0, { facing: 'East' }), 1600);
