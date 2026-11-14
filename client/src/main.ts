@@ -96,6 +96,32 @@ import {
   WASM_READY_MS,
   ZONE_ID,
 } from './shell/config';
+import {
+  boxView,
+  claimView,
+  controlsSavedLine,
+  controlsView,
+  dialogueView,
+  errorOverlayView,
+  evolutionNoticeBanner,
+  evolutionView,
+  healView,
+  helpView,
+  hintBarView,
+  leaderboardView,
+  menuView,
+  mountViews,
+  privacyView,
+  profileView,
+  pvpView,
+  questLogView,
+  raisingView,
+  renameView,
+  sessionView,
+  shopView,
+  tradeSessionView,
+  tradeView,
+} from './shell/views';
 import { clockVM } from './tactics/clock';
 import { DeployPanel, type DeployVM, deployVM } from './tactics/deployPanel';
 import { isAlreadyActing } from './tactics/draft';
@@ -152,7 +178,7 @@ import {
   buildPartyViewModel,
   resolvePartySlot,
 } from './ui/boxModel';
-import type { BoxView, OutcomeLine } from './ui/boxView';
+import type { OutcomeLine } from './ui/boxView';
 // F9 bug-bundle observability — session event ring + error ring +
 // pure bundle assembler + error overlay.
 import {
@@ -169,7 +195,7 @@ import {
   type ClaimModelState,
   claimStep,
 } from './ui/claimModel';
-import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
+import type { ClaimViewHandlers } from './ui/claimView';
 import { closeContextSheet, createContextSheet, renderContextSheet } from './ui/contextSheet';
 import {
   baseFor,
@@ -198,10 +224,9 @@ import {
   WORLD_STACK,
 } from './ui/contextStack';
 import { clearAccel, outcomeText, type SlotTarget } from './ui/controlsModel';
-import type { ControlsView, ControlsViewHandlers } from './ui/controlsView';
+import type { ControlsViewHandlers } from './ui/controlsView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
-import type { DialogueView } from './ui/dialogueView';
 import { applyTextStep, loadTextStep, saveTextStep } from './ui/displayPrefs';
 import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
@@ -214,14 +239,11 @@ import {
   isBenignAckRejection,
   resolveEvolutionNoticeNames,
 } from './ui/evolutionNotice';
-import type { EvolutionView } from './ui/evolutionView';
 import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
 import { channelOf, type MessageKind, outranks, type SinkKind } from './ui/feedbackPolicy';
 import { feedbackAnnouncement } from './ui/frame';
 import { buildHealViewModel, buildHealViewModelForLocation } from './ui/healModel';
-import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
-import type { HelpView } from './ui/helpView';
 import { HintBarView } from './ui/hintBar';
 import { type HintBattle, type HintChip, type HintDeploy, hintBar } from './ui/hintBarModel';
 import { isRtl, negotiateLocale } from './ui/i18n/locale';
@@ -240,7 +262,7 @@ import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { COALESCE_WINDOW_MS, LiveRegion } from './ui/liveRegion';
 import { type MenuTarget, withRequestBadge } from './ui/menuModel';
-import type { MenuPointerInput, MenuView } from './ui/menuView';
+import type { MenuPointerInput } from './ui/menuView';
 import type { MonstersTab } from './ui/monstersModel';
 import { EMPTY_NAV_MEMORY } from './ui/nav';
 import {
@@ -266,16 +288,12 @@ import {
   type PrivacyModelState,
   privacyStep,
 } from './ui/privacyModel';
-import type { PrivacyView, PrivacyViewHandlers } from './ui/privacyView';
-import type { ProfileView } from './ui/profileView';
+import type { PrivacyViewHandlers } from './ui/privacyView';
 import { buildPvpChallengeViewModel, challengeSizes, consciousPartyIds } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
-import type { QuestLogView } from './ui/questLogView';
 import { buildRaisingViewModel } from './ui/raisingModel';
-import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
-import type { RenameView } from './ui/renameView';
 import { SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './ui/screens/index';
 import {
   type MainMenuStep,
@@ -300,7 +318,7 @@ import {
   type SessionModelState,
   sessionStep,
 } from './ui/sessionModel';
-import type { SessionView, SessionViewHandlers } from './ui/sessionView';
+import type { SessionViewHandlers } from './ui/sessionView';
 import {
   buildShopViewModel,
   buildShopViewModelForShop,
@@ -314,7 +332,6 @@ import {
   type ShopOpenEvent,
   shopOpenStep,
 } from './ui/shopOpenModel';
-import type { ShopView } from './ui/shopView';
 import {
   type ConversationEndReason,
   conversationEndReason,
@@ -341,7 +358,6 @@ import {
   ownSessions,
   sessionWith,
 } from './ui/tradeSessionModel';
-import type { TradeSessionView } from './ui/tradeSessionView';
 import type { TradeView } from './ui/tradeView';
 
 // negotiate the boot locale once, before any consumer.
@@ -420,7 +436,6 @@ let lastOwnRating: number | null = null;
 // flush after it, so a partial hydration cannot burn it.
 let hydratedSinceReconnect = false;
 let conn: ReturnType<typeof connect> | undefined;
-let boxView: BoxView | undefined;
 // bt-12 (BT12.1-BT12.4): the deploy panel (a Deploying battle) and the results panel (a Finished one)
 // share the `battleView` frame and overlay id. Both are constructed LAZILY, on the first batch that
 // routes to them (the frame has ONE owner, so one `battle-title` root at a time), on the mount
@@ -503,47 +518,10 @@ const battleHint = (): HintBattle | HintDeploy | undefined =>
     : deployPanel?.visible === true
       ? deployPanel.hint()
       : undefined;
-let raisingView: RaisingView | undefined;
-let evolutionView: EvolutionView | undefined;
-let dialogueView: DialogueView | undefined;
-let questLogView: QuestLogView | undefined;
-let healView: HealView | undefined;
-let shopView: ShopView | undefined;
-let tradeView: TradeView | undefined;
-let pvpView: PvpView | undefined;
-// Ranked leaderboard overlay — pure subscription view (RL-15).
-let leaderboardView: LeaderboardView | undefined;
-// The Profile screen (uif-16b): ONE frame whose sections are the rename form, the guest-claim
-// prompt and the privacy surface below. It is the registered overlay (GUARD_ONLY); the three
-// section views are painted from their models here and shown only through it.
-let profileView: ProfileView | undefined;
-// The Name section: wires the set_profile_name reducer to the rename form.
-let renameView: RenameView | undefined;
-// The trade session editor: opened by Trade on a faced player, a Social › Trades row and the
-// request sheet's Accept. It paints what its screen hands it; the screen's commands reach the
-// session reducers through `dispatch`.
-let tradeSessionView: TradeSessionView | undefined;
-// How to Play (Select; uif-14): catalog copy. No reducer; its one handler is the live-region
-// announce. Its Report a problem row reaches `dispatch` as the `reportProblem` command (uif-14b).
-let helpView: HelpView | undefined;
-// The main menu (ctl-5): a nav-list screen that stays open beneath the overlay it opens.
-let menuView: MenuView | undefined;
-// The Account and Privacy sections of Profile, and the session-lifecycle overlay
-// (registry-EXTERNAL, driven by conn.sessionState()), each backed by its pure model state carried
-// at module scope.
-let claimView: ClaimView | undefined;
-let privacyView: PrivacyView | undefined;
-// Controls (ctl-12b): the remapping screen. Its `capturing` is what the keydown handler
-// reads to hand a key to the capture instead of the router.
-let controlsView: ControlsView | undefined;
-/** controlsView module's `savedLine`, bound with the view when it is built. */
-let controlsSavedLine: ((text: string, saved: boolean) => string) | undefined;
-let sessionView: SessionView | undefined;
-// The post-evolve reveal banner — runtime-constructed in main(), NOT a
-// registry overlay; read by the batch listener below and reset at the onReconnect tail.
-let evolutionNoticeBanner: EvolutionNoticeBanner | undefined;
-/** The banner's OK button, which B at the world presses for the player with no pointer. */
+/** The evolution notice banner's OK button, which B at the world presses for the player with no
+ *  pointer. */
 let evolutionNoticeOk: HTMLButtonElement | null = null;
+// The pure model states behind Profile's Account section and the session-lifecycle overlay.
 let claimModelState: ClaimModelState = CLAIM_INITIAL;
 let sessionModelState: SessionModelState = SESSION_INITIAL;
 // The dialogue-dismiss / deferred shop-open state (ui/shopOpenModel.ts): whether a
@@ -2422,8 +2400,6 @@ function endedLine(reason: ConversationEndReason): string {
 // clock so their unit tests stay deterministic. The overlay is mounted in main().
 const eventRing = new EventRing(() => Date.now());
 const errorRing = new ErrorRing(() => Date.now());
-let errorOverlayView: ErrorOverlayView | undefined;
-let hintBarView: HintBarView | undefined;
 /** The newest ring sequence the error toast showed when it was last dismissed (ctl-13). */
 let toastDismissedSeq = -1;
 
@@ -4817,42 +4793,50 @@ async function main(): Promise<void> {
     // Touch on the canvas is the game's (styles.css: touch-action none), never a browser pan.
     worldCanvasEl?.classList.add('mr-world-canvas');
     installResizeHandler(renderer, window); // fit the stage to the window + on resize
-    boxView = new BoxViewClass(mount, {
-      onSetNickname: (monsterId, nickname) =>
-        dispatch({ kind: 'setNickname', monsterId, nickname }),
-      onSetPartySlot: (monsterId, slot) => dispatch({ kind: 'setPartySlot', monsterId, slot }),
-      partySlotNone: PARTY_SLOT_NONE,
+    mountViews({
+      boxView: new BoxViewClass(mount, {
+        onSetNickname: (monsterId, nickname) =>
+          dispatch({ kind: 'setNickname', monsterId, nickname }),
+        onSetPartySlot: (monsterId, slot) => dispatch({ kind: 'setPartySlot', monsterId, slot }),
+        partySlotNone: PARTY_SLOT_NONE,
+      }),
     });
-    raisingView = new RaisingViewClass(mount);
-    evolutionView = new EvolutionViewClass(mount, {
-      onEvolve: (monsterId, toSpecies) => dispatch({ kind: 'evolve', monsterId, toSpecies }),
+    mountViews({ raisingView: new RaisingViewClass(mount) });
+    mountViews({
+      evolutionView: new EvolutionViewClass(mount, {
+        onEvolve: (monsterId, toSpecies) => dispatch({ kind: 'evolve', monsterId, toSpecies }),
+      }),
     });
     // dialogue / quest log / heal DOM shells.
-    dialogueView = new DialogueViewClass();
-    questLogView = new QuestLogViewClass();
-    healView = new HealViewClass();
+    mountViews({ dialogueView: new DialogueViewClass() });
+    mountViews({ questLogView: new QuestLogViewClass() });
+    mountViews({ healView: new HealViewClass() });
     // shop and trade DOM shells: buy/sell and rename run
     // through the performCare core (frozen gate, await of the SDK promise, exactly one feedback
     // line) inside `dispatch`.
-    shopView = new ShopViewClass({
-      onBuy: (shopId, itemId) => dispatch({ kind: 'buy', shopId, itemId, qty: 1 }),
-      onSell: (itemId) => dispatch({ kind: 'sell', itemId, qty: 1 }),
+    mountViews({
+      shopView: new ShopViewClass({
+        onBuy: (shopId, itemId) => dispatch({ kind: 'buy', shopId, itemId, qty: 1 }),
+        onSell: (itemId) => dispatch({ kind: 'sell', itemId, qty: 1 }),
+      }),
     });
-    tradeView = new TradeViewClass();
+    mountViews({ tradeView: new TradeViewClass() });
     // PvP challenge overlay: the lifecycle callbacks RETURN the promise.
-    pvpView = new PvpViewClass({
-      onAccept: (challengeId) => dispatch({ kind: 'acceptChallenge', challengeId }),
-      onDecline: (challengeId) => dispatch({ kind: 'declineChallenge', challengeId }),
-      onCancel: (challengeId) => dispatch({ kind: 'cancelChallenge', challengeId }),
+    mountViews({
+      pvpView: new PvpViewClass({
+        onAccept: (challengeId) => dispatch({ kind: 'acceptChallenge', challengeId }),
+        onDecline: (challengeId) => dispatch({ kind: 'declineChallenge', challengeId }),
+        onCancel: (challengeId) => dispatch({ kind: 'cancelChallenge', challengeId }),
+      }),
     });
     // Leaderboard DOM shell. ZERO-arg construction — RL-15: the
     // leaderboard is a pure subscription view; there is no client write path to profile.
-    leaderboardView = new LeaderboardViewClass();
+    mountViews({ leaderboardView: new LeaderboardViewClass() });
     // How to Play — no reducer callback: its one handler speaks a tab change or an opened entry
     // through the live region (the Report a problem row is a screen command, uif-14b). Opened by Select (R or Slash); `openHelp` binds its content.
-    helpView = new HelpViewClass({ announce: announceNow });
+    mountViews({ helpView: new HelpViewClass({ announce: announceNow }) });
     // The menu view only paints and forwards clicks; keys reach the menu through the router.
-    menuView = new MenuViewClass({ onInput: handleMenuPointer });
+    mountViews({ menuView: new MenuViewClass({ onInput: handleMenuPointer }) });
     // The guest-claim prompt (Profile's Account section). Its actions drive the pure claimModel;
     // the AUTHORITATIVE join veto lives in connection.ts's onApplied (G18), so these are UI-only.
     const claimHandlers: ClaimViewHandlers = {
@@ -4871,7 +4855,8 @@ async function main(): Promise<void> {
         claimView?.render(buildClaimViewModel(claimModelState));
       },
     };
-    claimView = new ClaimViewClass(claimHandlers);
+    const accountSection = new ClaimViewClass(claimHandlers);
+    mountViews({ claimView: accountSection });
     const privacyHandlers: PrivacyViewHandlers = {
       onDeleteRequested: () => applyPrivacy({ kind: 'delete-requested' }),
       onDeleteConfirmed: () => void dispatch({ kind: 'deleteAccount' }),
@@ -4883,7 +4868,8 @@ async function main(): Promise<void> {
       // Where focus goes when a render refuses the focused control: the frame's Close.
       fallbackRow: () => profileView?.closeRow,
     };
-    privacyView = new PrivacyViewClass(privacyHandlers);
+    const privacySection = new PrivacyViewClass(privacyHandlers);
+    mountViews({ privacyView: privacySection });
     // The session-lifecycle overlay (registry-external). Its actions drive
     // the pure sessionModel; a confirmed continue-anonymously routes to conn.continueAnonymously().
     const sessionHandlers: SessionViewHandlers = {
@@ -4900,18 +4886,21 @@ async function main(): Promise<void> {
           hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
         }),
     };
-    sessionView = new SessionViewClass(sessionHandlers);
+    mountViews({ sessionView: new SessionViewClass(sessionHandlers) });
     // The rename form (Profile's Name section): its own Enter (and submit click) commits through
     // `dispatch`; the view's #pending lock is reset by its own .finally().
-    renameView = new RenameViewClass({
+    const nameSection = new RenameViewClass({
       onSubmit: (name) => dispatch({ kind: 'setProfileName', name }),
       bindings: () => bindings,
     });
+    mountViews({ renameView: nameSection });
     // The Profile frame takes the three sections built above, in column order.
-    profileView = new ProfileViewClass({
-      name: renameView,
-      account: claimView,
-      privacy: privacyView,
+    mountViews({
+      profileView: new ProfileViewClass({
+        name: nameSection,
+        account: accountSection,
+        privacy: privacySection,
+      }),
     });
     // Controls: the view reads the live table, and its requests replace it at once.
     const controlsHandlers: ControlsViewHandlers = {
@@ -4930,13 +4919,15 @@ async function main(): Promise<void> {
       onOutcome: (text, saved) =>
         toastControls(saved ? 'controls-saved' : 'controls-save-failed', text, saved),
     };
-    controlsSavedLine = savedLine;
-    controlsView = new ControlsViewClass(controlsHandlers);
+    mountViews({ controlsSavedLine: savedLine });
+    mountViews({ controlsView: new ControlsViewClass(controlsHandlers) });
     // The session editor issues nothing itself: its screen's commands run through `dispatch`, and
     // its Close button closes the frame as B does.
-    tradeSessionView = new TradeSessionViewClass({
-      announce: (text) => announceNow(text),
-      onClose: closeTradeEditor,
+    mountViews({
+      tradeSessionView: new TradeSessionViewClass({
+        announce: (text) => announceNow(text),
+        onClose: closeTradeEditor,
+      }),
     });
   }
 
@@ -4971,7 +4962,7 @@ async function main(): Promise<void> {
   // The hint bar (ctl-13): painted every frame from `hintBar(...)`; a click on any chip is a press
   // of its button through the pointer source.
   const hintBarEl = document.getElementById('hint-bar');
-  if (hintBarEl !== null) hintBarView = new HintBarView(hintBarEl);
+  if (hintBarEl !== null) mountViews({ hintBarView: new HintBarView(hintBarEl) });
   // Painted once now, so the bar is never blank before the first frame.
   hintBarView?.render(hintBar(contextStack, bindings, []), null);
 
@@ -5030,26 +5021,28 @@ async function main(): Promise<void> {
   const noticeMount = document.createElement('div');
   noticeMount.id = 'evolution-notice';
   gameScreen.appendChild(noticeMount);
-  evolutionNoticeBanner = new EvolutionNoticeBanner(
-    () =>
-      sendGuarded('ackEvolutionNotices', () =>
-        conn
-          ?.live()
-          ?.reducers.ackEvolutionNotices({ count: 1 })
-          .catch((err: unknown) => {
-            if (!isBenignAckRejection(reduceErrorMessage(err, 'ackEvolutionNotices'))) throw err;
-          }),
-      ),
-    {
-      announce: (m) => announceNow(m),
-      returnFocus: () => worldCanvasEl?.focus(),
-    },
-  );
+  mountViews({
+    evolutionNoticeBanner: new EvolutionNoticeBanner(
+      () =>
+        sendGuarded('ackEvolutionNotices', () =>
+          conn
+            ?.live()
+            ?.reducers.ackEvolutionNotices({ count: 1 })
+            .catch((err: unknown) => {
+              if (!isBenignAckRejection(reduceErrorMessage(err, 'ackEvolutionNotices'))) throw err;
+            }),
+        ),
+      {
+        announce: (m) => announceNow(m),
+        returnFocus: () => worldCanvasEl?.focus(),
+      },
+    ),
+  });
   evolutionNoticeOk = noticeMount.querySelector('button');
 
   // mount the F9 error overlay (self-mounting, starts hidden,
   // non-blocking pointer-events:none). pushError renders into it on the first error.
-  errorOverlayView = new ErrorOverlayView();
+  mountViews({ errorOverlayView: new ErrorOverlayView() });
 
   // Fire-and-forget (never awaited: the SDK chunk must not delay connect()) and contractually
   // non-rejecting (T-P1). Host reads happen HERE — the observability modules are host-blind.

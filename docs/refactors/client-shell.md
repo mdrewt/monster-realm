@@ -202,7 +202,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `leaderboardView` | `views.ts` | `frames`, `screens`, `main` | `main()` boot: mount |
 | `profileView` | `views.ts` | `account`, `input`, `main` | `main()` boot: mount |
 | `renameView` | `views.ts` | `account`, `main` | `main()` boot: mount |
-| `tradeProposeView` | `views.ts` | `screens`, `main` | `main()` boot: mount |
+| `tradeSessionView` | `views.ts` | `screens`, `main` | `main()` boot: mount |
 | `helpView` | `views.ts` | `screens`, `commands` | `main()` boot: mount |
 | `menuView` | `views.ts` | `frames`, `menu`, `devHooks` | `main()` boot: mount |
 | `claimView` | `views.ts` | `account`, `main` | `main()` boot: mount |
@@ -386,7 +386,6 @@ they write; bodies change only by imports, and an inline listener body gains a n
 **ownership change** leaves a writer outside the destination, so it adds an owner function, or
 it installs a port or adds a pump. The slice for a line deletes that line.
 
-2. `client/src/shell/views.ts` takes the view handles `boxView`, `raisingView`, `evolutionView`, `dialogueView`, `questLogView`, `healView`, `shopView`, `tradeView`, `pvpView`, `leaderboardView`, `profileView`, `renameView`, `tradeProposeView`, `helpView`, `menuView`, `claimView`, `privacyView`, `controlsView`, `controlsSavedLine`, `sessionView`, `evolutionNoticeBanner`, `errorOverlayView` and `hintBarView`. Ownership change: `main` keeps every construction and mounts each instance.
 3. `client/src/shell/inputState.ts` takes `bindings`, `keyboard`, `held`, `inputRouter`, `navHeldCodes`, `releaseAllInput` and `applyBindings`. Ownership change: `navHeldCodes` is mutated by `onKeyDown`, `captureControlsKey` and the keyup listener.
 4. `client/src/shell/feedback.ts` takes `route`, `reportError`, `showToast`, `paintToast`, `tickToast`, `setWorldHint`, `topHint`, `hintOnMenu`, `paintWorldHint`, `resetFeedbackSinks`, `announceNow`, `dismissErrorToast`, `pushError`, `reportPaintError`, `eventRing`, `errorRing`, `liveRegion`, `MOVE_REJECT_PREFIX` and the bindings `statusEl`, `toastChrome`, `toastState`, `worldHints`, `saidHint`, `menuHint`, `statusNotice`, `announcedSinceFrame`, `lastA11ySnapshot`, `toastDismissedSeq`, `handlingError` and `lastPaintErrorMessage`. Ownership change: the hint-host port, the two boot mounts, and the announcement pump for the parts of `main` that write `statusNotice`, `announcedSinceFrame` and `lastA11ySnapshot`.
 5. `client/src/shell/session.ts` takes `store`, `identity`, `conn`, `hydratedSinceReconnect`, `resolveReady`, `ready`, `sessionGateBlocks`, `liveReducers`, `privacyLinkLive`, `sendGuarded`, `SEND_REJECT_KIND`, `SendWhere`, `battleEmit`, `lastOwnRating` and the two batch listeners that step the emit latches. Ownership change: `main` assigns `identity`, `conn` and `hydratedSinceReconnect`, and `resetPredictionState` resets the latches.
