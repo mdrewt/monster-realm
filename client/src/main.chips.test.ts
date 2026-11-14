@@ -271,7 +271,7 @@ describe('main.ts Start / Select hint-bar chips (runtime, ctl-7a)', { sequential
 
   it('CTL7A-4-START-CLEARS-HELD: clicking the Start chip opens the menu and releases every held key, so closing it does not resume the walk', async () => {
     // WRONG IMPL KILLED: a chip that opens the menu through a path that skips the existing
-    // [data-menu-launcher] branch (the held set survives, and the character walks on by itself
+    // pointer dispatcher's press of data-button="Start" (the held set survives, and the character walks on by itself
     // the moment the menu closes, because the keyup was never delivered); a chip that does not
     // open the menu at all (the shown() precondition inside the helper).
     const { before, after } = await holdThenClickChipThenFrames('chip-start', 'menu-overlay');
@@ -279,7 +279,7 @@ describe('main.ts Start / Select hint-bar chips (runtime, ctl-7a)', { sequential
   });
 
   it('CTL7A-4-SELECT-CLEARS-HELD: clicking the Select chip opens help and releases every held key, so closing it does not resume the walk', async () => {
-    // WRONG IMPL KILLED: a [data-help-launcher] branch that opens help without clearing the held
+    // WRONG IMPL KILLED: a data-button="Select" press that opens help without clearing the held
     // set (the same stuck-walk defect as the Start chip); a chip that opens the menu instead
     // (the shown('help-overlay') precondition inside the helper).
     const { before, after } = await holdThenClickChipThenFrames('chip-select', 'help-overlay');

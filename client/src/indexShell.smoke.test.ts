@@ -461,21 +461,17 @@ const LAYER_CHILD_IDS: readonly string[] = [...FRAME_LAYER_IDS, ...SECTION_IDS];
  *  INTENTIONAL CHANGE (uif-4b, UIF4B.5): four static message lines are RETIRED from index.html and
  *  from this roster, because every one of their message kinds moved to the toast channel through
  *  the one seam: `shop-feedback`, `pvp-challenge-feedback`, `rename-feedback` and
- *  `tradepropose-feedback`. `trade-feedback` STAYS as an empty node nothing writes (hidden
- *  dependency: ui/screens/socialScreen.boot.test.ts boots the real index.html and throws when it is
- *  absent; residual R-uif-4b-TRADEFEEDBACK-NODE to uif-9). Was: all five lines were listed. */
+ *  `tradepropose-feedback`. Was: all five lines were listed. (ts-6b-12 retires `trade-feedback`
+ *  and three more unused trade nodes as well; see the trade-overlay row.) */
 const INNER_IDS: Readonly<Record<string, readonly string[]>> = {
   'dialogue-overlay': ['dialogue-npc-name', 'dialogue-node-text', 'dialogue-choices'],
   'quest-log-overlay': ['quest-log-list'],
   'heal-overlay': ['heal-list'],
   'shop-overlay': ['shop-title', 'shop-for-sale', 'shop-inventory'],
-  'trade-overlay': [
-    'trade-status',
-    'trade-my-side',
-    'trade-their-side',
-    'trade-actions',
-    'trade-feedback',
-  ],
+  // ts-6b-12 (named intentional change): the trade root keeps only #trade-status; the four unused
+  // nodes (#trade-my-side, #trade-their-side, #trade-actions, #trade-feedback) are deleted.
+  // Was: all five ids listed.
+  'trade-overlay': ['trade-status'],
   'pvp-challenge-overlay': [
     'pvp-challenge-status',
     'pvp-challenge-incoming',
@@ -484,13 +480,9 @@ const INNER_IDS: Readonly<Record<string, readonly string[]>> = {
   ],
   'leaderboard-overlay': ['leaderboard-title', 'leaderboard-list'],
   'rename-overlay': ['rename-current', 'rename-input', 'rename-submit'],
-  'tradepropose-overlay': [
-    'tradepropose-target',
-    'tradepropose-monsters',
-    'tradepropose-offer-currency',
-    'tradepropose-request-currency',
-    'tradepropose-submit',
-  ],
+  // ts-6b-12 (named intentional change): the retired wizard controls leave the shell; only the
+  // Close button remains. Was: target, monsters, offer-currency, request-currency, submit.
+  'tradepropose-overlay': ['tradepropose-submit'],
   // INTENTIONAL CHANGE (uif-14, UIF14.1 / UIF14.4): `help-controls` and `help-goals` are RETIRED with
   // the All controls and Goals tabs and replaced by the Introduction panel (`help-intro`, a div the
   // view fills with paragraphs) and the Encyclopedia list (`help-encyclopedia`, a `ul.mr-nav-list`).
@@ -506,10 +498,8 @@ const TEST_IDS: readonly string[] = [
   'rename-submit',
   // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `rename-feedback` and `tradepropose-feedback` leave the
   // roster with their retired lines. Was: both listed.
-  'tradepropose-target',
-  'tradepropose-monsters',
-  'tradepropose-offer-currency',
-  'tradepropose-request-currency',
+  // ts-6b-12 (named intentional change): the four wizard test ids leave with their nodes.
+  // Was: target, monsters, offer-currency, request-currency also listed.
   'tradepropose-submit',
 ];
 
@@ -899,22 +889,23 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
         checked += 1;
       }
     }
-    // ANTI-VACUITY: the eleven roots hold 33 descendants between them (44 elements in all), so a
+    // ANTI-VACUITY: the eleven roots hold 25 descendants between them (36 elements in all), so a
     // walk that saw only the roots (or nothing) cannot reach this count.
     // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the four retired feedback lines leave the walk, so the
     // floor drops by four. Was: 37 descendants, 48 elements.
-    expect(checked, 'the roots and their descendants were walked').toBeGreaterThanOrEqual(44);
+    // ts-6b-12 (named intentional change): the four retired wizard controls and the four unused
+    // trade nodes leave the walk, so the floor drops by eight. Was: 33 descendants, 44 elements.
+    expect(checked, 'the roots and their descendants were walked').toBeGreaterThanOrEqual(36);
   });
 
-  it('UIF4B.5 the four retired message lines are gone from index.html, #trade-feedback stays as the named residual, and every other shell keeps its ids', () => {
+  it('UIF4B.5 the four retired message lines are gone from index.html and every other shell keeps its ids', () => {
     // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `#shop-feedback`, `#pvp-challenge-feedback`,
     // `#rename-feedback` and `#tradepropose-feedback` are retired: every one of their message kinds
     // moved to the toast channel (spec: "a line whose kinds all move to toast retires with its roster
-    // row, named"). `#trade-feedback` stays an empty node nothing writes (hidden dependency:
-    // socialScreen.boot.test.ts reads it; residual R-uif-4b-TRADEFEEDBACK-NODE -> uif-9).
+    // row, named"). ts-6b-12 (named intentional change): `#trade-feedback` is deleted too, so no
+    // static message line remains. Was: `#trade-feedback` stayed as an empty named residual.
     // WRONG IMPL KILLED: a retired line left in the markup (a dead node a view could still paint, or
-    // a second channel), a stale data-testid for one, and a `#trade-feedback` removed with them
-    // (socialScreen.boot.test.ts would throw).
+    // a second channel), a stale data-testid for one.
     for (const id of [
       'shop-feedback',
       'pvp-challenge-feedback',
@@ -932,14 +923,6 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
       ).toBe(false);
       expect(TEST_IDS.includes(id), `${id} is retired from the test-id roster`).toBe(false);
     }
-    const residual = doc.getElementById('trade-feedback');
-    expect(residual, '#trade-feedback stays (the named residual)').not.toBeNull();
-    expect(residual?.closest('#trade-overlay'), 'inside the trade shell').not.toBeNull();
-    expect((residual?.textContent ?? '').trim(), 'and empty in the markup').toBe('');
-    expect(
-      INNER_IDS['trade-overlay']?.includes('trade-feedback'),
-      '#trade-feedback is still on the roster',
-    ).toBe(true);
     // Control: the retired lines' neighbours are untouched.
     expect(doc.getElementById('shop-inventory'), 'control: the shop lists stay').not.toBeNull();
     expect(doc.getElementById('rename-submit'), 'control: the rename form stays').not.toBeNull();
@@ -947,10 +930,14 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
 
   it('CTL7A-4-CHIPS-SHELL: #hint-bar holds exactly the Start and Select chips as empty native buttons, and #help-hint is gone', () => {
     // WRONG IMPL KILLED: a leftover #help-hint badge; chips that are <div>s (not keyboard
-    // reachable); a missing [data-menu-launcher] / [data-help-launcher] (the delegated click
-    // listener finds nothing); the two chips wired to the same launcher; hard-coded English text,
-    // aria-label or title in the markup (the labels come from the catalog at boot, so a French
-    // boot would show English); a tabindex on a native button; a third control in the bar.
+    // reachable); a chip without its data-button (the #game-screen pointer dispatcher in
+    // input/pointerSource.ts presses the console button named by data-button, so it would press
+    // nothing); a stray markup attribute no code reads (the launcher attributes ts-6b-12 deleted,
+    // or any other); hard-coded English text, aria-label or title in the markup (the labels come
+    // from the catalog at boot, so a French boot would show English); a tabindex on a native
+    // button; a third control in the bar.
+    // ts-6b-12 (named intentional change): each chip carries exactly id, class, type and
+    // data-button. Was: data-menu-launcher on Start and data-help-launcher on Select.
     expect(doc.getElementById('help-hint'), '#help-hint is retired').toBeNull();
     const bar = must('hint-bar');
     expect(
@@ -960,17 +947,21 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
     expect(bar.querySelectorAll('button')).toHaveLength(2);
 
     const specs = [
-      { id: 'chip-start', verb: 'Start', own: 'data-menu-launcher', other: 'data-help-launcher' },
-      { id: 'chip-select', verb: 'Select', own: 'data-help-launcher', other: 'data-menu-launcher' },
+      { id: 'chip-start', verb: 'Start' },
+      { id: 'chip-select', verb: 'Select' },
     ];
-    for (const { id, verb, own, other } of specs) {
+    for (const { id, verb } of specs) {
       const chip = must(id);
       expect(chip.tagName, `#${id} is a native <button>`).toBe('BUTTON');
       expect(chip.getAttribute('type'), `#${id} is type=button`).toBe('button');
       expect(chip.classList.contains('mr-chip'), `#${id} carries .mr-chip`).toBe(true);
       expect(chip.getAttribute('data-button'), `#${id} names its console button`).toBe(verb);
-      expect(chip.hasAttribute(own), `#${id} carries [${own}]`).toBe(true);
-      expect(chip.hasAttribute(other), `#${id} must not carry [${other}]`).toBe(false);
+      expect(chip.getAttributeNames().sort(), `#${id} carries exactly these attributes`).toEqual([
+        'class',
+        'data-button',
+        'id',
+        'type',
+      ]);
       expect((chip.textContent ?? '').trim(), `#${id} ships empty: main.ts writes its verb`).toBe(
         '',
       );
@@ -979,7 +970,5 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
         expect(chip.hasAttribute(banned), `#${id} must not carry ${banned}`).toBe(false);
       }
     }
-    expect(doc.querySelectorAll('[data-menu-launcher]'), 'one menu launcher').toHaveLength(1);
-    expect(doc.querySelectorAll('[data-help-launcher]'), 'one help launcher').toHaveLength(1);
   });
 });

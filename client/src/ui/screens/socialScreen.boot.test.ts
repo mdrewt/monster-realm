@@ -475,14 +475,10 @@ function expectSocialOn(
   ).toEqual([]);
 }
 
-/** The five trade-shell parts, in shell order, and which of them are `hidden` now. */
-const TRADE_PARTS = [
-  'trade-status',
-  'trade-my-side',
-  'trade-their-side',
-  'trade-actions',
-  'trade-feedback',
-];
+/** The trade-shell parts, in shell order, and which of them are `hidden` now.
+ *  ts-6b-12 (named intentional change): the shell is #trade-status alone; the four unused nodes
+ *  are deleted from index.html. Was: status, my-side, their-side, actions and feedback. */
+const TRADE_PARTS = ['trade-status'];
 const hiddenTradeParts = (): string[] => TRADE_PARTS.filter((id) => el(id).hidden);
 
 /** Neither `hidden` nor `display: none`. */

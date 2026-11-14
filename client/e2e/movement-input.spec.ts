@@ -371,7 +371,9 @@ test.describe
       // Guarantee window keyboard focus: page.keyboard dispatches to the focused element, and
       // an unfocused page silently swallows every synthetic key (which would make the whole
       // suite pass or fail for the wrong reason). The click lands on the canvas, which owns
-      // no click handler — main.ts delegates only on [data-menu-launcher] / [data-choice-idx].
+      // no click handler of its own: clicks are routed by the #game-screen pointer dispatcher
+      // (input/pointerSource.ts), which presses a button only for a hint chip (data-button) or a
+      // nav row (data-nav-key), so a click on the bare canvas presses nothing.
       await page.mouse.click(400, 200);
       stepMs = (await snap(page)).stepMs;
       expect(stepMs, 'the hook must report the real STEP_MS cadence').toBeGreaterThan(0);

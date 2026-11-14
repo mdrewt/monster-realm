@@ -145,7 +145,6 @@ function vmOf(row: StoreTradeSession = sess(), over: Partial<TradeSessionInput> 
     ]),
     inventory: [{ invId: 1n, ownerIdentity: ME, itemId: 3, count: 4 }],
     balance: 900n,
-    legacyOfferMonsterIds: new Set(),
     battleMonsterIds: new Set(),
     partySize: 3,
     maxMonstersPerSide: 1,
