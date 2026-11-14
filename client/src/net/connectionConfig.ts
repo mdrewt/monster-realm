@@ -68,8 +68,9 @@ const DOT_SEGMENT = /[/\\](?:\.|%2e){1,2}[/\\]/i;
  * is refused: userinfo, a query or a fragment (even empty), a backslash in the authority, a path
  * whose last segment lacks its `/` (the SDK would drop that segment), a `.` or `..` segment (the
  * parser resolves it away), and any space or ASCII control character (the parser deletes or
- * strips some). The host is not canonicalized: two spellings the parser reads as one host (letter
- * case, a default port) are accepted and are two different keys.
+ * strips some). Nothing is canonicalized: two spellings the parser reads as one host or path
+ * (letter case, a default port, a backslash for `/` in the path) are accepted and are two
+ * different keys.
  */
 function isWsUrl(uri: string): boolean {
   if (!WS_URL.test(uri) || DOT_SEGMENT.test(uri) || hasAsciiControlOrSpace(uri)) return false;

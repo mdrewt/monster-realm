@@ -114,18 +114,18 @@ function readShellConfigDb(scriptText) {
 // loadsShellConfig(html) -> boolean
 //
 // True when `html` holds, outside comments, a <script> start tag that loads the shell document
-// as a classic script, which the browser runs before any module script: it carries
-// `src="/shell-config.js"` and none of `async`, `defer`, `nomodule` or `type`.
+// as a classic script, which the browser runs before any module script: it carries the
+// attribute `src="/shell-config.js"` and none of `async`, `defer`, `nomodule` or `type` (any
+// `type` is refused: Vite writes none on a classic script).
 function loadsShellConfig(html) {
   const tags = html.replace(/<!--[\s\S]*?-->/g, '').match(/<script\b[^>]*>/gi) ?? [];
   return tags.some(
     (tag) =>
-      tag.includes(`src="/${SHELL_CONFIG_SCRIPT}"`) &&
-      !/\s(?:async|defer|nomodule|type)\b/i.test(tag),
+      /\ssrc="\/shell-config\.js"/.test(tag) && !/\s(?:async|defer|nomodule|type)\b/i.test(tag),
   );
 }
 
-// Every regular file under `dir`, at any depth. Links are not followed: Vite writes none.
+// Every regular file under `dir`, at any depth. Symbolic links are skipped: Vite writes none.
 function collectFiles(dir) {
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
