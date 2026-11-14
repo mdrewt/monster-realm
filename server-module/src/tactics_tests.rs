@@ -7300,20 +7300,17 @@ fn a_practice_player_queues_cancels_and_plays_a_side_b_unit_as_side_b() {
 // and the movement-path `nh_movement_tick_opens_a_tactical_wild_battle_only_on_a_triggered_grass_step_bt16_1`.
 
 // ===========================================================================
-// np-d — queued moves end at battle start (spec M-netcode-presence, np-d.1 / np-d.3 / np-d.4)
+// Queued moves end at battle start
 // ===========================================================================
 //
-// EARS: WHEN a wild (np-d.1) or PvP (np-d.3) tactical battle starts, THE server SHALL empty each
-// battler's private `move_intent` queue in the same transaction and leave its `last_input_seq`
-// unchanged; a refused start leaves the queue as it was. WHEN the battle ends and the zone ticks,
-// THE server SHALL publish an empty `character.move_queue` and move neither battler (np-d.4).
+// When a wild or PvP tactical battle starts, the server empties each battler's private
+// `move_intent` queue in the same transaction and leaves its `last_input_seq` unchanged; a refused
+// start leaves the queue as it was. When the battle ends and the zone ticks, the server publishes
+// an empty `character.move_queue` and moves neither battler.
 //
 // The start functions write no `character` row: `movement_tick` stays the only writer of
 // `character.move_queue` / `character.acked_seq`, and the next tick publishes the empty queue.
 // Oracles are whole rows (BSATN-compared through `enc`, as the snapshots are) and tiles.
-//
-// RED REASON at the freeze: neither start function touches `move_intent`, so the queue survives
-// the battle and the first tick after it drains the stale queue (the battler walks).
 
 /// A private move intent: `queue` undrained, `seq` the last accepted input seq.
 fn npd_intent(entity_id: u64, queue: Vec<MoveInput>, seq: u64) -> crate::schema::MoveIntent {
@@ -7483,13 +7480,13 @@ fn npd_plain_walks(n: usize) -> Vec<(game_core::TilePos, Direction)> {
     walks
 }
 
-/// np-d.1 — a wild start called directly, pack 1 (auto-deploys through `materialize`) and a forced
+/// A wild start called directly, pack 1 (auto-deploys through `materialize`) and a forced
 /// pack 2 (Deploying): the player's `move_intent` row is afterwards exactly `{ entity_id, queue: [],
 /// last_input_seq: 41 }`; a bystander's non-empty queued intent is unchanged; every `character`
 /// row is unchanged — including the battler's, which still publishes its two queued inputs and
 /// seq 41 (the next tick publishes the empty queue, not the start).
 ///
-/// kills: the queue left intact (the defect); every player's queue cleared; the seq zeroed or
+/// kills: the queue left intact; every player's queue cleared; the seq zeroed or
 /// bumped; the intent row deleted; `character.move_queue` / `acked_seq` written by the start; the
 /// drop placed on one pack size only.
 #[test]
@@ -7565,7 +7562,7 @@ fn a_wild_battle_start_empties_the_players_queue_keeps_its_seq_and_writes_no_cha
     }
 }
 
-/// np-d.1 through the live path: a walker with a queued step onto grass plus a second queued input
+/// The same through the live path: a walker with a queued step onto grass plus a second queued input
 /// (seq 9), the always-firing table and a one-monster party. One tick applies the step and starts
 /// exactly one battle with the walker in it; the private queue is then empty with seq 9 kept, while
 /// the character row shows what that tick published (the second input, seq 9). A second tick
@@ -7632,10 +7629,11 @@ fn a_battle_started_by_the_zone_tick_empties_the_walkers_queue_and_the_next_tick
     );
 }
 
-/// np-d.1 guard — a refused direct wild start leaves the whole world as it was, the non-empty
-/// queue included: an early guard (the whole party fainted) and the LATE refusal (the deploy dry
-/// run refuses a zero-defense monster after the battle rows were inserted, and the writer undoes
-/// them). Passes today; it bites a drop placed before the last fallible step.
+/// A refused direct wild start leaves the whole world as it was, the non-empty queue included:
+/// an early guard (the whole party fainted) and the LATE refusal (the deploy dry run refuses a
+/// zero-defense monster after the battle rows were inserted, and the writer undoes them).
+///
+/// kills: a drop placed before the last fallible step.
 #[test]
 fn a_refused_wild_start_leaves_the_players_queue_and_the_world_as_they_were_np_d_1() {
     type Fault = (&'static str, &'static str, fn(&mut Monster));
@@ -7683,10 +7681,11 @@ fn a_refused_wild_start_leaves_the_players_queue_and_the_world_as_they_were_np_d
     }
 }
 
-/// np-d.1 guard — through `movement_tick`, the late refusal (a zero-defense party): the step is
-/// applied, no battle row exists, and the walker's `move_intent` row is exactly the post-drain
-/// queue the tick wrote (the second input still queued, seq 9 kept). Passes today; it bites a drop
-/// placed before the last fallible step.
+/// A wild start refused through `movement_tick` (the late refusal: a zero-defense party): the
+/// step is applied, no battle row exists, and the walker's `move_intent` row is exactly the
+/// post-drain queue the tick wrote (the second input still queued, seq 9 kept).
+///
+/// kills: a drop placed before the last fallible step.
 #[test]
 fn a_zone_tick_whose_wild_start_is_refused_keeps_the_post_drain_queue_np_d_1() {
     let fx = fixture();
@@ -7720,7 +7719,7 @@ fn a_zone_tick_whose_wild_start_is_refused_keeps_the_post_drain_queue_np_d_1() {
     );
 }
 
-/// np-d.3 — a PvP start called directly empties BOTH battlers' queues, each keeping its own
+/// A PvP start called directly empties BOTH battlers' queues, each keeping its own
 /// distinct seq (whole-row equality), while a third player's queued intent and every `character`
 /// row stay as they were.
 ///
@@ -7803,8 +7802,8 @@ fn a_pvp_battle_start_empties_both_battlers_queues_and_keeps_each_seq_np_d_3() {
     );
 }
 
-/// np-d.3 — a Practice start (one player on both sides, disjoint halves of one party) empties that
-/// player's queue and keeps its seq.
+/// A Practice start (one player on both sides, disjoint halves of one party) empties that player's
+/// queue and keeps its seq.
 ///
 /// kills: the drop keyed on `challenger != opponent`; the drop missing from the PvP start.
 #[test]
@@ -7843,10 +7842,12 @@ fn a_practice_battle_start_empties_the_players_queue_and_keeps_its_seq_np_d_3() 
     );
 }
 
-/// np-d.3 guard — a refused PvP start (the opponent's whole party fainted) leaves the whole world
-/// as it was, both non-empty queues included. On the real host a refused `accept_challenge` is
-/// rolled back; the native host has no rollback, so this guards the ORDERING (the drop after the
-/// last fallible step). Passes today.
+/// A refused PvP start (the opponent's whole party fainted) leaves the whole world as it was, both
+/// non-empty queues included. On the real host a refused `accept_challenge` is rolled back; the
+/// native host has no rollback, so this guards the ORDERING (the drop after the last fallible
+/// step).
+///
+/// kills: a drop placed before the last fallible step.
 #[test]
 fn a_refused_pvp_start_leaves_both_queues_and_the_world_as_they_were_np_d_3() {
     let fx = fixture();
@@ -7894,7 +7895,7 @@ fn a_refused_pvp_start_leaves_both_queues_and_the_world_as_they_were_np_d_3() {
     );
 }
 
-/// np-d.4 — two PvP battlers on plain tiles, each with TWO queued steps toward plain tiles (also
+/// Two PvP battlers on plain tiles, each with TWO queued steps toward plain tiles (also
 /// published, seq 21 / 34 on both rows), and a bystander with one queued step. The battle starts,
 /// is revealed, A forfeits; then the zone ticks once: both battlers' `character.move_queue` are
 /// empty with their `acked_seq` kept, neither moved, both private queues are empty — and the
@@ -7988,7 +7989,7 @@ fn after_a_pvp_battle_ends_the_zone_tick_publishes_empty_queues_and_moves_neithe
     );
 }
 
-/// np-d.4 — the same for a wild battle that ends by flee: the battler (two queued steps, seq 21)
+/// The same for a wild battle that ends by flee: the battler (two queued steps, seq 21)
 /// neither moves nor publishes a queue on the first tick after the flee, its seq kept; the
 /// bystander takes its one queued step in that tick.
 ///

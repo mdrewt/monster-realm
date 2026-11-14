@@ -59,7 +59,7 @@ const H = vi.hoisted(() => ({
    */
   rowEvents: {} as Record<string, { insert: Cb[]; update: Cb[]; delete: Cb[] }>,
   /**
-   * np-d: when true, the builder's `build()` throws synchronously (a malformed URI, an SDK version
+   * When true, the builder's `build()` throws synchronously (a malformed URI, an SDK version
    * check), after the build was recorded in `builds`. Additive: false by default, reset in every
    * `beforeEach`.
    */
@@ -1846,7 +1846,7 @@ describe('connect(): the world scope', { sequential: true }, () => {
 });
 
 // =============================================================================================
-// np-d: every reconnect attempt that ends without an applied subscription climbs exactly one rung
+// Every reconnect attempt that ends without an applied subscription climbs exactly one rung
 // of the backoff ladder (1000, 2000, 4000, 8000, 16000, 30000, 30000 ms …), whichever events
 // report the failure and whichever build path started the attempt.
 // =============================================================================================
@@ -2045,7 +2045,7 @@ describe('connect(): one backoff rung per failed reconnect attempt', { sequentia
 
   it('a rejecting credential resolve on an account tab climbs one rung per attempt: resolves at 2000, 4000, 8000 ms [np-d.5]', async () => {
     // WRONG IMPL KILLED: an attempt started after the async credential gap (or not at all), so its
-    // failure lands on a link that no longer marks an attempt in flight and climbs nothing.
+    // failure lands on a link that does not mark an attempt in flight and climbs nothing.
     writeAuthKind(globalThis, URI, DB, 'account');
     H.renew = () => Promise.reject(new Error('boom'));
     connect(makeOpts());

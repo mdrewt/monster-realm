@@ -7,7 +7,7 @@
 //! start has already emptied its queue through `drop_queued_moves`), publishes
 //! the remaining queue and the accepted seq on the `character` row it writes,
 //! and runs the grass-encounter trigger, which opens a TACTICAL wild battle
-//! through `tactics::start_wild_tactical` (bt-16: the one live wild path).
+//! through `tactics::start_wild_tactical` (the one live wild path).
 //! A zone ticks only while a player's character is in it (`arm_zone_tick` on
 //! entry; the tick that finds the zone empty sends its NPCs home and removes the
 //! schedule). The `movement_tick_schedule` scheduled `#[table]`
@@ -416,13 +416,13 @@ pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
 /// Empty `player`'s queued moves and keep the accepted seq: what a battle start
 /// does to each battler (`tactics::start_wild_tactical`,
 /// `tactics::start_pvp_tactical`), so a step queued before the battle never runs
-/// after it. The server drops the queue itself because a stale or hostile client
-/// would not send `clear_queue`. The seq stays where it is, so `authorize_move`
-/// still refuses every input sent before the battle.
+/// after it (docs/DECISIONS.md "Battle lifecycle and PvP"). The seq stays where
+/// it is, so `authorize_move` still refuses every input sent before the battle.
 ///
-/// Writes only the private `move_intent` row; the next `movement_tick` publishes
-/// the empty queue on the `character` row. Writes nothing when `player` has no
-/// `player` row, no intent row, or nothing queued.
+/// Writes only the private `move_intent` row. The `character` row keeps the
+/// queue the last tick published until the next `movement_tick` publishes the
+/// empty one. Writes nothing when `player` has no `player` row, no intent row,
+/// or nothing queued.
 pub(crate) fn drop_queued_moves(ctx: &ReducerContext, player: Identity) {
     let Some(p) = ctx.db.player().identity().find(player) else {
         return;

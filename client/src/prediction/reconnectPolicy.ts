@@ -56,8 +56,8 @@ export interface ReconnectState {
 
 /**
  * The pre-connection state. WHY 'disconnected' (not 'connected'): the client
- * starts frozen until the first onConnect — sends against a not-yet-open link
- * would be silently queued on the socket and never settle.
+ * starts frozen until the first applied subscription — sends against a
+ * not-yet-open link would be silently queued on the socket and never settle.
  */
 export function initialReconnectState(): ReconnectState {
   return { link: 'disconnected', attempt: 0 };

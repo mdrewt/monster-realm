@@ -13,7 +13,7 @@
 //                                                     if reconnecting: { link:'disconnected', attempt:s.attempt+1 }; if disconnected: s unchanged
 //   onAttemptFailed(s): ReconnectState              → if reconnecting: { link:'disconnected', attempt:s.attempt+1 }; else s unchanged
 //
-// np-d: every started attempt that ends without an applied subscription climbs exactly ONE rung,
+// Every started attempt that ends without an applied subscription climbs exactly ONE rung,
 // whichever failure event (connect error, drop, or both in either order) reports it. A link in
 // 'reconnecting' is a started attempt that has not failed yet; its first failure event moves it
 // to 'disconnected', so the same attempt's second event climbs nothing.
@@ -218,10 +218,10 @@ describe('reconnectPolicy: onDisconnected', () => {
   });
 
   it('a drop on a reconnecting link (the attempt opened and dropped before its subscription applied) climbs one rung [np-d.2]', () => {
-    // CORRECTED from the spec (np-d.2): this scenario used to expect `reconnecting` returned
-    // unchanged, which is the defect np-d fixes (a restarting host retried at a fixed 1 s). The
-    // attempt failed, so it ends 'disconnected' one rung higher.
-    // Kills: the old no-op; a drop that keeps 'reconnecting'; a drop that climbs two rungs.
+    // The attempt opened and dropped before its subscription applied: it failed, so it ends
+    // 'disconnected' one rung higher (a restarting host is not retried at a fixed 1 s).
+    // Kills: a drop on a reconnecting link treated as a no-op; a drop that keeps 'reconnecting';
+    // a drop that climbs two rungs.
     const reconnecting: ReconnectState = { link: 'reconnecting', attempt: 1 };
     const result = onDisconnected(reconnecting);
     expect(result).toEqual({ link: 'disconnected', attempt: 2 });
@@ -273,10 +273,9 @@ describe('reconnectPolicy: onAttemptFailed', () => {
   });
 
   it('from disconnected: a failure with no attempt in flight (the double-failure edge case) climbs nothing [np-d.5]', () => {
-    // CORRECTED from the spec (np-d.5): this scenario used to expect attempt 0 → 1. The
-    // 'disconnected' link means the attempt already failed (or none was started), so a second
-    // failure event of the same attempt must not climb a second rung.
-    // Kills: the old unconditional increment from 'disconnected'.
+    // A 'disconnected' link has no attempt in flight (it already failed, or none was started), so
+    // a failure event climbs nothing: an attempt's second failure event climbs no second rung.
+    // Kills: an increment from 'disconnected'.
     expect(onAttemptFailed({ link: 'disconnected', attempt: 0 })).toEqual({
       link: 'disconnected',
       attempt: 0,
@@ -470,7 +469,7 @@ describe('reconnectPolicy: T4 op-sequence property', () => {
 });
 
 // ================================================================================
-// 12. np-d: every attempt that ends without an applied subscription climbs ONE rung
+// 12. Every attempt that ends without an applied subscription climbs ONE rung
 // ================================================================================
 
 /** One failure event of an in-flight attempt, as connection.ts reports it. */
