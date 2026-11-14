@@ -1,6 +1,6 @@
 // ui/careAction.ts — the feedback-action decision core: one reducer call with a visible
-// outcome message (care, shop buy/sell, the four trade responses, rename, trade-propose), tagged
-// with the arm that settled so the caller routes it on its policy channel (uif-4b).
+// outcome message (care, shop buy/sell, rename), tagged with the arm that settled so the caller
+// routes it on its policy channel (uif-4b).
 //
 // WHY THIS MODULE EXISTS: `onCare` used to live inline in main.ts, which is
 // coverage-excluded and whose wiring closures are not exported — so the design's
@@ -42,14 +42,6 @@ export interface CareActionDeps {
   /** Shows the one outcome message; `outcome` names the arm, so the caller picks the message's
    *  kind from what happened, never from its text. */
   readonly showFeedback: (message: string, outcome: CareOutcome) => void;
-  /**
-   * Called when the action REJECTS — a synchronous throw from `call` or the settled
-   * rejection — right after its failure line is painted. The disconnected arm is NOT
-   * a rejection: no call was made. This threads the rejection out to the caller so it
-   * can undo optimistic state the send latched (C5: a rejected trade answer releases
-   * its answeredRequests key, so the still-pending request shows again).
-   */
-  readonly onRejected?: () => void;
 }
 
 /**
@@ -76,7 +68,6 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     inFlight = deps.call();
   } catch (err) {
     deps.showFeedback(reduceErrorMessage(err, deps.where), 'rejected');
-    deps.onRejected?.();
     return;
   }
   // Branch BEFORE awaiting: `await undefined` resolves without throwing, so a
@@ -98,6 +89,5 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     // reduceErrorMessage passes SenderError reasons through and collapses
     // InternalError to a generic line — raw err.message is never shown.
     deps.showFeedback(reduceErrorMessage(err, deps.where), 'rejected');
-    deps.onRejected?.();
   }
 }

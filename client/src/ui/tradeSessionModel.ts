@@ -91,8 +91,6 @@ export interface TradeSessionInput {
   readonly itemDefs: ReadonlyMap<number, StoreItemRow>;
   readonly inventory: readonly StoreInventory[];
   readonly balance: bigint;
-  /** The viewer's monsters in an active legacy trade offer. */
-  readonly legacyOfferMonsterIds: ReadonlySet<bigint>;
   /** The viewer's monsters in an ongoing battle. */
   readonly battleMonsterIds: ReadonlySet<bigint>;
   /** game-core's `PARTY_SIZE` (the `party_size()` export): a slot below it is a party slot. */
@@ -246,9 +244,7 @@ export function buildTradeSessionVm(i: TradeSessionInput): TradeSessionScreenVm 
   }
   const blockOf = (m: StoreMonsterPub): MonsterBlock | null => {
     if (m.currentHp === 0) return 'fainted';
-    if (elsewhere.has(m.monsterId) || i.legacyOfferMonsterIds.has(m.monsterId)) {
-      return 'inAnotherTrade';
-    }
+    if (elsewhere.has(m.monsterId)) return 'inAnotherTrade';
     return i.battleMonsterIds.has(m.monsterId) ? 'inBattle' : null;
   };
 

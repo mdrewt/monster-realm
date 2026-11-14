@@ -8,7 +8,7 @@
 // Enter or Space on a button and the D-pad all move and press the same thing, and no control is
 // drawn twice. Which controls show is the claim and privacy models' (held by main.ts, out of the
 // screen's reach), so the adapter keeps no cursor: a press becomes a one-shot row TOKEN (a new object
-// each press, compared by identity: the tradeProposeScreen precedent) that the view applies once.
+// each press, compared by identity) that the view applies once.
 // Every step's state holds the new token or null, so the host's paint after a later button never
 // re-applies an old one. B pops the frame, which never confirms anything: every close disarms both
 // two-step confirms (each section's `hide()`), and with no row focused a press only seats a row.

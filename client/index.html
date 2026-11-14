@@ -40,10 +40,6 @@
         <!-- m15b trade overlay shell — hidden by default; managed by TradeView. -->
         <div id="trade-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
           <div id="trade-status" tabindex="-1"></div>
-          <div id="trade-my-side"></div>
-          <div id="trade-their-side"></div>
-          <div id="trade-actions"></div>
-          <div id="trade-feedback"></div>
         </div>
         <!-- m16b PvP challenge overlay shell — hidden by default; managed by PvpView. -->
         <div id="pvp-challenge-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
@@ -64,22 +60,9 @@
           <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
           <button id="rename-submit" data-testid="rename-submit" type="button"></button>
         </div>
-        <!-- pt-c2 trade-PROPOSE overlay shell — hidden by default; managed by TradeProposeView. -->
+        <!-- The trade session editor's shell — hidden by default; managed by TradeSessionView, which
+             builds the editor inside it and keeps #tradepropose-submit as its Close button. -->
         <div id="tradepropose-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
-          <select id="tradepropose-target" data-testid="tradepropose-target"></select>
-          <div id="tradepropose-monsters" data-testid="tradepropose-monsters"></div>
-          <input
-            id="tradepropose-offer-currency"
-            data-testid="tradepropose-offer-currency"
-            type="number"
-            min="0"
-          />
-          <input
-            id="tradepropose-request-currency"
-            data-testid="tradepropose-request-currency"
-            type="number"
-            min="0"
-          />
           <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button"></button>
         </div>
         <!-- pt-c2b help overlay shell (How to Play) — hidden by default; managed by HelpView, which
@@ -122,23 +105,20 @@
       </div>
       <!-- ctl-7a: the hint bar — the on-screen Start and Select buttons, replacing the retired
            #help-hint badge. main.ts writes each verb from the copy catalog at boot (chrome.chip.*);
-           the button name (data-button) is a CSS pseudo-element with empty alt text. Clicks are
-           delegated in main.ts on [data-menu-launcher] / [data-help-launcher]. Static until ctl-13
-           makes the bar live. -->
+           the button name (data-button) is a CSS pseudo-element with empty alt text. A click presses
+           the chip's data-button through the #game-screen pointer dispatcher (input/pointerSource.ts). -->
       <div id="hint-bar" class="mr-hint-bar">
         <button
           id="chip-start"
           class="mr-chip"
           type="button"
           data-button="Start"
-          data-menu-launcher
         ></button>
         <button
           id="chip-select"
           class="mr-chip"
           type="button"
           data-button="Select"
-          data-help-launcher
         ></button>
       </div>
     </div>

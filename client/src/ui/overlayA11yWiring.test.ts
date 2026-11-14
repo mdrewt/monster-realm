@@ -1584,8 +1584,10 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
 
   it('QF1-1-SCOPE-NATIVE-EVERYWHERE BITES: EVERY natively focusable element of the shipped index.html, plus one input of every type, a select, a textarea, an a[href] and a contenteditable, keeps the browser ring (never computes none)', () => {
     // WRONG IMPL KILLED: a suppression scoped to one native control family that the four anchors
-    // do not cover — `input[type="number"]:focus { outline: none }` (the two currency inputs are
-    // type=number, the anchors are type=text / select / buttons), `input[type="range"]:focus`,
+    // do not cover — `input[type="number"]:focus { outline: none }` (index.html ships no
+    // type=number input any more, so the synthetic one-input-of-every-type list below, which
+    // includes 'number', is the only cover for it; the shipped anchors are type=text / buttons),
+    // `input[type="range"]:focus`,
     // `textarea:focus`, `a:focus`, `[contenteditable]:focus`, `select:focus`. Each element is read
     // ONCE, after its own focus (the computed-style cache hazard).
     const shipped = Array.from(
@@ -1593,10 +1595,12 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
         'button, input, select, textarea, a[href], [contenteditable]',
       ),
     );
+    // ts-6b-12 (named intentional change): the floor drops 8 -> 5, the wizard's select and two
+    // number inputs having left index.html. Was: 8, the wizard's select and two number inputs.
     expect(
       shipped.length,
-      'the adopted index.html ships eight native controls (rename x2, tradepropose x4, chips x2)',
-    ).toBeGreaterThanOrEqual(8);
+      'the adopted index.html ships five native controls (rename x2: input and button, the editor Close #tradepropose-submit x1, chips x2)',
+    ).toBeGreaterThanOrEqual(5);
 
     const wrapper = dialogWrapper();
     const synthetic: HTMLElement[] = [];
@@ -1647,10 +1651,13 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
         offenders.push(`${describeEl(el)} type=${el.getAttribute('type') ?? ''} computes none`);
       }
     }
+    // ts-6b-12 (named intentional change): 5 shipped controls (rename x2, the editor Close x1,
+    // chips x2) + 17 input types + select, textarea and a[href] (the contenteditable may be
+    // unfocusable and is not counted). Was: 8 + 17 + 3, the wizard's three controls included.
     expect(
       read,
       'vacuity guard: the loop must have read the native controls',
-    ).toBeGreaterThanOrEqual(8 + 17 + 3);
+    ).toBeGreaterThanOrEqual(5 + 17 + 3);
     expect(
       offenders,
       'a focus-suppression rule strips the browser ring from a native control',
