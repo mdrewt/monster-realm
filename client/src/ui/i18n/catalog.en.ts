@@ -1,6 +1,6 @@
 // ui/i18n/catalog.en.ts — the English (source-locale) catalog.
 //
-// ONE ENTRY PER `MessageId`, and the type makes that total: `satisfies Catalog` is load-bearing
+// ONE ENTRY PER `MessageId` AND `A11yKey`, and the type makes that total: `satisfies Catalog` is load-bearing
 // — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
 // into `T`; `satisfies` restores the excess-property check, and the mapped type reports an
 // omitted key by name (TS2741). Frozen for the same reason `a11yCopy` is: the type annotation is

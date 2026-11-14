@@ -25,12 +25,8 @@
 // catalog key. It exists so §2.4(3) (battle turn outcome) and §2.4(4) (NPC prompt / zone change)
 // can be wired by the slice that grows their producers, without breaking this frozen API.
 //
-// THE DECLARED COPY GAP, AND WHO OWNS IT (plan adjudication A4/A11). §2.4(2)/A11Y-22 want "the world
-// region is now focused" announced when the last overlay closes. That needs an `a11y.world.region`
-// entry, `ui/a11yCopy.ts` is in NO post-S0 slice's `touches:`, and `t()` throws on a miss — so
-// topOverlay → null emits NOTHING here rather than inventing a key or faking a literal. Escalated
-// to the supervisor as a residual; the slice that adds the key must wire this consumer in the same
-// change (A11Y-4's orphan rule).
+// topOverlay → null emits NOTHING here: the world region's name (`a11y.world.region`) is announced
+// by main.ts's frame pump on that edge, beside the focus return it pairs with.
 
 import { t } from './a11yCopy';
 import { OVERLAY_A11Y, type OverlayId } from './overlayRegistry';

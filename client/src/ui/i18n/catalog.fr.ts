@@ -7,7 +7,7 @@
 // the 1v1 view in bt-17; `ui/i18n/plural.ts` keeps its own tests). It mirrors catalog.en.ts
 // ENTRY FOR ENTRY, IN THE SAME ORDER, so a side-by-side diff of the two files lines up.
 //
-// ONE ENTRY PER `MessageId`, and the type makes that total: `satisfies Catalog` is load-bearing
+// ONE ENTRY PER `MessageId` AND `A11yKey`, and the type makes that total: `satisfies Catalog` is load-bearing
 // — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
 // into `T`; `satisfies` restores the excess-property check, and the mapped type reports an
 // omitted key by name (TS2741). Frozen for the same reason `CATALOG_EN` is: the type annotation
@@ -1857,7 +1857,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'a11y.overlay.shopView.title': 'Boutique',
   // @desc: Accessible name a screen reader announces for an incoming trade offer when it opens; a short
   // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
-  'a11y.overlay.tradeView.title': 'Échange entrant',
+  'a11y.overlay.tradeView.title': 'Proposition d’échange',
   // @desc: Accessible name a screen reader announces for a player-versus-player challenge when it opens; a short
   // dialog title, no trailing punctuation. overlayA11y.ts (aria-label) and announcements.ts
   'a11y.overlay.pvpView.title': 'Défi PvP',

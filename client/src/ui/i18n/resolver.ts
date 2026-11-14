@@ -12,7 +12,7 @@
 // `en` would make an unwired locale look wired — exactly the vacuity to avoid. The cell
 // is left unchanged on the throw. There is no per-call fallback to `en` in `t`/`tf` either: the
 // `Catalog` type makes every registered locale total, so a miss can only be a key
-// that is not a `MessageId` at all, and that is a bug to surface, not paper over.
+// that is neither a `MessageId` nor an `A11yKey`, and that is a bug to surface, not paper over.
 //
 // WHY `t`/`tf` THROW RATHER THAN RETURNING THE KEY OR '' — the `a11yCopy.t` reasoning verbatim:
 // the key text on screen makes an unwired catalog look wired, and '' ships a blank

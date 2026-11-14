@@ -5491,7 +5491,7 @@ async function main(): Promise<void> {
       ) {
         // The account entering deletion grace — this session's request or another's — is said
         // once, with the deadline the banner shows. A boot or reconnect into an existing grace
-        // reads `unknown` → `grace` here and stays silent.
+        // reads (no memo or `unknown`) → `grace` here and stays silent.
         if (lastPrivacyCountdown?.phase === 'active' && privacyCountdown.phase === 'grace') {
           const graceSaid = privacyBannerLabel(privacyCountdown);
           if (graceSaid !== null) announceNow(graceSaid);

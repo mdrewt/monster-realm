@@ -46,8 +46,8 @@
 // near-identical copies.
 //
 // THE NODE IS RESOLVED ON EVERY WRITE AND CACHED NEVER — neither a null result nor a non-null one.
-// Slice S2 ships `<div id="a11y-live">` in `client/index.html`; it does not exist yet, so S1 must be
-// inert-but-correct without it: a missing node returns silently and KEEPS the pending message so it
+// `client/index.html` ships `<div id="a11y-live">`; a document without it (most view test fixtures)
+// is handled inert-but-correct: a missing node returns silently and KEEPS the pending message so it
 // lands the moment the node appears. A non-null cache is just as wrong — the element can be
 // detached and replaced, and a stale reference would write to a node nobody can read.
 //
@@ -56,10 +56,8 @@
 // partner's name — and an HTML-parsing sink would be an injection surface), not `setAttribute`. The
 // `aria-live`/`aria-atomic`/`role` attributes belong to S2's markup, not to a runtime write.
 //
-// THE ONE NAMED EXCEPTION (named rather than softening the claim): this
-// header used to say `textContent` was the only DOM write of any kind, and explicitly excluded
-// `appendChild`. `adoptLiveRegion` below now calls `appendChild` — it moves the node's PARENT, and
-// never its content, never its attributes. The injection argument above is about CONTENT and is
+// THE ONE NAMED EXCEPTION: `adoptLiveRegion` below calls `appendChild` — it moves the node's
+// PARENT, and never its content, never its attributes. The injection argument above is about CONTENT and is
 // untouched: a custody move cannot introduce a sink.
 
 /** The id this module looks the live-region element up by, resolved fresh on every write and never
@@ -70,7 +68,7 @@
 export const LIVE_REGION_ID = 'a11y-live';
 
 /** U+00A0, toggled onto a repeat so the node's content changes (header). Built from its code
- *  point: it is a control character for assistive technology, never player-facing copy. */
+ *  point: an invisible, unspoken character, never player-facing copy. */
 const NO_BREAK_SPACE = String.fromCharCode(0xa0);
 
 /** The coalescing window. Exported because it is the contract S5's pump reasons about. */
@@ -110,7 +108,7 @@ export class LiveRegion {
     if (pending === null) return;
     if (nowMs - this.#windowOpenedAtMs < COALESCE_WINDOW_MS) return;
     const node = document.getElementById(LIVE_REGION_ID);
-    // No node yet (S2 has not landed) — keep `#pending` so the message lands once it exists.
+    // No node in this document — keep `#pending` so the message lands once it exists.
     if (node === null) return;
     // A repeat of what the node shows toggles a trailing U+00A0 so the content changes (header).
     node.textContent = node.textContent === pending ? pending + NO_BREAK_SPACE : pending;
