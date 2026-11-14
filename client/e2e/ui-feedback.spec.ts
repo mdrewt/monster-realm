@@ -32,8 +32,9 @@ import { closeAll, pressAccel, pressButton } from './controls';
 // first, so the "after" is never a vacuous no-op), and no control is clicked or focused between the
 // two reads (a click scrolls its target into view at 640x240 and would move rects by itself): the
 // rename submits with Enter in its focused field, and the Controls capture is driven by keys. A
-// frame's own deferred initial focus is such a focus too, so it has landed before the first read:
-// the rename waits for its field to be focused, and `openControls` for the rows.
+// frame's own deferred initial focus is scroll-free (ui/overlayA11y.ts focuses its anchor with
+// `preventScroll`), and the fixtures still wait for it before the first read so every read sees
+// a settled open: the rename waits for its field to be focused, and `openControls` for the rows.
 //
 // SHARED-WORLD HYGIENE (playwright.config.ts `workers: 1`, one published db). This file sorts after
 // ui-chrome and before ui-scale. It joins exactly ONE player in ONE browser context, closed in
@@ -43,11 +44,11 @@ import { closeAll, pressAccel, pressButton } from './controls';
 // table behind. No encounter, no battle, no fixed sleep: every wait polls a DOM or `__game()`
 // predicate with a bound.
 //
-// LATE DEFERRED FOCUS (ci-fix-20261113T2045). The last test proves the FIXTURE, not the product:
-// `openControls` must return only once the frame's deferred initial focus on `#controls-rows` has
-// landed, else that focus can land between two reads and scroll the 640x240 shell, moving the tab
-// strip and the rows grid by itself. It holds the page's zero-delay timers back so the late focus
-// is deterministic, not luck.
+// LATE DEFERRED FOCUS. The last test proves the PRODUCT: the Controls frame's deferred initial
+// focus on `#controls-rows` lands AFTER the cursor was walked and the first rect read was taken,
+// and moves no box of the 640x240 frame. It holds the page's zero-delay timers back so the late
+// focus is deterministic, not luck, and it shows that a focus which does scroll is seen by the
+// same rect read (else the no-move claim is vacuous).
 
 interface Frame {
   kind: string;
@@ -152,7 +153,8 @@ test.describe
         .toEqual([w.width, w.height]);
     };
 
-    const openControls = async (label: string): Promise<void> => {
+    /** Opens Controls over the menu and returns as soon as the frame is visible (no settle). */
+    const openControlsFrame = async (label: string): Promise<void> => {
       // Start, Down to Controls, A: the Controls frame above the menu (remap.spec). Controls is a
       // root entry of the menu (UIF15C.4), so there is no group and no Down-into-sub-list step.
       await pressButton(page, 'Start');
@@ -170,14 +172,16 @@ test.describe
         .poll(() => stackNames(page), { message: `${label}: A opens Controls over the menu` })
         .toEqual(['world', 'menuView', 'controlsView']);
       await expect(page.locator('#controls-overlay')).toBeVisible();
-      // SETTLE. The overlay moves focus to its rows one macrotask AFTER it opens (the deferred
-      // initial focus of ui/overlayA11y.ts), and that focus scrolls the 640x240 shell. A key or a
-      // rect read that beats it races it: the cursor scrolls the shell part of the way, then the
-      // late focus scrolls it further and every box inside the shell moves. The open is over once
-      // the rows have the focus (the pending timer is inert from then on). The rows do get it in
-      // this spec: every open here starts with focus outside the frame (on the page body, or on
-      // the menu beneath, which is blurred as Controls opens over it). A retried predicate with
-      // the expect timeout as its bound, not a sleep.
+    };
+
+    const openControls = async (label: string): Promise<void> => {
+      await openControlsFrame(label);
+      // SETTLE. The overlay moves focus to its rows one macrotask AFTER it opens (the deferred,
+      // scroll-free initial focus of ui/overlayA11y.ts). The open is over once the rows have the
+      // focus (the pending timer is inert from then on), so every read below sees a settled open.
+      // The rows do get it in this spec: every open here starts with focus outside the frame (on
+      // the page body, or on the menu beneath, which is blurred as Controls opens over it). A
+      // retried predicate with the expect timeout as its bound, not a sleep.
       await expect(
         page.locator('#controls-rows'),
         `${label}: the open settled on the rows`,
@@ -334,26 +338,42 @@ test.describe
       }
     });
 
-    test('UIF4B.2 fixture: openControls waits out a late deferred focus on the rows before any further key is sent, so at 640x240 no box of the Controls frame moves once the rows have their focus', async () => {
-      // The two orderings. SETTLED fixture: `openControls` waits out the hold, the rows take their
-      // focus (which scrolls the 640x240 shell), and only then is the cursor walked to X_0, so
-      // every read is at the same scroll. UNSETTLED fixture: the walk runs inside the hold and the
-      // cursor's own nearest-scroll moves the shell part of the way, `before` is read there, then
-      // the late focus scrolls the shell further and the tab strip and the rows grid move.
+    test('UIF4B.2 the Controls frame: a deferred focus that lands on the rows after the cursor walk and the first read moves no box of the frame at 640x240', async () => {
+      // The UNSETTLED ordering, on purpose: the frame opens, the cursor is walked to X_0 (its
+      // nearest-scroll moves the 640x240 shell), `before` is read, and only then does the held
+      // deferred focus land on the rows. That focus is scroll-free, so the tab strip and the rows
+      // grid keep their rects to the pixel. The counter-proof at the end blurs the rows and focuses
+      // them with a plain `.focus()` in the same state: that scrolling focus DOES move a box, so
+      // the equality above is a real measurement, not a frame that cannot move.
       // The hold is inside the PAGE (it delays the product's own zero-delay timer); the test itself
-      // never sleeps, every wait in it is a retried predicate.
-      // While installed, the hold delays EVERY zero-delay timer in the page, not only the
-      // overlay's; any other one is only slowed.
-      // The value: the hold starts at the Controls open, and an unsettled fixture is red only
-      // while its first read comes before the held focus. The unsettled fixture's
-      // open-to-first-read latency measures under 100 ms unthrottled and 959 ms at 20x CPU
-      // throttle, so 1500 ms keeps that read ahead of the focus on a loaded machine. It is a
-      // duration and not "until released" because a settled `openControls` waits for that
-      // very focus. It must stay under the expect timeout (5 s) that bounds the settle in
-      // `openControls`.
-      const ZERO_DELAY_HOLD_MS = 1500;
+      // never sleeps, every wait in it is a retried predicate. While installed, the hold delays
+      // EVERY zero-delay timer in the page, not only the overlay's; any other one is only slowed.
+      // The value: 2500 ms keeps the first read (the open, a handful of Down presses, one read)
+      // ahead of the focus on a loaded machine, and the read itself asserts the focus has not
+      // landed yet, so a too-slow run fails as a FIXTURE error, never as a vacuous pass.
+      const ZERO_DELAY_HOLD_MS = 2500;
       const label = 'late focus';
       const BOXES = ['#controls-overlay', '#controls-tabs', '#controls-rows'] as const;
+      /** The rects of BOXES, the shell's scrollTop and whether the rows hold the focus, in one pass. */
+      const readFrame = (): Promise<{ rects: Rect[]; scrollTop: number; rowsFocused: boolean }> =>
+        page.evaluate((sels: readonly string[]) => {
+          const rects = sels.map((s) => {
+            const el = document.querySelector(s);
+            if (el === null) throw new Error(`late focus: ${s} is not on the page`);
+            const r = el.getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height };
+          });
+          const overlay = document.getElementById('controls-overlay');
+          const rows = document.getElementById('controls-rows');
+          if (overlay === null || rows === null) {
+            throw new Error('late focus: the shell or the rows are not on the page');
+          }
+          return {
+            rects,
+            scrollTop: overlay.scrollTop,
+            rowsFocused: document.activeElement === rows,
+          };
+        }, BOXES);
       const heldFocus = (): Promise<boolean> =>
         page.evaluate(() => {
           const w = window as unknown as { __mrHeldFocus?: boolean };
@@ -395,47 +415,54 @@ test.describe
           };
         }, ZERO_DELAY_HOLD_MS);
 
-        await openControls(label);
+        // No settle: the walk and the first read run inside the hold.
+        await openControlsFrame(label);
         await downTo(page, controlsActive, 'X_0', 13, `${label}: the Controls grid`);
-        const before = await rectsOf(page, BOXES);
+        const before = await readFrame();
+        expect(
+          before.rowsFocused || (await heldFocus()),
+          'FIXTURE: the deferred focus landed before the first read, so this test no longer exercises the late-focus ordering',
+        ).toBe(false);
+        expect(
+          before.scrollTop,
+          'FIXTURE: the cursor walk scrolled the shell at 640x240 (else the frame has no scroll to keep)',
+        ).toBeGreaterThan(0);
 
         await expect(
           page.locator('#controls-rows'),
-          'late focus: the rows receive the open initial focus',
-        ).toBeFocused();
+          `${label}: the rows receive the open initial focus`,
+        ).toBeFocused({ timeout: ZERO_DELAY_HOLD_MS + 5_000 });
         expect(
           await heldFocus(),
           'FIXTURE: the hold did not carry the overlay initial focus onto the rows, so this test no longer exercises the late-focus ordering',
         ).toBe(true);
-        const after = await rectsOf(page, BOXES);
+        const after = await readFrame();
+        expect(after.scrollTop, `${label}: the shell did not scroll when the focus landed`).toBe(
+          before.scrollTop,
+        );
         for (const [k, sel] of BOXES.entries()) {
           expect(
-            after[k],
-            `late focus: ${sel} did not move when the deferred focus landed`,
-          ).toEqual(before[k]);
+            after.rects[k],
+            `${label}: ${sel} did not move when the deferred focus landed`,
+          ).toEqual(before.rects[k]);
         }
 
-        const shell = await page.evaluate(() => {
-          const overlay = document.getElementById('controls-overlay');
-          const cell = document.querySelector('#controls-rows [aria-selected="true"]');
-          if (overlay === null || cell === null) {
-            throw new Error('late focus: the shell or the active cell is not on the page');
-          }
-          const o = overlay.getBoundingClientRect();
-          const scrollportBottom = o.top + overlay.clientTop + overlay.clientHeight;
-          return {
-            scrollTop: overlay.scrollTop,
-            clearance: scrollportBottom - cell.getBoundingClientRect().bottom,
-          };
-        });
+        // COUNTER-PROOF: in this very state a focus that scrolls moves the frame's boxes, and the
+        // same one-pass read sees it.
+        const scrolled = await page.evaluate((sels: readonly string[]) => {
+          const rows = document.getElementById('controls-rows');
+          if (rows === null) throw new Error('late focus: the rows are not on the page');
+          rows.blur();
+          rows.focus();
+          return sels.map((s) => {
+            const r = document.querySelector(s)?.getBoundingClientRect();
+            return r === undefined ? null : { x: r.x, y: r.y, width: r.width, height: r.height };
+          });
+        }, BOXES);
         expect(
-          shell.scrollTop,
-          'FIXTURE: the shell is scrolled at 640x240 (else no focus can move a box and this test is vacuous)',
-        ).toBeGreaterThan(0);
-        expect(
-          shell.clearance,
-          'FIXTURE: the focus scrolled the shell past the active cell`s nearest-scroll (else a late focus moves no box and this test is vacuous)',
-        ).toBeGreaterThan(0);
+          scrolled,
+          'FIXTURE: a scrolling focus on the rows moves a box of the frame (else the no-move claim above is vacuous)',
+        ).not.toEqual(after.rects);
       } finally {
         try {
           await page.evaluate(() => {
