@@ -54,9 +54,9 @@ licence permits; that is the operator's negotiation with the licensor.
   Program grant you additional permission to convey the resulting work." The second grants, under
   the same condition, that "you need not prominently offer all users interacting with your modified
   version remotely through a computer network an opportunity to receive the Corresponding Source of
-  your version from a network server at no charge", and ends: "This permission does not waive or
-  modify any other obligations or terms of the AGPL v3.0, except for the specific requirement set
-  forth in section 13."
+  your version from a network server at no charge, if your version supports such interaction. This
+  permission does not waive or modify any other obligations or terms of the AGPL v3.0, except for
+  the specific requirement set forth in section 13."
 - **Subdirectories.** The file says: "If a subdirectory contains its own LICENSE or LICENSE.txt
   file, the terms in that file apply exclusively to all files and subfolders within that
   subdirectory." and "In the event of any conflict between this base license and a subdirectory’s
@@ -241,8 +241,7 @@ the host look the issuer up and answer 401 about ten seconds later (section 5).
 
 ### Can a token a private host receives be replayed to the official server
 
-**Own-issuer design.** Not as the account, and not at all once one rule holds. A private host holds
-two things.
+**Own-issuer design.** Not as the account. A private host holds two things.
 
 The world's own token is signed by the private host's key: the official host refuses it
 (`InvalidSignature`, measured between two hosts).
@@ -257,18 +256,20 @@ account.
 The attestation, presented as a reducer argument, is as narrow as what it names, and the same
 module runs on every server, the official one included. So the design needs a rule that does not
 exist in code: the official server refuses attestation binding outright and takes accounts only as
-connection tokens from the account issuer. With that rule nothing a private host holds does
-anything on the official server.
+connection tokens from the account issuer. With that rule nothing a private host holds reaches an
+account on the official server.
 
 Replay to another private world is a separate question, and the design has to close it before a
 private server sees a real attestation. An audience and a nonce do not close it: a hostile host can
 have its player's client fetch an attestation addressed to another world, carrying that world's
 nonce, and present it there as its own. Naming the player's identity in the attestation does not
-close it either: every standalone host calls itself "localhost" and chooses the subjects it signs,
-so a hostile host can give its player an identity equal to its own identity on the other world.
-The attestation has to name something a hostile host cannot forge, such as the key that verifies
-the client's own world token, checked by the client before it asks. That is LP6's to design and
-test.
+close it either: every standalone host calls itself "localhost", and a hostile operator holds its
+host's signing key and can sign any subject with it, so its player can be given the identity the
+operator holds on the other world. The attestation has to name something a hostile host cannot
+forge, such as the key that verifies the client's own world token, checked by the client before it
+asks. Two parts of that direction are open: a module cannot read its own host's verifying key (a
+reducer cannot call `GET /v1/identity/public-key`), and a hostile host that proxies the other
+world hands the client a genuine token from it. That is LP6's to design and test.
 
 **Audience-scoped fallback.** Refused at the WebSocket connection, by one check, and only for a
 token whose audience list holds no official audience. The private host holds a token from the
@@ -286,9 +287,9 @@ the audience is not (`provision_or_touch_account`; the wrong-audience control in
 - The token carries the account's official identity, so the host learns which official player
   joined.
 
-The account token in use today is this fallback's dangerous case: its audience is the build-wide
-client id, which the official server accepts. That is why the local-play plan offers no account
-token to a single-player or friends world.
+The account token the client is built to send is this fallback's dangerous case: its audience is
+the build-wide client id, which the official server accepts. That is why the local-play plan
+offers no account token to a single-player or friends world.
 
 ### What identifies a player between launches
 
@@ -358,8 +359,8 @@ Each cell is the median of three runs, with the range of the three in brackets.
   saw the commit log shrink, and the host wrote one snapshot when the world was created and none
   in the window after it, so within the time measured a world's disk use grows by this much for
   every hour played. What a later snapshot changes was not observed.
-- Resident memory at the end of every window was at or below its value at the start (within 2 %),
-  and no host's scope peaked above 202 MiB of the 2048 allowed.
+- Resident memory at the end of a window was never more than 2 % above its value at the start, and
+  no host's scope peaked above 202 MiB of the 2048 allowed.
 - The three runs of a condition agree within 4 % on CPU and on commit-log growth.
 
 Start-up, from the host process starting to the client's first frame with its own character drawn:
@@ -452,7 +453,8 @@ changes what the host does per tick, per connection or at start-up re-measures a
 | Friends server: disk growth, eight players walking | 45.01 | 68 | MiB per hour | 1.51 times the median |
 
 - *Memory* is peak resident memory since the host started, world creation included. Creation sets
-  it today, so it is the same for both rows; resident memory in play is lower (section 4).
+  the peak today in both rows, so this budget bounds what the host ever holds and does not bound
+  growth in play: resident memory at window end (section 4) is the number that shows that.
 - *Idle CPU* for a single-player world is the player standing still, the idle such a world has;
   for a friends server it is the host with nobody connected, an always-on server's idle.
 - *Start-up to playable* is the same host and module for both, so both rows derive from "Open an

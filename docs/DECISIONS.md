@@ -1547,7 +1547,7 @@ judge's scores and the measurements are in `docs/local-play.md`.
 
 **Why.** The shell must not fork the client, and the engine it renders in decides whether the e2e suite's
 coverage carries over. Electron ships Chromium, the only engine family the suite runs; Tauri renders in
-WKWebView on macOS and WebKitGTK on Linux and the Steam Deck. Early access is the Steam build: Electron has
+WebView2 on Windows but in WKWebView on macOS and WebKitGTK on Linux and the Steam Deck. Early access is the Steam build: Electron has
 a documented route to the Steam overlay, Tauri's request for one is closed as not planned, and a launcher
 that opens the system browser has no window to draw it over. A judge scored the three from one dossier:
 Electron 50, the launcher 44, Tauri 43 of 65 weighted. Unweighted the launcher leads by a point (27, 26,
@@ -1572,12 +1572,9 @@ draw, this entry is rewritten, not worked around.
 | Start-up to playable | 800 ms (1.49 times the 538 median) | 800 ms (1.49 times the 538 median) |
 | Disk growth | 12 MiB per hour (1.46 times the 8.23 median) | 68 MiB per hour (1.51 times the 45.01 median) |
 
-Memory is peak resident memory since the server started, world creation included. Idle CPU is one player
-standing still (single-player) and nobody connected (friends server). Start-up runs from the server process
-starting to the returning player's first frame with their character drawn, the shell's own start excluded.
-Disk growth is one player walking without pause, and eight clients walking. The friends-server memory and
-disk numbers are a walking-only floor, set again when battles and trades are measured. Work that changes
-what the server does per tick, per connection or at start-up re-measures and holds these.
+The record defines each measure and the condition it is taken in. The friends-server memory and disk
+numbers are a walking-only floor, set again when battles and trades are measured. Work that changes what
+the server does per tick, per connection or at start-up re-measures and holds these.
 
 **Why.** The server runs on the player's machine beside the game, so its cost is the player's, and a
 budget nobody measured is either ignored or blocks the wrong change. The measured costs are small and the
