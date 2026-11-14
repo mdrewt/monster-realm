@@ -1,6 +1,13 @@
 import { execSync } from 'node:child_process';
+import type { Plugin } from 'vite';
 import wasm from 'vite-plugin-wasm';
 import { coverageConfigDefaults, defineConfig } from 'vitest/config';
+import { resolveConnectionConfig } from './src/net/connectionConfig';
+import {
+  renderShellConfigScript,
+  SHELL_CONFIG_SCRIPT,
+  type ShellDocument,
+} from './src/net/shellDocument';
 
 // pt-a1: capture the build provenance at build time. The git short-SHA +
 // build time are injected as bareword globals (__MR_BUILD_SHA__ / __MR_BUILD_TIME__),
@@ -20,6 +27,59 @@ function resolveBuildSha(): string {
 const buildSha = resolveBuildSha();
 const buildTime = process.env.MR_BUILD_TIME ?? new Date().toISOString();
 
+// The shell document for this tooling's own servers. The client takes its SpacetimeDB target
+// from a page global that `/shell-config.js` sets at run time (src/net/shellDocument.ts), so
+// `VITE_STDB_URI` / `VITE_STDB_DB` are inputs of this plugin, never of client code:
+//   * `vite dev` answers `/shell-config.js` with a document naming them (each trimmed, or the
+//     local dev target when unset or blank), kind `test`. Nothing is validated here: the client
+//     refuses a bad document at page load, and vitest loads this config too.
+//   * `vite build` writes `dist/shell-config.js` the same way, but only when `VITE_STDB_DB` is
+//     set (the playtest and `client-verify-build` builds). It first resolves the document as a
+//     production client would, so a target that client refuses fails the build. Without
+//     `VITE_STDB_DB` the build ships no document and whatever hosts it supplies one.
+//   * `vite preview` has no hook: it serves the built file from `dist/`.
+function shellConfigPlugin(): Plugin {
+  const trimmed = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+  const local = resolveConnectionConfig(undefined, true);
+  // Both are set by `configResolved`, which Vite runs before the other two hooks.
+  let uri = '';
+  let db = '';
+  const shellDocument = (): ShellDocument => ({
+    connection: { uri: uri || local.uri, db: db || local.db, kind: 'test' },
+  });
+  return {
+    name: 'mr-shell-config',
+    configResolved(config) {
+      uri = trimmed(config.env.VITE_STDB_URI);
+      db = trimmed(config.env.VITE_STDB_DB);
+    },
+    configureServer(server) {
+      server.middlewares.use(`/${SHELL_CONFIG_SCRIPT}`, (_req, res) => {
+        res.setHeader('Content-Type', 'text/javascript');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(renderShellConfigScript(shellDocument()));
+      });
+    },
+    generateBundle() {
+      if (db === '') {
+        if (uri !== '') {
+          this.warn(
+            `VITE_STDB_URI is set but VITE_STDB_DB is not: no ${SHELL_CONFIG_SCRIPT} is written`,
+          );
+        }
+        return;
+      }
+      const doc = shellDocument();
+      resolveConnectionConfig(doc, false);
+      this.emitFile({
+        type: 'asset',
+        fileName: SHELL_CONFIG_SCRIPT,
+        source: renderShellConfigScript(doc),
+      });
+    },
+  };
+}
+
 // The client-prediction wasm (built `--target bundler` from client-wasm via
 // wasm-pack) is consumed through `vite-plugin-wasm`, which resolves the ESM `.wasm`
 // import; its async init is a NATIVE top-level await, which is why `build.target` is
@@ -32,7 +92,7 @@ export default defineConfig({
     __MR_BUILD_SHA__: JSON.stringify(buildSha),
     __MR_BUILD_TIME__: JSON.stringify(buildTime),
   },
-  plugins: [wasm()],
+  plugins: [wasm(), shellConfigPlugin()],
   // ES2022 keeps the wasm import's top-level await native and pins the syntax ceiling, so a
   // dependency cannot raise the browser floor unnoticed (Chrome 94, Firefox 93, Safari 16.4).
   // A transform plugin for older targets (`vite-plugin-top-level-await`) re-emits every chunk

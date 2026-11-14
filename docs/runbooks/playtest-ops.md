@@ -39,10 +39,18 @@ line. It exits 1 with a one-line pointer to `spacetime start` when no server ans
    unauthorized. Only the identity that first published the database (its owner) may
    call it.
 5. `just playtest-verify-release`, then the production client build with
-   `VITE_STDB_DB="$MR_PLAYTEST_DB"`, then `just playtest-verify-build`.
+   `VITE_STDB_DB="$MR_PLAYTEST_DB"` (the build writes `client/dist/shell-config.js`, the
+   shell document naming the playtest database), then `just playtest-verify-build`.
 6. Starts `vite preview` in the background, records its PID in
    `${TMPDIR:-/tmp}/mr-playtest-preview.pid`, and prints the URL (by default
    `http://localhost:4173`).
+
+The built client joins the address in `client/dist/shell-config.js`: `ws://127.0.0.1:3000`
+unless `VITE_STDB_URI` is set for the build. To serve the build against another SpacetimeDB
+address, set `VITE_STDB_URI` for the build, or replace `client/dist/shell-config.js` after it.
+`just playtest-verify-build` checks the database name only, not the address. Returning players
+keep their identity only if the `uri` and `db` strings are spelled exactly as before: their
+stored token is keyed on those strings.
 
 Re-running it republishes and re-syncs content without a wipe. Run
 `just playtest-down` first if a preview is already running: a second `playtest-up`
@@ -82,11 +90,16 @@ It checks what was published, not the source tree. Output on success:
 ## `just playtest-verify-build`
 
 Runs `node scripts/verify-build-hooks.mjs`, which scans `client/dist/**/*.js` for a
-DEV hook binding (`__game`, `__mrTrade`, `__mrPvp`). It fails if one is present, or
-if `client/dist` is missing or contains no `.js` files. It also fails if
-`MR_PLAYTEST_DB` is empty or `monster-realm`, or if the bundle was not built for that
-database (no `db:"<MR_PLAYTEST_DB>"` baked in). Run on its own, it therefore needs the
-same `MR_PLAYTEST_DB` the build used.
+DEV hook binding (`__game`, `__mrTrade`, `__mrPvp`, `__mrTactics`). It fails if one is
+present, or if `client/dist` is missing or contains no `.js` bundle. It also fails if
+`MR_PLAYTEST_DB` is empty or `monster-realm`. It then requires that `shell-config.js` exists,
+that running it (in a time-bounded `node:vm` context) sets a readable `__MR_SHELL_CONFIG__`
+with a string `connection.db`, and that this `db` is exactly `MR_PLAYTEST_DB`. It fails if any
+other file in the build contains the `MR_PLAYTEST_DB` name (a name elsewhere is an address
+baked back into the build, which a host could not change), or if `index.html` does not load
+`/shell-config.js` from a classic `<script>` tag (outside comments, without `async`, `defer`,
+`nomodule` or `type`). Run on its own, it therefore needs the same `MR_PLAYTEST_DB` the build
+used. Success prints `verify-build-hooks: OK — …`.
 
 ## `just playtest-wipe` (destructive)
 

@@ -64,17 +64,27 @@ function shellRoot(anchor: Element): Element | null {
 }
 
 describe('index.html shell contract', () => {
-  it('mounts #app (inside #game-screen) and loads exactly one module script by src, with no inline script', () => {
-    // ctl-7a (named intentional change): #app used to be a direct <body> child; it is now the
-    // canvas mount inside #game-screen (the wrap itself is pinned by its own case below).
+  it('mounts #app (inside #game-screen) and loads the classic /shell-config.js script and then the module script, adjacent <body> children by src, with no inline script', () => {
+    // #app is the canvas mount inside #game-screen (the wrap itself is pinned by its own case
+    // below). The shell document's classic script runs before the module script reads it.
     const app = doc.getElementById('app');
     expect(app?.parentElement?.id).toBe('game-screen');
     expect(app?.closest('body')).not.toBeNull();
     const scripts = Array.from(doc.querySelectorAll('script'));
-    expect(scripts).toHaveLength(1);
-    expect(scripts[0].getAttribute('type')).toBe('module');
-    expect(scripts[0].getAttribute('src')).toBeTruthy();
-    expect((scripts[0].textContent ?? '').trim()).toBe('');
+    expect(scripts).toHaveLength(2);
+    const [shell, main] = scripts;
+    for (const s of scripts) {
+      expect(s.parentElement?.tagName, 'each script is a direct <body> child').toBe('BODY');
+      expect((s.textContent ?? '').trim(), 'no inline script text').toBe('');
+    }
+    expect(shell.nextElementSibling, 'the two scripts are adjacent, shell config first').toBe(main);
+    expect(shell.getAttribute('src')).toBe('/shell-config.js');
+    expect(
+      shell.getAttributeNames().sort(),
+      'the shell-config script carries src and vite-ignore and nothing else',
+    ).toEqual(['src', 'vite-ignore']);
+    expect(main.getAttribute('type')).toBe('module');
+    expect(main.getAttribute('src')).toBeTruthy();
   });
 
   it('has exactly one live region: #a11y-live, polite + atomic, a direct empty <body> child outside #app', () => {

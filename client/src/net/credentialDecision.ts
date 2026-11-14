@@ -3,9 +3,9 @@
 // This module is deliberately importless and side-effect free: zero I/O, zero storage,
 // zero SDK. It owns its own input alphabet (`RenewalOutcome`) so `oidc.ts` imports the
 // type back (type-only) and `connection.ts` calls `decideConnectCredential` inside
-// `attemptBuild`'s try. Because `connection.ts` is coverage-excluded (vite.config.ts:98),
-// this is the ONE place the threshold boundary (`>` vs `>=`) is observable in a real
-// behaviour test — see credentialDecision.test.ts (G16).
+// `attemptBuild`'s try. Because `connection.ts` is coverage-excluded (`coverage.exclude` in
+// vite.config.ts), this is the ONE place the threshold boundary (`>` vs `>=`) is observable in
+// a real behaviour test — see credentialDecision.test.ts (G16).
 
 /**
  * The result of `oidc.renewOrExchange()`. `reason` on `exchange-failed` is ALREADY

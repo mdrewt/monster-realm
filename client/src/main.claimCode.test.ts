@@ -10,10 +10,15 @@
  * the storage delete is main.ts's `applyClaim`, which runs `claimCode.clear(globalThis, URI, DB)`
  * exactly when the step's effect is `delete-code-and-permit-join`. This file proves the wiring from
  * the connection callback to the real session storage, through the real net/claimCode.ts API:
- * a code is minted for the SAME target main.ts resolves (the same `resolveConnectionConfig`
- * expression), the connection handler `onClaimResult({ ok: true })` is driven, and the stored code
- * must be gone (`read` undefined, `hasUnconsumed` false). The controls prove the harness can see a
- * clear (a dead-code reject, which already deletes) and that a retain-bucket reject keeps the code.
+ * each boot runs under a shell document on the page global (`DOC_A` unless a case says otherwise),
+ * a code is minted for that document's target, the connection handler `onClaimResult({ ok: true })`
+ * is driven, and the stored code must be gone (`read` undefined, `hasUnconsumed` false). The
+ * controls prove the harness can see a clear (a dead-code reject, which already deletes) and that a
+ * retain-bucket reject keeps the code.
+ *
+ * The target cases prove main.ts hands `connect()` exactly the document's `uri` and `db`, and that
+ * the claim-code and first-run-nudge storage keys it reads and writes are the ones net/claimCode.ts
+ * derives from that pair; a second boot under another document touches no key of the first.
  *
  * RED REASON today: a `claim-succeeded` step has effect 'none', so `onClaimResult({ ok: true })`
  * leaves the consumed code in session storage.
@@ -31,9 +36,9 @@ import {
   wasmPkgIdentityMoveMock,
   worldRendererMock,
 } from '../test-util/mainBootHarness';
-import { claimCode } from './net/claimCode';
+import { claimCode, claimCodeStorageKey } from './net/claimCode';
 import type { Connection, ConnectionOptions } from './net/connection';
-import { resolveConnectionConfig } from './net/connectionConfig';
+import { SHELL_CONFIG_GLOBAL, type ShellDocument } from './net/shellDocument';
 import { buildClaimViewModel, CLAIM_INITIAL } from './ui/claimModel';
 
 const H = vi.hoisted(() => {
@@ -174,10 +179,27 @@ function mountIndexHtmlShell(): void {
 const clock = { t: 1000 };
 let opts: ConnectionOptions;
 
-async function bootReady(): Promise<void> {
+/** The shell document every boot runs under unless a case names another. Neither target is the
+ *  development default (`ws://127.0.0.1:3000` / `monster-realm`). */
+const DOC_A: ShellDocument = {
+  connection: { uri: 'wss://alpha.example:4443/', db: 'realm-alpha', kind: 'test' },
+};
+/** A second target differing from DOC_A in both `uri` and `db`. */
+const DOC_B: ShellDocument = {
+  connection: { uri: 'ws://bravo.example:5050/', db: 'realm-bravo', kind: 'test' },
+};
+
+/** Put `doc` on the page global the way `/shell-config.js` does. */
+function setShellDocument(doc: ShellDocument): void {
+  (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL] = doc;
+}
+
+/** Boot a fresh main.ts under `doc` and wait for its `connect()` call; no `onReady` yet. */
+async function bootUnder(doc: ShellDocument): Promise<void> {
   H.connectOpts = null;
   H.claimHandlers = null;
   H.claimRenders = [];
+  setShellDocument(doc);
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
   mountIndexHtmlShell();
@@ -193,7 +215,19 @@ async function bootReady(): Promise<void> {
     },
     { timeout: 5_000, interval: 5 },
   );
+}
+
+async function bootReady(): Promise<void> {
+  await bootUnder(DOC_A);
   opts.onReady(H.identity);
+}
+
+/** Remove a boot's listeners and shell, so a second boot in the same case starts clean. */
+function teardownBoot(): void {
+  for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+  recorded = [];
+  while (restorers.length > 0) restorers.pop()?.();
+  document.body.replaceChildren();
 }
 
 /** Narrow an optional connection-option callback; a missing one fails loudly rather than skipping. */
@@ -202,14 +236,8 @@ function must<T>(v: T | undefined, what: string): T {
   return v;
 }
 
-// The SAME target main.ts resolves (its module-scope `resolveConnectionConfig` call).
-const { uri: URI, db: DB } = resolveConnectionConfig(
-  {
-    uri: import.meta.env.VITE_STDB_URI as string | undefined,
-    db: import.meta.env.VITE_STDB_DB as string | undefined,
-  },
-  import.meta.env.DEV,
-);
+// The target `bootReady` boots under: DOC_A's pair.
+const { uri: URI, db: DB } = DOC_A.connection;
 
 /** The deterministic code `seed` mints: 32 bytes of 0xab, hex-encoded (64 lowercase characters). */
 const SEEDED_CODE = 'ab'.repeat(32);
@@ -240,13 +268,11 @@ describe('main.ts clears the stored claim code on a succeeded claim (polish-1 P4
     globalThis.sessionStorage.clear();
   });
   afterEach(() => {
-    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
-    recorded = [];
-    while (restorers.length > 0) restorers.pop()?.();
+    teardownBoot();
+    delete (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL];
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     window.history.replaceState(null, '', '/');
-    document.body.replaceChildren();
     globalThis.sessionStorage.clear();
   });
 
@@ -397,5 +423,157 @@ describe('main.ts clears the stored claim code on a succeeded claim (polish-1 P4
       declineCancel: false,
     });
     expect(lastClaimVm(), 'the claim view shows the claimed state').toEqual(claimed);
+  });
+});
+
+// --- the connection target comes from the shell document ------------------------------------
+
+/** Mint the deterministic code for `(uri, db)` into the live session storage. */
+function mintFor(uri: string, db: string): void {
+  const host = {
+    sessionStorage: globalThis.sessionStorage,
+    crypto: {
+      getRandomValues: (bytes: Uint8Array): Uint8Array => {
+        bytes.fill(0xab);
+        return bytes;
+      },
+    },
+  };
+  expect(claimCode.mint(host, uri, db), 'fixture: the code was minted').toBe(SEEDED_CODE);
+}
+
+/** The first-run-nudge key net/claimCode.ts derives for `(uri, db)`, observed on a recording host
+ *  (the derivation is private to claimCode, so the test asks claimCode itself). */
+function nudgeKeyOf(uri: string, db: string): string {
+  const keys: string[] = [];
+  const recordingHost = {
+    sessionStorage: {
+      setItem: (key: string): void => {
+        keys.push(key);
+      },
+    },
+  };
+  claimCode.markFirstRunNudgeSeen(recordingHost, uri, db);
+  expect(keys, 'fixture: claimCode wrote exactly one nudge key').toHaveLength(1);
+  return keys[0] as string;
+}
+
+/** Record every key the page's session and local storage are asked to get, set or remove.
+ *  The spies sit on the two storage INSTANCES: happy-dom's Storage binds `getItem` / `setItem` /
+ *  `removeItem` onto an instance at its first access, so a spy on `Storage.prototype` installed
+ *  after any earlier access is never called. An instance spy sees every later call, including one
+ *  through a `.bind(storage)` copy taken after the spy is installed. */
+function spyStorage() {
+  const stores = [globalThis.sessionStorage, globalThis.localStorage];
+  const gets = stores.map((s) => vi.spyOn(s, 'getItem'));
+  const sets = stores.map((s) => vi.spyOn(s, 'setItem'));
+  const removes = stores.map((s) => vi.spyOn(s, 'removeItem'));
+  const callsOf = (spies: ReadonlyArray<{ mock: { calls: unknown[][] } }>): unknown[][] =>
+    spies.flatMap((spy) => spy.mock.calls);
+  return {
+    gets: (): string[] => callsOf(gets).map((c) => String(c[0])),
+    sets: (): Array<readonly [string, string]> =>
+      callsOf(sets).map((c) => [String(c[0]), String(c[1])] as const),
+    removes: (): string[] => callsOf(removes).map((c) => String(c[0])),
+    keys: (): string[] =>
+      [...callsOf(gets), ...callsOf(sets), ...callsOf(removes)].map((c) => String(c[0])),
+    clear: (): void => {
+      for (const spy of [...gets, ...sets, ...removes]) spy.mockClear();
+    },
+  };
+}
+
+/** One press of a physical key on the page (keydown then keyup on window). */
+function pressKey(code: string): void {
+  for (const type of ['keydown', 'keyup']) {
+    window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true, cancelable: true }));
+  }
+}
+
+describe('main.ts connects to and keys its claim storage by the shell document`s target', () => {
+  const A = DOC_A.connection;
+  const B = DOC_B.connection;
+
+  beforeEach(() => {
+    globalThis.sessionStorage.clear();
+  });
+  afterEach(() => {
+    teardownBoot();
+    delete (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL];
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, '', '/');
+    globalThis.sessionStorage.clear();
+  });
+
+  it('hands connect() exactly the document`s uri and db, and reads and writes the nudge key and clears the claim-code key claimCode derives from that pair', async () => {
+    // WRONG IMPL KILLED: a client that ignores the page global (connect gets the development
+    // target and every claim key is the development target's); a target read from the document
+    // for connect but from the build env for the claim storage (or the reverse).
+    const storage = spyStorage();
+    await bootUnder(DOC_A);
+    expect({ uri: opts.uri, db: opts.db }, 'connect() receives the document`s pair').toEqual({
+      uri: A.uri,
+      db: A.db,
+    });
+
+    const nudgeA = nudgeKeyOf(A.uri, A.db);
+    pressKey('KeyC'); // Profile on Account: the first-run nudge is read, then marked seen
+    expect(storage.gets(), 'the nudge read names target A`s key').toContain(nudgeA);
+    expect(storage.sets(), 'the nudge mark is written under target A`s key').toContainEqual([
+      nudgeA,
+      '1',
+    ]);
+    expect(claimCode.hasSeenFirstRunNudge(globalThis, A.uri, A.db)).toBe(true);
+
+    opts.onReady(H.identity);
+    mintFor(A.uri, A.db);
+    must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);
+    expect(storage.removes(), 'the clear names target A`s claim-code key').toContain(
+      claimCodeStorageKey(A.uri, A.db),
+    );
+    expect(claimCode.read(globalThis, A.uri, A.db), 'target A`s code is gone').toBeUndefined();
+  });
+
+  it('a second boot under another document connects to that target and touches no key of the first', async () => {
+    // WRONG IMPL KILLED: a target cached across boots (the second boot connects to or keys by the
+    // first document); claim keys built from a mix of the two documents.
+    const storage = spyStorage();
+    await bootUnder(DOC_A);
+    pressKey('KeyC');
+    opts.onReady(H.identity);
+    mintFor(A.uri, A.db);
+    const codeKeyA = claimCodeStorageKey(A.uri, A.db);
+    const nudgeKeyA = nudgeKeyOf(A.uri, A.db);
+    expect(globalThis.sessionStorage.getItem(codeKeyA), 'precondition: A`s code is stored').toBe(
+      SEEDED_CODE,
+    );
+    expect(globalThis.sessionStorage.getItem(nudgeKeyA), 'precondition: A`s nudge is marked').toBe(
+      '1',
+    );
+
+    teardownBoot();
+    storage.clear();
+    await bootUnder(DOC_B);
+    expect({ uri: opts.uri, db: opts.db }, 'connect() receives the second document`s pair').toEqual(
+      { uri: B.uri, db: B.db },
+    );
+    pressKey('KeyC');
+    opts.onReady(H.identity);
+    mintFor(B.uri, B.db);
+    must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);
+    const touched = storage.keys();
+
+    // Anti-vacuity: the spies saw the second boot's own claim traffic.
+    expect(touched, 'the second boot read its nudge key').toContain(nudgeKeyOf(B.uri, B.db));
+    expect(storage.removes(), 'the second boot cleared its code key').toContain(
+      claimCodeStorageKey(B.uri, B.db),
+    );
+
+    const ofA = (key: string): boolean =>
+      key.includes(encodeURIComponent(A.uri)) || key.includes(A.db);
+    expect(touched.filter(ofA), 'no storage call of the second boot names target A').toEqual([]);
+    expect(globalThis.sessionStorage.getItem(codeKeyA), 'A`s code is unchanged').toBe(SEEDED_CODE);
+    expect(globalThis.sessionStorage.getItem(nudgeKeyA), 'A`s nudge mark is unchanged').toBe('1');
   });
 });

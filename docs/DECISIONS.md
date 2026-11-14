@@ -1533,6 +1533,36 @@ one-clear-per-frame count in `client/e2e/render-context.spec.ts`. So the live ga
 shader, filter or animation reading a clock other than the injected `nowMs`; a filter at a resolution below the
 renderer's; a linearly sampled LUT; adding another filter package without a new entry here.
 
+## The connection target is run-time configuration: a shell document set before the client module runs
+
+**Decision.** The client reads its server from a page global, `__MR_SHELL_CONFIG__`, that the classic
+script `/shell-config.js` sets before the module script runs. The document is
+`{ connection: { uri, db, kind } }`. One resolver (`client/src/net/connectionConfig.ts`) rejects a
+present document that is wrong and never clamps it. An absent document means the development defaults in
+a development build and a throw in a production build. An omitted `kind` is `test` in development and
+`private` in production. `uri` and `db` are used exactly as written (trimmed) and key the stored
+reconnect token and claim code. `VITE_STDB_*` are inputs of the Vite plugin only: it serves the document
+in dev and writes it into the build when `VITE_STDB_DB` is set. `scripts/verify-build-hooks.mjs` fails a
+build in which any file other than `shell-config.js` contains the playtest database name.
+
+**Why.** The same client must join a single-player world the game starts, a friends server and the
+official server (see "One game, three ways to play: no code may assume we run the server"). A page
+global set by a classic script is read synchronously, so the fail-loud throw stays at module scope where
+no `try` in `main()` can swallow it, and the unit suites that import `main.ts` issue no request. The
+`uri` rules exist because the SDK resolves its endpoint relative to the `uri` while the client keys
+credentials on the raw string: a spelling the URL parser rewrites (a query, a missing trailing slash, a
+`..` segment) would be keyed as one target and dialled as another. The omitted-`kind` default is the
+most restricted kind, so nothing keyed on the kind is granted by omission. The dev-database refusal is
+a guard by name against a released client writing into the dev loop's data.
+
+**Rules out.** Reading `import.meta.env.VITE_STDB_*` (or any build-time server address) in client code;
+fetching the document at start-up (an asynchronous read moves the throw out of module scope); deriving
+the target from `location` (a desktop shell's page origin is not the server); `type="module"` on the
+shell-config script or a `client/public/shell-config.js` (either fixes the target at build time);
+normalizing `uri` or `db` (case, trailing slash, default port: it would orphan stored identities);
+substituting a default for a present but invalid document; echoing a document value in a start-up error
+(a refused `uri` may carry credentials).
+
 ## The desktop shell is Electron; a preload script hands the client its connection
 
 **Decision.** The desktop (Steam) build hosts the unchanged web bundle in Electron. The shell gives the
@@ -1540,7 +1570,8 @@ client its shell document from a preload script: `contextBridge.exposeInMainWorl
 document)` in a window with `contextIsolation: true` and `sandbox: true`. Measured on Electron 45.3.2, that
 makes `__MR_SHELL_CONFIG__` an own, read-only property of the page's global object before the page's first
 script and before its module script run, on first load and after a reload, from `file://` and from a custom
-protocol; the page sees a frozen copy. Where the licence terms cover bundling, the shell starts the server
+protocol; the page sees a frozen copy, and the page's own `/shell-config.js` script cannot replace it
+(the property is not writable). Where the licence terms cover bundling, the shell starts the server
 as a child of Electron's main process and stops it when the app quits; otherwise it starts nothing and
 connects to a server the player installed. Steamworks calls stay in the main process. The evidence, the
 judge's scores and the measurements are in `docs/local-play.md`.

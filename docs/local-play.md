@@ -107,9 +107,8 @@ heaviest criteria and loses on size.
 - *Page global before module scripts.* Electron: measured (below). Tauri: documented, not run
   (`WebviewBuilder::initialization_script` adds a script "run after the global object has been
   created, but before the HTML document has been parsed and before any other script included by
-  the HTML document is run", on every top-level navigation). Launcher: it serves the document as a
-  classic script ahead of the module script, the delivery the local-play plan gives the browser
-  build.
+  the HTML document is run", on every top-level navigation). Launcher: it serves
+  `/shell-config.js` itself, the browser build's own delivery.
 - *Starts and stops a child server.* Electron and Tauri both spawn a native child and must kill it
   on quit; neither documents what happens to the child when the shell is killed. The launcher
   controls the child fully but cannot tell that the player closed the browser tab.
@@ -135,10 +134,15 @@ registered with `protocol.handle`, on first load and after a reload:
   configurable) when the first classic script runs and when the module script runs;
 - its value is a frozen plain object whose `connection`, and `connection.uri`, are own properties.
 
-The local-play plan has the client read the document as own properties of the global,
-synchronously at module scope; this hook meets that contract, and the page cannot replace the
-global. With `contextIsolation: false` a preload that assigns the global directly has the same
-timing and an ordinary writable property; the isolated form is the one to use.
+The client reads the document as an own property of the global, synchronously at module scope
+(`readShellDocument` in `client/src/net/shellDocument.ts`, called from
+`client/src/shell/config.ts`);
+this hook meets that contract. The page also loads `/shell-config.js` itself, the browser build's
+delivery. Measured in the same probe: a page script that assigns the global again changes nothing,
+because the property is not writable, and a missing script does not stop the module script. So
+under this shell the preload is the only source of the document, whatever answers that request.
+With `contextIsolation: false` a preload that assigns the global directly has the same timing and
+an ordinary writable property; the isolated form is the one to use.
 
 **What the choice rests on that is not measured.** The Steam overlay drawing over an Electron
 window on Windows. That is to be proved, or shown impossible, before anything else is built on the
