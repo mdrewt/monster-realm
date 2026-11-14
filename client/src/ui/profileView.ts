@@ -68,6 +68,8 @@ export class ProfileView implements RowsView, RowSection {
   readonly #root: HTMLElement;
   readonly #title: HTMLElement;
   readonly #closeBtn: HTMLButtonElement;
+  /** The scrolling body holding the sections and the Close row. */
+  readonly #body: HTMLElement;
   readonly #sections: Readonly<Record<ProfileSection, ProfileSectionView>>;
   // The last row token applied: a token is applied once (ui/screens/profileScreen.ts).
   #lastOp: RowOp | null = null;
@@ -83,6 +85,7 @@ export class ProfileView implements RowsView, RowSection {
     bar.appendChild(this.#title);
     this.#root.appendChild(bar);
     const body = element('div', 'profile-body', 'mr-frame-body');
+    this.#body = body;
     this.#root.appendChild(body);
     for (const [i, key] of SECTION_ORDER.entries()) {
       const section = sections[key].sectionRoot;
@@ -117,6 +120,8 @@ export class ProfileView implements RowsView, RowSection {
     for (const key of SECTION_ORDER) this.#sections[key].show();
     this.#root.style.display = 'flex';
     if (wasVisible) return;
+    // Every open reads from the top: the body keeps no scroll offset from the last open.
+    this.#body.scrollTop = 0;
     // LAST, after every write above, so the anchor resolves against a painted root.
     openOverlayA11y('profileView', this.#root);
     if (section !== 'name') this.focusSection(section);

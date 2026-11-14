@@ -917,6 +917,32 @@ describe('ProfileView (uif-16b): one dialog, one trap, one anchor', () => {
     expect(focusedId(), 'focusSection(account): its default row').toBe('claim-signin-btn');
   });
 
+  it('every open of the frame reads from the top of its body, whatever offset the last open left, and a repeat show() keeps the offset', async () => {
+    // WRONG IMPL KILLED: a body that keeps the last open's scroll offset (Profile opened on
+    // Account shows the Name section half scrolled off the top, measured in Chromium by
+    // e2e/a11y.spec.ts's axe scan); a reset on every show(), which would jump a frame that is
+    // already open whenever a claim event repaints it.
+    const b = build();
+    paintName(b, '');
+    b.claim.render(PROMPT_VM);
+    b.privacy.render(pvm());
+    const body = byId('profile-body');
+    b.profile.show('name');
+    await flush();
+    body.scrollTop = 40;
+    expect(body.scrollTop, 'ANTI-VACUITY: the body takes a scroll offset').toBe(40);
+    b.profile.show('account');
+    expect(body.scrollTop, 'a repeat show() on the open frame keeps the offset').toBe(40);
+    b.profile.hide();
+    for (const section of ['account', 'name', 'privacy'] as const) {
+      b.profile.show(section);
+      await flush();
+      expect(body.scrollTop, `opened on ${section}: the body is at its top`).toBe(0);
+      body.scrollTop = 40;
+      b.profile.hide();
+    }
+  });
+
   it('UIF16B.3 the opening anchor is shown and enabled in EVERY claim phase x privacy phase x section; Privacy falls back to Close when it has no enabled row', async () => {
     // WRONG IMPL KILLED: a privacy anchor that is a disabled Delete (grace/terminal: focus on a
     // dead control, the trap has nothing to hand on); a privacy section with no rows that leaves
