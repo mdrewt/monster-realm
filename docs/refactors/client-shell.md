@@ -202,7 +202,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `leaderboardView` | `views.ts` | `frames`, `screens`, `main` | `main()` boot: mount |
 | `profileView` | `views.ts` | `account`, `input`, `main` | `main()` boot: mount |
 | `renameView` | `views.ts` | `account`, `main` | `main()` boot: mount |
-| `tradeSessionView` | `views.ts` | `main` | `main()` boot: mount |
+| `tradeSessionView` | `views.ts` | `screens`, `main` | `main()` boot: mount |
 | `helpView` | `views.ts` | `screens`, `commands` | `main()` boot: mount |
 | `menuView` | `views.ts` | `frames`, `menu`, `devHooks` | `main()` boot: mount |
 | `claimView` | `views.ts` | `account`, `main` | `main()` boot: mount |

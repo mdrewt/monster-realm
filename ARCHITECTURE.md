@@ -402,9 +402,10 @@ configured with the dev database throws at import), the dev-log level and its se
 loggers, the zone id, the game-core constants read from the wasm exports, and the wasm-ready
 mark. It writes nothing to the document and registers nothing. `shell/views.ts` owns the handles
 of the views built at boot (the screens, the Profile sections, the session overlay, the
-evolution notice banner, the error overlay and the hint bar). `main()` constructs each view with
-its handlers and mounts it through `mountViews`; every reader takes the handle from its import,
-which is `undefined` until the view is mounted. The module imports types only.
+evolution notice banner, the error overlay and the hint bar) and the Controls saved-line
+function mounted with Controls. `main()` constructs each view with its handlers and mounts it
+through `mountViews`; every reader takes the handle from its import, which is `undefined` until
+the view is mounted. The module imports types only.
 
 ### Connection and store
 
