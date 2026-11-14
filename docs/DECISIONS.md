@@ -589,9 +589,8 @@ been held for `HOLD_COMMIT_MS` (150 ms, `client/src/prediction/heldKeys.ts`), on
 the predictor has no outstanding steps and no sent input is still owed, and only while
 `movementEnabled` (the world base with no frame above it and the session gate open). A
 hold from another facing therefore turns, waits for the row that drains the `Face`, then
-walks with no second press; a tap only turns, and the on-screen D-pad only taps. Every
-push of a non-base frame clears the held set, so a direction held through a menu does
-not resume when the menu closes. Menu auto-repeat is synthesized by the router on an
+walks with no second press; a tap only turns. Every push of a non-base frame clears the
+held set, so a direction held through a menu does not resume when the menu closes. Menu auto-repeat is synthesized by the router on an
 injected clock (350 ms, then 100 ms) and clamps at list ends. A zone warp keeps the
 held-key stack across the prediction reset; a reconnect does not.
 
