@@ -1,13 +1,14 @@
 # `game-core/src/combat/`: what stays of the 1v1 battle rules
 
 The tactical engine (`game-core/src/tactics/`) is the only battle engine a player can reach.
-`game-core/src/combat/` still holds the whole 1v1 engine it took over from: 20,207 lines, of
-which a production path reaches a small part. This file is the plan for the rest. It classes
+`game-core/src/combat/` still holds the whole 1v1 engine that the tactical engine took over
+from: 20,207 lines, of which a production path reaches a small part. This file is the plan for the rest. It classes
 every `pub` item of `combat/`, gives every test of the 1v1 rules a place, lists the gates that
 name a function the plan removes, records the values the removed weather and ability rules
 produce, and lists the extractions still to make. The decision and what it rules out are in
 `docs/DECISIONS.md` ("Battles run on one engine at a time; the tactical cutover was a flip, not
-a toggle").
+a toggle"). `server-module/src/marshal.rs` and `content_cache.rs` hold no 1v1 helper, under
+`cfg(test)` or otherwise, so the plan has no server line.
 
 Every count and caller in this file is measured at commit `485e8bca`. "Production" is Rust
 outside test files and outside `#[cfg(test)]` items, in `game-core/src`, `server-module/src`,
@@ -20,32 +21,35 @@ whole-word search of every tracked file.
    `battle_action.action`, a content row), and a rule a production path calls. An item that
    only its own tests call is removed with those tests.
 2. **A carried rule is called, not copied.** The tactical engine calls `calc_damage`,
-   `accuracy_check` and `tick_status` by value. Where a rule's signature takes the 1v1
+   `accuracy_check` and `tick_status` themselves. Where a rule's signature takes the 1v1
    `BattleState`, the engine states the rule once in `tactics/` (`status_tick_damage`,
-   `status_blocks_turn`, `status_of`) and a test pins that statement to literal expected values.
+   `status_blocks_turn`, `status_of`) and tests pin that statement to literal expected values.
+   Four tests also compare it with the 1v1 function while that function exists.
 3. **No 1v1 rule stays as the source for a later wave.** The entry-ability and weather
    functions take the 1v1 active-slot `BattleState`, which the grid has no equivalent of, so
    the tactical depth waves cannot call them. The values they produce are in "Values the
    removed weather and ability rules produce" below, and the wave's first test asserts those
    literals. `calc_damage` keeps its `weather` parameter: the Rain and Sun attack modifier is
-   already carried by value, and the weather wave passes `Some` where the pipeline passes `None`.
+   already carried, and the weather wave passes `Some` where the pipeline passes `None`.
 4. **A removed test names what protects the behaviour.** A test family that drives a function
    with no production caller is removed with that function, and the function is its reason. A
    family that also asserts a carried rule names the surviving test, by path and name, that
    fails when the rule breaks. A test that executes no product function is not a check: it is
-   removed for that reason and no survivor is claimed for it.
+   removed for that reason and needs no survivor.
 5. **Stored types change additively.** No extraction renames, reorders or drops a field or
    variant of `BattleState`, `BattleSide`, `BattleMonster`, `BattleOutcome`, `StatusEffect`,
-   `WeatherEffect`, `StatusKind` or `PvpAction`, and none moves one of them to another file:
-   `game-core/src/content.rs` reads `combat/ability.rs` and `combat/types.rs` by path.
+   `WeatherEffect`, `StatusKind` or `PvpAction`. None moves one of them to another file either,
+   for one reason: a test in `game-core/src/content.rs` reads `combat/ability.rs` and
+   `combat/types.rs` as text. A slice that replaces that test with one that executes lifts the
+   limit.
 
 ## Every `pub` item
 
 The classes: **stored** (a type in a table column), **carried** (a rule or type a production
 path outside `combat/` uses, or one a carried rule calls), **oracle** (no production caller; a
-tactics test executes it as its expected value), **unreached** (no production caller). No item
-is classed "source for a deferred wave" (rule 3). "Line" is the extraction, under "Extractions,
-in order", that removes the item.
+tactics test executes it as its expected value, or builds it to call the function that is),
+**unreached** (no production caller). No item is classed "source for a deferred wave" (rule 3).
+"Line" is the extraction, under "Extractions, in order", that removes the item.
 
 ### `combat/types.rs`
 
@@ -58,7 +62,7 @@ in order", that removes the item.
 | `BattleSide::with_lead` | carried | `server-module` `start_wild_tactical`, `start_pvp_tactical` |
 | `BattleSide::active_monster` | carried | `server-module` `write_back_battle_results` |
 | `BattleSide::has_conscious_member` | unreached | line 4 |
-| `BattleSide::active_monster_mut`, `next_conscious_index`, `set_active` | unreached | line 6 (the 1v1 faint cascade is their only caller) |
+| `BattleSide::active_monster_mut`, `next_conscious_index`, `set_active` | unreached | line 6 (only functions lines 3 to 6 remove call them) |
 | `SwapError` | unreached | line 6 |
 | `BattleOutcome` | stored | `Battle.state`; `tactics/`, `server-module`, `client-wasm` |
 | `BattleState` | stored | `Battle.state` (`server-module/src/schema.rs`) |
@@ -66,7 +70,7 @@ in order", that removes the item.
 | `Effectiveness` | carried | `calc_damage`'s result; `tactics/events.rs`, `client-wasm` |
 | `TurnChoice`, `TurnVariance` | oracle | line 4 (`tactics/resolve_tests.rs` builds them to call `resolve_turn`) |
 | `TurnVariance::from_ctx_random` | unreached | line 4 |
-| `BattleEvent` | carried | the type `tick_status` returns; `run_upkeep` discards it; line 7 |
+| `BattleEvent` | carried | the type `tick_status` returns; `run_upkeep` discards it; line 7. The server's `battle_event` row type has the same name and is another type |
 
 ### `combat/damage.rs`, `combat/type_chart.rs`, `combat/xp.rs`, `combat/pvp.rs`
 
@@ -95,7 +99,7 @@ in order", that removes the item.
 | `StatusVariance` | carried | `run_upkeep` fills it to pass one thaw roll; line 7 |
 | `StatusVariance::from_ctx_random` | unreached | line 4 |
 | `apply_pre_turn_effects`, `apply_post_turn_effects` | oracle | line 5 (`tactics/queue_tests.rs`, `tactics/upkeep_tests.rs`) |
-| `pub use super::types::StatusEffect` | unreached | line 5 (nothing imports `combat::status::StatusEffect`) |
+| `pub use super::types::StatusEffect` | unreached | line 7. Only `combat/status_tests.rs` imports `combat::status::StatusEffect`, in four `use` items that line 7 points at `combat::types` |
 
 ### `combat/resolve.rs`, `combat/ai.rs`
 
@@ -136,7 +140,7 @@ does not build.
 
 ### `combat/battle_core_tests.rs` (44 tests)
 
-Stays (26): `battle_side_active_field_is_u32`,
+Stays (21): `battle_side_active_field_is_u32`,
 `battle_side_active_monster_works_with_u32_active`, `battle_outcome_fled_variant_exists`,
 `battle_outcome_fled_is_not_ongoing`, `battle_state_serde_round_trip_with_u32_active`,
 `m7b_1_double_battle_double_xp_arithmetic`, `m7b_2_owner_change_mid_battle_spec_gap`,
@@ -146,17 +150,14 @@ Stays (26): `battle_side_active_field_is_u32`,
 `m7b_6_public_battlestate_leaks_opponent_derived_stats`,
 `m7b_7_xp_writeback_must_use_live_db_state_not_snapshot`,
 `m7b_8_turnvariance_out_of_range_damage_roll_produces_wrong_damage`,
-`m7b_11_derived_stats_vs_base_stats_xp_inflation`, `m7b_12_battle_turn_number_max_value`,
+`m7b_11_derived_stats_vs_base_stats_xp_inflation`,
 `r03_xp_reward_sensitive_to_winner_level_stale_read`,
 `r04_write_back_partial_success_xp_granted_but_species_missing`,
-`r06_flee_hp_writeback_index_assumption`, `r07_opponent_can_be_in_two_battles_simultaneously`,
 `r08_heal_party_blocked_during_ongoing_battle_but_not_after_flee`,
 `r09_u32_to_usize_cast_in_active_monster_is_safe_on_64bit`,
 `r11_derived_stats_in_public_battle_table_leak_iv_information`,
 `r13_duplicate_party_monster_id_causes_double_xp_grant`,
-`r14_hp_delta_on_level_up_is_correct_for_damaged_monster`,
-`r15_xp_formula_floor_is_1_not_0_even_for_lopsided_levels`,
-`r16_opponent_heal_during_battle_gets_overwritten_by_write_back`.
+`r15_xp_formula_floor_is_1_not_0_even_for_lopsided_levels`.
 
 | Line | Tests | Removed function, or carried rule and surviving test |
 |---|---|---|
@@ -164,10 +165,11 @@ Stays (26): `battle_side_active_field_is_u32`,
 | 4 | `m7b_3_resolve_turn_on_terminal_state_increments_turn_number`, `m7b_13_unknown_skill_id_panics_in_resolver`, `r01_resolve_turn_guard_on_finished_battle_does_not_mutate`, `r02_active_monster_uses_skill_it_does_not_know` | `resolve_turn` |
 | 4 | `turn_choice_swap_team_index_is_u32`, `turn_choice_swap_team_index_u32_max_round_trips` | `TurnChoice` |
 | 4 | `turn_variance_from_ctx_random_known_seed_is_in_range`, `turn_variance_from_ctx_random_seed_max_is_in_range`, `turn_variance_from_ctx_random_damage_roll_range_boundaries`, `prop_turn_variance_from_ctx_random_always_valid`, `r10_from_ctx_random_all_256_stride_seeds_in_range` | `TurnVariance::from_ctx_random`. The tactical rolls are drawn in range by `draw_rolls`: `tactics/resolve_tests.rs` `draw_rolls_reads_accuracy_then_variance_and_advances_by_two_bt2_5` |
-| 4 | `r12_turn_number_wraps_at_u16_max` | `TurnVariance` (it builds one) and `advance_turn`, the turn limit it describes. A tactical battle ends at its round cap: `tactics/upkeep_tests.rs` `a_wild_battle_auto_flees_at_the_round_cap_bt2_7` |
+| 4 | `r12_turn_number_wraps_at_u16_max` | `TurnVariance` (it builds one; its one assertion is `wrapping_add` on a local) |
 | 4 | `m7b_9_all_fainted_party_gives_degenerate_battle_state`, `m7b_9b_duplicate_monster_id_in_party_spec_gap` | `BattleSide::has_conscious_member` |
 | 6 | `next_conscious_index_returns_option_u32`, `next_conscious_index_skips_active_u32` | `BattleSide::next_conscious_index` |
 | 7 | `battle_event_switch_new_active_is_u32` | `BattleEvent` |
+| 8 | `m7b_12_battle_turn_number_max_value`, `r06_flee_hp_writeback_index_assumption`, `r07_opponent_can_be_in_two_battles_simultaneously`, `r14_hp_delta_on_level_up_is_correct_for_damaged_monster`, `r16_opponent_heal_during_battle_gets_overwritten_by_write_back` | Not a check: each asserts arithmetic on values the test defines |
 
 ### `combat/battle_0hp_tests.rs` (5 tests)
 
@@ -216,12 +218,11 @@ Stays (13): `ears_13_validate_abilities_rejects_duplicate_id`,
 
 ### `combat/status_tests.rs` (66 tests)
 
-Stays (10): `m14a_status_effect_match_is_exhaustive`,
+Stays (9): `m14a_status_effect_match_is_exhaustive`,
 `m14b_battle_monster_with_status_serde_round_trip`,
 `m14b_battle_monster_status_field_defaults_to_none`,
 `m14b_serde_default_allows_missing_status_field`,
 `m14b_battle_state_with_status_field_serde_round_trip`,
-`rt_m14_5a_03_status_store_must_match_battle_monster_status_before_resolve`,
 `skill_def_applies_status_field_defaults_to_none`,
 `skill_def_applies_status_field_parses_some_burn`,
 `item_def_cure_status_field_defaults_to_none`, `item_def_cure_status_field_parses_some_poison`.
@@ -235,9 +236,10 @@ Stays (10): `m14a_status_effect_match_is_exhaustive`,
 | 4 | `m14b_status_variance_from_ctx_random_is_deterministic`, `m14b_status_variance_from_ctx_random_all_fields_in_range`, `m14b_status_variance_from_ctx_random_different_seeds_differ`, `m14b_status_variance_from_ctx_random_known_answer_vectors`, `m14b_prop_status_variance_from_ctx_random_all_fields_in_range`, `m14b_prop_status_variance_from_ctx_random_is_deterministic` | `StatusVariance::from_ctx_random` |
 | 5 | `m14a_poison_deals_max_hp_over_8_damage`, `m14a_poison_deals_at_least_1_damage`, `m14a_burn_deals_max_hp_over_16_damage`, `m14a_burn_deals_at_least_1_damage`, `m14a_no_status_no_dot_events`, `m14a_poison_on_side_b_deals_dot_to_side_b`, `m14a_poison_dot_ko_triggers_faint_and_battle_end`, `rt_s14_03_undersized_status_store_silently_drops_dot_after_slot_change`, `rt_s14_04_simultaneous_dot_ko_side_a_processed_first_side_b_wins` | `apply_post_turn_effects`. The carried part, the Poison and Burn amounts: `tactics/upkeep_tests.rs` `status_tick_damage_is_the_carried_dot_for_every_max_hp_bt2_7` |
 | 5 | `m14a_paralysis_blocks_action_when_roll_under_25`, `m14a_paralysis_does_not_block_when_roll_25_or_above`, `m14a_sleep_always_blocks_action`, `m14a_freeze_always_blocks_action`, `m14a_both_sides_can_have_independent_status` | `apply_pre_turn_effects`. The carried part, the turn-skip rule: `tactics/queue_tests.rs` `status_blocks_turn_matches_the_carried_pre_turn_rule_bt3_5`, `paralysis_block_follows_the_mod_hundred_rule_across_a_seed_sweep_bt3_5` |
-| 7 | `m14a_sleep_turns_decrement_each_tick`, `m14a_sleep_cures_when_turns_reach_zero`, `m14a_freeze_thaws_when_roll_ge_80`, `m14a_freeze_persists_when_roll_lt_80`, `rt_s14_02_sleep_zero_turns_remaining_cures_without_underflow` | Stay, re-pointed at the one-status `tick_status` |
-| 7 | `m14b_sleep_cure_on_bench_slot_carries_correct_slot_index`, `m14b_sleep_cure_on_active_slot_carries_slot_zero`, `m14b_freeze_thaw_on_bench_slot_carries_correct_slot_index`, `rt_s14_01_bench_slot_status_cure_carries_correct_slot_index` | `BattleStatusStore` (no production path reads a slot index). The carried part, Sleep counts down and Freeze thaws at 80: the five re-pointed tests above and `tactics/upkeep_tests.rs` `sleep_counts_down_and_cures_at_one_or_zero_turns_left_bt2_7`, `freeze_thaws_on_a_roll_of_eighty_but_not_seventy_nine_bt2_7` |
+| 7 | `m14a_sleep_turns_decrement_each_tick`, `m14a_sleep_cures_when_turns_reach_zero`, `m14a_freeze_thaws_when_roll_ge_80`, `m14a_freeze_persists_when_roll_lt_80`, `rt_s14_02_sleep_zero_turns_remaining_cures_without_underflow` | Stay. Line 7 changes each call to the one-status `tick_status` and keeps each assertion on the status after the tick. Their `StatusCured` event assertions go with `BattleEvent`: no production path reads the event |
+| 7 | `m14b_sleep_cure_on_bench_slot_carries_correct_slot_index`, `m14b_sleep_cure_on_active_slot_carries_slot_zero`, `m14b_freeze_thaw_on_bench_slot_carries_correct_slot_index`, `rt_s14_01_bench_slot_status_cure_carries_correct_slot_index` | `BattleStatusStore` (no production path reads a slot index). The carried part, Sleep counts down and Freeze thaws at 80: the five tests of the row above and `tactics/upkeep_tests.rs` `sleep_counts_down_and_cures_at_one_or_zero_turns_left_bt2_7`, `freeze_thaws_on_a_roll_of_eighty_but_not_seventy_nine_bt2_7` |
 | 7 | `m14b_status_cured_carries_slot_field`, `m14b_status_cured_variant_structure_is_exhaustive`, `status_applied_event_exists` | `BattleEvent` |
+| 8 | `rt_m14_5a_03_status_store_must_match_battle_monster_status_before_resolve` | Not a check: it assigns and compares a field of a monster it builds |
 
 ### `monster/battle_redteam_tests.rs` (23 tests)
 
@@ -245,14 +247,14 @@ One row per test. **Carried** means the test executes a function that stays, and
 stays. **No production path** names the function whose removal ends the behaviour. **Not a
 check** means the test executes no product function: its assertions are integer arithmetic on
 values and helpers the test file defines, so no product change can fail it. Line 8 removes
-those; where the finding behind one concerns a carried rule, the row names the test that does
-execute the rule.
+those. No survivor is owed for one; where the finding behind it concerns a carried rule, the row
+says where that rule is executed.
 
 | Test | Disposition |
 |---|---|
 | `f1_damage_chain_order_matters_stab_plus_neutral` | Carried: `calc_damage` (STAB before type before variance). Stays |
 | `f1_damage_chain_order_matters_super_effective_stab` | Not a check. The order is executed by the test above and by `combat/damage.rs` `known_answer_fire_vs_plant_level5_power40_var100` |
-| `f2_damage_formula_u32_overflow_with_max_power`, `f2_damage_formula_safe_with_current_content` | Not a check. No test executes `calc_damage` beyond `u32` range: line 8 adds one first |
+| `f2_damage_formula_u32_overflow_with_max_power`, `f2_damage_formula_safe_with_current_content` | Not a check. No test executes `calc_damage` beyond `u32` range (the last row of "The surviving tests, demonstrated") |
 | `f3_damage_roll_zero_gives_zero_before_clamp`, `f3_damage_roll_255_gives_255_percent_damage`, `f3_accuracy_roll_255_never_misses` | Not a check. The finding is no production path: `TurnVariance` (line 4). The tactical rolls are bounded where they are drawn: `tactics/resolve_tests.rs` `draw_rolls_reads_accuracy_then_variance_and_advances_by_two_bt2_5` |
 | `f4_species_has_no_xp_yield_field` | Not a check (it reads the `Debug` text of a `Species`) |
 | `f5_xp_gain_at_level_100_must_noop` | Carried: `xp_for_level`, `level_for_xp`. Stays |
@@ -282,62 +284,70 @@ execute the rule.
 | `weather.rs` | 5 | line 6 (`WeatherEffect::turns_remaining`) |
 | `damage.rs`, `xp.rs`, `type_chart.rs` | 14, 20, 15 | all stay |
 
-## What the three tactics tests compare against
+## What the four tactics tests compare against
 
-Three tactics tests execute a 1v1 function as their expected value. Line 1 writes the literal
-beside the 1v1 comparison, so one merged commit proves the two equal; the line that removes
-the function removes the comparison.
+Four tactics tests, in three files, execute a 1v1 function as their expected value. Line 1
+writes the literal beside the 1v1 comparison, so one merged commit proves the two equal; the
+line that removes the function removes the comparison. The tests keep their names: "carried"
+names the rule, which stays.
 
 | Test | 1v1 oracle | Expected value once the oracle goes |
 |---|---|---|
 | `tactics/resolve_tests.rs` `the_status_gate_agrees_with_the_carried_resolver_bt2_5` | `resolve_turn` | Its `want` column, which is a literal: a clean hit applies Burn; an immune hit, a KO and a target that already has a status apply none |
 | `tactics/resolve_tests.rs` `an_applied_status_is_the_carried_m14_status_bt2_5` | `resolve_turn` | A five-row table: Poison, Burn, Paralysis and Freeze apply themselves; Sleep applies `Sleep { turns_remaining: 3 }` |
 | `tactics/queue_tests.rs` `status_blocks_turn_matches_the_carried_pre_turn_rule_bt3_5` | `apply_pre_turn_effects` | The count of blocking rolls over `0..=255` per status: 0 for none, Poison and Burn; 25 for Paralysis; 256 for Sleep and Freeze; with the boundary assertions it has (24 blocks, 25 does not). A count, not `roll < 25`, which would repeat the code under test |
-| `tactics/upkeep_tests.rs` `status_tick_damage_is_the_carried_dot_for_every_max_hp_bt2_7` | `apply_post_turn_effects` | Boundary rows for Poison and Burn at `max_hp` 1, 2, 7, 8, 9, 15, 16, 17, 100, 255, 256, 1000 and 65,535; the sum of each over `1..=65_535`; `None` for Paralysis, Sleep and Freeze. Its second half compares `status_tick_damage` with the upkeep's `StatusTick` amount and keeps doing so |
+| `tactics/upkeep_tests.rs` `status_tick_damage_is_the_carried_dot_for_every_max_hp_bt2_7` | `apply_post_turn_effects` | At `max_hp` 1, 2, 7, 8, 9, 15, 16, 17, 100, 255, 256, 1000 and 65,535: Poison 1, 1, 1, 1, 1, 1, 2, 2, 12, 31, 32, 125, 8,191 and Burn 1, 1, 1, 1, 1, 1, 1, 1, 6, 15, 16, 62, 4,095. The sums over `1..=65_535`: Poison 268,402,695, Burn 134,184,975. `None` for Paralysis, Sleep and Freeze. Its second half compares `status_tick_damage` with the upkeep's `StatusTick` amount and keeps doing so |
+
+The Poison and Burn numbers are `apply_post_turn_effects`' own output at `485e8bca`.
 
 ## Gates and pins that name a removed function
 
 | Where | What names it | Line |
 |---|---|---|
 | `.cargo/mutants.toml` | Entry 2 and its `exclude_re` row, pinned to `ability.rs:170:60` in `apply_entry_ability`. A line that changes the line count of `ability.rs` above line 170 re-pins it in the same slice | 6 removes it |
-| `game-core/benches/hot_paths.rs` | The `resolve_turn` bench, with the `BattleState`, `TurnVariance` and `TurnChoice` it builds | 2 |
+| `game-core/benches/hot_paths.rs` | The `resolve_turn` bench, with the fixtures only it uses: the `BattleState`, the `TurnVariance`, the `battle_monster` helper, the type chart and their imports | 2 |
 | `game-core/benches/budgets.rs` | The `resolve_turn` row (ceiling 2,000 ns) | 2 |
-| `game-core/benches/budget_check_tests.rs` | `"resolve_turn"` in `EXPECTED_IDS`, which shrinks from 8 ids to 7 | 2 |
+| `game-core/benches/budget_check_tests.rs` | `"resolve_turn"` in `EXPECTED_IDS`, which shrinks from 8 ids to 7, and the comments that count the hot paths | 2 |
 | `game-core/src/content.rs` (test module) | `include_str!("combat/ability.rs")` and `include_str!("combat/types.rs")`: a ban on `serde(skip)` in the files that define `StatusKind` and `StatusEffect` | Stays valid: both files stay and keep those types (rule 5) |
 | `ARCHITECTURE.md`, `docs/DECISIONS.md` ("Determinism: integer math, injected time and randomness", "Integer damage formula with a seeded variance roll"), `.claude/skills/game-core-testing/SKILL.md`, `.claude/skills/spacetimedb-reducer/SKILL.md`, `.claude/agents/desync-guard.md` | Prose that names `TurnVariance::from_ctx_random` or lists turn resolution, abilities, weather and AI under `combat` | 4 corrects the `TurnVariance` text; each line corrects the `combat` row of `ARCHITECTURE.md` |
-| Module and item docs in `combat/mod.rs`, `pvp.rs`, `ability.rs`, `status.rs`, `damage.rs`, `tactics/upkeep.rs`, `tactics/queue.rs`, `tactics/resolve.rs`, and comments at `game-core/src/content.rs` (the empty-moveset check), `taming/rules_tests.rs`, `client-wasm/src/tactics_tests.rs` | Text that names a removed function | The line that removes the function |
+| Module and item docs in `combat/mod.rs`, `pvp.rs`, `ability.rs`, `status.rs`, `damage.rs`, `tactics/upkeep.rs`, `tactics/queue.rs`, `tactics/resolve.rs`, and comments at `game-core/src/content.rs` (the empty-moveset check), `game-core/src/world.rs` (`SwapError`), `taming/rules_tests.rs`, `client-wasm/src/tactics_tests.rs` | Text that names a removed item | The line that removes the item |
 
 The mutation gate does not block any line. With every test that reaches an item of lines 3 to
 5 filtered out (125 tests), `cargo mutants` over the eight `combat/` files that stay tests 216
 mutants: 141 caught, 27 unviable, 48 missed, and all 48 are in `TurnVariance::from_ctx_random`,
 `StatusVariance::from_ctx_random` and `BattleSide::has_conscious_member`, which line 4 removes.
-With the tests of line 6 filtered out as well (171 tests), the 75 missed are all in functions
-lines 4 and 6 remove. No mutant of `calc_damage`, `accuracy_check`, `weather_attack_modifier`,
-`TypeChart`, `tick_status`, `with_lead`, the XP rules or the PvP rules depends on a removed
-test.
+With the tests of line 6 filtered out as well, all but the nine that name only
+`StatusKind::matches` or `WeatherEffect::turns_remaining` (171 tests), the 75 missed are all in
+functions lines 4 and 6 remove. No mutant of `calc_damage`, `accuracy_check`,
+`weather_attack_modifier`, `TypeChart`, `tick_status`, `with_lead`, the XP rules or the PvP
+rules depends on a removed test.
 
 ## The surviving tests, demonstrated
 
-Each defect below is written into a scratch copy of the tree at `485e8bca` and the suite of
-`game-core` is run on it. The right-hand column is what fails.
+Each defect below is written into a scratch copy of the tree at `485e8bca` and the tests named
+are run on it, as they stand at that commit. The first three rows leave the four oracle tests
+out, so they show what the tests that hold literals catch without any 1v1 comparison.
 
-| Carried rule | Defect | Tests that fail |
+| Carried rule | Defect | What fails |
 |---|---|---|
-| Poison and Burn amounts (`tactics/upkeep.rs` `status_tick_damage`) | each of its 7 `cargo mutants` mutants | all 7 caught by `status_tick_damage_is_the_carried_dot_for_every_max_hp_bt2_7` run alone |
-| Turn-skip rule (`tactics/queue.rs` `status_blocks_turn`) | each of its 5 mutants | all 5 caught by `status_blocks_turn_matches_the_carried_pre_turn_rule_bt3_5` run alone |
-| When a hit applies a status (`tactics/resolve.rs` `resolve_attack`, `status_of`) | the 6 mutants of the gate and the mapping | 5 caught by the two `…_bt2_5` oracle tests run alone, 1 unviable |
+| Poison and Burn amounts (`tactics/upkeep.rs` `status_tick_damage`) | each of its 7 `cargo mutants` mutants | all 7 caught by `tactics/upkeep_tests.rs` without `status_tick_damage_is_the_carried_dot_for_every_max_hp_bt2_7`; all 7 caught by that test alone |
+| Turn-skip rule (`tactics/queue.rs` `status_blocks_turn`) | each of its 5 mutants | all 5 caught by `tactics/queue_tests.rs` without `status_blocks_turn_matches_the_carried_pre_turn_rule_bt3_5`; all 5 caught by that test alone |
+| When a hit applies a status (`tactics/resolve.rs` `resolve_attack`, `status_of`) | the 6 mutants of the gate and the mapping | 5 caught by `a_status_lands_only_on_a_clean_surviving_hit_bt2_5` alone, 1 unviable; the same by the two oracle tests alone |
+| Sleep counts down, Freeze thaws at 80 (`combat/status.rs` `tick_status`) | each of its 8 mutants | 6 caught by `tactics/upkeep_tests.rs` alone, 2 unviable |
+| The first conscious member leads (`BattleSide::with_lead`) | each of its 3 mutants | 2 caught by the six `with_lead_*` tests in `combat/types.rs` alone, 1 unviable |
 | STAB, then type, then variance (`calc_damage`) | one deferred division in place of the three | 13 fail, among them `combat/damage.rs` `known_answer_fire_vs_plant_level5_power40_var100`, the red-team `f1_damage_chain_order_matters_stab_plus_neutral`, `tactics/golden_tests.rs` `every_bt2_golden_kind_reproduces_its_hand_derived_fixture_values_bt2_5` and `tactics/resolve_tests.rs` `the_pipeline_flanks_then_guards_flooring_each_step_bt2_5` |
 | HP removed never exceeds HP left (`tactics/resolve.rs` `damage_pipeline`) | the `min` dropped and a wrapping subtraction | 21 fail, among them `a_target_results_damage_is_the_hp_actually_removed_bt2_5` and `the_pipeline_never_revives_a_zero_hp_target_bt2_10` |
 | A wild double KO goes to side B (`tactics/outcome.rs` `check_battle_end`) | `SideAWins` in its place | `a_wild_double_wipe_follows_the_fixed_order_ruling_bt2_9`, `a_wild_double_ko_goes_to_side_b_by_the_fixed_order_ruling_bt2_10` |
 | Variance is drawn in `85..=100` (`tactics/resolve.rs` `draw_rolls`) | `80 + draw % 21` | 13 fail, among them `draw_rolls_reads_accuracy_then_variance_and_advances_by_two_bt2_5` and `golden_rolls_are_the_per_target_stream_from_seed_xor_action_seq_bt2_5` |
-| `u64` intermediates in `calc_damage` | the base term computed in wrapping `u32` | **none**: all 1,925 `game-core` tests pass. Line 8 adds the missing test |
+| `u64` intermediates in `calc_damage` | the base term computed in wrapping `u32` | **nothing**: all 1,925 `game-core` tests pass. The two `f2_*` tests cannot see it either. The base term leaves `u32` only for a `power` above 1,560 (the shipped maximum is 70), so this plan adds no test for it |
 
 ## Values the removed weather and ability rules produce
 
 The tactical depth waves (entry abilities on deploy; weather in upkeep slot 3) state these
 rules on `TacticalState`. Their first tests assert the literals below, which come from
 executing the 1v1 functions at `485e8bca`; the functions themselves are in that commit under
-`game-core/src/combat/ability.rs`, `weather.rs` and `resolve.rs`.
+`game-core/src/combat/ability.rs`, `weather.rs` and `resolve.rs`. This section outlives the
+extractions: it stays in this file until both waves have built their rule.
 
 **Entry heal** (`AbilityEffect::EntryHeal { denom }`, `denom ≥ 2` by `validate_abilities`).
 When a monster enters, if it has fainted or is at full HP nothing happens; otherwise it gains
@@ -356,14 +366,21 @@ from 99 it becomes 100. At `max_hp` 3 from 1 HP it becomes 2. The shipped abilit
 Regeneration, `denom` 4.
 
 **Status immunity** (`AbilityEffect::StatusImmunity { immune_to }`). When the monster enters,
-and at the start of every turn before the turn-skip check, a status of the immune kind is
-cleared; every other status stays. The match is by kind: Sleep immunity clears
-`Sleep { turns_remaining }` for any count. Nothing is healed and no event is emitted. The
-shipped abilities are Flame Body (Burn) and Vital Spirit (Sleep).
+and at the start of every full turn and every failed-recruit turn before the turn-skip check,
+a status of the immune kind is cleared; every other status stays. The match is by kind: Sleep
+immunity clears `Sleep { turns_remaining }` for any count. Nothing is healed and no event is
+emitted. Immunity does not stop a hit from applying the status: the status is written at the
+end of that turn and cleared when the next full or failed-recruit turn starts. A swap turn
+(`resolve_player_swap`) does not run the clearing step. The shipped abilities are Flame Body
+(Burn) and Vital Spirit (Sleep).
 
-**When "enters" fires in the 1v1 engine.** On a player's swap, before the opposing attack; on
-the automatic switch after a KO, after the action that caused it and before the end-of-turn
-phases.
+**When "enters" fires in the 1v1 engine.** `apply_entry_ability` documents two moments: battle
+start and any switch-in. At `485e8bca` the engine calls it in two places. `resolve_player_swap` calls it after the swap and before the opposing attack. After an
+attack that knocks a monster out and switches the next one in, `resolve_full_turn`,
+`resolve_player_swap` and `resolve_recruit_failure` call it for the newcomer, before the
+end-of-turn phases. It does not fire for a swap chosen inside `resolve_full_turn`
+(`TurnChoice::Swap`), nor for the switch after a KO by status damage or weather chip, and no
+code makes the battle-start call.
 
 **Weather attack modifier** (stays, in `calc_damage`). Rain: Water ×3/2, Fire ×1/2. Sun: Fire
 ×3/2, Water ×1/2. Sandstorm, Hail and no weather: ×1. Applied after the variance step and
@@ -371,36 +388,49 @@ before the floor of 1.
 
 **Weather chip.** At the end of a turn, after the status damage and before the status
 countdown, Sandstorm damages every active monster that is not Earth and Hail every one that is
-not Water, by `max(1, max_hp / 16)`; Rain and Sun damage nothing. The amount reported is the
-full chip even when less HP is left.
+not Water, by `max(1, max_hp / 16)`; Rain and Sun damage nothing. Side A is chipped first, and
+if that ends the battle side B is not. The amount reported is the full chip even when less HP
+is left.
 
 | `max_hp` | 1 | 2 | 15 | 16 | 17 | 31 | 32 | 33 | 100 | 255 | 256 | 1000 | 65,535 | Sum over 1..=65,535 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Chip | 1 | 1 | 1 | 1 | 1 | 1 | 2 | 2 | 6 | 15 | 16 | 62 | 4,095 | 134,184,975 |
 
 **Weather duration.** A hit by a skill with `sets_weather` sets the weather for 5 turns
-(`WEATHER_DEFAULT_TURNS`), after its own damage is applied, so it does not modify its own hit;
-it sets it on a KO, and not on a miss or an immune hit. The last end-of-turn phase counts the
-weather down: 5 becomes 4, 2 becomes 1, and at 1 or 0 the weather clears. The countdown runs on
-the setting turn too, so the weather modifies the attacks of the next four turns and chips at
-the end of five. The shipped setters
-are skills 7 to 10 (Rain Dance, Sunny Slam, Sandblast, Hailstrike); `tactics/content.rs`
-refuses a kit that holds one.
+(`WEATHER_DEFAULT_TURNS`), in place of any weather already active, after its own damage is
+applied. It does not modify its own hit, and it does modify every later attack, the other
+side's attack on the same turn included. It sets the weather on a KO, and not on a miss or an
+immune hit. The last end-of-turn phase counts the weather down: 5 becomes 4, 2 becomes 1, and
+at 1 or 0 the weather clears. The countdown runs on the setting turn too, so the weather
+chips at the end of five turns and modifies attacks for the rest of the setting turn and the
+next four. The shipped setters are skills 7 to 10 (Rain Dance, Sunny Slam, Sandblast,
+Hailstrike); `tactics/content.rs` refuses a kit that holds one.
 
 ## Extractions, in order
 
-Each is one slice, and the slice for a line deletes that line. Lines 2, 3 and 8 depend on
-nothing. Line 4 needs lines 1, 2 and 3; line 5 needs lines 1 and 4; line 6 needs lines 4 and
-5; line 7 needs line 6. Every line but 1 and 7 is a deletion: it removes whole items with the
-tests that name them, and the product code that stays does not change. A deleted test file
-takes its `mod` declaration with it. Someone other than the slice's author confirms each
-removed family against "The tests" before the merge.
+Each is one slice, and the slice for a line deletes that line and that line's rows from the
+tables above. The slice for the last line deletes every section but "Values the removed
+weather and ability rules produce".
 
-1. `tactics/resolve_tests.rs`, `tactics/queue_tests.rs` and `tactics/upkeep_tests.rs` gain the literal expected values of "What the three tactics tests compare against", beside the 1v1 comparisons they keep until lines 4 and 5. Test-only; it removes nothing.
-2. `game-core/benches/hot_paths.rs` loses the `resolve_turn` bench, `benches/budgets.rs` its row and `benches/budget_check_tests.rs` its `EXPECTED_IDS` entry.
-3. `resolve_player_swap`, `resolve_recruit_failure`, `resolve_enemy_turn` and `pick_best_skill` go: the three functions from `combat/resolve.rs` with their 15 inline tests, and all of `combat/ai.rs`. Test files: one test each in `combat/battle_core_tests.rs`, `combat/weather_tests.rs` and `monster/battle_redteam_tests.rs`, three in `combat/status_tests.rs`.
-4. `resolve_full_turn`, `resolve_turn` and `advance_turn` (the rest of `combat/resolve.rs`, which is deleted), `TurnChoice`, `TurnVariance`, `PvpAction::into_turn_choice`, `StatusVariance::from_ctx_random` and `BattleSide::has_conscious_member` go. Test files: 14 tests in `combat/battle_core_tests.rs`, 4 in `combat/battle_0hp_tests.rs`, 4 in `combat/weather_tests.rs`, 2 in `combat/ability_tests.rs`, 27 in `combat/status_tests.rs`, the inline tests named above in `status.rs`, `types.rs` and `pvp.rs`, and the `resolve_turn` comparison (`carried_status`) in `tactics/resolve_tests.rs`.
-5. `apply_pre_turn_effects` and `apply_post_turn_effects` go, with their private helpers and the `StatusEffect` re-export in `combat/status.rs`. Test files: 14 tests in `combat/status_tests.rs`, and the 1v1 comparisons in `tactics/queue_tests.rs` (`carried_can_act`) and `tactics/upkeep_tests.rs`.
-6. `apply_entry_ability`, `apply_ability_modifiers`, `AbilityStore`, `StatusKind::matches`, `apply_weather_damage`, `tick_weather`, `sandstorm_immune`, `hail_immune`, `WEATHER_DEFAULT_TURNS`, `WeatherEffect::from_kind`, `WeatherEffect::kind`, `WeatherEffect::turns_remaining`, `BattleSide::active_monster_mut`, `BattleSide::next_conscious_index`, `BattleSide::set_active` and `SwapError` go, with entry 2 of `.cargo/mutants.toml`. Test files: `combat/battle_0hp_tests.rs` (deleted), 23 tests in `combat/ability_tests.rs`, 15 in `combat/weather_tests.rs`, 2 in `combat/battle_core_tests.rs`, and the inline tests named above in `types.rs` and `weather.rs`.
-7. `tick_status` becomes `tick_status(status: StatusEffect, freeze_thaw_roll: u8) -> Option<StatusEffect>`, the status after one end-of-round tick, and `run_upkeep` calls it directly; `BattleStatusStore`, `StatusVariance` and `BattleEvent` go. An interface change. Test files: 5 tests in `combat/status_tests.rs` are re-pointed and 7 removed, with 1 in `combat/battle_core_tests.rs` and 2 inline in `types.rs`.
-8. `monster/battle_redteam_tests.rs` loses the 15 tests marked "Not a check", after a test that executes `calc_damage` beyond `u32` range (`power` 65,535, `attack` 65,535, level 100) is added and seen to fail on the wrapping-`u32` defect.
+- **Order.** Lines 2, 3 and 8 depend on nothing. Line 4 needs lines 1, 2 and 3; line 5 needs
+  lines 1 and 4; line 6 needs lines 4 and 5; line 7 needs line 6. Lines 3 and 8 edit the same
+  test file, so they are not built at the same time.
+- **Kinds.** A **deletion** removes whole `pub` items with the whole tests that name them; the
+  product code that stays does not change. A **test change** edits tests only and is written
+  by a tester, as is the 1v1 comparison lines 4 and 5 cut out of a tactics test. The
+  **interface change** is line 7.
+- **What a line carries besides its items.** The private helpers, test helpers and imports its
+  deletions leave unused (`cargo clippy --all-targets -D warnings` decides); the `mod`
+  declaration of a deleted file; the `pub use` names in `combat/mod.rs` and `lib.rs`; and
+  every row of "Gates and pins that name a removed function" marked with its number.
+- **Who confirms.** Someone other than the slice's author checks each removed family against
+  "The tests" before the merge.
+
+1. Test change. `tactics/resolve_tests.rs`, `tactics/queue_tests.rs` and `tactics/upkeep_tests.rs` gain the literal expected values of "What the four tactics tests compare against", beside the 1v1 comparisons they keep until lines 4 and 5. It removes nothing. The tester runs the mutants of `status_of`, `status_blocks_turn` and `status_tick_damage` against each changed test with its 1v1 comparison switched off for that run, and every one is caught.
+2. Deletion. `game-core/benches/hot_paths.rs` loses the `resolve_turn` bench, `benches/budgets.rs` its row and `benches/budget_check_tests.rs` its `EXPECTED_IDS` entry.
+3. Deletion. `resolve_player_swap`, `resolve_recruit_failure`, `resolve_enemy_turn` and `pick_best_skill` go: the three functions from `combat/resolve.rs` with their 15 inline tests, and all of `combat/ai.rs`. Test files: one test each in `combat/battle_core_tests.rs`, `combat/weather_tests.rs` and `monster/battle_redteam_tests.rs`, three in `combat/status_tests.rs`.
+4. Deletion. `resolve_full_turn`, `resolve_turn` and `advance_turn` (the rest of `combat/resolve.rs`, which is deleted), `TurnChoice`, `TurnVariance`, `PvpAction::into_turn_choice`, `StatusVariance::from_ctx_random` and `BattleSide::has_conscious_member` go. Test files: 14 tests in `combat/battle_core_tests.rs`, 4 in `combat/battle_0hp_tests.rs`, 4 in `combat/weather_tests.rs`, 2 in `combat/ability_tests.rs`, 27 in `combat/status_tests.rs`, the inline tests named above in `status.rs`, `types.rs` and `pvp.rs`, and the `resolve_turn` comparison (`carried_status`) in `tactics/resolve_tests.rs`.
+5. Deletion. `apply_pre_turn_effects` and `apply_post_turn_effects` go, with their private helpers. Test files: 14 tests in `combat/status_tests.rs`, and the 1v1 comparisons in `tactics/queue_tests.rs` (`carried_can_act`) and `tactics/upkeep_tests.rs`.
+6. Deletion. `apply_entry_ability`, `apply_ability_modifiers`, `AbilityStore`, `StatusKind::matches`, `apply_weather_damage`, `tick_weather`, `sandstorm_immune`, `hail_immune`, `WEATHER_DEFAULT_TURNS`, `WeatherEffect::from_kind`, `WeatherEffect::kind`, `WeatherEffect::turns_remaining`, `BattleSide::active_monster_mut`, `BattleSide::next_conscious_index`, `BattleSide::set_active` and `SwapError` go, with entry 2 of `.cargo/mutants.toml`. Test files: `combat/battle_0hp_tests.rs` (deleted), 23 tests in `combat/ability_tests.rs`, 15 in `combat/weather_tests.rs`, 2 in `combat/battle_core_tests.rs`, and the inline tests named above in `types.rs` and `weather.rs`.
+7. Interface change. `tick_status` becomes `tick_status(status: StatusEffect, freeze_thaw_roll: u8) -> Option<StatusEffect>`, the status after one end-of-round tick, and `run_upkeep` calls it directly. `BattleStatusStore`, `StatusVariance`, `combat::types::BattleEvent` and the `StatusEffect` re-export in `combat/status.rs` go. Test files, edited by a tester: in `combat/status_tests.rs` 5 tests keep their assertions on the status after a tick and lose their event assertions, 7 are removed and four `use` items point at `combat::types`; 1 test goes from `combat/battle_core_tests.rs` and 2 inline from `types.rs`.
+8. Test change. The 21 tests marked "Not a check" go: 15 from `monster/battle_redteam_tests.rs`, 5 from `combat/battle_core_tests.rs` and 1 from `combat/status_tests.rs`.

@@ -997,22 +997,21 @@ client-callable through the flip), `submit_attack`, `swap_active`, `flee`, `use_
 `attempt_recruit`, `submit_pvp_action`, `begin_encounter`, the dev-only `start_wild_battle`, the
 60 s secret-pick deadline arming and the 1v1-only guards are gone (the generated bindings and
 `client-callable-reducers.json` carry none of them), as are the client's 1v1 renderer, model,
-dispatch arms and copy. What stays of the 1v1 engine is deliberate. The
+dispatch arms and copy. What stays of the 1v1 engine is deliberate. The server
 module keeps the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical
 settle funnel calls. `marshal.rs` has no 1v1 row→`BattleMonster` marshaling helper and
 `content_cache.rs` no 1v1 skill, ability or type-chart cache: a helper only its own tests call is
 dead code, not a fallback engine. `game-core/src/combat/` follows the same rule. It holds the
 types stored in `Battle.state`, `battle_action` and the content rows, and the rules a production
 path calls: the damage formula and accuracy check, the type chart, lead selection, the status
-countdown, the XP rules, and the PvP forfeit and challenge rules. The turn driver
-(`combat/resolve.rs`), the enemy skill picker, the entry-ability hooks and the weather chip and
-countdown have no production caller;
-`docs/refactors/combat-carried-rules.md` classes every `pub` item and lists the order they are
-removed in. The tactical engine calls a carried rule by value. Where the rule's signature takes
-the 1v1 `BattleState`, the engine states it once in `tactics/` and a test pins that statement to
-literal expected values. A test of a removed rule goes with it, naming the removed function or
-the surviving test of the rule it carried; a test that executes no product function is no check
-and goes for that reason. The 1v1
+countdown, the XP rules, and the PvP forfeit and challenge rules. Everything else in it (the
+turn driver in `combat/resolve.rs`, the enemy skill picker, the entry-ability hooks, the weather
+chip and countdown) is removed in the order `docs/refactors/combat-carried-rules.md` lists;
+that file classes every `pub` item. The tactical engine calls a carried rule itself. Where the
+rule's signature takes the 1v1 `BattleState`, the engine states it once in `tactics/`, pinned by
+tests that hold literal expected values. A test of a removed rule goes with it, naming the
+removed function or the surviving test of the rule it carried; a test that executes no product
+function is no check and goes for that reason. The 1v1
 tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from use, never
 dropped or reordered (see "Schema changes are additive"): a census test pins that no client-callable reducer
 reaches `pvp_deadline_schedule` (the erase cascade's disarm still deletes from it), and that `battle_action` and `battle_wild` are reached by exactly
@@ -1030,16 +1029,15 @@ call is paid for by every change to a stored type (its tests build `BattleMonste
 `BattleSide` by hand), holds a bench budget and a mutation exclusion, and reads as a second
 engine. The entry-ability and weather functions take the 1v1 active-slot state, which the grid
 has no equivalent of, so a depth wave could use them only as a test oracle for one-line
-formulas; the plan file records the values they produce, and `calc_damage` already carries the
-Rain and Sun modifier through its `weather` parameter.
+formulas. The wave states its rule on `TacticalState` from the values the plan file records,
+and `calc_damage` already carries the Rain and Sun modifier through its `weather` parameter.
 
 **Rules out.** A feature flag or config row selecting the engine; starting a tactical
 battle through a dev-only reducer in any shipped build; dropping or reordering the
 retired tables (live data, additive schema).
 In `combat/`: a 1v1 rule kept as the source for a later wave or as the expected value of a
-tactics test; a second copy of a rule the engine can call; moving a stored type out of the file
-`content.rs` reads it from; naming a survivor for a test that executes nothing (15 of the 23 in
-`monster/battle_redteam_tests.rs`).
+tactics test; a second copy of a rule the engine can call; keeping a test that executes no
+product function until a survivor is found for it.
 
 ## Dev-only reducers never ship
 
