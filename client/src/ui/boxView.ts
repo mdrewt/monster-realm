@@ -213,8 +213,6 @@ export interface BoxViewCallbacks {
    *  mouse-only duplicate of the Monsters sheet's Move row (ui/screens/monstersScreen.ts, the
    *  `move` arm, by D-pad and by pointer) and are deleted. main.ts still passes it. */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
-  /** Unread: the Box's Heal Party button is retired (ctl-10a, B13). */
-  readonly onHealParty?: () => void;
   /** Unread since qf-8: the deleted To Box button emitted it (game-core's PARTY_SLOT_NONE, read
    *  once at boot from the `party_slot_none()` wasm export); main.ts still passes it, and the
    *  Monsters screen's view model carries its own copy for the Move row. */

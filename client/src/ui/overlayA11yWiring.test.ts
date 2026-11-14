@@ -266,14 +266,13 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     const view = new BoxView(appMount(), {
       onSetNickname: noop,
       onSetPartySlot: noop,
-      onHealParty: noop,
       partySlotNone: 255,
     });
     view.show();
     return { root: capturedRoot('boxView'), close: () => view.hide(), reopen: () => view.show() };
   },
   raisingView: () => {
-    const view = new RaisingView(appMount(), { onTrain: noop, onCare: noop });
+    const view = new RaisingView(appMount());
     view.show();
     return {
       root: capturedRoot('raisingView'),
@@ -370,7 +369,6 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onAccept: noop,
       onDecline: noop,
       onCancel: noop,
-      onChallenge: noop,
     });
     view.show();
     return { root: capturedRoot('pvpView'), close: () => view.hide(), reopen: () => view.show() };

@@ -16,6 +16,10 @@
  *
  * ts-6b-12 (named intentional change): four toast kinds no code produces retire: 63 -> 59 rows
  * (16 hint + 32 toast + 10 modal + 1 blocking).
+ *
+ * ts-6b-13 (named intentional change): the `heal-unavailable` toast kind retires with the
+ * location-less heal path (the healParty command always carries its locationId): 59 -> 58 rows
+ * (16 hint + 31 toast + 10 modal + 1 blocking).
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -57,7 +61,6 @@ const EXPECTED_CHANNEL: Record<MessageKind, Channel> = {
   'party-move-rejected': 'toast',
   'nickname-rejected': 'toast',
   'evolve-rejected': 'toast',
-  'heal-unavailable': 'toast',
   'heal-rejected': 'toast',
   'shop-buy-ok': 'toast',
   'shop-sell-ok': 'toast',
@@ -163,7 +166,7 @@ describe('feedbackPolicy (uif-4)', () => {
     expect(actual).toEqual(EXPECTED_CHANNEL);
   });
 
-  it('UIF4.1 the four channels hold 16 hint, 32 toast, 10 modal and 1 blocking kind', () => {
+  it('UIF4.1 the four channels hold 16 hint, 31 toast, 10 modal and 1 blocking kind', () => {
     // WRONG IMPL KILLED: a table typed to compile but with a channel emptied or bloated.
     expect(kindsOf('hint')).toHaveLength(16);
     expect(
@@ -173,8 +176,7 @@ describe('feedbackPolicy (uif-4)', () => {
         .sort(),
     ).toEqual(kindsOf('hint').sort());
     // uif-16b (named intentional change, WF1-A10): 37 -> 36 toast kinds, 'privacy-busy' retired.
-    // ts-6b-12 (named intentional change): 36 -> 32 toast kinds, four retired trade kinds. Was: 36.
-    expect(rows().filter(([, r]) => r.channel === 'toast')).toHaveLength(32);
+    expect(rows().filter(([, r]) => r.channel === 'toast')).toHaveLength(31);
     expect(rows().filter(([, r]) => r.channel === 'modal')).toHaveLength(10);
     expect(rows().filter(([, r]) => r.channel === 'blocking')).toHaveLength(1);
   });
@@ -231,8 +233,9 @@ describe('feedbackPolicy (uif-4)', () => {
     // WRONG IMPL KILLED: a toast or modal kind given a hint rank (it could take the strip).
     const nonHint = TABLE_KINDS.filter((k) => EXPECTED_CHANNEL[k] !== 'hint');
     // uif-16b (named intentional change, WF1-A10): 48 -> 47, 'privacy-busy' retired.
-    // ts-6b-12 (named intentional change): 47 -> 43, four retired trade kinds. Was: 47.
-    expect(nonHint).toHaveLength(43);
+    // ts-6b-13 (named intentional change): 43 -> 42 (31 toast + 10 modal + 1 blocking), the
+    // heal-unavailable kind retires.
+    expect(nonHint).toHaveLength(42);
     for (const kind of nonHint) expect(hintRank(kind), kind).toBe(-1);
   });
 
@@ -285,9 +288,14 @@ describe('feedbackPolicy (uif-4)', () => {
     // hide-claim verdict) is gone (a dead row the table no longer has), or left in the policy alone.
     expect(MESSAGE_KINDS as readonly string[]).not.toContain('privacy-busy');
     expect(Object.keys(FEEDBACK_POLICY)).not.toContain('privacy-busy');
-    // ts-6b-12 (named intentional change): 63 -> 59 kinds (16 + 32 + 10 + 1), four retired trade
-    // toasts. Was: 63 kinds remain (16 + 36 + 10 + 1).
-    expect(MESSAGE_KINDS, 'ANTI-VACUITY: 59 kinds remain (16 + 32 + 10 + 1)').toHaveLength(59);
+    expect(MESSAGE_KINDS, 'ANTI-VACUITY: 58 kinds remain (16 + 31 + 10 + 1)').toHaveLength(58);
+  });
+
+  it('ts-6b-13 the heal-unavailable kind is retired: no MESSAGE_KINDS entry, no policy row', () => {
+    // WRONG IMPL KILLED: the kind left in the roster or the table after the location-less heal
+    // path (its only producer) is gone.
+    expect(MESSAGE_KINDS as readonly string[]).not.toContain('heal-unavailable');
+    expect(Object.keys(FEEDBACK_POLICY)).not.toContain('heal-unavailable');
   });
 
   it('UIF4.6 every row that does not need the player to act has alsoCarriedBy null', () => {

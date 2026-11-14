@@ -92,7 +92,7 @@ import { CAPS } from './tactics/presentation';
 import { COMMAND_BATTLE_POLICY, OUTCOME_CONTINUE_GRACE_MS } from './ui/battlePolicy';
 // Read ONLY by the ctl-7c view-lending case's closing check that every frame id was driven.
 import { OVERLAY_IDS } from './ui/overlayRegistry';
-import type { SocialFrameView, SocialPanelId } from './ui/screens/types';
+import type { Command, SocialFrameView, SocialPanelId } from './ui/screens/types';
 // uif-4: the toast's dwell time (a toast expires at `nowMs >= untilMs`, untilMs = show + TOAST_MS).
 import { TOAST_MS } from './ui/toast';
 
@@ -615,9 +615,8 @@ interface Row {
 }
 
 /** The dispatch fixture: party 51 in slot 2 and 50 in slot 0, 52 boxed (255), so the free slot is 1
- *  and the party ids in store order are [51, 50]; two heal pads, 7 loaded first (ctl-10a: no
- *  command falls back to the first pad any more; the pads prove a location-less heal is refused
- *  even when a pad is loaded). */
+ *  and the party ids in store order are [51, 50]; two heal pads, 7 loaded first (no command falls
+ *  back to the first pad; the pads prove a healParty command's own id wins over the first pad). */
 function seedDispatchFixture(): void {
   opts.store.upsertMonster(monster(51n, 2));
   opts.store.upsertMonster(monster(50n, 0));
@@ -668,12 +667,9 @@ function dispatchRows(): readonly Row[] {
       kind: 'setPartySlot',
       atBattle: 'refuse',
     },
-    // ctl-10a (named intentional change, CTL10A.4): the 'box healParty targets the first loaded
-    // pad' row is removed with the Box Heal Party control and its `onHealParty` callback. Healing
-    // happens only at a bound healer: the heal frame's screen adapter issues `healParty {
-    // locationId }` (CTL7C-3-PRESENT), the absent arm reports healUnavailable (CTL7C-3-ABSENT,
-    // CTL10A-4-NO-BOX-HEAL-HANDLER), and the battle case below names healParty among the kinds
-    // with no view callback.
+    // There is no box healParty row: healing happens only at a bound healer, whose screen adapter
+    // issues `healParty { locationId }` (CTL7C-3-PRESENT, CTL10A-4-NO-BOX-HEAL-HANDLER), and the
+    // battle case below names healParty among the kinds with no view callback.
     // bt-17 (named intentional change, BT17.1): the seven 'battle attack / flee / swap / recruit /
     // useItem / pvp attack / pvp swap' rows are removed with the 1v1 BattleView and its seven
     // `Command` kinds (the reducers are no longer client-callable). The battle base's own actions
@@ -959,10 +955,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // WRONG IMPL KILLED: a -1 that sends the box sentinel into a full party (an accepted server
     // no-op the player never sees), a full-party guard that also blocks an explicit slot, and a
     // skip that is silent.
-    // ctl-10a (named intentional change, CTL10A.4): the heal half of this case (the Box's
-    // `onHealParty` with no pad loaded, then with one) is removed with the Box Heal Party control.
-    // Its survivors: CTL7C-3-ABSENT (a location-less healParty sends nothing and says why, with or
-    // without pads) and CTL10A-4-NO-BOX-HEAL-HANDLER (the Box gets no heal callback at all).
+    // The heal command carries its own bound locationId (CTL7C-3-PRESENT).
     await bootReady();
     server(1000);
     for (const [id, slot] of [
@@ -1961,14 +1954,25 @@ describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
   ] as const)('UIF4.2 a toast raised while %s is visible one ms before TOAST_MS and hidden at TOAST_MS', async (_name, atBattle) => {
     // WRONG IMPL KILLED: a toast tick that runs only at the world base (`contextStack.length === 1`):
     // under an open menu or a battle base the toast would never expire. Raised with a refused or
-    // unavailable command so the toast is real; the expiry is bracketed on the 5 ms the press spans,
-    // so it is sound whichever of the press's two events the command ran on.
+    // unavailable command so the toast is real (a box-slot move into a full party: the party-full
+    // toast at the world, the battle's refusal over a battle base; neither sends); the expiry is
+    // bracketed on the 5 ms the press spans, so it is sound whichever of the press's two events the
+    // command ran on.
     await bootReady();
     server(1000);
+    for (const [id, slot] of [
+      [41n, 0],
+      [42n, 1],
+      [43n, 2],
+      [44n, 255],
+    ] as const) {
+      opts.store.upsertMonster(monster(id, slot));
+    }
+    const fullParty = { kind: 'setPartySlot', monsterId: 44n, slot: -1 };
     if (atBattle) {
       putBattle(BATTLE_ID, 1100);
       // The stand-in is swapped BEFORE the menu opens (the frame's adapter state starts from it).
-      const issue: { command: unknown } = { command: { kind: 'healParty' } };
+      const issue: { command: unknown } = { command: fullParty };
       swapAdapter('menuView', commandAdapter(issue));
       press('Escape', 1200);
       expect(stackNow(), 'precondition: the menu is open over a battle base').toEqual([
@@ -1976,16 +1980,21 @@ describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
         { kind: 'screen', id: 'menuView', overBattle: '101' },
       ]);
     } else {
-      menuIssuing({ kind: 'healParty' });
+      menuIssuing(fullParty);
       expect(stackNow(), 'precondition: the menu is open').toEqual([
         WORLD_FRAME,
         screenFrame('menuView'),
       ]);
     }
+    const expectedToast = atBattle
+      ? i18n.t('menu.disabled.inBattle')
+      : i18n.t('chrome.status.partyFull');
+    H.calls = [];
     await pageUp(2000);
-    expect(toastText(), 'precondition: a toast is up').not.toBe('');
+    expect(H.calls, 'neither state sends a reducer').toEqual([]);
+    expect(toastText(), 'precondition: the state`s own toast is up').toBe(expectedToast);
     frame(2000 + TOAST_MS - 1);
-    expect(toastText(), 'still visible one ms before TOAST_MS').not.toBe('');
+    expect(toastText(), 'still visible one ms before TOAST_MS').toBe(expectedToast);
     frame(2005 + TOAST_MS);
     expect(toastText(), 'hidden once TOAST_MS has elapsed').toBe('');
   });
@@ -2223,33 +2232,22 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     document.body.replaceChildren();
   });
 
-  it('CTL7C-3-PRESENT: a screen command healParty with a locationId sends exactly that id: 9 while the store`s first pad is 7, 0 as 0, and 9 with no pad loaded at all (with no "unavailable" report); at a battle base it is refused like the absent arm', async () => {
-    // WRONG IMPL KILLED: a healParty arm that ignores a present locationId and sends the store's
+  it('CTL7C-3-PRESENT: a screen command healParty with a locationId sends exactly that id: 9 while the store`s first pad is 7, 0 as 0, and 9 with no pad loaded at all (with no report); at a battle base it is refused with the battle reason', async () => {
+    // WRONG IMPL KILLED: a healParty arm that ignores the locationId and sends the store's
     // first pad (B13: a heal screen bound to one location would heal at another), a `||` fallback
-    // (0 is a present id: it would be replaced by the first pad, or skipped when none is loaded),
-    // a present arm still gated on a loaded pad (nothing sent and "heal unavailable" reported for a
-    // location the screen knows), a present arm that rewrites the argument shape, and one that
-    // skips the battle policy (a heal sent at a battle base).
+    // (0 is a present id: it would be replaced by the first pad), an arm still gated on a loaded
+    // pad (nothing sent for a location the screen knows), an arm that rewrites the argument shape,
+    // and one that skips the battle policy (a heal sent at a battle base). The toast is timed, so
+    // it is cleared before each read that expects nothing.
     await bootReady();
     server(1000);
     const status = document.getElementById('status');
     if (status === null) throw new Error('#status must exist once booted');
-    const issue: { command: unknown } = { command: { kind: 'healParty' } };
+    const issue: { command: unknown } = { command: { kind: 'healParty', locationId: 9 } };
     swapAdapter('menuView', commandAdapter(issue));
     openMenuAtWorld(1010);
 
-    // Control: with no pad loaded the ABSENT arm sends nothing and says why, so none is loaded.
-    H.calls = [];
-    status.textContent = '';
-    await pageUp(1100);
-    expect(H.calls, 'control: no pad is loaded, the absent arm sends nothing').toEqual([]);
-    // uif-4 (named intentional change, UIF4.2): `heal-unavailable` is a toast kind: read #toast, not
-    // #status, here and at every statusText() below in this case. The toast is timed, so it is
-    // cleared before each read that expects nothing.
-    expect(toastText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
-
-    // A present id with no pad loaded is still sent, and nothing is reported.
-    issue.command = { kind: 'healParty', locationId: 9 };
+    // A present id with no pad loaded is sent, and nothing is reported.
     H.calls = [];
     status.textContent = '';
     clearToast();
@@ -2281,18 +2279,7 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       { name: 'healParty', args: { locationId: 0 } },
     ]);
 
-    // Control: in the same state the absent arm sends nothing and says why.
-    // ctl-10a (named intentional change, CTL10A.4): this control expected the absent arm to send
-    // the store's first pad (7), the retired Box behaviour; healing happens only at a bound healer
-    // now, so a location-less heal is refused with the pads loaded.
-    issue.command = { kind: 'healParty' };
-    H.calls = [];
-    status.textContent = '';
-    await pageUp(1600);
-    expect(H.calls, 'control: the absent arm sends nothing, pads or not').toEqual([]);
-    expect(toastText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
-
-    // At a battle base the present arm is refused exactly like the absent one.
+    // At a battle base the heal is refused with the battle's reason.
     press('Escape', 1700);
     expect(stackNow(), 'precondition: Start closed the menu').toEqual([{ kind: 'world' }]);
     putBattle(BATTLE_ID, 1800);
@@ -2310,7 +2297,6 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     for (const command of [
       { kind: 'healParty', locationId: 9 },
       { kind: 'healParty', locationId: 0 },
-      { kind: 'healParty' },
     ]) {
       const label = JSON.stringify(command);
       issue.command = command;
@@ -2324,43 +2310,12 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     }
   });
 
-  it('CTL7C-3-ABSENT: a screen command healParty with no locationId sends nothing and tells the player, with no pad loaded and with pads loaded (the Box`s first-pad fallback is retired)', async () => {
-    // WRONG IMPL KILLED: an absent arm that sends `undefined` or 0 when no pad is loaded (a
-    // guaranteed invisible server Err), one that loses the report, one that still falls back to
-    // the store's first pad (or the last, or a fixed one) once pads are loaded (B13: a heal at a
-    // location the player never chose), and a screen command path that never reaches `dispatch`.
-    // ctl-10a (named intentional change, CTL10A.4): the second half expected the store's first pad
-    // (7) to be sent once pads arrive (the Box Heal Party behaviour CTL7C.3 kept "until ctl-10a");
-    // it now expects nothing sent and the same report.
-    await bootReady();
-    server(1000);
-    const status = document.getElementById('status');
-    if (status === null) throw new Error('#status must exist once booted');
-    swapAdapter('menuView', commandAdapter({ command: { kind: 'healParty' } }));
-    openMenuAtWorld(1010);
-
-    H.calls = [];
-    status.textContent = '';
-    const unloaded = await pageUp(1100);
-    expect(unloaded.defaultPrevented, 'the routed press is consumed').toBe(true);
-    expect(H.calls, 'no pad loaded: nothing is sent').toEqual([]);
-    // uif-4 (named intentional change, UIF4.2): heal-unavailable is a toast kind (was #status).
-    expect(toastText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
-
-    seedDispatchFixture();
-    server(1200);
-    expect(
-      opts.store
-        .healLocations()
-        .map((l) => l.locationId)
-        .sort(),
-      'precondition: pads 7 and 9 are loaded',
-    ).toEqual([7, 9]);
-    H.calls = [];
-    status.textContent = '';
-    await pageUp(1300);
-    expect(H.calls, 'with pads loaded nothing is sent either').toEqual([]);
-    expect(toastText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+  it('CTL7C-3-LOCATIONID-REQUIRED: a healParty command lacking its locationId is a type error (the command carries the bound pad`s id)', () => {
+    // WRONG IMPL KILLED: a Command whose healParty arm keeps `locationId` optional (an absent-id
+    // branch stays representable).
+    // @ts-expect-error locationId is required
+    const _absent: Command = { kind: 'healParty' };
+    expect(_absent.kind).toBe('healParty');
   });
 
   it('QF9-3-BOOT-CARE-TRAIN-COMMANDS: the care and train screen commands (the Monsters sheet`s and the Bag`s, no longer any view callback) send exactly their reducer with exactly their arguments at the world, and a battle base refuses both with its reason and sends nothing', async () => {
@@ -5192,19 +5147,15 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
 describe('main.ts no Box heal (runtime, ctl-10a)', { sequential: true }, () => {
   afterEach(teardownBoot);
 
-  it('CTL10A-4-NO-BOX-HEAL-HANDLER: the BoxView main.ts constructs gets no onHealParty callback, and a healParty command with no locationId sends nothing and reports healUnavailable even with heal locations loaded; a present id in the same state is sent', async () => {
-    // WRONG IMPL KILLED (B13): a Box still handed a heal callback (any control wired to it heals at
-    // a location the player never chose), and a location-less healParty that falls back to the
-    // store's first loaded location (7 here) instead of refusing visibly. The control (a present
-    // id is sent) keeps the refusal from passing on a dead dispatch path.
+  it('CTL10A-4-NO-BOX-HEAL-HANDLER: the BoxView main.ts constructs gets no onHealParty callback, and with heal locations 7 and 9 loaded a healParty command with locationId 9 sends exactly 9 (not the store`s first pad) and reports nothing', async () => {
+    // WRONG IMPL KILLED (B13): a Box still handed a heal callback in main.ts's handler object
+    // (runtime data the type check does not see), and a healParty arm that sends the store's first
+    // loaded location (7 here) instead of the command's own id.
     await bootReady();
     server(1000);
     const box = H.handlers.BoxView;
     if (box === undefined) throw new Error('BoxView was never constructed by main.ts');
-    expect(
-      Object.hasOwn(box, 'onHealParty') ? box.onHealParty : undefined,
-      'the Box gets no Heal Party callback',
-    ).toBeUndefined();
+    expect(Object.hasOwn(box, 'onHealParty'), 'the Box gets no Heal Party callback').toBe(false);
     expect(typeof box.onSetNickname, 'control: the Box`s other callbacks are wired').toBe(
       'function',
     );
@@ -5221,30 +5172,20 @@ describe('main.ts no Box heal (runtime, ctl-10a)', { sequential: true }, () => {
     ).toEqual([7, 9]);
     const status = document.getElementById('status');
     if (status === null) throw new Error('#status must exist once booted');
-    const issue: { command: unknown } = { command: { kind: 'healParty' } };
+    const issue: { command: unknown } = { command: { kind: 'healParty', locationId: 9 } };
     swapAdapter('menuView', commandAdapter(issue));
     openMenuAtWorld(1020);
 
     H.calls = [];
     status.textContent = '';
+    clearToast();
     const down = await pageUp(1100);
     expect(down.defaultPrevented, 'the routed press is consumed').toBe(true);
-    expect(H.calls, 'no locationId: nothing is sent, pads loaded or not').toEqual([]);
-    // uif-4 (named intentional change, UIF4.2): heal-unavailable is a toast kind: the line is on
-    // #toast (was #status), and #status stays empty.
-    expect(toastText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
-    expect(statusText(), 'and not on the status line').toBe('');
-
-    issue.command = { kind: 'healParty', locationId: 9 };
-    H.calls = [];
-    status.textContent = '';
-    clearToast();
-    await pageUp(1200);
-    expect(H.calls, 'control: a present id is sent').toEqual([
+    expect(H.calls, 'the command`s id is sent, not the first pad`s').toEqual([
       { name: 'healParty', args: { locationId: 9 } },
     ]);
-    expect(toastText(), 'control: and nothing is reported').toBe('');
-    expect(statusText(), 'control: nor on the status line').toBe('');
+    expect(toastText(), 'and nothing is reported').toBe('');
+    expect(statusText(), 'nor on the status line').toBe('');
   });
 });
 

@@ -21,7 +21,14 @@
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { describe, expect, it } from 'vitest';
-import { challengeSizes, consciousPartyIds, type PartyPickRow, PVP_FORMAT_MAX } from './pvpModel';
+import type { StoreBattleChallenge, StorePlayer } from '../net/store';
+import {
+  buildPvpChallengeViewModel,
+  challengeSizes,
+  consciousPartyIds,
+  type PartyPickRow,
+  PVP_FORMAT_MAX,
+} from './pvpModel';
 
 /** The boxed sentinel the fixture uses (main.ts passes the bindings' PARTY_SLOT_NONE). */
 const NONE = 255;
@@ -107,5 +114,65 @@ describe('pvpModel: the conscious, untraded party in slot order (bt-15, BT15.1)'
     for (const [eligible, want] of cases) {
       expect(challengeSizes(eligible), `${eligible} eligible`).toEqual(want);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ts-6b-13: the view model is exactly the two requests; no player roster rides along.
+// ---------------------------------------------------------------------------
+
+describe('buildPvpChallengeViewModel (ts-6b-13)', () => {
+  const ME = '0xme01';
+  const challenges: readonly StoreBattleChallenge[] = [
+    {
+      challengeId: 5n,
+      challenger: '0xbbb',
+      target: ME,
+      challengerPartyIds: [1n],
+      status: 'Pending',
+      createdAtMs: 1_000n,
+    },
+    {
+      challengeId: 6n,
+      challenger: ME,
+      target: '0xccc',
+      challengerPartyIds: [2n],
+      status: 'Pending',
+      createdAtMs: 2_000n,
+    },
+  ];
+  // Alice is online, not self, and in no Pending challenge: a roster field would list her.
+  const players: readonly StorePlayer[] = [
+    { identity: ME, entityId: 1n, name: 'Me', online: true },
+    { identity: '0xbbb', entityId: 2n, name: 'Bob', online: true },
+    { identity: '0xccc', entityId: 3n, name: 'Carol', online: true },
+    { identity: '0xaaa1', entityId: 4n, name: 'Alice', online: true },
+  ];
+
+  it('returns exactly the keys incoming and outgoing, with an online non-busy player in the store', () => {
+    // WRONG IMPL KILLED: a builder that still computes and returns the unread
+    // `challengeablePlayers` roster (Alice would be in it).
+    const vm = buildPvpChallengeViewModel(challenges, ME, players);
+    expect(Object.keys(vm).sort()).toEqual(['incoming', 'outgoing']);
+    // A non-enumerable own property (a getter) hides from Object.keys.
+    expect(Object.getOwnPropertyNames(vm).sort()).toEqual(['incoming', 'outgoing']);
+    expect('challengeablePlayers' in vm).toBe(false);
+  });
+
+  it('control: incoming and outgoing are still built, names resolved from the players', () => {
+    // WRONG IMPL KILLED: a builder trimmed to the two keys that no longer builds the requests (or
+    // stops resolving names from `players`).
+    const vm = buildPvpChallengeViewModel(challenges, ME, players);
+    expect(vm.incoming).toEqual({ challengeId: 5n, challengerId: '0xbbb', challengerName: 'Bob' });
+    expect(vm.outgoing).toEqual({
+      challengeId: 6n,
+      targetId: '0xccc',
+      targetName: 'Carol',
+      status: 'Pending',
+    });
+    expect(Object.keys(buildPvpChallengeViewModel([], ME, players)).sort()).toEqual([
+      'incoming',
+      'outgoing',
+    ]);
   });
 });

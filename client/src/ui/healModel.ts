@@ -28,23 +28,6 @@ export interface HealViewModel {
 }
 
 /**
- * Pick the heal location to target: the FIRST location's id (matching the
- * original behavior), or `undefined` when none are loaded.
- *
- * WHY `undefined` and not 0: the old call site did `locations[0]?.locationId ?? 0`
- * — with no locations loaded it dispatched the heal reducer with locationId 0, a
- * guaranteed-invisible server `Err` (no location 0 exists). `undefined` is the
- * SKIP signal: the caller must not send at all (and surfaces "no heal location
- * available" instead). TOTAL: never throws (matching this module's
- * contract); a falsy-but-present locationId (0) on a non-empty array is valid.
- */
-export function healTargetLocationId(
-  locations: readonly { locationId: number }[],
-): number | undefined {
-  return locations[0]?.locationId;
-}
-
-/**
  * Bound-location view: the heal view model for ONE
  * location id. THIN filter-then-delegate — cost/isFree resolution stays in
  * buildHealViewModel. Unknown id → `{ locations: [] }` (never the full list,

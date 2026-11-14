@@ -899,7 +899,6 @@ function qf8PvpCallbacks(rec: ReturnType<typeof qf8Recorder>): PvpViewCallbacks 
     onAccept: rec.record('onAccept'),
     onDecline: rec.record('onDecline'),
     onCancel: rec.record('onCancel'),
-    onChallenge: rec.record('onChallenge'),
   };
 }
 
@@ -1538,7 +1537,6 @@ function qf8RenderBox(): Qf8Rendered {
   const view = new BoxView(parent, {
     onSetNickname: rec.record('onSetNickname'),
     onSetPartySlot: rec.record('onSetPartySlot'),
-    onHealParty: rec.record('onHealParty'),
     // The boxed sentinel the retired To Box emitted (game-core PARTY_SLOT_NONE; boxView.test.ts
     // X2b pins the wasm value).
     partySlotNone: 255,
@@ -1723,7 +1721,6 @@ const QF8_PVP_OUTGOING: NonNullable<PvpChallengeViewModel['outgoing']> = {
 const QF8_PVP_VM: PvpChallengeViewModel = {
   incoming: { challengeId: 21n, challengerId: 'cd'.repeat(32), challengerName: 'Bob' },
   outgoing: QF8_PVP_OUTGOING,
-  challengeablePlayers: [],
 };
 
 function qf8RenderPvp(): Qf8Rendered {
@@ -1761,7 +1758,6 @@ function qf8RenderPvp(): Qf8Rendered {
         apply: shown({
           incoming: null,
           outgoing: { ...QF8_PVP_OUTGOING, status: 'Accepted' },
-          challengeablePlayers: [],
         }),
         anchors: () => [i18nT('pvp.title.challenge')],
       },

@@ -143,9 +143,7 @@ export class RaisingView {
   readonly #bagStatus: HTMLDivElement;
   #bagPaint: BagPaint | null = null;
 
-  /** `_retired` is accepted and never read: overlayA11yWiring.test.ts (outside qf-9's touches)
-   *  still passes the deleted cards' `{ onTrain, onCare }` (R-qf-9-RAISINGVESTIGES). */
-  constructor(parent: HTMLElement, _retired?: unknown) {
+  constructor(parent: HTMLElement) {
     this.#root = document.createElement('div');
     // ctl-7b: a class-styled frame. `.mr-shell` places it inside `#game-screen` (the `#app` mount
     // main.ts passes is inside it) and `.mr-frame` paints the frame tokens; inline is only the

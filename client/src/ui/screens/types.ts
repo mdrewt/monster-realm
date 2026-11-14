@@ -34,9 +34,8 @@ export type Command =
   | { readonly kind: 'evolve'; readonly monsterId: bigint; readonly toSpecies: number }
   | { readonly kind: 'setNickname'; readonly monsterId: bigint; readonly nickname: string }
   | { readonly kind: 'setPartySlot'; readonly monsterId: bigint; readonly slot: number }
-  // `locationId`: the heal location a bound heal frame names. Absent (the Box button, until
-  // ctl-10a), `dispatch` takes the first loaded one.
-  | { readonly kind: 'healParty'; readonly locationId?: number }
+  // `locationId`: the heal location the bound heal frame names (healScreen is the only emitter).
+  | { readonly kind: 'healParty'; readonly locationId: number }
   // Shop. `qty` is the reducer's u32: an integer from 1 to 4294967295. `dispatch` sends nothing
   // for any other value (it never clamps).
   | {

@@ -32,6 +32,7 @@ import { describe, expect, it } from 'vitest';
 // The builders consume `StoreHealLocationRow` directly now, so the fixtures below are
 // typed against the SHIPPED shape and drift between the two is no longer expressible.
 import type { StoreHealLocationRow, StoreItemRow } from '../net/store';
+import * as healModel from './healModel';
 import {
   buildHealViewModel,
   // The bound-location selector.
@@ -39,7 +40,6 @@ import {
   // The cost-line renderer healView.ts:25 delegates to.
   formatHealCostLine,
   type HealLocationViewModel,
-  healTargetLocationId,
 } from './healModel';
 
 // ---------------------------------------------------------------------------
@@ -342,70 +342,19 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
 });
 
 // ---------------------------------------------------------------------------
-// M13.5b §D / ADR-0085 — healTargetLocationId
-//
-// API CONTRACT (pinned):
-//   healTargetLocationId(locations: readonly { locationId: number }[]): number | undefined
-//   - []           → undefined  (the SKIP signal — NOT `?? 0`)
-//   - [a]          → a.locationId
-//   - [a, b, ...]  → a.locationId (first wins)
+// The heal command carries the bound location id, so the module exports no selector that
+// picks a location from a list.
 // ---------------------------------------------------------------------------
 
-describe('healTargetLocationId (M13.5b ADR-0085 §D)', () => {
-  it('empty array → undefined (the SKIP signal, not 0)', () => {
-    // Kills: the `?? 0` doomed-send bug — an impl that returns 0 for an empty
-    // list would cause healParty({ locationId: 0 }) to be sent to the server,
-    // guaranteed to produce an invisible Err (no location with id 0 exists).
-    // The SKIP signal must be `undefined`, not a falsy number.
-    const result = healTargetLocationId([]);
-    expect(result).toBeUndefined();
-    // Extra proof: explicitly not 0 (the exact doomed-send value).
-    expect(result).not.toBe(0);
-  });
-
-  it('single location → returns its locationId', () => {
-    // Kills: an impl that returns undefined for a non-empty array (over-conservative).
-    const result = healTargetLocationId([{ locationId: 7 }]);
-    expect(result).toBe(7);
-  });
-
-  it('single location with locationId=0 → returns 0 (falsy id is valid)', () => {
-    // Kills: an impl that returns undefined for falsy locationId values.
-    // locationId=0 IS a valid id when the array is non-empty.
-    const result = healTargetLocationId([{ locationId: 0 }]);
-    expect(result).toBe(0);
-  });
-
-  it('multiple locations → returns the FIRST locationId (current behavior contract)', () => {
-    // Kills: an impl that returns the last element, the min, the max, or undefined.
-    // The spec says "first, matching current behavior".
-    const result = healTargetLocationId([
-      { locationId: 42 },
-      { locationId: 7 },
-      { locationId: 100 },
-    ]);
-    expect(result).toBe(42); // first wins
-  });
-
-  it('two locations → first wins over second', () => {
-    // Kills: an impl that returns the second element or picks by min/max.
-    expect(healTargetLocationId([{ locationId: 10 }, { locationId: 20 }])).toBe(10);
-    expect(healTargetLocationId([{ locationId: 20 }, { locationId: 10 }])).toBe(20);
-  });
-
-  it('extra properties on location objects are ignored (structural subtype)', () => {
-    // Kills: an impl that requires an exact HealLocationViewModel shape and crashes
-    // on a minimal { locationId } object.
-    const locs = [{ locationId: 55, zoneId: 1, tileX: 5, tileY: 5 }];
-    expect(healTargetLocationId(locs)).toBe(55);
+describe('healModel exports (ts-6b-13)', () => {
+  it('the module namespace has no healTargetLocationId', () => {
+    // WRONG IMPL KILLED: a healModel.ts that keeps the unread first-location selector exported.
+    expect('healTargetLocationId' in healModel).toBe(false);
   });
 });
 
 // ===========================================================================
 // buildHealViewModelForLocation: BOUND location view.
-// The `healTargetLocationId` first-location DEFAULT is deliberately unchanged (AC-10′
-// / adjudication 2: onHealParty's SEND keeps the first-location default; only the
-// OVERLAY's VIEW binds, until a second heal location is seeded).
 //
 // CONTRACT:
 //   export function buildHealViewModelForLocation(
@@ -459,9 +408,7 @@ describe('buildHealViewModelForLocation [uxd2-1]: renders ONLY the bound locatio
 
   it('★ [uxd2-1] BITES: locationId 0 is a valid bound id (falsy-0 trap)', () => {
     // WRONG IMPL KILLED: `if (!locationId) return { locations: healLocations.map(…) }` or
-    // `locationId || firstId` — a truthiness guard on a representable u32 id. The sibling
-    // healTargetLocationId block already pins the same trap on the SEND side; this is the
-    // VIEW side of it.
+    // `locationId || firstId` — a truthiness guard on a representable u32 id.
     const locs = [
       makeLocation({ locationId: 0, tileX: 2, tileY: 2 }),
       makeLocation({ locationId: 1 }),
