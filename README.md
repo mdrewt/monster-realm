@@ -144,7 +144,7 @@ without it ships none: its host must serve the file beside `index.html` (or set 
 itself before the client module runs), or the client throws at start-up. Replacing the file
 points a built client at another server without a rebuild. Serve it
 so a changed copy is picked up (for example `Cache-Control: no-cache`); a stale cached copy
-keeps clients on the old target.
+keeps clients on the target it names.
 
 The reconnect token and the guest-claim code are stored under keys derived from the exact `uri`
 and `db` strings. A host that changes the spelling of its target (letter case, a trailing slash,

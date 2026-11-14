@@ -15,11 +15,11 @@ import { resolveConnectionConfig } from '../net/connectionConfig';
 import { makeFateLogger, makeSendLogger, resolveDevLogLevel } from '../net/devLog';
 import { readShellDocument } from '../net/shellDocument';
 
-// The SpacetimeDB target comes from the shell document the page's host set on `globalThis`
-// before this module ran (`net/shellDocument.ts`); nothing here is fixed at build time. It is
-// resolved at MODULE scope (eagerly, at import) so a missing or refused document fails loud
-// here, before connect() is reachable. Kept at module scope on purpose: inside main() a
-// try/catch could swallow the throw.
+// The SpacetimeDB target comes from the shell document, which the page's host sets on
+// `globalThis` ahead of the client module (`net/shellDocument.ts`); nothing here is fixed at
+// build time. It is resolved at MODULE scope (eagerly, at import) so a missing or refused
+// document fails loud here, ahead of any connect() call. Kept at module scope on purpose:
+// inside main() a try/catch could swallow the throw.
 export const {
   uri: URI,
   db: DB,
