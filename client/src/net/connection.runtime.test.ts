@@ -58,6 +58,12 @@ const H = vi.hoisted(() => ({
    * row)` for insert and delete, `(ctx, oldRow, row)` for update. Additive: `rowCbs` is untouched.
    */
   rowEvents: {} as Record<string, { insert: Cb[]; update: Cb[]; delete: Cb[] }>,
+  /**
+   * When true, the builder's `build()` throws synchronously (a malformed URI, an SDK version
+   * check), after the build was recorded in `builds`. Additive: false by default, reset in every
+   * `beforeEach`.
+   */
+  builderThrows: false,
 }));
 
 vi.mock('../module_bindings', () => {
@@ -137,7 +143,10 @@ vi.mock('../module_bindings', () => {
             rec.onDisconnect = cb;
             return b;
           },
-          build: () => conn,
+          build: () => {
+            if (H.builderThrows) throw new Error('builder threw');
+            return conn;
+          },
         };
         return b;
       },
@@ -198,6 +207,7 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     H.viewRows = {};
     H.rowCbs = {};
     H.rowEvents = {};
+    H.builderThrows = false;
     H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
     sessionStorage.clear();
     localStorage.clear();
@@ -826,6 +836,7 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
     H.viewRows = {};
     H.rowCbs = {};
     H.rowEvents = {};
+    H.builderThrows = false;
     H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
     sessionStorage.clear();
     localStorage.clear();
@@ -1113,6 +1124,7 @@ describe('connect(): the trade session view (ts-3)', { sequential: true }, () =>
     H.viewRows = {};
     H.rowCbs = {};
     H.rowEvents = {};
+    H.builderThrows = false;
     H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
     sessionStorage.clear();
     localStorage.clear();
@@ -1367,6 +1379,7 @@ describe('connect(): the world scope', { sequential: true }, () => {
     H.viewRows = {};
     H.rowCbs = {};
     H.rowEvents = {};
+    H.builderThrows = false;
     H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
     sessionStorage.clear();
     localStorage.clear();
@@ -1829,6 +1842,274 @@ describe('connect(): the world scope', { sequential: true }, () => {
     expect(wsSubs(b).map((sub) => sub.unsubscribes)).toEqual([0, 1]);
     expect(handle.worldScope()).toEqual({ own: 'active', zones: [], settled: false });
     expect(b.disconnect).not.toHaveBeenCalled();
+  });
+});
+
+// =============================================================================================
+// Every reconnect attempt that ends without an applied subscription climbs exactly one rung
+// of the backoff ladder (1000, 2000, 4000, 8000, 16000, 30000, 30000 ms …), whichever events
+// report the failure and whichever build path started the attempt.
+// =============================================================================================
+
+/** The build at index `i`, failing the test readably when that attempt never reached the builder. */
+function npBuild(i: number): BuildRec {
+  const b = H.builds[i];
+  expect(b, `build #${i} was made`).toBeDefined();
+  return b;
+}
+
+/** The attempt's socket opened, then dropped before any subscription applied. */
+function npOpenAndDrop(b: BuildRec): void {
+  b.onConnect?.(conn0(b), ID, 'anon-tok');
+  b.onDisconnect?.();
+}
+
+/** The attempt's socket reported a connect error. */
+function npConnectError(b: BuildRec): void {
+  b.onConnectError?.({}, new Error('refused'));
+}
+
+/** The attempt's socket opened, its first subscription applied, then the link dropped. */
+function npConnectedDrop(b: BuildRec): void {
+  b.onConnect?.(conn0(b), ID, 'anon-tok');
+  b.onApplied?.();
+  b.onDisconnect?.();
+}
+
+/**
+ * The next attempt starts exactly `delayMs` from now: `count` is unchanged after `delayMs - 1`
+ * and one higher after 1 ms more. `count` defaults to the builder calls; an account tab whose
+ * attempts never reach the builder counts the credential resolves instead.
+ */
+async function npExpectNextAttemptAfter(
+  delayMs: number,
+  count: () => number = () => H.builds.length,
+): Promise<void> {
+  const before = count();
+  await vi.advanceTimersByTimeAsync(delayMs - 1);
+  expect(count(), `no attempt ${delayMs - 1} ms after the failure`).toBe(before);
+  await vi.advanceTimersByTimeAsync(1);
+  await settle();
+  expect(count(), `the next attempt ${delayMs} ms after the failure`).toBe(before + 1);
+}
+
+describe('connect(): one backoff rung per failed reconnect attempt', { sequential: true }, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  it('successive attempts that each open and drop before the first applied subscription are rebuilt at 1000, 2000, 4000, 8000, 16000, 30000, 30000 ms [np-d.7]', async () => {
+    // WRONG IMPL KILLED: the drop of a non-connected link as a no-op (every rebuild at 1000 ms, a
+    // restarting host hammered); a drop that climbs two rungs (4000 where 2000 is due); an
+    // uncapped ladder (32000 where 30000 is due).
+    connect(makeOpts());
+    await settle();
+    npConnectedDrop(npBuild(0));
+    const ladder = [1000, 2000, 4000, 8000, 16000, 30000, 30000];
+    for (const delay of ladder) {
+      await npExpectNextAttemptAfter(delay);
+      npOpenAndDrop(npBuild(H.builds.length - 1));
+    }
+  });
+
+  it('first boot: an attempt that opens and drops before its subscription applies is retried at 2000 ms, not 1000 [np-d.5]', async () => {
+    // Trace: boot starts attempt 0 → open, drop → rung 1 → 2000 ms.
+    // WRONG IMPL KILLED: the first boot not starting an attempt (its drop climbs nothing: 1000).
+    connect(makeOpts());
+    await settle();
+    npOpenAndDrop(npBuild(0));
+    await npExpectNextAttemptAfter(2000);
+  });
+
+  it('first boot: a drop then a connect error of the one attempt climbs one rung — 2000 ms, then 4000 after the next failure [np-d.5]', async () => {
+    // Trace: boot attempt 0 → drop → rung 1 (2000 scheduled) → connect error → still rung 1;
+    // attempt 1 → connect error → rung 2 → 4000.
+    // WRONG IMPL KILLED: the drop climbing nothing (the 1000 ms rebuild is already pending when
+    // the error climbs); both events climbing (rung 3 after the second attempt: 8000).
+    connect(makeOpts());
+    await settle();
+    const b0 = npBuild(0);
+    b0.onDisconnect?.();
+    npConnectError(b0);
+    await npExpectNextAttemptAfter(2000);
+    npConnectError(npBuild(1));
+    await npExpectNextAttemptAfter(4000);
+  });
+
+  it('first boot: a connect error then a drop of the one attempt climbs one rung — 2000 ms, then 4000 after the next failure [np-d.5]', async () => {
+    // Trace: boot attempt 0 → connect error → rung 1 (2000) → drop → still rung 1;
+    // attempt 1 → connect error → rung 2 → 4000.
+    // WRONG IMPL KILLED: the trailing drop climbing a second rung (8000 after the next failure).
+    connect(makeOpts());
+    await settle();
+    const b0 = npBuild(0);
+    npConnectError(b0);
+    b0.onDisconnect?.();
+    await npExpectNextAttemptAfter(2000);
+    npConnectError(npBuild(1));
+    await npExpectNextAttemptAfter(4000);
+  });
+
+  it('timer path: a rebuilt attempt reporting a connect error then a drop climbs one rung — 2000 ms, then 4000 [np-d.5]', async () => {
+    // Trace: connected drop keeps rung 0 → 1000; attempt (timer) → error → rung 1 (2000) → drop
+    // → still rung 1; next attempt → error → rung 2 → 4000.
+    // WRONG IMPL KILLED: the drop after the error climbing again (8000 where 4000 is due).
+    connect(makeOpts());
+    await settle();
+    npConnectedDrop(npBuild(0));
+    await npExpectNextAttemptAfter(1000);
+    const b1 = npBuild(1);
+    npConnectError(b1);
+    b1.onDisconnect?.();
+    await npExpectNextAttemptAfter(2000);
+    npConnectError(npBuild(2));
+    await npExpectNextAttemptAfter(4000);
+  });
+
+  it('timer path: a rebuilt attempt reporting a drop then a connect error climbs one rung — 2000 ms, then 4000 [np-d.5]', async () => {
+    // Trace: connected drop → 1000; attempt (timer) → drop → rung 1 (2000 scheduled) → error →
+    // still rung 1; next attempt → error → rung 2 → 4000.
+    // WRONG IMPL KILLED: the drop climbing nothing (the 1000 ms rebuild is scheduled before the
+    // error climbs); both events climbing (8000 where 4000 is due).
+    connect(makeOpts());
+    await settle();
+    npConnectedDrop(npBuild(0));
+    await npExpectNextAttemptAfter(1000);
+    const b1 = npBuild(1);
+    b1.onDisconnect?.();
+    npConnectError(b1);
+    await npExpectNextAttemptAfter(2000);
+    npConnectError(npBuild(2));
+    await npExpectNextAttemptAfter(4000);
+  });
+
+  it('reconnectNow called on a disconnected link with a rebuild pending starts an attempt that climbs its own rung [np-d.5]', async () => {
+    // Trace (rung after each step):
+    //   boot attempt 0 → connect error → rung 1, link disconnected, the 2000 ms rebuild pending
+    //   reconnectNow → attempt 1 → open, drop → rung 2 (the pending timer is kept)
+    //   the pending timer fires at 2000 → attempt 2 → open, drop → rung 3 → 8000 ms
+    // WRONG IMPL KILLED: reconnectNow not starting an attempt (its drop lands on a disconnected
+    // link and climbs nothing: rung 2 → 4000); the drop of a non-connected link climbing nothing
+    // (2000).
+    const handle = connect(makeOpts());
+    await settle();
+    npConnectError(npBuild(0));
+    handle.reconnectNow();
+    await settle();
+    expect(H.builds, 'reconnectNow built at once').toHaveLength(2);
+    npOpenAndDrop(npBuild(1));
+    await npExpectNextAttemptAfter(2000);
+    npOpenAndDrop(npBuild(2));
+    await npExpectNextAttemptAfter(8000);
+  });
+
+  it('continueAnonymously called on a disconnected link with a rebuild pending starts an attempt that climbs its own rung [np-d.5]', async () => {
+    // Trace (rung after each step), an account tab:
+    //   boot attempt 0 → the credential resolve rejects → rung 1, link disconnected, 2000 pending
+    //   continueAnonymously → attempt 1 (anon build) → open, drop → rung 2
+    //   the pending timer fires at 2000 → attempt 2 (anon, no resolve) → open, drop → rung 3 → 8000
+    // WRONG IMPL KILLED: continueAnonymously not starting an attempt (rung 2 → 4000); the drop of a
+    // non-connected link climbing nothing (2000).
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.reject(new Error('boom'));
+    const handle = connect(makeOpts());
+    await settle();
+    expect(H.renewCalls).toBe(1);
+    expect(H.builds).toHaveLength(0);
+    handle.continueAnonymously();
+    await settle();
+    expect(H.builds, 'continueAnonymously built at once').toHaveLength(1);
+    npOpenAndDrop(npBuild(0));
+    await npExpectNextAttemptAfter(2000);
+    expect(H.renewCalls, 'forced anonymous: no further resolve').toBe(1);
+    npOpenAndDrop(npBuild(1));
+    await npExpectNextAttemptAfter(8000);
+  });
+
+  it('a rejecting credential resolve on an account tab climbs one rung per attempt: resolves at 2000, 4000, 8000 ms [np-d.5]', async () => {
+    // WRONG IMPL KILLED: an attempt started after the async credential gap (or not at all), so its
+    // failure lands on a link that does not mark an attempt in flight and climbs nothing.
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.reject(new Error('boom'));
+    connect(makeOpts());
+    await settle();
+    expect(H.renewCalls).toBe(1);
+    const resolves = (): number => H.renewCalls;
+    await npExpectNextAttemptAfter(2000, resolves);
+    await npExpectNextAttemptAfter(4000, resolves);
+    await npExpectNextAttemptAfter(8000, resolves);
+    expect(H.builds, 'no attempt reached the builder').toHaveLength(0);
+  });
+
+  it('a transient-error credential outcome (the retry credential) climbs one rung: the second resolve at 2000 ms, not 1000 [np-d.5]', async () => {
+    // WRONG IMPL KILLED: the retry arm's failure landing on an attempt not yet started (rung 0).
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'transient-error' });
+    connect(makeOpts());
+    await settle();
+    expect(H.renewCalls).toBe(1);
+    expect(H.builds).toHaveLength(0);
+    await npExpectNextAttemptAfter(2000, () => H.renewCalls);
+  });
+
+  it('a synchronously throwing builder climbs one rung per attempt: rebuilt at 2000, then 4000 ms [np-d.5]', async () => {
+    // WRONG IMPL KILLED: the build-throw arm's failure landing on an attempt not yet started.
+    H.builderThrows = true;
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    expect(H.builds, 'the first build reached the builder and threw').toHaveLength(1);
+    expect(opts.onError).toHaveBeenCalledWith('connect', 'builder threw');
+    await npExpectNextAttemptAfter(2000);
+    await npExpectNextAttemptAfter(4000);
+  });
+
+  it('a connected drop followed by three attempts that each open and drop reports the lost link exactly once [np-d.6]', async () => {
+    // WRONG IMPL KILLED: the link-lost report fired on every failed attempt's drop (it belongs to
+    // the connected→disconnected edge only).
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    npConnectedDrop(npBuild(0));
+    for (let i = 1; i <= 3; i += 1) {
+      await nextAttempt();
+      npOpenAndDrop(npBuild(i));
+    }
+    expect(H.builds).toHaveLength(4);
+    const linkReports = vi.mocked(opts.onError).mock.calls.filter((call) => call[0] === 'link');
+    expect(linkReports).toHaveLength(1);
+  });
+
+  it('a reconnect whose subscription applies resets the ladder: the next drop is rebuilt at 1000 ms again [np-d.6]', async () => {
+    // WRONG IMPL KILLED: the applied subscription not resetting the rung (the drop after it rebuilt
+    // at 8000).
+    connect(makeOpts());
+    await settle();
+    npConnectedDrop(npBuild(0));
+    await npExpectNextAttemptAfter(1000);
+    npConnectError(npBuild(1));
+    await npExpectNextAttemptAfter(2000);
+    npConnectError(npBuild(2));
+    await npExpectNextAttemptAfter(4000);
+    npConnectedDrop(npBuild(3));
+    await npExpectNextAttemptAfter(1000);
   });
 });
 

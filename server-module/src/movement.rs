@@ -3,10 +3,11 @@
 //! Server-paced, per-zone movement: clients buffer intent in the PRIVATE
 //! `move_intent` table (an accepted input writes that one row and no public
 //! row); the scheduled `movement_tick` drains at most one move/character/tick (a
-//! character whose player is in an ongoing battle drains none — its queue stays
-//! frozen), publishes the remaining queue and the accepted seq on the
-//! `character` row it writes, and runs the grass-encounter trigger, which opens a TACTICAL wild battle through
-//! `tactics::start_wild_tactical` (bt-16: the one live wild path). The
+//! character whose player is in an ongoing battle drains none, and the battle's
+//! start has already emptied its queue through `drop_queued_moves`), publishes
+//! the remaining queue and the accepted seq on the `character` row it writes,
+//! and runs the grass-encounter trigger, which opens a TACTICAL wild battle
+//! through `tactics::start_wild_tactical` (the one live wild path).
 //! A zone ticks only while a player's character is in it (`arm_zone_tick` on
 //! entry; the tick that finds the zone empty sends its NPCs home and removes the
 //! schedule). The `movement_tick_schedule` scheduled `#[table]`
@@ -401,14 +402,39 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
 pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "clear_queue")?;
-    // Deliberately NOT battle-guarded: pure cancellation — it
-    // cannot cause movement. Guarding it would force the stale pre-battle queue
-    // to survive to battle end and deny an honest key-release cancel while the
-    // battle overlay is opening.
+    // Deliberately NOT battle-guarded: pure cancellation — it cannot cause
+    // movement, and guarding it would refuse an honest key-release cancel sent
+    // while the battle overlay is opening. The battle's start has already
+    // emptied the queue (`drop_queued_moves`), so mid-battle this moves only
+    // the seq.
     let mut intent = authorize_move(ctx, "clear_queue", seq)?;
     intent.queue.clear();
     ctx.db.move_intent().entity_id().update(intent);
     Ok(())
+}
+
+/// Empty `player`'s queued moves and keep the accepted seq: what a battle start
+/// does to each battler (`tactics::start_wild_tactical`,
+/// `tactics::start_pvp_tactical`), so a step queued before the battle never runs
+/// after it (docs/DECISIONS.md "Battle lifecycle and PvP"). The seq stays where
+/// it is, so `authorize_move` still refuses every input sent before the battle.
+///
+/// Writes only the private `move_intent` row. The `character` row keeps the
+/// queue the last tick published until the next `movement_tick` publishes the
+/// empty one. Writes nothing when `player` has no `player` row, no intent row,
+/// or nothing queued.
+pub(crate) fn drop_queued_moves(ctx: &ReducerContext, player: Identity) {
+    let Some(p) = ctx.db.player().identity().find(player) else {
+        return;
+    };
+    let Some(mut intent) = ctx.db.move_intent().entity_id().find(p.entity_id) else {
+        return;
+    };
+    if intent.queue.is_empty() {
+        return;
+    }
+    intent.queue.clear();
+    ctx.db.move_intent().entity_id().update(intent);
 }
 
 // --- Rate-limited encounter-failure logging -------------
@@ -568,7 +594,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         // in an ongoing battle in EITHER role, SKIP the drain with the queue
         // INTACT — the same semantics the sim-harness models — normalising
         // `action` to Idle write-on-change; the lock self-releases the tick after
-        // the battle's outcome leaves Ongoing. The argument is the CHARACTER's
+        // the battle's outcome leaves Ongoing. Defence in depth: a battle start
+        // empties the queue (`drop_queued_moves`) and the intake reducers refuse
+        // mid-battle input, so only a queue that got past both reaches this
+        // branch. The argument is the CHARACTER's
         // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender()`
         // here is the MODULE identity and would make the guard always false.
         // `unwrap_or(false)` states a FACT — a character with no `player` row is

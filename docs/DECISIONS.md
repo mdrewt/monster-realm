@@ -291,7 +291,9 @@ anchor before the sweep runs); `u8` codes for game-core enums in a row. Also rul
 **Decision.** A player's movement intent is stored in the private `move_intent` table
 (`server-module/src/schema.rs`): the undrained queue and the monotonic seq guard, keyed
 by `character.entity_id`. `enqueue_move`, `set_move` and `clear_queue` write that one
-row and touch no public row. `movement_tick` is the only writer of
+row and touch no public row; a battle start empties the queue through
+`movement::drop_queued_moves` (see "Battle lifecycle and PvP"), likewise touching no
+public row. `movement_tick` is the only writer of
 `character.move_queue` and `character.acked_seq`: through `movement::publish_intent`
 it copies the private pair onto the `character` row in the update that carries the
 position, and it writes that row only when something changed. Whenever the private
@@ -732,7 +734,10 @@ A battle starts with the first conscious monster as lead (`BattleSide::with_lead
 One predicate, `guards::is_in_ongoing_battle`, checks both roles and is used
 everywhere a battle must block something: movement (a drain-time lock in
 `movement_tick`, plus `enqueue_move`/`set_move` rejecting mid-battle), trading,
-evolution, guest claims. Accepting a challenge opens a TACTICAL battle
+evolution, guest claims. A battle start (`tactics::start_wild_tactical`,
+`tactics::start_pvp_tactical`) also empties each battler's private `move_intent.queue`
+through `movement::drop_queued_moves`, keeping the seq guard, so a step queued before a
+battle never runs after it. Accepting a challenge opens a TACTICAL battle
 (`tactics::start_pvp_tactical`): secret queue rows under the 30 s per-unit clock, forfeit on
 the fourth auto-pass or the last connection closing (see "Tactical battle privacy is
 structural"); the 1v1 `battle_action` rows and the 60 s `pvp_deadline_reaper` are never
@@ -748,10 +753,13 @@ this is inactive until a real OIDC issuer is configured (`pvp.rs`
 **Why.** Every blocking rule reads the same predicate, so PvE and PvP cannot drift
 apart. Disconnect handling keys on the *last* connection (the private
 `player_session` table), so a second tab or an overlapping reconnect cannot forfeit
-the player's battle.
+the player's battle. The server drops the queue itself because a stale or hostile client
+would not send `clear_queue`; the drain lock alone only postpones the queued steps until
+the battle ends.
 
 **Rules out.** Per-call-site battle checks; forfeiting on any single socket close;
-rating practice or wild battles.
+rating practice or wild battles; relying on a client-sent `clear_queue` to end pre-battle
+movement.
 
 ## Queued actions halt-and-return; the idle clock resets on every accepted submit
 

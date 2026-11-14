@@ -42,6 +42,7 @@ use crate::guards::{
 use crate::inventory::consume_one;
 use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
+use crate::movement::drop_queued_moves;
 use crate::observability::mr_log;
 use crate::playtest::{hp_permille, record_recruit_event};
 use crate::pvp::{SideAWriteBack, PVP_FORMAT_MAX};
@@ -1770,6 +1771,8 @@ fn anchor_monster(m: &Monster, species: &Species) -> BattleMonster {
 /// Atomic under a swallowing caller: `movement_tick` logs a refusal and carries on with the
 /// tick, so a refusal AFTER the first insert (the pack-1 auto-deploy's dry run) undoes every
 /// row this call wrote before returning the `Err` — nothing half-written ever locks a player.
+/// A started battle empties the player's queued moves (`movement::drop_queued_moves`) as its
+/// last step, after every refusal, so a refused start leaves the queue as it was.
 pub(crate) fn start_wild_tactical(
     ctx: &ReducerContext,
     player: Identity,
@@ -1994,6 +1997,7 @@ pub(crate) fn start_wild_tactical(
     } else if let Some(deadline) = deploy_deadline {
         arm_deadline(ctx, battle_id, DEPLOY_WINDOW_UNIT, 0, deadline);
     }
+    drop_queued_moves(ctx, player);
     Ok(battle_id)
 }
 
@@ -2077,6 +2081,7 @@ fn load_side_party(
 /// `battle_deploy` staging row per side (empty, unlocked), plus the 45 s deploy window row.
 /// Nothing is written before the last guard (reject, never clamp). The two side lists must be
 /// DISJOINT (Practice splits one party): every per-side rule then works over its own list.
+/// A started battle empties both battlers' queued moves (`movement::drop_queued_moves`).
 /// The ONE live writer of a PvP battle, called by `pvp::accept_challenge` (bt-16); EVERY caller
 /// must draw `seed` from `ctx.random()` — the public `map_id` derives from it.
 pub(crate) fn start_pvp_tactical(
@@ -2209,6 +2214,9 @@ pub(crate) fn start_pvp_tactical(
     log::info!(
         "{{\"evt\":\"tactical_pvp_start\",\"battle_id\":{battle_id},\"map_id\":{map_id},\"format\":{format},\"kind\":\"{kind:?}\"}}"
     );
+    for battler in [challenger, opponent] {
+        drop_queued_moves(ctx, battler);
+    }
     Ok(battle_id)
 }
 

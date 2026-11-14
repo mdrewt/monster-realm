@@ -9,8 +9,14 @@
 //   initialReconnectState(): ReconnectState         → { link:'disconnected', attempt:0 }
 //   onReconnectAttempt(s): ReconnectState           → if connected: s unchanged; else { link:'reconnecting', attempt:s.attempt }
 //   onConnected(s): ReconnectState                  → { link:'connected', attempt:0 }
-//   onDisconnected(s): ReconnectState               → if connected: { link:'disconnected', attempt:s.attempt }; else s unchanged
-//   onAttemptFailed(s): ReconnectState              → if connected: s unchanged; else { link:'disconnected', attempt:s.attempt+1 }
+//   onDisconnected(s): ReconnectState               → if connected: { link:'disconnected', attempt:s.attempt };
+//                                                     if reconnecting: { link:'disconnected', attempt:s.attempt+1 }; if disconnected: s unchanged
+//   onAttemptFailed(s): ReconnectState              → if reconnecting: { link:'disconnected', attempt:s.attempt+1 }; else s unchanged
+//
+// Every started attempt that ends without an applied subscription climbs exactly ONE rung,
+// whichever failure event (connect error, drop, or both in either order) reports it. A link in
+// 'reconnecting' is a started attempt that has not failed yet; its first failure event moves it
+// to 'disconnected', so the same attempt's second event climbs nothing.
 //   linkFrozen(s): boolean                          → s.link !== 'connected'
 //
 // Pure: no Date, no setTimeout, no DOM. Node-only.
@@ -139,7 +145,7 @@ describe('reconnectPolicy: initialReconnectState', () => {
 // ================================================================================
 
 describe('reconnectPolicy: onConnected', () => {
-  it('resets to { link: "connected", attempt: 0 } from any state', () => {
+  it('resets to { link: "connected", attempt: 0 } from any state [np-d.6]', () => {
     // Kills: an impl that preserves a non-zero attempt (would use wrong next delay).
     const fromDisconnected: ReconnectState = { link: 'disconnected', attempt: 3 };
     const s = onConnected(fromDisconnected);
@@ -148,12 +154,18 @@ describe('reconnectPolicy: onConnected', () => {
     expect(linkFrozen(s)).toBe(false); // unfrozen on connect
   });
 
-  it('onConnected from "reconnecting" also resets attempt to 0', () => {
+  it('onConnected from "reconnecting" also resets attempt to 0 [np-d.6]', () => {
     // Kills: an impl that only resets attempt when coming from 'disconnected'.
     const fromReconnecting: ReconnectState = { link: 'reconnecting', attempt: 5 };
     const s = onConnected(fromReconnecting);
     expect(s.link).toBe('connected');
     expect(s.attempt).toBe(0);
+  });
+
+  it('onConnected from "connected" with a non-zero rung also resets attempt to 0 [np-d.6]', () => {
+    // Kills: an impl that returns a connected state unchanged (keeping a stale rung).
+    const fromConnected: ReconnectState = { link: 'connected', attempt: 4 };
+    expect(onConnected(fromConnected)).toEqual({ link: 'connected', attempt: 0 });
   });
 
   it('linkFrozen is false after onConnected', () => {
@@ -168,7 +180,7 @@ describe('reconnectPolicy: onConnected', () => {
 // ================================================================================
 
 describe('reconnectPolicy: onDisconnected', () => {
-  it('from "connected": transitions to { link:"disconnected", attempt: preserved }', () => {
+  it('from "connected": transitions to { link:"disconnected", attempt: preserved } [np-d.6]', () => {
     // Kills: an impl that resets attempt on disconnect (should only reset on connect).
     const connected: ReconnectState = { link: 'connected', attempt: 0 };
     const s = onDisconnected(connected);
@@ -177,7 +189,7 @@ describe('reconnectPolicy: onDisconnected', () => {
     expect(linkFrozen(s)).toBe(true);
   });
 
-  it('from "connected" with attempt=3: preserves attempt=3', () => {
+  it('from "connected" with attempt=3: preserves attempt=3 [np-d.6]', () => {
     // This scenario can occur if a session had prior failed attempts then connected.
     // Kills: an impl that always sets attempt=0 on disconnect.
     const connected: ReconnectState = { link: 'connected', attempt: 3 };
@@ -188,7 +200,7 @@ describe('reconnectPolicy: onDisconnected', () => {
     expect(s.attempt).toBe(3);
   });
 
-  it('T5 idempotence: onDisconnected(onDisconnected(s)) deepEquals onDisconnected(s) for connected start', () => {
+  it('T5 idempotence: onDisconnected(onDisconnected(s)) deepEquals onDisconnected(s) for connected start [np-d.6]', () => {
     // Kills: a non-idempotent impl that double-transitions (e.g. increments attempt
     // each time — the SDK's onerror-then-onclose double event must not double-schedule).
     const connected: ReconnectState = { link: 'connected', attempt: 0 };
@@ -197,18 +209,22 @@ describe('reconnectPolicy: onDisconnected', () => {
     expect(twice).toEqual(once); // idempotent
   });
 
-  it('T5 idempotence: onDisconnected on already-disconnected state returns state unchanged', () => {
-    // Kills: an impl that transitions again (e.g. sets link:'reconnecting') on repeated calls.
+  it('T5 idempotence: onDisconnected on already-disconnected state (no attempt in flight) returns state unchanged [np-d.5]', () => {
+    // Kills: an impl that transitions again (e.g. sets link:'reconnecting') on repeated calls, or
+    // one that climbs a rung on a drop with no attempt started.
     const disconnected: ReconnectState = { link: 'disconnected', attempt: 2 };
     const result = onDisconnected(disconnected);
     expect(result).toEqual(disconnected); // unchanged (same shape)
   });
 
-  it('T5 idempotence: onDisconnected on reconnecting state returns state unchanged', () => {
-    // Kills: an impl that increments attempt or changes link on a non-connected input.
+  it('a drop on a reconnecting link (the attempt opened and dropped before its subscription applied) climbs one rung [np-d.2]', () => {
+    // The attempt opened and dropped before its subscription applied: it failed, so it ends
+    // 'disconnected' one rung higher (a restarting host is not retried at a fixed 1 s).
+    // Kills: a drop on a reconnecting link treated as a no-op; a drop that keeps 'reconnecting';
+    // a drop that climbs two rungs.
     const reconnecting: ReconnectState = { link: 'reconnecting', attempt: 1 };
     const result = onDisconnected(reconnecting);
-    expect(result).toEqual(reconnecting); // unchanged
+    expect(result).toEqual({ link: 'disconnected', attempt: 2 });
   });
 });
 
@@ -225,7 +241,7 @@ describe('reconnectPolicy: onReconnectAttempt', () => {
     expect(linkFrozen(s)).toBe(true); // still frozen during attempt
   });
 
-  it('from connected: no-op (returns s unchanged)', () => {
+  it('from connected: no-op (returns s unchanged) [np-d.6]', () => {
     // Kills: an impl that overrides the link even when already connected.
     const connected: ReconnectState = { link: 'connected', attempt: 0 };
     const result = onReconnectAttempt(connected);
@@ -256,14 +272,21 @@ describe('reconnectPolicy: onAttemptFailed', () => {
     expect(linkFrozen(s)).toBe(true); // stays frozen
   });
 
-  it('from disconnected: increments attempt (double-failure edge case)', () => {
-    // Kills: an impl that only increments attempt from 'reconnecting'.
-    const s = onAttemptFailed({ link: 'disconnected', attempt: 0 });
-    expect(s.link).toBe('disconnected');
-    expect(s.attempt).toBe(1);
+  it('from disconnected: a failure with no attempt in flight (the double-failure edge case) climbs nothing [np-d.5]', () => {
+    // A 'disconnected' link has no attempt in flight (it already failed, or none was started), so
+    // a failure event climbs nothing: an attempt's second failure event climbs no second rung.
+    // Kills: an increment from 'disconnected'.
+    expect(onAttemptFailed({ link: 'disconnected', attempt: 0 })).toEqual({
+      link: 'disconnected',
+      attempt: 0,
+    });
+    expect(onAttemptFailed({ link: 'disconnected', attempt: 3 })).toEqual({
+      link: 'disconnected',
+      attempt: 3,
+    });
   });
 
-  it('from connected: no-op', () => {
+  it('from connected: no-op [np-d.6]', () => {
     // Kills: an impl that increments attempt even when connected.
     const connected: ReconnectState = { link: 'connected', attempt: 0 };
     const result = onAttemptFailed(connected);
@@ -440,6 +463,185 @@ describe('reconnectPolicy: T4 op-sequence property', () => {
           prevAttempt = s.attempt;
         }
         void prevAttempt;
+      }),
+    );
+  });
+});
+
+// ================================================================================
+// 12. Every attempt that ends without an applied subscription climbs ONE rung
+// ================================================================================
+
+/** One failure event of an in-flight attempt, as connection.ts reports it. */
+type FailureEvent = 'connectError' | 'drop';
+
+function report(s: ReconnectState, event: FailureEvent): ReconnectState {
+  return event === 'connectError' ? onAttemptFailed(s) : onDisconnected(s);
+}
+
+/** Start an attempt from `s`, then feed it `events` in order. */
+function failOneAttempt(s: ReconnectState, events: readonly FailureEvent[]): ReconnectState {
+  let next = onReconnectAttempt(s);
+  for (const event of events) next = report(next, event);
+  return next;
+}
+
+/**
+ * The pre-attempt states every build path starts from: the first boot (the initial state), a
+ * timer firing after a failure (`disconnected` at n), and a parked attempt that is retried
+ * (`reconnecting` at n). `n` is the rung the state already stands on.
+ */
+const PRE_ATTEMPT_STATES: ReadonlyArray<{ readonly name: string; readonly s: ReconnectState }> = [
+  { name: 'initial (first boot)', s: initialReconnectState() },
+  { name: 'disconnected at 0', s: { link: 'disconnected', attempt: 0 } },
+  { name: 'disconnected at 3', s: { link: 'disconnected', attempt: 3 } },
+  { name: 'reconnecting at 0 (parked, retried)', s: { link: 'reconnecting', attempt: 0 } },
+  { name: 'reconnecting at 3 (parked, retried)', s: { link: 'reconnecting', attempt: 3 } },
+];
+
+describe('reconnectPolicy: a failed attempt climbs exactly one rung', () => {
+  it('a drop on a reconnecting link climbs to the next rung from every rung, and the next delay is that rung [np-d.2]', () => {
+    // Kills: the drop that is a no-op off a connected link (a restarting host retried at a fixed
+    // 1 s); a drop that climbs two rungs; a drop that leaves the link 'reconnecting'.
+    const cases: ReadonlyArray<readonly [number, number]> = [
+      [0, 2000],
+      [1, 4000],
+      [2, 8000],
+      [3, 16000],
+      [4, 30000],
+      [7, 30000],
+    ];
+    for (const [n, nextDelay] of cases) {
+      const s = onDisconnected({ link: 'reconnecting', attempt: n });
+      expect(s, `from reconnecting at ${n}`).toEqual({ link: 'disconnected', attempt: n + 1 });
+      expect(reconnectDelayMs(s.attempt), `the delay after a drop at ${n}`).toBe(nextDelay);
+    }
+  });
+
+  it('after a connected drop, a reconnect attempt that opens and drops before its subscription applies stands one rung up [np-d.2]', () => {
+    // Kills: the drop of a non-connected link left as a no-op (the ladder never leaves rung 0).
+    let s = onConnected(onReconnectAttempt(initialReconnectState()));
+    s = onDisconnected(s);
+    expect(s, 'the connected drop keeps the rung').toEqual({ link: 'disconnected', attempt: 0 });
+    s = onDisconnected(onReconnectAttempt(s));
+    expect(s).toEqual({ link: 'disconnected', attempt: 1 });
+    s = onDisconnected(onReconnectAttempt(s));
+    expect(s).toEqual({ link: 'disconnected', attempt: 2 });
+  });
+
+  it('one attempt reporting a connect error and a drop, in either order, climbs exactly one rung from every pre-attempt state [np-d.5]', () => {
+    // Kills: an impl where both events of the one attempt climb (two rungs); an impl where the
+    // second event re-opens the attempt.
+    for (const { name, s } of PRE_ATTEMPT_STATES) {
+      const n = s.attempt;
+      expect(failOneAttempt(s, ['connectError', 'drop']), `${name}: error then drop`).toEqual({
+        link: 'disconnected',
+        attempt: n + 1,
+      });
+      expect(failOneAttempt(s, ['drop', 'connectError']), `${name}: drop then error`).toEqual({
+        link: 'disconnected',
+        attempt: n + 1,
+      });
+    }
+  });
+
+  it('one attempt reporting a longer mix of failure events still climbs exactly one rung from every pre-attempt state [np-d.5]', () => {
+    // Kills: a connect error that climbs off a 'disconnected' link (the attempt already failed);
+    // a drop that climbs nothing off a 'reconnecting' link.
+    const mixes: ReadonlyArray<readonly FailureEvent[]> = [
+      ['drop'],
+      ['connectError', 'connectError'],
+      ['drop', 'drop'],
+      ['connectError', 'drop', 'connectError'],
+      ['drop', 'connectError', 'drop', 'connectError'],
+    ];
+    for (const { name, s } of PRE_ATTEMPT_STATES) {
+      for (const mix of mixes) {
+        expect(failOneAttempt(s, mix), `${name}: ${mix.join(', ')}`).toEqual({
+          link: 'disconnected',
+          attempt: s.attempt + 1,
+        });
+      }
+    }
+  });
+
+  it('two attempts that each fail climb two rungs, whichever event reports each failure [np-d.5]', () => {
+    // Kills: an attempt that ends on a drop alone climbing nothing; a climb counted once per
+    // session rather than once per attempt.
+    const combos: ReadonlyArray<readonly [readonly FailureEvent[], readonly FailureEvent[]]> = [
+      [['drop'], ['drop']],
+      [['connectError'], ['drop']],
+      [['drop'], ['connectError']],
+      [
+        ['drop', 'connectError'],
+        ['connectError', 'drop'],
+      ],
+    ];
+    for (const [first, second] of combos) {
+      const fromBoot = failOneAttempt(failOneAttempt(initialReconnectState(), first), second);
+      expect(fromBoot, `boot: ${first.join('+')} / ${second.join('+')}`).toEqual({
+        link: 'disconnected',
+        attempt: 2,
+      });
+      const afterConnectedDrop = onDisconnected({ link: 'connected', attempt: 0 });
+      const fromDrop = failOneAttempt(failOneAttempt(afterConnectedDrop, first), second);
+      expect(fromDrop, `after a connected drop: ${first.join('+')} / ${second.join('+')}`).toEqual({
+        link: 'disconnected',
+        attempt: 2,
+      });
+    }
+  });
+
+  it('property: attempt equals the number of started attempts that saw a failure event since the last onConnected [np-d.5]', () => {
+    // Trace-level count, not a copy of the transition table: an attempt is STARTED by
+    // onReconnectAttempt on a link that is not connected; it FAILED if a connect error or a drop
+    // arrives before the next start; a connected drop is not an attempt failure.
+    // Kills: any event that climbs twice for one attempt, a drop that never climbs, a failure
+    // event with no attempt started that climbs.
+    type OpKind = 'reconnectAttempt' | 'connected' | 'disconnected' | 'attemptFailed';
+    const opArb = fc.constantFrom<OpKind>(
+      'reconnectAttempt',
+      'connected',
+      'disconnected',
+      'attemptFailed',
+    );
+    fc.assert(
+      fc.property(fc.array(opArb, { minLength: 1, maxLength: 60 }), (ops) => {
+        let s = initialReconnectState();
+        let connected = false;
+        let inFlight = false;
+        let failedAttempts = 0;
+        for (const op of ops) {
+          switch (op) {
+            case 'reconnectAttempt':
+              s = onReconnectAttempt(s);
+              if (!connected) inFlight = true;
+              break;
+            case 'connected':
+              s = onConnected(s);
+              connected = true;
+              inFlight = false;
+              failedAttempts = 0;
+              break;
+            case 'disconnected':
+              s = onDisconnected(s);
+              if (connected) {
+                connected = false;
+              } else if (inFlight) {
+                inFlight = false;
+                failedAttempts += 1;
+              }
+              break;
+            case 'attemptFailed':
+              s = onAttemptFailed(s);
+              if (!connected && inFlight) {
+                inFlight = false;
+                failedAttempts += 1;
+              }
+              break;
+          }
+          expect(s.attempt).toBe(failedAttempts);
+        }
       }),
     );
   });

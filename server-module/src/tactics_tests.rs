@@ -7298,3 +7298,759 @@ fn a_practice_player_queues_cancels_and_plays_a_side_b_unit_as_side_b() {
 // `start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_players_bt14_1`,
 // `start_pvp_tactical_accepts_a_side_with_one_conscious_monster_which_then_deploys_alone_bt14_1`,
 // and the movement-path `nh_movement_tick_opens_a_tactical_wild_battle_only_on_a_triggered_grass_step_bt16_1`.
+
+// ===========================================================================
+// Queued moves end at battle start
+// ===========================================================================
+//
+// When a wild or PvP tactical battle starts, the server empties each battler's private
+// `move_intent` queue in the same transaction and leaves its `last_input_seq` unchanged; a refused
+// start leaves the queue as it was. When the battle ends and the zone ticks, the server publishes
+// an empty `character.move_queue` and moves neither battler.
+//
+// The start functions write no `character` row: `movement_tick` stays the only writer of
+// `character.move_queue` / `character.acked_seq`, and the next tick publishes the empty queue.
+// Oracles are whole rows (BSATN-compared through `enc`, as the snapshots are) and tiles.
+
+/// A private move intent: `queue` undrained, `seq` the last accepted input seq.
+fn npd_intent(entity_id: u64, queue: Vec<MoveInput>, seq: u64) -> crate::schema::MoveIntent {
+    crate::schema::MoveIntent {
+        entity_id,
+        queue,
+        last_input_seq: seq,
+    }
+}
+
+/// `who` joined as `entity_id`, its character Idle on `tile` of zone 0, with `queue` queued
+/// privately AND published on the character row with `seq` on both (as the last tick left them).
+fn npd_join_queued(
+    w: &World<'_>,
+    who: Identity,
+    entity_id: u64,
+    tile: (i32, i32),
+    queue: Vec<MoveInput>,
+    seq: u64,
+) {
+    w.players.seed(&Player {
+        identity: who,
+        entity_id,
+        name: format!("p{entity_id}"),
+        online: true,
+        last_input_seq: 0,
+    });
+    w.characters.seed(&Character {
+        entity_id,
+        zone_id: crate::ZONE_0,
+        tile_x: tile.0,
+        tile_y: tile.1,
+        facing: Direction::South,
+        action: ActionState::Idle,
+        move_started_at_ms: 0,
+        sprite_id: 0,
+        move_queue: queue.clone(),
+        acked_seq: seq,
+    });
+    w.intents.seed(&npd_intent(entity_id, queue, seq));
+}
+
+fn npd_intent_of(w: &World<'_>, entity_id: u64) -> crate::schema::MoveIntent {
+    w.intents
+        .rows()
+        .into_iter()
+        .find(|r| r.entity_id == entity_id)
+        .unwrap_or_else(|| panic!("entity {entity_id} has a move_intent row"))
+}
+
+fn npd_character_of(w: &World<'_>, entity_id: u64) -> Character {
+    w.characters
+        .rows()
+        .into_iter()
+        .find(|r| r.entity_id == entity_id)
+        .unwrap_or_else(|| panic!("entity {entity_id} has a character row"))
+}
+
+/// The tactical world plus the two indexes `movement_tick` reads (`player.entity_id`,
+/// `character.zone_id`).
+fn npd_tick_world(fx: &Fixture) -> World<'_> {
+    let w = world(fx);
+    let _ = fx.table_keyed::<Player, u64>("player", "entity_id", |r| r.entity_id);
+    let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+    w
+}
+
+/// Replace zone 0's shipped encounter row with an always-firing one-entry table (species 1, every
+/// level), so a grass step always triggers; the pack, map and wilds stay the writer's.
+fn npd_always_firing(w: &World<'_>) {
+    assert_eq!(
+        w.encounters.remove(0),
+        1,
+        "PRECONDITION: the tactical world seeds zone 0's shipped encounter row"
+    );
+    w.encounters.seed(&EncounterRow {
+        zone_id: 0,
+        encounter_rate: 1000,
+        entries: vec![crate::schema::EncounterEntryRow {
+            species_id: 1,
+            weight: 1,
+            min_level: 1,
+            max_level: 100,
+        }],
+    });
+}
+
+/// One zone-0 `movement_tick` at `now`, run as the module (the tactical world's identity).
+fn npd_tick(fx: &Fixture, now: i64) {
+    let sched = crate::movement::MovementTickSchedule {
+        id: 1,
+        zone_id: 0,
+        scheduled_at: ScheduleAt::Time(at(now)),
+    };
+    assert_eq!(
+        fx.run_as_at(module(), at(now), |ctx| {
+            crate::movement::movement_tick(ctx, sched)
+        }),
+        Ok(())
+    );
+}
+
+/// A plain (walkable, non-grass, warp-free) tile of zone 0 and a direction whose one step lands on
+/// a walkable, warp-free grass tile.
+fn npd_grass_approach() -> (game_core::TilePos, Direction) {
+    use game_core::TilePos;
+    let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+    let map = game_core::map_for(0, zone_maps).expect("zone 0 map");
+    let plain = |p: TilePos| map.is_walkable(p) && !map.is_grass(p) && map.warp_at(p).is_none();
+    let dirs = [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ];
+    (0..map.height)
+        .flat_map(|y| (0..map.width).map(move |x| TilePos { x, y }))
+        .filter(|&p| plain(p))
+        .find_map(|p| {
+            dirs.into_iter().find_map(|d| {
+                let n = p.step(d);
+                (map.is_walkable(n) && map.is_grass(n) && map.warp_at(n).is_none())
+                    .then_some((p, d))
+            })
+        })
+        .expect("zone 0 has a plain tile next to grass")
+}
+
+/// `n` plain tiles of zone 0, each with a direction whose first AND second steps land on plain
+/// tiles; no tile of one walk is a tile of another, so every walker stands and steps alone.
+fn npd_plain_walks(n: usize) -> Vec<(game_core::TilePos, Direction)> {
+    use game_core::TilePos;
+    let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+    let map = game_core::map_for(0, zone_maps).expect("zone 0 map");
+    let plain = |p: TilePos| map.is_walkable(p) && !map.is_grass(p) && map.warp_at(p).is_none();
+    let dirs = [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ];
+    let mut used: Vec<TilePos> = Vec::new();
+    let mut walks: Vec<(TilePos, Direction)> = Vec::new();
+    let tiles = (0..map.height).flat_map(|y| (0..map.width).map(move |x| TilePos { x, y }));
+    for p in tiles {
+        if walks.len() == n {
+            break;
+        }
+        if !plain(p) || used.contains(&p) {
+            continue;
+        }
+        let found = dirs.into_iter().find(|&d| {
+            let one = p.step(d);
+            let two = one.step(d);
+            plain(one) && plain(two) && !used.contains(&one) && !used.contains(&two)
+        });
+        if let Some(d) = found {
+            used.extend([p, p.step(d), p.step(d).step(d)]);
+            walks.push((p, d));
+        }
+    }
+    assert_eq!(
+        walks.len(),
+        n,
+        "PRECONDITION: zone 0 has {n} disjoint plain two-step walks"
+    );
+    walks
+}
+
+/// A wild start called directly, pack 1 (auto-deploys through `materialize`) and a forced
+/// pack 2 (Deploying): the player's `move_intent` row is afterwards exactly `{ entity_id, queue: [],
+/// last_input_seq: 41 }`; a bystander's non-empty queued intent is unchanged; every `character`
+/// row is unchanged — including the battler's, which still publishes its two queued inputs and
+/// seq 41 (the next tick publishes the empty queue, not the start).
+///
+/// kills: the queue left intact; every player's queue cleared; the seq zeroed or
+/// bumped; the intent row deleted; `character.move_queue` / `acked_seq` written by the start; the
+/// drop placed on one pack size only.
+#[test]
+fn a_wild_battle_start_empties_the_players_queue_keeps_its_seq_and_writes_no_character_np_d_1() {
+    let cases: [(&str, u64, Option<u8>, Phase); 2] = [
+        (
+            "pack 1 (auto-deploy)",
+            seed_for(1, Some(1)),
+            None,
+            Phase::Active,
+        ),
+        (
+            "forced pack 2 (Deploying)",
+            seed_for(4, None),
+            Some(2),
+            Phase::Deploying,
+        ),
+    ];
+    for (label, seed, forced, phase) in cases {
+        let fx = fixture();
+        let w = world(&fx);
+        let queued = vec![
+            MoveInput::Step(Direction::East),
+            MoveInput::Step(Direction::North),
+        ];
+        npd_join_queued(&w, a(), 1, (0, 0), queued.clone(), 41);
+        npd_join_queued(
+            &w,
+            c(),
+            3,
+            (2, 0),
+            vec![MoveInput::Step(Direction::West)],
+            17,
+        );
+        w.seed_party(a(), &PAIR);
+        let battler_char = npd_character_of(&w, 1);
+        assert_eq!(
+            (battler_char.move_queue, battler_char.acked_seq),
+            (queued, 41),
+            "{label}: PRECONDITION: the battler's character publishes its queue and seq"
+        );
+        let characters_before = row_set(&w.characters.rows());
+        let bystander_before = enc(&npd_intent_of(&w, 3));
+
+        let id = start(&fx, a(), seed, forced, T0);
+        assert_eq!(
+            w.tactical(id).phase,
+            phase,
+            "{label}: PRECONDITION: the start took the intended path"
+        );
+
+        let got = npd_intent_of(&w, 1);
+        assert_eq!(
+            (got.queue.clone(), got.last_input_seq),
+            (Vec::<MoveInput>::new(), 41),
+            "{label}: the battler's queue is empty and its seq kept"
+        );
+        assert_eq!(
+            enc(&got),
+            enc(&npd_intent(1, Vec::new(), 41)),
+            "{label}: the battler's whole move_intent row"
+        );
+        assert_eq!(
+            enc(&npd_intent_of(&w, 3)),
+            bystander_before,
+            "{label}: the bystander's queued intent is untouched"
+        );
+        assert_eq!(
+            row_set(&w.characters.rows()),
+            characters_before,
+            "{label}: the start writes no character row"
+        );
+    }
+}
+
+/// The same through the live path: a walker with a queued step onto grass plus a second queued input
+/// (seq 9), the always-firing table and a one-monster party. One tick applies the step and starts
+/// exactly one battle with the walker in it; the private queue is then empty with seq 9 kept, while
+/// the character row shows what that tick published (the second input, seq 9). A second tick
+/// (battle still ongoing) publishes the empty queue and leaves the tile.
+///
+/// kills: the queue left intact (the second tick still publishes the stale input); the drop done
+/// only on a direct call; the start writing the character row.
+#[test]
+fn a_battle_started_by_the_zone_tick_empties_the_walkers_queue_and_the_next_tick_publishes_it_np_d_1(
+) {
+    let fx = fixture();
+    let w = npd_tick_world(&fx);
+    npd_always_firing(&w);
+    let (from, dir) = npd_grass_approach();
+    npd_join_queued(
+        &w,
+        a(),
+        1,
+        (from.x, from.y),
+        vec![MoveInput::Step(dir), MoveInput::Step(dir)],
+        9,
+    );
+    w.seed_monster(&party_monster(a(), (11, 1, 0, 200)));
+
+    npd_tick(&fx, T0);
+    let to = from.step(dir);
+    let after_first = npd_character_of(&w, 1);
+    assert_eq!(
+        (after_first.tile_x, after_first.tile_y),
+        (to.x, to.y),
+        "the step onto grass was applied"
+    );
+    let anchors = w.battles.rows();
+    assert_eq!(anchors.len(), 1, "exactly one battle started");
+    let anchor = &anchors[0];
+    assert_eq!(anchor.player_identity, a(), "the walker is the battler");
+    assert_eq!(
+        anchor.state.outcome,
+        BattleOutcome::Ongoing,
+        "the battle is ongoing"
+    );
+    assert_eq!(
+        enc(&npd_intent_of(&w, 1)),
+        enc(&npd_intent(1, Vec::new(), 9)),
+        "the battle start emptied the walker's private queue and kept seq 9"
+    );
+    assert_eq!(
+        (after_first.move_queue, after_first.acked_seq),
+        (vec![MoveInput::Step(dir)], 9),
+        "for one tick the public row shows what the triggering tick published"
+    );
+
+    npd_tick(&fx, T0 + 1_000);
+    let after_second = npd_character_of(&w, 1);
+    assert_eq!(
+        (after_second.tile_x, after_second.tile_y),
+        (to.x, to.y),
+        "the walker stays put while battling"
+    );
+    assert_eq!(
+        (after_second.move_queue, after_second.acked_seq),
+        (Vec::<MoveInput>::new(), 9),
+        "the next tick publishes the empty queue with the kept seq"
+    );
+}
+
+/// A refused direct wild start leaves the whole world as it was, the non-empty queue included:
+/// an early guard (the whole party fainted) and the LATE refusal (the deploy dry run refuses a
+/// zero-defense monster after the battle rows were inserted, and the writer undoes them).
+///
+/// kills: a drop placed before the last fallible step.
+#[test]
+fn a_refused_wild_start_leaves_the_players_queue_and_the_world_as_they_were_np_d_1() {
+    type Fault = (&'static str, &'static str, fn(&mut Monster));
+    let faults: [Fault; 2] = [
+        (
+            "early: the whole party fainted",
+            crate::battle::NO_CONSCIOUS_MONSTER_REASON,
+            |m| m.current_hp = 0,
+        ),
+        ("late: the deploy dry run refuses", "ZeroDefense", |m| {
+            m.stat_defense = 0
+        }),
+    ];
+    for (label, reason, corrupt) in faults {
+        let fx = fixture();
+        let w = world(&fx);
+        npd_join_queued(
+            &w,
+            a(),
+            1,
+            (0, 0),
+            vec![
+                MoveInput::Step(Direction::East),
+                MoveInput::Step(Direction::North),
+            ],
+            41,
+        );
+        let mut m = party_monster(a(), (11, 1, 0, 200));
+        corrupt(&mut m);
+        w.seed_monster(&m);
+        let before = w.snapshot();
+        let got = fx.run_as_at(module(), at(T0), |ctx| {
+            super::start_wild_tactical(ctx, a(), 7, 7, None)
+        });
+        let e = got.expect_err("the start is refused");
+        assert!(
+            e.contains(reason),
+            "{label}: refused for the intended reason, got {e:?}"
+        );
+        assert_eq!(
+            changed(&before, &w.snapshot()),
+            none(),
+            "{label}: the refused start leaves every row, the queue included"
+        );
+    }
+}
+
+/// A wild start refused through `movement_tick` (the late refusal: a zero-defense party): the
+/// step is applied, no battle row exists, and the walker's `move_intent` row is exactly the
+/// post-drain queue the tick wrote (the second input still queued, seq 9 kept).
+///
+/// kills: a drop placed before the last fallible step.
+#[test]
+fn a_zone_tick_whose_wild_start_is_refused_keeps_the_post_drain_queue_np_d_1() {
+    let fx = fixture();
+    let w = npd_tick_world(&fx);
+    npd_always_firing(&w);
+    let (from, dir) = npd_grass_approach();
+    npd_join_queued(
+        &w,
+        a(),
+        1,
+        (from.x, from.y),
+        vec![MoveInput::Step(dir), MoveInput::Step(dir)],
+        9,
+    );
+    let mut m = party_monster(a(), (11, 1, 0, 200));
+    m.stat_defense = 0;
+    w.seed_monster(&m);
+
+    npd_tick(&fx, T0);
+    let to = from.step(dir);
+    let ch = npd_character_of(&w, 1);
+    assert_eq!((ch.tile_x, ch.tile_y), (to.x, to.y), "the step was applied");
+    assert!(
+        w.battles.rows().is_empty(),
+        "the refused start left no battle"
+    );
+    assert_eq!(
+        enc(&npd_intent_of(&w, 1)),
+        enc(&npd_intent(1, vec![MoveInput::Step(dir)], 9)),
+        "the walker keeps the queue the tick left: the second input, seq 9"
+    );
+}
+
+/// A PvP start called directly empties BOTH battlers' queues, each keeping its own
+/// distinct seq (whole-row equality), while a third player's queued intent and every `character`
+/// row stay as they were.
+///
+/// kills: only the challenger's queue dropped; only the opponent's; the drop only in the wild
+/// start; the seqs swapped, zeroed or bumped; every player's queue cleared; a character row written.
+#[test]
+fn a_pvp_battle_start_empties_both_battlers_queues_and_keeps_each_seq_np_d_3() {
+    let fx = fixture();
+    let w = world(&fx);
+    npd_join_queued(
+        &w,
+        a(),
+        1,
+        (0, 0),
+        vec![
+            MoveInput::Step(Direction::East),
+            MoveInput::Step(Direction::North),
+        ],
+        21,
+    );
+    npd_join_queued(
+        &w,
+        b(),
+        2,
+        (1, 0),
+        vec![MoveInput::Step(Direction::West)],
+        34,
+    );
+    npd_join_queued(
+        &w,
+        c(),
+        3,
+        (2, 0),
+        vec![MoveInput::Step(Direction::South)],
+        55,
+    );
+    w.seed_party(a(), &PAIR);
+    w.seed_party(b(), &B_PAIR);
+    let characters_before = row_set(&w.characters.rows());
+    let bystander_before = enc(&npd_intent_of(&w, 3));
+
+    let id = start_pvp(
+        &fx,
+        a(),
+        &ids(&PAIR),
+        b(),
+        &ids(&B_PAIR),
+        2,
+        pvp_seed(7),
+        T0,
+    );
+    assert_eq!(
+        w.tactical(id).kind,
+        BattleKind::Pvp,
+        "PRECONDITION: a PvP battle started"
+    );
+
+    for (who, entity_id, seq) in [("challenger A", 1u64, 21u64), ("opponent B", 2, 34)] {
+        let got = npd_intent_of(&w, entity_id);
+        assert_eq!(
+            (got.queue.clone(), got.last_input_seq),
+            (Vec::<MoveInput>::new(), seq),
+            "{who}: the queue is empty and its own seq kept"
+        );
+        assert_eq!(
+            enc(&got),
+            enc(&npd_intent(entity_id, Vec::new(), seq)),
+            "{who}: the whole move_intent row"
+        );
+    }
+    assert_eq!(
+        enc(&npd_intent_of(&w, 3)),
+        bystander_before,
+        "the third player's queued intent is untouched"
+    );
+    assert_eq!(
+        row_set(&w.characters.rows()),
+        characters_before,
+        "the start writes no character row"
+    );
+}
+
+/// A Practice start (one player on both sides, disjoint halves of one party) empties that player's
+/// queue and keeps its seq.
+///
+/// kills: the drop keyed on `challenger != opponent`; the drop missing from the PvP start.
+#[test]
+fn a_practice_battle_start_empties_the_players_queue_and_keeps_its_seq_np_d_3() {
+    let fx = fixture();
+    let w = world(&fx);
+    npd_join_queued(
+        &w,
+        a(),
+        1,
+        (0, 0),
+        vec![
+            MoveInput::Step(Direction::East),
+            MoveInput::Step(Direction::North),
+        ],
+        21,
+    );
+    w.seed_party(a(), &A_TRIO);
+    let characters_before = row_set(&w.characters.rows());
+
+    let id = start_pvp(&fx, a(), &[11, 12], a(), &[13], 2, pvp_seed(7), T0);
+    assert_eq!(
+        w.tactical(id).kind,
+        BattleKind::Practice,
+        "PRECONDITION: a Practice battle started"
+    );
+    assert_eq!(
+        enc(&npd_intent_of(&w, 1)),
+        enc(&npd_intent(1, Vec::new(), 21)),
+        "the player's queue is empty and its seq kept"
+    );
+    assert_eq!(
+        row_set(&w.characters.rows()),
+        characters_before,
+        "the start writes no character row"
+    );
+}
+
+/// A refused PvP start (the opponent's whole party fainted) leaves the whole world as it was, both
+/// non-empty queues included. On the real host a refused `accept_challenge` is rolled back; the
+/// native host has no rollback, so this guards the ORDERING (the drop after the last fallible
+/// step).
+///
+/// kills: a drop placed before the last fallible step.
+#[test]
+fn a_refused_pvp_start_leaves_both_queues_and_the_world_as_they_were_np_d_3() {
+    let fx = fixture();
+    let w = world(&fx);
+    npd_join_queued(
+        &w,
+        a(),
+        1,
+        (0, 0),
+        vec![MoveInput::Step(Direction::East)],
+        21,
+    );
+    npd_join_queued(
+        &w,
+        b(),
+        2,
+        (1, 0),
+        vec![MoveInput::Step(Direction::West)],
+        34,
+    );
+    w.seed_party(a(), &PAIR);
+    w.seed_party(b(), &B_PAIR);
+    for mid in [21, 22] {
+        w.edit_monster(mid, |m| m.current_hp = 0);
+    }
+    let before = w.snapshot();
+    let got = try_start_pvp(
+        &fx,
+        a(),
+        &ids(&PAIR),
+        b(),
+        &ids(&B_PAIR),
+        2,
+        pvp_seed(7),
+        T0,
+    );
+    assert_eq!(
+        got,
+        Err("opponent party has no conscious monster".to_string())
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "the refused start leaves every row, both queues included"
+    );
+}
+
+/// Two PvP battlers on plain tiles, each with TWO queued steps toward plain tiles (also
+/// published, seq 21 / 34 on both rows), and a bystander with one queued step. The battle starts,
+/// is revealed, A forfeits; then the zone ticks once: both battlers' `character.move_queue` are
+/// empty with their `acked_seq` kept, neither moved, both private queues are empty — and the
+/// bystander DID take its step in that same tick (the tick is live and such steps are walkable).
+///
+/// kills: the drop missing (the battlers walk the stale queue after the battle); a drop that also
+/// resets the seq (the published `acked_seq` moves).
+#[test]
+fn after_a_pvp_battle_ends_the_zone_tick_publishes_empty_queues_and_moves_neither_battler_np_d_4() {
+    let fx = fixture();
+    let w = npd_tick_world(&fx);
+    let walks = npd_plain_walks(3);
+    let (pa, da) = walks[0];
+    let (pb, db) = walks[1];
+    let (pc, dc) = walks[2];
+    npd_join_queued(
+        &w,
+        a(),
+        1,
+        (pa.x, pa.y),
+        vec![MoveInput::Step(da), MoveInput::Step(da)],
+        21,
+    );
+    npd_join_queued(
+        &w,
+        b(),
+        2,
+        (pb.x, pb.y),
+        vec![MoveInput::Step(db), MoveInput::Step(db)],
+        34,
+    );
+    npd_join_queued(&w, c(), 3, (pc.x, pc.y), vec![MoveInput::Step(dc)], 55);
+    w.seed_party(a(), &PAIR);
+    w.seed_party(b(), &B_PAIR);
+
+    let id = start_pvp(
+        &fx,
+        a(),
+        &ids(&PAIR),
+        b(),
+        &ids(&B_PAIR),
+        2,
+        pvp_seed(7),
+        T0,
+    );
+    let t = T0 + 5_000;
+    deploy(&fx, a(), t, id, picks_in_order(&PAIR)).expect("A locks its picks");
+    deploy(&fx, b(), t, id, picks_in_order(&B_PAIR)).expect("B locks its picks: the reveal");
+    assert_eq!(
+        w.tactical(id).phase,
+        Phase::Active,
+        "PRECONDITION: the battle is revealed"
+    );
+    assert_eq!(
+        fx.run_as_at(a(), at(T0 + 9_000), |ctx| super::forfeit(ctx, id)),
+        Ok(())
+    );
+    assert_ne!(
+        w.anchor(id).expect("anchor").state.outcome,
+        BattleOutcome::Ongoing,
+        "PRECONDITION: the battle has ended"
+    );
+
+    npd_tick(&fx, T0 + 10_000);
+
+    for (who, entity_id, tile, seq) in [("A", 1u64, pa, 21u64), ("B", 2, pb, 34)] {
+        let ch = npd_character_of(&w, entity_id);
+        assert_eq!(
+            (ch.tile_x, ch.tile_y),
+            (tile.x, tile.y),
+            "{who}: the battler did not walk its pre-battle queue"
+        );
+        assert_eq!(
+            (ch.move_queue, ch.acked_seq),
+            (Vec::<MoveInput>::new(), seq),
+            "{who}: the tick published the empty queue with the kept seq"
+        );
+        let intent = npd_intent_of(&w, entity_id);
+        assert_eq!(
+            (intent.queue, intent.last_input_seq),
+            (Vec::<MoveInput>::new(), seq),
+            "{who}: the private queue is empty, the seq kept"
+        );
+    }
+    let bystander = npd_character_of(&w, 3);
+    let to = pc.step(dc);
+    assert_eq!(
+        (bystander.tile_x, bystander.tile_y),
+        (to.x, to.y),
+        "the bystander took its queued step in the same tick"
+    );
+}
+
+/// The same for a wild battle that ends by flee: the battler (two queued steps, seq 21)
+/// neither moves nor publishes a queue on the first tick after the flee, its seq kept; the
+/// bystander takes its one queued step in that tick.
+///
+/// kills: the drop missing from the wild start (the battler walks after the flee); the seq reset.
+#[test]
+fn after_a_wild_battle_ends_by_flee_the_zone_tick_publishes_an_empty_queue_and_the_battler_stays_np_d_4(
+) {
+    let fx = fixture();
+    let w = npd_tick_world(&fx);
+    let walks = npd_plain_walks(2);
+    let (pa, da) = walks[0];
+    let (pc, dc) = walks[1];
+    npd_join_queued(
+        &w,
+        a(),
+        1,
+        (pa.x, pa.y),
+        vec![MoveInput::Step(da), MoveInput::Step(da)],
+        21,
+    );
+    npd_join_queued(&w, c(), 3, (pc.x, pc.y), vec![MoveInput::Step(dc)], 55);
+    w.seed_party(a(), &PAIR);
+
+    let id = start(&fx, a(), seed_for(1, Some(1)), None, T0);
+    let u1 = w.side_units(id, SideRow::A)[0].unit_id;
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(u1),
+        "PRECONDITION: the fastest party member holds the first window"
+    );
+    submit(&fx, a(), T0 + 25_000, id, u1, vec![QueuedAction::Flee]).expect("a full-AP unit flees");
+    assert_eq!(
+        w.anchor(id).expect("anchor").state.outcome,
+        BattleOutcome::Fled,
+        "PRECONDITION: the battle has ended"
+    );
+
+    npd_tick(&fx, T0 + 26_000);
+
+    let ch = npd_character_of(&w, 1);
+    assert_eq!(
+        (ch.tile_x, ch.tile_y),
+        (pa.x, pa.y),
+        "the battler did not walk its pre-battle queue"
+    );
+    assert_eq!(
+        (ch.move_queue, ch.acked_seq),
+        (Vec::<MoveInput>::new(), 21),
+        "the tick published the empty queue with the kept seq"
+    );
+    let intent = npd_intent_of(&w, 1);
+    assert_eq!(
+        (intent.queue, intent.last_input_seq),
+        (Vec::<MoveInput>::new(), 21),
+        "the private queue is empty, the seq kept"
+    );
+    let bystander = npd_character_of(&w, 3);
+    let to = pc.step(dc);
+    assert_eq!(
+        (bystander.tile_x, bystander.tile_y),
+        (to.x, to.y),
+        "the bystander took its queued step in the same tick"
+    );
+}
