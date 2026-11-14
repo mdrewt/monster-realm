@@ -1003,9 +1003,10 @@ settle funnel calls. `marshal.rs` has no 1v1 row→`BattleMonster` marshaling he
 `content_cache.rs` no 1v1 skill, ability or type-chart cache: a helper only its own tests call is
 dead code, not a fallback engine. `game-core/src/combat/` follows the same rule. It holds the
 types stored in `Battle.state`, `battle_action` and the content rows, and the rules a production
-path calls: the damage formula and accuracy check, the type chart, the status countdown, the XP
-rules, and the PvP forfeit and challenge rules. The turn driver (`combat/resolve.rs`), the enemy
-skill picker and the entry-ability and weather hooks have no production caller;
+path calls: the damage formula and accuracy check, the type chart, lead selection, the status
+countdown, the XP rules, and the PvP forfeit and challenge rules. The turn driver
+(`combat/resolve.rs`), the enemy skill picker, the entry-ability hooks and the weather chip and
+countdown have no production caller;
 `docs/refactors/combat-carried-rules.md` classes every `pub` item and lists the order they are
 removed in. The tactical engine calls a carried rule by value. Where the rule's signature takes
 the 1v1 `BattleState`, the engine states it once in `tactics/` and a test pins that statement to
@@ -1034,10 +1035,11 @@ Rain and Sun modifier through its `weather` parameter.
 
 **Rules out.** A feature flag or config row selecting the engine; starting a tactical
 battle through a dev-only reducer in any shipped build; dropping or reordering the
-retired tables (live data, additive schema); a 1v1 rule kept in `combat/` as the source for a
-later wave or as the expected value of a tactics test; a second copy of a rule the engine can
-call; moving a stored type out of the file `content.rs` reads it from; naming a survivor for a
-test that executes nothing (15 of the 23 in `monster/battle_redteam_tests.rs`).
+retired tables (live data, additive schema).
+In `combat/`: a 1v1 rule kept as the source for a later wave or as the expected value of a
+tactics test; a second copy of a rule the engine can call; moving a stored type out of the file
+`content.rs` reads it from; naming a survivor for a test that executes nothing (15 of the 23 in
+`monster/battle_redteam_tests.rs`).
 
 ## Dev-only reducers never ship
 
