@@ -1847,32 +1847,30 @@ describe('np-a remote continuation and slew (real store into the resolver)', () 
       // inside the 0.08 slew budget: the drawn position rises every frame. It is never on the
       // row's tile (it trails it by more than a quarter tile), so an Idle row is drawn Walking.
       // Today the Idle rows enter the ring (each step tile held for 200 ms) and pass through.
+      // Frames run one 16 ms frame past the last scheduled arrival (the Idle row 200 ms after
+      // the last step), so every arrival is applied. Sampling stops at that Idle row: with the
+      // delay at 500 the render clock is then still 300 ms short of the last step, so the walk
+      // is still under way (interpolated, never held) over the whole sampled range.
+      const lastStep = times[STEPS - 1]!;
       const t = track(
         run(walkWithIdleRows(9n, times), {
           from: times[0]!,
-          to: times[STEPS - 1]!,
+          to: lastStep + 200 + 16,
           frameMs: 16,
           walkable: OPEN,
         }),
         9n,
       );
-      const sampled = t.filter((f) => f.now >= times[SETTLED_FROM]!);
+      const sampled = t.filter((f) => f.now >= times[SETTLED_FROM]! && f.now <= lastStep + 200);
       expect(
         sampled.length,
         'ANTI-VACUITY: frames sampled after the estimate settles',
       ).toBeGreaterThan(100);
-      for (const f of sampled) {
-        expect(
-          adaptiveInterpDelayMs(f.c.jitterEwma, STEP_MS),
-          `the delay has settled at its cap by ${f.now}`,
-        ).toBe(500);
-      }
       const last = sampled[sampled.length - 1]!;
-      expect(
-        last.c.snapshots.map((sn) => sn.tileX),
-        'one snapshot per tile',
-      ).toEqual([STEPS - 4, STEPS - 3, STEPS - 2, STEPS - 1]);
+      expect(last.now, 'the last sample is after the last step arrived').toBeGreaterThan(lastStep);
 
+      // Behaviour first (today: each Idle row enters the ring and the estimate, the delay stays
+      // near 200, the remote holds each tile ~200 ms and the Idle action passes through).
       let runStart = sampled[0]!;
       let longestStill = 0;
       for (let i = 1; i < sampled.length; i++) {
@@ -1887,6 +1885,19 @@ describe('np-a remote continuation and slew (real store into the resolver)', () 
       expect(longestStill, 'longest stand-still (ms)').toBeLessThan(100);
       expect(last.x - sampled[0]!.x, 'advances along the walk').toBeGreaterThan(6);
       for (const f of sampled) expect(f.action, `action at ${f.now}`).toBe('Walking');
+
+      // The store side of the same criterion: one snapshot per tile, and an estimate taken from
+      // the step intervals alone has settled the delay at its 500 ms cap.
+      expect(
+        last.c.snapshots.map((sn) => sn.tileX),
+        'one snapshot per tile',
+      ).toEqual([STEPS - 4, STEPS - 3, STEPS - 2, STEPS - 1]);
+      for (const f of sampled) {
+        expect(
+          adaptiveInterpDelayMs(f.c.jitterEwma, STEP_MS),
+          `the delay has settled at its cap by ${f.now}`,
+        ).toBe(500);
+      }
     });
   }
 

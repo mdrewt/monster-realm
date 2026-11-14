@@ -271,7 +271,10 @@ describe('AuthoritativeStore np-a: same-tile debounce and the position-change re
     //   25, 46.875, 66.015625, 82.763671875, 97.418212890625, 110.240936279296875,
     //   121.460819244384765625 (every term dyadic, so exact).
     // Fed the Idle rows too, the estimator would see 200 ms intervals (deviation 0) instead.
-    expect(w.jitterEwma).toBe(121.460819244384765625);
+    let expected = 0;
+    for (let n = 0; n < 7; n++) expected = 0.125 * 200 + 0.875 * expected;
+    expect(w.jitterEwma).toBe(expected);
+    expect(w.jitterEwma).toBeCloseTo(121.4608, 4);
     expect(w.jitterEwma).toBe(control.character(1n)!.jitterEwma);
     // The stored row is the newest one: the Idle row on tile 7.
     expect(w.row.action).toBe('Idle');

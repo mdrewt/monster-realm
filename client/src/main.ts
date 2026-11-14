@@ -80,7 +80,7 @@ import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { type RawWarpDef, TileMap } from './render/map';
 import { motionPreferenceFromWindow } from './render/motionPreference';
 import type { PostStackToggles } from './render/postStack';
-import { RenderResolver } from './render/renderResolver';
+import { RenderResolver, walkableIn } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { type RenderEntity, WorldRenderer } from './render/world';
 import {
@@ -4235,7 +4235,7 @@ function snapshot() {
       tileY: c.row.tileY,
       facing: c.row.facing,
       action: c.row.action,
-      // The interpolation ring, oldest first: one entry per row update received.
+      // The interpolation ring, oldest first: one entry per position the character has held.
       history: c.snapshots.map((s) => ({ x: s.tileX, y: s.tileY })),
     })),
     rendered: lastRendered.map((e) => ({ entityId: e.entityId.toString(), x: e.x, y: e.y })),
@@ -5521,6 +5521,7 @@ async function main(): Promise<void> {
         now,
         currentZoneId: rawMap.zone_id,
         reduceMotion: motionPreference.reduceMotion,
+        walkable: walkableIn(rawMap),
       });
       lastRendered = entities;
       // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
