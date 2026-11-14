@@ -458,22 +458,27 @@ function nudgeKeyOf(uri: string, db: string): string {
   return keys[0] as string;
 }
 
-/** Record every key the page's storage is asked to get, set or remove. */
+/** Record every key the page's session and local storage are asked to get, set or remove.
+ *  The spies sit on the two storage INSTANCES: happy-dom's Storage binds `getItem` / `setItem` /
+ *  `removeItem` onto an instance at its first access, so a spy on `Storage.prototype` installed
+ *  after any earlier access is never called. An instance spy sees every later call, including one
+ *  through a `.bind(storage)` copy taken after the spy is installed. */
 function spyStorage() {
-  const get = vi.spyOn(Storage.prototype, 'getItem');
-  const set = vi.spyOn(Storage.prototype, 'setItem');
-  const remove = vi.spyOn(Storage.prototype, 'removeItem');
+  const stores = [globalThis.sessionStorage, globalThis.localStorage];
+  const gets = stores.map((s) => vi.spyOn(s, 'getItem'));
+  const sets = stores.map((s) => vi.spyOn(s, 'setItem'));
+  const removes = stores.map((s) => vi.spyOn(s, 'removeItem'));
+  const callsOf = (spies: ReadonlyArray<{ mock: { calls: unknown[][] } }>): unknown[][] =>
+    spies.flatMap((spy) => spy.mock.calls);
   return {
-    gets: (): string[] => get.mock.calls.map((c) => String(c[0])),
+    gets: (): string[] => callsOf(gets).map((c) => String(c[0])),
     sets: (): Array<readonly [string, string]> =>
-      set.mock.calls.map((c) => [String(c[0]), String(c[1])] as const),
-    removes: (): string[] => remove.mock.calls.map((c) => String(c[0])),
+      callsOf(sets).map((c) => [String(c[0]), String(c[1])] as const),
+    removes: (): string[] => callsOf(removes).map((c) => String(c[0])),
     keys: (): string[] =>
-      [...get.mock.calls, ...set.mock.calls, ...remove.mock.calls].map((c) => String(c[0])),
+      [...callsOf(gets), ...callsOf(sets), ...callsOf(removes)].map((c) => String(c[0])),
     clear: (): void => {
-      get.mockClear();
-      set.mockClear();
-      remove.mockClear();
+      for (const spy of [...gets, ...sets, ...removes]) spy.mockClear();
     },
   };
 }
