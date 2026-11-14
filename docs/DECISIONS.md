@@ -1222,13 +1222,13 @@ now); a module-scope copy of a live binding; a shell module that registers a lis
 subscription batch, the help entries, the command kinds, the menu rows and accelerators) is written
 out as a literal by one test: a roster compared with the registry for equality, in order where order
 is behaviour, in the test file beside the registry. The frame ids have no list of their own: they
-are the overlay roster plus the Social frame. Every other test computes its expected value from the
-registry, asserts only its own entity, or loses the assertion with the owner named as the survivor.
-No test asserts a bare count of a registry and no test title carries one. A hand table that says what
-each member should be (its tier, its battle policy, its adapter, its name) is expected behaviour: it
-stays hand-written, typed `Record<K, _>` where the registry has a key type. The subscription batch is
-read from what `connect()` sends and is not exported for a test. `docs/refactors/test-pins.md` lists
-each fact, its owner, the disposition of every other assertion and the slices that apply them.
+are the overlay roster plus the Social frame. Any other test computes its expected value from the
+registry, asserts only its own entity, or gives the assertion up to the owner; none asserts a bare
+count of a registry or carries one in its title. A hand table that says what each member should be
+(its tier, its battle policy, its adapter, its name) is expected behaviour: it stays hand-written,
+typed `Record<K, _>` where the registry has a key type. The subscription batch is read from what
+`connect()` sends and is not exported for a test. `docs/refactors/test-pins.md` lists each fact, its
+owner, and the slices that bring the existing tests to this rule.
 
 **Why.** A registry's size written into many tests makes a slice that adds one member edit each of
 them, and two slices that name the same test file never run together. A count cannot say which
@@ -1239,11 +1239,10 @@ reordered by accident, and what a client subscribes to is what it is sent.
 
 **Rules out.** Leaving the duplicates and letting each run add the pin files to its own file list:
 the edits, the serialization and the stale counts all stay. A shared constants module for tests: a
-second copy of every registry, in one file every slice edits, and not a check. No roster at all,
-every test reading the registry: nothing would notice a thirtieth subscription query. Rebuilding a
-per-member table, or the subscription expectation, from the product value it checks: the product
-compared with itself. A tally that adds one per pass of a loop over the registry, or that counts
-whether another test ran: it restates the registry's size or checks a check.
+second copy of every registry, in one file every slice edits, and not a check. No roster at all:
+nothing would notice a thirtieth subscription query. Rebuilding a per-member table, or the
+subscription expectation, from the product value it checks. A tally that adds one per pass of a
+loop over the registry, or that counts whether another test ran.
 
 ## Interaction target: the tile in front, then your own tile
 

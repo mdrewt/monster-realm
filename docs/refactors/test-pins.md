@@ -46,22 +46,22 @@ enough to match one test in that file. Counts are those of commit `485e8bca`.
 
 | Fact | Literal sites |
 |---|---|
-| Overlay ids (16) | the number at 36 assertion sites in five files: `ui/overlayRegistry.test.ts` 19, `ui/overlayA11y.test.ts` 6, `ui/overlayA11yWiring.test.ts` 5, `ui/a11yCopy.test.ts` 4, `ui/announcements.test.ts` 2; numbers worked out from it by hand (15, 48, 64, 180) in the first, and (14, 15, 17, 23, 48, 51, 272) in `ui/contextStack.test.ts` |
+| Overlay ids (16) | the number at 36 assertion sites in five files: `ui/overlayRegistry.test.ts` 19, `ui/overlayA11y.test.ts` 6, `ui/overlayA11yWiring.test.ts` 5, `ui/a11yCopy.test.ts` 4, `ui/announcements.test.ts` 2, and once more in `ui/contextStack.test.ts`; numbers worked out from it by hand (15, 48, 64, 180) in the first, and (14, 15, 17, 23, 48, 51, 272) in `ui/contextStack.test.ts` |
 | Catalog keys (543) | 12 sites in six tests of `ui/i18n/catalog.test.ts`, beside the roster that already fixes it |
 | Subscription batch (29) | 3 sites in `net/connection.runtime.test.ts`, beside the exact roster in `net/connection.test.ts` |
 | Help entries (16) | 5 sites in `main.help.test.ts`, 4 in `ui/helpView.test.ts`, 4 in `ui/helpModel.test.ts` |
 | Command kinds (36: 10 safe, 26 refused) | 4 sites in `ui/battlePolicy.test.ts`, 6 in `ui/contextStack.test.ts` |
-| Menu root rows (8) | the same eight-key array written out in five test files |
+| Menu root rows (8) | the same eight-key array written out in five test files, and the numbers 8 and 7 at 15 sites in five |
 
-Of the last 300 commits on `master`, 65 changed `ui/i18n/catalog.test.ts`; each of the ten most
-recent changed all 12 copies of the key count, and three of the ten changed nothing but the roster
-and the counts. 28 changed `ui/i18n/catalogParity.test.ts`; of the twelve most recent, seven
-edited the hand list of the keys `main.ts` resolves and four the hand list of the files that
-import the resolver. Ten changed `ui/contextStack.test.ts` and left `ui/contextStack.ts` alone;
-six of them moved the command counts. Six titles state a count their bodies no longer assert: 18
-overlays above 16 in `ui/overlayA11y.test.ts` (twice) and `ui/overlayA11yWiring.test.ts`, 15 safe
-commands above 10 in `ui/contextStack.test.ts`, 511 keys above 543 in `ui/i18n/catalog.test.ts`
-(twice). Nothing checks a title.
+Of the last 300 commits on `master` (`git log -300 --name-only`), 63 changed
+`ui/i18n/catalog.test.ts`; nine of the ten most recent changed the key count, in nine to twelve
+places each, and three of the ten added no test. 27 changed `ui/i18n/catalogParity.test.ts`; of
+the twelve most recent, seven edited the hand list of the keys `main.ts` resolves and four the
+hand list of the files that import the resolver. Ten changed `ui/contextStack.test.ts` and left
+`ui/contextStack.ts` alone; six of them moved the command counts. Eight titles state a count
+their bodies do not assert: 18 overlays above 16 in `ui/overlayA11y.test.ts` (twice) and
+`ui/overlayA11yWiring.test.ts`, 15 safe commands above 10 in `ui/contextStack.test.ts`, and 511
+keys (twice) and 527 keys (twice) above 543 in `ui/i18n/catalog.test.ts`. Nothing checks a title.
 
 A build run may add a pin file to its own file list when a measurement proves the need and no
 unmerged slice holds the file. That spares the spec author the list and leaves the rest:
@@ -94,8 +94,8 @@ delete one id's row and its other compile-forced rows; the owner goes red both t
 | Test | Asserts of this fact | Disposition |
 |---|---|---|
 | `ui/overlayRegistry.test.ts` › "OR-MANIFEST-COMPLETE BITES" | the `ui/*View.ts` file count is `OVERLAY_IDS.length + 4` | already derived; see "Pins that read source text" |
-| `ui/overlayRegistry.test.ts` › "OR-TIERS-PARTITION BITES" | the three tier lists; `OVERLAY_IDS.length` is 16; the lists together hold 16 ids and equal `OVERLAY_IDS`; a `Set` of the ids has 16 | the tier lists and their equality with `OVERLAY_IDS` stay (rule 3). The two length-16 assertions: delete; survivors: this test's own equality, and the owner. The duplicate check: derive (`OVERLAY_IDS.length`) |
-| `ui/overlayRegistry.test.ts` › "OR-CANOPEN-EMPTY-ALLOWS-ALL BITES" | a tally of 16, one per pass | delete; survivor: the owner |
+| `ui/overlayRegistry.test.ts` › "OR-TIERS-PARTITION BITES" | the three tier lists; `OVERLAY_IDS.length` is 16; the lists together hold 16 ids and equal `OVERLAY_IDS`; a `Set` of the ids has 16 | the tier lists and their equality with `OVERLAY_IDS` stay (rule 3). The two length-16 assertions: delete; survivors: this test's own equality, and the owner. The duplicate check: derive (`OVERLAY_IDS.length`). The title loses its count |
+| `ui/overlayRegistry.test.ts` › "OR-CANOPEN-EMPTY-ALLOWS-ALL BITES" | a tally of 16, one per pass | delete; survivor: the owner. The title loses its count |
 | `ui/overlayRegistry.test.ts` › "OR-CANOPEN-GUARDONLY-ALL BITES" | a tally of 180, one per pass but the target itself | delete; survivor: the owner |
 | `ui/overlayRegistry.test.ts` › "OR-CANOPEN-BATTLE-DENIES-ALL BITES" | a tally of 15, one per pass but the battle | delete; survivor: the owner |
 | `ui/overlayRegistry.test.ts` › "OR-CANOPEN-BATTLE-TARGET-DENIES BITES" | a tally of 15, one per pass but the battle | delete; survivor: the owner |
@@ -161,9 +161,10 @@ cast; this owner goes red. Drop an overlay id; the overlay owner goes red.
 | Test | Asserts of this fact | Disposition |
 |---|---|---|
 | `ui/contextStack.test.ts` › "CTL2-1-POLICY: SCREEN_POLICY is total over the frame ids" | `MIRRORED_IDS` has 2 members | delete; survivor: the same test's equality with the pair |
-| `ui/contextStack.test.ts`, module scope | `PLAYER_IDS`, the 14 player ids written out; `PLAYER_FRAMES`, one frame per id with its kind (the challenge a prompt, Profile a text entry); `SAFE_OVER_BATTLE` (4) and `UNSAFE_OVER_BATTLE` (10) | `PLAYER_IDS` derives: `OVERLAY_IDS` without the hand-written server pair. The kind of each player frame stays hand-written, as a `Record` over the player ids (rule 3), and `PLAYER_FRAMES` is built from it. The safe and unsafe lists stay (rule 3) |
+| `ui/contextStack.test.ts`, module scope | `PLAYER_IDS`, the 14 player ids written out; `PLAYER_FRAMES`, one frame per id with its kind (the challenge a prompt, Profile a text entry); `SAFE_OVER_BATTLE` (4) and `UNSAFE_OVER_BATTLE` (10) | `PLAYER_IDS` derives: `OVERLAY_IDS` without the hand-written server pair. The kind of each player frame stays hand-written, as a `Record` over the player ids (rule 3), and `PLAYER_FRAMES` is `PLAYER_IDS` mapped through it, so the frames keep the ids' order. The safe and unsafe lists stay (rule 3) |
 | `ui/contextStack.test.ts` › "CTL3-2-DROP-EXACT" | `PLAYER_IDS` has 14; it equals `OVERLAY_IDS` without the pair; a battle drop returns 15 commands, then 14 | delete the length and the equality (the list is derived); survivors: the overlay owner and this section's owner. The command counts: derive (`PLAYER_IDS.length + 1`, `PLAYER_IDS.length`). The title loses its count |
 | `ui/contextStack.test.ts` › "CTL3-2-POLICY-EXACT" | a 17-row hand table of owner and battle rule; it has 17 rows; its ids equal the frame ids | the table stays, typed `Record<FrameId, _>` (rule 3). The row count: delete; survivor: the same test's id equality |
+| `ui/contextStack.test.ts` › "CTL3-4-CONV-APPEARS" | its title names 14 player frames; its body reads `PLAYER_IDS` | already derived. The title loses its count |
 | `ui/contextStack.test.ts` › "CTL3-5-OPEN-GATE" | its own row table has 23 rows | delete (rule 5); survivor: this section's owner |
 | `ui/contextStack.test.ts` › "CTL6C-1-RECONCILE-KEEPS-SAFE-OVER-BATTLE" | the safe list has 4 and the unsafe list 10; together they equal `PLAYER_IDS`; a drop returns 10 closes | delete the two lengths; survivor: the same test's equality with `PLAYER_IDS`. The close count: derive (`UNSAFE_OVER_BATTLE.length`) |
 | `ui/contextStack.test.ts` › "the SCREEN_POLICY battleSafe column is exactly the literal table" | a hand `Record<FrameId, boolean>`; 5 product rows are true | the table stays (rule 3). The count: delete; survivor: the same test's row-by-row equality |
@@ -253,7 +254,7 @@ order": ordered equality with a hand-written list. Its title loses the count.
 | `main.help.test.ts` › "UIF14.5 A opens the entry under the cursor" | 16 rows behind the sheet | derive: `ENTRY_KEYS.length` |
 | `main.help.test.ts` › "clicking the Select chip opens the same two-tab Help" | 16 rows | derive: `ENTRY_KEYS.length` |
 | `ui/i18n/catalog.test.ts`, module scope, and › "UIF14.4 the other 34 plain Help ids" | `UIF14_ENTRY_KEYS`, the 16 keys written out to build 32 rows of the catalog roster; 34 ids; 16 distinct texts per kind | the list stays hand-written: it is part of the catalog owner's roster. The 34: delete; it counts the test's own list (rule 5). The distinctness check: derive (`UIF14_ENTRY_KEYS.length`). The title loses its counts |
-| `ui/screens/helpScreen.test.ts` › "UIF14.1 HELP_LAYOUT is a tabs layout" | the Encyclopedia's items equal `ENTRY_KEYS` | already derived |
+| `ui/screens/helpScreen.test.ts` › "UIF14.1 HELP_LAYOUT is a tabs layout" | the Encyclopedia's items equal `ENTRY_KEYS` | already derived. The title loses its count |
 
 ### Subscription batch
 
@@ -314,12 +315,17 @@ re-create.** Swap two entries of `MENU_ENTRIES`; the owner goes red.
 
 | Test | Asserts of this fact | Disposition |
 |---|---|---|
-| `ui/menuModel.test.ts` › "UIF15C.1 CTL5-1-ENTRIES" | the root has 8 rows | delete; survivor: the same test's equality with `ROOT_KEYS` |
-| `ui/screens/mainMenuScreen.test.ts`, module scope | its own `ROOT_KEYS`, the eight keys | derive: the keys of `MENU_ENTRIES`. The tests that compare a layout or a label table with it then prove the screen follows the model |
-| `ui/menuView.test.ts`, module scope | its own `ROOT_KEYS` | derive: the keys of `MENU_ENTRIES` |
-| `main.menu.test.ts`, module scope | its own `ROOT_KEYS` | derive: the keys of `MENU_ENTRIES` |
-| `ui/reachability.test.ts` › "UIF15C.3 the bound of 7 presses holds" | its own list of the eight keys; the search reaches 7 leaves; a tally of `8 * 17` cells, one per pass | the list derives (the keys of `MENU_ENTRIES`). The 7: derive (the entries of `MENU_ENTRIES` that open a frame). The tally: delete; survivor: the owner |
+| `ui/menuModel.test.ts` › "UIF15C.1 CTL5-1-ENTRIES" | the root has 8 rows, twice | delete both; survivor: the same test's equality with `ROOT_KEYS` |
 | `ui/menuModel.test.ts` › "UIF16B.1 the root Profile row is an open leaf" | the seven root leaves, written out | derive: `ROOT_KEYS` without `close` |
+| `ui/menuModel.test.ts` › "CTL10B-2-MENU-NO-INITIATE" | the table has 7 leaves | derive: `ROOT_KEYS.length - 1` |
+| `ui/screens/mainMenuScreen.test.ts`, module scope | its own `ROOT_KEYS`, the eight keys | derive: the keys of `MENU_ENTRIES`. The tests that compare a layout or a label table with it then prove the screen follows the model |
+| `ui/screens/mainMenuScreen.test.ts` › "CTL5-2-A-OPENS-CHILD" | 7 distinct targets; a tally of 7 presses, one per pass | the distinctness check: derive (`OTHER_KEYS.length`). The tally: delete; survivor: the owner |
+| `ui/screens/mainMenuScreen.test.ts` › "UIF15C.3 every OTHER remembered cursor" | its list of the keys but Close has 7 members | delete (rule 5); survivor: the owner |
+| `ui/menuView.test.ts`, module scope | its own `ROOT_KEYS` | derive: the keys of `MENU_ENTRIES` |
+| `ui/menuView.test.ts` › "constructing a second view over the same shared markup", › "UIF15C.1 the real root paints exactly eight", › "MV-VIS-03", › "MV-RENDER-REPLACES" and › "MV-A11Y-OPTION-01" | the view painted 8 rows (seven sites) | derive: `ROOT_KEYS.length`. The second title loses its count |
+| `main.menu.test.ts`, module scope | its own `ROOT_KEYS` | derive: the keys of `MENU_ENTRIES` |
+| `main.menu.test.ts` › "UIF15B.5 every root leaf" | a tally of 7 leaves driven, one per pass | delete; survivor: the owner |
+| `ui/reachability.test.ts` › "UIF15C.3 the bound of 7 presses holds" | its own list of the eight keys; the search reaches 7 leaves; a tally of `8 * 17` cells, one per pass | the list derives (the keys of `MENU_ENTRIES`). The 7: derive (the entries of `MENU_ENTRIES` that open a frame). The tally: delete; survivor: the owner. The title keeps its 7, the press bound, and loses its row count |
 
 ### Menu accelerators
 
@@ -342,10 +348,10 @@ the owner goes red.
 Each row is a shared fact that is itself read from source, a hand list that restates a source
 scan, or a source-text fact that more than one test asserts. The dispositions are those of
 `standards/testing-tdd.md`, "Deleting a check is legitimate" and "Behavior-preserving changes". A
-source read in these files that no row names is not a shared pin, and this plan does not judge
-it: the scans of `ui/i18n/catalogParity.test.ts` for dynamic, undefined and dead keys, its parse
-of the unions, the purity read of `ui/overlayRegistry.test.ts`, and the scan of `client/e2e` in
-`ui/reachability.test.ts` stay as they are.
+source read in these files that no row names restates no shared fact and is outside this plan:
+the scans of `ui/i18n/catalogParity.test.ts` for dynamic, undefined and dead keys, its parse of
+the unions, the purity read of `ui/overlayRegistry.test.ts`, and the scan of `client/e2e` in
+`ui/reachability.test.ts`.
 
 | Test | Reads | Disposition |
 |---|---|---|
@@ -377,8 +383,8 @@ nothing follows the code there once the lists are gone.
   `ui/i18n/catalogParity.test.ts`, the per-string tests of `ui/i18n/catalog.test.ts`.
 - **Floors on what `client/index.html` ships** in `ui/overlayA11yWiring.test.ts`: they follow the
   document, not a registry.
-- **The end-to-end specs.** `client/e2e/ui-chrome.spec.ts` writes the menu root keys out to
-  compare them with the live document.
+- **The end-to-end specs.** Those under `client/e2e` that write the menu root keys out
+  (`client/e2e/ui-chrome.spec.ts` is one) compare them with the live document.
 - **Hand-built fixtures of another module's types** ("What the pins cost").
 
 ## Slices, in order
@@ -386,18 +392,19 @@ nothing follows the code there once the lists are gone.
 Each slice edits tests only, and the tester makes the edit. It takes the dispositions of the
 sections its line names, re-creates each section's defect on a scratch copy for the deleted
 assertions of a protected behaviour, and shows the named survivor red; someone other than the
-tester adjudicates. It rewrites the comments its edits make false (a note that a list is
-hand-written, a count in a comment). The slice for a line deletes that line, and the slice that
-deletes the last line deletes this file.
+tester adjudicates. It makes the title changes the owner paragraphs and rows name, drops the
+registry's count from any other title in the files it edits, and rewrites the comments its edits
+make false (a note that a list is hand-written, a count in a comment). The slice for a line
+deletes that line, and the slice that deletes the last line deletes this file.
 
-1. Catalog keys: `client/src/ui/i18n/catalog.test.ts`, `client/src/ui/i18n/resolver.test.ts`. It also takes that first file's rows of "The accessible-name keys", "Help entries" and "Pins that read source text".
+1. Catalog keys: `client/src/ui/i18n/catalog.test.ts`, `client/src/ui/i18n/resolver.test.ts`. It also takes that first file's rows of "The accessible-name keys" (and that section's owner title), "Help entries" and "Pins that read source text", and the title of the locale registry's owner.
 2. The catalog scan's hand lists and the locale registry: `client/src/ui/i18n/catalogParity.test.ts`, `client/src/ui/i18n/catalogShape.test.ts`, `docs/refactors/client-shell.md`. It takes those files' rows of "Pins that read source text", "The accessible-name keys" and "The locale registry".
 3. Command kinds and their battle policy: `client/src/ui/battlePolicy.test.ts`, `client/src/ui/contextStack.test.ts`.
 4. Overlay ids: `client/src/ui/overlayRegistry.test.ts`, `client/src/ui/overlayA11y.test.ts`, `client/src/ui/overlayA11yWiring.test.ts`, `client/src/ui/a11yCopy.test.ts`, `client/src/ui/announcements.test.ts`. It also takes the `ui/a11yCopy.test.ts` row of "The accessible-name keys".
 5. Frame ids: `client/src/ui/contextStack.test.ts`, `client/src/ui/screens/index.test.ts`, `client/src/input/router.test.ts`.
 6. Subscription batch: `client/src/net/connection.runtime.test.ts`, `client/src/net/connection.test.ts`.
 7. Menu root rows and accelerators: `client/src/ui/menuModel.test.ts`, `client/src/ui/screens/mainMenuScreen.test.ts`, `client/src/ui/menuView.test.ts`, `client/src/main.menu.test.ts`, `client/src/ui/reachability.test.ts`, `client/src/input/router.test.ts`.
-8. Help entries: `client/src/ui/helpModel.test.ts`, `client/src/ui/helpView.test.ts`, `client/src/main.help.test.ts`.
+8. Help entries: `client/src/ui/helpModel.test.ts`, `client/src/ui/helpView.test.ts`, `client/src/main.help.test.ts`, `client/src/ui/screens/helpScreen.test.ts`.
 
 Lines 3 and 5 both edit `client/src/ui/contextStack.test.ts`, and lines 5 and 7
 `client/src/input/router.test.ts`: each pair runs in that order. Lines 7 and 8 each edit a
