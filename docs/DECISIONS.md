@@ -1562,3 +1562,59 @@ shell-config script or a `client/public/shell-config.js` (either fixes the targe
 normalizing `uri` or `db` (case, trailing slash, default port: it would orphan stored identities);
 substituting a default for a present but invalid document; echoing a document value in a start-up error
 (a refused `uri` may carry credentials).
+
+## The desktop shell is Electron; a preload script hands the client its connection
+
+**Decision.** The desktop (Steam) build hosts the unchanged web bundle in Electron. The shell gives the
+client its shell document from a preload script: `contextBridge.exposeInMainWorld('__MR_SHELL_CONFIG__',
+document)` in a window with `contextIsolation: true` and `sandbox: true`. Measured on Electron 45.3.2, that
+makes `__MR_SHELL_CONFIG__` an own, read-only property of the page's global object before the page's first
+script and before its module script run, on first load and after a reload, from `file://` and from a custom
+protocol; the page sees a frozen copy, and the page's own `/shell-config.js` script cannot replace it
+(the property is not writable). Where the licence terms cover bundling, the shell starts the server
+as a child of Electron's main process and stops it when the app quits; otherwise it starts nothing and
+connects to a server the player installed. Steamworks calls stay in the main process. The evidence, the
+judge's scores and the measurements are in `docs/local-play.md`.
+
+**Why.** The shell must not fork the client, and the engine it renders in decides whether the e2e suite's
+coverage carries over. Electron ships Chromium, the only engine family the suite runs; Tauri renders in
+WebView2 on Windows but in WKWebView on macOS and WebKitGTK on Linux and the Steam Deck. Early access is the Steam build: Electron has
+a documented route to the Steam overlay, Tauri's request for one is closed as not planned, and a launcher
+that opens the system browser has no window to draw it over. A judge scored the three from one dossier:
+Electron 50, the launcher 44, Tauri 43 of 65 weighted. Unweighted the launcher leads by a point (27, 26,
+26); what Electron pays is size, a 151 MiB archive on Windows beside the 127 MiB server.
+
+**Rules out.** A system-webview shell (Tauri) while the e2e suite runs Chromium only; shipping the Steam
+build as a launcher plus the player's own browser; delivering the shell document in the desktop build by a
+fetch, by editing the bundle's `index.html`, or with context isolation off; Steamworks or Node APIs in the
+page. The choice stands on one thing nobody has measured: the Steam overlay drawing over an Electron window
+on Windows. That is proved before anything else is built on the shell, and if the overlay cannot be made to
+draw, this entry is rewritten, not worked around.
+
+## Local-play budgets are measured medians with stated headroom, on one machine profile
+
+**Decision.** A single-player world and a friends server hold these budgets, measured the way
+`docs/local-play.md` describes, with the server confined to the two threads of one core and 2 GiB:
+
+| | Single-player world | Friends server |
+|---|---|---|
+| Memory | 330 MiB (1.49 times the 220.8 median) | 330 MiB (1.52 times the 216.4 median) |
+| Idle CPU | 1.4 % of one thread (1.57 times the 0.89 median) | 1.0 % of one thread (1.54 times the 0.65 median) |
+| Start-up to playable | 800 ms (1.49 times the 538 median) | 800 ms (1.49 times the 538 median) |
+| Disk growth | 12 MiB per hour (1.46 times the 8.23 median) | 68 MiB per hour (1.51 times the 45.01 median) |
+
+The record defines each measure and the condition it is taken in. The friends-server memory and disk
+numbers are a walking-only floor, set again when battles and trades are measured. Work that changes what
+the server does per tick, per connection or at start-up re-measures and holds these.
+
+**Why.** The server runs on the player's machine beside the game, so its cost is the player's, and a
+budget nobody measured is either ignored or blocks the wrong change. The measured costs are small and the
+three runs of a condition agree closely (the record gives the spread), so a budget near one and a half
+times the median catches a real change without tripping on noise. The cost that never stops while someone
+is connected is the movement tick, which commits a transaction five times a second even when every player
+stands still.
+
+**Rules out.** Raising a budget without re-measuring and rewriting the record; comparing a run on another
+machine, without the constraints, or in another condition to these numbers (clock and disk speed are not
+modelled; a run on real low-end hardware replaces the profile and the numbers together); reading the
+friends-server memory and disk numbers as a ceiling for play with battles and trades.
