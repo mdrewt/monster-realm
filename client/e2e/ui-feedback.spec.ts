@@ -46,9 +46,10 @@ import { closeAll, pressAccel, pressButton } from './controls';
 //
 // LATE DEFERRED FOCUS. The last test proves the PRODUCT: the Controls frame's deferred initial
 // focus on `#controls-rows` lands AFTER the cursor was walked and the first rect read was taken,
-// and moves no box of the 640x240 frame. It holds the page's zero-delay timers back so the late
-// focus is deterministic, not luck, and it shows that a focus which does scroll is seen by the
-// same rect read (else the no-move claim is vacuous).
+// and moves no box of the 640x240 frame. It parks the page's zero-delay timers until the first
+// read is taken and then releases them, so the late focus is ordered by the test, not by timing,
+// and it shows that a focus which does scroll is seen by the same read (else the no-move claim is
+// vacuous).
 
 interface Frame {
   kind: string;
@@ -341,22 +342,33 @@ test.describe
     test('UIF4B.2 the Controls frame: a deferred focus that lands on the rows after the cursor walk and the first read moves no box of the frame at 640x240', async () => {
       // The UNSETTLED ordering, on purpose: the frame opens, the cursor is walked to X_0 (its
       // nearest-scroll moves the 640x240 shell), `before` is read, and only then does the held
-      // deferred focus land on the rows. That focus is scroll-free, so the tab strip and the rows
-      // grid keep their rects to the pixel. The counter-proof at the end blurs the rows and focuses
-      // them with a plain `.focus()` in the same state: that scrolling focus DOES move a box, so
-      // the equality above is a real measurement, not a frame that cannot move.
-      // The hold is inside the PAGE (it delays the product's own zero-delay timer); the test itself
-      // never sleeps, every wait in it is a retried predicate. While installed, the hold delays
-      // EVERY zero-delay timer in the page, not only the overlay's; any other one is only slowed.
-      // The value: 2500 ms keeps the first read (the open, a handful of Down presses, one read)
-      // ahead of the focus on a loaded machine, and the read itself asserts the focus has not
-      // landed yet, so a too-slow run fails as a FIXTURE error, never as a vacuous pass.
-      const ZERO_DELAY_HOLD_MS = 2500;
+      // deferred focus land on the rows. That focus is scroll-free, so the shell keeps its
+      // scrollTop and the tab strip and the rows grid keep their rects to the pixel. The
+      // counter-proof at the end blurs the rows and focuses them with a plain `.focus()` in the
+      // same state: that scrolling focus DOES move a box, so the equality is a real measurement,
+      // not a frame that cannot move.
+      // The hold is inside the PAGE: every zero-delay timer is parked (on the real timer, with
+      // HOLD_FALLBACK_MS as a bound so nothing parks forever) until the test calls
+      // `__mrReleaseHeld()` right after the first read, which re-arms each still-pending one at
+      // zero delay. A parked timer the product clears (overlayA11y clears its pending focus when
+      // another frame opens over its frame, on a re-open and on a close) is dropped from the park,
+      // so the release never runs a cleared callback. The test itself never sleeps: every wait in
+      // it is a retried predicate or two animation frames (requestAnimationFrame is not held).
+      const HOLD_FALLBACK_MS = 20_000;
       const label = 'late focus';
       const BOXES = ['#controls-overlay', '#controls-tabs', '#controls-rows'] as const;
-      /** The rects of BOXES, the shell's scrollTop and whether the rows hold the focus, in one pass. */
-      const readFrame = (): Promise<{ rects: Rect[]; scrollTop: number; rowsFocused: boolean }> =>
-        page.evaluate((sels: readonly string[]) => {
+      interface FrameRead {
+        rects: Rect[];
+        scrollTop: number;
+        rowsFocused: boolean;
+        heldFocus: boolean;
+      }
+      /** Two animation frames, then the rects, the shell's scrollTop and the focus, in one pass. */
+      const readFrame = (): Promise<FrameRead> =>
+        page.evaluate(async (sels: readonly string[]): Promise<FrameRead> => {
+          await new Promise<void>((r) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => r())),
+          );
           const rects = sels.map((s) => {
             const el = document.querySelector(s);
             if (el === null) throw new Error(`late focus: ${s} is not on the page`);
@@ -372,35 +384,39 @@ test.describe
             rects,
             scrollTop: overlay.scrollTop,
             rowsFocused: document.activeElement === rows,
+            heldFocus: (window as unknown as { __mrHeldFocus?: boolean }).__mrHeldFocus === true,
           };
         }, BOXES);
-      const heldFocus = (): Promise<boolean> =>
-        page.evaluate(() => {
-          const w = window as unknown as { __mrHeldFocus?: boolean };
-          return w.__mrHeldFocus === true;
-        });
       try {
         await setWindow({ width: 640, height: 240 });
         await closeAll(page);
-        await page.evaluate((hold) => {
+        await page.evaluate((fallback) => {
           type Timer = (handler: unknown, delay?: number, ...args: unknown[]) => number;
+          type Clear = (id?: number) => void;
           const w = window as unknown as {
             setTimeout: Timer;
+            clearTimeout: Clear;
             __mrRealSetTimeout?: Timer;
+            __mrRealClearTimeout?: Clear;
             __mrHeldFocus?: boolean;
+            __mrReleaseHeld?: () => number;
           };
-          const real = w.setTimeout;
-          w.__mrRealSetTimeout = real;
+          const realSet = w.setTimeout;
+          const realClear = w.clearTimeout;
+          w.__mrRealSetTimeout = realSet;
+          w.__mrRealClearTimeout = realClear;
           w.__mrHeldFocus = false;
-          // Delegates to the real timer and returns ITS id: overlayA11y clears a pending timer
-          // by that id when another frame opens over its frame, on a re-open, and on a close
-          // (the menu's held timer is cleared that way when Controls opens over it).
+          // Parked id -> its wrapped callback. The id returned to the page is the real timer's,
+          // so a product clearTimeout reaches the real timer and leaves the park too.
+          const parked = new Map<number, () => void>();
+          let holding = true;
           w.setTimeout = (handler, delay, ...args) => {
-            if (typeof handler !== 'function' || (delay !== undefined && delay !== 0)) {
-              return real.call(window, handler, delay, ...args);
+            if (!holding || typeof handler !== 'function' || (delay !== undefined && delay !== 0)) {
+              return realSet.call(window, handler, delay, ...args);
             }
             const fn = handler as (...a: unknown[]) => void;
             const held = (): void => {
+              parked.delete(id);
               const prior = document.activeElement;
               try {
                 fn(...args);
@@ -411,16 +427,32 @@ test.describe
                 }
               }
             };
-            return real.call(window, held, hold);
+            const id = realSet.call(window, held, fallback);
+            parked.set(id, held);
+            return id;
           };
-        }, ZERO_DELAY_HOLD_MS);
+          w.clearTimeout = (id) => {
+            if (id !== undefined) parked.delete(id);
+            realClear.call(window, id);
+          };
+          w.__mrReleaseHeld = () => {
+            holding = false;
+            const pending = [...parked.entries()];
+            parked.clear();
+            for (const [id, held] of pending) {
+              realClear.call(window, id);
+              realSet.call(window, held, 0);
+            }
+            return pending.length;
+          };
+        }, HOLD_FALLBACK_MS);
 
-        // No settle: the walk and the first read run inside the hold.
+        // No settle: the walk and the first read run while the focus is parked.
         await openControlsFrame(label);
         await downTo(page, controlsActive, 'X_0', 13, `${label}: the Controls grid`);
         const before = await readFrame();
         expect(
-          before.rowsFocused || (await heldFocus()),
+          before.rowsFocused || before.heldFocus,
           'FIXTURE: the deferred focus landed before the first read, so this test no longer exercises the late-focus ordering',
         ).toBe(false);
         expect(
@@ -428,15 +460,19 @@ test.describe
           'FIXTURE: the cursor walk scrolled the shell at 640x240 (else the frame has no scroll to keep)',
         ).toBeGreaterThan(0);
 
+        const released = await page.evaluate(() =>
+          (window as unknown as { __mrReleaseHeld: () => number }).__mrReleaseHeld(),
+        );
+        expect(released, 'FIXTURE: the overlay focus timer was parked').toBeGreaterThan(0);
         await expect(
           page.locator('#controls-rows'),
           `${label}: the rows receive the open initial focus`,
-        ).toBeFocused({ timeout: ZERO_DELAY_HOLD_MS + 5_000 });
-        expect(
-          await heldFocus(),
-          'FIXTURE: the hold did not carry the overlay initial focus onto the rows, so this test no longer exercises the late-focus ordering',
-        ).toBe(true);
+        ).toBeFocused();
         const after = await readFrame();
+        expect(
+          after.heldFocus,
+          'FIXTURE: the parked overlay initial focus is what put the focus on the rows',
+        ).toBe(true);
         expect(after.scrollTop, `${label}: the shell did not scroll when the focus landed`).toBe(
           before.scrollTop,
         );
@@ -448,27 +484,39 @@ test.describe
         }
 
         // COUNTER-PROOF: in this very state a focus that scrolls moves the frame's boxes, and the
-        // same one-pass read sees it.
-        const scrolled = await page.evaluate((sels: readonly string[]) => {
+        // same read sees it.
+        await page.evaluate(() => {
           const rows = document.getElementById('controls-rows');
           if (rows === null) throw new Error('late focus: the rows are not on the page');
           rows.blur();
           rows.focus();
-          return sels.map((s) => {
-            const r = document.querySelector(s)?.getBoundingClientRect();
-            return r === undefined ? null : { x: r.x, y: r.y, width: r.width, height: r.height };
-          });
-        }, BOXES);
+        });
+        const scrolled = await readFrame();
+        expect(scrolled.rowsFocused, 'FIXTURE: the plain focus is on the rows').toBe(true);
         expect(
-          scrolled,
-          'FIXTURE: a scrolling focus on the rows moves a box of the frame (else the no-move claim above is vacuous)',
+          scrolled.scrollTop,
+          'FIXTURE: a plain focus on the rows scrolls the shell (else the no-move claim above is vacuous)',
+        ).not.toBe(after.scrollTop);
+        expect(
+          scrolled.rects,
+          'FIXTURE: a scrolling focus on the rows moves a box of the frame',
         ).not.toEqual(after.rects);
       } finally {
         try {
           await page.evaluate(() => {
-            const w = window as unknown as { setTimeout: unknown; __mrRealSetTimeout?: unknown };
+            const w = window as unknown as {
+              setTimeout: unknown;
+              clearTimeout: unknown;
+              __mrRealSetTimeout?: unknown;
+              __mrRealClearTimeout?: unknown;
+              __mrReleaseHeld?: () => number;
+            };
+            w.__mrReleaseHeld?.();
             if (w.__mrRealSetTimeout !== undefined) w.setTimeout = w.__mrRealSetTimeout;
+            if (w.__mrRealClearTimeout !== undefined) w.clearTimeout = w.__mrRealClearTimeout;
             w.__mrRealSetTimeout = undefined;
+            w.__mrRealClearTimeout = undefined;
+            w.__mrReleaseHeld = undefined;
           });
         } finally {
           await closeAll(page);
