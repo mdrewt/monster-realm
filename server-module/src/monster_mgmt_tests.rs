@@ -242,7 +242,8 @@ fn nh_set_nickname_refuses_a_stranger_and_admits_the_owner() {
 // Each test also proves the site actually wrote (a no-op keeps any mirror green).
 //
 //   battle.rs  write_back_party_hp, write_back_battle_results (x2)  -> battle_tests bn_*
-//   trading.rs confirm_trade                                        -> trading_tests nh_trade_confirm_*
+//   trading_session.rs apply_swap                                   -> trading_session_tests
+//     ts0a_apply_swap_*, trading_tests nh_21re_apply_swap_*
 //   monster_mgmt.rs set_nickname                                    -> nh_set_nickname_* above
 //   monster_mgmt.rs set_party_slot, rekey_monsters, erase_monsters  -> dw_monster_mgmt_sites
 //   raising.rs care, train, heal_party, essence_train,

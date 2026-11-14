@@ -305,7 +305,7 @@ describe('closeOverlayA11y — return-focus map, detached-target fallback, and n
     expect(
       document.activeElement,
       'with no fallback and a detached returnFocus target there must be NO focus call at all — ' +
-        'the natural browser blur to <body> is what worldHasFocus() already treats as world-focused',
+        'focus rests on <body> after the browser blur, and a key there still reaches the game',
     ).toBe(document.body);
   });
 

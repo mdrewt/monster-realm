@@ -45,13 +45,16 @@
  * the same synchronous burst (S5T-ANNOUNCE-TOP). Both are real properties of the
  * production code, not test artefacts.
  *
- * HISTORY (m23-s5, then ctl-11a and ctl-11b): the original slice added a `worldHasFocus()` gate
- * on the hotkeys, a frame-loop announcement/focus-return pump and a Space guard. ctl-11b DELETED
- * `worldHasFocus`: one rule replaces it, in main.ts's keydown handler (a key whose target is an
- * element outside `#game-screen`, and not <body>, is the browser's) and in the pure
- * `ownership(target, event, screen)`. The cases below that still say "gate" name what they now
- * pin; the CTL11B-1-* cases at the end pin the outside rule itself. The frame-loop focus return
- * (<body>, or focus stranded in a hidden subtree, goes back to the canvas) is unchanged.
+ * THE FOCUS RULE: a key whose target is an element outside `#game-screen` (and not <body> or
+ * <html>) is the browser's, every key: main.ts's keydown handler returns early on
+ * `outsideGameScreen`. Every other key goes through `ownership(target, event, screen)`: a text
+ * field keeps its typing keys, a focused button or link keeps Enter/Space, an IME composition
+ * stays with its target, and the rest is the router's. Nothing reads whether the world has
+ * focus, so an accelerator or Start works with focus on <body>, the canvas or a control inside
+ * `#game-screen`. The cases named "gate" pin that: an accelerator opens, replaces or closes its
+ * screen whatever holds focus, a DENY verdict still refuses, and a key first heals focus
+ * stranded inside a hidden subtree. The CTL11B-1-* cases at the end pin the outside rule itself.
+ * The frame loop returns focus to the world canvas when the last overlay's close left it adrift.
  *
  * Several S5T cases are regression pins that were green from the day their code landed (marked at
  * each site). `S5T-GATE-ALLOWED-CANVAS` asserts `document.activeElement` genuinely IS the canvas
@@ -456,8 +459,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // longer gated on the world focus and replaces whatever screen is open, so the same state
     // (focus genuinely inside the open overlay) now proves the opposite: the second accelerator
     // opens its overlay, the first one closes, and the main menu stays beneath the new one.
-    // WRONG IMPL KILLED: the `&& worldHasFocus()` conjunct (or any focus test) left on an
-    // accelerator, so with focus inside the open overlay the second press is refused; a refusal
+    // WRONG IMPL KILLED: a focus test on the open (any check that refuses an accelerator while
+    // focus is not on the world), so the second press is refused with focus inside $id; a refusal
     // for an open player screen (the old mutual-exclusivity guard), which leaves $id open; a
     // replace that opens $replacedById without closing $id (two screens at once); and a replace
     // that drops the menu beneath it.
@@ -544,7 +547,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-GATE-ALLOWED-CANVAS: a hotkey still opens its overlay when the world CANVAS has focus', () => {
-    // ctl-11b: with `worldHasFocus` deleted, nothing reads the world focus any more: the canvas is
+    // Nothing reads whether the world has focus: the canvas is
     // inside #game-screen, so a key at it is the router's (CTL11B-1-BOOT-INSIDE-ROUTES pins the
     // same for B). What this keeps is the keyboard/AT user who Tabs onto the canvas: an accelerator
     // and Start must both still work there. The canvas-has-focus precondition is asserted BEFORE
@@ -675,9 +678,9 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
 
     // Let the REAL setTimeout(0) deferred-focus macrotask fire, so
     // focus is genuinely INSIDE the overlay — the A11Y-19 post-open state, and the precise
-    // state in which the pre-amendment gate refuses the close. Without this wait the test
-    // would pass against the UNFIXED implementation (activeElement would still be <body>, so
-    // worldHasFocus() would still be true) — i.e. this await is what makes the test bite.
+    // state in which a focus test on the open refuses the close. Without this wait the test
+    // would pass against such a focus test (activeElement would still be <body>, which it reads
+    // as focus on the world) — i.e. this await is what makes the test bite.
     const anchor = overlayFocusAnchor(id);
     expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
     await vi.waitFor(
@@ -768,8 +771,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-GATE-PRECEDENCE-DENY-WINS: a DENIED verdict still refuses the open even when focus is on the page', () => {
-    // ctl-11b: `worldHasFocus` (and the `|| worldHasFocus()` precedence mutant this case was written
-    // for) no longer exists. What it still pins is the verdict itself: `canOpen('helpView')` is DENY
+    // What this case pins is the verdict itself: `canOpen('helpView')` is DENY
     // over a visible GUARD_ONLY overlay, and no focus state may bypass a DENY. It is still this
     // file's only test that presses a denied open with focus on <body>, which is the state in which
     // any reintroduced focus-based bypass (`allow || <focus on the page>`) would fire.
@@ -888,9 +890,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     pressKey({ code: 'KeyB' }); // boxView opens; body is still focused (no await has run yet)
     runFrame(0); // lastA11ySnapshot.topOverlay becomes 'boxView'; its name is queued
     // KeyI (raisingView) is a HIDE_SWITCH sibling: canOpen() force-hides boxView. Pressed
-    // with NO intervening await, so worldHasFocus() is still true (the deferred focus for
-    // boxView has not fired) — this is the one legitimate way to drive a same-tier switch
-    // without violating the very gate this slice adds.
+    // with NO intervening await, so focus is still on <body> (the deferred focus for
+    // boxView has not fired) and the switch starts from the same page state as the first press.
     pressKey({ code: 'KeyI' });
     expect(overlayIsOpen('boxView'), 'boxView must have been force-hidden by the switch').toBe(
       false,
@@ -1073,8 +1074,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // when a visible control holds focus). Phase 2 is the POSITIVE (the heal fires when focus is
     // stranded inside a hidden subtree).
     //
-    // ctl-11b: with `worldHasFocus` deleted, a press inside the stale-focus window opens its screen
-    // whether or not the heal ran, so the OPEN assertion in Phase 2 no longer discriminates. The
+    // A press inside the stale-focus window opens its screen whether or not the heal ran
+    // (no open reads where focus is), so the OPEN assertion in Phase 2 does not discriminate. The
     // assertion that bites is the SYNCHRONOUS `document.activeElement === canvas` one: it is the
     // only thing that fails without the heal. The mutants below are killed by it, not by the open.
     //
@@ -1104,14 +1105,12 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     helpHint!.focus();
     expect(document.activeElement, 'anti-vacuity: the chip really is focusable').toBe(helpHint);
 
-    // ctl-11b (named intentional change): this arm used to assert that Select does NOT open help
-    // while a visible control holds focus (the `worldHasFocus()` conjunct). That conjunct is deleted:
-    // the chip is INSIDE #game-screen, where the router owns the key, so Select now opens help with
-    // the chip focused. The retired refusal's survivors are `router.test.ts` CTL11B-1-OWN-OUTSIDE
-    // (an element outside the game screen owns every key) and `main.a11yFocus.test.ts`
-    // CTL11B-1-BOOT-OUTSIDE (focus outside the screen: nothing opens). What stays here is the half
-    // that was never about the gate: the press must not HEAL focus (no steal) while a visible
-    // control holds it.
+    // The chip is INSIDE #game-screen, where the router owns Select, so Select opens help with the
+    // chip focused: no open checks whether focus is on the world. Focus outside the screen is
+    // pinned by `router.test.ts` CTL11B-1-OWN-OUTSIDE (an element outside the game screen owns
+    // every key) and `main.a11yFocus.test.ts` CTL11B-1-BOOT-OUTSIDE (focus outside the screen:
+    // nothing opens). What this arm pins for the heal: the press must not HEAL focus (no steal)
+    // while a visible control holds it.
     pressKey(HELP_KEY);
     expect(
       overlayIsOpen('helpView'),
@@ -1469,8 +1468,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     const chip = document.getElementById('chip-start') as HTMLElement | null;
     expect(chip, '#chip-start must exist (client/index.html)').not.toBeNull();
     expect(overlayIsOpen('menuView'), 'precondition: the menu starts closed').toBe(false);
-    // A real pointer press focuses the button first; so does this case (a chip gated on
-    // worldHasFocus() would refuse its own click).
+    // A real pointer press focuses the button first; so does this case (a chip that opens only
+    // while focus is on the world would refuse its own click).
     chip!.focus();
     expect(document.activeElement, 'precondition: the chip holds focus').toBe(chip);
     chip!.click();
@@ -1489,8 +1488,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     const chip = document.getElementById('chip-select') as HTMLElement | null;
     expect(chip, '#chip-select must exist (client/index.html)').not.toBeNull();
     expect(overlayIsOpen('helpView'), 'precondition: help starts closed').toBe(false);
-    // A real pointer press focuses the button first; so does this case (a chip gated on
-    // worldHasFocus() would refuse its own click).
+    // A real pointer press focuses the button first; so does this case (a chip that opens only
+    // while focus is on the world would refuse its own click).
     chip!.focus();
     expect(document.activeElement, 'precondition: the chip holds focus').toBe(chip);
     chip!.click();
@@ -1503,7 +1502,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   // ---------------------------------------------------------------------------------------
-  // ctl-11b (CTL11B.1): the legacy `worldHasFocus` ladder is replaced by one rule. A key that is
+  // One focus rule, and nothing reads whether the world has focus. A key that is
   // not bound does nothing at the world and is left unprevented; a key event whose target is an
   // element OUTSIDE #game-screen (and not <body>) is the browser's, every key. main.ts looks
   // `#game-screen` up on each keydown (`document.getElementById`), so these cases add or move

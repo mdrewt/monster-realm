@@ -83,10 +83,12 @@ import {
 //   200 / 300 / 150. The cheapest sink is 150.
 //   (Consequence, disclosed: the A/B differentiator is known-vs-unknown, not two different
 //   amounts. A second identity with a DIFFERENT nonzero balance IS reachable via
-//   `propose_trade`'s currency legs and is the strongest named follow-up — ADR-0169
-//   accepted risk 2. It is deferred for cost, NOT because it is unreachable.)
+//   a trade session's currency (`set_trade_offer`, then both sides' `confirm_trade_session`)
+//   and is the strongest named follow-up. It is deferred for cost, NOT because it is
+//   unreachable.)
 //
-// NPCs (game-core/content/npcs/000-core.ron) + npc.rs:19 `TALK_RANGE = 2` (Manhattan):
+// NPCs (game-core/content/npcs/000-core.ron) + game-core's `npc::TALK_RANGE` = 2 (Manhattan;
+//   the server's talk check reads it through `in_talk_range`):
 //   - `elder_oak`: zone 0, home (5,5), **wander_radius 2** ⇒ it MOVES; every interaction
 //     with it needs a bounded retry loop (the dialogue.spec.ts machinery, CI-proven for
 //     months). Its `interaction` field is absent ⇒ plain Dialogue.
@@ -814,10 +816,10 @@ const SHOPKEEPER_GREETING = 'Hello, customer!';
 const SHOP_NAME = 'Pebble Town Shop';
 const EXPECTED_BALANCE_TEXT = 'Gold: 50';
 /** Bounded retries per quest phase. Elder_oak wanders, so a talk ("too far away") or an
- *  advance (walked_away) can be refused, and the phase must be able to retry. A rejected
- *  ADVANCE is rolled back whole, its conversation-row delete included, so the overlay stays
- *  open: that attempt spends its full 20 s hidden-wait, and the next one re-activates the
- *  still-open dialogue without a fresh talk.
+ *  advance (walked_away) can be refused, and the phase must be able to retry. A refused
+ *  ADVANCE writes nothing; the client then sends dismiss_dialogue, whose server-side row
+ *  delete hides the overlay, so that attempt ends without spending its full 20 s
+ *  hidden-wait and the next one talks to the elder again.
  *  ARITHMETIC, stated honestly: an attempt normally costs a few seconds (the wait for the
  *  elder in reach of the post — 1.7 s on average — one talk round trip, one dismiss, one
  *  quest-log read), so the expected phase sits well inside TALK_PHASE_TIMEOUT_MS. Its
@@ -930,9 +932,10 @@ test.describe
     // Precondition (a): A STARTS quest_001.
     //   talk → activate "I seek a quest." → advance_dialogue applies
     //   StartQuest("quest_001") → the quest log shows it at step 0.
-    // Only a SUCCESSFUL advance hides the overlay (next_node None ends the dialogue). A
-    // rejected one (walked_away) returns Err, which rolls back its own conversation-row
-    // delete, so the overlay stays open and the next attempt re-activates it. An attempt
+    // A SUCCESSFUL advance hides the overlay (next_node None ends the dialogue). A refused
+    // one (walked_away: too far, another zone, the NPC gone) writes nothing; the client then
+    // sends dismiss_dialogue, whose server-side row delete hides the overlay, so the quest
+    // log lacks quest_001 and the next attempt talks to the elder again. An attempt
     // whose overlay does not hide in time is treated as a failed attempt rather than
     // failing the test.
     // ESCAPE VALVE (the one race two sequential loops cannot absorb): if an attempt's

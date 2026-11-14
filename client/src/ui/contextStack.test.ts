@@ -2002,7 +2002,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
           else droppedStamped += 1;
         }
       }),
-      { numRuns: 500 },
+      // The seed fixes the generated sample, so the two floors below read the same counts on
+      // every run (89 kept, 1730 dropped); the counts move if the `scenario` arbitrary or the
+      // fast-check version changes.
+      { numRuns: 500, seed: 1 },
     );
     expect(keptStamped, 'ANTI-VACUITY: many stamped frames were kept').toBeGreaterThan(50);
     expect(droppedStamped, 'ANTI-VACUITY: many stamped frames were dropped').toBeGreaterThan(50);
@@ -2279,7 +2282,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // Named spec rows: Care = care, Feed = train, Move = setPartySlot, Evolve = evolve, challenge
     // Accept = acceptChallenge, buy, sell. Bag Use and talk have no Command arm yet: Bag Use is
     // covered by the disabled Bag menu row (CTL6C-3-MENU-DISABLED-OVER-BATTLE in
-    // mainMenuScreen.test.ts), talk by the booted KeyT movement-gate test CTL2-3-BOOT-B17 in
+    // mainMenuScreen.test.ts), talk by the booted movement-gate test CTL2-3-BOOT-B17 in
     // main.input.test.ts, and the total Record makes their future arms classify themselves.
     // ctl-7d (named intentional change, CTL7D.3 / CTL7D.5): `buy` and `sell` carry a `qty`, and
     // the new `pickShop` arm (the greet-then-shop pick) joins the refused list: 12 safe, 25

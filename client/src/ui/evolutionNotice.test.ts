@@ -575,10 +575,10 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
   });
 
   it('20r-d EN-BANNER-LAYOUT BITES: z-index 60, container pointer-events none, button pointer-events auto', () => {
-    // WHY EACH NUMBER: z-index 60 sits ABOVE `#help-hint` (50) so
+    // WHY EACH NUMBER: z-index 60 sits ABOVE the hint bar (`#hint-bar`, 50) so
     //   the banner is never painted over at narrow widths, and BELOW every
-    //   overlay (100) so an open modal's opaque backdrop covers it — which is what
-    //   makes "no focus trap, no registry membership" safe.
+    //   overlay shell (100; the battle roots 110, the menu and help 120), so a
+    //   shell that paints over the banner's strip sits above it.
     // WRONG IMPL KILLED ★: leaving the CONTAINER click-through-able but also
     //   leaving the BUTTON click-through-able — the OK control would be
     //   unclickable, the reveal undismissable, and nothing else in the slice

@@ -1199,8 +1199,8 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
   // ------------------------------------------------------------------------------------------
 
   it('CTL11A-SELECT-HELP-OVER-BATTLE: at a bare battle base Select (KeyR) opens Help over the battle, stamped with it and kept through a batch, and a second Select closes it, the battle base, the battle view and the intents untouched throughout; and at the world Select still toggles Help the same way', async () => {
-    // WRONG IMPL KILLED (residual R-ctl-8j-SELECTINERT): today's toggleHelp arm, which opens only
-    // when the world has focus (`overlayVerdict('helpView')` allow AND `worldHasFocus()`): the
+    // WRONG IMPL KILLED: a Select that opens Help only while focus is on the world (an
+    // `overlayVerdict('helpView')` allow AND a test that focus is on the world): the
     // battle overlay holds focus here (asserted below), so Select over a battle does nothing and
     // the first stack check reads the bare battle; a fix that opens Help but not through the stack
     // mirror (the shown root with no frame: Start and B could not close it); one that opens it

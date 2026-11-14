@@ -33,9 +33,8 @@ const CTX = {
 
 const nav = (button: VButton, repeat = false): NavInput => ({ button, repeat });
 
-// ts-3 (named intentional change, C): a trade request is an incoming SESSION now: its key is
-// `session-<sessionId>`, its Accept opens the editor (`openTradeEditor`) and its Decline cancels the
-// session (`cancelTradeSession`). Was: `trade-<tradeId>` and respondTrade accepted true / false.
+// A trade request is an incoming SESSION: its key is `session-<sessionId>`, Accept opens the
+// editor (`openTradeEditor`) and Decline cancels the session (`cancelTradeSession`).
 const REQ: RequestNotice = {
   kind: 'request',
   key: 'session-11',
