@@ -389,11 +389,11 @@ export class Predictor {
     return this.#lastAuthQueueLen + this.#pending.length;
   }
 
-  /** The direction of the last queued move if it is a Step, else undefined (a Jump
-   *  or an empty queue) — M4 uses it to avoid issuing a duplicate held direction. */
+  /** The direction of the last queued move if it is a Step or a Face, else undefined
+   *  (a Jump or an empty queue) — M4 uses it to avoid issuing a duplicate held direction. */
   get lastQueuedDir(): WasmDirection | undefined {
     const last = this.#queue[this.#queue.length - 1];
     if (last === undefined || last === 'Jump') return undefined;
-    return last.Step;
+    return 'Face' in last ? last.Face : last.Step;
   }
 }

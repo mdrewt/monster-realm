@@ -505,6 +505,12 @@ fn check_deep_water_shore(zone_id: u32, map: &TileMap) -> Result<(), String> {
 /// The SOLE movement rule — total, pure, deterministic. A bump (blocked step) or a
 /// blocked jump is a legal no-op, never an `Err`. `move_started_at` is stamped on
 /// EVERY call.
+///
+/// `Face(dir)` is a press: a character that does not face `dir` turns to it and
+/// stays on its tile, `Idle`; one that already faces `dir` takes exactly the
+/// `Step(dir)` path. The choice is made here, against the facing left by the
+/// inputs applied ahead of it, so the server's drain and the client's replay
+/// decide it alike.
 #[must_use]
 pub fn apply_move(
     state: &CharacterState,
@@ -515,7 +521,13 @@ pub fn apply_move(
     let mut next = *state;
     next.move_started_at = now;
     match input {
-        MoveInput::Step(dir) => {
+        MoveInput::Face(dir) if state.facing != dir => {
+            next.facing = dir; // a turn in place: the tile is kept
+            next.action = ActionState::Idle;
+        }
+        // One arm for a step and for a press of the faced direction, so the two
+        // cannot drift apart.
+        MoveInput::Step(dir) | MoveInput::Face(dir) => {
             next.facing = dir; // you always turn to face, even into a wall
             let target = state.pos.step(dir);
             if map.is_walkable(target) {
@@ -1236,7 +1248,7 @@ mod tests {
         // Totality + determinism over arbitrary states (incl. extreme coords).
         #[test]
         fn apply_move_is_total_and_deterministic(
-            x in any::<i32>(), y in any::<i32>(), f in 0u8..4, ik in 0u8..2, sd in 0u8..4, now in any::<i64>(),
+            x in any::<i32>(), y in any::<i32>(), f in 0u8..4, ik in 0u8..3, sd in 0u8..4, now in any::<i64>(),
         ) {
             let m = zone_0();
             let s = CharacterState {
@@ -1245,10 +1257,10 @@ mod tests {
                 action: ActionState::Idle,
                 move_started_at: Millis(0),
             };
-            let input = if ik == 0 {
-                MoveInput::Step(crate::types::dir_from_code(sd).expect("sd in 0..4 is valid"))
-            } else {
-                MoveInput::Jump
+            let input = match ik {
+                0 => MoveInput::Step(crate::types::dir_from_code(sd).expect("sd in 0..4 is valid")),
+                1 => MoveInput::Jump,
+                _ => MoveInput::Face(crate::types::dir_from_code(sd).expect("sd in 0..4 is valid")),
             };
             let a = apply_move(&s, input, &m, Millis(now));
             let b = apply_move(&s, input, &m, Millis(now));
@@ -1281,6 +1293,180 @@ mod tests {
                 prop_assert_eq!(r.action, ActionState::Walking);
             }
             prop_assert!(m.in_bounds(r.pos)); // in-bounds preserved
+        }
+
+        /// Over arbitrary states on zone 0: a `Face(d)` the character
+        /// already faces returns exactly the `Step(d)` result; any other `Face(d)`
+        /// returns the input state turned to `d`, `Idle`, stamped `now` (tile kept).
+        /// `x`/`y` mix the full i32 range with zone 0's own span (28x20 plus a
+        /// one-tile rim) so open, blocked and edge tiles are all drawn.
+        #[test]
+        fn face_equals_step_when_already_facing_else_turns_in_place_np_c1_2(
+            x in prop_oneof![any::<i32>(), -1i32..29],
+            y in prop_oneof![any::<i32>(), -1i32..21],
+            f in 0u8..4,
+            a in 0u8..3,
+            dc in 0u8..4,
+            started in any::<i64>(),
+            now in any::<i64>(),
+        ) {
+            let m = zone_0();
+            let s = CharacterState {
+                pos: TilePos { x, y },
+                facing: crate::types::dir_from_code(f).expect("f in 0..4 is valid"),
+                action: crate::types::action_from_code(a).expect("a in 0..3 is valid"),
+                move_started_at: Millis(started),
+            };
+            let d = crate::types::dir_from_code(dc).expect("dc in 0..4 is valid");
+            let r = apply_move(&s, MoveInput::Face(d), &m, Millis(now));
+            if s.facing == d {
+                prop_assert_eq!(r, apply_move(&s, MoveInput::Step(d), &m, Millis(now)));
+            } else {
+                prop_assert_eq!(
+                    r,
+                    CharacterState {
+                        pos: s.pos,
+                        facing: d,
+                        action: ActionState::Idle,
+                        move_started_at: Millis(now),
+                    }
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // `MoveInput::Face(d)` — turn in place when not facing `d`, else exactly
+    // `Step(d)`.
+    // -----------------------------------------------------------------------
+
+    const ALL_DIRS: [Direction; 4] = [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ];
+
+    /// The three neighbour classes, each explicit via `from_rows`:
+    /// - "walkable": (1,1) of an all-floor 3x3 — every neighbour is floor;
+    /// - "blocked": (1,1) of a 3x3 ringed by walls — every neighbour is a wall;
+    /// - "out of bounds": (0,0) of a 1x1 map — every neighbour is off the map.
+    ///
+    /// The zone ids are non-zero and distinct, so the rule cannot lean on zone 0.
+    fn neighbour_class_maps() -> Vec<(&'static str, TileMap, TilePos)> {
+        vec![
+            (
+                "walkable",
+                TileMap::from_rows(7, &["...", "...", "..."]).expect("open 3x3"),
+                TilePos { x: 1, y: 1 },
+            ),
+            (
+                "blocked",
+                TileMap::from_rows(8, &["###", "#.#", "###"]).expect("walled 3x3"),
+                TilePos { x: 1, y: 1 },
+            ),
+            (
+                "out of bounds",
+                TileMap::from_rows(9, &["."]).expect("1x1"),
+                TilePos { x: 0, y: 0 },
+            ),
+        ]
+    }
+
+    /// For all 12 ordered pairs of distinct directions, from `Walking`
+    /// and from `Jumping` with a stamp other than `now`, toward a walkable, a
+    /// blocked and an off-map neighbour, `Face(d)` keeps the tile, faces `d`,
+    /// idles and stamps `now`. Kills: Face == Step (moves onto the walkable
+    /// neighbour); action left unchanged; the stamp not set to `now`; turning
+    /// only when blocked; a fixed direction.
+    #[test]
+    fn face_toward_a_direction_not_faced_turns_in_place_and_idles_np_c1_1() {
+        let now = Millis(4_321);
+        for (class, map, start) in neighbour_class_maps() {
+            for facing in ALL_DIRS {
+                for d in ALL_DIRS {
+                    if facing == d {
+                        continue;
+                    }
+                    // Fixture check: the neighbour really is of the named class.
+                    let neighbour = start.step(d);
+                    match class {
+                        "walkable" => assert!(map.is_walkable(neighbour), "{class} {d:?}"),
+                        "blocked" => assert!(
+                            map.in_bounds(neighbour) && !map.is_walkable(neighbour),
+                            "{class} {d:?}"
+                        ),
+                        _ => assert!(!map.in_bounds(neighbour), "{class} {d:?}"),
+                    }
+                    for action in [ActionState::Walking, ActionState::Jumping] {
+                        let s = CharacterState {
+                            pos: start,
+                            facing,
+                            action,
+                            move_started_at: Millis(17),
+                        };
+                        let r = apply_move(&s, MoveInput::Face(d), &map, now);
+                        assert_eq!(
+                            r,
+                            CharacterState {
+                                pos: start,
+                                facing: d,
+                                action: ActionState::Idle,
+                                move_started_at: now,
+                            },
+                            "Face({d:?}) from facing {facing:?}, {action:?}, neighbour {class}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// For every direction, with the character already facing it, on an
+    /// open tile, a blocked tile and an edge tile, `Face(d)` returns exactly what
+    /// `Step(d)` returns — and that result is the step's by value (moved one tile
+    /// and `Walking` on the open tile; tile kept and `Idle` when blocked / at the
+    /// edge), so a pair of equally wrong arms cannot pass.
+    #[test]
+    fn face_toward_the_direction_already_faced_is_exactly_a_step_np_c1_2() {
+        let now = Millis(900);
+        for (class, map, start) in neighbour_class_maps() {
+            for d in ALL_DIRS {
+                for action in [
+                    ActionState::Idle,
+                    ActionState::Walking,
+                    ActionState::Jumping,
+                ] {
+                    let s = CharacterState {
+                        pos: start,
+                        facing: d,
+                        action,
+                        move_started_at: Millis(17),
+                    };
+                    let face = apply_move(&s, MoveInput::Face(d), &map, now);
+                    let step = apply_move(&s, MoveInput::Step(d), &map, now);
+                    assert_eq!(face, step, "Face({d:?}) vs Step({d:?}) on the {class} tile");
+                    let expected = if class == "walkable" {
+                        CharacterState {
+                            pos: start.step(d),
+                            facing: d,
+                            action: ActionState::Walking,
+                            move_started_at: now,
+                        }
+                    } else {
+                        CharacterState {
+                            pos: start,
+                            facing: d,
+                            action: ActionState::Idle,
+                            move_started_at: now,
+                        }
+                    };
+                    assert_eq!(
+                        face, expected,
+                        "Face({d:?}) on the {class} tile, from {action:?}"
+                    );
+                }
+            }
         }
     }
 

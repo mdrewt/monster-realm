@@ -350,6 +350,12 @@ fn json_move_input_into(out: &mut String, v: &MoveInput) {
             json_field_into(out, &mut first, stringify!(kind));
             json_str_into(out, stringify!(Jump));
         }
+        MoveInput::Face(direction) => {
+            json_field_into(out, &mut first, stringify!(kind));
+            json_str_into(out, stringify!(Face));
+            json_field_into(out, &mut first, stringify!(direction));
+            json_direction_into(out, direction);
+        }
     }
     out.push('}');
 }

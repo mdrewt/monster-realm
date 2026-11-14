@@ -72,7 +72,7 @@ place they meet:
 | Value | SDK binding shape | wasm/serde shape |
 |---|---|---|
 | `Direction` | `{ tag: 'East' }` | `'East'` |
-| `MoveInput` | `{ tag: 'Step', value: { tag: 'East' } }` · `{ tag: 'Jump' }` | `{ Step: 'East' }` · `'Jump'` |
+| `MoveInput` | `{ tag: 'Step', value: { tag: 'East' } }` · `{ tag: 'Jump' }` · `{ tag: 'Face', value: { tag: 'East' } }` | `{ Step: 'East' }` · `'Jump'` · `{ Face: 'East' }` |
 | `CharacterState` | flat columns `tileX, tileY, facing, action, moveStartedAtMs` | `{ pos: {x, y}, facing, action, move_started_at }` |
 | ids (`entity_id`, `seq`, `monster_id`) | `bigint` (u64) | stays `bigint`; never downcast |
 | `move_started_at` (`Millis`) | `bigint` (i64) | a whole **number**; a fraction is rejected at the boundary |

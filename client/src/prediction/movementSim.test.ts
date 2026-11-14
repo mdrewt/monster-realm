@@ -72,8 +72,9 @@ function stepPos(dir: WasmDirection, x: number, y: number): { x: number; y: numb
 function walkable(p: { x: number; y: number }): boolean {
   return p.x > 0; // west wall at x <= 0
 }
-// Mirrors game-core world.rs apply_move (:364-399): move_started_at stamped on EVERY
-// call; Step turns to face, moves if walkable else bumps Idle; Jump moves along facing.
+// Mirrors game-core world.rs apply_move: move_started_at stamped on EVERY call; Step
+// turns to face, moves if walkable else bumps Idle; Jump moves along facing. Face is
+// not modelled (the fake throws on one).
 const applyMove: ApplyMove = (state, input, now): WasmCharacterState => {
   const stamp = Math.floor(now);
   if (input === 'Jump') {
@@ -81,6 +82,7 @@ const applyMove: ApplyMove = (state, input, now): WasmCharacterState => {
     const pos = walkable(target) ? target : state.pos;
     return { ...state, pos, action: 'Jumping', move_started_at: stamp };
   }
+  if ('Face' in input) throw new Error('this fake does not model Face');
   const dir = input.Step;
   const target = stepPos(dir, state.pos.x, state.pos.y);
   if (walkable(target)) {
@@ -215,7 +217,7 @@ class ServerModel {
     const next = applyMove(before, input, now);
     const moved = next.pos.x !== before.pos.x || next.pos.y !== before.pos.y;
     this.acceptedDrains.push({
-      dir: input === 'Jump' ? 'Jump' : input.Step,
+      dir: input === 'Jump' ? 'Jump' : 'Face' in input ? input.Face : input.Step,
       atMs: now,
       moved,
     });
@@ -297,7 +299,7 @@ class ClientModel {
     this.#lastSentSeq = intent.seq;
     this.emissions.push({
       seq: intent.seq,
-      dir: input === 'Jump' ? 'Jump' : input.Step,
+      dir: input === 'Jump' ? 'Jump' : 'Face' in input ? input.Face : input.Step,
       atMs: at,
       source: this.#source,
       owedBefore: this.owed.count,

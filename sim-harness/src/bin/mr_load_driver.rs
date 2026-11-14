@@ -2136,12 +2136,14 @@ pub fn sats_direction(d: Direction) -> &'static str {
     }
 }
 
-/// SATS-JSON for a `MoveInput`: `{"step":{"east":[]}}` / `{"jump":[]}`.
+/// SATS-JSON for a `MoveInput`: `{"step":{"east":[]}}` / `{"jump":[]}` /
+/// `{"face":{"east":[]}}`.
 #[must_use]
 pub fn sats_move_input(input: MoveInput) -> String {
     match input {
         MoveInput::Step(d) => format!("{{\"step\":{{\"{}\":[]}}}}", sats_direction(d)),
         MoveInput::Jump => "{\"jump\":[]}".to_string(),
+        MoveInput::Face(d) => format!("{{\"face\":{{\"{}\":[]}}}}", sats_direction(d)),
     }
 }
 
@@ -6435,6 +6437,22 @@ mod tests {
             r#"{"step":{"south":[]}}"#
         );
         assert_eq!(sats_move_input(MoveInput::Jump), r#"{"jump":[]}"#);
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::East)),
+            r#"{"face":{"east":[]}}"#
+        );
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::West)),
+            r#"{"face":{"west":[]}}"#
+        );
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::North)),
+            r#"{"face":{"north":[]}}"#
+        );
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::South)),
+            r#"{"face":{"south":[]}}"#
+        );
     }
 
     /// the direction names are exact and distinct — a swapped pair would

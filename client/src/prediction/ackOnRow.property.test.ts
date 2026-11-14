@@ -31,9 +31,13 @@ const DELTA: Record<WasmDirection, { dx: number; dy: number }> = {
   East: { dx: 1, dy: 0 },
   West: { dx: -1, dy: 0 },
 };
-/** An open plane: every step moves, a jump moves along the facing. */
+/** An open plane: every step moves, a jump moves along the facing. A `Face` the character
+ *  does not face turns it in place (Idle); one it already faces is the step. */
 function moved(state: WasmCharacterState, input: WasmMoveInput, now: number): WasmCharacterState {
-  const facing = input === 'Jump' ? state.facing : input.Step;
+  if (input !== 'Jump' && 'Face' in input && state.facing !== input.Face) {
+    return { ...state, facing: input.Face, action: 'Idle', move_started_at: now };
+  }
+  const facing = input === 'Jump' ? state.facing : 'Face' in input ? input.Face : input.Step;
   const d = DELTA[facing];
   return {
     pos: { x: state.pos.x + d.dx, y: state.pos.y + d.dy },
@@ -289,6 +293,7 @@ type Command =
 const inputArb: fc.Arbitrary<WasmMoveInput> = fc.oneof(
   fc.constantFrom<WasmDirection>('North', 'South', 'East', 'West').map((d) => ({ Step: d })),
   fc.constant<WasmMoveInput>('Jump'),
+  fc.constantFrom<WasmDirection>('North', 'South', 'East', 'West').map((d) => ({ Face: d })),
 );
 const commandArb: fc.Arbitrary<Command> = fc.oneof(
   {

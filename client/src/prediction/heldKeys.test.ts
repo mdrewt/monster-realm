@@ -787,6 +787,7 @@ const applyMove: ApplyMove = (state, input, now): WasmCharacterState => {
     const pos = walkable(target) ? target : state.pos;
     return { ...state, pos, action: 'Jumping', move_started_at: stamp };
   }
+  if ('Face' in input) throw new Error('this fake does not model Face');
   const dir = input.Step;
   const target = fakeStep(dir, state.pos.x, state.pos.y);
   if (walkable(target)) {
