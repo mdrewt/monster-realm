@@ -83,6 +83,12 @@ const REJECTED_URIS: readonly string[] = [
   `ws://h${BACKSLASH}x/`,
   'ws://h/a?b/',
   'ftp://h/',
+  // A dot segment the URL parser would resolve away, so the SDK would dial another prefix.
+  'ws://h/stdb/../',
+  'ws://h/./',
+  'ws://h/a/%2e%2e/',
+  'ws://h/a/.%2E/',
+  'ws://h/%2e/',
 ];
 
 const REJECTED_DBS: readonly string[] = ['', '   ', 'a b', 'a/b', 'a.b', 'a?b', `caf${E_ACUTE}`];
@@ -225,6 +231,10 @@ describe('resolveConnectionConfig accepts a valid document exactly', () => {
     'wss://play.example/stdb/',
     'WSS://Play.Example/',
     `wss://play.example/a"b'c${BACKSLASH}d<e@f%g${E_ACUTE}/`,
+    // Dots inside a segment that is not exactly `.` or `..`.
+    'wss://play.example/a.b/',
+    'wss://play.example/.../',
+    'wss://play.example/.hidden/',
   ];
 
   it.each(ACCEPTED_URIS)('returns uri %j unchanged apart from the trim, in both builds', (uri) => {
@@ -250,6 +260,17 @@ describe('resolveConnectionConfig accepts a valid document exactly', () => {
   it.each([...TARGET_KINDS])('returns kind %s as given, in both builds', (kind) => {
     for (const isDev of [true, false]) {
       expect(resolveConnectionConfig(withField('kind', kind), isDev).kind).toBe(kind);
+    }
+  });
+
+  it('ignores an inherited kind: the build default is returned, never the inherited value', () => {
+    for (const isDev of [true, false]) {
+      const connection = Object.assign(Object.create({ kind: 'official' }) as object, GOOD);
+      expect(resolveConnectionConfig(withConnection(connection), isDev)).toStrictEqual({
+        uri: GOOD.uri,
+        db: GOOD.db,
+        kind: isDev ? 'test' : 'private',
+      });
     }
   });
 

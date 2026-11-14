@@ -134,6 +134,34 @@ describe('shell config import', () => {
   });
 });
 
+describe('shell config with a document only on Object.prototype', () => {
+  const VALID = { connection: { uri: 'wss://inherited.example/', db: 'inherited-realm' } };
+  const protoHost = Object.prototype as unknown as Record<string, unknown>;
+
+  it('a production import rejects as if no document were set, naming the page global', async () => {
+    vi.stubEnv('DEV', false);
+    protoHost[SHELL_CONFIG_GLOBAL] = VALID;
+    try {
+      vi.resetModules();
+      await expect(import('./config')).rejects.toThrow(/^shell document: __MR_SHELL_CONFIG__ /);
+    } finally {
+      delete protoHost[SHELL_CONFIG_GLOBAL];
+    }
+  });
+
+  it('a development import resolves the development target, not the inherited document', async () => {
+    protoHost[SHELL_CONFIG_GLOBAL] = VALID;
+    try {
+      const c = await loadConfig();
+      expect(c.URI).toBe('ws://127.0.0.1:3000');
+      expect(c.DB).toBe('monster-realm');
+      expect(c.TARGET_KIND).toBe('test');
+    } finally {
+      delete protoHost[SHELL_CONFIG_GLOBAL];
+    }
+  });
+});
+
 describe('shell config in a production build', () => {
   it('throws at import when the page has no shell document, naming the page global', async () => {
     vi.stubEnv('DEV', false);

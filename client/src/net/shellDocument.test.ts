@@ -137,8 +137,21 @@ const arbSegment = fc
     { maxLength: 5 },
   )
   .map((parts) => pathSafe(parts.join('')));
+/** True when a path holds a `.` or `..` segment (a dot also spelled `%2e`), splitting on `/` and
+ *  on the backslash the URL parser treats as `/`: the resolver refuses such a path. */
+function hasDotSegment(path: string): boolean {
+  return path
+    .split(BACKSLASH)
+    .join('/')
+    .split('/')
+    .some((seg) => {
+      const dots = seg.toLowerCase().split('%2e').join('.');
+      return dots === '.' || dots === '..';
+    });
+}
+
 const arbPath = fc.option(
-  arbSegment.map((s) => `/${s}${s === '' ? '' : '/'}`),
+  arbSegment.map((s) => `/${s}${s === '' ? '' : '/'}`).filter((p) => !hasDotSegment(p)),
   { nil: '' },
 );
 const arbPad = fc.constantFrom('', ' ', '  ', '\t', '\n ');

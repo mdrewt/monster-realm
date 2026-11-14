@@ -60,7 +60,23 @@ test.describe
           }),
         );
         const page = await ctx.newPage();
+        // Every WebSocket the page opens, by URL: the SDK dials `<uri>/v1/database/<db>/subscribe`.
+        const sockets: string[] = [];
+        page.on('websocket', (ws) => {
+          sockets.push(ws.url());
+        });
         await page.goto('/');
+
+        await expect
+          .poll(
+            () => sockets.some((u) => new URL(u).pathname.includes(`/v1/database/${ABSENT_DB}/`)),
+            { message: 'the client dials the routed database', timeout: 30_000 },
+          )
+          .toBe(true);
+        expect(
+          sockets.filter((u) => new URL(u).pathname.includes(`/v1/database/${SUITE_DB}/`)),
+          'the client never dials the suite database',
+        ).toEqual([]);
 
         await expect
           .poll(() => page.locator('#status').textContent(), {
@@ -84,10 +100,11 @@ test.describe
           'the page read the routed document',
         ).toEqual({ connection: { uri: SUITE_URI, db: ABSENT_DB, kind: 'test' } });
 
+        // Another spec's row may leave meanwhile, so the claim is "no identity that was not there".
         expect(
-          playerIdentities('absent: players after').length,
+          playerIdentities('absent: players after').filter((id) => !before.includes(id)),
           'no player joined the suite database',
-        ).toBe(before.length);
+        ).toEqual([]);
       } finally {
         await ctx.close();
       }

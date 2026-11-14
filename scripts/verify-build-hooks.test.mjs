@@ -86,7 +86,7 @@ const minimalBuild = () => ({
 });
 
 /** Write `files` (relative path -> text; `undefined` omits it) into a fresh dir, run the CLI on it
- *  and remove the dir. */
+ *  and remove the dir. An `env` key set to `undefined` is left out of the child's environment. */
 function runOn(files, env = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'verify-build-hooks-'));
   try {
@@ -96,8 +96,12 @@ function runOn(files, env = {}) {
       mkdirSync(path.dirname(full), { recursive: true });
       writeFileSync(full, text);
     }
+    const childEnv = { ...process.env, MR_PLAYTEST_DB: DB, ...env };
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete childEnv[key];
+    }
     const res = spawnSync(process.execPath, [SCRIPT, dir], {
-      env: { ...process.env, MR_PLAYTEST_DB: DB, ...env },
+      env: childEnv,
       encoding: 'utf8',
       timeout: 30_000,
     });
@@ -146,6 +150,15 @@ test('the CLI fails a shell-config.js that sets no readable document, naming the
       'globalThis.__MR_SHELL_CONFIG__={"connection":{"uri":"ws://127.0.0.1:3000","db":7}};',
     ],
     ['it never finishes', 'for (;;) {}'],
+    [
+      'it replaces JSON.stringify before setting a document',
+      `JSON.stringify = () => 'nope'; globalThis.__MR_SHELL_CONFIG__ = {"connection":{"uri":"ws://127.0.0.1:3000","db":"${DB}"}};`,
+    ],
+    ['it throws a value whose toString never returns', 'throw { toString() { for (;;) {} } };'],
+    [
+      'it throws a proxy whose prototype lookup never returns',
+      'throw new Proxy({}, { getPrototypeOf() { for (;;) {} } });',
+    ],
   ];
   for (const [what, text] of cases) {
     assertFails(
@@ -204,4 +217,63 @@ test('the CLI fails when MR_PLAYTEST_DB is blank or the development database, ev
 test('the CLI still fails a DEV hook in a bundle when the shell config beside it is valid', () => {
   const res = runOn({ ...minimalBuild(), 'assets/app.js': 'window.__game = function(){};' });
   assertFails(res, ['__game'], 'dev hook');
+});
+
+test('the CLI fails a DEV hook in a .js file at the root of the build', () => {
+  const res = runOn({ ...minimalBuild(), 'x.js': 'window.__game = function(){};' });
+  assertFails(res, ['__game'], 'root dev hook');
+});
+
+test('the CLI compares the shell config`s database to MR_PLAYTEST_DB exactly', () => {
+  for (const named of [`${DB}-old`, DB.slice(0, -1), DB.toUpperCase()]) {
+    const res = runOn({ ...minimalBuild(), 'shell-config.js': shellConfig(named) });
+    assertFails(res, [DB], `shell config names ${JSON.stringify(named)}`);
+  }
+});
+
+test('the CLI defaults MR_PLAYTEST_DB to monster-realm-playtest and trims a set value', () => {
+  const defaultBuild = {
+    ...minimalBuild(),
+    'shell-config.js': shellConfig('monster-realm-playtest'),
+  };
+  const unset = { MR_PLAYTEST_DB: undefined };
+  const passing = runOn(defaultBuild, unset);
+  assert.equal(passing.status, 0, `unset: exit 0 (stderr ${passing.stderr})`);
+  assert.ok(passing.stdout.startsWith('verify-build-hooks: OK'), passing.stdout);
+
+  assertFails(
+    runOn({ ...defaultBuild, 'shell-config.js': undefined }, unset),
+    ['shell-config.js'],
+    'unset, no shell config',
+  );
+
+  const padded = runOn(minimalBuild(), { MR_PLAYTEST_DB: `  ${DB}  ` });
+  assert.equal(padded.status, 0, `padded: exit 0 (stderr ${padded.stderr})`);
+  assert.ok(padded.stdout.startsWith('verify-build-hooks: OK'), padded.stdout);
+});
+
+test('the CLI requires index.html to load /shell-config.js with a real classic script tag', () => {
+  const page = (head) =>
+    `<!doctype html><html><body>${head}` +
+    '<script type="module" src="/assets/app.js"></script></body></html>';
+  const failing = [
+    ['the tag only inside a comment', '<!-- <script src="/shell-config.js"></script> -->'],
+    ['async', '<script async src="/shell-config.js"></script>'],
+    ['defer', '<script defer src="/shell-config.js"></script>'],
+    ['nomodule', '<script nomodule src="/shell-config.js"></script>'],
+    ['type="module"', '<script type="module" src="/shell-config.js"></script>'],
+    ['only a preload link', '<link rel="preload" href="/shell-config.js" as="script">'],
+  ];
+  for (const [what, head] of failing) {
+    assertFails(runOn({ ...minimalBuild(), 'index.html': page(head) }), ['index.html'], what);
+  }
+  const passing = [
+    ['two spaces after script', '<script  src="/shell-config.js"></script>'],
+    ['crossorigin', '<script crossorigin src="/shell-config.js"></script>'],
+  ];
+  for (const [what, head] of passing) {
+    const res = runOn({ ...minimalBuild(), 'index.html': page(head) });
+    assert.equal(res.status, 0, `${what}: exit 0 (stderr ${res.stderr})`);
+    assert.ok(res.stdout.startsWith('verify-build-hooks: OK'), `${what}: ${res.stdout}`);
+  }
 });

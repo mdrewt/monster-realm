@@ -79,9 +79,10 @@ describe('index.html shell contract', () => {
     }
     expect(shell.nextElementSibling, 'the two scripts are adjacent, shell config first').toBe(main);
     expect(shell.getAttribute('src')).toBe('/shell-config.js');
-    for (const attr of ['type', 'async', 'defer']) {
-      expect(shell.hasAttribute(attr), `the shell-config script carries no ${attr}`).toBe(false);
-    }
+    expect(
+      shell.getAttributeNames().sort(),
+      'the shell-config script carries src and vite-ignore and nothing else',
+    ).toEqual(['src', 'vite-ignore']);
     expect(main.getAttribute('type')).toBe('module');
     expect(main.getAttribute('src')).toBeTruthy();
   });
