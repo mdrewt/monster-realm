@@ -516,9 +516,11 @@ player immediately:
    start above the highest seq already sent.
 
 Held keys (`prediction/heldKeys.ts`) keep a most-recent-first stack of held
-directions. The frame loop re-issues the active direction only after it has been held
-150 ms and only when the predictor has no outstanding steps and no sent input is
-still owed. OS key-repeat is ignored. A zone warp (`switchZone` in `main.ts`) rebuilds
+directions. A press sends `Face` at once: a turn in place for a character that faces
+another way, a step for one that already faces the direction. The frame loop continues
+a hold with `Step` in the active direction only after it has been held 150 ms and only
+when the predictor has no outstanding steps and no sent input is still owed. OS
+key-repeat is ignored. A zone warp (`switchZone` in `main.ts`) rebuilds
 prediction state but keeps the held stack. The rebuilt predictor has forgotten an
 input that was on the wire at the warp, so `prediction/owedInputs.ts` counts sent
 inputs outside the predictor: each stays owed until the own row's `acked_seq` covers
