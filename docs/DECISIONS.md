@@ -1539,52 +1539,54 @@ renderer's; a linearly sampled LUT; adding another filter package without a new 
 client its shell document from a preload script: `contextBridge.exposeInMainWorld('__MR_SHELL_CONFIG__',
 document)` in a window with `contextIsolation: true` and `sandbox: true`. Measured on Electron 45.3.2, that
 makes `__MR_SHELL_CONFIG__` an own, read-only property of the page's global object before the page's first
-script and before its module script run, on every load, from `file://` and from a custom protocol; the
-page sees a frozen copy. The shell starts the bundled server as a child of Electron's main process and
-stops it when the app quits, and Steamworks calls stay in the main process. The evidence, the judge's
-scores and the measurements are in `docs/local-play.md`.
+script and before its module script run, on first load and after a reload, from `file://` and from a custom
+protocol; the page sees a frozen copy. Where the licence terms cover bundling, the shell starts the server
+as a child of Electron's main process and stops it when the app quits; otherwise it starts nothing and
+connects to a server the player installed. Steamworks calls stay in the main process. The evidence, the
+judge's scores and the measurements are in `docs/local-play.md`.
 
 **Why.** The shell must not fork the client, and the engine it renders in decides whether the e2e suite's
 coverage carries over. Electron ships Chromium, the only engine family the suite runs; Tauri renders in
 WKWebView on macOS and WebKitGTK on Linux and the Steam Deck. Early access is the Steam build: Electron has
 a documented route to the Steam overlay, Tauri's request for one is closed as not planned, and a launcher
 that opens the system browser has no window to draw it over. A judge scored the three from one dossier:
-Electron 50, the launcher 44, Tauri 43 of 65 weighted. Unweighted they are level; what Electron pays is
-size, a 151 MiB archive on Windows beside the 133 MB server.
+Electron 50, the launcher 44, Tauri 43 of 65 weighted. Unweighted the launcher leads by a point (27, 26,
+26); what Electron pays is size, a 151 MiB archive on Windows beside the 127 MiB server.
 
 **Rules out.** A system-webview shell (Tauri) while the e2e suite runs Chromium only; shipping the Steam
 build as a launcher plus the player's own browser; delivering the shell document in the desktop build by a
 fetch, by editing the bundle's `index.html`, or with context isolation off; Steamworks or Node APIs in the
 page. The choice stands on one thing nobody has measured: the Steam overlay drawing over an Electron window
-on Windows. The first desktop-shell slice proves that before anything else is built on the shell, and if
-the overlay cannot be made to draw, this entry is rewritten, not worked around.
+on Windows. That is proved before anything else is built on the shell, and if the overlay cannot be made to
+draw, this entry is rewritten, not worked around.
 
 ## Local-play budgets are measured medians with stated headroom, on one machine profile
 
-**Decision.** A single-player world and a friends server hold the budgets below, measured the way
-`docs/local-play.md` describes, with the server confined to the two threads of one core and 2 GiB.
+**Decision.** A single-player world and a friends server hold these budgets, measured the way
+`docs/local-play.md` describes, with the server confined to the two threads of one core and 2 GiB:
 
 | | Single-player world | Friends server |
 |---|---|---|
-| Memory (peak resident) | {{SP_MEM}} | {{FS_MEM}} |
-| Idle CPU | {{SP_CPU}} | {{FS_CPU}} |
-| Start-up to playable | {{SP_START}} | {{FS_START}} |
-| Disk growth | {{SP_DISK}} | {{FS_DISK}} |
+| Memory | 330 MiB (1.49 times the 220.8 median) | 330 MiB (1.52 times the 216.4 median) |
+| Idle CPU | 1.4 % of one thread (1.57 times the 0.89 median) | 1.0 % of one thread (1.54 times the 0.65 median) |
+| Start-up to playable | 800 ms (1.49 times the 538 median) | 800 ms (1.49 times the 538 median) |
+| Disk growth | 12 MiB per hour (1.46 times the 8.23 median) | 68 MiB per hour (1.51 times the 45.01 median) |
 
-Each is at most twice a median of three measured runs; the medians and the ratios are in the record. The
-single-player numbers come from one player: standing still for idle CPU, walking without pause for disk
-growth. The friends-server numbers come from a server with nobody connected (idle CPU) and from eight
-clients walking (memory, disk growth), which is a walking-only floor: battles and trades cost more, and
-those two numbers are re-set when they are measured. Work that changes what the server does per tick, per
-connection or at start-up re-measures and holds these.
+Memory is peak resident memory since the server started, world creation included. Idle CPU is one player
+standing still (single-player) and nobody connected (friends server). Start-up runs from the server process
+starting to the returning player's first frame with their character drawn, the shell's own start excluded.
+Disk growth is one player walking without pause, and eight clients walking. The friends-server memory and
+disk numbers are a walking-only floor, set again when battles and trades are measured. Work that changes
+what the server does per tick, per connection or at start-up re-measures and holds these.
 
 **Why.** The server runs on the player's machine beside the game, so its cost is the player's, and a
-budget nobody measured is either ignored or blocks the wrong change. The measured costs are small and
-steady (the three runs of a condition agree within a few percent), so a doubling is a change in what the
-server does, not noise. The one cost that never stops while someone is connected is the movement tick,
-which commits a transaction five times a second even when every player stands still.
+budget nobody measured is either ignored or blocks the wrong change. The measured costs are small and the
+three runs of a condition agree closely (the record gives the spread), so a budget near one and a half
+times the median catches a real change without tripping on noise. The cost that never stops while someone
+is connected is the movement tick, which commits a transaction five times a second even when every player
+stands still.
 
 **Rules out.** Raising a budget without re-measuring and rewriting the record; comparing a run on another
-machine, or without the constraints, to these numbers (clock and disk speed are not modelled; a run on real
-low-end hardware replaces the profile and the numbers together); reading the friends-server memory and
-disk numbers as a ceiling for play with battles and trades.
+machine, without the constraints, or in another condition to these numbers (clock and disk speed are not
+modelled; a run on real low-end hardware replaces the profile and the numbers together); reading the
+friends-server memory and disk numbers as a ceiling for play with battles and trades.
