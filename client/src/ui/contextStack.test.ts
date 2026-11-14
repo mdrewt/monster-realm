@@ -2758,7 +2758,7 @@ describe('the greet-then-shop pick over a battle (ctl-7d, CTL7D.5)', () => {
 // Every expected edge and policy row below is a HARD-CODED literal, never read from the module.
 
 describe('context stack: the one Social frame (ctl-8s, CTL8S.3)', () => {
-  it('CTL8S-3-SOCIAL-PANEL: socialPanel names the panel of each requested tab, challenges the pvp panel, rankings the leaderboard and trades, players and no tab the trade panel; SOCIAL_PANELS is the three panels in that order and SOCIAL_FRAME is `social`', () => {
+  it('CTL8S-3-SOCIAL-PANEL: socialPanel names the panel of each requested tab, challenges the pvp panel, rankings and players the leaderboard and trades and no tab the trade panel; SOCIAL_PANELS is the three panels in that order and SOCIAL_FRAME is `social`', () => {
     // WRONG IMPL KILLED: a crossed map (challenges to the leaderboard: P would open Rankings), a
     // `null` or `players` tab that names no panel (`undefined`: the open path would show nothing
     // and push no frame), a players tab sent to the pvp panel, a panel list missing one (a mirror
@@ -2774,7 +2774,9 @@ describe('context stack: the one Social frame (ctl-8s, CTL8S.3)', () => {
       ['trades', 'tradeView'],
       ['challenges', 'pvpView'],
       ['rankings', 'leaderboardView'],
-      ['players', 'tradeView'],
+      // ts-6b-10 (named intentional change): Players opens on the leaderboard panel directly.
+      // Was: ['players', 'tradeView'].
+      ['players', 'leaderboardView'],
       [null, 'tradeView'],
     ];
     let checked = 0;
@@ -2787,6 +2789,16 @@ describe('context stack: the one Social frame (ctl-8s, CTL8S.3)', () => {
       [...new Set(rows.map(([tab]) => socialPanel(tab)))].sort(),
       'every panel is reached by some tab',
     ).toEqual(['leaderboardView', 'pvpView', 'tradeView']);
+  });
+
+  it('socialPanel opens the Players tab on the leaderboard panel', () => {
+    // WRONG IMPL KILLED: today's players -> tradeView placeholder path; a fix that also moves
+    // trades or no tab off the trade panel, or sends challenges off the pvp panel.
+    expect(socialPanel('players')).toBe('leaderboardView');
+    expect(socialPanel('rankings')).toBe('leaderboardView');
+    expect(socialPanel('challenges')).toBe('pvpView');
+    expect(socialPanel('trades')).toBe('tradeView');
+    expect(socialPanel(null)).toBe('tradeView');
   });
 
   it('CTL8S-3-MIRROR-ONE-FRAME: mirrorEdges folds the trade, pvp and leaderboard overlays into ONE social frame at the first visible panel`s position, stamped over a battle like any frame; it never pushes a panel frame; a stack holding social raises no edge whichever panels are visible; with no panel visible social pops; SCREEN_POLICY.social drops on a battle and is not battle-safe, the panel rows unchanged; and reconcile closes a social frame when a battle, an outcome or a conversation arrives', () => {

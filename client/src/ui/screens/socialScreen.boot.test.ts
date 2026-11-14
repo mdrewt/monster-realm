@@ -524,9 +524,21 @@ const sheetShown = (): boolean => {
   const sheet = document.getElementById('social-sheet');
   return sheet !== null && !sheet.hidden;
 };
+// ts-6b-10 (named intentional change): the Yes / No prompt is the kit sheet root's confirm variant,
+// its rows container `#social-confirm` (the root's one rows element is renamed while it asks).
+// Was: a separate `#social-prompt` part, shown or hidden.
+const sheetRootEl = (): HTMLElement | null =>
+  document.querySelector<HTMLElement>('[data-context-sheet]');
 const promptShown = (): boolean => {
-  const prompt = document.getElementById('social-prompt');
-  return prompt !== null && !prompt.hidden;
+  const root = sheetRootEl();
+  const confirm = document.getElementById('social-confirm');
+  return (
+    root !== null &&
+    !root.hidden &&
+    root.dataset.sheetVariant === 'confirm' &&
+    confirm !== null &&
+    !confirm.hidden
+  );
 };
 
 interface NavRows {
@@ -548,25 +560,33 @@ function navRows(container: HTMLElement): NavRows {
   };
 }
 
-/** The sheet of an incoming challenge: Accept then Decline, the cursor on `active`. */
+/** The sheet of an incoming challenge: Accept, Decline then Back, the cursor on `active`.
+ *  ts-6b-10 (named intentional change): the kit sheet ends with a Back row. Was: Accept, Decline. */
 function expectAnswerSheet(label: string, active: 'accept' | 'decline'): void {
   expect(sheetShown(), `${label}: the sheet shows`).toBe(true);
-  expect(navRows(el('social-sheet')), `${label}: Accept, Decline, the cursor on ${active}`).toEqual(
-    {
-      keys: ['accept', 'decline'],
-      texts: [i18n.t('social.action.accept'), i18n.t('social.action.decline')],
-      activeByClass: [active],
-      activeByAria: [active],
-    },
-  );
+  expect(
+    navRows(el('social-sheet')),
+    `${label}: Accept, Decline, Back, the cursor on ${active}`,
+  ).toEqual({
+    keys: ['accept', 'decline', 'back'],
+    texts: [
+      i18n.t('social.action.accept'),
+      i18n.t('social.action.decline'),
+      i18n.t('kit.sheet.back'),
+    ],
+    activeByClass: [active],
+    activeByAria: [active],
+  });
 }
 
-/** The challenge Decline question, Yes then No, the cursor on `active`. */
+/** The challenge Decline question, Yes then No, the cursor on `active`. The question is the kit
+ *  sheet's heading (ts-6b-10, named intentional change; was `#social-prompt-text`). */
 function expectDeclineChallengePrompt(label: string, active: 'yes' | 'no'): void {
   expect(promptShown(), `${label}: the prompt shows`).toBe(true);
-  expect(el('social-prompt-text').textContent, `${label}: the question`).toBe(
-    i18n.t('social.confirm.declineChallenge'),
-  );
+  expect(
+    sheetRootEl()?.querySelector('.mr-sheet-title')?.textContent,
+    `${label}: the question`,
+  ).toBe(i18n.t('social.confirm.declineChallenge'));
   expect(navRows(el('social-confirm')), `${label}: Yes, No, the cursor on ${active}`).toEqual({
     keys: ['yes', 'no'],
     texts: [i18n.t('prompt.yes'), i18n.t('prompt.no')],
@@ -692,7 +712,15 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     expectAnswerSheet('Down', 'decline');
     press('Enter', 1230);
     expectDeclineChallengePrompt('A on Decline', 'no');
-    expectAnswerSheet('the sheet beneath the prompt', 'decline');
+    // ts-6b-10 (named intentional change): the prompt replaces the action rows in the one kit
+    // root (no sheet beneath it). Was: expectAnswerSheet('the sheet beneath the prompt', 'decline').
+    expect(
+      navRows(sheetRootEl() as HTMLElement).keys,
+      'the prompt is the root`s only rows: no Accept / Decline row beneath it',
+    ).toEqual(['yes', 'no']);
+    expect(sheetShown(), 'the list-variant #social-sheet is not shown under the prompt').toBe(
+      false,
+    );
     await flush();
     expect(H.calls, 'A on Decline only asks: nothing is sent').toEqual([]);
 
@@ -1098,10 +1126,16 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
         ['true', ''],
         ['true', ''],
       ]);
+      // ts-6b-10 (named intentional change): the chrome is the bar, then the ONE kit sheet root.
+      // Was: ['', 'social-sheet', 'social-prompt'].
       expect(
         [...chrome.children].map((c) => c.id),
-        `${tab}: the chrome is the bar, then the sheet, then the prompt`,
-      ).toEqual(['', 'social-sheet', 'social-prompt']);
+        `${tab}: the chrome is the bar, then the kit sheet root`,
+      ).toEqual(['', '']);
+      expect(
+        chrome.children[1]?.hasAttribute('data-context-sheet'),
+        `${tab}: the second child is the kit sheet root`,
+      ).toBe(true);
       // NAMED INTENTIONAL CHANGE (uif-9, UIF9.1): was "exactly one `.mr-tabbar` in the document".
       // That count is false by construction: boxView (#monsters-tabs), raisingView (#bag-tabs) and
       // frame.ts createFrame (`<id>-tabs`) each build their own TabBar, always in the DOM. The

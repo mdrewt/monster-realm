@@ -885,7 +885,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'social.tab.trades': 'Trades',
   'social.tab.challenges': 'Challenges',
   'social.tab.rankings': 'Rankings',
-  'social.players.placeholder': 'The player list is not available yet.',
+  // ts-6b-10 (named intentional change): `social.players.placeholder` is retired with the Players
+  // tab's placeholder path (Players opens on the leaderboard panel). Was: 'The player list is not
+  // available yet.'
   // ts-4.6: the sheet's three rows and its one question (no offer-based trade row is listed).
   'social.action.accept': 'Accept',
   'social.action.decline': 'Decline',
@@ -912,6 +914,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tradeSession.row.confirm': 'Confirm trade',
   'tradeSession.row.cancel': 'Cancel trade',
   'tradeSession.prompt.confirm': 'Confirm this trade? A completed trade cannot be undone.',
+  // ts-6b-10 (named intentional change): the confirm question for a side that offers a monster
+  // names the bond reset (R-21r-e-E1).
+  'tradeSession.prompt.confirmMonsters':
+    'Confirm this trade? A completed trade cannot be undone. Traded monsters lose their trust and quality time with you, even if traded back.',
   'tradeSession.prompt.cancel': 'Cancel this trade?',
   'tradeSession.notice.changed': 'The offer changed. Review it before you confirm.',
   'tradeSession.notice.closed': 'Trade closed.',
@@ -2375,6 +2381,7 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): 528 -> 545, +17 `a11y.*`
     // keys (16 overlay titles + the world region) moved in from ui/a11yCopy.ts.
+    // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
     expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-6b-9 roster is 545 keys').toHaveLength(545);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
@@ -2606,7 +2613,7 @@ const EXPECTED_FR_CTL8D_PLAIN: Record<string, string> = {
   'social.tab.trades': `${CAPITAL_E_ACUTE}changes`,
   'social.tab.challenges': `D${E_ACUTE}fis`,
   'social.tab.rankings': 'Classement',
-  'social.players.placeholder': `La liste des joueurs n${RIGHT_QUOTE}est pas encore disponible.`,
+  // ts-6b-10 (named intentional change): `social.players.placeholder` is retired (8 keys, was 9).
   'social.action.accept': 'Accepter',
   'social.action.decline': 'Refuser',
   'social.action.cancel': 'Annuler',
@@ -2614,7 +2621,7 @@ const EXPECTED_FR_CTL8D_PLAIN: Record<string, string> = {
 };
 
 describe('ctl-8d: catalog.fr.ts, the Social frame`s keys', () => {
-  it('ctl-8d FR-PINS: the 9 plain Social keys carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
+  it('ctl-8d FR-PINS: the 8 plain Social keys carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
     // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot); a French entry left
     // as the English copy, reworded, or swapped with a sibling (Accepter / Refuser); a straight
     // apostrophe (not U+2019) in the placeholder; a decomposed or missing accent; and a question
@@ -2630,8 +2637,9 @@ describe('ctl-8d: catalog.fr.ts, the Social frame`s keys', () => {
     }
     expect(
       Object.keys(EXPECTED_FR_CTL8D_PLAIN).length,
-      'ANTI-VACUITY: all 9 Social keys are pinned in French',
-    ).toBe(9);
+      // ts-6b-10 (named intentional change): -social.players.placeholder. Was: all 9, toBe(9).
+      'ANTI-VACUITY: all 8 Social keys are pinned in French',
+    ).toBe(8);
   });
 });
 
@@ -3529,6 +3537,7 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
     expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
     expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
   });
@@ -3653,6 +3662,7 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
     expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
     expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
   });
@@ -3971,6 +3981,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
     expect(Object.keys(en).length, 'the English catalog holds exactly 545 keys').toBe(545);
     expect(Object.keys(fr).length, 'and so does the French one').toBe(545);
     expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(545);
@@ -4658,6 +4669,7 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
     expect(Object.keys(en), 'the English roster is 545 keys (ts-6b-9 +17)').toHaveLength(545);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(545);
   });
@@ -4778,6 +4790,7 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
     // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
     // ts-6b-9 (named intentional change): 528 -> 545, +17 `a11y.*` keys.
+    // ts-6b-10 (named intentional change): -social.players.placeholder +tradeSession.prompt.confirmMonsters, 545 unchanged
     expect(Object.keys(en), 'the English roster is 545 keys').toHaveLength(545);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(545);
   });

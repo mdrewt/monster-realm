@@ -120,7 +120,12 @@ const TOAST = '#toast';
 // The English strings (ts-3 plan, i18n table).
 const NOTICE_CHANGED = 'The offer changed. Review it before you confirm.';
 const CLOSED = 'Trade closed.';
-const PROMPT_CONFIRM = 'Confirm this trade? A completed trade cannot be undone.';
+// ts-6b-10 (named intentional change, R-21r-e-E1): every confirm in this spec is by a seat whose
+// own side offers a monster (A offers monA, B offers monB before any confirm), so the question is
+// the monsters wording that names the trust and quality-time reset. Was: 'Confirm this trade? A
+// completed trade cannot be undone.' (the plain wording a side with no monster still sees).
+const PROMPT_CONFIRM =
+  'Confirm this trade? A completed trade cannot be undone. Traded monsters lose their trust and quality time with you, even if traded back.';
 const PROMPT_CANCEL = 'Cancel this trade?';
 const COINS_ROW = /^Coins: (\d+) of (\d+)$/;
 

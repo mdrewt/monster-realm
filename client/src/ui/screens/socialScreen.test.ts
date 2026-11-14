@@ -13,8 +13,10 @@
 // Where the cursor and the sheet are is read off `state.nav` / `state.phase` (the plan's
 // `SocialScreenState`), matched as a subset (the state may carry fields the contract does not
 // name). What the frame shows is read off the calls one `paint` makes on a recording
-// `SocialFrameView`: `show(panel)`, then `trades.paintSocial(chrome, p)`, then
-// `challenges.paintCursor(row)`.
+// `SocialFrameView`: `show(panel)`, then `challenges.paintCursor(row)`, then
+// `trades.paintSocial(chrome, p)`.
+// ts-6b-10 (named intentional change): paintCursor now precedes paintSocial (the kit sheet places
+// itself against the marked row). Was: show, paintSocial, paintCursor.
 //
 // The fixture world (the viewer 'aa…', Bob 'bb…', Carol 'cc…'):
 //   session 11      between Bob and the viewer: `waiting` (Bob opened it, untouched: a waiting
@@ -35,8 +37,8 @@
 //   prompt   a fresh Up/Down flips Yes/No; A on Yes issues the command; A on No, or B, closes it.
 //   settle   the SAME state when nothing changed; a sheet whose row is gone or whose legal actions
 //            changed closes to the list; a press whose phase the settle just changed only paints.
-//   paint    follows the state (never `vm.requested`): show the tab's panel first, then the strip
-//            and the sheet through `trades.paintSocial`, then the challenge cursor.
+//   paint    follows the state (never `vm.requested`): show the tab's panel first, then the
+//            challenge cursor, then the strip and the sheet through `trades.paintSocial`.
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
 import type { VButton } from '../../input/buttons';
@@ -220,7 +222,7 @@ const LIST = { kind: 'list' } as const;
 const sheet = (
   row: string,
   actions: readonly SocialAction[],
-  action: SocialAction,
+  action: SocialAction | 'back',
   confirm: { readonly yes: boolean } | null = null,
 ) => ({ kind: 'sheet' as const, row, actions, action, confirm });
 
@@ -303,9 +305,9 @@ function paintOf(w: World, state: SocialScreenState): Painted {
   const calls = paintCalls(vmOf(w), state);
   expect(
     calls.map((c) => c.call),
-    'show first, then paintSocial, then paintCursor, once each',
-  ).toEqual(['show', 'paintSocial', 'paintCursor']);
-  const [shown, social, cursor] = calls as [ShowCall, SocialCall, CursorCall];
+    'show first, then paintCursor, then paintSocial, once each',
+  ).toEqual(['show', 'paintCursor', 'paintSocial']);
+  const [shown, cursor, social] = calls as [ShowCall, CursorCall, SocialCall];
   expect(social.chrome, 'paintSocial paints into the frame`s chrome').toBe(CHROME);
   return { panel: shown.panel, paint: social.paint, cursor: cursor.row };
 }
@@ -632,15 +634,29 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
     const a = press(w, opened, 'A');
     expect(a.result, 'A opens the request`s sheet').toBe('consumed');
     expect(a.state.phase).toMatchObject(sheet(INCOMING, REQUEST, 'accept'));
+    // ts-6b-10 (named intentional change): the sheet's rows end with Back, so the walk is
+    // accept, decline, back and the wrap and the clamp happen at Back. Was: a fresh Down on
+    // Decline wrapped to Accept, a held Down on Decline stayed, a fresh Up on Accept wrapped to
+    // Decline.
     const onDecline = swallowed(w, a.state, ['Down']);
     expect(onDecline.phase, 'Down').toMatchObject(sheet(INCOMING, REQUEST, 'decline'));
-    expect(swallowed(w, onDecline, ['Down']).phase, 'a fresh Down wraps').toMatchObject(
+    const onBack = swallowed(w, onDecline, ['Down']);
+    expect(onBack.phase, 'Down from Decline reaches Back').toMatchObject(
+      sheet(INCOMING, REQUEST, 'back'),
+    );
+    expect(swallowed(w, onBack, ['Down']).phase, 'a fresh Down wraps from Back').toMatchObject(
       sheet(INCOMING, REQUEST, 'accept'),
     );
-    expect(swallowed(w, onDecline, [rep('Down')]).phase, 'a held Down stays').toMatchObject(
-      sheet(INCOMING, REQUEST, 'decline'),
+    expect(swallowed(w, onBack, [rep('Down')]).phase, 'a held Down stays on Back').toMatchObject(
+      sheet(INCOMING, REQUEST, 'back'),
     );
-    expect(swallowed(w, a.state, ['Up']).phase, 'a fresh Up wraps').toMatchObject(
+    expect(swallowed(w, onDecline, [rep('Down')]).phase, 'a held Down reaches Back').toMatchObject(
+      sheet(INCOMING, REQUEST, 'back'),
+    );
+    expect(swallowed(w, a.state, ['Up']).phase, 'a fresh Up wraps to Back').toMatchObject(
+      sheet(INCOMING, REQUEST, 'back'),
+    );
+    expect(swallowed(w, onBack, ['Up']).phase, 'Up from Back').toMatchObject(
       sheet(INCOMING, REQUEST, 'decline'),
     );
     expect(swallowed(w, a.state, [rep('Up')]).phase, 'a held Up stays').toMatchObject(
@@ -656,11 +672,30 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
     const ao = press(w, onOutgoing, 'A');
     expect(ao.result, 'A opens the outgoing row`s sheet').toBe('consumed');
     expect(ao.state.phase).toMatchObject(sheet(OUTGOING, ['cancel'], 'cancel'));
-    for (const input of ['Down', 'Up', rep('Down'), rep('Up')] as const) {
-      expect(swallowed(w, ao.state, [input]).phase, `${label(input)}: one action`).toMatchObject(
-        sheet(OUTGOING, ['cancel'], 'cancel'),
-      );
-    }
+    // ts-6b-10 (named intentional change): Cancel is followed by the Back row. Was: Down / Up
+    // (fresh or held) all stayed on Cancel, "one action".
+    const cancelOnBack = swallowed(w, ao.state, ['Down']);
+    expect(cancelOnBack.phase, 'Down reaches Back').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'back'),
+    );
+    expect(swallowed(w, ao.state, ['Up']).phase, 'a fresh Up wraps to Back').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'back'),
+    );
+    expect(swallowed(w, ao.state, [rep('Down')]).phase, 'a held Down reaches Back').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'back'),
+    );
+    expect(swallowed(w, ao.state, [rep('Up')]).phase, 'a held Up stays on Cancel').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'cancel'),
+    );
+    expect(swallowed(w, cancelOnBack, ['Up']).phase, 'Up from Back').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'cancel'),
+    );
+    expect(swallowed(w, cancelOnBack, ['Down']).phase, 'a fresh Down wraps').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'cancel'),
+    );
+    expect(swallowed(w, cancelOnBack, [rep('Down')]).phase, 'a held Down stays').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'back'),
+    );
     const backFromOutgoing = press(w, ao.state, 'B');
     expect(backFromOutgoing.state.phase).toMatchObject(LIST);
     expect(cursorOf(backFromOutgoing.state)).toEqual({ tab: 'challenges', item: OUTGOING });
@@ -697,9 +732,11 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
         reach: ['A', 'Down'],
       },
       {
-        name: 'challenge Decline by a wrapping Up, the request alone',
+        // ts-6b-10 (named intentional change): a wrapping Up from Accept now lands on Back, so
+        // Decline is one more Up. Was: reach ['A', 'Up'] (the wrap landed on Decline).
+        name: 'challenge Decline by a wrapping Up through Back, the request alone',
         w: world({ tab: 'challenges', sessions: [session('opened')], challenges: [incoming()] }),
-        reach: ['A', 'Up'],
+        reach: ['A', 'Up', 'Up'],
       },
     ];
     for (const c of CASES) {
@@ -781,6 +818,81 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
       expect(step.result, `${name}: A issues the command`).toEqual(command);
       expect(step.state.phase, `${name}: no prompt, back on the list`).toMatchObject(LIST);
     }
+  });
+
+  it('the Social row sheet ends with a Back row whose A closes the sheet and sends nothing', () => {
+    // WRONG IMPL KILLED: today's sheet with no Back row (Down from Decline wraps to Accept, Up from
+    // Accept to Decline); a Back that is painted but not reachable by Up / Down; a `sheet.actions`
+    // that carries 'back' (the view appends the row; screens/index.test.ts pins the legal-only
+    // shape); an A on Back that sends the neighbour's command (Decline, Cancel) or opens the
+    // Decline prompt; an A on Back that leaves the sheet open or moves the cursor off the row; a
+    // held A on Back that closes it; a settle that sees the Back row as a changed action list
+    // (observe must answer the SAME state); a Decline that stopped asking Yes / No on No.
+    const w = world({ tab: 'challenges', challenges: [incoming(), outgoing()] });
+    const onAccept = swallowed(w, open(w), ['A']);
+    expect(onAccept.phase, 'fixture: the sheet on Accept').toMatchObject(
+      sheet(INCOMING, REQUEST, 'accept'),
+    );
+
+    // Up from Accept (fresh wrap) and Down, Down both reach Back; the legal actions stay as they were.
+    const byUp = swallowed(w, onAccept, ['Up']);
+    const byDown = swallowed(w, onAccept, ['Down', 'Down']);
+    for (const [how, s] of [
+      ['Up', byUp],
+      ['Down, Down', byDown],
+    ] as const) {
+      expect(s.phase, `${how} reaches Back`).toMatchObject(sheet(INCOMING, REQUEST, 'back'));
+      if (s.phase.kind !== 'sheet') throw new Error('fixture: a sheet phase');
+      expect(s.phase.actions, `${how}: the phase keeps the legal actions only`).toEqual(REQUEST);
+      expect(observe(w, s), `${how}: observe on Back answers the same state`).toBe(s);
+    }
+
+    // The paint hands the legal actions only, with Back active; the view appends the row.
+    const painted = paintOf(w, byDown);
+    expect(painted.paint.sheet, 'paint on Back').toEqual({ actions: REQUEST, active: 'back' });
+    expect(painted.paint.confirm, 'no prompt on Back').toBeNull();
+    expect(painted.cursor, 'the challenge cursor is still the incoming row').toBe('incoming');
+
+    // A on Back: nothing sent, the list, the cursor on that row.
+    const closed = press(w, byDown, 'A');
+    expect(closed.result, 'A on Back sends nothing').toBe('consumed');
+    expect(closed.state.phase, 'A on Back closes the sheet').toMatchObject(LIST);
+    expect(cursorOf(closed.state), 'back on the list, on that row').toEqual({
+      tab: 'challenges',
+      item: INCOMING,
+    });
+    expect(
+      swallowed(w, closed.state, ['A']).phase,
+      'the sheet opens again on the first action',
+    ).toMatchObject(sheet(INCOMING, REQUEST, 'accept'));
+
+    // A held A on Back does nothing: the sheet stays on Back.
+    const held = press(w, byDown, rep('A'));
+    expect(held.result, 'a held A on Back').toBe('consumed');
+    expect(held.state.phase, 'a held A leaves the sheet on Back').toMatchObject(
+      sheet(INCOMING, REQUEST, 'back'),
+    );
+
+    // The outgoing row's sheet (Cancel, Back): A on Back is not the Cancel command.
+    const onCancel = swallowed(w, open(w), ['Down', 'A']);
+    const cancelBack = swallowed(w, onCancel, ['Down']);
+    expect(cancelBack.phase, 'fixture: Back under Cancel').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'back'),
+    );
+    const closedCancel = press(w, cancelBack, 'A');
+    expect(closedCancel.result, 'A on the outgoing Back sends nothing').toBe('consumed');
+    expect(closedCancel.state.phase).toMatchObject(LIST);
+    expect(cursorOf(closedCancel.state)).toEqual({ tab: 'challenges', item: OUTGOING });
+    expect(press(w, onCancel, 'A').result, 'ANTI-VACUITY: A on Cancel still cancels').toEqual(
+      CANCEL_22,
+    );
+
+    // Decline still asks Yes / No on No (Back follows it, it does not replace it).
+    const asked = swallowed(w, onAccept, ['Down', 'A']);
+    expect(asked.phase, 'Decline asks').toMatchObject(
+      sheet(INCOMING, REQUEST, 'decline', { yes: false }),
+    );
+    expect(press(w, swallowed(w, asked, ['Down']), 'A').result, 'Yes declines').toEqual(DECLINE_21);
   });
 
   it('CTL8D-2-COMMANDS: the commands carry their exact ids (the session row`s openTradeEditor on 11, challenge Accept / Decline on 21, Cancel on 22) and each returns to the list; A, A on a waiting challenge accepts it and A on a waiting session opens its editor; B in the list pops, Start pops to the base in the list, the sheet and the prompt, and Select toggles help', () => {
@@ -1125,12 +1237,12 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
       const s = open(w);
       expect(s.nav.tab, `${tab}: fixture`).toBe(tab);
       const calls = paintCalls(vmOf(w), s);
-      expect(calls, `${tab}: the panel, then the strip, then the challenge cursor`).toEqual([
+      expect(calls, `${tab}: the panel, then the challenge cursor, then the strip`).toEqual([
         { call: 'show', panel: PANEL[tab] },
-        { call: 'paintSocial', chrome: CHROME, paint },
         { call: 'paintCursor', row: cursor },
+        { call: 'paintSocial', chrome: CHROME, paint },
       ]);
-      expect((calls[1] as SocialCall).chrome, `${tab}: the very chrome`).toBe(CHROME);
+      expect((calls[2] as SocialCall).chrome, `${tab}: the very chrome`).toBe(CHROME);
     }
 
     // The outgoing row under the cursor; a Trades tab with no session holds no session cursor.
@@ -1207,8 +1319,8 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
           `${tab} ${JSON.stringify(parts)}: only the views that exist`,
         ).toEqual([
           'show',
-          ...(parts.trades ? ['paintSocial'] : []),
           ...(parts.challenges ? ['paintCursor'] : []),
+          ...(parts.trades ? ['paintSocial'] : []),
         ]);
         missing += 1;
       }
@@ -1334,8 +1446,10 @@ function rankingsPaintOf(w: World, state: SocialScreenState): SocialRankingsPain
   const log = paintLog(vmOf(w), state);
   expect(
     log.map((c) => c.call),
-    'show first, then the strip, the challenge cursor and the Rankings view, once each',
-  ).toEqual(['show', 'paintSocial', 'paintCursor', 'rankings']);
+    // ts-6b-10 (named intentional change): the cursor paint precedes the strip. Was: show,
+    // paintSocial, paintCursor, rankings.
+    'show first, then the challenge cursor, the strip and the Rankings view, once each',
+  ).toEqual(['show', 'paintCursor', 'paintSocial', 'rankings']);
   expect(log[0], 'the leaderboard root is the panel').toEqual({
     call: 'show',
     panel: 'leaderboardView',
@@ -1678,17 +1792,20 @@ describe('socialScreen — paint over the leaderboard root (ctl-8g)', () => {
     const log = paintLog(vmOf(w), s);
     expect(
       log.map((c) => c.call),
-      'show, the strip, the challenge cursor, then the Rankings view',
-    ).toEqual(['show', 'paintSocial', 'paintCursor', 'rankings']);
+      'show, the challenge cursor, the strip, then the Rankings view',
+      // ts-6b-10 (named intentional change): the cursor paint precedes the strip; Players shows
+      // the leaderboard root through socialPanel itself. Was: show, paintSocial, paintCursor,
+      // rankings (with a players override in the screen).
+    ).toEqual(['show', 'paintCursor', 'paintSocial', 'rankings']);
     expect(log[0], 'the leaderboard root, first').toEqual({
       call: 'show',
       panel: 'leaderboardView',
     });
-    expect((log[1] as SocialCall).chrome, 'the very chrome').toBe(CHROME);
-    expect((log[1] as SocialCall).paint, 'the strip on the Players tab').toEqual(
+    expect((log[2] as SocialCall).chrome, 'the very chrome').toBe(CHROME);
+    expect((log[2] as SocialCall).paint, 'the strip on the Players tab').toEqual(
       listPaint('players'),
     );
-    expect((log[2] as CursorCall).row, 'no challenge cursor on Players').toBeNull();
+    expect((log[1] as CursorCall).row, 'no challenge cursor on Players').toBeNull();
     const first = (log[3] as RankingsCall).paint;
     expect(first.tab).toBe('players');
     expect(first.players, 'the listed players, in name order').toMatchObject([
@@ -1743,8 +1860,8 @@ describe('socialScreen — paint over the leaderboard root (ctl-8g)', () => {
     const missing = paintLog(vmOf(w), s, { rankings: false });
     expect(
       missing.map((c) => c.call),
-      'no Rankings view: show, the strip, the challenge cursor',
-    ).toEqual(['show', 'paintSocial', 'paintCursor']);
+      'no Rankings view: show, the challenge cursor, the strip',
+    ).toEqual(['show', 'paintCursor', 'paintSocial']);
     expect(missing[0]).toEqual({ call: 'show', panel: 'leaderboardView' });
   });
 

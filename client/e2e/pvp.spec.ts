@@ -312,17 +312,26 @@ test.describe
         'true',
       );
 
-      // A: the sheet, Accept then Decline, the cursor on Accept.
+      // A: the sheet, Accept, Decline then Back, the cursor on Accept.
+      // ts-6b-10 (named intentional change): the sheet is the kit ContextSheet and ends with a Back
+      // row. Was: ['Accept', 'Decline'].
       await pageB.keyboard.press('Enter');
-      await expect(pageB.locator('#social-sheet [data-nav-key]')).toHaveText(['Accept', 'Decline']);
+      await expect(pageB.locator('#social-sheet [data-nav-key]')).toHaveText([
+        'Accept',
+        'Decline',
+        'Back',
+      ]);
       await expect(pageB.locator('#social-sheet [aria-selected="true"]')).toHaveText('Accept');
 
       // Down, A on Decline: the question, No selected; nothing is answered yet.
       await pageB.keyboard.press('ArrowDown');
       await expect(pageB.locator('#social-sheet [aria-selected="true"]')).toHaveText('Decline');
       await pageB.keyboard.press('Enter');
-      await expect(pageB.locator('#social-prompt-text')).toBeVisible();
-      await expect(pageB.locator('#social-prompt-text')).toHaveText('Decline this challenge?');
+      // ts-6b-10 (named intentional change): the question is the sheet's heading (the same kit
+      // root in its confirm variant). Was: `#social-prompt-text`.
+      const sheetHeading = pageB.locator('[data-context-sheet] .mr-sheet-title');
+      await expect(sheetHeading).toBeVisible();
+      await expect(sheetHeading).toHaveText('Decline this challenge?');
       await expect(pageB.locator('#social-confirm [aria-selected="true"]')).toHaveText('No');
       await expect(pageB.locator('[data-testid="pvp-incoming-label"]')).toBeVisible();
 
