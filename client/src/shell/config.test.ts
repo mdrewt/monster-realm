@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 // shell/config — the session constants resolved once at module scope. Each test imports the
-// module fresh (after resetModules) so the values are the ones its own import computed.
+// module fresh (after resetModules) so the values are the ones its own import computed. The
+// connection target comes from the page global the shell document sets; a test that sets it
+// deletes it again in afterEach, so every other test sees no document.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deletion_grace_ms_default,
@@ -9,15 +11,27 @@ import {
   party_slot_none,
   step_ms,
 } from '../../../client-wasm/pkg/client_wasm.js';
-import { resolveConnectionConfig } from '../net/connectionConfig';
 import { resolveDevLogLevel } from '../net/devLog';
+import { SHELL_CONFIG_GLOBAL } from '../net/shellDocument';
 
 const loadConfig = async () => {
   vi.resetModules();
   return import('./config');
 };
 
+/** Put `doc` on the page global the way `/shell-config.js` does. */
+const setShellDocument = (doc: unknown): void => {
+  (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL] = doc;
+};
+
+/** Build-time env values that differ from every document below, so reading them shows. */
+const stubBuildEnv = (): void => {
+  vi.stubEnv('VITE_STDB_URI', 'ws://env-host.example:9999');
+  vi.stubEnv('VITE_STDB_DB', 'env-realm');
+};
+
 afterEach(() => {
+  delete (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL];
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.resetModules();
@@ -34,17 +48,27 @@ describe('shell config constants', () => {
     expect(c.DELETION_GRACE_MS_DEFAULT).toBe(deletion_grace_ms_default());
   });
 
-  it('resolves URI and DB from the run env through resolveConnectionConfig', async () => {
-    const c = await loadConfig();
-    const expected = resolveConnectionConfig(
-      {
-        uri: import.meta.env.VITE_STDB_URI as string | undefined,
-        db: import.meta.env.VITE_STDB_DB as string | undefined,
+  it('takes URI, DB and TARGET_KIND from the page`s shell document, trimmed and otherwise unchanged, whatever the build env holds', async () => {
+    stubBuildEnv();
+    setShellDocument({
+      connection: {
+        uri: '  WSS://Doc-Host.Example:4443/Stdb/ ',
+        db: '\tDoc_Realm-7  ',
+        kind: 'local',
       },
-      import.meta.env.DEV,
-    );
-    expect(c.URI).toBe(expected.uri);
-    expect(c.DB).toBe(expected.db);
+    });
+    const c = await loadConfig();
+    expect(c.URI).toBe('WSS://Doc-Host.Example:4443/Stdb/');
+    expect(c.DB).toBe('Doc_Realm-7');
+    expect(c.TARGET_KIND).toBe('local');
+  });
+
+  it('resolves the development target when the page has no shell document, whatever the build env holds', async () => {
+    stubBuildEnv();
+    const c = await loadConfig();
+    expect(c.URI).toBe('ws://127.0.0.1:3000');
+    expect(c.DB).toBe('monster-realm');
+    expect(c.TARGET_KIND).toBe('test');
   });
 
   it('resolves DEV_LOG_LEVEL from the run env through resolveDevLogLevel', async () => {
@@ -111,17 +135,33 @@ describe('shell config import', () => {
 });
 
 describe('shell config in a production build', () => {
-  it.each(['', 'monster-realm'])('throws at import when VITE_STDB_DB is %j', async (db) => {
+  it('throws at import when the page has no shell document, naming the page global', async () => {
     vi.stubEnv('DEV', false);
-    vi.stubEnv('VITE_STDB_DB', db);
+    stubBuildEnv();
     vi.resetModules();
-    await expect(import('./config')).rejects.toThrow(/refuses the dev-default database/);
+    await expect(import('./config')).rejects.toThrow(/^shell document: __MR_SHELL_CONFIG__ /);
   });
 
-  it('imports and exposes the configured database when it is not the dev default', async () => {
+  it.each([
+    'monster-realm',
+    'Monster-REALM',
+  ])('throws at import when the shell document names the dev database as %j, naming connection.db', async (db) => {
     vi.stubEnv('DEV', false);
-    vi.stubEnv('VITE_STDB_DB', 'monster-realm-playtest');
+    stubBuildEnv();
+    setShellDocument({ connection: { uri: 'wss://play.example/', db } });
+    vi.resetModules();
+    await expect(import('./config')).rejects.toThrow(/^shell document: connection\.db /);
+  });
+
+  it('imports and exposes the shell document`s target, private when it names no kind', async () => {
+    vi.stubEnv('DEV', false);
+    stubBuildEnv();
+    setShellDocument({
+      connection: { uri: 'wss://play.example/stdb/', db: 'monster-realm-playtest' },
+    });
     const c = await loadConfig();
+    expect(c.URI).toBe('wss://play.example/stdb/');
     expect(c.DB).toBe('monster-realm-playtest');
+    expect(c.TARGET_KIND).toBe('private');
   });
 });
