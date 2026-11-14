@@ -71,15 +71,15 @@ describe('convert: faithful round-trips (handles tagged unions + bigint)', () =>
   });
 });
 
-// np-c1.8: the third MoveInput variant, `Face(dir)`, crosses the marshaling boundary
-// in both directions as itself — never as a `Step`.
+// The MoveInput variant `Face(dir)` crosses the marshaling boundary in both
+// directions as itself — never as a `Step`.
 const sdkMoveInputArb: fc.Arbitrary<SdkMoveInput> = fc.oneof(
   fc.constant<SdkMoveInput>({ tag: 'Jump' }),
   dirArb.map((d): SdkMoveInput => ({ tag: 'Step', value: { tag: d } })),
   dirArb.map((d): SdkMoveInput => ({ tag: 'Face', value: { tag: d } })),
 );
 
-describe('convert: MoveInput Face (np-c1)', () => {
+describe('convert: MoveInput Face', () => {
   it('Face maps SDK -> wasm and wasm -> SDK as Face for every direction, never as Step [np-c1.8]', () => {
     for (const d of DIRS) {
       const wasm = moveInputToWasm({ tag: 'Face', value: { tag: d } });
@@ -87,22 +87,11 @@ describe('convert: MoveInput Face (np-c1)', () => {
       const sdk = moveInputToSdk({ Face: d });
       expect(sdk, `wasm Face ${d} -> SDK`).toEqual({ tag: 'Face', value: { tag: d } });
     }
-    // Step and Jump still map as they always have.
+    // Step and Jump map beside Face.
     expect(moveInputToWasm({ tag: 'Step', value: { tag: 'West' } })).toEqual({ Step: 'West' });
     expect(moveInputToSdk({ Step: 'West' })).toEqual({ tag: 'Step', value: { tag: 'West' } });
     expect(moveInputToWasm({ tag: 'Jump' })).toBe('Jump');
     expect(moveInputToSdk('Jump')).toEqual({ tag: 'Jump' });
-  });
-
-  it('every MoveInput round-trips wasm -> SDK -> wasm, Face beside Step and Jump [np-c1.8]', () => {
-    fc.assert(
-      fc.property(moveInputArb, (m) => {
-        expect(moveInputToWasm(moveInputToSdk(m))).toEqual(m);
-      }),
-    );
-    for (const d of DIRS) {
-      expect(moveInputToWasm(moveInputToSdk({ Face: d })), `Face ${d}`).toEqual({ Face: d });
-    }
   });
 
   it('every MoveInput round-trips SDK -> wasm -> SDK, Face beside Step and Jump [np-c1.8]', () => {

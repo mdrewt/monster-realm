@@ -1203,7 +1203,7 @@ mod m14f_tests {
                 match intent.input {
                     MoveInput::Step(_) => saw_step = true,
                     MoveInput::Jump => saw_jump = true,
-                    // random_scenario emits no Face; np-c1 does not change that.
+                    // random_scenario emits no Face.
                     MoveInput::Face(_) => {}
                 }
             }

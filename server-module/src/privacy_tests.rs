@@ -1849,10 +1849,10 @@ fn m22s4_serializer_per_table_shape() {
     }
 }
 
-/// np-c1.6: a character whose published queue holds a `Face` of every
-/// direction, beside a `Step` and a `Jump`, exports each `Face` as the tagged
-/// two-field object `{"kind":"Face","direction":"<Dir>"}` — the shape `Step`
-/// has — with the `Step` and `Jump` encodings unchanged beside them.
+/// A character whose published queue holds a `Face` of every direction,
+/// beside a `Step` and a `Jump`, exports each `Face` as the tagged two-field
+/// object `{"kind":"Face","direction":"<Dir>"}` — the shape `Step` has — with
+/// the `Step` and `Jump` encodings beside them.
 ///
 /// kills: the Face arm emitting kind `Step` / a missing or mis-cased direction
 /// / a fixed direction.
@@ -1905,7 +1905,7 @@ fn data_export_encodes_a_queued_face_as_a_tagged_face_with_its_direction_np_c1_6
             ),
             ("acked_seq", m22s4_quoted_num(9)),
         ]),
-        "np-c1.6: each queued Face exports as kind Face with its own direction"
+        "each queued Face exports as kind Face with its own direction"
     );
     assert!(m22s4_json_is_wellformed(&out), "well-formed JSON: {out:?}");
 }

@@ -610,11 +610,9 @@ earlier ones are still in flight; resuming a held walk after a frame closes.
 result; the two share one match arm. `Face` travels on the existing `enqueue_move` and
 `set_move` reducers and drains like any other input, so a turn takes one movement slot
 (`STEP_MS`) on the server and in the predictor's replay, and it passes the same battle
-locks, deletion gate and sequence guard. The variant is appended after `Jump`;
-`client/src/convert/convert.ts` marshals it with one case per variant and no fallback.
-The flat-code helper `apply_move_coded` carries only `Step` and `Jump`: `Face` crosses
-the wasm boundary on the serde path, which `client/src/prediction/predictor.test.ts`
-checks against the built package.
+locks, deletion gate and sequence guard. The variant is appended after `Jump`. The
+flat-code helper `apply_move_coded` carries only `Step` and `Jump`; `Face` crosses the
+wasm boundary on the serde path.
 
 **Why.** The operator ruled that a player faces a direction before moving in it
 (feedback item pt3-2026-10-165), and interaction targets the faced tile, so facing
@@ -627,10 +625,11 @@ movement input needs.
 **Rules out.** A separate facing reducer (a second intake path with its own battle
 lock, deletion gate and seq); an extra reducer argument (it changes every caller and
 the client-callable reducer baseline); changing `Step` itself (NPC wander and the bump
-rule use it); choosing between `Face` and `Step` on the client from its own idea of the
-facing; marshaling a variant the client does not know as `Step`; publishing a module
-that adds a `MoveInput` variant apart from the client bundle that decodes it — a bundle
-built before the variant cannot decode a `character` row whose public queue holds one.
+rule use it); choosing between `Face` and `Step` at intake or on the client; marshaling
+a variant the client does not know as `Step`; publishing a module that adds a
+`MoveInput` variant apart from the client bundle that decodes it — a bundle built
+before the variant cannot decode a `character` row whose public queue holds one,
+whoever queued it.
 
 ## Remote interpolation: adaptive delay; hold, except a bounded continued walk
 

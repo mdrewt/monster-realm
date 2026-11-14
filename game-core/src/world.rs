@@ -1295,7 +1295,7 @@ mod tests {
             prop_assert!(m.in_bounds(r.pos)); // in-bounds preserved
         }
 
-        /// np-c1.2 over arbitrary states on zone 0: a `Face(d)` the character
+        /// Over arbitrary states on zone 0: a `Face(d)` the character
         /// already faces returns exactly the `Step(d)` result; any other `Face(d)`
         /// returns the input state turned to `d`, `Idle`, stamped `now` (tile kept).
         /// `x`/`y` mix the full i32 range with zone 0's own span (28x20 plus a
@@ -1336,11 +1336,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // np-c1: `MoveInput::Face(d)` — turn in place when not facing `d`, else
-    // exactly `Step(d)`.
+    // `MoveInput::Face(d)` — turn in place when not facing `d`, else exactly
+    // `Step(d)`.
     // -----------------------------------------------------------------------
 
-    const NP_C1_DIRS: [Direction; 4] = [
+    const ALL_DIRS: [Direction; 4] = [
         Direction::North,
         Direction::South,
         Direction::East,
@@ -1351,27 +1351,29 @@ mod tests {
     /// - "walkable": (1,1) of an all-floor 3x3 — every neighbour is floor;
     /// - "blocked": (1,1) of a 3x3 ringed by walls — every neighbour is a wall;
     /// - "out of bounds": (0,0) of a 1x1 map — every neighbour is off the map.
-    fn np_c1_neighbour_maps() -> Vec<(&'static str, TileMap, TilePos)> {
+    ///
+    /// The zone ids are non-zero and distinct, so the rule cannot lean on zone 0.
+    fn neighbour_class_maps() -> Vec<(&'static str, TileMap, TilePos)> {
         vec![
             (
                 "walkable",
-                TileMap::from_rows(0, &["...", "...", "..."]).expect("open 3x3"),
+                TileMap::from_rows(7, &["...", "...", "..."]).expect("open 3x3"),
                 TilePos { x: 1, y: 1 },
             ),
             (
                 "blocked",
-                TileMap::from_rows(0, &["###", "#.#", "###"]).expect("walled 3x3"),
+                TileMap::from_rows(8, &["###", "#.#", "###"]).expect("walled 3x3"),
                 TilePos { x: 1, y: 1 },
             ),
             (
                 "out of bounds",
-                TileMap::from_rows(0, &["."]).expect("1x1"),
+                TileMap::from_rows(9, &["."]).expect("1x1"),
                 TilePos { x: 0, y: 0 },
             ),
         ]
     }
 
-    /// np-c1.1: for all 12 ordered pairs of distinct directions, from `Walking`
+    /// For all 12 ordered pairs of distinct directions, from `Walking`
     /// and from `Jumping` with an old stamp, toward a walkable, a blocked and an
     /// off-map neighbour, `Face(d)` keeps the tile, faces `d`, idles and stamps
     /// `now`. Kills: Face == Step (moves onto the walkable neighbour); action left
@@ -1379,9 +1381,9 @@ mod tests {
     #[test]
     fn face_toward_a_direction_not_faced_turns_in_place_and_idles_np_c1_1() {
         let now = Millis(4_321);
-        for (class, map, start) in np_c1_neighbour_maps() {
-            for facing in NP_C1_DIRS {
-                for d in NP_C1_DIRS {
+        for (class, map, start) in neighbour_class_maps() {
+            for facing in ALL_DIRS {
+                for d in ALL_DIRS {
                     if facing == d {
                         continue;
                     }
@@ -1419,7 +1421,7 @@ mod tests {
         }
     }
 
-    /// np-c1.2: for every direction, with the character already facing it, on an
+    /// For every direction, with the character already facing it, on an
     /// open tile, a blocked tile and an edge tile, `Face(d)` returns exactly what
     /// `Step(d)` returns — and that result is the step's by value (moved one tile
     /// and `Walking` on the open tile; tile kept and `Idle` when blocked / at the
@@ -1427,8 +1429,8 @@ mod tests {
     #[test]
     fn face_toward_the_direction_already_faced_is_exactly_a_step_np_c1_2() {
         let now = Millis(900);
-        for (class, map, start) in np_c1_neighbour_maps() {
-            for d in NP_C1_DIRS {
+        for (class, map, start) in neighbour_class_maps() {
+            for d in ALL_DIRS {
                 for action in [
                     ActionState::Idle,
                     ActionState::Walking,

@@ -5,10 +5,10 @@
 // in Rust; this suite proves the *queue + reconcile + drain* orchestration). The
 // fake mirrors game-core movement over a tiny map: a west wall at x <= 0,
 // everything else walkable. Screen coords: North = y-1, South = y+1, East = x+1,
-// West = x-1. The one exception is the np-c1 block at the end of the file: its
-// replay-parity cases load the BUILT client-wasm pkg (`loadWasmPkg`) and run the
-// real `apply_move` over zone 0, so a `Face` op is replayed by the same rule the
-// server runs.
+// West = x-1. The fake does not model `Face` (it throws on one). The exception is
+// the Face replay block at the end of the file: its replay cases load the BUILT
+// client-wasm pkg (`loadWasmPkg`) and run the real `apply_move` over zone 0, so a
+// `Face` op is replayed by the same rule the server runs.
 
 import * as fc from 'fast-check';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -54,18 +54,9 @@ const applyMove: ApplyMove = (state, input, now): WasmCharacterState => {
     const pos = walkable(target) ? target : state.pos; // hop in place if blocked
     return { ...state, pos, action: 'Jumping', move_started_at: stamp };
   }
-  // Face(dir): a turn in place (Idle, stamped) when not already facing dir; when it
-  // already faces dir it is exactly Step(dir).
-  let dir: WasmDirection;
-  if ('Face' in input) {
-    if (state.facing !== input.Face) {
-      return { ...state, facing: input.Face, action: 'Idle', move_started_at: stamp };
-    }
-    dir = input.Face;
-  } else {
-    dir = input.Step;
-  }
+  if ('Face' in input) throw new Error('this fake does not model Face');
   // Step(dir): face the dir, move if walkable, else bump (Idle, stay put).
+  const dir = input.Step;
   const target = step(dir, state.pos.x, state.pos.y);
   if (walkable(target)) {
     return { pos: target, facing: dir, action: 'Walking', move_started_at: stamp };
@@ -2152,12 +2143,10 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
   const predictor = new Predictor(applyMove, stepMs, cap);
   const held = new HeldDirections();
 
-  // --- server model: tile + facing + capped move_queue + last_input_seq ----------
-  // `facing` starts as `baseline`'s default ('East') and is read only by a Face entry.
+  // --- server model: tile + capped move_queue + last_input_seq -------------------
   const server = {
     x: startTile.x,
     y: startTile.y,
-    facing: 'East' as WasmDirection,
     queue: [] as WasmMoveInput[],
     ackedSeq: 0,
   };
@@ -2315,19 +2304,8 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
         publish(now);
         return;
       }
-      // Face(d): a turn in place when the character does not face d, else the step.
-      let dir: WasmDirection;
-      if ('Face' in mv) {
-        if (mv.Face !== server.facing) {
-          server.facing = mv.Face;
-          publish(now);
-          return;
-        }
-        dir = mv.Face;
-      } else {
-        dir = mv.Step;
-      }
-      server.facing = dir;
+      if ('Face' in mv) throw new Error('this fake does not model Face');
+      const dir = mv.Step;
       const target = step(dir, server.x, server.y);
       if (walkable(target)) {
         server.x = target.x;
@@ -2933,20 +2911,21 @@ describe('fresh Predictor outstanding count (accepted behaviour, ADR-0152)', () 
 });
 
 // --------------------------------------------------------------------------------
-// np-c1.7: a pending `Face` op replays through the predictor with the server's
-// result, and `lastQueuedDir` reports a trailing `Face`'s direction.
+// A pending `Face` op replays through the predictor with the server's result, a
+// turn takes one movement slot in the drain, and `lastQueuedDir` reports a trailing
+// `Face`'s direction.
 //
-// The replay cases run the REAL rule: the BUILT client-wasm pkg's `apply_move` over
-// zone 0 (a missing pkg throws — a failure, never a skip). Every expected state is
-// hard-coded from the rule and zone 0's map (`game-core/src/world.rs` ZONE_0_ROWS,
-// twin of the authored RON), never computed by a second call into the same wasm.
-// Zone-0 tiles relied on (row 0 is all wall; row 1 is `#........#`; row 2 is
-// `#.~~....~#`; row 3 is `#...##..=#`):
+// The replay and drain cases run the REAL rule: the BUILT client-wasm pkg's
+// `apply_move` over zone 0 (a missing pkg throws — a failure, never a skip). Every
+// expected state is pinned to a hard-coded value worked out from the rule and zone
+// 0's map (`game-core/src/world.rs` ZONE_0_ROWS, twin of the authored RON).
+// Zone-0 tiles relied on (row 0 is all wall at x 0..9; row 1 begins `#........#`;
+// row 2 begins `#.~~....~#`; row 3 begins `#...##..=#`):
 //   (1,1) open; north (1,0) and west (0,1) are wall; east (2,1), (3,1) open.
 //   (6,2) open with all four neighbours (6,1), (6,3), (7,2), (5,2) walkable.
 //   (8,1) open with east (9,1) wall;  (4,2) open with south (4,3) wall.
 // --------------------------------------------------------------------------------
-describe('np-c1: a Face op through the predictor', () => {
+describe('a Face op through the predictor', () => {
   let wasmApplyMove: ApplyMove;
   beforeAll(async () => {
     const pkg = await loadWasmPkg();
@@ -3033,6 +3012,25 @@ describe('np-c1: a Face op through the predictor', () => {
     }
   });
 
+  it('a turn takes one movement slot in the drain, ahead of a queued step [np-c1.7]', () => {
+    // South-facing on (1,1) with move_started_at T0: the first queued move is due at
+    // T0 + STEP_MS, the second one STEP_MS after that. (2,1) is open.
+    const p = new Predictor(wasmApplyMove, STEP_MS, 2);
+    expect(p.reconcile(row(1, 1, 'South'), [], 0, T0)).toBe(false);
+    expect(p.enqueue({ Face: 'East' })).toBeDefined();
+    expect(p.enqueue({ Step: 'East' })).toBeDefined();
+
+    // Only the first move is due: the turn, with the step still queued.
+    p.drain(T0 + STEP_MS);
+    expect(p.predicted).toEqual(row(1, 1, 'East', 'Idle', T0 + STEP_MS));
+    expect(p.queueDepth).toBe(1);
+
+    // One STEP_MS later the step is due.
+    p.drain(T0 + 2 * STEP_MS);
+    expect(p.predicted).toEqual(row(2, 1, 'East', 'Walking', T0 + 2 * STEP_MS));
+    expect(p.queueDepth).toBe(0);
+  });
+
   it('the wasm rule returns the Step result for a Face the character already faces [np-c1.7]', () => {
     const now = 500;
     const open = { x: 6, y: 2 };
@@ -3068,6 +3066,8 @@ describe('np-c1: a Face op through the predictor', () => {
   });
 
   it('lastQueuedDir reports the direction of a trailing Face [np-c1.7]', () => {
+    // Enqueue only, on unseeded predictors: nothing drains, so the file's fake (which
+    // does not model Face) is never called.
     for (const d of ['North', 'South', 'East', 'West'] as const) {
       const p = mkCapped(2);
       p.enqueue({ Face: d });
