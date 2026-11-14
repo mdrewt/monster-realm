@@ -6326,6 +6326,13 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     opts.store.upsertBattle(bt12bAnchor(B, 'SideAWins', [P1, P2]));
     opts.store.reconcileTacticalBattlesFromView([{ ...bRow, phase: 'Finished' }]);
     server(at());
+    // ts-6b-7 (named intentional change, ts-6b-7.3): a Finished batch now waits for the visible, fed
+    // shell's playback; frames past every queued beat (the live RoundEnded events above) drain it, then
+    // the results panel takes the frame. Every assertion below is unchanged.
+    t += 60_000;
+    frame(t);
+    t += 100;
+    frame(t);
     owner('Finished', bt12Root('tactics-results'));
     expect(bt12Displayed(shell), 'the shell is hidden').toBe(false);
     expect(shell.getAttribute('role'), 'and holds no dialog').toBeNull();
@@ -6732,16 +6739,41 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     opts.store.reconcileBattleClocksFromView([
       bt12bClock(Z, BigInt(W0 + 30_000), BigInt(W0 - 90_000)),
     ]);
+    // ts-6b-7 (named intentional change, ts-6b-7.1): the shell now also speaks the own-turn line through
+    // the live region (a status notice, spoken a coalescing window after the countdown line), so the
+    // region's FINAL text is no longer the countdown's. The "first value, once" proof reads every
+    // write to #a11y-live instead (a MutationObserver drained synchronously after each frame).
+    const writes: string[] = [];
+    const liveEl = document.getElementById('a11y-live');
+    const writeLog = new MutationObserver(() => undefined);
+    if (liveEl !== null)
+      writeLog.observe(liveEl, { childList: true, characterData: true, subtree: true });
+    const collect = (): void => {
+      for (const r of writeLog.takeRecords()) {
+        if (r.type === 'childList') {
+          for (const n of r.addedNodes) writes.push(n.textContent ?? '');
+        } else writes.push(r.target.textContent ?? '');
+      }
+    };
     t += 50;
     server(t);
     tick(W0);
+    collect();
     expect(shownIn(bt12bShell()), 'the shell battle shows its 30').toEqual([line(30)]);
-    const live = (): string => document.getElementById('a11y-live')?.textContent ?? '';
-    for (let i = 1; i <= 30; i += 1) tick(W0 + i * 100);
+    for (let i = 1; i <= 30; i += 1) {
+      tick(W0 + i * 100);
+      collect();
+    }
     expect(shownIn(bt12bShell()), 'three seconds of frames on: 27').toEqual([line(27)]);
-    expect(live(), 'the live region announced the FIRST value of this deadline, once').toBe(
-      line(30),
-    );
+    expect(liveEl !== null, 'fixture: the live region exists').toBe(true);
+    expect(
+      writes.filter((w) => w === line(30)),
+      'the live region announced the FIRST value of this deadline, once',
+    ).toHaveLength(1);
+    expect(
+      writes.filter((w) => Array.from({ length: 29 }, (_, i) => line(i + 1)).includes(w)),
+      'and never a later second of it',
+    ).toEqual([]);
     opts.store.upsertBattle(bt12bAnchor(Z, 'SideAWins', [PZ]));
     opts.store.reconcileTacticalBattlesFromView([{ ...zRow, phase: 'Finished' }]);
     t += 50;
@@ -7492,6 +7524,13 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
       t += 100;
       return t;
     };
+    /** Frames past every queued beat (ts-6b-7.3: a Finished batch waits for the playback). */
+    const drain = (): void => {
+      t += 60_000;
+      frame(t);
+      t += 100;
+      frame(t);
+    };
     const continueAndClear = async (battleId: bigint, label: string): Promise<void> => {
       press('Backspace', at());
       await flush();
@@ -7522,6 +7561,9 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
     opts.store.reconcileTacticalBattlesFromView([{ ...bt15bRow(B, 52, 1), phase: 'Finished' }]);
     opts.store.reconcileBattleEventsFromView([bt15bEnd(B, 0, 'SideBWins', 'Forfeit')]);
     server(at());
+    // ts-6b-7 (named intentional change, ts-6b-7.3): the Finished batch carries a BattleEnd (3000 ms)
+    // the visible, fed shell plays first; a frame past it hands the frame to the results panel.
+    drain();
     expect(bt12Shown('tactics-results'), 'Finished: the results panel').toBe(true);
     expect(
       bt12Root('tactics-results')?.querySelector('h2.tactics-title')?.textContent,
@@ -7566,6 +7608,7 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
     ]);
     opts.store.reconcileBattleEventsFromView([bt15bEnd(W, 0, 'SideAWins', 'SideEmpty')]);
     server(at());
+    drain(); // ts-6b-7 (named intentional change): as above, the BattleEnd plays first.
     expect(bt12Shown('tactics-results'), 'fixture: the wild results').toBe(true);
     expect(bt15bLines(), 'a wild finish: no reason, no rating, the none line').toEqual([
       ['none', i18n.t('tactics.results.none')],
@@ -7582,6 +7625,7 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
     opts.store.reconcileTacticalBattlesFromView([{ ...bt15bRow(F, 52, 1), phase: 'Finished' }]);
     opts.store.reconcileBattleEventsFromView([bt15bEnd(F, 0, 'Fled', 'Fled')]);
     server(at());
+    drain(); // ts-6b-7 (named intentional change): as above, the BattleEnd plays first.
     expect(bt12Shown('tactics-results'), 'fixture: the flight`s results').toBe(true);
     expect(bt15bLines(), 'a PvP flight: no rating line (and no reason)').toEqual([
       ['none', i18n.t('tactics.results.none')],
@@ -8081,6 +8125,10 @@ describe('bt-17: no 1v1 renderer — a row-less anchor shows nothing (BT17.1, BT
       bt15bEnd(B, awards.length, 'SideAWins', 'SideEmpty'),
     ]);
     server(1200);
+    // ts-6b-7 (named intentional change, ts-6b-7.3): the Finished batch's BattleEnd (3000 ms) plays
+    // on the visible, fed shell first; a frame past it hands the frame to the results panel.
+    frame(1200 + 60_000);
+    frame(1200 + 60_100);
     expect(bt12Shown('tactics-results'), 'precondition: the results panel is shown').toBe(true);
     const names = ['Sparky', 'Mosshorn', `#${M3}`, `#${M4}`];
     expect(
