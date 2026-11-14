@@ -405,8 +405,9 @@ reducers (`evals/baselines/client-visible-tables.json`,
 `client/src/main.ts` wires everything; the logic lives in small modules, mostly pure
 with thin shells. Code leaves it into owner modules under `client/src/shell/` on the plan in
 `docs/refactors/client-shell.md`. `shell/config.ts` holds the values fixed for the session,
-set at import: the connection target (`URI`, `DB`; a production build
-configured with the dev database throws at import), the dev-log level and its send and fate
+set at import: the connection target (`URI`, `DB`, `TARGET_KIND`, resolved from the shell
+document on the page global; a production build throws at import when the document is missing
+or refused), the dev-log level and its send and fate
 loggers, the zone id, the game-core constants read from the wasm exports, and the wasm-ready
 mark. It writes nothing to the document and registers nothing. `shell/views.ts` owns the handles
 of the views built at boot (the screens, the Profile sections, the session overlay, the
@@ -417,9 +418,28 @@ the view is mounted. The module imports types only.
 
 ### Connection and store
 
-`net/connection.ts` builds the SpacetimeDB connection (URI and database from
-`VITE_STDB_URI`/`VITE_STDB_DB`; a production build refuses the dev-default database,
-`net/connectionConfig.ts`). It subscribes to the public tables it renders (never the
+`net/connection.ts` builds the SpacetimeDB connection from the target in `shell/config.ts`
+(`URI`, `DB`). The host sets that target in a page global: `index.html` loads a classic script,
+`/shell-config.js`, as a `<body>` child before the module script, and it assigns
+`globalThis.__MR_SHELL_CONFIG__` to the shell document `{ connection: { uri, db, kind } }`.
+`net/shellDocument.ts` owns the global's and the script's names, the four kinds (`official`,
+`test`, `local`, `private`), `readShellDocument` (the global's own value only) and
+`renderShellConfigScript`. `net/connectionConfig.ts` holds the one resolver, which rejects and
+never clamps. With no document a development build joins `ws://127.0.0.1:3000`, database
+`monster-realm`, kind `test`, and a production build throws. A present document must hold only
+`connection`, which holds `uri`, `db` and optionally `kind`; anything else throws in every
+build. `uri` is an absolute `ws:`/`wss:` URL with no userinfo, query, fragment or
+whitespace, and a path ends in `/` and holds no `.` or `..` segment (the SDK resolves its
+endpoints relative to it, so any other path would dial a prefix the string does not name). `db`
+matches `[A-Za-z0-9_-]+`, and a production build also refuses `monster-realm` in any letter
+case. An omitted `kind` is `test` in development and `private` in production. `uri` and `db`
+are the document's strings trimmed and otherwise unchanged, because `net/authToken.ts` and
+`net/claimCode.ts` key the reconnect token and the claim code on them. Errors name the field
+and never echo a value. The Vite plugin `mr-shell-config` (`client/vite.config.ts`) takes
+`VITE_STDB_URI`/`VITE_STDB_DB` as its inputs: `vite dev` serves `/shell-config.js` with kind
+`test`; `vite build` writes `dist/shell-config.js` only when `VITE_STDB_DB` is set, after
+resolving it as a production client would; `vite preview` has no hook and serves the built
+file. The connection subscribes to the public tables it renders (never the
 drain-only `trade_offer`) and the owner-scoped views in one batch, the base set of 29
 queries. `player` is in it, world-wide. `character` is not: it is the one public table
 written on every step, so the connection holds it as query sets of their own, one for
@@ -655,7 +675,8 @@ root, so opening one never closes a sibling.
 - Uncaught errors show a non-blocking toast that `B` at the world base or `F8` dismisses.
 - DEV builds expose debug hooks (`__game`, `__mrTrade`, `__mrPvp`) inside an
   `import.meta.env.DEV` branch; `scripts/verify-build-hooks.mjs` checks that a
-  production bundle contains none.
+  production bundle contains none, that the build's `shell-config.js` names the playtest
+  database, and that no other file in the build contains that name.
 - `VITE_MR_DEVLOG` enables a DEV console log of outbound reducer calls
   (`net/devLog.ts`).
 - Client telemetry (`observability/`) exports OpenTelemetry metrics over OTLP/HTTP to
