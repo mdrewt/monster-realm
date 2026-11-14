@@ -138,15 +138,39 @@ function bootUnder(kind: TargetKind): Promise<ConnectionOptions> {
   return bootWith(documentFor(kind), `a ${kind} document`);
 }
 
+/** Which groups of build variables a boot sets. A group left out is absent from
+ *  `import.meta.env` for that boot, not an empty string. */
+interface BuildEnv {
+  /** `VITE_MR_OTLP_ENDPOINT` (the valid origin) and `VITE_MR_OTLP_INTERVAL_MS`. */
+  readonly telemetry: boolean;
+  /** `VITE_MR_OIDC_ISSUER` and `VITE_MR_OIDC_CLIENT_ID`. */
+  readonly oidc: boolean;
+}
+
+const FULL_BUILD_ENV: BuildEnv = { telemetry: true, oidc: true };
+
 /** Boot a fresh main.ts under `doc` (described by `label` in failure messages), with the build
- *  env stubbed, and return the options it handed `connect()` once the boot is known to have taken
- *  `doc`'s target and the work it started before `connect()` has settled. */
-async function bootWith(doc: ShellDocument, label: string): Promise<ConnectionOptions> {
+ *  variable groups `env` names set, and return the options it handed `connect()` once the boot is
+ *  known to have taken `doc`'s target and the work it started before `connect()` has settled. */
+async function bootWith(
+  doc: ShellDocument,
+  label: string,
+  env: BuildEnv = FULL_BUILD_ENV,
+): Promise<ConnectionOptions> {
   (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL] = doc;
-  vi.stubEnv('VITE_MR_OTLP_ENDPOINT', OTLP_ORIGIN);
-  vi.stubEnv('VITE_MR_OTLP_INTERVAL_MS', '60000');
-  vi.stubEnv('VITE_MR_OIDC_ISSUER', OIDC_ISSUER);
-  vi.stubEnv('VITE_MR_OIDC_CLIENT_ID', OIDC_CLIENT_ID);
+  if (env.telemetry) {
+    vi.stubEnv('VITE_MR_OTLP_ENDPOINT', OTLP_ORIGIN);
+    vi.stubEnv('VITE_MR_OTLP_INTERVAL_MS', '60000');
+  } else {
+    expect(import.meta.env.VITE_MR_OTLP_ENDPOINT, 'the endpoint is unset').toBeUndefined();
+  }
+  if (env.oidc) {
+    vi.stubEnv('VITE_MR_OIDC_ISSUER', OIDC_ISSUER);
+    vi.stubEnv('VITE_MR_OIDC_CLIENT_ID', OIDC_CLIENT_ID);
+  } else {
+    expect(import.meta.env.VITE_MR_OIDC_ISSUER, 'the issuer is unset').toBeUndefined();
+    expect(import.meta.env.VITE_MR_OIDC_CLIENT_ID, 'the client id is unset').toBeUndefined();
+  }
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -219,6 +243,30 @@ describe('the booted client gates telemetry and account sign-in on the target ki
         const opts = await bootUnder(kind);
         expect(opts.authIssuer, `authIssuer under a ${kind} document`).toBe('');
         expect(opts.authClientId, `authClientId under a ${kind} document`).toBe('');
+      });
+    }
+
+    // Each gate holds whatever the other gate's build variable is: the OIDC config does not
+    // depend on a telemetry endpoint being set, nor telemetry on the OIDC variables.
+    if (expected.signIn) {
+      it(`hands connect() the configured OIDC issuer and client id toward a ${kind} server built without a telemetry endpoint`, async () => {
+        const label = `a ${kind} document, no telemetry endpoint`;
+        const opts = await bootWith(documentFor(kind), label, { telemetry: false, oidc: true });
+        expect(opts.authIssuer, `authIssuer under ${label}`).toBe(OIDC_ISSUER);
+        expect(opts.authClientId, `authClientId under ${label}`).toBe(OIDC_CLIENT_ID);
+        expect(H.loadSdk, `the SDK loader under ${label}`).not.toHaveBeenCalled();
+      });
+    }
+
+    if (expected.telemetry) {
+      it(`loads the telemetry SDK once toward a ${kind} server built without the OIDC variables`, async () => {
+        const label = `a ${kind} document, no OIDC variables`;
+        const opts = await bootWith(documentFor(kind), label, { telemetry: true, oidc: false });
+        expect(H.loadSdk, `the SDK loader under ${label}`).toHaveBeenCalledTimes(1);
+        const init = H.loadSdk.mock.calls[0]?.[0];
+        expect(init?.exporterUrl, `the exporter URL under ${label}`).toBe(OTLP_EXPORTER_URL);
+        expect(opts.authIssuer, `authIssuer under ${label}`).toBe('');
+        expect(opts.authClientId, `authClientId under ${label}`).toBe('');
       });
     }
   }
