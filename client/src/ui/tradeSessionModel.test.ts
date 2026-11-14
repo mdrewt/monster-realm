@@ -17,8 +17,8 @@
 //   session 102   Carol opened with ME. ME's side: monsters 23 and 20.
 //   session 103   Bob opened with Carol (a foreign session; its opener side names ME's 21 and 32,
 //                 which must block nothing).
-//   party (PARTY_SIZE 9, by slot): 21 free · 22 fainted · 23 in session 102 · 24 in a legacy offer ·
-//                 25 in battle · 26 fainted AND legacy AND battle · 20 in session 102 AND battle ·
+//   party (PARTY_SIZE 9, by slot): 21 free · 22 fainted · 23 in session 102 · 24 free ·
+//                 25 in battle · 26 fainted AND battle · 20 in session 102 AND battle ·
 //                 27 free · 32 free. Storage: 28 (slot 9 = PARTY_SIZE, the boundary) and 30 (slot 255).
 //                 Bob's monster 29 rides in the own-monster input and must never appear.
 //   inventory     ME: item 3 ×5, item 7 ×3, item 9 ×0 (no stack to offer); Bob: item 5 ×8 (foreign).
@@ -206,7 +206,6 @@ function input(over: Partial<TradeSessionInput> = {}): TradeSessionInput {
     ]),
     inventory: [inv(1n, 7, 3), inv(2n, 3, 5), inv(3n, 9, 0), inv(4n, 5, 8, BOB)],
     balance: 500n,
-    legacyOfferMonsterIds: new Set([24n, 26n]),
     battleMonsterIds: new Set([25n, 26n, 20n]),
     partySize: PARTY_SIZE,
     maxMonstersPerSide: MAX,
@@ -334,25 +333,41 @@ describe('tradeSessionModel — both sides, both marks, the pickers (ts-3.2)', (
     expect(sessionVm({ partySize: 3 }).monsters.map((m) => m.monsterId)).toEqual([21n, 22n, 23n]);
   });
 
-  it('ts-3.2 a monster the rule refuses is blocked with its reason, first match in the order fainted, inAnotherTrade, inBattle: one case per reason, a monster with all three reads fainted, one in another trade AND in battle reads inAnotherTrade; the viewer`s side of THIS session and a foreign session block nothing', () => {
-    // WRONG IMPL KILLED: the reasons checked in another order (26 would read inBattle or
-    // inAnotherTrade, 20 would read inBattle); a fainted test on `statHp` or `<= 1`; the
-    // current session counted as "another" trade (the viewer's own offered monsters 21 and 27
-    // would be blocked, and could never be re-offered after an edit); the PARTNER's side or a
-    // foreign session counted (21 and 32 sit on Bob's side of session 103); the legacy offer
-    // ignored (24 free); and a block that drops the monster from the picker instead of marking it.
+  it('ts-3.2 a monster the rule refuses is blocked with its reason, first match in the order fainted, inAnotherTrade, inBattle: one case per reason, a monster fainted AND in battle reads fainted, one in another trade AND in battle reads inAnotherTrade; a monster offered in ANOTHER session is refused while the same monster in THIS session is not; the viewer`s side of THIS session and a foreign session block nothing', () => {
+    // WRONG IMPL KILLED: the reasons checked in another order (fainted must come before
+    // inAnotherTrade: 26, fainted AND offered in session 104 AND in battle, would read
+    // inAnotherTrade; 20 would read inBattle); a fainted test on `statHp` or `<= 1`; the current session counted as
+    // "another" trade (the viewer's own offered monsters 21 and 27 would be blocked, and could
+    // never be re-offered after an edit); the PARTNER's side or a foreign session counted (21 and
+    // 32 sit on Bob's side of session 103); a monster offered in no session blocked (24 free);
+    // and a block that drops the monster from the picker instead of marking it.
+    // ts-6b-12 (named intentional change): 24 is a plain free party monster and reads null; the
+    // retired legacy-offer input no longer blocks it. Was: 24 read inAnotherTrade (a legacy offer).
     const vm = sessionVm();
     const blocks = Object.fromEntries(vm.monsters.map((m) => [m.monsterId.toString(), m.blocked]));
     expect(blocks).toEqual({
       '21': null,
       '22': 'fainted',
       '23': 'inAnotherTrade',
-      '24': 'inAnotherTrade',
+      '24': null,
       '25': 'inBattle',
       '26': 'fainted',
       '20': 'inAnotherTrade',
       '27': null,
       '32': null,
+    });
+    // A monster that is fainted, offered in ANOTHER session AND in battle reads fainted: the first
+    // match wins. Session 104 (ME opened with Carol) offers 26 on ME's side; viewed from 101, 26
+    // is in another trade, in battle and fainted. The other expectations are unchanged.
+    const S4 = session(104n, ME, CAROL, { openerOffer: side([26n]) });
+    const withS4 = sessionVm({ sessions: [S3, S2, S1, S4] });
+    const s4Blocks = Object.fromEntries(
+      withS4.monsters.map((m) => [m.monsterId.toString(), m.blocked]),
+    );
+    expect(s4Blocks['26'], 'fainted AND inAnotherTrade AND inBattle reads fainted').toBe('fainted');
+    expect(s4Blocks, 'session 104 changes no other monster`s block').toEqual({
+      ...blocks,
+      '26': 'fainted',
     });
     // Seen from session 102, ME's monsters in session 101 are the ones in ANOTHER trade, and 23
     // (offered here) is free; 20 is still in battle.
@@ -383,7 +398,9 @@ describe('tradeSessionModel — the editor rows (ts-3.2)', () => {
       { key: 'monster-21', enabled: true },
       { key: 'monster-22', reason: 'fainted' },
       { key: 'monster-23', reason: 'inAnotherTrade' },
-      { key: 'monster-24', reason: 'inAnotherTrade' },
+      // ts-6b-12 (named intentional change): 24 is free, so at the cap it reads limit (like 32).
+      // Was: inAnotherTrade (a legacy offer).
+      { key: 'monster-24', reason: 'limit' },
       { key: 'monster-25', reason: 'inBattle' },
       { key: 'monster-26', reason: 'fainted' },
       { key: 'monster-20', reason: 'inAnotherTrade' },
@@ -477,7 +494,15 @@ describe('tradeSessionModel — the draft steps (ts-3.2)', () => {
 
     expect(toggleMonster(vm, vm.offer, 32n), 'at the cap: refused').toBe(vm.offer);
     expect(toggleMonster(vm, out, 32n).monsterIds, 'below the cap: added').toEqual([27n, 32n]);
-    for (const refused of [22n, 23n, 24n, 25n, 26n, 20n, 28n, 29n, 30n, 99n]) {
+    // ts-6b-12 (named intentional change): 24 is a free party monster, no longer refused as a
+    // legacy offer: refused at the cap, added in ascending order below it. Was: 24n in the
+    // refused list.
+    expect(toggleMonster(vm, vm.offer, 24n), 'at the cap: 24 is refused').toBe(vm.offer);
+    expect(toggleMonster(vm, out, 24n).monsterIds, '24 is free: added in order').toEqual([
+      24n,
+      27n,
+    ]);
+    for (const refused of [22n, 23n, 25n, 26n, 20n, 28n, 29n, 30n, 99n]) {
       expect(toggleMonster(vm, out, refused), `adding ${refused} is refused`).toBe(out);
     }
 

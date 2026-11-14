@@ -208,7 +208,6 @@ export const tradeSessionScreen: ScreenAdapter<
       itemDefs: store.itemDefs(),
       inventory: store.ownInventory(identity),
       balance: store.ownWallet(identity)?.balance ?? 0n,
-      legacyOfferMonsterIds: new Set(),
       // Both lists: the viewer's monsters are in one of them, whichever role they hold.
       battleMonsterIds: new Set([
         ...(battle?.partyMonsterIds ?? []),

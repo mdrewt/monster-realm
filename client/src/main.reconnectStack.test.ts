@@ -535,7 +535,7 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     // HONEST SCOPE. The only real show paths that leave a closing-set view off the stack are the
     // menu-row clicks: `handleMenuPointer` -> `applyMenuStep` -> `openMenuTarget('renameView')`
     // -> `openRename()` shows the form and no sync follows (the next key, frame or batch mirrors
-    // it). Every other show path syncs: the launcher click and the key and pointer wrappers sync on
+    // it). Every other show path syncs: the Start chip press and the key and pointer wrappers sync on
     // both sides, the accelerators and `seatOpened` sync, and a batch's last listener syncs.
     // `menuView` is the only closing-set view the unconditional reset pass does not also hide, and
     // it is always shown through a synced path, so the in-reconnect `syncStack()` is DEFENSIVE:
@@ -547,11 +547,11 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     // the shape: the form is shown while the stack does not list it.
     await bootReady();
     server(1000);
-    const launcher = document.querySelector('[data-menu-launcher]');
-    if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+    const launcher = document.getElementById('chip-start');
+    if (launcher === null) throw new Error('#chip-start is not in the shell');
     clock.t = 1100;
     launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(menuShown(), 'precondition: the launcher click opened the menu').toBe(true);
+    expect(menuShown(), 'precondition: the Start chip click opened the menu').toBe(true);
     const clickRow = (key: string, t: number): void => {
       const row = document.querySelector(`#menu-rows [data-nav-key="${key}"]`);
       if (row === null) throw new Error(`no menu row [data-nav-key="${key}"]`);
@@ -662,10 +662,10 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
   // store state a drop invalidates: they stay in the roster's false rows, and they must stay OUT of
   // the unconditional reset pass too (a reset-pass `hide()` is as fatal to them as a sweep close).
 
-  /** Click the launcher, then each menu row in turn (the pointer path, `handleMenuPointer`). */
+  /** Click the Start chip, then each menu row in turn (the pointer path, `handleMenuPointer`). */
   const openByMenuClicks = (rows: readonly string[], t0: number): void => {
-    const launcher = document.querySelector('[data-menu-launcher]');
-    if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+    const launcher = document.getElementById('chip-start');
+    if (launcher === null) throw new Error('#chip-start is not in the shell');
     clock.t = t0;
     launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     rows.forEach((key, i) => {
@@ -932,7 +932,7 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
   }
   // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the five views that had a stale feedback line to dirty
   // (`tradepropose-feedback`, `rename-feedback`, `shop-feedback`, `trade-feedback`,
-  // `pvp-challenge-feedback`) own no message line any more (the lines are retired or unwritten; every
+  // `pvp-challenge-feedback`) own no message line any more (the lines are retired and every
   // message is a toast), so their `stale` entries are gone: there is no view line for hide() to clear.
   // The reset itself (the `hide()` call-count delta) is still pinned for all of them. Was: each of the
   // five carried a `stale` id that was dirtied before the reconnect and read back '' after it.
@@ -1046,21 +1046,21 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     expect(stack(), 'the stack is the bare world').toEqual(WORLD_ONLY);
   });
 
-  it('UIF4B.5 SO1-2-BOOT-OFFSTACK-TRADE: a trade panel forced hidden without hide() and popped off the stack by the mirror is still reset by onReconnect (the view`s hide() runs), and the reset writes nothing into the residual #trade-feedback node', async () => {
+  it('UIF4B.5 SO1-2-BOOT-OFFSTACK-TRADE: a trade panel forced hidden without hide() and popped off the stack by the mirror is still reset by onReconnect (the view`s hide() runs)', async () => {
     // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the view owns no feedback line, so "the stale line is
-    // cleared" becomes "the view's hide() ran" (a spy delta) and "a sentinel in the residual node is
-    // left alone" (nothing reads or clears it). Was: a stale line in #trade-feedback was read back ''.
+    // cleared" becomes "the view's hide() ran" (a spy delta). Was: a stale line in #trade-feedback
+    // was read back ''. ts-6b-12 (named intentional change): #trade-feedback is deleted from the
+    // markup, so the sentinel check on it is gone. Was: a sentinel written into the residual node
+    // was read back unchanged.
     // WRONG IMPL KILLED: as the rename case, for a Social panel: the Social frame is gone from the
     // stack and no panel is shown, so a close driven only by the stack never reaches the trade
-    // view whose double-send lock and feedback line the reset clears.
+    // view whose double-send lock the reset clears.
     await bootReady();
     server(1000);
     tap('KeyU', 1010);
     expect(tradeShown(), 'precondition: the accelerator opened the trade panel').toBe(true);
     const { TradeView } = await import('./ui/tradeView');
     const hide = vi.spyOn(TradeView.prototype, 'hide');
-    const line = byId('trade-feedback');
-    line.textContent = 'sentinel the view must leave alone';
     byId('trade-overlay').style.display = 'none';
     frame(1100);
     const before = hide.mock.calls.length;
@@ -1075,9 +1075,6 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
       hide.mock.calls.length - before,
       'the trade view`s hide() ran on the reconnect',
     ).toBeGreaterThanOrEqual(1);
-    expect(line.textContent, 'the residual node is neither read nor cleared').toBe(
-      'sentinel the view must leave alone',
-    );
     expect(menuShown(), 'the menu beneath it is closed by the sweep').toBe(false);
     expect(stack(), 'the stack is the bare world').toEqual(WORLD_ONLY);
   });

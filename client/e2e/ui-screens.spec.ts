@@ -119,7 +119,7 @@ const UIF10_MOUNT = `(async () => {
       players: [{ identity: me, entityId: 1n, name: 'Me', online: true },
         { identity: them, entityId: 2n, name: 'Bob', online: true }],
       ownMonsters, speciesMap: new Map([[1, { name: 'Flameling' }]]), itemDefs, inventory,
-      balance: 250n, legacyOfferMonsterIds: new Set(), battleMonsterIds: new Set(),
+      balance: 250n, battleMonsterIds: new Set(),
       partySize: 6, maxMonstersPerSide: 6 });
   }
 

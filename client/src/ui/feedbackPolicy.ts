@@ -45,12 +45,8 @@ export type MessageKind =
   | 'shop-buy-ok'
   | 'shop-sell-ok'
   | 'shop-rejected'
-  | 'trade-answered'
-  | 'trade-settled'
   | 'trade-cancelled'
   | 'trade-rejected'
-  | 'trade-offer-sent'
-  | 'trade-propose-rejected'
   | 'rename-saved'
   | 'rename-rejected'
   | 'controls-saved'
@@ -128,12 +124,8 @@ export const FEEDBACK_POLICY = {
   'shop-buy-ok': row('toast'),
   'shop-sell-ok': row('toast'),
   'shop-rejected': row('toast'),
-  'trade-answered': row('toast'),
-  'trade-settled': row('toast'),
   'trade-cancelled': row('toast'),
   'trade-rejected': row('toast'),
-  'trade-offer-sent': row('toast'),
-  'trade-propose-rejected': row('toast'),
   'rename-saved': row('toast'),
   'rename-rejected': row('toast'),
   'controls-saved': row('toast'),

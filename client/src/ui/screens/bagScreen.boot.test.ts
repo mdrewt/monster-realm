@@ -21,8 +21,8 @@
  * ignores keys a focused form control owns); the deferred initial focus (one macrotask after KeyI,
  * from ui/overlayA11y.ts) is flushed before the first key.
  *
- * Harness: tradeProposeScreen.boot.test.ts's (the real shell mounted, main.ts imported fresh per
- * boot, only the wasm pkg, the connection, telemetry and the world renderer stubbed). The store is
+ * Harness: the real shell mounted, main.ts imported fresh per boot, only the wasm pkg, the
+ * connection, telemetry and the world renderer stubbed. The store is
  * written through `opts.store` (the adapter-only ingest the connection would call) and a batch is
  * delivered with `flushBatch()`. No frame is run: a press reaches the adapter, and the adapter's
  * paint reaches the view, on the keydown.

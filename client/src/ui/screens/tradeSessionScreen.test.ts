@@ -94,7 +94,6 @@ function input(sessions: readonly StoreTradeSession[], over: Partial<TradeSessio
     itemDefs: new Map(),
     inventory: [{ invId: 1n, ownerIdentity: ME, itemId: 4, count: 3 }],
     balance: BALANCE,
-    legacyOfferMonsterIds: new Set(),
     battleMonsterIds: new Set(),
     partySize: 3,
     maxMonstersPerSide: 2,

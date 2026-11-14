@@ -1209,12 +1209,12 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // subtree (ctl-11b: the guard is now `a === null || a === <body> || focusInsideHiddenSubtree()`),
     // which is false here.
     // ctl-7a (named intentional change): the badge #help-hint is deleted; the Start chip,
-    // #chip-start, is the click-opened front door ([data-menu-launcher]) that replaces it.
+    // #chip-start, is the click-opened front door (data-button="Start") that replaces it.
     const helpHint = document.getElementById('chip-start') as HTMLElement | null;
     expect(helpHint).not.toBeNull();
     helpHint!.focus();
     expect(document.activeElement, 'anti-vacuity: the chip really is focusable').toBe(helpHint);
-    helpHint!.click(); // the delegated [data-menu-launcher] front door — opens menuView
+    helpHint!.click(); // the Start chip, pressed through the pointer dispatcher (data-button="Start") — opens menuView
     expect(overlayIsOpen('menuView'), 'menuView must have opened from the click').toBe(true);
     // without this frame the snapshot never registers 'menuView', lastA11ySnapshot.topOverlay
     // is still null at the final frame, the outer edge predicate is FALSE, and the guarded
@@ -1464,7 +1464,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('CTL7A-4-START-OPENS-MENU: clicking the Start chip opens the main menu (and not help)', () => {
-    // WRONG IMPL KILLED: a chip with no [data-menu-launcher] binding (the click is inert); a chip
+    // WRONG IMPL KILLED: a chip whose data-button="Start" press is not wired (the click is inert); a chip
     // that opens help instead; a click that toggles a stale overlay state.
     const chip = document.getElementById('chip-start') as HTMLElement | null;
     expect(chip, '#chip-start must exist (client/index.html)').not.toBeNull();
@@ -1483,8 +1483,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('CTL7A-4-SELECT-OPENS-HELP: clicking the Select chip opens help (and not the menu)', () => {
-    // WRONG IMPL KILLED: a chip with no [data-help-launcher] branch (the click is inert); a chip
-    // wired to the menu launcher (both chips would open the menu); a help open that bypasses the
+    // WRONG IMPL KILLED: a chip whose data-button="Select" press is not wired (the click is inert); a chip
+    // wired to the Start press (both chips would open the menu); a help open that bypasses the
     // overlay verdict.
     const chip = document.getElementById('chip-select') as HTMLElement | null;
     expect(chip, '#chip-select must exist (client/index.html)').not.toBeNull();

@@ -9,7 +9,7 @@
 // CONTRACT (the imperative shell over `hintBar`'s chips):
 //   new HintBarView(root /* #hint-bar */); render(chips, banner: string | null)
 //   - A keyed reconcile on `data-button`: the shipped `#chip-start` / `#chip-select` buttons are
-//     REUSED (same nodes, ids and launcher attributes kept); every other chip is a
+//     REUSED (same nodes, ids and data-button kept); every other chip is a
 //     `<span class="mr-chip" data-button=X>`. ctl-15 (named intentional change, CTL15.5): the span
 //     chips no longer carry an inline `pointer-events: none`; the #game-screen pointer dispatcher
 //     turns a click on one into a press of its button (CTL15-5-CHIP-CLICKABLE below).
@@ -81,9 +81,9 @@ const part = (el: HTMLElement, cls: string): string | null =>
 const flush = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe('HintBarView (ctl-13, CTL13.1)', () => {
-  it('CTL13-1-VIEW-RENDER: the bar reconciles by data-button: Start and Select stay the same nodes (ids and launchers kept), new chips are non-clickable spans with keycap, verb and badge parts in model order, a chip the model drops is removed, the banner is one hidden-when-null node with no ARIA role, live region or tabindex, an identical render writes nothing, nothing is focused, and every string is text', async () => {
+  it('CTL13-1-VIEW-RENDER: the bar reconciles by data-button: Start and Select stay the same nodes (ids and data-button kept, no launcher attribute), new chips are non-clickable spans with keycap, verb and badge parts in model order, a chip the model drops is removed, the banner is one hidden-when-null node with no ARIA role, live region or tabindex, an identical render writes nothing, nothing is focused, and every string is text', async () => {
     // WRONG IMPL KILLED: a bar rebuilt with replaceChildren on every render (Start / Select lose
-    // their ids and click launchers, and a focused chip would lose focus); new chips as <button>s
+    // their ids and data-button, and a focused chip would lose focus); new chips as <button>s
     // (a click target with no handler, and a tab stop) or without pointer-events:none; chip text
     // in one lump instead of the key / verb / badge parts; a badge part left behind after the
     // badge clears or shown when it is not asked for; a stale chip left in the DOM; chips in
@@ -110,8 +110,12 @@ describe('HintBarView (ctl-13, CTL13.1)', () => {
     expect(chipOf(bar, 'Start'), 'the shipped Start button is reused').toBe(startNode);
     expect(chipOf(bar, 'Select'), 'the shipped Select button is reused').toBe(selectNode);
     expect(startNode.id).toBe('chip-start');
-    expect(startNode.hasAttribute('data-menu-launcher'), 'the menu launcher is kept').toBe(true);
-    expect(selectNode.hasAttribute('data-help-launcher'), 'the help launcher is kept').toBe(true);
+    // ts-6b-12 (named intentional change): the shipped nodes keep data-button (the pointer
+    // dispatcher's press target) and carry no launcher attribute. Was: both launchers kept.
+    expect(startNode.getAttribute('data-button'), 'the Start button name is kept').toBe('Start');
+    expect(selectNode.getAttribute('data-button'), 'the Select button name is kept').toBe('Select');
+    expect(startNode.hasAttribute('data-menu-launcher'), 'no menu launcher attribute').toBe(false);
+    expect(selectNode.hasAttribute('data-help-launcher'), 'no help launcher attribute').toBe(false);
     expect(part(startNode, 'mr-chip-key')).toBe('Esc');
     expect(part(startNode, 'mr-chip-verb')).toBe('Menu');
     expect(startNode.querySelector('.mr-chip-badge'), 'no badge asked for').toBeNull();
@@ -201,7 +205,10 @@ describe('HintBarView (ctl-13, CTL13.1)', () => {
     ).toBeNull();
     view.render([chip('A', 'Enter', 'OK'), chip('Start', 'Esc', 'Menu'), SELECT], null);
     expect(document.getElementById('chip-select'), 'and returns as the same node').toBe(selectNode);
-    expect(selectNode.hasAttribute('data-help-launcher')).toBe(true);
+    // ts-6b-12 (named intentional change): the returning node keeps its data-button and has no
+    // launcher attribute. Was: data-help-launcher kept.
+    expect(selectNode.getAttribute('data-button')).toBe('Select');
+    expect(selectNode.hasAttribute('data-help-launcher')).toBe(false);
 
     // --- an identical render writes nothing ---------------------------------------------------
     const steady = [chip('A', 'Enter', 'OK'), chip('Start', 'Esc', 'Menu', true), SELECT];

@@ -743,7 +743,8 @@ test.describe
     test('keyboard pass: Tab reaches the launcher, Enter/Space open the menu, arrows/Enter operate its rows', async () => {
       // ctl-7a (named intentional change): this pass drove the #help-hint badge, which ctl-7a
       // deletes; the Start chip in the hint bar is the always-on native launcher that replaces it
-      // (still [data-menu-launcher]), so the same Tab / Enter / Space contract now targets it.
+      // (pressed through the pointer dispatcher via data-button="Start"), so the same Tab / Enter /
+      // Space contract now targets it.
       const hint = page.locator('#chip-start');
       const overlay = page.locator('#menu-overlay');
       const rows = page.locator('#menu-rows');

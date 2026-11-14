@@ -71,16 +71,15 @@ test.describe
     });
 
     // ---------------------------------------------------------------------------
-    // DOM structure: all required elements must exist (tradeView.ts constructor
-    // will throw if any are missing, crashing the trade overlay wiring).
+    // DOM structure: the trade root and its status line must exist (the tradeView.ts
+    // constructor needs only those two and throws if either is missing).
+    // ts-6b-12 (named intentional change): the four unused static nodes (#trade-my-side,
+    // #trade-their-side, #trade-actions, #trade-feedback) are deleted, so only the root and
+    // the status are listed. Was: all six counted.
     // ---------------------------------------------------------------------------
     test('trade overlay DOM elements exist', async () => {
       await expect(page.locator('#trade-overlay')).toHaveCount(1);
       await expect(page.locator('#trade-status')).toHaveCount(1);
-      await expect(page.locator('#trade-my-side')).toHaveCount(1);
-      await expect(page.locator('#trade-their-side')).toHaveCount(1);
-      await expect(page.locator('#trade-actions')).toHaveCount(1);
-      await expect(page.locator('#trade-feedback')).toHaveCount(1);
     });
 
     // ---------------------------------------------------------------------------
@@ -157,24 +156,23 @@ test.describe
     });
 
     // ---------------------------------------------------------------------------
-    // Regression: overlay content area is empty (not showing stale data) when
-    // no offer exists.  Both my-side and their-side innerHTML must be blank.
+    // Regression: with no offer the trade root shows its no-trade status and holds no stale
+    // action controls.
+    // ts-6b-12 (named intentional change): the side and actions containers are deleted, so the
+    // case reads the root itself. Was: #trade-my-side, #trade-their-side and #trade-actions
+    // innerHTML each read back empty.
     // ---------------------------------------------------------------------------
-    test('trade overlay shows empty sides when no active trade', async () => {
+    test('trade overlay shows the status and no action control when no active trade', async () => {
       // Open the overlay.
       await pressAccel(page, 'U');
       await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 5_000 });
 
-      // Both side panels must be empty (no stale cards/items from a prior render).
-      const mySideContent = await page.locator('#trade-my-side').innerHTML();
-      const theirSideContent = await page.locator('#trade-their-side').innerHTML();
-      expect(mySideContent.trim()).toBe('');
-      expect(theirSideContent.trim()).toBe('');
-
-      // No action buttons: tradeView.ts renders none in any state since qf-8 (a trade is
-      // answered on the Social sheet), so the actions container stays empty.
-      const actionsContent = await page.locator('#trade-actions').innerHTML();
-      expect(actionsContent.trim()).toBe('');
+      // The status names the no-trade state and no action control is rendered under the root:
+      // tradeView.ts renders no card or action button in any state since qf-8 (a trade is
+      // answered on the Social sheet).
+      await expect(page.locator('#trade-status')).toHaveText('No active trade');
+      await expect(page.locator('#trade-overlay button')).toHaveCount(0);
+      await expect(page.locator('#trade-overlay [data-action]')).toHaveCount(0);
 
       // Cleanup (U on its own screen is Start).
       await pressAccel(page, 'U');

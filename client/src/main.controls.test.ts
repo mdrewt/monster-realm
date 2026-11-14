@@ -945,7 +945,7 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     const chip = byId('chip-start');
     chip.focus();
     expect(document.activeElement, 'anti-vacuity: the Start chip really holds focus').toBe(chip);
-    chip.click(); // the delegated [data-menu-launcher] front door
+    chip.click(); // the Start chip, pressed through the pointer dispatcher (data-button="Start")
     expect(stackNames(), 'the chip opened the menu over the world').toEqual(['world', 'menuView']);
     expect(menuShown(), 'the menu is shown').toBe(true);
 
@@ -2070,8 +2070,8 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // it). The follow-up Start proves the drop was this race, not "menus never survive".
     await bootReady();
     server(1000);
-    const launcher = document.querySelector('[data-menu-launcher]');
-    if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+    const launcher = document.getElementById('chip-start');
+    if (launcher === null) throw new Error('#chip-start is not in the shell');
     clock.t = 1100;
     launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(menuShown(), 'precondition: the click opened the menu at the world').toBe(true);
@@ -3225,10 +3225,10 @@ async function so2Watch(
   return calls;
 }
 
-/** Click the launcher, then each menu row in turn (the pointer path, `handleMenuPointer`). */
+/** Click the Start chip, then each menu row in turn (the pointer path, `handleMenuPointer`). */
 function so2OpenByClicks(rows: readonly string[], t0: number): void {
-  const launcher = document.querySelector('[data-menu-launcher]');
-  if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+  const launcher = document.getElementById('chip-start');
+  if (launcher === null) throw new Error('#chip-start is not in the shell');
   clock.t = t0;
   launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   rows.forEach((key, i) => {

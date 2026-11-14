@@ -1135,8 +1135,8 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
 
     // ctl-15 (named intentional change, CTL15.5): the Start chip click is now a Start PRESS through
     // the router (the #game-screen pointer dispatcher), which syncs the stack on both sides like a
-    // keydown, so the click-opened menu is mirrored AT ONCE (keyboard parity). Was: the old
-    // [data-menu-launcher] delegate opened the menu outside the input path, the stack saw it only
+    // keydown, so the click-opened menu is mirrored AT ONCE (keyboard parity). Was: the
+    // old Start-chip delegate opened the menu outside the input path, the stack saw it only
     // on the next frame, and two hook reads in between proved a read never syncs. No non-press
     // opener is left in this harness, so that half has no subject any more; the reads below still
     // agree with each other and with the frame that follows.
@@ -1511,7 +1511,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // keydown must sync at its TOP as well, before the handler closes the overlay.
     // Paths checked for an open that is neither a keydown nor a store batch and does not clear
     // held itself: the sign-in-failed callback (this one; it shows the claim overlay directly),
-    // and the menu launcher click, which already clears held. A menu leaf click opens its target,
+    // and the Start chip click, which already clears held. A menu leaf click opens its target,
     // but the menu's open cleared held and the menu swallows the D-pad, so nothing is held then.
     await bootReady();
     seedWorld(1000);
@@ -1752,8 +1752,8 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
     expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
     // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the sentinels were text in `#shop-feedback`,
     // `#trade-feedback` and `#pvp-challenge-feedback`, the nodes those views' hide() cleared; the
-    // lines are retired (index.html no longer ships the shop and pvp ones; the trade one is an
-    // unwritten residual), so hide() clears nothing there. The sentinels are now the DRAFT VALUES
+    // lines are retired (index.html ships none of the three; ts-6b-12 deleted the trade one
+    // too), so hide() clears nothing there. The sentinels are now the DRAFT VALUES
     // of two hidden overlays whose hide() still resets them: the Name field and the trade wizard's
     // offer-coins field. Was: `textContent = 'sentinel'` on the three feedback nodes. The numeric
     // field takes a digit string (a number input drops a non-numeric value).
