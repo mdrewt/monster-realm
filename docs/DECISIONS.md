@@ -602,22 +602,37 @@ stamps would skip the commit threshold.
 **Rules out.** Repeat-driven movement or menus; emitting continuation steps while
 earlier ones are still in flight; resuming a held walk after a frame closes.
 
-## Remote interpolation: adaptive delay, hold rather than extrapolate
+## Remote interpolation: adaptive delay; hold, except a bounded continued walk
 
-**Decision.** Other characters render at `now − delay` between two buffered snapshots
+**Decision.** Other characters render at `now − delay` between buffered snapshots
 (`client/src/render/interpolation.ts`). The delay adapts per character from a jitter
-estimate (smoothing `INTERP_JITTER_ALPHA` = 0.125, up to `INTERP_MAX_DEPTH` = 4
-snapshots, bounded between 0.5 and 2.5 steps in `client/src/render/config.ts`). An
-arrival gap longer than three steps counts as idleness, not jitter
-(`JITTER_IDLE_GAP_STEPS` in `client/src/net/store.ts`). At the newest snapshot the
-entity holds position rather than extrapolating. The own character snaps instead of
-sliding when the server correction is more than one tile away.
+estimate that ignores intervals longer than three steps (idleness), bounded between 0.5
+and 2.5 steps. The store keeps one snapshot per position: a row update on the same tile
+replaces the row and is neither a snapshot nor a jitter sample
+(`client/src/net/store.ts`). At the newest snapshot a remote holds position, with one
+exception: a remote whose last two position changes were the same one-tile step, at
+most three steps apart, the newer at most three steps ago, and which has not turned in
+place since, is drawn on past its newest tile at the walk's cadence, at most half a
+tile and only toward a walkable tile. A gap of up to three steps between two steps of a
+walking remote is crossed at the walk's pace, not held and then slid. The remote arm
+(`client/src/render/renderResolver.ts`) walks each drawn position to its target at no
+more than one tile per step, and draws it at the target once it is two tiles behind.
+The own character snaps instead of sliding when the server correction is more than one
+tile away.
 
-**Why.** Snapshots arrive in bursts. A fixed delay either pops under jitter or lags
-all the time. Extrapolation guesses wrong and then corrects visibly. Treating a pause
-as jitter would inflate the delay after every stop.
+**Why.** Snapshots arrive in bursts: a fixed delay either pops under jitter or lags all
+the time, and treating a pause as jitter would inflate the delay after every stop. The
+own client sends one step at a time, so a walker's row stream often has an empty tick
+between steps, on which the server writes a same-tile `Idle` row. Holding at the newest
+snapshot draws that as a pause on every tile, so the operator ruled that a remote
+continues its last walk for a short window and then settles (feedback item
+pt3-2026-10-159). A stop is only known when the window runs out, so the half-tile cap
+is also the backward correction a stop can show.
 
-**Rules out.** Extrapolating remote entities; a single global interpolation delay.
+**Rules out.** Continuing a remote that is not on a straight walk, farther than half a
+tile, past the window, or toward a tile that is not walkable; continuing from a single
+step (a tap, an NPC's wander); appending a same-tile row to the snapshot ring; a single
+global interpolation delay.
 
 ## Integer pixel scaling
 

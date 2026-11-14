@@ -4,15 +4,21 @@
 // A remote character is drawn at `now - interpDelay` BETWEEN its bracketing
 // authoritative snapshots. The delay is a jitter shock-absorber: brief arrival
 // jitter is hidden because we render slightly in the past where bracketing snapshots
-// already exist. Past the latest snapshot we HOLD — never extrapolate (extrapolation
-// overshoots, then snaps back: the v1 rubberband). Before the earliest snapshot we
-// clamp to it.
+// already exist. Past the latest snapshot `interpolate` and `interpolateHistory` HOLD
+// (unbounded extrapolation overshoots, then snaps back: the v1 rubberband). Before the
+// earliest snapshot they clamp to it.
 //
-// The delay is now ADAPTIVE per character — derived from an EWMA
+// The one exception to HOLD is a remote on a straight walk (`walkOf`): `continueWalk` draws
+// it up to CONTINUE_MAX_TILES past its newest tile at the walk's own cadence, so a late step
+// does not stop it. RenderResolver bounds that by a time window and by walkability, and
+// `slewToward` walks the drawn position to each new target instead of jumping there.
+//
+// The delay is ADAPTIVE per character — derived from an EWMA
 // jitter estimate so burst-delivery (two ticks in one flush) widens the window rather
 // than collapsing to a zero-span jump. `interpDelayMs` is kept for backward compat.
 
 import {
+  CONTINUE_MAX_TILES,
   INTERP_DELAY_STEPS,
   INTERP_JITTER_COEFF,
   INTERP_MAX_DELAY_STEPS,
@@ -151,11 +157,16 @@ export const REANCHOR_SPAN_STEPS = 2;
  * @param renderTime - Target render clock (ms), typically now − adaptive delay.
  * @param stepMs     - Nominal server step interval (ms). Default 0 = re-anchoring
  *   disabled (legacy behaviour preserved exactly).
+ * @param idleSpanMs - A bracket whose raw span is strictly greater than this is an idle
+ *   gap. Default REANCHOR_SPAN_STEPS×stepMs. The resolver passes the continuation window for
+ *   a remote that is walking: its steps arrive up to that far apart, so a gap that long
+ *   between two of them is part of the walk and is crossed at the walk's own pace.
  */
 export function interpolateHistory(
   snapshots: readonly InterpSample[],
   renderTime: number,
   stepMs = 0,
+  idleSpanMs = REANCHOR_SPAN_STEPS * stepMs,
 ): RenderPos {
   // Degenerate: no history — no position to render.
   if (snapshots.length === 0) return { x: 0, y: 0 };
@@ -208,7 +219,7 @@ export function interpolateHistory(
   // the slide must END when the new authoritative position becomes current (front-
   // anchoring would move the character at gap start and freeze it for the rest).
   let lower = prev.receivedAt;
-  if (stepMs > 0 && span > REANCHOR_SPAN_STEPS * stepMs) {
+  if (stepMs > 0 && span > idleSpanMs) {
     lower = next.receivedAt - stepMs;
     // Dead zone — the character genuinely stood at `prev` for the whole gap
     // (hold-don't-drift applied to the interior of a bracket).
@@ -220,4 +231,104 @@ export function interpolateHistory(
     x: prev.tileX + (next.tileX - prev.tileX) * a,
     y: prev.tileY + (next.tileY - prev.tileY) * a,
   };
+}
+
+// =============================================================================
+// Walk continuation + slew
+// =============================================================================
+
+/** One position change of a remote (the store's `PositionChange`). */
+export interface InterpStep {
+  readonly dx: number;
+  readonly dy: number;
+  readonly arrivedAt: number; // performance.now()
+}
+
+/** What a remote's last two position changes say about its walk. */
+export interface Walk {
+  /** ms per tile: the interval between the two arrivals, never below one step (the server
+   *  moves a character one tile per step, so two changes delivered in one burst still read as
+   *  one step apart). */
+  readonly cadenceMs: number;
+  /** The step both changes made, while the remote has not turned in place since; undefined
+   *  once the walk turned. */
+  readonly ahead: { readonly dx: number; readonly dy: number } | undefined;
+}
+
+/**
+ * The walk a remote is on, or undefined when it is not walking.
+ *
+ * A remote is walking when its last two position changes (`changes`, older first) are
+ * single-tile moves that arrived at most `windowMs` apart, the newer at most `windowMs` before
+ * `now` (the wall clock, not the render clock). A lone step, and steps farther apart than the
+ * window (an NPC wandering), are not walks.
+ *
+ * The walk has an `ahead` only while it is straight: both changes made the same step and the
+ * remote has not turned in place since (`turned`: a same-tile row arrived facing another way,
+ * as a turn or a bump at an angle does).
+ */
+export function walkOf(
+  changes: readonly InterpStep[],
+  turned: boolean,
+  now: number,
+  stepMs: number,
+  windowMs: number,
+): Walk | undefined {
+  if (changes.length < 2) return undefined;
+  // biome-ignore lint/style/noNonNullAssertion: length >= 2 checked above
+  const older = changes[changes.length - 2]!;
+  // biome-ignore lint/style/noNonNullAssertion: length >= 2 checked above
+  const newer = changes[changes.length - 1]!;
+  if (Math.abs(older.dx) + Math.abs(older.dy) !== 1) return undefined;
+  if (Math.abs(newer.dx) + Math.abs(newer.dy) !== 1) return undefined;
+  const apart = newer.arrivedAt - older.arrivedAt;
+  if (apart > windowMs || now - newer.arrivedAt > windowMs) return undefined;
+  const straight = !turned && newer.dx === older.dx && newer.dy === older.dy;
+  return {
+    cadenceMs: Math.max(stepMs, apart),
+    ahead: straight ? { dx: newer.dx, dy: newer.dy } : undefined,
+  };
+}
+
+/**
+ * Where a continued walk is drawn once the render clock has passed the newest snapshot: on the
+ * line from `newest` along `ahead`, one tile per `cadenceMs`, at most CONTINUE_MAX_TILES past
+ * the tile. At or before `newest.receivedAt` it is the tile itself.
+ */
+export function continueWalk(
+  newest: InterpSample,
+  ahead: { readonly dx: number; readonly dy: number },
+  cadenceMs: number,
+  renderTime: number,
+): RenderPos {
+  const tiles = Math.min(
+    CONTINUE_MAX_TILES,
+    Math.max(0, renderTime - newest.receivedAt) / cadenceMs,
+  );
+  return { x: newest.tileX + ahead.dx * tiles, y: newest.tileY + ahead.dy * tiles };
+}
+
+/** Float slack on the slew budget, in tiles: a target moving at exactly the budget stays met. */
+const SLEW_EPSILON = 1e-9;
+
+/**
+ * Move `from` toward `to` by at most `maxTiles` (Manhattan, not negative), one axis at a time;
+ * `to` itself when it is within reach.
+ *
+ * Tile paths are axis-aligned, so of the two corners between the points the one that is a tile
+ * centre is on the path: `x` closes first when the corner (`to.x`, `from.y`) is one, else `y`.
+ * A point drawn past a corner walks back to the corner and then along the new leg, and is on
+ * the path as soon as it reaches the corner. A straight line to the target would cut the corner
+ * and only meet a moving target when that stops.
+ */
+export function slewToward(from: RenderPos, to: RenderPos, maxTiles: number): RenderPos {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (Math.abs(dx) + Math.abs(dy) <= maxTiles + SLEW_EPSILON) return to;
+  const xFirst = Number.isInteger(to.x) && Number.isInteger(from.y);
+  const first = Math.min(Math.abs(xFirst ? dx : dy), maxTiles);
+  const rest = maxTiles - first;
+  return xFirst
+    ? { x: from.x + Math.sign(dx) * first, y: from.y + Math.sign(dy) * rest }
+    : { x: from.x + Math.sign(dx) * rest, y: from.y + Math.sign(dy) * first };
 }

@@ -7,9 +7,15 @@
 // and `MOVE_QUEUE_CAP` are NOT duplicated here: they are single-sourced from
 // game-core via the wasm `step_ms()`/`move_queue_cap()` exports and injected.
 //
-// Three interpolation constants (INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH, BURST_EPSILON_MS)
-// are single-sourced from `shared/interpConfig.ts` to avoid a net↔render import cycle.
-export { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
+// Four interpolation constants (INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH, BURST_EPSILON_MS,
+// JITTER_IDLE_GAP_STEPS) are single-sourced from `shared/interpConfig.ts` to avoid a
+// net↔render import cycle.
+export {
+  BURST_EPSILON_MS,
+  INTERP_JITTER_ALPHA,
+  INTERP_MAX_DEPTH,
+  JITTER_IDLE_GAP_STEPS,
+} from '../shared/interpConfig';
 
 /** Pixels per logical tile (the one configurable mapping; default ~32). */
 export const TILE_PX = 32;
@@ -97,6 +103,27 @@ export const INTERP_MIN_DELAY_STEPS = 0.5;
  *  WHY 2.5: beyond 2.5×stepMs (500 ms at 200 ms cadence) the remote-entity lag
  *  is user-perceptible; a catastrophically jittery connection shows lag not pops. */
 export const INTERP_MAX_DELAY_STEPS = 2.5;
+
+// ---------------------------------------------------------------------------
+// Remote walk continuation and slew — consumed by `interpolation.ts` and `renderResolver.ts`.
+// The continuation window is JITTER_IDLE_GAP_STEPS steps (above): the one idleness threshold.
+// ---------------------------------------------------------------------------
+
+/** Farthest a remote is drawn past its newest authoritative tile, in tiles.
+ *  WHAT: the cap on the continued-walk offset along the walk direction.
+ *  WHY 0.5: a stop is only known when the continuation window runs out, so the cap is the
+ *  backward correction every stop can show. Half a tile bridges a late step without turning a
+ *  stop into a full-tile rubberband. */
+export const CONTINUE_MAX_TILES = 0.5;
+
+/** Distance (Manhattan tiles) from its target at which a remote is drawn at the target
+ *  instead of walked there.
+ *  WHAT: the bound on how far the speed-limited remote may trail its target.
+ *  WHY 2: the widest gap ordinary play opens is under 1.5 tiles (a 0.5-tile continuation on
+ *  one side of a reversal, and up to a tile of authoritative travel on the other). Two tiles
+ *  or more is a stall delivered as one burst; walking that off at one tile per step would
+ *  leave the remote behind a walker who never slows. */
+export const REMOTE_SNAP_TILES = 2;
 
 // ---------------------------------------------------------------------------
 // Terrain renderer (wap-4) — consumed by `terrainLayout.ts` (pure) and `world.ts`.

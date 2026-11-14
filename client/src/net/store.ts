@@ -13,7 +13,12 @@
 // `flushBatch` once per transaction burst.
 import type { WasmAction, WasmDirection, WasmMoveInput } from '../convert/convert';
 import type { EventPayload } from '../module_bindings/types';
-import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
+import {
+  BURST_EPSILON_MS,
+  INTERP_JITTER_ALPHA,
+  INTERP_MAX_DEPTH,
+  JITTER_IDLE_GAP_STEPS,
+} from '../shared/interpConfig';
 import type { QueuedActionRule, RuleSide, UnitRow } from '../tactics/wasm';
 // Type-only, therefore erased: no runtime import edge, no cycle. `AffinityName` is
 // derived from the SDK-boundary registry (contract A7); `TrustTierName` comes from the
@@ -26,17 +31,6 @@ export type { AffinityName };
 /** A monster's essence pool, one entry per affinity (contract §B). Keyed by affinity —
  *  never positional, never partial. */
 export type EssenceByAffinity = Readonly<Record<AffinityName, number>>;
-
-/**
- * inter-arrival intervals above K × stepMs are IDLENESS, not jitter —
- * `upsertCharacter` skips the EWMA update for them (`<=` admits, `>` skips; one-sided:
- * interval ≈ 0 burst co-arrivals still update).
- *
- * WHY 3: must exceed 2 — a coalesced-tick spike presents as interval ≈ 2×stepMs of
- * genuine delivery jitter that must stay inside the gate — while capping one admitted
- * sample's delay movement at +0.5 steps.
- */
-export const JITTER_IDLE_GAP_STEPS = 3;
 
 /** A character row, normalized at the SDK boundary (ids `bigint`, enums as strings). */
 export interface StoreCharacter {
@@ -497,8 +491,20 @@ export interface Snapshot {
   readonly receivedAt: number; // performance.now()
 }
 
+/** One authoritative position change of a character, as it arrived. */
+export interface PositionChange {
+  /** Tile delta from the tile before it; a walked step is 1 on exactly one axis. */
+  readonly dx: number;
+  readonly dy: number;
+  /** Wall-clock arrival (ms). */
+  readonly arrivedAt: number;
+}
+
 export interface StoredCharacter {
+  /** The newest row. A same-tile update replaces it and nothing else here. */
   readonly row: StoreCharacter;
+  /** Wall-clock arrival of the newest snapshot: the base the next jitter sample is measured
+   *  from. */
   readonly receivedAt: number;
   /** Newest authoritative snapshot. Alias for snapshots[last]. */
   readonly latest: Snapshot;
@@ -513,6 +519,14 @@ export interface StoredCharacter {
   /** EWMA of inter-arrival deviation from STEP_MS (ms); 0 = smooth/no history.
    *  Fed to adaptiveInterpDelayMs in RenderResolver. */
   readonly jitterEwma: number;
+  /** The last two position changes, older first; empty after first sight and after a snap,
+   *  which are not steps. RenderResolver reads a remote's walk from it. Absent on a
+   *  hand-built character, which reads as no position change. */
+  readonly positionChanges?: readonly PositionChange[];
+  /** True once a same-tile row has faced another way than the row before it; false again at
+   *  the next position change. A character that turned in place is not walking on, even if
+   *  it turns back. */
+  readonly turnedInPlace?: boolean;
 }
 
 export class AuthoritativeStore {
@@ -610,6 +624,26 @@ export class AuthoritativeStore {
         Math.abs(row.tileX - existing.row.tileX) > 1 ||
         Math.abs(row.tileY - existing.row.tileY) > 1);
 
+    // A same-tile update is no position sample. The server writes one whenever a tick finds
+    // the queue empty (`action` Idle), between the steps of a walk as well as after it, so
+    // appending it would fill the ring with repeats of a tile and read as delivery jitter.
+    // The row is still replaced: `facing`, `action`, the published queue and the ack stay
+    // current.
+    if (
+      existing !== undefined &&
+      !shouldSnap &&
+      row.tileX === existing.row.tileX &&
+      row.tileY === existing.row.tileY
+    ) {
+      this.#chars.set(row.entityId, {
+        ...existing,
+        row,
+        turnedInPlace: existing.turnedInPlace === true || row.facing !== existing.row.facing,
+      });
+      this.#dirty = true;
+      return;
+    }
+
     // Burst detection: when two snapshots for the same entity arrive
     // within BURST_EPSILON_MS of each other (same WebSocket flush), attempt to
     // assign a synthetic receivedAt one nominal step after the existing latest.
@@ -681,6 +715,18 @@ export class AuthoritativeStore {
       }
     }
 
+    const positionChanges: readonly PositionChange[] =
+      existing === undefined || shouldSnap
+        ? []
+        : [
+            ...(existing.positionChanges ?? []).slice(-1),
+            {
+              dx: row.tileX - existing.row.tileX,
+              dy: row.tileY - existing.row.tileY,
+              arrivedAt: now,
+            },
+          ];
+
     this.#chars.set(row.entityId, {
       row,
       // Always real wall-clock time — the jitter base for the NEXT update, written
@@ -692,6 +738,8 @@ export class AuthoritativeStore {
       prev: newSnapshots.length >= 2 ? newSnapshots[newSnapshots.length - 2] : undefined,
       snapshots: newSnapshots,
       jitterEwma: newJitter,
+      positionChanges,
+      turnedInPlace: false,
     });
     this.#dirty = true;
   }

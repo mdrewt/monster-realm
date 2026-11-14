@@ -42,7 +42,9 @@ const H = vi.hoisted(() => ({
 }));
 
 // wasm pkg: the walking mock, with a warp in each of zones 0 and 1 (into the other) and no map
-// at all for zone 9.
+// at all for zone 9. Zone 0's 8x8 grid has one wall, at (6,2); zone 1's has one, at (6,4), where
+// zone 0 is open (and zone 1 is open at (6,2)). The remote-continuation wiring tests walk remotes
+// toward them, so the predicate main.ts hands the resolver must be the drawn zone's.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const base = wasmPkgWalkingMock();
   return {
@@ -54,7 +56,10 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
         zoneId === 0 || zoneId === 1
           ? [{ from: { x: 1, y: 5 }, to_zone: 1 - zoneId, to_tile: { x: 1, y: 5 } }]
           : [];
-      return { ...base.zone_map(zoneId), warps };
+      const map = base.zone_map(zoneId);
+      const wall = zoneId === 0 ? 2 * map.width + 6 : zoneId === 1 ? 4 * map.width + 6 : -1;
+      const walkable = map.walkable.map((w, i) => w && i !== wall);
+      return { ...map, walkable, warps };
     },
   };
 });
@@ -354,11 +359,19 @@ describe('main.ts draws the world once its scope has settled', { sequential: tru
       s.upsertCharacter(character(OWN, 1, 1, 5), 1200);
       s.upsertCharacter(character(41n, 1, 3, 5), 1200);
     });
-    // Zone 1's remote arrives on the step; the zone-0 one, still held, arrives off it.
-    for (const t of [1400, 1600, 1800, 2000]) {
-      batch(t, (s) => s.upsertCharacter(character(41n, 1, 3, 5), t));
+    // Zone 1's remote steps on the step; the zone-0 one, still held, steps off it. Only position
+    // changes feed the jitter estimate (a same-tile row does not), so both step between
+    // adjacent tiles: 41n every 200 ms (estimate 0), NPC at 1600 and 2000 (intervals 500 and
+    // 400: estimate 37.5, then 57.8125, delay 315.625).
+    for (const [t, x] of [
+      [1400, 4],
+      [1600, 3],
+      [1800, 4],
+      [2000, 3],
+    ] as const) {
+      batch(t, (s) => s.upsertCharacter(character(41n, 1, x, 5), t));
     }
-    batch(1600, (s) => s.upsertCharacter(character(NPC, 0, 4, 6), 1600));
+    batch(1600, (s) => s.upsertCharacter(character(NPC, 0, 5, 6), 1600));
     batch(2000, (s) => s.upsertCharacter(character(NPC, 0, 4, 6), 2000));
 
     const delayOf = (entityId: bigint): number => {
@@ -373,4 +386,105 @@ describe('main.ts draws the world once its scope has settled', { sequential: tru
     frame(2050);
     expect(H.gaps).toEqual([delayOf(41n)]);
   });
+
+  it('a remote on a straight walk is drawn past its newest tile toward a walkable tile, and never into a wall of the drawn zone [np-a.2]', async () => {
+    // WRONG IMPL KILLED: main.ts not handing the resolver a walkability predicate (never
+    // continued: OPEN_WALKER never passes x = 5); a predicate that is not the drawn zone's map,
+    // e.g. always true (WALL_WALKER is drawn into the wall at (6,2)).
+    // Both remotes step east in zone 0 at 1100, 1300, 1500 (x = 3, 4, 5): steps exactly 200 ms
+    // apart keep the jitter estimate at 0, the delay at 200. The render clock passes 1500 at
+    // 1700; OPEN_WALKER, heading for (6,4), is then continued at one tile per 200 ms to x = 5.5
+    // (1800) until the window ends at 2100. WALL_WALKER is heading for (6,2), a wall.
+    await boot();
+    settled(false);
+    opts.onReady(H.identity);
+    batch(1100, (s) => ownRows(s, 1100));
+    settled(true);
+    walkPair({ zoneId: 0, firstAt: 1100, openRow: 4, wallRow: 2 });
+  });
+
+  it("after a warp, the walls a remote is held short of are the new zone's [np-a.2]", async () => {
+    // WRONG IMPL KILLED: a predicate built once from the map drawn at boot (zone 0). Zone 1 is
+    // open at (6,2), where zone 0 has its wall, and walled at (6,4), where zone 0 is open: the
+    // boot predicate holds OPEN_WALKER short of (6,2) and draws WALL_WALKER into (6,4).
+    // Same timing as the zone-0 test, shifted: steps at 1300, 1500, 1700; continued from 1900 to
+    // x = 5.5 by 2000; the window ends at 2300.
+    await boot();
+    settled(false);
+    opts.onReady(H.identity);
+    batch(1100, (s) => ownRows(s, 1100));
+    settled(true);
+    frame(1150);
+    // The own character warps to zone 1 (the WS-REVEAL-WARP sequence); the world stays drawn.
+    opts.onOwnWarp?.(1);
+    batch(1200, (s) => s.upsertCharacter(character(OWN, 1, 1, 5), 1200));
+    settled(false);
+    frame(1250);
+    settled(true);
+    walkPair({ zoneId: 1, firstAt: 1300, openRow: 2, wallRow: 4 });
+  });
+
+  /**
+   * Two remotes in `zoneId` step east from x = 3 to 5, 200 ms apart from `firstAt` (jitter 0,
+   * delay 200): OPEN_WALKER on `openRow` toward the zone's open (6, openRow), WALL_WALKER on
+   * `wallRow` toward its wall (6, wallRow). Frames every 16 ms until 700 ms after the last step.
+   * OPEN_WALKER is continued past x = 5 (to 5.5); WALL_WALKER is never drawn past 5.
+   */
+  function walkPair(o: {
+    zoneId: number;
+    firstAt: number;
+    openRow: number;
+    wallRow: number;
+  }): void {
+    const OPEN_WALKER = 50n;
+    const WALL_WALKER = 51n;
+    interface Drawn {
+      readonly entityId: string;
+      readonly x: number;
+      readonly y: number;
+    }
+    const drawn = (id: bigint): Drawn | undefined =>
+      (window as unknown as { __game: () => { rendered: readonly Drawn[] } })
+        .__game()
+        .rendered.find((e) => e.entityId === id.toString());
+
+    const steps: readonly [number, number][] = [
+      [o.firstAt, 3],
+      [o.firstAt + 200, 4],
+      [o.firstAt + 400, 5],
+    ];
+    let next = 0;
+    const open: number[] = [];
+    const wall: number[] = [];
+    for (let t = o.firstAt + 16; t <= o.firstAt + 1100; t += 16) {
+      while (next < steps.length && steps[next]![0] <= t) {
+        const [at, x] = steps[next]!;
+        batch(at, (s) => {
+          s.upsertCharacter(character(OPEN_WALKER, o.zoneId, x, o.openRow), at);
+          s.upsertCharacter(character(WALL_WALKER, o.zoneId, x, o.wallRow), at);
+        });
+        next++;
+      }
+      frame(t);
+      const op = drawn(OPEN_WALKER);
+      const wp = drawn(WALL_WALKER);
+      expect(op, `OPEN_WALKER drawn at ${t}`).toBeDefined();
+      expect(wp, `WALL_WALKER drawn at ${t}`).toBeDefined();
+      expect(op!.y).toBeCloseTo(o.openRow, 9);
+      expect(wp!.y).toBeCloseTo(o.wallRow, 9);
+      open.push(op!.x);
+      wall.push(wp!.x);
+    }
+    expect(next, 'every step was delivered').toBe(steps.length);
+    expect(
+      Math.max(...open),
+      `drawn past (5,${o.openRow}) toward the open (6,${o.openRow}) of zone ${o.zoneId}`,
+    ).toBeGreaterThan(5.25);
+    expect(Math.max(...open)).toBeLessThanOrEqual(5.5 + 1e-9);
+    expect(
+      Math.max(...wall),
+      `never drawn past (5,${o.wallRow}) toward the wall (6,${o.wallRow}) of zone ${o.zoneId}`,
+    ).toBeLessThanOrEqual(5 + 1e-9);
+    expect(wall[wall.length - 1], 'WALL_WALKER rests on its newest tile').toBeCloseTo(5, 9);
+  }
 });
