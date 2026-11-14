@@ -1,8 +1,14 @@
 // observability/config.ts — OBS-21.
 //
-// Pure, total resolver for the two VITE telemetry vars. Discriminated union out — an illegal
-// combination is unrepresentable, and the shell branches on `kind` alone.
+// Pure, total resolver for the two VITE telemetry vars and the target kind. Discriminated union
+// out — an illegal combination is unrepresentable, and the shell branches on the result's `kind`
+// alone.
 //
+//   target    — ALLOW-LIST, decided before any env value is read. Only a server we operate
+//               (target kind `official` or `test`) reaches the endpoint and interval rules. A
+//               single-player world (`local`) or a friends server (`private`) is disabled
+//               whatever the build's endpoint holds: a client joined to a world we do not run
+//               sends nothing to our ingest.
 //   endpoint  — REJECT-don't-clamp. PROD accepts absolute `https:` origins only (no path, no
 //               query, no fragment, no URL userinfo — the ingest takes no secret of any
 //               kind, and a rejected shape must never be "helpfully" repaired). DEV additionally
@@ -16,6 +22,8 @@
 //
 // NEVER writes to the console, for any input: it runs at module scope in main.ts, before the
 // error plumbing exists, and "off" is the normal state of every dev/test build, not an error.
+
+import type { TargetKind } from '../net/shellDocument';
 
 export const OTLP_METRICS_PATH = '/v1/metrics';
 export const TELEMETRY_INTERVAL_MIN_MS = 15_000;
@@ -92,7 +100,21 @@ export function resolveTelemetryConfig(
   env: TelemetryEnv,
   isDev: boolean,
   jitter: number,
+  kind: TargetKind,
 ): TelemetryConfig {
+  switch (kind) {
+    case 'official':
+    case 'test':
+      break;
+    case 'local':
+    case 'private':
+      return disabled(`target kind ${kind} — telemetry off`);
+    default:
+      // A kind added to TARGET_KINDS fails to compile here until it has a case above, and a
+      // run-time value outside the type stays off.
+      kind satisfies never;
+      return disabled('unclassified target kind — telemetry off');
+  }
   const endpoint = resolveEndpoint(env.endpoint, isDev);
   if (endpoint.kind === 'disabled') return endpoint;
   return {

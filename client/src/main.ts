@@ -92,6 +92,7 @@ import {
   QUEUE_CAP,
   STEP_MS,
   sendLogger,
+  TARGET_KIND,
   URI,
   WASM_READY_MS,
   ZONE_ID,
@@ -371,7 +372,8 @@ document.documentElement.dir = isRtl(LOCALE) ? 'rtl' : 'ltr';
 // rawMap is `let` — replaced on zone warp (zone_map() re-called for the new zone id).
 let rawMap = zone_map(ZONE_ID);
 
-// module-scope resolve (F-3 pattern); jitter injected so the resolver stays pure (AM12).
+// module-scope resolve (F-3 pattern); jitter injected so the resolver stays pure (AM12). The
+// target kind decides first: only an `official` or `test` target can resolve enabled.
 const TELEMETRY_CONFIG = resolveTelemetryConfig(
   {
     endpoint: import.meta.env.VITE_MR_OTLP_ENDPOINT as string | undefined,
@@ -379,6 +381,7 @@ const TELEMETRY_CONFIG = resolveTelemetryConfig(
   },
   import.meta.env.DEV,
   Math.random(),
+  TARGET_KIND,
 );
 // Seeded with the shared no-op; re-assigned once by the init hunk iff the bootstrap resolves.
 let telemetry: ClientTelemetry = NOOP_TELEMETRY;
@@ -5052,15 +5055,18 @@ async function main(): Promise<void> {
     telemetry.setZone(rawMap.zone_id);
   });
 
+  // The build's OIDC issuer and client id go only to a server we operate. A single-player world
+  // (`local`) or a friends server (`private`) gets both empty, as a build that sets no issuer
+  // does: no request goes to our issuer on that world's behalf.
+  const accountTarget = TARGET_KIND === 'official' || TARGET_KIND === 'test';
   conn = connect({
     uri: URI,
     db: DB,
     name: 'Player',
     store,
-    // OIDC config from env. The `?? ''` fallback degrades gracefully
-    // today (no issuer → the flow contacts no network, AUTH-44) and lights up once a real issuer is deployed.
-    authIssuer: import.meta.env.VITE_MR_OIDC_ISSUER ?? '',
-    authClientId: import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '',
+    // `?? ''`: a build that sets no issuer is anonymous-only.
+    authIssuer: accountTarget ? (import.meta.env.VITE_MR_OIDC_ISSUER ?? '') : '',
+    authClientId: accountTarget ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
     // Undefined unless VITE_MR_DEVLOG is set — then the connection installs the
     // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay
