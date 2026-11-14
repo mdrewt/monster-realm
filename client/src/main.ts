@@ -55,6 +55,7 @@ import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
 import { RATE_LIMIT_INITIAL, rateLimitTick } from './net/devLog';
+import { ServerClock } from './net/serverClock';
 import {
   AuthoritativeStore,
   ownPerspective,
@@ -62,7 +63,6 @@ import {
   type StoreTacticalBattle,
   type StoreTradeSessionOffer,
 } from './net/store';
-import { ServerClock } from './net/serverClock';
 import { describeScope, INITIAL_SCOPE, revealAfterScopeEdge } from './net/worldScope';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';

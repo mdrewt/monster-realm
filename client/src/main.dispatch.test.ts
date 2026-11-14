@@ -9513,7 +9513,8 @@ describe('ts-6b-7: the server-time estimate and the results drain', { sequential
     expect(shownIn(shell), 'the last half second: 1').toEqual([line(1)]);
     tick(behind(S0 + 50_000));
     expect(bt12bCountdowns(), 'gone at the SERVER deadline').toEqual([]);
-    ts7Clear(W, (t += 50));
+    t += 50;
+    ts7Clear(W, t);
 
     // --- a PvP battle, the device clock stepped to 30 s behind ----------------------------------
     const stepped = (serverMs: number): number => serverMs - 30_000;
