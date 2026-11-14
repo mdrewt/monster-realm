@@ -81,11 +81,17 @@ function isWsUrl(uri: string): boolean {
   }
 }
 
+/** The own string field `key` of `connection`, read once and trimmed. */
+function stringField(connection: Fields, key: 'uri' | 'db'): string {
+  const subject = `connection.${key}`;
+  if (!Object.hasOwn(connection, key)) throw refusal(subject, 'is missing');
+  const raw = connection[key];
+  if (typeof raw !== 'string') throw refusal(subject, 'must be a string');
+  return raw.trim();
+}
+
 function uriOf(connection: Fields): string {
-  if (!Object.hasOwn(connection, 'uri')) throw refusal('connection.uri', 'is missing');
-  const raw = connection.uri;
-  if (typeof raw !== 'string') throw refusal('connection.uri', 'must be a string');
-  const uri = raw.trim();
+  const uri = stringField(connection, 'uri');
   if (!isWsUrl(uri)) {
     throw refusal(
       'connection.uri',
@@ -101,10 +107,7 @@ function uriOf(connection: Fields): string {
 const DB_NAME = /^[A-Za-z0-9_-]+$/;
 
 function dbOf(connection: Fields, isDev: boolean): string {
-  if (!Object.hasOwn(connection, 'db')) throw refusal('connection.db', 'is missing');
-  const raw = connection.db;
-  if (typeof raw !== 'string') throw refusal('connection.db', 'must be a string');
-  const db = raw.trim();
+  const db = stringField(connection, 'db');
   if (!DB_NAME.test(db)) throw refusal('connection.db', 'must match [A-Za-z0-9_-]+');
   if (!isDev && db.toLowerCase() === DEV_DB) {
     throw refusal(
