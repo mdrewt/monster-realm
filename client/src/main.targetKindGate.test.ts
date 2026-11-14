@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 /**
- * main.targetKindGate.test.ts: the booted client sends telemetry and offers account sign-in only
- * toward an official or test server. A single-player world (`local`) and a friends server
- * (`private`) get neither, whatever the build's telemetry and OIDC variables hold.
+ * main.targetKindGate.test.ts: the booted client loads the telemetry SDK, and hands `connect()`
+ * the build's OIDC issuer and client id, only toward an official or test server. Toward a
+ * single-player world (`local`) or a friends server (`private`) it does neither, whatever the
+ * build's telemetry and OIDC variables hold: the loader is never called and `connect()` receives
+ * an empty issuer and client id. A production build whose document names no kind is `private`.
  *
  * Every case boots the REAL main.ts, over the real client/index.html shell with the real views,
  * under a shell document on the page global that names the target kind, with the build env
@@ -132,8 +134,15 @@ function drainPendingWork(): Promise<void> {
 
 /** Boot a fresh main.ts under a shell document of `kind` and return the options it handed
  *  `connect()`, after the work it started before that call has settled. */
-async function bootUnder(kind: TargetKind): Promise<ConnectionOptions> {
-  (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL] = documentFor(kind);
+function bootUnder(kind: TargetKind): Promise<ConnectionOptions> {
+  return bootWith(documentFor(kind), `a ${kind} document`);
+}
+
+/** Boot a fresh main.ts under `doc` (described by `label` in failure messages), with the build
+ *  env stubbed, and return the options it handed `connect()` once the boot is known to have taken
+ *  `doc`'s target and the work it started before `connect()` has settled. */
+async function bootWith(doc: ShellDocument, label: string): Promise<ConnectionOptions> {
+  (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL] = doc;
   vi.stubEnv('VITE_MR_OTLP_ENDPOINT', OTLP_ORIGIN);
   vi.stubEnv('VITE_MR_OTLP_INTERVAL_MS', '60000');
   vi.stubEnv('VITE_MR_OIDC_ISSUER', OIDC_ISSUER);
@@ -155,9 +164,8 @@ async function bootUnder(kind: TargetKind): Promise<ConnectionOptions> {
     { timeout: 5_000, interval: 5 },
   );
   // The boot took this case's document, not the development default (which is kind `test`).
-  const target = documentFor(kind).connection;
-  expect(opts.uri, `connect() uri under a ${kind} document`).toBe(target.uri);
-  expect(opts.db, `connect() db under a ${kind} document`).toBe(target.db);
+  expect(opts.uri, `connect() uri under ${label}`).toBe(doc.connection.uri);
+  expect(opts.db, `connect() db under ${label}`).toBe(doc.connection.db);
   await drainPendingWork();
   return opts;
 }
@@ -214,4 +222,21 @@ describe('the booted client gates telemetry and account sign-in on the target ki
       });
     }
   }
+
+  it('gives a production build whose document names no kind neither telemetry nor the OIDC config', async () => {
+    // A production build resolves an omitted kind to `private`, the most restricted kind; a
+    // development build resolves it to `test`. The document has no `kind` key at all.
+    vi.stubEnv('DEV', false);
+    const doc: ShellDocument = {
+      connection: { uri: 'wss://gate.example:4443/', db: 'realm-gate' },
+    };
+    expect(Object.hasOwn(doc.connection, 'kind')).toBe(false);
+    const opts = await bootWith(doc, 'a production document with no kind');
+    expect(
+      H.loadSdk,
+      'the SDK loader under a production document with no kind',
+    ).not.toHaveBeenCalled();
+    expect(opts.authIssuer, 'authIssuer under a production document with no kind').toBe('');
+    expect(opts.authClientId, 'authClientId under a production document with no kind').toBe('');
+  });
 });

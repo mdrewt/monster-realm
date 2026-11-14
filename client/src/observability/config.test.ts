@@ -346,15 +346,6 @@ for (const kind of ALLOWED_KINDS) {
 
 /** The interval cases, registered once per allowed target kind. */
 function intervalCases(kind: AllowedKind): void {
-  it('T-21b-constants: the clamp window is [15000, 300000] with a 60000 default and 10% jitter', () => {
-    // These four numbers ARE the rate budget (see the tooth below). Pinning them here means the
-    // budget arithmetic cannot be quietly invalidated by editing a constant.
-    expect(TELEMETRY_INTERVAL_MIN_MS).toBe(15_000);
-    expect(TELEMETRY_INTERVAL_MAX_MS).toBe(300_000);
-    expect(TELEMETRY_INTERVAL_DEFAULT_MS).toBe(60_000);
-    expect(TELEMETRY_JITTER_FRACTION).toBe(0.1);
-  });
-
   it('T-21b-default: an unset/garbage interval falls back to the default — it never disables', () => {
     // CLAMP-don't-reject, the deliberate asymmetry against the endpoint rule: a typo'd interval
     // must not silently switch telemetry off (that failure is invisible), whereas a typo'd
@@ -461,6 +452,23 @@ function intervalCases(kind: AllowedKind): void {
       { seed: 20250809, numRuns: 500 },
     );
   });
+}
+
+for (const kind of ALLOWED_KINDS) {
+  describe(`resolveTelemetryConfig (T-21b) [target kind ${kind}]: interval clamp + upward-only jitter`, () => {
+    intervalCases(kind);
+  });
+}
+
+describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', () => {
+  it('T-21b-constants: the clamp window is [15000, 300000] with a 60000 default and 10% jitter', () => {
+    // These four numbers ARE the rate budget (see the tooth below). Pinning them here means the
+    // budget arithmetic cannot be quietly invalidated by editing a constant.
+    expect(TELEMETRY_INTERVAL_MIN_MS).toBe(15_000);
+    expect(TELEMETRY_INTERVAL_MAX_MS).toBe(300_000);
+    expect(TELEMETRY_INTERVAL_DEFAULT_MS).toBe(60_000);
+    expect(TELEMETRY_JITTER_FRACTION).toBe(0.1);
+  });
 
   it('T-21b-budget: the WORST-CASE request rate at the clamp floor fits under Caddy 120/min', () => {
     // AM12, written as arithmetic rather than as a comment so it cannot rot:
@@ -489,13 +497,7 @@ function intervalCases(kind: AllowedKind): void {
         `${CADDY_EVENTS_PER_MINUTE}/min. Lowering the floor to 10s already breaks it.`,
     ).toBeLessThanOrEqual(CADDY_EVENTS_PER_MINUTE);
   });
-}
-
-for (const kind of ALLOWED_KINDS) {
-  describe(`resolveTelemetryConfig (T-21b) [target kind ${kind}]: interval clamp + upward-only jitter`, () => {
-    intervalCases(kind);
-  });
-}
+});
 
 describe('resolveTelemetryConfig: a target kind other than official and test disables telemetry', () => {
   it('disables a valid https origin in dev and in prod for every target kind but official and test', () => {
@@ -591,36 +593,77 @@ describe('resolveTelemetryConfig: a target kind other than official and test dis
 
   it('disables a run-time value outside the target kinds without throwing, even for a valid https origin', () => {
     // Reachable only through a cast or an untyped caller. A lookup table keyed by the kind would
-    // read `toString` or `constructor` off Object.prototype; a case-folding compare would let
-    // `OFFICIAL` through. Neither is a target kind the page's host can name.
-    const outside: unknown[] = [
-      undefined,
-      null,
-      '',
-      'OFFICIAL',
-      'Official',
-      ' official',
-      'tests',
-      'production',
-      'toString',
-      'constructor',
-      '__proto__',
-      0,
-      1,
-      true,
-      {},
-      ['official'],
+    // read `toString` or `constructor` off Object.prototype; a case-folding or trimming compare
+    // would let `OFFICIAL` or ` test` through; a reason that interpolates the value would name a
+    // target kind for a near-miss, and throw for a Symbol or a value whose conversion throws.
+    // Each value carries a fixed label, so no failure message ever converts the value itself.
+    const throwingObject = {
+      toString(): string {
+        throw new Error('toString throws');
+      },
+      valueOf(): number {
+        throw new Error('valueOf throws');
+      },
+    };
+    const outside: ReadonlyArray<readonly [string, unknown]> = [
+      ['undefined', undefined],
+      ['null', null],
+      ['the empty string', ''],
+      ['upper-case OFFICIAL', 'OFFICIAL'],
+      ['capitalised Official', 'Official'],
+      ['official with a leading space', ' official'],
+      ['upper-case TEST', 'TEST'],
+      ['test with a leading space', ' test'],
+      ['test with a trailing space', 'test '],
+      ['test with a trailing newline', 'test\n'],
+      ['officially', 'officially'],
+      ['official followed by NUL', `official${String.fromCharCode(0)}`],
+      ['tests', 'tests'],
+      ['production', 'production'],
+      // Constructed reflectively: the same boxed String object `new String('official')` makes.
+      ['a boxed String official', Reflect.construct(String, ['official'])],
+      ['toString', 'toString'],
+      ['valueOf', 'valueOf'],
+      ['hasOwnProperty', 'hasOwnProperty'],
+      ['constructor', 'constructor'],
+      ['__proto__', '__proto__'],
+      ['the number 0', 0],
+      ['the number 1', 1],
+      ['the bigint 1n', 1n],
+      ['true', true],
+      ['a Symbol described official', Symbol('official')],
+      ['an empty object', {}],
+      ['a prototype-less object', Object.create(null)],
+      ['an object whose toString and valueOf throw', throwingObject],
+      ['an array holding official', ['official']],
+      ['a function', () => 'official'],
     ];
-    for (const raw of outside) {
+    const total = spyConsole();
+    for (const [label, raw] of outside) {
       for (const isDev of [true, false]) {
-        const cfg = resolveTelemetryConfig(
-          { endpoint: HTTPS_NAMED, intervalMs: '60000' },
-          isDev,
-          0,
-          raw as TargetKind,
-        );
-        const reason = disabledReasonOrThrow(cfg);
-        expect(reason.length, `a reason for ${String(raw)} isDev=${isDev}`).toBeGreaterThan(0);
+        const where = `${label}, isDev=${isDev}`;
+        const before = total();
+        let cfg: ReturnType<typeof resolveTelemetryConfig>;
+        try {
+          cfg = resolveTelemetryConfig(
+            { endpoint: HTTPS_NAMED, intervalMs: '60000' },
+            isDev,
+            0,
+            raw as TargetKind,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'a non-Error value';
+          throw new Error(`${where}: must not throw, threw ${message}`);
+        }
+        expect(cfg.kind, `${where}: must be disabled`).toBe('disabled');
+        if (cfg.kind !== 'disabled') continue;
+        expect(cfg.reason.length, `${where}: reason must be non-empty`).toBeGreaterThan(0);
+        // Case-folded, so an interpolated `OFFICIAL` or `TEST` counts as naming the kind too.
+        const words = wordsOf(cfg.reason.toLowerCase());
+        for (const kind of TARGET_KINDS) {
+          expect(words, `${where}: reason must not name ${kind}`).not.toContain(kind);
+        }
+        expect(total() - before, `${where}: must not write to the console`).toBe(0);
       }
     }
   });
