@@ -38,10 +38,10 @@ whole-word search of every tracked file.
    removed for that reason and needs no survivor.
 5. **Stored types change additively.** No extraction renames, reorders or drops a field or
    variant of `BattleState`, `BattleSide`, `BattleMonster`, `BattleOutcome`, `StatusEffect`,
-   `WeatherEffect`, `StatusKind` or `PvpAction`. None moves one of them to another file either,
-   for one reason: a test in `game-core/src/content.rs` reads `combat/ability.rs` and
-   `combat/types.rs` as text. A slice that replaces that test with one that executes lifts the
-   limit.
+   `WeatherEffect`, `StatusKind` or `PvpAction`. `StatusKind`, `StatusEffect` and the types
+   beside them also stay in `combat/ability.rs` and `combat/types.rs`, for one reason: a test
+   in `game-core/src/content.rs` reads those two files as text. A slice that replaces that test
+   with one that executes lifts the limit.
 
 ## Every `pub` item
 
@@ -309,8 +309,10 @@ The Poison and Burn numbers are `apply_post_turn_effects`' own output at `485e8b
 | `game-core/benches/budgets.rs` | The `resolve_turn` row (ceiling 2,000 ns) | 2 |
 | `game-core/benches/budget_check_tests.rs` | `"resolve_turn"` in `EXPECTED_IDS`, which shrinks from 8 ids to 7, and the comments that count the hot paths | 2 |
 | `game-core/src/content.rs` (test module) | `include_str!("combat/ability.rs")` and `include_str!("combat/types.rs")`: a ban on `serde(skip)` in the files that define `StatusKind` and `StatusEffect` | Stays valid: both files stay and keep those types (rule 5) |
-| `ARCHITECTURE.md`, `docs/DECISIONS.md` ("Determinism: integer math, injected time and randomness", "Integer damage formula with a seeded variance roll"), `.claude/skills/game-core-testing/SKILL.md`, `.claude/skills/spacetimedb-reducer/SKILL.md`, `.claude/agents/desync-guard.md` | Prose that names `TurnVariance::from_ctx_random` or lists turn resolution, abilities, weather and AI under `combat` | 4 corrects the `TurnVariance` text; each line corrects the `combat` row of `ARCHITECTURE.md` |
-| Module and item docs in `combat/mod.rs`, `pvp.rs`, `ability.rs`, `status.rs`, `damage.rs`, `tactics/upkeep.rs`, `tactics/queue.rs`, `tactics/resolve.rs`, and comments at `game-core/src/content.rs` (the empty-moveset check), `game-core/src/world.rs` (`SwapError`), `taming/rules_tests.rs`, `client-wasm/src/tactics_tests.rs` | Text that names a removed item | The line that removes the item |
+| `ARCHITECTURE.md`, `docs/DECISIONS.md` ("Determinism: integer math, injected time and randomness", "Integer damage formula with a seeded variance roll"), `.claude/skills/game-core-testing/SKILL.md`, `.claude/skills/spacetimedb-reducer/SKILL.md`, `.claude/agents/desync-guard.md` | Prose that names `TurnVariance` or `TurnVariance::from_ctx_random` | 4 |
+| `ARCHITECTURE.md` | The `combat` row of the module table (turn resolution, abilities, weather, AI) and the sentence that names `StatusVariance` among the pre-rolled values | each line corrects the row; 7 corrects the sentence |
+| `docs/DECISIONS.md` ("Reject, don't clamp") | `BattleSide::set_active` and `SwapError` as an example in code | 6 |
+| Module and item docs in `combat/mod.rs`, `pvp.rs`, `ability.rs`, `status.rs`, `damage.rs`, `tactics/upkeep.rs`, `tactics/queue.rs`, `tactics/resolve.rs`, and comments at `game-core/src/content.rs` (the empty-moveset check names `pick_best_skill`; the doc of `status_token_key` names `StatusKind::matches`), `game-core/src/world.rs` (`SwapError`), `taming/rules_tests.rs`, `client-wasm/src/tactics_tests.rs` | Text that names a removed item | The line that removes the item |
 
 The mutation gate does not block any line. With every test that reaches an item of lines 3 to
 5 filtered out (125 tests), `cargo mutants` over the eight `combat/` files that stay tests 216
@@ -366,8 +368,8 @@ from 99 it becomes 100. At `max_hp` 3 from 1 HP it becomes 2. The shipped abilit
 Regeneration, `denom` 4.
 
 **Status immunity** (`AbilityEffect::StatusImmunity { immune_to }`). When the monster enters,
-and at the start of every full turn and every failed-recruit turn before the turn-skip check,
-a status of the immune kind is cleared; every other status stays. The match is by kind: Sleep
+at the start of every full turn (before the turn-skip check) and at the start of every
+failed-recruit turn, a status of the immune kind is cleared; every other status stays. The match is by kind: Sleep
 immunity clears `Sleep { turns_remaining }` for any count. Nothing is healed and no event is
 emitted. Immunity does not stop a hit from applying the status: the status is written at the
 end of that turn and cleared when the next full or failed-recruit turn starts. A swap turn
@@ -380,7 +382,7 @@ attack that knocks a monster out and switches the next one in, `resolve_full_tur
 `resolve_player_swap` and `resolve_recruit_failure` call it for the newcomer, before the
 end-of-turn phases. It does not fire for a swap chosen inside `resolve_full_turn`
 (`TurnChoice::Swap`), nor for the switch after a KO by status damage or weather chip, and no
-code makes the battle-start call.
+production code makes the battle-start call.
 
 **Weather attack modifier** (stays, in `calc_damage`). Rain: Water ×3/2, Fire ×1/2. Sun: Fire
 ×3/2, Water ×1/2. Sandstorm, Hail and no weather: ×1. Applied after the variance step and
@@ -398,23 +400,24 @@ is left.
 
 **Weather duration.** A hit by a skill with `sets_weather` sets the weather for 5 turns
 (`WEATHER_DEFAULT_TURNS`), in place of any weather already active, after its own damage is
-applied. It does not modify its own hit, and it does modify every later attack, the other
+applied. It does not apply to its own hit, and it applies to every later attack, the other
 side's attack on the same turn included. It sets the weather on a KO, and not on a miss or an
 immune hit. The last end-of-turn phase counts the weather down: 5 becomes 4, 2 becomes 1, and
 at 1 or 0 the weather clears. The countdown runs on the setting turn too, so the weather
-chips at the end of five turns and modifies attacks for the rest of the setting turn and the
-next four. The shipped setters are skills 7 to 10 (Rain Dance, Sunny Slam, Sandblast,
+chips at the end of five turns and applies to attacks for the rest of the setting turn and
+the next four. The shipped setters are skills 7 to 10 (Rain Dance, Sunny Slam, Sandblast,
 Hailstrike); `tactics/content.rs` refuses a kit that holds one.
 
 ## Extractions, in order
 
 Each is one slice, and the slice for a line deletes that line and that line's rows from the
-tables above. The slice for the last line deletes every section but "Values the removed
-weather and ability rules produce".
+tables above. The slice that lands last deletes every section but "Values the removed weather
+and ability rules produce", rewrites this file's opening to say what is left, and takes the
+list of what is being removed out of the decision entry.
 
 - **Order.** Lines 2, 3 and 8 depend on nothing. Line 4 needs lines 1, 2 and 3; line 5 needs
-  lines 1 and 4; line 6 needs lines 4 and 5; line 7 needs line 6. Lines 3 and 8 edit the same
-  test file, so they are not built at the same time.
+  lines 1 and 4; line 6 needs lines 4 and 5; line 7 needs line 6. Line 8 edits test files that
+  lines 3 to 7 also edit, so it is not built at the same time as one of them.
 - **Kinds.** A **deletion** removes whole `pub` items with the whole tests that name them; the
   product code that stays does not change. A **test change** edits tests only and is written
   by a tester, as is the 1v1 comparison lines 4 and 5 cut out of a tactics test. The

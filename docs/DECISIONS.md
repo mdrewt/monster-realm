@@ -1006,8 +1006,8 @@ types stored in `Battle.state`, `battle_action` and the content rows, and the ru
 path calls: the damage formula and accuracy check, the type chart, lead selection, the status
 countdown, the XP rules, and the PvP forfeit and challenge rules. Everything else in it (the
 turn driver in `combat/resolve.rs`, the enemy skill picker, the entry-ability hooks, the weather
-chip and countdown) is removed in the order `docs/refactors/combat-carried-rules.md` lists;
-that file classes every `pub` item. The tactical engine calls a carried rule itself. Where the
+chip and countdown) has no production caller, and `docs/refactors/combat-carried-rules.md`
+lists what is left to remove and in what order. The tactical engine calls a carried rule itself. Where the
 rule's signature takes the 1v1 `BattleState`, the engine states it once in `tactics/`, pinned by
 tests that hold literal expected values. A test of a removed rule goes with it, naming the
 removed function or the surviving test of the rule it carried; a test that executes no product
@@ -1026,7 +1026,7 @@ the settlement funnels and the battle frame single-sourced, and compiling the ol
 engine through the flip let the client keep typechecking so the purge could delete the
 client side first and de-attribute the server side in the same slice. A 1v1 rule only its tests
 call is paid for by every change to a stored type (its tests build `BattleMonster` and
-`BattleSide` by hand), holds a bench budget and a mutation exclusion, and reads as a second
+`BattleSide` by hand) and by every gate that has to cover it, and it reads as a second
 engine. The entry-ability and weather functions take the 1v1 active-slot state, which the grid
 has no equivalent of, so a depth wave could use them only as a test oracle for one-line
 formulas. The wave states its rule on `TacticalState` from the values the plan file records,
