@@ -154,6 +154,10 @@ test('the CLI fails a shell-config.js that sets no readable document, naming the
       'it replaces JSON.stringify before setting a document',
       `JSON.stringify = () => 'nope'; globalThis.__MR_SHELL_CONFIG__ = {"connection":{"uri":"ws://127.0.0.1:3000","db":"${DB}"}};`,
     ],
+    [
+      'it queues a never-ending microtask, then sets a valid document',
+      `Promise.resolve().then(() => { for (;;) {} }); globalThis.__MR_SHELL_CONFIG__ = {"connection":{"uri":"ws://127.0.0.1:3000","db":"${DB}","kind":"test"}};`,
+    ],
     ['it throws a value whose toString never returns', 'throw { toString() { for (;;) {} } };'],
     [
       'it throws a proxy whose prototype lookup never returns',
@@ -263,6 +267,7 @@ test('the CLI requires index.html to load /shell-config.js with a real classic s
     ['nomodule', '<script nomodule src="/shell-config.js"></script>'],
     ['type="module"', '<script type="module" src="/shell-config.js"></script>'],
     ['only a preload link', '<link rel="preload" href="/shell-config.js" as="script">'],
+    ['only a data-src attribute', '<script data-src="/shell-config.js"></script>'],
   ];
   for (const [what, head] of failing) {
     assertFails(runOn({ ...minimalBuild(), 'index.html': page(head) }), ['index.html'], what);

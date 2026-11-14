@@ -89,6 +89,8 @@ const REJECTED_URIS: readonly string[] = [
   'ws://h/a/%2e%2e/',
   'ws://h/a/.%2E/',
   'ws://h/%2e/',
+  // An empty authority: the URL parser would read `h` as the host, but the string names none.
+  'ws:///h/',
 ];
 
 const REJECTED_DBS: readonly string[] = ['', '   ', 'a b', 'a/b', 'a.b', 'a?b', `caf${E_ACUTE}`];
