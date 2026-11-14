@@ -2776,8 +2776,8 @@ function noteMoveRejection(seq: number, dropped: boolean): void {
   }
 }
 function sendIntent(input: WasmMoveInput): void {
-  // Single choke point for the movement freeze: the keydown first
-  // step, the frame-loop held re-issue, AND the reconcile-listener divergence
+  // Single choke point for the movement freeze: the keydown press (a Face),
+  // the frame-loop held re-issue, AND the reconcile-listener divergence
   // re-issue all route through here, so this one gate covers every movement path.
   // No prediction against a dead link either — enqueue is skipped, not just the send.
   if (conn === undefined || conn.linkFrozen()) return;
@@ -2833,6 +2833,7 @@ function sendIntent(input: WasmMoveInput): void {
       noteMoveRejection(seq, dropped);
     });
 }
+// A direct Step (turn and move in one input): what the DEV hook's `step` sends.
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
 const jump = (): void => sendIntent('Jump');
 
@@ -2898,10 +2899,12 @@ const routeCtx = (): RouteContext => {
 const applyRouterEffect = (effect: RouterEffect): void => {
   switch (effect.kind) {
     case 'dirDown':
-      // Dual-key dedup: the router reports every press at the world, so a second key or
-      // source for an already-held dir must not fire another ungated first step (pure not-emit).
-      if (!held.isHeld(effect.dir)) step(effect.dir); // immediate first step (latency + deliberate double-tap)
-      held.press(effect.dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed
+      // A press is a Face, sent at once and ungated by the hold threshold: game-core turns a
+      // character that does not face the direction and steps one that does, when the input drains
+      // (the client never works out which). Dual-key dedup: the router reports every press at the
+      // world, so a second key or source for an already-held dir sends nothing (pure not-emit).
+      if (!held.isHeld(effect.dir)) sendIntent({ Face: effect.dir });
+      held.press(effect.dir, performance.now()); // mark held (stamped) so the frame loop continues it with a Step once hold-committed
       break;
     case 'dirUp':
       held.release(effect.dir); // a still-held key falls back to the most-recent (M8.6c)

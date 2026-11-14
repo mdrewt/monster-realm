@@ -11,6 +11,7 @@ import type { ArtDescription, ScreenRect } from '../src/render/world';
 import {
   type Dir,
   DPAD_BUTTON,
+  dpadFace,
   dpadWalkPath,
   dpadWalkTo,
   oppositeDir,
@@ -883,7 +884,12 @@ test.describe
       });
       expectProof(proof);
 
-      // The step onto the warp: the D-pad, then the zone changes.
+      // The step onto the warp: a character that arrived facing another way is turned to face the
+      // warp first; the D-pad press then steps onto it and the zone changes.
+      expect(await dpadFace(page, approach.final, 'WAP10.2 facing the warp'), 'no battle').toBe(
+        'facing',
+      );
+      await expectNoStepCalls(page, 'WAP10.2 facing the warp');
       await pressButton(page, DPAD_BUTTON[approach.final]);
       await page.waitForFunction(
         () => {

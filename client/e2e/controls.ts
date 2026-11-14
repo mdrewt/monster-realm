@@ -1577,6 +1577,47 @@ const dpadOutcome = (
     .then((h) => h.jsonValue() as Promise<'battle' | 'moved' | 'turned'>)
     .catch(() => null);
 
+/** Puts the world at its base for a D-pad press: closes any open frame, and blurs whatever holds
+ *  the keyboard focus (a text field or button would swallow the press). */
+async function dpadReady(page: Page): Promise<void> {
+  if ((await readWorld(page)).stackLength > 1) await closeAll(page);
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) active.blur();
+  });
+}
+
+/** Makes the character face `dir` on the tile it stands on, with the live-bound D-pad. A press
+ *  sends `Face` (FACING FACTS): it turns a character that does not face `dir` and moves nobody,
+ *  so a press of the faced direction would step instead. Already facing `dir` (by the
+ *  authoritative own row), it presses nothing and returns 'facing'. Otherwise it presses
+ *  `dir` ONCE and waits up to `STEP_SETTLE_MS` for the row to face `dir` on the SAME tile:
+ *  'facing' when it does, 'battle' when an encounter starts. A press that moves the character
+ *  instead, or no turn within the budget, throws naming `label`, the direction, the start tile
+ *  and what happened. It never presses twice and never calls `__game().step`. The world must
+ *  be at its base: any open frame is closed first. */
+export async function dpadFace(page: Page, dir: Dir, label: string): Promise<'facing' | 'battle'> {
+  await dpadReady(page);
+  const before = await readWorld(page);
+  if (before.battle) return 'battle';
+  const from = before.ownAuthTile;
+  if (from === null) throw new Error(`${label}: no authoritative own tile before facing ${dir}`);
+  if (before.ownFacing === dir) return 'facing';
+  await pressButton(page, DPAD_BUTTON[dir]);
+  const outcome = await dpadOutcome(page, from, dir);
+  if (outcome === 'turned') return 'facing';
+  if (outcome === 'battle') return 'battle';
+  const what =
+    outcome === 'moved'
+      ? `moved the character to ${tileName((await readWorld(page)).ownAuthTile)} instead of ` +
+        'turning it in place'
+      : `did not turn the character within ${STEP_SETTLE_MS} ms`;
+  throw new Error(
+    `${label}: D-pad ${DPAD_BUTTON[dir]} (${dir}) on ${tileName(from)}, facing ` +
+      `${before.ownFacing ?? '(unknown)'}, ${what}`,
+  );
+}
+
 /** Walks `dirs` with the live-bound D-pad keys, waiting for the AUTHORITATIVE own tile to land
  *  on `stepTile(from, dir)` before the next step. A press sends `Face` (FACING FACTS), so each
  *  step reads the own row's facing BEFORE it presses: already facing `dir`, one press steps;
@@ -1591,12 +1632,7 @@ export async function dpadWalkPath(
   label: string,
 ): Promise<'arrived' | 'battle'> {
   for (const dir of dirs) {
-    if ((await readWorld(page)).stackLength > 1) await closeAll(page);
-    // No text field or button may hold the keyboard focus: the press must reach the world.
-    await page.evaluate(() => {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && active !== document.body) active.blur();
-    });
+    await dpadReady(page);
     const before = await readWorld(page);
     if (before.battle) return 'battle';
     const from = before.ownAuthTile;
