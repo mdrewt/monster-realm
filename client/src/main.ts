@@ -5057,16 +5057,16 @@ async function main(): Promise<void> {
 
   // The build's OIDC issuer and client id go only to a server we operate. A single-player world
   // (`local`) or a friends server (`private`) gets both empty, as a build that sets no issuer
-  // does: no request goes to our issuer on that world's behalf.
-  const accountTarget = TARGET_KIND === 'official' || TARGET_KIND === 'test';
+  // does: the OIDC flow is never given the build's issuer or client id there.
+  const operatedByUs = TARGET_KIND === 'official' || TARGET_KIND === 'test';
   conn = connect({
     uri: URI,
     db: DB,
     name: 'Player',
     store,
-    // `?? ''`: a build that sets no issuer is anonymous-only.
-    authIssuer: accountTarget ? (import.meta.env.VITE_MR_OIDC_ISSUER ?? '') : '',
-    authClientId: accountTarget ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
+    // `?? ''`: a build that sets no issuer passes an empty one.
+    authIssuer: operatedByUs ? (import.meta.env.VITE_MR_OIDC_ISSUER ?? '') : '',
+    authClientId: operatedByUs ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
     // Undefined unless VITE_MR_DEVLOG is set — then the connection installs the
     // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay
