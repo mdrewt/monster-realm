@@ -280,17 +280,19 @@ export class BoxView {
     this.#root.className = 'mr-frame mr-shell';
     this.#root.style.cssText = 'display:none;';
 
+    // The kit title bar (`ui/frame.ts`), first in the frame. NO text here — `box.title` is resolved
+    // in show() (see there for why).
     const header = document.createElement('div');
-    header.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:16px;';
-    // NO text here — `box.title` is resolved in show() (see there for why).
+    header.className = 'mr-frame-titlebar';
     const title = document.createElement('h2');
+    title.className = 'mr-frame-title';
     // The OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
     title.setAttribute('data-testid', 'box-title');
     title.setAttribute('tabindex', '-1');
-    title.style.cssText = 'margin:0;color:#fff;';
+    title.style.margin = '0';
     this.#titleEl = title;
     header.appendChild(title);
     this.#root.appendChild(header);

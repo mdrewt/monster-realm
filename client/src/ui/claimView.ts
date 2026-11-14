@@ -15,13 +15,12 @@
 // would otherwise be the next row under the name field of a re-opened screen.
 //
 // Button labels and the section header are the strings this view owns, resolved through the i18n
-// resolver (`t('claim.privacyButton')`, the five `claim.*Button` action labels and the header
+// resolver (the five `claim.*Button` action labels and the header
 // `t('menu.profile.account.title')`) in BOTH `render()` and `show()` — unconditionally, on every
 // call, never in the constructor (the locale may be negotiated after this view is constructed).
-// The privacy label shares its English bytes with `privacy.title` today but is a DIFFERENT key (a
-// button label, not a heading); the button is the door to the Privacy section below (it moves the
-// cursor there). WHICH action buttons are shown is `vm.actions` (claimModel owns the rule);
-// `render()` writes each one's display.
+// The rows are the claim actions only: the Privacy section is the next section down the same
+// column, so the Down walk reaches it without a door here. WHICH action buttons are shown is
+// `vm.actions` (claimModel owns the rule); `render()` writes each one's display.
 // The vm strings (`title`, `body`, `nudge`, `feedback`, `confirmPrompt`) are model copy from
 // `claimModel.ts`, rendered raw; `vm.title` is the phase heading `#claim-title`, below the header.
 // The shown buttons stack as a column (`.mr-button-rows`, QF13.2), the axis the Up/Down rows walk.
@@ -35,9 +34,6 @@ export interface ClaimViewHandlers {
   readonly onDeclineRequested: () => void;
   readonly onDeclineConfirmed: () => void;
   readonly onDeclineCancelled: () => void;
-  /** The door to the Privacy section: account deletion and data export are account management,
-   *  so the account prompt points at them. */
-  readonly onPrivacy: () => void;
   /** Called from `hide()` — every close path, including the battle force-hide. */
   readonly onDismissed: () => void;
 }
@@ -84,7 +80,6 @@ export class ClaimView implements RowSection {
   readonly #nudge: HTMLElement;
   readonly #feedback: HTMLElement;
   readonly #confirm: HTMLElement;
-  readonly #privacyBtn: HTMLButtonElement;
   readonly #actionBtns: Readonly<Record<keyof ClaimActions, HTMLButtonElement>>;
   readonly #onDismissed: () => void;
 
@@ -109,18 +104,12 @@ export class ClaimView implements RowSection {
       declineConfirm: this.#wireButton('claim-decline-confirm-btn', handlers.onDeclineConfirmed),
       declineCancel: this.#wireButton('claim-decline-cancel-btn', handlers.onDeclineCancelled),
     };
-    this.#privacyBtn = this.#wireButton('claim-privacy-btn', handlers.onPrivacy);
     this.#onDismissed = handlers.onDismissed;
-    // The privacy door is always offered, so it is un-hidden once here. Its label is NOT
-    // written here: `render()` and `show()` each resolve it (header), so pre-open the button is
-    // visible but empty.
-    this.#privacyBtn.style.display = '';
   }
 
   /** Write the section header and every button label (every render and show — header). */
   #writeLabels(): void {
     this.#frameTitle.textContent = t('menu.profile.account.title');
-    this.#privacyBtn.textContent = t('claim.privacyButton');
     const b = this.#actionBtns;
     b.signIn.textContent = t('claim.signInButton');
     b.join.textContent = t('claim.joinButton');
@@ -170,7 +159,7 @@ export class ClaimView implements RowSection {
     return this.#overlay;
   }
 
-  /** The rows (CTL8H.3): the shown buttons in DOM order, the privacy door last. */
+  /** The rows (CTL8H.3): the shown action buttons in DOM order. */
   sectionRows(): readonly HTMLElement[] {
     return [...this.#overlay.querySelectorAll('button')].filter(
       (b) => b.style.display !== 'none' && !b.disabled,

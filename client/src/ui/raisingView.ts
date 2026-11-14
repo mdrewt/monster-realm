@@ -74,7 +74,7 @@ import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 // open) the legacy inventory grid shows instead; `hide()` drops the kept paint.
 //
 // uif-8: the frame is built like Monsters' (boxView.ts), so Chromium computes the same spacing: a
-// header row holding the title, the kit's TabBar for the pockets, then the tab content area
+// kit title bar holding the title, the kit's TabBar for the pockets, then the tab content area
 // `#bag-panel`, which grows to the frame and clips. It holds the list (pseudo-scrolled: renderNav
 // scrolls the cursor row into view, the pointer source's wheel presses Up / Down over it, and `.mr-scroll`
 // draws the cue), the EmptyState of an empty pocket, the legacy grid and the frame's one
@@ -126,13 +126,11 @@ function setShown(el: HTMLElement, shown: boolean): void {
 
 export class RaisingView {
   readonly #root: HTMLDivElement;
-  /** The "Raising & Inventory" heading; its text is resolved in show(), not here. */
+  /** The frame title, in the kit title bar; its text is resolved in show(), not here. */
   readonly #titleEl: HTMLHeadingElement;
   readonly #panel: HTMLDivElement;
   readonly #tabBar: TabBar;
   readonly #sheet: ContextSheet;
-  /** The section heading; text resolved in show() (see show()). */
-  readonly #inventoryLabelEl: HTMLHeadingElement;
   readonly #inventoryEl: HTMLDivElement;
   #visible = false;
   // What the inventory grid shows, as a render key (R-ci-fix-20261002T0901Z-RAISINGVIEWREBUILD):
@@ -157,27 +155,22 @@ export class RaisingView {
     // lays out like Monsters').
     this.#root.style.cssText = 'display:none;';
 
-    // The header row, as Monsters' (boxView.ts): it owns the gap under the title.
+    // The kit title bar (`ui/frame.ts`), first in the frame, as Monsters' (boxView.ts). NO text
+    // here — `raising.title` is resolved in show() (see there for why).
     const header = document.createElement('div');
-    header.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:16px;';
-    // NO text here — `raising.title` is resolved in show() (see there for why).
+    header.className = 'mr-frame-titlebar';
     const title = document.createElement('h2');
+    title.className = 'mr-frame-title';
     // The OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
     title.setAttribute('data-testid', 'raising-title');
     title.setAttribute('tabindex', '-1');
-    title.style.cssText = 'margin:0;color:#fff;';
+    title.style.margin = '0';
     this.#titleEl = title;
     header.appendChild(title);
     this.#root.appendChild(header);
-
-    // Its text (`raising.inventory.heading`) is resolved in show(), not here.
-    const inventoryLabel = document.createElement('h3');
-    inventoryLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
-    this.#inventoryLabelEl = inventoryLabel;
-    this.#root.appendChild(inventoryLabel);
 
     // The pockets: the kit's TabBar (its strip keeps the id `bag-tabs`, which e2e keys on), hidden
     // until the adapter paints.
@@ -247,7 +240,6 @@ export class RaisingView {
     // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
     // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
     this.#titleEl.textContent = t('raising.title');
-    this.#inventoryLabelEl.textContent = t('raising.inventory.heading');
     this.#root.style.display = 'flex';
     if (!wasVisible) openOverlayA11y('raisingView', this.#root);
   }

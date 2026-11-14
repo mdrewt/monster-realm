@@ -113,6 +113,10 @@ export function privacyBannerLabel(countdown: DeletionCountdown): string | null 
  * `evals/account-e2e.eval.mjs`'s already-exported `PIN_PSEUDONYMIZATION` (a SECOND source, so one
  * bad transcription cannot be copied into both the pin and the implementation), and that the word
  * occurs exactly once, inside this literal.
+ *
+ * The Privacy section paints it through the catalog (`privacy.disclosure`, privacyView.ts), so a
+ * fr player reads the translation; the en catalog value is this sentence byte for byte
+ * (`privacyView.i18n.test.ts` and `catalog.test.ts` pin the equality).
  */
 export const PRIVACY_PSEUDONYMIZATION_DISCLOSURE =
   'Direct name/display fields are severed on deletion. The `Identity` key and its associated ' +

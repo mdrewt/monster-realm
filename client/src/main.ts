@@ -4845,8 +4845,6 @@ async function main(): Promise<void> {
       onDeclineRequested: () => applyClaim({ kind: 'decline-requested' }),
       onDeclineConfirmed: () => void dispatch({ kind: 'claimDecline' }),
       onDeclineCancelled: () => applyClaim({ kind: 'decline-cancelled' }),
-      // The Privacy section is on the same screen: the door moves the cursor there.
-      onPrivacy: () => profileView?.focusSection('privacy'),
       // Every close cancels an armed decline (the privacy rule). Stepped and painted directly:
       // `applyClaim`'s paint would re-open the screen that is closing.
       onDismissed: () => {
