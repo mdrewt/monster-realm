@@ -29,7 +29,8 @@ import {
 // 2. UNHELD walk (back west). Localhost: a step on every tick, no Idle row between steps.
 //    It protects the one-step-per-tick stream: the ring, the order, the glide, no snap, the
 //    settle.
-// Both walks share the two contexts and the corridor; the hold is a switch the route reads.
+// Both walks share the two contexts and the corridor, and each starts from rest; the hold is a
+// switch the route reads.
 //
 // The walker is driven by a held key (main.ts's real input path); the watcher never moves.
 // Everything is read from the watcher's `window.__game()` once per animation frame:
@@ -185,9 +186,11 @@ test.describe
     });
 
     /**
-     * Hold `key` until the walker's predicted tile is `steps` tiles from where it stands, release,
-     * let everything settle, and return the watcher's frames. The release is read on the
-     * watcher's clock just BEFORE the key goes up, so the checked span can only be shorter.
+     * From rest, hold `key` until the walker's predicted tile is `steps` tiles from where it
+     * stands, release, let everything settle, and return the watcher's frames. The key goes down
+     * only after the walker has stood on its start tile, held by the watcher, for longer than the
+     * continuation window. The release is read on the watcher's clock just BEFORE the key goes
+     * up, so the checked span can only be shorter.
      */
     async function walk(key: 'ArrowRight' | 'ArrowLeft', steps: number): Promise<Walk> {
       const dir = key === 'ArrowRight' ? 1 : -1;
@@ -222,6 +225,13 @@ test.describe
         { id: walkerId, x: start.x },
         { timeout: 15_000 },
       );
+      // The walk starts from rest as the watcher's store measures it: the walker has stood on
+      // its start tile for longer than the continuation window, so the walk's first position
+      // change is no jitter sample (the store takes one only from position changes at most that
+      // window apart, and a same-tile row moves no base) and the render delay starts from the
+      // value it holds at rest. A walk that starts sooner after the walker's row first arrives
+      // raises the delay early and shortens what a renderer that never continues stands still.
+      await watcher.waitForTimeout((WINDOW_STEPS + 1) * stepMs);
 
       await watcher.evaluate((id: string) => {
         const w = window as unknown as {
