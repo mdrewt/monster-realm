@@ -7,8 +7,9 @@
 // reconnect may have opened minutes ago. So a clock id is remembered on its first sighting, and only a
 // later change of its `windowOpenMs` to a new value is a sample. `windowOpenMs` is the server's write
 // instant plus the presentation pad (game-core `clock::open_window`, at most the tuning's `pad_cap_ms`),
-// so the estimate runs ahead of the server by at most that pad: a countdown reads early, never late.
-// The latest sample wins, so a device clock step is corrected by the next window.
+// and the sample is taken when the batch is applied, after its delivery delay: the estimate is off by
+// the pad minus that delay, either way, and only by that — where the raw device clock is off by its
+// whole skew. The latest sample wins, so a device clock step is corrected by the next window.
 //
 // Pure: no clock of its own — every local "now" is an argument (main.ts passes `Date.now()`).
 

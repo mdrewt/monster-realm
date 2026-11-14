@@ -2879,6 +2879,7 @@ const routeCtx = (): RouteContext => {
       // them continues an outcome the player has not been shown yet.
       if (
         resultsAwaitDrain !== null &&
+        outcomeOnTop(contextStack) &&
         (btn.button === 'A' || btn.button === 'B' || btn.button === 'Start')
       ) {
         tacticsBattle?.skip();
@@ -3347,6 +3348,8 @@ store.onBatchApplied(() => refreshRaising());
 
 // --- battle view: refresh on batch, auto-show/hide --------
 function refreshBattle(): void {
+  // ts-6b-7.3: only the results hold below keeps a wait alive, so a battle that moved on ends it.
+  resultsAwaitDrain = null;
   if (battleMount === undefined || identity === '') return;
   // The ONE view-perspective projection in the client — it re-seats
   // the local player as sideA so a PvP accepter (stored in opponentIdentity) gets their
@@ -3667,17 +3670,12 @@ function feedTacticsShell(view: TacticsBattle, battleId: bigint): void {
  *  the frame then. True while the results wait. */
 function holdResultsForPlayback(battleId: bigint): boolean {
   const view = tacticsBattle;
-  if (view === undefined || !view.visible || tacticsIngested?.battleId !== battleId) {
-    resultsAwaitDrain = null;
-    return false;
-  }
+  if (view === undefined || !view.visible || tacticsIngested?.battleId !== battleId) return false;
   feedTacticsShell(view, battleId);
-  if (!view.playing) {
-    resultsAwaitDrain = null;
-    return false;
-  }
+  if (!view.playing) return false;
   resultsAwaitDrain = battleId;
-  // The outcome is not shown until the results are: A's grace and the auto-advance wait for them.
+  // The outcome is not shown until the results are: A's grace and the auto-advance wait for them
+  // (this batch's `syncStack` may already have started the edge — it runs before `refreshBattle`).
   outcomeShownAtMs = null;
   autoContinuedAtMs = null;
   return true;
@@ -3782,7 +3780,12 @@ function tacticsShellDeps(): TacticsBattleDeps {
       void dispatch({ kind: 'submitQueue', battleId, unitId, entries }),
     onCancelQueue: (battleId, unitId) => void dispatch({ kind: 'cancelQueue', battleId, unitId }),
     onForfeit: (battleId) => void dispatch({ kind: 'forfeit', battleId }),
-    announce: (text) => queueNotice(text, performance.now()),
+    // Joined onto a notice still queued, never replacing it (the queue holds one).
+    announce: (text) =>
+      queueNotice(
+        statusNotice.queued === null ? text : `${statusNotice.queued.text} ${text}`,
+        performance.now(),
+      ),
   };
 }
 
@@ -5390,7 +5393,8 @@ async function main(): Promise<void> {
       // would freeze between batches, R5). Its first second is announced below, after the transitions.
       tacticsBattle?.tick();
       // ts-6b-7.3: the results that waited for the playback take the frame once it drains; the
-      // outcome counts as shown from here (A's grace, the auto-advance).
+      // outcome counts as shown from here (A's grace, the auto-advance) — no batch or key may follow
+      // to run `syncStack`.
       if (resultsAwaitDrain !== null && tacticsBattle?.playing !== true) {
         refreshBattle();
         if (resultsAwaitDrain === null && outcomeOnTop(contextStack)) {

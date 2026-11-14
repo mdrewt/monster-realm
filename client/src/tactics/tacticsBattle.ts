@@ -33,7 +33,7 @@
 //
 // bt-15 increment B (BT15.2 / BT15.3): the PvP clock ring and the players strip are SHELL state the
 // frame pump writes through `setClock` (the `setCountdown` precedent: the deadline is a server epoch
-// instant, so main.ts pumps it on the wall clock and `#commit` re-applies the memoised ring after every
+// instant, so main.ts pumps it on its server-time estimate and `#commit` re-applies the memoised ring after every
 // turn-bar render, only onto the chip that is still current); the Forfeit row is a root menu row of a
 // player battle whose `forfeit` level is a two-row confirm that opens on "Keep fighting" — a mashed A
 // never forfeits — and whose Yes calls `deps.onForfeit` once (not a queue entry: the in-flight map is
@@ -366,7 +366,7 @@ export class TacticsBattle implements BattleOpsView {
   /** bt-15: the last clock VM the pump set (the ring + the strip); null when none shows. */
   #clock: ClockVM | null = null;
   /** ts-6b-7.1: the event lines and the own-turn line waiting for `tick()` to speak them as one
-   *  utterance (events first), and the last own turn spoken (`round:turnIdx:unitId`). */
+   *  utterance (events first), and the last own turn queued to be spoken (`round:turnIdx:unitId`). */
   #saidEvents: string[] = [];
   #saidTurn: string | null = null;
   #heardTurn: string | null = null;
@@ -436,6 +436,8 @@ export class TacticsBattle implements BattleOpsView {
     this.#root.style.display = 'none';
     this.#playback.skip();
     this.#syncPlaying();
+    // A turn line dropped unspoken is not heard: the next show may say it.
+    if (this.#saidTurn !== null) this.#heardTurn = null;
     this.#dropSpeech();
     this.setCountdown(null);
     this.setClock(null);
@@ -484,7 +486,7 @@ export class TacticsBattle implements BattleOpsView {
 
   /** The "Still there?" countdown (bt-12 B, BT12.2): `n` seconds paints one `.tactics-countdown` line in
    *  the field after the banner, the same value writes nothing, null removes it; `#commit` never touches
-   *  it; `hide()` and a new battle clear it. Driven by main.ts's frame pump on the wall clock. */
+   *  it; `hide()` and a new battle clear it. Driven by main.ts's frame pump on its server-time estimate. */
   setCountdown(seconds: number | null): void {
     if (seconds === this.#countdownValue) return;
     this.#countdownValue = seconds;
@@ -502,7 +504,7 @@ export class TacticsBattle implements BattleOpsView {
   /** The PvP clock ring and the players strip (bt-15, BT15.2): `vm` paints the ring onto the waiting
    *  unit's chip and the strike rows into the strip; an equal VM writes nothing; null clears both.
    *  `#commit` re-applies the memoised ring after every turn-bar render (`#reapplyClock`); `hide()` and
-   *  a new battle clear it. Driven by main.ts's frame pump on the WALL clock (a server epoch deadline). */
+   *  a new battle clear it. Driven by main.ts's frame pump on its server-time estimate (a server epoch deadline). */
   setClock(vm: ClockVM | null): void {
     if (structurallyEqual(this.#clock, vm)) return;
     this.#clock = vm;
