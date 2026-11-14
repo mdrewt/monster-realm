@@ -1902,7 +1902,7 @@ function swapRefusingDialogue(): void {
 
 const statusText = (): string => byId('status').textContent ?? '';
 /** uif-4: the toast's visible text, '' while it is hidden. Toast kinds (battle-refused, train and
- *  care rejections, heal-unavailable, ...) are read here, never off #status. */
+ *  care rejections, ...) are read here, never off #status. */
 const toastText = (): string => {
   const el = byId('toast');
   return el.hidden ? '' : (el.textContent ?? '');

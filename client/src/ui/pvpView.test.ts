@@ -170,7 +170,6 @@ function makeCallbacks(): PvpViewCallbacks {
     onAccept: vi.fn(),
     onDecline: vi.fn(),
     onCancel: vi.fn(),
-    onChallenge: vi.fn(),
   };
 }
 
@@ -178,7 +177,6 @@ function pvpVm(overrides: Partial<PvpChallengeViewModel> = {}): PvpChallengeView
   return {
     incoming: null,
     outgoing: null,
-    challengeablePlayers: [],
     ...overrides,
   };
 }
@@ -338,9 +336,7 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
     // #pvp-challenge-status before they can use it.
     const root = mountPvpOverlay();
     const view = new PvpView(makeCallbacks());
-    const vm = pvpVm({
-      challengeablePlayers: [{ identity: '0xaaa1', name: 'Alice' }],
-    });
+    const vm = pvpVm();
 
     view.refresh(vm, true); // 1st — the open edge
     await flushMacrotask();
@@ -536,11 +532,8 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
 const RA_INCOMING_ID = 77n;
 const RA_OUTGOING_ID = 88n;
 
-/** Incoming from Bob, a Pending outgoing to Carol, and two challengeable players — so both
- *  request rows render at once (before qf-8 this was every lifecycle control: Accept, Decline,
- *  Cancel Challenge; now it is both labels and no control). (ctl-10b, CTL10B.2: the per-player
- *  Challenge buttons are gone, so Alice and Dave stay in the view model as UNREAD data and prove
- *  that a roster never renders a control.) */
+/** Incoming from Bob and a Pending outgoing to Carol — so both request rows render at once
+ *  (both labels, no control). */
 function raPvpVm(): PvpChallengeViewModel {
   return pvpVm({
     incoming: { challengeId: RA_INCOMING_ID, challengerId: '0xbbb', challengerName: 'Bob' },
@@ -550,10 +543,6 @@ function raPvpVm(): PvpChallengeViewModel {
       targetName: 'Carol',
       status: 'Pending',
     },
-    challengeablePlayers: [
-      { identity: '0xaaa1', name: 'Alice' },
-      { identity: '0xddd4', name: 'Dave' },
-    ],
   });
 }
 
@@ -1315,17 +1304,16 @@ describe('PvpView.paintCursor (ctl-8d, CTL8D.2)', () => {
 
 // ---------------------------------------------------------------------------
 // ctl-10b (CTL10B.2): pvpView is respond-only. It lists no challengeable players and starts no
-// challenge: the per-player Challenge buttons (and the "Challenge:" / "No players online to
-// challenge" lines) are gone. A challenge starts face to face (A -> picker -> Challenge -> Yes).
+// challenge: it has no per-player Challenge buttons (nor "Challenge:" / "No players online to
+// challenge" lines), and its view model carries no player roster. A challenge starts face to
+// face (A -> picker -> Challenge -> Yes).
 // ---------------------------------------------------------------------------
 
 describe('PvpView is respond-only (ctl-10b, CTL10B.2)', () => {
-  it('CTL10B-2-PVP-NO-INITIATE: fed three challengeable players, the idle root holds no button, no challenge-player control, no player name and no heading line, and clicking every element calls no callback; with live challenges the root still holds no button and lists no player, the two requests read as labels, and clicking every element calls no callback', () => {
-    // WRONG IMPL KILLED: a view that still renders the per-player Challenge buttons (the slice);
-    // one that keeps the list as plain rows with a click handler (a clickable non-button); one that
-    // hides the buttons but keeps the "Challenge:" heading or the "No players online to challenge"
-    // line; one that lists the players' names as text (a roster with nothing to press); one whose
-    // click on anything calls onChallenge (or any callback).
+  it('CTL10B-2-PVP-NO-INITIATE: the idle root holds no button, no challenge-player control and no heading line, and clicking every element calls no callback; with live challenges the root still holds no button, the two requests read as labels, and clicking every element calls no callback', () => {
+    // WRONG IMPL KILLED: a view that renders per-player Challenge buttons; one that renders list
+    // rows with a click handler (a clickable non-button); one that keeps the "Challenge:" heading
+    // or the "No players online to challenge" line; one whose click on anything calls a callback.
     // qf-8 (named intentional change): "with live challenges the only buttons are Accept, Decline
     // and Cancel" (and its "one that drops Accept / Decline / Cancel" kill) is inverted: those
     // buttons are deleted (QF8.1), the view holds no button in ANY state, and it still shows both
@@ -1334,22 +1322,14 @@ describe('PvpView is respond-only (ctl-10b, CTL10B.2)', () => {
     const root = mountPvpOverlay();
     const cbs = makeCallbacks();
     const view = new PvpView(cbs);
-    const players = [
-      { identity: '0xaaa1', name: 'Alice' },
-      { identity: '0xddd4', name: 'Dave' },
-      { identity: '0xeee5', name: 'Erin' },
-    ];
 
-    view.refresh(pvpVm({ challengeablePlayers: players }), true);
+    view.refresh(pvpVm(), true);
     expect(view.visible, 'ANTI-VACUITY: the overlay really rendered').toBe(true);
     expect(root.querySelectorAll('button'), 'no button at all while idle').toHaveLength(0);
     expect(root.querySelectorAll('[data-testid="pvp-challenge-player-btn"]')).toHaveLength(0);
     expect(root.querySelectorAll('[data-player-identity]')).toHaveLength(0);
     expect(root.querySelectorAll('li'), 'no list rows').toHaveLength(0);
     const text = root.textContent ?? '';
-    for (const name of ['Alice', 'Dave', 'Erin']) {
-      expect(text.includes(name), `${name} is not listed`).toBe(false);
-    }
     expect(text.includes('Challenge:'), 'the old heading is gone').toBe(false);
     expect(text.includes('No players online to challenge'), 'the old "none" line is gone').toBe(
       false,
@@ -1378,8 +1358,6 @@ describe('PvpView is respond-only (ctl-10b, CTL10B.2)', () => {
       i18nTf('pvp.outgoing.label', { target: 'Carol' }),
     ]);
     expect(root.querySelectorAll('[data-testid="pvp-challenge-player-btn"]')).toHaveLength(0);
-    expect((root.textContent ?? '').includes('Alice')).toBe(false);
-    expect((root.textContent ?? '').includes('Dave')).toBe(false);
     for (const el of root.querySelectorAll<HTMLElement>('*')) el.click();
     for (const [name, spy] of Object.entries(cbs)) {
       expect(
@@ -1387,6 +1365,18 @@ describe('PvpView is respond-only (ctl-10b, CTL10B.2)', () => {
         `qf-8: with live challenges, clicking everything calls no ${name}`,
       ).not.toHaveBeenCalled();
     }
+  });
+
+  it('ts-6b-13 PvpViewCallbacks has no onChallenge member (an object literal naming it is a type error)', () => {
+    // WRONG IMPL KILLED: a PvpViewCallbacks that keeps the unread `onChallenge` member declared.
+    const withChallenge: PvpViewCallbacks = {
+      onAccept: vi.fn(),
+      onDecline: vi.fn(),
+      onCancel: vi.fn(),
+      // @ts-expect-error onChallenge is not a PvpViewCallbacks member
+      onChallenge: vi.fn(),
+    };
+    expect(Object.keys(withChallenge)).toContain('onAccept');
   });
 });
 

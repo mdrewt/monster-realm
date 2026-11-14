@@ -636,7 +636,6 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // with the `privacy-busy` kind (catalogParity DEAD-KEY otherwise).
   'chrome.status.contentStale': 'content out of date — reload',
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
-  'chrome.status.healUnavailable': 'heal: no heal location available',
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
   // bt-17 (named intentional change, BT17.1): the four `battle.*` keys the tactical panels still
   // read stay (`battle.title`, `battle.outcome.{victory,defeat,fled}`: the deploy / results titles);

@@ -2327,7 +2327,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['Evolve: evolve', { kind: 'evolve', monsterId: big, toSpecies: 9 }],
       ['setNickname', { kind: 'setNickname', monsterId: big, nickname: 'Zed' }],
       ['Move: setPartySlot', { kind: 'setPartySlot', monsterId: big, slot: 0 }],
-      ['healParty', { kind: 'healParty' }],
+      ['healParty', { kind: 'healParty', locationId: 7 }],
       ['buy', { kind: 'buy', shopId: 1, itemId: 2, qty: 3 }],
       ['sell', { kind: 'sell', itemId: 2, qty: 3 }],
       ['openTradeSession', { kind: 'openTradeSession', partnerIdentity: 'cd'.repeat(32) }],

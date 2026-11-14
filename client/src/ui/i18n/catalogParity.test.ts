@@ -919,7 +919,6 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.contentStale',
       'chrome.status.disconnected',
       'chrome.status.exportBlocked',
-      'chrome.status.healUnavailable',
       'chrome.status.partyFull',
       // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' leaves
       // main.ts with `reportError('privacy-busy', …)` (Profile is one dialog).

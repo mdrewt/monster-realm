@@ -286,6 +286,21 @@ function mountParent(): HTMLElement {
   return parent;
 }
 
+describe('RaisingView constructor (ts-6b-13)', () => {
+  it('declares exactly one parameter: the parent', () => {
+    // WRONG IMPL KILLED: a RaisingView that keeps an unread second constructor parameter
+    // (`_retired?: unknown`), which makes Function.length 2.
+    expect(RaisingView.length).toBe(1);
+  });
+
+  it('a second constructor argument is a type error', () => {
+    // WRONG IMPL KILLED: a constructor signature that still accepts a second argument.
+    // @ts-expect-error the constructor takes the parent alone
+    const view = new RaisingView(mountParent(), {});
+    expect(view.visible).toBe(false);
+  });
+});
+
 // One monster, zero items. qf-9: the screen ignores `monsters`, but the view-model type still
 // carries them (raisingModel is unchanged), so every fixture supplies them: a render that DID read
 // them would show a nickname or a stat below, and the QF9-2 cases fail on that.

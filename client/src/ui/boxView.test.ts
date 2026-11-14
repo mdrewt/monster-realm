@@ -113,7 +113,6 @@
 // ctl-10a (CTL10A.4): Monsters offers no Heal Party control; healing happens only at a bound
 // healer. The case is the describe titled 'BoxView ctl-10a ...' at the end of this file
 // (CTL10A-4-NO-HEAL-CONTROL). NAMED INTENTIONAL CHANGES to pre-existing cases:
-//   - makeBoxCallbacks no longer passes `onHealParty` (the callbacks are constructed without it).
 //   - M24S4_BX_PLAIN_KEYS drops `box.heal` (a «box.heal» span is now an unexpected sentinel);
 //     'Heal Party' stays in M24S4_BX_ROSTER, so it may appear nowhere.
 //   - m24s4 BX-01: `box.heal` is no longer resolved by show() or a repeat show(), and no button
@@ -463,8 +462,7 @@ const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
  *  it stays the boxed `partySlot` of the fixtures below. */
 const BOX_SLOT = 255;
 
-/** The BoxViewCallbacks callbacks as spies, plus the injected box sentinel. ctl-10a (named
- *  intentional change): no `onHealParty` — the Box Heal Party control is gone (CTL10A.4). */
+/** The BoxViewCallbacks callbacks as spies, plus the injected box sentinel. */
 function makeBoxCallbacks(): BoxViewCallbacks {
   return {
     onSetNickname: vi.fn(),
@@ -4182,7 +4180,7 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
 // =============================================================================
 
 describe('BoxView ctl-10a: no Heal Party control (CTL10A.4)', () => {
-  it('CTL10A-4-NO-HEAL-CONTROL: a BoxView constructed WITHOUT onHealParty and shown (both lists drawn, then a sheet with the typing row open, then reopened) renders no button reading Heal Party, no Heal Party text anywhere in its root, and never resolves box.heal', () => {
+  it('CTL10A-4-NO-HEAL-CONTROL: a BoxView shown (both lists drawn, then a sheet with the typing row open, then reopened) renders no button reading Heal Party, no Heal Party text anywhere in its root, and never resolves box.heal', () => {
     // WRONG IMPL KILLED (B13): the Box Heal Party button kept (it heals at the store's first
     // location, never at the healer the player stands at), kept with its label from a literal,
     // kept only while the typing row is closed, kept as a disabled control, or brought back by a
@@ -4229,6 +4227,18 @@ describe('BoxView ctl-10a: no Heal Party control (CTL10A.4)', () => {
     expect(buttonTexts(), 'nor after a reopen').not.toContain('Heal Party');
     expect(root.textContent ?? '').not.toContain('Heal Party');
     expect(i18nT, 'box.heal is never resolved, on any path').not.toHaveBeenCalledWith('box.heal');
+  });
+
+  it('ts-6b-13 BoxViewCallbacks has no onHealParty member (an object literal naming it is a type error)', () => {
+    // WRONG IMPL KILLED: a BoxViewCallbacks that keeps the unread `onHealParty` member declared.
+    const withHeal: BoxViewCallbacks = {
+      onSetNickname: vi.fn(),
+      onSetPartySlot: vi.fn(),
+      partySlotNone: BOX_SLOT,
+      // @ts-expect-error onHealParty is not a BoxViewCallbacks member
+      onHealParty: () => {},
+    };
+    expect(withHeal.partySlotNone).toBe(BOX_SLOT);
   });
 });
 
