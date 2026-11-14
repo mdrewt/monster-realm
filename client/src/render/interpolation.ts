@@ -241,7 +241,6 @@ export function interpolateHistory(
 export interface InterpStep {
   readonly dx: number;
   readonly dy: number;
-  readonly facing: string;
   readonly arrivedAt: number; // performance.now()
 }
 
@@ -251,7 +250,7 @@ export interface Walk {
    *  moves a character one tile per step, so two changes delivered in one burst still read as
    *  one step apart). */
   readonly cadenceMs: number;
-  /** The step both changes made, while the remote still faces the way it arrived; undefined
+  /** The step both changes made, while the remote has not turned in place since; undefined
    *  once the walk turned. */
   readonly ahead: { readonly dx: number; readonly dy: number } | undefined;
 }
@@ -265,12 +264,12 @@ export interface Walk {
  * window (an NPC wandering), are not walks.
  *
  * The walk has an `ahead` only while it is straight: both changes made the same step and the
- * row's current `facing` is still the one the newer change arrived with. A turn in place, or a
- * bump that turns the character, arrives as a same-tile row with another facing and ends it.
+ * remote has not turned in place since (`turned`: a same-tile row arrived facing another way,
+ * as a turn or a bump at an angle does).
  */
 export function walkOf(
   changes: readonly InterpStep[],
-  facing: string,
+  turned: boolean,
   now: number,
   stepMs: number,
   windowMs: number,
@@ -284,7 +283,7 @@ export function walkOf(
   if (Math.abs(newer.dx) + Math.abs(newer.dy) !== 1) return undefined;
   const apart = newer.arrivedAt - older.arrivedAt;
   if (apart > windowMs || now - newer.arrivedAt > windowMs) return undefined;
-  const straight = newer.dx === older.dx && newer.dy === older.dy && facing === newer.facing;
+  const straight = !turned && newer.dx === older.dx && newer.dy === older.dy;
   return {
     cadenceMs: Math.max(stepMs, apart),
     ahead: straight ? { dx: newer.dx, dy: newer.dy } : undefined,

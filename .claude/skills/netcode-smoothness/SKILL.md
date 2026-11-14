@@ -32,12 +32,13 @@ description: Working on client prediction, reconciliation, movement, or renderin
 3. **Remote skipping ← rendering at the head.** `render/interpolation.ts` renders
    remotes in the past between buffered snapshots, with an adaptive per-character
    delay, and holds at the newest snapshot. The one exception is a remote on a straight
-   walk (its last two position changes are the same step, at most three steps apart):
-   `render/renderResolver.ts` continues it at most half a tile past its newest tile,
-   toward a walkable tile, for at most three steps after its newest step, and then
-   walks it back. The store adds a snapshot only when the tile changes, so the `Idle`
-   row the server writes on an empty tick between steps is not drawn as a stop. A
-   remote's drawn position moves toward its target at no more than one tile per step.
+   walk (its last two position changes are the same step, at most three steps apart,
+   and it has not turned in place since): `render/renderResolver.ts` draws it on at
+   most half a tile past its newest tile, toward a walkable tile, for at most three
+   steps after its newest step, and then walks it back. The store adds a snapshot only
+   when the tile changes, so the `Idle` row the server writes on an empty tick between
+   steps is not drawn as a stop. A remote's drawn position moves toward its target at
+   no more than one tile per step.
 4. **Divergence blowups ← unbounded prediction.** The predictor refuses enqueues past
    `MOVE_QUEUE_CAP` and backs off at 16 unacknowledged ops. A long frame gap reports
    `snapped`, and a correction of more than one tile snaps instead of gliding
@@ -66,8 +67,9 @@ the held-key stack.
 ## Red flags in a diff (reject)
 
 Reconciling outside the per-transaction flush · per-tick position snapping on the local
-avatar · rendering remotes at the head · continuing a remote without the half-tile,
-window and walkability bounds · appending same-tile rows to the snapshot ring ·
+avatar · rendering remotes at the head · drawing a remote past its newest tile without
+the half-tile, window and walkability bounds · appending same-tile rows to the snapshot
+ring ·
 predicting battle outcomes · unbounded prediction · reading a wall clock or unseeded
 RNG in a rule · letting key-repeat enqueue moves.
 

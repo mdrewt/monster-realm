@@ -5,7 +5,15 @@
 // under sub-buffer jitter; a remote renderer WITHOUT the buffer fails the jitter
 // test" (proof-of-teeth).
 import { describe, expect, it } from 'vitest';
-import { type InterpSample, interpDelayMs, interpolate } from './interpolation';
+import {
+  continueWalk,
+  type InterpSample,
+  type InterpStep,
+  interpDelayMs,
+  interpolate,
+  slewToward,
+  walkOf,
+} from './interpolation';
 
 const s = (tileX: number, tileY: number, receivedAt: number): InterpSample => ({
   tileX,
@@ -916,139 +924,113 @@ describe('m23-s7 interpolateReducedMotion (A11Y-27)', () => {
 // =============================================================================
 // np-a: the pure parts of remote continuation.
 //
-// walkOf(changes, facing, now, stepMs, windowMs) — is the remote walking, and can it be continued:
+// walkOf(changes, turned, now, stepMs, windowMs) — is the remote walking, can it be continued:
 //   walking  = at least two changes; the last two each a single-tile move; newer.arrivedAt -
 //              older.arrivedAt <= windowMs; now - newer.arrivedAt <= windowMs (both inclusive)
 //   cadence  = max(stepMs, newer.arrivedAt - older.arrivedAt)
-//   ahead    = the step when the two deltas are equal AND facing === newer.facing, else undefined
+//   ahead    = the step when the two deltas are equal AND `turned` (a turn in place since the
+//              newest change) is false, else undefined; walking does not depend on `turned`
 // continueWalk(newest, ahead, cadenceMs, renderTime) = newest's tile plus
 //   min(0.5, max(0, renderTime - newest.receivedAt) / cadenceMs) tiles along ahead
 // slewToward(from, to, maxTiles) = to when within maxTiles (Manhattan, 1e-9 slack); otherwise
 //   exactly maxTiles along the tile path: x first when (to.x, from.y) is a tile centre, else y first
 // interpolateHistory(..., idleSpanMs): a bracket whose raw span is strictly greater than
 //   idleSpanMs is re-anchored to [next - stepMs, next]; omitted, the threshold is 2 * stepMs.
-//
-// The functions are read off the namespace import: before np-a lands they are `undefined` and
-// each test reds with "is not a function" rather than taking the file's collection down.
 // =============================================================================
-import type { InterpStep } from './interpolation';
 
 describe('np-a continuation primitives', () => {
   const STEP_MS = 200;
   const WINDOW_MS = 600; // JITTER_IDLE_GAP_STEPS (3) x STEP_MS
-  const walkOf = interpolationModule.walkOf;
-  const continueWalk = interpolationModule.continueWalk;
-  const slewToward = interpolationModule.slewToward;
 
-  const step = (dx: number, dy: number, facing: string, arrivedAt: number): InterpStep => ({
-    dx,
-    dy,
-    facing,
-    arrivedAt,
-  });
-  const EAST_1000 = step(1, 0, 'East', 1000);
-  const EAST_1200 = step(1, 0, 'East', 1200);
+  const step = (dx: number, dy: number, arrivedAt: number): InterpStep => ({ dx, dy, arrivedAt });
+  const EAST_1000 = step(1, 0, 1000);
+  const EAST_1200 = step(1, 0, 1200);
 
-  it('walkOf: two one-tile steps in one direction, arriving one step apart, with the row still facing that way, are a straight walk at their cadence [np-a.1]', () => {
-    expect(walkOf([EAST_1000, EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS)).toEqual({
+  it('walkOf: two one-tile steps in one direction, arriving one step apart, with no turn in place since, are a straight walk at their cadence [np-a.1]', () => {
+    expect(walkOf([EAST_1000, EAST_1200], false, 1300, STEP_MS, WINDOW_MS)).toEqual({
       cadenceMs: 200,
       ahead: { dx: 1, dy: 0 },
     });
     // Another direction, another cadence: 350 ms between the steps is the cadence.
-    expect(
-      walkOf(
-        [step(0, -1, 'North', 1000), step(0, -1, 'North', 1350)],
-        'North',
-        1400,
-        STEP_MS,
-        WINDOW_MS,
-      ),
-    ).toEqual({ cadenceMs: 350, ahead: { dx: 0, dy: -1 } });
+    expect(walkOf([step(0, -1, 1000), step(0, -1, 1350)], false, 1400, STEP_MS, WINDOW_MS)).toEqual(
+      { cadenceMs: 350, ahead: { dx: 0, dy: -1 } },
+    );
   });
 
   it('walkOf: the cadence is never faster than one tile per stepMs [np-a.1]', () => {
     // 150 ms between the steps: cadence max(200, 150) = 200. 0 ms (a burst): 200.
-    expect(walkOf([EAST_1000, step(1, 0, 'East', 1150)], 'East', 1150, STEP_MS, WINDOW_MS)).toEqual(
-      { cadenceMs: 200, ahead: { dx: 1, dy: 0 } },
-    );
-    expect(walkOf([EAST_1000, step(1, 0, 'East', 1000)], 'East', 1000, STEP_MS, WINDOW_MS)).toEqual(
-      { cadenceMs: 200, ahead: { dx: 1, dy: 0 } },
-    );
+    expect(walkOf([EAST_1000, step(1, 0, 1150)], false, 1150, STEP_MS, WINDOW_MS)).toEqual({
+      cadenceMs: 200,
+      ahead: { dx: 1, dy: 0 },
+    });
+    expect(walkOf([EAST_1000, step(1, 0, 1000)], false, 1000, STEP_MS, WINDOW_MS)).toEqual({
+      cadenceMs: 200,
+      ahead: { dx: 1, dy: 0 },
+    });
   });
 
   it('walkOf: both window bounds are inclusive [np-a.1]', () => {
     // newer - older exactly 600: walking, cadence 600; 600.5: not walking.
-    expect(walkOf([EAST_1000, step(1, 0, 'East', 1600)], 'East', 1600, STEP_MS, WINDOW_MS)).toEqual(
-      { cadenceMs: 600, ahead: { dx: 1, dy: 0 } },
-    );
+    expect(walkOf([EAST_1000, step(1, 0, 1600)], false, 1600, STEP_MS, WINDOW_MS)).toEqual({
+      cadenceMs: 600,
+      ahead: { dx: 1, dy: 0 },
+    });
     expect(
-      walkOf([EAST_1000, step(1, 0, 'East', 1600.5)], 'East', 1600.5, STEP_MS, WINDOW_MS),
+      walkOf([EAST_1000, step(1, 0, 1600.5)], false, 1600.5, STEP_MS, WINDOW_MS),
     ).toBeUndefined();
     // now - newer exactly 600: walking; 600.5 later: not walking.
-    expect(walkOf([EAST_1000, EAST_1200], 'East', 1800, STEP_MS, WINDOW_MS)).toEqual({
+    expect(walkOf([EAST_1000, EAST_1200], false, 1800, STEP_MS, WINDOW_MS)).toEqual({
       cadenceMs: 200,
       ahead: { dx: 1, dy: 0 },
     });
-    expect(walkOf([EAST_1000, EAST_1200], 'East', 1800.5, STEP_MS, WINDOW_MS)).toBeUndefined();
+    expect(walkOf([EAST_1000, EAST_1200], false, 1800.5, STEP_MS, WINDOW_MS)).toBeUndefined();
     // The window is the argument, not a constant: 400 ms at windowMs 300 is not a walk.
-    expect(
-      walkOf([EAST_1000, step(1, 0, 'East', 1400)], 'East', 1400, STEP_MS, 300),
-    ).toBeUndefined();
+    expect(walkOf([EAST_1000, step(1, 0, 1400)], false, 1400, STEP_MS, 300)).toBeUndefined();
   });
 
   it('walkOf: a lone step, a step that is not one tile, and steps further apart than the window are not a walk [np-a.7]', () => {
-    expect(walkOf([], 'East', 1000, STEP_MS, WINDOW_MS)).toBeUndefined();
-    expect(walkOf([EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS)).toBeUndefined();
+    expect(walkOf([], false, 1000, STEP_MS, WINDOW_MS)).toBeUndefined();
+    expect(walkOf([EAST_1200], false, 1300, STEP_MS, WINDOW_MS)).toBeUndefined();
     // Two tiles at once (Manhattan 2), as the newer and as the older change.
-    expect(
-      walkOf([EAST_1000, step(2, 0, 'East', 1200)], 'East', 1300, STEP_MS, WINDOW_MS),
-    ).toBeUndefined();
-    expect(
-      walkOf([step(1, 1, 'East', 1000), EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS),
-    ).toBeUndefined();
+    expect(walkOf([EAST_1000, step(2, 0, 1200)], false, 1300, STEP_MS, WINDOW_MS)).toBeUndefined();
+    expect(walkOf([step(1, 1, 1000), EAST_1200], false, 1300, STEP_MS, WINDOW_MS)).toBeUndefined();
     // An NPC wandering one tile a second.
-    expect(
-      walkOf([EAST_1000, step(1, 0, 'East', 2000)], 'East', 2100, STEP_MS, WINDOW_MS),
-    ).toBeUndefined();
+    expect(walkOf([EAST_1000, step(1, 0, 2000)], false, 2100, STEP_MS, WINDOW_MS)).toBeUndefined();
   });
 
-  it('walkOf: a turn, or a row now facing another way, is walking but not continuable [np-a.5]', () => {
+  it('walkOf: a turn, a reversal on either axis, or a turn in place is walking but not continuable [np-a.5]', () => {
     // East then South: walking at cadence 200, nothing ahead.
-    const turned = walkOf(
-      [EAST_1000, step(0, 1, 'South', 1200)],
-      'South',
-      1300,
-      STEP_MS,
-      WINDOW_MS,
-    );
+    const turned = walkOf([EAST_1000, step(0, 1, 1200)], false, 1300, STEP_MS, WINDOW_MS);
     expect(turned).toBeDefined();
     expect(turned!.cadenceMs).toBe(200);
     expect(turned!.ahead).toBeUndefined();
-    // East then West (a reversal).
-    const reversed = walkOf(
-      [EAST_1000, step(-1, 0, 'West', 1200)],
-      'West',
-      1300,
-      STEP_MS,
-      WINDOW_MS,
-    );
-    expect(reversed).toBeDefined();
-    expect(reversed!.ahead).toBeUndefined();
-    // Two East steps, but the row (a later same-tile row) now faces North.
-    const faced = walkOf([EAST_1000, EAST_1200], 'North', 1300, STEP_MS, WINDOW_MS);
+    // Reversals: East then West, and South then North (equal dx, opposite dy).
+    for (const [a, b] of [
+      [step(1, 0, 1000), step(-1, 0, 1200)],
+      [step(0, 1, 1000), step(0, -1, 1200)],
+    ] as const) {
+      const reversed = walkOf([a, b], false, 1300, STEP_MS, WINDOW_MS);
+      expect(reversed, `(${a.dx},${a.dy}) then (${b.dx},${b.dy})`).toBeDefined();
+      expect(reversed!.cadenceMs).toBe(200);
+      expect(reversed!.ahead, `(${a.dx},${a.dy}) then (${b.dx},${b.dy})`).toBeUndefined();
+    }
+    // Two East steps, then a turn in place: walking, not continuable.
+    const faced = walkOf([EAST_1000, EAST_1200], true, 1300, STEP_MS, WINDOW_MS);
     expect(faced).toBeDefined();
     expect(faced!.cadenceMs).toBe(200);
     expect(faced!.ahead).toBeUndefined();
+    // A turn in place does not make a non-walk a walk.
+    expect(walkOf([EAST_1000, step(1, 0, 2000)], true, 2100, STEP_MS, WINDOW_MS)).toBeUndefined();
   });
 
   it('walkOf: only the last two changes are read [np-a.1]', () => {
     // A turn three changes back does not matter; a straight pair three back does not rescue a turn.
     expect(
-      walkOf([step(0, 1, 'South', 800), EAST_1000, EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS),
+      walkOf([step(0, 1, 800), EAST_1000, EAST_1200], false, 1300, STEP_MS, WINDOW_MS),
     ).toEqual({ cadenceMs: 200, ahead: { dx: 1, dy: 0 } });
     const turned = walkOf(
-      [step(1, 0, 'East', 800), EAST_1000, step(0, 1, 'South', 1200)],
-      'South',
+      [step(1, 0, 800), EAST_1000, step(0, 1, 1200)],
+      false,
       1300,
       STEP_MS,
       WINDOW_MS,

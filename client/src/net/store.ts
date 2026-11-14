@@ -32,8 +32,6 @@ export type { AffinityName };
  *  never positional, never partial. */
 export type EssenceByAffinity = Readonly<Record<AffinityName, number>>;
 
-export { JITTER_IDLE_GAP_STEPS };
-
 /** A character row, normalized at the SDK boundary (ids `bigint`, enums as strings). */
 export interface StoreCharacter {
   readonly entityId: bigint;
@@ -498,8 +496,6 @@ export interface PositionChange {
   /** Tile delta from the tile before it; a walked step is 1 on exactly one axis. */
   readonly dx: number;
   readonly dy: number;
-  /** The row's facing when the change arrived. */
-  readonly facing: WasmDirection;
   /** Wall-clock arrival (ms). */
   readonly arrivedAt: number;
 }
@@ -527,6 +523,10 @@ export interface StoredCharacter {
    *  which are not steps. RenderResolver reads a remote's walk from it. Absent on a
    *  hand-built character, which reads as no position change. */
   readonly positionChanges?: readonly PositionChange[];
+  /** True once a same-tile row has faced another way than the row before it; false again at
+   *  the next position change. A character that turned in place is not walking on, even if
+   *  it turns back. */
+  readonly turnedInPlace?: boolean;
 }
 
 export class AuthoritativeStore {
@@ -635,7 +635,11 @@ export class AuthoritativeStore {
       row.tileX === existing.row.tileX &&
       row.tileY === existing.row.tileY
     ) {
-      this.#chars.set(row.entityId, { ...existing, row });
+      this.#chars.set(row.entityId, {
+        ...existing,
+        row,
+        turnedInPlace: existing.turnedInPlace === true || row.facing !== existing.row.facing,
+      });
       this.#dirty = true;
       return;
     }
@@ -719,7 +723,6 @@ export class AuthoritativeStore {
             {
               dx: row.tileX - existing.row.tileX,
               dy: row.tileY - existing.row.tileY,
-              facing: row.facing,
               arrivedAt: now,
             },
           ];
@@ -736,6 +739,7 @@ export class AuthoritativeStore {
       snapshots: newSnapshots,
       jitterEwma: newJitter,
       positionChanges,
+      turnedInPlace: false,
     });
     this.#dirty = true;
   }

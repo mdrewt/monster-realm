@@ -8,7 +8,7 @@
 
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
-import { BURST_EPSILON_MS } from '../shared/interpConfig';
+import { BURST_EPSILON_MS, JITTER_IDLE_GAP_STEPS } from '../shared/interpConfig';
 // The boundary converter, used by the npc-interaction integration
 // tooth at the foot of this file (adapter path: upsertNpc(npcRowToStore(row))).
 // 12r-d [E2]: healLocationRowToStore joins it for the heal-cost currency adapter tooth
@@ -217,7 +217,7 @@ describe('AuthoritativeStore: a remote walker written once per step fills the ri
     ).toEqual([4, 5, 6, 7]);
     expect(stored.snapshots).toEqual(control.character(1n)!.snapshots);
     // Every step interval is within 15 ms of STEP_MS, so the estimate stays small; the extra
-    // writes (60 / 140 ms intervals) would have driven it past 50.
+    // writes, sampled as intervals (60 / 140 ms), would drive it past 50.
     expect(stored.jitterEwma).toBe(control.character(1n)!.jitterEwma);
     expect(stored.jitterEwma).toBeLessThan(15);
   });
@@ -305,7 +305,8 @@ describe('AuthoritativeStore np-a: same-tile debounce and the position-change re
     expect(after.receivedAt).toBe(1250);
     expect(after.jitterEwma).toBe(before.jitterEwma);
     expect(after.positionChanges).toEqual(before.positionChanges);
-    expect(after.positionChanges).toEqual([{ dx: 1, dy: 0, facing: 'East', arrivedAt: 1250 }]);
+    expect(after.positionChanges).toEqual([{ dx: 1, dy: 0, arrivedAt: 1250 }]);
+    expect(after.turnedInPlace, 'the row faces another way than before').toBe(true);
     s.flushBatch();
     expect(cb, 'a same-tile update still marks the batch dirty').toHaveBeenCalledTimes(1);
 
@@ -344,30 +345,61 @@ describe('AuthoritativeStore np-a: same-tile debounce and the position-change re
     ]);
     expect(stored.receivedAt).toBe(200);
     expect(stored.row.facing).toBe('West');
-    expect(stored.positionChanges).toEqual([{ dx: 1, dy: 0, facing: 'East', arrivedAt: 200 }]);
+    expect(stored.positionChanges).toEqual([{ dx: 1, dy: 0, arrivedAt: 200 }]);
+    expect(stored.turnedInPlace).toBe(true);
   });
 
-  it('first sight records no position change; each step records its delta, the row facing and its arrival; a third evicts the oldest [np-a.1]', () => {
+  it('first sight records no position change; each step records its delta and its arrival; a third evicts the oldest [np-a.1]', () => {
     const s = new AuthoritativeStore(STEP_MS);
     s.upsertCharacter(rowAt(0, 0), 1000);
     expect(s.character(1n)!.positionChanges).toEqual([]);
 
     s.upsertCharacter(rowAt(1, 0, { facing: 'East' }), 1200);
-    expect(s.character(1n)!.positionChanges).toEqual([
-      { dx: 1, dy: 0, facing: 'East', arrivedAt: 1200 },
-    ]);
+    expect(s.character(1n)!.positionChanges).toEqual([{ dx: 1, dy: 0, arrivedAt: 1200 }]);
 
     s.upsertCharacter(rowAt(1, 1, { facing: 'South' }), 1400);
     expect(s.character(1n)!.positionChanges).toEqual([
-      { dx: 1, dy: 0, facing: 'East', arrivedAt: 1200 },
-      { dx: 0, dy: 1, facing: 'South', arrivedAt: 1400 },
+      { dx: 1, dy: 0, arrivedAt: 1200 },
+      { dx: 0, dy: 1, arrivedAt: 1400 },
     ]);
 
     s.upsertCharacter(rowAt(0, 1, { facing: 'West' }), 1600);
     expect(s.character(1n)!.positionChanges).toEqual([
-      { dx: 0, dy: 1, facing: 'South', arrivedAt: 1400 },
-      { dx: -1, dy: 0, facing: 'West', arrivedAt: 1600 },
+      { dx: 0, dy: 1, arrivedAt: 1400 },
+      { dx: -1, dy: 0, arrivedAt: 1600 },
     ]);
+  });
+
+  it('turnedInPlace is set by a same-tile row facing a new way, stays set until the next position change, and is false at first sight, after a step and after a snap [np-a.5]', () => {
+    const s = new AuthoritativeStore(STEP_MS);
+    const turned = (): boolean | undefined => s.character(1n)!.turnedInPlace;
+    s.upsertCharacter(rowAt(0, 0, { facing: 'East' }), 1000);
+    expect(turned(), 'first sight').toBe(false);
+    s.upsertCharacter(rowAt(1, 0, { facing: 'East' }), 1200);
+    expect(turned(), 'after a step').toBe(false);
+    // An Idle row on the same tile with the same facing is not a turn.
+    s.upsertCharacter(rowAt(1, 0, { facing: 'East', action: 'Idle' }), 1300);
+    expect(turned(), 'same tile, same facing').toBe(false);
+    // Facing South on the same tile: a turn in place.
+    s.upsertCharacter(rowAt(1, 0, { facing: 'South', action: 'Idle' }), 1400);
+    expect(turned(), 'same tile, new facing').toBe(true);
+    // Facing East again: still a turn (it is sticky until the next position change).
+    s.upsertCharacter(rowAt(1, 0, { facing: 'East', action: 'Idle' }), 1500);
+    expect(turned(), 'faced back the original way').toBe(true);
+    expect(s.character(1n)!.positionChanges).toEqual([{ dx: 1, dy: 0, arrivedAt: 1200 }]);
+    // The next position change clears it.
+    s.upsertCharacter(rowAt(2, 0, { facing: 'East' }), 1600);
+    expect(turned(), 'cleared by the next step').toBe(false);
+    // Set again, then a snap (a two-tile jump) clears it.
+    s.upsertCharacter(rowAt(2, 0, { facing: 'North' }), 1700);
+    expect(turned()).toBe(true);
+    s.upsertCharacter(rowAt(5, 0, { facing: 'North' }), 1800);
+    expect(turned(), 'after a snap').toBe(false);
+    // Set again, then a zone change on the same tile (a snap) clears it.
+    s.upsertCharacter(rowAt(5, 0, { facing: 'West' }), 1900);
+    expect(turned()).toBe(true);
+    s.upsertCharacter(rowAt(5, 0, { facing: 'West', zoneId: 2 }), 2000);
+    expect(turned(), 'after a zone change').toBe(false);
   });
 
   it('a position change records the wall clock it arrived at, not a synthetic snapshot stamp [np-a.1]', () => {
@@ -377,9 +409,7 @@ describe('AuthoritativeStore np-a: same-tile debounce and the position-change re
     s.upsertCharacter(rowAt(0, 0), 900);
     s.upsertCharacter(rowAt(1, 0, { facing: 'East' }), 919);
     expect(s.character(1n)!.latest.receivedAt).toBe(920);
-    expect(s.character(1n)!.positionChanges).toEqual([
-      { dx: 1, dy: 0, facing: 'East', arrivedAt: 919 },
-    ]);
+    expect(s.character(1n)!.positionChanges).toEqual([{ dx: 1, dy: 0, arrivedAt: 919 }]);
   });
 
   it('a snap empties the record: a zone change (even on the same tile) and a two-tile jump [np-a.7]', () => {
@@ -395,9 +425,7 @@ describe('AuthoritativeStore np-a: same-tile debounce and the position-change re
     expect(s.character(1n)!.row.zoneId).toBe(2);
 
     s.upsertCharacter(rowAt(2, 0, { zoneId: 2 }), 400);
-    expect(s.character(1n)!.positionChanges).toEqual([
-      { dx: 1, dy: 0, facing: 'East', arrivedAt: 400 },
-    ]);
+    expect(s.character(1n)!.positionChanges).toEqual([{ dx: 1, dy: 0, arrivedAt: 400 }]);
 
     // A two-tile jump: a snap.
     s.upsertCharacter(rowAt(4, 0, { zoneId: 2 }), 500);
@@ -3349,10 +3377,8 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
 // the fix out of the net layer's data model.
 // =============================================================================
 
-// Namespace import ON PURPOSE (see case (xvi)): JITTER_IDLE_GAP_STEPS does not
-// exist yet, and a missing NAMED binding is an ESM link error that would take this
-// whole FILE's collection down. Property access reds as a clean `undefined !== 3`.
-import * as storeMod from './store';
+// Namespace import: the rb-53 block further down reaches `StoreExportChunk` through it.
+import type * as storeMod from './store';
 
 describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
   const STEP = 200; // production STEP_MS; gate boundary = 3 x 200 = 600 ms
@@ -3527,11 +3553,11 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
     expect(diag.character(2n)!.jitterEwma).toBe(0);
   });
 
-  it('(xvi) PIN: JITTER_IDLE_GAP_STEPS is exported from store.ts and equals 3 (ADR-0171 D5)', () => {
+  it('(xvi) PIN: JITTER_IDLE_GAP_STEPS is exported from shared/interpConfig.ts and equals 3 (ADR-0171 D5)', () => {
     // Literal pin so an implementer cannot silently relax K.
     // The twin pin (REANCHOR_SPAN_STEPS === 2) lives in render/interpolation.test.ts;
     // ADR-0171 D5 keeps the two constants deliberately independent — do not unify.
-    expect((storeMod as unknown as Record<string, unknown>).JITTER_IDLE_GAP_STEPS).toBe(3);
+    expect(JITTER_IDLE_GAP_STEPS).toBe(3);
   });
 
   it('(xvii) T-E: genuine pre-idle jitter crosses a 5 s gap bit-identical (the gap must not amplify it)', () => {

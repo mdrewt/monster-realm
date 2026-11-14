@@ -14,7 +14,8 @@
 // HOLDS at its newest snapshot, except on a straight walk: then it is continued at most half
 // a tile past its newest tile, toward a walkable tile, until the continuation window after
 // its newest step runs out. Its drawn position is walked to each frame's target at no more
-// than one tile per step, so a late step, a turn or the end of the window never jumps it.
+// than one tile per step, so a late step, a turn or the end of the window does not jump it;
+// only a remote two tiles or more from its target is drawn at the target.
 
 import type { WasmCharacterState } from '../convert/convert';
 import type { StoredCharacter } from '../net/store';
@@ -209,7 +210,7 @@ export class RenderResolver {
     if (c.snapshots.length > 0) {
       const windowMs = JITTER_IDLE_GAP_STEPS * stepMs;
       const renderTime = now - adaptiveInterpDelayMs(c.jitterEwma, stepMs);
-      const walk = walkOf(c.positionChanges ?? [], c.row.facing, now, stepMs, windowMs);
+      const walk = walkOf(c.positionChanges ?? [], c.turnedInPlace === true, now, stepMs, windowMs);
       ahead = walk?.ahead;
       // The stepMs argument arms the idle-gap re-anchor — without it the
       // resume-from-idle fix is inert in production (renderResolver.test.ts pins it). A
@@ -235,33 +236,28 @@ export class RenderResolver {
 
     const last = this.#remotes.get(c.row.entityId);
     let pos = target;
-    // The remote is walked to its target from where it was last drawn. It is drawn AT the
-    // target when there is nowhere to walk from: no last position, a clock that did not move
-    // forward, or `prev` undefined (first sight, or the store's snap on a zone change or a
-    // teleport). So is one that has fallen REMOTE_SNAP_TILES behind.
-    if (
-      last !== undefined &&
-      c.prev !== undefined &&
-      now - last.at >= 0 &&
-      Math.abs(target.x - last.x) + Math.abs(target.y - last.y) < REMOTE_SNAP_TILES
-    ) {
-      pos = slewToward(last, target, (now - last.at) / stepMs);
+    // The remote is drawn AT its target when there is nowhere to walk from: no last position,
+    // a clock that did not move forward, or `prev` undefined (first sight, or the store's snap
+    // on a zone change or a teleport).
+    if (last !== undefined && c.prev !== undefined && now - last.at >= 0) {
+      // Otherwise it is walked there, unless it has fallen REMOTE_SNAP_TILES behind.
+      if (Math.abs(target.x - last.x) + Math.abs(target.y - last.y) < REMOTE_SNAP_TILES)
+        pos = slewToward(last, target, (now - last.at) / stepMs);
       if (ahead !== undefined) {
-        // On a straight walk the target can step back (the delay grows as a step arrives, or a
-        // late step re-anchors its bracket). A remote that is not past its newest tile waits
-        // for the target instead of walking backward.
-        const past = (last.x - c.latest.tileX) * ahead.dx + (last.y - c.latest.tileY) * ahead.dy;
+        // On a straight walk the target can step back (the delay grows as a step arrives, a
+        // late step re-anchors its bracket, or a burst evicts the snapshot under the render
+        // clock). The remote waits for it instead of moving backward.
         const along = (pos.x - last.x) * ahead.dx + (pos.y - last.y) * ahead.dy;
-        if (past <= 0 && along < 0)
-          pos = { x: pos.x - along * ahead.dx, y: pos.y - along * ahead.dy };
+        if (along < 0) pos = { x: pos.x - along * ahead.dx, y: pos.y - along * ahead.dy };
       }
     }
     drawn.set(c.row.entityId, { x: pos.x, y: pos.y, at: now });
     return pos;
   }
 
-  /** Drop the own slide clock so a post-reconnect re-seed starts fresh (no stale
-   *  pre-reconnect origin). Called from main.ts onReconnect. */
+  /** Drop the own slide clock and every remote's last drawn position, so the next frame
+   *  re-seeds each from its target (no stale origin). main.ts calls it when it resets
+   *  prediction state: on a zone switch and on a reconnect. */
   reset(): void {
     this.#ownClock = undefined;
     this.#remotes.clear();
