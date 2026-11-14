@@ -28,9 +28,9 @@ import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge 
 import { createRowCard } from './rowCard';
 
 /**
- * UNREAD since qf-8 (QF8.1): the lifecycle buttons these fed are deleted (see the header), and
- * with them the view-wide in-flight lock that guarded them. Kept, with its shape, so main.ts's
- * construction stays unchanged; nothing in this view calls any member.
+ * UNREAD (qf-8, QF8.1): nothing in this view calls any member; the panel has no lifecycle
+ * control (see the header). main.ts still passes all three, and main.dispatch.test.ts reaches the
+ * challenge dispatch arms through them.
  */
 export interface PvpViewCallbacks {
   /** Unread (qf-8): accepting is the Social sheet's Accept row. */

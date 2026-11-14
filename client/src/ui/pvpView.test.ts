@@ -1344,7 +1344,7 @@ describe('PvpView is respond-only (ctl-10b, CTL10B.2)', () => {
       expect(spy, `clicking everything calls no ${name}`).not.toHaveBeenCalled();
     }
 
-    // With live challenges the roster is still not rendered, and (qf-8) no button renders either.
+    // With live challenges the root lists no player, and (qf-8) no button renders.
     view.refresh(raPvpVm(), true);
     expect(root.querySelectorAll('button'), 'qf-8: no button with live challenges').toHaveLength(0);
     expect(

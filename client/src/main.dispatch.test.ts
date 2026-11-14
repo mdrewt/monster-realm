@@ -615,9 +615,8 @@ interface Row {
 }
 
 /** The dispatch fixture: party 51 in slot 2 and 50 in slot 0, 52 boxed (255), so the free slot is 1
- *  and the party ids in store order are [51, 50]; two heal pads, 7 loaded first (ctl-10a: no
- *  command falls back to the first pad any more; the pads prove a location-less heal is refused
- *  even when a pad is loaded). */
+ *  and the party ids in store order are [51, 50]; two heal pads, 7 loaded first (no command falls
+ *  back to the first pad; the pads prove a healParty command's own id wins over the first pad). */
 function seedDispatchFixture(): void {
   opts.store.upsertMonster(monster(51n, 2));
   opts.store.upsertMonster(monster(50n, 0));
@@ -956,8 +955,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // WRONG IMPL KILLED: a -1 that sends the box sentinel into a full party (an accepted server
     // no-op the player never sees), a full-party guard that also blocks an explicit slot, and a
     // skip that is silent.
-    // The heal command carries its own bound locationId (CTL7C-3-PRESENT), so this case has no
-    // heal half.
+    // The heal command carries its own bound locationId (CTL7C-3-PRESENT).
     await bootReady();
     server(1000);
     for (const [id, slot] of [
@@ -1988,10 +1986,15 @@ describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
         screenFrame('menuView'),
       ]);
     }
+    const expectedToast = atBattle
+      ? i18n.t('menu.disabled.inBattle')
+      : i18n.t('chrome.status.partyFull');
+    H.calls = [];
     await pageUp(2000);
-    expect(toastText(), 'precondition: a toast is up').not.toBe('');
+    expect(H.calls, 'neither state sends a reducer').toEqual([]);
+    expect(toastText(), 'precondition: the state`s own toast is up').toBe(expectedToast);
     frame(2000 + TOAST_MS - 1);
-    expect(toastText(), 'still visible one ms before TOAST_MS').not.toBe('');
+    expect(toastText(), 'still visible one ms before TOAST_MS').toBe(expectedToast);
     frame(2005 + TOAST_MS);
     expect(toastText(), 'hidden once TOAST_MS has elapsed').toBe('');
   });
@@ -5144,13 +5147,15 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
 describe('main.ts no Box heal (runtime, ctl-10a)', { sequential: true }, () => {
   afterEach(teardownBoot);
 
-  it('CTL10A-4-NO-BOX-HEAL-HANDLER: with heal locations 7 and 9 loaded, a healParty command with locationId 9 sends exactly 9 (not the store`s first pad) and reports nothing; the Box keeps its other callbacks', async () => {
-    // WRONG IMPL KILLED (B13): a healParty arm that sends the store's first loaded location (7
-    // here) instead of the command's own id.
+  it('CTL10A-4-NO-BOX-HEAL-HANDLER: the BoxView main.ts constructs gets no onHealParty callback, and with heal locations 7 and 9 loaded a healParty command with locationId 9 sends exactly 9 (not the store`s first pad) and reports nothing', async () => {
+    // WRONG IMPL KILLED (B13): a Box still handed a heal callback in main.ts's handler object
+    // (runtime data the type check does not see), and a healParty arm that sends the store's first
+    // loaded location (7 here) instead of the command's own id.
     await bootReady();
     server(1000);
     const box = H.handlers.BoxView;
     if (box === undefined) throw new Error('BoxView was never constructed by main.ts');
+    expect(Object.hasOwn(box, 'onHealParty'), 'the Box gets no Heal Party callback').toBe(false);
     expect(typeof box.onSetNickname, 'control: the Box`s other callbacks are wired').toBe(
       'function',
     );

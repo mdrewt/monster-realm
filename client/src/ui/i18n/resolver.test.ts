@@ -99,6 +99,8 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       // with the `privacy-busy` kind (Profile is one dialog).
       'chrome.status.contentStale': 'content out of date — reload',
       'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
+      // ts-6b-13 (named intentional change): 'chrome.status.healUnavailable' leaves with the
+      // heal-unavailable kind (healParty always carries its location).
       'chrome.status.partyFull': 'party is full — move a monster to the box first',
       // 21r-b: 8 new plain chrome.* keys — the repo-wide disconnected line, the rename
       // confirmation, and the six session-overlay strings (sessionModel.ts:124-134).

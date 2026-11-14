@@ -342,8 +342,8 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
 });
 
 // ---------------------------------------------------------------------------
-// The first-location SEND default is gone: the heal command carries the bound location id,
-// so the module exports no selector that picks a location from a list.
+// The heal command carries the bound location id, so the module exports no selector that
+// picks a location from a list.
 // ---------------------------------------------------------------------------
 
 describe('healModel exports (ts-6b-13)', () => {

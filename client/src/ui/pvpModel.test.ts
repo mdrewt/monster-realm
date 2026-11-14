@@ -141,7 +141,7 @@ describe('buildPvpChallengeViewModel (ts-6b-13)', () => {
       createdAtMs: 2_000n,
     },
   ];
-  // Alice is online, not self, and in no Pending challenge: today she is a challengeable player.
+  // Alice is online, not self, and in no Pending challenge: a roster field would list her.
   const players: readonly StorePlayer[] = [
     { identity: ME, entityId: 1n, name: 'Me', online: true },
     { identity: '0xbbb', entityId: 2n, name: 'Bob', online: true },
@@ -154,6 +154,9 @@ describe('buildPvpChallengeViewModel (ts-6b-13)', () => {
     // `challengeablePlayers` roster (Alice would be in it).
     const vm = buildPvpChallengeViewModel(challenges, ME, players);
     expect(Object.keys(vm).sort()).toEqual(['incoming', 'outgoing']);
+    // A non-enumerable own property (a getter) hides from Object.keys.
+    expect(Object.getOwnPropertyNames(vm).sort()).toEqual(['incoming', 'outgoing']);
+    expect('challengeablePlayers' in vm).toBe(false);
   });
 
   it('control: incoming and outgoing are still built, names resolved from the players', () => {
