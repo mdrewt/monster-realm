@@ -424,7 +424,6 @@ export function connect(opts: ConnectionOptions): Connection {
     const delay = reconnectDelayMs(state.attempt);
     rebuildTimer = setTimeout(() => {
       rebuildTimer = undefined;
-      state = onReconnectAttempt(state);
       // attemptBuild owns the whole resolve→build cycle and is defensively total
       // (RT-01's synchronous-throw protection and C1's async-throw protection both live inside
       // it), so the timer body is a bare fire-and-forget of the one reconnect entry point.
@@ -433,10 +432,11 @@ export function connect(opts: ConnectionOptions): Connection {
   }
 
   /**
-   * Shared drop path: wipe stale rows, freeze the link, surface the
-   * loss ONCE (only on the genuine connected→disconnected edge — onDisconnected is
-   * idempotent, so the SDK's onerror-then-onclose double event cannot
-   * double-transition, A7/A8), and schedule the rebuild.
+   * Shared drop path: wipe stale rows, freeze the link, surface the loss ONCE (only on the
+   * genuine connected→disconnected edge), and schedule the rebuild. onDisconnected counts the
+   * drop of an attempt that never applied as that attempt's failure (one rung) and leaves an
+   * already-down link as it is, so the SDK's onerror-then-onclose double event cannot transition
+   * or climb twice (A7/A8).
    */
   function handleDrop(): void {
     stopScope?.();
@@ -469,7 +469,8 @@ export function connect(opts: ConnectionOptions): Connection {
   // while the page was frozen (the SDK's onclose may have fired into the frozen page
   // and been lost). Without this, the client is permanently frozen after Back
   // navigation. persisted=false (a fresh load) never gets here: connect() below is
-  // that path. handleDrop() is safe if the drop was already processed (idempotent).
+  // that path. handleDrop() is safe if the drop was already processed (a down link keeps its
+  // rung); an attempt that was in flight when the page froze counts as failed.
   window.addEventListener('pageshow', (e) => {
     if (!e.persisted) return;
     teardown = false;
@@ -1230,11 +1231,17 @@ export function connect(opts: ConnectionOptions): Connection {
   }
 
   /**
-   * The ONE caller of build(). Bumps the generation before the async gap, resolves
-   * the credential inside an exception boundary (C1: an ordinary Better Auth hiccup must never
-   * stop the ladder), re-checks staleness after the await, and routes each terminal kind.
+   * The ONE caller of build(), and so the entry of every build path: the rebuild timer, the cold
+   * start, reconnectNow and continueAnonymously. Starts the reconnect attempt and bumps the
+   * generation before the async gap, resolves the credential inside an exception boundary (C1:
+   * an ordinary Better Auth hiccup must never stop the ladder), re-checks staleness after the
+   * await, and routes each terminal kind.
    */
   async function attemptBuild(): Promise<void> {
+    // Started here, before the async gap, so every failure of this attempt — an arm below, or
+    // the build's own onConnectError / onDisconnect — finds an attempt in flight and climbs the
+    // ladder once for it.
+    state = onReconnectAttempt(state);
     // The build this attempt supersedes stops driving its world scope.
     stopScope?.();
     buildGen += 1; // opens the generation BEFORE the async gap

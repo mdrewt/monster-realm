@@ -36,8 +36,10 @@ export function reconnectDelayMs(attempt: number): number {
 
 /**
  * The link's lifecycle position. WHY three states (not a boolean): 'reconnecting'
- * distinguishes an in-flight build() attempt from the idle waiting-for-timer gap,
- * so onReconnectAttempt/onAttemptFailed can be no-ops in the right places.
+ * is an attempt that has started and not yet failed; 'disconnected' is the gap
+ * after a failure or a connected drop, waiting for the next attempt. Telling the
+ * two apart is what makes one attempt climb exactly one rung of the ladder,
+ * however many events report its failure.
  */
 export type LinkState = 'connected' | 'disconnected' | 'reconnecting';
 
@@ -62,10 +64,10 @@ export function initialReconnectState(): ReconnectState {
 }
 
 /**
- * A rebuild attempt is starting (the reconnect timer fired and build() is being
- * called). No-op when already connected — a stale timer must not regress a live
- * link. Does NOT touch `attempt`: attempts count FAILURES (onAttemptFailed), not
- * tries, so the delay ladder only climbs on actual failure.
+ * A connection attempt is starting, on any build path (the reconnect timer, the
+ * first boot, a user retry). No-op when already connected — a stale timer must
+ * not regress a live link. Does NOT touch `attempt`: attempts count FAILURES
+ * (onAttemptFailed), not tries, so the delay ladder only climbs on actual failure.
  */
 export function onReconnectAttempt(s: ReconnectState): ReconnectState {
   if (s.link === 'connected') return s;
@@ -73,7 +75,7 @@ export function onReconnectAttempt(s: ReconnectState): ReconnectState {
 }
 
 /**
- * The link came up (onConnect/onApplied). WHY attempt resets HERE and ONLY here:
+ * The link came up (the first applied subscription). WHY attempt resets HERE and ONLY here:
  * a successful connection is the only evidence the backoff ladder should restart
  * from the base delay; resetting anywhere else would defeat the backoff.
  */
@@ -82,24 +84,29 @@ export function onConnected(_s: ReconnectState): ReconnectState {
 }
 
 /**
- * The link dropped (onDisconnect). Preserves `attempt` (only onConnected resets
- * it). IDEMPOTENT: on an already-down link it returns `s` UNCHANGED — the SDK
- * fires onerror-then-onclose as a double event on some drop paths, and the second
- * event must not double-transition or double-schedule.
+ * The link dropped (onDisconnect). A connected link goes 'disconnected' and keeps
+ * `attempt` (only onConnected resets it). A 'reconnecting' link is an attempt
+ * whose socket opened and closed before its first applied subscription: that
+ * attempt failed, so the drop is onAttemptFailed. A 'disconnected' link is
+ * returned UNCHANGED — the SDK fires onerror-then-onclose as a double event on
+ * some drop paths, and the second event must not transition or climb again.
  */
 export function onDisconnected(s: ReconnectState): ReconnectState {
-  if (s.link !== 'connected') return s;
-  return { link: 'disconnected', attempt: s.attempt };
+  if (s.link === 'connected') return { link: 'disconnected', attempt: s.attempt };
+  return onAttemptFailed(s);
 }
 
 /**
- * A rebuild attempt failed (onConnectError). Increments `attempt` — this is the
- * ONLY place the ladder climbs — and returns to 'disconnected' to await the next
- * scheduled attempt. No-op when connected: a stale error from a superseded build
- * must not penalize a live link.
+ * The attempt in flight failed: a connect error, a credential or build failure,
+ * or (through onDisconnected) a drop before the first applied subscription.
+ * Climbs ONE rung — this is the only place the ladder climbs — and returns to
+ * 'disconnected' to await the next scheduled attempt. Only a 'reconnecting' link
+ * climbs: on 'disconnected' the attempt has already failed, so a second event
+ * reporting the same failure changes nothing; on 'connected' a stale error from
+ * a superseded build must not penalize a live link.
  */
 export function onAttemptFailed(s: ReconnectState): ReconnectState {
-  if (s.link === 'connected') return s;
+  if (s.link !== 'reconnecting') return s;
   return { link: 'disconnected', attempt: s.attempt + 1 };
 }
 
