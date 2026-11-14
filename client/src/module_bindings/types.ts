@@ -849,6 +849,9 @@ export const MoveInput = __t.enum("MoveInput", {
     return Direction;
   },
   Jump: __t.unit(),
+  get Face() {
+    return Direction;
+  },
 });
 export type MoveInput = __Infer<typeof MoveInput>;
 

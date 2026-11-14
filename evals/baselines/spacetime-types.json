@@ -366,7 +366,8 @@
     "kind": "enum",
     "variants": [
       "Step",
-      "Jump"
+      "Jump",
+      "Face"
     ]
   },
   "TileKind": {

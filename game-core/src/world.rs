@@ -505,6 +505,12 @@ fn check_deep_water_shore(zone_id: u32, map: &TileMap) -> Result<(), String> {
 /// The SOLE movement rule — total, pure, deterministic. A bump (blocked step) or a
 /// blocked jump is a legal no-op, never an `Err`. `move_started_at` is stamped on
 /// EVERY call.
+///
+/// `Face(dir)` is a press: a character that does not face `dir` turns to it and
+/// stays on its tile, `Idle`; one that already faces `dir` takes exactly the
+/// `Step(dir)` path. The choice is made here, against the facing the inputs
+/// applied before this one left, so the server's drain and the client's replay
+/// decide it alike.
 #[must_use]
 pub fn apply_move(
     state: &CharacterState,
@@ -515,7 +521,13 @@ pub fn apply_move(
     let mut next = *state;
     next.move_started_at = now;
     match input {
-        MoveInput::Step(dir) => {
+        MoveInput::Face(dir) if state.facing != dir => {
+            next.facing = dir; // a turn in place: the tile is kept
+            next.action = ActionState::Idle;
+        }
+        // One arm for a step and for a press of the faced direction, so the two
+        // cannot drift apart.
+        MoveInput::Step(dir) | MoveInput::Face(dir) => {
             next.facing = dir; // you always turn to face, even into a wall
             let target = state.pos.step(dir);
             if map.is_walkable(target) {

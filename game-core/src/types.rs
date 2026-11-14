@@ -75,12 +75,20 @@ pub enum ActionState {
 /// A movement INTENT — the only thing that crosses the wire. There is **no
 /// position-bearing variant**, so a client physically cannot assert "I am at
 /// (x,y)"; only intent crosses, authority resolves position (illegal states
-/// unrepresentable).
+/// unrepresentable). What each variant does is `world::apply_move`'s to say.
+///
+/// Variants are TAIL-APPENDED only: the `SpacetimeType` derive encodes them
+/// positionally in `move_intent.queue` and `character.move_queue` (the
+/// spacetime-type-snapshot eval pins the order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum MoveInput {
+    /// Turn to the direction and move one tile that way.
     Step(Direction),
+    /// Hop one tile along the current facing.
     Jump,
+    /// A press: turn to the direction, or step when it is already faced.
+    Face(Direction),
 }
 
 /// A tile's terrain class — THE class table (glyph, Tiled GID, walkability,

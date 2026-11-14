@@ -8,8 +8,12 @@
 // --- wasm / serde shapes (mirror game-core's serde derives; verified by probe) --
 export type WasmDirection = 'North' | 'South' | 'East' | 'West';
 export type WasmAction = 'Idle' | 'Walking' | 'Jumping';
-/** `MoveInput::Step(dir)` -> `{Step:"East"}`; the unit `MoveInput::Jump` -> `"Jump"`. */
-export type WasmMoveInput = { readonly Step: WasmDirection } | 'Jump';
+/** `MoveInput::Step(dir)` -> `{Step:"East"}`; the unit `MoveInput::Jump` -> `"Jump"`;
+ *  `MoveInput::Face(dir)` -> `{Face:"East"}`. */
+export type WasmMoveInput =
+  | { readonly Step: WasmDirection }
+  | 'Jump'
+  | { readonly Face: WasmDirection };
 export interface WasmCharacterState {
   readonly pos: { readonly x: number; readonly y: number };
   readonly facing: WasmDirection;
@@ -22,7 +26,8 @@ export type SdkDirection = { readonly tag: WasmDirection };
 export type SdkAction = { readonly tag: WasmAction };
 export type SdkMoveInput =
   | { readonly tag: 'Step'; readonly value: SdkDirection }
-  | { readonly tag: 'Jump' };
+  | { readonly tag: 'Jump' }
+  | { readonly tag: 'Face'; readonly value: SdkDirection };
 
 /**
  * The movement-bearing subset of the generated `character` row that convert reads.
@@ -38,11 +43,22 @@ export interface SdkCharacterFields {
 }
 
 // --- MoveInput ------------------------------------------------------------------
+// One case per variant and no fallback: a variant these functions do not name is a
+// type error here, never a value quietly marshaled as another variant.
 export function moveInputToWasm(m: SdkMoveInput): WasmMoveInput {
-  return m.tag === 'Jump' ? 'Jump' : { Step: m.value.tag };
+  switch (m.tag) {
+    case 'Step':
+      return { Step: m.value.tag };
+    case 'Jump':
+      return 'Jump';
+    case 'Face':
+      return { Face: m.value.tag };
+  }
 }
 export function moveInputToSdk(m: WasmMoveInput): SdkMoveInput {
-  return m === 'Jump' ? { tag: 'Jump' } : { tag: 'Step', value: { tag: m.Step } };
+  if (m === 'Jump') return { tag: 'Jump' };
+  if ('Face' in m) return { tag: 'Face', value: { tag: m.Face } };
+  return { tag: 'Step', value: { tag: m.Step } };
 }
 
 // --- CharacterState -------------------------------------------------------------
