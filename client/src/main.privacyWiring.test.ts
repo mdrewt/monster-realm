@@ -370,7 +370,7 @@ function openPrivacySurface(): void {
   ).toBe(true);
   // The walk seats the Privacy section's first live row; when the section has none (an
   // already-erased account), the next row down is the frame's Close row. Decided from the DOM.
-  const target = privacyDoorTarget();
+  const target = privacyWalkTarget();
   expect(
     document.activeElement,
     target.id === 'profile-close-btn'
@@ -381,7 +381,7 @@ function openPrivacySurface(): void {
 
 /** Where the walk must seat focus, read off the DOM: the Privacy section's first shown, enabled
  *  button, else the frame's `#profile-close-btn`. */
-function privacyDoorTarget(): HTMLElement {
+function privacyWalkTarget(): HTMLElement {
   const live = Array.from(byId('privacy-overlay').querySelectorAll('button')).filter(
     (b) => !b.disabled && hiddenAncestorOf(b) === null,
   );
@@ -506,7 +506,7 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
   });
 
   // ---------------------------------------------------------------------------------------
-  // The front door (the criterion's "WHEN the player opens the privacy surface").
+  // The way in (the criterion's "WHEN the player opens the privacy surface").
   // ---------------------------------------------------------------------------------------
 
   it('RB52T-OPENER-REACHABLE: the Account section has no privacy door, and Down from its rows reaches the Privacy section`s first control, a labelled, on-screen native button', () => {
@@ -547,12 +547,12 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     // overlay must be CLOSED once the privacy surface is up — two aria-modal roots and two focus
     // traps cannot both be correct" is replaced. Its reason still holds, and is now met the other
     // way round: Account and Privacy are sections of ONE dialog (`#profile-overlay`) with ONE focus
-    // trap, so the door hides nothing and opens nothing; it only moves focus. ADR-0231 A2-D5's
+    // trap, so the Down walk into Privacy hides nothing and opens nothing; it only moves focus. ADR-0231 A2-D5's
     // hide-claim-first ordering has no subject left (`openPrivacy`'s verdict retired).
-    // WRONG IMPL KILLED: a door that still hides the Account section (the old verdict left in);
-    // a door that opens a second dialog or pushes a frame (two live aria-modal roots, or a
-    // `privacyView` frame on the stack); a section that kept its own role="dialog"; a door that
-    // focuses nothing (focus left on the door, outside the Privacy section); a close that parks
+    // WRONG IMPL KILLED: a walk that hides the Account section; a walk that opens a second
+    // dialog or pushes a frame (two live aria-modal roots, or a `privacyView` frame on the
+    // stack); a section that kept its own role="dialog"; a walk that never leaves the Account
+    // rows (focus outside the Privacy section); a close that parks
     // focus in the hidden frame.
     pressKey({ code: 'KeyC' });
     expect(claimOverlayVisible(), 'KeyC shows the Account section').toBe(true);
@@ -571,7 +571,7 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
 
     openPrivacySurface();
     expect(claimOverlayVisible(), 'the Account section is still on screen').toBe(true);
-    expect(JSON.stringify(stackOf()), 'the door pushed and popped nothing').toBe(before);
+    expect(JSON.stringify(stackOf()), 'the walk pushed and popped nothing').toBe(before);
     expect(liveModalDialogs(), 'still exactly one live modal root').toEqual(['profile-overlay']);
     const focused = document.activeElement as HTMLButtonElement;
     expect(focused.tagName, 'focus is on a Privacy row').toBe('BUTTON');
@@ -594,7 +594,7 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     // — the controls would be present but unlabelled and still `display:none` from
     // `ensureElement`, i.e. an empty black box.
     // WRONG IMPL KILLED (2): a `canOpen` verdict check that denies its own open (e.g. probing
-    // the privacy view itself as a blocker), so the door is a dead button.
+    // the privacy view itself as a blocker), so the section never opens.
     H.account = ACCOUNT_ACTIVE;
     runFrame(0);
     openPrivacySurface();
@@ -770,9 +770,9 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
   });
 
   it('UIF16B.3 for an already-erased account the Privacy section has no live row, so Down from the Account rows seats the frame`s Close row (enabled, on screen), never a disabled or hidden Privacy control, and the frame stays the one live dialog', () => {
-    // WRONG IMPL KILLED: a door that focuses the Privacy section's first DOM button whatever its
+    // WRONG IMPL KILLED: a walk that seats the Privacy section's first DOM button whatever its
     // state (a disabled Delete or Cancel: focus on a dead control, the trap has nothing to keep);
-    // a door that focuses nothing when the section is empty (focus left on the door, or on the
+    // a walk that seats nothing when the section is empty (focus left on the Account rows, or the
     // page); a fallback to a section root instead of the Close row.
     H.account = ACCOUNT_TERMINAL;
     runFrame(0);

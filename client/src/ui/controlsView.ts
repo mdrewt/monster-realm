@@ -178,13 +178,12 @@ export class ControlsView implements ControlsScreenView {
     this.#title.style.margin = '0';
     // Every kit part is located before it is created, so a second view duplicates nothing. The
     // title sits in the kit title bar (`ui/frame.ts`), first in the frame.
-    const shownBar = this.#title.parentElement;
-    const titleBar =
-      shownBar?.classList.contains('mr-frame-titlebar') === true
-        ? shownBar
-        : document.createElement('div');
-    titleBar.className = 'mr-frame-titlebar';
-    if (this.#title.parentElement !== titleBar) titleBar.appendChild(this.#title);
+    let titleBar = this.#title.parentElement;
+    if (titleBar?.classList.contains('mr-frame-titlebar') !== true) {
+      titleBar = document.createElement('div');
+      titleBar.className = 'mr-frame-titlebar';
+      titleBar.appendChild(this.#title);
+    }
     const strip = document.getElementById('controls-tabs');
     const stripRoot = strip?.parentElement;
     this.#tabBar =

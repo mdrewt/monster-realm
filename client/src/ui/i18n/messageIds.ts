@@ -320,8 +320,7 @@ export type MessageId =
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
   // Claim.* : the guest-claim overlay — its buttons (claimView.ts) and, since 21r-b2, its
-  // titles, bodies, prompts and feedback lines (claimModel.ts). The privacy button and the
-  // privacy heading below share English bytes today but are TWO keys.
+  // titles, bodies, prompts and feedback lines (claimModel.ts).
   | 'claim.signInButton'
   | 'claim.joinButton'
   | 'claim.declineButton'

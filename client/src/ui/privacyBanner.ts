@@ -114,9 +114,11 @@ export function privacyBannerLabel(countdown: DeletionCountdown): string | null 
  * bad transcription cannot be copied into both the pin and the implementation), and that the word
  * occurs exactly once, inside this literal.
  *
- * The Privacy section paints it through the catalog (`privacy.disclosure`, privacyView.ts), so a
- * fr player reads the translation; the en catalog value is this sentence byte for byte
- * (`privacyView.i18n.test.ts` and `catalog.test.ts` pin the equality).
+ * "Verbatim" binds the English: the Privacy section paints the catalog's `privacy.disclosure`
+ * (privacyView.ts), whose en value is this sentence byte for byte, and a fr player reads its
+ * translation. The two English copies are tied by equality pins (`privacyView.i18n.test.ts`,
+ * `catalog.test.ts`); catalog.en.ts holds a literal rather than importing this constant because
+ * the import would close a cycle (this module -> the resolver -> catalog.en.ts -> this module).
  */
 export const PRIVACY_PSEUDONYMIZATION_DISCLOSURE =
   'Direct name/display fields are severed on deletion. The `Identity` key and its associated ' +

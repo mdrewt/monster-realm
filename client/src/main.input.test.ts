@@ -2073,8 +2073,8 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     // standing under the battle and, for privacy, its dismissal never runs). Each opens by its
     // own real path: N, A then A on Trade (face to face with the rival: ctl-10b retired O), A (the
     // stubbed interact rule names the heal NPC on the player's own tile), I, the real view's own
-    // show() for Evolution (ctl-11a: E is RB now and nothing opens that screen by key), and the
-    // claim overlay's privacy button.
+    // show() for Evolution (ctl-11a: E is RB now and nothing opens that screen by key), and for
+    // privacy a failed sign-in (Profile on Account) then Down into the Privacy section.
     // ctl-10a: T retired — the heal frame opener was KeyT (the nearest-in-range rule picked the
     // heal NPC); it is A now, with the wasm rule stub naming that NPC.
     // Not separately observed: privacy's onDismissed effect (it disarms an armed delete

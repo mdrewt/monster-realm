@@ -3381,10 +3381,8 @@ describe('qf-6: the conversation-ended and quest-completion lines in both catalo
 });
 
 // =============================================================================
-// qf-9 (QF9.1, QF9.2): the Summary's full-stats line in BOTH catalogs (exact bytes, two differing
-// sample sets and a third), and the six raising ids retired with the raising screen's Monsters
-// section. Every expected byte is typed here (the separator and the French capitals by code point);
-// none is read off the catalog under test.
+// ts-6b-11: the ids left with no requester (the Account section's privacy door, the Inventory
+// in-panel heading) are retired, and the pseudonymization disclosure is catalogued.
 // =============================================================================
 
 describe('ts-6b-11: the two ids with no requester left are retired and the disclosure id is catalogued', () => {
@@ -3419,7 +3417,32 @@ describe('ts-6b-11: the two ids with no requester left are retired and the discl
     expect(french, 'fr is not the English text').not.toBe(PRIVACY_PSEUDONYMIZATION_DISCLOSURE);
     expect(french as string, 'fr keeps the literal Identity token').toContain('`Identity`');
   });
+
+  it('the fr disclosure names purging and erasure only to deny them', () => {
+    // The English is pinned byte for byte; the French is compliance copy too, and the legally false
+    // claim is a French line that says the Identity history IS purged or that deletion IS erasure.
+    // WRONG IMPL KILLED: a translation that drops the negation ("sont purgés des lignes", "et un
+    // effacement"), says either word a second time, or leaves the English word in.
+    const french = String((CATALOG_FR as Record<string, unknown>)['privacy.disclosure']);
+    const count = (text: string, needle: string): number => {
+      let n = 0;
+      for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + 1)) n += 1;
+      return n;
+    };
+    expect(count(french, 'purg'), 'the stem purg occurs once').toBe(1);
+    expect(french, 'and only in the denial').toContain('ne sont pas purgés');
+    expect(count(french, 'effac'), 'the stem effac occurs once').toBe(1);
+    expect(french, 'and only in the denial').toContain('et non d\u2019un effacement');
+    expect(count(french, 'erasure'), 'no English word left in').toBe(0);
+  });
 });
+
+// =============================================================================
+// qf-9 (QF9.1, QF9.2): the Summary's full-stats line in BOTH catalogs (exact bytes, two differing
+// sample sets and a third), and the six raising ids retired with the raising screen's Monsters
+// section. Every expected byte is typed here (the separator and the French capitals by code point);
+// none is read off the catalog under test.
+// =============================================================================
 
 describe('qf-9: the Summary stats line and the retired raising ids', () => {
   const KEY = 'box.summary.stats';

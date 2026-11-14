@@ -1173,7 +1173,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'privacy.disclosure':
     'Les champs directs de nom et d’affichage sont dissociés lors de la suppression. La clé `Identity`, ' +
     'ainsi que les horodatages et l’historique comportemental qui lui sont associés, ne sont pas ' +
-    'purgés des lignes multi-utilisateurs ou historiques ; il s’agit d’une limite de ' +
+    'purgés des lignes multi-utilisateurs ou historiques ; il s’agit d’une limite de ' +
     'pseudonymisation documentée et acceptée, et non d’un effacement.',
   // @desc: Button that closes the Profile screen; it is the last row and always enabled. Short
   // verb, fits a very narrow button.
