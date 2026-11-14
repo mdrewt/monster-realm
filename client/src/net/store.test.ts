@@ -197,21 +197,209 @@ describe('AuthoritativeStore: a remote walker written once per step fills the ri
     expect(stored.jitterEwma).toBeLessThan(15);
   });
 
-  it('CONTRAST: a second same-tile write between steps halves the ring and reads as heavy jitter', () => {
+  it('a second same-tile write between steps leaves the ring and the jitter estimate as the steps alone make them [np-a.3]', () => {
+    // Named intentional change (np-a): a same-tile update replaces the stored row and appends no
+    // snapshot and no jitter sample.
     // The same walk, with one extra row update 60 ms after each step that changes no tile (a
-    // queue-only write). The ring cannot tell it from a position sample.
+    // queue-only write). A control store receives the steps alone.
     const s = new AuthoritativeStore(STEP_MS);
+    const control = new AuthoritativeStore(STEP_MS);
     JITTER.forEach((j, k) => {
       const t = 1000 + k * STEP_MS + j;
       s.upsertCharacter(char(1n, k, 0), t);
       s.upsertCharacter(char(1n, k, 0), t + 60);
+      control.upsertCharacter(char(1n, k, 0), t);
     });
     const stored = s.character(1n)!;
     expect(
-      new Set(stored.snapshots.map((snap) => snap.tileX)).size,
-      'four snapshots, two real positions',
-    ).toBe(2);
-    expect(stored.jitterEwma, 'intervals alternate 60 / 140 ms').toBeGreaterThan(50);
+      stored.snapshots.map((snap) => snap.tileX),
+      'four snapshots, four positions',
+    ).toEqual([4, 5, 6, 7]);
+    expect(stored.snapshots).toEqual(control.character(1n)!.snapshots);
+    // Every step interval is within 15 ms of STEP_MS, so the estimate stays small; the extra
+    // writes (60 / 140 ms intervals) would have driven it past 50.
+    expect(stored.jitterEwma).toBe(control.character(1n)!.jitterEwma);
+    expect(stored.jitterEwma).toBeLessThan(15);
+  });
+});
+
+// =============================================================================
+// np-a: same-tile updates are debounced; the store records the last two position changes.
+//
+// A walking character's server row is written once per step, and again on the same tile with
+// `action: 'Idle'` whenever a tick finds its move queue empty. A same-zone, same-tile update
+// replaces the stored row (facing, action, queue and ack stay current) and changes nothing
+// else: no snapshot, no jitter sample, no position change. `receivedAt` is the arrival of the
+// newest snapshot, so the jitter interval between two steps is the time between the steps.
+// =============================================================================
+describe('AuthoritativeStore np-a: same-tile debounce and the position-change record', () => {
+  const STEP_MS = 200;
+
+  /** A row with every field the debounce must keep current set to a distinguishable value. */
+  function rowAt(
+    tileX: number,
+    tileY: number,
+    over: Partial<StoreCharacter> = {},
+    entityId = 1n,
+  ): StoreCharacter {
+    return { ...char(entityId, tileX, tileY), ...over };
+  }
+
+  it('a straight walk with Idle same-tile rows between its steps keeps one snapshot per tile and takes its jitter samples from the step intervals only [np-a.3]', () => {
+    // Steps every 400 ms (two STEP_MS), an Idle row on the same tile 200 ms after each step.
+    // A control store receives the steps alone.
+    const walk = new AuthoritativeStore(STEP_MS);
+    const control = new AuthoritativeStore(STEP_MS);
+    for (let k = 0; k < 8; k++) {
+      const t = 1000 + 400 * k;
+      walk.upsertCharacter(rowAt(k, 0, { action: 'Walking' }), t);
+      control.upsertCharacter(rowAt(k, 0, { action: 'Walking' }), t);
+      walk.upsertCharacter(rowAt(k, 0, { action: 'Idle' }), t + 200);
+    }
+    const w = walk.character(1n)!;
+    expect(w.snapshots).toEqual([
+      { tileX: 4, tileY: 0, receivedAt: 2600 },
+      { tileX: 5, tileY: 0, receivedAt: 3000 },
+      { tileX: 6, tileY: 0, receivedAt: 3400 },
+      { tileX: 7, tileY: 0, receivedAt: 3800 },
+    ]);
+    expect(w.latest).toEqual({ tileX: 7, tileY: 0, receivedAt: 3800 });
+    expect(w.prev).toEqual({ tileX: 6, tileY: 0, receivedAt: 3400 });
+    expect(w.receivedAt).toBe(3800);
+    // Seven step intervals of 400 ms, each deviating 200 ms from STEP_MS:
+    //   e_n = 0.125 * 200 + 0.875 * e_(n-1) = 25 + 0.875 * e_(n-1)
+    //   25, 46.875, 66.015625, 82.763671875, 97.418212890625, 110.240936279296875,
+    //   121.460819244384765625 (every term dyadic, so exact).
+    // Fed the Idle rows too, the estimator would see 200 ms intervals (deviation 0) instead.
+    expect(w.jitterEwma).toBe(121.460819244384765625);
+    expect(w.jitterEwma).toBe(control.character(1n)!.jitterEwma);
+    // The stored row is the newest one: the Idle row on tile 7.
+    expect(w.row.action).toBe('Idle');
+    expect(w.row.tileX).toBe(7);
+  });
+
+  it('a same-tile update replaces the row, leaves history, estimate and record exactly as they were, and still fires the batch signal [np-a.3]', () => {
+    const s = new AuthoritativeStore(STEP_MS);
+    s.upsertCharacter(rowAt(3, 4), 1000);
+    s.upsertCharacter(rowAt(4, 4, { facing: 'East', action: 'Walking' }), 1250);
+    s.flushBatch();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    const before = s.character(1n)!;
+
+    const turned = rowAt(4, 4, {
+      facing: 'North',
+      action: 'Idle',
+      moveQueue: [{ Step: 'West' }],
+      ackedSeq: 9n,
+    });
+    s.upsertCharacter(turned, 1400);
+    const after = s.character(1n)!;
+    expect(after.row).toEqual(turned);
+    expect(after.snapshots).toEqual(before.snapshots);
+    expect(after.latest).toEqual(before.latest);
+    expect(after.prev).toEqual(before.prev);
+    expect(after.receivedAt).toBe(1250);
+    expect(after.jitterEwma).toBe(before.jitterEwma);
+    expect(after.positionChanges).toEqual(before.positionChanges);
+    expect(after.positionChanges).toEqual([{ dx: 1, dy: 0, facing: 'East', arrivedAt: 1250 }]);
+    s.flushBatch();
+    expect(cb, 'a same-tile update still marks the batch dirty').toHaveBeenCalledTimes(1);
+
+    // A second same-tile update replaces the row again; still nothing else moves.
+    const again = rowAt(4, 4, { facing: 'South', action: 'Walking', ackedSeq: 10n });
+    s.upsertCharacter(again, 1500);
+    expect(s.character(1n)!.row).toEqual(again);
+    expect(s.character(1n)!.snapshots).toEqual(before.snapshots);
+    expect(s.character(1n)!.jitterEwma).toBe(before.jitterEwma);
+  });
+
+  it('the jitter interval between two steps runs from the newest snapshot, whatever same-tile rows arrived in between [np-a.3]', () => {
+    // Steps at 1000 and 1200, same-tile rows at 1100 and 1150. The interval the estimator sees is
+    // 1200 - 1000 = 200 = STEP_MS, deviation 0, so the estimate stays exactly 0. Measured from
+    // the last same-tile row it would be 50 ms (deviation 150, estimate 18.75).
+    const s = new AuthoritativeStore(STEP_MS);
+    s.upsertCharacter(rowAt(0, 0), 1000);
+    s.upsertCharacter(rowAt(0, 0, { action: 'Walking' }), 1100);
+    s.upsertCharacter(rowAt(0, 0, { action: 'Idle' }), 1150);
+    expect(s.character(1n)!.jitterEwma).toBe(0);
+    expect(s.character(1n)!.receivedAt).toBe(1000);
+    s.upsertCharacter(rowAt(1, 0), 1200);
+    expect(s.character(1n)!.jitterEwma).toBe(0);
+    expect(s.character(1n)!.receivedAt).toBe(1200);
+  });
+
+  it('the debounce applies on the default store too (stepMs 0) [np-a.3]', () => {
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(rowAt(2, 2), 100);
+    s.upsertCharacter(rowAt(3, 2), 200);
+    s.upsertCharacter(rowAt(3, 2, { facing: 'West' }), 300);
+    const stored = s.character(1n)!;
+    expect(stored.snapshots.map((sn) => [sn.tileX, sn.receivedAt])).toEqual([
+      [2, 100],
+      [3, 200],
+    ]);
+    expect(stored.receivedAt).toBe(200);
+    expect(stored.row.facing).toBe('West');
+    expect(stored.positionChanges).toEqual([{ dx: 1, dy: 0, facing: 'East', arrivedAt: 200 }]);
+  });
+
+  it('first sight records no position change; each step records its delta, the row facing and its arrival; a third evicts the oldest [np-a.1]', () => {
+    const s = new AuthoritativeStore(STEP_MS);
+    s.upsertCharacter(rowAt(0, 0), 1000);
+    expect(s.character(1n)!.positionChanges).toEqual([]);
+
+    s.upsertCharacter(rowAt(1, 0, { facing: 'East' }), 1200);
+    expect(s.character(1n)!.positionChanges).toEqual([
+      { dx: 1, dy: 0, facing: 'East', arrivedAt: 1200 },
+    ]);
+
+    s.upsertCharacter(rowAt(1, 1, { facing: 'South' }), 1400);
+    expect(s.character(1n)!.positionChanges).toEqual([
+      { dx: 1, dy: 0, facing: 'East', arrivedAt: 1200 },
+      { dx: 0, dy: 1, facing: 'South', arrivedAt: 1400 },
+    ]);
+
+    s.upsertCharacter(rowAt(0, 1, { facing: 'West' }), 1600);
+    expect(s.character(1n)!.positionChanges).toEqual([
+      { dx: 0, dy: 1, facing: 'South', arrivedAt: 1400 },
+      { dx: -1, dy: 0, facing: 'West', arrivedAt: 1600 },
+    ]);
+  });
+
+  it('a position change records the wall clock it arrived at, not a synthetic snapshot stamp [np-a.1]', () => {
+    // stepMs 20 makes the burst stamp reachable: B at 919 is 19 ms after A, so its snapshot is
+    // stamped 900 + 20 = 920 (store.ts burst detection). The record keeps the `now` passed in.
+    const s = new AuthoritativeStore(20);
+    s.upsertCharacter(rowAt(0, 0), 900);
+    s.upsertCharacter(rowAt(1, 0, { facing: 'East' }), 919);
+    expect(s.character(1n)!.latest.receivedAt).toBe(920);
+    expect(s.character(1n)!.positionChanges).toEqual([
+      { dx: 1, dy: 0, facing: 'East', arrivedAt: 919 },
+    ]);
+  });
+
+  it('a snap empties the record: a zone change (even on the same tile) and a two-tile jump [np-a.7]', () => {
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(rowAt(0, 0), 100);
+    s.upsertCharacter(rowAt(1, 0), 200);
+    expect(s.character(1n)!.positionChanges).toHaveLength(1);
+
+    // Zone change on the same tile: a snap, not a same-tile update.
+    s.upsertCharacter(rowAt(1, 0, { zoneId: 2 }), 300);
+    expect(s.character(1n)!.positionChanges).toEqual([]);
+    expect(s.character(1n)!.snapshots).toEqual([{ tileX: 1, tileY: 0, receivedAt: 300 }]);
+    expect(s.character(1n)!.row.zoneId).toBe(2);
+
+    s.upsertCharacter(rowAt(2, 0, { zoneId: 2 }), 400);
+    expect(s.character(1n)!.positionChanges).toEqual([
+      { dx: 1, dy: 0, facing: 'East', arrivedAt: 400 },
+    ]);
+
+    // A two-tile jump: a snap.
+    s.upsertCharacter(rowAt(4, 0, { zoneId: 2 }), 500);
+    expect(s.character(1n)!.positionChanges).toEqual([]);
+    expect(s.character(1n)!.prev).toBeUndefined();
   });
 });
 
@@ -345,13 +533,24 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
           });
           const stored = s.character(7n)!;
           expect(stored.latest.tileX).toBe(xs[xs.length - 1]);
-          // Large tile delta (>1) triggers snap — prev is dropped.
-          // Only assert prev when the last transition was a normal 1-tile step.
-          const prevX = xs[xs.length - 2];
-          if (Math.abs(xs[xs.length - 1] - prevX) <= 1) {
-            expect(stored.prev?.tileX).toBe(prevX);
-          } else {
-            expect(stored.prev).toBeUndefined();
+          // Named intentional change (np-a): a repeated tile is a same-tile update and leaves the
+          // history alone, so the oracle folds the sequence the way the store does: a repeat
+          // changes nothing, a delta above 1 snaps (prev dropped), any other delta is a step
+          // whose prev is the tile before it.
+          let cur: number | undefined;
+          let prevX: number | undefined;
+          for (const x of xs) {
+            if (cur === undefined) {
+              cur = x;
+            } else if (x !== cur) {
+              prevX = Math.abs(x - cur) > 1 ? undefined : cur;
+              cur = x;
+            }
+          }
+          expect(stored.prev?.tileX).toBe(prevX);
+          // No two consecutive snapshots share a tile.
+          for (let i = 1; i < stored.snapshots.length; i++) {
+            expect(stored.snapshots[i]!.tileX).not.toBe(stored.snapshots[i - 1]!.tileX);
           }
         },
       ),

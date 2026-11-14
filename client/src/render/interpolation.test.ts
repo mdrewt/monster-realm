@@ -912,3 +912,237 @@ describe('m23-s7 interpolateReducedMotion (A11Y-27)', () => {
     expect(first).not.toBe(second);
   });
 });
+
+// =============================================================================
+// np-a: the pure parts of remote continuation.
+//
+// walkOf(changes, facing, now, stepMs, windowMs) — is the remote walking, and can it be continued:
+//   walking  = at least two changes; the last two each a single-tile move; newer.arrivedAt -
+//              older.arrivedAt <= windowMs; now - newer.arrivedAt <= windowMs (both inclusive)
+//   cadence  = max(stepMs, newer.arrivedAt - older.arrivedAt)
+//   ahead    = the step when the two deltas are equal AND facing === newer.facing, else undefined
+// continueWalk(newest, ahead, cadenceMs, renderTime) = newest's tile plus
+//   min(0.5, max(0, renderTime - newest.receivedAt) / cadenceMs) tiles along ahead
+// slewToward(from, to, maxTiles) = to when within maxTiles (Manhattan, 1e-9 slack); otherwise
+//   exactly maxTiles along the tile path: x first when (to.x, from.y) is a tile centre, else y first
+// interpolateHistory(..., idleSpanMs): a bracket whose raw span is strictly greater than
+//   idleSpanMs is re-anchored to [next - stepMs, next]; omitted, the threshold is 2 * stepMs.
+//
+// The functions are read off the namespace import: before np-a lands they are `undefined` and
+// each test reds with "is not a function" rather than taking the file's collection down.
+// =============================================================================
+import type { InterpStep } from './interpolation';
+
+describe('np-a continuation primitives', () => {
+  const STEP_MS = 200;
+  const WINDOW_MS = 600; // JITTER_IDLE_GAP_STEPS (3) x STEP_MS
+  const walkOf = interpolationModule.walkOf;
+  const continueWalk = interpolationModule.continueWalk;
+  const slewToward = interpolationModule.slewToward;
+
+  const step = (dx: number, dy: number, facing: string, arrivedAt: number): InterpStep => ({
+    dx,
+    dy,
+    facing,
+    arrivedAt,
+  });
+  const EAST_1000 = step(1, 0, 'East', 1000);
+  const EAST_1200 = step(1, 0, 'East', 1200);
+
+  it('walkOf: two one-tile steps in one direction, arriving one step apart, with the row still facing that way, are a straight walk at their cadence [np-a.1]', () => {
+    expect(walkOf([EAST_1000, EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS)).toEqual({
+      cadenceMs: 200,
+      ahead: { dx: 1, dy: 0 },
+    });
+    // Another direction, another cadence: 350 ms between the steps is the cadence.
+    expect(
+      walkOf(
+        [step(0, -1, 'North', 1000), step(0, -1, 'North', 1350)],
+        'North',
+        1400,
+        STEP_MS,
+        WINDOW_MS,
+      ),
+    ).toEqual({ cadenceMs: 350, ahead: { dx: 0, dy: -1 } });
+  });
+
+  it('walkOf: the cadence is never faster than one tile per stepMs [np-a.1]', () => {
+    // 150 ms between the steps: cadence max(200, 150) = 200. 0 ms (a burst): 200.
+    expect(walkOf([EAST_1000, step(1, 0, 'East', 1150)], 'East', 1150, STEP_MS, WINDOW_MS)).toEqual(
+      { cadenceMs: 200, ahead: { dx: 1, dy: 0 } },
+    );
+    expect(walkOf([EAST_1000, step(1, 0, 'East', 1000)], 'East', 1000, STEP_MS, WINDOW_MS)).toEqual(
+      { cadenceMs: 200, ahead: { dx: 1, dy: 0 } },
+    );
+  });
+
+  it('walkOf: both window bounds are inclusive [np-a.1]', () => {
+    // newer - older exactly 600: walking, cadence 600; 600.5: not walking.
+    expect(walkOf([EAST_1000, step(1, 0, 'East', 1600)], 'East', 1600, STEP_MS, WINDOW_MS)).toEqual(
+      { cadenceMs: 600, ahead: { dx: 1, dy: 0 } },
+    );
+    expect(
+      walkOf([EAST_1000, step(1, 0, 'East', 1600.5)], 'East', 1600.5, STEP_MS, WINDOW_MS),
+    ).toBeUndefined();
+    // now - newer exactly 600: walking; 600.5 later: not walking.
+    expect(walkOf([EAST_1000, EAST_1200], 'East', 1800, STEP_MS, WINDOW_MS)).toEqual({
+      cadenceMs: 200,
+      ahead: { dx: 1, dy: 0 },
+    });
+    expect(walkOf([EAST_1000, EAST_1200], 'East', 1800.5, STEP_MS, WINDOW_MS)).toBeUndefined();
+    // The window is the argument, not a constant: 400 ms at windowMs 300 is not a walk.
+    expect(
+      walkOf([EAST_1000, step(1, 0, 'East', 1400)], 'East', 1400, STEP_MS, 300),
+    ).toBeUndefined();
+  });
+
+  it('walkOf: a lone step, a step that is not one tile, and steps further apart than the window are not a walk [np-a.7]', () => {
+    expect(walkOf([], 'East', 1000, STEP_MS, WINDOW_MS)).toBeUndefined();
+    expect(walkOf([EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS)).toBeUndefined();
+    // Two tiles at once (Manhattan 2), as the newer and as the older change.
+    expect(
+      walkOf([EAST_1000, step(2, 0, 'East', 1200)], 'East', 1300, STEP_MS, WINDOW_MS),
+    ).toBeUndefined();
+    expect(
+      walkOf([step(1, 1, 'East', 1000), EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS),
+    ).toBeUndefined();
+    // An NPC wandering one tile a second.
+    expect(
+      walkOf([EAST_1000, step(1, 0, 'East', 2000)], 'East', 2100, STEP_MS, WINDOW_MS),
+    ).toBeUndefined();
+  });
+
+  it('walkOf: a turn, or a row now facing another way, is walking but not continuable [np-a.5]', () => {
+    // East then South: walking at cadence 200, nothing ahead.
+    const turned = walkOf(
+      [EAST_1000, step(0, 1, 'South', 1200)],
+      'South',
+      1300,
+      STEP_MS,
+      WINDOW_MS,
+    );
+    expect(turned).toBeDefined();
+    expect(turned!.cadenceMs).toBe(200);
+    expect(turned!.ahead).toBeUndefined();
+    // East then West (a reversal).
+    const reversed = walkOf(
+      [EAST_1000, step(-1, 0, 'West', 1200)],
+      'West',
+      1300,
+      STEP_MS,
+      WINDOW_MS,
+    );
+    expect(reversed).toBeDefined();
+    expect(reversed!.ahead).toBeUndefined();
+    // Two East steps, but the row (a later same-tile row) now faces North.
+    const faced = walkOf([EAST_1000, EAST_1200], 'North', 1300, STEP_MS, WINDOW_MS);
+    expect(faced).toBeDefined();
+    expect(faced!.cadenceMs).toBe(200);
+    expect(faced!.ahead).toBeUndefined();
+  });
+
+  it('walkOf: only the last two changes are read [np-a.1]', () => {
+    // A turn three changes back does not matter; a straight pair three back does not rescue a turn.
+    expect(
+      walkOf([step(0, 1, 'South', 800), EAST_1000, EAST_1200], 'East', 1300, STEP_MS, WINDOW_MS),
+    ).toEqual({ cadenceMs: 200, ahead: { dx: 1, dy: 0 } });
+    const turned = walkOf(
+      [step(1, 0, 'East', 800), EAST_1000, step(0, 1, 'South', 1200)],
+      'South',
+      1300,
+      STEP_MS,
+      WINDOW_MS,
+    );
+    expect(turned).toBeDefined();
+    expect(turned!.ahead).toBeUndefined();
+  });
+
+  it('continueWalk: moves past the newest tile along the walk at one tile per cadence [np-a.1]', () => {
+    const newest = s(2, 3, 1000);
+    // (1050 - 1000) / 200 = 0.25 tile east.
+    expect(continueWalk(newest, { dx: 1, dy: 0 }, 200, 1050)).toEqual({ x: 2.25, y: 3 });
+    // (1100 - 1000) / 400 = 0.25 tile north.
+    expect(continueWalk(newest, { dx: 0, dy: -1 }, 400, 1100)).toEqual({ x: 2, y: 2.75 });
+    // (1050 - 1000) / 250 = 0.2 tile west.
+    const west = continueWalk(newest, { dx: -1, dy: 0 }, 250, 1050);
+    expect(west.x).toBeCloseTo(1.8, 12);
+    expect(west.y).toBe(3);
+  });
+
+  it('continueWalk: never more than half a tile past the newest tile, and never before it [np-a.2]', () => {
+    const newest = s(2, 3, 1000);
+    expect(continueWalk(newest, { dx: 1, dy: 0 }, 200, 1100)).toEqual({ x: 2.5, y: 3 });
+    expect(continueWalk(newest, { dx: 1, dy: 0 }, 200, 1300)).toEqual({ x: 2.5, y: 3 });
+    expect(continueWalk(newest, { dx: 0, dy: 1 }, 400, 9000)).toEqual({ x: 2, y: 3.5 });
+    // At and before the snapshot: the snapshot's tile, never a step backward.
+    expect(continueWalk(newest, { dx: 1, dy: 0 }, 200, 1000)).toEqual({ x: 2, y: 3 });
+    expect(continueWalk(newest, { dx: 1, dy: 0 }, 200, 900)).toEqual({ x: 2, y: 3 });
+  });
+
+  it('slewToward: a target within reach is returned as it is [np-a.4]', () => {
+    expect(slewToward({ x: 0, y: 0 }, { x: 0.3, y: 0.1 }, 0.5)).toEqual({ x: 0.3, y: 0.1 });
+    // Exactly the budget away.
+    expect(slewToward({ x: 1, y: 0 }, { x: 1.5, y: 0 }, 0.5)).toEqual({ x: 1.5, y: 0 });
+    // Within 1e-9 of the budget: still the target itself.
+    const to = { x: 0.5 + 1e-10, y: 0 };
+    expect(slewToward({ x: 0, y: 0 }, to, 0.5)).toEqual(to);
+  });
+
+  it('slewToward: a target out of reach is approached by exactly the budget, Manhattan [np-a.4]', () => {
+    // 1-D moves, both signs.
+    expect(slewToward({ x: 0, y: 0 }, { x: 3, y: 0 }, 0.25)).toEqual({ x: 0.25, y: 0 });
+    expect(slewToward({ x: 2, y: 1 }, { x: 2, y: -1 }, 0.5)).toEqual({ x: 2, y: 0.5 });
+    // A zero budget does not move.
+    expect(slewToward({ x: 1, y: 1 }, { x: 2, y: 1 }, 0)).toEqual({ x: 1, y: 1 });
+    // A 2-D move spends the whole budget, no more.
+    const from = { x: 2.5, y: 0 };
+    const p = slewToward(from, { x: 2, y: 0.3 }, 0.6);
+    expect(Math.abs(p.x - from.x) + Math.abs(p.y - from.y)).toBeCloseTo(0.6, 12);
+  });
+
+  it('slewToward: the first axis is the one whose corner is a tile centre [np-a.5]', () => {
+    // (2.5, 0) -> (2, 0.3): the corner (to.x, from.y) = (2, 0) is a tile centre, so x first.
+    // Budget 0.3: x only, 2.5 - 0.3 = 2.2.
+    const xOnly = slewToward({ x: 2.5, y: 0 }, { x: 2, y: 0.3 }, 0.3);
+    expect(xOnly.x).toBeCloseTo(2.2, 12);
+    expect(xOnly.y).toBe(0);
+    // Budget 0.6: x closes (0.5), the 0.1 left goes to y. (y first would give (2.2, 0.3).)
+    const xThenY = slewToward({ x: 2.5, y: 0 }, { x: 2, y: 0.3 }, 0.6);
+    expect(xThenY.x).toBeCloseTo(2, 12);
+    expect(xThenY.y).toBeCloseTo(0.1, 12);
+    // (5, 3) -> (5.3, 4): the corner (5.3, 3) is not a tile centre, so y first, via (5, 4).
+    // Budget 0.5: y only. (x first would give (5.3, 3.2).)
+    const yOnly = slewToward({ x: 5, y: 3 }, { x: 5.3, y: 4 }, 0.5);
+    expect(yOnly.x).toBe(5);
+    expect(yOnly.y).toBeCloseTo(3.5, 12);
+    // Budget 1.1: y closes (1.0), the 0.1 left goes to x.
+    const yThenX = slewToward({ x: 5, y: 3 }, { x: 5.3, y: 4 }, 1.1);
+    expect(yThenX.x).toBeCloseTo(5.1, 12);
+    expect(yThenX.y).toBeCloseTo(4, 12);
+  });
+
+  it('interpolateHistory: idleSpanMs raises the re-anchor threshold, which stays strict, and a re-anchored window stays one step wide [np-a.3]', () => {
+    // A 410 ms bracket at stepMs 200.
+    const ring410: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1410)];
+    // Default threshold 2 x 200 = 400 < 410: re-anchored to [1210, 1410]; 1205 is in the dead
+    // zone, 1310 is half way.
+    expect(interpolateHistory(ring410, 1205, STEP_MS)).toEqual({ x: 0, y: 0 });
+    expect(interpolateHistory(ring410, 1310, STEP_MS).x).toBeCloseTo(0.5, 12);
+    // An explicit undefined is the default.
+    expect(interpolateHistory(ring410, 1205, STEP_MS, undefined)).toEqual({ x: 0, y: 0 });
+    // idleSpanMs 600 >= 410: lerped across the raw span. 205 / 410 = 0.5; 310 / 410.
+    expect(interpolateHistory(ring410, 1205, STEP_MS, 600)).toEqual({ x: 0.5, y: 0 });
+    expect(interpolateHistory(ring410, 1310, STEP_MS, 600).x).toBeCloseTo(310 / 410, 12);
+
+    // Exactly 600 at idleSpanMs 600 is not strictly greater: lerped, 300 / 600 = 0.5.
+    const ring600: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1600)];
+    expect(interpolateHistory(ring600, 1300, STEP_MS, 600)).toEqual({ x: 0.5, y: 0 });
+
+    // A 700 ms bracket is re-anchored either way, to [1500, 1700].
+    const ring700: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1700)];
+    for (const idle of [undefined, 600]) {
+      expect(interpolateHistory(ring700, 1350, STEP_MS, idle)).toEqual({ x: 0, y: 0 });
+      expect(interpolateHistory(ring700, 1600, STEP_MS, idle).x).toBeCloseTo(0.5, 12);
+    }
+  });
+});

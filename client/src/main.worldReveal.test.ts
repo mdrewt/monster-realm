@@ -42,7 +42,8 @@ const H = vi.hoisted(() => ({
 }));
 
 // wasm pkg: the walking mock, with a warp in each of zones 0 and 1 (into the other) and no map
-// at all for zone 9.
+// at all for zone 9. Zone 0's 8x8 grid has one wall, at (6,2) (np-a: the remote-continuation
+// wiring test walks a remote toward it).
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const base = wasmPkgWalkingMock();
   return {
@@ -54,7 +55,10 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
         zoneId === 0 || zoneId === 1
           ? [{ from: { x: 1, y: 5 }, to_zone: 1 - zoneId, to_tile: { x: 1, y: 5 } }]
           : [];
-      return { ...base.zone_map(zoneId), warps };
+      const map = base.zone_map(zoneId);
+      const walkable =
+        zoneId === 0 ? map.walkable.map((w, i) => w && i !== 2 * map.width + 6) : map.walkable;
+      return { ...map, walkable, warps };
     },
   };
 });
@@ -354,11 +358,19 @@ describe('main.ts draws the world once its scope has settled', { sequential: tru
       s.upsertCharacter(character(OWN, 1, 1, 5), 1200);
       s.upsertCharacter(character(41n, 1, 3, 5), 1200);
     });
-    // Zone 1's remote arrives on the step; the zone-0 one, still held, arrives off it.
-    for (const t of [1400, 1600, 1800, 2000]) {
-      batch(t, (s) => s.upsertCharacter(character(41n, 1, 3, 5), t));
+    // Zone 1's remote steps on the step; the zone-0 one, still held, steps off it. Only position
+    // changes feed the jitter estimate (a same-tile row does not), so both step between
+    // adjacent tiles: 41n every 200 ms (estimate 0), NPC at 1600 and 2000 (intervals 500 and
+    // 400: estimate 37.5, then 57.8125, delay 315.625).
+    for (const [t, x] of [
+      [1400, 4],
+      [1600, 3],
+      [1800, 4],
+      [2000, 3],
+    ] as const) {
+      batch(t, (s) => s.upsertCharacter(character(41n, 1, x, 5), t));
     }
-    batch(1600, (s) => s.upsertCharacter(character(NPC, 0, 4, 6), 1600));
+    batch(1600, (s) => s.upsertCharacter(character(NPC, 0, 5, 6), 1600));
     batch(2000, (s) => s.upsertCharacter(character(NPC, 0, 4, 6), 2000));
 
     const delayOf = (entityId: bigint): number => {
@@ -372,5 +384,70 @@ describe('main.ts draws the world once its scope has settled', { sequential: tru
     expect(H.gaps).toEqual([]);
     frame(2050);
     expect(H.gaps).toEqual([delayOf(41n)]);
+  });
+
+  it('a remote on a straight walk is drawn past its newest tile toward a walkable tile, and never into a wall of the drawn zone [np-a.2]', async () => {
+    // WRONG IMPL KILLED: main.ts not handing the resolver a walkability predicate (never
+    // continued: OPEN_WALKER never passes x = 5); a predicate that is not the drawn zone's map,
+    // e.g. always true (WALL_WALKER is drawn into the wall at (6,2)).
+    // Both remotes step east in zone 0 at 1100, 1300, 1500 (x = 3, 4, 5): steps exactly 200 ms
+    // apart keep the jitter estimate at 0, the delay at 200. The render clock passes 1500 at
+    // 1700; OPEN_WALKER, heading for (6,4), is then continued at one tile per 200 ms to x = 5.5
+    // (1800) until the window ends at 2100. WALL_WALKER is heading for (6,2), a wall.
+    const OPEN_WALKER = 50n;
+    const WALL_WALKER = 51n;
+    await boot();
+    settled(false);
+    opts.onReady(H.identity);
+    batch(1100, (s) => {
+      ownRows(s, 1100);
+      s.upsertCharacter(character(OPEN_WALKER, 0, 3, 4), 1100);
+      s.upsertCharacter(character(WALL_WALKER, 0, 3, 2), 1100);
+    });
+    settled(true);
+
+    interface Drawn {
+      readonly entityId: string;
+      readonly x: number;
+      readonly y: number;
+    }
+    const drawn = (id: bigint): Drawn | undefined =>
+      (window as unknown as { __game: () => { rendered: readonly Drawn[] } })
+        .__game()
+        .rendered.find((e) => e.entityId === id.toString());
+
+    const steps: readonly [number, number][] = [
+      [1300, 4],
+      [1500, 5],
+    ];
+    let next = 0;
+    const open: number[] = [];
+    const wall: number[] = [];
+    for (let t = 1116; t <= 2000; t += 16) {
+      while (next < steps.length && steps[next]![0] <= t) {
+        const [at, x] = steps[next]!;
+        batch(at, (s) => {
+          s.upsertCharacter(character(OPEN_WALKER, 0, x, 4), at);
+          s.upsertCharacter(character(WALL_WALKER, 0, x, 2), at);
+        });
+        next++;
+      }
+      frame(t);
+      const o = drawn(OPEN_WALKER);
+      const w = drawn(WALL_WALKER);
+      expect(o, `OPEN_WALKER drawn at ${t}`).toBeDefined();
+      expect(w, `WALL_WALKER drawn at ${t}`).toBeDefined();
+      expect(o!.y).toBeCloseTo(4, 9);
+      expect(w!.y).toBeCloseTo(2, 9);
+      open.push(o!.x);
+      wall.push(w!.x);
+    }
+    expect(next, 'both steps were delivered').toBe(steps.length);
+    expect(Math.max(...open), 'drawn past (5,4) toward the walkable (6,4)').toBeGreaterThan(5.25);
+    expect(Math.max(...open)).toBeLessThanOrEqual(5.5 + 1e-9);
+    expect(Math.max(...wall), 'never drawn past (5,2) toward the wall (6,2)').toBeLessThanOrEqual(
+      5 + 1e-9,
+    );
+    expect(wall[wall.length - 1], 'WALL_WALKER rests on its newest tile').toBeCloseTo(5, 9);
   });
 });

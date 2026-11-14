@@ -855,9 +855,14 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
     expect(store.character(NPC_ID)!.jitterEwma).toBe(20);
 
     // Frame 2 — renderTime 6040.1 - 240 = 5800.1: STILL the A->B bracket, now only
-    // 0.1 ms into its window → a = 0.0005. The render clock stepped backward 40 ms.
+    // 0.1 ms into its window → the interpolated target is a = 0.0005. The render clock stepped
+    // backward 40 ms.
+    // Named intentional change (np-a): B and C are a straight walk, on which the drawn position
+    // never moves backward, so the remote waits at `before` for its target instead of stepping
+    // back to 0.0005; it moves at most one tile per STEP_MS, i.e. 0.2 / 200 = 0.001 tile here.
     const after = renderX(store, resolver, 6040.1);
-    expect(after).toBeCloseTo(0.0005, 6);
+    expect(after).toBeGreaterThanOrEqual(before);
+    expect(after - before).toBeLessThanOrEqual(0.2 / STEP_MS + 1e-9);
 
     expect(before - after).toBeLessThanOrEqual(0.2 + 1e-3); // the pinned closed-form bound
     expect(after).toBeGreaterThanOrEqual(0); // dead-zone floor: never behind `prev`
@@ -1457,5 +1462,651 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
     frame(0, 1); // step 0->1 at t=0
     // exactly 0.5 — the same value §1 of this file has pinned since M8.6b
     expect(frame(100, 1)).toEqual({ x: 0.5, y: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. np-a: a remote on a straight walk keeps walking between late steps
+// ---------------------------------------------------------------------------
+//
+// Rows go through a REAL AuthoritativeStore(200) into RenderResolver(200), frame by frame, at
+// the adaptive delay the store's jitter estimate gives (every scenario says how its delay is
+// set). The contract the expected values are worked from, per remote per frame:
+//   delay = adaptiveInterpDelayMs(jitterEwma, 200); renderTime = now - delay; window = 600 ms
+//   walk  = walkOf(positionChanges, row.facing, now, 200, 600)
+//   target: interpolateHistory(snapshots, renderTime, 200, walk ? 600 : undefined); when the
+//     walk is straight, renderTime > latest.receivedAt and `walkable(latest + ahead)`, instead
+//     latest + min(0.5, (renderTime - latest.receivedAt) / cadence) along the walk
+//   position: the target on first sight / after a snap / when it is 2+ tiles away, else the last
+//     drawn position moved toward it by at most (now - lastNow) / 200 tiles; on a straight walk
+//     a move backward along the walk is dropped until the remote is past its newest tile
+//   action: 'Walking' for an Idle row while the remote is not drawn on the row's tile
+// "Timing facts" for the base walk A@1000 (0,0), B@1200 (1,0), C@1400 (2,0), all East, delay
+// 200: the render clock passes C at now 1600; continuation adds one tile per 200 ms up to +0.5
+// at 1700; the window ends at 2000 (C's arrival + 600); the settle back takes 100 ms.
+import { adaptiveInterpDelayMs, interpolateHistory } from './interpolation';
+import { TileMap } from './map';
+// Namespace import: `walkableIn` does not exist before np-a; read off the namespace, its tests
+// red with "is not a function" instead of taking the file's collection down.
+import * as resolverModule from './renderResolver';
+
+describe('np-a remote continuation and slew (real store into the resolver)', () => {
+  const EPS = 1e-9;
+  const OPEN = (): boolean => true;
+  const walkableIn = resolverModule.walkableIn;
+
+  type Facing = StoreCharacter['facing'];
+  type Action = StoreCharacter['action'];
+
+  function row(
+    entityId: bigint,
+    tileX: number,
+    tileY: number,
+    facing: Facing = 'East',
+    action: Action = 'Walking',
+    zoneId = 1,
+  ): StoreCharacter {
+    return {
+      entityId,
+      zoneId,
+      tileX,
+      tileY,
+      facing,
+      action,
+      moveStartedAtMs: 0n,
+      moveQueue: [],
+      ackedSeq: 0n,
+    };
+  }
+
+  interface Arrival {
+    readonly at: number;
+    readonly row: StoreCharacter;
+  }
+  interface Drawn {
+    readonly now: number;
+    readonly x: number;
+    readonly y: number;
+    readonly action: string;
+    /** The stored character the frame was resolved from. */
+    readonly c: StoredCharacter;
+  }
+  interface RunOpts {
+    readonly from: number;
+    readonly to: number;
+    readonly frameMs: number;
+    readonly walkable?: (tileX: number, tileY: number) => boolean;
+    /** Hand the resolver `{ ...stored, jitterEwma: 0 }`: delay pinned at one STEP_MS. */
+    readonly pinDelay?: boolean;
+  }
+
+  /** Apply each arrival at its own wall clock, before the first frame at or after it, and
+   *  resolve a frame every `frameMs` from `from` to `to`. Returns every entity's frames. */
+  function run(arrivals: readonly Arrival[], o: RunOpts): Map<bigint, Drawn[]> {
+    const store = new AuthoritativeStore(STEP_MS);
+    const resolver = new RenderResolver(STEP_MS);
+    const queue = [...arrivals].sort((a, b) => a.at - b.at);
+    let next = 0;
+    const out = new Map<bigint, Drawn[]>();
+    for (let i = 0; o.from + i * o.frameMs <= o.to; i++) {
+      const now = o.from + i * o.frameMs;
+      while (next < queue.length && queue[next]!.at <= now) {
+        store.upsertCharacter(queue[next]!.row, queue[next]!.at);
+        next++;
+      }
+      const held = [...store.characters()];
+      const characters = o.pinDelay === true ? held.map((c) => ({ ...c, jitterEwma: 0 })) : held;
+      const entities = resolver.resolve({
+        characters,
+        ownEntityId: undefined,
+        predicted: undefined,
+        snapped: false,
+        now,
+        walkable: o.walkable,
+      });
+      for (const c of characters) {
+        const e = entities.find((d) => d.entityId === c.row.entityId);
+        expect(e, `entity ${c.row.entityId} drawn at ${now}`).toBeDefined();
+        const list = out.get(c.row.entityId) ?? [];
+        list.push({ now, x: e!.x, y: e!.y, action: e!.action, c });
+        out.set(c.row.entityId, list);
+      }
+    }
+    expect(next, 'every arrival was applied').toBe(queue.length);
+    return out;
+  }
+
+  function track(m: Map<bigint, Drawn[]>, id: bigint): Drawn[] {
+    const t = m.get(id);
+    expect(t, `frames for ${id}`).toBeDefined();
+    return t!;
+  }
+
+  function frameAt(t: readonly Drawn[], now: number): Drawn {
+    const f = t.find((d) => d.now === now);
+    expect(f, `a frame at ${now}`).toBeDefined();
+    return f!;
+  }
+
+  /** One East step per arrival time: tile k at times[k], on row y. */
+  function walkEast(id: bigint, times: readonly number[], y = 0, x0 = 0): Arrival[] {
+    return times.map((at, k) => ({ at, row: row(id, x0 + k, y) }));
+  }
+
+  /** No sampled move faster than one tile per STEP_MS (Manhattan), from frame `from` on. */
+  function expectBoundedSpeed(t: readonly Drawn[], label: string, from = 1): void {
+    for (let i = Math.max(1, from); i < t.length; i++) {
+      const a = t[i - 1]!;
+      const b = t[i]!;
+      const moved = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+      expect(
+        moved,
+        `${label}: ${a.now}->${b.now} moved (${a.x}, ${a.y}) -> (${b.x}, ${b.y})`,
+      ).toBeLessThanOrEqual((b.now - a.now) / STEP_MS + EPS);
+    }
+  }
+
+  /** Manhattan distance from p to the axis-aligned segment a-b. */
+  function toSegment(
+    p: { readonly x: number; readonly y: number },
+    a: { readonly tileX: number; readonly tileY: number },
+    b: { readonly tileX: number; readonly tileY: number },
+  ): number {
+    const cx = Math.min(Math.max(p.x, Math.min(a.tileX, b.tileX)), Math.max(a.tileX, b.tileX));
+    const cy = Math.min(Math.max(p.y, Math.min(a.tileY, b.tileY)), Math.max(a.tileY, b.tileY));
+    return Math.abs(p.x - cx) + Math.abs(p.y - cy);
+  }
+
+  /** Whether p lies on the polyline through the ring's tiles (the authoritative path). */
+  function onPath(
+    p: { readonly x: number; readonly y: number },
+    ring: readonly { readonly tileX: number; readonly tileY: number }[],
+  ): boolean {
+    if (ring.length === 1) return toSegment(p, ring[0]!, ring[0]!) <= EPS;
+    for (let i = 1; i < ring.length; i++) {
+      if (toSegment(p, ring[i - 1]!, ring[i]!) <= EPS) return true;
+    }
+    return false;
+  }
+
+  // --- np-a.1 -------------------------------------------------------------------------------
+
+  it("keeps walking past its newest tile, in the walk's direction, once the render clock passes it [np-a.1]", () => {
+    // Steps exactly STEP_MS apart: every jitter sample deviates 0, the estimate stays 0 and the
+    // delay is pinned at adaptiveInterpDelayMs(0, 200) = 200.
+    // The render clock passes C (1400) at now 1600. The cadence is max(200, 1400 - 1200) = 200,
+    // so x = 2 + (now - 1600) / 200 up to the 0.5 cap at 1700, then 2.5 to the end of the window
+    // (2000). The 10 ms frames move 0.05 tile each: exactly the slew budget, so the drawn
+    // position is the continued target. Today: HOLD at 2.
+    const t = track(
+      run(walkEast(9n, [1000, 1200, 1400]), { from: 1000, to: 2000, frameMs: 10, walkable: OPEN }),
+      9n,
+    );
+    for (const f of t) expect(adaptiveInterpDelayMs(f.c.jitterEwma, STEP_MS)).toBe(200);
+    for (const f of t.filter((d) => d.now >= 1600 && d.now <= 1700)) {
+      expect(f.x, `x at ${f.now}`).toBeCloseTo(2 + (f.now - 1600) / 200, 9);
+      expect(f.y).toBeCloseTo(0, 12);
+    }
+    for (const f of t.filter((d) => d.now >= 1700 && d.now <= 2000)) {
+      expect(f.x, `x at ${f.now}`).toBeCloseTo(2.5, 9);
+    }
+  });
+
+  it("continues at the walk's own observed cadence, not at one tile per STEP_MS [np-a.1]", () => {
+    // Steps 300 ms apart: A@1000, B@1300, C@1600; the resolver is handed jitterEwma 0, so the
+    // delay is pinned at 200. Cadence = max(200, 1600 - 1300) = 300 ms per tile.
+    // Before C, each new bracket starts 1/3 tile ahead of the held position and the slew
+    // (0.05 / 10 ms frame) closes it in 17 frames, so by 1770 the drawn position is the target.
+    // The render clock passes C at now 1800; then x = 2 + (now - 1800) / 300 (e.g. 2.3 at 1890;
+    // a one-tile-per-STEP_MS continuation would read 2.45 there), capped at 2.5 from 1950 to
+    // the end of the window (1600 + 600 = 2200).
+    const t = track(
+      run(walkEast(9n, [1000, 1300, 1600]), {
+        from: 1000,
+        to: 2200,
+        frameMs: 10,
+        walkable: OPEN,
+        pinDelay: true,
+      }),
+      9n,
+    );
+    for (const f of t.filter((d) => d.now >= 1800 && d.now <= 1950)) {
+      expect(f.x, `x at ${f.now}`).toBeCloseTo(2 + (f.now - 1800) / 300, 9);
+    }
+    for (const f of t.filter((d) => d.now >= 1950 && d.now <= 2200)) {
+      expect(f.x, `x at ${f.now}`).toBeCloseTo(2.5, 9);
+    }
+  });
+
+  // --- np-a.2 -------------------------------------------------------------------------------
+
+  it('is drawn at most half a tile (Manhattan) past its newest tile, and does reach that half tile [np-a.2]', () => {
+    // Cadence 200 (natural, delay 200) and cadence 300 (pinned delay 200), each at 10 ms and
+    // 50 ms frames. The cap is reached at 1700 (cadence 200) / 1950 (cadence 300), both on
+    // either frame grid, and held to the window's end.
+    const cases = [
+      { times: [1000, 1200, 1400], pinDelay: false, to: 2000 },
+      { times: [1000, 1300, 1600], pinDelay: true, to: 2200 },
+    ];
+    for (const k of cases) {
+      for (const frameMs of [10, 50]) {
+        const t = track(
+          run(walkEast(9n, k.times), {
+            from: 1000,
+            to: k.to,
+            frameMs,
+            walkable: OPEN,
+            pinDelay: k.pinDelay,
+          }),
+          9n,
+        );
+        let farthest = Number.NEGATIVE_INFINITY;
+        for (const f of t) {
+          const past = f.x - f.c.latest.tileX;
+          farthest = Math.max(farthest, past);
+          if (past > 0) {
+            const d = Math.abs(f.x - f.c.latest.tileX) + Math.abs(f.y - f.c.latest.tileY);
+            expect(
+              d,
+              `cadence case ${k.times}, ${frameMs} ms frames, at ${f.now}`,
+            ).toBeLessThanOrEqual(0.5 + EPS);
+          }
+        }
+        expect(farthest, `cadence case ${k.times}, ${frameMs} ms frames`).toBeGreaterThanOrEqual(
+          0.5 - EPS,
+        );
+      }
+    }
+  });
+
+  it('holds short of a tile the walkability predicate rejects, while a walk toward an accepted tile is continued [np-a.2]', () => {
+    // Two remotes walk east in step: 9n on row 0 toward (3,0), which the predicate rejects; 10n on
+    // row 1 toward (3,1), which it accepts. Delay 200 (steps exactly 200 apart).
+    const walkable = (x: number, y: number): boolean => !(x === 3 && y === 0);
+    const m = run(
+      [...walkEast(9n, [1000, 1200, 1400], 0), ...walkEast(10n, [1000, 1200, 1400], 1)],
+      {
+        from: 1000,
+        to: 2000,
+        frameMs: 10,
+        walkable,
+      },
+    );
+    const blocked = track(m, 9n);
+    const open = track(m, 10n);
+    for (const f of blocked) {
+      expect(f.x, `9n never past its newest tile (at ${f.now})`).toBeLessThanOrEqual(2 + EPS);
+    }
+    expect(frameAt(blocked, 2000).x).toBeCloseTo(2, 9);
+    expect(Math.max(...open.map((f) => f.x)), '10n is continued').toBeCloseTo(2.5, 9);
+  });
+
+  it('is never continued without a walkability predicate [np-a.2]', () => {
+    const t = track(
+      run(walkEast(9n, [1000, 1200, 1400]), { from: 1000, to: 2000, frameMs: 10 }),
+      9n,
+    );
+    for (const f of t) expect(f.x, `x at ${f.now}`).toBeLessThanOrEqual(2 + EPS);
+    expect(frameAt(t, 2000).x).toBeCloseTo(2, 9);
+  });
+
+  it('walkableIn agrees with TileMap.isWalkable on every tile of a grid and on its border [np-a.2]', () => {
+    // A 5 x 3 grid whose pattern is not symmetric under an x/y swap, row-major:
+    //   y=0: # . # # .     y=1: . # # . #     y=2: # # . # #     (# walkable)
+    const walkable = [...'#.##..##.###.##'].map((ch) => ch === '#');
+    const raw = {
+      zone_id: 3,
+      width: 5,
+      height: 3,
+      walkable,
+      grass: walkable.map(() => false),
+    };
+    const map = TileMap.fromRaw(raw);
+    const pred = walkableIn(raw);
+    let trues = 0;
+    for (let y = -1; y <= 3; y++) {
+      for (let x = -1; x <= 5; x++) {
+        expect(pred(x, y), `(${x}, ${y})`).toBe(map.isWalkable(x, y));
+        if (pred(x, y)) trues++;
+      }
+    }
+    expect(trues, 'every walkable tile inside the grid, and no other').toBe(10);
+    // A fractional coordinate is never a tile.
+    for (const [x, y] of [
+      [1.5, 0],
+      [0, 1.5],
+      [-0.5, 1],
+    ] as const) {
+      expect(pred(x, y), `(${x}, ${y})`).toBe(false);
+      expect(map.isWalkable(x, y)).toBe(false);
+    }
+  });
+
+  it('a walk toward the edge of the map is not continued off it; one toward the inside is [np-a.2]', () => {
+    // A 4 x 2 open grid through walkableIn. 9n walks east on row 0 to (3,0): the tile ahead,
+    // (4,0), is outside the map. 10n walks west on row 1 to (1,1): the tile ahead, (0,1), is
+    // inside, so it is continued to x = 0.5.
+    const grid = { width: 4, height: 2, walkable: Array.from({ length: 8 }, () => true) };
+    const m = run(
+      [
+        ...walkEast(9n, [1000, 1200, 1400], 0, 1),
+        { at: 1000, row: row(10n, 3, 1, 'West') },
+        { at: 1200, row: row(10n, 2, 1, 'West') },
+        { at: 1400, row: row(10n, 1, 1, 'West') },
+      ],
+      { from: 1000, to: 2000, frameMs: 10, walkable: walkableIn(grid) },
+    );
+    const edge = track(m, 9n);
+    for (const f of edge) expect(f.x, `9n at ${f.now}`).toBeLessThanOrEqual(3 + EPS);
+    expect(frameAt(edge, 2000).x).toBeCloseTo(3, 9);
+    expect(Math.min(...track(m, 10n).map((f) => f.x)), '10n is continued west').toBeCloseTo(0.5, 9);
+  });
+
+  // --- np-a.3 -------------------------------------------------------------------------------
+
+  /** A small seeded LCG (Numerical Recipes constants): deterministic arrival jitter. */
+  function lcg(seed: number): () => number {
+    let s = seed >>> 0;
+    return () => {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      return s;
+    };
+  }
+
+  const STEPS = 24;
+  const SETTLED_FROM = 16; // sample from the 17th step on
+  const exact400 = Array.from({ length: STEPS }, (_, k) => 1000 + 400 * k);
+  const alternating: number[] = [1000];
+  for (let k = 1; k < STEPS; k++) alternating.push(alternating[k - 1]! + (k % 2 === 1 ? 390 : 410));
+  const rand = lcg(0x5eed);
+  const seeded = Array.from({ length: STEPS }, (_, k) =>
+    k === 0 ? 1000 : 1000 + 400 * k + ((rand() % 21) - 10),
+  );
+
+  /** A straight walk east with an Idle same-tile row 200 ms after each step. */
+  function walkWithIdleRows(id: bigint, times: readonly number[]): Arrival[] {
+    const out: Arrival[] = [];
+    times.forEach((at, k) => {
+      out.push({ at, row: row(id, k, 0, 'East', 'Walking') });
+      out.push({ at: at + 200, row: row(id, k, 0, 'East', 'Idle') });
+    });
+    return out;
+  }
+
+  for (const [name, times] of [
+    ['exactly 400 ms', exact400],
+    ['alternating 390 / 410 ms', alternating],
+    ['400 ms +- seeded 10 ms', seeded],
+  ] as const) {
+    it(`steps two STEP_MS apart (${name}) with Idle rows between them advance without a 100 ms stand-still, drawn Walking [np-a.3]`, () => {
+      // Every step interval deviates ~200 ms from STEP_MS, so the estimate climbs toward 200 and
+      // the delay reaches its 500 ms cap within a dozen steps; sampling starts at step 16.
+      // Settled: renderTime = now - 500 trails the newest step (next step <= 420 ms later) by more
+      // than 80 ms, every bracket spans 380..420 ms (<= the 600 ms walk span, so it is lerped,
+      // never re-anchored), and the lerp moves at most 16 / 380 = 0.042 tile per 16 ms frame,
+      // inside the 0.08 slew budget: the drawn position rises every frame. It is never on the
+      // row's tile (it trails it by more than a quarter tile), so an Idle row is drawn Walking.
+      // Today the Idle rows enter the ring (each step tile held for 200 ms) and pass through.
+      const t = track(
+        run(walkWithIdleRows(9n, times), {
+          from: times[0]!,
+          to: times[STEPS - 1]!,
+          frameMs: 16,
+          walkable: OPEN,
+        }),
+        9n,
+      );
+      const sampled = t.filter((f) => f.now >= times[SETTLED_FROM]!);
+      expect(
+        sampled.length,
+        'ANTI-VACUITY: frames sampled after the estimate settles',
+      ).toBeGreaterThan(100);
+      for (const f of sampled) {
+        expect(
+          adaptiveInterpDelayMs(f.c.jitterEwma, STEP_MS),
+          `the delay has settled at its cap by ${f.now}`,
+        ).toBe(500);
+      }
+      const last = sampled[sampled.length - 1]!;
+      expect(
+        last.c.snapshots.map((sn) => sn.tileX),
+        'one snapshot per tile',
+      ).toEqual([STEPS - 4, STEPS - 3, STEPS - 2, STEPS - 1]);
+
+      let runStart = sampled[0]!;
+      let longestStill = 0;
+      for (let i = 1; i < sampled.length; i++) {
+        const a = sampled[i - 1]!;
+        const b = sampled[i]!;
+        expect(b.x, `never backward (${a.now} -> ${b.now})`).toBeGreaterThanOrEqual(a.x - EPS);
+        expect(b.y).toBeCloseTo(0, 12);
+        const still = Math.abs(b.x - a.x) + Math.abs(b.y - a.y) <= EPS;
+        if (!still) runStart = b;
+        longestStill = Math.max(longestStill, b.now - runStart.now);
+      }
+      expect(longestStill, 'longest stand-still (ms)').toBeLessThan(100);
+      expect(last.x - sampled[0]!.x, 'advances along the walk').toBeGreaterThan(6);
+      for (const f of sampled) expect(f.action, `action at ${f.now}`).toBe('Walking');
+    });
+  }
+
+  // --- np-a.4 -------------------------------------------------------------------------------
+
+  it('with no position change within the window, returns to the newest tile within one STEP_MS, no faster than one tile per STEP_MS, and then shows the row action [np-a.4]', () => {
+    // The base walk (delay 200) plus an Idle row on C's tile at 1600. Continued to 2.5 by 1700;
+    // the window ends at 2000 (C + 600); from 2010 the target is C's tile and the 0.05-per-frame
+    // slew brings 2.5 back to 2 by 2100, inside 2000 + STEP_MS. Drawn Walking while off the
+    // tile, Idle once on it.
+    const t = track(
+      run([...walkEast(9n, [1000, 1200, 1400]), { at: 1600, row: row(9n, 2, 0, 'East', 'Idle') }], {
+        from: 1000,
+        to: 2400,
+        frameMs: 10,
+        walkable: OPEN,
+      }),
+      9n,
+    );
+    expect(Math.max(...t.map((f) => f.x)), 'ANTI-VACUITY: it was continued').toBeCloseTo(2.5, 9);
+    expectBoundedSpeed(t, 'settle');
+    const back = t.find((f) => f.now > 2000 && Math.abs(f.x - 2) <= EPS);
+    expect(back, 'back on the newest tile').toBeDefined();
+    expect(back!.now).toBeLessThanOrEqual(2000 + STEP_MS);
+    for (const f of t.filter((d) => d.now >= 2000 + STEP_MS)) {
+      expect(f.x, `x at ${f.now}`).toBeCloseTo(2, 9);
+      expect(f.y).toBeCloseTo(0, 12);
+      expect(f.action, `action at ${f.now}`).toBe('Idle');
+    }
+    for (const f of t.filter((d) => d.now >= 1700 && d.now <= 2000)) {
+      expect(f.action, `action off the tile at ${f.now}`).toBe('Walking');
+    }
+  });
+
+  it('a walk at two STEP_MS per step that stops settles back onto its last tile the same way [np-a.4]', () => {
+    // 16 steps 400 ms apart with Idle rows (delay settled at 500 by the end); the last step is
+    // tile 15 at 7000, its Idle row at 7200. The render clock passes 7000 at now 7500 and the
+    // remote is continued at the 400 ms cadence until the window ends at 7600 (+0.25 tile);
+    // then it returns to 15 well before 7600 + STEP_MS and shows Idle.
+    const times = exact400.slice(0, 16);
+    const t = track(
+      run(walkWithIdleRows(9n, times), { from: 1000, to: 8200, frameMs: 16, walkable: OPEN }),
+      9n,
+    );
+    expect(
+      Math.max(...t.filter((f) => f.now > 7000).map((f) => f.x)),
+      'ANTI-VACUITY: it was continued past tile 15',
+    ).toBeGreaterThan(15.1);
+    expectBoundedSpeed(t, 'walk and settle');
+    for (const f of t.filter((d) => d.now >= 7600 + STEP_MS)) {
+      expect(f.x, `x at ${f.now}`).toBeCloseTo(15, 9);
+      expect(f.action, `action at ${f.now}`).toBe('Idle');
+    }
+  });
+
+  // --- np-a.5 -------------------------------------------------------------------------------
+
+  for (const [name, contradiction] of [
+    ['a reversal', row(9n, 1, 0, 'West')],
+    ['a perpendicular turn', row(9n, 2, 1, 'South')],
+    ['a same-tile turn', row(9n, 2, 0, 'North', 'Idle')],
+  ] as const) {
+    it(`after ${name} it stays within half a tile of its last segment, moves no faster than one tile per STEP_MS and reaches the authoritative path within one STEP_MS [np-a.5]`, () => {
+      // The base walk, continued to 2.5 by 1700; the contradicting row arrives at 1750.
+      // Reversal: D (1,0) West. Interval 350 -> estimate 18.75 -> delay 237.5; a turn, so not
+      //   continued; the target is the C->D lerp, 2 - 112.5/350 = 1.68 at 1750, heading for 1.
+      // Perpendicular: D (2,1) South, the same delay; the target (2, 0.32) at 1750; the slew goes
+      //   x first (its corner (2,0) is a tile centre), so it walks back along y = 0 to (2,0).
+      // Same-tile turn: (2,0) facing North; no snapshot, no jitter sample; the target holds C.
+      // Each way the drawn position goes from (2.5, 0) to x = 2 in 10 frames (1840), on the path.
+      const t = track(
+        run([...walkEast(9n, [1000, 1200, 1400]), { at: 1750, row: contradiction }], {
+          from: 1000,
+          to: 2400,
+          frameMs: 10,
+          walkable: OPEN,
+        }),
+        9n,
+      );
+      expect(frameAt(t, 1740).x, 'ANTI-VACUITY: continued when the row arrives').toBeCloseTo(
+        2.5,
+        9,
+      );
+      const after = t.filter((f) => f.now >= 1750);
+      for (const f of after) {
+        const ring = f.c.snapshots;
+        const d = toSegment(f, ring[ring.length - 2]!, ring[ring.length - 1]!);
+        expect(
+          d,
+          `distance from the last segment at ${f.now} (${f.x}, ${f.y})`,
+        ).toBeLessThanOrEqual(0.5 + EPS);
+      }
+      expectBoundedSpeed(
+        t.filter((f) => f.now >= 1740),
+        name,
+      );
+      const reached = after.find((f) => onPath(f, f.c.snapshots));
+      expect(reached, 'reaches the authoritative path').toBeDefined();
+      expect(reached!.now).toBeLessThanOrEqual(1750 + STEP_MS);
+    });
+  }
+
+  // --- np-a.6 -------------------------------------------------------------------------------
+
+  for (const dAt of [1750, 1850, 1990]) {
+    it(`a same-direction step arriving while continued (${dAt - 1400} ms after the last) never draws it backward [np-a.6]`, () => {
+      // The base walk, continued to 2.5 by 1700, then D (3,0) East at dAt. 1850 and 1990 make
+      // brackets of 450 and 590 ms, past REANCHOR_SPAN_STEPS (2) x STEP_MS = 400.
+      // D at 1750: interval 350 -> estimate 18.75 -> delay 237.5; the C->D target is 2.32 at 1750,
+      //   behind the drawn 2.5, which therefore waits (it is not past the newest tile, 3) until
+      //   the target passes 2.5 at 1812.5, then walks on, continued to 3.5 by 2162.5.
+      // D at 1850: delay 262.5, cadence 450, at 3.5 by 2337.5. D at 1990: delay 297.5, cadence
+      //   590, at 3.5 by 2582.5. Each is still continued at its last frame, dAt + 600.
+      const t = track(
+        run(walkEast(9n, [1000, 1200, 1400, dAt]), {
+          from: 1000,
+          to: dAt + 600,
+          frameMs: 10,
+          walkable: OPEN,
+        }),
+        9n,
+      );
+      expect(frameAt(t, dAt - 10).x, 'ANTI-VACUITY: continued when D arrives').toBeCloseTo(2.5, 9);
+      const walked = t.filter((f) => f.now >= 1600);
+      for (let i = 1; i < walked.length; i++) {
+        const a = walked[i - 1]!;
+        const b = walked[i]!;
+        expect(b.x, `never backward (${a.now}: ${a.x} -> ${b.now}: ${b.x})`).toBeGreaterThanOrEqual(
+          a.x - EPS,
+        );
+        expect(b.y).toBeCloseTo(0, 12);
+      }
+      expect(walked[walked.length - 1]!.x, 'walks on past D').toBeGreaterThan(3);
+    });
+  }
+
+  // --- np-a.7 -------------------------------------------------------------------------------
+
+  /** Today's remote position for a frame: interpolation at the adaptive delay, then HOLD. */
+  function today(f: Drawn): { readonly x: number; readonly y: number } {
+    return interpolateHistory(
+      f.c.snapshots,
+      f.now - adaptiveInterpDelayMs(f.c.jitterEwma, STEP_MS),
+      STEP_MS,
+    );
+  }
+
+  function expectAsToday(frames: readonly Drawn[], label: string): void {
+    for (const f of frames) {
+      const want = today(f);
+      expect(f.x, `${label}: x at ${f.now}`).toBeCloseTo(want.x, 9);
+      expect(f.y, `${label}: y at ${f.now}`).toBeCloseTo(want.y, 9);
+      expect(f.x, `${label}: never past the newest tile at ${f.now}`).toBeLessThanOrEqual(
+        f.c.latest.tileX + EPS,
+      );
+    }
+  }
+
+  it('a lone step after a long idle renders as today: one STEP_MS slide, then HOLD on the new tile [np-a.7]', () => {
+    // (5,5) since 1000, one step to (6,5) at 6000: one position change, not a walk. The idle gap
+    // is gated out of the estimate, delay 200; today's re-anchored slide moves 16/200 = 0.08 tile
+    // per 16 ms frame, exactly the slew budget, so the drawn position is today's.
+    const t = track(
+      run(
+        [
+          { at: 1000, row: row(9n, 5, 5) },
+          { at: 6000, row: row(9n, 6, 5) },
+        ],
+        { from: 5900, to: 6450, frameMs: 16, walkable: OPEN },
+      ),
+      9n,
+    );
+    expectAsToday(t, 'lone step');
+    expect(t[t.length - 1]!.x).toBeCloseTo(6, 9);
+  });
+
+  it('two same-direction steps 1000 ms apart (an NPC wandering) render as today and come to rest on the newest tile [np-a.7]', () => {
+    // 1000 ms between position changes is more than the 600 ms window: not a walk. Every interval
+    // is gated (> 600), delay 200; each step is today's hold-then-slide (0.08 tile / frame).
+    // The Idle row at 3100 lands mid-slide: drawn Walking until the remote is on (2,0) at 3200.
+    const t = track(
+      run([...walkEast(9n, [1000, 2000, 3000]), { at: 3100, row: row(9n, 2, 0, 'East', 'Idle') }], {
+        from: 1000,
+        to: 3600,
+        frameMs: 16,
+        walkable: OPEN,
+      }),
+      9n,
+    );
+    expectAsToday(t, 'wander');
+    for (const f of t) {
+      const onTile = Math.abs(f.x - f.c.row.tileX) <= EPS && Math.abs(f.y - f.c.row.tileY) <= EPS;
+      const want = f.c.row.action === 'Idle' && !onTile ? 'Walking' : f.c.row.action;
+      expect(f.action, `action at ${f.now}`).toBe(want);
+    }
+    for (const f of t.filter((d) => d.now >= 3200)) {
+      expect(f.x).toBeCloseTo(2, 9);
+      expect(f.action).toBe('Idle');
+    }
+  });
+
+  it('after a zone change it renders as today: drawn on the new tile at once, then interpolation and HOLD [np-a.7]', () => {
+    // The base walk in zone 1, then (3,0)@1600 and (4,0)@1800 in zone 2. The zone change is a
+    // snap (the record empties), so the second zone-2 step is a lone step: interpolated
+    // 3 -> 4 over 1800..2000 at delay 200, then HOLD at 4, never continued.
+    const t = track(
+      run(
+        [
+          ...walkEast(9n, [1000, 1200, 1400]),
+          { at: 1600, row: row(9n, 3, 0, 'East', 'Walking', 2) },
+          { at: 1800, row: row(9n, 4, 0, 'East', 'Walking', 2) },
+        ],
+        { from: 1000, to: 2400, frameMs: 16, walkable: OPEN },
+      ),
+      9n,
+    );
+    const zone2 = t.filter((f) => f.c.row.zoneId === 2);
+    expect(zone2.length, 'ANTI-VACUITY: frames after the zone change').toBeGreaterThan(40);
+    expect(zone2[0]!.x, 'drawn on the new zone tile at once').toBeCloseTo(3, 9);
+    expectAsToday(zone2, 'zone change');
+    expect(zone2[zone2.length - 1]!.x).toBeCloseTo(4, 9);
   });
 });
