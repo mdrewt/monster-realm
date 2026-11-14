@@ -21,9 +21,13 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
 
 ## Connect and subscribe (`net/connection.ts`)
 
-- The builder takes the URI and database from `VITE_STDB_URI`/`VITE_STDB_DB`
-  (`net/connectionConfig.ts`); a production build refuses the dev database
-  `monster-realm`.
+- The builder takes the URI and database from the shell document: the page's host serves
+  `/shell-config.js`, which sets `globalThis.__MR_SHELL_CONFIG__` before the client module
+  runs (`net/shellDocument.ts`), and `net/connectionConfig.ts` resolves it (reject, never
+  clamp; a production build refuses a missing document and the dev database `monster-realm`).
+  `shell/config.ts` exports the result as `URI`, `DB` and `TARGET_KIND`. `VITE_STDB_URI` and
+  `VITE_STDB_DB` are inputs of the Vite plugin that serves that script in `vite dev` and
+  writes it on a build; client code never reads them.
 - The base subscription batch is the public tables the client renders and the
   owner-scoped views. Public: `player` (every player, unfiltered), the content and world
   tables (`species_row`, `skill_row`, `item_row`, `evolution_path`, `heal_location_row`, `npc`,
