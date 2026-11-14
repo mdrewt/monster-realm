@@ -1906,14 +1906,9 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       return sendGuarded('party', () => conn?.live()?.reducers.setPartySlot({ monsterId, slot }));
     }
     case 'healParty': {
-      // The location a bound heal frame names: healing happens only at a healer (B13; ctl-10a
-      // retired the Box button and its first-location guess). With none bound the send is
-      // skipped, surfaced, never silent; the server still validates zone and cooldown.
-      const locationId = command.locationId;
-      if (locationId === undefined) {
-        reportError('heal-unavailable', i18nT('chrome.status.healUnavailable'));
-        return DONE;
-      }
+      // The location the bound heal frame names: healing happens only at a healer (B13). The
+      // server still validates zone and cooldown.
+      const { locationId } = command;
       return sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
     }
     case 'buy': {

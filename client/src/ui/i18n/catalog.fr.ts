@@ -509,10 +509,6 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // main.ts:2442
   'chrome.status.bugBundleBlocked':
     'rapport de bogue : téléchargement bloqué — copiez-le depuis la console',
-  // @desc: Status-strip error shown when the player asks to heal but no heal location is
-  // available in the current zone.
-  // main.ts:2524
-  'chrome.status.healUnavailable': 'soins : aucun lieu de soins disponible',
   // @desc: Status-strip error shown when the player moves a monster from the box to the party
   // but every party slot is taken; nothing is moved.
   'chrome.status.partyFull': 'équipe complète — placez d’abord un monstre dans la boîte',

@@ -40,7 +40,6 @@ export type MessageKind =
   | 'party-move-rejected'
   | 'nickname-rejected'
   | 'evolve-rejected'
-  | 'heal-unavailable'
   | 'heal-rejected'
   | 'shop-buy-ok'
   | 'shop-sell-ok'
@@ -119,7 +118,6 @@ export const FEEDBACK_POLICY = {
   'party-move-rejected': row('toast'),
   'nickname-rejected': row('toast'),
   'evolve-rejected': row('toast'),
-  'heal-unavailable': row('toast'),
   'heal-rejected': row('toast'),
   'shop-buy-ok': row('toast'),
   'shop-sell-ok': row('toast'),

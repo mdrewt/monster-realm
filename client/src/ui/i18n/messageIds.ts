@@ -180,7 +180,6 @@ export type MessageId =
   | 'chrome.status.disconnected'
   | 'chrome.status.contentStale'
   | 'chrome.status.bugBundleBlocked'
-  | 'chrome.status.healUnavailable'
   | 'chrome.status.partyFull'
   | 'chrome.status.zoneEntered'
   | 'chrome.feedback.disconnected'

@@ -20,19 +20,11 @@ export interface PvpOutgoingChallenge {
   readonly status: string;
 }
 
-/** A player who can be challenged (online, not self, not in a Pending challenge). */
-export interface PvpChallengeablePlayer {
-  readonly identity: string;
-  readonly name: string;
-}
-
 export interface PvpChallengeViewModel {
   /** The oldest Pending challenge targeting this player, or null. */
   readonly incoming: PvpIncomingChallenge | null;
   /** This player's most-recent Pending outgoing challenge, or null. */
   readonly outgoing: PvpOutgoingChallenge | null;
-  /** Online players this player can challenge (excludes self + challenge participants). */
-  readonly challengeablePlayers: readonly PvpChallengeablePlayer[];
 }
 
 /** The request the Challenges panel shows: the OLDEST Pending challenge targeting `identity` (the
@@ -105,26 +97,7 @@ export function buildPvpChallengeViewModel(
           status: sent.status,
         };
 
-  // Collect identities involved in any Pending challenge (both sides)
-  const busyIdentities = new Set<string>();
-  busyIdentities.add(identity); // exclude self
-  for (const c of challenges) {
-    if (c.status === 'Pending') {
-      busyIdentities.add(c.challenger);
-      busyIdentities.add(c.target);
-    }
-  }
-
-  // Challengeable players: online (all players in the store are loaded on join),
-  // not self, not already in a Pending challenge.
-  const challengeablePlayers: PvpChallengeablePlayer[] = [];
-  for (const p of players) {
-    if (!busyIdentities.has(p.identity) && p.online) {
-      challengeablePlayers.push({ identity: p.identity, name: p.name });
-    }
-  }
-
-  return { incoming, outgoing, challengeablePlayers };
+  return { incoming, outgoing };
 }
 
 // --- bt-15 (BT15.1): the party-size pick -----------------------------------------------------------

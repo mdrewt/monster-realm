@@ -233,8 +233,9 @@ describe('feedbackPolicy (uif-4)', () => {
     // WRONG IMPL KILLED: a toast or modal kind given a hint rank (it could take the strip).
     const nonHint = TABLE_KINDS.filter((k) => EXPECTED_CHANNEL[k] !== 'hint');
     // uif-16b (named intentional change, WF1-A10): 48 -> 47, 'privacy-busy' retired.
-    // ts-6b-12 (named intentional change): 47 -> 43, four retired trade kinds. Was: 47.
-    expect(nonHint).toHaveLength(43);
+    // ts-6b-13 (named intentional change): 43 -> 42 (31 toast + 10 modal + 1 blocking), the
+    // heal-unavailable kind retires.
+    expect(nonHint).toHaveLength(42);
     for (const kind of nonHint) expect(hintRank(kind), kind).toBe(-1);
   });
 

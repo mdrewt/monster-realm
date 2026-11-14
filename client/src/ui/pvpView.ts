@@ -39,9 +39,6 @@ export interface PvpViewCallbacks {
   readonly onDecline: (challengeId: bigint) => void | Promise<void>;
   /** Unread (qf-8): withdrawing is the Social sheet's Cancel row. */
   readonly onCancel: (challengeId: bigint) => void | Promise<void>;
-  /** UNREAD since ctl-10b (a challenge starts face to face). Optional only because a test
-   *  outside the slice's touches still passes it (residual R-ctl-10b-PVPCB). */
-  readonly onChallenge?: (targetIdentity: string) => void | Promise<void>;
 }
 
 export class PvpView {
