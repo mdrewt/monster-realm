@@ -3788,6 +3788,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
       UIF14B_PLAIN_IDS.length +
       // ts-6b-8 (named intentional change, R-uif-10-TITLES): + the plain `heal.title` id.
       TS6B8_PLAIN_IDS.length +
+      // ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): 657 -> 674, + the 17
+      // plain `a11y.*` values now in both catalogs.
+      TS6B9_A11Y_IDS.length +
       2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
     expect(fr.texts, 'every French value was read').toBe(expectedTexts);

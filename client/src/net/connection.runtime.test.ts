@@ -348,8 +348,9 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     claimCode.mint(globalThis, URI, DB);
     writeAuthKind(globalThis, URI, DB, 'account');
     H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
-    const opts = makeOpts();
-    opts.onClaimResult = vi.fn(onResult);
+    const opts = { ...makeOpts(), onClaimResult: vi.fn(onResult) } as unknown as ReturnType<
+      typeof makeOpts
+    >;
     vi.spyOn(opts.store, 'ownAccount').mockReturnValue({} as never);
     connect(opts);
     await settle();

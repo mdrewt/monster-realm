@@ -879,23 +879,40 @@ export type ParamMessageId = keyof MessageParams;
 export type PlainMessageId = Exclude<MessageId, ParamMessageId>;
 
 /**
- * The accessible-name keys `t()` also accepts. EMPTY TODAY: M23's
- * `ui/a11yCopy.ts` exports `a11yCopy: Readonly<Record<string, string>>`, whose `keyof` is
- * `string` — importing it would widen `t` to `(key: string) => string` and silently destroy
- * every totality guarantee in this file (the compile suite's `bad-t-wide` fixture is the oracle
- * for exactly that). `never` keeps `t(key: A11yKey | PlainMessageId)` byte-identical to M23 §2.8
- * while collapsing to `t(key: PlainMessageId)`, so the future flip is a pure widening.
- *
- * FOLLOW-UP: once `a11yCopy.ts` exports a literal-typed
- * `A11Y_COPY_EN`, set `A11yKey = keyof typeof A11Y_COPY_EN` here — no call site changes.
+ * The accessible-name keys `t()` also accepts: the sixteen `a11y.overlay.<OverlayId>.title`
+ * dialog names (derived from `OVERLAY_IDS` with the id kept verbatim, so no mapping table) and the
+ * world region's name. Kept OUT of `MessageId`, so `tf()` (keyed by `ParamMessageId`) can never
+ * take one and the dead-key census over `MessageId` never sees them — they are reached through
+ * `OVERLAY_A11Y[id].labelKey`, and their orphan check is the set-equality gate in a11yCopy.test.ts.
+ * Every registered catalog is total over them (`Catalog` below), so a missing translation is a
+ * `tsc` error.
  */
-export type A11yKey = never;
+export type A11yKey =
+  | 'a11y.overlay.battleView.title'
+  | 'a11y.overlay.boxView.title'
+  | 'a11y.overlay.raisingView.title'
+  | 'a11y.overlay.evolutionView.title'
+  | 'a11y.overlay.dialogueView.title'
+  | 'a11y.overlay.questLogView.title'
+  | 'a11y.overlay.healView.title'
+  | 'a11y.overlay.shopView.title'
+  | 'a11y.overlay.tradeView.title'
+  | 'a11y.overlay.pvpView.title'
+  | 'a11y.overlay.leaderboardView.title'
+  | 'a11y.overlay.profileView.title'
+  | 'a11y.overlay.tradeSessionView.title'
+  | 'a11y.overlay.helpView.title'
+  | 'a11y.overlay.menuView.title'
+  | 'a11y.overlay.controlsView.title'
+  | 'a11y.world.region';
 
-/** A locale's complete catalog: TOTAL over `MessageId` (omit one key → TS2741), with each
+/** A locale's complete catalog: TOTAL over `MessageId` and `A11yKey` (omit one key → TS2741), with each
  *  parameterized key holding a closure over its declared params and every other key a plain
  *  string. `readonly` is the declared invariant; `Object.freeze` in each catalog makes it real. */
 export type Catalog = {
-  readonly [K in MessageId]: K extends ParamMessageId ? (p: MessageParams[K]) => string : string;
+  readonly [K in MessageId | A11yKey]: K extends ParamMessageId
+    ? (p: MessageParams[K]) => string
+    : string;
 };
 
 /** Type-level assert: no parameterized key may live in the `a11y.*` namespace — accessible

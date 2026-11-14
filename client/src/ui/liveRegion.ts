@@ -21,13 +21,16 @@
 // a lone announcement is delayed up to 500 ms; that is a spec-mandated consequence, flagged to M23's
 // owner as a UX question rather than silently redesigned here (plan adjudication A9).
 //
-// THE DEDUP COMPARES AGAINST `#pending ?? #lastWritten`, NOT `#lastWritten` ALONE, and that is a
-// measured bug fix (plan adjudication A1). Deduping against what was last PAINTED drops a
-// legitimate re-announcement forever: `announce('Box', 0); flush(520); announce('Raising &
-// Inventory', 550); announce('Box', 600); flush(1200)` would see the second 'Box' as "unchanged"
-// (because `#lastWritten` is still the stale 'Box') and discard it, leaving 'Raising & Inventory'
-// as the region's final announcement. Comparing against the value that will ACTUALLY be emitted
-// next — the pending slot when one is open, otherwise the painted one — is the correct invariant.
+// DEDUP IS ONLY THE COALESCING WINDOW. Messages announced inside one open window merge into one
+// write (the last wins); a message announced after the previous one was painted is written again,
+// even when it is the same text, because the player asked for it again (a second refusal, a
+// re-opened frame). Every caller is edge-driven — it announces on a change it tracks, never on
+// every frame or batch — so this module needs no memory of what it last painted.
+//
+// A REPEAT MUST CHANGE THE NODE. Assistive technology speaks a live region when its content
+// changes; writing the text the node already holds changes nothing and is not spoken. So when the
+// text to paint equals the node's current `textContent`, a trailing U+00A0 (no-break space) is
+// appended, and the next repeat writes it bare again. The character is invisible and not spoken.
 //
 // THE PUMP MUST PASS A MONOTONIC CLOCK, AND THAT IS A CALLER CONTRACT, NOT A DEFENSIVE CHECK. The
 // window boundary is the plain comparison `nowMs - windowOpenedAtMs >= 500`, so a clock that steps
@@ -66,6 +69,10 @@
  *  HTML, so an id typo in `index.html` is caught by S2's own markup gate, not by this constant. */
 export const LIVE_REGION_ID = 'a11y-live';
 
+/** U+00A0, toggled onto a repeat so the node's content changes (header). Built from its code
+ *  point: it is a control character for assistive technology, never player-facing copy. */
+const NO_BREAK_SPACE = String.fromCharCode(0xa0);
+
 /** The coalescing window. Exported because it is the contract S5's pump reasons about. */
 export const COALESCE_WINDOW_MS = 500;
 
@@ -73,23 +80,20 @@ export const COALESCE_WINDOW_MS = 500;
  * A trailing-edge coalescing announcer. One instance per app (S5 owns the singleton); a class
  * rather than module state so each test gets a fresh, isolated machine with no reset hook.
  *
- * State is exactly three fields: the single pending slot (last write wins inside a window), the
- * timestamp the current window opened at, and the last string actually painted. The window is open
- * iff `#pending !== null`.
+ * State is exactly two fields: the single pending slot (last write wins inside a window) and the
+ * timestamp the current window opened at. The window is open iff `#pending !== null`.
  */
 export class LiveRegion {
   #pending: string | null = null;
   #windowOpenedAtMs = 0;
-  #lastWritten: string | null = null;
 
   /**
    * Record `message` as the next thing to announce. Drains any already-due message first, then
-   * dedups against `#pending ?? #lastWritten` (header) and opens a new 500 ms window only if one is
-   * not already open — a burst coalesces into the window the FIRST message opened.
+   * opens a new 500 ms window only if one is not already open — a burst coalesces into the window
+   * the FIRST message opened, and the last message of the burst is the one painted.
    */
   announce(message: string, nowMs: number): void {
     this.#maybeEmit(nowMs);
-    if (message === (this.#pending ?? this.#lastWritten)) return;
     if (this.#pending === null) this.#windowOpenedAtMs = nowMs;
     this.#pending = message;
   }
@@ -108,8 +112,8 @@ export class LiveRegion {
     const node = document.getElementById(LIVE_REGION_ID);
     // No node yet (S2 has not landed) — keep `#pending` so the message lands once it exists.
     if (node === null) return;
-    node.textContent = pending;
-    this.#lastWritten = pending;
+    // A repeat of what the node shows toggles a trailing U+00A0 so the content changes (header).
+    node.textContent = node.textContent === pending ? pending + NO_BREAK_SPACE : pending;
     this.#pending = null;
   }
 }

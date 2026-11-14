@@ -946,6 +946,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'notice.sheet.accept', // ctl-13: the request sheet's rows
       'notice.sheet.decline',
       'notice.sheet.view',
+      // ts-6b-9 (named intentional change, ts-6b-9.2): the export-complete announcement, `tf(…)`.
+      'privacy.export.complete',
       'prompt.no', // ctl-10b: the Challenge confirm's No row (bt-15: the size pick's No row)
       'quest.complete.done', // qf-6: a completed quest with no gold moved
       'quest.complete.reward', // qf-6: a completed quest and the gold it paid
