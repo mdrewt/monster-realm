@@ -7,11 +7,20 @@
 //   ops/observability/alloy/config.alloy — the receiver behind it.
 //
 // THE CONTRACT THIS FILE FIXES:
-//   resolveTelemetryConfig(env, isDev, jitter) is PURE and TOTAL and returns a discriminated
-//   union — { kind: 'disabled', reason } | { kind: 'enabled', endpoint, exportIntervalMs }.
-//   `env` is the structural record `{ endpoint?: string; intervalMs?: string }` — BOTH members
-//   optional, both raw `import.meta.env` strings, so main.ts can pass the two VITE vars straight
-//   through and the tests can omit the one they are not exercising.
+//   resolveTelemetryConfig(env, isDev, jitter, kind) is PURE and TOTAL and returns a
+//   discriminated union — { kind: 'disabled', reason } | { kind: 'enabled', endpoint,
+//   exportIntervalMs }. `env` is the structural record `{ endpoint?: string; intervalMs?: string }`
+//   — BOTH members optional, both raw `import.meta.env` strings, so main.ts can pass the two VITE
+//   vars straight through and the tests can omit the one they are not exercising. The fourth
+//   parameter `kind` is REQUIRED: the target kind the page's shell document names
+//   (net/shellDocument.ts TARGET_KINDS). Two meanings of "kind" meet here: the PARAMETER is the
+//   target kind, the RESULT's `kind` member is 'disabled' | 'enabled'.
+//     • TARGET KIND `official` OR `test` ⇒ the endpoint and interval rules below decide. Every
+//       case in the three rule blocks runs once under each of the two, with identical assertions.
+//     • EVERY OTHER TARGET KIND (a single-player world, a friends server, and any kind added to
+//       TARGET_KINDS without being classified here) ⇒ disabled, with a reason naming that kind,
+//       whatever the endpoint, interval, build mode and jitter. A run-time value outside
+//       TargetKind (a cast, or a caller that omits the argument) is disabled too, and never throws.
 //     • endpoint UNSET ⇒ disabled, with ZERO console output (T-I1). vitest, Playwright and every
 //       default build must be inert: no machinery, no SDK chunk, no noise.
 //     • ENDPOINT IS REJECT-DON'T-CLAMP: PROD accepts absolute `https:` origins only; DEV also
@@ -19,9 +28,8 @@
 //     • INTERVAL IS CLAMP-DON'T-REJECT: a bad interval must not disable telemetry; it is clamped
 //       into [MIN, MAX] and then given UPWARD-ONLY jitter ×(1 + 0.1×jitter) (AM12,
 //       thundering-herd mitigation; main.ts injects Math.random()).
-//     • IT NEVER WRITES TO THE CONSOLE, for any input. It is a pure resolver; the SHELL decides
-//       whether to say anything. (Deliberate divergence from devLog.ts's injected `warn` sink —
-//       the signature adjudicated in the plan has three params and no sink.)
+//     • IT NEVER WRITES TO THE CONSOLE, for any input and any target kind. It is a pure resolver;
+//       the SHELL decides whether to say anything, so it takes no `warn` sink (unlike devLog.ts).
 //
 // NOTE ON URL LITERALS: a bare insecure-scheme URL literal — `http` or `ws` written flush
 // against the `://` separator — is banned in this repo's source scans, and the remote Semgrep
@@ -31,6 +39,7 @@
 
 import * as fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TARGET_KINDS, type TargetKind } from '../net/shellDocument';
 import {
   resolveTelemetryConfig,
   TELEMETRY_INTERVAL_DEFAULT_MS,
@@ -62,6 +71,15 @@ const CADDY_EVENTS_PER_MINUTE = 120;
  *  up to 1 + 5 = 6 requests on the wire. Not configurable — hence a constant, not a knob. */
 const REQUESTS_PER_EXPORT_CYCLE = 6;
 
+/** The target kinds whose servers receive telemetry. */
+const ALLOWED_KINDS = ['official', 'test'] as const satisfies readonly TargetKind[];
+type AllowedKind = (typeof ALLOWED_KINDS)[number];
+/** Every other member of TARGET_KINDS, derived rather than listed: a kind added to TARGET_KINDS
+ *  is tested here as gated until someone classifies it. */
+const GATED_KINDS: readonly TargetKind[] = TARGET_KINDS.filter(
+  (k) => !(ALLOWED_KINDS as readonly TargetKind[]).includes(k),
+);
+
 function enabledOrThrow(cfg: ReturnType<typeof resolveTelemetryConfig>): {
   endpoint: string;
   exportIntervalMs: number;
@@ -70,6 +88,19 @@ function enabledOrThrow(cfg: ReturnType<typeof resolveTelemetryConfig>): {
     throw new Error(`expected an ENABLED config, got disabled: ${cfg.reason}`);
   }
   return { endpoint: cfg.endpoint, exportIntervalMs: cfg.exportIntervalMs };
+}
+
+/** The reason of a DISABLED config; an enabled one fails the test with its endpoint. */
+function disabledReasonOrThrow(cfg: ReturnType<typeof resolveTelemetryConfig>): string {
+  if (cfg.kind !== 'disabled') {
+    throw new Error(`expected a DISABLED config, got enabled: ${cfg.endpoint}`);
+  }
+  return cfg.reason;
+}
+
+/** The whole words of `text`: maximal runs of ASCII letters, digits and underscores. */
+function wordsOf(text: string): string[] {
+  return text.split(/[^A-Za-z0-9_]+/).filter((w) => w !== '');
 }
 
 afterEach(() => {
@@ -88,7 +119,8 @@ function spyConsole(): () => number {
   return () => spies.reduce((total, spy) => total + spy.mock.calls.length, 0);
 }
 
-describe('resolveTelemetryConfig (T-I1): unset ⇒ disabled, silently', () => {
+/** The unset-endpoint cases, registered once per allowed target kind. */
+function unsetEndpointCases(kind: AllowedKind): void {
   it('T-I1: an UNSET endpoint disables telemetry and writes NOTHING to the console', () => {
     // WRONG IMPL KILLED (1): an enabled-by-default fallback (`endpoint ?? SOME_DEFAULT`). Every
     //   vitest run, every Playwright run and every developer's `npm run dev` would then try to
@@ -99,7 +131,12 @@ describe('resolveTelemetryConfig (T-I1): unset ⇒ disabled, silently', () => {
     //   every developer console and in every e2e's captured output forever, training everyone to
     //   ignore it. "Off" is the normal state, not a misconfiguration.
     const total = spyConsole();
-    const cfg = resolveTelemetryConfig({ endpoint: undefined, intervalMs: undefined }, false, 0);
+    const cfg = resolveTelemetryConfig(
+      { endpoint: undefined, intervalMs: undefined },
+      false,
+      0,
+      kind,
+    );
 
     expect(cfg.kind).toBe('disabled');
     if (cfg.kind === 'disabled') {
@@ -116,7 +153,12 @@ describe('resolveTelemetryConfig (T-I1): unset ⇒ disabled, silently', () => {
     // take main.ts's module evaluation down and blank the whole game.
     for (const raw of ['', ' ', '\t\n']) {
       for (const isDev of [true, false]) {
-        const cfg = resolveTelemetryConfig({ endpoint: raw, intervalMs: undefined }, isDev, 0);
+        const cfg = resolveTelemetryConfig(
+          { endpoint: raw, intervalMs: undefined },
+          isDev,
+          0,
+          kind,
+        );
         expect(cfg.kind, `endpoint=${JSON.stringify(raw)} isDev=${isDev}`).toBe('disabled');
       }
     }
@@ -128,15 +170,22 @@ describe('resolveTelemetryConfig (T-I1): unset ⇒ disabled, silently', () => {
     const total = spyConsole();
     fc.assert(
       fc.property(fc.string(), fc.string(), fc.boolean(), (endpoint, intervalMs, isDev) => {
-        resolveTelemetryConfig({ endpoint, intervalMs }, isDev, 0.5);
+        resolveTelemetryConfig({ endpoint, intervalMs }, isDev, 0.5, kind);
       }),
       { seed: 20250809, numRuns: 300 },
     );
     expect(total()).toBe(0);
   });
-});
+}
 
-describe('resolveTelemetryConfig (T-21a): PROD accepts https: origins ONLY', () => {
+for (const kind of ALLOWED_KINDS) {
+  describe(`resolveTelemetryConfig (T-I1) [target kind ${kind}]: unset ⇒ disabled, silently`, () => {
+    unsetEndpointCases(kind);
+  });
+}
+
+/** The PROD endpoint cases, registered once per allowed target kind. */
+function prodEndpointCases(kind: AllowedKind): void {
   it('T-21a-accept: an absolute https origin is accepted and normalised to its ORIGIN', () => {
     // The endpoint is stored as a bare origin because telemetry.ts appends the OTLP path
     // (`/v1/metrics`) itself — see T-16c. Normalising here is what makes that append exact.
@@ -145,18 +194,19 @@ describe('resolveTelemetryConfig (T-21a): PROD accepts https: origins ONLY', () 
     // `https://host/some/path` (which would produce `…/some/path/v1/metrics`), and rejects the
     // perfectly legal uppercase scheme. Only a real URL parse gets all three right.
     expect(
-      enabledOrThrow(resolveTelemetryConfig({ endpoint: HTTPS_LOOPBACK }, false, 0)).endpoint,
+      enabledOrThrow(resolveTelemetryConfig({ endpoint: HTTPS_LOOPBACK }, false, 0, kind)).endpoint,
     ).toBe(HTTPS_LOOPBACK);
     expect(
-      enabledOrThrow(resolveTelemetryConfig({ endpoint: HTTPS_NAMED }, false, 0)).endpoint,
+      enabledOrThrow(resolveTelemetryConfig({ endpoint: HTTPS_NAMED }, false, 0, kind)).endpoint,
     ).toBe(HTTPS_NAMED);
     // A trailing slash is the empty path — accepted, and normalised away.
     expect(
-      enabledOrThrow(resolveTelemetryConfig({ endpoint: `${HTTPS_NAMED}/` }, false, 0)).endpoint,
+      enabledOrThrow(resolveTelemetryConfig({ endpoint: `${HTTPS_NAMED}/` }, false, 0, kind))
+        .endpoint,
     ).toBe(HTTPS_NAMED);
     // Scheme case is not significant in a URL; the parse normalises it.
     expect(
-      enabledOrThrow(resolveTelemetryConfig({ endpoint: 'HTTPS://127.0.0.1:8443' }, false, 0))
+      enabledOrThrow(resolveTelemetryConfig({ endpoint: 'HTTPS://127.0.0.1:8443' }, false, 0, kind))
         .endpoint,
     ).toBe(HTTPS_LOOPBACK);
   });
@@ -192,7 +242,7 @@ describe('resolveTelemetryConfig (T-21a): PROD accepts https: origins ONLY', () 
       'not a url at all',
     ];
     for (const endpoint of rejected) {
-      const cfg = resolveTelemetryConfig({ endpoint }, false, 0);
+      const cfg = resolveTelemetryConfig({ endpoint }, false, 0, kind);
       expect(cfg.kind, `PROD must reject ${JSON.stringify(endpoint)}`).toBe('disabled');
     }
   });
@@ -215,7 +265,7 @@ describe('resolveTelemetryConfig (T-21a): PROD accepts https: origins ONLY', () 
     );
     fc.assert(
       fc.property(endpoints, (endpoint) => {
-        const cfg = resolveTelemetryConfig({ endpoint }, false, 0);
+        const cfg = resolveTelemetryConfig({ endpoint }, false, 0, kind);
         if (cfg.kind !== 'enabled') return;
         const url = new URL(cfg.endpoint);
         expect(url.protocol, `PROD enabled endpoint ${cfg.endpoint}`).toBe('https:');
@@ -229,24 +279,33 @@ describe('resolveTelemetryConfig (T-21a): PROD accepts https: origins ONLY', () 
       { seed: 20250809, numRuns: 500 },
     );
   });
-});
+}
 
-describe('resolveTelemetryConfig (T-21a): DEV additionally allows the http loopback WITH a port', () => {
+for (const kind of ALLOWED_KINDS) {
+  describe(`resolveTelemetryConfig (T-21a) [target kind ${kind}]: PROD accepts https: origins ONLY`, () => {
+    prodEndpointCases(kind);
+  });
+}
+
+/** The DEV loopback cases, registered once per allowed target kind. */
+function devLoopbackCases(kind: AllowedKind): void {
   it('T-21a-dev-accept: http://127.0.0.1:<port> and http://localhost:<port> are DEV-only', () => {
     // The dev stack terminates TLS at Caddy with an internal CA the browser has not trusted yet
     // (risk R-6), so a developer needs to be able to point straight at Alloy's plaintext
     // receiver. That allowance must be DEV-scoped: the same value in a production build is a
     // plaintext public ingest.
     for (const endpoint of [DEV_LOOPBACK_HTTP, DEV_LOCALHOST_HTTP]) {
-      expect(enabledOrThrow(resolveTelemetryConfig({ endpoint }, true, 0)).endpoint).toBe(endpoint);
+      expect(enabledOrThrow(resolveTelemetryConfig({ endpoint }, true, 0, kind)).endpoint).toBe(
+        endpoint,
+      );
       expect(
-        resolveTelemetryConfig({ endpoint }, false, 0).kind,
+        resolveTelemetryConfig({ endpoint }, false, 0, kind).kind,
         `${endpoint} must be DEV-only`,
       ).toBe('disabled');
     }
     // https keeps working in DEV too — the DEV rule ADDS a case, it does not replace one.
     expect(
-      enabledOrThrow(resolveTelemetryConfig({ endpoint: HTTPS_NAMED }, true, 0)).endpoint,
+      enabledOrThrow(resolveTelemetryConfig({ endpoint: HTTPS_NAMED }, true, 0, kind)).endpoint,
     ).toBe(HTTPS_NAMED);
   });
 
@@ -272,14 +331,21 @@ describe('resolveTelemetryConfig (T-21a): DEV additionally allows the http loopb
     ];
     for (const endpoint of rejected) {
       expect(
-        resolveTelemetryConfig({ endpoint }, true, 0).kind,
+        resolveTelemetryConfig({ endpoint }, true, 0, kind).kind,
         `DEV must reject ${JSON.stringify(endpoint)}`,
       ).toBe('disabled');
     }
   });
-});
+}
 
-describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', () => {
+for (const kind of ALLOWED_KINDS) {
+  describe(`resolveTelemetryConfig (T-21a) [target kind ${kind}]: DEV additionally allows the http loopback WITH a port`, () => {
+    devLoopbackCases(kind);
+  });
+}
+
+/** The interval cases, registered once per allowed target kind. */
+function intervalCases(kind: AllowedKind): void {
   it('T-21b-constants: the clamp window is [15000, 300000] with a 60000 default and 10% jitter', () => {
     // These four numbers ARE the rate budget (see the tooth below). Pinning them here means the
     // budget arithmetic cannot be quietly invalidated by editing a constant.
@@ -295,7 +361,7 @@ describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', 
     // endpoint must never be guessed at.
     for (const intervalMs of [undefined, '', '   ', 'abc', 'NaN', 'Infinity', '60_000']) {
       const cfg = enabledOrThrow(
-        resolveTelemetryConfig({ endpoint: HTTPS_NAMED, intervalMs }, false, 0),
+        resolveTelemetryConfig({ endpoint: HTTPS_NAMED, intervalMs }, false, 0, kind),
       );
       expect(cfg.exportIntervalMs, `intervalMs=${JSON.stringify(intervalMs)}`).toBe(
         TELEMETRY_INTERVAL_DEFAULT_MS,
@@ -322,7 +388,7 @@ describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', 
     ];
     for (const [intervalMs, expected] of cases) {
       const cfg = enabledOrThrow(
-        resolveTelemetryConfig({ endpoint: HTTPS_NAMED, intervalMs }, false, 0),
+        resolveTelemetryConfig({ endpoint: HTTPS_NAMED, intervalMs }, false, 0, kind),
       );
       expect(cfg.exportIntervalMs, `intervalMs=${JSON.stringify(intervalMs)}`).toBe(expected);
     }
@@ -340,25 +406,31 @@ describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', 
     // WRONG IMPL KILLED (3): a non-total jitter — NaN in, NaN out, and the OTel reader would
     //   either spin or never export at all.
     const base = { endpoint: HTTPS_NAMED, intervalMs: '60000' } as const;
-    expect(enabledOrThrow(resolveTelemetryConfig(base, false, 0)).exportIntervalMs).toBe(60_000);
-    expect(enabledOrThrow(resolveTelemetryConfig(base, false, 0.5)).exportIntervalMs).toBe(63_000);
-    expect(enabledOrThrow(resolveTelemetryConfig(base, false, 0.99)).exportIntervalMs).toBe(65_940);
+    expect(enabledOrThrow(resolveTelemetryConfig(base, false, 0, kind)).exportIntervalMs).toBe(
+      60_000,
+    );
+    expect(enabledOrThrow(resolveTelemetryConfig(base, false, 0.5, kind)).exportIntervalMs).toBe(
+      63_000,
+    );
+    expect(enabledOrThrow(resolveTelemetryConfig(base, false, 0.99, kind)).exportIntervalMs).toBe(
+      65_940,
+    );
 
     // Applied after the clamp: a below-floor request is clamped to 15000 and THEN jittered.
     const clamped = enabledOrThrow(
-      resolveTelemetryConfig({ endpoint: HTTPS_NAMED, intervalMs: '1000' }, false, 0.5),
+      resolveTelemetryConfig({ endpoint: HTTPS_NAMED, intervalMs: '1000' }, false, 0.5, kind),
     );
     expect(clamped.exportIntervalMs).toBe(15_750);
 
     // Total + upward-only for out-of-contract jitter values.
     for (const jitter of [Number.NaN, -1, -0.5]) {
       expect(
-        enabledOrThrow(resolveTelemetryConfig(base, false, jitter)).exportIntervalMs,
+        enabledOrThrow(resolveTelemetryConfig(base, false, jitter, kind)).exportIntervalMs,
         `jitter=${String(jitter)} must never REDUCE the interval`,
       ).toBe(60_000);
     }
     for (const jitter of [1, 5, Number.POSITIVE_INFINITY]) {
-      const ms = enabledOrThrow(resolveTelemetryConfig(base, false, jitter)).exportIntervalMs;
+      const ms = enabledOrThrow(resolveTelemetryConfig(base, false, jitter, kind)).exportIntervalMs;
       expect(ms, `jitter=${String(jitter)}`).toBeGreaterThanOrEqual(60_000);
       expect(ms, `jitter=${String(jitter)} must stay within +10%`).toBeLessThanOrEqual(66_000);
     }
@@ -372,7 +444,12 @@ describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', 
         fc.oneof(fc.integer({ min: -1000, max: 10_000_000 }).map(String), fc.string()),
         fc.double({ min: 0, max: 1, noNaN: true, maxExcluded: true }),
         (intervalMs, jitter) => {
-          const cfg = resolveTelemetryConfig({ endpoint: HTTPS_NAMED, intervalMs }, false, jitter);
+          const cfg = resolveTelemetryConfig(
+            { endpoint: HTTPS_NAMED, intervalMs },
+            false,
+            jitter,
+            kind,
+          );
           if (cfg.kind !== 'enabled') throw new Error('a valid https endpoint must stay enabled');
           expect(Number.isInteger(cfg.exportIntervalMs)).toBe(true);
           expect(cfg.exportIntervalMs).toBeGreaterThanOrEqual(TELEMETRY_INTERVAL_MIN_MS);
@@ -411,5 +488,167 @@ describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', 
         `${TELEMETRY_INTERVAL_MIN_MS}ms floor that is ${worstCasePerMinute * 5} of Caddy's ` +
         `${CADDY_EVENTS_PER_MINUTE}/min. Lowering the floor to 10s already breaks it.`,
     ).toBeLessThanOrEqual(CADDY_EVENTS_PER_MINUTE);
+  });
+}
+
+for (const kind of ALLOWED_KINDS) {
+  describe(`resolveTelemetryConfig (T-21b) [target kind ${kind}]: interval clamp + upward-only jitter`, () => {
+    intervalCases(kind);
+  });
+}
+
+describe('resolveTelemetryConfig: a target kind other than official and test disables telemetry', () => {
+  it('disables a valid https origin in dev and in prod for every target kind but official and test', () => {
+    // The gated set is derived from TARGET_KINDS; it holds the two non-public kinds and neither
+    // public one, so the loops below are not vacuous.
+    expect(GATED_KINDS).toEqual(expect.arrayContaining(['local', 'private']));
+    expect(GATED_KINDS).not.toContain('official');
+    expect(GATED_KINDS).not.toContain('test');
+
+    // Each input is known-good: under `official` it resolves ENABLED in that build mode.
+    const inputs: ReadonlyArray<readonly [string, boolean]> = [
+      [HTTPS_NAMED, false],
+      [HTTPS_NAMED, true],
+      [HTTPS_LOOPBACK, false],
+      [HTTPS_LOOPBACK, true],
+      [DEV_LOOPBACK_HTTP, true],
+    ];
+    for (const [endpoint, isDev] of inputs) {
+      const control = resolveTelemetryConfig({ endpoint }, isDev, 0, 'official');
+      expect(control.kind, `control: ${endpoint} isDev=${isDev} under official`).toBe('enabled');
+      for (const kind of GATED_KINDS) {
+        const cfg = resolveTelemetryConfig({ endpoint, intervalMs: '60000' }, isDev, 0.5, kind);
+        expect(cfg.kind, `${endpoint} isDev=${isDev} under ${kind}`).toBe('disabled');
+      }
+    }
+  });
+
+  it('names the gated target kind, and no other target kind, in the disabled reason', () => {
+    const reasons: string[] = [];
+    for (const kind of GATED_KINDS) {
+      const reason = disabledReasonOrThrow(
+        resolveTelemetryConfig({ endpoint: HTTPS_NAMED }, false, 0, kind),
+      );
+      const words = wordsOf(reason);
+      expect(words, `reason ${JSON.stringify(reason)} must name ${kind}`).toContain(kind);
+      for (const other of TARGET_KINDS) {
+        if (other === kind) continue;
+        expect(words, `reason ${JSON.stringify(reason)} must not name ${other}`).not.toContain(
+          other,
+        );
+      }
+      reasons.push(reason);
+    }
+    expect(new Set(reasons).size, 'each gated target kind gets its own reason').toBe(
+      GATED_KINDS.length,
+    );
+  });
+
+  it('gives a gated target kind one result for every endpoint, interval, build mode and jitter', () => {
+    // The gate decides before any input is read: a malformed endpoint, a garbage interval or an
+    // out-of-contract jitter yields the very value (same reason string) a valid https origin does.
+    const endpoints = fc.oneof(
+      fc.constant(undefined),
+      fc.string(),
+      fc.webUrl(),
+      fc.constantFrom(
+        '',
+        '   ',
+        HTTPS_LOOPBACK,
+        HTTPS_NAMED,
+        `${HTTPS_NAMED}/`,
+        DEV_LOOPBACK_HTTP,
+        DEV_LOCALHOST_HTTP,
+        HTTPS_WITH_USERINFO,
+        `${WS}127.0.0.1:3000`,
+        'https://127.0.0.1:8443/v1/metrics',
+        'not a url at all',
+      ),
+    );
+    const intervals = fc.oneof(
+      fc.constant(undefined),
+      fc.string(),
+      fc.integer({ min: -1000, max: 10_000_000 }).map(String),
+    );
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...GATED_KINDS),
+        endpoints,
+        intervals,
+        fc.boolean(),
+        fc.double(),
+        (kind, endpoint, intervalMs, isDev, jitter) => {
+          const reference = resolveTelemetryConfig({ endpoint: HTTPS_NAMED }, false, 0, kind);
+          expect(reference.kind).toBe('disabled');
+          expect(resolveTelemetryConfig({ endpoint, intervalMs }, isDev, jitter, kind)).toEqual(
+            reference,
+          );
+        },
+      ),
+      { seed: 20250809, numRuns: 500 },
+    );
+  });
+
+  it('disables a run-time value outside the target kinds without throwing, even for a valid https origin', () => {
+    // Reachable only through a cast or an untyped caller. A lookup table keyed by the kind would
+    // read `toString` or `constructor` off Object.prototype; a case-folding compare would let
+    // `OFFICIAL` through. Neither is a target kind the page's host can name.
+    const outside: unknown[] = [
+      undefined,
+      null,
+      '',
+      'OFFICIAL',
+      'Official',
+      ' official',
+      'tests',
+      'production',
+      'toString',
+      'constructor',
+      '__proto__',
+      0,
+      1,
+      true,
+      {},
+      ['official'],
+    ];
+    for (const raw of outside) {
+      for (const isDev of [true, false]) {
+        const cfg = resolveTelemetryConfig(
+          { endpoint: HTTPS_NAMED, intervalMs: '60000' },
+          isDev,
+          0,
+          raw as TargetKind,
+        );
+        const reason = disabledReasonOrThrow(cfg);
+        expect(reason.length, `a reason for ${String(raw)} isDev=${isDev}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('requires the target kind: a call that omits it does not typecheck and disables telemetry', () => {
+    // The directive below is itself the compile-time half: if the parameter were optional or
+    // had a default, the call would typecheck and the unused directive is a TS2578 error.
+    // @ts-expect-error the target kind is a required parameter
+    const cfg = resolveTelemetryConfig({ endpoint: HTTPS_NAMED }, false, 0);
+    const reason = disabledReasonOrThrow(cfg);
+    expect(reason.length).toBeGreaterThan(0);
+  });
+
+  it('never writes to the console, for any input and any target kind', () => {
+    const total = spyConsole();
+    fc.assert(
+      fc.property(
+        fc.option(fc.string(), { nil: undefined }),
+        fc.option(fc.string(), { nil: undefined }),
+        fc.boolean(),
+        fc.double(),
+        fc.constantFrom(...TARGET_KINDS),
+        (endpoint, intervalMs, isDev, jitter, kind) => {
+          resolveTelemetryConfig({ endpoint, intervalMs }, isDev, jitter, kind);
+        },
+      ),
+      { seed: 20250809, numRuns: 400 },
+    );
+    expect(total()).toBe(0);
   });
 });
