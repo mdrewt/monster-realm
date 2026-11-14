@@ -602,6 +602,36 @@ stamps would skip the commit threshold.
 **Rules out.** Repeat-driven movement or menus; emitting continuation steps while
 earlier ones are still in flight; resuming a held walk after a frame closes.
 
+## Turning in place: `Face` turns, or steps when already facing
+
+**Decision.** `MoveInput::Face(Direction)` is a press of a direction.
+`game_core::apply_move` turns a character that does not face it (same tile, `Idle`,
+`move_started_at` stamped) and gives one that already faces it exactly the `Step`
+result; the two share one match arm. `Face` travels on the existing `enqueue_move` and
+`set_move` reducers and drains like any other input, so a turn takes one movement slot
+(`STEP_MS`) on the server and in the predictor's replay, and it passes the same battle
+locks, deletion gate and sequence guard. The variant is appended after `Jump`;
+`client/src/convert/convert.ts` marshals it with one case per variant and no fallback.
+The flat-code helper `apply_move_coded` carries only `Step` and `Jump`: `Face` crosses
+the wasm boundary on the serde path, which `client/src/prediction/predictor.test.ts`
+checks against the built package.
+
+**Why.** The operator ruled that a player faces a direction before moving in it
+(feedback item pt3-2026-10-165), and interaction targets the faced tile, so facing
+needs an input that does not move. The turn-or-step choice is made when the input
+drains: the server and the predictor then both judge it against the facing left by the
+inputs before it, from the same compiled rule, and the client never works out an
+"effective facing" of its own. The existing reducers already carry every guard a
+movement input needs.
+
+**Rules out.** A separate facing reducer (a second intake path with its own battle
+lock, deletion gate and seq); an extra reducer argument (it changes every caller and
+the client-callable reducer baseline); changing `Step` itself (NPC wander and the bump
+rule use it); choosing between `Face` and `Step` on the client from its own idea of the
+facing; marshaling a variant the client does not know as `Step`; publishing a module
+that adds a `MoveInput` variant apart from the client bundle that decodes it — a bundle
+built before the variant cannot decode a `character` row whose public queue holds one.
+
 ## Remote interpolation: adaptive delay; hold, except a bounded continued walk
 
 **Decision.** Other characters render at `now − delay` between buffered snapshots
