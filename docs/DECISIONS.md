@@ -1216,6 +1216,35 @@ injected collaborators (each extraction would move code and change its interface
 prelude module holding the locale block (it would run ahead of modules that run before it
 now); a module-scope copy of a live binding; a shell module that registers a listener.
 
+## Each client registry has one test that states its members
+
+**Decision.** A fact that a client registry holds (the overlay ids, the frame ids, the catalog keys,
+the subscription batch, the help entries, the command kinds, the menu rows and accelerators) is
+written out as a literal by one test: a roster compared with the registry for equality, in order
+where order is behaviour, in the test file beside the registry. Every other test computes its
+expected value from the registry, asserts only its own entity, or loses the assertion with the owner
+named as the survivor. No test asserts a bare count of a registry and no test title carries one. A
+hand table that says what each member should be (its tier, its battle policy, its adapter, its name)
+is expected behaviour: it stays hand-written, typed `Record<K, _>` where the registry has a key type.
+The subscription batch is read from what `connect()` sends and is not exported for a test.
+`docs/refactors/test-pins.md` lists each fact, its owner, the disposition of every other assertion
+and the slices that apply them.
+
+**Why.** A registry's size written into many tests makes a slice that adds one member edit each of
+them, and two slices that name the same test file never run together. A count cannot say which
+member changed and survives a swap; a roster can, so the roster is the one literal worth keeping.
+The compiler holds the `Record` tables total, but not the subscription batch, the help entries or
+the menu rows, so one owner per fact is what still goes red when a member is added, dropped or
+reordered by accident, and what a client subscribes to is what it is sent.
+
+**Rules out.** Leaving the duplicates and letting each run add the pin files to its own file list:
+the edits, the serialization and the stale counts all stay. A shared constants module for tests: a
+second copy of every registry, in one file every slice edits, and not a check. No roster at all,
+every test reading the registry: nothing would notice a thirtieth subscription query. Rebuilding a
+per-member table, or the subscription expectation, from the product value it checks: the product
+compared with itself. A tally that adds one per pass of a loop over the registry: it restates the
+registry's size and nothing else.
+
 ## Interaction target: the tile in front, then your own tile
 
 **Decision.** A (and a click on the world) acts on the candidates from
