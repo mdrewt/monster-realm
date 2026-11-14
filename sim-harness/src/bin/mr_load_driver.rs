@@ -6435,6 +6435,22 @@ mod tests {
             r#"{"step":{"south":[]}}"#
         );
         assert_eq!(sats_move_input(MoveInput::Jump), r#"{"jump":[]}"#);
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::East)),
+            r#"{"face":{"east":[]}}"#
+        );
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::West)),
+            r#"{"face":{"west":[]}}"#
+        );
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::North)),
+            r#"{"face":{"north":[]}}"#
+        );
+        assert_eq!(
+            sats_move_input(MoveInput::Face(Direction::South)),
+            r#"{"face":{"south":[]}}"#
+        );
     }
 
     /// the direction names are exact and distinct — a swapped pair would

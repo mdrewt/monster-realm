@@ -11,6 +11,7 @@ import {
   moveInputToSdk,
   moveInputToWasm,
   type SdkCharacterFields,
+  type SdkMoveInput,
   type WasmAction,
   type WasmCharacterState,
   type WasmDirection,
@@ -24,6 +25,7 @@ const actionArb = fc.constantFrom(...ACTIONS);
 const moveInputArb: fc.Arbitrary<WasmMoveInput> = fc.oneof(
   fc.constant<WasmMoveInput>('Jump'),
   dirArb.map((d): WasmMoveInput => ({ Step: d })),
+  dirArb.map((d): WasmMoveInput => ({ Face: d })),
 );
 const i32 = fc.integer({ min: -2_147_483_648, max: 2_147_483_647 });
 const msArb = fc.integer({ min: 0, max: 2 ** 40 }); // bounded ms, far under 2^53
@@ -66,6 +68,53 @@ describe('convert: faithful round-trips (handles tagged unions + bigint)', () =>
         expect(back.moveStartedAtMs).toBe(BigInt(t));
       }),
     );
+  });
+});
+
+// np-c1.8: the third MoveInput variant, `Face(dir)`, crosses the marshaling boundary
+// in both directions as itself — never as a `Step`.
+const sdkMoveInputArb: fc.Arbitrary<SdkMoveInput> = fc.oneof(
+  fc.constant<SdkMoveInput>({ tag: 'Jump' }),
+  dirArb.map((d): SdkMoveInput => ({ tag: 'Step', value: { tag: d } })),
+  dirArb.map((d): SdkMoveInput => ({ tag: 'Face', value: { tag: d } })),
+);
+
+describe('convert: MoveInput Face (np-c1)', () => {
+  it('Face maps SDK -> wasm and wasm -> SDK as Face for every direction, never as Step [np-c1.8]', () => {
+    for (const d of DIRS) {
+      const wasm = moveInputToWasm({ tag: 'Face', value: { tag: d } });
+      expect(wasm, `SDK Face ${d} -> wasm`).toEqual({ Face: d });
+      const sdk = moveInputToSdk({ Face: d });
+      expect(sdk, `wasm Face ${d} -> SDK`).toEqual({ tag: 'Face', value: { tag: d } });
+    }
+    // Step and Jump still map as they always have.
+    expect(moveInputToWasm({ tag: 'Step', value: { tag: 'West' } })).toEqual({ Step: 'West' });
+    expect(moveInputToSdk({ Step: 'West' })).toEqual({ tag: 'Step', value: { tag: 'West' } });
+    expect(moveInputToWasm({ tag: 'Jump' })).toBe('Jump');
+    expect(moveInputToSdk('Jump')).toEqual({ tag: 'Jump' });
+  });
+
+  it('every MoveInput round-trips wasm -> SDK -> wasm, Face beside Step and Jump [np-c1.8]', () => {
+    fc.assert(
+      fc.property(moveInputArb, (m) => {
+        expect(moveInputToWasm(moveInputToSdk(m))).toEqual(m);
+      }),
+    );
+    for (const d of DIRS) {
+      expect(moveInputToWasm(moveInputToSdk({ Face: d })), `Face ${d}`).toEqual({ Face: d });
+    }
+  });
+
+  it('every MoveInput round-trips SDK -> wasm -> SDK, Face beside Step and Jump [np-c1.8]', () => {
+    fc.assert(
+      fc.property(sdkMoveInputArb, (m) => {
+        expect(moveInputToSdk(moveInputToWasm(m))).toEqual(m);
+      }),
+    );
+    for (const d of DIRS) {
+      const m: SdkMoveInput = { tag: 'Face', value: { tag: d } };
+      expect(moveInputToSdk(moveInputToWasm(m)), `Face ${d}`).toEqual(m);
+    }
   });
 });
 

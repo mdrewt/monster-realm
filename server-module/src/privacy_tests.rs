@@ -1849,6 +1849,67 @@ fn m22s4_serializer_per_table_shape() {
     }
 }
 
+/// np-c1.6: a character whose published queue holds a `Face` of every
+/// direction, beside a `Step` and a `Jump`, exports each `Face` as the tagged
+/// two-field object `{"kind":"Face","direction":"<Dir>"}` — the shape `Step`
+/// has — with the `Step` and `Jump` encodings unchanged beside them.
+///
+/// kills: the Face arm emitting kind `Step` / a missing or mis-cased direction
+/// / a fixed direction.
+#[test]
+fn data_export_encodes_a_queued_face_as_a_tagged_face_with_its_direction_np_c1_6() {
+    let character = Character {
+        entity_id: 15,
+        zone_id: 1,
+        tile_x: 3,
+        tile_y: 2,
+        facing: Direction::North,
+        action: ActionState::Idle,
+        move_started_at_ms: 47,
+        sprite_id: 0,
+        move_queue: vec![
+            MoveInput::Face(Direction::North),
+            MoveInput::Face(Direction::South),
+            MoveInput::Step(Direction::East),
+            MoveInput::Face(Direction::East),
+            MoveInput::Jump,
+            MoveInput::Face(Direction::West),
+        ],
+        acked_seq: 9,
+    };
+    let tagged = |kind: &str, dir: &str| {
+        m22s4_obj(&[("kind", m22s4_qtxt(kind)), ("direction", m22s4_qtxt(dir))])
+    };
+    let out = super::json_character(&character);
+    assert_eq!(
+        out,
+        m22s4_obj(&[
+            ("entity_id", m22s4_quoted_num(15)),
+            ("zone_id", m22s4_bare(1)),
+            ("tile_x", m22s4_bare(3)),
+            ("tile_y", m22s4_bare(2)),
+            ("facing", m22s4_qtxt("North")),
+            ("action", m22s4_qtxt("Idle")),
+            ("move_started_at_ms", m22s4_quoted_num(47)),
+            ("sprite_id", m22s4_bare(0)),
+            (
+                "move_queue",
+                m22s4_arr(&[
+                    tagged("Face", "North"),
+                    tagged("Face", "South"),
+                    tagged("Step", "East"),
+                    tagged("Face", "East"),
+                    m22s4_obj(&[("kind", m22s4_qtxt("Jump"))]),
+                    tagged("Face", "West"),
+                ]),
+            ),
+            ("acked_seq", m22s4_quoted_num(9)),
+        ]),
+        "np-c1.6: each queued Face exports as kind Face with its own direction"
+    );
+    assert!(m22s4_json_is_wellformed(&out), "well-formed JSON: {out:?}");
+}
+
 /// PRV1-11 / X1 (the zero-state half): an owner who holds NOTHING still gets a
 /// well-formed, meaningful export.
 ///

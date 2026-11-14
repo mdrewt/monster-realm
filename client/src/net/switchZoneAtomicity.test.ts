@@ -272,7 +272,16 @@ const applyMove: ApplyMove = (state, input, now): WasmCharacterState => {
     const pos = walkableTile(target) ? target : state.pos; // hop in place if blocked
     return { ...state, pos, action: 'Jumping', move_started_at: stamp };
   }
-  const dir = input.Step;
+  // Face(dir): a turn in place when not already facing dir, else exactly Step(dir).
+  let dir: WasmDirection;
+  if ('Face' in input) {
+    if (state.facing !== input.Face) {
+      return { ...state, facing: input.Face, action: 'Idle', move_started_at: stamp };
+    }
+    dir = input.Face;
+  } else {
+    dir = input.Step;
+  }
   const target = stepTile(dir, state.pos.x, state.pos.y);
   if (walkableTile(target)) {
     return { pos: target, facing: dir, action: 'Walking', move_started_at: stamp };

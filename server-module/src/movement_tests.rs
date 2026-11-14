@@ -2024,6 +2024,344 @@ mod nh {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // np-c1: `MoveInput::Face(d)` on the server — a turn in place when the
+    // character does not face `d` (one drain slot, no encounter, no warp), the
+    // step when it already does; refused mid-battle like any other move.
+    // -----------------------------------------------------------------------
+
+    fn np_c1_opposite(d: Direction) -> Direction {
+        match d {
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        }
+    }
+
+    /// Zone 0's shipped map. Spawn (1,1) and its east neighbours (2,1), (3,1)
+    /// are plain floor (row 1 is `#........#`), which the tests assert as a
+    /// precondition rather than assume.
+    fn np_c1_zone0_plain(p: game_core::TilePos) -> bool {
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(0, zone_maps).expect("zone 0 map");
+        map.is_walkable(p) && !map.is_grass(p) && map.warp_at(p).is_none()
+    }
+
+    /// A warp-free tall-grass tile of zone 0 and a direction whose one step
+    /// lands on another warp-free tall-grass tile.
+    fn np_c1_grass_pair() -> (game_core::TilePos, Direction) {
+        use game_core::TilePos;
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(0, zone_maps).expect("zone 0 map");
+        let grass = |p: TilePos| map.is_walkable(p) && map.is_grass(p) && map.warp_at(p).is_none();
+        let dirs = [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ];
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| TilePos { x, y }))
+            .filter(|&p| grass(p))
+            .find_map(|p| {
+                dirs.iter()
+                    .find_map(|&d| grass(p.step(d)).then_some((p, d)))
+            })
+            .expect("zone 0 has two adjacent grass tiles")
+    }
+
+    /// np-c1.3, plain tile, through the reducer: a joined player facing South
+    /// on spawn (1,1) enqueues `Face(East)` (east neighbour (2,1) walkable) as
+    /// seq 5; one tick turns it in place — same tile, facing East, Idle, stamped
+    /// at the tick — and publishes the drained queue with the ack, the private
+    /// row agreeing.
+    ///
+    /// kills: Face treated as Step (moves to (2,1), Walking) / the turn not
+    /// applied / the ack not published / the queue not drained.
+    #[test]
+    fn nh_a_face_toward_a_direction_not_faced_turns_in_place_and_acks_np_c1_3() {
+        let fx = fixture();
+        let w = world(&fx);
+        assert!(
+            np_c1_zone0_plain(game_core::TilePos { x: 2, y: 1 }),
+            "PRECONDITION: the east neighbour of spawn is plain floor"
+        );
+        w.join(a(), 1, character(1, vec![], ActionState::Walking));
+        assert_eq!(w.character(1).facing, Direction::South, "PRECONDITION");
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| enqueue_move(
+                ctx,
+                MoveInput::Face(Direction::East),
+                5
+            )),
+            Ok(())
+        );
+        Walk::tick(&fx, T0 + 100);
+        let ch = w.character(1);
+        assert_eq!(
+            (ch.zone_id, ch.tile_x, ch.tile_y, ch.facing, ch.action),
+            (0, 1, 1, Direction::East, ActionState::Idle),
+            "turned in place"
+        );
+        assert_eq!(ch.move_started_at_ms, T0 + 100, "stamped at the tick");
+        assert_eq!(w.published(1), (vec![], 5), "drained and acked on the row");
+        assert_eq!(w.intent(1), (vec![], 5), "the private row agrees");
+    }
+
+    /// np-c1.3, tall grass: under an always-firing encounter table, a walker
+    /// standing ON a grass tile, not facing `d` (whose neighbour is grass too),
+    /// with `Face(d)` queued, turns in place and opens no battle of either
+    /// engine. Positive control in the same fixture and party: the walker on the
+    /// same tile with `Step(d)` queued moves onto the grass neighbour and opens
+    /// a battle, so the fixture can encounter.
+    ///
+    /// kills: Face treated as Step (moves; a battle opens) / an encounter rolled
+    /// for a turn / the ack not published.
+    #[test]
+    fn nh_a_face_turn_on_tall_grass_rolls_no_encounter_np_c1_3() {
+        let (g, d) = np_c1_grass_pair();
+        let facing = np_c1_opposite(d);
+        for (label, input, opens) in [
+            ("Face, not facing d", MoveInput::Face(d), false),
+            ("control: Step(d) onto grass", MoveInput::Step(d), true),
+        ] {
+            let fx = fixture();
+            let w = bt16_world(&fx, bt16_always());
+            w.players.seed(&Player {
+                identity: a(),
+                entity_id: 1,
+                name: String::new(),
+                online: true,
+                last_input_seq: 0,
+            });
+            w.characters.seed(&Character {
+                zone_id: 0,
+                tile_x: g.x,
+                tile_y: g.y,
+                facing,
+                ..character(1, vec![input], ActionState::Idle)
+            });
+            w.intents.seed(&intent(1, vec![input], 3));
+            w.seed_monster(&bt16_lead());
+            bt16_tick(&fx, T0);
+            let ch = w
+                .characters
+                .rows()
+                .into_iter()
+                .find(|c| c.entity_id == 1)
+                .expect("the walker's character row");
+            if opens {
+                let to = g.step(d);
+                assert_eq!((ch.tile_x, ch.tile_y), (to.x, to.y), "{label}: stepped");
+                assert_eq!(
+                    w.battles.rows().len(),
+                    1,
+                    "{label}: the fixture can open a battle"
+                );
+            } else {
+                assert_eq!(
+                    (ch.zone_id, ch.tile_x, ch.tile_y, ch.facing, ch.action),
+                    (0, g.x, g.y, d, ActionState::Idle),
+                    "{label}: turned in place on the grass tile"
+                );
+                assert_eq!(
+                    bt16_counts(&w),
+                    [0; 7],
+                    "{label}: no battle of either engine"
+                );
+                assert_eq!(
+                    (ch.move_queue, ch.acked_seq),
+                    (vec![], 3),
+                    "{label}: drained and acked"
+                );
+            }
+        }
+    }
+
+    /// np-c1.3, warp tile: a player standing ON a shipped warp's `from` tile,
+    /// facing the warp's step direction, with `Face(back)` queued (the opposite
+    /// way, onto the walkable approach tile), turns in place: zone and tile
+    /// unchanged, facing `back`, Idle, acked. Positive control: the same warp
+    /// fires for a `Step` onto it from the approach tile.
+    ///
+    /// kills: Face treated as Step (moves to the approach tile) / a warp
+    /// resolved for a turn / the ack not published.
+    #[test]
+    fn nh_a_face_turn_on_a_warp_tile_resolves_no_warp_np_c1_3() {
+        let (zone, warp, start, dir) = sr10_warp();
+        let back = np_c1_opposite(dir);
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(zone, zone_maps).expect("source zone map");
+        assert!(
+            map.warp_at(warp.from).is_some(),
+            "PRECONDITION: the character stands on a warp tile"
+        );
+        assert_eq!(
+            warp.from.step(back),
+            start,
+            "PRECONDITION: back faces the approach"
+        );
+        assert!(
+            map.is_walkable(start),
+            "PRECONDITION: the approach is walkable"
+        );
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let sched = || MovementTickSchedule {
+            id: 1,
+            zone_id: zone,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+
+        // The turn on the warp tile.
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            w.join(
+                a(),
+                1,
+                Character {
+                    zone_id: zone,
+                    tile_x: warp.from.x,
+                    tile_y: warp.from.y,
+                    facing: dir,
+                    ..character(1, vec![], ActionState::Idle)
+                },
+            );
+            w.set_intent(intent(1, vec![MoveInput::Face(back)], 2));
+            assert_eq!(
+                fx.run_as_at(module, at(T0), |ctx| movement_tick(ctx, sched())),
+                Ok(())
+            );
+            let ch = w.character(1);
+            assert_eq!(
+                (ch.zone_id, ch.tile_x, ch.tile_y, ch.facing, ch.action),
+                (zone, warp.from.x, warp.from.y, back, ActionState::Idle),
+                "turned in place on the warp tile; no warp resolved"
+            );
+            assert_eq!(w.published(1), (vec![], 2), "drained and acked");
+        }
+
+        // Positive control: the same warp fires for a step onto it.
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            w.join(
+                a(),
+                1,
+                Character {
+                    zone_id: zone,
+                    tile_x: start.x,
+                    tile_y: start.y,
+                    ..character(1, vec![], ActionState::Idle)
+                },
+            );
+            w.set_intent(intent(1, vec![MoveInput::Step(dir)], 2));
+            assert_eq!(
+                fx.run_as_at(module, at(T0), |ctx| movement_tick(ctx, sched())),
+                Ok(())
+            );
+            let ch = w.character(1);
+            assert_eq!(
+                (ch.zone_id, ch.tile_x, ch.tile_y),
+                (warp.to_zone, warp.to_tile.x, warp.to_tile.y),
+                "control: the step onto the warp tile warps"
+            );
+        }
+    }
+
+    /// np-c1.4: two `Face(East)` inputs for a player facing South on spawn
+    /// (1,1), with (2,1) plain floor, drain one per tick: the first turns in
+    /// place (the second still queued, the higher seq acked), the second —
+    /// judged against the facing the first left — steps to (2,1), Walking.
+    ///
+    /// kills: both turn (the second never steps) / both step (the first tick
+    /// moves) / the second input dropped / both drained in one tick.
+    #[test]
+    fn nh_two_faces_toward_a_new_direction_turn_then_step_np_c1_4() {
+        let fx = fixture();
+        let w = world(&fx);
+        assert!(
+            np_c1_zone0_plain(game_core::TilePos { x: 2, y: 1 }),
+            "PRECONDITION: the east neighbour of spawn is plain floor"
+        );
+        w.join(a(), 1, character(1, vec![], ActionState::Idle));
+        assert_eq!(w.character(1).facing, Direction::South, "PRECONDITION");
+        let face = MoveInput::Face(Direction::East);
+        for seq in [1, 2] {
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, face, seq)),
+                Ok(()),
+                "seq {seq}"
+            );
+        }
+
+        Walk::tick(&fx, T0 + 200);
+        let ch = w.character(1);
+        assert_eq!(
+            (ch.tile_x, ch.tile_y, ch.facing, ch.action),
+            (1, 1, Direction::East, ActionState::Idle),
+            "tick 1: the turn"
+        );
+        assert_eq!(w.published(1), (vec![face], 2), "tick 1: one Face left");
+
+        Walk::tick(&fx, T0 + 400);
+        let ch = w.character(1);
+        assert_eq!(
+            (ch.tile_x, ch.tile_y, ch.facing, ch.action),
+            (2, 1, Direction::East, ActionState::Walking),
+            "tick 2: the step"
+        );
+        assert_eq!(w.published(1), (vec![], 2), "tick 2: drained");
+    }
+
+    /// np-c1.5: mirror of the ADR-0168 D2 intake lock for `Face`, in each of
+    /// the three battle roles: `enqueue_move(Face)` and `set_move(Face)` are
+    /// refused with the battle-lock error and write nothing. Control: once the
+    /// battle is decided the same `enqueue_move(Face)` is admitted and the
+    /// private queue holds exactly that `Face`.
+    ///
+    /// kills: a Face arm that bypasses the lock in either reducer / Face queued
+    /// as a different input.
+    #[test]
+    fn nh_intake_refuses_a_face_during_an_ongoing_battle_in_either_role_np_c1_5() {
+        let arms: [(&str, Identity, Identity); 3] = [
+            ("side A vs wild", a(), crate::WILD_IDENTITY),
+            ("side A vs player", a(), b()),
+            ("side B (PvP opponent)", b(), a()),
+        ];
+        let face = MoveInput::Face(Direction::East);
+        for (label, player, opponent) in arms {
+            let fx = fixture();
+            let w = world(&fx);
+            w.join(a(), 1, character(1, vec![], ActionState::Idle));
+            w.battles
+                .seed(&battle(1, player, opponent, BattleOutcome::Ongoing));
+            let before = w.snapshot();
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, face, 1)),
+                Err(REJECT_IN_BATTLE.to_string()),
+                "{label}: enqueue_move(Face)"
+            );
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| set_move(ctx, face, 2)),
+                Err(REJECT_IN_BATTLE.to_string()),
+                "{label}: set_move(Face)"
+            );
+            assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+
+            assert_eq!(w.battles.remove(player), 1);
+            w.battles
+                .seed(&battle(1, player, opponent, BattleOutcome::SideAWins));
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, face, 3)),
+                Ok(()),
+                "{label}: a decided battle no longer locks intake"
+            );
+            assert_eq!(w.intent(1), (vec![face], 3), "{label}");
+        }
+    }
+
     /// Every `log` record of this test PROCESS as `(target, line)`. NEXTEST-ONLY, like
     /// tactics_tests.rs's `RejectLogSink`: one logger may be installed per process, so plain
     /// `cargo test` (one process for every test) fails all but the first installer.

@@ -81,7 +81,16 @@ const applyMove: ApplyMove = (state, input, now): WasmCharacterState => {
     const pos = walkable(target) ? target : state.pos;
     return { ...state, pos, action: 'Jumping', move_started_at: stamp };
   }
-  const dir = input.Step;
+  // Face(dir): a turn in place when not already facing dir, else exactly Step(dir).
+  let dir: WasmDirection;
+  if ('Face' in input) {
+    if (state.facing !== input.Face) {
+      return { ...state, facing: input.Face, action: 'Idle', move_started_at: stamp };
+    }
+    dir = input.Face;
+  } else {
+    dir = input.Step;
+  }
   const target = stepPos(dir, state.pos.x, state.pos.y);
   if (walkable(target)) {
     return { pos: target, facing: dir, action: 'Walking', move_started_at: stamp };
@@ -215,7 +224,7 @@ class ServerModel {
     const next = applyMove(before, input, now);
     const moved = next.pos.x !== before.pos.x || next.pos.y !== before.pos.y;
     this.acceptedDrains.push({
-      dir: input === 'Jump' ? 'Jump' : input.Step,
+      dir: input === 'Jump' ? 'Jump' : 'Face' in input ? input.Face : input.Step,
       atMs: now,
       moved,
     });
@@ -297,7 +306,7 @@ class ClientModel {
     this.#lastSentSeq = intent.seq;
     this.emissions.push({
       seq: intent.seq,
-      dir: input === 'Jump' ? 'Jump' : input.Step,
+      dir: input === 'Jump' ? 'Jump' : 'Face' in input ? input.Face : input.Step,
       atMs: at,
       source: this.#source,
       owedBefore: this.owed.count,
