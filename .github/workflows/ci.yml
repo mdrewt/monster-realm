@@ -187,6 +187,22 @@ jobs:
             client/test-results/e2e-list.json
           if-no-files-found: warn
           retention-days: 14
+      # A failed shard keeps what triage needs: each failed test's Playwright trace
+      # (client/test-results/<test>/trace.zip, from `use.trace` in playwright.config.ts) and this
+      # shard's SpacetimeDB log. The name stays outside the `e2e-timings-*` pattern the `e2e` job
+      # downloads. The two paths share only `/`, so the zip holds each under its full path. The
+      # repository is public: a trace's network log carries the client's token for this job's
+      # in-memory SpacetimeDB, which ends with the runner, and this job is given no secret.
+      - name: Upload the failed shard's traces and SpacetimeDB log
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-failure-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: |
+            client/test-results
+            /tmp/stdb.log
+          if-no-files-found: warn
+          retention-days: 14
 
   # Green only when the shards together ran every listed test exactly once with no failure:
   # an empty shard, a missing shard or a shard total above the number of shard jobs fails here.
