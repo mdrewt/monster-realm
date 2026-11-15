@@ -2,8 +2,8 @@
 //!
 //! The 1v1 battle cluster's survivors (bt-17 deleted the 1v1 start and per-turn reducers): the
 //! write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical settle funnel and
-//! the account lifecycle call, plus the party readers `movement_tick` and the tactical starts share
-//! and the `player.lead_level` refresh that reads the same lead.
+//! the account lifecycle call, plus the party readers `movement_tick` and the tactical starts share.
+//! `refresh_lead_level` keeps the public `player.lead_level` on the level of that same lead.
 //! No battle is started or advanced here. Helpers are thin: delegate the rule to `game-core` (the
 //! SSOT), write tables; reject with `Err`, never clamp.
 
@@ -103,15 +103,17 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
 /// party monster (the first of `lead_party_ids`), or 0 with no party.
 ///
 /// Infallible, so no caller's write fails on it. An owner with no `player` row
-/// (offline) is skipped before any party read, and none is inserted. The row is
-/// written only when the value differs, so a refresh that changes nothing reaches
-/// no subscriber. The level byte is copied as stored; `lead_party` owns the
-/// `Level` check.
+/// (offline, or never joined) is skipped before any party read, and none is
+/// inserted. The row is written only when the value differs, so a refresh that
+/// changes nothing reaches no subscriber. The level byte is copied as stored;
+/// `lead_party` owns the `Level` check.
 ///
-/// Every site that can change which monster leads, or the lead's level, calls
-/// this after its write: the dual-write seam (`monster_mgmt::update_monster_synced`)
-/// does on a `level` or `party_slot` change, and `join_game` and the session-trade
-/// transfer (`trading_session::apply_swap`) call it themselves.
+/// Callers, each after its own write: the dual-write seam
+/// (`monster_mgmt::update_monster_synced`) on a `level` or `party_slot` change,
+/// `join_game` after the starter grant, and the session-trade transfer
+/// (`trading_session::apply_swap`). The deletion cascade does not call it: it
+/// zeroes the column when it tombstones the row
+/// (`ranking::player_with_deleted_name`).
 pub(crate) fn refresh_lead_level(ctx: &ReducerContext, owner: Identity) {
     let Some(row) = ctx.db.player().identity().find(owner) else {
         return;

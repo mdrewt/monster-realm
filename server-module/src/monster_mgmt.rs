@@ -31,7 +31,7 @@ use spacetimedb::{Identity, ReducerContext};
 /// A write whose `level` or `party_slot` differs from the stored projection can
 /// change which monster leads the owner's party, or the lead's level, so it then
 /// refreshes the owner's public `player.lead_level`
-/// (`battle::refresh_lead_level`). An explicit site that writes `level` or
+/// (`battle::refresh_lead_level`). An explicit site that changes `level` or
 /// `party_slot` outside this seam calls `battle::refresh_lead_level` itself. A
 /// write that changes only the owner does not refresh: the one such caller is
 /// the guest claim (`rekey_monsters`), whose guards leave neither identity a
