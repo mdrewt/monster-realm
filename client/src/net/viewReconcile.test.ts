@@ -789,13 +789,13 @@ describe('createOwnerViewReconciler: only the dirty views reconcile (sr-6b)', ()
 
   it('OWNER_VIEWS is the owner-view roster in reconcile order [SR6B.2]', () => {
     // WRONG IMPL KILLED: a view in no try group (it is never reconciled); a view in two groups (it
-    // is reconciled twice); two groups swapped (the shared group no longer runs first).
+    // is reconciled twice); two groups swapped (the shared group does not run first).
     expect(OWNER_VIEWS).toEqual(ROSTER);
   });
 
   it('after a full reconcile, a reconcile with nothing marked calls no store method, reads no view, converts no row and logs nothing [SR6B.1]', () => {
-    // WRONG IMPL KILLED: every view reconciled on every call (the pre-dirty-set behaviour); a clean
-    // view's cache iterated, or its rows converted, with only the store call skipped.
+    // WRONG IMPL KILLED: every view reconciled on every call, marked or not; a clean view's cache
+    // iterated, or its rows converted, with only the store call skipped.
     const rows = allValid();
     const p = probe(rows);
     const r = createOwnerViewReconciler();

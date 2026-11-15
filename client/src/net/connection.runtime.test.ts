@@ -22,7 +22,7 @@ import { claimCode } from './claimCode';
 import { type ConnectionOptions, connect } from './connection';
 import type { RenewalOutcome } from './credentialDecision';
 import { AuthoritativeStore } from './store';
-import type { OwnerView } from './viewReconcile';
+import { OWNER_VIEWS, type OwnerView } from './viewReconcile';
 import { APPLY_TIMEOUT_MS, LINGER_MS } from './worldScope';
 
 type Cb = (...args: unknown[]) => void;
@@ -50,6 +50,11 @@ interface BuildRec {
   readonly disconnect: ReturnType<typeof vi.fn>;
   /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
   queries?: readonly string[];
+  /**
+   * This build's own SDK cache by table name, read by its `db` before `H.viewRows`. Additive:
+   * undefined by default, so every build reads `H.viewRows`.
+   */
+  viewRows?: Record<string, unknown[]>;
 }
 
 const H = vi.hoisted(() => ({
@@ -87,7 +92,7 @@ vi.mock('../module_bindings', () => {
     ['onUpdate', 'update'],
     ['onDelete', 'delete'],
   ]);
-  const tableFor = (name: string) =>
+  const tableFor = (name: string, rec: BuildRec) =>
     new Proxy(
       {},
       {
@@ -95,7 +100,7 @@ vi.mock('../module_bindings', () => {
           if (k === 'iter') {
             return () => {
               H.iterCalls[name] = (H.iterCalls[name] ?? 0) + 1;
-              return (H.viewRows[name] ?? [])[Symbol.iterator]();
+              return (rec.viewRows?.[name] ?? H.viewRows[name] ?? [])[Symbol.iterator]();
             };
           }
           return (cb: Cb) => {
@@ -136,7 +141,7 @@ vi.mock('../module_bindings', () => {
           subscribe: () => sub,
         };
         const conn = {
-          db: new Proxy({}, { get: (_t, name) => tableFor(String(name)) }),
+          db: new Proxy({}, { get: (_t, name) => tableFor(String(name), rec) }),
           reducers: {
             joinGame: rec.joinGame,
             completeGuestClaim: rec.completeGuestClaim,
@@ -2191,11 +2196,20 @@ const SR6B_METHOD: Record<OwnerView, Sr6bMethod> = {
   myFormation: 'reconcileFormationFromView',
   myTradeSession: 'reconcileTradeSessionsFromView',
 };
-/** The owner views in reconcile order (the order of the table above). */
+/** The owner views of the table above, in no particular order. A test that expects every view
+ *  in reconcile order takes that order from OWNER_VIEWS, whose roster test is in
+ *  viewReconcile.test.ts. */
 const SR6B_VIEWS = Object.keys(SR6B_METHOD) as OwnerView[];
+/** The owner-view tables, to tell them from every other table connect() wires. */
+const SR6B_VIEW_TABLES = new Set<string>(SR6B_VIEWS);
 /** Every owner-view row handler: each view's insert and delete. */
 const SR6B_HANDLERS = SR6B_VIEWS.flatMap((view) =>
   (['insert', 'delete'] as const).map((event) => [view, event] as const),
+);
+/** Two callbacks the base subscription's onApplied makes, either of which may throw: the earliest
+ *  after its stale check, and one near its end. */
+const SR6B_APPLIED_THROWERS = (['claimCode.hasUnconsumed', 'onScopeSettled'] as const).map(
+  (thrower) => [thrower] as const,
 );
 type Sr6bSpies = Record<OwnerView, MockInstance>;
 
@@ -2389,6 +2403,42 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     await sr6bExpectDrained(spies);
   });
 
+  it('a burst of a character row and a view row is one batch: the view is rebuilt first, then the hydration edge fires once, then the batch listener runs once and already reads the rebuilt view [SR6B.2]', async () => {
+    // WRONG IMPL KILLED: the reconcile moved after flushBatch with a second flush (the listener
+    // runs twice, first on the stale view); onHydrated fired before the reconcile (the hydrated
+    // screen reads the pre-snapshot view); onHydrated fired after the flush (the listener runs on
+    // a store not yet announced as hydrated).
+    const opts = makeOpts();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    const { b0, spies } = await sr6bConnected(opts, false);
+    await sr6bExpectDrained(spies);
+    expect(
+      opts.onHydrated,
+      'precondition: no snapshot yet, so no hydration edge',
+    ).not.toHaveBeenCalled();
+    const seen: unknown[] = [];
+    const listener = vi.fn(() => {
+      seen.push(opts.store.ownInventory(BT12_ME));
+    });
+    opts.store.onBatchApplied(listener);
+    // The snapshot arms the hydration edge; then one burst of a character row and a view row.
+    b0.onApplied?.();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 4)];
+    wsFire('character', 'insert', [wsChar(903n, 0)]);
+    sr6bFire('my_inventory', 'insert');
+    await settle();
+    expect(listener, 'one burst, one batch').toHaveBeenCalledTimes(1);
+    expect(seen, 'inside the listener the view is already rebuilt').toEqual([
+      [sr6bStoredInventory(1n, 4)],
+    ]);
+    expect(opts.onHydrated, 'the hydration edge fires once').toHaveBeenCalledTimes(1);
+    const reconciledAt = spies.my_inventory.mock.invocationCallOrder[0];
+    const hydratedAt = vi.mocked(opts.onHydrated).mock.invocationCallOrder[0];
+    const listenedAt = listener.mock.invocationCallOrder[0];
+    expect(reconciledAt, 'the view is rebuilt before the hydration edge').toBeLessThan(hydratedAt);
+    expect(hydratedAt, 'the hydration edge fires before the listener').toBeLessThan(listenedAt);
+  });
+
   it('an applied snapshot marks every view: the next batch, of character rows only, reconciles each one, and the store takes the rows the snapshot left in the cache [SR6B.3]', async () => {
     // WRONG IMPL KILLED: no mark in the base subscription's onApplied (a view the snapshot changed
     // with no row callback for it keeps its old rows until it next changes).
@@ -2399,7 +2449,7 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     H.viewRows.my_inventory = [sr6bInventory(1n, 2), sr6bInventory(2n, 1)];
     b0.onApplied?.();
     await sr6bCharacterBurst();
-    sr6bExpect(spies, SR6B_VIEWS, 'the first batch after the snapshot');
+    sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the snapshot');
     expect(opts.store.ownInventory(BT12_ME)).toEqual([
       sr6bStoredInventory(1n, 2),
       sr6bStoredInventory(2n, 1),
@@ -2411,20 +2461,39 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     (['reconnectNow', 'continueAnonymously'] as const).map((how) => [how] as const),
   )('a connection rebuilt by %s marks every view: the first batch on it, of character rows only, reconciles each one from the new cache [SR6B.3]', async (how) => {
     // WRONG IMPL KILLED: no mark when build() builds a connection (this rebuild resets nothing and
-    // applies no snapshot, so every view keeps the old connection's rows until it next changes).
+    // applies no snapshot, so every view keeps the old connection's rows until it next changes);
+    // a reconcile that keeps reading the first connection's cache (the old rows land instead).
     const opts = makeOpts();
     H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    H.viewRows.myFormation = [bt12Formation([37n])];
+    H.viewRows.myTradeSession = [ts3Row(9n)];
     const { handle, spies } = await sr6bConnected(opts);
     await sr6bExpectDrained(spies);
-    H.viewRows.my_inventory = [sr6bInventory(1n, 2)];
+    // The first connection's cache moves on too, with no row callback: only the new
+    // connection's rows may land.
+    H.viewRows.my_inventory = [sr6bInventory(1n, 7)];
+    H.viewRows.myFormation = [bt12Formation([43n])];
+    H.viewRows.myTradeSession = [ts3Row(5n)];
     handle[how]();
     await settle();
     expect(H.builds, 'the rebuild built a second connection').toHaveLength(2);
     const b1 = npBuild(1);
+    b1.viewRows = {
+      my_inventory: [sr6bInventory(1n, 2)],
+      myFormation: [bt12Formation([41n])],
+      myTradeSession: [ts3Row(4n)],
+    };
     b1.onConnect?.(conn0(b1), ID, 'anon-tok');
     await sr6bCharacterBurst(1);
-    sr6bExpect(spies, SR6B_VIEWS, `the first batch on the connection ${how} built`);
-    expect(opts.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 2)]);
+    sr6bExpect(spies, OWNER_VIEWS, `the first batch on the connection ${how} built`);
+    expect(opts.store.ownInventory(BT12_ME), 'the new connection`s inventory').toEqual([
+      sr6bStoredInventory(1n, 2),
+    ]);
+    expect(opts.store.ownFormation(BT12_ME)?.monsterIds, 'its formation').toEqual([41n]);
+    expect(
+      opts.store.allTradeSessions().map((s) => s.sessionId),
+      'its trade session',
+    ).toEqual([4n]);
     await sr6bExpectDrained(spies, 1);
   });
 
@@ -2438,7 +2507,7 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     b0.onDisconnect?.();
     expect(H.builds, 'no rebuild yet: its timer has not run').toHaveLength(1);
     await sr6bCharacterBurst();
-    sr6bExpect(spies, SR6B_VIEWS, 'the first batch after the drop');
+    sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the drop');
   });
 
   it('a world scope that takes its drop path resets the store and marks every view with no onDisconnect: the next batch, of character rows only, reconciles each one [SR6B.3]', async () => {
@@ -2468,7 +2537,7 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     ).toHaveBeenCalledTimes(1);
     expect(H.builds, 'no rebuild yet: its timer has not run').toHaveLength(1);
     await sr6bCharacterBurst();
-    sr6bExpect(spies, SR6B_VIEWS, 'the first batch after the scope`s drop');
+    sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the scope`s drop');
   });
 
   it('each connect() has its own reconciler: a view marked on one connection is reconciled by that connection`s next batch and never by another connection`s [SR6B.3]', async () => {
@@ -2595,7 +2664,7 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     ).toBe(thrown);
     await settle();
     expect(flushed, 'one flushed batch').toHaveBeenCalledTimes(1);
-    sr6bExpect(spies, SR6B_VIEWS, 'the flush the throwing handler scheduled');
+    sr6bExpect(spies, OWNER_VIEWS, 'the flush the throwing handler scheduled');
     expect(opts.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 2)]);
     expect(opts.store.ongoingBattle(BT12_ME)?.battleId).toBe(47n);
   });
@@ -2623,32 +2692,93 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
       'the handler`s own error goes on to the SDK',
     ).toBe(thrown);
     await settle();
-    sr6bExpect(spies, SR6B_VIEWS, 'the flush the throwing handler scheduled');
+    sr6bExpect(spies, OWNER_VIEWS, 'the flush the throwing handler scheduled');
     expect(opts.store.ownFormation(BT12_ME)?.monsterIds).toEqual([37n]);
     expect(opts.store.allTradeSessions().map((s) => s.sessionId)).toEqual([9n]);
   });
 
-  it('an applied snapshot marks every owner view before anything in it can throw: a throwing scope listener escapes onApplied and the next batch still reconciles every view [SR6B.3]', async () => {
-    // WRONG IMPL KILLED: the snapshot's mark placed after the callbacks onApplied makes (here the
-    // scope listener throws first, and the rows the snapshot left in the cache never land).
+  it('every row handler connect() wires on a table that is not an owner view, whatever value it throws, marks every owner view and schedules the flush before that same value goes on to the SDK [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: any one non-view handler left without the recovery (my_wallet's insert,
+    // my_account's update, my_conversation's delete, character's delete: the views of the message
+    // the SDK stops dispatching stay stale and clean); a recovery that marks only on an Error, so a
+    // thrown string or object goes on unmarked.
+    const opts = makeOpts();
+    const { spies } = await sr6bConnected(opts);
+    // What connect() registered on the tables that are not owner views.
+    const handlers = Object.entries(H.rowEvents)
+      .filter(([table]) => !SR6B_VIEW_TABLES.has(table))
+      .flatMap(([table, events]) =>
+        (['insert', 'update', 'delete'] as const).flatMap((event) =>
+          events[event].map((handler) => ({ table, event, handler })),
+        ),
+      );
+    expect(handlers.length, 'connect() wires non-view row handlers').toBeGreaterThan(0);
+    const tables = new Set(handlers.map(({ table }) => table));
+    for (const table of ['character', 'player', 'my_wallet', 'my_account', 'my_conversation']) {
+      expect(tables.has(table), `a handler on ${table}`).toBe(true);
+    }
+    // An Error, a string and a plain object, in turn.
+    const throwables = [
+      (at: string): unknown => new Error(`${at} threw`),
+      (at: string): unknown => `${at} threw`,
+      (at: string): unknown => ({ at }),
+    ];
+    for (const [i, { table, event, handler }] of handlers.entries()) {
+      const at = `${table}.${event}`;
+      await sr6bExpectDrained(spies);
+      // The rest of the message: a view row already in the SDK cache whose callback never runs.
+      H.viewRows.my_inventory = [sr6bInventory(1n, 10 + i)];
+      const thrown = throwables[i % throwables.length](at);
+      const row = sr6bMalformed(thrown);
+      const args = event === 'update' ? [row, row] : [row];
+      expect(
+        sr6bThrown(() => handler({}, ...args)),
+        `${at}: the value it threw goes on to the SDK`,
+      ).toBe(thrown);
+      await settle();
+      sr6bExpect(spies, OWNER_VIEWS, `the flush the ${at} throw scheduled`);
+      expect(opts.store.ownInventory(BT12_ME), `${at}: the view row landed`).toEqual([
+        sr6bStoredInventory(1n, 10 + i),
+      ]);
+    }
+  });
+
+  it.each(
+    SR6B_APPLIED_THROWERS,
+  )('an applied snapshot marks every owner view before anything in it can throw: a throw from %s escapes onApplied and the next batch still reconciles every view [SR6B.3]', async (thrower) => {
+    // WRONG IMPL KILLED: the snapshot's mark placed after a call onApplied makes that can throw
+    // (claimCode.hasUnconsumed is the earliest after the stale check, onScopeSettled is near the
+    // end): the throw skips the mark, and the rows the snapshot left in the cache never land.
     const onScopeSettled = vi.fn<(settled: boolean) => void>();
     const opts: ConnectionOptions = { ...makeOpts(), onScopeSettled };
     H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
     const { b0, spies } = await sr6bConnected(opts, false);
     await sr6bExpectDrained(spies);
     expect(onScopeSettled, 'precondition: no scope before the snapshot').not.toHaveBeenCalled();
-    const thrown = new Error('scope listener threw');
-    onScopeSettled.mockImplementation(() => {
-      throw thrown;
-    });
-    H.viewRows.my_inventory = [sr6bInventory(1n, 2)];
-    expect(
-      sr6bThrown(() => b0.onApplied?.()),
-      'the listener`s error escapes onApplied',
-    ).toBe(thrown);
-    await sr6bCharacterBurst();
-    sr6bExpect(spies, SR6B_VIEWS, 'the first batch after the snapshot');
-    expect(opts.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 2)]);
+    const thrown = new Error(`${thrower} threw`);
+    const hasUnconsumed = vi.spyOn(claimCode, 'hasUnconsumed');
+    try {
+      const fail = (): never => {
+        throw thrown;
+      };
+      if (thrower === 'claimCode.hasUnconsumed') hasUnconsumed.mockImplementationOnce(fail);
+      else onScopeSettled.mockImplementation(fail);
+      H.viewRows.my_inventory = [sr6bInventory(1n, 2)];
+      expect(
+        sr6bThrown(() => b0.onApplied?.()),
+        `the ${thrower} throw escapes onApplied`,
+      ).toBe(thrown);
+      expect(hasUnconsumed, 'onApplied reached the claim-code check once').toHaveBeenCalledTimes(1);
+      expect(
+        onScopeSettled.mock.calls.length,
+        'the scope listener is reached only when the claim-code check returns',
+      ).toBe(thrower === 'claimCode.hasUnconsumed' ? 0 : 1);
+      await sr6bCharacterBurst();
+      sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the snapshot');
+      expect(opts.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 2)]);
+    } finally {
+      hasUnconsumed.mockRestore();
+    }
   });
 });
 
