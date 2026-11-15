@@ -598,17 +598,16 @@ held-key stack across the prediction reset; a reconnect does not.
 tap (one input) from a hold (walk), and waiting for outstanding steps stops the client
 queueing moves faster than the server drains them. One step in flight is also the
 measured choice over two (`docs/send-pipeline-depth.md`). Against a local server a step
-already lands on every tick, so a second gives a watcher nothing. Allowed on both
-continuation emitters it teleports the own avatar in 7.8 % of presses from rest at 60 Hz
-and 27.1 % at 30 Hz, against none and 1.3 %. Allowed on the frame loop alone it fills
-the server's queue, which then refuses a turn pressed during a walk, and every committed
-hold travels a tile further. The cost of one step is paid on a slow link: past about
-92 ms each way every step misses a tick and the walk halves in speed. The continuation
-sends `Step`, which turns and moves in one input, so a walk that falls back to a second
-held key or resumes after a server correction does not stop for a turn slot. Keeping the
-stack across a warp lets a player walk through a door without re-pressing. A walk that
-resumes behind a closing menu is a step the player did not ask for, and stale hold
-stamps would skip the commit threshold.
+already lands on every tick, so a second gives a watcher nothing. A second step multiplies
+teleports of the own avatar unless it is kept to the frame loop's send, and either way it
+fills the server's queue, which then refuses a press made mid-walk, and adds a tile to
+every committed hold. The cost of one step falls on a player whose delay each way nears
+half of `STEP_MS`: steps miss ticks and the walk drops toward half speed. The
+continuation sends `Step`, which turns and moves in one input, so a walk that falls back
+to a second held key or resumes after a server correction does not stop for a turn slot.
+Keeping the stack across a warp lets a player walk through a door without re-pressing. A
+walk that resumes behind a closing menu is a step the player did not ask for, and stale
+hold stamps would skip the commit threshold.
 
 **Rules out.** Repeat-driven movement or menus; continuation steps while earlier ones
 are in flight; resuming a held walk after a frame closes; `Step` on a fresh press (a

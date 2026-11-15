@@ -8,11 +8,12 @@
 - Allowed on both emitters, it teleports the own avatar in 7.8 % of presses from rest at 60 Hz
   and 27.1 % at 30 Hz, against 0.0 % and 1.3 % with one step.
 - Allowed on the frame loop alone, it keeps today's teleport share, but the server then refuses
-  a turn pressed during a walk (30 of 30 presses), every committed hold travels one tile
-  further, and every walk starts at about twice walking speed.
-- What one step in flight costs is paid on a slow link. Past about 90 ms each way every step
-  misses a tick and the walk halves in speed; a second step removes that. No change measured
-  here keeps that gain without the costs above ("What a later change must hold").
+  a turn pressed during a walk (30 of 30 presses), a committed hold travels a tile further,
+  and every walk starts faster than walking speed.
+- What one step in flight costs is paid on a slow link. From about 92 ms each way at 60 Hz
+  steps start to miss a tick, and from about 100 ms every step does and the walk halves in
+  speed; a second step removes that. No change measured here keeps that gain without the
+  costs above ("What a later change must hold").
 
 Measured on commit `c9674f5b`, with the continued-walk render for remote players and the
 turn-first press in place, against SpacetimeDB 2.11.0 on the same machine, in headless Chromium
@@ -28,9 +29,10 @@ emitters in `client/src/main.ts` (the frame loop, and the divergence branch of
 nothing sent is still unanswered, and the queue the server last published is empty. The server
 drains one input per character per tick, and its queue holds two.
 
-Would letting one more step be in flight (`<= 1` in place of `=== 0`) give every player who
-watches a walker a steadier stream of position changes? The hard constraint is the press-phase
-teleport: the share of presses from rest in which the own avatar jumps instead of sliding.
+Would letting one more step be in flight (`<= 1` in place of `=== 0`, on both counts) give
+every player who watches a walker a steadier stream of position changes? The hard constraint
+is the press-phase teleport: the share of presses from rest in which the own avatar jumps
+instead of sliding.
 
 ## Variants
 
@@ -40,7 +42,9 @@ teleport: the share of presses from rest in which the own avatar jumps instead o
 | Depth 2 | `<= 1` | `<= 1` |
 | Depth 2, frame loop only | `<= 1` | `=== 0` |
 
-"`<= 1`" names no emitter, so the third variant is measured beside the literal one.
+Each cell is the condition on both counts: `<= 1` stands for
+`predictor.outstandingSteps <= 1 && owed.count <= 1`. "`<= 1`" names no emitter, so the third
+variant is measured beside the literal one.
 
 ## The rule the verdict follows
 
@@ -105,21 +109,23 @@ With a delay added to the walker's socket, each way:
 | 2 | 40 to 120 ms | 6 | 200.0 ms | 202.2 ms | 0.0 % | 0.33 | 4.99 tiles/s | 0.00 |
 | 2, frame loop only | 40 to 120 ms | 6 | 200.1 ms | 202.5 ms | 0.0 % | 0.00 | 5.03 tiles/s | 0.00 |
 
-One step in flight holds a step per tick up to 85 ms each way and loses it at 100 ms. The code
-puts the limit at (`STEP_MS` − one frame) / 2, about 92 ms at 60 Hz: the next step is sent on
-the first frame after the row that drained the one before, and has to reach the server before
-the next tick. Past the limit every step misses one tick. The server writes a same-tile `Idle`
-row in each gap (114 of 114 at 100 ms), the walker moves at half speed, and its own avatar
-stops on every tile. The watcher is spared most of that: its render keeps the walker moving
-between late steps, so it draws a smooth walk at half speed. On the uneven link a third of the
-steps are late and the watcher does see it, with a stand-still of 100 ms or more 2.3 times per
-walk.
+One step in flight holds a step per tick up to 85 ms each way and loses it at 100 ms. By the
+code, the next step is sent on the first frame after the row that drained the one before, and
+has to reach the server before the next tick: a step misses its tick once twice the delay plus
+the wait for that frame exceeds `STEP_MS`. Steps therefore start to miss from about 92 ms each
+way at 60 Hz (83 ms at 30 Hz), and from about 100 ms every step misses. The server then writes
+a same-tile `Idle` row in each gap (114 of 114 at 100 ms), the walker moves at half speed, and
+its own avatar stops on every tile. The watcher is spared most of that: its render keeps the
+walker moving between late steps, so it draws a smooth walk at half speed. On the uneven link a
+third of the steps are late and the watcher does see it, with three stand-stills of 50 ms or
+more per walk.
 
 A second step in flight removes the late steps and restores the walking speed, on either pair
-of emitters: the server's queue holds the next step while the one after travels. (With `<= 1`
-on both emitters the watcher's drawn walker stood for 83 to 100 ms at the start of 12 of the 18
-delayed walks, before it first moved; with the frame loop only it never did.) That is the gain
-this study found, and it lies entirely past the delay limit.
+of emitters: the server's queue holds the next step while the one after travels. That is the
+gain this study found, and it lies entirely past the delay limit. With `<= 1` on both emitters
+the watcher's drawn walker was also slow to start: in 15 of the 18 walks at 100 ms, 150 ms and
+the uneven link it first moved 167 to 317 ms after the walker's first step reached the watcher,
+against 50 ms at most at depth 1 and with the frame loop only. The cause was not traced.
 
 ### Press-phase teleports
 
@@ -164,8 +170,8 @@ press or in the steady part of any walk.
 
 ### What a second step costs the walker
 
-**Every committed hold travels one tile further.** Tiles travelled by one press, 40 presses per
-cell at 60 Hz:
+**A committed hold travels a tile further.** Tiles travelled by one press, 40 presses per cell
+at 60 Hz:
 
 | Hold | Start | Depth 1 | Depth 2 | Depth 2, frame loop only |
 |---|---|---|---|---|
@@ -178,19 +184,19 @@ cell at 60 Hz:
 
 Tiles are counted from the inputs the press sent: on this row every accepted input moves one
 tile, except the turn a `turn` start begins with. A tap shorter than `HOLD_COMMIT_MS` is
-untouched: one input at every depth. Any longer press sends one more input at depth 2. The
-pipeline is one step deeper, the first continuation step leaves at the commit threshold without
-waiting for the row that answers the press, and whatever is in the pipeline when the key comes
-up is still walked. A 650 ms hold travels 4.23 tiles on average at depth 1 and 5.22 with a
-second step on the frame loop. Prediction then runs two tiles ahead of the authoritative tile
-where it runs one today, and after the key comes up the server moves the character two more
-tiles where it moves one.
+untouched: one input at every depth. In every longer cell the tiles travelled shift up by one
+at depth 2. The pipeline is one step deeper, the first continuation step leaves at the commit
+threshold without waiting for the row that answers the press, and whatever is in the pipeline
+when the key comes up is still walked. A 650 ms hold travels 4.23 tiles on average at depth 1
+and 5.22 with a second step on the frame loop (runs A and B, 60 Hz). Prediction then runs two
+tiles ahead of the authoritative tile where it runs one today, and after the key comes up the
+server moves the character two more tiles where it moves one.
 
 **Every walk starts fast.** The avatar slides toward the predicted tile, and at depth 2 the
 second and third tiles are predicted within a frame or two of each other. The largest distance
 the avatar covers in any 200 ms of a press has a median of 1.3 tiles at depth 1 and of 2.0, twice
-walking speed, with a second step on the frame loop (60 Hz, presses without a teleport). It
-reaches 1.5 tiles in 29.4 % of presses at depth 1 and in all of them at depth 2.
+walking speed, with a second step on the frame loop (runs A and B, 60 Hz, presses without a
+teleport). It reaches 1.5 tiles in 29.4 % of presses at depth 1 and in all of them at depth 2.
 
 **A turn pressed during a walk is refused.** East is held; north goes down as well, mid-walk:
 
@@ -201,12 +207,12 @@ reaches 1.5 tiles in 29.4 % of presses at depth 1 and in all of them at depth 2.
 | 2, frame loop only | 30 | 30 of 30 | 2 in 29, 3 in 1 | 509 ms |
 
 With two steps in flight the server's queue is full from just after each tick until the next,
-and `enqueue_move` refuses a third input. A press is not gated on the client, so the `Face` is
-sent and refused, and the server never sees it. The walk turns when the held-key continuation
-sends a `Step` north, which turns and moves in one input: the turn in place that "Turning in
-place" gives a press mid-walk does not happen, and the character walks two more tiles east
-where it walks one. By the same code a jump pressed mid-walk meets the same full queue; that
-was not run.
+and `enqueue_move` refuses a third input. A press is not held back by the continuation gate, so
+the `Face` is sent and refused, and the server never queues it. The walk turns when the
+held-key continuation sends a `Step` north, which turns and moves in one input: the turn in
+place that "Turning in place" gives a press mid-walk does not happen, and the character walks
+two more tiles east where it walks one. By the same code a jump pressed mid-walk meets the same
+full queue; that was not run.
 
 ## Why
 
@@ -215,28 +221,31 @@ first frame after the row that acknowledges the one before. At local delay that 
 frame after the tick, with most of a tick to spare. A second step in flight cannot add steps to
 ticks that all have one.
 
-**The divergence emitter makes every teleport.** `RenderResolver` snaps the own avatar when the
-predicted tile is two or more tiles from the slide clock's target, which happens when prediction
-gains two tiles between two drawn frames. The frame-loop emitter sends after the frame's
-`predictor.drain`, so its step is predicted on the next frame: it adds one tile per frame at
-most. The divergence emitter runs inside a reconcile, between frames. When a row arrives in the
-one frame between a continuation send and its drain, the reconcile replays the unanswered step
-(one tile, which `Predictor.reconcile` reports as a divergence), the divergence emitter sends
-another step at once, and the next frame's drain predicts it (a second tile): a snap.
+**By the code, the divergence emitter makes every teleport.** Outside a long frame gap and
+reduced motion, `RenderResolver` snaps the own avatar when the predicted tile is two or more
+tiles from the slide clock's target, which happens when prediction gains two tiles between two
+drawn frames. The frame-loop emitter sends after the frame's `predictor.drain`, so its step is
+predicted on the next frame: it adds one tile per frame at most. The divergence emitter runs
+inside a reconcile, between frames. When a row arrives in the one frame between a continuation
+send and its drain, the reconcile brings in the step just sent: replayed if it is still
+unanswered, taken from the row if the row drained it. `Predictor.reconcile` reports that one
+tile as a divergence, the divergence emitter sends another step at once, and the next frame's
+drain predicts it (a second tile): a snap.
 
 - At depth 1 the emitter fires only when nothing is outstanding after the reconcile, so the row
-  has to be the one that drained the step sent a frame earlier. That needs the tick and a frame
-  of more than 25 ms to line up: never at 60 Hz, and at 30 Hz in about 2 % of presses by the
-  code and in 6 of 450 here.
+  has to be the one that drained the step sent a frame earlier. Only the first continuation
+  step can be drained that fast, and only when two frames span more than `STEP_MS` −
+  `HOLD_COMMIT_MS` (50 ms) plus the round trip. That means a frame of more than 25 ms: not at a
+  steady 60 Hz, in about 2 % of presses at 30 Hz by the code, and in 6 of 450 here.
 - With `<= 1` on the divergence emitter, any row that arrives in that frame fires it, since one
-  outstanding step is then the normal state: about one frame in twelve at 60 Hz, more than
-  three in twelve at 30 Hz, where two orderings qualify.
+  outstanding step is then the normal state. A frame is a twelfth of a tick at 60 Hz, which
+  gives about 8 %. At 30 Hz it is a sixth, and the second continuation step, sent a frame
+  after the first, opens the same window again: 25 to 33 %.
 - With `<= 1` on the frame loop only, the divergence emitter keeps the depth 1 condition and
   the depth 1 share.
 
-The shares these orderings predict were worked out from the code alone while the runs were
-under way: none and about 2 % at depth 1, about 8 % and 25 to 33 % at depth 2, at 60 and 30 Hz.
-The measured shares match them.
+The measured shares match the ones these orderings give. The frame-loop-only variant changes
+nothing but which emitter may send, and it has depth 1's share.
 
 **The server's queue has room for one press only while one step is in flight.**
 `MOVE_QUEUE_CAP` is 2. At depth 1 the queue holds one step for most of each tick and a press
@@ -244,9 +253,9 @@ takes the second place. At depth 2 the held key takes both.
 
 ## Alternatives scored
 
-Four alternatives, scored from 0 to 10 against the rule above by a reviewer who took no part
-in the measurements. The watcher's gain and the press rules count twice, and the teleport
-constraint is a gate:
+Four alternatives, scored from 0 to 10 against the rule above, independently of the
+measurements. The watcher's gain and the press rules count twice, and the teleport constraint
+is a gate. The scores are advisory: the verdict follows the rule alone.
 
 | Alternative | Watcher's gain at local delay | Teleport constraint | Press rules | Gain on a slow link | Evidence and size | Total of 60 |
 |---|---|---|---|---|---|---|
@@ -266,9 +275,11 @@ gives up the press rules for every player to help the distant one.
 
 ## How to repeat
 
-Everything below ran from a scratch worktree of the commit under test; nothing in it is
-committed. The client was the vite dev build (it carries the DEV `window.__game()` hook), with
-the prediction wasm from `just wasm`.
+Everything below ran from a scratch worktree of the commit under test. The probe and the gate
+change are not in the repository: this section is what there is to rebuild them from. The
+client was the vite dev build (it carries the DEV `window.__game()` hook), with the prediction
+wasm from `just wasm`, in Playwright's headless Chromium at its default launch flags, on Linux
+under WSL2 with 32 logical CPUs.
 
 | Run | What | Cells | Per cell |
 |---|---|---|---|
@@ -320,7 +331,15 @@ if (predictor.outstandingSteps <= sendSlack('frame') && owed.count <= sendSlack(
 ```
 
 Depth 1 is `{ frame: 0, div: 0 }`, depth 2 is `{ frame: 1, div: 1 }`, and depth 2 on the frame
-loop only is `{ frame: 1, div: 0 }`.
+loop only is `{ frame: 1, div: 0 }`. The probe sets the variant and the frame rate with
+`page.evaluate` before each walk or press:
+
+```ts
+await page.evaluate(() => {
+  window.__sendSlack = { frame: 1, div: 0 };
+  window.__halfRate = true; // 30 Hz, see below
+});
+```
 
 ### The probe
 
@@ -340,10 +359,12 @@ before any client code, adds three things to each page:
   let nextId = 1, vsync = 0, pumping = false;
   const pump = (t: number): void => {
     vsync += 1;
-    if (!half || vsync % 2 === 0) {
+    if (!window.__halfRate || vsync % 2 === 0) {
       const run = queue;
       queue = new Map();
-      for (const cb of run.values()) cb(t);
+      for (const cb of run.values()) {
+        try { cb(t); } catch (e) { queueMicrotask(() => { throw e; }); }
+      }
     }
     if (queue.size > 0) native(pump);
     else pumping = false;
@@ -366,7 +387,10 @@ before any client code, adds three things to each page:
 A recorder, started before each walk or press, pushes one row per animation frame: the frame
 time, the own avatar's drawn position (`rendered[]`), the predicted tile, the authoritative tile,
 `moveSendCount`, `moveRejectCount`, the acknowledged sequence number and the published queue
-length; on the watcher also the walker's tile, action and drawn position.
+length; on the watcher also the walker's tile, action and drawn position. Its callback is
+registered after the game's frame callback and both re-arm themselves, so each row reads the
+frame the game has just drawn. Offsets, shuffles and delays come from a seeded generator
+(mulberry32, seed 20261114; 7741 for run B).
 
 Both players walk with the DEV `step()` hook from the spawn down column 1 of zone 0, through the
 warp at (1, 5), to row 7 of zone 1. That row is open floor, path and sand from x = 1 to x = 29,
@@ -375,9 +399,9 @@ with no grass and no warp: the only straight 20-tile run without wild encounters
 **Held walk.** The watcher stands at (2, 5). The walker waits at rest until the watcher has
 drawn it on its tile for four steps plus a random part of a step, then a direction key goes
 down. The key comes up when the walker's predicted tile is 20 tiles from the start, and the
-recorders stop eight steps after the walker is at rest. Walks alternate east and west, so each
-starts with a turn. The three variants are interleaved, and the variant that walks first
-rotates.
+recorders stop eight steps after the walker is at rest. Walks alternate east and west, so every
+walk but the first of a run starts with a turn. The three variants are interleaved, and the
+variant that walks first rotates.
 
 - A **position-change interval** is the time between the socket messages that carried two
   consecutive tiles of the walker to the watcher. A change is matched to the one message stamped
@@ -394,6 +418,32 @@ it. The watcher's socket is direct. "40 to 120 ms each way" draws the delay of e
 uniformly from that range. The walks with no added delay ran on a direct socket; a control run
 with the route in place and no delay gave the same numbers.
 
+```ts
+function makeLane(delayMs: () => number): (send: () => void) => void {
+  const q: { due: number; send: () => void }[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const pump = (): void => {
+    timer = null;
+    while (q.length > 0 && q[0].due <= performance.now() + 0.25) q.shift().send();
+    if (q.length > 0) timer = setTimeout(pump, Math.max(0, q[0].due - performance.now()));
+  };
+  return (send) => {
+    const ms = delayMs();
+    if (ms <= 0 && q.length === 0) return send();
+    const due = Math.max(performance.now() + ms, q.length > 0 ? q[q.length - 1].due : 0);
+    q.push({ due, send });
+    if (timer === null) timer = setTimeout(pump, Math.max(0, due - performance.now()));
+  };
+}
+await page.routeWebSocket(/.*/, (ws) => {
+  const server = ws.connectToServer();
+  const up = makeLane(delayMs);
+  const down = makeLane(delayMs);
+  ws.onMessage((m) => up(() => server.send(m)));
+  server.onMessage((m) => down(() => ws.send(m)));
+});
+```
+
 **Press from rest.** One player on row 7. Before each press the probe sets the variant and the
 frame rate, taps the character to the facing the cell needs (the walk direction for a `facing`
 start, the opposite for a `turn` start), waits for rest (nothing queued, predicted and
@@ -407,14 +457,17 @@ wait 250 ms after the release before they test for rest.
 
 - The **offset** sweeps one tick: `((k × 0.618 + c / cells) mod 1) × STEP_MS` for round `k` and
   the cell's place `c` in the round, plus up to 4 ms of seeded noise. The press therefore falls
-  on every phase of the server tick: sorted into 25 ms bins from 0 to 200 ms, the delay from
-  the press to its first acknowledgement fills all eight bins in 17 of the 18 cells of runs A
-  to C and seven in the other.
-- One round presses every cell once. The cell order rotates by one each round (runs A, C and D
-  and the hold run) or is a fresh seeded shuffle each round (run B).
+  on every phase of the server tick: sorted into eight 25 ms bins, the last open-ended, the
+  delay from the press to its first acknowledgement fills all eight in 17 of the 18 cells of
+  runs A to C and seven in the other.
+- One round presses every cell once, so a run has as many rounds as presses per cell. The
+  95 % interval is the Wilson score interval.
+- The cell order rotates by one each round (runs A, C and D and the hold run) or is a fresh
+  seeded shuffle each round (run B).
 - A **teleport** is one frame shorter than half a step in which the own avatar's drawn position
-  moves 0.9 tile or more. The slide clock covers at most two tiles per step (0.33 tile in a
-  33 ms frame), and a snap moves the avatar at least one tile, so nothing lies between.
+  moves 0.9 tile or more. A slide would need the drawn position more than five tiles behind its
+  target to cover that in a 33 ms frame, and prediction never runs that far ahead; a snap moves
+  the avatar at least one tile.
 
 **A second direction mid-walk.** From (12, 7), east goes down; 700 ms plus the swept offset
 later north goes down as well; 500 ms later both come up.
@@ -426,23 +479,28 @@ with the probe above, on a direct socket and at 100 ms, 150 ms and 40 to 120 ms 
 
 - **The teleport bound.** No more presses with a teleport than depth 1, from `facing` and `turn`
   starts: 0 of 450 at 60 Hz and 6 of 450 at 30 Hz here. The divergence emitter keeps `=== 0`.
-- **A press during a held walk is accepted** (0 of 30 refused here), which a second
-  continuation step and `MOVE_QUEUE_CAP` 2 cannot both allow.
+- **A press during a held walk is accepted** (0 of 30 refused here), for which a second
+  continuation step and `MOVE_QUEUE_CAP` 2 leave no room.
 - **At local delay a hold travels what it does today** (the depth 1 column of the hold table),
   so the second step is in flight only while the round trip needs it.
 
 Two more findings are left for later work. Depth 1 itself teleports in 6 of 450 presses at
-30 Hz, through the divergence emitter firing on a reconcile that moved prediction forward. And
-the half-speed walk past 92 ms each way stands until a change meets the three conditions above.
+30 Hz, through the divergence emitter firing on a reconcile that moved prediction forward; the
+comment on the drain order in the frame loop says that order takes the share to zero, and at
+30 Hz it does not. And the half-speed walk on a slow link stands until a change meets the three
+conditions above.
 
 ## Verdict
 
 **No-go.** One step in flight stays on both emitters, and `docs/DECISIONS.md` ("Held keys")
 records why.
 
-- No watcher gains at the delay the game is played at: no late step and no stand-still interval
-  in the 10 walks at each depth.
+- No watcher gains at the delay the game is played at today, a local server: no late step and
+  no stand-still interval in the 10 walks at each depth.
 - `<= 1` on both emitters fails the teleport constraint: 35 of 450 presses at 60 Hz and
   122 of 450 at 30 Hz, against 0 of 450 and 6 of 450.
-- `<= 1` on the frame loop only holds the teleport constraint and fails the press rules: 30 of
-  30 turns pressed mid-walk refused, and one more tile on every committed hold.
+- `<= 1` on the frame loop only holds the teleport constraint and fails the press rules (30 of
+  30 turns pressed mid-walk refused); it also adds a tile to every committed hold.
+
+How much the slow link should weigh is a question for the game's owner and is put to them with
+this record. The no-go does not wait on the answer: neither change measured here is the remedy.
