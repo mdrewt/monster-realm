@@ -43,7 +43,8 @@ import { ownerCall, sqlRows } from './stdb';
 // actionSheetModel / main.input / main.dispatch).
 //
 // SEEDING: owner SQL (`spacetime sql`), literal-shaped and charset-checked (tactics-wild.spec.ts's
-// idioms). The page calls reducers only through its virtual buttons. The CLI calls one reducer, in
+// idioms). The page calls reducers through its virtual buttons, except T1's decline (the
+// `__mrPvp.declineChallenge` hook, HOOKS below). The CLI calls one reducer, in
 // T2 only: the owner-only dev reducer `dev_expire_tactical_window` (`ownerCall`, stdb.ts; the e2e
 // module is built with `dev_reducers`) expires B's second, third and fourth AFK windows at once.
 // The two starters get DISTINCT random letter-only nicknames, so "B's page never shows A's monster"
@@ -71,9 +72,10 @@ import { ownerCall, sqlRows } from './stdb';
 // T2's AFK run: B's first AFK window expires on the REAL scheduler, so that strike lands at least
 // one live window after the window opened (proved on server timestamps: B's next window opens at or
 // after the first window's `deadline_ms`); each later B window is expired at once by
-// `dev_expire_tactical_window` (side B = 1), so the run waits one live window, not four. B's
-// windows can follow each other across a round boundary (the tie regime), so the AFK loop wakes on
-// whichever unit waits next.
+// `dev_expire_tactical_window` (side B = 1), so the run waits one live window. The three forced
+// strikes land within less than one live window of the first reducer call (two host-clock
+// `Date.now()` readings), which three real expiries cannot do. B's windows can follow each other
+// across a round boundary (the tie regime), so the AFK loop wakes on whichever unit waits next.
 //
 // HOOKS READ (DEV, API freeze): `__mrPvp.challengeFormats()`, `__mrPvp.battleById(id)`,
 // `__mrPvp.declineChallenge(id)` (B declines T1's challenge: the decline UI is not under test here),
@@ -207,7 +209,7 @@ const cellNumber = (cell: string | undefined): number | null => {
   return digits === null ? null : Number(digits[0]);
 };
 
-/** A small integer cell (`0`, `3`: a `u8` count, a small `u64` id) — digits only, else null. */
+/** A decimal `u8`/`u64` cell (`0`, `3`, `12345`) — digits only, else null. */
 const cellInt = (cell: string | undefined): number | null => {
   const s = (cell ?? '').trim();
   return /^[0-9]+$/.test(s) ? Number(s) : null;
@@ -534,7 +536,9 @@ test.describe
       // reducer call only if the real fire booked it; B's next window opening before the first
       // window's deadline means the window was cut short); a dev reducer that is refused, books no
       // strike, or books more than one per call (B's strike count is one above the calls made at
-      // every B window); a fifth call needed, or a call made during A's window.
+      // every B window); a fifth call needed, or a call made during A's window; a dev reducer that
+      // returns Ok and does nothing (strikes 2-4 would come from the real scheduler, three live
+      // windows after the first call, not under one: the forced-phase oracle).
       // Budget: the deploy and secrecy part, ONE live AFK window, three forced expiries, slack.
       test.setTimeout(360_000);
       const starterA = (await snap(pageA)).ownMonsters[0];
@@ -827,12 +831,18 @@ test.describe
         throw new Error(`T2: B's first-window clock row is unreadable: ${JSON.stringify(bRow)}`);
       }
 
-      // One live window (the real expiry) plus three forced expiries, with slack.
-      const afkBound = windowMs + TURN_SLACK_MS + AFK_STRIKES * 2 * TURN_SLACK_MS + 60_000;
+      // B's first window (already open: the real expiry, at most one live window away), then the
+      // forced phase (under one live window: the forced-phase oracle below), plus TURN_SLACK_MS per
+      // AFK strike. With the 30 s window that is 100 s: four real windows (120 s) do not fit.
+      const afkBound = 2 * windowMs + AFK_STRIKES * TURN_SLACK_MS;
       const afkStart = Date.now();
       let lastA: string | null = null;
       let lastB = turnKey(t);
       let reducerCalls = 0;
+      // Host clock only (`Date.now()`), never mixed with server timestamps: the instant just
+      // before the first reducer call, and the instant the loop sees the battle Finished.
+      let firstCallAt: number | null = null;
+      let finishedAt: number | null = null;
       // The strike maxima fold over EVERY polled Active snapshot (never the Finished one, which
       // would satisfy the climb trivially).
       let maxStrikesB = 0;
@@ -862,7 +872,10 @@ test.describe
           2 * (windowMs + TURN_SLACK_MS),
           'A`s next own turn, B`s next struck window, or the finish',
         );
-        if (snapA.phase === 'Finished') break;
+        if (snapA.phase === 'Finished') {
+          finishedAt = Date.now();
+          break;
+        }
         maxHitPipsB = Math.max(maxHitPipsB, await hitPipsB.count());
         if (snapA.activeUnitId === unitA.unitId) {
           expect(snapA.strikes.A, 'A acts every turn: never struck').toBe(0);
@@ -895,6 +908,7 @@ test.describe
           ).toBe(true);
         }
         lastB = turnKey(snapA);
+        if (firstCallAt === null) firstCallAt = Date.now();
         ownerCall(
           'dev_expire_tactical_window',
           [battleId, '1'],
@@ -906,6 +920,13 @@ test.describe
         reducerCalls,
         'B`s 2nd, 3rd and 4th windows were expired by the dev reducer, each call returning',
       ).toBe(AFK_STRIKES - 1);
+      if (firstCallAt === null || finishedAt === null) {
+        throw new Error('T2: the forced phase recorded no first call or no finish instant');
+      }
+      expect(
+        finishedAt - firstCallAt,
+        `the three forced strikes landed within one live window (${windowMs} ms) of the first reducer call: a longer forced phase means the dev reducer did not expire B's windows and the real scheduler struck them`,
+      ).toBeLessThan(windowMs);
       const tags = await readEventTags(pageA);
       const autoPasses = tags.filter((e) => e.tag === 'AutoPass');
       expect(autoPasses.length, 'exactly four AutoPass strikes').toBe(AFK_STRIKES);

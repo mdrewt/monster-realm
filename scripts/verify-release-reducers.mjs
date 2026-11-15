@@ -18,13 +18,12 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-// The forbidden reducer set: every name a `dev_reducers` build exports or has exported. Two
-// functions carry both `#[cfg(feature = "dev_reducers")]` and `#[spacetimedb::reducer]`:
-// `grant_bait` (taming.rs) and `dev_expire_tactical_window` (dev_clock.rs). `start_wild_battle`
-// is the 1v1-era dev start; no source defines it, and a module that still exports it is refused.
-// `grant_item` (inventory.rs) is a `pub(crate)` helper, NOT a reducer — it can never surface in
-// `describe`, so including it would guard a non-existent surface. A new dev reducer joins this
-// list in the change that adds it.
+// The forbidden reducer set: every dev reducer name. Two functions carry both
+// `#[cfg(feature = "dev_reducers")]` and `#[spacetimedb::reducer]`: `grant_bait` (taming.rs) and
+// `dev_expire_tactical_window` (dev_clock.rs). No source defines `start_wild_battle`; a module
+// exporting it is an old dev build and is refused. `grant_item` (inventory.rs) is a `pub(crate)`
+// helper, NOT a reducer — it can never surface in `describe`, so including it would guard a
+// non-existent surface. A new dev reducer joins this list in the change that adds it.
 export const FORBIDDEN_REDUCERS = ['start_wild_battle', 'grant_bait', 'dev_expire_tactical_window'];
 
 // parseReducerNames(describeOutput) -> string[]

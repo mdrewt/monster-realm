@@ -9,9 +9,8 @@ import {
 } from './verify-release-reducers.mjs';
 
 test('the forbidden set is exactly the three dev_reducers-only reducer names', () => {
-  // The two 1v1-era dev reducers and th-4's `dev_expire_tactical_window`, the owner-only window
-  // expiry the e2e suite calls. A published module exporting any of them was built with
-  // `--features dev_reducers`.
+  // `start_wild_battle` (no source defines it), `grant_bait` and `dev_expire_tactical_window`: a
+  // published module exporting any of them was built with `--features dev_reducers`.
   assert.deepEqual([...FORBIDDEN_REDUCERS].sort(), [
     'dev_expire_tactical_window',
     'grant_bait',

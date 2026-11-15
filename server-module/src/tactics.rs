@@ -3123,6 +3123,8 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
 }
 
 /// `arm_deadline` for `dev_clock.rs`, which expires an open window by arming its fire now.
+/// Dev-gated and separate so that `arm_deadline` stays private: no other module can arm a
+/// deadline in a release build.
 #[cfg(feature = "dev_reducers")]
 pub(crate) fn dev_arm_deadline(
     ctx: &ReducerContext,

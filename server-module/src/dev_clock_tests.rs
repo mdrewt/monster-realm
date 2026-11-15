@@ -303,20 +303,22 @@ mod nh {
         strikes: (u8, u8),
         turn_state: TurnState,
         outcome: game_core::BattleOutcome,
-        /// `clock_window` of B's clock, instants relative to the fire.
-        b_window: (u32, Option<i64>, Option<i64>, u8, u8),
+        /// `clock_window` of the struck side's clock, instants relative to the fire.
+        window: (u32, Option<i64>, Option<i64>, u8, u8),
         /// `(unit, window_seq, at - fire)` of every deadline row but the fired one.
         pending: Vec<(u32, u32, i64)>,
     }
 
+    /// The fire's outcome, `window` read off `side`'s clock row.
     fn pvp_fire_outcome(
         w: &World<'_>,
         id: u64,
+        side: SideRow,
         events_before: usize,
         fired: u64,
         fire_at: i64,
     ) -> PvpFire {
-        let (seq, open, deadline, windows, autopass) = clock_window(&w.clock_of(id, SideRow::B));
+        let (seq, open, deadline, windows, autopass) = clock_window(&w.clock_of(id, side));
         PvpFire {
             fresh: w
                 .events_of(id)
@@ -324,10 +326,13 @@ mod nh {
                 .skip(events_before)
                 .map(|e| e.payload)
                 .collect(),
-            strikes: (w.clock_of(id, SideRow::A).autopass_count, autopass),
+            strikes: (
+                w.clock_of(id, SideRow::A).autopass_count,
+                w.clock_of(id, SideRow::B).autopass_count,
+            ),
             turn_state: w.tactical(id).turn_state,
             outcome: w.anchor(id).expect("the anchor").state.outcome,
-            b_window: (
+            window: (
                 seq,
                 open.map(|t| t - fire_at),
                 deadline.map(|t| t - fire_at),
@@ -460,7 +465,14 @@ mod nh {
                 Ok(()),
                 "the armed fire runs at the call's time"
             );
-            let out = pvp_fire_outcome(&w, live.id, events_before, armed.scheduled_id, now);
+            let out = pvp_fire_outcome(
+                &w,
+                live.id,
+                SideRow::B,
+                events_before,
+                armed.scheduled_id,
+                now,
+            );
             assert!(
                 matches!(
                     out.fresh.as_slice(),
@@ -486,7 +498,7 @@ mod nh {
                 "B's next unit waits"
             );
             assert_eq!(
-                out.b_window,
+                out.window,
                 (b_before.window_seq + 1, Some(0), Some(PVP_WINDOW_MS), 1, 1),
                 "B's next window opens at the fire with a full 30 s"
             );
@@ -512,12 +524,300 @@ mod nh {
                 Ok(()),
                 "twin: the real deadline's fire"
             );
-            pvp_fire_outcome(&w, live.id, events_before, original.scheduled_id, deadline)
+            pvp_fire_outcome(
+                &w,
+                live.id,
+                SideRow::B,
+                events_before,
+                original.scheduled_id,
+                deadline,
+            )
         };
         assert_eq!(
             dev, twin,
             "the expiry's fire books exactly what the real deadline's fire books, only earlier"
         );
+    }
+
+    /// The owner's call during A's open PvP window (side 0; two clock rows, A's unit waiting),
+    /// strictly before the real deadline, is `Ok`; it changes ONLY A's clock row and only in
+    /// `deadline_ms == now` (B's row byte-unchanged) and adds ONE deadline row `(A's waiting unit,
+    /// A's clock window_seq, time(now))`, keeping the original row. Firing it books exactly one
+    /// AutoPass strike, on A's unit (A's count 1, B's 0), the battle stays Ongoing, A's next unit
+    /// gets a full window — the twin world's real-deadline outcome, only earlier.
+    ///
+    /// WRONG IMPL KILLED (each green against th-4.1's B-window test alone): a reducer that
+    /// pre-increments A's `autopass_count` (the fire then books a second strike: A's row differs
+    /// in more than `deadline_ms`); a side-A expiry that moves the deadline but arms no fire; a
+    /// fire armed with `window_seq + 1` (the fire would refuse it as stale and strike nobody); a
+    /// side-A path that writes B's clock row.
+    #[test]
+    fn the_owners_expiry_of_as_pvp_window_strikes_a_once_th4_1() {
+        let dev = {
+            let fx = fixture();
+            let w = world(&fx);
+            set_owner(&w, owner());
+            let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+            let unit = live.a[0];
+            assert_eq!(
+                waiting(&w, live.id),
+                unit,
+                "PRECONDITION: A's faster unit waits"
+            );
+            assert_eq!(
+                w.clocks_of(live.id).len(),
+                2,
+                "PRECONDITION: a PvP battle has two clock rows"
+            );
+            let a_before = w.clock_of(live.id, SideRow::A);
+            let b_before = w.clock_of(live.id, SideRow::B);
+            let seq = a_before.window_seq;
+            let deadline = a_before.deadline_ms.expect("A's window has a deadline");
+            let original = w.only_deadline(live.id);
+            assert_eq!(
+                (original.unit_id, original.window_seq, original.scheduled_at),
+                (unit, seq, time(deadline)),
+                "PRECONDITION: one pending fire for A's window at its real deadline"
+            );
+            let now = in_window(&w, live.id);
+
+            let before = w.snapshot();
+            assert_eq!(
+                expire_now(&fx, owner(), now, live.id, SIDE_A),
+                Ok(()),
+                "the owner expires A's open window"
+            );
+            assert_eq!(
+                changed(&before, &w.snapshot()),
+                vec!["battle_clock", "tactical_deadline_sched"],
+                "the call writes the clock and the schedule only"
+            );
+            let mut want_a = a_before.clone();
+            want_a.deadline_ms = Some(now);
+            assert_eq!(
+                enc(&w.clock_of(live.id, SideRow::A)),
+                enc(&want_a),
+                "A's clock row differs only in deadline_ms == now: got {:?}, want {:?}",
+                clock_window(&w.clock_of(live.id, SideRow::A)),
+                clock_window(&want_a)
+            );
+            assert_eq!(
+                row_set(&w.clocks_of(live.id)),
+                row_set(&[want_a, b_before]),
+                "B's clock row is untouched"
+            );
+            let (kept, mut armed): (Vec<_>, Vec<_>) = w
+                .deadlines_of(live.id)
+                .into_iter()
+                .partition(|r| r.scheduled_id == original.scheduled_id);
+            assert_eq!(
+                row_set(&kept),
+                row_set(&[deadline_args(&original)]),
+                "the original pending row stays, unchanged"
+            );
+            assert_eq!(armed.len(), 1, "exactly one new deadline row");
+            let armed = armed.remove(0);
+            assert_eq!(
+                (armed.unit_id, armed.window_seq, armed.scheduled_at),
+                (unit, seq, time(now)),
+                "the new row pins A's waiting unit and A's open window, at the call's time"
+            );
+
+            let events_before = w.events_of(live.id).len();
+            assert_eq!(
+                fire_deadline(&fx, now, deadline_args(&armed)),
+                Ok(()),
+                "the armed fire runs at the call's time"
+            );
+            let out = pvp_fire_outcome(
+                &w,
+                live.id,
+                SideRow::A,
+                events_before,
+                armed.scheduled_id,
+                now,
+            );
+            let strikes: Vec<(u32, u8)> = out
+                .fresh
+                .iter()
+                .filter_map(|p| match p {
+                    EventPayload::AutoPass(x) => Some((x.unit, x.strike)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                strikes,
+                vec![(unit, 1)],
+                "exactly one AutoPass strike, strike 1 on A's unit"
+            );
+            assert!(
+                matches!(
+                    out.fresh.as_slice(),
+                    [
+                        EventPayload::AutoPass(_),
+                        EventPayload::TurnEnded(t),
+                        ..
+                    ] if t.unit == unit && !t.guard && !t.committed
+                ),
+                "AutoPass then TurnEnded{{guard false, uncommitted}}, got {:?}",
+                out.fresh
+            );
+            assert_eq!(out.strikes, (1, 0), "the strike is A's; B's count stays 0");
+            assert_eq!(
+                out.outcome,
+                game_core::BattleOutcome::Ongoing,
+                "one auto-pass ends nothing"
+            );
+            assert_eq!(
+                out.turn_state,
+                TurnState::Waiting(live.a[1]),
+                "A's next unit waits"
+            );
+            assert_eq!(
+                out.window,
+                (seq + 1, Some(0), Some(PVP_WINDOW_MS), 1, 1),
+                "A's next window opens at the fire with a full 30 s"
+            );
+            assert_eq!(
+                out.pending,
+                vec![(live.a[1], seq + 1, PVP_WINDOW_MS)],
+                "the fire swept the original row and armed only the next window"
+            );
+            out
+        };
+        let twin = {
+            let fx = fixture();
+            let w = world(&fx);
+            set_owner(&w, owner());
+            let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+            let original = w.only_deadline(live.id);
+            let deadline = w
+                .clock_of(live.id, SideRow::A)
+                .deadline_ms
+                .expect("A's window has a deadline");
+            let events_before = w.events_of(live.id).len();
+            assert_eq!(
+                fire_deadline(&fx, deadline, deadline_args(&original)),
+                Ok(()),
+                "twin: the real deadline's fire"
+            );
+            pvp_fire_outcome(
+                &w,
+                live.id,
+                SideRow::A,
+                events_before,
+                original.scheduled_id,
+                deadline,
+            )
+        };
+        assert_eq!(
+            dev, twin,
+            "the expiry's fire of A's window books what the real deadline's fire books"
+        );
+    }
+
+    /// The clock row armed is the WAITING UNIT's side's, not the battle's first row with an open
+    /// window. By a row edit (unreachable through the shipped reducers: only the waiting side's
+    /// row holds a window) the other side's clock row is given a stale open window with a
+    /// different `window_seq`; the owner's call naming the waiting side is `Ok`, the stale row is
+    /// byte-unchanged, the waiting side's row alone takes `deadline_ms == now`, and the armed row
+    /// carries the waiting side's `window_seq`. Both orientations (B waits with A's row stale; A
+    /// waits with B's row stale), each with the stale row FIRST in the host's row order.
+    ///
+    /// WRONG IMPL KILLED: the clock lookup's side filter dropped (the first open row of the
+    /// battle is taken: the stale row is rewritten, the fire armed at the stale `window_seq`, or
+    /// the call refused `no pending deadline for the open window`); a lookup by the NAMED side
+    /// that ignores the waiting unit.
+    #[test]
+    fn the_armed_clock_row_is_the_waiting_sides_not_the_first_open_one_th4_1() {
+        for waiting_side in [SideRow::B, SideRow::A] {
+            let fx = fixture();
+            let w = world(&fx);
+            let (id, side_arg, stale_side) = if waiting_side == SideRow::B {
+                let (live, _) = pvp_b_waiting(&fx, &w);
+                (live.id, SIDE_B, SideRow::A)
+            } else {
+                set_owner(&w, owner());
+                let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+                (live.id, SIDE_A, SideRow::B)
+            };
+            let unit = waiting(&w, id);
+            assert_eq!(
+                w.unit(unit).side,
+                waiting_side,
+                "PRECONDITION: the {waiting_side:?} unit waits"
+            );
+            let now = in_window(&w, id);
+            let live_clock = w.clock_of(id, waiting_side);
+            let seq = live_clock.window_seq;
+            w.edit_clock_of(id, stale_side, |c| {
+                c.window_open_ms = Some(now - 2_000);
+                c.deadline_ms = Some(now + 5_000);
+                c.window_seq = seq + 3;
+            });
+            // A no-op edit re-seeds the live row LAST, so the host's row order (insertion order)
+            // puts the stale row first: a first-open-row lookup takes the stale one.
+            w.edit_clock_of(id, waiting_side, |_| {});
+            assert_eq!(
+                enc(&w.clock_of(id, waiting_side)),
+                enc(&live_clock),
+                "fixture: the live row is unchanged by the re-seed"
+            );
+            let order: Vec<SideRow> = w
+                .clocks
+                .rows()
+                .into_iter()
+                .filter(|r| r.battle_id == id)
+                .map(|r| r.side)
+                .collect();
+            assert_eq!(
+                order,
+                vec![stale_side, waiting_side],
+                "PRECONDITION: the stale open row precedes the live one in host order"
+            );
+            let stale = w.clock_of(id, stale_side);
+            assert_ne!(
+                stale.window_seq, seq,
+                "fixture: the stale window's sequence differs"
+            );
+            let pending_before: Vec<u64> =
+                w.deadlines_of(id).iter().map(|r| r.scheduled_id).collect();
+
+            let before = w.snapshot();
+            assert_eq!(
+                expire_now(&fx, owner(), now, id, side_arg),
+                Ok(()),
+                "{waiting_side:?} waits: the owner naming that side is admitted"
+            );
+            assert_eq!(
+                changed(&before, &w.snapshot()),
+                vec!["battle_clock", "tactical_deadline_sched"],
+                "{waiting_side:?} waits: the clock and the schedule only"
+            );
+            assert_eq!(
+                enc(&w.clock_of(id, stale_side)),
+                enc(&stale),
+                "{waiting_side:?} waits: the stale {stale_side:?} row is byte-unchanged"
+            );
+            let mut want = live_clock.clone();
+            want.deadline_ms = Some(now);
+            assert_eq!(
+                enc(&w.clock_of(id, waiting_side)),
+                enc(&want),
+                "{waiting_side:?} waits: its own row differs only in deadline_ms == now"
+            );
+            let armed: Vec<(u32, u32, ScheduleAt)> = w
+                .deadlines_of(id)
+                .into_iter()
+                .filter(|r| !pending_before.contains(&r.scheduled_id))
+                .map(|r| (r.unit_id, r.window_seq, r.scheduled_at))
+                .collect();
+            assert_eq!(
+                armed,
+                vec![(unit, seq, time(now))],
+                "{waiting_side:?} waits: one armed row, at the waiting side's window_seq"
+            );
+        }
     }
 
     // =======================================================================
@@ -1296,6 +1596,276 @@ mod nh {
         }
         w.deadlines.seed(&deadline_args(&original));
         assert_admitted(&fx, &w, call, "positive control: the original row restored");
+    }
+
+    /// Every caller but the registered owner: both participants, a stranger, the database
+    /// identity.
+    fn non_owners() -> [(Identity, &'static str); 4] {
+        [
+            (a(), "participant A"),
+            (b(), "participant B"),
+            (c(), "an identity in no battle"),
+            (module(), "the database identity"),
+        ]
+    }
+
+    /// Every non-owner, with side 0, 1 and the out-of-range 2, on battle `id` at `now`, is refused
+    /// with exactly `caller is not the module owner`, writes nothing, logs one reject line.
+    fn refuse_every_non_owner(fx: &Fixture, w: &World<'_>, now: i64, id: u64, state: &str) {
+        for (who, name) in non_owners() {
+            for side in [SIDE_A, SIDE_B, 2] {
+                let label = format!("{state}: {name}, side {side}");
+                assert_refused(fx, w, Call { who, now, id, side }, NOT_OWNER, &label);
+            }
+        }
+    }
+
+    /// A 2v2 PvP battle owned by `owner()` at its first round boundary: every unit ended its turn
+    /// live, the battle is Active and `Advancing`, the advance row not fired. Returns the battle id
+    /// and a call time.
+    fn pvp_advancing(fx: &Fixture, w: &World<'_>) -> (u64, i64) {
+        set_owner(w, owner());
+        let live = live_pvp(fx, w, &PAIR, &B_PAIR);
+        let mut now = live.revealed_at;
+        for _ in 0..4 {
+            let u = waiting(w, live.id);
+            let who = if w.unit(u).side == SideRow::A {
+                a()
+            } else {
+                b()
+            };
+            now = now.max(window_of(w, live.id, u).window_open_ms.expect("open")) + 1_000;
+            submit(fx, who, now, live.id, u, vec![QueuedAction::EndTurn])
+                .expect("every unit ends its turn live");
+        }
+        let t = w.tactical(live.id);
+        assert_eq!(
+            (t.phase, t.turn_state),
+            (Phase::Active, TurnState::Advancing),
+            "PRECONDITION: round 1 is over, the next has not started"
+        );
+        (live.id, now + 500)
+    }
+
+    /// A wild battle owned by `owner()`, finished by the owner's expiry and its fire. Returns the
+    /// battle id and a call time after the finish.
+    fn wild_finished(fx: &Fixture, w: &World<'_>) -> (u64, i64) {
+        let live = wild_player_waiting(fx, w);
+        let now = in_window(w, live.id);
+        expire_and_fire(fx, w, live.id, SIDE_A, now);
+        assert_eq!(
+            w.tactical(live.id).phase,
+            Phase::Finished,
+            "PRECONDITION: the fire finished the battle"
+        );
+        (live.id, now + 1_000)
+    }
+
+    /// No non-owner is admitted, whichever `side` it names and whichever side's window is open:
+    /// participant A, participant B, a stranger and the database identity, with side 0, 1 (and 2),
+    /// in a PvP battle with A's unit waiting and in one with B's unit waiting, are each refused
+    /// `caller is not the module owner` with no row written (so no fire is armed) and one reject
+    /// line. Positive control in each state: the owner naming the waiting side is admitted.
+    ///
+    /// WRONG IMPL KILLED: the owner check skipped for one `side` value (`if !is_owner && side !=
+    /// 1`, or `!= 0`): the skipped side reaches its own window in one of the two states and is
+    /// admitted; an owner check that admits a participant only for its own side's window.
+    #[test]
+    fn no_non_owner_is_admitted_for_either_side_in_either_window_th4_4() {
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            set_owner(&w, owner());
+            let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+            assert_eq!(
+                w.unit(waiting(&w, live.id)).side,
+                SideRow::A,
+                "PRECONDITION: A's unit waits"
+            );
+            let now = in_window(&w, live.id);
+            refuse_every_non_owner(&fx, &w, now, live.id, "A's window open");
+            assert_admitted(
+                &fx,
+                &w,
+                Call {
+                    who: owner(),
+                    now,
+                    id: live.id,
+                    side: SIDE_A,
+                },
+                "positive control: the owner, A's window, side 0",
+            );
+        }
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            let (live, _) = pvp_b_waiting(&fx, &w);
+            let now = in_window(&w, live.id);
+            refuse_every_non_owner(&fx, &w, now, live.id, "B's window open");
+            assert_admitted(
+                &fx,
+                &w,
+                Call {
+                    who: owner(),
+                    now,
+                    id: live.id,
+                    side: SIDE_B,
+                },
+                "positive control: the owner, B's window, side 1",
+            );
+        }
+    }
+
+    /// A non-owner learns no battle state: with (a) an unknown battle id, (b) a Deploying PvP
+    /// battle, (c) a Finished battle, (d) an Active battle at a round boundary (`Advancing`, no
+    /// open window), and with an open window, every non-owner with side 0, 1 and 2 gets exactly
+    /// `caller is not the module owner` and writes nothing. Positive controls: the owner, in the
+    /// same states, gets each state's own reason (`no such tactical battle`, `battle is not
+    /// active`, `no open turn window`, `side must be 0 or 1`) — the reasons a leaky check would
+    /// hand the non-owner.
+    ///
+    /// WRONG IMPL KILLED: the owner check applied only once the battle is found (an unknown id
+    /// reports `no such tactical battle`), only for an Active battle (`battle is not active`),
+    /// only when some clock row holds an open window (`no open turn window` at a boundary, on a
+    /// Finished battle), or after the side range check (`side must be 0 or 1`).
+    #[test]
+    fn a_non_owner_learns_no_battle_state_from_the_refusal_th4_4() {
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            set_owner(&w, owner());
+            let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+            let now = in_window(&w, live.id);
+            let unknown = live.id + 1_000;
+            refuse_every_non_owner(&fx, &w, now, unknown, "an unknown battle id");
+            refuse_every_non_owner(&fx, &w, now, live.id, "an open window");
+            let owner_call = |id, side| Call {
+                who: owner(),
+                now,
+                id,
+                side,
+            };
+            assert_refused(
+                &fx,
+                &w,
+                owner_call(unknown, SIDE_A),
+                NO_BATTLE,
+                "control: the owner on the unknown id",
+            );
+            assert_refused(
+                &fx,
+                &w,
+                owner_call(live.id, 2),
+                BAD_SIDE,
+                "control: the owner with side 2 on the open window",
+            );
+        }
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            set_owner(&w, owner());
+            let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+            let now = T0 + 1_000;
+            refuse_every_non_owner(&fx, &w, now, id, "a Deploying PvP battle");
+            assert_refused(
+                &fx,
+                &w,
+                Call {
+                    who: owner(),
+                    now,
+                    id,
+                    side: SIDE_A,
+                },
+                NOT_ACTIVE,
+                "control: the owner on the Deploying battle",
+            );
+        }
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            let (id, now) = wild_finished(&fx, &w);
+            refuse_every_non_owner(&fx, &w, now, id, "a Finished battle");
+            assert_refused(
+                &fx,
+                &w,
+                Call {
+                    who: owner(),
+                    now,
+                    id,
+                    side: SIDE_A,
+                },
+                NOT_ACTIVE,
+                "control: the owner on the Finished battle",
+            );
+        }
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            let (id, now) = pvp_advancing(&fx, &w);
+            refuse_every_non_owner(&fx, &w, now, id, "a round boundary");
+            assert_refused(
+                &fx,
+                &w,
+                Call {
+                    who: owner(),
+                    now,
+                    id,
+                    side: SIDE_A,
+                },
+                NO_WINDOW,
+                "control: the owner at the round boundary",
+            );
+        }
+    }
+
+    /// A waiting unit whose `battle_unit` row is missing has no open turn window: the owner's call
+    /// naming either side is `no open turn window` with no row written. The state is a row edit,
+    /// unreachable through the shipped reducers (a waiting unit always has its row), like the
+    /// cleared clock row above. Positive control: the unit row restored admits the call.
+    ///
+    /// WRONG IMPL KILLED: the missing-unit refusal given another reason (`no such tactical
+    /// battle`, `the other side's window is open`, ...); a missing unit row read as "any side" (a
+    /// fire armed for a unit the battle no longer has); a lookup that panics.
+    #[test]
+    fn a_waiting_unit_without_its_battle_unit_row_has_no_open_window_th4_4() {
+        let fx = fixture();
+        let w = world(&fx);
+        set_owner(&w, owner());
+        let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+        let now = in_window(&w, live.id);
+        let unit = waiting(&w, live.id);
+        let saved = w.unit(unit);
+        assert_eq!(
+            w.units.remove(unit),
+            1,
+            "fixture: the waiting unit's battle_unit row goes"
+        );
+        for side in [SIDE_A, SIDE_B] {
+            assert_refused(
+                &fx,
+                &w,
+                Call {
+                    who: owner(),
+                    now,
+                    id: live.id,
+                    side,
+                },
+                NO_WINDOW,
+                "the waiting unit has no battle_unit row",
+            );
+        }
+        w.units.seed(&saved);
+        assert_admitted(
+            &fx,
+            &w,
+            Call {
+                who: owner(),
+                now,
+                id: live.id,
+                side: SIDE_A,
+            },
+            "positive control: the unit row restored",
+        );
     }
 
     // =======================================================================
