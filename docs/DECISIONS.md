@@ -583,9 +583,9 @@ NPC crossing zones.
 (`client/src/input/router.ts`), refcounted across physical keys, so releasing ArrowUp
 does not stop a held W. OS key-repeat drives neither movement nor menus (`e.repeat` is
 ignored). A press sends one `Face` immediately (see "Turning in place"): a turn for a
-character facing another way, a step for one already facing the direction. Continuation
-comes from the frame loop sending `Step` in the held direction only after the key has
-been held for `HOLD_COMMIT_MS` (150 ms, `client/src/prediction/heldKeys.ts`), only when
+character facing another way, a step for one already facing the direction. A release
+sends nothing: it only drops the direction from the held set. Continuation comes from
+the frame loop sending `Step` in the held direction only after the key has been held for `HOLD_COMMIT_MS` (150 ms, `client/src/prediction/heldKeys.ts`), only when
 the predictor has no outstanding steps and no sent input is still owed, and only while
 `movementEnabled` (the world base with no frame above it and the session gate open). A
 hold from another facing therefore turns, waits for the row that drains the `Face`, then
@@ -607,11 +607,13 @@ continuation sends `Step`, which turns and moves in one input, so a walk that fa
 to a second held key or resumes after a server correction does not stop for a turn slot.
 Keeping the stack across a warp lets a player walk through a door without re-pressing. A
 walk that resumes behind a closing menu is a step the player did not ask for, and stale
-hold stamps would skip the commit threshold.
+hold stamps would skip the commit threshold. A step sent and then cancelled on keyup
+would take back steps the predictor has already drawn, pulling the own avatar backward.
 
 **Rules out.** Repeat-driven movement or menus; continuation steps while earlier ones
-are in flight; resuming a held walk after a frame closes; `Step` on a fresh press (a
-tap would move instead of turning); `Face` from the continuation.
+are in flight; a step cancelled on keyup (`clear_queue` or `set_move` on release);
+resuming a held walk after a frame closes; `Step` on a fresh press (a tap would move
+instead of turning); `Face` from the continuation.
 
 ## Turning in place: `Face` turns, or steps when already facing
 
@@ -641,6 +643,30 @@ a variant the client does not know as `Step`; publishing a module that adds a
 `MoveInput` variant apart from the client bundle that decodes it — a bundle built
 before the variant cannot decode a `character` row whose public queue holds one,
 whoever queued it.
+
+## Reconnect backoff climbs one rung per failed attempt
+
+**Decision.** The client owns its reconnect policy: a pure state machine in
+`client/src/prediction/reconnectPolicy.ts`, driven by `client/src/net/connection.ts`. After `n`
+failed attempts in a row, the next attempt waits `min(1000 ms · 2^n, 30 s)`. The ladder has no
+give-up rung. Only the session terminals stop retrying (an expired account session, an
+unreachable auth service) until the player retries or continues anonymously. Every build path
+starts an attempt (the reconnect timer, the first boot, `reconnectNow`, `continueAnonymously`),
+and every attempt that fails climbs exactly one rung, whether it ends in a connect error, a drop
+after the socket opened, or both in either order. A failed attempt is marked, so a second event
+for the same failure changes nothing. Only an applied subscription resets the ladder. A drop from
+a connected link does not climb, so its first retry waits the base delay. The "connection lost"
+notice shows on the connected-to-disconnected edge only.
+
+**Why.** The SDK does not reconnect on the raw builder path, so the app owns its retries. A
+restarting host often accepts the socket and drops it before the subscription applies. If only
+a connect error climbed, that client would retry every second for as long as the restart lasts.
+The SDK can report one drop as both an error and a close, so the ladder counts failed attempts,
+not failure events.
+
+**Rules out.** Resetting the ladder when the socket opens, or on anything but an applied
+subscription; climbing once per failure event; a build path that does not start an attempt; a
+give-up rung on the ladder.
 
 ## Remote interpolation: adaptive delay; hold, except a bounded continued walk
 
