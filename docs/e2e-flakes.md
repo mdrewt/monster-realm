@@ -11,8 +11,8 @@ flake: add an entry.
 
 | # | Test | State | Next step |
 |---|---|---|---|
-| 1 | `ui-feedback.spec.ts` UIF4B.2 rename: the name field stays hidden after N | signature forced, cause not reproduced | read the trace of its next rerun listing |
-| 2 | `tactics-wild.spec.ts` BT12-5-WILD-RECRUIT and `recruit.spec.ts` R2: a recruit reported as none | cause reproduced by forcing; fixed in BT12-5-WILD-RECRUIT, open in R2 | the follow-up slice in the entry |
+| 1 | `ui-feedback.spec.ts` UIF4B.2 rename: the name field stays hidden after N | signature forced, flake not reproduced | read the trace of its next rerun listing |
+| 2 | `tactics-wild.spec.ts` BT12-5-WILD-RECRUIT and `recruit.spec.ts` R2: a recruit reported as none | cause shown by forcing, CI path inferred; fixed in BT12-5-WILD-RECRUIT, open in R2 | the follow-up slice in the entry |
 | 3 | `zone-scope.spec.ts` "A walks to the warp": no frame sampled before the warp | not studied | read the trace run 43690080900 kept |
 | 4 | `remote-walk.spec.ts` np-a.9: the sprite stands still past its bound | not studied here | its own row, `R-np-a-flake` |
 
@@ -58,16 +58,21 @@ The test took 14.4 s with its `beforeAll`; less the 10 s wait, the press came ab
 - the session terminal holds the screen (`sessionGateBlocks`);
 - a Ctrl, Alt or Meta chord is down, the event is an OS key repeat, or Controls is capturing a
   key;
-- the focused element owns the key, a text field or a button (`ownership` is not `router`);
-- the top frame denies accelerators: a prompt, a text entry, a battle or a conversation
-  (`accelDecision`);
+- the focused element owns the key, a text field or a button, or the key is part of an IME
+  composition (`ownership` is not `router`);
+- the live table binds no accelerator to the key's code, after a remap or a cleared slot
+  (`accelForCode`);
+- the top frame denies accelerators: a prompt, a text entry, or a server-owned screen, the battle
+  view or a conversation (`accelDecision`);
 - a frame the pop to the base cannot take stays on top (`openAccelPath`);
 - `identity === ''` (`openAccelPath`): from page load until the join lands only the C accelerator
   opens a frame. The handler calls `preventDefault` on the keydown anyway.
 
-On a page that has joined for the first time only the last can hold, and it has passed: focus is
-on `<body>` until a frame opens, the session terminal shows only in a tab that has signed in, and
-nothing pushes a prompt, a text entry, a battle or a conversation by itself. In the 29 traced
+On a page in its first join none of these holds by the time `ready()` returns. The last held only
+until the join landed, and the others need a state such a page does not create: focus is on
+`<body>` until a frame opens, the session terminal shows only in a tab that has signed in, the
+table is the default one, and nothing pushes a prompt, a text entry, the battle view or a
+conversation by itself. In the 29 traced
 presses with no injected reload the target and the focused element were `<body>`, no modifier was
 down, the stack held the world frame alone, the page had joined, and the press opened the menu
 and Profile. The views are mounted before `connect()`, so every document has a span between its
@@ -210,14 +215,16 @@ What the rows show:
   distance never lets the starter stand adjacent and draws no Recruit press at all (6 of the 41
   battles in the plain, CPU 4x and frames late rows).
 - Rate. In those three rows, 79 Recruit presses, 35 succeeded (44 %); the first press of a
-  battle fell on own turn 4 to 11 and the latest press on turn 12. With each press an independent
-  44 % and the first-press turns as observed, the chance that a battle's press on turn 16
-  succeeds is the sum over t of P(first press on turn t) x 0.56^(16 - t) x 0.44: about 1 battle
-  in 480. CI saw one failure in the 197 runs created from 2026-11-07 to 2026-11-13.
-- The sibling signature (`fleeByButtons: the battle is Finished`) is in none of the 20 failed job
-  logs that ran Playwright in the other 24 failed or rerun runs of those days and in run
-  42328156037 half an hour before them (every attempt), and no second BT12-5-WILD-RECRUIT failure
-  is in them.
+  battle fell on own turn 4 to 11 and the latest press on turn 12. Own turns count from 1. A
+  battle that first presses Recruit on own turn t presses it again on every later own turn until
+  one succeeds, each press an independent 44 %. With the first-press turns as observed, the
+  chance that the press on turn 16 is the first to succeed is the sum over t of
+  P(first press on turn t) x 0.56^(16 - t) x 0.44: about 1 battle in 480. CI saw one failure in
+  the 197 runs created from 2026-11-07 to 2026-11-13.
+- Run 42328156037, half an hour before those days, and the other 24 failed or rerun runs of
+  those days have 20 failed job logs that ran Playwright, every attempt included. None holds the
+  sibling signature (`fleeByButtons: the battle is Finished`) or a second BT12-5-WILD-RECRUIT
+  failure.
 
 **Verdict.** The test is wrong, not the product: the loop answers before its last press resolves.
 BT12-5-WILD-RECRUIT waits (PR #752); R2 does not. That run 43362803625 hit this path is inferred.
@@ -297,9 +304,9 @@ was green on another run.
 |---|---|---|---|---|
 | 27 | 24 | 2 | 1 | 0 |
 
-No test failed on attempt 1 and passed on a rerun in the window: no run was rerun, so the rerun
-listing, in the `e2e` job from commit `221a1196` on, has listed nothing. The two cancelled runs
-are earlier pushes of PR #791 with no failed test.
+No test failed on attempt 1 and passed on a rerun in the window: no run was rerun, and the rerun
+listing in the `e2e` job lists nothing. The two cancelled runs are earlier pushes of PR #791 with
+no failed test.
 
 | Test | Run | What happened | Mapped to |
 |---|---|---|---|
@@ -312,3 +319,5 @@ are earlier pushes of PR #791 with no failed test.
 | 1 | `R-th-1-RENAME-HIDDEN` | the rename test is next listed as passed on a rerun |
 | 2 | `R-th-1-RECRUIT-LASTTURN` | `th-7` merges |
 | 3 | `R-th-1-ZONESCOPE-FRAMES` | the zone-scope test is next listed as passed on a rerun, or a study of the kept trace names a cause |
+
+Entry 4's row, `R-np-a-flake`, lifts with its own follow-up.
