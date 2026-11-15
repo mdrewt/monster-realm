@@ -596,12 +596,18 @@ held-key stack across the prediction reset; a reconnect does not.
 
 **Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a
 tap (one input) from a hold (walk), and waiting for outstanding steps stops the client
-queueing moves faster than the server drains them. The continuation sends `Step`, which
-turns and moves in one input, so a walk that falls back to a second held key or resumes
-after a server correction does not stop for a turn slot. Keeping the stack across a
-warp lets a player walk through a door without re-pressing. A walk that resumes behind
-a closing menu is a step the player did not ask for, and stale hold stamps would skip
-the commit threshold.
+queueing moves faster than the server drains them. One step in flight is also the
+measured choice over two (`docs/send-pipeline-depth.md`). Against a local server a step
+already lands on every tick, so a second gives a watcher nothing. A second step multiplies
+teleports of the own avatar unless it is kept to the frame loop's send, and either way it
+fills the server's queue, which then refuses a press made mid-walk, and adds a tile to
+every committed hold. The cost of one step falls on a player whose delay each way nears
+half of `STEP_MS`: steps miss ticks and the walk drops toward half speed. The
+continuation sends `Step`, which turns and moves in one input, so a walk that falls back
+to a second held key or resumes after a server correction does not stop for a turn slot.
+Keeping the stack across a warp lets a player walk through a door without re-pressing. A
+walk that resumes behind a closing menu is a step the player did not ask for, and stale
+hold stamps would skip the commit threshold.
 
 **Rules out.** Repeat-driven movement or menus; continuation steps while earlier ones
 are in flight; resuming a held walk after a frame closes; `Step` on a fresh press (a
