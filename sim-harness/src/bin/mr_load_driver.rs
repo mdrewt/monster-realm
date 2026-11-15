@@ -26,6 +26,10 @@
 //! | `--seed <u64>` | `0x5EED_0D20` | seeds WS masks + per-client walk phase |
 //! | `--run-id <string>` | **required** | the injected wall-clock label (the driver never reads a clock) |
 //! | `--report <path>` | — | optional; default is stdout |
+//! | `--fail-on-invalid` | off | takes no value; see "Exit codes" |
+//!
+//! A flag's value may not begin with `--`: that is a forgotten value, and taking
+//! it would swallow the next flag.
 //!
 //! There is deliberately **no** `--transport` (AM25: WS is the only viable
 //! transport — see below), **no** `--queue-metric` (AM17: `QUEUE_FAMILIES` is a
@@ -36,6 +40,19 @@
 //! the fixed-concurrency pairing-on / pairing-off A/B:
 //! `--run-id "$(date -u +%Y%m%dT%H%M%SZ)-pairing-on"` (AM18 convention — the
 //! run-id is free text and the ONLY place a timestamp enters this tool).
+//!
+//! ## Exit codes
+//!
+//! - `0` — the report is written. Without `--fail-on-invalid` that includes a
+//!   run whose levels are invalid: the report says so per level.
+//! - `1` — a usage or tool error (no report), or a ramp aborted at a level (the
+//!   partial report is still written, with an `aborted_at_concurrency` note;
+//!   with `--fail-on-invalid`, the stderr line below names any invalid level).
+//! - `2` — `--scenario chat-flood` (see OBS-28 below; no report).
+//! - [`INVALID_LEVEL_EXIT_CODE`] (`3`) — `--fail-on-invalid` and at least one
+//!   level is invalid. The report is written first; each level carries its
+//!   `invalid_reason`, and stderr ends with a line naming every invalid level as
+//!   `<concurrency>:<invalid_reason>` ([`exit_after_report`]).
 //!
 //! # The criteria this tool encodes
 //!
@@ -151,8 +168,9 @@
 //!   `db=`, queue gauges use `database_identity=`. All txn matches also pin
 //!   `txn_type="Reducer"` — an `txn_type="Update"` row exists per reducer and
 //!   would double-count accepted/rejected deltas.
-//! - Download (`rx_bytes_per_client_per_s`, `_max`): every bot counts the bytes
-//!   it reads off its socket after the handshake, and the scraper copies all the
+//! - Download (`rx_bytes_per_client_per_s`, `_max`): every bot counts every byte
+//!   it receives after the 101 response head (including any that arrived in the
+//!   same read as the head), and the scraper copies all the
 //!   counts right after each scrape. Over the AM6 usable window (the first scrape
 //!   discarded), the mean is all bots' bytes divided by the bot count — the
 //!   level's concurrency, a bot that never connected counting as 0 — and the
@@ -220,13 +238,20 @@
 //! separate host wherever possible, and Phase-3 verification watches the DRIVER
 //! process's CPU alongside the server's (AM21).
 //!
-//! ## This binary never runs in CI
+//! ## Where this binary runs
 //!
-//! It needs a live SpacetimeDB host and a published module, the same
-//! skip-by-design posture as the metrics-contract eval's live half. What CI runs
-//! is the `#[cfg(test)] mod tests` below: the whole pure core (CLI, Prometheus
-//! parser, estimators, verdict machine, renderer, bot model, WS codec, envelope
-//! builders) with zero sockets and zero clocks. The bot model's one map
+//! It needs a live SpacetimeDB host and a published module, so the merge gate
+//! never runs it. What the merge gate runs is the `#[cfg(test)] mod tests`
+//! below: the whole pure core (CLI, Prometheus parser, estimators, verdict
+//! machine, exit mapping, renderer, bot model, WS codec, envelope builders) with
+//! zero sockets and zero clocks. The nightly workflow's `load-smoke` job does
+//! run it: it publishes the default module build to a fresh in-memory host and
+//! runs `just load-smoke`, one level of 20 bots with `--fail-on-invalid`, so the
+//! night goes red when the run errors or aborts, or when that level is invalid
+//! for any of the reasons under "Level validity" (no join, no zone scope, no
+//! move intent reaching the server, a counter reset, too few samples or an
+//! indeterminate p95). It measures no breaking point: a shared CI runner
+//! is the co-location case above at its worst. The bot model's one map
 //! assumption — zone-0 row 1 is grass-free — is proven by feeding the generated
 //! walk through the REAL `game_core::apply_move` on the REAL zone-0 content
 //! (T13), not by runtime logic: this driver models no game rules (AM23 records
@@ -408,6 +433,9 @@ pub struct Config {
     pub seed: u64,
     pub run_id: String,
     pub report_path: Option<String>,
+    /// `--fail-on-invalid`: an invalid level makes the run exit
+    /// [`INVALID_LEVEL_EXIT_CODE`] once the report is written.
+    pub fail_on_invalid: bool,
 }
 
 /// Parse + validate argv (WITHOUT argv[0]).
@@ -429,10 +457,17 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut seed: u64 = 0x5EED_0D20;
     let mut run_id: Option<String> = None;
     let mut report_path: Option<String> = None;
+    let mut fail_on_invalid = false;
 
     let mut i = 0usize;
     while i < args.len() {
         let flag = args[i].as_str();
+        // The one flag that takes no value.
+        if flag == "--fail-on-invalid" {
+            fail_on_invalid = true;
+            i += 1;
+            continue;
+        }
         match flag {
             "--server" => server = flag_value(args, i, flag)?.clone(),
             "--db" => db = flag_value(args, i, flag)?.clone(),
@@ -499,13 +534,21 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
         seed,
         run_id,
         report_path,
+        fail_on_invalid,
     })
 }
 
-/// Fetch the value that must follow the flag at `i`.
+/// Fetch the value that must follow the flag at `i`. A value that starts with
+/// `--` is a forgotten value, not a value: taking it would silently swallow the
+/// next flag (`--report --fail-on-invalid` would drop the flag).
 fn flag_value<'a>(args: &'a [String], i: usize, flag: &str) -> Result<&'a String, String> {
-    args.get(i + 1)
-        .ok_or_else(|| format!("flag {flag} requires a value"))
+    match args.get(i + 1) {
+        Some(value) if value.starts_with("--") => Err(format!(
+            "flag {flag} requires a value, got the flag {value}"
+        )),
+        Some(value) => Ok(value),
+        None => Err(format!("flag {flag} requires a value")),
+    }
 }
 
 fn parse_u32(s: &str, flag: &str) -> Result<u32, String> {
@@ -535,6 +578,47 @@ pub fn exit_code_for_error(msg: &str) -> i32 {
     } else {
         1
     }
+}
+
+/// The exit code of a completed run in which `--fail-on-invalid` found an
+/// invalid level. Distinct from 1 (a tool error or an aborted ramp) and 2
+/// (the reserved scenario).
+pub const INVALID_LEVEL_EXIT_CODE: i32 = 3;
+
+/// The process exit code once the report is written, and the stderr line
+/// naming the invalid levels as `<concurrency>:<invalid_reason>` tokens.
+///
+/// An aborted ramp exits 1 whatever the levels say. Otherwise, with
+/// `fail_on_invalid`, any level whose verdict is not valid exits
+/// [`INVALID_LEVEL_EXIT_CODE`]; every other run exits 0. The line is present
+/// exactly when `fail_on_invalid` is set and some level is invalid.
+#[must_use]
+pub fn exit_after_report(
+    aborted: bool,
+    fail_on_invalid: bool,
+    verdicts: &[LevelVerdict],
+) -> (i32, Option<String>) {
+    let invalid: Vec<String> = verdicts
+        .iter()
+        .filter(|v| !v.valid)
+        .map(|v| {
+            format!(
+                "{}:{}",
+                v.concurrency,
+                v.invalid_reason.as_deref().unwrap_or("unknown")
+            )
+        })
+        .collect();
+    let message = (fail_on_invalid && !invalid.is_empty())
+        .then(|| format!("--fail-on-invalid: invalid level(s) {}", invalid.join(" ")));
+    let code = if aborted {
+        1
+    } else if message.is_some() {
+        INVALID_LEVEL_EXIT_CODE
+    } else {
+        0
+    };
+    (code, message)
 }
 
 /// Open-loop pacing sleep in ms, derived purely from `--move-rate` (AM1): the
@@ -1936,7 +2020,8 @@ pub enum ControlFrame {
 pub struct DrainState {
     /// Payload bytes of the current DATA frame still to be discarded.
     pub skip_remaining: u64,
-    /// Bytes received but not yet consumed (a partial header or control frame).
+    /// Bytes received but not yet consumed (a partial header or control frame,
+    /// or the stream bytes that arrived behind the 101 head).
     pub buf: Vec<u8>,
 }
 
@@ -2599,8 +2684,22 @@ fn mint_identity(host: &str) -> Result<MintedIdentity, String> {
     })
 }
 
-/// Read an HTTP response head (up to the blank line) from a live socket.
-fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
+/// Split an HTTP response at its first `\r\n\r\n`: the head before it, and
+/// every byte after it. `None` while the head is incomplete. After a 101 the
+/// rest is the start of the WebSocket stream — the host sends its first frame
+/// right behind the head, often in the same read.
+#[must_use]
+pub fn split_response_head(buf: &[u8]) -> Option<(String, Vec<u8>)> {
+    let pos = find_subslice(buf, b"\r\n\r\n")?;
+    Some((
+        String::from_utf8_lossy(&buf[..pos]).into_owned(),
+        buf[pos + 4..].to_vec(),
+    ))
+}
+
+/// Read an HTTP response head (up to the blank line) from a live socket, and
+/// the bytes that arrived behind it ([`split_response_head`]).
+fn read_response_head(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 512];
     loop {
@@ -2611,8 +2710,8 @@ fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-            return Ok(String::from_utf8_lossy(&buf[..pos]).into_owned());
+        if let Some(split) = split_response_head(&buf) {
+            return Ok(split);
         }
         if buf.len() > 65536 {
             return Err("handshake response head too large".to_string());
@@ -2622,14 +2721,15 @@ fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
 }
 
 /// Open a WS connection, handshake, subscribe to the opening set
-/// ([`opening_queries`]), and `join_game`.
+/// ([`opening_queries`]), and `join_game`. Returns the socket and the stream
+/// bytes that arrived behind the 101 head, which the bot's drain parses first.
 /// AM11: sets BOTH a read timeout ([`READ_TIMEOUT_MS`]) and a write timeout.
 fn connect_client(
     host: &str,
     cfg: &Config,
     client_index: u32,
     identity: &MintedIdentity,
-) -> Result<TcpStream, String> {
+) -> Result<(TcpStream, Vec<u8>), String> {
     let token = &identity.token;
     let mut stream = connect_timeout(host)?;
     // Generous timeouts for the connect burst (a large handshake/subscribe/join
@@ -2647,7 +2747,7 @@ fn connect_client(
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("handshake write: {e}"))?;
-    let head = read_response_head(&mut stream)?;
+    let (head, leftover) = read_response_head(&mut stream)?;
     if !handshake_is_101(&head) {
         return Err(format!("websocket handshake rejected: {head}"));
     }
@@ -2677,7 +2777,7 @@ fn connect_client(
     stream
         .set_write_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS * 4)))
         .map_err(|e| e.to_string())?;
-    Ok(stream)
+    Ok((stream, leftover))
 }
 
 /// One thread per client: bounded drain (AM2) → any change of scope → one intent
@@ -2690,10 +2790,10 @@ fn client_thread(
     counters: &ClientCounters,
     running: &AtomicBool,
 ) {
-    let mut stream = match connect_client(host, cfg, client_index, identity) {
-        Ok(stream) => {
+    let (mut stream, leftover) = match connect_client(host, cfg, client_index, identity) {
+        Ok(connected) => {
             counters.connected.fetch_add(1, Ordering::Relaxed);
-            stream
+            connected
         }
         Err(_) => {
             counters.send_errors.fetch_add(1, Ordering::Relaxed);
@@ -2701,7 +2801,14 @@ fn client_thread(
         }
     };
 
-    let mut drain = DrainState::default();
+    // The stream bytes read with the handshake are received bytes too, and the
+    // first thing the drain parses — at the first read that returns data, which
+    // always comes: the subscribe and join are already sent.
+    counters.rx_bytes[client_index as usize].fetch_add(leftover.len() as u64, Ordering::Relaxed);
+    let mut drain = DrainState {
+        buf: leftover,
+        ..DrainState::default()
+    };
     let mut scope = BotScope::new(&identity.identity_hex);
     let mut was_scoped = false;
     let mut buf = [0u8; 8192];
@@ -3100,6 +3207,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         notes.push(format!("cross_level_growth:{family}"));
     }
 
+    let (code, message) = exit_after_report(aborted, cfg.fail_on_invalid, &verdicts);
     let run = Run {
         config: cfg,
         db_identity,
@@ -3113,7 +3221,10 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some(path) => std::fs::write(path, &report).map_err(|e| format!("write {path}: {e}"))?,
         None => println!("{report}"),
     }
-    Ok(i32::from(aborted))
+    if let Some(message) = message {
+        eprintln!("mr_load_driver: {message}");
+    }
+    Ok(code)
 }
 
 fn main() {
@@ -5147,6 +5258,349 @@ mod tests {
         assert_eq!(median(&[1.0, 2.0, 3.0, 4.0]), Some(2.5));
         assert_eq!(median(&[7.0]), Some(7.0));
         assert_eq!(median(&[]), None);
+    }
+
+    // =======================================================================
+    // sr-9c — --fail-on-invalid: verdict-to-exit mapping
+    // =======================================================================
+
+    fn invalid_verdict(n: u32, reason: &str) -> LevelVerdict {
+        LevelVerdict {
+            valid: false,
+            invalid_reason: Some(reason.to_string()),
+            ..ok_verdict(n)
+        }
+    }
+
+    /// Kills an impl that defaults the flag to true.
+    #[test]
+    fn sr9c_flag_defaults_false() {
+        let cfg = parse_args(&min_args()).expect("min args parse");
+        assert!(!cfg.fail_on_invalid);
+    }
+
+    /// Kills an impl that ignores the flag.
+    #[test]
+    fn sr9c_flag_alone_sets_true() {
+        let cfg =
+            parse_args(&argv(&["--run-id", "T-0001", "--fail-on-invalid"])).expect("flag parses");
+        assert!(cfg.fail_on_invalid);
+    }
+
+    /// Kills an impl treating the flag as value-taking (swallows the next flag).
+    #[test]
+    fn sr9c_flag_does_not_swallow_next_flag() {
+        let cfg = parse_args(&argv(&[
+            "--run-id",
+            "T",
+            "--fail-on-invalid",
+            "--clients-max",
+            "20",
+        ]))
+        .expect("flag then another flag parses");
+        assert!(cfg.fail_on_invalid);
+        assert_eq!(cfg.clients_max, 20);
+    }
+
+    /// Kills an impl that accepts (and consumes) a value for the boolean flag.
+    #[test]
+    fn sr9c_flag_with_value_is_rejected() {
+        assert!(parse_args(&args_with("--fail-on-invalid", "true")).is_err());
+    }
+
+    /// Kills an impl that fails when every level is valid.
+    #[test]
+    fn sr9c_all_valid_with_flag_exits_zero_no_message() {
+        let v = vec![ok_verdict(5), ok_verdict(10), ok_verdict(20)];
+        assert_eq!(exit_after_report(false, true, &v), (0, None));
+    }
+
+    /// Kills an impl that returns the wrong code, omits the reason, or names
+    /// valid levels.
+    #[test]
+    fn sr9c_one_invalid_with_flag_exits_invalid_code_and_names_it() {
+        let v = vec![
+            ok_verdict(5),
+            ok_verdict(10),
+            invalid_verdict(20, "no_load_reached"),
+        ];
+        let (code, msg) = exit_after_report(false, true, &v);
+        assert_eq!(code, INVALID_LEVEL_EXIT_CODE);
+        let msg = msg.expect("message when failing on invalid");
+        assert!(msg.contains("20:no_load_reached"), "msg: {msg}");
+        assert!(!msg.contains("5:"), "valid level named: {msg}");
+        assert!(!msg.contains("10:"), "valid level named: {msg}");
+    }
+
+    /// Kills an impl that names only the first (or last) invalid level.
+    #[test]
+    fn sr9c_every_invalid_level_is_named_with_its_reason() {
+        let v = vec![
+            invalid_verdict(5, "join_failed"),
+            ok_verdict(10),
+            invalid_verdict(20, "counter_reset"),
+            invalid_verdict(40, "p95_indeterminate"),
+        ];
+        let (code, msg) = exit_after_report(false, true, &v);
+        assert_eq!(code, INVALID_LEVEL_EXIT_CODE);
+        let msg = msg.expect("message");
+        assert!(msg.contains("5:join_failed"), "msg: {msg}");
+        assert!(msg.contains("20:counter_reset"), "msg: {msg}");
+        assert!(msg.contains("40:p95_indeterminate"), "msg: {msg}");
+        assert!(!msg.contains("10:"), "valid level named: {msg}");
+    }
+
+    /// Kills an impl that fails invalid levels without the opt-in flag.
+    #[test]
+    fn sr9c_invalid_without_flag_stays_exit_zero() {
+        let v = vec![ok_verdict(5), invalid_verdict(10, "scope_unsettled")];
+        assert_eq!(exit_after_report(false, false, &v), (0, None));
+    }
+
+    /// Kills an impl where the flag overrides the aborted-ramp exit code, or
+    /// where an abort suppresses the message.
+    #[test]
+    fn sr9c_aborted_exits_one_regardless() {
+        assert_eq!(exit_after_report(true, false, &[ok_verdict(5)]).0, 1);
+        assert_eq!(exit_after_report(true, true, &[ok_verdict(5)]), (1, None));
+        let v = vec![invalid_verdict(10, "insufficient_samples")];
+        let (code, msg) = exit_after_report(true, true, &v);
+        assert_eq!(code, 1);
+        let msg = msg.expect("message even when aborted");
+        assert!(msg.contains("10:insufficient_samples"), "msg: {msg}");
+        assert_eq!(exit_after_report(true, false, &v), (1, None));
+    }
+
+    /// Kills a colliding exit code (success, tool error, reserved scenario).
+    #[test]
+    fn sr9c_invalid_exit_code_is_distinct() {
+        assert_ne!(INVALID_LEVEL_EXIT_CODE, 0);
+        assert_ne!(INVALID_LEVEL_EXIT_CODE, 1);
+        assert_ne!(INVALID_LEVEL_EXIT_CODE, 2);
+        assert_ne!(
+            INVALID_LEVEL_EXIT_CODE,
+            exit_code_for_error(SCENARIO_RESERVED_ERR)
+        );
+    }
+
+    /// Kills an impl keyed on `invalid_reason` presence instead of `valid`.
+    #[test]
+    fn sr9c_decision_keys_on_valid_not_reason() {
+        let no_reason = LevelVerdict {
+            valid: false,
+            invalid_reason: None,
+            ..ok_verdict(30)
+        };
+        let (code, msg) = exit_after_report(false, true, &[no_reason]);
+        assert_eq!(code, INVALID_LEVEL_EXIT_CODE);
+        assert!(msg.expect("message").contains("30:unknown"));
+
+        let stray_reason = LevelVerdict {
+            valid: true,
+            invalid_reason: Some("join_failed".to_string()),
+            ..ok_verdict(30)
+        };
+        assert_eq!(exit_after_report(false, true, &[stray_reason]), (0, None));
+    }
+
+    /// Kills an impl that panics or fails on an empty ramp.
+    #[test]
+    fn sr9c_empty_verdicts_exit_zero() {
+        assert_eq!(exit_after_report(false, true, &[]), (0, None));
+        assert_eq!(exit_after_report(false, false, &[]), (0, None));
+    }
+
+    /// Kills an exit code that truncates to 0 (256) or drifts from 3.
+    #[test]
+    fn sr9c_invalid_exit_code_is_exactly_three() {
+        assert_eq!(INVALID_LEVEL_EXIT_CODE, 3);
+    }
+
+    /// Kills a message with a wrong prefix, separator, order, or a take(N) cap.
+    #[test]
+    fn sr9c_message_exact_format_four_invalid() {
+        let v = vec![
+            invalid_verdict(5, "join_failed"),
+            ok_verdict(10),
+            invalid_verdict(20, "counter_reset"),
+            invalid_verdict(40, "p95_indeterminate"),
+            invalid_verdict(60, "scope_unsettled"),
+        ];
+        let (code, msg) = exit_after_report(false, true, &v);
+        assert_eq!(code, 3);
+        assert_eq!(
+            msg.as_deref(),
+            Some(
+                "--fail-on-invalid: invalid level(s) 5:join_failed 20:counter_reset \
+                 40:p95_indeterminate 60:scope_unsettled"
+            )
+        );
+    }
+
+    /// Kills an impl that ignores `aborted` when there are no levels.
+    #[test]
+    fn sr9c_aborted_with_empty_verdicts_exits_one() {
+        assert_eq!(exit_after_report(true, true, &[]), (1, None));
+        assert_eq!(exit_after_report(true, false, &[]), (1, None));
+    }
+
+    /// Kills prefix/contains matching of the flag name.
+    #[test]
+    fn sr9c_near_miss_flag_spellings_rejected() {
+        for bad in ["--fail-on-invalid=true", "--fail", "--fail-on-invalidx"] {
+            let mut a = min_args();
+            a.push(bad.to_string());
+            assert!(parse_args(&a).is_err(), "{bad} must be rejected");
+        }
+    }
+
+    /// Kills `fail_on_invalid || args.len() > N`.
+    #[test]
+    fn sr9c_default_false_with_every_other_flag_set() {
+        let a = argv(&[
+            "--server",
+            "http://10.0.0.4:3001",
+            "--db",
+            "mr-scratch",
+            "--scenario",
+            "movement",
+            "--clients-start",
+            "3",
+            "--clients-step",
+            "7",
+            "--clients-max",
+            "31",
+            "--hold-scrapes",
+            "12",
+            "--scrape-interval-ms",
+            "250",
+            "--move-rate",
+            "9",
+            "--seed",
+            "12345",
+            "--run-id",
+            "T",
+            "--report",
+            "/tmp/r.json",
+        ]);
+        assert!(!parse_args(&a).expect("valid").fail_on_invalid);
+    }
+
+    /// Kills a value-taking flag swallowing `--fail-on-invalid` as its value.
+    #[test]
+    fn sr9c_value_flag_swallowing_the_flag_is_rejected() {
+        assert!(parse_args(&argv(&["--run-id", "T", "--report", "--fail-on-invalid"])).is_err());
+        assert!(parse_args(&argv(&["--run-id", "--fail-on-invalid"])).is_err());
+    }
+
+    /// Kills over-eager rejection: a single-dash value is still a value.
+    #[test]
+    fn sr9c_single_dash_value_still_accepted() {
+        let a = argv(&["--run-id", "T", "--report", "-x"]);
+        let cfg = parse_args(&a).expect("-x is a valid report path");
+        assert_eq!(cfg.report_path.as_deref(), Some("-x"));
+    }
+
+    /// Kills a negative-number value being accepted after the `--` rule change.
+    #[test]
+    fn sr9c_negative_number_value_still_rejected() {
+        assert!(parse_args(&args_with("--hold-scrapes", "-4")).is_err());
+    }
+
+    /// Kills an impl that errors on a repeated flag.
+    #[test]
+    fn sr9c_repeated_flag_parses_true() {
+        let a = argv(&["--run-id", "T", "--fail-on-invalid", "--fail-on-invalid"]);
+        assert!(parse_args(&a).expect("repeat ok").fail_on_invalid);
+    }
+
+    const SR9C_HEAD_101: &str = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n";
+
+    fn sr9c_buf(head_text: &str, rest: &[u8]) -> Vec<u8> {
+        let mut b = head_text.as_bytes().to_vec();
+        b.extend_from_slice(b"\r\n");
+        b.extend_from_slice(rest);
+        b
+    }
+
+    /// Kills a splitter that returns Some without a full terminator.
+    #[test]
+    fn sr9c_split_no_terminator_is_none() {
+        assert_eq!(split_response_head(b""), None);
+        assert_eq!(
+            split_response_head(b"HTTP/1.1 101 X\r\nUpgrade: websocket\r\n"),
+            None
+        );
+        assert_eq!(split_response_head(b"HTTP/1.1 101 X\r\n\r"), None);
+        assert_eq!(split_response_head(b"HTTP/1.1 101 X\r\n\r\x00\n"), None);
+    }
+
+    /// Kills a splitter that leaves the terminator in the head or invents rest bytes.
+    #[test]
+    fn sr9c_split_head_only_has_empty_rest() {
+        let buf = sr9c_buf(SR9C_HEAD_101, b"");
+        let (head, rest) = split_response_head(&buf).expect("terminated");
+        assert_eq!(head, SR9C_HEAD_101.trim_end_matches("\r\n"));
+        assert!(rest.is_empty());
+    }
+
+    /// Kills the drop-the-rest defect: bytes after the head must survive byte-exact.
+    #[test]
+    fn sr9c_split_keeps_following_frame_byte_exact() {
+        let frame = server_frame(1, true, b"first frame after the 101");
+        let buf = sr9c_buf(SR9C_HEAD_101, &frame);
+        let (head, rest) = split_response_head(&buf).expect("terminated");
+        assert!(head.starts_with("HTTP/1.1 101"));
+        assert_eq!(rest, frame);
+    }
+
+    /// Kills a splitter that cuts at the last terminator (or re-scans the rest).
+    #[test]
+    fn sr9c_split_stops_at_first_terminator() {
+        let tail = b"xx\r\n\r\nyy".to_vec();
+        let buf = sr9c_buf(SR9C_HEAD_101, &tail);
+        let (head, rest) = split_response_head(&buf).expect("terminated");
+        assert_eq!(head, SR9C_HEAD_101.trim_end_matches("\r\n"));
+        assert_eq!(rest, tail);
+    }
+
+    /// Kills the lost-first-frame-header defect end to end: leftover bytes seed the drain.
+    #[test]
+    fn sr9c_leftover_after_head_seeds_drain_and_parses_both_frames() {
+        let a = server_frame(1, true, b"AAAAAAAAAA");
+        let b = server_frame(1, true, b"BBBBBBBBBBBB");
+        let mut wire = a.clone();
+        wire.extend_from_slice(&b[..3]);
+        let buf = sr9c_buf(SR9C_HEAD_101, &wire);
+        let (_, rest) = split_response_head(&buf).expect("terminated");
+        assert_eq!(rest, wire);
+
+        let mut st = DrainState {
+            buf: rest,
+            ..DrainState::default()
+        };
+        let mut sink: Vec<u8> = Vec::new();
+        let out = drain_feed_into(&mut st, &b[3..], &mut |p| sink.extend_from_slice(p))
+            .expect("leftover + remainder parse");
+        assert_eq!(sink, b"AAAAAAAAAABBBBBBBBBBBB".to_vec());
+        assert_eq!(out.data_frames_skipped, 2);
+        assert!(st.buf.is_empty());
+        assert_eq!(st.skip_remaining, 0);
+    }
+
+    /// Shows the defect: seeding with the payload alone (header dropped) loses it.
+    #[test]
+    fn sr9c_dropping_the_frame_header_corrupts_the_payload() {
+        let payload = b"AAAAAAAAAA";
+        let mut st = DrainState {
+            buf: payload.to_vec(),
+            ..DrainState::default()
+        };
+        let mut sink: Vec<u8> = Vec::new();
+        let res = drain_feed_into(&mut st, b"", &mut |p| sink.extend_from_slice(p));
+        if res.is_ok() {
+            assert_ne!(sink, payload.to_vec());
+        }
     }
 
     // =======================================================================

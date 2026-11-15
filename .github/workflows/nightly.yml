@@ -187,13 +187,46 @@ jobs:
         if: failure()
         run: cat /tmp/stdb-smoke.log || true
 
+  # The load driver for a few seconds: the default module build on a fresh in-memory host, one
+  # level of 20 bots (`just load-smoke`). Red when the driver fails, the ramp aborts or the level is
+  # invalid; the log's last driver line names each invalid level as <concurrency>:<reason>.
+  load-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MR_LOAD_DB: monster-realm-load
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-load-smoke }
+      - uses: ./.github/actions/tools
+      - name: Start SpacetimeDB
+        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-load.log 2>&1 &
+      - name: Wait for SpacetimeDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo "ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "spacetime did not become ready on :3000" >&2
+          cat /tmp/stdb-load.log >&2 || true
+          exit 1
+      - name: Publish the default module
+        run: spacetime publish -s http://127.0.0.1:3000 --module-path server-module -y "$MR_LOAD_DB"
+      - run: just load-smoke
+      - name: Dump SpacetimeDB logs on failure
+        if: failure()
+        run: cat /tmp/stdb-load.log || true
+
   # One open issue per failed, skipped or cancelled job: a job that is still red the next night
   # gets a comment on its open issue, not a second issue. A job that times out concludes
   # `cancelled`; `!cancelled()` only suppresses a whole-run cancel. No soft-fail anywhere: a
   # notifier that swallows its errors looks like a green night. Default branch only: a manual run on
   # another branch reports through its own run page, not the issue tracker.
   notify:
-    needs: [mutation, mutation-server, coverage, perf-budget, e2e-serial, smoke-republish]
+    needs: [mutation, mutation-server, coverage, perf-budget, e2e-serial, smoke-republish, load-smoke]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     permissions:
