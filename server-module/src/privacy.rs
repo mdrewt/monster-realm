@@ -933,6 +933,11 @@ fn json_player(row: &Player) -> String {
     out
 }
 
+/// SCAFFOLD: serializes nothing.
+fn json_player_handle(_row: &crate::schema::PlayerHandle) -> String {
+    String::new()
+}
+
 fn json_profile(row: &Profile) -> String {
     let Profile {
         identity,

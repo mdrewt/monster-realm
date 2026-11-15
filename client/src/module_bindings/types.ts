@@ -970,6 +970,8 @@ export const Player = __t.object("Player", {
   name: __t.string(),
   online: __t.bool(),
   lastInputSeq: __t.u64(),
+  discriminator: __t.u32(),
+  leadLevel: __t.u8(),
 });
 export type Player = __Infer<typeof Player>;
 
@@ -992,6 +994,12 @@ export const PlayerFormation = __t.object("PlayerFormation", {
   monsterIds: __t.array(__t.u64()),
 });
 export type PlayerFormation = __Infer<typeof PlayerFormation>;
+
+export const PlayerHandle = __t.object("PlayerHandle", {
+  ownerIdentity: __t.identity(),
+  discriminator: __t.u32(),
+});
+export type PlayerHandle = __Infer<typeof PlayerHandle>;
 
 export const PlayerQuestRow = __t.object("PlayerQuestRow", {
   pqId: __t.u64(),
