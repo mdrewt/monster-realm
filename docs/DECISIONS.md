@@ -1092,63 +1092,73 @@ by the claiming account's deletion cascade, which erases rows under the account'
 
 ## A player's tag is a minted sequence value: private at rest, mirrored on the public player row while online
 
-**Decision.** Names are free and not unique, so each identity gets a discriminator, shown as a
-tag beside the name, that tells same-named players apart. It lives in the private
-`player_handle` table (`owner_identity` primary key, `discriminator: u32` `#[unique]
-#[auto_inc]`). `join_game` finds the caller's row or mints one (insert 0, the column's sequence
-assigns the value) and copies the value onto the public `player` row it inserts
-(`player.discriminator`; 0 means no tag). `onboarding.rs` owns the table (`ensure_handle`,
-`rekey_handle`, `erase_handle`, `has_handle`). The value is never 0, never derived from the
-identity, never held by two identities at once and never minted twice: a sequence only grows, so
-a deleted handle's value is not minted again. The guest claim moves the row to the account with
-its value unchanged (`rekey_all`), and a handle counts as game data, so an account that already
-holds one cannot claim (`account_has_game_data`). A claimed guest identity that joins again is
-minted a different value. The deletion cascade erases the handle and zeroes `discriminator` and
-`lead_level` on the surviving `player` row beside the tombstone name. The owner's data export
-carries the handle row. A mint the datastore refuses (an exhausted sequence) refuses the join
-with `handle unavailable` before any presence row is written. `player.lead_level` is the second
-public column on that row: the stored level of the owner's lead party monster, 0 with no party.
-`battle::refresh_lead_level` keeps it equal to that level and writes the row only when the value
-differs. The dual-write seam (`monster_mgmt::update_monster_synced`) calls it when a write
+**Decision.** Names are free and not unique, so each identity gets a discriminator, shown as a tag
+beside the name, that tells same-named players apart. It lives in the private `player_handle` table
+(`owner_identity` primary key, `discriminator: u32` `#[unique] #[auto_inc]`). `join_game` finds the
+caller's row or mints one (insert 0, the column's sequence assigns the value) and copies the value
+onto the public `player` row it inserts (`player.discriminator`; 0 means no tag). `onboarding.rs`
+owns the table (`ensure_handle`, `rekey_handle`, `erase_handle`, `has_handle`). The value is never
+0, never derived from the identity, never held by two identities at once and never minted twice: a
+sequence only grows, so a deleted handle's value is not minted again. The guest claim moves the row
+to the account with its value unchanged (`rekey_all`), and a handle counts as game data, so an
+account that already holds one cannot claim (`account_has_game_data`). A claimed guest identity that
+joins again is minted a different value. The deletion cascade erases the handle and zeroes
+`discriminator` and `lead_level` on the surviving `player` row beside the tombstone name. The
+owner's data export carries the handle row. A mint the datastore refuses (an exhausted sequence)
+refuses the join with `handle unavailable` before any presence row is written. `player.lead_level`
+is the second public column on that row: the stored level of the owner's lead party monster, 0 with
+no party. `battle::refresh_lead_level` keeps it equal to that level and writes the row only when the
+value differs. The dual-write seam (`monster_mgmt::update_monster_synced`) calls it when a write
 changes a monster's `level` or `party_slot`; `join_game` and the session-trade transfer
-(`trading_session::apply_swap`) call it themselves. The cascade zeroes it. The client keeps the
-two columns apart from the name: `StorePlayer` carries `discriminator` and `leadLevel`, and
+(`trading_session::apply_swap`) call it themselves. The cascade zeroes it. The client keeps the two
+columns apart from the name: `StorePlayer` carries `discriminator` and `leadLevel`, and
 `StorePlayer.name` is the raw name. `client/src/ui/playerTag.ts` is the one place a tag is
 formatted: `formatTag(discriminator)` gives `#` and the number padded to at least four digits
-through the catalog key `identity.tag` (no tag for 0), and `taggedName(players, identity)` joins
-the name and the tag through `identity.taggedName` (`Drew #0042`). Three surfaces show the tag:
-the Social screen's Players row (name, tag, lead level, Nearby, each its own element, the tag in
-the muted text colour except on the cursor row), the incoming trade and challenge request banner,
-and the Trades-tab session row. Every other surface shows the name alone: the tactical battle
-clock, the trade editor heading, the rename view, the Rankings tab.
+through the catalog key `identity.tag` (no tag for 0), and `taggedName(players, identity)` joins the
+name and the tag through `identity.taggedName` (`Drew #0042`). Three surfaces show the tag: the
+Social screen's Players row (name, tag, lead level, Nearby, each its own element; the tag in the
+muted text colour `--mr-text-muted`, which the accessibility suite checks in both themes, except on
+the cursor row; the level through the battle HUD's `tactics.hud.level` copy so it reads the same in
+both places, and none for 0), the incoming trade and challenge request banner, and the Trades-tab
+session row. Every other surface shows the name alone: the tactical battle clock, the trade editor
+heading, the rename view, the Rankings tab. `playerName` (`client/src/ui/tradeSessionModel.ts`)
+shows `#` and the first eight hex digits of the identity when the store holds no row for it or the
+row's name is empty. That fallback is not a tag: `validate_name` refuses an empty name at join and
+rename, so only an identity the store does not hold reaches it, and that identity has no tag to
+show.
 
 **Why.** The `player` row is deleted at every disconnect and is not re-keyed by the claim, so a
-value stored only there would be re-minted each session. A public `player_handle` would list
-every identity that ever joined, offline ones included; the mirror shows a tag only while its
-owner is online. `profile` rows exist only after a first rated game. A sequence value needs no
-collision retry and cannot be forged to match another player's; the accepted cost is that a tag
-reveals roughly how many identities joined before it. Zeroing the mirror at deletion keeps the
-tombstoned row from being linked back to a tag another player saw. The lead level is a stored
-column, not a view: another player's monsters are private (`monster_pub` is read only through
-the owner's view), and a view over `monster` evaluated for each subscriber would be recomputed
-on every monster change. The tag disambiguates where a player picks another player out of a list
-or answers a request from one; in a battle and in the world the name alone reads as part of the
-game (the operator's ruling), so the tag is a display join and never part of the stored name. The
-Players row is built from parts so the player-chosen name stays isolated in its `<bdi>` and out
-of the catalog resolver; the one-line banner and session row are plain text, so they take the
-catalog join.
+value stored only there would be re-minted each session. A public `player_handle` would list every
+identity that ever joined, offline ones included; the mirror shows a tag only while its owner is
+online. `profile` rows exist only after a first rated game. A sequence value needs no collision
+retry and cannot be forged to match another player's; the accepted cost is that a tag reveals
+roughly how many identities joined before it. Zeroing the mirror at deletion keeps the tombstoned
+row from being linked back to a tag another player saw. The lead level is a stored column, not a
+view: another player's monsters are private (`monster_pub` is read only through the owner's view),
+and a view over `monster` evaluated for each subscriber would be recomputed on every monster change.
+The tag disambiguates where a player picks another player out of a list or answers a request from
+one; in a battle and in the world the name alone reads as part of the game (the operator's ruling,
+<https://github.com/mdrewt/monster-realm/issues/588>), so the tag is a display join and never part
+of the stored name. The Players row is built from parts so the player-chosen name stays isolated in
+its `<bdi>` and out of the catalog resolver; the one-line banner and session row are plain text, so
+they take the catalog join.
 
 **Rules out.** Enforced-unique names. Deriving the tag from the identity (it would change at the
-claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle
-table or a view that serves another player's handle. Reissuing an erased value. Minting anywhere
-but `join_game`'s success path (a refused or deletion-gated join mints nothing). Changing a
-monster's `level` or `party_slot` outside the dual-write seam without calling
-`battle::refresh_lead_level`: the column would stay stale until the owner's next seam write or
-join. Folding the tag into `StorePlayer.name` at the row converter (every name-only surface would
-show it), and building the tag text or the name-and-tag join by concatenation outside
-`playerTag.ts`. Accepted consequence: the `u32` sequence is one finite, shared resource (about
-4.3 billion identities) that guests, who are never reaped, also draw from; once it is spent every
-identity without a handle is refused at join.
+claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle table or
+a view that serves another player's handle. Reissuing an erased value. Minting anywhere but
+`join_game`'s success path (a refused or deletion-gated join mints nothing). Changing a monster's
+`level` or `party_slot` outside the dual-write seam without calling `battle::refresh_lead_level`:
+the column would stay stale until the owner's next seam write or join. Folding the tag into
+`StorePlayer.name` at the row converter (every name-only surface would show it), and building the
+tag text or the name-and-tag join by concatenation outside `playerTag.ts`. Accepted consequence: the
+`u32` sequence is one finite, shared resource (about 4.3 billion identities) that guests, who are
+never reaped, also draw from; once it is spent every identity without a handle is refused at join.
+Also accepted: any client sees each online player's lead level and its changes as they happen
+(reorders, boxing, level-ups), because the operator chose the lead level for the Players row;
+bucketing the value is the remedy if a playtest finds that matters. A tag tells identities apart,
+not people: anonymous identities cost nothing to mint. And the tag links a claimed guest to its
+account for anyone who saw the guest's tag, which is the ruling's intent; deletion zeroes the tag on
+the surviving row only, not in another player's memory or screenshots.
 
 ## Account deletion and data export
 
@@ -1942,33 +1952,43 @@ OpenTelemetry SDK never loads. `main.ts` reads the build's `VITE_MR_OIDC_ISSUER`
 assignment that keeps it only for `official` or `test`; any other kind holds the empty string. That
 one value goes to `connect` and to `signInOffer` (`client/src/ui/claimModel.ts`), which decides
 whether the Profile screen's Account section offers Sign In and under which name: the build's
-`VITE_MR_OIDC_PROVIDER_NAME`, or the issuer string when the build names none. `VITE_MR_OIDC_CLIENT_ID`
-reaches `connect` under the same kind test. A production document that omits `kind` resolves to
-`private`, so it gets neither. The OTLP endpoint stays a build value; the run-time decision is only
-whether to use it. Two tests hold both gates: `client/src/observability/config.test.ts` (every kind
-but `official` and `test` resolves disabled) and `client/src/main.targetKindGate.test.ts` (boots
-`main.ts` under each kind, and reads the Sign In control and the connection's sign-in calls).
+`VITE_MR_OIDC_PROVIDER_NAME`, or the issuer string when the build names none.
+`VITE_MR_OIDC_CLIENT_ID` reaches `connect` under the same kind test. A production document that
+omits `kind` resolves to `private`, so it gets neither. The OTLP endpoint stays a build value; the
+run-time decision is only whether to use it. Two tests hold both gates:
+`client/src/observability/config.test.ts` (every kind but `official` and `test` resolves disabled)
+and `client/src/main.targetKindGate.test.ts` (boots `main.ts` under each kind, and reads the Sign In
+control and the connection's sign-in calls). The control reads "Sign in / create account with
+<provider>" (`claim.signInWithProvider`), because registration happens at the provider (operator
+ruling, <https://github.com/mdrewt/monster-realm/issues/588>). The e2e build sets the server's
+placeholder issuer `https://auth.monster-realm.invalid/` and a provider name
+(`client/playwright.config.ts`), so the browser suite runs the labelled sign-in and its fail-safe;
+the hidden control is proven by the DOM view tests and `main.targetKindGate.test.ts`.
 
-**Why.** The same build joins worlds we do not operate (see "One game, three ways to play: no code may
-assume we run the server"). Metrics from a friend's or a single-player world would reach our ingest
-carrying the client's address, timing, build and device class though the player never used our
-service. The account token is our issuer's id_token addressed to the build-wide client id, so a host
-that received it could replay it against the official server. The Sign In control follows the value
-`connect` received, so it shows exactly where a sign-in can start and the two cannot disagree; with no
-issuer the prompt says accounts are not available on that server. Both gates are allow-lists, so a kind
-added later is off until someone classifies it. The kind is the host's claim and is trusted exactly as
-far as the client code the host serves; a host that claims `official` or `test` can send its players'
-metrics to our ingest, which is accepted (the metrics carry no account identity).
+**Why.** The same build joins worlds we do not operate (see "One game, three ways to play: no code
+may assume we run the server"). Metrics from a friend's or a single-player world would reach our
+ingest carrying the client's address, timing, build and device class though the player never used
+our service. The account token is our issuer's id_token addressed to the build-wide client id, so a
+host that received it could replay it against the official server. The Sign In control follows the
+value `connect` received, so it shows exactly where a sign-in can start and the two cannot disagree;
+with no issuer the prompt says accounts are not available on that server. The issuer and the
+provider name are build values that reach the client at this one seam, and no client logic assumes a
+provider, so each build can point at its own OIDC provider. Both gates are allow-lists, so a kind
+added later is off until someone classifies it. The kind is the host's claim and is trusted exactly
+as far as the client code the host serves; a host that claims `official` or `test` can send its
+players' metrics to our ingest, which is accepted (the metrics carry no account identity).
 
-**Rules out.** Gating either on a build-time flag or on the page's `location` (the build must not know
-its server; a desktop shell's page origin is not the server); a deny-list of `local` and `private`;
-moving the telemetry endpoint into the shell document (a friends host copying our document would carry
-it); reading `import.meta.env.VITE_MR_OIDC_ISSUER` anywhere but that one assignment, or deciding the
-Sign In control from anything but the value `connect` received (a second read or a second kind test
-lets the control and the connection disagree); treating the hidden control or the empty issuer as a
-complete off switch (hiding is presentation: a hidden button still dispatches, so the `claimSignIn`
-command checks the offer itself; and a tab that holds a stored refresh token or a sign-in redirect's
-code still runs the token exchange at connect, which with an empty issuer fetches discovery from the
-page's own origin and fails unless that origin serves one; the `connect` gate is the boundary that
-keeps the build's issuer and client id from a server we do not operate). A per-world telemetry
-opt-in or per-world sign-in changes these two gates and their tests, not a side path.
+**Rules out.** Gating either on a build-time flag or on the page's `location` (the build must not
+know its server; a desktop shell's page origin is not the server); a deny-list of `local` and
+`private`; moving the telemetry endpoint into the shell document (a friends host copying our
+document would carry it); reading `import.meta.env.VITE_MR_OIDC_ISSUER` anywhere but that one
+assignment, or deciding the Sign In control from anything but the value `connect` received (a second
+read or a second kind test lets the control and the connection disagree); treating the hidden
+control or the empty issuer as a complete off switch (hiding is presentation: a hidden button still
+dispatches, so the `claimSignIn` command checks the offer itself; and a tab that holds a stored
+refresh token or a sign-in redirect's code still runs the token exchange at connect, which with an
+empty issuer fetches discovery from the page's own origin and fails unless that origin serves one;
+the `connect` gate is the boundary that keeps the build's issuer and client id from a server we do
+not operate). Client logic that assumes a provider, or a provider label derived by parsing the
+issuer URL (the OIDC flow already refuses an issuer it cannot use). A per-world telemetry opt-in or
+per-world sign-in changes these two gates and their tests, not a side path.
