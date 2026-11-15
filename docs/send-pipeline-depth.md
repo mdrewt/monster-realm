@@ -253,9 +253,9 @@ takes the second place. At depth 2 the held key takes both.
 
 ## Alternatives scored
 
-Four alternatives, scored from 0 to 10 against the rule above, independently of the
-measurements. The watcher's gain and the press rules count twice, and the teleport constraint
-is a gate. The scores are advisory: the verdict follows the rule alone.
+Four alternatives, scored from 0 to 10 against the rule above in a separate review of the
+data. The watcher's gain and the press rules count twice, and the teleport constraint is a
+gate. The scores are advisory: the verdict follows the rule alone.
 
 | Alternative | Watcher's gain at local delay | Teleport constraint | Press rules | Gain on a slow link | Evidence and size | Total of 60 |
 |---|---|---|---|---|---|---|
