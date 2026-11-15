@@ -1075,7 +1075,16 @@ public column on that row: the stored level of the owner's lead party monster, 0
 `battle::refresh_lead_level` keeps it equal to that level and writes the row only when the value
 differs. The dual-write seam (`monster_mgmt::update_monster_synced`) calls it when a write
 changes a monster's `level` or `party_slot`; `join_game` and the session-trade transfer
-(`trading_session::apply_swap`) call it themselves. The cascade zeroes it.
+(`trading_session::apply_swap`) call it themselves. The cascade zeroes it. The client keeps the
+two columns apart from the name: `StorePlayer` carries `discriminator` and `leadLevel`, and
+`StorePlayer.name` is the raw name. `client/src/ui/playerTag.ts` is the one place a tag is
+formatted: `formatTag(discriminator)` gives `#` and the number padded to at least four digits
+through the catalog key `identity.tag` (no tag for 0), and `taggedName(players, identity)` joins
+the name and the tag through `identity.taggedName` (`Drew #0042`). Three surfaces show the tag:
+the Social screen's Players row (name, tag, lead level, Nearby, each its own element, the tag in
+the muted text colour except on the cursor row), the incoming trade and challenge request banner,
+and the Trades-tab session row. Every other surface shows the name alone: the tactical battle
+clock, the trade editor heading, the rename view, the Rankings tab.
 
 **Why.** The `player` row is deleted at every disconnect and is not re-keyed by the claim, so a
 value stored only there would be re-minted each session. A public `player_handle` would list
@@ -1086,7 +1095,12 @@ reveals roughly how many identities joined before it. Zeroing the mirror at dele
 tombstoned row from being linked back to a tag another player saw. The lead level is a stored
 column, not a view: another player's monsters are private (`monster_pub` is read only through
 the owner's view), and a view over `monster` evaluated for each subscriber would be recomputed
-on every monster change.
+on every monster change. The tag disambiguates where a player picks another player out of a list
+or answers a request from one; in a battle and in the world the name alone reads as part of the
+game (the operator's ruling), so the tag is a display join and never part of the stored name. The
+Players row is built from parts so the player-chosen name stays isolated in its `<bdi>` and out
+of the catalog resolver; the one-line banner and session row are plain text, so they take the
+catalog join.
 
 **Rules out.** Enforced-unique names. Deriving the tag from the identity (it would change at the
 claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle
@@ -1094,9 +1108,11 @@ table or a view that serves another player's handle. Reissuing an erased value. 
 but `join_game`'s success path (a refused or deletion-gated join mints nothing). Changing a
 monster's `level` or `party_slot` outside the dual-write seam without calling
 `battle::refresh_lead_level`: the column would stay stale until the owner's next seam write or
-join. Accepted consequence: the `u32` sequence is one finite, shared resource (about 4.3 billion
-identities) that guests, who are never reaped, also draw from; once it is spent every identity
-without a handle is refused at join.
+join. Folding the tag into `StorePlayer.name` at the row converter (every name-only surface would
+show it), and building the tag text or the name-and-tag join by concatenation outside
+`playerTag.ts`. Accepted consequence: the `u32` sequence is one finite, shared resource (about
+4.3 billion identities) that guests, who are never reaped, also draw from; once it is spent every
+identity without a handle is refused at join.
 
 ## Account deletion and data export
 
