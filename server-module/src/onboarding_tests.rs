@@ -495,7 +495,7 @@ fn starter_grant_truth_table() {
     }
 }
 
-// --- eo-1.1 .. eo-1.4: what a join grants ----------------------------------------
+// --- what a join grants ------------------------------------------------------------
 
 /// A fresh identity (no marker, no monster) joins through `join_game`: it gets one
 /// starter monster of the starter species and its projection, a wallet of 200, one
@@ -558,9 +558,9 @@ fn a_fresh_joiner_gets_the_starter_the_kit_and_the_marker_eo1_1() {
 /// row joins: the join succeeds and grants nothing — no monster, no stack, no wallet
 /// row — and its dialogue row is byte-identical.
 ///
-/// kills: monster ownership as the starter test (the R-weekly-review-2026-10-23-F1
-/// re-grant: an identity that traded its last monster away gets a fresh starter); the
-/// kit granted to a claimed identity; the marker row rewritten.
+/// kills: monster ownership as the starter test (a guest claim moves every monster to
+/// the account, so the retired guest joins again owning none and gets a fresh
+/// starter); the kit granted to a claimed identity; the marker row rewritten.
 #[test]
 fn a_joiner_holding_the_marker_is_granted_nothing_even_owning_nothing_eo1_2() {
     let fx = fixture();
@@ -804,7 +804,7 @@ fn the_kit_is_skipped_when_its_second_item_does_not_fit_and_granted_when_it_does
     }
 }
 
-// --- eo-1.9: a kit that cannot be loaded ------------------------------------------
+// --- a kit that cannot be loaded -------------------------------------------------
 
 /// Register `last_position` (as the sr11 fixtures do) and seed a saved position for
 /// `who`: `take_start` consumes it on a join that gets past the refusals. Returns
