@@ -1979,7 +1979,9 @@ pub mod recruit_and_ordering {
     /// fixture really reaches the skill-validation loop and kills the always-`Ok` mutant.
     #[test]
     fn rt_w14_valid_01_validate_content_accepts_every_weather_kind() {
-        use crate::content::{parse_skills, parse_species, parse_type_chart, validate_content};
+        use crate::content::{
+            parse_skills, parse_species_parts, parse_type_chart, validate_content,
+        };
 
         // One species that learns exactly the one skill each case defines, so the
         // "learnable_skill_ids must exist" cross-check (content.rs:849-867) never fires and
@@ -1988,7 +1990,7 @@ pub mod recruit_and_ordering {
         (id: 1, name: "A", base_stats: (hp:45,attack:49,defense:49,speed:65,sp_attack:65,sp_defense:45),
          affinity: Fire, learnable_skill_ids: [1])
     ]"#;
-        let species = parse_species(species_ron).expect("species parse");
+        let species = parse_species_parts(&[("inline", species_ron)]).expect("species parse");
         let type_chart = parse_type_chart("[]").expect("type chart parse");
         let items = vec![];
 

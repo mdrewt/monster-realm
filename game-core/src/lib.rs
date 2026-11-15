@@ -50,16 +50,14 @@ pub use combat::{
 pub use content::{
     is_system_flag, load_abilities, load_dialogue_trees, load_encounters, load_evolution_paths,
     load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops, load_skills,
-    load_species, load_starter_kit, load_type_chart, load_zone_maps, load_zones, parse_abilities,
-    parse_dialogue_trees, parse_dialogue_trees_parts, parse_encounters, parse_evolution_paths,
-    parse_evolution_paths_parts, parse_heal_locations, parse_heal_locations_parts, parse_items,
-    parse_npc_defs, parse_npc_defs_parts, parse_quest_defs, parse_quest_defs_parts, parse_shops,
-    parse_skills, parse_species, parse_type_chart, parse_zone_maps, parse_zone_maps_parts,
-    parse_zones, validate_abilities, validate_content, validate_encounters,
-    validate_evolution_paths, validate_npc_content, validate_npc_interactions, validate_shops,
-    validate_starter_kit, validate_zones, AbilityDef, EssenceRequirement, EvolutionPath,
-    HealLocationDef, ItemDef, NpcDef, ShopDef, ShopStockEntry, SkillDef, Species, StarterKit,
-    TrustTier, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
+    load_species, load_starter_kit, load_type_chart, load_zone_maps, load_zones,
+    parse_dialogue_trees_parts, parse_evolution_paths_parts, parse_heal_locations_parts,
+    parse_items, parse_npc_defs_parts, parse_quest_defs_parts, parse_skills, parse_type_chart,
+    parse_zone_maps, parse_zone_maps_parts, validate_abilities, validate_content,
+    validate_encounters, validate_evolution_paths, validate_npc_content, validate_npc_interactions,
+    validate_shops, validate_starter_kit, validate_zones, AbilityDef, EssenceRequirement,
+    EvolutionPath, HealLocationDef, ItemDef, NpcDef, ShopDef, ShopStockEntry, SkillDef, Species,
+    StarterKit, TrustTier, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
 };
 pub use currency::battle_currency_reward;
 pub use dialogue::{
@@ -129,15 +127,9 @@ pub fn tick_seed(state: u64, input: u64, seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Pure movement helper: clamp a coordinate into `[-max, max]`.
-#[must_use]
-pub fn clamp_position(v: i32, max: i32) -> i32 {
-    v.clamp(-max, max)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{clamp_position, tick_seed};
+    use super::tick_seed;
 
     #[test]
     fn tick_seed_is_referentially_deterministic() {
@@ -158,13 +150,6 @@ mod tests {
     #[test]
     fn tick_seed_depends_on_seed() {
         assert_ne!(tick_seed(1, 2, 3), tick_seed(1, 2, 4));
-    }
-
-    #[test]
-    fn clamp_position_bounds() {
-        assert_eq!(clamp_position(1500, 1000), 1000);
-        assert_eq!(clamp_position(-1500, 1000), -1000);
-        assert_eq!(clamp_position(42, 1000), 42);
     }
 
     // -----------------------------------------------------------------------
