@@ -3257,21 +3257,477 @@ mod tests {
         assert_eq!(cfg.clients_start, cfg.clients_max);
     }
 
-    /// the hard client cap. 500 accepted, 501 rejected — kills a `>=` flip
-    /// on the cap and any parser that ignores MAX_CLIENTS entirely.
+    /// sr-9a.3: the hard client cap. 1000 accepted, 1001 rejected with the cap
+    /// in the message — kills a `>=` flip on the cap and any parser that
+    /// ignores MAX_CLIENTS entirely.
     #[test]
-    fn t01_clients_max_cap_is_exactly_max_clients() {
-        assert_eq!(MAX_CLIENTS, 500);
-        let ok = argv(&["--run-id", "T", "--clients-max", "500"]);
+    fn sr9a_3_clients_max_cap_is_exactly_1000() {
+        assert_eq!(MAX_CLIENTS, 1000);
+        let ok = argv(&["--run-id", "T", "--clients-max", "1000"]);
         assert!(
             parse_args(&ok).is_ok(),
-            "clients-max == MAX_CLIENTS must be accepted"
+            "clients-max == 1000 must be accepted"
         );
-        let bad = argv(&["--run-id", "T", "--clients-max", "501"]);
+        let bad = argv(&["--run-id", "T", "--clients-max", "1001"]);
+        let err = parse_args(&bad).expect_err("clients-max 1001 must be rejected");
+        assert!(err.contains("1000"), "the message names the cap: {err}");
+    }
+
+    // =======================================================================
+    // sr-9a.1 — rx bytes per client per second.
+    // =======================================================================
+
+    /// 3 bots, 4 raw readings. Reading 0 (warm-up) carries a huge spike in bot
+    /// 0 that a non-discarding impl would count; the largest bot is index 1
+    /// (neither first nor last). Usable = readings 1..=3, span = 2 intervals.
+    fn rx_fixture() -> Vec<Vec<u64>> {
+        vec![
+            vec![1_000_000_000, 0, 0],
+            vec![100, 200, 300],
+            vec![1100, 3200, 500],
+            vec![1500, 5200, 900],
+        ]
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_interval_1000() {
+        // deltas [1400, 5000, 600]; sum 7000; span 2000 ms.
+        // mean = 7000*1000/(3*2000) = 1166.67 -> 1166; max = 5000*1000/2000.
+        assert_eq!(
+            rx_rates(&rx_fixture(), 1000),
+            Some(RxRates {
+                mean: 1166,
+                max: 2500
+            })
+        );
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_scale_with_the_scrape_interval() {
+        // span = 2 * 250 = 500 ms: mean = 7000*1000/(3*500) = 4666.67 -> 4666.
+        assert_eq!(
+            rx_rates(&rx_fixture(), 250),
+            Some(RxRates {
+                mean: 4666,
+                max: 10_000
+            })
+        );
+        // span = 2 * 4000 = 8000 ms: mean = 7000*1000/24000 = 291.67 -> 291.
+        assert_eq!(
+            rx_rates(&rx_fixture(), 4000),
+            Some(RxRates {
+                mean: 291,
+                max: 625
+            })
+        );
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_floor_the_max_too() {
+        // usable [5] -> [15], span 3000 ms: 10 * 1000 / 3000 = 3.33 -> 3.
+        assert_eq!(
+            rx_rates(&[vec![0], vec![5], vec![15]], 3000),
+            Some(RxRates { mean: 3, max: 3 })
+        );
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_warmup_spike_is_excluded() {
+        // Only the warm-up reading differs between these two; the rates must not.
+        let calm = vec![vec![0, 0], vec![100, 100], vec![300, 500]];
+        let spiked = vec![vec![u64::MAX, 0], vec![100, 100], vec![300, 500]];
+        let expected = Some(RxRates { mean: 300, max: 400 });
+        assert_eq!(rx_rates(&calm, 1000), expected);
+        assert_eq!(rx_rates(&spiked, 1000), expected);
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_counter_decrease_saturates_to_zero() {
+        // deltas [100, 0]; span 1000: mean = 100*1000/(2*1000) = 50; max = 100.
+        assert_eq!(
+            rx_rates(&[vec![0, 0], vec![100, 500], vec![200, 100]], 1000),
+            Some(RxRates { mean: 50, max: 100 })
+        );
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_do_not_overflow() {
+        assert_eq!(
+            rx_rates(&[vec![0, 0], vec![0, 0], vec![u64::MAX, u64::MAX]], 1000),
+            Some(RxRates {
+                mean: u64::MAX,
+                max: u64::MAX
+            })
+        );
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_none_cases() {
+        assert_eq!(rx_rates(&[], 1000), None, "no readings");
+        assert_eq!(rx_rates(&[vec![1, 2]], 1000), None, "warm-up only");
+        assert_eq!(
+            rx_rates(&[vec![1, 2], vec![3, 4]], 1000),
+            None,
+            "one usable reading is no window"
+        );
+        assert_eq!(
+            rx_rates(&[vec![], vec![], vec![]], 1000),
+            None,
+            "zero bots"
+        );
+        assert_eq!(rx_rates(&rx_fixture(), 0), None, "zero interval");
+        assert_eq!(
+            rx_rates(&[vec![0, 0], vec![1, 2], vec![3]], 1000),
+            None,
+            "usable readings of differing length"
+        );
         assert!(
-            parse_args(&bad).is_err(),
-            "clients-max above MAX_CLIENTS must be rejected"
+            rx_rates(&[vec![0, 0], vec![1, 2], vec![3, 4]], 1000).is_some(),
+            "exactly two usable readings is a window"
         );
+    }
+
+    fn rx_sample(concurrency: u32, readings: Vec<Vec<u64>>) -> LevelSample {
+        LevelSample {
+            rx_bytes_by_scrape: readings,
+            ..base_sample(concurrency)
+        }
+    }
+
+    /// Each level object in the compact report, in order.
+    fn level_chunks(report: &str) -> Vec<&str> {
+        report.split("{\"concurrency\":").skip(1).collect()
+    }
+
+    #[test]
+    fn sr9a_1_report_carries_the_rx_rates_after_send_errors() {
+        let mut run = run_fixture("T-rx", vec![rx_sample(3, rx_fixture())]);
+        run.config.scrape_interval_ms = 1000;
+        let report = render_report(&run);
+        let levels = level_chunks(&report);
+        assert_eq!(levels.len(), 1);
+        assert!(
+            levels[0].contains(
+                "\"send_errors\":0,\"rx_bytes_per_client_per_s\":1166,\"rx_bytes_per_client_per_s_max\":2500,\"valid\":"
+            ),
+            "got {}",
+            levels[0]
+        );
+        // A different interval changes the rates: the config's interval is used.
+        run.config.scrape_interval_ms = 250;
+        let report = render_report(&run);
+        assert!(
+            report.contains(
+                "\"rx_bytes_per_client_per_s\":4666,\"rx_bytes_per_client_per_s_max\":10000,"
+            ),
+            "got {report}"
+        );
+    }
+
+    #[test]
+    fn sr9a_1_report_rx_is_null_without_a_window() {
+        let mut run = run_fixture(
+            "T-rx",
+            vec![
+                rx_sample(3, vec![]),
+                rx_sample(3, vec![vec![0; 3], vec![5; 3]]),
+            ],
+        );
+        run.config.scrape_interval_ms = 1000;
+        let report = render_report(&run);
+        let levels = level_chunks(&report);
+        assert_eq!(levels.len(), 2);
+        for level in levels {
+            assert!(
+                level.contains(
+                    "\"send_errors\":0,\"rx_bytes_per_client_per_s\":null,\"rx_bytes_per_client_per_s_max\":null,\"valid\":"
+                ),
+                "got {level}"
+            );
+        }
+    }
+
+    #[test]
+    fn sr9a_1_report_levels_get_their_own_rx_values() {
+        let level_b = vec![vec![0, 0], vec![0, 0], vec![400, 200]];
+        let mut run = run_fixture(
+            "T-rx",
+            vec![rx_sample(3, rx_fixture()), rx_sample(2, level_b)],
+        );
+        run.config.scrape_interval_ms = 1000;
+        let report = render_report(&run);
+        let levels = level_chunks(&report);
+        assert_eq!(levels.len(), 2);
+        assert!(
+            levels[0].contains(
+                "\"rx_bytes_per_client_per_s\":1166,\"rx_bytes_per_client_per_s_max\":2500,"
+            ),
+            "got {}",
+            levels[0]
+        );
+        // deltas [400, 200]; span 1000: mean 600*1000/(2*1000) = 300; max 400.
+        assert!(
+            levels[1].contains(
+                "\"rx_bytes_per_client_per_s\":300,\"rx_bytes_per_client_per_s_max\":400,"
+            ),
+            "got {}",
+            levels[1]
+        );
+    }
+
+    /// header cells and row cells of the rendered table.
+    fn table_cells(run: &Run) -> (Vec<String>, Vec<Vec<String>>) {
+        let table = render_table(run);
+        assert!(table.ends_with('\n'), "every line ends in a newline");
+        let mut lines = table.split_terminator('\n');
+        let header = lines
+            .next()
+            .expect("a header line")
+            .split('\t')
+            .map(str::to_string)
+            .collect();
+        let rows = lines
+            .map(|l| l.split('\t').map(str::to_string).collect())
+            .collect();
+        (header, rows)
+    }
+
+    fn column(header: &[String], name: &str) -> usize {
+        header
+            .iter()
+            .position(|h| h == name)
+            .unwrap_or_else(|| panic!("no column {name} in {header:?}"))
+    }
+
+    #[test]
+    fn sr9a_1_table_header_is_exact() {
+        let run = run_fixture("T-rx", vec![rx_sample(3, rx_fixture())]);
+        let (header, rows) = table_cells(&run);
+        assert_eq!(
+            header,
+            [
+                "concurrency",
+                "valid",
+                "movement_tick_p95_s",
+                "rx_bytes_per_client_per_s",
+                "rx_bytes_per_client_per_s_max",
+            ]
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 5);
+    }
+
+    #[test]
+    fn sr9a_1_table_rows_carry_exact_values_per_level() {
+        let level_b = vec![vec![0, 0], vec![0, 0], vec![400, 200]];
+        let mut run = run_fixture(
+            "T-rx",
+            vec![
+                rx_sample(3, rx_fixture()),
+                rx_sample(2, level_b),
+                rx_sample(4, vec![]),
+            ],
+        );
+        run.config.scrape_interval_ms = 1000;
+        let p95 = json_number(extract_p95_value(run.levels[0].verdict.p95));
+        let (header, rows) = table_cells(&run);
+        assert_eq!(rows.len(), 3);
+        let conc = column(&header, "concurrency");
+        let valid = column(&header, "valid");
+        let p95_col = column(&header, "movement_tick_p95_s");
+        let mean = column(&header, "rx_bytes_per_client_per_s");
+        let max = column(&header, "rx_bytes_per_client_per_s_max");
+        assert_eq!(rows[0][conc], "3");
+        assert_eq!(rows[0][valid], "true");
+        assert_eq!(rows[0][p95_col], p95);
+        assert_eq!(rows[0][mean], "1166");
+        assert_eq!(rows[0][max], "2500");
+        assert_eq!(rows[1][conc], "2");
+        assert_eq!(rows[1][mean], "300");
+        assert_eq!(rows[1][max], "400");
+        assert_eq!(rows[2][conc], "4");
+        assert_eq!(rows[2][mean], "-");
+        assert_eq!(rows[2][max], "-");
+    }
+
+    // =======================================================================
+    // sr-9a.2 — the world-wide `player` subscription.
+    // =======================================================================
+
+    const OTHER_A: &str = "abababababababababababababababababababababababababababababababab";
+    const OTHER_B: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+
+    /// a player row, object spelling, escaped for an `inserts` string slot.
+    fn obj_row(identity: &str, entity: u64) -> String {
+        format!(
+            r#"{{\"identity\":{{\"__identity__\":\"0x{identity}\"}},\"entity_id\":{entity},\"name\":\"P{entity}\",\"online\":true,\"last_input_seq\":0}}"#
+        )
+    }
+
+    /// a player row, array spelling, escaped for an `inserts` string slot.
+    fn arr_row(identity: &str, entity: u64) -> String {
+        format!(r#"[[\"0x{identity}\"],{entity},\"P{entity}\",true,0]"#)
+    }
+
+    fn insert_list(rows: &[String]) -> String {
+        rows.iter()
+            .map(|r| format!("\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn initial_msg(rows: &[String]) -> String {
+        format!(
+            r#"{{"InitialSubscription":{{"database_update":{{"tables":[{{"table_id":4132,"table_name":"player","num_rows":{},"updates":[{{"deletes":[],"inserts":[{}]}}]}}]}},"request_id":1}}}}"#,
+            rows.len(),
+            insert_list(rows)
+        )
+    }
+
+    fn txn_msg(rows: &[String]) -> String {
+        format!(
+            r#"{{"TransactionUpdate":{{"status":{{"Committed":{{"tables":[{{"table_id":4132,"table_name":"player","num_rows":{},"updates":[{{"deletes":[],"inserts":[{}]}}]}}]}}}},"timestamp":{{"__timestamp_micros_since_unix_epoch__":1}}}}}}"#,
+            rows.len(),
+            insert_list(rows)
+        )
+    }
+
+    /// every message layout: the own row (entity 9) with other players' rows
+    /// before it (a SMALLER id first), after it (a LARGER id last), and both.
+    fn crowded_messages() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        type RowFn = fn(&str, u64) -> String;
+        type MsgFn = fn(&[String]) -> String;
+        let spellings: [(&str, RowFn, MsgFn); 2] =
+            [("object", obj_row, initial_msg), ("array", arr_row, txn_msg)];
+        for (spelling, row, msg) in spellings {
+            let own = row(CAP_IDENTITY, 9);
+            let before = [row(OTHER_A, 4), own.clone()];
+            let after = [own.clone(), row(OTHER_B, 77)];
+            let both = [row(OTHER_A, 4), own.clone(), row(OTHER_B, 77)];
+            let many = [
+                row(OTHER_A, 4),
+                row(OTHER_B, 31),
+                own.clone(),
+                row(OTHER_A, 1000),
+                row(OTHER_B, 77),
+            ];
+            out.push((format!("{spelling}/before"), msg(&before)));
+            out.push((format!("{spelling}/after"), msg(&after)));
+            out.push((format!("{spelling}/both"), msg(&both)));
+            out.push((format!("{spelling}/many"), msg(&many)));
+        }
+        out
+    }
+
+    #[test]
+    fn sr9a_2_opening_set_is_the_whole_player_table() {
+        assert_eq!(PLAYER_QUERY, "SELECT * FROM player");
+        assert_eq!(opening_queries(), vec!["SELECT * FROM player".to_string()]);
+        assert_eq!(
+            client_msg_subscribe(&opening_queries(), 1),
+            r#"{"Subscribe":{"query_strings":["SELECT * FROM player"],"request_id":1}}"#
+        );
+    }
+
+    #[test]
+    fn sr9a_2_every_scope_set_has_the_player_query_exactly_once_first() {
+        for set in [
+            scope_queries(9, None),
+            scope_queries(9, Some(0)),
+            scope_queries(9, Some(1)),
+            scope_queries(u64::MAX, Some(u32::MAX)),
+        ] {
+            assert_eq!(set[0], "SELECT * FROM player");
+            assert_eq!(
+                set.iter().filter(|q| *q == "SELECT * FROM player").count(),
+                1,
+                "{set:?}"
+            );
+        }
+        assert_eq!(scope_queries(9, None).len(), 2);
+        assert_eq!(scope_queries(9, Some(2)).len(), 3);
+    }
+
+    #[test]
+    fn sr9a_2_row_scan_reads_the_own_entity_among_other_players() {
+        for (label, msg) in crowded_messages() {
+            for size in [1, 3, 7, 4096] {
+                assert_eq!(
+                    scan_in_pieces(&mut RowScan::own_player(CAP_IDENTITY), &msg, size),
+                    Some(9),
+                    "{label} in pieces of {size}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sr9a_2_row_scan_without_the_own_row_reads_nothing() {
+        for spelling in [obj_row as fn(&str, u64) -> String, arr_row] {
+            let rows = [spelling(OTHER_A, 4), spelling(OTHER_B, 77)];
+            for msg in [initial_msg(&rows), txn_msg(&rows)] {
+                for size in [1, 7, 4096] {
+                    assert_eq!(
+                        scan_in_pieces(&mut RowScan::own_player(CAP_IDENTITY), &msg, size),
+                        None,
+                        "pieces of {size}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sr9a_2_bot_scope_names_its_own_entity_among_other_players() {
+        for (label, msg) in crowded_messages() {
+            for size in [1, 3, 7, 4096] {
+                let mut scope = BotScope::new(CAP_IDENTITY);
+                let mut sent: Vec<Vec<String>> = Vec::new();
+                for piece in msg.as_bytes().chunks(size) {
+                    sent.extend(scope.on_payload(piece));
+                }
+                assert_eq!(
+                    sent,
+                    [vec![
+                        "SELECT * FROM player".to_string(),
+                        "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                    ]],
+                    "{label} in pieces of {size}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sr9a_2_bot_scope_resubscribe_after_a_warp_keeps_the_player_query() {
+        for (label, msg) in crowded_messages() {
+            let mut scope = BotScope::new(CAP_IDENTITY);
+            let mut sent: Vec<Vec<String>> = Vec::new();
+            for text in [msg.as_str(), CAP_OWN_APPLIED, CAP_PAIR_APPLIED, CAP_WARP] {
+                sent.extend(scope.on_payload(text.as_bytes()));
+            }
+            assert_eq!(
+                sent,
+                [
+                    vec![
+                        "SELECT * FROM player".to_string(),
+                        "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                    ],
+                    vec![
+                        "SELECT * FROM player".to_string(),
+                        "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                        "SELECT * FROM character WHERE zone_id = 0".to_string(),
+                    ],
+                    vec![
+                        "SELECT * FROM player".to_string(),
+                        "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                        "SELECT * FROM character WHERE zone_id = 1".to_string(),
+                    ],
+                ],
+                "{label}"
+            );
+        }
     }
 
     /// `--hold-scrapes` ≥ 4 (1 warm-up discard + ≥3 usable readings).
@@ -3767,10 +4223,8 @@ mod tests {
     /// the three query strings, byte for byte, and the sets built from them.
     #[test]
     fn t03_scope_queries_are_byte_exact() {
-        assert_eq!(
-            own_player_query("c200ab"),
-            "SELECT * FROM player WHERE identity = 0xc200ab"
-        );
+        assert_eq!(PLAYER_QUERY, "SELECT * FROM player");
+        assert_eq!(opening_queries(), ["SELECT * FROM player"]);
         assert_eq!(
             own_character_query(7),
             "SELECT * FROM character WHERE entity_id = 7"
@@ -3786,11 +4240,15 @@ mod tests {
         );
         assert_eq!(
             scope_queries(7, None),
-            ["SELECT * FROM character WHERE entity_id = 7"]
+            [
+                "SELECT * FROM player",
+                "SELECT * FROM character WHERE entity_id = 7"
+            ]
         );
         assert_eq!(
             scope_queries(7, Some(3)),
             [
+                "SELECT * FROM player",
                 "SELECT * FROM character WHERE entity_id = 7",
                 "SELECT * FROM character WHERE zone_id = 3",
             ]
@@ -3801,7 +4259,7 @@ mod tests {
     /// names the table filters it by the own entity or by one zone.
     #[test]
     fn t03_no_query_subscribes_character_unfiltered() {
-        let mut sent = vec![own_player_query("c200ab")];
+        let mut sent = opening_queries();
         sent.extend(scope_queries(7, None));
         sent.extend(scope_queries(7, Some(0)));
         sent.extend(scope_queries(7, Some(1)));
@@ -4748,6 +5206,9 @@ mod tests {
             drain_cap_hits: 0,
             send_errors: 0,
             counter_decreased: false,
+            rx_bytes_by_scrape: (0..4u64)
+                .map(|k| vec![k * 1000; concurrency as usize])
+                .collect(),
         }
     }
 
@@ -5185,7 +5646,7 @@ mod tests {
     ];
 
     /// The exact per-level key order.
-    const LEVEL_KEYS: [&str; 19] = [
+    const LEVEL_KEYS: [&str; 21] = [
         "concurrency",
         "scrapes",
         "clients_connected",
@@ -5202,6 +5663,8 @@ mod tests {
         "attempted_sends",
         "drain_cap_hits",
         "send_errors",
+        "rx_bytes_per_client_per_s",
+        "rx_bytes_per_client_per_s_max",
         "valid",
         "invalid_reason",
         "notes",
@@ -6384,11 +6847,11 @@ mod tests {
     fn t17_subscribe_envelope_is_byte_exact() {
         assert_eq!(
             client_msg_subscribe(&scope_queries(7, Some(0)), 1),
-            r#"{"Subscribe":{"query_strings":["SELECT * FROM character WHERE entity_id = 7","SELECT * FROM character WHERE zone_id = 0"],"request_id":1}}"#
+            r#"{"Subscribe":{"query_strings":["SELECT * FROM player","SELECT * FROM character WHERE entity_id = 7","SELECT * FROM character WHERE zone_id = 0"],"request_id":1}}"#
         );
         assert_eq!(
-            client_msg_subscribe(&[own_player_query("c200ab")], 1),
-            r#"{"Subscribe":{"query_strings":["SELECT * FROM player WHERE identity = 0xc200ab"],"request_id":1}}"#
+            client_msg_subscribe(&opening_queries(), 1),
+            r#"{"Subscribe":{"query_strings":["SELECT * FROM player"],"request_id":1}}"#
         );
     }
 
@@ -6481,12 +6944,12 @@ mod tests {
     /// order, using the driver's own bot name — proving the pieces compose.
     #[test]
     fn t17_per_connection_message_sequence() {
-        let subscribe = client_msg_subscribe(&[own_player_query("c200ab")], 1);
+        let subscribe = client_msg_subscribe(&opening_queries(), 1);
         let join = client_msg_call_reducer(REDUCER_JOIN_GAME, &args_join_game(&bot_name(3)), 2);
         assert!(subscribe.starts_with(r#"{"Subscribe":"#));
         assert!(
             !subscribe.contains("character"),
-            "a bot opens with its own player row; its character set follows from that row"
+            "a bot opens with the player table; its character set follows from its own row"
         );
         assert_eq!(
             join,
@@ -6659,12 +7122,17 @@ mod tests {
             assert_eq!(
                 sent,
                 [
-                    vec!["SELECT * FROM character WHERE entity_id = 9".to_string()],
                     vec![
+                        "SELECT * FROM player".to_string(),
+                        "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                    ],
+                    vec![
+                        "SELECT * FROM player".to_string(),
                         "SELECT * FROM character WHERE entity_id = 9".to_string(),
                         "SELECT * FROM character WHERE zone_id = 0".to_string(),
                     ],
                     vec![
+                        "SELECT * FROM player".to_string(),
                         "SELECT * FROM character WHERE entity_id = 9".to_string(),
                         "SELECT * FROM character WHERE zone_id = 1".to_string(),
                     ],
@@ -6690,6 +7158,7 @@ mod tests {
         assert_eq!(
             scope.on_payload(in_zone_1.as_bytes()),
             Some(vec![
+                "SELECT * FROM player".to_string(),
                 "SELECT * FROM character WHERE entity_id = 9".to_string(),
                 "SELECT * FROM character WHERE zone_id = 1".to_string(),
             ])
@@ -6805,7 +7274,7 @@ mod tests {
     fn am04_thread_count_includes_the_scraper() {
         assert_eq!(total_driver_threads(0), 1);
         assert_eq!(total_driver_threads(50), 51);
-        assert_eq!(total_driver_threads(MAX_CLIENTS), 501);
+        assert_eq!(total_driver_threads(MAX_CLIENTS), 1001);
     }
 
     /// The remaining frozen constants, pinned so a rename or a re-tune is a
