@@ -3,7 +3,9 @@
 //
 // evals/baselines/table-schemas.json records, per table: pk, visibility,
 // column types, column order, #[default] columns, #[unique] columns, indexed
-// columns (#[index(btree)]) and the scheduled reducer. Two layers:
+// columns (#[index(btree)]), each table-level composite index (accessor and
+// ordered columns; the key is present only on a table that declares one) and
+// the scheduled reducer. Two layers:
 //
 //  1. DRIFT — the parsed source must equal the working baseline exactly
 //     (regenerate with `node evals/battle-schema-snapshot.eval.mjs --write`
@@ -103,6 +105,27 @@ export function parseField(chunk) {
   return { attrs, name: m[1], type: m[2].replace(/\s+/g, '') };
 }
 
+// The one modelled table-level index form: `index(accessor = X, btree(columns = [a, b, ..]))`.
+const COMPOSITE_INDEX =
+  /^index\s*\(\s*accessor\s*=\s*(\w+)\s*,\s*btree\s*\(\s*columns\s*=\s*\[([\w\s,]*)\]\s*\)\s*\)$/;
+
+// A table-level index argument -> { accessor, columns } (columns in declared order). It must
+// name two or more distinct columns of the struct; any other table-level form throws, and a
+// one-column index belongs on its field as #[index(btree)].
+export function parseCompositeIndex(table, arg, order) {
+  const fail = (why) => {
+    throw new Error(`${table}: table-level index \`${arg}\` ${why}`);
+  };
+  const m = COMPOSITE_INDEX.exec(arg);
+  if (!m) fail('is not the modelled index(accessor = X, btree(columns = [a, b, ..])) form');
+  const columns = m[2].split(',').map((c) => c.trim());
+  if (columns.length < 2)
+    fail('must list two or more columns (a one-column index goes on the field)');
+  for (const c of columns) if (!order.includes(c)) fail(`names unknown column '${c}'`);
+  if (new Set(columns).size !== columns.length) fail('repeats a column');
+  return { accessor: m[1], columns };
+}
+
 export function parseTables(src) {
   const tables = {};
   let at = src.indexOf(TABLE_ATTR);
@@ -113,22 +136,28 @@ export function parseTables(src) {
       args.find((a) => a.startsWith('accessor')) ?? '',
     )?.[1];
     if (!name) throw new Error(`table attribute at offset ${at} has no accessor`);
-    if (args.some((a) => a.startsWith('index(')))
-      throw new Error(`${name}: table-level index() is not modelled here`);
     const item = itemAt(src, matchClose(src, at + 1));
     const fields = splitTop(item.body).map(parseField);
     const has = (f, a) => f.attrs.includes(a);
     const withAttr = (a) => fields.filter((f) => has(f, a)).map((f) => f.name);
+    const order = fields.map((f) => f.name);
+    const composite = args
+      .filter((a) => /^index\b/.test(a))
+      .map((a) => parseCompositeIndex(name, a, order));
+    const accessors = composite.map((c) => c.accessor);
+    if (new Set(accessors).size !== accessors.length)
+      throw new Error(`${name}: two table-level indexes share an accessor`);
     tables[name] = {
       pk: fields.find((f) => has(f, 'primary_key'))?.name ?? null,
       visibility: args.includes('public') ? 'public' : 'private',
       columns: Object.fromEntries(fields.map((f) => [f.name, f.type])),
-      order: fields.map((f) => f.name),
+      order,
       defaults: fields
         .filter((f) => f.attrs.some((a) => a.startsWith('default(')))
         .map((f) => f.name),
       unique: withAttr('unique'),
       indexes: withAttr('index(btree)'),
+      ...(composite.length ? { composite_indexes: composite } : {}),
       scheduled:
         /^scheduled\((\w+)\)$/.exec(args.find((a) => a.startsWith('scheduled(')) ?? '')?.[1] ??
         null,
@@ -160,7 +189,7 @@ export function driftViolations(parsed, baseline) {
     else if (!(t in baseline))
       out.push(`[drift] table '${t}' is in source but not in the baseline`);
     else if (JSON.stringify(parsed[t]) !== JSON.stringify(b)) {
-      const keys = Object.keys(parsed[t]).filter(
+      const keys = [...new Set([...Object.keys(parsed[t]), ...Object.keys(b)])].filter(
         (k) => JSON.stringify(parsed[t][k]) !== JSON.stringify(b[k]),
       );
       out.push(`[drift] table '${t}' differs from the baseline in ${keys.join(', ')}`);
@@ -265,6 +294,37 @@ function selfTeeth() {
   const decoy = `const S: &str = "${TABLE_ATTR}accessor = fake)] pub struct F { pub x: u8 }"; // ${TABLE_ATTR}accessor = f2)]`;
   if (Object.keys(parseTables(stripRustSource(decoy))).length !== 0)
     bad.push('string/comment decoy parsed as a table');
+  const table = (extra) =>
+    parseTables(
+      stripRustSource(
+        `${TABLE_ATTR}accessor = t${extra})] pub struct T { pub a: u32, pub b: u32 }`,
+      ),
+    ).t;
+  const composite = table(', index(accessor = ba, btree(columns = [b, a]))').composite_indexes;
+  if (JSON.stringify(composite) !== '[{"accessor":"ba","columns":["b","a"]}]')
+    bad.push('composite index not recorded with its columns in declared order');
+  if ('composite_indexes' in table('')) bad.push('composite_indexes key on a table without one');
+  for (const form of [
+    'index(accessor = x, hash(columns = [a, b]))',
+    'index(accessor = x, direct(column = a))',
+    'index(name = x, btree(columns = [a, b]))',
+    'index(btree(columns = [a, b]))',
+    'index(accessor = x, btree(columns = [a, b]), y)',
+    'index (accessor = x, hash(columns = [a, b]))',
+    'index(accessor = x, btree(columns = [a]))',
+    'index(accessor = x, btree(columns = [a, b,]))',
+    'index(accessor = x, btree(columns = [a, c]))',
+    'index(accessor = x, btree(columns = [a, a]))',
+    'index(accessor = x, btree(columns = [a, b])), index(accessor = x, btree(columns = [b, a]))',
+  ]) {
+    let message = '';
+    try {
+      table(`, ${form}`);
+    } catch (err) {
+      message = err.message;
+    }
+    if (!message.includes('table-level index')) bad.push(`table-level \`${form}\` did not throw`);
+  }
   return bad;
 }
 

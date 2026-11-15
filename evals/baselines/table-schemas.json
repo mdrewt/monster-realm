@@ -529,6 +529,15 @@
     "indexes": [
       "owner_identity"
     ],
+    "composite_indexes": [
+      {
+        "accessor": "owner_party",
+        "columns": [
+          "owner_identity",
+          "party_slot"
+        ]
+      }
+    ],
     "scheduled": null
   },
   "monster_pub": {
