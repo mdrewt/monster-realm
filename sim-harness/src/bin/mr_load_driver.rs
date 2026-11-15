@@ -19,7 +19,7 @@
 //! | `--scenario movement\|chat-flood` | `movement` | `chat-flood` ⇒ exit 2, no report (OBS-28/M19) |
 //! | `--clients-start <n>` | `5` | ≥1 |
 //! | `--clients-step <n>` | `5` | ≥1 |
-//! | `--clients-max <n>` | `50` | ≥ start, ≤ `MAX_CLIENTS` (500) |
+//! | `--clients-max <n>` | `50` | ≥ start, ≤ `MAX_CLIENTS` (1000) |
 //! | `--hold-scrapes <n>` | `10` | ≥ `MIN_HOLD_SCRAPES` (4) |
 //! | `--scrape-interval-ms <n>` | `1000` | ≥100 |
 //! | `--move-rate <n>` | `5` | 1..=100 intents/sec/client |
@@ -106,12 +106,16 @@
 //!               "enqueue_move_accepted_delta":…, "enqueue_move_rejected_delta":…,
 //!               "movement_tick_txn_delta":…, "attempted_sends":…,
 //!               "drain_cap_hits":…, "send_errors":…,
+//!               "rx_bytes_per_client_per_s":<int>|null,
+//!               "rx_bytes_per_client_per_s_max":<int>|null,
 //!               "valid":<bool>, "invalid_reason":null|"…", "notes":[…] } ],
 //!   "notes":[…] }
 //! ```
 //!
 //! The JSON is compact (no whitespace outside string values) and contains **no
-//! newline**. The bearer token NEVER appears in it — [`Run`] carries
+//! newline**. Beside it, stderr carries the rendered table ([`render_table`]): one
+//! tab-separated line per level with its concurrency, validity, p95 and the two
+//! download rates. The bearer token NEVER appears in it — [`Run`] carries
 //! `auth_token` for the shell, and [`render_report`] deliberately omits it.
 //!
 //! ## Measurement semantics
@@ -147,6 +151,14 @@
 //!   `db=`, queue gauges use `database_identity=`. All txn matches also pin
 //!   `txn_type="Reducer"` — an `txn_type="Update"` row exists per reducer and
 //!   would double-count accepted/rejected deltas.
+//! - Download (`rx_bytes_per_client_per_s`, `_max`): every bot counts the bytes
+//!   it reads off its socket after the handshake, and the scraper copies all the
+//!   counts right after each scrape. Over the same usable window as the p95 (AM6
+//!   discard), the mean is all bots' bytes divided by the bot count and the
+//!   window's seconds, and the max is the single largest bot's rate. The seconds
+//!   are `(usable scrapes − 1) × --scrape-interval-ms`, the driver's own schedule
+//!   ([`rx_rates`]); a scrape's own duration is not counted, so the rates lean
+//!   high. Both are integers, rounded down.
 //! - Accept/reject truth comes from `spacetime_num_txns_total` deltas alone
 //!   (S1), so the WS reader never parses a data payload as JSON. It reads two
 //!   numbers out of the stream by their surrounding text ([`RowScan`]): the
@@ -155,20 +167,24 @@
 //!
 //! ## What a bot subscribes to
 //!
-//! What the real client holds of `character` (`client/src/net/worldScope.ts`),
-//! in the same order and the same SQL text, so the host shares each zone query
-//! between bots and clients alike:
+//! What the real client holds of `player` and `character`, in the same SQL text,
+//! so the host shares each query between bots and clients alike:
 //!
-//! 1. `SELECT * FROM player WHERE identity = 0x<own>`, then `join_game`.
-//! 2. The own `player` row names the entity:
-//!    `SELECT * FROM character WHERE entity_id = <E>`.
-//! 3. The own `character` row names the zone: that query plus
+//! 1. `SELECT * FROM player` — the whole table, world-wide, as
+//!    `client/src/net/connection.ts` subscribes it — then `join_game`. The bot's
+//!    own row is the one whose identity is the bot's; other players' rows in the
+//!    same message are passed over ([`RowScan::own_player`]).
+//! 2. The own `player` row names the entity: the player query plus
+//!    `SELECT * FROM character WHERE entity_id = <E>`
+//!    (`client/src/net/worldScope.ts`).
+//! 3. The own `character` row names the zone: those two plus
 //!    `SELECT * FROM character WHERE zone_id = <Z>`.
-//! 4. A later own row in another zone: both strings again with the new `<Z>`.
+//! 4. A later own row in another zone: all three again with the new `<Z>`.
 //!
 //! This protocol's `Subscribe` REPLACES the connection's whole query set, so
-//! each step sends every string the bot is to hold. `character` is never
-//! subscribed whole, and a bot holds none of the client's other tables.
+//! each step sends every string the bot is to hold, the player query included.
+//! `character` is never subscribed whole. A bot holds none of the client's other
+//! tables: walking writes none of them, so they add no per-step fan-out.
 //!
 //! ## Level validity (AM5) — an invalid level can never be the breaking point
 //!
@@ -252,11 +268,16 @@ pub const QUEUE_FAMILIES: [&str; 2] = [
     "spacetime_worker_instance_operation_queue_length",
 ];
 
-/// The query a bot opens with: its own `player` row, which names the entity it
-/// was given by `join_game`. `identity_hex` is the bare hex of `POST /v1/identity`.
+/// The whole `player` table, world-wide. Byte-identical to the real client's
+/// `player` query in `client/src/net/connection.ts`, so a bot receives the
+/// `player` fan-out a client does. The bot's own row is picked out of it by
+/// identity ([`RowScan::own_player`]); that row names the entity `join_game` gave it.
+pub const PLAYER_QUERY: &str = "SELECT * FROM player";
+
+/// The set a bot opens with, before it knows its entity.
 #[must_use]
-pub fn own_player_query(identity_hex: &str) -> String {
-    format!("SELECT * FROM player WHERE identity = 0x{identity_hex}")
+pub fn opening_queries() -> Vec<String> {
+    vec![PLAYER_QUERY.to_string()]
 }
 
 /// The own-row `character` query. Byte-identical to `ownCharacterQuery` in
@@ -275,12 +296,12 @@ pub fn zone_query(zone_id: u32) -> String {
     format!("SELECT * FROM character WHERE zone_id = {zone_id}")
 }
 
-/// The `character` set a bot holds, as the real client scopes it: its own row,
-/// and the zone that row is in once the row has said which. `character` is never
-/// subscribed whole.
+/// The set a bot holds once it knows its entity: [`PLAYER_QUERY`], then
+/// `character` as the real client scopes it — its own row, and the zone that row
+/// is in once the row has said which. `character` is never subscribed whole.
 #[must_use]
 pub fn scope_queries(entity_id: u64, zone_id: Option<u32>) -> Vec<String> {
-    let mut queries = vec![own_character_query(entity_id)];
+    let mut queries = vec![PLAYER_QUERY.to_string(), own_character_query(entity_id)];
     if let Some(zone_id) = zone_id {
         queries.push(zone_query(zone_id));
     }
@@ -288,7 +309,9 @@ pub fn scope_queries(entity_id: u64, zone_id: Option<u32>) -> Vec<String> {
 }
 
 /// Hard client cap (fail-loud above it): thread + FD ceilings, 256 KiB stacks.
-pub const MAX_CLIENTS: u32 = 500;
+/// One socket per bot, so 1,000 bots sit just under a common 1,024 open-file
+/// limit; a lower `ulimit -n` shows up as connect failures (`send_errors`).
+pub const MAX_CLIENTS: u32 = 1000;
 
 /// Highest accepted `--move-rate` (intents/sec/client).
 pub const MAX_MOVE_RATE: u32 = 100;
@@ -1207,6 +1230,9 @@ pub struct LevelSample {
     pub send_errors: u64,
     /// A cumulative counter decreased between scrapes (host restart).
     pub counter_decreased: bool,
+    /// Per-scrape readings, oldest first: every bot's cumulative received bytes
+    /// at that scrape, indexed by bot. Judged by [`rx_rates`].
+    pub rx_bytes_by_scrape: Vec<Vec<u64>>,
 }
 
 /// The judged level.
@@ -1391,6 +1417,47 @@ pub fn cross_level_growth(verdicts: &[LevelVerdict]) -> Vec<String> {
     out
 }
 
+/// Per-client download over a level's usable window, in bytes per second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RxRates {
+    /// All bots' bytes over the window, divided by the bot count and its seconds.
+    pub mean: u64,
+    /// The single largest bot's bytes over the window, divided by its seconds.
+    pub max: u64,
+}
+
+/// The download rates of one level. `readings` is [`LevelSample::rx_bytes_by_scrape`]
+/// (raw; this owns the AM6 discard). The window runs from the first usable reading
+/// to the last, and its length is the driver's own scrape schedule —
+/// `(usable readings − 1) × scrape_interval_ms` — never a clock read. A scrape's
+/// own duration is not in that length, so the rates lean high, never low.
+/// Both rates round down.
+///
+/// `None` with fewer than two usable readings, no bots, a zero interval, or
+/// usable readings of unequal length.
+#[must_use]
+pub fn rx_rates(readings: &[Vec<u64>], scrape_interval_ms: u64) -> Option<RxRates> {
+    let usable = usable_window(readings);
+    let (first, last) = (usable.first()?, usable.last()?);
+    let intervals = u128::try_from(usable.len() - 1).ok()?;
+    let span_ms = intervals * u128::from(scrape_interval_ms);
+    let bots = u128::try_from(first.len()).ok()?;
+    if span_ms == 0 || bots == 0 || usable.iter().any(|r| r.len() != first.len()) {
+        return None;
+    }
+    let deltas = first
+        .iter()
+        .zip(last)
+        .map(|(start, end)| u128::from(end.saturating_sub(*start)));
+    let (sum, max) = deltas.fold((0u128, 0u128), |(sum, max), d| (sum + d, max.max(d)));
+    let rate =
+        |bytes: u128, divisor: u128| u64::try_from(bytes * 1000 / divisor).unwrap_or(u64::MAX);
+    Some(RxRates {
+        mean: rate(sum, bots * span_ms),
+        max: rate(max, span_ms),
+    })
+}
+
 /// Total threads this run will spawn: one per client plus the scraper.
 #[must_use]
 pub fn total_driver_threads(clients: u32) -> usize {
@@ -1494,15 +1561,21 @@ fn json_opt_number(v: Option<f64>) -> String {
     v.map_or_else(|| "null".to_string(), json_number)
 }
 
+/// An optional integer report field: `null` when `None`.
+fn json_opt_integer(v: Option<u64>) -> String {
+    v.map_or_else(|| "null".to_string(), |n| n.to_string())
+}
+
 fn scenario_name(scenario: Scenario) -> &'static str {
     match scenario {
         Scenario::Movement => "movement",
     }
 }
 
-fn render_level(report: &LevelReport) -> String {
+fn render_level(report: &LevelReport, scrape_interval_ms: u64) -> String {
     let s = &report.sample;
     let v = &report.verdict;
+    let rx = rx_rates(&s.rx_bytes_by_scrape, scrape_interval_ms);
 
     let queues: Vec<String> = s
         .queue_readings
@@ -1528,6 +1601,7 @@ fn render_level(report: &LevelReport) -> String {
             "\"plateau\":{{{}}},\"enqueue_move_accepted_delta\":{},",
             "\"enqueue_move_rejected_delta\":{},\"movement_tick_txn_delta\":{},",
             "\"attempted_sends\":{},\"drain_cap_hits\":{},\"send_errors\":{},",
+            "\"rx_bytes_per_client_per_s\":{},\"rx_bytes_per_client_per_s_max\":{},",
             "\"valid\":{},\"invalid_reason\":{},\"notes\":{}}}"
         ),
         s.concurrency,
@@ -1546,6 +1620,8 @@ fn render_level(report: &LevelReport) -> String {
         s.attempted_sends,
         s.drain_cap_hits,
         s.send_errors,
+        json_opt_integer(rx.map(|r| r.mean)),
+        json_opt_integer(rx.map(|r| r.max)),
         v.valid,
         invalid_reason,
         json_str_array(&v.notes),
@@ -1567,7 +1643,11 @@ pub fn render_report(run: &Run) -> String {
     };
     let not_reached = bp.is_none();
 
-    let levels: Vec<String> = run.levels.iter().map(render_level).collect();
+    let levels: Vec<String> = run
+        .levels
+        .iter()
+        .map(|level| render_level(level, cfg.scrape_interval_ms))
+        .collect();
 
     format!(
         concat!(
@@ -1594,6 +1674,32 @@ pub fn render_report(run: &Run) -> String {
         levels.join(","),
         json_str_array(&run.notes),
     )
+}
+
+/// The rendered table: one tab-separated line per level under a header line,
+/// each line ending in `\n`, `-` where a value is absent. The shell writes it to
+/// stderr, so stdout stays the bare JSON report.
+#[must_use]
+pub fn render_table(run: &Run) -> String {
+    let mut out = String::from(
+        "concurrency\tvalid\tmovement_tick_p95_s\trx_bytes_per_client_per_s\trx_bytes_per_client_per_s_max\n",
+    );
+    let cell = |v: Option<String>| v.unwrap_or_else(|| "-".to_string());
+    for level in &run.levels {
+        let rx = rx_rates(
+            &level.sample.rx_bytes_by_scrape,
+            run.config.scrape_interval_ms,
+        );
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            level.sample.concurrency,
+            level.verdict.valid,
+            cell(p95_value_s(level.verdict.p95).map(json_number)),
+            cell(rx.map(|r| r.mean.to_string())),
+            cell(rx.map(|r| r.max.to_string())),
+        ));
+    }
+    out
 }
 
 // ===========================================================================
@@ -2373,6 +2479,9 @@ pub fn client_msg_call_reducer(reducer: &str, args: &str, request_id: u32) -> St
 /// Cross-thread counters (no mpsc — YAGNI).
 #[derive(Debug, Default)]
 pub struct ClientCounters {
+    /// Each bot's cumulative bytes read off its socket after the handshake, by
+    /// bot index. The scraper copies them at every scrape.
+    pub rx_bytes: Vec<std::sync::atomic::AtomicU64>,
     pub connected: std::sync::atomic::AtomicU64,
     /// Bots that have asked for their own row and its zone ([`BotScope::scoped`]).
     pub scoped: std::sync::atomic::AtomicU64,
@@ -2464,8 +2573,8 @@ struct MintedIdentity {
 /// client needs its own so `join_game` creates a distinct player+character —
 /// otherwise every connection re-uses one identity, one character exists, and the
 /// O(N²) subscription fan-out OBS-27 measures collapses to O(N). The identity is
-/// kept beside the token: a bot names its own `player` row by it
-/// ([`own_player_query`]).
+/// kept beside the token: a bot picks its own row out of the whole `player`
+/// table by it ([`RowScan::own_player`]).
 fn mint_identity(host: &str) -> Result<MintedIdentity, String> {
     let (head, body) = http_roundtrip(host, &http_post_request(host, "/v1/identity", "", None))?;
     if http_status(&head)? != 200 {
@@ -2503,8 +2612,8 @@ fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
     Err("connection closed before the handshake completed".to_string())
 }
 
-/// Open a WS connection, handshake, subscribe to the own `player` row, and
-/// `join_game`.
+/// Open a WS connection, handshake, subscribe to the opening set
+/// ([`opening_queries`]), and `join_game`.
 /// AM11: sets BOTH a read timeout ([`READ_TIMEOUT_MS`]) and a write timeout.
 fn connect_client(
     host: &str,
@@ -2534,9 +2643,9 @@ fn connect_client(
         return Err(format!("websocket handshake rejected: {head}"));
     }
 
-    // The own `player` row (frame 0), then join_game (frame 1): the join's row
-    // names the entity, and BotScope takes the subscription from there.
-    let subscribe = client_msg_subscribe(&[own_player_query(&identity.identity_hex)], 1);
+    // The whole `player` table (frame 0), then join_game (frame 1): the join's
+    // own row names the entity, and BotScope takes the subscription from there.
+    let subscribe = client_msg_subscribe(&opening_queries(), 1);
     let sub_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), 0);
     stream
         .write_all(&encode_text_frame(&subscribe, sub_mask))
@@ -2605,34 +2714,40 @@ fn client_thread(
                     stop = true; // peer closed
                     break;
                 }
-                Ok(n) => match drain_feed_into(&mut drain, &buf[..n], &mut |payload| {
-                    resubscribes.extend(scope.on_payload(payload));
-                }) {
-                    Ok(out) => {
-                        skipped_this_iter += out.data_frames_skipped;
-                        for control in out.control {
-                            if let ControlFrame::Ping(payload) = control {
-                                let mask =
-                                    mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
-                                frame_index += 1;
-                                let _ = stream.write_all(&encode_pong(&payload, mask));
+                Ok(n) => {
+                    counters.rx_bytes[client_index as usize].fetch_add(n as u64, Ordering::Relaxed);
+                    let fed = drain_feed_into(&mut drain, &buf[..n], &mut |payload| {
+                        resubscribes.extend(scope.on_payload(payload));
+                    });
+                    match fed {
+                        Ok(out) => {
+                            skipped_this_iter += out.data_frames_skipped;
+                            for control in out.control {
+                                if let ControlFrame::Ping(payload) = control {
+                                    let mask = mask_from_seed(
+                                        cfg.seed ^ u64::from(client_index),
+                                        frame_index,
+                                    );
+                                    frame_index += 1;
+                                    let _ = stream.write_all(&encode_pong(&payload, mask));
+                                }
+                            }
+                            if out.closed {
+                                stop = true;
+                                break;
+                            }
+                            if skipped_this_iter >= DRAIN_FRAME_CAP as u64 {
+                                counters.drain_cap_hits.fetch_add(1, Ordering::Relaxed);
+                                break; // receive-lag: stop draining, go send
                             }
                         }
-                        if out.closed {
+                        Err(_) => {
+                            counters.send_errors.fetch_add(1, Ordering::Relaxed);
                             stop = true;
                             break;
                         }
-                        if skipped_this_iter >= DRAIN_FRAME_CAP as u64 {
-                            counters.drain_cap_hits.fetch_add(1, Ordering::Relaxed);
-                            break; // receive-lag: stop draining, go send
-                        }
                     }
-                    Err(_) => {
-                        counters.send_errors.fetch_add(1, Ordering::Relaxed);
-                        stop = true;
-                        break;
-                    }
-                },
+                }
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
@@ -2695,11 +2810,14 @@ fn client_thread(
 
 /// The single scraper thread: `GET /metrics` with explicit timeouts and bounded
 /// retries (AM12). Exhaustion clears `running` and aborts the level LOUDLY.
+/// Each scrape is paired with a copy of every bot's received-byte count taken
+/// right after it, so the download window follows the same schedule.
 fn scraper_thread(
     cfg: &Config,
     host: &str,
     token: &str,
-    scrapes: &Mutex<Vec<Vec<Sample>>>,
+    counters: &ClientCounters,
+    scrapes: &Mutex<Vec<(Vec<Sample>, Vec<u64>)>>,
     running: &AtomicBool,
 ) -> Result<(), String> {
     for _ in 0..cfg.hold_scrapes {
@@ -2714,10 +2832,17 @@ fn scraper_thread(
             }
         }
         match collected {
-            Some(samples) => scrapes
-                .lock()
-                .map_err(|_| "scrapes mutex poisoned".to_string())?
-                .push(samples),
+            Some(samples) => {
+                let rx: Vec<u64> = counters
+                    .rx_bytes
+                    .iter()
+                    .map(|bytes| bytes.load(Ordering::Relaxed))
+                    .collect();
+                scrapes
+                    .lock()
+                    .map_err(|_| "scrapes mutex poisoned".to_string())?
+                    .push((samples, rx));
+            }
             None => {
                 running.store(false, Ordering::Relaxed);
                 return Err("metrics scrape failed after retries (AM12)".to_string());
@@ -2789,6 +2914,7 @@ fn build_level_sample(
     counters: &ClientCounters,
     baseline: &[Sample],
     scrapes: &[Vec<Sample>],
+    rx_bytes_by_scrape: Vec<Vec<u64>>,
 ) -> Result<LevelSample, String> {
     let p95_snapshots = tick_snapshots(scrapes, db_identity)?;
 
@@ -2833,6 +2959,7 @@ fn build_level_sample(
         drain_cap_hits: counters.drain_cap_hits.load(Ordering::Relaxed),
         send_errors: counters.send_errors.load(Ordering::Relaxed),
         counter_decreased: detect_counter_reset(baseline, scrapes, db_identity),
+        rx_bytes_by_scrape,
     })
 }
 
@@ -2855,9 +2982,14 @@ fn run_level(
     // whole level (joins finish during startup, before the first in-window scrape).
     let baseline = scrape_once(host, token)?;
 
-    let counters = ClientCounters::default();
+    let counters = ClientCounters {
+        rx_bytes: (0..concurrency)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect(),
+        ..ClientCounters::default()
+    };
     let running = AtomicBool::new(true);
-    let scrapes: Mutex<Vec<Vec<Sample>>> = Mutex::new(Vec::new());
+    let scrapes: Mutex<Vec<(Vec<Sample>, Vec<u64>)>> = Mutex::new(Vec::new());
 
     // Shared references (Copy) so the `move` client closures don't consume the
     // owned values we still need after the scope joins.
@@ -2867,8 +2999,8 @@ fn run_level(
     let client_tokens_ref = &client_tokens;
     let scrape_result = std::thread::scope(|scope| -> Result<(), String> {
         for client_index in 0..concurrency {
-            // 256 KiB stacks (not the ~2 MiB default) so MAX_CLIENTS=500 is
-            // actually reachable (~128 MiB vs ~1 GiB) and the doc claim is honest.
+            // 256 KiB stacks (not the ~2 MiB default) so MAX_CLIENTS=1000 is
+            // actually reachable (~256 MiB vs ~2 GiB) and the doc claim is honest.
             std::thread::Builder::new()
                 .stack_size(256 * 1024)
                 .spawn_scoped(scope, move || {
@@ -2887,18 +3019,28 @@ fn run_level(
                     format!("spawn client {client_index}: {e}")
                 })?;
         }
-        let scraper =
-            scope.spawn(move || scraper_thread(cfg, host, token, scrapes_ref, running_ref));
+        let scraper = scope.spawn(move || {
+            scraper_thread(cfg, host, token, counters_ref, scrapes_ref, running_ref)
+        });
         scraper
             .join()
             .map_err(|_| "scraper thread panicked".to_string())?
     });
     scrape_result?;
 
-    let raw = scrapes
+    let (raw, rx_bytes_by_scrape): (Vec<Vec<Sample>>, Vec<Vec<u64>>) = scrapes
         .into_inner()
-        .map_err(|_| "scrapes mutex poisoned".to_string())?;
-    let sample = build_level_sample(db_identity, concurrency, &counters, &baseline, &raw)?;
+        .map_err(|_| "scrapes mutex poisoned".to_string())?
+        .into_iter()
+        .unzip();
+    let sample = build_level_sample(
+        db_identity,
+        concurrency,
+        &counters,
+        &baseline,
+        &raw,
+        rx_bytes_by_scrape,
+    )?;
     let verdict = evaluate_level(&sample)?;
     Ok(LevelReport { sample, verdict })
 }
@@ -2957,6 +3099,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         notes,
     };
     let report = render_report(&run);
+    eprint!("{}", render_table(&run));
     match run.config.report_path.as_deref() {
         Some(path) => std::fs::write(path, &report).map_err(|e| format!("write {path}: {e}"))?,
         None => println!("{report}"),
@@ -3336,7 +3479,10 @@ mod tests {
         // Only the warm-up reading differs between these two; the rates must not.
         let calm = vec![vec![0, 0], vec![100, 100], vec![300, 500]];
         let spiked = vec![vec![u64::MAX, 0], vec![100, 100], vec![300, 500]];
-        let expected = Some(RxRates { mean: 300, max: 400 });
+        let expected = Some(RxRates {
+            mean: 300,
+            max: 400,
+        });
         assert_eq!(rx_rates(&calm, 1000), expected);
         assert_eq!(rx_rates(&spiked, 1000), expected);
     }
@@ -3370,11 +3516,7 @@ mod tests {
             None,
             "one usable reading is no window"
         );
-        assert_eq!(
-            rx_rates(&[vec![], vec![], vec![]], 1000),
-            None,
-            "zero bots"
-        );
+        assert_eq!(rx_rates(&[vec![], vec![], vec![]], 1000), None, "zero bots");
         assert_eq!(rx_rates(&rx_fixture(), 0), None, "zero interval");
         assert_eq!(
             rx_rates(&[vec![0, 0], vec![1, 2], vec![3]], 1000),
@@ -3598,8 +3740,10 @@ mod tests {
         let mut out = Vec::new();
         type RowFn = fn(&str, u64) -> String;
         type MsgFn = fn(&[String]) -> String;
-        let spellings: [(&str, RowFn, MsgFn); 2] =
-            [("object", obj_row, initial_msg), ("array", arr_row, txn_msg)];
+        let spellings: [(&str, RowFn, MsgFn); 2] = [
+            ("object", obj_row, initial_msg),
+            ("array", arr_row, txn_msg),
+        ];
         for (spelling, row, msg) in spellings {
             let own = row(CAP_IDENTITY, 9);
             let before = [row(OTHER_A, 4), own.clone()];
