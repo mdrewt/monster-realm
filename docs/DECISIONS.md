@@ -1153,21 +1153,32 @@ product function until a survivor is found for it.
 
 ## Dev-only reducers never ship
 
-**Decision.** `start_wild_battle` and `grant_bait` compile only with the
-`dev_reducers` feature (`server-module/Cargo.toml`), which is never in `default`. The
-playtest recipes publish the default build and then check the *published* module with
-`spacetime describe --json` (`scripts/verify-release-reducers.mjs`), and check that
-the production client bundle contains no DEV debug hooks
-(`scripts/verify-build-hooks.mjs`). A dev-gated start never outlives its build phase: the
-tactical `dev_start_tactical_*` reducers were deleted in the same slice that wired the live
-paths, and the e2e drives every battle through the player-reachable flows.
+**Decision.** The dev reducers, `grant_bait` and `dev_expire_tactical_window`, compile
+only with the `dev_reducers` feature (`server-module/Cargo.toml`), which is never in
+`default`. The playtest recipes publish the default build and then check the *published*
+module with `spacetime describe --json` (`scripts/verify-release-reducers.mjs`, whose
+`FORBIDDEN_REDUCERS` lists every dev reducer name, so a new dev reducer joins it in the
+change that adds it), and check that the production client bundle contains no DEV debug
+hooks (`scripts/verify-build-hooks.mjs`). The committed client bindings are generated from
+the default build, so they hold no dev reducer, and the `bindings-drift` eval fails if one
+appears. No dev reducer starts a battle: the e2e drives every battle through the
+player-reachable flows. `dev_expire_tactical_window` is callable only by the module owner
+(the `config` row's `owner_identity`, the check `sync_content` makes), so a player is
+refused even in a dev build. It moves the open turn window's deadline to the call's time and
+arms one deadline fire there; the scheduler's own `tactical_deadline_fire` expires the
+window as at a real deadline. An e2e may expire a window through it instead of waiting, and
+a test that does so keeps one real-time expiry in the same test.
 
-**Why.** A dev reducer in a real deployment is a free-items and free-battles exploit.
-Checking the published module rather than the source catches a wrong build flag in
-the publish path, which a source grep would not.
+**Why.** A dev reducer in a real deployment is an exploit: free items, or expiring another
+player's turn window. Checking the published module rather than the source catches a wrong
+build flag in the publish path, which a source grep would not. A test that waits real
+deadlines spends a full turn window per expiry (30 s in PvP); overriding `now` would open later
+windows ahead of real time, so the reducer moves one deadline and leaves every timestamp real.
+One real-time expiry per test keeps the real scheduler covered by the two-browser flow.
 
-**Rules out.** Runtime flags for dev reducers; trusting the source tree as proof of
-what was published.
+**Rules out.** Runtime flags for dev reducers; trusting the source tree as proof of what was
+published; a dev reducer a player can call; a fake or overridden clock for tests; an e2e that
+takes every expiry through the dev path.
 
 ## SpacetimeDB versions move in lockstep
 
