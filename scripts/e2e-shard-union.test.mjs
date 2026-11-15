@@ -80,7 +80,7 @@ test('an artifact that is not a shard report fails', () => {
   assert.match(r.out, /not an e2e-timings-<shard>-<attempt> artifact/);
 });
 
-// ---- th-3: tests that passed only on a rerun ----
+// ---- tests that passed only on a rerun ----
 
 const HEADING = '## e2e tests that passed only on a rerun';
 const TABLE_HEAD =
@@ -418,7 +418,7 @@ test('th-3.3: a nested describe title is in the warning message', () => {
   ]);
 });
 
-// Round 2: titles are normalised to one line before escaping, so only '%' needs escaping here.
+// Titles are normalised to one line before escaping, so only '%' needs escaping here.
 test('th-3.3: percent in a title is escaped in the message and a line break becomes one space', () => {
   const title = '100% sure\r\nsecond';
   const r = run([
@@ -504,7 +504,7 @@ test('th-3.5: a highest attempt with no e2e.json still fails the run', () => {
   assert.match(r.stderr, /e2e-timings-1-2: e2e.json or e2e-list.json is missing/);
 });
 
-// ---- round 2 ----
+// ---- shard order, project keys, one-line titles, unreadable highest attempts, summary write failures ----
 
 const STDERR_UNREADABLE =
   'e2e-shard-union: e2e-timings-1-2: e2e.json or e2e-list.json is missing or unreadable';
