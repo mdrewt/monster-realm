@@ -593,11 +593,12 @@ draw order (`client/src/render/world.ts:296-299`): terrain (`#bg`), ground decor
 `world.ts:302`). The world container is the stage's only child; the UI is DOM, outside
 the canvas.
 - Terrain (`#drawMap`, `world.ts:461`): `planChunks` bakes static tiles into
-  nearest-sampled chunk textures at the device scale (`world.ts:490`). Animated water
+  nearest-sampled chunk textures at resolution 1 (`world.ts:489`), which the integer
+  device scale upsamples, so a device-scale change re-bakes nothing. Animated water
   stays as per-tile sprites whose texture changes only when the frame index changes. The
   bake runs before the drawn terrain is torn down, so a failed bake leaves the previous
   terrain on screen.
-- Decor (`#drawDecor`, `world.ts:523`): `layoutDecor` (`render/decorLayout.ts:56`)
+- Decor (`#drawDecor`, `world.ts:521`): `layoutDecor` (`render/decorLayout.ts:56`)
   places a landmark per heal-location row and a warp marker per warp source tile, from the
   map's content rows. Landmarks are two tiles tall and join the actors' row z-order. Warp
   markers are ground decals under every actor.
@@ -615,7 +616,7 @@ renderer starts with every pass off (`world.ts:255`), and the live game keeps it
 (`world.ts:343`) turns passes on: the look-dev scene uses it, and the world-art e2e uses
 it through the DEV `__game().setPostStack` hook.
 
-`WorldRenderer.describeArt()` (`world.ts:724`) is a read-only account of what was last
+`WorldRenderer.describeArt()` (`world.ts:717`) is a read-only account of what was last
 drawn. It reports the terrain kind (kit or fallback), the kit frame key per tile, the
 per-class tile histogram, the landmark and warp-marker sprites with their screen rects
 (via `screenFor`), and the attached passes with their keyframe. The DEV

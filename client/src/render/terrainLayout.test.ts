@@ -1,10 +1,12 @@
 /**
  * render/terrainLayout.test.ts — gating tests for the terrain renderer's pure core (wap-4,
  * WAP4.1–WAP4.6; WAP4.4's main.ts wiring half lives in main.reducedMotionWiring.test.ts).
+ * Every chunk texture is requested at resolution 1 with nearest sampling, whatever the device
+ * scale; the cache takes no device scale.
  * Real `TileMap`s, the TS kit manifest for the frame key set, injected fake texture factory:
  * no Pixi, no wasm, no clock.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ShoreSlot,
   TERRAIN_KIT_CLASSES,
@@ -497,7 +499,7 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
   it('WAP4.5 build creates one texture per chunk and returns them', () => {
     const { cache, created } = harness();
     const chunks = mkChunks();
-    const out = cache.build(chunks, 1);
+    const out = cache.build(chunks);
     expect(chunks.length).toBe(6);
     expect(created).toHaveLength(6);
     expect(out).toEqual(created);
@@ -507,8 +509,8 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
   it('WAP4.5 a second build destroys every texture of the first exactly once', () => {
     const { cache, created, destroyed } = harness();
     const chunks = mkChunks();
-    const first = [...cache.build(chunks, 1)];
-    cache.build(chunks, 1);
+    const first = [...cache.build(chunks)];
+    cache.build(chunks);
     expect(destroyed).toHaveLength(6);
     for (const tok of first) expect(destroyed.filter((d) => d === tok)).toHaveLength(1);
     expect(created).toHaveLength(12);
@@ -518,7 +520,7 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
   it('WAP4.5 clear destroys every live texture exactly once; a second clear is a no-op', () => {
     const { cache, created, destroyed } = harness();
     const chunks = mkChunks();
-    cache.build(chunks, 1);
+    cache.build(chunks);
     cache.clear();
     expect(cache.size).toBe(0);
     expect(destroyed).toHaveLength(6);
@@ -530,8 +532,8 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
   it('WAP4.5 across build, build, clear every created texture is destroyed exactly once', () => {
     const { cache, created, destroyed } = harness();
     const chunks = mkChunks();
-    cache.build(chunks, 1);
-    cache.build(chunks.slice(0, 3), 2);
+    cache.build(chunks);
+    cache.build(chunks.slice(0, 3));
     cache.clear();
     expect(created).toHaveLength(9);
     expect(destroyed).toHaveLength(9);
@@ -540,8 +542,8 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
 
   it('WAP4.5 building an empty chunk list after a build destroys both and leaves size 0', () => {
     const { cache, created, destroyed } = harness();
-    cache.build(mkChunks().slice(0, 2), 1);
-    expect(cache.build([], 1)).toEqual([]);
+    cache.build(mkChunks().slice(0, 2));
+    expect(cache.build([])).toEqual([]);
     expect(cache.size).toBe(0);
     expect(destroyed).toHaveLength(2);
     for (const tok of created) expect(destroyed.filter((d) => d === tok)).toHaveLength(1);
@@ -550,8 +552,8 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
   it('WAP4.5 a failed rebuild is atomic: new textures destroyed, previous set stays live', () => {
     const { cache, created, destroyed } = harness(4);
     const chunks = mkChunks().slice(0, 2);
-    cache.build(chunks, 1);
-    expect(() => cache.build(chunks, 1)).toThrow('create failed');
+    cache.build(chunks);
+    expect(() => cache.build(chunks)).toThrow('create failed');
     expect(created).toHaveLength(3);
     expect(destroyed).toEqual([created[2]]);
     expect(cache.size).toBe(2);
@@ -563,43 +565,54 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
 
   it('WAP4.5 a failed first build leaves size 0 and destroys what it created', () => {
     const { cache, created, destroyed } = harness(2);
-    expect(() => cache.build(mkChunks().slice(0, 3), 1)).toThrow('create failed');
+    expect(() => cache.build(mkChunks().slice(0, 3))).toThrow('create failed');
     expect(created).toHaveLength(1);
     expect(destroyed).toEqual([created[0]]);
     expect(cache.size).toBe(0);
   });
 
-  it('WAP4.6 chunkTextureRequest maps the cache options to Pixi generateTexture options', () => {
-    for (const scale of [1, 2, 3]) {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('chunkTextureRequest maps the cache options to resolution 1 nearest at any device scale sr-8.1', () => {
+    for (const scale of [1, 1.5, 2, 3]) {
+      vi.stubGlobal('devicePixelRatio', scale);
+      vi.stubGlobal('window', { devicePixelRatio: scale });
       const { cache, created } = harness();
-      cache.build(mkChunks().slice(0, 1), scale);
+      cache.build(mkChunks().slice(0, 1));
       const opts = (created[0] as Token).options;
       expect(chunkTextureRequest(opts)).toEqual({
-        resolution: scale,
+        resolution: 1,
         textureSourceOptions: { scaleMode: 'nearest' },
       });
     }
   });
 
-  it('WAP4.6 every create call receives the deviceScale with nearest scaling', () => {
-    for (const scale of [1, 2, 3]) {
+  it('every create call receives resolution 1 with nearest scaling at any device scale sr-8.1', () => {
+    for (const scale of [1, 1.5, 2, 3]) {
+      vi.stubGlobal('devicePixelRatio', scale);
+      vi.stubGlobal('window', { devicePixelRatio: scale });
       const { cache, created } = harness();
-      const chunks = mkChunks();
-      cache.build(chunks, scale);
+      cache.build(mkChunks());
       expect(created).toHaveLength(6);
-      for (const tok of created)
-        expect(tok.options).toEqual({ resolution: scale, scaleMode: 'nearest' });
+      for (const tok of created) {
+        expect(tok.options).toEqual({ resolution: 1, scaleMode: 'nearest' });
+        expect(chunkTextureRequest(tok.options)).toEqual({
+          resolution: 1,
+          textureSourceOptions: { scaleMode: 'nearest' },
+        });
+      }
     }
   });
 
-  it('WAP4.6 a rebuild at a new deviceScale uses the new scale for the second batch', () => {
+  it('a rebuild creates every texture at resolution 1 with nearest scaling sr-8.1', () => {
     const { cache, created } = harness();
     const chunks = mkChunks();
-    cache.build(chunks, 2);
-    cache.build(chunks, 3);
-    expect(created.slice(0, 6).every((t) => t.options.resolution === 2)).toBe(true);
-    expect(created.slice(6).every((t) => t.options.resolution === 3)).toBe(true);
-    expect(created.every((t) => t.options.scaleMode === 'nearest')).toBe(true);
+    cache.build(chunks);
+    cache.build(chunks);
+    expect(created).toHaveLength(12);
+    for (const tok of created) expect(tok.options).toEqual({ resolution: 1, scaleMode: 'nearest' });
   });
 
   it('WAP4.6 kitAtlasAsset asks Pixi for nearest-scaled atlas textures', () => {

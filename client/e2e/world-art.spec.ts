@@ -53,8 +53,14 @@ import {
 // overlap either rect and the topmost DOM element at the rect must be the canvas. The terrain
 // tooth compares same-class tiles of DIFFERENT frame keys: a flat or missing terrain draws them
 // identical.
+//
+// DEVICE SCALE. The whole flow runs in three contexts, deviceScaleFactor 1, 2 and 1.5, each with
+// the thresholds above unchanged. Rects, pitch and the DOM probes stay in CSS px; the screenshot is
+// device px (VIEWPORT x dpr), so `toPx` converts a CSS rect to device px at the diff boundary.
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
+/** The device scale factors the whole flow runs at; 1.5 gives a fractional stage scale. */
+const DEVICE_SCALES = [1, 2, 1.5] as const;
 const FULL_STACK = ['lightmap', 'bloom', 'godray', 'lut'] as const;
 const STACK_ON = { lightmap: true, bloom: true, godray: true, lut: true } as const;
 const STACK_OFF = { lightmap: false, bloom: false, godray: false, lut: false } as const;
@@ -64,7 +70,7 @@ type Toggles = Record<(typeof FULL_STACK)[number], boolean>;
 const CHANNEL_THRESH = 24;
 /** The share of a sampled rect's pixels that must differ from a ground tile. */
 const LAND_MIN = 0.3;
-/** The warp marker's own floor: a decal covering less of its tile (measured 0.293). With a
+/** The warp marker's own floor: a decal covering less of its tile (measured 0.293 at dpr 1). With a
  *  stack-off noise of 0.000 the noise + NOISE_MARGIN rule dominates, so the EFFECTIVE floor for
  *  the warp is 0.2; this constant only documents that the absolute floor is below the margin. */
 const WARP_MIN = 0.15;
@@ -72,7 +78,7 @@ const WARP_MIN = 0.15;
 const NOISE_MARGIN = 0.2;
 /** The share of the whole frame that must change when the stack goes off. Measured: the day
  *  keyframe is a light warm lift, so the full stack moves 0.217 of the frame (199708 of 921600
- *  pixels by >= 24 per channel); an unattached stack reads ~0. */
+ *  pixels by >= 24 per channel, at dpr 1); an unattached stack reads ~0. */
 const STACK_FRAME_MIN = 0.1;
 /** The heal post (8,3) and the warp source (1,5), both tiles of zone 0 (Verdant Hollow); the
  *  warp lands in zone 1 (Tideglass Cove). */
@@ -270,12 +276,13 @@ async function diffRects(
   };
 }
 
-/** An integer pixel rect shrunk 2 px each side (edge anti-aliasing, sub-pixel seams). */
-const toPx = (r: ScreenRect): Px => ({
-  x: Math.round(r.x) + 2,
-  y: Math.round(r.y) + 2,
-  w: Math.max(1, Math.round(r.w) - 4),
-  h: Math.max(1, Math.round(r.h) - 4),
+/** A CSS-px rect as an integer DEVICE-px rect (the screenshot's pixels), shrunk 2 CSS px (2*dpr
+ *  device px) each side (edge anti-aliasing, sub-pixel seams). At dpr 1 this is the CSS rect. */
+const toPx = (r: ScreenRect, dpr: number): Px => ({
+  x: Math.round(r.x * dpr) + Math.round(2 * dpr),
+  y: Math.round(r.y * dpr) + Math.round(2 * dpr),
+  w: Math.max(1, Math.round(r.w * dpr) - Math.round(4 * dpr)),
+  h: Math.max(1, Math.round(r.h * dpr) - Math.round(4 * dpr)),
 });
 
 const overlaps = (a: ScreenRect, b: ScreenRect): boolean =>
@@ -342,6 +349,8 @@ interface ProofCase {
   tile: Tile;
   /** The CSS px of one tile at the stage scale. */
   pitch: number;
+  /** The context's device scale factor: the screenshot is device px, every rect is CSS px. */
+  dpr: number;
   /** Ground classes the references are drawn from, in preference order. */
   kinds: readonly string[];
   /** The absolute floor on the share of sample pixels that differ from ground. */
@@ -477,7 +486,7 @@ async function variantTooth(page: Page, c: ProofCase): Promise<{ frac: number; d
       await page.waitForTimeout(500);
       continue;
     }
-    const px = await diffRects(page, png, [[toPx(rectOf(a)), toPx(rectOf(b))]]);
+    const px = await diffRects(page, png, [[toPx(rectOf(a), c.dpr), toPx(rectOf(b), c.dpr)]]);
     const s = px.shares[0] as Share;
     return {
       frac: s.frac,
@@ -582,15 +591,15 @@ async function pixelProofStackOff(page: Page, c: ProofCase): Promise<ProofResult
       continue;
     }
     const px = await diffRects(page, png, [
-      [toPx(sample), toPx(ground1)],
-      [toPx(ground1), toPx(ground2)],
+      [toPx(sample, c.dpr), toPx(ground1, c.dpr)],
+      [toPx(ground1, c.dpr), toPx(ground2, c.dpr)],
     ]);
     expect(
       { w: px.w, h: px.h },
-      `${c.label}: the screenshot is the viewport at device ratio 1`,
+      `${c.label}: the screenshot is the viewport at device ratio ${c.dpr}`,
     ).toEqual({
-      w: VIEWPORT.width,
-      h: VIEWPORT.height,
+      w: VIEWPORT.width * c.dpr,
+      h: VIEWPORT.height * c.dpr,
     });
     const land = px.shares[0] as Share;
     const noise = px.shares[1] as Share;
@@ -667,386 +676,397 @@ interface PostSample {
   post: ArtDescription['post'] | null;
 }
 
-test.describe
-  .serial('wap-10 — the integrated world art (real client + server, one player, D-pad only)', () => {
-    let browser: Browser;
-    let ctx: BrowserContext;
-    let page: Page;
-    const samples: PostSample[] = [];
-    let zone0Histogram: ArtDescription['histogram'] | null = null;
-    let pitch = 0;
+for (const dpr of DEVICE_SCALES) {
+  test.describe
+    .serial(`wap-10 — the integrated world art (real client + server, one player, D-pad only) @dpr${dpr}`, () => {
+      let browser: Browser;
+      let ctx: BrowserContext;
+      let page: Page;
+      const samples: PostSample[] = [];
+      let zone0Histogram: ArtDescription['histogram'] | null = null;
+      let pitch = 0;
 
-    const sample = async (label: string): Promise<void> => {
-      const art = await readArt(page);
-      samples.push({ label, post: art === null ? null : art.post });
-    };
+      const sample = async (label: string): Promise<void> => {
+        const art = await readArt(page);
+        samples.push({ label, post: art === null ? null : art.post });
+      };
 
-    /** Waits (without asserting) for the full stack to show on the art; WAP10.3 judges it. */
-    const waitStackOn = async (): Promise<void> => {
-      await page
-        .waitForFunction(
+      /** Waits (without asserting) for the full stack to show on the art; WAP10.3 judges it. */
+      const waitStackOn = async (): Promise<void> => {
+        await page
+          .waitForFunction(
+            () => {
+              const a = (window as unknown as { __game: () => ArtHook }).__game().art;
+              return a !== null && a !== undefined && a.post.passes.length === 4;
+            },
+            null,
+            { timeout: 20_000 },
+          )
+          .catch(() => undefined);
+      };
+
+      test.beforeAll(async () => {
+        test.setTimeout(120_000);
+        browser = await chromium.launch();
+        ctx = await browser.newContext({
+          viewport: VIEWPORT,
+          deviceScaleFactor: dpr,
+          reducedMotion: 'reduce',
+        });
+        page = await ctx.newPage();
+        await page.goto('/');
+        await page.waitForFunction(
+          () => {
+            const w = window as unknown as ArtWindow;
+            if (!w.__game) return false;
+            const g = w.__game();
+            return g.identity !== '' && g.ownAuthTile !== null;
+          },
+          null,
+          { timeout: 30_000 },
+        );
+        await installStepCounter(page);
+      });
+
+      test.afterAll(async () => {
+        await ctx?.close();
+        await browser?.close();
+      });
+
+      test('WAP10.1 the kit terrain and the heal landmark are drawn in zone 0, reached by D-pad', async () => {
+        // WRONG IMPL KILLED: no art hook / a null art (needArt throws); a renderer still on the flat
+        // fallback (terrain !== 'kit'); frames not one per tile, or one family only (a flat fill);
+        // a heal landmark reported at the wrong tile, twice, or with a rect that is not 1x2 tiles or
+        // not on screen; a landmark REPORTED but never drawn (the pixels in its rect equal bare
+        // ground: landFrac < LAND_MIN); a sprite no different from its texture noise (the noise
+        // margin); terrain never drawn, or drawn flat, while reported 'kit' (two same-class tiles
+        // with different frame keys read identical: the variant tooth); a test that walked with
+        // __game().step (the step counter).
+        test.setTimeout(240_000);
+        await setStack(page, STACK_ON);
+        await waitStackOn();
+        await settleCamera(page, 'WAP10.1 spawn');
+        await sample('spawn');
+
+        const spawn = await readWorld(page);
+        expect(spawn.map.zone_id, 'the player spawns in zone 0').toBe(0);
+        expect(await dpadWalkTo(page, HEAL, 'WAP10.1 to the heal post'), 'a grass-free walk').toBe(
+          'arrived',
+        );
+        await expectNoStepCalls(page, 'WAP10.1 to the heal post');
+        // Step back off the post (two tiles when both are safe) so the player stands clear of it.
+        const back: Dir[] = [];
+        let at: Tile = HEAL;
+        for (let i = 0; i < 2; i += 1) {
+          const next = stepTile(at, 'West');
+          if (!safeTile(spawn.map, next)) break;
+          back.push('West');
+          at = next;
+        }
+        expect(back.length, 'the heal post has a safe tile to its west').toBeGreaterThan(0);
+        expect(await dpadWalkPath(page, back, 'WAP10.1 off the post')).toBe('arrived');
+        await expectNoStepCalls(page, 'WAP10.1 off the post');
+        await settleCamera(page, 'WAP10.1 heal post');
+        await sample('heal post');
+
+        const art = await needArt(page, 'WAP10.1');
+        expect(art.zoneId, 'the art describes zone 0').toBe(0);
+        expect(art.terrain, 'the kit terrain is what was drawn').toBe('kit');
+        expect(art.frames.length, 'one frame key per tile').toBe(art.width * art.height);
+        expect([art.width, art.height], 'the art size is the zone map size').toEqual([
+          spawn.map.width,
+          spawn.map.height,
+        ]);
+        const families = new Set(
+          art.frames.filter((f): f is string => typeof f === 'string').map(familyOf),
+        );
+        expect(
+          families.size,
+          `at least two frame-key families are drawn (saw ${[...families].join(', ')})`,
+        ).toBeGreaterThanOrEqual(2);
+
+        const heals = art.landmarks.filter((l) => l.kind === 'heal');
+        expect(
+          heals.map((l) => [l.x, l.y]),
+          'exactly one heal landmark, at (8,3)',
+        ).toEqual([[HEAL.x, HEAL.y]]);
+        const heal = heals[0];
+        if (heal === undefined) throw new Error('unreachable: one heal landmark asserted');
+        const r = heal.rect;
+        expect(r.w, `the landmark is 1 tile wide on screen: ${JSON.stringify(r)}`).toBeGreaterThan(
+          8,
+        );
+        expect(
+          Math.abs(r.h - 2 * r.w),
+          `the landmark is 2 tiles tall: ${JSON.stringify(r)}`,
+        ).toBeLessThan(2);
+        expect(
+          r.x >= 0 && r.y >= 0 && r.x + r.w <= VIEWPORT.width && r.y + r.h <= VIEWPORT.height,
+          `the landmark rect lies inside the 1280x720 viewport: ${JSON.stringify(r)}`,
+        ).toBe(true);
+        pitch = r.w;
+
+        // Only the lower, (8,3), tile: the upper half covers (8,2), tall grass.
+        const healCase: ProofCase = {
+          label: 'WAP10.1 heal landmark',
+          readSample: (a) => {
+            const h = a.landmarks.find((l) => l.kind === 'heal');
+            return h === undefined
+              ? undefined
+              : { x: h.rect.x, y: h.rect.y + h.rect.h / 2, w: h.rect.w, h: h.rect.h / 2 };
+          },
+          tile: HEAL,
+          pitch,
+          dpr,
+          kinds: ['Path', 'Floor'],
+          min: LAND_MIN,
+        };
+        // One stack-off window for both: the landmark proof and the terrain tooth.
+        const [proof, tooth] = await inStackOffWindow(page, async () => {
+          const p = await pixelProofStackOff(page, healCase);
+          const t = await variantTooth(page, { ...healCase, label: 'WAP10.1 terrain variants' });
+          return [p, t] as const;
+        });
+        expectProof(proof);
+        expect(tooth.frac, tooth.detail).toBeGreaterThanOrEqual(VARIANT_MIN);
+        await expectNoStepCalls(page, 'WAP10.1 after the pixel proof');
+        zone0Histogram = { ...(await needArt(page, 'WAP10.1 histogram')).histogram };
+      });
+
+      test('WAP10.2 the warp marker is drawn, and the D-pad warp lands in Tideglass Cove, a kit zone rich in water', async () => {
+        // WRONG IMPL KILLED: a warp marker missing from the art or off screen; a marker reported but
+        // never drawn (its pixels equal ground); a warp that stays on zone 0 or never moves the
+        // player; a zone 1 still drawn with the flat fallback; a histogram echoing zone 0, or one
+        // that is not the drawn frames' per-class counts (a map echo of a different layer); a cove
+        // under 10% water; a walk done with __game().step.
+        test.setTimeout(240_000);
+        expect(
+          zone0Histogram,
+          'WAP10.1 ran first and recorded the zone-0 histogram',
+        ).not.toBeNull();
+        expect(pitch, 'WAP10.1 measured the tile size').toBeGreaterThan(0);
+        const w0 = await readWorld(page);
+        const warp = (w0.map.warps ?? []).find((w) => w.from.x === WARP.x && w.from.y === WARP.y);
+        expect(warp, 'zone 0 holds the warp at (1,5)').toBeDefined();
+        const own = w0.ownAuthTile;
+        if (own === null) throw new Error('no authoritative own tile');
+        // A safe neighbour of the warp reachable on a safe walk; step onto the warp FROM it.
+        let approach: { tile: Tile; path: Dir[]; final: Dir } | null = null;
+        for (const d of ['North', 'East', 'West', 'South'] as const) {
+          const tile = stepTile(WARP, d);
+          const path = safeTile(w0.map, tile) ? safePath(w0.map, own, tile) : null;
+          if (path !== null) {
+            approach = { tile, path, final: oppositeDir(d) };
+            break;
+          }
+        }
+        if (approach === null) throw new Error('no safe approach tile next to the warp (1,5)');
+        expect(await dpadWalkPath(page, approach.path, 'WAP10.2 to the warp'), 'no battle').toBe(
+          'arrived',
+        );
+        await expectNoStepCalls(page, 'WAP10.2 to the warp');
+
+        await settleCamera(page, 'WAP10.2 before the warp');
+        await sample('before warp');
+        const before = await needArt(page, 'WAP10.2 before the warp');
+        const marker = before.warpMarkers.find((m) => m.x === WARP.x && m.y === WARP.y);
+        expect(
+          marker,
+          `art.warpMarkers contains (1,5): ${JSON.stringify(before.warpMarkers)}`,
+        ).toBeDefined();
+        if (marker === undefined) throw new Error('unreachable: marker asserted');
+        expect(
+          visibleShare(marker.rect),
+          `the marker overlaps the viewport by at least half: ${JSON.stringify(marker.rect)}`,
+        ).toBeGreaterThanOrEqual(0.5);
+        const warpKind = (w0.map.terrain ?? [])[WARP.y * w0.map.width + WARP.x] ?? 'Path';
+        const proof = await pixelProof(page, {
+          label: 'WAP10.2 warp marker',
+          // The warp frames are 2 tiles tall, bottom-anchored (like the heal): sample the lower
+          // (1,5) tile only; the upper half covers (1,4).
+          readSample: (a) => {
+            const m = a.warpMarkers.find((mk) => mk.x === WARP.x && mk.y === WARP.y);
+            return m === undefined
+              ? undefined
+              : { x: m.rect.x, y: m.rect.y + m.rect.h / 2, w: m.rect.w, h: m.rect.h / 2 };
+          },
+          tile: WARP,
+          pitch,
+          dpr,
+          kinds: [warpKind],
+          // The marker is a ground DECAL (a pulse ring over the tile), not a sprite: measured, its
+          // drawn footprint differs on 0.293 of the lower tile's pixels (1056/3600, at dpr 1) against a
+          // same-key reference, with a stack-off noise floor of 0.000. An undrawn marker reads ~0.
+          min: WARP_MIN,
+        });
+        expectProof(proof);
+
+        // The step onto the warp: a character that arrived facing another way is turned to face the
+        // warp first; the D-pad press then steps onto it and the zone changes.
+        expect(await dpadFace(page, approach.final, 'WAP10.2 facing the warp'), 'no battle').toBe(
+          'facing',
+        );
+        await expectNoStepCalls(page, 'WAP10.2 facing the warp');
+        await pressButton(page, DPAD_BUTTON[approach.final]);
+        await page.waitForFunction(
           () => {
             const a = (window as unknown as { __game: () => ArtHook }).__game().art;
-            return a !== null && a !== undefined && a.post.passes.length === 4;
+            return a !== null && a !== undefined && a.zoneId === 1;
+          },
+          null,
+          { timeout: 15_000 },
+        );
+        const dest = warp?.to_tile;
+        await expect
+          .poll(
+            async () => {
+              const w = await readWorld(page);
+              return JSON.stringify([w.map.zone_id, w.ownAuthTile]);
+            },
+            { message: 'the own authoritative tile lands in zone 1', timeout: 15_000 },
+          )
+          .toBe(JSON.stringify([1, dest]));
+        await expectNoStepCalls(page, 'WAP10.2 the warp step');
+        await settleCamera(page, 'WAP10.2 after the warp');
+        await sample('after warp');
+
+        const w1 = await readWorld(page);
+        const cove = await needArt(page, 'WAP10.2 zone 1');
+        expect(cove.zoneId, 'the art describes zone 1').toBe(1);
+        expect(cove.terrain, 'zone 1 is drawn from the kit').toBe('kit');
+        expect([cove.width, cove.height], 'the art size is the zone-1 map size').toEqual([
+          w1.map.width,
+          w1.map.height,
+        ]);
+        expect(cove.frames.length, 'one frame key per zone-1 tile').toBe(cove.width * cove.height);
+        expect(cove.histogram, 'the zone-1 histogram is not the zone-0 histogram').not.toEqual(
+          zone0Histogram,
+        );
+
+        // Not a map echo: the counts must be what the DRAWN frames say, class by class.
+        const unmapped = cove.frames.filter((f) => classOfFrame(f) === null);
+        expect(unmapped, 'every drawn frame key belongs to exactly one terrain class').toEqual([]);
+        const fromFrames = countBy(cove.frames.map(classOfFrame));
+        expect(
+          nonZero(cove.histogram),
+          `the histogram equals the per-class counts of the drawn frames ${JSON.stringify(fromFrames)}`,
+        ).toEqual(fromFrames);
+        expect(fromFrames, 'the drawn frames agree with the authoritative zone map').toEqual(
+          countBy(w1.map.terrain ?? []),
+        );
+        const water = (cove.histogram.ShallowWater ?? 0) + (cove.histogram.DeepWater ?? 0);
+        expect(
+          water / (cove.width * cove.height),
+          `Tideglass Cove is at least 10% water (${water} of ${cove.width * cove.height})`,
+        ).toBeGreaterThanOrEqual(0.1);
+      });
+
+      test('WAP10.3 the post stack is on at the day keyframe on every sample, and its filters really change the frame', async () => {
+        // WRONG IMPL KILLED: a stack that is never turned on (passes []); passes in the wrong order
+        // or a missing pass; a keyframe other than the live 'day' (or one the test had to set);
+        // passes REPORTED but no filter attached to the world layer (the stack-on and stack-off
+        // frames are equal: frameFrac < STACK_FRAME_MIN); an off switch that leaves passes attached
+        // (passes must read [] with the keyframe still 'day'); a switch back on that attaches
+        // nothing or reorders; a missed sample (all four labels must exist).
+        test.setTimeout(240_000);
+        expect(
+          samples.map((s) => s.label),
+          'WAP10.1 and WAP10.2 recorded the spawn, heal post, before-warp and after-warp samples',
+        ).toEqual(['spawn', 'heal post', 'before warp', 'after warp']);
+        await sample('now');
+        for (const s of samples) {
+          expect(s.post, `${s.label}: __game().art.post is reported`).not.toBeNull();
+          expect(s.post?.keyframe, `${s.label}: the live keyframe`).toBe('day');
+          expect(s.post?.passes, `${s.label}: the full ordered post stack`).toEqual([
+            ...FULL_STACK,
+          ]);
+        }
+
+        await settleCamera(page, 'WAP10.3 stack on');
+        const onPng = await shot(page);
+        await setStack(page, STACK_OFF);
+        await page.waitForFunction(
+          () => {
+            const a = (window as unknown as { __game: () => ArtHook }).__game().art;
+            return a !== null && a !== undefined && a.post.passes.length === 0;
           },
           null,
           { timeout: 20_000 },
-        )
-        .catch(() => undefined);
-    };
-
-    test.beforeAll(async () => {
-      test.setTimeout(120_000);
-      browser = await chromium.launch();
-      ctx = await browser.newContext({
-        viewport: VIEWPORT,
-        deviceScaleFactor: 1,
-        reducedMotion: 'reduce',
-      });
-      page = await ctx.newPage();
-      await page.goto('/');
-      await page.waitForFunction(
-        () => {
-          const w = window as unknown as ArtWindow;
-          if (!w.__game) return false;
-          const g = w.__game();
-          return g.identity !== '' && g.ownAuthTile !== null;
-        },
-        null,
-        { timeout: 30_000 },
-      );
-      await installStepCounter(page);
-    });
-
-    test.afterAll(async () => {
-      await ctx?.close();
-      await browser?.close();
-    });
-
-    test('WAP10.1 the kit terrain and the heal landmark are drawn in zone 0, reached by D-pad', async () => {
-      // WRONG IMPL KILLED: no art hook / a null art (needArt throws); a renderer still on the flat
-      // fallback (terrain !== 'kit'); frames not one per tile, or one family only (a flat fill);
-      // a heal landmark reported at the wrong tile, twice, or with a rect that is not 1x2 tiles or
-      // not on screen; a landmark REPORTED but never drawn (the pixels in its rect equal bare
-      // ground: landFrac < LAND_MIN); a sprite no different from its texture noise (the noise
-      // margin); terrain never drawn, or drawn flat, while reported 'kit' (two same-class tiles
-      // with different frame keys read identical: the variant tooth); a test that walked with
-      // __game().step (the step counter).
-      test.setTimeout(240_000);
-      await setStack(page, STACK_ON);
-      await waitStackOn();
-      await settleCamera(page, 'WAP10.1 spawn');
-      await sample('spawn');
-
-      const spawn = await readWorld(page);
-      expect(spawn.map.zone_id, 'the player spawns in zone 0').toBe(0);
-      expect(await dpadWalkTo(page, HEAL, 'WAP10.1 to the heal post'), 'a grass-free walk').toBe(
-        'arrived',
-      );
-      await expectNoStepCalls(page, 'WAP10.1 to the heal post');
-      // Step back off the post (two tiles when both are safe) so the player stands clear of it.
-      const back: Dir[] = [];
-      let at: Tile = HEAL;
-      for (let i = 0; i < 2; i += 1) {
-        const next = stepTile(at, 'West');
-        if (!safeTile(spawn.map, next)) break;
-        back.push('West');
-        at = next;
-      }
-      expect(back.length, 'the heal post has a safe tile to its west').toBeGreaterThan(0);
-      expect(await dpadWalkPath(page, back, 'WAP10.1 off the post')).toBe('arrived');
-      await expectNoStepCalls(page, 'WAP10.1 off the post');
-      await settleCamera(page, 'WAP10.1 heal post');
-      await sample('heal post');
-
-      const art = await needArt(page, 'WAP10.1');
-      expect(art.zoneId, 'the art describes zone 0').toBe(0);
-      expect(art.terrain, 'the kit terrain is what was drawn').toBe('kit');
-      expect(art.frames.length, 'one frame key per tile').toBe(art.width * art.height);
-      expect([art.width, art.height], 'the art size is the zone map size').toEqual([
-        spawn.map.width,
-        spawn.map.height,
-      ]);
-      const families = new Set(
-        art.frames.filter((f): f is string => typeof f === 'string').map(familyOf),
-      );
-      expect(
-        families.size,
-        `at least two frame-key families are drawn (saw ${[...families].join(', ')})`,
-      ).toBeGreaterThanOrEqual(2);
-
-      const heals = art.landmarks.filter((l) => l.kind === 'heal');
-      expect(
-        heals.map((l) => [l.x, l.y]),
-        'exactly one heal landmark, at (8,3)',
-      ).toEqual([[HEAL.x, HEAL.y]]);
-      const heal = heals[0];
-      if (heal === undefined) throw new Error('unreachable: one heal landmark asserted');
-      const r = heal.rect;
-      expect(r.w, `the landmark is 1 tile wide on screen: ${JSON.stringify(r)}`).toBeGreaterThan(8);
-      expect(
-        Math.abs(r.h - 2 * r.w),
-        `the landmark is 2 tiles tall: ${JSON.stringify(r)}`,
-      ).toBeLessThan(2);
-      expect(
-        r.x >= 0 && r.y >= 0 && r.x + r.w <= VIEWPORT.width && r.y + r.h <= VIEWPORT.height,
-        `the landmark rect lies inside the 1280x720 viewport: ${JSON.stringify(r)}`,
-      ).toBe(true);
-      pitch = r.w;
-
-      // Only the lower, (8,3), tile: the upper half covers (8,2), tall grass.
-      const healCase: ProofCase = {
-        label: 'WAP10.1 heal landmark',
-        readSample: (a) => {
-          const h = a.landmarks.find((l) => l.kind === 'heal');
-          return h === undefined
-            ? undefined
-            : { x: h.rect.x, y: h.rect.y + h.rect.h / 2, w: h.rect.w, h: h.rect.h / 2 };
-        },
-        tile: HEAL,
-        pitch,
-        kinds: ['Path', 'Floor'],
-        min: LAND_MIN,
-      };
-      // One stack-off window for both: the landmark proof and the terrain tooth.
-      const [proof, tooth] = await inStackOffWindow(page, async () => {
-        const p = await pixelProofStackOff(page, healCase);
-        const t = await variantTooth(page, { ...healCase, label: 'WAP10.1 terrain variants' });
-        return [p, t] as const;
-      });
-      expectProof(proof);
-      expect(tooth.frac, tooth.detail).toBeGreaterThanOrEqual(VARIANT_MIN);
-      await expectNoStepCalls(page, 'WAP10.1 after the pixel proof');
-      zone0Histogram = { ...(await needArt(page, 'WAP10.1 histogram')).histogram };
-    });
-
-    test('WAP10.2 the warp marker is drawn, and the D-pad warp lands in Tideglass Cove, a kit zone rich in water', async () => {
-      // WRONG IMPL KILLED: a warp marker missing from the art or off screen; a marker reported but
-      // never drawn (its pixels equal ground); a warp that stays on zone 0 or never moves the
-      // player; a zone 1 still drawn with the flat fallback; a histogram echoing zone 0, or one
-      // that is not the drawn frames' per-class counts (a map echo of a different layer); a cove
-      // under 10% water; a walk done with __game().step.
-      test.setTimeout(240_000);
-      expect(zone0Histogram, 'WAP10.1 ran first and recorded the zone-0 histogram').not.toBeNull();
-      expect(pitch, 'WAP10.1 measured the tile size').toBeGreaterThan(0);
-      const w0 = await readWorld(page);
-      const warp = (w0.map.warps ?? []).find((w) => w.from.x === WARP.x && w.from.y === WARP.y);
-      expect(warp, 'zone 0 holds the warp at (1,5)').toBeDefined();
-      const own = w0.ownAuthTile;
-      if (own === null) throw new Error('no authoritative own tile');
-      // A safe neighbour of the warp reachable on a safe walk; step onto the warp FROM it.
-      let approach: { tile: Tile; path: Dir[]; final: Dir } | null = null;
-      for (const d of ['North', 'East', 'West', 'South'] as const) {
-        const tile = stepTile(WARP, d);
-        const path = safeTile(w0.map, tile) ? safePath(w0.map, own, tile) : null;
-        if (path !== null) {
-          approach = { tile, path, final: oppositeDir(d) };
-          break;
-        }
-      }
-      if (approach === null) throw new Error('no safe approach tile next to the warp (1,5)');
-      expect(await dpadWalkPath(page, approach.path, 'WAP10.2 to the warp'), 'no battle').toBe(
-        'arrived',
-      );
-      await expectNoStepCalls(page, 'WAP10.2 to the warp');
-
-      await settleCamera(page, 'WAP10.2 before the warp');
-      await sample('before warp');
-      const before = await needArt(page, 'WAP10.2 before the warp');
-      const marker = before.warpMarkers.find((m) => m.x === WARP.x && m.y === WARP.y);
-      expect(
-        marker,
-        `art.warpMarkers contains (1,5): ${JSON.stringify(before.warpMarkers)}`,
-      ).toBeDefined();
-      if (marker === undefined) throw new Error('unreachable: marker asserted');
-      expect(
-        visibleShare(marker.rect),
-        `the marker overlaps the viewport by at least half: ${JSON.stringify(marker.rect)}`,
-      ).toBeGreaterThanOrEqual(0.5);
-      const warpKind = (w0.map.terrain ?? [])[WARP.y * w0.map.width + WARP.x] ?? 'Path';
-      const proof = await pixelProof(page, {
-        label: 'WAP10.2 warp marker',
-        // The warp frames are 2 tiles tall, bottom-anchored (like the heal): sample the lower
-        // (1,5) tile only; the upper half covers (1,4).
-        readSample: (a) => {
-          const m = a.warpMarkers.find((mk) => mk.x === WARP.x && mk.y === WARP.y);
-          return m === undefined
-            ? undefined
-            : { x: m.rect.x, y: m.rect.y + m.rect.h / 2, w: m.rect.w, h: m.rect.h / 2 };
-        },
-        tile: WARP,
-        pitch,
-        kinds: [warpKind],
-        // The marker is a ground DECAL (a pulse ring over the tile), not a sprite: measured, its
-        // drawn footprint differs on 0.293 of the lower tile's pixels (1056/3600) against a
-        // same-key reference, with a stack-off noise floor of 0.000. An undrawn marker reads ~0.
-        min: WARP_MIN,
-      });
-      expectProof(proof);
-
-      // The step onto the warp: a character that arrived facing another way is turned to face the
-      // warp first; the D-pad press then steps onto it and the zone changes.
-      expect(await dpadFace(page, approach.final, 'WAP10.2 facing the warp'), 'no battle').toBe(
-        'facing',
-      );
-      await expectNoStepCalls(page, 'WAP10.2 facing the warp');
-      await pressButton(page, DPAD_BUTTON[approach.final]);
-      await page.waitForFunction(
-        () => {
-          const a = (window as unknown as { __game: () => ArtHook }).__game().art;
-          return a !== null && a !== undefined && a.zoneId === 1;
-        },
-        null,
-        { timeout: 15_000 },
-      );
-      const dest = warp?.to_tile;
-      await expect
-        .poll(
-          async () => {
-            const w = await readWorld(page);
-            return JSON.stringify([w.map.zone_id, w.ownAuthTile]);
-          },
-          { message: 'the own authoritative tile lands in zone 1', timeout: 15_000 },
-        )
-        .toBe(JSON.stringify([1, dest]));
-      await expectNoStepCalls(page, 'WAP10.2 the warp step');
-      await settleCamera(page, 'WAP10.2 after the warp');
-      await sample('after warp');
-
-      const w1 = await readWorld(page);
-      const cove = await needArt(page, 'WAP10.2 zone 1');
-      expect(cove.zoneId, 'the art describes zone 1').toBe(1);
-      expect(cove.terrain, 'zone 1 is drawn from the kit').toBe('kit');
-      expect([cove.width, cove.height], 'the art size is the zone-1 map size').toEqual([
-        w1.map.width,
-        w1.map.height,
-      ]);
-      expect(cove.frames.length, 'one frame key per zone-1 tile').toBe(cove.width * cove.height);
-      expect(cove.histogram, 'the zone-1 histogram is not the zone-0 histogram').not.toEqual(
-        zone0Histogram,
-      );
-
-      // Not a map echo: the counts must be what the DRAWN frames say, class by class.
-      const unmapped = cove.frames.filter((f) => classOfFrame(f) === null);
-      expect(unmapped, 'every drawn frame key belongs to exactly one terrain class').toEqual([]);
-      const fromFrames = countBy(cove.frames.map(classOfFrame));
-      expect(
-        nonZero(cove.histogram),
-        `the histogram equals the per-class counts of the drawn frames ${JSON.stringify(fromFrames)}`,
-      ).toEqual(fromFrames);
-      expect(fromFrames, 'the drawn frames agree with the authoritative zone map').toEqual(
-        countBy(w1.map.terrain ?? []),
-      );
-      const water = (cove.histogram.ShallowWater ?? 0) + (cove.histogram.DeepWater ?? 0);
-      expect(
-        water / (cove.width * cove.height),
-        `Tideglass Cove is at least 10% water (${water} of ${cove.width * cove.height})`,
-      ).toBeGreaterThanOrEqual(0.1);
-    });
-
-    test('WAP10.3 the post stack is on at the day keyframe on every sample, and its filters really change the frame', async () => {
-      // WRONG IMPL KILLED: a stack that is never turned on (passes []); passes in the wrong order
-      // or a missing pass; a keyframe other than the live 'day' (or one the test had to set);
-      // passes REPORTED but no filter attached to the world layer (the stack-on and stack-off
-      // frames are equal: frameFrac < STACK_FRAME_MIN); an off switch that leaves passes attached
-      // (passes must read [] with the keyframe still 'day'); a switch back on that attaches
-      // nothing or reorders; a missed sample (all four labels must exist).
-      test.setTimeout(240_000);
-      expect(
-        samples.map((s) => s.label),
-        'WAP10.1 and WAP10.2 recorded the spawn, heal post, before-warp and after-warp samples',
-      ).toEqual(['spawn', 'heal post', 'before warp', 'after warp']);
-      await sample('now');
-      for (const s of samples) {
-        expect(s.post, `${s.label}: __game().art.post is reported`).not.toBeNull();
-        expect(s.post?.keyframe, `${s.label}: the live keyframe`).toBe('day');
-        expect(s.post?.passes, `${s.label}: the full ordered post stack`).toEqual([...FULL_STACK]);
-      }
-
-      await settleCamera(page, 'WAP10.3 stack on');
-      const onPng = await shot(page);
-      await setStack(page, STACK_OFF);
-      await page.waitForFunction(
-        () => {
-          const a = (window as unknown as { __game: () => ArtHook }).__game().art;
-          return a !== null && a !== undefined && a.post.passes.length === 0;
-        },
-        null,
-        { timeout: 20_000 },
-      );
-      await page.evaluate(
-        () =>
-          new Promise<void>((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-          ),
-      );
-      await settleCamera(page, 'WAP10.3 stack off');
-      const offPng = await shot(page);
-      const off = await needArt(page, 'WAP10.3 off');
-      expect(off.post, 'every pass is detached, the keyframe is still day').toEqual({
-        passes: [],
-        keyframe: 'day',
-      });
-
-      // Compare the two screenshots through the page: A = the on frame, B = the off frame.
-      const frameDiff = (onShot: Buffer, offShot: Buffer) =>
-        page.evaluate(
-          async (a: { on: string; off: string; thresh: number }) => {
-            const read = async (b64: string): Promise<Uint8ClampedArray> => {
-              const img = new Image();
-              img.src = `data:image/png;base64,${b64}`;
-              await img.decode();
-              const c = document.createElement('canvas');
-              c.width = img.width;
-              c.height = img.height;
-              const g = c.getContext('2d', { willReadFrequently: true });
-              if (g === null) throw new Error('no 2d context');
-              g.drawImage(img, 0, 0);
-              return g.getImageData(0, 0, c.width, c.height).data;
-            };
-            const A = await read(a.on);
-            const B = await read(a.off);
-            let count = 0;
-            for (let i = 0; i < A.length; i += 4) {
-              const m = Math.max(
-                Math.abs((A[i] ?? 0) - (B[i] ?? 0)),
-                Math.abs((A[i + 1] ?? 0) - (B[i + 1] ?? 0)),
-                Math.abs((A[i + 2] ?? 0) - (B[i + 2] ?? 0)),
-              );
-              if (m >= a.thresh) count += 1;
-            }
-            return { count, total: A.length / 4 };
-          },
-          {
-            on: onShot.toString('base64'),
-            off: offShot.toString('base64'),
-            thresh: CHANNEL_THRESH,
-          },
         );
-      const both = await frameDiff(onPng, offPng);
-      expect(
-        both.count / both.total,
-        `stack-on vs stack-off frames: ${both.count} of ${both.total} pixels differ by >= ${CHANNEL_THRESH}`,
-      ).toBeGreaterThanOrEqual(STACK_FRAME_MIN);
-      // Control: two stack-off screenshots apart (an animation-frame wait and a screenshot round
-      // trip between them). The on/off difference above is the stack, not frame-to-frame motion,
-      // only if this reads (near) zero.
-      await page.evaluate(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
-      );
-      const offAgain = await frameDiff(offPng, await shot(page));
-      expect(
-        offAgain.count / offAgain.total,
-        `stack-off vs stack-off control: ${offAgain.count} of ${offAgain.total} pixels differ`,
-      ).toBeLessThan(0.01);
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            ),
+        );
+        await settleCamera(page, 'WAP10.3 stack off');
+        const offPng = await shot(page);
+        const off = await needArt(page, 'WAP10.3 off');
+        expect(off.post, 'every pass is detached, the keyframe is still day').toEqual({
+          passes: [],
+          keyframe: 'day',
+        });
 
-      await setStack(page, STACK_ON);
-      await waitStackOn();
-      const back = await needArt(page, 'WAP10.3 back on');
-      expect(back.post, 'the full ordered stack is back on at day').toEqual({
-        passes: [...FULL_STACK],
-        keyframe: 'day',
+        // Compare the two screenshots through the page: A = the on frame, B = the off frame.
+        const frameDiff = (onShot: Buffer, offShot: Buffer) =>
+          page.evaluate(
+            async (a: { on: string; off: string; thresh: number }) => {
+              const read = async (b64: string): Promise<Uint8ClampedArray> => {
+                const img = new Image();
+                img.src = `data:image/png;base64,${b64}`;
+                await img.decode();
+                const c = document.createElement('canvas');
+                c.width = img.width;
+                c.height = img.height;
+                const g = c.getContext('2d', { willReadFrequently: true });
+                if (g === null) throw new Error('no 2d context');
+                g.drawImage(img, 0, 0);
+                return g.getImageData(0, 0, c.width, c.height).data;
+              };
+              const A = await read(a.on);
+              const B = await read(a.off);
+              let count = 0;
+              for (let i = 0; i < A.length; i += 4) {
+                const m = Math.max(
+                  Math.abs((A[i] ?? 0) - (B[i] ?? 0)),
+                  Math.abs((A[i + 1] ?? 0) - (B[i + 1] ?? 0)),
+                  Math.abs((A[i + 2] ?? 0) - (B[i + 2] ?? 0)),
+                );
+                if (m >= a.thresh) count += 1;
+              }
+              return { count, total: A.length / 4 };
+            },
+            {
+              on: onShot.toString('base64'),
+              off: offShot.toString('base64'),
+              thresh: CHANNEL_THRESH,
+            },
+          );
+        const both = await frameDiff(onPng, offPng);
+        expect(
+          both.count / both.total,
+          `stack-on vs stack-off frames: ${both.count} of ${both.total} pixels differ by >= ${CHANNEL_THRESH}`,
+        ).toBeGreaterThanOrEqual(STACK_FRAME_MIN);
+        // Control: two stack-off screenshots apart (an animation-frame wait and a screenshot round
+        // trip between them). The on/off difference above is the stack, not frame-to-frame motion,
+        // only if this reads (near) zero.
+        await page.evaluate(
+          () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+        );
+        const offAgain = await frameDiff(offPng, await shot(page));
+        expect(
+          offAgain.count / offAgain.total,
+          `stack-off vs stack-off control: ${offAgain.count} of ${offAgain.total} pixels differ`,
+        ).toBeLessThan(0.01);
+
+        await setStack(page, STACK_ON);
+        await waitStackOn();
+        const back = await needArt(page, 'WAP10.3 back on');
+        expect(back.post, 'the full ordered stack is back on at day').toEqual({
+          passes: [...FULL_STACK],
+          keyframe: 'day',
+        });
+        await expectNoStepCalls(page, 'WAP10.3');
       });
-      await expectNoStepCalls(page, 'WAP10.3');
     });
-  });
+}
