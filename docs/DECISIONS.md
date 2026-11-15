@@ -1841,10 +1841,10 @@ empty with one warning, and the world draws unfiltered. A driver that fails a sh
 detected. The renderer starts with the stack off at the `day` keyframe, and `setPostStack` turns passes on.
 A production build that turns the stack on must keep it off on a software rasteriser, recognised from the
 WebGL renderer string (`UNMASKED_RENDERER_WEBGL`) read at init and again after a context restore: a string
-naming SwiftShader or llvmpipe, in any letter case, is one more reason for the empty plan and its warning. A
-string that names neither, or that the browser masks, counts as hardware, so another software rasteriser runs
-the stack until it is measured and added to the check's list. No production build turns the stack on, so the
-check is not written.
+naming SwiftShader or llvmpipe, in any letter case, would be one more reason for the empty plan and its
+warning. A string that names neither, or that the browser masks, counts as hardware, so another software
+rasteriser runs the stack until it is measured and added to the check's list. No production build turns the
+stack on, so the check is not written.
 
 **Why.** `pixi-filters` was the vetted USE verdict for this stack (`docs/research/pixijs-ecosystem-ui-and-assets.md`
 §0/§6 in the harness). It is MIT-licensed, has no install scripts, and its single runtime dependency is a types

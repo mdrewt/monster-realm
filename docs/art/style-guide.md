@@ -119,9 +119,9 @@ GPU is far faster. These numbers are a record, not a gate.
 
 Frame intervals of the live client, read against the client frame-rate objective:
 `mr:client_fps_p50` at least 55 fps (`ops/observability/rules/recording.rules.yml`), the
-five-minute median over all clients of each client's one-second frame-rate windows. The
-same objective read per frame is a median interval of at most 18.2 ms; every row gives its
-median, but on a 60 Hz tick that reading is necessary, not sufficient (a row with 45%
+five-minute median over all clients of each client's one-second frame-rate windows. Read
+per frame, 55 fps is an interval of 18.2 ms. Every row gives its median interval, but on a
+60 Hz tick a median at or below 18.2 ms is necessary, not sufficient (a row with 45%
 two-tick frames keeps a 16.7 ms median), so rows are judged on fps. These numbers are a
 record, not a gate.
 
@@ -135,10 +135,10 @@ variables and `VITE_STDB_DB`), the only build with the switch (`__game().setPost
 Host: the 16-core Ryzen 9 9950X under WSL2 (Ubuntu 24.04, Mesa 25.2.8). Browser:
 Playwright 1.61.1's Chromium 149, headless (`channel: 'chromium'`).
 
-**Renderers.** With the launch flags below, Chromium reaches hardware GL on this host, and
-the host exposes an integrated GPU: the Ryzen's own Radeon, beside a GeForce RTX 5080.
-Headless Chromium's default is SwiftShader. Rows name each renderer by its WebGL renderer
-string (`UNMASKED_RENDERER_WEBGL`, read in the page):
+**Renderers.** With the GPU rows' launch flags below, Chromium reaches hardware GL on this
+host, and the host exposes an integrated GPU: the Ryzen's own Radeon, beside a GeForce RTX
+5080. Headless Chromium's default is SwiftShader. Rows name each renderer by its WebGL
+renderer string (`UNMASKED_RENDERER_WEBGL`, read in the page):
 
 | Row name | Renderer string | Launch |
 |---|---|---|
@@ -169,8 +169,9 @@ frames.
   intervals read 33.4 ms.
 - **fps** is the median of the one-second windows the client forms
   (`client/src/observability/frameWindow.ts`), replayed over the same intervals. The
-  recording rule estimates that median from the client's histogram buckets (`50, 55, 60,
-  90`, …); recomputed that way a row moves by up to 6.5 fps and no verdict changes.
+  recording rule estimates that median from the client's histogram buckets (`15, 30, 45,
+  50, 55, 60, 90, 144`); recomputed that way a row moves by up to 6.5 fps and no verdict
+  changes.
 - **CPU throttling slows the page's main thread only.** SwiftShader and llvmpipe rasterise
   in the GPU process at the host's full speed. The "2 cores" rows run the Playwright driver
   under `taskset -c 0,2` (two different cores), and every browser process inherits the pin.
@@ -232,12 +233,13 @@ row at 1280×720, 1,200 at the larger canvases):
 
 **Reading.**
 
-- **Stack off, every renderer meets the objective at 1280×720** at 1×, 4× and 6×, and
-  SwiftShader does on two cores at 1× and 4×. A hero walking a two-tile shuttle (Up then
+- **Stack off at 1280×720, every renderer meets the objective** at every factor measured:
+  1×, 4× and 6×, llvmpipe at 1× and 4×. SwiftShader also holds 60.0 fps on two cores at 1×
+  and at 4×. A hero walking a two-tile shuttle (Up then
   Down, each held 450 ms) changes nothing: at most 0.2% of frames take more than one tick,
   at 6× on either GPU, at 4× on SwiftShader, and at 1× on SwiftShader's two cores.
 - **The 60 Hz tick hides the margin**, which the synced frame shows. Stack off at 1280×720
-  it is 2.3 ms on SwiftShader (the look-dev scene's 2.0 ms above, in live zone 0) and
+  it is 2.3 ms on SwiftShader (against the look-dev scene's 2.0 ms above) and
   3.5 ms on llvmpipe. On the GPUs it is 4.3 ms (RTX 5080) and 6.4 ms (Radeon), an upper
   bound: a second readback straight after the first takes 1.6 ms and 1.7 ms. The frame
   loop's script is 0.25 ms a frame in the production build; in a profile of the dev
