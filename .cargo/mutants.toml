@@ -72,13 +72,16 @@
 # keyed by file + function + operator + column, never by a bare line. Each is deleted the moment
 # the code around it makes the mutant observable.
 #
-# 8. dev-only reducers (`#[cfg(feature = "dev_reducers")]`): start_wild_battle (battle.rs:559
-#    `!=`->`==`), grant_bait (taming.rs:325 `==`->`!=`), dev_start_tactical_wild (tactics.rs
-#    2078 x3). The nightly mutates the default-feature build, which does not compile these
-#    functions, so their mutants survive vacuously (the mutated source never builds into the test
-#    binary). They are never shipped (the release module has no dev reducers) and are killed for
-#    real by tests that `just test` runs with `--features dev_reducers`
-#    (e.g. dev_start_tactical_wild_admits_only_the_player_and_the_module_owner_mutw3).
+# 8. dev-only code (`#[cfg(feature = "dev_reducers")]`): grant_bait (taming.rs, `==`->`!=`),
+#    dev_expire_tactical_window (dev_clock.rs: every operator, `!` and match-arm mutant of its
+#    body) and its arm forwarder dev_arm_deadline (tactics.rs, `-> ()`). The nightly mutates the
+#    default-feature build, which does not compile these functions, so their mutants survive
+#    vacuously (the mutated source never builds into the test binary). They are never shipped
+#    (the release module has no dev reducers) and are killed for real by tests that `just test`
+#    runs with `--features dev_reducers`: the `_th4_` tests of dev_clock_tests.rs kill every
+#    dev_expire_tactical_window mutant and the forwarder's. A dev reducer's body replacement
+#    (`-> Ok(())`) needs no entry: the deletion-gate census (privacy_enforcement_tests.rs) reads
+#    the source, so it fails in the default build too.
 #
 # 9. apply_delta (tactics_settle.rs:362:36) `<` -> `<=` on the resize guard: Vec::resize(n, 0) at
 #    len == n is a no-op, so the two comparisons differ only where the result is identical (an
@@ -121,9 +124,13 @@ exclude_re = [
     "trading/types\\.rs:56:9: replace TradeStatus::is_active -> bool with true",
     "tactics/movement\\.rs:\\d+:60: replace < with > in dijkstra",
     "tactics/queue\\.rs:\\d+:25: replace < with <= in TacticalBattle::cancel_queue",
-    "battle\\.rs:\\d+:16: replace != with == in start_wild_battle",
     "taming\\.rs:\\d+:27: replace == with != in grant_bait",
-    "tactics\\.rs:\\d+:(11|21|27): replace (!=|&&) with (==|\\|\\|) in dev_start_tactical_wild$",
+    "dev_clock\\.rs:\\d+:(18|23|47): replace != with == in dev_expire_tactical_window$",
+    "dev_clock\\.rs:\\d+:(26|32|61|85): replace == with != in dev_expire_tactical_window$",
+    "dev_clock\\.rs:\\d+:(39|43|63): replace && with \\|\\| in dev_expire_tactical_window$",
+    "dev_clock\\.rs:\\d+:8: delete ! in dev_expire_tactical_window$",
+    "dev_clock\\.rs:\\d+:9: delete match arm [01] in dev_expire_tactical_window$",
+    "tactics\\.rs:\\d+:5: replace dev_arm_deadline with \\(\\)$",
     "tactics_settle\\.rs:\\d+:36: replace < with <= in apply_delta",
     "accounts\\.rs:\\d+:17: replace && with \\|\\| in account_state_is_legal",
     "playtest\\.rs:\\d+:20: replace > with >= in plan_reap",

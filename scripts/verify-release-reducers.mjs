@@ -18,16 +18,13 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-// The canonical forbidden reducer set (§K F1 — EXACTLY 2). These are the only
-// two functions carrying both `#[cfg(feature="dev_reducers")]` and
-// `#[spacetimedb::reducer]`: the 1v1-era `start_wild_battle` and `grant_bait`
-// (bt-17 deletes the first with the 1v1 engine). The build-phase tactical starts
-// `dev_start_tactical_wild` (bt-8) and `dev_start_tactical_pvp` (bt-14) were deleted by
-// bt-16 when the live grass and challenge-accept paths flipped to the tactical engine.
-// `grant_item` (inventory.rs) is a `pub(crate)` helper, NOT a reducer — it can never
-// surface in `describe`, so including it would guard a non-existent surface. If a
-// callable `grant_item` reducer is ever introduced, add it here.
-export const FORBIDDEN_REDUCERS = ['start_wild_battle', 'grant_bait'];
+// The forbidden reducer set: every dev reducer name. Two functions carry both
+// `#[cfg(feature = "dev_reducers")]` and `#[spacetimedb::reducer]`: `grant_bait` (taming.rs) and
+// `dev_expire_tactical_window` (dev_clock.rs). No source defines `start_wild_battle`; a module
+// exporting it is an old dev build and is refused. `grant_item` (inventory.rs) is a `pub(crate)`
+// helper, NOT a reducer — it can never surface in `describe`, so including it would guard a
+// non-existent surface. A new dev reducer joins this list in the change that adds it.
+export const FORBIDDEN_REDUCERS = ['start_wild_battle', 'grant_bait', 'dev_expire_tactical_window'];
 
 // parseReducerNames(describeOutput) -> string[]
 //
