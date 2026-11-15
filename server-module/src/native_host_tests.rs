@@ -73,7 +73,7 @@ struct Host {
     /// the last [`fixture`] or [`Fixture::reset_writes`] — the subscription-visible footprint of a
     /// transaction, which a row diff cannot see (an unchanged `update` still reaches subscribers).
     writes: HashMap<u32, u32>,
-    /// sr-2: rows the read syscalls HANDED OUT per table id since the last [`fixture`] or
+    /// Rows the read syscalls HANDED OUT per table id since the last [`fixture`] or
     /// [`Fixture::reset_reads`] (see [`Fixture::rows_read`]).
     reads: HashMap<u32, u32>,
     /// Opt-in write/scan model + module identity (EOF extension); reset per fixture.
