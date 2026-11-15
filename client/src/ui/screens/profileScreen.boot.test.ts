@@ -43,7 +43,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mountIndexHtmlShell } from '../../../test-util/mainBootHarness';
 import type { WasmMoveInput } from '../../convert/convert';
 import type { Connection, ConnectionOptions } from '../../net/connection';
-import { t } from '../i18n/resolver';
+import { t, tf } from '../i18n/resolver';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -206,13 +206,27 @@ let tick = 1000;
 let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 
+/** The OIDC issuer a boot is built with. A vitest boot has no shell document, so its target kind
+ *  is `test`: main.ts keeps the issuer, and the Account section offers Sign in. */
+const BOOT_ISSUER = 'https://auth.profile-boot.test/';
+
+/** Which build variables a boot sets: `issuer: false` builds with no `VITE_MR_OIDC_ISSUER`. */
+interface BootBuild {
+  readonly issuer: boolean;
+}
+
 /** Boot a fresh main.ts over the real shell and wait for it to connect (no onReady yet). */
-async function bootConnected(): Promise<void> {
+async function bootConnected(build: BootBuild = { issuer: true }): Promise<void> {
   H.connectOpts = null;
   H.calls = [];
   H.signIns = 0;
   H.account = undefined;
   H.claimClear.mockClear();
+  if (build.issuer) {
+    vi.stubEnv('VITE_MR_OIDC_ISSUER', BOOT_ISSUER);
+  } else {
+    expect(import.meta.env.VITE_MR_OIDC_ISSUER, 'the issuer is unset').toBeUndefined();
+  }
   tick = 1000;
   clock.t = tick;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
@@ -237,8 +251,8 @@ async function bootConnected(): Promise<void> {
 }
 
 /** Boot and join (onReady). */
-async function bootReady(): Promise<void> {
-  await bootConnected();
+async function bootReady(build?: BootBuild): Promise<void> {
+  await bootConnected(build);
   opts.onReady(H.identity);
 }
 
@@ -248,6 +262,7 @@ function teardownBoot(): void {
   while (restorers.length > 0) restorers.pop()?.();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   rafCallback = null;
   window.history.replaceState(null, '', '/');
   document.body.replaceChildren();
@@ -326,6 +341,12 @@ function el(id: string): HTMLElement {
   const found = document.getElementById(id);
   if (found === null) throw new Error(`#${id} must be in the document`);
   return found;
+}
+
+/** A connection option main.ts must have wired. */
+function must<T>(value: T | undefined, name: string): T {
+  if (value === undefined) throw new Error(`${name} was not wired by main.ts`);
+  return value;
 }
 
 /** Shown unless the element or an ancestor has an inline `display:none`. */
@@ -819,6 +840,60 @@ describe('the one Profile frame booted through main.ts over the real views and a
     press('Enter');
     expect(H.claimClear, 'Yes runs the decline once').toHaveBeenCalledTimes(1);
     expect(H.calls, 'no reducer call').toEqual([]);
+  });
+
+  it('with no OIDC issuer in the build, KeyC seats Decline, Sign in is not shown, and a click on it starts no sign-in', async () => {
+    // WRONG IMPL KILLED: a Sign in shown for a build that has no issuer to sign in with; a
+    // default row on the hidden Sign in (focus on a display:none control); a hidden Sign in whose
+    // click still starts a sign-in.
+    await bootReady({ issuer: false });
+    server();
+    pressWindow('KeyC');
+    expect(focusSection(), 'KeyC opens Profile on Account').toBe('account');
+    expect(focusedId(), 'KeyC seats Decline').toBe('claim-decline-btn');
+    expectSafeFocus('no issuer');
+    expect(shown('claim-signin-btn'), 'Sign in is not shown').toBe(false);
+    el('claim-signin-btn').click();
+    expect(H.signIns, 'a click on the hidden Sign in starts no sign-in').toBe(0);
+  });
+
+  it('a failed sign-in with Profile open keeps Sign in shown and labelled with the provider, and so does arming then cancelling Decline after it, each repainted in place', async () => {
+    // WRONG IMPL KILLED: an in-place Account repaint (a claim event with Profile already open)
+    // built without the build's sign-in offer: the retry vanishes (Sign in display:none, its label
+    // blank) the moment a sign-in fails, or when a decline is armed and cancelled after it.
+    vi.stubEnv('VITE_MR_OIDC_PROVIDER_NAME', 'Profile Boot ID');
+    await bootReady();
+    server();
+    const label = tf('claim.signInWithProvider', { provider: 'Profile Boot ID' });
+    const signIn = el('claim-signin-btn');
+
+    pressWindow('KeyC');
+    expect(focusSection(), 'precondition: KeyC opens Profile on Account').toBe('account');
+    expect(shown('claim-signin-btn'), 'precondition: Sign in is shown').toBe(true);
+    expect(signIn.textContent, 'precondition: labelled with the provider').toBe(label);
+
+    signIn.click();
+    expect(H.signIns, 'Sign in starts one sign-in').toBe(1);
+    must(opts.onSignInFailed, 'onSignInFailed')('transient-error');
+    expect(frameShown(), 'Profile stays open through the failure').toEqual(ALL_SHOWN);
+    expect(stackNames(), 'the same frame, never closed and reopened').toEqual(OVER_MENU);
+    expect(el('claim-title').textContent, 'the failure is shown').toBe(
+      t('claim.signInFailed.title'),
+    );
+    expect(signIn.style.display, 'failed: Sign in is not display:none').not.toBe('none');
+    expect(shown('claim-signin-btn'), 'failed: Sign in is shown').toBe(true);
+    expect(signIn.textContent, 'failed: still labelled with the provider').toBe(label);
+
+    el('claim-decline-btn').click();
+    expect(shown('claim-decline-cancel-btn'), 'Decline armed: No is shown').toBe(true);
+    expect(shown('claim-signin-btn'), 'Decline armed: Sign in is not offered').toBe(false);
+    el('claim-decline-cancel-btn').click();
+    expect(shown('claim-decline-cancel-btn'), 'No disarms').toBe(false);
+    expect(stackNames(), 'still the same frame').toEqual(OVER_MENU);
+    expect(signIn.style.display, 'cancelled: Sign in is not display:none').not.toBe('none');
+    expect(shown('claim-signin-btn'), 'cancelled: Sign in is shown again').toBe(true);
+    expect(signIn.textContent, 'cancelled: labelled with the provider').toBe(label);
+    expect(H.claimClear, 'nothing was declined').not.toHaveBeenCalled();
   });
 
   it('UIF16B.4 the two-step delete: Delete arms with focus on Keep, Keep sends nothing and returns to Delete, armed again Confirm sends deleteAccount exactly once', async () => {

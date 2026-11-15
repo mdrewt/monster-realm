@@ -513,6 +513,13 @@ async function bootReady(beforeImport?: () => void): Promise<void> {
   opts.onReady(H.identity);
 }
 
+/** A `beforeImport` that builds the boot with an OIDC issuer. A vitest boot has no shell document,
+ *  so its target kind is `test`: main.ts keeps the issuer, and the claim view's Sign In reaches the
+ *  connection's `startSignIn`. The describe's teardown unstubs it. */
+const withBuildIssuer = (): void => {
+  vi.stubEnv('VITE_MR_OIDC_ISSUER', 'https://auth.dispatch.test/');
+};
+
 const EID = 7n;
 const OTHER_IDENTITY = 'cd'.repeat(32);
 
@@ -853,6 +860,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     while (restorers.length > 0) restorers.pop()?.();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     raf.cb = null;
     H.gate = null;
     H.frozen = false;
@@ -1193,7 +1201,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // is refused with the veto line, a decline lifts it), a join that sends joinGame past the veto,
     // a decline that joins, a sign-in that never reaches the connection, and a hasLiveConnection
     // forced true (a frozen link would send joinGame into the void, or delete the claim code).
-    await bootReady();
+    await bootReady(withBuildIssuer);
     server(1000);
     const claim = H.handlers.ClaimView;
     if (claim === undefined) throw new Error('ClaimView was never constructed');
@@ -1369,7 +1377,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // there); one that also refuses at the world, or spends what the player armed (the world
     // phase re-runs every refused callback in the same boot and each one sends); and a claim or
     // privacy arm that bypasses the policy (each is armed first, so an unrefused call would act).
-    await bootReady();
+    await bootReady(withBuildIssuer);
     server(1000);
     seedDispatchFixture();
     const rows = dispatchRows();

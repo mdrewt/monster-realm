@@ -34,7 +34,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildClaimViewModel,
   CLAIM_EVENT_KINDS,
@@ -42,11 +42,15 @@ import {
   CLAIM_REJECT_OUTCOMES,
   type ClaimEvent,
   type ClaimModelState,
+  type ClaimPhase,
   type ClaimRejectOutcome,
+  type ClaimViewModel,
   claimRejectDeletesCode,
   claimStep,
   classifyClaimReject,
+  type SignInOffer,
   senseInvalidCode,
+  signInOffer,
 } from './claimModel';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
@@ -77,8 +81,29 @@ function catalogString(
   return value;
 }
 
+/** `catalog[key]`, which MUST be an own parameterised entry (a function); throws otherwise. */
+function catalogFunction(
+  catalog: Readonly<Record<string, unknown>>,
+  locale: string,
+  key: string,
+): (params: { readonly provider: string }) => string {
+  const value = Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+  if (typeof value !== 'function') {
+    throw new Error(
+      `catalog.${locale} has no parameterised entry for '${key}' (got ${typeof value})`,
+    );
+  }
+  return value as (params: { readonly provider: string }) => string;
+}
+
 /** The repo-wide disconnected line (AUTH-59), read from the en catalog. */
 const DISCONNECTED_FEEDBACK_EN = catalogString(EN_CATALOG, 'en', 'chrome.feedback.disconnected');
+
+/** The sign-in offers a build can make. The cases below that assert Sign In, or the pending /
+ *  prompt copy a build with a provider shows, are handed PROVIDER_OFFER. */
+const PROVIDER_NAME = 'Acme ID';
+const PROVIDER_OFFER: SignInOffer = { kind: 'provider', name: PROVIDER_NAME };
+const NO_OFFER: SignInOffer = { kind: 'none' };
 
 // ---------------------------------------------------------------------------
 // The ELEVEN exact reject strings `complete_guest_claim` can return, transcribed
@@ -587,7 +612,7 @@ describe('claimModel AUTH-56: declining requires a DISTINCT second step naming t
     //
     // WRONG IMPL KILLED: `confirmPrompt: 'Are you sure?'` — a distinct second step that
     // says nothing about what is lost, i.e. the dialog every player clicks through.
-    const armed = buildClaimViewModel(pending({ confirmPending: true }));
+    const armed = buildClaimViewModel(pending({ confirmPending: true }), PROVIDER_OFFER);
     expect(armed.confirmPrompt, 'the armed decline must carry a prompt').toBeDefined();
     const prompt = String(armed.confirmPrompt);
     expect(
@@ -600,7 +625,7 @@ describe('claimModel AUTH-56: declining requires a DISTINCT second step naming t
     ).toBeGreaterThanOrEqual(0);
     expect(prompt.length).toBeGreaterThan(20);
 
-    const unarmed = buildClaimViewModel(pending({ confirmPending: false }));
+    const unarmed = buildClaimViewModel(pending({ confirmPending: false }), PROVIDER_OFFER);
     expect(unarmed.confirmPrompt, 'an unarmed decline shows no prompt').toBeUndefined();
     expect(
       `${unarmed.title}${unarmed.body}`.indexOf('cannot be undone'),
@@ -645,10 +670,12 @@ describe('claimModel AUTH-48: a failed first-time sign-in routes into the claim 
     // remedy for the two is different (retry the provider vs. give up on the claim).
     const signInFailed = buildClaimViewModel(
       stateOf({ phase: 'sign-in-failed', signInReason: 'sign-in-rejected' }),
+      PROVIDER_OFFER,
     );
-    const pendingVm = buildClaimViewModel(pending());
+    const pendingVm = buildClaimViewModel(pending(), PROVIDER_OFFER);
     const rejectedVm = buildClaimViewModel(
       stateOf({ phase: 'rejected', outcome: 'retain-destination-terminal', codeRetained: true }),
+      PROVIDER_OFFER,
     );
     expect(signInFailed.visible).toBe(true);
     expect(signInFailed.body.length).toBeGreaterThan(0);
@@ -663,9 +690,11 @@ describe('claimModel AUTH-48: a failed first-time sign-in routes into the claim 
     // distinguishable in the copy, without the copy BEING the token.
     const a = buildClaimViewModel(
       stateOf({ phase: 'sign-in-failed', signInReason: 'sign-in-rejected' }),
+      PROVIDER_OFFER,
     );
     const b = buildClaimViewModel(
       stateOf({ phase: 'sign-in-failed', signInReason: 'auth-service-unreachable' }),
+      PROVIDER_OFFER,
     );
     expect(a.body).not.toBe('sign-in-rejected');
     expect(b.body).not.toBe('auth-service-unreachable');
@@ -707,9 +736,15 @@ describe('claimModel first-run nudge: shown once per tab on the first claim-UI o
     // contract, not a paraphrase. Its content is load-bearing — a player who claims on a
     // second device would otherwise expect progress from the first one to follow.
     const NUDGE = 'Guest progress transfers only from the device you claim it on.';
-    const shown = buildClaimViewModel(pending({ showFirstRunNudge: true, nudgeShown: true }));
+    const shown = buildClaimViewModel(
+      pending({ showFirstRunNudge: true, nudgeShown: true }),
+      PROVIDER_OFFER,
+    );
     expect(String(shown.nudge)).toBe(NUDGE);
-    const quiet = buildClaimViewModel(pending({ showFirstRunNudge: false, nudgeShown: true }));
+    const quiet = buildClaimViewModel(
+      pending({ showFirstRunNudge: false, nudgeShown: true }),
+      PROVIDER_OFFER,
+    );
     expect(quiet.nudge).toBeUndefined();
   });
 
@@ -764,7 +799,7 @@ describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phas
       'prompt',
     );
     expect(
-      buildClaimViewModel(step.next).visible,
+      buildClaimViewModel(step.next, PROVIDER_OFFER).visible,
       'the prompt view model must be VISIBLE — this is the whole content of the bug the reviews found',
     ).toBe(true);
   });
@@ -776,8 +811,9 @@ describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phas
     // indistinguishable to the player from the dark-overlay bug this slice closes.
     const prompt = buildClaimViewModel(
       claimStep(CLAIM_INITIAL, { kind: 'claim-ui-opened', nudgeAlreadySeen: true }).next,
+      PROVIDER_OFFER,
     );
-    const pendingVm = buildClaimViewModel(pending());
+    const pendingVm = buildClaimViewModel(pending(), PROVIDER_OFFER);
     expect(prompt.title, 'the prompt title reuses the PENDING copy').toBe(pendingVm.title);
     expect(prompt.body, 'the prompt body reuses the PENDING copy').toBe(pendingVm.body);
     expect(prompt.body.length, 'anti-vacuity: the shared copy is non-empty').toBeGreaterThan(0);
@@ -799,7 +835,7 @@ describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phas
     expect(first.showFirstRunNudge, 'first open with an unseen flag shows the nudge').toBe(true);
     expect(first.nudgeShown, 'and the model latches it').toBe(true);
     expect(
-      String(buildClaimViewModel(first).nudge),
+      String(buildClaimViewModel(first, PROVIDER_OFFER).nudge),
       'the prompt VM renders the ADR-quoted nudge',
     ).toBe(NUDGE);
 
@@ -832,7 +868,8 @@ describe('claimModel: purity and totality', () => {
         expect(typeof step.next.codeRetained, JSON.stringify(event)).toBe('boolean');
         expect(typeof step.next.joinPermitted, JSON.stringify(event)).toBe('boolean');
         expect(typeof step.next.confirmPending, JSON.stringify(event)).toBe('boolean');
-        expect(() => buildClaimViewModel(step.next)).not.toThrow();
+        expect(() => buildClaimViewModel(step.next, PROVIDER_OFFER)).not.toThrow();
+        expect(() => buildClaimViewModel(step.next, NO_OFFER)).not.toThrow();
       }
     }
   });
@@ -991,11 +1028,11 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
   };
 
   it('hidden: no action is operable', () => {
-    expect(buildClaimViewModel(CLAIM_INITIAL).actions).toEqual(none);
+    expect(buildClaimViewModel(CLAIM_INITIAL, PROVIDER_OFFER).actions).toEqual(none);
   });
 
   it('prompt (a fresh guest opened the overlay): sign in or decline', () => {
-    expect(buildClaimViewModel(run(opened)).actions).toEqual({
+    expect(buildClaimViewModel(run(opened), PROVIDER_OFFER).actions).toEqual({
       ...none,
       signIn: true,
       decline: true,
@@ -1004,8 +1041,12 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
 
   it('sign-in-failed: sign in again or decline; re-opening lands on the same pair', () => {
     const failed = run(opened, { kind: 'sign-in-failed', reason: 'transient-error' });
-    expect(buildClaimViewModel(failed).actions).toEqual({ ...none, signIn: true, decline: true });
-    expect(buildClaimViewModel(claimStep(failed, opened).next).actions).toEqual({
+    expect(buildClaimViewModel(failed, PROVIDER_OFFER).actions).toEqual({
+      ...none,
+      signIn: true,
+      decline: true,
+    });
+    expect(buildClaimViewModel(claimStep(failed, opened).next, PROVIDER_OFFER).actions).toEqual({
       ...none,
       signIn: true,
       decline: true,
@@ -1015,17 +1056,17 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
   it('decline step one arms ONLY confirm + cancel; cancel returns to the prompt pair', () => {
     const armed = run(opened, { kind: 'decline-requested' });
     expect(
-      buildClaimViewModel(armed).confirmPrompt,
+      buildClaimViewModel(armed, PROVIDER_OFFER).confirmPrompt,
       'an armed decline from the PROMPT must show the confirmation copy (the buttons alone do ' +
         'not say what is lost)',
     ).toBeDefined();
-    expect(buildClaimViewModel(armed).actions).toEqual({
+    expect(buildClaimViewModel(armed, PROVIDER_OFFER).actions).toEqual({
       ...none,
       declineConfirm: true,
       declineCancel: true,
     });
     const cancelled = claimStep(armed, { kind: 'decline-cancelled' }).next;
-    expect(buildClaimViewModel(cancelled).actions).toEqual({
+    expect(buildClaimViewModel(cancelled, PROVIDER_OFFER).actions).toEqual({
       ...none,
       signIn: true,
       decline: true,
@@ -1038,14 +1079,20 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
       { kind: 'decline-requested' },
       { kind: 'decline-confirmed', hasLiveConnection: true },
     );
-    expect(buildClaimViewModel(declined).actions).toEqual({ ...none, join: true });
+    expect(buildClaimViewModel(declined, PROVIDER_OFFER).actions).toEqual({ ...none, join: true });
   });
 
   it('code-pending / awaiting-account: the claim is in flight — decline only', () => {
     const pendingState = run({ kind: 'claim-pending', code: 'a'.repeat(64) });
-    expect(buildClaimViewModel(pendingState).actions).toEqual({ ...none, decline: true });
+    expect(buildClaimViewModel(pendingState, PROVIDER_OFFER).actions).toEqual({
+      ...none,
+      decline: true,
+    });
     const awaiting = claimStep(pendingState, { kind: 'claim-awaiting-account' }).next;
-    expect(buildClaimViewModel(awaiting).actions).toEqual({ ...none, decline: true });
+    expect(buildClaimViewModel(awaiting, PROVIDER_OFFER).actions).toEqual({
+      ...none,
+      decline: true,
+    });
   });
 
   it('claimed: join only', () => {
@@ -1053,7 +1100,7 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
       { kind: 'claim-pending', code: 'a'.repeat(64) },
       { kind: 'claim-succeeded' },
     );
-    expect(buildClaimViewModel(claimed).actions).toEqual({ ...none, join: true });
+    expect(buildClaimViewModel(claimed, PROVIDER_OFFER).actions).toEqual({ ...none, join: true });
   });
 
   it('rejected: a code-deleting reject offers join; a code-retaining reject offers decline', () => {
@@ -1061,12 +1108,15 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
       { kind: 'claim-pending', code: 'a'.repeat(64) },
       { kind: 'claim-rejected', message: 'code expired', claimedFrom: undefined },
     );
-    expect(buildClaimViewModel(deleting).actions).toEqual({ ...none, join: true });
+    expect(buildClaimViewModel(deleting, PROVIDER_OFFER).actions).toEqual({ ...none, join: true });
     const retaining = run(
       { kind: 'claim-pending', code: 'a'.repeat(64) },
       { kind: 'claim-rejected', message: 'already in an ongoing battle', claimedFrom: undefined },
     );
-    expect(buildClaimViewModel(retaining).actions).toEqual({ ...none, decline: true });
+    expect(buildClaimViewModel(retaining, PROVIDER_OFFER).actions).toEqual({
+      ...none,
+      decline: true,
+    });
   });
 });
 
@@ -1086,10 +1136,13 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
 // ===========================================================================
 
 /** One projected view model and the catalog key each copy field must resolve to. An absent
- *  `confirmPrompt` / `nudge` means that field must be `undefined`. */
+ *  `confirmPrompt` / `nudge` means that field must be `undefined`. An absent `offer` projects
+ *  under PROVIDER_OFFER, whose Sign In label is the `claim.signInWithProvider` entry; under
+ *  NO_OFFER the label must be `undefined`. */
 interface ClaimCopyCase {
   readonly where: string;
   readonly state: ClaimModelState;
+  readonly offer?: SignInOffer;
   readonly title: string;
   readonly body: string;
   readonly confirmPrompt?: string;
@@ -1113,7 +1166,20 @@ function signInFailedWith(signInReason: string | undefined): ClaimModelState {
 const CLAIM_COPY_CASES: readonly ClaimCopyCase[] = [
   { where: 'hidden (the initial state)', state: CLAIM_INITIAL, ...PENDING_COPY },
   { where: 'prompt', state: stateOf({ phase: 'prompt' }), ...PENDING_COPY },
+  {
+    where: 'prompt with no sign-in offer',
+    state: stateOf({ phase: 'prompt' }),
+    offer: NO_OFFER,
+    title: PENDING_COPY.title,
+    body: 'claim.prompt.noProvider',
+  },
   { where: 'code-pending', state: pending(), ...PENDING_COPY },
+  {
+    where: 'code-pending with no sign-in offer',
+    state: pending(),
+    offer: NO_OFFER,
+    ...PENDING_COPY,
+  },
   {
     where: 'awaiting-account',
     state: stateOf({ phase: 'awaiting-account', codeRetained: true }),
@@ -1284,11 +1350,21 @@ const CLAIM_FEEDBACK_CASES: readonly ClaimFeedbackCase[] = [
  *  Returns the number of arms checked so the caller can pin anti-vacuity. */
 function expectClaimCopyFrom(catalog: Readonly<Record<string, unknown>>, locale: string): number {
   let checked = 0;
+  const signInWithProvider = catalogFunction(catalog, locale, 'claim.signInWithProvider');
   for (const c of CLAIM_COPY_CASES) {
-    const vm = buildClaimViewModel(c.state);
+    const offer = c.offer ?? PROVIDER_OFFER;
+    const vm = buildClaimViewModel(c.state, offer);
     expect(vm.title, `${locale} / ${c.where}: title must be ${c.title}`).toBe(
       catalogString(catalog, locale, c.title),
     );
+    if (offer.kind === 'provider') {
+      expect(
+        vm.signInLabel,
+        `${locale} / ${c.where}: the Sign In label must be claim.signInWithProvider`,
+      ).toBe(signInWithProvider({ provider: offer.name }));
+    } else {
+      expect(vm.signInLabel, `${locale} / ${c.where}: no Sign In label`).toBeUndefined();
+    }
     expect(vm.body, `${locale} / ${c.where}: body must be ${c.body}`).toBe(
       catalogString(catalog, locale, c.body),
     );
@@ -1315,7 +1391,7 @@ function expectClaimCopyFrom(catalog: Readonly<Record<string, unknown>>, locale:
     expect(step.effect, `${locale} / ${c.where}: the action must not act`).toBe('none');
     expect(step.next.feedback, `${locale} / ${c.where}: feedback must be ${c.key}`).toBe(expected);
     expect(
-      buildClaimViewModel(step.next).feedback,
+      buildClaimViewModel(step.next, PROVIDER_OFFER).feedback,
       `${locale} / ${c.where}: the view model must carry that same feedback line`,
     ).toBe(expected);
     checked += 1;
@@ -1442,5 +1518,186 @@ describe('claimModel polish-1 P4: claim-succeeded deletes the stored code', () =
     expect(claimStep(pending(), { kind: 'claim-pending', code: 'a'.repeat(64) }).effect).toBe(
       'none',
     );
+  });
+});
+
+// ===========================================================================
+// The sign-in offer: a build with no issuer offers no Sign In; a build with one offers Sign In
+// labelled with its provider name, or the issuer string when no name is set. The offer gates the
+// Sign In action, writes its label and changes the prompt body; nothing else in the view model.
+// ===========================================================================
+
+const ALL_PHASES: readonly ClaimPhase[] = [
+  'hidden',
+  'prompt',
+  'code-pending',
+  'awaiting-account',
+  'rejected',
+  'sign-in-failed',
+  'claimed',
+];
+
+/** Every phase crossed with an armed / unarmed decline and a lifted / standing join veto. */
+const OFFER_MATRIX: readonly ClaimModelState[] = ALL_PHASES.flatMap((phase) =>
+  [false, true].flatMap((confirmPending) =>
+    [false, true].map((joinPermitted) => stateOf({ phase, confirmPending, joinPermitted })),
+  ),
+);
+
+function describeState(state: ClaimModelState): string {
+  return `${state.phase} (confirmPending=${state.confirmPending}, joinPermitted=${state.joinPermitted})`;
+}
+
+/** The view model with the offer-dependent fields removed: Sign In, its label, and (in the
+ *  prompt phase only) the body. */
+function offerIndependentFields(vm: ClaimViewModel, phase: ClaimPhase): Record<string, unknown> {
+  const { signInLabel: _label, body, actions, ...rest } = vm;
+  const { signIn: _signIn, ...otherActions } = actions;
+  return phase === 'prompt'
+    ? { ...rest, actions: otherActions }
+    : { ...rest, body, actions: otherActions };
+}
+
+const RSQUO = String.fromCharCode(0x2019);
+const SIGN_IN_LABEL_EN = `Sign in / create account with ${PROVIDER_NAME}`;
+const NO_PROVIDER_BODY_EN =
+  'Accounts are not available on this server yet. You can keep playing as a guest.';
+const NO_PROVIDER_BODY_FR = `Les comptes ne sont pas encore disponibles sur ce serveur. Vous pouvez continuer à jouer en tant qu${RSQUO}invité.`;
+
+describe('claimModel sign-in offer: the build issuer decides whether Sign In is offered and how it is labelled', () => {
+  beforeEach(() => {
+    setLocale('en');
+  });
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('signInOffer with an empty issuer offers no sign-in, whatever the provider name [ih-4.1]', () => {
+    expect(signInOffer('', '')).toStrictEqual({ kind: 'none' });
+    expect(signInOffer('', 'Acme ID')).toStrictEqual({ kind: 'none' });
+  });
+
+  it('signInOffer with an issuer and a provider name offers that name exactly [ih-4.1]', () => {
+    expect(signInOffer('https://auth.example.test/', 'Acme ID')).toStrictEqual({
+      kind: 'provider',
+      name: 'Acme ID',
+    });
+    // The name is taken as given: surrounding spaces are not trimmed.
+    expect(signInOffer('https://auth.example.test/', ' Acme ID ')).toStrictEqual({
+      kind: 'provider',
+      name: ' Acme ID ',
+    });
+  });
+
+  it('signInOffer with an issuer and an empty provider name offers the issuer string byte for byte [ih-4.1]', () => {
+    const issuer = 'https://auth.example.test/realms/mr?client=web#x';
+    expect(signInOffer(issuer, '')).toStrictEqual({ kind: 'provider', name: issuer });
+    // Trailing slashes are part of the issuer: the name keeps every one of them.
+    expect(signInOffer('https://auth.monster-realm.invalid/', '')).toStrictEqual({
+      kind: 'provider',
+      name: 'https://auth.monster-realm.invalid/',
+    });
+    expect(signInOffer('https://auth.example//', '')).toStrictEqual({
+      kind: 'provider',
+      name: 'https://auth.example//',
+    });
+    // Only the exact empty string is "no issuer": a single space is an issuer, shown as is.
+    expect(signInOffer(' ', '')).toStrictEqual({ kind: 'provider', name: ' ' });
+  });
+
+  it('signInOffer over arbitrary strings offers none iff the issuer is empty, else the provider name or the issuer when the name is empty [ih-4.1]', () => {
+    const maybeEmpty = fc.oneof(fc.constant(''), fc.string());
+    // One issuer arm ends in one or more slashes, the shape a real issuer URL has.
+    const issuerArb = fc.oneof(
+      fc.constant(''),
+      fc.string(),
+      fc.tuple(fc.string(), fc.constantFrom('/', '//', '///')).map(([head, tail]) => head + tail),
+    );
+    fc.assert(
+      fc.property(issuerArb, maybeEmpty, (issuer, providerName) => {
+        const offer = signInOffer(issuer, providerName);
+        if (issuer === '') {
+          expect(offer).toStrictEqual({ kind: 'none' });
+        } else {
+          expect(offer).toStrictEqual({
+            kind: 'provider',
+            name: providerName === '' ? issuer : providerName,
+          });
+        }
+      }),
+    );
+  });
+
+  it('with no sign-in offer, no phase offers Sign In and no view model carries a Sign In label [ih-4.2]', () => {
+    expect(OFFER_MATRIX.length, 'seven phases x two decline states x two veto states').toBe(28);
+    for (const state of OFFER_MATRIX) {
+      const vm = buildClaimViewModel(state, NO_OFFER);
+      expect(vm.actions.signIn, `${describeState(state)}: Sign In under no offer`).toBe(false);
+      expect(vm.signInLabel, `${describeState(state)}: label under no offer`).toBeUndefined();
+    }
+    // Positive control: a provider offer does offer Sign In, in exactly the unarmed, vetoed
+    // prompt and sign-in-failed states.
+    const offered = OFFER_MATRIX.filter(
+      (state) => buildClaimViewModel(state, PROVIDER_OFFER).actions.signIn,
+    ).map(describeState);
+    expect(offered).toEqual([
+      describeState(stateOf({ phase: 'prompt' })),
+      describeState(stateOf({ phase: 'sign-in-failed' })),
+    ]);
+  });
+
+  it('the offer changes only Sign In, its label and the prompt body; a provider label is the same in every phase [ih-4.2]', () => {
+    for (const state of OFFER_MATRIX) {
+      const withNone = buildClaimViewModel(state, NO_OFFER);
+      const withProvider = buildClaimViewModel(state, PROVIDER_OFFER);
+      expect(
+        offerIndependentFields(withNone, state.phase),
+        `${describeState(state)}: every other field is the same under both offers`,
+      ).toEqual(offerIndependentFields(withProvider, state.phase));
+      expect(
+        withProvider.signInLabel,
+        `${describeState(state)}: the provider label depends on the offer alone`,
+      ).toBe(SIGN_IN_LABEL_EN);
+      if (state.phase === 'prompt') {
+        expect(
+          withNone.body,
+          `${describeState(state)}: the prompt body follows the offer`,
+        ).not.toBe(withProvider.body);
+      }
+    }
+  });
+
+  it('with no sign-in offer the prompt body says, in English, that accounts are not available here yet and play continues as a guest [ih-4.3]', () => {
+    setLocale('en');
+    const vm = buildClaimViewModel(stateOf({ phase: 'prompt' }), NO_OFFER);
+    expect(vm.body).toBe(NO_PROVIDER_BODY_EN);
+    expect(vm.body).toBe(catalogString(EN_CATALOG, 'en', 'claim.prompt.noProvider'));
+    expect(vm.body).not.toBe(catalogString(EN_CATALOG, 'en', 'claim.pending.body'));
+  });
+
+  it('with no sign-in offer the prompt body says, in French, that accounts are not available here yet and play continues as a guest [ih-4.3]', () => {
+    setLocale('fr');
+    const vm = buildClaimViewModel(stateOf({ phase: 'prompt' }), NO_OFFER);
+    expect(vm.body).toBe(NO_PROVIDER_BODY_FR);
+    expect(vm.body).toBe(catalogString(FR_CATALOG, 'fr', 'claim.prompt.noProvider'));
+    expect(vm.body).not.toBe(catalogString(FR_CATALOG, 'fr', 'claim.pending.body'));
+    expect(vm.body).not.toBe(NO_PROVIDER_BODY_EN);
+  });
+
+  it('the no-provider copy is gated on the prompt phase alone: a provider prompt, and a no-offer hidden or code-pending claim, keep the pending body [ih-4.3]', () => {
+    const pendingBody = catalogString(EN_CATALOG, 'en', 'claim.pending.body');
+    expect(buildClaimViewModel(stateOf({ phase: 'prompt' }), PROVIDER_OFFER).body).toBe(
+      pendingBody,
+    );
+    expect(buildClaimViewModel(pending(), NO_OFFER).body).toBe(pendingBody);
+    expect(buildClaimViewModel(CLAIM_INITIAL, NO_OFFER).body).toBe(pendingBody);
+    // The no-offer prompt reads the no-provider copy, and so does an armed decline in the prompt
+    // (still the prompt phase).
+    expect(buildClaimViewModel(stateOf({ phase: 'prompt' }), NO_OFFER).body).toBe(
+      NO_PROVIDER_BODY_EN,
+    );
+    expect(
+      buildClaimViewModel(stateOf({ phase: 'prompt', confirmPending: true }), NO_OFFER).body,
+    ).toBe(NO_PROVIDER_BODY_EN);
   });
 });

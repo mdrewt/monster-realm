@@ -318,9 +318,9 @@ export type MessageId =
   | 'social.confirm.declineChallenge'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
-  // Claim.* : the guest-claim overlay — its buttons (claimView.ts) and, since 21r-b2, its
-  // titles, bodies, prompts and feedback lines (claimModel.ts).
-  | 'claim.signInButton'
+  // Claim.* : the guest-claim overlay — four button labels (claimView.ts); its titles, bodies,
+  // prompts, feedback lines and the Sign In label (claimModel.ts).
+  | 'claim.signInWithProvider'
   | 'claim.joinButton'
   | 'claim.declineButton'
   | 'claim.declineConfirmButton'
@@ -330,6 +330,7 @@ export type MessageId =
   | 'claim.decline.confirmPrompt'
   | 'claim.pending.title'
   | 'claim.pending.body'
+  | 'claim.prompt.noProvider'
   | 'claim.awaiting.title'
   | 'claim.awaiting.body'
   | 'claim.claimed.title'
@@ -774,6 +775,9 @@ export interface MessageParams {
   readonly 'quest.complete.reward': { readonly name: string; readonly amount: bigint };
   readonly 'quest.complete.done': { readonly name: string };
   readonly 'social.players.walkUp': { readonly name: string };
+  // The build's provider name, or its issuer string when the build names none: build text, never
+  // player data.
+  readonly 'claim.signInWithProvider': { readonly provider: string };
   // bt-10: the tactical client's parameterised lines. Names, status words and halt reasons are
   // catalog text or model data resolved by the caller; `currency` is a bigint, every other count a number.
   readonly 'tactics.turnbar.round': { readonly round: number };

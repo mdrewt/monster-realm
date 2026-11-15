@@ -6,8 +6,9 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { E2E_OIDC_PROVIDER_NAME } from '../playwright.config';
 import { CLAIM_CODE_KEY_PREFIX } from '../src/net/claimCode';
-import { t } from '../src/ui/i18n/resolver';
+import { t, tf } from '../src/ui/i18n/resolver';
 import { closeAll, pressAccel } from './controls';
 
 // accounts.spec.ts — the BROWSER surface of the guest-claim flow (de-bloat Phase 3 smoke).
@@ -132,7 +133,7 @@ test.describe
       await browser.close();
     });
 
-    test('A1: KeyC opens the claim overlay with the guest prompt, a sign-in button, no privacy door and the first-run nudge', async () => {
+    test('A1: KeyC opens the claim overlay with the guest prompt, a sign-in button labelled with the provider, no privacy door and the first-run nudge [ih-4.6]', async () => {
       expect(await storedCodes(page), 'a fresh guest holds no claim code').toEqual([]);
       await focusWorld(page);
       await pressAccel(page, 'C');
@@ -149,7 +150,11 @@ test.describe
       await expect(page.locator('#claim-body')).toBeVisible();
       await expect(page.locator('#claim-nudge')).toHaveText(NUDGE);
       await expect(page.locator('#claim-signin-btn')).toBeVisible();
-      await expect(page.locator('#claim-signin-btn')).toHaveText(t('claim.signInButton'));
+      // The e2e build sets an issuer and a provider name (playwright.config.ts), so the button
+      // reads the provider label.
+      await expect(page.locator('#claim-signin-btn')).toHaveText(
+        tf('claim.signInWithProvider', { provider: E2E_OIDC_PROVIDER_NAME }),
+      );
       // The overlay's initial-focus anchor is the (now painted) sign-in button.
       await expect(page.locator('#claim-signin-btn')).toBeFocused();
       await expect(page.locator('#claim-decline-btn')).toHaveText(t('claim.declineButton'));
@@ -158,13 +163,18 @@ test.describe
       await expect(page.locator('#claim-privacy-btn')).toHaveCount(0);
     });
 
-    test('A2: sign-in with an unreachable auth service fails safe — failure copy, a minted claim code, and the guest session untouched', async () => {
+    test('A2: sign-in with an unreachable auth service fails safe — failure copy, a minted claim code, and the guest session untouched [ih-4.6]', async () => {
       await page.locator('#claim-signin-btn').click();
       await expect(page.locator('#claim-title')).toHaveText(FAILED_TITLE, { timeout: 10_000 });
       await expect(page.locator('#claim-body')).toHaveText(FAILED_BODY);
       // B2 (ctl-8h): the failure copy is visible to the player in this phase too.
       await expect(page.locator('#claim-title')).toBeVisible();
       await expect(page.locator('#claim-body')).toBeVisible();
+      // The retry is still offered, labelled with the provider.
+      await expect(page.locator('#claim-signin-btn')).toBeVisible();
+      await expect(page.locator('#claim-signin-btn')).toHaveText(
+        tf('claim.signInWithProvider', { provider: E2E_OIDC_PROVIDER_NAME }),
+      );
 
       // The code is minted BEFORE the provider is contacted (connection.ts startSignIn) and
       // survives the failure (claimModel 'sign-in-failed' never deletes it).

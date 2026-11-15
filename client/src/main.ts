@@ -205,6 +205,7 @@ import {
   type ClaimEvent,
   type ClaimModelState,
   claimStep,
+  signInOffer,
 } from './ui/claimModel';
 import type { ClaimViewHandlers } from './ui/claimView';
 import { closeContextSheet, createContextSheet, renderContextSheet } from './ui/contextSheet';
@@ -392,6 +393,18 @@ const TELEMETRY_CONFIG = resolveTelemetryConfig(
   import.meta.env.DEV,
   Math.random(),
   TARGET_KIND,
+);
+// The build's OIDC issuer and client id go only to a server we operate. A single-player world
+// (`local`) or a friends server (`private`) gets both empty, as a build that sets no issuer does.
+// OIDC_ISSUER is the one read of the issuer: `connect` and the Account section's Sign In offer
+// both take it, so the control shows exactly where the OIDC flow holds an issuer.
+const OPERATED_BY_US = TARGET_KIND === 'official' || TARGET_KIND === 'test';
+const OIDC_ISSUER = OPERATED_BY_US
+  ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
+  : '';
+const SIGN_IN_OFFER = signInOffer(
+  OIDC_ISSUER,
+  (import.meta.env.VITE_MR_OIDC_PROVIDER_NAME as string | undefined) ?? '',
 );
 // Seeded with the shared no-op; re-assigned once by the init hunk iff the bootstrap resolves.
 let telemetry: ClientTelemetry = NOOP_TELEMETRY;
@@ -940,7 +953,7 @@ function applySession(event: SessionEvent): void {
  *  no other way to show itself). With Profile open it only paints: a claim event never pulls the
  *  player out of the section they are in. */
 function renderClaim(): void {
-  const vm = buildClaimViewModel(claimModelState);
+  const vm = buildClaimViewModel(claimModelState, SIGN_IN_OFFER);
   if (vm.visible && profileView?.visible === false) showProfile('account');
   else claimView?.render(vm);
 }
@@ -1126,7 +1139,7 @@ function showProfile(section: ProfileSection): void {
     if (profileView?.visible === false) {
       renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
     }
-    claimView?.render(buildClaimViewModel(claimModelState));
+    claimView?.render(buildClaimViewModel(claimModelState, SIGN_IN_OFFER));
     renderPrivacy();
     profileView?.show(section);
   });
@@ -2137,7 +2150,8 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       stepShopOpen({ kind: 'shopPicked', shopId: command.shopId });
       return DONE;
     case 'claimSignIn':
-      conn?.startSignIn();
+      // The command checks the offer itself: hiding Sign In does not disable it.
+      if (SIGN_IN_OFFER.kind === 'provider') conn?.startSignIn();
       return DONE;
     case 'claimJoin':
       applyClaim({
@@ -4823,7 +4837,7 @@ async function main(): Promise<void> {
       onDismissed: () => {
         if (!claimModelState.confirmPending) return;
         claimModelState = claimStep(claimModelState, { kind: 'decline-cancelled' }).next;
-        claimView?.render(buildClaimViewModel(claimModelState));
+        claimView?.render(buildClaimViewModel(claimModelState, SIGN_IN_OFFER));
       },
     };
     const accountSection = new ClaimViewClass(claimHandlers);
@@ -5030,18 +5044,13 @@ async function main(): Promise<void> {
     telemetry.setZone(rawMap.zone_id);
   });
 
-  // The build's OIDC issuer and client id go only to a server we operate. A single-player world
-  // (`local`) or a friends server (`private`) gets both empty, as a build that sets no issuer
-  // does: the OIDC flow is never given the build's issuer or client id there.
-  const operatedByUs = TARGET_KIND === 'official' || TARGET_KIND === 'test';
   conn = connect({
     uri: URI,
     db: DB,
     name: 'Player',
     store,
-    // `?? ''`: a build that sets no issuer passes an empty one.
-    authIssuer: operatedByUs ? (import.meta.env.VITE_MR_OIDC_ISSUER ?? '') : '',
-    authClientId: operatedByUs ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
+    authIssuer: OIDC_ISSUER,
+    authClientId: OPERATED_BY_US ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
     // Undefined unless VITE_MR_DEVLOG is set — then the connection installs the
     // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay

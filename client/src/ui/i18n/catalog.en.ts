@@ -989,8 +989,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72
   'dialogue.action.shop': 'Shop',
-  // @desc: Button on the guest-claim overlay that starts sign-in so guest progress can be claimed onto an account. Short verb phrase.
-  'claim.signInButton': 'Sign in',
+  // @desc: Button in the Profile screen's Account section that starts sign-in at the build's
+  // identity provider, where an account is also created. {provider} is that provider's name.
+  'claim.signInWithProvider': (p) => `Sign in / create account with ${p.provider}`,
   // @desc: Button on the guest-claim overlay that returns to the game once the claim is settled or declined. Short phrase.
   'claim.joinButton': 'Continue playing',
   // @desc: Button on the guest-claim overlay: first step of declining the claim (a confirmation follows). One word.
@@ -1024,6 +1025,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'claim.pending.body':
     'Sign in to claim the progress you made as a guest, or decline to keep playing as a guest ' +
     'on this device.',
+  // @desc: Body of the Account section's prompt when this build has no identity provider:
+  // accounts cannot be used on this server yet, and play goes on as a guest. Two sentences.
+  'claim.prompt.noProvider':
+    'Accounts are not available on this server yet. You can keep playing as a guest.',
   // @desc: Heading of the guest-claim overlay after sign-in while the account is still being
   // prepared. One short line.
   // claimModel.ts:327

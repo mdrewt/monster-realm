@@ -14,10 +14,12 @@
 // reconnect force-hides, and main.ts cancels an armed decline there: in one column an armed "Yes"
 // would otherwise be the next row under the name field of a re-opened screen.
 //
-// Button labels and the section header are the strings this view owns, resolved through the i18n
-// resolver (the five `claim.*Button` action labels and the header
+// Four button labels and the section header are the strings this view owns, resolved through the
+// i18n resolver (the `claim.*Button` action labels and the header
 // `t('menu.profile.account.title')`) in BOTH `render()` and `show()` — unconditionally, on every
 // call, never in the constructor (the locale may be negotiated after this view is constructed).
+// The Sign In label names the build's provider, so it is model copy (`vm.signInLabel`): `render()`
+// writes it, in the same call that can show the button, and `show()` has no view model to read.
 // The rows are the claim actions only: the Privacy section is the next section down the same
 // column, so the Down walk reaches it without a door here. WHICH action buttons are shown is
 // `vm.actions` (claimModel owns the rule); `render()` writes each one's display.
@@ -96,7 +98,7 @@ export class ClaimView implements RowSection {
       if (child.parentElement !== this.#overlay) this.#overlay.appendChild(child);
     }
     // The five action buttons start hidden (`ensureElement`) and are shown per `vm.actions` by
-    // every `render()`; labels are written by every render and show (header).
+    // every `render()`; the view's own labels are written by every render and show (header).
     this.#actionBtns = {
       signIn: this.#wireButton('claim-signin-btn', handlers.onSignIn),
       join: this.#wireButton('claim-join-btn', handlers.onJoin),
@@ -107,11 +109,10 @@ export class ClaimView implements RowSection {
     this.#onDismissed = handlers.onDismissed;
   }
 
-  /** Write the section header and every button label (every render and show — header). */
+  /** Write the section header and the four labels this view owns (every render and show). */
   #writeLabels(): void {
     this.#frameTitle.textContent = t('menu.profile.account.title');
     const b = this.#actionBtns;
-    b.signIn.textContent = t('claim.signInButton');
     b.join.textContent = t('claim.joinButton');
     b.decline.textContent = t('claim.declineButton');
     b.declineConfirm.textContent = t('claim.declineConfirmButton');
@@ -144,6 +145,7 @@ export class ClaimView implements RowSection {
       this.#actionBtns[action].style.display = vm.actions[action] ? '' : 'none';
     }
     // Every render, unconditionally.
+    this.#actionBtns.signIn.textContent = vm.signInLabel ?? '';
     this.#writeLabels();
     // Only while the section shows: the open edge's focus is the frame's.
     if (this.visible) this.#reseat(wasArmed);
