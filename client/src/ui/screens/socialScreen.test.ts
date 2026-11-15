@@ -2222,7 +2222,7 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
   it('ts-4.6 the only prompt question any reachable state paints is declineChallenge, every sheet offers only accept / decline / cancel, and every paint hands the view a SocialPaint with exactly the keys tab, sessions, sessionCursor, sheet, confirm', () => {
     // WRONG IMPL KILLED: a `declineTrade` or `confirmTrade` question still asked by some row; a
     // `confirm` action on a sheet; a paint that still carries a `tradeCursor` key (or any key
-    // beyond the five) or drops one of them.
+    // beyond the six) or drops one of them.
     const found = explore(MIXED);
     expect([...found.questions], 'the prompt questions painted').toEqual(['declineChallenge']);
     expect([...found.sheetActions].sort(), 'the actions a sheet offers').toEqual([
@@ -2235,7 +2235,7 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
     ]);
   });
 
-  it('ts-4.6 the view model reads no trade offers: over a store whose only members are allChallenges, allPlayers, characters, allProfiles and allTradeSessions it builds, every member it reads is one of those, and Trades lists exactly the viewer`s session rows', () => {
+  it('ts-4.6 the view model reads no trade offers: over a store whose only members are allChallenges, allPlayers, characters, allProfiles, allTradeSessions and profilesVersion it builds, every member it reads is one of those, and Trades lists exactly the viewer`s session rows', () => {
     // WRONG IMPL KILLED: a viewModel that still calls `store.allTradeOffers()` (a TypeError on
     // this store), or reads any other store member; one whose Trades tab lists anything but the
     // viewer's two sessions.
@@ -2245,6 +2245,7 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
       'characters',
       'allProfiles',
       'allTradeSessions',
+      'profilesVersion',
     ];
     const reads = new Set<string>();
     const base = ctxOf(MIXED) as unknown as { store: Record<string, unknown> };
@@ -2261,7 +2262,7 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
     const vm = socialScreen.viewModel(ctx);
     expect(
       [...reads].filter((r) => !ALLOWED.includes(r)),
-      'store members read beyond the five',
+      'store members read beyond the six',
     ).toEqual([]);
     expect(reads.has('allTradeSessions'), 'the session read is made').toBe(true);
     expect(vm.trades.map((r) => [r.key, r.kind])).toEqual([

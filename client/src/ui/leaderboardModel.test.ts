@@ -384,7 +384,7 @@ const idOf = (i: number): string => `i${String(i).padStart(7, '0')}abcd`;
  *  `i + 1`. Handed back in REVERSED order so no case leans on the input order. */
 function ladder(n: number): StoreProfile[] {
   const out: StoreProfile[] = [];
-  for (let i = 0; i < n; i++) out.push(makeProfile(idOf(i), `N${i}`, 5000 - i, i, 1));
+  for (let i = 0; i < n; i++) out.push(makeProfile(idOf(i), 5000 - i, `N${i}`, i, 1));
   return out.reverse();
 }
 
@@ -426,9 +426,9 @@ describe('sr-4a.1: the model holds the top 100 in the total order, ranks 1-100',
     // 'Aaa' < 'Same', and the two 'Same' by identity. Order: m (pos 100), a (pos 101), z (pos 102).
     const leaders = ladder(99);
     const tied = [
-      makeProfile('z1000000zz', 'Same', 1000),
-      makeProfile('a1000000aa', 'Same', 1000),
-      makeProfile('m1000000mm', 'Aaa', 1000),
+      makeProfile('z1000000zz', 1000, 'Same'),
+      makeProfile('a1000000aa', 1000, 'Same'),
+      makeProfile('m1000000mm', 1000, 'Aaa'),
     ];
     const all = [...tied, ...leaders];
     const asA = buildLeaderboardViewModel(all, 'a1000000aa');
@@ -533,7 +533,7 @@ describe('sr-4a.2: the one-entry memo keyed on (profilesVersion, identity)', () 
     const v1 = freshVersion();
     const v2 = freshVersion();
     const a = buildLeaderboardViewModel(ladder(5), idOf(0), v1);
-    const more = [...ladder(5), makeProfile('top00000000', 'Top', 9999)];
+    const more = [...ladder(5), makeProfile('top00000000', 9999, 'Top')];
     const b = buildLeaderboardViewModel(more, idOf(0), v2);
     expect(b).not.toBe(a);
     expect(b.rows).toHaveLength(6);
@@ -571,7 +571,7 @@ describe('sr-4a.2: the one-entry memo keyed on (profilesVersion, identity)', () 
     expect(plainB).not.toBe(plainA);
     expect(plainA).toEqual(kept);
     // A versionless call over DIFFERENT profiles/identity does not clobber the entry...
-    const other = buildLeaderboardViewModel([makeProfile('zzz00000000', 'Zed', 1)], 'zzz00000000');
+    const other = buildLeaderboardViewModel([makeProfile('zzz00000000', 1, 'Zed')], 'zzz00000000');
     expect(other.rows).toHaveLength(1);
     // ...so the pair still hits, and still ignores the profiles it is handed.
     expect(buildLeaderboardViewModel([], idOf(1), v)).toBe(kept);

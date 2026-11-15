@@ -13,7 +13,9 @@
 // is NEVER a resolver argument (I18N-21): each row is `[<bdi>name</bdi>, textNode]` — the
 // `<bdi>` (zero attributes, zero children, `textContent` only) isolates the player-chosen name's
 // bidi run from the surrounding catalog text (M24 §2.7, I18N-20), and the catalog value carries
-// the leading space, so `li.textContent` is byte-identical to the pre-migration string.
+// the leading space. A row that carries a rank (every row the model builds) starts with a `<span>`
+// holding the rank's digits, or `100+` on the caller's own row below the top 100, then one space:
+// no catalog text. `render` handed the object it last rendered keeps the rows as they are.
 //
 // ctl-8g: this root also hosts the Social frame's Players and Rankings tabs (CTL8G.1-.2).
 // `paintSocial(p)` is kept and re-applied after every `render(vm)` (main.ts re-renders the board
@@ -78,6 +80,8 @@ export class LeaderboardView {
   /** The Rankings cursor last scrolled into view (its id and index), so a re-render that leaves
    *  it in place never re-scrolls, and a re-sort that moves it does. */
   #scrolledTo: string | null = null;
+  /** The view model the board's rows were last built from. */
+  #rendered: LeaderboardViewModel | null = null;
 
   constructor() {
     const el = document.getElementById('leaderboard-overlay');
@@ -125,11 +129,15 @@ export class LeaderboardView {
 
   /** Render or re-render the board. Rows render in VM order — never re-sort here
    *  (the comparator is the model's contract). replaceChildren keeps
-   *  re-renders replace-not-append. */
+   *  re-renders replace-not-append; the object last rendered rebuilds nothing (the model hands
+   *  the same object back while no profile changed). */
   render(vm: LeaderboardViewModel): void {
     // A hidden root keeps no paint: the next open starts from the legacy board.
     if (!this.visible) this.#drop();
-    this.#renderBoard(vm);
+    if (vm !== this.#rendered) {
+      this.#renderBoard(vm);
+      this.#rendered = vm;
+    }
     this.#apply();
   }
 
@@ -296,6 +304,11 @@ export class LeaderboardView {
         name,
         tf('leaderboard.row', { rating: row.rating, wins: row.wins, losses: row.losses }),
       );
+      if (row.rank !== undefined) {
+        const rank = document.createElement('span');
+        rank.textContent = String(row.rank);
+        li.prepend(rank, ' ');
+      }
       return li;
     });
     this.#listEl.replaceChildren(...items);

@@ -3005,6 +3005,7 @@ function qf8SocialHarness(
       allPlayers: () => [],
       characters: () => [].values(),
       allProfiles: () => [],
+      profilesVersion: () => 0,
     },
     identity: QF8_ME,
     socialTab: tab,
