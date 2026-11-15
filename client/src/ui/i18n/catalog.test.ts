@@ -555,6 +555,9 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // verbatim; the two sets differ. (Its output is checked by the 'uif-14' describe at the end of this
   // file: the terms appear verbatim and the sets differ; the frame text is authored with the slice.)
   'help.detail.related': [{ terms: 'Party, Storage' }, { terms: 'Bait' }],
+  // The Account section's Sign In label (1 ★). `provider` is the build's provider name, or its
+  // issuer string when no name is set, carried verbatim; the two sets differ.
+  'claim.signInWithProvider': [{ provider: 'Acme ID' }, { provider: 'https://auth.example.test/' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -730,7 +733,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // The tail batch's 10 plain keys. ts-3 (named intentional change, the Strangler):
   // 'tradePropose.target.placeholder' ('Select a player…') is DELETED with the wizard; 9 remain.
   'dialogue.action.shop': 'Shop', // dialogueView.ts:72
-  'claim.signInButton': 'Sign in', // claimView.ts (resolved in render()/show())
+  // The Sign In label is parameterised (`claim.signInWithProvider`, SAMPLE_PARAMS below).
   'claim.joinButton': 'Continue playing', // claimView.ts (resolved in render()/show())
   'claim.declineButton': 'Decline', // claimView.ts (resolved in render()/show())
   'claim.declineConfirmButton': 'Yes, decline', // claimView.ts (resolved in render()/show())
@@ -783,6 +786,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'claim.pending.body':
     'Sign in to claim the progress you made as a guest, or decline to keep playing as a guest ' +
     'on this device.', // claimModel.ts:325-326
+  // The prompt body of a build with no sign-in offer (no OIDC issuer).
+  'claim.prompt.noProvider':
+    'Accounts are not available on this server yet. You can keep playing as a guest.',
   'claim.awaiting.title': 'Finishing your claim', // claimModel.ts:327
   'claim.awaiting.body':
     'Waiting for your account to be ready before your guest progress can transfer.', // claimModel.ts:328-329
@@ -1226,6 +1232,12 @@ const BT15_ARROW = String.fromCharCode(0x2192);
  *  — pins the EXACT output string (plan R6), which as a consequence also pins
  *  outputA !== outputB (asserted explicitly below, belt-and-braces). */
 const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
+  'claim.signInWithProvider': {
+    inputA: { provider: 'Acme ID' },
+    outputA: 'Sign in / create account with Acme ID',
+    inputB: { provider: 'https://auth.example.test/' },
+    outputB: 'Sign in / create account with https://auth.example.test/',
+  },
   'chrome.status.disconnected': {
     inputA: { where: 'shop' },
     outputA: 'shop: disconnected — try again',
@@ -2386,7 +2398,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 543 keys').toHaveLength(543);
+    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
+    // them, claim.signInButton not.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 544 keys').toHaveLength(544);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3601,8 +3615,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 543 keys').toBe(543);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(543);
+    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
+    // them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
   });
 });
 
@@ -3729,8 +3745,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 543 keys').toBe(543);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(543);
+    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
+    // them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4051,9 +4069,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 543 keys').toBe(543);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(543);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(543);
+    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
+    // them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(544);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4742,8 +4762,10 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    expect(Object.keys(en), 'the English roster is 543 keys').toHaveLength(543);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(543);
+    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
+    // them, claim.signInButton not.
+    expect(Object.keys(en), 'the English roster is 544 keys').toHaveLength(544);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(544);
   });
 });
 
@@ -4866,7 +4888,76 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    expect(Object.keys(en), 'the English roster is 543 keys').toHaveLength(543);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(543);
+    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
+    // them, claim.signInButton not.
+    expect(Object.keys(en), 'the English roster is 544 keys').toHaveLength(544);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(544);
+  });
+});
+
+// =============================================================================
+// The Account section's provider-labelled Sign In and the prompt body of a build with no sign-in
+// offer, in both catalogs. Every expected byte is typed here; the French apostrophe is U+2019, by
+// code point.
+// =============================================================================
+
+describe('the claim Sign In label and the no-provider prompt body in both catalogs', () => {
+  const RIGHT_QUOTE = String.fromCharCode(0x2019);
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  const closureOf = (
+    catalog: Record<string, unknown>,
+    locale: string,
+  ): ((p: { provider: string }) => string) => {
+    const entry = Object.hasOwn(catalog, 'claim.signInWithProvider')
+      ? catalog['claim.signInWithProvider']
+      : undefined;
+    if (typeof entry !== 'function') {
+      throw new Error(`${locale}: claim.signInWithProvider must be a parameterised entry`);
+    }
+    return entry as (p: { provider: string }) => string;
+  };
+
+  it('claim.prompt.noProvider is its exact plain text in en and in fr, the fr a translation', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot); an fr entry left
+    // as the English copy; a straight apostrophe instead of U+2019; a reworded line.
+    expect(en['claim.prompt.noProvider']).toBe(
+      'Accounts are not available on this server yet. You can keep playing as a guest.',
+    );
+    expect(fr['claim.prompt.noProvider']).toBe(
+      `Les comptes ne sont pas encore disponibles sur ce serveur. Vous pouvez continuer à jouer en tant qu${RIGHT_QUOTE}invité.`,
+    );
+    expect(fr['claim.prompt.noProvider']).not.toBe(en['claim.prompt.noProvider']);
+  });
+
+  it('claim.signInWithProvider is a closure in en and fr whose output is the exact label with the provider echoed once and verbatim, for two differing sample sets, the fr a translation', () => {
+    // WRONG IMPL KILLED: a plain string (the provider never reaches the label); a closure that
+    // ignores its param or repeats it; a provider appended outside the catalog text; an fr entry
+    // left as the English copy.
+    const samples = SAMPLE_PARAMS['claim.signInWithProvider'];
+    expect(samples, 'fixture: the two sample sets').toEqual([
+      { provider: 'Acme ID' },
+      { provider: 'https://auth.example.test/' },
+    ]);
+    const enFn = closureOf(en, 'en');
+    const frFn = closureOf(fr, 'fr');
+    for (const provider of ['Acme ID', 'https://auth.example.test/']) {
+      const enOut = enFn({ provider });
+      const frOut = frFn({ provider });
+      expect(enOut).toBe(`Sign in / create account with ${provider}`);
+      expect(frOut).toBe(`Se connecter / créer un compte avec ${provider}`);
+      expect(countOccurrences(enOut, provider), `en echoes ${provider} once`).toBe(1);
+      expect(countOccurrences(frOut, provider), `fr echoes ${provider} once`).toBe(1);
+      expect(frOut, 'a translation, not the English copy').not.toBe(enOut);
+    }
+    expect(enFn({ provider: 'Acme ID' })).not.toBe(
+      enFn({ provider: 'https://auth.example.test/' }),
+    );
+  });
+
+  it('claim.signInButton is an own key of neither catalog', () => {
+    // WRONG IMPL KILLED: the fixed "Sign in" label left behind as a dead key in either catalog.
+    expect(Object.hasOwn(en, 'claim.signInButton'), 'en').toBe(false);
+    expect(Object.hasOwn(fr, 'claim.signInButton'), 'fr').toBe(false);
   });
 });

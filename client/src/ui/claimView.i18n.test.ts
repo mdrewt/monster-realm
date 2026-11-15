@@ -9,11 +9,18 @@
 // plan/plan-revisions/ADR-0261 only.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ClaimViewModel } from './claimModel';
+import {
+  buildClaimViewModel,
+  CLAIM_INITIAL,
+  type ClaimModelState,
+  type ClaimViewModel,
+  claimStep,
+  signInOffer,
+} from './claimModel';
 import { ClaimView, type ClaimViewHandlers } from './claimView';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
-import { t as i18nT, setLocale } from './i18n/resolver';
+import { t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
 
@@ -60,6 +67,9 @@ function sweepA11y(): void {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
 }
 
+/** The Sign In label a hand-built vm carries: the view writes it verbatim on render(). */
+const SIGN_IN_LABEL_VM = 'Sign in / create account with Acme ID';
+
 /** vm strings deliberately avoid every roster word (the English action labels). */
 function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
   return {
@@ -69,6 +79,7 @@ function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
     confirmPrompt: undefined,
     nudge: undefined,
     feedback: undefined,
+    signInLabel: SIGN_IN_LABEL_VM,
     actions: {
       signIn: true,
       join: false,
@@ -85,7 +96,6 @@ function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
 // ---------------------------------------------------------------------------
 
 const M24S5_CV_PLAIN_KEYS = new Set([
-  'claim.signInButton',
   'claim.joinButton',
   'claim.declineButton',
   'claim.declineConfirmButton',
@@ -140,9 +150,11 @@ function m24s5CvWalkSubtree(root: HTMLElement): string[] {
 /** The English action labels (the vm strings above avoid all of them). */
 const M24S5_CV_ROSTER = ['Continue playing', 'Yes, decline', 'Keep my code', 'Decline'];
 
-/** Each action button's id and the plain catalog key its label resolves through. */
+/** Each plain-labelled action button's id and the catalog key its label resolves through. The
+ *  Sign In button is not here: its label is the view model's `signInLabel`, written by render()
+ *  alone (SIGN_IN_ID below). */
+const SIGN_IN_ID = 'claim-signin-btn';
 const ACTION_LABELS = [
-  ['claim-signin-btn', 'claim.signInButton'],
   ['claim-join-btn', 'claim.joinButton'],
   ['claim-decline-btn', 'claim.declineButton'],
   ['claim-decline-confirm-btn', 'claim.declineConfirmButton'],
@@ -178,6 +190,7 @@ describe('m24s5 (ADR-0261): claimView.ts routes the action labels through t() fr
       expect(btn(id).textContent, `${id}: the constructor writes no label`).toBe('');
       expect(i18nT).not.toHaveBeenCalledWith(key);
     }
+    expect(btn(SIGN_IN_ID).textContent, 'Sign In: the constructor writes no label').toBe('');
 
     // Door 1: show() alone, no render().
     view.show();
@@ -185,6 +198,10 @@ describe('m24s5 (ADR-0261): claimView.ts routes the action labels through t() fr
       expect(i18nT, `show() resolves ${key}`).toHaveBeenCalledWith(key);
       expect(btn(id).textContent, `${id}: the English bytes`).toBe(enLabel(key));
     }
+    expect(
+      btn(SIGN_IN_ID).textContent,
+      'Sign In: show() has no view model and writes no label',
+    ).toBe('');
 
     // RT2: a repeat show() on an already-open overlay re-resolves the keys.
     vi.mocked(i18nT).mockClear();
@@ -201,13 +218,21 @@ describe('m24s5 (ADR-0261): claimView.ts routes the action labels through t() fr
     // Door 2: render(visible vm) alone, no show().
     const freshView = new ClaimView(makeHandlers());
     for (const [id] of ACTION_LABELS) expect(btn(id).textContent).toBe('');
+    expect(btn(SIGN_IN_ID).textContent).toBe('');
     vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
 
     freshView.render(makeVm());
     for (const [id, key] of ACTION_LABELS) {
       expect(i18nT, `render() resolves ${key}`).toHaveBeenCalledWith(key);
       expect(btn(id).textContent, `${id}: the English bytes`).toBe(enLabel(key));
     }
+    expect(btn(SIGN_IN_ID).textContent, "Sign In: render() writes the view model's label").toBe(
+      SIGN_IN_LABEL_VM,
+    );
+    expect(i18nTf, 'the view resolves no parameterised label of its own').not.toHaveBeenCalled();
+    freshView.render(makeVm({ signInLabel: undefined }));
+    expect(btn(SIGN_IN_ID).textContent, 'Sign In: an undefined label renders as empty').toBe('');
 
     // RT2 (render door): a repeat render() re-resolves the keys.
     vi.mocked(i18nT).mockClear();
@@ -240,6 +265,8 @@ describe('m24s5 (ADR-0261): claimView.ts routes the action labels through t() fr
       for (const [, key] of ACTION_LABELS) {
         expect(texts.join('\n')).toContain(`«${key}»`);
       }
+      const signInBtn = document.getElementById(SIGN_IN_ID) as HTMLButtonElement;
+      expect(signInBtn.textContent, 'show() door: Sign In stays empty').toBe('');
 
       view.render(makeVm({ title: 'Keep your session', body: 'Sign in to keep it.' }));
       texts = m24s5CvWalkSubtree(overlay);
@@ -248,6 +275,9 @@ describe('m24s5 (ADR-0261): claimView.ts routes the action labels through t() fr
       for (const [, key] of ACTION_LABELS) {
         expect(joined).toContain(`«${key}»`);
       }
+      expect(signInBtn.textContent, "render() door: Sign In is the view model's label").toBe(
+        SIGN_IN_LABEL_VM,
+      );
       expect(joined, 'no retired privacy sentinel').not.toContain('«claim.privacyButton»');
       expect(joined, 'vm.title stays raw').toContain('Keep your session');
     } finally {
@@ -350,5 +380,71 @@ describe('qf-13 (QF13.1): the Account frame title routes menu.profile.account.ti
 
     sweepA11y();
     await flushMacrotask();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The provider-labelled Sign In, through the real model and the real view: the label is the
+// `claim.signInWithProvider` catalog entry with the provider in its slot, and the view writes the
+// model's string as is.
+// ---------------------------------------------------------------------------
+
+describe('the Sign In button reads the provider label from the catalog, en and fr', () => {
+  const ISSUER = 'https://auth.example.test/realms/mr';
+  const promptState = (): ClaimModelState =>
+    claimStep(CLAIM_INITIAL, { kind: 'claim-ui-opened', nudgeAlreadySeen: true }).next;
+  const renderPrompt = (issuer: string, providerName: string): HTMLButtonElement => {
+    const view = new ClaimView(makeHandlers());
+    view.render(buildClaimViewModel(promptState(), signInOffer(issuer, providerName)));
+    return document.getElementById(SIGN_IN_ID) as HTMLButtonElement;
+  };
+
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('with a provider offer under en, the Sign In button reads "Sign in / create account with <provider>", the provider passed through the catalog slot [ih-4.4]', () => {
+    setLocale('en');
+    const button = renderPrompt(ISSUER, 'Acme ID');
+    expect(button.style.display, 'Sign In is shown in the prompt').not.toBe('none');
+    expect(button.textContent).toBe('Sign in / create account with Acme ID');
+    expect(i18nTf).toHaveBeenCalledWith('claim.signInWithProvider', { provider: 'Acme ID' });
+  });
+
+  it('with a provider offer under fr, the Sign In button reads "Se connecter / créer un compte avec <provider>", the provider passed through the catalog slot [ih-4.4]', () => {
+    setLocale('fr');
+    const button = renderPrompt(ISSUER, 'Fournisseur Nord');
+    expect(button.textContent).toBe('Se connecter / créer un compte avec Fournisseur Nord');
+    expect(i18nTf).toHaveBeenCalledWith('claim.signInWithProvider', {
+      provider: 'Fournisseur Nord',
+    });
+  });
+
+  it('under a sentinel tf the Sign In button shows exactly the resolver output, with nothing around it [ih-4.4]', () => {
+    try {
+      vi.mocked(i18nTf).mockImplementation(
+        ((key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`) as typeof i18nTf,
+      );
+      const button = renderPrompt(ISSUER, 'Acme ID');
+      expect(button.textContent).toBe('«claim.signInWithProvider|{"provider":"Acme ID"}»');
+    } finally {
+      vi.mocked(i18nTf).mockRestore();
+    }
+  });
+
+  it('with no provider name set, the Sign In label ends in the issuer string [ih-4.4]', () => {
+    setLocale('en');
+    const button = renderPrompt(ISSUER, '');
+    expect(button.textContent).toBe(`Sign in / create account with ${ISSUER}`);
+    expect(button.textContent?.endsWith(ISSUER)).toBe(true);
+    expect(i18nTf).toHaveBeenCalledWith('claim.signInWithProvider', { provider: ISSUER });
+  });
+
+  it('a provider name containing markup renders as text, never as elements [ih-4.4]', () => {
+    setLocale('en');
+    const button = renderPrompt(ISSUER, '<b>x</b>');
+    expect(button.textContent).toBe('Sign in / create account with <b>x</b>');
+    expect(button.children.length).toBe(0);
+    expect(button.querySelector('b')).toBeNull();
   });
 });

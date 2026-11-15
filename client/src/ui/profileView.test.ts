@@ -37,6 +37,7 @@ import {
   type ClaimModelState,
   type ClaimViewModel,
   claimStep,
+  type SignInOffer,
 } from './claimModel';
 import { ClaimView } from './claimView';
 import { CATALOG_EN } from './i18n/catalog.en';
@@ -284,9 +285,20 @@ const CLAIM_PHASES: ReadonlyArray<readonly [string, ClaimModelState]> = [
   ['decline armed', claimAfter(OPENED, { kind: 'decline-requested' })],
 ];
 
-const PROMPT_VM = buildClaimViewModel(claimAfter(OPENED));
-const ARMED_VM = buildClaimViewModel(claimAfter(OPENED, { kind: 'decline-requested' }));
-const CLAIMED_VM = buildClaimViewModel(claimAfter(OPENED, { kind: 'claim-succeeded' }));
+/** The sign-in offers a build can make. The cases below project under PROVIDER_OFFER (a build
+ *  with an issuer), so Sign In is the Account section's first row in the prompt. */
+const PROVIDER_OFFER: SignInOffer = { kind: 'provider', name: 'Acme ID' };
+const NO_OFFER: SignInOffer = { kind: 'none' };
+
+const PROMPT_VM = buildClaimViewModel(claimAfter(OPENED), PROVIDER_OFFER);
+const ARMED_VM = buildClaimViewModel(
+  claimAfter(OPENED, { kind: 'decline-requested' }),
+  PROVIDER_OFFER,
+);
+const CLAIMED_VM = buildClaimViewModel(
+  claimAfter(OPENED, { kind: 'claim-succeeded' }),
+  PROVIDER_OFFER,
+);
 
 const GRACE_MS = 90_000n;
 function countdown(
@@ -628,7 +640,7 @@ describe('ProfileView (uif-16b): one column of rows', () => {
     for (const [cLabel, cState] of CLAIM_PHASES) {
       for (const [pLabel, pVm] of PRIVACY_PHASES) {
         paintName(b, checked % 2 === 0 ? '' : 'Bob');
-        b.claim.render(buildClaimViewModel(cState));
+        b.claim.render(buildClaimViewModel(cState, PROVIDER_OFFER));
         b.privacy.render(pVm);
         expect(ids(b.profile.sectionRows()), `${cLabel} x ${pLabel}`).toEqual([
           ...ids(b.rename.sectionRows()),
@@ -891,6 +903,22 @@ describe('ProfileView (uif-16b): one dialog, one trap, one anchor', () => {
     }
   });
 
+  it("with no sign-in offer, show('account') seats Decline as the Account section's default row and Sign In is not shown", async () => {
+    // WRONG IMPL KILLED: a default row on the hidden Sign In button (focus() on it is a no-op and
+    // the cursor stays on the page); a Sign In shown for a build with no issuer.
+    const b = build();
+    paintName(b, '');
+    b.claim.render(buildClaimViewModel(claimAfter(OPENED), NO_OFFER));
+    b.privacy.render(pvm());
+    b.outside.focus();
+    b.profile.show('account');
+    expect(focusedId(), 'synchronously: Decline').toBe('claim-decline-btn');
+    await flush();
+    expect(focusedId(), 'still Decline after the deferred anchor').toBe('claim-decline-btn');
+    expectUsableFocus(b.root(), 'account');
+    expect(byId('claim-signin-btn').style.display, 'Sign In is not shown').toBe('none');
+  });
+
   it('UIF16B.3 a second show() on a visible frame moves no focus and does not re-open, whatever section it names; focusSection() moves to a section on demand', async () => {
     // WRONG IMPL KILLED: an unguarded open (a repeat show re-schedules the deferred anchor and
     // yanks the player to the field); a repeat show(section) that focuses that section (a claim
@@ -957,7 +985,7 @@ describe('ProfileView (uif-16b): one dialog, one trap, one anchor', () => {
           document.body.innerHTML = '';
           const b = build();
           paintName(b, '');
-          b.claim.render(buildClaimViewModel(cState));
+          b.claim.render(buildClaimViewModel(cState, PROVIDER_OFFER));
           b.privacy.render(pVm);
           b.outside.focus();
           b.profile.show(section);
@@ -1191,7 +1219,10 @@ describe('ProfileView (uif-16b): red-team round', () => {
     // from the last Account row lands on Delete's Confirm); a re-seat applied to every move (inside
     // an armed section Up from No must reach Yes); a blanket jump on every crossing (unarmed,
     // Down from Save must land on the first Account row).
-    const armedClaim = buildClaimViewModel(claimAfter(OPENED, { kind: 'decline-requested' }));
+    const armedClaim = buildClaimViewModel(
+      claimAfter(OPENED, { kind: 'decline-requested' }),
+      PROVIDER_OFFER,
+    );
     const armedPrivacy = buildPrivacyViewModel(
       privacyAfter([{ kind: 'account-changed', countdown: ACTIVE }, { kind: 'delete-requested' }]),
     );

@@ -58,6 +58,7 @@ import {
   type ClaimModelState,
   type ClaimViewModel,
   claimStep,
+  type SignInOffer,
 } from './claimModel';
 import { ClaimView, type ClaimViewHandlers } from './claimView';
 import { CATALOG_EN } from './i18n/catalog.en';
@@ -132,6 +133,11 @@ function makeHandlers(): ClaimViewHandlers {
   };
 }
 
+/** The sign-in offers a build can make. The real-model cases below project under PROVIDER_OFFER
+ *  (a build with an issuer), so the prompt and sign-in-failed phases show Sign In. */
+const PROVIDER_OFFER: SignInOffer = { kind: 'provider', name: 'Acme ID' };
+const NO_OFFER: SignInOffer = { kind: 'none' };
+
 function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
   return {
     visible: true,
@@ -140,6 +146,7 @@ function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
     confirmPrompt: undefined,
     nudge: undefined,
     feedback: undefined,
+    signInLabel: 'Sign in / create account with Acme ID',
     actions: {
       signIn: true,
       join: false,
@@ -174,7 +181,7 @@ describe('ClaimView (uif-16b): a section with one door', () => {
     const { view, overlay } = s4Mount();
     view.show();
     for (const [, state] of CLAIM_PHASES.map((c) => [c.label, c.state] as const)) {
-      view.render(buildClaimViewModel(state));
+      view.render(buildClaimViewModel(state, PROVIDER_OFFER));
     }
     view.show();
     await flushMacrotask();
@@ -248,6 +255,7 @@ describe('ClaimView — action buttons are shown per vm.actions and labelled', (
     const { view } = s4Mount();
     view.render(
       makeVm({
+        signInLabel: 'Sign in / create account with Acme ID',
         actions: {
           signIn: true,
           join: false,
@@ -543,7 +551,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
         null,
       );
 
-      const vm = buildClaimViewModel(state);
+      const vm = buildClaimViewModel(state, PROVIDER_OFFER);
       view.render(vm);
       expect(view.visible, `${label}: a render alone does not show the section`).toBe(false);
       expect(hiddenAncestorOf(title), `${label}: only the root hides #claim-title`).toBe(
@@ -700,7 +708,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     // button; and rows derived from a stale vm instead of the DOM the last render painted.
     let checked = 0;
     for (const { label, state, rows } of CLAIM_PHASES) {
-      const { view } = freshVisible(buildClaimViewModel(state));
+      const { view } = freshVisible(buildClaimViewModel(state, PROVIDER_OFFER));
       const overlay = document.getElementById('claim-overlay') as HTMLElement;
       const shownInDom = [...overlay.querySelectorAll('button')]
         .filter((b) => hiddenAncestorOf(b) === null && !b.disabled)
@@ -732,7 +740,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     vi.mocked(i18nT).mockClear();
     let checked = 0;
     for (const { label, state, rows } of CLAIM_PHASES) {
-      const vm = buildClaimViewModel(state);
+      const vm = buildClaimViewModel(state, PROVIDER_OFFER);
       const { view } = freshVisible(vm);
       const shownActions = order.filter((k) => vm.actions[k]).map((k) => ACTION_IDS[k]);
       expect(shownActions, `${label}: the table names the vm's shown actions`).toEqual(rows);
@@ -957,9 +965,9 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       kind: 'decline-confirmed',
       hasLiveConnection: true,
     }).next;
-    const promptVm = buildClaimViewModel(stateAfter(OPENED));
-    const armedVm = buildClaimViewModel(armedState);
-    const confirmedVm = buildClaimViewModel(confirmedState);
+    const promptVm = buildClaimViewModel(stateAfter(OPENED), PROVIDER_OFFER);
+    const armedVm = buildClaimViewModel(armedState, PROVIDER_OFFER);
+    const confirmedVm = buildClaimViewModel(confirmedState, PROVIDER_OFFER);
     expect(armedVm.actions.declineCancel, 'ANTI-VACUITY: the model armed the confirm').toBe(true);
     expect(confirmedVm.visible, 'ANTI-VACUITY: the frame stays open after a confirm').toBe(true);
     expect(
@@ -1131,14 +1139,14 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
     const expected = qf13EnglishAccountTitle();
     expect(expected.length, 'ANTI-VACUITY: the catalogue has an Account title').toBeGreaterThan(0);
     expect(
-      new Set(CLAIM_PHASES.map((c) => buildClaimViewModel(c.state).title)).size,
+      new Set(CLAIM_PHASES.map((c) => buildClaimViewModel(c.state, PROVIDER_OFFER).title)).size,
       'ANTI-VACUITY: the phases carry several distinct vm.title values',
     ).toBeGreaterThanOrEqual(3);
 
     let checked = 0;
     for (const { label, state, rows } of CLAIM_PHASES) {
       // --- the render door alone ---------------------------------------------------------------
-      const vm = buildClaimViewModel(state);
+      const vm = buildClaimViewModel(state, PROVIDER_OFFER);
       const { view } = freshVisible(vm);
       const overlay = document.getElementById('claim-overlay') as HTMLElement;
       const title = qf13AssertAccountBar(`${label} / render`, overlay);
@@ -1273,7 +1281,7 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
         // EVERY visible claim phase (a rule or class that applies in some phases only fails here).
         ...CLAIM_PHASES.map(({ label, state, rows }) => ({
           label: `phase: ${label}`,
-          vm: buildClaimViewModel(state),
+          vm: buildClaimViewModel(state, PROVIDER_OFFER),
           shown: rows,
           hidden: ALL_BUTTONS.filter((id) => !rows.includes(id)),
         })),
@@ -1593,7 +1601,7 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     const { view } = open16(PROMPT16);
     let armedSeen = 0;
     for (const { label, state } of CLAIM_PHASES) {
-      const vm = buildClaimViewModel(state);
+      const vm = buildClaimViewModel(state, PROVIDER_OFFER);
       view.render(vm);
       expect(view.armed, label).toBe(vm.actions.declineCancel);
       if (view.armed) armedSeen += 1;
@@ -1608,5 +1616,51 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     // over the frame's token, or a section-scoped walk clamping at the section edge).
     const view = new ClaimView(makeHandlers());
     expect('applyRowOp' in view, 'no section-level applyRowOp').toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sign-in offer through the real model and the real view: a build with no issuer renders
+// no Sign In control in the Account section; a build with one renders it first, labelled.
+// ---------------------------------------------------------------------------
+
+describe('ClaimView sign-in offer: the Account section renders Sign In only for a provider offer', () => {
+  const signInButton = (): HTMLButtonElement => {
+    const el = document.getElementById('claim-signin-btn');
+    if (!(el instanceof HTMLButtonElement)) throw new Error('#claim-signin-btn must exist');
+    return el;
+  };
+  const rowIds = (view: ClaimView): string[] => view.sectionRows().map((el) => el.id);
+
+  it('with no sign-in offer, every visible phase leaves #claim-signin-btn hidden, out of the section rows and with empty text [ih-4.2]', () => {
+    let checked = 0;
+    for (const { label, state } of CLAIM_PHASES) {
+      const vm = buildClaimViewModel(state, NO_OFFER);
+      const { view } = freshVisible(vm);
+      expect(signInButton().style.display, `${label}: Sign In is not shown`).toBe('none');
+      expect(rowIds(view), `${label}: Sign In is not a row`).not.toContain('claim-signin-btn');
+      expect(walkRows(view), `${label}: the D-pad never reaches Sign In`).not.toContain(
+        'claim-signin-btn',
+      );
+      expect(signInButton().textContent, `${label}: Sign In carries no label`).toBe('');
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: every visible phase was rendered').toBe(CLAIM_PHASES.length);
+  });
+
+  it('with no sign-in offer, the prompt section has Decline as its only row and its default row [ih-4.2]', () => {
+    const { view } = freshVisible(buildClaimViewModel(stateAfter(OPENED), NO_OFFER));
+    const decline = document.getElementById('claim-decline-btn');
+    expect(rowIds(view)).toEqual(['claim-decline-btn']);
+    expect(view.defaultRow()).toBe(decline);
+    expect(decline?.style.display).not.toBe('none');
+  });
+
+  it('with a provider offer, the prompt section shows Sign In, labelled, as its first row and default row [ih-4.2]', () => {
+    const { view } = freshVisible(buildClaimViewModel(stateAfter(OPENED), PROVIDER_OFFER));
+    expect(signInButton().style.display).not.toBe('none');
+    expect(rowIds(view)).toEqual(['claim-signin-btn', 'claim-decline-btn']);
+    expect(view.defaultRow()).toBe(signInButton());
+    expect(signInButton().textContent).toBe('Sign in / create account with Acme ID');
   });
 });

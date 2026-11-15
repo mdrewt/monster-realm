@@ -10,7 +10,9 @@
  * under a shell document on the page global that names the target kind, with the build env
  * stubbed to a valid https telemetry origin and a configured OIDC issuer and client id. It reads
  * two things: how often the telemetry SDK loader main.ts imports was called, and with what
- * exporter URL; and the `authIssuer` / `authClientId` main.ts handed `connect()`.
+ * exporter URL; and the `authIssuer` / `authClientId` main.ts handed `connect()`. The Sign In
+ * cases also join the world, press C to open Profile on Account, and read the Sign In control, the
+ * prompt body and how often the connection's `startSignIn` was called.
  *
  * The telemetry module is the real one with only `loadOtelSdk` replaced by a recording spy, so
  * the real `startClientTelemetry` decides whether the loader runs. It calls the loader
@@ -31,7 +33,8 @@ import {
   wasmPkgWalkingMock,
   worldRendererMock,
 } from '../test-util/mainBootHarness';
-import type { ConnectionOptions } from './net/connection';
+import type { WasmMoveInput } from './convert/convert';
+import type { Connection, ConnectionOptions } from './net/connection';
 import {
   SHELL_CONFIG_GLOBAL,
   type ShellDocument,
@@ -39,6 +42,7 @@ import {
   type TargetKind,
 } from './net/shellDocument';
 import type { TelemetryInit, TelemetryMeter } from './observability/telemetry';
+import { t, tf } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => {
   /** A meter whose instruments accept every record / add and keep nothing. */
@@ -55,13 +59,27 @@ const H = vi.hoisted(() => {
     calls: [] as Array<{ name: string; args: unknown }>,
     /** The telemetry SDK loader main.ts imports: records each init and resolves the meter. */
     loadSdk: vi.fn((_init: TelemetryInit): Promise<TelemetryMeter> => Promise.resolve(meter)),
+    /** How many times the connection was asked to start a sign-in. */
+    signIns: 0,
   };
 });
 
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgWalkingMock({ interact: () => [] }));
 
-// The connection: capture the options; every reducer records its call and resolves at once.
-vi.mock('./net/connection', () => connectionRecordingMock(H));
+// The connection: capture the options; every reducer records its call and resolves at once; and
+// startSignIn is counted on H.
+vi.mock('./net/connection', () => {
+  const recording = connectionRecordingMock(H);
+  return {
+    connect: (opts: ConnectionOptions): Connection =>
+      ({
+        ...(recording.connect(opts) as unknown as Record<string, unknown>),
+        startSignIn: () => {
+          H.signIns += 1;
+        },
+      }) as unknown as Connection,
+  };
+});
 
 // The real telemetry module, with only the SDK loader replaced: startClientTelemetry is real.
 vi.mock('./observability/telemetry', async (importOriginal) => ({
@@ -145,9 +163,16 @@ interface BuildEnv {
   readonly telemetry: boolean;
   /** `VITE_MR_OIDC_ISSUER` and `VITE_MR_OIDC_CLIENT_ID`. */
   readonly oidc: boolean;
+  /** `VITE_MR_OIDC_PROVIDER_NAME` (PROVIDER_NAME); left out when absent. */
+  readonly providerName?: boolean;
 }
 
 const FULL_BUILD_ENV: BuildEnv = { telemetry: true, oidc: true };
+
+/** The provider name a build may set beside its issuer, for the Sign In label. */
+const PROVIDER_NAME = 'Gate ID';
+/** Every build variable, the provider name included. */
+const SIGN_IN_BUILD_ENV: BuildEnv = { telemetry: true, oidc: true, providerName: true };
 
 /** Boot a fresh main.ts under `doc` (described by `label` in failure messages), with the build
  *  variable groups `env` names set, and return the options it handed `connect()` once the boot is
@@ -170,6 +195,14 @@ async function bootWith(
   } else {
     expect(import.meta.env.VITE_MR_OIDC_ISSUER, 'the issuer is unset').toBeUndefined();
     expect(import.meta.env.VITE_MR_OIDC_CLIENT_ID, 'the client id is unset').toBeUndefined();
+  }
+  if (env.providerName === true) {
+    vi.stubEnv('VITE_MR_OIDC_PROVIDER_NAME', PROVIDER_NAME);
+  } else {
+    expect(
+      import.meta.env.VITE_MR_OIDC_PROVIDER_NAME,
+      'the provider name is unset',
+    ).toBeUndefined();
   }
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
@@ -199,6 +232,7 @@ beforeEach(() => {
   H.sends = [];
   H.calls = [];
   H.loadSdk.mockClear();
+  H.signIns = 0;
 });
 
 afterEach(() => {
@@ -286,5 +320,117 @@ describe('the booted client gates telemetry and account sign-in on the target ki
     ).not.toHaveBeenCalled();
     expect(opts.authIssuer, 'authIssuer under a production document with no kind').toBe('');
     expect(opts.authClientId, 'authClientId under a production document with no kind').toBe('');
+  });
+});
+
+// --- the Account section's Sign In, as a player opens it -------------------------------------
+
+function el(id: string): HTMLElement {
+  const found = document.getElementById(id);
+  if (found === null) throw new Error(`#${id} must be in the document`);
+  return found;
+}
+
+/** Shown unless the element or an ancestor has an inline `display:none`. */
+function isShown(node: Element): boolean {
+  for (let n: Element | null = node; n instanceof HTMLElement; n = n.parentElement) {
+    if (n.style.display === 'none') return false;
+  }
+  return true;
+}
+
+/** One key press and its release, aimed at `window` (the accelerators' target). */
+function pressWindow(code: string): void {
+  clock.t += 100;
+  window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+  clock.t += 5;
+  window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+}
+
+/** Join the world (onReady, then one authoritative batch with the own player and character), then
+ *  press C: Profile opens on its Account section. */
+function openAccount(opts: ConnectionOptions, label: string): void {
+  opts.onReady(H.identity);
+  clock.t += 100;
+  opts.store.upsertPlayer({ identity: H.identity, entityId: 7n, name: 'P', online: true });
+  opts.store.upsertCharacter(
+    {
+      entityId: 7n,
+      zoneId: 0,
+      tileX: 2,
+      tileY: 2,
+      facing: 'East',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
+    },
+    clock.t,
+  );
+  opts.store.flushBatch();
+  pressWindow('KeyC');
+  expect(isShown(el('profile-overlay')), `${label}: C opened Profile`).toBe(true);
+  expect(isShown(el('claim-overlay')), `${label}: with its Account section shown`).toBe(true);
+}
+
+describe('the booted client offers Sign In only toward a kind it hands the OIDC issuer to', () => {
+  for (const kind of TARGET_KINDS) {
+    if (EXPECTED[kind].signIn) {
+      it(`toward a ${kind} server built with an issuer and a provider name, Profile on Account shows Sign In labelled with that provider, and a click on it starts one sign-in [ih-4.5]`, async () => {
+        const label = `a ${kind} document, issuer and provider name set`;
+        const opts = await bootWith(documentFor(kind), label, SIGN_IN_BUILD_ENV);
+        openAccount(opts, label);
+        const button = el('claim-signin-btn');
+        expect(isShown(button), `${label}: Sign In is shown`).toBe(true);
+        expect(button.textContent, `${label}: the provider label`).toBe(
+          tf('claim.signInWithProvider', { provider: PROVIDER_NAME }),
+        );
+        expect(el('claim-body').textContent, `${label}: the prompt body`).toBe(
+          t('claim.pending.body'),
+        );
+        button.click();
+        expect(H.signIns, `${label}: one sign-in started`).toBe(1);
+      });
+
+      it(`toward a ${kind} server built with an issuer and no provider name, the Sign In label names exactly the issuer connect() received [ih-4.5]`, async () => {
+        const label = `a ${kind} document, issuer set, no provider name`;
+        const opts = await bootWith(documentFor(kind), label, FULL_BUILD_ENV);
+        expect(opts.authIssuer, `${label}: connect() received the build issuer`).toBe(OIDC_ISSUER);
+        openAccount(opts, label);
+        const button = el('claim-signin-btn');
+        expect(isShown(button), `${label}: Sign In is shown`).toBe(true);
+        expect(button.textContent, `${label}: the label names connect()'s issuer`).toBe(
+          tf('claim.signInWithProvider', { provider: opts.authIssuer }),
+        );
+      });
+    } else {
+      it(`toward a ${kind} server built with an issuer and a provider name, Profile on Account shows no Sign In, reads the no-provider prompt, and a click on the hidden Sign In starts no sign-in [ih-4.5]`, async () => {
+        const label = `a ${kind} document, issuer and provider name set`;
+        const opts = await bootWith(documentFor(kind), label, SIGN_IN_BUILD_ENV);
+        expect(opts.authIssuer, `${label}: connect() received no issuer`).toBe('');
+        openAccount(opts, label);
+        const button = el('claim-signin-btn');
+        expect(button.style.display, `${label}: Sign In is not shown`).toBe('none');
+        expect(el('claim-body').textContent, `${label}: the no-provider prompt body`).toBe(
+          t('claim.prompt.noProvider'),
+        );
+        button.click();
+        expect(H.signIns, `${label}: no sign-in started`).toBe(0);
+      });
+    }
+  }
+
+  it('toward an official server built without the OIDC variables, Profile on Account shows no Sign In and a click on it starts no sign-in [ih-4.5]', async () => {
+    const label = 'an official document, no OIDC variables';
+    const opts = await bootWith(documentFor('official'), label, { telemetry: true, oidc: false });
+    expect(opts.authIssuer, `${label}: connect() received no issuer`).toBe('');
+    openAccount(opts, label);
+    const button = el('claim-signin-btn');
+    expect(button.style.display, `${label}: Sign In is not shown`).toBe('none');
+    expect(el('claim-body').textContent, `${label}: the no-provider prompt body`).toBe(
+      t('claim.prompt.noProvider'),
+    );
+    button.click();
+    expect(H.signIns, `${label}: no sign-in started`).toBe(0);
   });
 });

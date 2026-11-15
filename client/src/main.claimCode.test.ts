@@ -39,7 +39,7 @@ import {
 import { claimCode, claimCodeStorageKey } from './net/claimCode';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { SHELL_CONFIG_GLOBAL, type ShellDocument } from './net/shellDocument';
-import { buildClaimViewModel, CLAIM_INITIAL } from './ui/claimModel';
+import { buildClaimViewModel, CLAIM_INITIAL, signInOffer } from './ui/claimModel';
 
 const H = vi.hoisted(() => {
   const h = {
@@ -410,11 +410,16 @@ describe('main.ts clears the stored claim code on a succeeded claim (polish-1 P4
     must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);
 
     expect(stored(), 'the code is cleared').toBeUndefined();
-    const claimed = buildClaimViewModel({
-      ...CLAIM_INITIAL,
-      phase: 'claimed',
-      joinPermitted: true,
-    });
+    // This boot stubs no OIDC issuer, so main.ts projects every claim view model under the
+    // empty-issuer offer.
+    const claimed = buildClaimViewModel(
+      {
+        ...CLAIM_INITIAL,
+        phase: 'claimed',
+        joinPermitted: true,
+      },
+      signInOffer('', ''),
+    );
     expect(claimed.actions, 'fixture: the claimed model offers Join only').toEqual({
       signIn: false,
       join: true,
