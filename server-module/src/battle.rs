@@ -35,6 +35,12 @@ const LEAD_LEVEL_ERR_WINDOW_MS: i64 = 5000;
 /// Making the failure visible must not make it deafening.
 static LEAD_LEVEL_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
+// `0..PARTY_SLOT_NONE` is every slot but Storage only while Storage is the top `u8`.
+const _: () = assert!(
+    PARTY_SLOT_NONE == u8::MAX,
+    "the owner_party range would drop slots"
+);
+
 /// The player's party monster ids (slot != 255), ordered by `party_slot` —
 /// lowest slot (the lead) first. `None` iff the player has no party monster;
 /// a `Some` is NEVER empty.

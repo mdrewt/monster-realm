@@ -54,8 +54,8 @@ struct Host {
     /// Canonical index name (`{table}_{col}_idx_btree`, or `{table}_{col_a}_{col_b}_idx_btree`
     /// for a two-column index) -> id. Never reset.
     index_ids: HashMap<String, u32>,
-    /// index id -> (table id, key comparator), bound only for indexes THIS
-    /// fixture registered — reset by every [`fixture`] because it
+    /// index id -> its [`IndexModel`] (table id, key and column models), bound only
+    /// for indexes THIS fixture registered — reset by every [`fixture`] because it
     /// now decides whether a WRITE aborts (D5). An index no test registered has
     /// NO table behind it: READS over it yield no rows — what lets
     /// `account_has_game_data` visit six tables while a test registers one.
@@ -595,9 +595,10 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 // rests on that order can be executed and measured here at all, against a host
 // that keeps the contract deliberately and says so.
 //
-// D6 — A BOTH-`Unbounded` RANGE ABORTS. It is a sorted full scan: the `.iter()`
-// shape this host refuses, wearing a range. Refusing it here keeps the wall
-// SHAPE-based rather than spelling-based.
+// D6 — A BOTH-`Unbounded` RANGE WITH NO PREFIX ABORTS. It is a sorted full scan: the
+// `.iter()` shape this host refuses, wearing a range. Refusing it here keeps the wall
+// SHAPE-based rather than spelling-based. With a prefix fixed, an unbounded last column
+// reads that prefix's rows only, and is served.
 //
 // D5 — THE WRITE WALL IS ASYMMETRIC, on purpose. A READ through an index no
 // fixture registered yields nothing, so a predicate that visits several tables
@@ -673,9 +674,9 @@ impl RangeBound<'_> {
 ///
 /// An index no fixture registered opens an EMPTY iterator and returns `0`,
 /// exactly as the point scan above does — an unregistered table reads as empty,
-/// it does not abort. A both-`Unbounded` range aborts (D6), and so does a prefix that leaves
-/// no column to range (the bindings send that as a point scan). The whole call takes the host
-/// lock ONCE; the comparators run inside it and re-enter nothing.
+/// it does not abort. A both-`Unbounded` range with no prefix aborts (D6), and so does a
+/// prefix that leaves no column to range (the bindings send that as a point scan). The whole
+/// call takes the host lock ONCE; the comparators run inside it and re-enter nothing.
 #[no_mangle]
 unsafe extern "C" fn datastore_index_scan_range_bsatn(
     index_id: u32,
@@ -694,7 +695,7 @@ unsafe extern "C" fn datastore_index_scan_range_bsatn(
     let rstart = unsafe { std::slice::from_raw_parts(rstart_ptr, rstart_len) };
     let rend = unsafe { std::slice::from_raw_parts(rend_ptr, rend_len) };
     let (low, high) = (parse_bound(rstart), parse_bound(rend));
-    if matches!((low, high), (RangeBound::Unbounded, RangeBound::Unbounded)) {
+    if prefix_elems == 0 && matches!((low, high), (RangeBound::Unbounded, RangeBound::Unbounded)) {
         unmodelled("datastore_index_scan_range_bsatn over a both-unbounded range (a sorted scan)");
     }
     let mut h = host();

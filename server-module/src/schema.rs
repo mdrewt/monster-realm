@@ -277,8 +277,8 @@ pub struct EncounterRow {
 ///
 /// Two indexes over the owner. `owner_identity` reads EVERY monster an owner holds (re-key,
 /// erase, export, `has_monsters`). `owner_party` is `(owner_identity, party_slot)`: the range
-/// `(owner, 0..PARTY_SLOT_NONE)` is the party alone, ascending by slot, so a party read costs
-/// the party's size however many monsters sit in Storage (`party_slot == PARTY_SLOT_NONE`).
+/// `(owner, 0..PARTY_SLOT_NONE)` is the party alone, ascending by slot, so a read through it
+/// costs the party's size however many monsters sit in Storage (`party_slot == PARTY_SLOT_NONE`).
 #[derive(Clone)]
 #[spacetimedb::table(
     accessor = monster,
