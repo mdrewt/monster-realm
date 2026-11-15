@@ -2222,7 +2222,7 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
   it('ts-4.6 the only prompt question any reachable state paints is declineChallenge, every sheet offers only accept / decline / cancel, and every paint hands the view a SocialPaint with exactly the keys tab, sessions, sessionCursor, sheet, confirm', () => {
     // WRONG IMPL KILLED: a `declineTrade` or `confirmTrade` question still asked by some row; a
     // `confirm` action on a sheet; a paint that still carries a `tradeCursor` key (or any key
-    // beyond the six) or drops one of them.
+    // beyond the five) or drops one of them.
     const found = explore(MIXED);
     expect([...found.questions], 'the prompt questions painted').toEqual(['declineChallenge']);
     expect([...found.sheetActions].sort(), 'the actions a sheet offers').toEqual([
