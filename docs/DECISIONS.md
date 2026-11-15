@@ -932,8 +932,9 @@ progress to an account like this. The browser mints a 256-bit claim code
 `start_guest_claim` *before* redirecting to sign-in. After sign-in, the account
 identity calls `complete_guest_claim`, which runs every caller-state guard before it
 looks up the code, then re-keys the guest's persistent game data onto the account
-(`rekey_all`: monsters, inventory, quests, wallet, profile and the rest),
-purges the guest's export bundles, erases the guest's finished battles as the deletion
+(`rekey_all`: monsters, inventory, quests, wallet, profile and the rest; the retired guest keeps
+a dialogue-state tombstone, see "The starter is a once-per-identity grant recorded by a marker;
+ownership is never the test"), purges the guest's export bundles, erases the guest's finished battles as the deletion
 cascade erases its subject's (`schema::erase_tactical_rows`, then
 `battle::anonymize_battles`: the per-battle tactical rows go, and the guest's side of
 each `battle` and `battle_summary` row becomes the tombstone identity), and consumes
@@ -956,6 +957,40 @@ anchor waits on the opponent's next battle in the same role.
 anonymous connections; widening the audience allowlist to more than this game's client;
 re-keying battle rows onto the claiming account (a re-key helper per tactical table, to
 carry history that only telemetry reads).
+
+## The starter is a once-per-identity grant recorded by a marker; ownership is never the test
+
+**Decision.** A first `join_game` grants the starter monster and the starter kit, once per
+identity. The kit is data (`game-core/content/starter_kit.ron`: 200 gold, 2 Lure Berries, 1
+Antidote), checked at publish by `validate_starter_kit`. The grant is recorded by the flag
+`sys:starter_claimed` in the owner's private `player_dialogue_state.flags`, set in the same
+transaction as the kit. `onboarding::starter_grant(claimed, owns_monster)` is the rule: a set
+marker grants nothing, whatever the identity owns; an unset marker grants the kit, and the
+monster too unless the identity already owns one. The kit is granted whole or not at all: it is
+checked against the stack and balance caps first, and a kit that does not fit is skipped with a
+`starter_kit_skipped` log line, leaving the marker unset so the next join tries again. A kit
+that fails to load refuses the join before anything is written. The `sys:` flag namespace is
+reserved for the server: `validate_npc_content` refuses any dialogue condition or effect, quest
+start condition or quest step condition that names a `sys:` flag. The guest claim moves the
+guest's dialogue row to the account and leaves the retired guest a tombstone row: its `sys:`
+flags, the starter marker, and a copy of its done quests (`npc::rekey_npc_state`).
+
+**Why.** `on_disconnect` deletes the `player` row when an identity's last session ends, so the
+next join re-runs the grant check; a rule that reads ownership re-grants a starter (with fresh
+hidden IVs) to any identity that reaches zero monsters. The guest claim is such a path: it moves
+every monster to the account while the retired guest token can still call `join_game`. The
+marker lives in `player_dialogue_state` rather than a new table because that row is already
+private, re-keyed by the claim, erased by the deletion cascade, counted as game data and part of
+the owner's export; a new table would need all of that wiring again. The tombstone is the one
+place the claim copies instead of moving: without it the retired guest would be granted a second
+starter and kit, and could redo a finished quest.
+
+**Rules out.** Inferring "new player" from owned monsters, items or a wallet row. A re-grant for
+an identity that holds the marker and owns no monster: a release or loss mechanic added later
+must bring its own floor rule. Content (dialogue or quest) that tests, sets or clears a `sys:`
+flag. Granting part of a kit, or clamping it at a cap. Accepted consequence: the retired guest's
+tombstone (the reserved flags and quest ids, keyed by the retired guest identity) is not erased
+by the claiming account's deletion cascade, which erases rows under the account's own identity.
 
 ## Account deletion and data export
 
