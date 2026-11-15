@@ -108,14 +108,14 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
             .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
         monster_id,
     )?;
-    // Collect PARTY slots of the caller's OTHER monsters (excluding the one being moved
-    // and excluding boxed monsters whose party_slot == PARTY_SLOT_NONE = 255).
+    // The PARTY slots of the caller's OTHER monsters: the `owner_party` range below
+    // PARTY_SLOT_NONE never visits a boxed monster, and the one being moved is excluded.
     let occupied: Vec<u8> = ctx
         .db
         .monster()
-        .owner_identity()
-        .filter(me)
-        .filter(|other| other.monster_id != monster_id && other.party_slot != PARTY_SLOT_NONE)
+        .owner_party()
+        .filter((me, 0..PARTY_SLOT_NONE))
+        .filter(|other| other.monster_id != monster_id)
         .map(|other| other.party_slot)
         .collect();
     if let Err(err) = game_core::check_party_slot(slot, &occupied) {

@@ -274,8 +274,16 @@ pub struct EncounterRow {
 /// The authoritative monster record — PRIVATE (no `public`). Contains hidden
 /// genes (IVs, EVs, nature) that must NEVER reach a non-owner client. Only
 /// server-side reducers read/write this table; no client can subscribe.
+///
+/// Two indexes over the owner. `owner_identity` reads EVERY monster an owner holds (re-key,
+/// erase, export, `has_monsters`). `owner_party` is `(owner_identity, party_slot)`: the range
+/// `(owner, 0..PARTY_SLOT_NONE)` is the party alone, ascending by slot, so a read through it
+/// costs the party's size however many monsters sit in Storage (`party_slot == PARTY_SLOT_NONE`).
 #[derive(Clone)]
-#[spacetimedb::table(accessor = monster)]
+#[spacetimedb::table(
+    accessor = monster,
+    index(accessor = owner_party, btree(columns = [owner_identity, party_slot]))
+)]
 pub struct Monster {
     #[primary_key]
     #[auto_inc]
@@ -1765,7 +1773,7 @@ pub(crate) fn erase_tactical_rows(ctx: &ReducerContext, owner: Identity) {
 /// read over EVERY owner's chunks, census-guarded there (seven sanctioned uses,
 /// all in privacy.rs). Row-invisible to clients: the table is private,
 /// `spacetime generate` emits no bindings change and
-/// `evals/baselines/table-schemas.json` records no index information — only the
+/// `evals/baselines/table-schemas.json` is a repo-side snapshot no client reads — only the
 /// unauthenticated schema endpoint publishes index METADATA, as it does for
 /// every table, which discloses nothing beyond the column names already there.
 /// Synthetic `chunk_id` PK: views strip primary keys, and

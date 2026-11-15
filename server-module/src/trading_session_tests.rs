@@ -988,6 +988,11 @@ fn s2_base(fx: &Fixture) -> S2World<'_> {
         .writable()
         .unique();
     let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let _ = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
     let pubs = fx
         .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
         .writable()

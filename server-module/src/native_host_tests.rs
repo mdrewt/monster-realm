@@ -51,10 +51,11 @@ type Row = Vec<u8>;
 struct Host {
     /// Table name (the `accessor`) -> id. Never reset (see module doc).
     table_ids: HashMap<String, u32>,
-    /// Canonical index name (`{table}_{col}_idx_btree`) -> id. Never reset.
+    /// Canonical index name (`{table}_{col}_idx_btree`, or `{table}_{col_a}_{col_b}_idx_btree`
+    /// for a two-column index) -> id. Never reset.
     index_ids: HashMap<String, u32>,
-    /// index id -> (table id, key comparator), bound only for indexes THIS
-    /// fixture registered — reset by every [`fixture`] because it
+    /// index id -> its [`IndexModel`] (table id, key and column models), bound only
+    /// for indexes THIS fixture registered — reset by every [`fixture`] because it
     /// now decides whether a WRITE aborts (D5). An index no test registered has
     /// NO table behind it: READS over it yield no rows — what lets
     /// `account_has_game_data` visit six tables while a test registers one.
@@ -72,6 +73,9 @@ struct Host {
     /// the last [`fixture`] or [`Fixture::reset_writes`] — the subscription-visible footprint of a
     /// transaction, which a row diff cannot see (an unchanged `update` still reaches subscribers).
     writes: HashMap<u32, u32>,
+    /// Rows the read syscalls HANDED OUT per table id since the last [`fixture`] or
+    /// [`Fixture::reset_reads`] (see [`Fixture::rows_read`]).
+    reads: HashMap<u32, u32>,
     /// Opt-in write/scan model + module identity (EOF extension); reset per fixture.
     model: Model,
     next_table_id: u32,
@@ -111,6 +115,14 @@ impl Host {
 
     fn rows_of(&self, table_id: u32) -> &[Row] {
         self.rows.get(&table_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// [`Host::open_iter`] over rows read from `table_id`, counted as handed out — when the
+    /// iterator OPENS, so a caller that stops early still counts every row the scan matched.
+    fn open_read(&mut self, table_id: u32, rows: Vec<Row>) -> u32 {
+        let n = u32::try_from(rows.len()).expect("native_host_tests: a read count fits a u32");
+        *self.reads.entry(table_id).or_insert(0) += n;
+        self.open_iter(rows)
     }
 }
 
@@ -154,6 +166,7 @@ pub(crate) fn fixture() -> Fixture {
         h.index_table.clear();
         h.requested_indexes.clear();
         h.writes.clear();
+        h.reads.clear();
         h.model = Model::default();
     }
     Fixture { _serial: serial }
@@ -207,6 +220,47 @@ impl Fixture {
         }
     }
 
+    /// The same registration for a TWO-column btree index (`index(accessor = …, btree(columns =
+    /// [a, b]))`): `key_of` extracts the `(a, b)` key. The index name
+    /// `{table}_{a}_{b}_idx_btree` is derived here as the table macro derives it. The full key is
+    /// the BSATN of the tuple, which is its fields' BSATN concatenated — the bytes the bindings
+    /// send for a point scan on both columns. A range scan may fix `a` and range `b`, or range
+    /// `a` alone (see [`datastore_index_scan_range_bsatn`]).
+    pub(crate) fn table_composite<'a, R, A, B>(
+        &'a self,
+        table: &str,
+        columns: [&str; 2],
+        key_of: fn(&R) -> (A, B),
+    ) -> Handle<'a, R, (A, B)>
+    where
+        R: Serialize + DeserializeOwned + 'static,
+        A: Serialize + DeserializeOwned + Ord + 'static,
+        B: Serialize + DeserializeOwned + Ord + 'static,
+    {
+        let [first, second] = columns;
+        let first_key: Extract = Box::new(move |row| key_bytes(&key_of(&decode_row::<R>(row)).0));
+        let second_key: Extract = Box::new(move |row| key_bytes(&key_of(&decode_row::<R>(row)).1));
+        let models = vec![
+            ColumnModel {
+                extract: first_key,
+                cmp: cmp_keys::<A>,
+            },
+            ColumnModel {
+                extract: second_key,
+                cmp: cmp_keys::<B>,
+            },
+        ];
+        let index = format!("{table}_{first}_{second}_idx_btree");
+        let (table_id, index_id) = register_columns(table, &index, key_of, models);
+        Handle {
+            table_id,
+            index_id,
+            key_of,
+            _rows: PhantomData,
+            _fixture: PhantomData,
+        }
+    }
+
     /// Every index name the generated code has asked this host about since
     /// the fixture was created — the diagnostic to print when a positive
     /// assertion reads `false` (a mis-spelled registration matches nothing).
@@ -226,6 +280,22 @@ impl Fixture {
     /// Zero every table's write count (mark the start of the transaction under test).
     pub(crate) fn reset_writes(&self) {
         host().writes.clear();
+    }
+
+    /// Rows the host HANDED OUT from `table` (its `accessor` name) through its read syscalls —
+    /// index point scans, index range scans and table scans — since the fixture or the last
+    /// [`Fixture::reset_reads`]. Counted when an iterator opens, so this is the scan's cost,
+    /// not how far the caller consumed it. A read through an index no fixture registered hands
+    /// out nothing and counts nothing. The read-side twin of [`Fixture::writes_to`].
+    pub(crate) fn rows_read(&self, table: &str) -> u32 {
+        let mut h = host();
+        let id = h.table_id(table);
+        h.reads.get(&id).copied().unwrap_or(0)
+    }
+
+    /// Zero every table's read count.
+    pub(crate) fn reset_reads(&self) {
+        host().reads.clear();
     }
 }
 
@@ -333,16 +403,19 @@ unsafe extern "C" fn datastore_index_scan_point_bsatn(
     // live for the call's duration.
     let point = unsafe { std::slice::from_raw_parts(point_ptr, point_len) };
     let mut h = host();
-    let matching: Vec<Row> = match h.index_table.get(&index_id) {
-        Some(ix) => h
+    let read = h.index_table.get(&index_id).map(|ix| {
+        let rows: Vec<Row> = h
             .rows_of(ix.table_id)
             .iter()
             .filter(|row| (ix.extract)(row) == point)
             .cloned()
-            .collect(),
-        None => Vec::new(),
+            .collect();
+        (ix.table_id, rows)
+    });
+    let iter = match read {
+        Some((table_id, rows)) => h.open_read(table_id, rows),
+        None => h.open_iter(Vec::new()),
     };
-    let iter = h.open_iter(matching);
     // SAFETY: `out` points at the bindings' `MaybeUninit<RowIter>` out-param.
     unsafe { out.write(iter) };
     0
@@ -522,9 +595,10 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 // rests on that order can be executed and measured here at all, against a host
 // that keeps the contract deliberately and says so.
 //
-// D6 — A BOTH-`Unbounded` RANGE ABORTS. It is a sorted full scan: the `.iter()`
-// shape this host refuses, wearing a range. Refusing it here keeps the wall
-// SHAPE-based rather than spelling-based.
+// D6 — A BOTH-`Unbounded` RANGE WITH NO PREFIX ABORTS. It is a sorted full scan: the
+// `.iter()` shape this host refuses, wearing a range. Refusing it here keeps the wall
+// SHAPE-based rather than spelling-based. With a prefix fixed, an unbounded last column
+// reads that prefix's rows only, and is served.
 //
 // D5 — THE WRITE WALL IS ASYMMETRIC, on purpose. A READ through an index no
 // fixture registered yields nothing, so a predicate that visits several tables
@@ -592,19 +666,22 @@ impl RangeBound<'_> {
     }
 }
 
-/// The btree range scan: every row of the registered table whose key clears
-/// both bounds, handed back ASCENDING by decoded key with ties in store order.
+/// The btree range scan. The first `prefix_elems` indexed columns are FIXED to the prefix
+/// bytes (the BSATN of those column values, concatenated; canonical BSATN makes byte equality
+/// value equality), and the next column must clear both bounds under ITS comparator. Matching
+/// rows come back ASCENDING by the decoded FULL key, ties in store order. A single-column index
+/// has prefix 0 and ranges its one column.
 ///
 /// An index no fixture registered opens an EMPTY iterator and returns `0`,
 /// exactly as the point scan above does — an unregistered table reads as empty,
-/// it does not abort. A multi-column prefix and a both-`Unbounded` range do
-/// abort (D6). The whole call takes the host lock ONCE; the comparator runs
-/// inside it and re-enters nothing.
+/// it does not abort. A both-`Unbounded` range with no prefix aborts (D6), and so does a
+/// prefix that leaves no column to range (the bindings send that as a point scan). The whole
+/// call takes the host lock ONCE; the comparators run inside it and re-enter nothing.
 #[no_mangle]
 unsafe extern "C" fn datastore_index_scan_range_bsatn(
     index_id: u32,
-    _prefix_ptr: *const u8,
-    _prefix_len: usize,
+    prefix_ptr: *const u8,
+    prefix_len: usize,
     prefix_elems: u16,
     rstart_ptr: *const u8,
     rstart_len: usize,
@@ -612,34 +689,47 @@ unsafe extern "C" fn datastore_index_scan_range_bsatn(
     rend_len: usize,
     out: *mut u32,
 ) -> u16 {
-    if prefix_elems != 0 {
-        unmodelled("datastore_index_scan_range_bsatn over a multi-column index prefix");
-    }
     // SAFETY: each `ptr[..len]` is a live slice of the bindings' packed range
     // buffer, owned by the caller for the call's duration.
+    let prefix = unsafe { std::slice::from_raw_parts(prefix_ptr, prefix_len) };
     let rstart = unsafe { std::slice::from_raw_parts(rstart_ptr, rstart_len) };
     let rend = unsafe { std::slice::from_raw_parts(rend_ptr, rend_len) };
     let (low, high) = (parse_bound(rstart), parse_bound(rend));
-    if matches!((low, high), (RangeBound::Unbounded, RangeBound::Unbounded)) {
+    if prefix_elems == 0 && matches!((low, high), (RangeBound::Unbounded, RangeBound::Unbounded)) {
         unmodelled("datastore_index_scan_range_bsatn over a both-unbounded range (a sorted scan)");
     }
     let mut h = host();
-    let matching: Vec<Row> = match h.index_table.get(&index_id) {
-        Some(ix) => {
-            let cmp = ix.cmp;
-            let mut hits: Vec<(Key, &Row)> = h
-                .rows_of(ix.table_id)
+    let read = h.index_table.get(&index_id).map(|ix| {
+        let fixed = usize::from(prefix_elems);
+        let Some(ranged) = ix.columns.get(fixed) else {
+            unmodelled("datastore_index_scan_range_bsatn with a prefix covering every column")
+        };
+        let in_prefix = |row: &[u8]| {
+            let fixed_key: Vec<u8> = ix.columns[..fixed]
                 .iter()
-                .map(|row| ((ix.extract)(row), row))
-                .filter(|(key, _)| low.admits_low(key, cmp) && high.admits_high(key, cmp))
+                .flat_map(|column| (column.extract)(row))
                 .collect();
-            // STABLE, so equal keys keep the order `Handle::seed` stored them in.
-            hits.sort_by(|a, b| cmp(&a.0, &b.0));
-            hits.into_iter().map(|(_, row)| row.clone()).collect()
-        }
-        None => Vec::new(),
+            fixed_key == prefix
+        };
+        let mut hits: Vec<(Key, &Row)> = h
+            .rows_of(ix.table_id)
+            .iter()
+            .filter(|row| in_prefix(row))
+            .filter(|row| {
+                let key = (ranged.extract)(row);
+                low.admits_low(&key, ranged.cmp) && high.admits_high(&key, ranged.cmp)
+            })
+            .map(|row| ((ix.extract)(row), row))
+            .collect();
+        // STABLE, so equal keys keep the order `Handle::seed` stored them in.
+        hits.sort_by(|a, b| (ix.cmp)(&a.0, &b.0));
+        let rows: Vec<Row> = hits.into_iter().map(|(_, row)| row.clone()).collect();
+        (ix.table_id, rows)
+    });
+    let iter = match read {
+        Some((table_id, rows)) => h.open_read(table_id, rows),
+        None => h.open_iter(Vec::new()),
     };
-    let iter = h.open_iter(matching);
     // SAFETY: `out` points at the bindings' `MaybeUninit<RowIter>` out-param.
     unsafe { out.write(iter) };
     0
@@ -737,12 +827,22 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 /// The module identity every fixture starts with (see the banner above).
 pub(crate) const DEFAULT_DATABASE_IDENTITY: [u8; 32] = [0xDB; 32];
 
-/// One registered index: its table, its key comparator and its key extractor.
+/// One registered index: its table, its FULL key's comparator and extractor, and one
+/// [`ColumnModel`] per indexed column (one for a single-column index, whose column key is
+/// the full key).
 struct IndexModel {
     table_id: u32,
     cmp: KeyCmp,
     extract: Extract,
+    columns: Vec<ColumnModel>,
     unique: bool,
+}
+
+/// One indexed column: what a range scan compares once a prefix has fixed the columns
+/// before it.
+struct ColumnModel {
+    extract: Extract,
+    cmp: KeyCmp,
 }
 
 type SeqGet = Box<dyn Fn(&[u8]) -> u64 + Send>;
@@ -813,15 +913,40 @@ where
     R: Serialize + DeserializeOwned + 'static,
     K: Serialize + DeserializeOwned + Ord + 'static,
 {
-    let index = format!("{table}_{column}_idx_btree");
+    let column_key: Extract = Box::new(move |row| key_bytes(&key_of(&decode_row::<R>(row))));
+    let models = vec![ColumnModel {
+        extract: column_key,
+        cmp: cmp_keys::<K>,
+    }];
+    register_columns(
+        table,
+        &format!("{table}_{column}_idx_btree"),
+        key_of,
+        models,
+    )
+}
+
+/// Binds the index named `index` to `table`, with the full-key comparator and extractor for
+/// `K` and the per-column models a prefix range scan reads; returns `(table id, index id)`.
+fn register_columns<R, K>(
+    table: &str,
+    index: &str,
+    key_of: fn(&R) -> K,
+    columns: Vec<ColumnModel>,
+) -> (u32, u32)
+where
+    R: Serialize + DeserializeOwned + 'static,
+    K: Serialize + DeserializeOwned + Ord + 'static,
+{
     let mut h = host();
     let table_id = h.table_id(table);
-    let index_id = h.index_id(&index);
+    let index_id = h.index_id(index);
     let extract: Extract = Box::new(move |row| key_bytes(&key_of(&decode_row::<R>(row))));
     let model = IndexModel {
         table_id,
         cmp: cmp_keys::<K>,
         extract,
+        columns,
         unique: false,
     };
     h.index_table.insert(index_id, model);
@@ -1497,7 +1622,7 @@ unsafe fn table_scan(table_id: u32, out: *mut u32) -> u16 {
         unmodelled("datastore_table_scan_bsatn")
     }
     let rows = h.rows_of(table_id).to_vec();
-    let iter = h.open_iter(rows);
+    let iter = h.open_read(table_id, rows);
     // SAFETY: `out` points at the bindings' `MaybeUninit<RowIter>` out-param.
     unsafe { out.write(iter) };
     0

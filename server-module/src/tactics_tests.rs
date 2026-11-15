@@ -431,6 +431,11 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
     let _ = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
     let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
     let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let _ = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
     let _ = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
     let _ = fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity);
     let _ = fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator);

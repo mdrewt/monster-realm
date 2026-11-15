@@ -2377,6 +2377,11 @@ fn enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b() {
         .unique();
     let monsters =
         fx.table::<crate::schema::Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let _ = fx.table_composite::<crate::schema::Monster, spacetimedb::Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
     intents.seed(&crate::schema::MoveIntent {
         entity_id: 7,
         queue: vec![],

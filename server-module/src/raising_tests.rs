@@ -2379,6 +2379,11 @@ mod nh {
             (monsters, pubs)
         };
         let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+        let _ = fx.table_composite::<Monster, Identity, u8>(
+            "monster",
+            ["owner_identity", "party_slot"],
+            |r| (r.owner_identity, r.party_slot),
+        );
         let _ = fx
             .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
             .writable()
