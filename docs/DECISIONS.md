@@ -1037,16 +1037,16 @@ tag beside the name, that tells same-named players apart. It lives in the privat
 assigns the value) and copies the value onto the public `player` row it inserts
 (`player.discriminator`; 0 means no tag). `onboarding.rs` owns the table (`ensure_handle`,
 `rekey_handle`, `erase_handle`, `has_handle`). The value is never 0, never derived from the
-identity, never held by two identities at once and never minted twice: a sequence only grows,
-so a deleted handle's value is not minted again. The guest claim moves the row to the account with its value unchanged
-(`rekey_all`), and a handle counts as game data, so an account that already holds one cannot
-claim (`account_has_game_data`). A retired guest that joins again is minted a different value.
-The deletion cascade erases the handle and zeroes `discriminator` and `lead_level` on the
-surviving `player` row beside the tombstone name. The owner's data export carries the handle
-row. A mint the datastore refuses (an exhausted sequence) refuses the join with `handle
-unavailable` before any presence row is written. `player.lead_level` is the second public column
-on that row, for the level of the owner's lead party monster: `join_game` writes 0 (which reads
-as no party), the cascade zeroes it, and nothing else writes it.
+identity, never held by two identities at once and never minted twice: a sequence only grows, so
+a deleted handle's value is not minted again. The guest claim moves the row to the account with
+its value unchanged (`rekey_all`), and a handle counts as game data, so an account that already
+holds one cannot claim (`account_has_game_data`). A claimed guest identity that joins again is
+minted a different value. The deletion cascade erases the handle and zeroes `discriminator` and
+`lead_level` on the surviving `player` row beside the tombstone name. The owner's data export
+carries the handle row. A mint the datastore refuses (an exhausted sequence) refuses the join
+with `handle unavailable` before any presence row is written. `player.lead_level` is the second
+public column on that row, for the level of the owner's lead party monster: `join_game` writes 0
+(which reads as no party), the cascade zeroes it, and nothing else writes it.
 
 **Why.** The `player` row is deleted at every disconnect and is not re-keyed by the claim, so a
 value stored only there would be re-minted each session. A public `player_handle` would list
@@ -1057,9 +1057,9 @@ reveals roughly how many identities joined before it. Zeroing the mirror at dele
 tombstoned row from being linked back to a tag another player saw.
 
 **Rules out.** Enforced-unique names. Deriving the tag from the identity (it would change at the
-claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle table
-or a view that serves another player's handle. Reissuing an erased value. Minting anywhere but
-`join_game`'s success path (a refused or deletion-gated join mints nothing). Accepted
+claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle
+table or a view that serves another player's handle. Reissuing an erased value. Minting anywhere
+but `join_game`'s success path (a refused or deletion-gated join mints nothing). Accepted
 consequence: the `u32` sequence is one finite, shared resource (about 4.3 billion identities)
 that guests, who are never reaped, also draw from; once it is spent every identity without a
 handle is refused at join.

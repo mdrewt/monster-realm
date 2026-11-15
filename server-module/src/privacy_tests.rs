@@ -7930,8 +7930,8 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// rows, more than the 256 a tick reads, so a population of minimum-size
 /// minted bundles can never put a seventeenth stamp in the window. The stamp
 /// cap binding is proven by `rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps`
-/// (thirteen-chunk bundles, planned 16 of 20) and by rb-115's short-stamp
-/// populations in `rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows`
+/// (thirteen-chunk bundles, planned 16 of 20) and by the short-stamp populations
+/// in `rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows`
 /// (ticks A, A-prime and C: planned 16 of 20, 16 of 17 and 16 of 20), which
 /// seed bundles shorter than the minimum on purpose.
 ///
