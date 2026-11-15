@@ -2091,6 +2091,11 @@ fn bn_world(fx: &Fixture) -> BnWorld<'_> {
         .writable()
         .unique();
     let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let _ = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
     let pubs = fx
         .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
         .writable()
@@ -2939,6 +2944,141 @@ fn bn_lead_party_ids_orders_the_slotted_party_and_ignores_levels() {
     w.monsters.seed(&lead);
     assert_eq!(super::lead_party_ids(&ctx, bn_a()), Some(vec![11, 12]));
     assert_eq!(super::lead_party(&ctx, bn_a()).map(|(ids, _)| ids), None);
+}
+
+// ===========================================================================
+// sr-2.1 — the party is read through the `(owner_identity, party_slot)` index.
+//
+// Owner A's lead sits in slot 1, not 0, its slots are non-contiguous, and two of them
+// are out of range but not Storage (7 and 254), which the party read keeps exactly as
+// `!= PARTY_SLOT_NONE` always did. `monster_id` DESCENDS as the slot ascends, and the
+// rows are stored shuffled with owner B's interleaved, so neither store order nor id
+// order is slot order. B's party sits in overlapping slots (0, 1, 3, 4, 254): any B id
+// in A's answer is a read that ignored the owner. A, B and the storage-only owner C each
+// also hold `storage` Storage monsters (slot 255).
+// ===========================================================================
+
+/// A's party ids in slot order (slots 1, 3, 4, 7, 254).
+const SR2_1_A_PARTY: [u64; 5] = [105, 104, 103, 102, 101];
+/// B's party ids in slot order (slots 0, 1, 3, 4, 254).
+const SR2_1_B_PARTY: [u64; 5] = [205, 204, 203, 202, 201];
+
+/// An owner with no `monster` row at all.
+fn sr2_1_nobody() -> Identity {
+    Identity::from_byte_array([0xD4; 32])
+}
+
+/// `monster` registered through its `(owner_identity, party_slot)` index, plus the
+/// single-column `owner_identity` index only when `owner_index` is set. Returns the
+/// composite handle, which seeds the rows.
+fn sr2_1_monsters(fx: &Fixture, owner_index: bool) -> Handle<'_, Monster, (Identity, u8)> {
+    let party = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
+    if owner_index {
+        let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    }
+    party
+}
+
+/// Seeds A's and B's parties in a shuffled, interleaved store order, then `storage`
+/// Storage monsters each for A, B and C.
+fn sr2_1_seed(monsters: &Handle<'_, Monster, (Identity, u8)>, storage: u64) {
+    let (a, b) = (bn_a(), bn_b());
+    for (owner, slot, id) in [
+        (a, 4, 103),
+        (b, 4, 202),
+        (a, 254, 101),
+        (b, 0, 205),
+        (a, 1, 105),
+        (b, 3, 203),
+        (a, 7, 102),
+        (b, 1, 204),
+        (a, 3, 104),
+        (b, 254, 201),
+    ] {
+        monsters.seed(&bn_monster(id, owner, slot));
+    }
+    for i in 0..storage {
+        monsters.seed(&bn_monster(10_000 + i, a, crate::PARTY_SLOT_NONE));
+        monsters.seed(&bn_monster(20_000 + i, b, crate::PARTY_SLOT_NONE));
+        monsters.seed(&bn_monster(30_000 + i, bn_c(), crate::PARTY_SLOT_NONE));
+    }
+}
+
+/// sr-2.1: with 1,000 Storage monsters per owner, `lead_party_ids` returns exactly each
+/// owner's party ordered by slot, and `None` for an owner holding only Storage monsters
+/// and for an owner with no row. The world registers ONLY the composite index.
+///
+/// kills: a read that is not through the composite index (sees nothing here: A and B
+/// read `None`); a range that stops at `PARTY_SIZE` (drops 102 and 101); an inclusive
+/// `0..=255` range (Storage ids leak in); a read that ignores the owner (B's ids in A's
+/// answer); a result left in store or id order instead of slot order.
+#[test]
+fn sr2_1_lead_party_ids_returns_the_party_in_slot_order_past_1000_storage_monsters() {
+    let fx = fixture();
+    let monsters = sr2_1_monsters(&fx, false);
+    sr2_1_seed(&monsters, 1_000);
+    let ctx = fx.ctx();
+    let got = [bn_a(), bn_b(), bn_c(), sr2_1_nobody()]
+        .map(|owner| crate::battle::lead_party_ids(&ctx, owner));
+    assert_eq!(
+        got,
+        [
+            Some(SR2_1_A_PARTY.to_vec()),
+            Some(SR2_1_B_PARTY.to_vec()),
+            None,
+            None,
+        ],
+        "[A, B, storage-only C, no-row owner]; indexes asked for: {:?}",
+        fx.requested_indexes()
+    );
+}
+
+/// sr-2.1 read cost: `lead_party_ids(A)` reads EXACTLY A's party (5 rows) whether A holds
+/// 1 or 1,000 Storage monsters, and the storage-only and no-row owners read 0 rows. Each
+/// case runs once with only the composite index and once with the `owner_identity` index
+/// registered too, where a read through `owner_identity` hands out every owned row.
+///
+/// kills: the full-owner scan with a `!= 255` filter (6 / 1,005 rows for A, 1 / 1,000 for
+/// C); an owner-prefix-only read of the composite index with the same filter (the same
+/// counts); any read through an index that is not the composite one (`None`, 0 rows).
+#[test]
+fn sr2_1_lead_party_ids_reads_exactly_the_party_whatever_the_storage_count() {
+    let party_size = u32::try_from(SR2_1_A_PARTY.len()).expect("a small count");
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for owner_index in [false, true] {
+        for storage in [1, 1_000] {
+            let fx = fixture();
+            let monsters = sr2_1_monsters(&fx, owner_index);
+            sr2_1_seed(&monsters, storage);
+            let ctx = fx.ctx();
+            let mut reads = Vec::new();
+            for owner in [bn_a(), bn_c(), sr2_1_nobody()] {
+                fx.reset_reads();
+                let ids = crate::battle::lead_party_ids(&ctx, owner);
+                reads.push((ids, fx.rows_read("monster")));
+            }
+            got.push((owner_index, storage, reads));
+            want.push((
+                owner_index,
+                storage,
+                vec![
+                    (Some(SR2_1_A_PARTY.to_vec()), party_size),
+                    (None, 0),
+                    (None, 0),
+                ],
+            ));
+        }
+    }
+    assert_eq!(
+        got, want,
+        "(owner_identity index registered, Storage per owner, [(ids, monster rows read) for \
+         A, storage-only C, no-row owner])"
+    );
 }
 
 /// Captures `log` records for this test PROCESS (nextest isolates each test).

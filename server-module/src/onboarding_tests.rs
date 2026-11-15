@@ -153,6 +153,11 @@ fn ob_world(fx: &Fixture) -> Ob<'_> {
     fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id)
         .seed(&species1());
     let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let _ = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
     let _ = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
     let _ = fx
         .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)

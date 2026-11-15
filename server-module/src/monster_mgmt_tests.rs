@@ -98,6 +98,11 @@ fn rb41_owned_monster(owner: Identity, monster_id: u64) -> Monster {
 fn rb41_has_monsters_tracks_real_monster_rows() {
     let fx = fixture();
     let t = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let _ = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
     let ctx = fx.ctx();
     let owner = Identity::from_byte_array([19u8; 32]);
     let stranger = Identity::from_byte_array([20u8; 32]);
@@ -345,6 +350,11 @@ fn dw_world(fx: &Fixture) -> DwWorld<'_> {
         .unique()
         .auto_inc(|r| r.monster_id, |r, id| r.monster_id = id);
     let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let _ = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
     let pubs = fx
         .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
         .writable()
@@ -2064,4 +2074,174 @@ fn a_party_change_for_an_owner_with_no_player_row_succeeds_and_writes_no_player_
     assert_eq!(players.rows().len(), 1, "only B's row exists");
     assert_eq!(fx.writes_to("player"), 0, "player took no write");
     w.assert_mirrored("owner with no player row");
+}
+
+// ===========================================================================
+// sr-2.2 — `set_party_slot` reads the caller's occupied slots through the
+// `(owner_identity, party_slot)` index.
+//
+// The caller A holds a party in non-contiguous slots and a pile of Storage monsters,
+// the first of which is the mover 15. B holds 21 in slot 3, a slot that is free for A,
+// and one Storage monster.
+// ===========================================================================
+
+/// `dw_world`'s monster pair (`monster_id` writable, unique and auto-inc; `monster_pub`
+/// writable and unique), the `player` table the refresh after a slot change reads, and
+/// `monster`'s `(owner_identity, party_slot)` index. The single-column `owner_identity`
+/// index is registered only when `owner_index` is set.
+fn sr2_2_world(fx: &Fixture, owner_index: bool) -> DwWorld<'_> {
+    let monsters = fx
+        .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+        .writable()
+        .unique()
+        .auto_inc(|r| r.monster_id, |r, id| r.monster_id = id);
+    let _ = fx.table_composite::<Monster, Identity, u8>(
+        "monster",
+        ["owner_identity", "party_slot"],
+        |r| (r.owner_identity, r.party_slot),
+    );
+    if owner_index {
+        let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    }
+    let pubs = fx
+        .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+        .writable()
+        .unique();
+    let _ = ih2_players(fx);
+    DwWorld {
+        monsters,
+        pubs,
+        stacks: fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity),
+    }
+}
+
+/// Seeds A's mover 15 in Storage, A's `party` as `(monster_id, slot)`, then `storage - 1`
+/// more Storage monsters for A (ids 1001 up), so A holds `storage` Storage monsters in
+/// all; then B's 21 (slot 3) and 22 (Storage).
+fn sr2_2_seed(w: &DwWorld<'_>, party: &[(u64, u8)], storage: u64) {
+    w.monster(15, dw_a(), crate::PARTY_SLOT_NONE);
+    for &(id, slot) in party {
+        w.monster(id, dw_a(), slot);
+    }
+    for n in 1..storage {
+        w.monster(1_000 + n, dw_a(), crate::PARTY_SLOT_NONE);
+    }
+    w.monster(21, dw_b(), 3);
+    w.monster(22, dw_b(), crate::PARTY_SLOT_NONE);
+}
+
+/// sr-2.2: while A holds 14 (slot 0), 13 (2), 12 (5), 11 in the out-of-range slot 7 and
+/// 1,000 Storage monsters, `set_party_slot` accepts a slot free for A (3, which B's 21
+/// holds), a party monster's own current slot, Storage, and a free slot for 11. It
+/// rejects as occupied a slot another of A's party monsters holds (the lead's 0, the
+/// non-contiguous 2 and 5, also for a party monster), and as out of range 6 and the
+/// held-but-out-of-range 7. A rejected call changes no `monster` or `monster_pub` row; an
+/// accepted one changes only the mover's `party_slot`. The world registers the composite
+/// index and NOT `owner_identity`. Each case runs on a fresh world.
+///
+/// kills: occupancy read through any index but the composite one (no slot is seen as
+/// occupied, so 0, 2, 5 and 14 -> 5 are accepted); occupancy that counts the mover itself
+/// (13 -> 2 refused); occupancy across owners (15 -> 3 refused); a write that lands
+/// before the slot check (a rejected case changes a row).
+#[test]
+fn sr2_2_set_party_slot_accepts_free_and_rejects_occupied_or_out_of_range_past_1000_storage() {
+    let occupied = || Err(game_core::SlotError::Occupied.to_string());
+    let out_of_range = || Err(game_core::SlotError::OutOfRange.to_string());
+    let cases: [(&str, u64, u8, Result<(), String>); 10] = [
+        ("Storage 15 -> 3, free for A, held by B", 15, 3, Ok(())),
+        ("Storage 15 -> the lead's slot 0", 15, 0, occupied()),
+        ("Storage 15 -> 2, held by 13", 15, 2, occupied()),
+        ("Storage 15 -> 5, held by 12", 15, 5, occupied()),
+        ("lead 14 -> 5, held by 12", 14, 5, occupied()),
+        ("Storage 15 -> 7, held by 11", 15, 7, out_of_range()),
+        ("Storage 15 -> 6", 15, 6, out_of_range()),
+        ("13 -> its own slot 2", 13, 2, Ok(())),
+        ("12 -> Storage", 12, crate::PARTY_SLOT_NONE, Ok(())),
+        ("11 in slot 7 -> 1", 11, 1, Ok(())),
+    ];
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for (label, id, slot, expected) in cases {
+        let fx = fixture();
+        let w = sr2_2_world(&fx, false);
+        sr2_2_seed(&w, &[(14, 0), (13, 2), (12, 5), (11, 7)], 1_000);
+        let before = w.monsters.rows();
+        let before_pubs = dw_bytes(&w.pubs.rows());
+        let held = w.row(id).expect("the mover is seeded").party_slot;
+        let result = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::monster_mgmt::set_party_slot(ctx, id, slot)
+        });
+        let accepted = expected.is_ok();
+        let slot_after = if accepted { slot } else { held };
+        let want_rows: Vec<Monster> = before
+            .into_iter()
+            .map(|mut m| {
+                if m.monster_id == id {
+                    m.party_slot = slot_after;
+                }
+                m
+            })
+            .collect();
+        let rows_as_expected = dw_bytes(&w.monsters.rows()) == dw_bytes(&want_rows)
+            && (accepted || dw_bytes(&w.pubs.rows()) == before_pubs);
+        got.push((
+            label,
+            result,
+            w.row(id).map(|m| m.party_slot),
+            rows_as_expected,
+        ));
+        want.push((label, expected, Some(slot_after), true));
+        w.assert_mirrored(label);
+    }
+    assert_eq!(
+        got, want,
+        "(case, result, the mover's party_slot after, every row as expected: only an \
+         accepted mover's party_slot changed)"
+    );
+}
+
+/// One sr-2.2 read-cost observation: (owner_identity index registered, A's Storage
+/// count, result, 15's `party_slot` after, `monster` rows read).
+type Sr22Reads = (bool, u64, Result<(), String>, Option<u8>, u32);
+
+/// sr-2.2 read cost: moving the Storage monster 15 into the free slot 3 reads EXACTLY 9
+/// `monster` rows whether A holds 1 or 1,000 Storage monsters: the `monster_id` find of
+/// 15 (1), A's occupied party through the composite range (14, 13, 12: 3), then the
+/// `player.lead_level` refresh the slot change triggers, which re-reads the party
+/// through `lead_party_ids` (14, 13, 15, 12: 4) and finds the lead 14 (1). Each count is
+/// taken once with only the composite index and once with `owner_identity` registered
+/// too, where a full-owner read hands out every owned row.
+///
+/// kills: occupancy or the refresh's party read through the full-owner scan (10 / 2,008
+/// rows with both indexes; 1 row with the composite only, where neither read sees a
+/// row); an owner-prefix-only composite read filtered afterwards (the full-scan counts).
+#[test]
+fn sr2_2_an_accepted_move_reads_the_same_rows_with_1_and_1000_storage_monsters() {
+    let mut got: Vec<Sr22Reads> = Vec::new();
+    let mut want: Vec<Sr22Reads> = Vec::new();
+    for owner_index in [false, true] {
+        for storage in [1, 1_000] {
+            let fx = fixture();
+            let w = sr2_2_world(&fx, owner_index);
+            sr2_2_seed(&w, &[(14, 0), (13, 2), (12, 5)], storage);
+            ih2_players(&fx).seed(&ih2_player(dw_a(), 1, w.level_of(14)));
+            fx.reset_reads();
+            let result = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+                crate::monster_mgmt::set_party_slot(ctx, 15, 3)
+            });
+            got.push((
+                owner_index,
+                storage,
+                result,
+                w.row(15).map(|m| m.party_slot),
+                fx.rows_read("monster"),
+            ));
+            want.push((owner_index, storage, Ok(()), Some(3), 9));
+        }
+    }
+    assert_eq!(
+        got, want,
+        "(owner_identity index registered, A's Storage count, result, 15's party_slot \
+         after, monster rows read)"
+    );
 }

@@ -5378,6 +5378,11 @@ mod acct_nh {
         let _ = fx
             .table_keyed::<PlayerHandle, u32>("player_handle", "discriminator", |r| r.discriminator)
             .unique();
+        let _ = fx.table_composite::<Monster, Identity, u8>(
+            "monster",
+            ["owner_identity", "party_slot"],
+            |r| (r.owner_identity, r.party_slot),
+        );
         W {
             handle: handles,
             account: fx

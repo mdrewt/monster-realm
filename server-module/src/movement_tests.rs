@@ -580,6 +580,11 @@ mod nh {
         let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
         let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
         let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+        let _ = fx.table_composite::<Monster, Identity, u8>(
+            "monster",
+            ["owner_identity", "party_slot"],
+            |r| (r.owner_identity, r.party_slot),
+        );
         fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id)
             .seed(&species1());
         World {
