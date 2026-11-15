@@ -1374,6 +1374,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "taming",
     "trading",
     "trading_session",
+    "dev_clock",
 ];
 
 const EXPECTED_LIFECYCLE: &[&str] = &["init", "on_connect", "on_disconnect"];
@@ -1411,6 +1412,7 @@ const EXPECTED_GATED: &[&str] = &[
     "confirm_trade_session",
     "consume_crystalized_essence",
     "deploy_units",
+    "dev_expire_tactical_window",
     "dismiss_dialogue",
     "enqueue_move",
     "essence_train",

@@ -25,7 +25,7 @@ import {
   type TacticsSnap,
   type Tile,
 } from './controls';
-import { sqlRows } from './stdb';
+import { ownerCall, sqlRows } from './stdb';
 
 // tactics-pvp.spec.ts — bt-15 increment A: the PvP pick, the PvP deploy panel and the secrecy of a
 // two-browser PvP battle (BT15.1, BT15.4), driven by VIRTUAL BUTTONS only.
@@ -43,9 +43,11 @@ import { sqlRows } from './stdb';
 // actionSheetModel / main.input / main.dispatch).
 //
 // SEEDING: owner SQL (`spacetime sql`), literal-shaped and charset-checked (tactics-wild.spec.ts's
-// idioms); no reducer is called from the page or the CLI. The two
-// starters get DISTINCT random letter-only nicknames, so "B's page never shows A's monster" is a
-// real oracle (two Flamelings would share a species name) with a positive control on A's page.
+// idioms). The page calls reducers only through its virtual buttons. The CLI calls one reducer, in
+// T2 only: the owner-only dev reducer `dev_expire_tactical_window` (`ownerCall`, stdb.ts; the e2e
+// module is built with `dev_reducers`) expires B's second, third and fourth AFK windows at once.
+// The two starters get DISTINCT random letter-only nicknames, so "B's page never shows A's monster"
+// is a real oracle (two Flamelings would share a species name) with a positive control on A's page.
 //
 // ORDER: T1 (the pick), T2 (secrecy + AFK forfeit), T4 (the server refuses private tables to B —
 // needs B's browser alive), T5 (bt-15 B: the Forfeit confirm), T3 (disconnect: closes browser B).
@@ -66,6 +68,12 @@ import { sqlRows } from './stdb';
 // regimes: B strictly faster (B first every round); a tie (round 1 by a coin flip on the battle seed,
 // alternating each round); A strictly faster (A first every round). T2 pre-queues in round 1's first
 // B window in every regime, so its lock oracle is two-state (pending -> one lock, acted -> none).
+// T2's AFK run: B's first AFK window expires on the REAL scheduler, so that strike lands at least
+// one live window after the window opened (proved on server timestamps: B's next window opens at or
+// after the first window's `deadline_ms`); each later B window is expired at once by
+// `dev_expire_tactical_window` (side B = 1), so the run waits one live window, not four. B's
+// windows can follow each other across a round boundary (the tie regime), so the AFK loop wakes on
+// whichever unit waits next.
 //
 // HOOKS READ (DEV, API freeze): `__mrPvp.challengeFormats()`, `__mrPvp.battleById(id)`,
 // `__mrPvp.declineChallenge(id)` (B declines T1's challenge: the decline UI is not under test here),
@@ -198,6 +206,28 @@ const cellNumber = (cell: string | undefined): number | null => {
   const digits = /\d{4,}/.exec(cell ?? '');
   return digits === null ? null : Number(digits[0]);
 };
+
+/** A small integer cell (`0`, `3`: a `u8` count, a small `u64` id) — digits only, else null. */
+const cellInt = (cell: string | undefined): number | null => {
+  const s = (cell ?? '').trim();
+  return /^[0-9]+$/.test(s) ? Number(s) : null;
+};
+
+/** The 64 lowercase hex digits of an `Identity` cell (`0x…`), or null. */
+const cellIdentity = (cell: string | undefined): string | null => {
+  const hex = /[0-9a-fA-F]{64}/.exec(cell ?? '');
+  return hex === null ? null : hex[0].toLowerCase();
+};
+
+/** `battle_clock` rows matching `where` (a literal-shaped condition), read by owner SQL. */
+const clockRows = (where: string, label: string): Record<string, string>[] =>
+  sqlRows(
+    ownerSql(
+      `SELECT clock_id, player, window_open_ms, deadline_ms, autopass_count FROM battle_clock WHERE ${where}`,
+      label,
+    ),
+    label,
+  );
 
 /** The PvP turn window of `battleId`, from its LIVE clock rows: the largest `deadline_ms -
  *  window_open_ms` among rows with an open window (the deploy rows carry no open). */
@@ -500,7 +530,13 @@ test.describe
       // `my_battle_queue` row is not exactly [A, A's unit]); a lock chip painted on an acted own chip
       // or missing on a pending one (exact count: B-first -> pending -> 1, A-first -> acted -> 0,
       // BT10-3-BAR-LOCK); a strike on A or a missing strike climb on any polled Active snapshot.
-      test.setTimeout(600_000);
+      // th-4.8: a first strike that is not the real scheduler's (B's row reads a strike before any
+      // reducer call only if the real fire booked it; B's next window opening before the first
+      // window's deadline means the window was cut short); a dev reducer that is refused, books no
+      // strike, or books more than one per call (B's strike count is one above the calls made at
+      // every B window); a fifth call needed, or a call made during A's window.
+      // Budget: the deploy and secrecy part, ONE live AFK window, three forced expiries, slack.
+      test.setTimeout(360_000);
       const starterA = (await snap(pageA)).ownMonsters[0];
       const starterB = (await snap(pageB)).ownMonsters[0];
       if (starterA === undefined || starterB === undefined) throw new Error('no starters');
@@ -767,22 +803,50 @@ test.describe
         'still no A monster in B`s document',
       ).toBe(false);
 
-      // AFK: B presses nothing; A acts on every own turn until the battle finishes.
-      const afkBound = AFK_STRIKES * (windowMs + TURN_SLACK_MS) + windowMs + 60_000;
+      // AFK: B presses nothing; A acts on every own turn until the battle finishes. B's first AFK
+      // window is the one B's unit waits in now (key `turnKey(t)`, no strike yet): the real
+      // scheduler expires it. While it is open, B's clock row is read by owner SQL: its id and its
+      // deadline D1 (server time) are kept for the first-strike oracle at B's second window.
+      const firstWindowRows = clockRows(`battle_id = ${battleId}`, 'T2 B first window');
+      const bRow = firstWindowRows.find((r) => cellIdentity(r.player) === normId(idB));
+      if (bRow === undefined) {
+        throw new Error(`T2: no battle_clock row names B: ${JSON.stringify(firstWindowRows)}`);
+      }
+      const openRows = firstWindowRows.filter((r) => cellNumber(r.window_open_ms) !== null);
+      expect(
+        openRows.map((r) => r.clock_id),
+        'B`s first window: B`s clock row is the battle`s one row with an open window',
+      ).toEqual([bRow.clock_id]);
+      expect(
+        cellInt(bRow.autopass_count),
+        'B`s first window: B`s row carries no strike yet (an open B window with no strike is B`s first)',
+      ).toBe(0);
+      const bClockId = cellInt(bRow.clock_id);
+      const firstDeadline = cellNumber(bRow.deadline_ms);
+      if (bClockId === null || firstDeadline === null) {
+        throw new Error(`T2: B's first-window clock row is unreadable: ${JSON.stringify(bRow)}`);
+      }
+
+      // One live window (the real expiry) plus three forced expiries, with slack.
+      const afkBound = windowMs + TURN_SLACK_MS + AFK_STRIKES * 2 * TURN_SLACK_MS + 60_000;
       const afkStart = Date.now();
-      let last: string | null = null;
+      let lastA: string | null = null;
+      let lastB = turnKey(t);
+      let reducerCalls = 0;
       // The strike maxima fold over EVERY polled Active snapshot (never the Finished one, which
-      // would satisfy the climb trivially): in some initiative orders A has no own turn while B
-      // stands on three strikes, but the poll sees it during B's last window.
+      // would satisfy the climb trivially).
       let maxStrikesB = 0;
       let maxStrikesA = 0;
-      // bt-15 B (BT15.2): the most hit strike pips A's page showed by B's name on any poll.
+      // bt-15 B (BT15.2): the most hit strike pips A's page showed by B's name on any wake.
       let maxHitPipsB = 0;
       const hitPipsB = pageA.locator(
         `.tactics-players .tactics-player[data-side="${unitB.side}"] .tactics-strike--hit`,
       );
       for (;;) {
         expect(Date.now() - afkStart, 'the AFK forfeit within its bound').toBeLessThan(afkBound);
+        // ONE wait per iteration, waking on whichever comes first: the finish, A's unit under a new
+        // turn key, or B's unit under a new turn key once B carries a strike (B's first window is
+        // never expired by the reducer).
         const snapA = await waitTactics(
           pageA,
           (x) => {
@@ -790,24 +854,58 @@ test.describe
               maxStrikesA = Math.max(maxStrikesA, x.strikes.A);
               maxStrikesB = Math.max(maxStrikesB, x.strikes.B);
             }
-            return (
-              x.phase === 'Finished' ||
-              (x.phase === 'Active' &&
-                x.turnState === 'Waiting' &&
-                x.activeUnitId === unitA.unitId &&
-                turnKey(x) !== last)
-            );
+            if (x.phase === 'Finished') return true;
+            if (x.phase !== 'Active' || x.turnState !== 'Waiting') return false;
+            if (x.activeUnitId === unitA.unitId) return turnKey(x) !== lastA;
+            return x.activeUnitId === unitB.unitId && x.strikes.B >= 1 && turnKey(x) !== lastB;
           },
           2 * (windowMs + TURN_SLACK_MS),
-          'A`s next own turn or the finish',
+          'A`s next own turn, B`s next struck window, or the finish',
         );
         if (snapA.phase === 'Finished') break;
-        expect(snapA.strikes.A, 'A acts every turn: never struck').toBe(0);
         maxHitPipsB = Math.max(maxHitPipsB, await hitPipsB.count());
-        last = turnKey(snapA);
-        await endTurnLive(pageA, turnKey(snapA), unitA.unitId, 'AFK loop');
+        if (snapA.activeUnitId === unitA.unitId) {
+          expect(snapA.strikes.A, 'A acts every turn: never struck').toBe(0);
+          lastA = turnKey(snapA);
+          await endTurnLive(pageA, turnKey(snapA), unitA.unitId, 'AFK loop');
+          continue;
+        }
+        // B's unit waits in a window after its first: each earlier B window booked exactly one
+        // strike (the real one, then one per reducer call).
+        expect(snapA.strikes.B, 'B`s strikes are one above the reducer calls made').toBe(
+          reducerCalls + 1,
+        );
+        if (reducerCalls === 0) {
+          // The first strike is the real scheduler's, on server timestamps: before any reducer
+          // call, B's row already reads one strike, and B's second window (still open: B is AFK and
+          // nothing else closes it) opened at or after the first window's deadline.
+          const rows = clockRows(`clock_id = ${bClockId}`, 'T2 B second window');
+          const row = rows[0];
+          if (rows.length !== 1 || row === undefined) {
+            throw new Error(`T2: clock row ${bClockId} not read back: ${JSON.stringify(rows)}`);
+          }
+          expect(
+            cellInt(row.autopass_count),
+            'before the first reducer call B`s row reads one strike: the real fire booked it',
+          ).toBe(1);
+          const secondOpen = cellNumber(row.window_open_ms);
+          expect(
+            secondOpen !== null && secondOpen >= firstDeadline,
+            `B's second window opened at or after the first window's deadline (open ${secondOpen}, D1 ${firstDeadline}): the first strike came at least one live window after B's window opened`,
+          ).toBe(true);
+        }
+        lastB = turnKey(snapA);
+        ownerCall(
+          'dev_expire_tactical_window',
+          [battleId, '1'],
+          `T2 expire B #${reducerCalls + 2}`,
+        );
+        reducerCalls += 1;
       }
-      const elapsed = Date.now() - afkStart;
+      expect(
+        reducerCalls,
+        'B`s 2nd, 3rd and 4th windows were expired by the dev reducer, each call returning',
+      ).toBe(AFK_STRIKES - 1);
       const tags = await readEventTags(pageA);
       const autoPasses = tags.filter((e) => e.tag === 'AutoPass');
       expect(autoPasses.length, 'exactly four AutoPass strikes').toBe(AFK_STRIKES);
@@ -825,9 +923,6 @@ test.describe
         maxHitPipsB,
         'A`s page showed at least one hit strike pip by B`s name during the AFK run (BT15.2)',
       ).toBeGreaterThanOrEqual(1);
-      expect(elapsed, 'at least three full windows passed').toBeGreaterThanOrEqual(
-        (AFK_STRIKES - 1) * windowMs,
-      );
       const final = await readTactics(pageA);
       expect(final?.strikes.A ?? 0, 'A was never struck').toBe(0);
       expect(
