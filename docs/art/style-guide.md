@@ -243,11 +243,12 @@ a row at 1280×720, 1,200 at the larger canvases):
   is 2.3 ms at 1280×720 and 15.1 ms at 3840×2160, and the browser then composites 8.3 M
   pixels in software. The renderer's backing store follows the device pixel ratio.
   Follow-up: `R-th-6-SWRASTER-PIXELS`.
-- **Stack on, SwiftShader and llvmpipe** (21.0 and 41.3 fps at 1280×720). The cost is the
-  four passes: the synced frame is 47.0 ms against 2.3 ms on SwiftShader and 21.7 ms
-  against 3.5 ms on llvmpipe, with godray and bloom the largest (per-pass table above).
-  DECISIONS.md "The world post stack is `pixi-filters`…" keeps the stack off on a software
-  rasteriser. Follow-up: `R-th-6-POSTSTACK-GUARD`.
+- **Stack on, SwiftShader and llvmpipe** (21.0 and 41.3 fps at 1280×720, and 29.0 fps on
+  llvmpipe at 1920×1080). The cost is the four passes: the synced frame is 47.0 ms
+  against 2.3 ms on SwiftShader and 21.7 ms against 3.5 ms on llvmpipe, with godray and
+  bloom the largest (per-pass table above). DECISIONS.md "The world post stack is
+  `pixi-filters`…" keeps the stack off on a software rasteriser. Follow-up:
+  `R-th-6-POSTSTACK-GUARD`.
 - **Stack on, the Radeon at 1920×1080 and above** (34.4 fps, 10.3 fps at 3840×2160). The
   cost is the same four passes on a small GPU: the synced frame is 11.9 ms at 1280×720 and
   97.5 ms at 3840×2160, where the RTX 5080 takes 5.7 ms. The software-rasteriser rule does
