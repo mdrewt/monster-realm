@@ -14,7 +14,7 @@ use crate::marshal::{loser_base_stat_total, now_ms, write_back_hp};
 use crate::monster_mgmt::update_monster_synced;
 use crate::movement::RateLimiter;
 use crate::raising::{accrue_quality_time, grant_essence};
-use crate::schema::{battle, battle_wild, monster, player, species_row, Battle, Monster, Player};
+use crate::schema::{battle, battle_wild, monster, player, species_row, Battle, Player};
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
@@ -39,6 +39,10 @@ static LEAD_LEVEL_ERR_LIMITER: RateLimiter = RateLimiter::new();
 /// lowest slot (the lead) first. `None` iff the player has no party monster;
 /// a `Some` is NEVER empty.
 ///
+/// Read through the `owner_party` index's `(owner, 0..PARTY_SLOT_NONE)` range: the btree
+/// yields exactly the party, ascending by slot, so the read never visits a Storage monster
+/// and costs the party's size however full Storage is. It runs on every accepted move.
+///
 /// THE BASE HELPER, and deliberately level-free: it parses nothing and therefore
 /// cannot fail for a non-empty party. so a corrupt LEAD level can no longer
 /// silently disable Quality-Time and auto-evolution for the whole party.
@@ -47,18 +51,14 @@ static LEAD_LEVEL_ERR_LIMITER: RateLimiter = RateLimiter::new();
 /// level check here, or hoisting one into the caller) restores the exact defect
 /// this closes while leaving every needle satisfied.
 pub(crate) fn lead_party_ids(ctx: &ReducerContext, owner: Identity) -> Option<Vec<u64>> {
-    let mut party: Vec<Monster> = ctx
+    let party: Vec<u64> = ctx
         .db
         .monster()
-        .owner_identity()
-        .filter(owner)
-        .filter(|m| m.party_slot != PARTY_SLOT_NONE)
+        .owner_party()
+        .filter((owner, 0..PARTY_SLOT_NONE))
+        .map(|m| m.monster_id)
         .collect();
-    if party.is_empty() {
-        return None;
-    }
-    party.sort_by_key(|m| m.party_slot);
-    Some(party.iter().map(|m| m.monster_id).collect())
+    (!party.is_empty()).then_some(party)
 }
 
 /// The player's party ids PLUS the lead monster's typed level, for the callers
