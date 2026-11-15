@@ -578,6 +578,7 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
   it('chunkTextureRequest maps the cache options to resolution 1 nearest at any device scale sr-8.1', () => {
     for (const scale of [1, 1.5, 2, 3]) {
       vi.stubGlobal('devicePixelRatio', scale);
+      vi.stubGlobal('window', { devicePixelRatio: scale });
       const { cache, created } = harness();
       cache.build(mkChunks().slice(0, 1));
       const opts = (created[0] as Token).options;
@@ -591,6 +592,7 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
   it('every create call receives resolution 1 with nearest scaling at any device scale sr-8.1', () => {
     for (const scale of [1, 1.5, 2, 3]) {
       vi.stubGlobal('devicePixelRatio', scale);
+      vi.stubGlobal('window', { devicePixelRatio: scale });
       const { cache, created } = harness();
       cache.build(mkChunks());
       expect(created).toHaveLength(6);
