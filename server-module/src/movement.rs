@@ -190,11 +190,11 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
     ctx.db.last_position().owner_identity().delete(owner);
 }
 
-/// Join: one `player` + one `character` + its `move_intent` row + one starter `monster`
-/// (idempotent: a returning player gets character+player only, not a second
-/// monster). The character stands where the account's last one stood when it
-/// disconnected (`take_start`), or on the spawn. Rejects a double-join within
-/// the same session.
+/// Join: one `player` + one `character` + its `move_intent` row, and the starter grant
+/// `onboarding` decides (the starter kit and the starter `monster`, once per identity: an
+/// identity whose starter marker is set gets the three presence rows and nothing else).
+/// The character stands where the account's last one stood when it disconnected
+/// (`take_start`), or on the spawn. Rejects a double-join within the same session.
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.

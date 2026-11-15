@@ -653,13 +653,16 @@ fn rekey_npc_state_moves_the_whole_row_and_leaves_the_source_its_sys_flags() {
     );
 }
 
-/// The claim re-key over a dialogue row with no `sys:` flag moves the row and
-/// leaves the source no row at all.
+/// The claim re-key over a dialogue row holding only ordinary flags (a guest that
+/// never received the marker): the destination receives the whole row, and the
+/// source keeps a tombstone holding exactly the starter marker and a copy of its
+/// done quests, so the retired guest is never granted a second starter or kit.
 ///
-/// kills: a tombstone written for every source (an empty row left under a guest
-/// that never held a marker).
+/// kills: a tombstone written only when the source already held a `sys:` flag (a
+/// marker-less retired guest re-joins as a fresh identity); an ordinary flag left on
+/// the source (`my_sys:flag` is not reserved); the done quests dropped.
 #[test]
-fn rekey_npc_state_without_a_sys_flag_leaves_the_source_no_row() {
+fn rekey_npc_state_without_a_sys_flag_leaves_the_source_a_marker_only_tombstone() {
     let fx = crate::native_host_tests::fixture();
     let t = fx
         .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
@@ -686,9 +689,42 @@ fn rekey_npc_state_without_a_sys_flag_leaves_the_source_no_row() {
         )],
         "the account receives the whole row"
     );
+    assert_eq!(
+        dialogue_rows_of(&t, guest),
+        vec![(strings(&[MARKER]), strings(&["quest_001"]))],
+        "the source keeps exactly the marker and a copy of its done quests"
+    );
+}
+
+/// The claim re-key of a source with no dialogue row at all: the destination gets
+/// no row, and the source is left a tombstone holding exactly the starter marker
+/// with no done quests.
+///
+/// kills: a tombstone written only when the source had a row; a row invented for
+/// the destination.
+#[test]
+fn rekey_npc_state_of_a_source_with_no_row_leaves_it_a_marker_only_tombstone() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx
+        .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+            r.owner_identity
+        })
+        .writable()
+        .unique();
+    let ctx = fx.ctx();
+    let guest = Identity::from_byte_array([36u8; 32]);
+    let account = Identity::from_byte_array([37u8; 32]);
+
+    crate::npc::rekey_npc_state(&ctx, guest, account);
+
     assert!(
-        dialogue_rows_of(&t, guest).is_empty(),
-        "a row without a sys: flag leaves the source nothing"
+        dialogue_rows_of(&t, account).is_empty(),
+        "the destination gets no row"
+    );
+    assert_eq!(
+        dialogue_rows_of(&t, guest),
+        vec![(strings(&[MARKER]), strings(&[]))],
+        "the source keeps a marker-only tombstone"
     );
 }
 
@@ -713,6 +749,10 @@ fn mark_starter_claimed_inserts_or_adds_the_marker_once_and_starter_claimed_read
     let seasoned = Identity::from_byte_array([42u8; 32]);
     let stranger = Identity::from_byte_array([43u8; 32]);
     assert_eq!(crate::npc::STARTER_CLAIMED_FLAG, MARKER);
+    assert!(
+        game_core::is_system_flag(crate::npc::STARTER_CLAIMED_FLAG),
+        "the marker is inside the namespace the content validator reserves"
+    );
     t.seed(&PlayerDialogueStateRow {
         owner_identity: seasoned,
         flags: strings(&["met_elder_oak"]),

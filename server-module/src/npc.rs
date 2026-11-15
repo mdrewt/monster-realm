@@ -658,10 +658,11 @@ pub(crate) fn mark_starter_claimed(ctx: &ReducerContext, owner: Identity) {
 /// table, so neither path can collide.
 ///
 /// The dialogue row is the one thing the claim does not move whole. `to` receives every
-/// flag and the done-quest history. When the row holds flags of the reserved `sys:`
-/// namespace, `from` keeps a row with only those flags and a copy of the done quests: the
-/// retired guest token can still call `join_game`, and without the starter marker it would
-/// be granted a second starter and kit, and without the history it could redo a quest.
+/// flag and the done-quest history of `from`'s row. `from` is always left a row: the flags
+/// of the reserved `sys:` namespace it held, the starter marker whether or not it held it,
+/// and a copy of the done quests. The retired guest token can still call `join_game`;
+/// without the marker it would be granted a second starter and kit, and without the
+/// history it could redo a quest.
 pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity) {
     let pq_ids: Vec<u64> = ctx
         .db
@@ -676,23 +677,18 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
             ctx.db.player_quest().pq_id().update(q);
         }
     }
-    if let Some(row) = ctx.db.player_dialogue_state().owner_identity().find(from) {
+    let moved = ctx.db.player_dialogue_state().owner_identity().find(from);
+    let mut kept: Vec<String> = Vec::new();
+    let mut done_quests: Vec<String> = Vec::new();
+    if let Some(row) = moved {
         ctx.db.player_dialogue_state().owner_identity().delete(from);
-        let kept: Vec<String> = row
-            .flags
-            .iter()
-            .filter(|f| game_core::is_system_flag(f))
-            .cloned()
-            .collect();
-        if !kept.is_empty() {
-            ctx.db
-                .player_dialogue_state()
-                .insert(PlayerDialogueStateRow {
-                    owner_identity: from,
-                    flags: kept,
-                    done_quests: row.done_quests.clone(),
-                });
-        }
+        kept.extend(
+            row.flags
+                .iter()
+                .filter(|f| game_core::is_system_flag(f))
+                .cloned(),
+        );
+        done_quests.clone_from(&row.done_quests);
         ctx.db
             .player_dialogue_state()
             .insert(PlayerDialogueStateRow {
@@ -701,6 +697,16 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
                 done_quests: row.done_quests,
             });
     }
+    if !kept.iter().any(|f| f == STARTER_CLAIMED_FLAG) {
+        kept.push(STARTER_CLAIMED_FLAG.to_string());
+    }
+    ctx.db
+        .player_dialogue_state()
+        .insert(PlayerDialogueStateRow {
+            owner_identity: from,
+            flags: kept,
+            done_quests,
+        });
 }
 
 /// delete every NPC-progress row

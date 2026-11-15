@@ -40,6 +40,8 @@ const BIG = { width: 1920, height: 1080 } as const;
 const FOOD_ITEM_ID = 2; // Power Root: `train_stat: Some(Attack)`, content/items/000-core.ron
 const FOOD_NAME = 'Power Root';
 const FOOD_SEED = 3;
+/** The starter kit's Antidote (item 3, `cure_status: Some(Poison)`: Medicine), granted at join. */
+const KIT_ANTIDOTE_ITEM_ID = 3;
 const STARTER_SPECIES_NAME = 'Flameling'; // species 1
 
 interface OwnItem {
@@ -155,8 +157,8 @@ test.describe
       starterName = starter.nickname !== '' ? starter.nickname : STARTER_SPECIES_NAME;
       const hex = normId(start.identity);
       expect(/^[0-9a-f]{64}$/.test(hex), 'the identity is 64 hex digits').toBe(true);
-      // One stack of Power Root: Food holds one item; Bait (the first pocket, opened first) and
-      // Medicine hold none, so an empty pocket is one RB-free open away.
+      // One stack of Power Root: Food holds one item beside the starter kit's Lure Berry (Bait)
+      // and Antidote (Medicine); Other holds none, the empty pocket UIF8.4 reads.
       ownerSql(
         `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${hex}, ${FOOD_ITEM_ID}, ${FOOD_SEED})`,
         'seed the food stack',
@@ -509,7 +511,18 @@ test.describe
       // bar or the title lost with the content; an EmptyState left over a pocket that has items.
       // The fr half is the unit suite's (raisingView.test.ts, catalog.test.ts): the page's locale
       // switch is not an e2e control.
-      await openInventory(page); // Bait: nothing owned
+      // By this test the bag holds the starter kit's Lure Berry x2 (Bait) and Antidote x1
+      // (Medicine) plus the seeded Power Root (Food); Other (the essence shards, item ids 4 and 5)
+      // holds nothing. Pockets are ordered by the lowest item id they define, so three RBs from
+      // the first pocket reach Other, and one LB from it reaches Medicine, a pocket with items.
+      await openInventory(page); // Bait: the kit's Lure Berry
+      for (const pocket of ['food', 'medicine', 'other']) {
+        await pressButton(page, 'RB');
+        await expect(page.locator(`#bag-tab-${pocket}`), `RB reaches ${pocket}`).toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+      }
       const empty = page.locator('#bag-panel .mr-empty');
       await expect(empty, 'the EmptyState is visible').toBeVisible();
       for (const [line, text] of [
@@ -525,18 +538,18 @@ test.describe
         page.locator('[data-testid="raising-title"]'),
         'the title is kept',
       ).toBeVisible();
-      for (const pocket of ['bait', 'food']) {
+      for (const pocket of ['bait', 'food', 'medicine', 'other']) {
         await expect(page.locator(`#bag-tab-${pocket}`), `the ${pocket} tab is kept`).toBeVisible();
       }
 
-      await pressButton(page, 'RB');
-      await expect(page.locator('#bag-tab-food')).toHaveAttribute('aria-selected', 'true');
+      await pressButton(page, 'LB');
+      await expect(page.locator('#bag-tab-medicine')).toHaveAttribute('aria-selected', 'true');
       await expect(
         page.locator('#bag-panel .mr-empty'),
-        'Food has an item: no EmptyState',
+        'Medicine has an item (the kit Antidote): no EmptyState',
       ).toHaveCount(0);
       await expect(
-        page.locator(`#${navItemId('bag', 'food', String(FOOD_ITEM_ID))}`),
+        page.locator(`#${navItemId('bag', 'medicine', String(KIT_ANTIDOTE_ITEM_ID))}`),
         'its row shows',
       ).toBeVisible();
     });

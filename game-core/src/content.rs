@@ -9234,7 +9234,12 @@ mod tests {
     /// The marker flag at each of `places` is refused with an error naming the flag
     /// and `owner` (the tree id or the quest id).
     fn eo1_assert_sys_flag_refused(places: &[Eo1Place], owner: &str) {
-        let flag = "sys:starter_claimed";
+        eo1_assert_flag_refused("sys:starter_claimed", places, owner);
+    }
+
+    /// `flag` at each of `places` is refused with an error naming the flag and
+    /// `owner` (the tree id or the quest id).
+    fn eo1_assert_flag_refused(flag: &str, places: &[Eo1Place], owner: &str) {
         for &place in places {
             match eo1_validate_flag_at(place, flag) {
                 Ok(()) => panic!("{place:?}: a `sys:` flag must be refused"),
@@ -9308,6 +9313,25 @@ mod tests {
     #[test]
     fn sys_flag_in_a_quest_step_condition_is_refused_eo1_8() {
         eo1_assert_sys_flag_refused(&[Eo1Place::QuestStepHas, Eo1Place::QuestStepNot], EO1_QUEST);
+    }
+
+    /// A reserved flag other than the starter marker (`sys:other`) is refused too, in
+    /// a dialogue placement (naming the tree) and in a quest placement (naming the
+    /// quest): the rule is the `sys:` namespace, not the one flag the server writes.
+    ///
+    /// Kills: a validator that compares against `sys:starter_claimed` only.
+    #[test]
+    fn a_reserved_flag_other_than_the_marker_is_refused_eo1_8() {
+        eo1_assert_flag_refused(
+            "sys:other",
+            &[Eo1Place::NodeAutoSet, Eo1Place::ChoiceCondNot],
+            EO1_TREE,
+        );
+        eo1_assert_flag_refused(
+            "sys:other",
+            &[Eo1Place::QuestStartHas, Eo1Place::QuestStepNot],
+            EO1_QUEST,
+        );
     }
 
     /// The same fixtures pass with an ordinary flag, and with a flag that holds

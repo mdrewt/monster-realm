@@ -22,7 +22,7 @@ pub(crate) struct StarterGrant {
 
 /// The grant rule. `claimed`: the identity's starter marker is set. `owns_monster`: it owns
 /// at least one monster. A claimed identity gets nothing. An unclaimed one gets the kit,
-/// and the monster too unless it already owns one (it joined before the marker existed).
+/// and the monster too unless it already owns one.
 pub(crate) fn starter_grant(claimed: bool, owns_monster: bool) -> StarterGrant {
     StarterGrant {
         monster: !claimed && !owns_monster,

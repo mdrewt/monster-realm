@@ -756,7 +756,75 @@ fn a_kit_that_does_not_fit_still_grants_a_monster_less_joiner_its_starter_eo1_4(
     assert_one_skip_line(joiner(), "currency", "no monster, balance near the cap");
 }
 
+/// The headroom check covers every kit item, not only the first: with a wallet of 50
+/// and 3 Lure Berries, an Antidote stack at `MAX_ITEM_STACK` (the kit's 1 does not
+/// fit) skips the whole kit — the wallet and the Lure Berry stack are unchanged, the
+/// marker stays unset and the skip line's reason names `item 3` — while an Antidote
+/// stack at `MAX_ITEM_STACK - 1` fits: 250 gold, 5 Lure Berries, a full Antidote stack
+/// and the marker.
+///
+/// kills: a headroom check that reads only `items[0]`; a partial grant (the gold and
+/// the berries paid while the Antidote does not fit).
+#[test]
+fn the_kit_is_skipped_when_its_second_item_does_not_fit_and_granted_when_it_does_eo1_4() {
+    install_log_sink();
+    for (antidotes, fits) in [(MAX_ITEM_STACK, false), (MAX_ITEM_STACK - 1, true)] {
+        clear_log_lines();
+        let fx = fixture();
+        let w = ob_world(&fx);
+        w.seed_monster(11, joiner());
+        w.seed_wallet(joiner(), 50);
+        w.seed_stack(900, joiner(), LURE_BERRY, 3);
+        w.seed_stack(901, joiner(), ANTIDOTE, antidotes);
+        let before = w.economy_bytes(joiner());
+
+        assert_eq!(join(&fx, joiner()), Ok(()), "Antidote stack {antidotes}");
+
+        if fits {
+            assert_eq!(w.balance_of(joiner()), Some(50 + KIT_GOLD), "fits: balance");
+            assert_eq!(
+                w.stacks_of(joiner()),
+                vec![(LURE_BERRY, 5), (ANTIDOTE, MAX_ITEM_STACK)],
+                "fits: both stacks grow in place"
+            );
+            assert!(w.marked(joiner()), "fits: the marker is set");
+            assert!(
+                log_lines("starter_kit_skipped").is_empty(),
+                "fits: nothing is skipped"
+            );
+        } else {
+            assert_eq!(
+                w.economy_bytes(joiner()),
+                before,
+                "skipped: the wallet, both stacks and the dialogue state are unchanged"
+            );
+            assert!(!w.marked(joiner()), "skipped: the marker stays unset");
+            assert_one_skip_line(joiner(), "item 3", "Antidote stack at the cap");
+        }
+    }
+}
+
 // --- eo-1.9: a kit that cannot be loaded ------------------------------------------
+
+/// Register `last_position` (as the sr11 fixtures do) and seed a saved position for
+/// `who`: `take_start` consumes it on a join that gets past the refusals. Returns
+/// the table's handle.
+fn seed_saved_position(fx: &Fixture, who: Identity) -> Handle<'_, crate::schema::LastPosition> {
+    let saved = fx
+        .table::<crate::schema::LastPosition>("last_position", "owner_identity", |r| {
+            r.owner_identity
+        })
+        .writable()
+        .unique();
+    saved.seed(&crate::schema::LastPosition {
+        owner_identity: who,
+        zone_id: 1,
+        tile_x: 2,
+        tile_y: 4,
+        facing: game_core::Direction::West,
+    });
+    saved
+}
 
 /// The reject line `log_reject("join_game", who, reason)` prints.
 fn reject_line(who: Identity, reason: &str) -> String {
@@ -766,16 +834,20 @@ fn reject_line(who: Identity, reason: &str) -> String {
 
 /// A join whose starter kit failed to load is refused with the load error, after one
 /// WARN reject line for `join_game` carrying the reason, and writes nothing: no write
-/// reaches any table a join writes, and every one of them is still empty.
+/// reaches any table a join writes, every one of them is still empty, and the
+/// joiner's saved position is still in place (`take_start` never ran).
 ///
 /// kills: a join that grants the monster and skips the kit; the error swallowed (the
 /// join succeeds without a kit and without a marker, so a later join grants a second
-/// starter); a write before the refusal; the refusal unlogged.
+/// starter); a write before the refusal, the saved position's consumption included;
+/// the refusal unlogged.
 #[test]
 fn a_kit_that_cannot_load_refuses_the_join_and_writes_nothing_eo1_9() {
     install_log_sink();
     let fx = fixture();
     let w = ob_world(&fx);
+    let saved = seed_saved_position(&fx, joiner());
+    let saved_before = bytes(&saved.rows());
     let reason = "starter kit: parse failed";
     fx.reset_writes();
 
@@ -792,6 +864,16 @@ fn a_kit_that_cannot_load_refuses_the_join_and_writes_nothing_eo1_9() {
         assert_eq!(fx.writes_to(t), 0, "`{t}`: nothing is written");
     }
     assert_eq!(w.row_counts(), [0; 9], "every join table is still empty");
+    assert_eq!(
+        fx.writes_to("last_position"),
+        0,
+        "the saved position is not consumed"
+    );
+    assert_eq!(
+        bytes(&saved.rows()),
+        saved_before,
+        "the joiner's saved position is still there"
+    );
     assert_eq!(
         log_lines("reject"),
         vec![(log::Level::Warn, reject_line(joiner(), reason))],
@@ -810,6 +892,8 @@ fn a_kit_that_cannot_load_refuses_a_joiner_holding_the_marker_too_eo1_9() {
     let w = ob_world(&fx);
     w.seed_dialogue(joiner(), &[MARKER], &["quest_001"]);
     let dialogue_before = w.economy_bytes(joiner());
+    let saved = seed_saved_position(&fx, joiner());
+    let saved_before = bytes(&saved.rows());
     let reason = "starter kit: missing";
     fx.reset_writes();
 
@@ -830,6 +914,11 @@ fn a_kit_that_cannot_load_refuses_a_joiner_holding_the_marker_too_eo1_9() {
         w.economy_bytes(joiner()),
         dialogue_before,
         "the dialogue row is unchanged"
+    );
+    assert_eq!(
+        bytes(&saved.rows()),
+        saved_before,
+        "the joiner's saved position is still there"
     );
     assert_eq!(
         log_lines("reject"),

@@ -8,7 +8,7 @@ import {
   test,
 } from '@playwright/test';
 import { t } from '../src/ui/a11yCopy';
-import { closeAll, pressAccel } from './controls';
+import { closeAll, pressAccel, pressButton } from './controls';
 
 // the axe-core + real-browser a11y tier that M23-accessibility.spec.md §5.7 DECIDED
 // should exist and that no M23 slice owned.
@@ -1235,6 +1235,20 @@ test.describe
       await blurToBody();
       await pressAccel(page, 'I'); // ctl-11a: Bag through the main menu
       await expect(page.getByTestId('raising-title')).toBeVisible();
+      // The measured frame is the Bag over an EMPTY pocket. The Bag opens on Bait, which for a
+      // fresh identity lists the starter kit's Lure Berry; a listed row sits under #bag-list's
+      // scroll-shadow gradient, whose colours the contrast arithmetic cannot see (it refuses
+      // the gradient as hostile). Food is empty for a fresh identity (Bait holds the Lure Berry,
+      // Medicine the Antidote), so one RB switches to it before the measurement.
+      await pressButton(page, 'RB');
+      await expect(
+        page.locator('#bag-tab-food'),
+        'RB selects the empty Food pocket',
+      ).toHaveAttribute('aria-selected', 'true');
+      await expect(
+        page.locator('#bag-panel .mr-empty'),
+        'Food is empty: the EmptyState shows, no listed row',
+      ).toBeVisible();
       try {
         expect(
           await tagAppRoot('raising-title', 'raising'),

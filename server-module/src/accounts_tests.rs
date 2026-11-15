@@ -7180,6 +7180,86 @@ mod acct_nh {
         );
     }
 
+    /// A guest WITHOUT the marker (it joined before the marker existed: it owns a
+    /// monster and a dialogue row of ordinary flags and a done quest) is claimed.
+    /// The retired guest then joins through `join_game`: the join succeeds and
+    /// grants no monster, no stack and no gold, and its dialogue row is exactly the
+    /// marker plus its done quests. The account, which holds the guest's monster and
+    /// no marker, joins: it gets the kit (200 gold, 2 Lure Berries, 1 Antidote) and
+    /// the marker, and no second monster.
+    ///
+    /// kills: a tombstone written only for a guest that held a `sys:` flag (the
+    /// marker-less retired guest re-joins monster-less and is granted a second
+    /// starter and kit); a claim that hands the account a marker it never earned
+    /// (the legacy account never gets its kit).
+    #[test]
+    fn a_retired_marker_less_guest_rejoins_with_no_kit_and_no_starter_eo1_6() {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let (g, c) = (id(0x86), id(0x87));
+        let secret = code('8');
+        let m = monster_row(101, g);
+        w.monster_pub.seed(&crate::marshal::pub_from_monster(&m, 0));
+        w.monster.seed(&m);
+        w.dialogue.seed(&PlayerDialogueStateRow {
+            owner_identity: g,
+            flags: eo1_strings(&["met_elder_oak"]),
+            done_quests: eo1_strings(&["quest_001"]),
+        });
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert!(!eo1_marked(&w, g), "fixture: the guest holds no marker");
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| {
+                crate::accounts::start_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "the guest starts a claim"
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest leaves");
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(&fx, c, T0 + 1, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "the account completes the claim"
+        );
+
+        assert_eq!(sr11_join(&fx, g, T0 + 2), Ok(()), "the retired guest joins");
+        assert_eq!(eo1_monster_count(&w, g), 0, "no starter monster");
+        assert!(eo1_stacks(&w, g).is_empty(), "no inventory row");
+        assert!(
+            eo1_balances(&w, g).is_empty(),
+            "no gold: the guest held no wallet and the join creates none"
+        );
+        assert_eq!(
+            eo1_dialogue(&w, g),
+            vec![(eo1_strings(&[EO1_MARKER]), eo1_strings(&["quest_001"]))],
+            "the guest's row is the marker and its done quests"
+        );
+
+        assert!(!eo1_marked(&w, c), "the claim gives the account no marker");
+        assert_eq!(sr11_join(&fx, c, T0 + 3), Ok(()), "the account joins");
+        assert_eq!(
+            (
+                eo1_balances(&w, c),
+                eo1_stacks(&w, c),
+                eo1_monster_count(&w, c)
+            ),
+            (vec![200], vec![(1, 2), (3, 1)], 1),
+            "the account gets the kit and no second monster"
+        );
+        assert_eq!(
+            eo1_dialogue(&w, c),
+            vec![(
+                eo1_strings(&["met_elder_oak", EO1_MARKER]),
+                eo1_strings(&["quest_001"])
+            )],
+            "the account's join sets the marker beside the guest's moved state"
+        );
+    }
+
     /// An account joins through `join_game` (the join sets the marker), requests its
     /// deletion, and the reaper completes the cascade at the grace end: no
     /// `player_dialogue_state` row remains for it, and its next `join_game` is
@@ -7521,8 +7601,10 @@ mod acct_nh {
     /// The whole guest→account claim, through the shipped reducers: the guest
     /// starts a claim, disconnects, and a signed-in fresh account completes it.
     /// Every re-key table moves onto the claimer (moves leave NOTHING under the
-    /// guest; the two copy-forward re-keys leave the guest's wallet at zero and
-    /// its profile tombstoned), the guest's export chunks are purged, the code
+    /// guest, except the dialogue row's starter-marker tombstone: exactly
+    /// `sys:starter_claimed` and a copy of the done quests; the two copy-forward
+    /// re-keys leave the guest's wallet at zero and its profile tombstoned), the
+    /// guest's export chunks are purged, the code
     /// and its reaper are consumed, provenance is stamped. A second account
     /// replaying the SAME code gets the no-oracle invalid-code answer and gains
     /// nothing; the claimer can never claim a second guest. A bystander's rows
@@ -7604,10 +7686,25 @@ mod acct_nh {
             "last_position",
             "export_bundle",
         ] {
-            assert!(
-                row_of(t, &owned_by(&w, g)).is_empty(),
-                "`{t}`: no row may stay under the retired guest identity"
-            );
+            if t == "player_dialogue_state" {
+                // The one row the retired guest keeps: the starter-marker tombstone,
+                // holding exactly the marker and a copy of the seeded row's (empty)
+                // done quests; its ordinary flag `flag1` moved to the claimer.
+                assert_eq!(
+                    row_of(t, &owned_by(&w, g)),
+                    encs(&[PlayerDialogueStateRow {
+                        owner_identity: g,
+                        flags: vec!["sys:starter_claimed".to_string()],
+                        done_quests: vec![],
+                    }]),
+                    "`{t}`: the retired guest keeps only the tombstone"
+                );
+            } else {
+                assert!(
+                    row_of(t, &owned_by(&w, g)).is_empty(),
+                    "`{t}`: no row may stay under the retired guest identity"
+                );
+            }
             if t != "export_bundle" {
                 assert_eq!(
                     row_of(t, &owned_by(&w, c)).len(),
