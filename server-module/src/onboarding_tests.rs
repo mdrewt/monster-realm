@@ -448,7 +448,7 @@ impl Ob<'_> {
     }
 
     /// The level of `who`'s lead: its owned `monster` row with the lowest party slot
-    /// (ih-2), asserted non-zero so an expected `lead_level` read from it is never a
+    /// (what `player.lead_level` mirrors), asserted non-zero so an expected `lead_level` read from it is never a
     /// vacuous 0.
     fn lead_level_of(&self, who: Identity) -> u8 {
         let level = self
@@ -1023,7 +1023,7 @@ fn a_kit_that_cannot_load_refuses_a_joiner_holding_the_marker_too_eo1_9() {
 /// Two identities join under different names, then a fresh identity joins through
 /// `join_game`: that join writes `player_handle` exactly once and leaves the joiner one
 /// handle row whose discriminator is non-zero and held by no other row; the joiner's
-/// new `player` row carries the same value and its starter's level (ih-2), and each earlier
+/// new `player` row carries the same value and its starter's level, and each earlier
 /// joiner's `player` row carries its own handle's value. The value is drawn from the
 /// table's sequence: after the last minted row is removed, a further fresh joiner is
 /// minted a value none of the earlier mints held.

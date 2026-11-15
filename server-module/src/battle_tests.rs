@@ -3057,11 +3057,11 @@ fn bn_disconnect_auto_flee_pays_nothing_bt17_2() {
 }
 
 // ===========================================================================
-// ih-2.2 — a battle write-back keeps `player.lead_level` on the lead's level
+// A battle write-back keeps `player.lead_level` on the lead's level
 //
 // Each case drives `write_back_battle_results` over `bn_world` with `player` registered
 // writable. XP is the shipped formula over the battle-side levels (`bn_mon`, level 7) and
-// the species-2 loser (BST 300): every conscious winner gains `IH2_GAIN` per win. Stored
+// the species-2 loser (BST 300): every conscious winner gains `ih2_gain()` per win. Stored
 // levels follow `level_for_xp` (level = the cube root floor of xp), so a monster seeded one
 // XP short of its next level levels up on a win and one seeded at its level's floor does
 // not. The lead (12, slot 0) has a higher id than the non-lead (11, slot 1), and the two

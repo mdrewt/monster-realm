@@ -1794,7 +1794,7 @@ fn ts2_auto_cancel_not_on_a_sibling_session() {
 }
 
 // ===========================================================================
-// ih-2.3 / ih-2.5 — a party change keeps `player.lead_level` on the lead's level
+// A party change keeps `player.lead_level` on the lead's level
 //
 // Every case runs the shipped `set_party_slot` on `dw_world` (which registers `player`
 // writable). Each owner's monsters carry distinct levels, and the lead's slot order

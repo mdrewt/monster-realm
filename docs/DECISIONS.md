@@ -1045,8 +1045,11 @@ minted a different value. The deletion cascade erases the handle and zeroes `dis
 `lead_level` on the surviving `player` row beside the tombstone name. The owner's data export
 carries the handle row. A mint the datastore refuses (an exhausted sequence) refuses the join
 with `handle unavailable` before any presence row is written. `player.lead_level` is the second
-public column on that row, for the level of the owner's lead party monster: `join_game` writes 0
-(which reads as no party), the cascade zeroes it, and nothing else writes it.
+public column on that row: the stored level of the owner's lead party monster, 0 with no party.
+`battle::refresh_lead_level` keeps it equal to that level and writes the row only when the value
+differs. The dual-write seam (`monster_mgmt::update_monster_synced`) calls it when a write
+changes a monster's `level` or `party_slot`; `join_game` and the session-trade transfer
+(`trading_session::apply_swap`) call it themselves. The cascade zeroes it.
 
 **Why.** The `player` row is deleted at every disconnect and is not re-keyed by the claim, so a
 value stored only there would be re-minted each session. A public `player_handle` would list
@@ -1054,15 +1057,20 @@ every identity that ever joined, offline ones included; the mirror shows a tag o
 owner is online. `profile` rows exist only after a first rated game. A sequence value needs no
 collision retry and cannot be forged to match another player's; the accepted cost is that a tag
 reveals roughly how many identities joined before it. Zeroing the mirror at deletion keeps the
-tombstoned row from being linked back to a tag another player saw.
+tombstoned row from being linked back to a tag another player saw. The lead level is a stored
+column, not a view: another player's monsters are private (`monster_pub` is read only through
+the owner's view), and a view over `monster` evaluated for each subscriber would be recomputed
+on every monster change.
 
 **Rules out.** Enforced-unique names. Deriving the tag from the identity (it would change at the
 claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle
 table or a view that serves another player's handle. Reissuing an erased value. Minting anywhere
-but `join_game`'s success path (a refused or deletion-gated join mints nothing). Accepted
-consequence: the `u32` sequence is one finite, shared resource (about 4.3 billion identities)
-that guests, who are never reaped, also draw from; once it is spent every identity without a
-handle is refused at join.
+but `join_game`'s success path (a refused or deletion-gated join mints nothing). Changing a
+monster's `level` or `party_slot` outside the dual-write seam without calling
+`battle::refresh_lead_level`: the column would stay stale until the owner's next seam write or
+join. Accepted consequence: the `u32` sequence is one finite, shared resource (about 4.3 billion
+identities) that guests, who are never reaped, also draw from; once it is spent every identity
+without a handle is refused at join.
 
 ## Account deletion and data export
 

@@ -4394,7 +4394,7 @@ mod nh {
         }
     }
 
-    // --- ih-2.1: a join writes the lead monster's level onto the player row ----
+    // --- a join writes the lead monster's level onto the player row ----------
 
     /// The movement world plus what a join needs beyond it (as `sr11_world`, with no
     /// monster seeded): an auto-inc `character` key, the starter-kit tables and the

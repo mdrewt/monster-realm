@@ -1008,7 +1008,7 @@ fn s2_base(fx: &Fixture) -> S2World<'_> {
     let offers = fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator);
     let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
     let w = S2World {
-        // Writable since ih-2: an executed swap refreshes both sides' `player.lead_level`.
+        // Writable: an executed swap refreshes both sides' `player.lead_level`.
         players: fx
             .table::<Player>("player", "identity", |r| r.identity)
             .writable(),
@@ -1051,6 +1051,10 @@ fn s2_std(fx: &Fixture) -> S2World<'_> {
 
 impl S2World<'_> {
     fn player_only(&self, who: Identity) {
+        self.player_leading(who, 0);
+    }
+    /// `who`'s `player` row (no character), holding `lead_level`.
+    fn player_leading(&self, who: Identity, lead_level: u8) {
         self.players.seed(&Player {
             identity: who,
             entity_id: entity_of(who),
@@ -1058,7 +1062,7 @@ impl S2World<'_> {
             online: true,
             last_input_seq: 0,
             discriminator: 0,
-            lead_level: 0,
+            lead_level,
         });
     }
     fn place(&self, who: Identity, zone_id: u32, tile_x: i32, tile_y: i32) {
@@ -4585,7 +4589,7 @@ fn ts2_auto_cancel_on_legacy_swap() {
 }
 
 // ===========================================================================
-// ih-2.4 — an executed session swap keeps both sides' `player.lead_level` on
+// An executed session swap keeps both sides' `player.lead_level` on
 // their leads' levels
 //
 // Each case joins alice and bob on the shared tile with `player` rows already holding
@@ -4598,15 +4602,7 @@ fn ts2_auto_cancel_on_legacy_swap() {
 /// `who` joined on the shared tile (zone 1, 10, 10), its `player` row holding
 /// `lead_level`.
 fn ih2_join(w: &S2World<'_>, who: Identity, lead_level: u8) {
-    w.players.seed(&Player {
-        identity: who,
-        entity_id: entity_of(who),
-        name: String::new(),
-        online: true,
-        last_input_seq: 0,
-        discriminator: 0,
-        lead_level,
-    });
+    w.player_leading(who, lead_level);
     w.place(who, 1, 10, 10);
 }
 
