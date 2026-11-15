@@ -170,6 +170,11 @@ test.describe
       // B2 (ctl-8h): the failure copy is visible to the player in this phase too.
       await expect(page.locator('#claim-title')).toBeVisible();
       await expect(page.locator('#claim-body')).toBeVisible();
+      // The retry is still offered, labelled with the provider.
+      await expect(page.locator('#claim-signin-btn')).toBeVisible();
+      await expect(page.locator('#claim-signin-btn')).toHaveText(
+        tf('claim.signInWithProvider', { provider: E2E_OIDC_PROVIDER_NAME }),
+      );
 
       // The code is minted BEFORE the provider is contacted (connection.ts startSignIn) and
       // survives the failure (claimModel 'sign-in-failed' never deletes it).
