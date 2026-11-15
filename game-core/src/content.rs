@@ -2540,7 +2540,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// load_species() after migration returns the same rows as
-    /// parse_species_parts(SPECIES_GOLDEN) as a prefix.
+    /// parse_species_parts(&[("inline", SPECIES_GOLDEN)]) as a prefix.
     ///
     /// Kills: an impl that drops species, reverses them, or loads from a
     /// different file entirely.
@@ -2586,7 +2586,7 @@ mod tests {
     }
 
     /// load_zones() after migration returns the same rows as
-    /// parse_zones_parts(ZONES_GOLDEN) as a prefix.
+    /// parse_zones_parts(&[("inline", ZONES_GOLDEN)]) as a prefix.
     ///
     /// Kills: an impl that drops zones or reorders them.
     #[test]
@@ -2631,7 +2631,7 @@ mod tests {
     }
 
     /// load_encounters() after migration returns the same rows as
-    /// parse_encounters_parts(ENCOUNTERS_GOLDEN) as a prefix.
+    /// parse_encounters_parts(&[("inline", ENCOUNTERS_GOLDEN)]) as a prefix.
     ///
     /// Kills: an impl that drops encounter tables or reorders them.
     #[test]
