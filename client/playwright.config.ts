@@ -8,6 +8,9 @@ import { defineConfig } from '@playwright/test';
 const e2ePort = process.env.MR_E2E_PORT ?? '5290';
 const e2eBaseUrl = `http://localhost:${e2ePort}`;
 
+/** The provider name the e2e client build shows on the Account section's Sign In button. */
+export const E2E_OIDC_PROVIDER_NAME = 'Placeholder ID';
+
 export default defineConfig({
   testDir: './e2e',
   // A stray `test.only()` must fail CI (never silently skip all other e2e specs).
@@ -54,6 +57,12 @@ export default defineConfig({
     // Never reuse a foreign server (another project may hold a common port).
     reuseExistingServer: false,
     timeout: 60_000,
+    // Added to the inherited environment. The issuer is the server module's own fail-closed
+    // placeholder: the Account section offers Sign In, and no sign-in can complete.
+    env: {
+      VITE_MR_OIDC_ISSUER: 'https://auth.monster-realm.invalid/',
+      VITE_MR_OIDC_PROVIDER_NAME: E2E_OIDC_PROVIDER_NAME,
+    },
   },
   // Two projects, and the pair is
   // TWO-SIDED ON PURPOSE — each side is mandatory for a different reason:

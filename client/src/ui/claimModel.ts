@@ -7,7 +7,7 @@
 // this model receives the nudge flag as a boolean INPUT so it stays pure. The AUTHORITATIVE join
 // veto is connection.ts's `.onApplied` (G18); this model is its UI-visible mirror.
 
-import { t } from './i18n/resolver';
+import { t, tf } from './i18n/resolver';
 
 /** The four-way reject taxonomy (AUTH-54), keyed on the EXACT strings complete_guest_claim
  *  returns (server-module/src/accounts.rs). The name of each bucket IS its consequence. */
@@ -277,6 +277,20 @@ export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep 
   }
 }
 
+/** Whether this build can start a sign-in, and under which provider's name. */
+export type SignInOffer =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'provider'; readonly name: string };
+
+/** The offer for a build's OIDC issuer and provider name. `issuer` is the value `connect`
+ *  receives: empty means the build has no issuer for this server, so nothing is offered. A build
+ *  that names no provider shows the issuer string. Exact string tests: the OIDC flow is what
+ *  refuses an issuer it cannot use. */
+export function signInOffer(issuer: string, providerName: string): SignInOffer {
+  if (issuer === '') return { kind: 'none' };
+  return { kind: 'provider', name: providerName === '' ? issuer : providerName };
+}
+
 /** Which of the overlay's five action buttons the player can operate right now. */
 export interface ClaimActions {
   readonly signIn: boolean;
@@ -294,12 +308,15 @@ export interface ClaimViewModel {
   readonly nudge: string | undefined;
   readonly feedback: string | undefined;
   readonly actions: ClaimActions;
+  /** The Sign In button's text; undefined when the build offers no sign-in. */
+  readonly signInLabel: string | undefined;
 }
 
-/** The operable buttons. Sign in is offered from the prompt and after a failed sign-in; decline
- *  whenever a claim can still be given up (the join veto is up); declining is two-step, so an
- *  armed decline offers ONLY confirm / cancel; join exactly when the veto is lifted. */
-function claimActions(state: ClaimModelState): ClaimActions {
+/** The operable buttons. Sign in is offered only by a build with a provider, from the prompt and
+ *  after a failed sign-in; decline whenever a claim can still be given up (the join veto is up);
+ *  declining is two-step, so an armed decline offers ONLY confirm / cancel; join exactly when the
+ *  veto is lifted. */
+function claimActions(state: ClaimModelState, offer: SignInOffer): ClaimActions {
   if (state.phase === 'hidden') {
     return {
       signIn: false,
@@ -312,6 +329,7 @@ function claimActions(state: ClaimModelState): ClaimActions {
   const armed = state.confirmPending;
   return {
     signIn:
+      offer.kind === 'provider' &&
       !armed &&
       !state.joinPermitted &&
       (state.phase === 'prompt' || state.phase === 'sign-in-failed'),
@@ -363,10 +381,11 @@ function signInFailedBody(reason: string | undefined): string {
   }
 }
 
-/** Pure projection into what the DOM shell renders. Title, body, confirm prompt and nudge are
- *  resolved HERE, at projection time (a module-level `t()` would freeze the boot locale);
- *  `feedback` arrives already resolved from `claimStep`. */
-export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
+/** Pure projection into what the DOM shell renders. Title, body, confirm prompt, nudge and the
+ *  Sign In label are resolved HERE, at projection time (a module-level `t()` would freeze the boot
+ *  locale); `feedback` arrives already resolved from `claimStep`. With no offer the prompt says
+ *  accounts are not available on this server, and no phase offers Sign In. */
+export function buildClaimViewModel(state: ClaimModelState, offer: SignInOffer): ClaimViewModel {
   let title: string;
   let body: string;
   switch (state.phase) {
@@ -388,6 +407,10 @@ export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
       body = copy.body;
       break;
     }
+    case 'prompt':
+      title = t('claim.pending.title');
+      body = offer.kind === 'none' ? t('claim.prompt.noProvider') : t('claim.pending.body');
+      break;
     default:
       title = t('claim.pending.title');
       body = t('claim.pending.body');
@@ -400,6 +423,10 @@ export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
     confirmPrompt: state.confirmPending ? t('claim.decline.confirmPrompt') : undefined,
     nudge: state.showFirstRunNudge ? t('claim.nudge') : undefined,
     feedback: state.feedback,
-    actions: claimActions(state),
+    actions: claimActions(state, offer),
+    signInLabel:
+      offer.kind === 'provider'
+        ? tf('claim.signInWithProvider', { provider: offer.name })
+        : undefined,
   };
 }
