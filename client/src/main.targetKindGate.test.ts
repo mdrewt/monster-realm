@@ -105,8 +105,10 @@ const EXPECTED: Record<TargetKind, { readonly telemetry: boolean; readonly signI
 const OTLP_ORIGIN = 'https://otlp.example:8443';
 /** The exporter URL the loader receives for OTLP_ORIGIN: the origin plus the OTLP metrics path. */
 const OTLP_EXPORTER_URL = 'https://otlp.example:8443/v1/metrics';
-/** The OIDC issuer and client id the build env carries; different from each other on purpose. */
-const OIDC_ISSUER = 'https://auth.example/realms/monster-realm';
+/** The OIDC issuer and client id the build env carries; different from each other on purpose.
+ *  The issuer ends in `/`, as real issuer URLs do, so a client that tidied the slash away before
+ *  handing it on (to `connect()` or to the Sign In label) fails the exact comparisons below. */
+const OIDC_ISSUER = 'https://auth.example/realms/monster-realm/';
 const OIDC_CLIENT_ID = 'monster-realm-web-client';
 
 /** The shell document for `kind`: a target that is not the development default. */

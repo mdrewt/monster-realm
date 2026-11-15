@@ -1592,14 +1592,29 @@ describe('claimModel sign-in offer: the build issuer decides whether Sign In is 
   it('signInOffer with an issuer and an empty provider name offers the issuer string byte for byte [ih-4.1]', () => {
     const issuer = 'https://auth.example.test/realms/mr?client=web#x';
     expect(signInOffer(issuer, '')).toStrictEqual({ kind: 'provider', name: issuer });
+    // Trailing slashes are part of the issuer: the name keeps every one of them.
+    expect(signInOffer('https://auth.monster-realm.invalid/', '')).toStrictEqual({
+      kind: 'provider',
+      name: 'https://auth.monster-realm.invalid/',
+    });
+    expect(signInOffer('https://auth.example//', '')).toStrictEqual({
+      kind: 'provider',
+      name: 'https://auth.example//',
+    });
     // Only the exact empty string is "no issuer": a single space is an issuer, shown as is.
     expect(signInOffer(' ', '')).toStrictEqual({ kind: 'provider', name: ' ' });
   });
 
   it('signInOffer over arbitrary strings offers none iff the issuer is empty, else the provider name or the issuer when the name is empty [ih-4.1]', () => {
     const maybeEmpty = fc.oneof(fc.constant(''), fc.string());
+    // One issuer arm ends in one or more slashes, the shape a real issuer URL has.
+    const issuerArb = fc.oneof(
+      fc.constant(''),
+      fc.string(),
+      fc.tuple(fc.string(), fc.constantFrom('/', '//', '///')).map(([head, tail]) => head + tail),
+    );
     fc.assert(
-      fc.property(maybeEmpty, maybeEmpty, (issuer, providerName) => {
+      fc.property(issuerArb, maybeEmpty, (issuer, providerName) => {
         const offer = signInOffer(issuer, providerName);
         if (issuer === '') {
           expect(offer).toStrictEqual({ kind: 'none' });
