@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Tier-2 validation for ops/observability/** — schema/syntax checks no string predicate can do.
+// Tier-2 validation for ops/observability/** — schema/syntax checks no string predicate can do,
+// plus the recording rules' `promtool test rules` unit test.
 //
 // Runs each upstream validator through THE PINNED IMAGE the stack actually deploys, so what is
 // checked is the exact version that will run. Every check is skip-guarded: if docker is absent
@@ -108,9 +109,10 @@ export const IMAGES = {
 
 /**
  * The non-vacuity floor: one check per pinned image, plus the three that are not image-pinned
- * (`docker compose config`, the Caddy image build, and `caddy validate`). DERIVED from IMAGES
- * rather than hand-typed, because a second hand-maintained constant is exactly the thing that
- * silently drifts down as checks are deleted.
+ * (`docker compose config`, the Caddy image build, and `caddy validate`). It is a floor, not the
+ * check count: the Prometheus image runs three checks, so a full run reports more. DERIVED from
+ * IMAGES rather than hand-typed, because a second hand-maintained constant is exactly the thing
+ * that silently drifts down as checks are deleted.
  */
 export const EXPECTED_MIN_CHECKS = Object.keys(IMAGES).length + 3;
 
@@ -233,6 +235,13 @@ function runDockerChecks() {
       'check',
       'rules',
       'rules/recording.rules.yml',
+    ]),
+    // The recording rules' behaviour over fixture series, beside their syntax check above.
+    inImage('promtool test rules', IMAGES.prometheus, [
+      'promtool',
+      'test',
+      'rules',
+      'rules/recording.rules.test.yml',
     ]),
     inImage('alloy fmt', IMAGES.alloy, ['alloy', 'fmt', 'alloy/config.alloy']),
     inImage('loki verify-config', IMAGES.loki, [
