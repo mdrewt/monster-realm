@@ -512,6 +512,43 @@ pub fn validate_shops(shops: &[ShopDef], items: &[ItemDef]) -> Result<(), String
 }
 
 // ===========================================================================
+// Starter kit (SCAFFOLD, eo-1 red phase)
+// ===========================================================================
+
+/// Prefix of the flags the server writes for itself; content may not name one.
+pub const SYSTEM_FLAG_PREFIX: &str = "sys:";
+
+/// True when `flag` is in the reserved server namespace.
+pub fn is_system_flag(flag: &str) -> bool {
+    flag.starts_with(SYSTEM_FLAG_PREFIX)
+}
+
+/// What an identity receives at its first join, beside the starter monster.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StarterKit {
+    pub currency: u64,
+    pub items: Vec<crate::quest::RewardItem>,
+}
+
+/// SCAFFOLD: no kit is embedded yet.
+///
+/// # Errors
+/// Always, until the kit lands.
+pub fn load_starter_kit() -> Result<StarterKit, String> {
+    Err("starter kit: not implemented".to_string())
+}
+
+/// SCAFFOLD: accepts every kit.
+///
+/// # Errors
+/// Never, until the rules land.
+pub fn validate_starter_kit(kit: &StarterKit, items: &[ItemDef]) -> Result<(), String> {
+    let _ = (kit, items);
+    Ok(())
+}
+
+// ===========================================================================
 // M14c embedded content — ability registry
 // ===========================================================================
 

@@ -33,6 +33,9 @@ static ITEMS: LazyLock<Result<Vec<game_core::ItemDef>, String>> =
 static HEAL_LOCATIONS: LazyLock<Result<Vec<game_core::HealLocationDef>, String>> =
     LazyLock::new(game_core::load_heal_locations);
 
+static STARTER_KIT: LazyLock<Result<game_core::StarterKit, String>> =
+    LazyLock::new(game_core::load_starter_kit);
+
 // bt-6: the five tactical sidecar registries (`game_core::tactics::content`).
 static TACTICS_SKILLS: LazyLock<Result<Vec<game_core::TacticsSkillDef>, String>> =
     LazyLock::new(game_core::load_tactics_skills);
@@ -100,6 +103,14 @@ pub(crate) fn cached_items() -> Result<&'static Vec<game_core::ItemDef>, String>
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
 pub(crate) fn cached_heal_locations() -> Result<&'static Vec<game_core::HealLocationDef>, String> {
     (*HEAL_LOCATIONS).as_ref().map_err(Clone::clone)
+}
+
+/// The starter kit: parsed once per process.
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_starter_kit() -> Result<&'static game_core::StarterKit, String> {
+    (*STARTER_KIT).as_ref().map_err(Clone::clone)
 }
 
 /// `tactics_skills` sidecar registry: parsed once per process.

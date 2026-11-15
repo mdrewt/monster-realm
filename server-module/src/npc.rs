@@ -604,6 +604,20 @@ pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
+// --- Starter marker (SCAFFOLD, eo-1 red phase) ------------------
+
+/// The reserved flag that records an identity's once-only starter grant.
+pub(crate) const STARTER_CLAIMED_FLAG: &str = "sys:starter_claimed";
+
+pub(crate) fn starter_claimed(ctx: &ReducerContext, owner: Identity) -> bool {
+    let _ = (ctx, owner);
+    false
+}
+
+pub(crate) fn mark_starter_claimed(ctx: &ReducerContext, owner: Identity) {
+    let _ = (ctx, owner);
+}
+
 // --- M21 guest→account re-key ----------------------------------
 
 /// Re-key both NPC-state tables owned by `from` onto `to`: `player_quest`

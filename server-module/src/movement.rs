@@ -199,6 +199,16 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "join_game")?;
+    join_with_kit(ctx, name, crate::content_cache::cached_starter_kit())
+}
+
+/// SCAFFOLD (eo-1 red phase): today's join; the kit is ignored.
+pub(crate) fn join_with_kit(
+    ctx: &ReducerContext,
+    name: String,
+    kit: Result<&game_core::StarterKit, String>,
+) -> Result<(), String> {
+    let _ = kit;
     let me = ctx.sender();
     let name = validate_name(&name).inspect_err(|e| log_reject("join_game", me, e))?;
     if ctx.db.player().identity().find(me).is_some() {

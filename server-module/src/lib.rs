@@ -34,6 +34,7 @@ mod monster_mgmt;
 mod movement;
 mod npc;
 mod observability;
+mod onboarding;
 mod playtest;
 mod privacy;
 mod pvp;
