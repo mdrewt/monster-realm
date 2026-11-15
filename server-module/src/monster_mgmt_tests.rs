@@ -718,6 +718,16 @@ fn dw_insert_sites() {
             .scannable()
             .unique()
             .auto_inc(|r| r.id, |r, id| r.id = id);
+        // The joiner holds no starter marker, so the join also grants the starter kit:
+        // `dw_world` opens `inventory` and `player_wallet`; the marker is written here.
+        let _ = fx
+            .table::<crate::schema::PlayerDialogueStateRow>(
+                "player_dialogue_state",
+                "owner_identity",
+                |r| r.owner_identity,
+            )
+            .writable()
+            .unique();
         // An earlier character, so the new one's auto-inc id is not the default 0 or 1.
         characters.seed(&Character {
             entity_id: 40,

@@ -70,7 +70,8 @@ import { sqlRows } from './stdb';
 //     E1 (a KO would pay XP, level the starter to 8 and recompute its seeded stats before E2).
 //   - E2: retired "`outcome-text` reads Victory!" → `fightToOutcome` by buttons → the results
 //     title is the victory string (catalog `battle.outcome.victory`), the server's battle row is
-//     `SideAWins`, the box shows Lv8 (the XP grant) and the wallet is credited (SQL).
+//     `SideAWins`, the box shows Lv8 (the XP grant) and the wallet is credited (SQL): its balance
+//     rises above the one read before E2's battles (the starter kit's 200 is already there).
 //
 // SEEDING (owner SQL, the recruit / wallet-balance precedent — no reducer is page-callable). The
 // starter is raised to level 7 with xp = 8^3 - 1, so ANY win levels it to 8 — a VISIBLE XP grant in
@@ -831,6 +832,21 @@ test.describe
       expect(Number(seeded?.stat_attack), 'the starter row reads back the attack seed').toBe(
         SEED_ATTACK,
       );
+      // The wallet BEFORE the battles: every identity's first join writes the starter kit's 200
+      // (earlier tests' battles may have added KO pay), so a credit is a rise from this reading,
+      // never merely a positive balance.
+      const walletBalance = (label: string): number => {
+        const row = sqlRows(sql('SELECT * FROM player_wallet', label), label).find(
+          (r) => normId(r.owner_identity ?? '') === normId(identity),
+        );
+        if (row === undefined) throw new Error(`${label}: the player owns no player_wallet row`);
+        return Number((row.balance ?? '').trim());
+      };
+      const balanceBefore = walletBalance('E2 before');
+      expect(
+        Number.isInteger(balanceBefore),
+        `E2: the wallet read before the battles is a whole balance (got ${balanceBefore})`,
+      ).toBe(true);
       let won = false;
       for (let battle = 0; battle < MAX_WIN_BATTLES && !won; battle += 1) {
         const start = await huntEncounter(page, `E2 battle ${battle}`);
@@ -869,10 +885,10 @@ test.describe
         (r) => r.monster_id === monsterId,
       );
       expect(Number(mon?.xp), 'the win must add XP on top of the seed').toBeGreaterThan(SEED_XP);
-      const wallet = sqlRows(sql('SELECT * FROM player_wallet', 'E2'), 'E2').find(
-        (r) => normId(r.owner_identity ?? '') === normId(identity),
-      );
-      expect(Number(wallet?.balance), 'the win must credit currency').toBeGreaterThan(0);
+      expect(
+        walletBalance('E2'),
+        `the win must credit currency: the balance rises above the ${balanceBefore} read before the battles`,
+      ).toBeGreaterThan(balanceBefore);
 
       // Visible XP: the box card now reads Lv8. The results already advanced to the world base
       // (throughResults), so B opens Monsters through the main menu.

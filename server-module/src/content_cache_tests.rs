@@ -400,3 +400,42 @@ fn cached_heal_locations_ptr_eq_second_call() {
          LazyLock is not caching (the Vec was re-allocated or re-parsed on the second call)"
     );
 }
+
+// ===========================================================================
+// Starter-kit cache
+// ===========================================================================
+
+/// `cached_starter_kit()` returns exactly what `game_core::load_starter_kit()`
+/// returns: the shipped 200 gold, 2 of item 1 and 1 of item 3.
+///
+/// `StarterKit` derives `PartialEq + Eq`.
+///
+/// Wrong impl killed: a static over another loader, a default or empty kit.
+#[test]
+fn cached_starter_kit_matches_load() {
+    let cached = cached_starter_kit().expect("cached_starter_kit() must succeed");
+    let loaded = game_core::load_starter_kit().expect("game_core::load_starter_kit() must succeed");
+    assert_eq!(
+        *cached, loaded,
+        "cached_starter_kit() data does not match game_core::load_starter_kit()"
+    );
+    let items: Vec<(u32, u32)> = cached.items.iter().map(|i| (i.item_id, i.qty)).collect();
+    assert_eq!(
+        (cached.currency, items),
+        (200, vec![(1, 2), (3, 1)]),
+        "the cached kit is the shipped kit"
+    );
+}
+
+/// Two successive calls to `cached_starter_kit()` return the SAME `&'static`.
+///
+/// Wrong impl killed: an accessor that re-parses the kit on every call.
+#[test]
+fn cached_starter_kit_ptr_eq_second_call() {
+    let first = cached_starter_kit().expect("first call must succeed");
+    let second = cached_starter_kit().expect("second call must succeed");
+    assert!(
+        std::ptr::eq(first, second),
+        "cached_starter_kit() returned different pointers on two calls — LazyLock is not caching"
+    );
+}

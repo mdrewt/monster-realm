@@ -190,15 +190,25 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
     ctx.db.last_position().owner_identity().delete(owner);
 }
 
-/// Join: one `player` + one `character` + its `move_intent` row + one starter `monster`
-/// (idempotent: a returning player gets character+player only, not a second
-/// monster). The character stands where the account's last one stood when it
-/// disconnected (`take_start`), or on the spawn. Rejects a double-join within
-/// the same session.
+/// Join: one `player` + one `character` + its `move_intent` row, and the starter grant
+/// `onboarding` decides (the starter kit and the starter `monster`, once per identity: an
+/// identity whose starter marker is set gets the three presence rows and nothing else).
+/// The character stands where the account's last one stood when it disconnected
+/// (`take_start`), or on the spawn. Rejects a double-join within the same session.
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "join_game")?;
+    join_with_kit(ctx, name, crate::content_cache::cached_starter_kit())
+}
+
+/// `join_game` over the starter kit the content cache answered. A kit that failed to load
+/// refuses the join before anything is written.
+pub(crate) fn join_with_kit(
+    ctx: &ReducerContext,
+    name: String,
+    kit: Result<&game_core::StarterKit, String>,
+) -> Result<(), String> {
     let me = ctx.sender();
     let name = validate_name(&name).inspect_err(|e| log_reject("join_game", me, e))?;
     if ctx.db.player().identity().find(me).is_some() {
@@ -206,6 +216,7 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         log_reject("join_game", me, &e);
         return Err(e);
     }
+    let kit = kit.inspect_err(|e| log_reject("join_game", me, e))?;
     let (zone_id, pos, facing) = take_start(ctx, me);
     let ch = ctx.db.character().insert(Character {
         entity_id: 0,
@@ -234,15 +245,9 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     });
     arm_zone_tick(ctx, zone_id);
 
-    // Grant starter if this identity has no monsters yet (idempotent on reconnect).
-    let has_monsters = ctx
-        .db
-        .monster()
-        .owner_identity()
-        .filter(me)
-        .next()
-        .is_some();
-    if !has_monsters {
+    // The starter grant: the kit is granted (or skipped) inside `onboard`, the monster here.
+    let grant = crate::onboarding::onboard(ctx, me, kit);
+    if grant.monster {
         let Some(species) = ctx.db.species_row().id().find(STARTER_SPECIES_ID) else {
             let e =
                 format!("starter species {STARTER_SPECIES_ID} not found — content sync required");

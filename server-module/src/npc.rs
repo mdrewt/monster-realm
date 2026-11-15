@@ -131,7 +131,7 @@ fn write_player_dialogue_state(ctx: &ReducerContext, owner: Identity, state: &Pl
 /// The item and currency credits one call is about to make, summed so the cap checks see
 /// the whole reward rather than one grant at a time.
 #[derive(Default)]
-struct RewardCredits {
+pub(crate) struct RewardCredits {
     /// Quantity per item id. The sums saturate, and a saturated sum is over any cap.
     items: BTreeMap<u32, u32>,
     currency: u64,
@@ -139,14 +139,14 @@ struct RewardCredits {
 
 impl RewardCredits {
     /// A zero quantity credits nothing (`grant_item` skips it), so it asks for no room.
-    fn add_item(&mut self, item_id: u32, qty: u32) {
+    pub(crate) fn add_item(&mut self, item_id: u32, qty: u32) {
         if qty > 0 {
             let total = self.items.entry(item_id).or_default();
             *total = total.saturating_add(qty);
         }
     }
 
-    fn add_currency(&mut self, amount: u64) {
+    pub(crate) fn add_currency(&mut self, amount: u64) {
         self.currency = self.currency.saturating_add(amount);
     }
 }
@@ -154,7 +154,7 @@ impl RewardCredits {
 /// Refuse unless every credit in `credits` fits under `owner`'s stack and balance caps.
 /// Reads only. The counts are raw: a trade lock holds units back from spending, it makes
 /// no room.
-fn check_reward_headroom(
+pub(crate) fn check_reward_headroom(
     ctx: &ReducerContext,
     owner: Identity,
     credits: &RewardCredits,
@@ -604,6 +604,45 @@ pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
+// --- Starter marker ---------------------------------------------
+
+/// The flag that records an identity's once-only starter grant (the starter monster and
+/// the starter kit). It lives in the owner's private `player_dialogue_state.flags`, in the
+/// reserved `sys:` namespace: `game_core::validate_npc_content` refuses content that names
+/// such a flag, so no dialogue or quest can test, set or clear it.
+pub(crate) const STARTER_CLAIMED_FLAG: &str = "sys:starter_claimed";
+
+/// True if `owner` has taken its starter grant. Read-only.
+pub(crate) fn starter_claimed(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db
+        .player_dialogue_state()
+        .owner_identity()
+        .find(owner)
+        .is_some_and(|row| row.flags.iter().any(|f| f == STARTER_CLAIMED_FLAG))
+}
+
+/// Record that `owner` has taken its starter grant. Every other flag and the done-quest
+/// history are kept; a marker already set is left as it is.
+pub(crate) fn mark_starter_claimed(ctx: &ReducerContext, owner: Identity) {
+    match ctx.db.player_dialogue_state().owner_identity().find(owner) {
+        Some(mut row) => {
+            if !row.flags.iter().any(|f| f == STARTER_CLAIMED_FLAG) {
+                row.flags.push(STARTER_CLAIMED_FLAG.to_string());
+                ctx.db.player_dialogue_state().owner_identity().update(row);
+            }
+        }
+        None => {
+            ctx.db
+                .player_dialogue_state()
+                .insert(PlayerDialogueStateRow {
+                    owner_identity: owner,
+                    flags: vec![STARTER_CLAIMED_FLAG.to_string()],
+                    done_quests: Vec::new(),
+                });
+        }
+    }
+}
+
 // --- M21 guest→account re-key ----------------------------------
 
 /// Re-key both NPC-state tables owned by `from` onto `to`: `player_quest`
@@ -617,6 +656,13 @@ pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
 /// in place (collect ids first). `player_dialogue_state.owner_identity`
 /// IS the PK → delete-then-insert. The destination owns zero rows in either
 /// table, so neither path can collide.
+///
+/// The dialogue row is the one thing the claim does not move whole. `to` receives every
+/// flag and the done-quest history of `from`'s row. `from` is always left a row: the flags
+/// of the reserved `sys:` namespace it held, the starter marker whether or not it held it,
+/// and a copy of the done quests. The retired guest token can still call `join_game`;
+/// without the marker it would be granted a second starter and kit, and without the
+/// history it could redo a quest.
 pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity) {
     let pq_ids: Vec<u64> = ctx
         .db
@@ -631,8 +677,18 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
             ctx.db.player_quest().pq_id().update(q);
         }
     }
-    if let Some(row) = ctx.db.player_dialogue_state().owner_identity().find(from) {
+    let moved = ctx.db.player_dialogue_state().owner_identity().find(from);
+    let mut kept: Vec<String> = Vec::new();
+    let mut done_quests: Vec<String> = Vec::new();
+    if let Some(row) = moved {
         ctx.db.player_dialogue_state().owner_identity().delete(from);
+        kept.extend(
+            row.flags
+                .iter()
+                .filter(|f| game_core::is_system_flag(f))
+                .cloned(),
+        );
+        done_quests.clone_from(&row.done_quests);
         ctx.db
             .player_dialogue_state()
             .insert(PlayerDialogueStateRow {
@@ -641,6 +697,16 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
                 done_quests: row.done_quests,
             });
     }
+    if !kept.iter().any(|f| f == STARTER_CLAIMED_FLAG) {
+        kept.push(STARTER_CLAIMED_FLAG.to_string());
+    }
+    ctx.db
+        .player_dialogue_state()
+        .insert(PlayerDialogueStateRow {
+            owner_identity: from,
+            flags: kept,
+            done_quests,
+        });
 }
 
 /// delete every NPC-progress row

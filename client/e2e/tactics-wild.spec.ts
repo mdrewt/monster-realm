@@ -70,6 +70,8 @@ const SEED_HP = 300;
 const RECRUIT_SEED_HP = 120;
 const SEED_DEFENSE = 250;
 const BAIT_ITEM_ID = 1;
+/** The starter kit's bait: every identity's first join grants one stack of Lure Berry (item 1) x2. */
+const KIT_BAIT_COUNT = 2;
 /** The wild is recruited (not hit again) at or under this share of its max HP. */
 const WEAK_PCT = 45;
 /** Battle-1 restarts (a KO'd wild, a kiting wild, a timed-out loop) before the test gives up. */
@@ -502,10 +504,33 @@ test.describe
       expect(Number(row?.stat_defense), 'the starter row reads back the defence seed').toBe(
         SEED_DEFENSE,
       );
+      // The bait seed raises the starter kit's ONE bait stack (Lure Berry x2, granted at join) by
+      // UPDATE of its row: one stack per owner and item is a server invariant, and the recruit's
+      // consume reads the first row of the item.
+      const baitRows = (label: string): Record<string, string>[] =>
+        sqlRows(ownerSql('SELECT * FROM inventory', label), label).filter(
+          (r) =>
+            normId(r.owner_identity ?? '') === normId(identity) &&
+            (r.item_id ?? '').trim() === `${BAIT_ITEM_ID}`,
+        );
+      const kitBait = baitRows('seed bait');
+      expect(
+        kitBait.map((r) => (r.count ?? '').trim()),
+        `the starter kit's one bait stack of ${KIT_BAIT_COUNT} before the seed`,
+      ).toEqual([`${KIT_BAIT_COUNT}`]);
+      const kitBaitInvId = (kitBait[0]?.inv_id ?? '').trim();
+      if (!/^[0-9]+$/.test(kitBaitInvId)) {
+        throw new Error(`seed bait: the kit bait stack has a non-decimal inv_id ${kitBaitInvId}`);
+      }
       ownerSql(
-        `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${normId(identity)}, ${BAIT_ITEM_ID}, ${BAIT_SEED})`,
+        `UPDATE inventory SET count = ${BAIT_SEED} WHERE inv_id = ${kitBaitInvId}`,
         'seed bait',
       );
+      // Read-back: an UPDATE that matched no row leaves the kit's 2 and fails here.
+      expect(
+        baitRows('seed bait read-back').map((r) => (r.count ?? '').trim()),
+        'the bait stack reads back the seed, still one stack',
+      ).toEqual([`${BAIT_SEED}`]);
       await expect
         .poll(async () => (await readOwnMonsters(page))[0]?.maxHp, { timeout: 15_000 })
         .toBe(SEED_HP);

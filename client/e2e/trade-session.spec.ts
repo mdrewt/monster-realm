@@ -53,10 +53,10 @@ import {
 //     (`update_monster_synced` → `cancel_sessions_listing`) deletes every session listing the
 //     monster once it is no longer in the party (the auto-cancel, ts-3.6).
 //
-// A FRESH IDENTITY HAS NO WALLET ROW (wallet-balance.spec.ts WORLD FACTS: join_game grants a
-// starter monster, no gold, no items). The coins leg therefore adapts: the balance is read from the
-// editor's own coins row, a side offers one coin only when its balance allows, and the post-trade
-// balances are read back (from a second session's coins rows) only when a coin was offered.
+// A FRESH IDENTITY HOLDS THE STARTER KIT (the first join_game grants a starter monster, a wallet
+// of 200, Lure Berry x2 and Antidote x1). So each editor's own coins row reads a balance of 200, A
+// offers one coin beside its monster, B offers none, and the post-trade balances are read back
+// (from a second session's coins rows): A 200 - 1 = 199, B 200 + 1 = 201, the total 400 kept.
 
 // The `__mrTrade` session functions, exactly as the ts-3 plan's hook contract states them (bigints
 // as decimal strings). The legacy functions the hook keeps are not used here.
@@ -128,6 +128,8 @@ const PROMPT_CONFIRM =
   'Confirm this trade? A completed trade cannot be undone. Traded monsters lose their trust and quality time with you, even if traded back.';
 const PROMPT_CANCEL = 'Cancel this trade?';
 const COINS_ROW = /^Coins: (\d+) of (\d+)$/;
+/** The starter kit's balance: every identity's first join grants 200. */
+const KIT_BALANCE = 200n;
 
 async function gameReady(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -539,14 +541,13 @@ test.describe
         const coinsA = await readCoins(pageA, 'A');
         const coinsB = await readCoins(pageB, 'B');
         expect(coinsA.amount, 'A: an empty draft offers no coin').toBe(0n);
+        expect(coinsA.balance, 'A: a fresh identity holds the starter kit 200').toBe(KIT_BALANCE);
+        expect(coinsB.balance, 'B: a fresh identity holds the starter kit 200').toBe(KIT_BALANCE);
         await draftMonsterIn(pageA, monA.monsterId, 'A');
-        let offeredA = 0n;
-        if (coinsA.balance > 0n) {
-          await cursorTo(pageA, 'coins', 'A');
-          await pressButton(pageA, 'A');
-          await expect.poll(async () => (await readCoins(pageA, 'A')).amount).toBe(1n);
-          offeredA = 1n;
-        }
+        await cursorTo(pageA, 'coins', 'A');
+        await pressButton(pageA, 'A');
+        await expect.poll(async () => (await readCoins(pageA, 'A')).amount).toBe(1n);
+        const offeredA = 1n;
         await sendOffer(pageA, 'A');
         await expect(pageA.locator(sideMonster('mine', monA.monsterId)), 'A: stored').toHaveCount(
           1,
@@ -560,14 +561,11 @@ test.describe
           { timeout: 15_000 },
         );
 
+        // B offers its monster and no coin: one coin leg, A's, so the read-back below tells the
+        // giver from the receiver.
         await draftMonsterIn(pageB, monB.monsterId, 'B');
-        let offeredB = 0n;
-        if (offeredA === 0n && coinsB.balance > 0n) {
-          await cursorTo(pageB, 'coins', 'B');
-          await pressButton(pageB, 'A');
-          await expect.poll(async () => (await readCoins(pageB, 'B')).amount).toBe(1n);
-          offeredB = 1n;
-        }
+        const offeredB = 0n;
+        expect((await readCoins(pageB, 'B')).amount, 'B: its draft offers no coin').toBe(offeredB);
         await sendOffer(pageB, 'B');
         await expect(pageB.locator(sideMonster('mine', monB.monsterId)), 'B: stored').toHaveCount(
           1,
@@ -702,28 +700,30 @@ test.describe
         expect(holdings(aAfter).inventory, 'A: no item moved').toEqual(holdings(aBefore).inventory);
         expect(holdings(bAfter).inventory, 'B: no item moved').toEqual(holdings(bBefore).inventory);
 
-        // Coins: read back from a second session's coins rows, only when a coin moved (a fresh
-        // identity has no wallet, so on a fresh world neither side can offer one).
-        if (offeredA + offeredB > 0n) {
-          await openFaceToFace(pageA, 'Trade', undefined, pageB);
-          const second = await waitSession(pageA, idA, idB, 'balance read-back');
-          await expect(pageA.locator(EDITOR)).toHaveAttribute('data-session-id', second.sessionId);
-          await waitSession(pageB, idB, idA, 'balance read-back');
-          await openFromBanner(pageB, second.sessionId, 'B balance read-back');
-          const afterA = await readCoins(pageA, 'A after');
-          const afterB = await readCoins(pageB, 'B after');
-          expect(afterA.balance, 'A: coins moved by exactly the offer').toBe(
-            coinsA.balance - offeredA + offeredB,
-          );
-          expect(afterB.balance, 'B: coins moved by exactly the offer').toBe(
-            coinsB.balance - offeredB + offeredA,
-          );
-          expect(afterA.balance + afterB.balance, 'the coin total is unchanged').toBe(
-            coinsA.balance + coinsB.balance,
-          );
-          await answerPrompt(pageA, 'cancel', 'A cancels the read-back session');
-          await waitNoSession(pageA, idA, idB, 'read-back cancelled');
-        }
+        // Coins: read back from a second session's coins rows. A gave one coin: 200 - 1 = 199;
+        // B received it: 200 + 1 = 201; the total stays 400.
+        await openFaceToFace(pageA, 'Trade', undefined, pageB);
+        const second = await waitSession(pageA, idA, idB, 'balance read-back');
+        await expect(pageA.locator(EDITOR)).toHaveAttribute('data-session-id', second.sessionId);
+        await waitSession(pageB, idB, idA, 'balance read-back');
+        await openFromBanner(pageB, second.sessionId, 'B balance read-back');
+        const afterA = await readCoins(pageA, 'A after');
+        const afterB = await readCoins(pageB, 'B after');
+        expect(afterA.balance, 'A: coins moved by exactly the offer').toBe(
+          coinsA.balance - offeredA + offeredB,
+        );
+        expect(afterB.balance, 'B: coins moved by exactly the offer').toBe(
+          coinsB.balance - offeredB + offeredA,
+        );
+        expect([afterA.balance, afterB.balance], 'A gave one coin to B: 199 and 201').toEqual([
+          KIT_BALANCE - 1n,
+          KIT_BALANCE + 1n,
+        ]);
+        expect(afterA.balance + afterB.balance, 'the coin total is unchanged').toBe(
+          coinsA.balance + coinsB.balance,
+        );
+        await answerPrompt(pageA, 'cancel', 'A cancels the read-back session');
+        await waitNoSession(pageA, idA, idB, 'read-back cancelled');
       } finally {
         await cancelLeftover(pageA, pageB, idA, idB);
       }

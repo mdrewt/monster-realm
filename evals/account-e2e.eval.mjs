@@ -133,15 +133,17 @@ export const M22S9_MANIFEST_TRANSCRIPTION =
 // cap moves only for a table no reducer writes (a drained table, which no
 // scenario can give a row); any other owned table that newly reads zero rows is
 // a seeding regression, fixed in the scenario and never by an allowlist entry.
-// The list holds nine tables: five that no live path writes (`battle_action`,
+// The list holds eight tables: five that no live path writes (`battle_action`,
 // `pvp_deadline_schedule` and `battle_wild`, retired in place by the tactical
 // cutover; `trade_offer` and `trade_offer_reaper_schedule`, drained tables: the
-// three offer reducers refuse every call and write nothing), one that SQL DML
-// cannot seed (`player_dialogue_state`), and three whose rows are swept or
-// consumed before the snapshot (`battle_queue`, `battle_deploy`,
-// `tactical_advance_sched`).
+// three offer reducers refuse every call and write nothing), and three whose
+// rows are swept or consumed before the snapshot (`battle_queue`,
+// `battle_deploy`, `tactical_advance_sched`).
 // Every other owned table is written ORGANICALLY by the S9 scenario and must
-// carry rows: A's one-monster party meets a pack of one on the grass (Active
+// carry rows: A's first `join_game` grants the starter kit and writes A's
+// `player_dialogue_state` row (the starter marker `sys:starter_claimed`) beside
+// its `inventory` stacks and `player_wallet` row (both reseeded below); A's
+// one-monster party meets a pack of one on the grass (Active
 // with auto-deploy, its unit waiting under the 300 s PvE window:
 // `battle_tactical`, `battle_unit`, `battle_clock`, `tactical_deadline_sched`
 // stand at the snapshot); battle1 — deployed by both sides to Active, then
@@ -160,10 +162,6 @@ export const S9_VACUITY_ALLOWLIST = [
   [
     'pvp_deadline_schedule',
     'no live writer since the bt-16 cutover: accept_challenge opens a tactical battle (its deploy window is the tactical deadline) and arms no 1v1 turn deadline; retired in place (bt-17 retires the table)',
-  ],
-  [
-    'player_dialogue_state',
-    'Vec<String> columns are not expressible in 2.8.1 SQL DML (probed: 400) and no zone-0 organic writer fits the e2e budget',
   ],
   [
     'battle_queue',
@@ -190,7 +188,7 @@ export const S9_VACUITY_ALLOWLIST = [
     'drain-only: no reducer arms a row (propose_trade refuses every call), and ScheduleAt is not DML-expressible, so no row exists to sweep; the disarm on deletion is proven natively by nh_trade_every_offer_deletion_site_disarms_its_reaper, and this eval proves schedule erasure on a real host on trade_session_reaper_schedule',
   ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 9;
+export const S9_VACUITY_ALLOWLIST_CAP = 8;
 // Erase-policy identity columns that are `Option<Identity>` (a sum type): the
 // snapshot counts them by battle reachability, never by an identity WHERE.
 export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
@@ -1385,8 +1383,15 @@ export function checkCascadeTruth(input) {
  * them). >500 playtest_event rows (batched) + wallet + inventory + conversation
  * + quest + heal_cooldown, plus the two column bumps that make the subject's
  * starter monster evolvable. player_dialogue_state is NOT here (Vec<String>
- * columns are not DML-expressible — probed 400; declared on the vacuity
- * allowlist instead).
+ * columns are not DML-expressible — probed 400): the subject's first
+ * `join_game` writes its row organically (the starter marker).
+ *
+ * The subject already owns the starter kit's inventory stacks (item 1 x2,
+ * item 3 x1) and wallet row from that join. One stack per (owner, item) is a
+ * server invariant (`item_count` and `consume_n` read the first row), so the
+ * inventory seed is DELETE-then-INSERT like the PK-on-owner tables: the
+ * subject's own stacks are deleted first, and the seeded rows are its only
+ * stacks.
  *
  * `aMonsterId`: the subject's own starter monster id, as a
  * DECIMAL STRING — the driver emits it through the `S9-presence-ready` payload
@@ -1428,11 +1433,14 @@ export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId, batt
   }
   const stmts = [];
   // The three PK-on-owner tables are DELETE-then-INSERT: the subject may already
-  // own a row (e.g. the wallet re-keyed onto A by the G22 guest claim), and SQL
-  // DML has no upsert.
+  // own a row (the wallet the starter kit wrote at join, or one re-keyed onto A
+  // by the G22 guest claim), and SQL DML has no upsert. The inventory is
+  // DELETE-then-INSERT too: the subject owns the kit's stacks of items 1 and 3,
+  // and a second stack of either would break one stack per (owner, item).
   stmts.push('DELETE FROM player_wallet WHERE owner_identity = ' + aHex);
   stmts.push('DELETE FROM heal_cooldown WHERE owner_identity = ' + aHex);
   stmts.push('DELETE FROM player_conversation WHERE owner_identity = ' + aHex);
+  stmts.push('DELETE FROM inventory WHERE owner_identity = ' + aHex);
   stmts.push('INSERT INTO player_wallet (owner_identity, balance) VALUES (' + aHex + ', 500)');
   stmts.push(
     'INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES ' +

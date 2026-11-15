@@ -1362,6 +1362,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "movement",
     "npc",
     "observability",
+    "onboarding",
     "playtest",
     "privacy",
     "pvp",

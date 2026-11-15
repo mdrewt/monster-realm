@@ -3521,6 +3521,33 @@ mod nh {
         assert_eq!(armed[0], first[0], "zone 3 keeps its row");
     }
 
+    /// The tables a marker-less joiner's starter kit writes: `inventory` (read by owner,
+    /// updated by `inv_id`, inserted with an auto-inc key), `player_wallet` and
+    /// `player_dialogue_state` (the starter marker).
+    fn sr10_kit_tables(fx: &Fixture) {
+        let _ = fx
+            .table::<crate::schema::Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
+        let _ = fx
+            .table_keyed::<crate::schema::Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+            .unique();
+        let _ = fx
+            .table::<crate::schema::PlayerWallet>("player_wallet", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .unique();
+        let _ = fx
+            .table::<crate::schema::PlayerDialogueStateRow>(
+                "player_dialogue_state",
+                "owner_identity",
+                |r| r.owner_identity,
+            )
+            .writable()
+            .unique();
+    }
+
     /// `join_game` arms the spawn zone; a second player joining the armed zone
     /// adds no row.
     ///
@@ -3532,7 +3559,9 @@ mod nh {
         let _ = fx
             .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
             .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
-        // A monster each, so join_game grants no starter.
+        sr10_kit_tables(&fx);
+        // A monster each, so join_game grants no starter monster; the joiners hold no
+        // starter marker, so each join grants the starter kit.
         w.seed_monster(&monster(11, a(), 0));
         w.seed_monster(&monster(12, b(), 0));
         assert!(w.armed().is_empty(), "nobody has joined: no zone is armed");
@@ -3575,7 +3604,9 @@ mod nh {
             .table::<LastPosition>("last_position", "owner_identity", |r| r.owner_identity)
             .writable()
             .unique();
-        // A monster each, so join_game grants no starter.
+        sr10_kit_tables(fx);
+        // A monster each, so join_game grants no starter monster; the joiners hold no
+        // starter marker, so each join grants the starter kit.
         w.seed_monster(&monster(11, a(), 0));
         w.seed_monster(&monster(12, b(), 0));
         (w, saved)

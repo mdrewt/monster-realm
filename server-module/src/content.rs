@@ -64,6 +64,9 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     let battle_maps = cached_battle_maps().map_err(|e| format!("battle_maps: {e}"))?;
     let tactics_tuning =
         game_core::load_tactics_tuning().map_err(|e| format!("tactics_tuning: {e:?}"))?;
+    // The kit `join_game` grants (process-cached; validated below, never written to a table).
+    let starter_kit =
+        crate::content_cache::cached_starter_kit().map_err(|e| format!("starter_kit: {e}"))?;
 
     // ====== VALIDATE PHASE ======
     game_core::validate_zones(&zones).map_err(|e| format!("zones invalid: {e}"))?;
@@ -93,6 +96,8 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     validate_npc_interactions(&npc_defs, &shops, &heal_defs)
         .map_err(|e| format!("npc_interactions invalid: {e}"))?;
     validate_shops(&shops, &items).map_err(|e| format!("shops invalid: {e}"))?;
+    game_core::validate_starter_kit(starter_kit, &items)
+        .map_err(|e| format!("starter_kit invalid: {e}"))?;
     validate_abilities(&abilities, &species).map_err(|e| format!("abilities invalid: {e}"))?;
     // bt-6: the tactical join + kit lints — the same gate the game-core CI tests run.
     game_core::validate_tactics_content(&game_core::TacticsRegistries {

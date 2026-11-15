@@ -31,8 +31,9 @@ import { ownerSql } from './stdb';
 // ===========================
 // A = the opener, B = the partner, C = a joined NON-PARTICIPANT (the third identity is what
 // makes 5a and 6a possible at all). One `chromium.launch()` + three `newContext()` gives three
-// distinct SpacetimeDB identities, each freshly joined: one starter monster in party slot 0, NO
-// player_wallet row, NO inventory row.
+// distinct SpacetimeDB identities, each freshly joined: one starter monster in party slot 0 and
+// the starter kit — a player_wallet row of 200, one inventory stack of item 1 (count 2) and one
+// of item 3 (count 1).
 //
 // RANGE. open_trade_session needs both characters in the same zone within interact range
 // (game-core/src/interact.rs `within_interact_range`: same zone, Manhattan <= TALK_RANGE). All
@@ -176,18 +177,23 @@ const ERR_STALE_REVISION = 'the trade changed since you reviewed it';
 
 /** A KNOWN item id (an `item_row` exists — check_offered_item refuses an unknown id FIRST with
  *  "unknown item N", session.rs:225/:350-352, which would move 1a/1b off the stack rule). Item 1
- *  is the bait recruit.spec.ts seeds; every test that uses it re-proves `item_row` holds it. */
+ *  is the Lure Berry of the starter kit; every test that uses it re-proves `item_row` holds it. */
 const ITEM_X = 1;
-/** The item quantity A offers in 1a/1b. > 0: qty 0 is ZeroItemQuantity (session.rs:353-355). */
-const ITEM_X_QTY = 1;
+/** The starter kit's stack of ITEM_X: every identity's first join grants Lure Berry x2. */
+const KIT_ITEM_X_COUNT = 2;
+/** The item quantity A offers in 1a/1b: one more than A's kit stack (2 + 1), so A holds too few.
+ *  > 0: qty 0 is ZeroItemQuantity (session.rs:353-355). */
+const ITEM_X_QTY = KIT_ITEM_X_COUNT + 1;
 /** What 1b seeds into B's stack of ITEM_X — strictly more than ITEM_X_QTY, so a reducer that
  *  reads the PARTNER's stack instead of the caller's finds enough and accepts. */
 const PARTNER_ITEM_X_SEED = 5;
-/** The coins A offers in 3a/3b against a provably empty own wallet. */
-const OVERDRAWN_CURRENCY = '1';
+/** The starter kit's balance: every identity's first join grants 200. */
+const KIT_BALANCE = 200;
+/** The coins A offers in 3a/3b: one more than A's kit balance (200 + 1), so A has too few. */
+const OVERDRAWN_CURRENCY = `${KIT_BALANCE + 1}`;
 /** What 3b seeds as B's balance — strictly more than OVERDRAWN_CURRENCY, so a reducer that read
  *  the PARTNER's wallet instead of the caller's finds enough and accepts. */
-const PARTNER_WALLET_SEED = 100;
+const PARTNER_WALLET_SEED = 300;
 /** game-core `PARTY_SIZE` (game-core/src/world.rs): slots 0..6 are the party. */
 const PARTY_SIZE = 6;
 /** Walk A onto B's tile when they stand further apart than this (the server's range,
@@ -729,12 +735,12 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
       sessionId: sid,
       offer: monsterOffer(monsterA),
     });
-    await step('set own monster plus an item A does not hold', {
+    await step('set own monster plus more of an item than A holds', {
       kind: 'setOffer',
       sessionId: sid,
       offer: { ...monsterOffer(monsterA), items: [{ itemId: ITEM_X, qty: ITEM_X_QTY }] },
     });
-    await step('set own monster plus a coin A does not have', {
+    await step('set own monster plus more coins than A has', {
       kind: 'setOffer',
       sessionId: sid,
       offer: { ...monsterOffer(monsterA), currency: OVERDRAWN_CURRENCY },
@@ -775,13 +781,13 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
         view: live('1', offered),
       },
       {
-        step: 'set own monster plus an item A does not hold',
+        step: 'set own monster plus more of an item than A holds',
         result: rej(errNotEnoughItem(ITEM_X)),
         server: ['1/false/false'],
         view: live('1', offered),
       },
       {
-        step: 'set own monster plus a coin A does not have',
+        step: 'set own monster plus more coins than A has',
         result: rej(ERR_NOT_ENOUGH_CURRENCY),
         server: ['1/false/false'],
         view: live('1', offered),
@@ -802,16 +808,20 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
     ];
   }
 
-  /** A's own side holds no ITEM_X and no coin, and ITEM_X is a known item: the preconditions
-   *  that make "not enough of item X" / "not enough currency" the CALLER's own refusal. */
-  function expectCallerHoldsNothing(label: string): void {
+  /** A's own side holds exactly the starter kit — one stack of ITEM_X of KIT_ITEM_X_COUNT (2),
+   *  fewer than ITEM_X_QTY (3), and KIT_BALANCE (200) coins, fewer than OVERDRAWN_CURRENCY
+   *  (201) — and ITEM_X is a known item: the preconditions that make "not enough of item X" /
+   *  "not enough currency" the CALLER's own refusal. */
+  function expectCallerHoldsOnlyTheKit(label: string): void {
     const known = sqlSelect('SELECT id FROM item_row', label).map((r) => (r.id ?? '').trim());
     expect(known, `${label}: item ${ITEM_X} must exist in item_row`).toContain(`${ITEM_X}`);
     expect(
-      inventoryRowsOf(identityA, ITEM_X, label),
-      `${label}: A must hold no stack of item ${ITEM_X}`,
-    ).toEqual([]);
-    expect(balanceOf(identityA, label), `${label}: A must hold no coin`).toBe('0');
+      inventoryRowsOf(identityA, ITEM_X, label).map((r) => (r.count ?? '').trim()),
+      `${label}: A must hold exactly the kit's one stack of item ${ITEM_X}, count ${KIT_ITEM_X_COUNT}`,
+    ).toEqual([`${KIT_ITEM_X_COUNT}`]);
+    expect(balanceOf(identityA, label), `${label}: A must hold exactly the kit's coin`).toBe(
+      `${KIT_BALANCE}`,
+    );
   }
 
   /** Cancel every live session involving A, B or C and await it — and its snapshot and reaper
@@ -895,7 +905,7 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   test('1a: set_trade_offer listing an item the caller does not hold is refused with the own-side error, and the same offer without it is accepted', async () => {
     test.setTimeout(120_000);
     const label = '1a';
-    expectCallerHoldsNothing(label);
+    expectCallerHoldsOnlyTheKit(label);
     const monsterA = await partyMonsterId(pageA, label);
     const sid = await openSession(pageA, pageB, identityA, identityB, label);
 
@@ -935,8 +945,9 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   // -------------------------------------------------------------------------
   // 1b — ts-4.2, the PARTNER's INVENTORY (the no-oracle security case).
   //
-  // The same caller script runs twice against B: run 1 with B holding NO stack of ITEM_X,
-  // run 2 with B holding PARTNER_ITEM_X_SEED of it (owner SQL), the difference proven by a
+  // The same caller script runs twice against B: run 1 with B holding only its kit stack of
+  // ITEM_X (2, fewer than A's 3-unit leg), run 2 with that stack raised to PARTNER_ITEM_X_SEED
+  // (5, more than the leg) by an owner-SQL UPDATE of the kit's row, the difference proven by a
   // server-truth SELECT before run 2. The two outcome lists — every call's Ok or exact error,
   // plus server truth and A's own view after each step — must be deep-equal, and equal to the
   // pinned expectation.
@@ -946,42 +957,56 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   // depends on the partner's stack (one that answers "counterparty has insufficient inventory
   // for item N" when the partner lacks the item fails here), and the wrong-party operand: an
   // eligibility check that reads `stacks` of the partner instead of the caller accepts A's
-  // one-unit item leg in run 2 only.
+  // three-unit item leg in run 2 only.
   // -------------------------------------------------------------------------
   test('1b: every caller-visible trade session outcome is identical whether or not the partner holds the item', async () => {
     test.setTimeout(180_000);
     const label = '1b';
-    expectCallerHoldsNothing(label);
+    expectCallerHoldsOnlyTheKit(label);
     const monsterA = await partyMonsterId(pageA, label);
-    const hexB = identityHex(identityB, label);
+    const kitRows = inventoryRowsOf(identityB, ITEM_X, `${label} state 1`);
     expect(
-      inventoryRowsOf(identityB, ITEM_X, label),
-      `${label} state 1: B holds no stack of item ${ITEM_X}`,
-    ).toEqual([]);
+      kitRows.map((r) => (r.count ?? '').trim()),
+      `${label} state 1: B holds exactly the kit's one stack of item ${ITEM_X}, count ${KIT_ITEM_X_COUNT}`,
+    ).toEqual([`${KIT_ITEM_X_COUNT}`]);
+    // The kit's row is the one stack the seed raises and the restore lowers back: one stack per
+    // (owner, item) is a server invariant, so a second INSERTed stack would break it.
+    const kitInvId = assertDecimal((kitRows[0]?.inv_id ?? '').trim(), 'inv_id', label);
 
-    let seededInvId = '';
+    let seeded = false;
     try {
-      const run1 = await runCallerScript(monsterA, `${label} run 1, partner without the item`);
+      const run1 = await runCallerScript(monsterA, `${label} run 1, partner with the kit stack`);
       // One live session per pair: run 1's must be gone, rows and all, before B changes.
       if (run1.sessionId !== '') await expectSessionGone(run1.sessionId, `${label} run 1 end`);
       await expectPairSessions(identityA, identityB, 0, `${label} between the runs`);
 
       const state1 = inventoryRowsOf(identityB, ITEM_X, `${label} state 1`);
       ownerSql(
-        `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${hexB}, ${ITEM_X}, ${PARTNER_ITEM_X_SEED})`,
+        `UPDATE inventory SET count = ${PARTNER_ITEM_X_SEED} WHERE inv_id = ${kitInvId}`,
         `${label} seed the partner's stack`,
       );
+      seeded = true;
       const state2 = await pollSql(
         () => inventoryRowsOf(identityB, ITEM_X, `${label} state 2`),
-        (r) => r.length === 1,
+        (r) => r.length === 1 && (r[0]?.count ?? '').trim() === `${PARTNER_ITEM_X_SEED}`,
       );
-      seededInvId = assertDecimal((state2[0]?.inv_id ?? '').trim(), 'inv_id', label);
-      // THE NON-VACUITY PROOF: the two partner states really differ in server truth.
-      expect(state1, `${label} state 1: no stack`).toEqual([]);
+      // THE NON-VACUITY PROOF: the two partner states really differ in server truth (an UPDATE
+      // that matched no row leaves state 2 equal to state 1 and fails here).
+      expect(
+        state1.map((r) => (r.count ?? '').trim()),
+        `${label} state 1: the kit's ${KIT_ITEM_X_COUNT}`,
+      ).toEqual([`${KIT_ITEM_X_COUNT}`]);
       expect(state2.length, `${label} state 2: exactly one stack`).toBe(1);
+      expect((state2[0]?.inv_id ?? '').trim(), `${label} state 2: the kit's own row`).toBe(
+        kitInvId,
+      );
       expect((state2[0]?.count ?? '').trim(), `${label} state 2: the seeded count`).toBe(
         `${PARTNER_ITEM_X_SEED}`,
       );
+      expect(
+        KIT_ITEM_X_COUNT,
+        `${label}: in state 1 the partner holds FEWER than A's item leg asks`,
+      ).toBeLessThan(ITEM_X_QTY);
       expect(
         Number((state2[0]?.count ?? '0').trim()),
         `${label}: the partner holds MORE than A's item leg asks, so a partner-reading rule would accept`,
@@ -1005,14 +1030,20 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
         `${label}: nothing moved the partner's stack`,
       ).toEqual([`${PARTNER_ITEM_X_SEED}`]);
     } finally {
-      if (seededInvId !== '') {
-        ownerSql(`DELETE FROM inventory WHERE inv_id = ${seededInvId}`, `${label} restore`);
+      if (seeded) {
+        ownerSql(
+          `UPDATE inventory SET count = ${KIT_ITEM_X_COUNT} WHERE inv_id = ${kitInvId}`,
+          `${label} restore`,
+        );
       }
       const left = await pollSql(
-        () => inventoryRowsOf(identityB, ITEM_X, `${label} restore`),
-        (r) => r.length === 0,
+        () =>
+          inventoryRowsOf(identityB, ITEM_X, `${label} restore`).map((r) => (r.count ?? '').trim()),
+        (c) => c.length === 1 && c[0] === `${KIT_ITEM_X_COUNT}`,
       );
-      expect(left, `${label} restore: B's seeded stack is gone`).toEqual([]);
+      expect(left, `${label} restore: B's stack is back to the kit's count`).toEqual([
+        `${KIT_ITEM_X_COUNT}`,
+      ]);
     }
     await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
@@ -1020,14 +1051,14 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   // -------------------------------------------------------------------------
   // 3a — the CALLER's own coins (check_offer_eligibility's currency rule, session.rs).
   //
-  // A fresh identity has no player_wallet row: the balance is provably 0 (re-proven below).
+  // A fresh identity holds the starter kit's 200 (re-proven below), and A offers 201.
   // WHAT THIS KILLS: `currency > balance - locked` → `<` or deleted (the coin is accepted and
   // the call resolves); a refused edit that still writes.
   // -------------------------------------------------------------------------
   test('3a: set_trade_offer listing more coins than the caller has is refused with the own-side error, and the same offer without them is accepted', async () => {
     test.setTimeout(120_000);
     const label = '3a';
-    expectCallerHoldsNothing(label);
+    expectCallerHoldsOnlyTheKit(label);
     const monsterA = await partyMonsterId(pageA, label);
     const sid = await openSession(pageA, pageB, identityA, identityB, label);
 
@@ -1064,38 +1095,40 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   // -------------------------------------------------------------------------
   // 3b — ts-4.2, the PARTNER's WALLET (the second security case).
   //
-  // Same caller script, two partner states: run 1 with B holding no coin (no player_wallet row,
-  // or a zero balance), run 2 with B's balance seeded to PARTNER_WALLET_SEED by owner SQL; the
-  // difference proven by a server-truth SELECT before run 2; the two outcome lists deep-equal.
+  // Same caller script, two partner states: run 1 with B holding the starter kit's 200 (fewer
+  // than A's 201-coin leg), run 2 with B's balance raised to PARTNER_WALLET_SEED (300, more than
+  // the leg) by an owner-SQL UPDATE of the kit's wallet row; the difference proven by a
+  // server-truth SELECT before run 2; the two outcome lists deep-equal.
   //
   // As in 1b, a reducer that never reads the partner passes by construction. WHAT THIS KILLS: a
   // session reducer whose result or error text depends on the partner's wallet (one that
   // answers "counterparty has insufficient currency for this trade" when the partner is broke
   // fails here), and the wrong-party operand: a currency rule that reads the partner's balance
-  // instead of the caller's accepts A's one-coin leg in run 2 only.
+  // instead of the caller's accepts A's 201-coin leg in run 2 only.
   // -------------------------------------------------------------------------
   test('3b: every caller-visible trade session outcome is identical whether or not the partner has coins', async () => {
     test.setTimeout(180_000);
     const label = '3b';
-    expectCallerHoldsNothing(label);
+    expectCallerHoldsOnlyTheKit(label);
     const monsterA = await partyMonsterId(pageA, label);
     const hexB = identityHex(identityB, label);
+    // The kit wrote B's wallet row at join (owner_identity is its primary key, so an INSERT
+    // would collide): the seed and the restore are UPDATEs of that one row.
     const original = walletRowsOf(identityB, `${label} state 1`);
-    expect(original.length, `${label}: at most one wallet row for B`).toBeLessThanOrEqual(1);
-    expect(balanceOf(identityB, label), `${label} state 1: B holds no coin`).toBe('0');
-    const hadRow = original.length === 1;
+    expect(original.length, `${label}: exactly one wallet row for B, the kit's`).toBe(1);
+    expect(balanceOf(identityB, label), `${label} state 1: B holds the kit's coin`).toBe(
+      `${KIT_BALANCE}`,
+    );
 
     let seeded = false;
     try {
-      const run1 = await runCallerScript(monsterA, `${label} run 1, partner without coins`);
+      const run1 = await runCallerScript(monsterA, `${label} run 1, partner with the kit coins`);
       if (run1.sessionId !== '') await expectSessionGone(run1.sessionId, `${label} run 1 end`);
       await expectPairSessions(identityA, identityB, 0, `${label} between the runs`);
 
       const state1 = balanceOf(identityB, `${label} state 1`);
       ownerSql(
-        hadRow
-          ? `UPDATE player_wallet SET balance = ${PARTNER_WALLET_SEED} WHERE owner_identity = 0x${hexB}`
-          : `INSERT INTO player_wallet (owner_identity, balance) VALUES (0x${hexB}, ${PARTNER_WALLET_SEED})`,
+        `UPDATE player_wallet SET balance = ${PARTNER_WALLET_SEED} WHERE owner_identity = 0x${hexB}`,
         `${label} seed the partner's wallet`,
       );
       seeded = true;
@@ -1103,9 +1136,14 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
         () => balanceOf(identityB, `${label} state 2`),
         (b) => b === `${PARTNER_WALLET_SEED}`,
       );
-      // THE NON-VACUITY PROOF: the two partner states really differ in server truth.
-      expect(state1, `${label} state 1: zero`).toBe('0');
+      // THE NON-VACUITY PROOF: the two partner states really differ in server truth (an UPDATE
+      // that matched no row leaves state 2 at 200 and fails here).
+      expect(state1, `${label} state 1: the kit's balance`).toBe(`${KIT_BALANCE}`);
       expect(state2, `${label} state 2: the seeded balance`).toBe(`${PARTNER_WALLET_SEED}`);
+      expect(
+        KIT_BALANCE,
+        `${label}: in state 1 the partner holds FEWER coins than A's coin leg asks`,
+      ).toBeLessThan(Number(OVERDRAWN_CURRENCY));
       expect(
         PARTNER_WALLET_SEED,
         `${label}: the partner holds MORE than A's coin leg asks, so a partner-reading rule would accept`,
@@ -1128,20 +1166,19 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
     } finally {
       if (seeded) {
         ownerSql(
-          hadRow
-            ? `UPDATE player_wallet SET balance = 0 WHERE owner_identity = 0x${hexB}`
-            : `DELETE FROM player_wallet WHERE owner_identity = 0x${hexB}`,
+          `UPDATE player_wallet SET balance = ${KIT_BALANCE} WHERE owner_identity = 0x${hexB}`,
           `${label} restore`,
         );
       }
       const restored = await pollSql(
-        () => walletRowsOf(identityB, `${label} restore`).length,
-        (n) => n === (hadRow ? 1 : 0),
+        () => balanceOf(identityB, `${label} restore`),
+        (b) => b === `${KIT_BALANCE}`,
       );
-      expect(restored, `${label} restore: B's wallet row count is back`).toBe(hadRow ? 1 : 0);
-      expect(balanceOf(identityB, `${label} restore`), `${label} restore: B holds no coin`).toBe(
-        '0',
-      );
+      expect(restored, `${label} restore: B holds the kit's coin again`).toBe(`${KIT_BALANCE}`);
+      expect(
+        walletRowsOf(identityB, `${label} restore`).length,
+        `${label} restore: B's one wallet row is kept`,
+      ).toBe(1);
     }
     await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
