@@ -120,8 +120,9 @@ pub(crate) fn netted_receiver_stacks(
 
 /// Apply a `SwapPlan` between `initiator` and `counterparty`: every monster
 /// transfer first (new owner, `dest_slot(monster_id)` as its party slot, bond
-/// reset), then the item and currency steps in the debits-before-credits order
-/// of `SwapPlan::ordered_steps()`. Writes land as they go, so the caller must
+/// reset), then a refresh of both sides' public `player.lead_level`, then the
+/// item and currency steps in the debits-before-credits order of
+/// `SwapPlan::ordered_steps()`. Writes land as they go, so the caller must
 /// return any `Err` out of its reducer — that aborts the transaction and no
 /// partial apply commits. `dest_slot` is written unchecked: the caller passes a
 /// slot it has already validated for the new owner's party.
@@ -170,6 +171,9 @@ pub(crate) fn apply_swap(
         // A session that still lists this monster ends here: it has a new owner.
         cancel_sessions_listing(ctx, &moved);
     }
+    // A transfer can take either side's lead party monster or put a new one below it.
+    crate::battle::refresh_lead_level(ctx, initiator);
+    crate::battle::refresh_lead_level(ctx, counterparty);
 
     // Apply item + currency transfers in the debits-before-credits order published
     // by game-core: ALL debits land before ANY credit, so a

@@ -14,7 +14,7 @@
 //! lives HERE (not `schema.rs`) so the `scheduled(movement_tick)` attribute
 //! reference resolves within the module.
 
-use crate::battle::{lead_party, lead_party_ids, NO_CONSCIOUS_MONSTER_REASON};
+use crate::battle::{lead_party, lead_party_ids, refresh_lead_level, NO_CONSCIOUS_MONSTER_REASON};
 use crate::evolution::check_and_evolve;
 use crate::guards::{
     authorize_move, escrowed_monster_ids_of, is_in_ongoing_battle, json_escape, log_reject,
@@ -194,7 +194,8 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 /// `onboarding` decides (the starter kit and the starter `monster`, once per identity: an
 /// identity whose starter marker is set gets the three presence rows and nothing else).
 /// The `player` row carries the identity's discriminator, minted by its first join and
-/// read back by every later one (`onboarding::ensure_handle`).
+/// read back by every later one (`onboarding::ensure_handle`), and the level of its lead
+/// party monster (`battle::refresh_lead_level`, 0 with no party).
 /// The character stands where the account's last one stood when it disconnected
 /// (`take_start`), or on the spawn. Rejects a double-join within the same session.
 #[spacetimedb::reducer]
@@ -290,6 +291,10 @@ pub(crate) fn join_with_kit(
             inserted.monster_id
         );
     }
+
+    // After the starter grant: the lead is the starter on a first join, and the party the
+    // identity already owns on a later one.
+    refresh_lead_level(ctx, me);
 
     log::info!("{{\"evt\":\"join\",\"sender\":\"{me}\"}}");
     Ok(())
