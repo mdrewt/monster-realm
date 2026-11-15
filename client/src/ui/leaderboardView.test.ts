@@ -2890,4 +2890,75 @@ describe('LeaderboardView — the Players row shows the tag and the lead level',
     const plainLevel = plain.querySelector('.mr-player-level') as HTMLElement;
     expect(qf16TextColourOf(plainLevel), 'the level is not muted').not.toBe('var(--mr-text-muted)');
   });
+
+  it('two rows that share a name each paint their own tag, level and Nearby badge, in either order [ih-3.4]', () => {
+    // WRONG IMPL KILLED: a row fill that finds its row by name instead of by nav key (both
+    // same-named rows paint the first one's tag and level); a fill that reads the row at the
+    // option's position from a stale order (the swapped repaint shows the other row's values).
+    const first: SocialPlayerRow = { key: 'aa', name: 'Bob', tag: '#0042', level: 5, nearby: true };
+    const other: SocialPlayerRow = {
+      key: 'bb',
+      name: 'Cid',
+      tag: '#0007',
+      level: 3,
+      nearby: false,
+    };
+    const second: SocialPlayerRow = {
+      key: 'cc',
+      name: 'Bob',
+      tag: '#0107',
+      level: 12,
+      nearby: false,
+    };
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(makeVm(BOARD));
+
+    const checkOwnValues = (order: readonly SocialPlayerRow[], label: string): void => {
+      expect(
+        ih3Options().map((o) => o.dataset.navKey),
+        `${label}: one option per row, in the given order`,
+      ).toEqual(order.map((r) => r.key));
+      const nearbyText = i18nT('social.players.nearby');
+      for (const row of order) {
+        const option = ih3Option(row.key);
+        expect(option.querySelector('bdi')?.textContent, `${label} ${row.key}: the name`).toBe(
+          row.name,
+        );
+        expect(
+          option.querySelector('.mr-player-tag')?.textContent,
+          `${label} ${row.key}: its own tag`,
+        ).toBe(row.tag);
+        expect(
+          option.querySelector('.mr-player-level')?.textContent,
+          `${label} ${row.key}: its own level`,
+        ).toBe(i18nTf('tactics.hud.level', { level: row.level as number }));
+        const badges = [...option.querySelectorAll('span')].filter(
+          (s) => s.getAttribute('class') === null && s.textContent === nearbyText,
+        );
+        expect(badges.length, `${label} ${row.key}: the Nearby badge as its own row says`).toBe(
+          row.nearby ? 1 : 0,
+        );
+      }
+      const firstTag = ih3Option('aa').querySelector('.mr-player-tag')?.textContent;
+      const secondTag = ih3Option('cc').querySelector('.mr-player-tag')?.textContent;
+      const firstLevel = ih3Option('aa').querySelector('.mr-player-level')?.textContent;
+      const secondLevel = ih3Option('cc').querySelector('.mr-player-level')?.textContent;
+      expect(firstTag, `${label}: the same-named rows' tags differ`).not.toBe(secondTag);
+      expect(firstLevel, `${label}: the same-named rows' levels differ`).not.toBe(secondLevel);
+      expect(ih3Option('aa').textContent, `${label}: the first Bob row`).toBe(
+        `Bob #0042 ${i18nTf('tactics.hud.level', { level: 5 })} ${nearbyText}`,
+      );
+      expect(ih3Option('cc').textContent, `${label}: the second Bob row`).toBe(
+        `Bob #0107 ${i18nTf('tactics.hud.level', { level: 12 })}`,
+      );
+    };
+
+    expect(first.name, 'fixture: the two rows share a name').toBe(second.name);
+    view.paintSocial(playersPaint([first, other, second]));
+    checkOwnValues([first, other, second], 'first paint');
+    view.paintSocial(playersPaint([second, other, first]));
+    checkOwnValues([second, other, first], 'swapped repaint');
+  });
 });
