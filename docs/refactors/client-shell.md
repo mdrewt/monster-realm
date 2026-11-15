@@ -58,7 +58,7 @@ All paths are under `client/src/shell/`. The table is in import order.
 |---|---|---|---|
 | 1 | `config.ts` | The values fixed for the session: the connection target, the dev-log sinks, the game-core constants, the wasm-ready mark | none |
 | 2 | `views.ts` | The handles of the view instances built at boot | none |
-| 3 | `inputState.ts` | The live input devices: the binding table, the keyboard source, the router, the held directions | none |
+| 3 | `inputState.ts` | The live input devices: the binding table, the keyboard source, the router, the held directions, the key codes whose repeats are cancelled | none |
 | 4 | `feedback.ts` | Where a message goes: the toast, the world hint, the announcer, the error ring and overlay | `views` |
 | 5 | `session.ts` | The link to the server: the store, the identity, the connection, hydration, the guarded send, the session-event latches | `config`, `feedback` |
 | 6 | `screenContext.ts` | What a screen adapter reads: `screenCtx`, the id each open bound, the motion preference | `inputState`, `session` |
@@ -255,7 +255,7 @@ The three movement latches are written where the event happens and read only by 
 
 | Collection | Owner | Mutated from outside the owner by |
 |---|---|---|
-| `navHeldCodes` | `inputState.ts` | `onKeyDown`, `captureControlsKey`, the keyup listener |
+| `navHeldCodes` | `inputState.ts` | nothing: `noteNavHeld`, `releaseNavHeld` and `releaseAllInput` are its writers |
 | `dismissedRequests` | `notices.ts` | `worldPort`, `onReady`, `onReconnect` |
 | `announcedRequests` | `notices.ts` | the batch listener that announces a new request, `onReady`, `onReconnect` |
 | `answeredRequests` | `notices.ts` | `dispatch`, `onReady`, `onReconnect` |
@@ -271,8 +271,6 @@ function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `views.ts` | `mountViews` | each view assignment in `main()`, called after each construction in the same statement order; it takes the handles present in its argument |
-| `inputState.ts` | `noteNavHeld`, `releaseNavHeld` | the adds and the delete on `navHeldCodes` |
 | `feedback.ts` | `installHintHost` | the hint-host port |
 | `feedback.ts` | `mountFeedback` | the `statusEl` and `toastChrome` assignments |
 | `feedback.ts` | `pumpAnnouncements` | the frame loop's announcement edge and notice step |
@@ -386,7 +384,6 @@ they write; bodies change only by imports, and an inline listener body gains a n
 **ownership change** leaves a writer outside the destination, so it adds an owner function, or
 it installs a port or adds a pump. The slice for a line deletes that line.
 
-3. `client/src/shell/inputState.ts` takes `bindings`, `keyboard`, `held`, `inputRouter`, `navHeldCodes`, `releaseAllInput` and `applyBindings`. Ownership change: `navHeldCodes` is mutated by `onKeyDown`, `captureControlsKey` and the keyup listener.
 4. `client/src/shell/feedback.ts` takes `route`, `reportError`, `showToast`, `paintToast`, `tickToast`, `setWorldHint`, `topHint`, `hintOnMenu`, `paintWorldHint`, `resetFeedbackSinks`, `announceNow`, `dismissErrorToast`, `pushError`, `reportPaintError`, `eventRing`, `errorRing`, `liveRegion`, `MOVE_REJECT_PREFIX` and the bindings `statusEl`, `toastChrome`, `toastState`, `worldHints`, `saidHint`, `menuHint`, `statusNotice`, `announcedSinceFrame`, `lastA11ySnapshot`, `toastDismissedSeq`, `handlingError` and `lastPaintErrorMessage`. Ownership change: the hint-host port, the two boot mounts, and the announcement pump for the parts of `main` that write `statusNotice`, `announcedSinceFrame` and `lastA11ySnapshot`.
 5. `client/src/shell/session.ts` takes `store`, `identity`, `conn`, `hydratedSinceReconnect`, `resolveReady`, `ready`, `sessionGateBlocks`, `liveReducers`, `privacyLinkLive`, `sendGuarded`, `SEND_REJECT_KIND`, `SendWhere`, `battleEmit`, `lastOwnRating` and the two batch listeners that step the emit latches. Ownership change: `main` assigns `identity`, `conn` and `hydratedSinceReconnect`, and `resetPredictionState` resets the latches.
 6. `client/src/shell/screenContext.ts` takes `screenCtx`, `motionPreference`, `boundShopId`, `boundHealLocationId`, `boundSocialTab`, `boundMonstersTab` and `boundProposeTarget`. Ownership change: `openPendingShop`, `runInteract`, `openSocial`, `openMenuTarget` and `openPropose` bind them and `main` clears them.

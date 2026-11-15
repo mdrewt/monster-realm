@@ -414,7 +414,14 @@ of the views built at boot (the screens, the Profile sections, the session overl
 evolution notice banner, the error overlay and the hint bar) and the Controls saved-line
 function mounted with Controls. `main()` constructs each view with its handlers and mounts it
 through `mountViews`; every reader takes the handle from its import, which is `undefined` until
-the view is mounted. The module imports types only.
+the view is mounted. The module imports types only. `shell/inputState.ts` owns the live input
+devices: the binding table (read from storage at import), the keyboard source built over it, the
+router, the held directions, and the key codes of consumed presses, whose OS repeats are cancelled.
+Only it replaces the table and the keyboard source (`applyBindings`, which saves the table and
+releases everything held first), and the set of codes is read-only to every other module: a
+consumed press is recorded with `noteNavHeld` and its keyup with `releaseNavHeld`.
+`releaseAllInput` lets go of everything held; `main.ts` registers it on `blur` and on a hidden
+`visibilitychange`.
 
 ### Connection and store
 
