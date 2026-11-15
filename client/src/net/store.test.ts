@@ -68,7 +68,14 @@ function char(entityId: bigint, tileX: number, tileY: number): StoreCharacter {
   };
 }
 function player(identity: string, entityId: bigint): StorePlayer {
-  return { identity, entityId, name: `P-${identity}`, online: true };
+  return {
+    identity,
+    entityId,
+    name: `P-${identity}`,
+    online: true,
+    discriminator: 0,
+    leadLevel: 0,
+  };
 }
 
 describe('AuthoritativeStore: keyed-Map idempotency (no array-store duplication)', () => {

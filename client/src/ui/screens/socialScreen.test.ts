@@ -1358,6 +1358,8 @@ const person = (identity: string, name: string, entityId: bigint, online = true)
   name,
   entityId,
   online,
+  discriminator: 0,
+  leadLevel: 0,
 });
 
 const at = (entityId: bigint, tileX: number, tileY: number, zoneId = 0): StoreCharacter => ({
@@ -1707,6 +1709,40 @@ describe('socialScreen — Players: the walk-up phase and the change signal (ctl
     const reseated = observe(bobGone, board);
     expect(reseated, 'the cursor`s ranked row is gone: a new state').not.toBe(board);
     expect([CAROL, ME], 'the cursor is re-seated on a ranked row').toContain(reseated.nav.item);
+  });
+
+  it('observe answers a NEW state, with the new signature and then stable, when a listed player`s lead level changes and when their discriminator changes, and the SAME state for the rows rebuilt equal [ih-3.3]', () => {
+    // WRONG IMPL KILLED: a signature that ignores the level (a live level-up never repaints the
+    // Players row) or the tag (a minted tag never shows until a button press); a signature taken
+    // from the new rows but not stored back (changed again at the next batch).
+    const tweakOf = (players: readonly StorePlayer[]) => (id: string, edit: Partial<StorePlayer>) =>
+      players.map((p) => (p.identity === id ? { ...p, ...edit } : p));
+    const start = crowd('players');
+    const base: World = {
+      ...start,
+      players: tweakOf(start.players)(BOB, { discriminator: 42, leadLevel: 7 }),
+    };
+    const s = open(base);
+    expect(s.people, 'fixture: the signature of the listed rows').toBe(socialPeopleKey(vmOf(base)));
+    const tweak = tweakOf(base.players);
+    expect(
+      observe({ ...base, players: base.players.map((p) => ({ ...p })) }, s),
+      'the rows rebuilt equal: the same state',
+    ).toBe(s);
+    const CHANGES: ReadonlyArray<readonly [string, World]> = [
+      ['Bob levels up', { ...base, players: tweak(BOB, { leadLevel: 8 }) }],
+      ['Bob`s lead level goes to 0', { ...base, players: tweak(BOB, { leadLevel: 0 }) }],
+      ['Bob`s discriminator changes', { ...base, players: tweak(BOB, { discriminator: 43 }) }],
+      ['Carol gains a tag', { ...base, players: tweak(CAROL, { discriminator: 9 }) }],
+      ['Carol gains a level', { ...base, players: tweak(CAROL, { leadLevel: 4 }) }],
+    ];
+    for (const [what, after] of CHANGES) {
+      const next = observe(after, s);
+      expect(next, `${what}: a NEW state`).not.toBe(s);
+      expect(next.people, `${what}: the new signature`).toBe(socialPeopleKey(vmOf(after)));
+      expect(next.people, `${what}: it differs from the old one`).not.toBe(s.people);
+      expect(observe(after, next), `${what}: and then stable`).toBe(next);
+    }
   });
 });
 

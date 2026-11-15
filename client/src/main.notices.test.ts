@@ -164,6 +164,8 @@ function batch(): void {
     entityId: EID,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   opts.store.upsertCharacter(
     {
@@ -182,8 +184,8 @@ function batch(): void {
   opts.store.flushBatch();
 }
 
-function seedPlayer(identity: string, name: string, entityId: bigint): void {
-  opts.store.upsertPlayer({ identity, entityId, name, online: true });
+function seedPlayer(identity: string, name: string, entityId: bigint, discriminator = 0): void {
+  opts.store.upsertPlayer({ identity, entityId, name, online: true, discriminator, leadLevel: 0 });
 }
 
 /** An incoming trade request: a SESSION (`my_trade_session`) `from` opened with the booted player,
@@ -1104,6 +1106,8 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
         entityId: EID,
         name: 'P',
         online: true,
+        discriminator: 0,
+        leadLevel: 0,
       });
       opts.store.upsertCharacter(
         {
@@ -1604,5 +1608,64 @@ describe('main.ts an identity change and opened sessions (runtime, ts-4)', {
     } finally {
       H.identity = OLD_IDENTITY;
     }
+  }, 60_000);
+});
+
+// Same harness. The requester's player row carries a discriminator, so the banner names them with
+// their tag through `identity.taggedName`; a requester whose discriminator is 0 is named bare.
+
+describe('main.ts the request banner names the requester with the tag (runtime)', {
+  sequential: true,
+}, () => {
+  afterEach(teardown);
+
+  it('an incoming trade session from Bob, whose discriminator is 42, makes the banner read the trade line with `Bob #0042`, and one from a requester whose discriminator is 0 the bare name [ih-3.5]', async () => {
+    // WRONG IMPL KILLED: a banner name still from playerName (no tag); a tag on the challenge line
+    // only; a tag concatenated after the whole line (`Bob wants to trade #0042`); the viewer's own
+    // tag in place of the requester's.
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n, 42);
+    seedPlayer(CAROL, 'Carol', 9n);
+    batch();
+    frame();
+    expect(bannerText(), 'control: nothing waits').toBeNull();
+
+    putSession(sessionFrom(BOB, 11n, 1_000n));
+    batch();
+    frame();
+    await flush();
+    frame();
+    const line = tf('notice.request.trade', { name: 'Bob #0042' });
+    expect(line, 'fixture: the catalog line carries the tagged name').toContain('Bob #0042');
+    expect(bannerText(), 'the trade line names Bob with his tag').toBe(line);
+
+    dropSession(11n);
+    putSession(sessionFrom(CAROL, 12n, 2_000n));
+    batch();
+    frame();
+    await flush();
+    frame();
+    expect(bannerText(), 'a requester with no tag: the bare name').toBe(
+      tf('notice.request.trade', { name: 'Carol' }),
+    );
+  }, 60_000);
+
+  it('an incoming challenge from Bob, whose discriminator is 42, makes the banner read the challenge line with `Bob #0042` [ih-3.5]', async () => {
+    // WRONG IMPL KILLED: a tag on trade requests only (the challenge banner would read a bare
+    // `Bob`); the challenge line built from the target's name.
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n, 42);
+    batch();
+    frame();
+    expect(bannerText(), 'control: nothing waits').toBeNull();
+
+    opts.store.upsertChallenge(challengeFrom(BOB, 21n, 4_000n));
+    batch();
+    frame();
+    await flush();
+    frame();
+    expect(bannerText(), 'the challenge line names Bob with his tag').toBe(
+      tf('notice.request.challenge', { name: 'Bob #0042' }),
+    );
   }, 60_000);
 });

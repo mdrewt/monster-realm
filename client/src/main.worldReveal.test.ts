@@ -184,6 +184,8 @@ function ownRows(store: AuthoritativeStore, t: number, zoneId = 0): void {
     entityId: OWN,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   store.upsertCharacter(character(OWN, zoneId, 2, 6), t);
 }

@@ -370,7 +370,7 @@ const DAN = 'dd'.repeat(32);
 const EVE = 'ee'.repeat(32);
 
 function person(identity: string, name: string, entityId: bigint, online = true): StorePlayer {
-  return { identity, name, entityId, online };
+  return { identity, name, entityId, online, discriminator: 0, leadLevel: 0 };
 }
 
 function at(entityId: bigint, tileX: number, tileY: number, zoneId = 0): StoreCharacter {
@@ -827,8 +827,8 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
 
     // Order: the same rows, swapped, by hand (socialPlayers always sorts).
     const rowsAB: readonly SocialPlayerRow[] = [
-      { key: 'a', name: 'x', nearby: false },
-      { key: 'b', name: 'y', nearby: true },
+      { key: 'a', name: 'x', tag: null, level: null, nearby: false },
+      { key: 'b', name: 'y', tag: null, level: null, nearby: true },
     ];
     const withRows = (players: readonly SocialPlayerRow[]): SocialVm => ({ ...build(), players });
     expect(socialPeopleKey(withRows([...rowsAB].reverse())), 'swapped order').not.toBe(
@@ -861,8 +861,8 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       HEX_B.slice(0, 63),
     );
     const twinRows = (first: string, second: string): readonly SocialPlayerRow[] => [
-      { key: first, name: 'twin', nearby: false },
-      { key: second, name: 'twin', nearby: false },
+      { key: first, name: 'twin', tag: null, level: null, nearby: false },
+      { key: second, name: 'twin', tag: null, level: null, nearby: false },
     ];
     expect(
       socialPeopleKey(withRows(twinRows(HEX_A, HEX_B))),
@@ -901,13 +901,15 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       for (const outer of SEPS) {
         for (const [no, yes] of BOOLS) {
           const honest: readonly SocialPlayerRow[] = [
-            { key: 'a', name: 'b', nearby: false },
-            { key: 'c', name: 'd', nearby: true },
+            { key: 'a', name: 'b', tag: null, level: null, nearby: false },
+            { key: 'c', name: 'd', tag: null, level: null, nearby: true },
           ];
           const hostile: readonly SocialPlayerRow[] = [
             {
               key: 'a',
               name: `b${inner}${no}${outer}c${inner}d`,
+              tag: null,
+              level: null,
               nearby: true,
             },
           ];
@@ -1450,5 +1452,228 @@ describe('socialModel — Social › Trades lists only session rows (ts-4, ts-4.
       socialSessionsKey(buildSocialVm(null, MIX_CHALLENGES, ME, SESSION_PEOPLE, marked)),
       'the viewer confirms 203',
     ).not.toBe(k);
+  });
+});
+
+// ==========================================================================================
+// The tag and the lead level on the Players rows and the Trades-tab session row.
+//
+// `SocialPlayerRow` carries `tag` (formatTag of the player's discriminator, null for 0) and `level`
+// (the player's leadLevel when it is > 0, else null). The rows sort by raw name, then discriminator
+// ascending, then identity hex. `socialPeopleKey` follows the tag and the level too. A session row's
+// `partnerName` is the partner's tagged name.
+// ==========================================================================================
+
+const FAY = 'ff'.repeat(32);
+const ZOE = '77'.repeat(32);
+
+/** An online player with a discriminator and a lead level. */
+function tagged(
+  identity: string,
+  name: string,
+  entityId: bigint,
+  discriminator: number,
+  leadLevel: number,
+): StorePlayer {
+  return { identity, name, entityId, online: true, discriminator, leadLevel };
+}
+
+/** The row's `{ key, name, tag, level }`. */
+const shown = (rows: readonly SocialPlayerRow[]) =>
+  rows.map((r) => ({ key: r.key, name: r.name, tag: r.tag, level: r.level }));
+
+describe('socialModel — the tag and the lead level on the Players rows', () => {
+  it('two other online players who share a name each get their own row with their own key, tag and level, and same-named rows come in tag-number order whatever the identity or input order [ih-3.3]', () => {
+    // WRONG IMPL KILLED: rows merged or deduplicated by name; a tag or level copied from the first
+    // same-named player; a tie broken by identity (Bob before Carol before Dan), by the tag TEXT of
+    // the raw discriminator (`1000` < `42` < `9`) or by input order; a level read from the
+    // discriminator; a name order lost to the discriminator (Ann #5000 must still come first).
+    const players = [
+      person(ME, 'Me', ME_EID),
+      tagged(BOB, 'Sam', 2n, 42, 7),
+      tagged(CAROL, 'Sam', 3n, 9, 12),
+      tagged(DAN, 'Sam', 4n, 1000, 3),
+      tagged(EVE, 'Ann', 5n, 5000, 20),
+      tagged(ZOE, 'Zed', 6n, 1, 1),
+    ];
+    const expected = [
+      { key: EVE, name: 'Ann', tag: '#5000', level: 20 },
+      { key: CAROL, name: 'Sam', tag: '#0009', level: 12 },
+      { key: BOB, name: 'Sam', tag: '#0042', level: 7 },
+      { key: DAN, name: 'Sam', tag: '#1000', level: 3 },
+      { key: ZOE, name: 'Zed', tag: '#0001', level: 1 },
+    ];
+    for (const order of [
+      players,
+      [...players].reverse(),
+      [players[3], ...players.slice(0, 3), ...players.slice(4)],
+    ]) {
+      const rows = socialPlayers(order as readonly StorePlayer[], [], ME);
+      expect(shown(rows), 'name, then tag number, then identity').toEqual(expected);
+    }
+    const vm = buildSocialVm(null, [], ME, { players, characters: [], profiles: [] });
+    expect(shown(vm.players), 'the same rows through buildSocialVm').toEqual(expected);
+    expect(
+      itemsOf(socialLayout(vm), 'players').map((i) => i.key),
+      'the layout follows',
+    ).toEqual(expected.map((r) => r.key));
+  });
+
+  it('a row whose lead level is 0 carries no level and still its tag, and a row whose discriminator is 0 carries no tag and still its level [ih-3.3]', () => {
+    // WRONG IMPL KILLED: a `leadLevel >= 0` guard (level 0 shown as `Lv.0`); a level read from the
+    // discriminator (Bob's 42 would read as his level, Carol's 0 as no level); a tag read from the
+    // lead level (Carol's 9 would read `#0009`); a tag for discriminator 0 (`#0000`).
+    const rows = socialPlayers(
+      [person(ME, 'Me', ME_EID), tagged(BOB, 'Bob', 2n, 42, 0), tagged(CAROL, 'Carol', 3n, 0, 9)],
+      [],
+      ME,
+    );
+    expect(shown(rows)).toEqual([
+      { key: BOB, name: 'Bob', tag: '#0042', level: null },
+      { key: CAROL, name: 'Carol', tag: null, level: 9 },
+    ]);
+    // An empty name keeps its #hex8 fallback, and the tag rides beside it.
+    const anon = socialPlayers([tagged(FAY, '', 7n, 3, 4)], [], ME);
+    expect(shown(anon)).toEqual([
+      { key: FAY, name: `#${FAY.slice(0, 8)}`, tag: '#0003', level: 4 },
+    ]);
+  });
+
+  it('socialPeopleKey changes when only a listed player`s tag changes, when only their level changes (to another level, from 0 and to 0), and is equal for rows rebuilt equal [ih-3.3]', () => {
+    // WRONG IMPL KILLED: a key that adds the tag but not the level, or the level but not the tag (a
+    // live level-up or a fresh tag would never repaint the row); a key that reads the level as
+    // `level ?? 0` against a tag-less encoding so that a tag and a level of the same digits tie.
+    const world = (bob: StorePlayer) => ({
+      players: [person(ME, 'Me', ME_EID), bob, tagged(CAROL, 'Carol', 3n, 9, 4)],
+      characters: [at(ME_EID, 50, 50), at(2n, 50, 55), at(3n, 50, 90)],
+      profiles: [],
+    });
+    const key = (bob: StorePlayer): string =>
+      socialPeopleKey(buildSocialVm(null, [], ME, world(bob)));
+    const k0 = key(tagged(BOB, 'Bob', 2n, 42, 7));
+    expect(key(tagged(BOB, 'Bob', 2n, 42, 7)), 'rebuilt equal').toBe(k0);
+    const changes: ReadonlyArray<readonly [string, string]> = [
+      ['the tag changes', key(tagged(BOB, 'Bob', 2n, 43, 7))],
+      ['the tag goes', key(tagged(BOB, 'Bob', 2n, 0, 7))],
+      ['the level changes', key(tagged(BOB, 'Bob', 2n, 42, 8))],
+      ['the level goes to 0', key(tagged(BOB, 'Bob', 2n, 42, 0))],
+    ];
+    for (const [what, changed] of changes) {
+      expect(changed, what).not.toBe(k0);
+    }
+    expect(
+      new Set([k0, ...changes.map(([, c]) => c)]).size,
+      'every change differs from every other',
+    ).toBe(changes.length + 1);
+    // From no tag and no level: each appearing alone moves the key.
+    const bare = key(tagged(BOB, 'Bob', 2n, 0, 0));
+    expect(key(tagged(BOB, 'Bob', 2n, 5, 0)), 'a tag appears').not.toBe(bare);
+    expect(key(tagged(BOB, 'Bob', 2n, 0, 5)), 'a level appears').not.toBe(bare);
+    expect(key(tagged(BOB, 'Bob', 2n, 5, 0)), 'tag 5 is not level 5').not.toBe(
+      key(tagged(BOB, 'Bob', 2n, 0, 5)),
+    );
+  });
+
+  it('socialPeopleKey stays unforgeable with the tag and the level in it: a name or a tag cannot spell another row list [ih-3.3]', () => {
+    // WRONG IMPL KILLED: a key that joins the name and the tag with a separator a name can contain
+    // (`Bob` + `#0042` against a player literally named `Bob #0042` with no tag); a key that
+    // writes a null level and a null tag as the same token as an empty string.
+    const vm = buildSocialVm(null, [], ME, NO_PEOPLE);
+    const keyOf = (players: readonly SocialPlayerRow[]): string =>
+      socialPeopleKey({ ...vm, players });
+    const NUL = String.fromCharCode(0);
+    const SEPS = ['', ' ', ',', '|', ':', ';', '\n', '\t', '/', '=', '-', '_', NUL];
+    let tried = 0;
+    for (const sep of SEPS) {
+      const honest: readonly SocialPlayerRow[] = [
+        { key: 'a', name: 'Bob', tag: '#0042', level: null, nearby: false },
+      ];
+      const forged: readonly SocialPlayerRow[] = [
+        { key: 'a', name: `Bob${sep}#0042`, tag: null, level: null, nearby: false },
+      ];
+      expect(keyOf(forged), `name + tag through ${JSON.stringify(sep)}`).not.toBe(keyOf(honest));
+      const withLevel: readonly SocialPlayerRow[] = [
+        { key: 'a', name: 'Bob', tag: null, level: 5, nearby: false },
+      ];
+      const nameLevel: readonly SocialPlayerRow[] = [
+        { key: 'a', name: `Bob${sep}5`, tag: null, level: null, nearby: false },
+      ];
+      expect(keyOf(nameLevel), `name + level through ${JSON.stringify(sep)}`).not.toBe(
+        keyOf(withLevel),
+      );
+      tried += 2;
+    }
+    expect(tried, 'ANTI-VACUITY: every separator tried twice').toBe(SEPS.length * 2);
+    expect(
+      keyOf([{ key: 'a', name: 'Bob', tag: '#0005', level: null, nearby: false }]),
+      'a tag is not a level',
+    ).not.toBe(keyOf([{ key: 'a', name: 'Bob', tag: null, level: 5, nearby: false }]));
+    expect(
+      keyOf([{ key: 'a', name: 'Bob', tag: '', level: null, nearby: false }]),
+      'an empty tag is not no tag',
+    ).not.toBe(keyOf([{ key: 'a', name: 'Bob', tag: null, level: null, nearby: false }]));
+  });
+});
+
+describe('socialModel — the Trades-tab session row names its partner with the tag', () => {
+  it('a session row`s partnerName is the partner`s tagged name whichever seat the viewer holds, and the bare name for a partner whose discriminator is 0 [ih-3.5]', () => {
+    // WRONG IMPL KILLED: a partnerName still from playerName (no tag); a tag looked up for the
+    // viewer instead of the partner (the viewer's own #0099 on every row); a tag only from the
+    // opener's seat; a tag for discriminator 0.
+    const people = {
+      players: [
+        tagged(ME, 'Me', ME_EID, 99, 3),
+        tagged(BOB, 'Bob', 2n, 42, 7),
+        tagged(CAROL, '', 3n, 7, 2),
+        tagged(DAN, 'Dan', 4n, 0, 9),
+      ],
+      characters: [],
+      profiles: [],
+    };
+    const sessions = [
+      tradeSession(101n, ME, BOB),
+      tradeSession(102n, CAROL, ME),
+      tradeSession(103n, ME, DAN),
+    ];
+    const vm = buildSocialVm(null, [], ME, people, sessions);
+    expect(vm.trades.map((r) => r.key)).toEqual(['session-101', 'session-102', 'session-103']);
+    expect(vm.trades[0], 'ME opened with Bob').toMatchObject({
+      session: { partnerName: 'Bob #0042' },
+    });
+    expect(vm.trades[1], 'Carol opened with ME: the #hex8 fallback, tagged').toMatchObject({
+      session: { partnerName: `#${CAROL.slice(0, 8)} #0007` },
+    });
+    expect(vm.trades[2], 'Dan has no tag').toMatchObject({ session: { partnerName: 'Dan' } });
+    // From Bob's seat, ME is the partner.
+    const bobs = buildSocialVm(null, [], BOB, people, sessions);
+    expect(bobs.trades.map((r) => r.key)).toEqual(['session-101']);
+    expect(bobs.trades[0], 'Bob`s partner is ME').toMatchObject({
+      session: { partnerName: 'Me #0099' },
+    });
+  });
+
+  it('socialSessionsKey changes when the partner`s player row with a tag arrives after the session, and when only the partner`s tag appears [ih-3.5]', () => {
+    // WRONG IMPL KILLED: a partnerName without the tag (the row would keep showing `Bob` when his
+    // tag arrives, the key unchanged); a session key that drops the partner name.
+    const sessions = [tradeSession(101n, ME, BOB)];
+    const vmWith = (players: readonly StorePlayer[]): SocialVm =>
+      buildSocialVm(null, [], ME, { players, characters: [], profiles: [] }, sessions);
+    const before = vmWith([person(ME, 'Me', ME_EID)]);
+    expect(before.trades[0], 'no row for Bob yet').toMatchObject({
+      session: { partnerName: `#${BOB.slice(0, 8)}` },
+    });
+    const arrived = vmWith([person(ME, 'Me', ME_EID), tagged(BOB, 'Bob', 2n, 42, 7)]);
+    expect(arrived.trades[0], 'Bob`s row arrived').toMatchObject({
+      session: { partnerName: 'Bob #0042' },
+    });
+    expect(socialSessionsKey(arrived), 'the row arrived').not.toBe(socialSessionsKey(before));
+    const untagged = vmWith([person(ME, 'Me', ME_EID), tagged(BOB, 'Bob', 2n, 0, 7)]);
+    expect(socialSessionsKey(arrived), 'only the tag differs').not.toBe(
+      socialSessionsKey(untagged),
+    );
+    expect(
+      socialSessionsKey(vmWith([person(ME, 'Me', ME_EID), tagged(BOB, 'Bob', 2n, 42, 8)])),
+      'a level-only change is not a session fact',
+    ).toBe(socialSessionsKey(arrived));
   });
 });

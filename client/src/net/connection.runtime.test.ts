@@ -1289,6 +1289,8 @@ const wsPlayer = (entityId: bigint = WS_E, identity: { toHexString(): string } =
   entityId,
   name: 'Tester',
   online: true,
+  discriminator: 0,
+  leadLevel: 0,
 });
 const wsChar = (entityId: bigint, zoneId: number, tileX = 2, tileY = 2) => ({
   entityId,
@@ -1798,6 +1800,35 @@ describe('connect(): the world scope', { sequential: true }, () => {
     expect(b.disconnect).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(500);
     expect(b.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('a player row`s discriminator and lead level reach the store through the real connect(): an insert carries 42 and 7, an update to lead level 8 replaces the row, and another player`s row keeps its own values [ih-3.1]', async () => {
+    // WRONG IMPL KILLED: a converter that drops the two fields (undefined in the store), hard-codes
+    // 0, swaps them (7 / 42), or reads the lead level from the discriminator (42 / 42); an update
+    // handler that keeps the inserted row (the level stays 7); a store keyed so that the second
+    // player's row overwrites the first one's values.
+    const { w } = await wsSettled(0);
+    const store = w.opts.store;
+    const hex = ID.toHexString();
+    const other = { toHexString: () => 'ef'.repeat(32) };
+    const inserted = { ...wsPlayer(), discriminator: 42, leadLevel: 7 };
+    wsFire('player', 'insert', [inserted]);
+    expect(store.player(hex), 'the inserted row, both fields from the row').toMatchObject({
+      identity: hex,
+      entityId: WS_E,
+      name: 'Tester',
+      online: true,
+      discriminator: 42,
+      leadLevel: 7,
+    });
+    wsFire('player', 'insert', [{ ...wsPlayer(6n, other), discriminator: 1234, leadLevel: 3 }]);
+    wsFire('player', 'update', [inserted, { ...inserted, leadLevel: 8 }]);
+    expect(store.player(hex)?.discriminator, 'the update keeps the discriminator').toBe(42);
+    expect(store.player(hex)?.leadLevel, 'the update replaces the lead level').toBe(8);
+    expect(store.player(other.toHexString())?.discriminator, 'the other row, its own tag').toBe(
+      1234,
+    );
+    expect(store.player(other.toHexString())?.leadLevel, 'the other row, its own level').toBe(3);
   });
 
   it('an unsubscribe that throws does not escape the scope run, and the scope carries on [WS-UNSUBSCRIBE-THROWS]', async () => {

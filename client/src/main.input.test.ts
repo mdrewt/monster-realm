@@ -394,6 +394,8 @@ function server(t: number, s: { x: number; y: number; ack: number; facing?: Dir 
     entityId: EID,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   opts.store.upsertCharacter(
     {
@@ -3255,7 +3257,7 @@ function placePlayer(
   t: number,
   online = true,
 ): void {
-  opts.store.upsertPlayer({ identity, entityId, name, online });
+  opts.store.upsertPlayer({ identity, entityId, name, online, discriminator: 0, leadLevel: 0 });
   opts.store.upsertCharacter(
     {
       entityId,

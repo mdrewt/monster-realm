@@ -279,6 +279,8 @@ function ownRows(store: AuthoritativeStore, t: number, tileX = 2, tileY = 6): vo
     entityId: EID,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   store.upsertCharacter(character(EID, tileX, tileY), t);
 }
@@ -470,6 +472,8 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
         entityId: 9n,
         name: 'Dana',
         online: true,
+        discriminator: 0,
+        leadLevel: 0,
       });
       // The request is an incoming SESSION Dana opened.
       s.reconcileTradeSessionsFromView([

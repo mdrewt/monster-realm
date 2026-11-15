@@ -162,6 +162,8 @@ function server(t: number, s: { x: number; y: number; ack: number }): void {
     entityId: EID,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   opts.store.upsertCharacter(
     {

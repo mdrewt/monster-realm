@@ -72,7 +72,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { setLocale as i18nSetLocale, t as i18nT, tf as i18nTf } from './i18n/resolver';
 import type { LeaderboardViewModel } from './leaderboardModel';
 import { LeaderboardView, type SocialRankingsPaint } from './leaderboardView';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -862,9 +862,9 @@ describe('LeaderboardView — the Players list and the walk-up line (ctl-8g, CTL
     view.render(makeVm(BOARD));
     const XSS = '<img src=x onerror=alert(1)>';
     const rows: readonly SocialPlayerRow[] = [
-      { key: 'bb', name: 'Bob', nearby: true },
-      { key: 'cc', name: 'Carol', nearby: false },
-      { key: 'dd', name: XSS, nearby: true },
+      { key: 'bb', name: 'Bob', tag: null, level: null, nearby: true },
+      { key: 'cc', name: 'Carol', tag: null, level: null, nearby: false },
+      { key: 'dd', name: XSS, tag: null, level: null, nearby: true },
     ];
     vi.clearAllMocks();
     view.paintSocial(playersPaint(rows, 'cc'));
@@ -995,7 +995,9 @@ describe('LeaderboardView — the Players list and the walk-up line (ctl-8g, CTL
     const view = new LeaderboardView();
     view.show();
     view.render(makeVm(BOARD));
-    const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+    const rows: readonly SocialPlayerRow[] = [
+      { key: 'bb', name: 'Bob', tag: null, level: null, nearby: false },
+    ];
 
     // Nothing to walk up to: hidden (or absent) on Players with null, on Rankings with a (never
     // produced) name.
@@ -1202,7 +1204,9 @@ describe('LeaderboardView — the Rankings list and the kept paint (ctl-8g, CTL8
 
     // Players, then Rankings, then Players again: each flips the two lists.
     view.render(makeVm(BOARD));
-    const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: true }];
+    const rows: readonly SocialPlayerRow[] = [
+      { key: 'bb', name: 'Bob', tag: null, level: null, nearby: true },
+    ];
     view.paintSocial(playersPaint(rows, 'bb'));
     expect(isShown(list), 'Players: the board list hidden').toBe(false);
     expect(isShown(byId('leaderboard-players')), 'Players: the players list shown').toBe(true);
@@ -1320,8 +1324,8 @@ describe('LeaderboardView — the Rankings list and the kept paint (ctl-8g, CTL8
 
     // A Players paint survives a render too, the empty board included: the board stays hidden.
     const rows: readonly SocialPlayerRow[] = [
-      { key: 'bb', name: 'Bob', nearby: true },
-      { key: 'cc', name: 'Carol', nearby: false },
+      { key: 'bb', name: 'Bob', tag: null, level: null, nearby: true },
+      { key: 'cc', name: 'Carol', tag: null, level: null, nearby: false },
     ];
     view.paintSocial(playersPaint(rows, 'cc', 'Carol'));
     for (const vm of [makeVm(BOARD), makeVm([])]) {
@@ -1985,7 +1989,9 @@ describe('LeaderboardView — the Rankings rows are display-only (qf-16, QF16.1)
     view.render(makeVm(BOARD));
     view.paintSocial(rankingsPaint('bb'));
     expect(readonly(), 'Rankings again after the re-open').toBe('true');
-    const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+    const rows: readonly SocialPlayerRow[] = [
+      { key: 'bb', name: 'Bob', tag: null, level: null, nearby: false },
+    ];
     view.paintSocial(playersPaint(rows, 'bb'));
     expect(readonly(), 'a Players paint').toBeNull();
     view.paintSocial(rankingsPaint('bb'));
@@ -2021,7 +2027,9 @@ describe('LeaderboardView — the Rankings rows are display-only (qf-16, QF16.1)
 // ==========================================================================================
 
 describe('LeaderboardView — Rankings on the shared scroll rule and row spacing (uif-9)', () => {
-  const NOT_RANKED: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+  const NOT_RANKED: readonly SocialPlayerRow[] = [
+    { key: 'bb', name: 'Bob', tag: null, level: null, nearby: false },
+  ];
   const zero = (v: string): boolean => v === '0' || v === '0px';
 
   it('UIF9.5 a populated Rankings paint adds mr-scroll to the board list next to aria-readonly and the listbox marks (the rows never wear it, other classes are kept); hide, a Players paint, a hidden render or paint and the re-open edge each remove it, and the legacy board never has it [UIF9.5 shared cue]', () => {
@@ -2278,7 +2286,9 @@ describe('LeaderboardView — the Rankings cursor row scrolls into view (qf-16, 
 
       // A Players tab scrolls no board row; the next Rankings paint scrolls the cursor again, even
       // though its id is the one last scrolled to.
-      const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+      const rows: readonly SocialPlayerRow[] = [
+        { key: 'bb', name: 'Bob', tag: null, level: null, nearby: false },
+      ];
       view.paintSocial(playersPaint(rows, 'bb'));
       expect(boardIds().length, 'a Players paint scrolls no ranking row').toBe(6);
       view.paintSocial(rankingsPaint('cc'));
@@ -2645,5 +2655,239 @@ describe('LeaderboardView — the real stylesheet on the Rankings list (qf-16, Q
     for (const row of ranking) {
       expect(qf16IsClear(qf16FillOf(row)), `${row.id}: paints no fill over the shadows`).toBe(true);
     }
+  });
+});
+
+// ==========================================================================================
+// The Players row: the name, the tag, the level and the Nearby badge as separate nodes.
+//
+// Each option holds, in order: a `<bdi>` with the name (text only, no attributes); only with a tag,
+// a ' ' text node then `<span class="mr-player-tag">` holding the row's tag verbatim; only with a
+// level, a ' ' text node then `<span class="mr-player-level">` holding
+// `tf('tactics.hud.level', { level })`; only when nearby, a ' ' text node then a class-less `<span>`
+// holding `t('social.players.nearby')`. The tag's text colour is the muted token on a plain row
+// and the row's own colour on the cursor row.
+// ==========================================================================================
+
+/** One child node as `TAG.class:text` (an element) or `#text:text` (a text node). */
+function ih3Node(node: ChildNode): string {
+  if (node.nodeType === 3) return `#text:${node.textContent ?? ''}`;
+  const el = node as Element;
+  return `${el.tagName}.${el.getAttribute('class') ?? ''}:${el.textContent ?? ''}`;
+}
+
+/** The painted Players options, in order. */
+const ih3Options = (): HTMLElement[] => [
+  ...document.querySelectorAll<HTMLElement>('#leaderboard-players > [data-nav-key]'),
+];
+
+/** The option painted for `key`. */
+function ih3Option(key: string): HTMLElement {
+  const found = ih3Options().find((o) => o.dataset.navKey === key);
+  if (found === undefined) throw new Error(`no Players option for ${key}`);
+  return found;
+}
+
+describe('LeaderboardView — the Players row shows the tag and the lead level', () => {
+  function paintRows(rows: readonly SocialPlayerRow[], cursor: string | null = null): void {
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(makeVm(BOARD));
+    vi.clearAllMocks();
+    view.paintSocial(playersPaint(rows, cursor));
+  }
+
+  it('a row`s child nodes are exactly the name, then the tag, the level and the Nearby badge each after one space, every part present only when the row carries it [ih-3.4]', () => {
+    // WRONG IMPL KILLED: the tag inside the `<bdi>` (`Bob #0042` as the name's text); the level
+    // appended to the tag span (`#0042 Lv.5` in one element); a part joined into one text node; no
+    // separating space, or a space inside a span; an empty tag or level span painted for a null
+    // one; a class on the Nearby span; the parts in another order.
+    const rows: readonly SocialPlayerRow[] = [
+      { key: 'aa', name: 'Bob', tag: '#0042', level: 5, nearby: true },
+      { key: 'bb', name: 'Cid', tag: '#0007', level: null, nearby: false },
+      { key: 'cc', name: 'Dee', tag: null, level: 12, nearby: false },
+      { key: 'dd', name: 'Eve', tag: null, level: null, nearby: false },
+      { key: 'ee', name: 'Fay', tag: null, level: null, nearby: true },
+    ];
+    paintRows(rows);
+    expect(
+      ih3Options().map((o) => o.dataset.navKey),
+      'one option per row',
+    ).toEqual(['aa', 'bb', 'cc', 'dd', 'ee']);
+    const expected: Record<string, readonly string[]> = {
+      aa: [
+        'BDI.:Bob',
+        '#text: ',
+        'SPAN.mr-player-tag:#0042',
+        '#text: ',
+        'SPAN.mr-player-level:Lv.5',
+        '#text: ',
+        'SPAN.:Nearby',
+      ],
+      bb: ['BDI.:Cid', '#text: ', 'SPAN.mr-player-tag:#0007'],
+      cc: ['BDI.:Dee', '#text: ', 'SPAN.mr-player-level:Lv.12'],
+      dd: ['BDI.:Eve'],
+      ee: ['BDI.:Fay', '#text: ', 'SPAN.:Nearby'],
+    };
+    for (const row of rows) {
+      const option = ih3Option(row.key);
+      expect([...option.childNodes].map(ih3Node), `${row.key}: the child nodes`).toEqual(
+        expected[row.key],
+      );
+      for (const el of option.children) {
+        expect(el.children.length, `${row.key} ${el.tagName}: text only`).toBe(0);
+      }
+      const bdi = option.querySelector('bdi') as HTMLElement;
+      expect(bdi.attributes.length, `${row.key}: the <bdi> has no attributes`).toBe(0);
+    }
+    expect(ih3Option('aa').textContent, 'the whole row').toBe('Bob #0042 Lv.5 Nearby');
+    expect(ih3Option('dd').textContent, 'a plain row is the name alone').toBe('Eve');
+  });
+
+  it('the tag span holds the row`s tag verbatim and the view never resolves it, and a tag with markup stays text [ih-3.4]', () => {
+    // WRONG IMPL KILLED: a view that formats or resolves the tag itself (tf(`identity.tag`) from a
+    // number it re-derives: an odd tag would come out re-formatted); an innerHTML write (the markup
+    // tag would become an element).
+    const ODD = '#12<b>x</b>';
+    paintRows([
+      { key: 'aa', name: 'Bob', tag: ODD, level: null, nearby: false },
+      { key: 'bb', name: 'Cid', tag: '#0042', level: null, nearby: false },
+    ]);
+    const tag = ih3Option('aa').querySelector('.mr-player-tag') as HTMLElement;
+    expect(tag.textContent, 'verbatim').toBe(ODD);
+    expect(tag.children.length, 'markup stays text').toBe(0);
+    expect(document.querySelector('#leaderboard-players b'), 'no element from the tag').toBeNull();
+    expect(tag.className, 'the class').toBe('mr-player-tag');
+    expect(ih3Option('bb').querySelector('.mr-player-tag')?.textContent).toBe('#0042');
+    const keys = [...vi.mocked(i18nT).mock.calls, ...vi.mocked(i18nTf).mock.calls].map((c) => c[0]);
+    expect(keys.includes('identity.tag'), 'the view does not resolve the tag').toBe(false);
+    expect(keys.includes('identity.taggedName'), 'nor join it to the name').toBe(false);
+  });
+
+  it('the level text comes from tf(`tactics.hud.level`, { level }) in en and in fr, and a sentinel resolver output is what the span shows [ih-3.4]', async () => {
+    // WRONG IMPL KILLED: an English literal (`Lv.${level}`, `Level 5`) instead of the catalog; the
+    // level passed as a string or as another field; the level text built from the resolver's
+    // output with something added.
+    const actual = await vi.importActual<typeof import('./i18n/resolver')>('./i18n/resolver');
+    paintRows([{ key: 'aa', name: 'Bob', tag: null, level: 5, nearby: false }]);
+    expect(i18nTf, 'the level through the catalog').toHaveBeenCalledWith('tactics.hud.level', {
+      level: 5,
+    });
+    expect(ih3Option('aa').querySelector('.mr-player-level')?.textContent).toBe('Lv.5');
+
+    try {
+      i18nSetLocale('fr');
+      paintRows([{ key: 'aa', name: 'Bob', tag: '#0042', level: 5, nearby: false }]);
+      expect(ih3Option('aa').querySelector('.mr-player-level')?.textContent, 'fr').toBe('Niv.5');
+      expect(ih3Option('aa').querySelector('.mr-player-tag')?.textContent, 'the tag as given').toBe(
+        '#0042',
+      );
+    } finally {
+      i18nSetLocale('en');
+    }
+
+    const SENTINEL = 'LEVEL-SENTINEL';
+    vi.mocked(i18nTf).mockImplementation(((key: string, params: unknown) =>
+      key === 'tactics.hud.level'
+        ? SENTINEL
+        : (actual.tf as (k: string, p: unknown) => string)(key, params)) as typeof i18nTf);
+    try {
+      paintRows([{ key: 'aa', name: 'Bob', tag: '#0042', level: 9, nearby: true }]);
+      const level = ih3Option('aa').querySelector('.mr-player-level') as HTMLElement;
+      expect(level.textContent, 'the resolver`s output, as is').toBe(SENTINEL);
+    } finally {
+      vi.mocked(i18nTf).mockImplementation(actual.tf);
+    }
+  });
+
+  it('no resolver call carries the name, checked with a name that is itself a catalog key and one with markup, and the Nearby badge still comes from t(`social.players.nearby`) [ih-3.4]', () => {
+    // WRONG IMPL KILLED: a name passed to t() (the key-shaped name would read `Nearby`) or to tf()
+    // as a param (a combined `name tag` line); an innerHTML write (the markup name becomes an
+    // element); a badge text from a literal.
+    const KEY_NAME = 'social.players.nearby';
+    const MARKUP = '<img src=x onerror=alert(1)>';
+    paintRows([
+      { key: 'aa', name: KEY_NAME, tag: '#0042', level: 5, nearby: false },
+      { key: 'bb', name: MARKUP, tag: '#0007', level: 3, nearby: true },
+    ]);
+    expect(ih3Option('aa').querySelector('bdi')?.textContent, 'the key-shaped name, as typed').toBe(
+      KEY_NAME,
+    );
+    expect(ih3Option('bb').querySelector('bdi')?.textContent, 'the markup name, as text').toBe(
+      MARKUP,
+    );
+    expect(document.querySelector('#leaderboard-players img'), 'no element from a name').toBeNull();
+    expect(ih3Option('aa').textContent, 'the key-shaped name beside its tag and level').toBe(
+      `${KEY_NAME} #0042 Lv.5`,
+    );
+    expect(ih3Option('bb').textContent, 'the markup name beside its tag, level and badge').toBe(
+      `${MARKUP} #0007 Lv.3 Nearby`,
+    );
+    const nearbyCalls = vi.mocked(i18nT).mock.calls.filter((c) => c[0] === 'social.players.nearby');
+    expect(nearbyCalls.length, 'one badge resolve, for the one nearby row').toBe(1);
+    expect(ih3Option('bb').lastElementChild?.textContent, 'the catalogued badge').toBe(
+      i18nT('social.players.nearby'),
+    );
+    for (const call of vi.mocked(i18nTf).mock.calls) {
+      expect(JSON.stringify(call).includes('onerror'), 'no name reaches tf()').toBe(false);
+      expect(JSON.stringify(call).includes(KEY_NAME), 'no name reaches tf()').toBe(false);
+    }
+    for (const call of vi.mocked(i18nT).mock.calls) {
+      expect(JSON.stringify(call).includes('onerror'), 'no name reaches t()').toBe(false);
+    }
+  });
+
+  it('a re-paint with a changed level replaces the level text in place, a level that goes leaves no span, and a tag that goes leaves no span [ih-3.4]', () => {
+    // WRONG IMPL KILLED: a repaint that appends a second level span or keeps the stale one; a
+    // cleared level or tag left as an empty span or a stale text; a separator left behind.
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(makeVm(BOARD));
+    view.paintSocial(
+      playersPaint([{ key: 'aa', name: 'Bob', tag: '#0042', level: 5, nearby: false }]),
+    );
+    view.paintSocial(
+      playersPaint([{ key: 'aa', name: 'Bob', tag: '#0042', level: 6, nearby: false }]),
+    );
+    const levels = ih3Option('aa').querySelectorAll('.mr-player-level');
+    expect(levels.length, 'one level span').toBe(1);
+    expect(levels[0]?.textContent, 'the new level').toBe('Lv.6');
+    expect(ih3Option('aa').textContent).toBe('Bob #0042 Lv.6');
+    view.paintSocial(
+      playersPaint([{ key: 'aa', name: 'Bob', tag: '#0042', level: null, nearby: false }]),
+    );
+    expect([...ih3Option('aa').childNodes].map(ih3Node), 'the level gone').toEqual([
+      'BDI.:Bob',
+      '#text: ',
+      'SPAN.mr-player-tag:#0042',
+    ]);
+    view.paintSocial(
+      playersPaint([{ key: 'aa', name: 'Bob', tag: null, level: null, nearby: false }]),
+    );
+    expect([...ih3Option('aa').childNodes].map(ih3Node), 'the tag gone').toEqual(['BDI.:Bob']);
+  });
+
+  it('the tag`s text colour is the muted token on a plain row and the row`s own colour on the cursor row, by the real stylesheet [ih-3.4]', () => {
+    // WRONG IMPL KILLED: no rule for the tag (it reads as the name's colour); a muted tag on the
+    // inverted cursor row (low contrast on the fill); a tag rule that also mutes the level.
+    paintRows(
+      [
+        { key: 'aa', name: 'Bob', tag: '#0042', level: 5, nearby: true },
+        { key: 'bb', name: 'Cid', tag: '#0007', level: 3, nearby: false },
+      ],
+      'aa',
+    );
+    const cursor = ih3Option('aa');
+    const plain = ih3Option('bb');
+    expect(cursor.classList.contains('is-active'), 'fixture: the cursor row is active').toBe(true);
+    expect(plain.classList.contains('is-active'), 'fixture: the other row is not').toBe(false);
+    const plainTag = plain.querySelector('.mr-player-tag') as HTMLElement;
+    const cursorTag = cursor.querySelector('.mr-player-tag') as HTMLElement;
+    expect(qf16TextColourOf(plainTag), 'a plain row: the muted token').toBe('var(--mr-text-muted)');
+    expect(qf16TextColourOf(cursorTag), 'the cursor row: the row`s own colour').toBe('inherit');
+    const plainLevel = plain.querySelector('.mr-player-level') as HTMLElement;
+    expect(qf16TextColourOf(plainLevel), 'the level is not muted').not.toBe('var(--mr-text-muted)');
   });
 });

@@ -168,6 +168,8 @@ function batch(): void {
     entityId: EID,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   opts.store.upsertCharacter(
     {
@@ -187,7 +189,14 @@ function batch(): void {
 }
 
 function seedPlayer(identity: string, name: string, entityId: bigint): void {
-  opts.store.upsertPlayer({ identity, entityId, name, online: true });
+  opts.store.upsertPlayer({
+    identity,
+    entityId,
+    name,
+    online: true,
+    discriminator: 0,
+    leadLevel: 0,
+  });
 }
 
 /** An incoming, untouched SESSION `from` opened with the booted player. */

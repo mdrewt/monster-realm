@@ -841,6 +841,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/hintBarModel.ts',
       'ui/leaderboardView.ts',
       'ui/menuModel.ts',
+      // The player tag and the name-with-tag join resolve through `identity.tag` /
+      // `identity.taggedName`.
+      'ui/playerTag.ts',
       'ui/privacyBanner.ts',
       'ui/privacyView.ts',
       // uif-16b (named intentional change): the one Profile frame resolves its title and Close row

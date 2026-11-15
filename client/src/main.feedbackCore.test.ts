@@ -427,6 +427,8 @@ function openFaceToFaceTrade(): void {
     entityId: 7n,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   store.upsertCharacter(placeCharacter(7n, 1, 1), 1000);
   store.upsertPlayer({
@@ -434,6 +436,8 @@ function openFaceToFaceTrade(): void {
     entityId: 1n,
     name: 'Bob',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   store.upsertCharacter(placeCharacter(1n, 2, 1), 1000);
   store.reconcileMonstersFromView([monster(5n, 255)]);

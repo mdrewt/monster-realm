@@ -322,6 +322,13 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // ctl-8g: the Players tab's walk-up line (leaderboardView.ts). `name` is a player-chosen display
   // name: it reaches this closure only in this test, never from the view (I18N-21).
   'social.players.walkUp': [{ name: 'Zed' }, { name: 'Amy' }],
+  // The player tag (`#` and the zero-padded digits) and the name-with-tag join. `name` is a
+  // player-chosen display name and `digits` a decimal string; every field differs.
+  'identity.tag': [{ digits: '0042' }, { digits: '123456' }],
+  'identity.taggedName': [
+    { name: 'Drew', tag: '#0042' },
+    { name: 'Amy', tag: '#123456' },
+  ],
   // ctl-10a (named intentional change): the world interaction chip and the picker / sheet rows
   // (3 ★). `key` is the live A keycap text (the catalog's Enter name, or a raw code), `verb` a
   // resolved interact.verb.* value, `name` an npc id or the healer name; every field differs.
@@ -1578,6 +1585,20 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Amy' },
     outputB: 'Walk up to Amy and press A',
   },
+  // The player tag and the name-with-tag join: format strings with no words. Each string param sits
+  // once, verbatim; the join is one U+0020.
+  'identity.tag': {
+    inputA: { digits: '0042' },
+    outputA: '#0042',
+    inputB: { digits: '123456' },
+    outputB: '#123456',
+  },
+  'identity.taggedName': {
+    inputA: { name: 'Drew', tag: '#0042' },
+    outputA: 'Drew #0042',
+    inputB: { name: 'Amy', tag: '#123456' },
+    outputB: 'Amy #123456',
+  },
   // ctl-10a: the world interaction chip (CTL10A.3) `[{A keycap}] {verb} — {name}` / `[{A keycap}]
   // Choose…`, and the picker / sheet row `{verb} — {name}`. The dash is U+2014 and the ellipsis
   // U+2026, built by code point.
@@ -2398,9 +2419,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
-    // them, claim.signInButton not.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 544 keys').toHaveLength(544);
+    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
+    // claim.prompt.noProvider among them, claim.signInButton not.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 546 keys').toHaveLength(546);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3615,10 +3636,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
-    // them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
+    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
+    // claim.prompt.noProvider among them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 546 keys').toBe(546);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(546);
   });
 });
 
@@ -3745,10 +3766,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
-    // them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
+    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
+    // claim.prompt.noProvider among them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 546 keys').toBe(546);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(546);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4069,11 +4090,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
-    // them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 544 keys').toBe(544);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(544);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(544);
+    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
+    // claim.prompt.noProvider among them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 546 keys').toBe(546);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(546);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(546);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4762,10 +4783,10 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
-    // them, claim.signInButton not.
-    expect(Object.keys(en), 'the English roster is 544 keys').toHaveLength(544);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(544);
+    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
+    // claim.prompt.noProvider among them, claim.signInButton not.
+    expect(Object.keys(en), 'the English roster is 546 keys').toHaveLength(546);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(546);
   });
 });
 
@@ -4888,10 +4909,10 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 544 keys: claim.signInWithProvider and claim.prompt.noProvider among
-    // them, claim.signInButton not.
-    expect(Object.keys(en), 'the English roster is 544 keys').toHaveLength(544);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(544);
+    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
+    // claim.prompt.noProvider among them, claim.signInButton not.
+    expect(Object.keys(en), 'the English roster is 546 keys').toHaveLength(546);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(546);
   });
 });
 
@@ -4959,5 +4980,100 @@ describe('the claim Sign In label and the no-provider prompt body in both catalo
     // WRONG IMPL KILLED: the fixed "Sign in" label left behind as a dead key in either catalog.
     expect(Object.hasOwn(en, 'claim.signInButton'), 'en').toBe(false);
     expect(Object.hasOwn(fr, 'claim.signInButton'), 'fr').toBe(false);
+  });
+});
+
+describe('the player tag and the name-with-tag join in both catalogs', () => {
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  const closureOf = (
+    catalog: Record<string, unknown>,
+    locale: string,
+    key: string,
+  ): ((p: Record<string, string>) => string) => {
+    const entry = Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+    if (typeof entry !== 'function') {
+      throw new Error(`${locale}: ${key} must be a parameterised entry`);
+    }
+    return entry as (p: Record<string, string>) => string;
+  };
+
+  it('identity.tag is a closure in en and fr whose output is `#` and the digits echoed once and verbatim, for two differing sample sets, the fr output the en output by design [ih-3.2]', () => {
+    // WRONG IMPL KILLED: a plain string (the digits never reach the tag); a closure that ignores
+    // the digits, repeats them, pads or re-formats them (the caller pads; `0042` stays `0042`), or
+    // drops the `#`; a key added to en only (tf throws in a French boot); a French entry that
+    // puts a space or a `n°` before the digits.
+    const samples = SAMPLE_PARAMS['identity.tag'];
+    expect(samples, 'fixture: the two sample sets').toEqual([
+      { digits: '0042' },
+      { digits: '123456' },
+    ]);
+    const enFn = closureOf(en, 'en', 'identity.tag');
+    const frFn = closureOf(fr, 'fr', 'identity.tag');
+    for (const [digits, expected] of [
+      ['0042', '#0042'],
+      ['123456', '#123456'],
+      ['7', '#7'],
+    ] as const) {
+      const enOut = enFn({ digits });
+      expect(enOut, `en for ${digits}`).toBe(expected);
+      expect(countOccurrences(enOut, digits), `en echoes ${digits} once`).toBe(1);
+      expect(
+        frFn({ digits }),
+        'fr: the same format string as en, by design (a symbol and digits, no words to translate)',
+      ).toBe(enOut);
+    }
+    expect(enFn({ digits: '0042' })).not.toBe(enFn({ digits: '123456' }));
+  });
+
+  it('identity.taggedName is a closure in en and fr whose output is the name, one U+0020 and the tag, each echoed once and verbatim, for two differing sample sets and hostile names, the fr output the en output by design [ih-3.2]', () => {
+    // WRONG IMPL KILLED: a closure that drops or repeats the name or the tag, swaps their order,
+    // joins them with no space, two spaces, a NBSP or a dash, trims the name, or puts it through a
+    // `.replace` template (a `$&` in the name would be rewritten); a key added to en only.
+    const samples = SAMPLE_PARAMS['identity.taggedName'];
+    expect(samples, 'fixture: the two sample sets').toEqual([
+      { name: 'Drew', tag: '#0042' },
+      { name: 'Amy', tag: '#123456' },
+    ]);
+    const enFn = closureOf(en, 'en', 'identity.taggedName');
+    const frFn = closureOf(fr, 'fr', 'identity.taggedName');
+    const SPACE = String.fromCharCode(0x0020);
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ['Drew', '#0042'],
+      ['Amy', '#123456'],
+      ['$&', '#0001'],
+      ['{name}', '#0002'],
+      [' Ann ', '#9999'],
+      ['</bdi><b>x', '#10000'],
+    ];
+    for (const [name, tag] of cases) {
+      const enOut = enFn({ name, tag });
+      expect(enOut, `en for ${JSON.stringify(name)} ${tag}`).toBe(`${name}${SPACE}${tag}`);
+      expect(countOccurrences(enOut, tag), `en echoes ${tag} once`).toBe(1);
+      expect(enOut.startsWith(name), 'the name leads, verbatim').toBe(true);
+      expect(
+        frFn({ name, tag }),
+        'fr: the same format string as en, by design (a name and a tag, no words to translate)',
+      ).toBe(enOut);
+    }
+    expect(enFn({ name: 'Drew', tag: '#0042' })).toBe('Drew #0042');
+    expect(enFn({ name: 'Drew', tag: '#0042' })).not.toBe(enFn({ name: 'Amy', tag: '#123456' }));
+  });
+
+  it('tf resolves identity.tag and identity.taggedName in en and in fr to the same text [ih-3.2]', () => {
+    // WRONG IMPL KILLED: a French catalog missing either key (the resolver throws or falls back to
+    // the key id under `fr`); a resolver path that formats the tag itself.
+    try {
+      for (const locale of ['en', 'fr']) {
+        setLocale(locale);
+        expect(tf('identity.tag', { digits: '0042' }), `${locale}: the tag`).toBe('#0042');
+        expect(
+          tf('identity.taggedName', { name: 'Bob', tag: '#0042' }),
+          `${locale}: the tagged name`,
+        ).toBe('Bob #0042');
+      }
+    } finally {
+      setLocale('en');
+    }
   });
 });
