@@ -815,6 +815,8 @@ fn rb80_seed_player(fx: &crate::native_host_tests::Fixture, me: Identity) {
         name: String::new(),
         online: true,
         last_input_seq: 0,
+        discriminator: 0,
+        lead_level: 0,
     });
 }
 
@@ -1278,6 +1280,8 @@ mod nh_range {
                 name: String::new(),
                 online: true,
                 last_input_seq: 0,
+                discriminator: 0,
+                lead_level: 0,
             });
         fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id)
             .seed(&Npc {
@@ -1554,6 +1558,8 @@ mod nh_dialogue_security {
                 name: String::new(),
                 online: true,
                 last_input_seq: 0,
+                discriminator: 0,
+                lead_level: 0,
             });
             chars.seed(&Character {
                 entity_id,
@@ -1997,6 +2003,8 @@ mod ctl16_battle_guard {
                 name: String::new(),
                 online: true,
                 last_input_seq: 0,
+                discriminator: 0,
+                lead_level: 0,
             });
         let chars = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
         for (entity_id, tile_x) in [(1, 5), (NPC, 6)] {
@@ -2394,6 +2402,8 @@ fn rw_world<'a>(fx: &'a RwFixture, npc_id: &str, tree_id: &str) -> RwWorld<'a> {
             name: String::new(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
     let chars =
         fx.table_keyed::<crate::schema::Character, u64>("character", "entity_id", |r| r.entity_id);

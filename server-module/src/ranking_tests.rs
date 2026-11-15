@@ -530,6 +530,8 @@ fn m22s3b_deleted_name_rows() {
         name: "Ash".to_string(),
         online: true,
         last_input_seq: 909,
+        discriminator: 0,
+        lead_level: 0,
     };
     let identity = before_player.identity;
     let entity_id = before_player.entity_id;
@@ -755,6 +757,8 @@ fn rk_world(fx: &RkFixture) -> RkWorld<'_> {
             name: name.to_string(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
     }
     w
@@ -1040,4 +1044,122 @@ fn nh_anonymize_display_names_tombstones_only_the_owner() {
     let before = w.snapshot();
     super::anonymize_display_names(&fx.ctx(), Identity::from_byte_array([0x3F; 32]));
     assert_eq!(w.snapshot(), before, "absent rows: no-op");
+}
+
+/// A joined player (its `player` row carries discriminator 4207 and lead level 13, its
+/// `player_handle` row holds 4207, a second player holds a handle too) renames through
+/// `set_profile_name`: the name changes, `player.discriminator` and `lead_level` keep
+/// their values, both handle rows are byte-identical and `player_handle` sees no write
+/// (the table is registered writable, so a stray write is counted, not an abort).
+///
+/// kills: a rename that re-mints or re-reads the tag into the row; a rename that
+/// rewrites the handle row; a rename that resets `discriminator` or `lead_level`.
+#[test]
+fn a_rename_leaves_the_handle_and_the_player_discriminator_unchanged_ih1_4() {
+    use crate::schema::PlayerHandle;
+    use spacetimedb::sats::bsatn::to_vec;
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let handles = fx
+        .table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .unique()
+        .auto_inc(
+            |r| u64::from(r.discriminator),
+            |r, v| r.discriminator = u32::try_from(v).expect("a test sequence value fits a u32"),
+        );
+    let _ = fx
+        .table_keyed::<PlayerHandle, u32>("player_handle", "discriminator", |r| r.discriminator)
+        .unique();
+    assert_eq!(w.players.remove(rk_a()), 1, "the seeded untagged row goes");
+    w.players.seed(&RkPlayer {
+        identity: rk_a(),
+        entity_id: u64::from(rk_a().to_byte_array()[0]),
+        name: "Alice".to_string(),
+        online: true,
+        last_input_seq: 0,
+        discriminator: 4_207,
+        lead_level: 13,
+    });
+    handles.seed(&PlayerHandle {
+        owner_identity: rk_a(),
+        discriminator: 4_207,
+    });
+    handles.seed(&PlayerHandle {
+        owner_identity: rk_b(),
+        discriminator: 9_000_001,
+    });
+    let handles_before = to_vec(&handles.rows()).expect("rows encode");
+    fx.reset_writes();
+
+    assert_eq!(
+        fx.run_as(rk_a(), |ctx| super::set_profile_name(
+            ctx,
+            "Alicia".to_string()
+        )),
+        Ok(())
+    );
+
+    assert_eq!(
+        w.name(rk_a()),
+        Some("Alicia".to_string()),
+        "the rename lands"
+    );
+    let tags: Vec<(u32, u8)> = w
+        .players
+        .rows()
+        .into_iter()
+        .filter(|p| p.identity == rk_a())
+        .map(|p| (p.discriminator, p.lead_level))
+        .collect();
+    assert_eq!(
+        tags,
+        vec![(4_207, 13)],
+        "the player row keeps its discriminator and lead level"
+    );
+    assert_eq!(
+        to_vec(&handles.rows()).expect("rows encode"),
+        handles_before,
+        "every handle row is byte-identical"
+    );
+    assert_eq!(
+        fx.writes_to("player_handle"),
+        0,
+        "a rename writes nothing to player_handle"
+    );
+}
+
+/// `player_with_deleted_name` over a row with discriminator 4207 and lead level 13:
+/// both come back 0, the name is the game-core deletion tombstone, and `identity`,
+/// `entity_id`, `online` and `last_input_seq` are unchanged.
+///
+/// kills: a tombstone that leaves the tag or the lead level on the surviving row (the
+/// row stays linkable to a tag seen elsewhere); a zeroing that also clobbers the
+/// presence or reconciliation columns.
+#[test]
+fn the_deletion_tombstone_zeroes_the_discriminator_and_the_lead_level_ih1_7() {
+    let before = RkPlayer {
+        identity: Identity::from_byte_array([0x47; 32]),
+        entity_id: 4_243,
+        name: "Ash".to_string(),
+        online: true,
+        last_input_seq: 910,
+        discriminator: 4_207,
+        lead_level: 13,
+    };
+    let identity = before.identity;
+
+    let after = super::player_with_deleted_name(before);
+
+    assert_eq!(after.discriminator, 0, "the discriminator is zeroed");
+    assert_eq!(after.lead_level, 0, "the lead level is zeroed");
+    assert_eq!(
+        after.name,
+        game_core::TOMBSTONE_DISPLAY_NAME,
+        "the name is the deletion tombstone"
+    );
+    assert_eq!(after.identity, identity, "the primary key survives");
+    assert_eq!(after.entity_id, 4_243, "the entity id survives");
+    assert!(after.online, "the presence flag survives");
+    assert_eq!(after.last_input_seq, 910, "the input ack survives");
 }

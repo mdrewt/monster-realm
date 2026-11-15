@@ -1028,6 +1028,42 @@ flag. Granting part of a kit, or clamping it at a cap. Accepted consequence: the
 tombstone (the reserved flags and quest ids, keyed by the retired guest identity) is not erased
 by the claiming account's deletion cascade, which erases rows under the account's own identity.
 
+## A player's tag is a minted sequence value: private at rest, mirrored on the public player row while online
+
+**Decision.** Names are free and not unique, so each identity gets a discriminator, shown as a
+tag beside the name, that tells same-named players apart. It lives in the private
+`player_handle` table (`owner_identity` primary key, `discriminator: u32` `#[unique]
+#[auto_inc]`). `join_game` finds the caller's row or mints one (insert 0, the column's sequence
+assigns the value) and copies the value onto the public `player` row it inserts
+(`player.discriminator`; 0 means no tag). `onboarding.rs` owns the table (`ensure_handle`,
+`rekey_handle`, `erase_handle`, `has_handle`). The value is never 0, never derived from the
+identity, never held by two identities at once and never minted twice: a sequence only grows, so
+a deleted handle's value is not minted again. The guest claim moves the row to the account with
+its value unchanged (`rekey_all`), and a handle counts as game data, so an account that already
+holds one cannot claim (`account_has_game_data`). A claimed guest identity that joins again is
+minted a different value. The deletion cascade erases the handle and zeroes `discriminator` and
+`lead_level` on the surviving `player` row beside the tombstone name. The owner's data export
+carries the handle row. A mint the datastore refuses (an exhausted sequence) refuses the join
+with `handle unavailable` before any presence row is written. `player.lead_level` is the second
+public column on that row, for the level of the owner's lead party monster: `join_game` writes 0
+(which reads as no party), the cascade zeroes it, and nothing else writes it.
+
+**Why.** The `player` row is deleted at every disconnect and is not re-keyed by the claim, so a
+value stored only there would be re-minted each session. A public `player_handle` would list
+every identity that ever joined, offline ones included; the mirror shows a tag only while its
+owner is online. `profile` rows exist only after a first rated game. A sequence value needs no
+collision retry and cannot be forged to match another player's; the accepted cost is that a tag
+reveals roughly how many identities joined before it. Zeroing the mirror at deletion keeps the
+tombstoned row from being linked back to a tag another player saw.
+
+**Rules out.** Enforced-unique names. Deriving the tag from the identity (it would change at the
+claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle
+table or a view that serves another player's handle. Reissuing an erased value. Minting anywhere
+but `join_game`'s success path (a refused or deletion-gated join mints nothing). Accepted
+consequence: the `u32` sequence is one finite, shared resource (about 4.3 billion identities)
+that guests, who are never reaped, also draw from; once it is spent every identity without a
+handle is refused at join.
+
 ## Account deletion and data export
 
 **Decision.** Every table is classified once in `schema::DATA_LIFECYCLE_MANIFEST`

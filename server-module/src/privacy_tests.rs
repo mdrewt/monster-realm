@@ -1211,7 +1211,7 @@ fn my_monster_pub_exposes_last_care_at_ms_to_the_owner_only_qf3() {
 }
 
 // ===========================================================================
-// PRV1-11 / X1 — the seventeen pure per-table serializers.
+// PRV1-11 / X1 — the eighteen pure per-table serializers.
 // ===========================================================================
 
 /// PRV1-11 / X1: every exportable table's row serializes to EXACTLY the
@@ -1684,6 +1684,8 @@ fn m22s4_serializer_per_table_shape() {
         name: nasty.clone(),
         online: true,
         last_input_seq: 9_007_199_254_740_993,
+        discriminator: 3_000_000_001,
+        lead_level: 200,
     };
     let out_player = super::json_player(&player);
     assert_eq!(
@@ -1694,9 +1696,29 @@ fn m22s4_serializer_per_table_shape() {
             ("name", nasty_json.clone()),
             ("online", m22s4_bool(true)),
             ("last_input_seq", m22s4_quoted_num(9_007_199_254_740_993)),
+            ("discriminator", m22s4_bare(3_000_000_001)),
+            ("lead_level", m22s4_bare(200)),
         ]),
         "m22s4 [X1/player]: last_input_seq is u64 and the fixture sits one above 2^53 — a bare \
-         number here loses the low bit in the client assembler."
+         number here loses the low bit in the client assembler. The appended discriminator (u32) \
+         and lead_level (u8) are EXPORTED, last, as BARE numbers; the fixture values sit above \
+         the i32 and i8 ceilings, so a signed narrowing renders a negative number."
+    );
+
+    // --- player_handle (the minted discriminator) ---------------------------
+    let handle = crate::schema::PlayerHandle {
+        owner_identity: owner,
+        discriminator: 3_000_000_003,
+    };
+    let out_handle = super::json_player_handle(&handle);
+    assert_eq!(
+        out_handle,
+        m22s4_obj(&[
+            ("owner_identity", m22s4_qid(owner)),
+            ("discriminator", m22s4_bare(3_000_000_003)),
+        ]),
+        "m22s4 [X1/player_handle]: the owner's handle row exports both columns in declaration \
+         order — the identity as 64 lowercase hex, the u32 discriminator as a BARE number."
     );
 
     // --- profile (the only signed 32-bit column in the export) --------------
@@ -1833,6 +1855,7 @@ fn m22s4_serializer_per_table_shape() {
         ("trade_offer", &out_trade),
         ("battle_challenge", &out_challenge),
         ("battle_action", &out_action),
+        ("player_handle", &out_handle),
         ("player", &out_player),
         ("profile", &out_profile),
         ("account", &out_account),
@@ -2095,7 +2118,7 @@ fn m22s4_serializer_empty_owner() {
 // ===========================================================================
 
 /// X2: the exporter registry and the manifest's exportable set are the SAME
-/// SET, in BOTH directions, at exactly seventeen tables, in manifest ORDER.
+/// SET, in BOTH directions, at exactly eighteen tables, in manifest ORDER.
 ///
 /// Neither direction alone is enough. A forward-only check (every exporter
 /// names an exportable table) is green on a registry that exports three tables
@@ -2115,20 +2138,20 @@ fn m22s4_exporter_set_equals_manifest_both_directions() {
     let manifest_order = m22s4_manifest_exportable();
     assert_eq!(
         manifest_order.len(),
-        17,
+        18,
         "m22s4 [X2/floor]: DATA_LIFECYCLE_MANIFEST carries {} exportable entries; the spec's \
-         export scope is exactly SEVENTEEN (twelve erase tables plus four anonymize tables plus \
-         character). If that number legitimately changed, the registry and this floor move \
-         together, in one reviewed diff.",
+         export scope is exactly EIGHTEEN (thirteen erase tables, player_handle among them, plus \
+         four anonymize tables plus character). If that number legitimately changed, the \
+         registry and this floor move together, in one reviewed diff.",
         manifest_order.len()
     );
 
     let registry: Vec<String> = super::EXPORTERS.iter().map(|e| e.0.to_string()).collect();
     assert_eq!(
         registry.len(),
-        17,
+        18,
         "m22s4 [X2/floor]: the exporter registry carries {} entries; the manifest's exportable \
-         set is 17.",
+         set is 18.",
         registry.len()
     );
 
@@ -7875,8 +7898,8 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 }
 
 /// T3, THE CRITERION END TO END: eighteen bundles committed through
-/// the mint at one clock, then ONE reaper tick — sixteen WHOLE BUNDLES leave,
-/// not one delete unit.
+/// the mint at one clock, then ONE reaper tick — the fifteen WHOLE BUNDLES its
+/// read window touches leave, not one delete unit.
 ///
 /// THE POPULATION IS MINTED, NEVER HAND-SEEDED, and that is the difference
 /// between this test and `rb109_oversized_tick_...`. A hand-seeded population
@@ -7891,15 +7914,26 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// — which the population clause below reports BEFORE the tick runs at all.
 ///
 /// THE ARITHMETIC, derived from the shipped constants and never transcribed:
-/// eighteen minimum-size bundles are 306 rows, so the 256-row read window
-/// BINDS; that window in ascending stamp order covers fifteen whole bundles and
-/// one row of the sixteenth, so it touches sixteen DISTINCT stamps, which is
-/// also the write cap; each is deleted whole, tail beyond the window included,
-/// so 16 x 17 = 272 rows go and the two newest bundles survive intact. Under
-/// the status-quo shared stamp the same tick plans ONE stamp and reaps all 306
-/// rows in one transaction — the unbounded delete unit, and the abort-loop
-/// hazard that silently retains expired personal data past the seven-day
-/// ceiling.
+/// eighteen minimum-size bundles of eighteen chunks are 324 rows, so the
+/// 256-row read window BINDS; that window in ascending stamp order covers
+/// fourteen whole bundles (252 rows) and four rows of the fifteenth, so it
+/// touches FIFTEEN distinct stamps, one below the write cap of sixteen; each
+/// is deleted whole, tail beyond the window included, so 15 x 18 = 270 rows go
+/// (more than the 256 read) and the three newest bundles (54 rows) survive
+/// intact. Under the status-quo shared stamp the same tick plans ONE stamp and
+/// reaps all 324 rows in one transaction — the unbounded delete unit, and the
+/// abort-loop hazard that silently retains expired personal data past the
+/// seven-day ceiling.
+///
+/// WHAT THIS TEST DOES NOT SHOW. With an eighteen-chunk minimum bundle the
+/// read window binds BEFORE the stamp cap: sixteen minimum bundles are 288
+/// rows, more than the 256 a tick reads, so a population of minimum-size
+/// minted bundles can never put a seventeenth stamp in the window. The stamp
+/// cap binding is proven by `rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps`
+/// (thirteen-chunk bundles, planned 16 of 20) and by the short-stamp populations
+/// in `rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows`
+/// (ticks A, A-prime and C: planned 16 of 20, 16 of 17 and 16 of 20), which
+/// seed bundles shorter than the minimum on purpose.
 ///
 /// The tick is driven through `rb109_tick`, the file's ONE naming of the
 /// private reaper helper: a second spelling here would red
@@ -7908,13 +7942,16 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 ///
 /// Kills: the status-quo body (the population clause, before the tick); a mint
 /// that reuses a live stamp under any spelling (same clause); a tick that
-/// stopped at the window's edge (reaped 256 rather than 272); the stamp cap
-/// dropped (planned 18, reaped 306); the read cap dropped (read 306); a
-/// survivor set of the right SIZE but the wrong IDENTITY, which every count
-/// clause here is blind to (the triple comparison); numbers moved to match the
-/// code rather than re-derived (the constants pin).
+/// stopped at the window's edge (reaped 256 rather than 270); the read cap
+/// dropped (read 324, due 18, planned 16 at the stamp cap, reaped 16 x 18 = 288); a `due` count that is not the
+/// window's distinct expired stamps; a survivor set of the right SIZE but the
+/// wrong IDENTITY, which every count clause here is blind to (the triple
+/// comparison); numbers moved to match the code rather than re-derived (the
+/// constants pin). NOT killed here: the stamp cap dropped (the window holds
+/// fifteen stamps, so planned is 15 either way; the two tests named above own
+/// that mutant).
 #[test]
-fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
+fn rb111_one_tick_reaps_fifteen_whole_bundles_from_a_same_millisecond_burst() {
     let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
     let read_cap = crate::privacy::EXPORT_REAP_MAX_READ_PER_TICK;
     let stamp_cap = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK;
@@ -7930,12 +7967,24 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
     // so it is re-derived from the spec rather than quietly followed.
     assert_eq!(
         (read_cap, stamp_cap, min_bundle, window),
-        (256usize, 16usize, 17usize, 16usize),
+        (256usize, 16usize, 18usize, 16usize),
         "[rb111/bound-attribution]: the shipped read cap, stamp cap, minimum bundle and probe \
          window read ({read_cap}, {stamp_cap}, {min_bundle}, {window}); this population was \
-         sized against (256, 16, 17, 16) — 18 bundles of 17 chunks is 306 rows, which makes the \
-         256-row read window BIND and leaves the window touching exactly 16 distinct stamps. \
-         Re-derive every number in this test from the spec before touching anything else."
+         sized against (256, 16, 18, 16) — 18 bundles of 18 chunks is 324 rows, which makes the \
+         256-row read window BIND and leaves the window touching exactly 15 distinct stamps, \
+         one below the stamp cap. Re-derive every number in this test from the spec before \
+         touching anything else."
+    );
+    // The stamps a full ascending read window touches when every bundle is
+    // `min_bundle` rows: ceil(256 / 18) = 15 (fourteen whole bundles and four
+    // rows of a fifteenth).
+    let touched = read_cap.div_ceil(min_bundle);
+    assert!(
+        touched < stamp_cap && touched < bundles,
+        "[rb111/bound-attribution]: a full read window over minimum-size bundles touches \
+         {touched} stamp(s) against a stamp cap of {stamp_cap} and a population of {bundles} \
+         bundles. The claims below are that the READ window binds and the stamp cap does not; \
+         a window touching the cap or the whole population makes them a different claim."
     );
 
     let fx = crate::native_host_tests::fixture();
@@ -8005,7 +8054,7 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
 
     let newest = *sorted.last().expect("rb111: the population is not empty");
     let tick_now = newest.saturating_add(crate::privacy::EXPORT_BUNDLE_TTL_MS);
-    let (read, planned, reaped, _) = rb109_tick(&ctx, tick_now);
+    let (read, planned, reaped, due) = rb109_tick(&ctx, tick_now);
 
     assert_eq!(
         read, read_cap,
@@ -8014,34 +8063,37 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
          bound on the payload bytes it materialises under the global write lock."
     );
     assert_eq!(
-        planned, stamp_cap,
-        "[rb111/bound-planned]: the tick planned {planned} creation stamp(s); the per-tick WRITE \
-         bound is {stamp_cap}. ONE is the status quo — a single shared stamp under every bundle \
-         the burst committed — and it is the number that makes the write set unbounded."
+        (planned, due),
+        (touched, touched),
+        "[rb111/bound-planned]: the tick planned {planned} creation stamp(s) and reported {due} \
+         due; the read window touches {touched} distinct stamps, below the per-tick WRITE bound \
+         of {stamp_cap}, so every one of them is both due and planned. ONE is the status quo — a \
+         single shared stamp under every bundle the burst committed — and it is the number that \
+         makes the write set unbounded; a `due` of {bundles} beside a `planned` of {stamp_cap} \
+         is the read cap dropped."
     );
     assert_eq!(
         reaped,
-        stamp_cap * min_bundle,
-        "[rb111/bound-bundles]: THE RESIDUAL ITSELF. The tick deleted {reaped} row(s); sixteen \
+        touched * min_bundle,
+        "[rb111/bound-bundles]: THE RESIDUAL ITSELF. The tick deleted {reaped} row(s); {touched} \
          WHOLE BUNDLES of {min_bundle} chunks is {}. Since rb-111 a creation stamp is exactly \
-         one live request, so the reaper's cap of {stamp_cap} stamps per tick is {stamp_cap} \
-         BUNDLES; before it, every bundle a same-millisecond burst committed shared one stamp \
-         and the same tick retired all {seeded} rows in one transaction — 16 x (bundles per \
-         stamp), soft-bounded in the attacker's direction, and an abort loop there silently \
-         retains expired personal data past the seven-day ceiling.",
-        stamp_cap * min_bundle
+         one live request, so each stamp the tick plans is ONE bundle; before it, every bundle a \
+         same-millisecond burst committed shared one stamp and the same tick retired all \
+         {seeded} rows in one transaction — soft-bounded in the attacker's direction, and an \
+         abort loop there silently retains expired personal data past the seven-day ceiling.",
+        touched * min_bundle
     );
     assert!(
-        reaped > read && reaped % min_bundle == 0 && reaped / min_bundle == stamp_cap,
+        reaped > read && reaped % min_bundle == 0 && reaped / min_bundle == touched,
         "[rb111/bound-attribution]: the tick read {read} row(s) and deleted {reaped}. The write \
          set must be a WHOLE NUMBER OF BUNDLES — {reaped} is {} bundles of {min_bundle} — and it \
-         must EXCEED the read, because the sixteenth stamp's tail lies past the window's edge \
+         must EXCEED the read, because the last touched stamp's tail lies past the window's edge \
          and goes with it. Equal counts mean the delete stopped at the window; a remainder means \
          a bundle was cut. The product is read off the shipped constants, never transcribed.",
         reaped / min_bundle
     );
 
-    let floor = sorted[stamp_cap];
+    let floor = sorted[touched];
     let mut expected_survivors: Vec<(spacetimedb::Identity, i64, u64)> = Vec::new();
     for (i, stamp) in stamps.iter().enumerate() {
         if *stamp < floor {
@@ -8059,24 +8111,24 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
     expected_survivors.sort_unstable_by_key(|(_, stamp, chunk)| (*stamp, *chunk));
     assert_eq!(
         expected_survivors.len(),
-        (bundles - stamp_cap) * min_bundle,
+        (bundles - touched) * min_bundle,
         "[rb111/bound-survivors]: the ORACLE itself describes {} row(s); it must describe {} — \
          the {} newest bundles of {min_bundle} chunks each. A wrong floor turns this oracle into \
          a different, still self-consistent claim.",
         expected_survivors.len(),
-        (bundles - stamp_cap) * min_bundle,
-        bundles - stamp_cap
+        (bundles - touched) * min_bundle,
+        bundles - touched
     );
     let observed = rb111_triples(&t);
     assert_eq!(
         observed,
         expected_survivors,
-        "[rb111/bound-survivors]: the store holds {} row(s) and must hold the {} rows of the two \
-         NEWEST bundles, whole. Compared as a sorted SET of (owner, stamp, chunk id) triples and \
-         not as a count: a tick that retired the wrong sixteen bundles leaves the same number of \
-         rows behind with a disjoint identity, and every numeric clause above stays green over \
-         it. WHICH bundles survive is the fairness claim — the cap discards the youngest stamps \
-         in the window, so the oldest personal data always leaves first.",
+        "[rb111/bound-survivors]: the store holds {} row(s) and must hold the {} rows of the \
+         three NEWEST bundles, whole. Compared as a sorted SET of (owner, stamp, chunk id) \
+         triples and not as a count: a tick that retired the wrong fifteen bundles leaves the \
+         same number of rows behind with a disjoint identity, and every numeric clause above \
+         stays green over it. WHICH bundles survive is the fairness claim — the read window \
+         takes the oldest stamps first, so the oldest personal data always leaves first.",
         observed.len(),
         expected_survivors.len()
     );
@@ -8522,8 +8574,10 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
 ///     is 208 rows plus 48 of the sixty-row bundle: SEVENTEEN stamps, the same
 ///     sixteen planned, the same 208 reaped.
 ///   - B, rb-109's oversized population: twenty expired bundles of seventeen
-///     rows and six live. The window is fifteen whole bundles and one row of a
-///     sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
+///     rows and six live. Seventeen rows is the minimum bundle as written
+///     before the eighteenth exportable table, one row short of the shipped
+///     minimum of eighteen. The window is fifteen whole bundles and one row of
+///     a sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
 ///   - C, the rb-87 residual's own case: twenty expired bundles of FIVE rows and
 ///     none live. The range runs out at 100 rows holding twenty stamps; sixteen
 ///     are planned and 80 rows reaped.
@@ -8549,13 +8603,16 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
 
     assert_eq!(
         (read_cap, stamp_cap, min_bundle),
-        (256usize, 16usize, 17usize),
+        (256usize, 16usize, 18usize),
         "[rb115/tick-sizing]: the shipped read cap, stamp cap and minimum bundle read \
          ({read_cap}, {stamp_cap}, {min_bundle}); the four populations below were sized against \
-         (256, 16, 17) — thirteen- and five-row bundles are SHORT stamps against a seventeen-row \
-         minimum, which is what lets the cap bind at all on an ascending read. A value that moves \
-         makes every tuple below a different, still self-consistent claim: re-derive each one \
-         from the spec before touching anything else."
+         (256, 16, 18) — thirteen- and five-row bundles are SHORT stamps against an eighteen-row \
+         minimum, which is what lets the cap bind at all on an ascending read (sixteen bundles \
+         of eighteen rows are 288, past the 256-row window, so a window of minimum-size bundles \
+         holds at most fifteen stamps), and B's seventeen-row bundles are the minimum as written \
+         before the eighteenth exportable table. A value that moves makes every tuple below a \
+         different, still self-consistent claim: re-derive each one from the spec before \
+         touching anything else."
     );
 
     let pop_a = rb115_uniform(cutoff, 20, 2, 13);
@@ -8609,9 +8666,10 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
         "[rb115/tick-exact]: tick B reported {b:?}; the spec's arithmetic is (256, 16, 272, 16) \
          — fifteen whole seventeen-row bundles and one row of a sixteenth fill the window, so it \
          holds exactly SIXTEEN stamps, all of them planned, each deleted whole with its tail. \
-         `due` equal to `planned` here is not a coincidence: it is what a well-formed tick over \
-         bundles this module writes reports, which is why the new field is a tripwire and not a \
-         backlog signal."
+         `due` equal to `planned` here is not a coincidence: a full window over bundles of \
+         seventeen rows or more holds at most sixteen stamps, so a well-formed tick over bundles \
+         this module writes (eighteen rows or more) reports it, which is why the new field is a \
+         tripwire and not a backlog signal."
     );
     let b_expired_left = b_left.iter().filter(|stamp| **stamp <= cutoff).count();
     assert!(
@@ -8619,7 +8677,7 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
         "[rb115/window-edge]: a DISCLOSURE, asserted as a value so it cannot drift into a claim. \
          Tick B planned every stamp its window held ({b:?}), yet {b_expired_left} expired row(s) \
          are still in the store; the spec says 68 — the four newest expired bundles of seventeen \
-         rows, all past the full window's edge. `due` is taken OVER the window, so it inherits \
+         rows (the pre-eighteenth-table minimum), all past the full window's edge. `due` is taken OVER the window, so it inherits \
          that blindness: a full window whose every stamp was planned says nothing about rows past \
          its edge. That half of the rb-87 residual is R-rb-115-X8, and it stays open."
     );
@@ -8669,6 +8727,244 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
          yield the host models (R-rb-109-ORDERMODEL, open). What `due` adds is not WHETHER but \
          HOW MANY stamps the window held — which the twin clauses above show the three counts \
          cannot say."
+    );
+}
+
+// ===========================================================================
+// The minted discriminator in the export: the caller's `player_handle` row and
+// the two tag columns of the caller's `player` row.
+// ===========================================================================
+
+/// `json_player_handle` and `json_player` over rows carrying a non-zero
+/// discriminator and lead level: the handle row is exactly
+/// `{owner_identity, discriminator}` and the player row ends with
+/// `discriminator` then `lead_level`, every one of the three numbers BARE.
+///
+/// kills: an empty or placeholder handle serializer; the two `player` columns
+/// dropped, swapped or quoted; a handle serializer that emits a constant or
+/// another column in place of the discriminator.
+#[test]
+fn the_player_handle_and_the_player_tag_columns_serialize_into_the_export_ih1_8() {
+    let owner = m22s4_id_a();
+    let handle = crate::schema::PlayerHandle {
+        owner_identity: owner,
+        discriminator: 77_777,
+    };
+    assert_eq!(
+        super::json_player_handle(&handle),
+        m22s4_obj(&[
+            ("owner_identity", m22s4_qid(owner)),
+            ("discriminator", m22s4_bare(77_777)),
+        ]),
+        "the handle row exports its owner and its discriminator"
+    );
+    let player = Player {
+        identity: owner,
+        entity_id: 31,
+        name: "Ada".to_string(),
+        online: false,
+        last_input_seq: 5,
+        discriminator: 77_777,
+        lead_level: 42,
+    };
+    assert_eq!(
+        super::json_player(&player),
+        m22s4_obj(&[
+            ("identity", m22s4_qid(owner)),
+            ("entity_id", m22s4_quoted_num(31)),
+            ("name", m22s4_qtxt("Ada")),
+            ("online", m22s4_bool(false)),
+            ("last_input_seq", m22s4_quoted_num(5)),
+            ("discriminator", m22s4_bare(77_777)),
+            ("lead_level", m22s4_bare(42)),
+        ]),
+        "the player row exports its discriminator and lead level, last"
+    );
+}
+
+/// The tables `request_data_export` reaches on the native host: `player` and
+/// `player_handle` read by owner, `playtest_event` and `battle_action` scanned
+/// (their own-row predicates read every row), `export_bundle` written, scanned
+/// (the admission count) and read by owner, chunk id and creation stamp, and
+/// the reaper's schedule table written and scanned. Every other exportable
+/// table is read through an index no fixture registered, so it yields nothing.
+struct Ih1Export<'a> {
+    players: crate::native_host_tests::Handle<'a, Player>,
+    handles: crate::native_host_tests::Handle<'a, crate::schema::PlayerHandle>,
+    chunks: crate::native_host_tests::Handle<'a, crate::schema::ExportBundle>,
+}
+
+fn ih1_export_world(fx: &crate::native_host_tests::Fixture) -> Ih1Export<'_> {
+    let _ =
+        fx.table_keyed::<crate::schema::PlayerHandle, u32>("player_handle", "discriminator", |r| {
+            r.discriminator
+        });
+    let _ = fx
+        .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+        .scannable();
+    let _ = fx
+        .table_keyed::<BattleAction, u64>("battle_action", "action_id", |r| r.action_id)
+        .scannable();
+    let _ = fx.table_keyed::<crate::schema::ExportBundle, u64>("export_bundle", "chunk_id", |r| {
+        r.chunk_id
+    });
+    let _ =
+        fx.table_keyed::<crate::schema::ExportBundle, i64>("export_bundle", "created_at_ms", |r| {
+            r.created_at_ms
+        });
+    let _ = fx
+        .table_keyed::<super::ExportBundleReaperSchedule, u64>(
+            "export_bundle_reaper_schedule",
+            "id",
+            |r| r.id,
+        )
+        .writable()
+        .scannable()
+        .auto_inc(|r| r.id, |r, v| r.id = v);
+    Ih1Export {
+        players: fx.table::<Player>("player", "identity", |r| r.identity),
+        handles: fx.table::<crate::schema::PlayerHandle>("player_handle", "owner_identity", |r| {
+            r.owner_identity
+        }),
+        chunks: fx
+            .table::<crate::schema::ExportBundle>("export_bundle", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .scannable()
+            .auto_inc(|r| r.chunk_id, |r, v| r.chunk_id = v),
+    }
+}
+
+impl Ih1Export<'_> {
+    fn seed_player(&self, who: Identity, entity_id: u64, discriminator: u32, lead_level: u8) {
+        self.players.seed(&Player {
+            identity: who,
+            entity_id,
+            name: "Ada".to_string(),
+            online: true,
+            last_input_seq: 0,
+            discriminator,
+            lead_level,
+        });
+    }
+
+    /// `who`'s chunks as `(table_name, payload_json)`.
+    fn chunks_of(&self, who: Identity) -> Vec<(String, String)> {
+        self.chunks
+            .rows()
+            .into_iter()
+            .filter(|c| c.owner_identity == who)
+            .map(|c| (c.table_name, c.payload_json))
+            .collect()
+    }
+}
+
+/// The JSON of the `player` row `Ih1Export::seed_player` writes.
+fn ih1_player_json(who: Identity, entity_id: u64, discriminator: u32, lead_level: u8) -> String {
+    m22s4_obj(&[
+        ("identity", m22s4_qid(who)),
+        ("entity_id", m22s4_quoted_num(i128::from(entity_id))),
+        ("name", m22s4_qtxt("Ada")),
+        ("online", m22s4_bool(true)),
+        ("last_input_seq", m22s4_quoted_num(0)),
+        ("discriminator", m22s4_bare(i128::from(discriminator))),
+        ("lead_level", m22s4_bare(i128::from(lead_level))),
+    ])
+}
+
+/// Through the shipped `request_data_export` on the native host: the caller
+/// (a `player` row tagged 4207 at lead level 13, and its handle 4207) and a
+/// stranger (its own tagged `player` row and a handle holding 9000001) are both
+/// stored. The caller's bundle holds one chunk per exportable table, exactly one
+/// of them for `player_handle`, whose payload holds exactly ONE row, the
+/// caller's; the `player` chunk's row carries the caller's two values; no chunk
+/// of the bundle names the stranger or its value. A second caller that holds no
+/// handle gets a `player_handle` chunk with an empty rows array.
+///
+/// kills: no `player_handle` exporter; an exporter that reads every handle row
+/// or the wrong owner's; the two `player` columns left out of the export; an
+/// exporter that drops the empty chunk for a caller with no handle.
+#[test]
+fn an_export_holds_the_callers_handle_and_no_other_identitys_ih1_8() {
+    let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
+    let t0: i64 = 1_700_000_000_000;
+    let caller = m22s4_id(0xE1);
+    let stranger = m22s4_id(0xE2);
+    let handless = m22s4_id(0xE3);
+    let fx = crate::native_host_tests::fixture();
+    let w = ih1_export_world(&fx);
+    w.seed_player(caller, 41, 4_207, 13);
+    w.handles.seed(&crate::schema::PlayerHandle {
+        owner_identity: caller,
+        discriminator: 4_207,
+    });
+    w.seed_player(stranger, 42, 9_000_001, 9);
+    w.handles.seed(&crate::schema::PlayerHandle {
+        owner_identity: stranger,
+        discriminator: 9_000_001,
+    });
+    w.seed_player(handless, 43, 0, 0);
+
+    assert_eq!(
+        fx.run_as_at(caller, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "the caller's export is served"
+    );
+
+    let chunks = w.chunks_of(caller);
+    let mut names: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
+    names.sort_unstable();
+    let mut exportable = m22s4_manifest_exportable();
+    exportable.sort_unstable();
+    assert_eq!(names, exportable, "one chunk per exportable table");
+    let payloads_for = |table: &str| -> Vec<String> {
+        chunks
+            .iter()
+            .filter(|(t, _)| t == table)
+            .map(|(_, p)| p.clone())
+            .collect()
+    };
+    let own_handle = m22s4_obj(&[
+        ("owner_identity", m22s4_qid(caller)),
+        ("discriminator", m22s4_bare(4_207)),
+    ]);
+    assert_eq!(
+        payloads_for("player_handle"),
+        vec![m22s4_expected_payload("player_handle", &[own_handle])],
+        "exactly one player_handle chunk, holding exactly the caller's row"
+    );
+    assert_eq!(
+        payloads_for("player"),
+        vec![m22s4_expected_payload(
+            "player",
+            &[ih1_player_json(caller, 41, 4_207, 13)]
+        )],
+        "the player chunk carries the caller's discriminator and lead level"
+    );
+    let stranger_hex = stranger.to_string();
+    for (table, payload) in &chunks {
+        assert!(
+            !payload.contains("9000001") && !payload.contains(&stranger_hex),
+            "the `{table}` chunk names the stranger or its handle: {payload}"
+        );
+    }
+
+    assert_eq!(
+        fx.run_as_at(handless, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "a caller with no handle is served too"
+    );
+    let empty: Vec<String> = w
+        .chunks_of(handless)
+        .into_iter()
+        .filter(|(t, _)| t == "player_handle")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        empty,
+        vec![m22s4_expected_payload("player_handle", &[])],
+        "a caller with no handle gets one player_handle chunk with an empty rows array"
     );
 }
 

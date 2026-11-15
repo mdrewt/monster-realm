@@ -1996,6 +1996,8 @@ fn rb80_seed_player(fx: &crate::native_host_tests::Fixture, me: Identity) {
         name: String::new(),
         online: true,
         last_input_seq: 0,
+        discriminator: 0,
+        lead_level: 0,
     });
 }
 
@@ -2456,6 +2458,8 @@ mod nh {
                 name: String::new(),
                 online: true,
                 last_input_seq: 0,
+                discriminator: 0,
+                lead_level: 0,
             });
             self.chars.seed(&Character {
                 entity_id,

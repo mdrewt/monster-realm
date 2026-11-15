@@ -1272,6 +1272,8 @@ impl NhWorld<'_> {
             name: String::new(),
             online,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
     }
     fn monster(&self, id: u64, owner: Identity, party_slot: u8) {

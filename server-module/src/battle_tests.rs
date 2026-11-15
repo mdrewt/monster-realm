@@ -2272,6 +2272,8 @@ fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
             name: String::new(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
         fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
             .seed(&Character {

@@ -187,6 +187,8 @@ fn rb46_seed_player(fx: &crate::native_host_tests::Fixture, me: Identity) {
         name: String::new(),
         online: true,
         last_input_seq: 0,
+        discriminator: 0,
+        lead_level: 0,
     });
 }
 
@@ -736,6 +738,8 @@ fn ec_bare_world(fx: &EcFixture) -> EcWorld<'_> {
             name: String::new(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
     }
     let (chars, npcs) = ec_reach_tables(fx);

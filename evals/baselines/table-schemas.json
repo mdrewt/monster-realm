@@ -183,16 +183,23 @@
       "entity_id": "u64",
       "name": "String",
       "online": "bool",
-      "last_input_seq": "u64"
+      "last_input_seq": "u64",
+      "discriminator": "u32",
+      "lead_level": "u8"
     },
     "order": [
       "identity",
       "entity_id",
       "name",
       "online",
-      "last_input_seq"
+      "last_input_seq",
+      "discriminator",
+      "lead_level"
     ],
-    "defaults": [],
+    "defaults": [
+      "discriminator",
+      "lead_level"
+    ],
     "unique": [],
     "indexes": [
       "entity_id"
@@ -1771,6 +1778,24 @@
     "indexes": [
       "zone_id"
     ],
+    "scheduled": null
+  },
+  "player_handle": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "discriminator": "u32"
+    },
+    "order": [
+      "owner_identity",
+      "discriminator"
+    ],
+    "defaults": [],
+    "unique": [
+      "discriminator"
+    ],
+    "indexes": [],
     "scheduled": null
   }
 }

@@ -314,6 +314,8 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
         name: "rb73-subject".to_string(),
         online: true,
         last_input_seq: 0,
+        discriminator: 0,
+        lead_level: 0,
     });
     character_t.seed(&Character {
         entity_id: ENTITY_ID,
