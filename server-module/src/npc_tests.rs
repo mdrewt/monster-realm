@@ -575,6 +575,192 @@ fn rb41_dialogue_state_tracks_real_dialogue_rows() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The starter marker: `sys:starter_claimed` in the owner's dialogue row.
+// ---------------------------------------------------------------------------
+
+const MARKER: &str = "sys:starter_claimed";
+
+fn strings(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+/// `owner`'s dialogue rows as `(sorted flags, done_quests)`.
+fn dialogue_rows_of(
+    t: &crate::native_host_tests::Handle<'_, PlayerDialogueStateRow>,
+    owner: Identity,
+) -> Vec<(Vec<String>, Vec<String>)> {
+    t.rows()
+        .into_iter()
+        .filter(|r| r.owner_identity == owner)
+        .map(|r| {
+            let mut flags = r.flags;
+            flags.sort();
+            (flags, r.done_quests)
+        })
+        .collect()
+}
+
+/// The claim re-key over a dialogue row that holds the starter marker: the
+/// destination receives the whole row (every flag, the marker included, and the
+/// done quests); the source keeps a tombstone holding only its `sys:` flags and a
+/// copy of its done quests. A bystander's row is untouched.
+///
+/// kills: a re-key that drops the marker or the quest history on the way to the
+/// account; a source left with no row (the retired guest could claim a second
+/// starter); a tombstone that keeps an ordinary flag or loses the done quests.
+#[test]
+fn rekey_npc_state_moves_the_whole_row_and_leaves_the_source_its_sys_flags() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx
+        .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+            r.owner_identity
+        })
+        .writable()
+        .unique();
+    let ctx = fx.ctx();
+    let guest = Identity::from_byte_array([31u8; 32]);
+    let account = Identity::from_byte_array([32u8; 32]);
+    let bystander = Identity::from_byte_array([33u8; 32]);
+    t.seed(&PlayerDialogueStateRow {
+        owner_identity: guest,
+        flags: strings(&["met_elder_oak", MARKER]),
+        done_quests: strings(&["quest_001"]),
+    });
+    t.seed(&PlayerDialogueStateRow {
+        owner_identity: bystander,
+        flags: strings(&[MARKER, "x"]),
+        done_quests: vec![],
+    });
+    let bystander_before = dialogue_rows_of(&t, bystander);
+
+    crate::npc::rekey_npc_state(&ctx, guest, account);
+
+    assert_eq!(
+        dialogue_rows_of(&t, account),
+        vec![(strings(&["met_elder_oak", MARKER]), strings(&["quest_001"]))],
+        "the account receives the guest's whole dialogue row"
+    );
+    assert_eq!(
+        dialogue_rows_of(&t, guest),
+        vec![(strings(&[MARKER]), strings(&["quest_001"]))],
+        "the guest keeps only its sys: flags and a copy of its done quests"
+    );
+    assert_eq!(
+        dialogue_rows_of(&t, bystander),
+        bystander_before,
+        "a bystander's row is untouched"
+    );
+}
+
+/// The claim re-key over a dialogue row with no `sys:` flag moves the row and
+/// leaves the source no row at all.
+///
+/// kills: a tombstone written for every source (an empty row left under a guest
+/// that never held a marker).
+#[test]
+fn rekey_npc_state_without_a_sys_flag_leaves_the_source_no_row() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx
+        .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+            r.owner_identity
+        })
+        .writable()
+        .unique();
+    let ctx = fx.ctx();
+    let guest = Identity::from_byte_array([34u8; 32]);
+    let account = Identity::from_byte_array([35u8; 32]);
+    t.seed(&PlayerDialogueStateRow {
+        owner_identity: guest,
+        flags: strings(&["met_elder_oak", "my_sys:flag"]),
+        done_quests: strings(&["quest_001"]),
+    });
+
+    crate::npc::rekey_npc_state(&ctx, guest, account);
+
+    assert_eq!(
+        dialogue_rows_of(&t, account),
+        vec![(
+            strings(&["met_elder_oak", "my_sys:flag"]),
+            strings(&["quest_001"])
+        )],
+        "the account receives the whole row"
+    );
+    assert!(
+        dialogue_rows_of(&t, guest).is_empty(),
+        "a row without a sys: flag leaves the source nothing"
+    );
+}
+
+/// `mark_starter_claimed` inserts the owner's row when absent, adds the marker to
+/// an existing row keeping every other flag and the done quests, and is
+/// idempotent; `starter_claimed` reads the marker per owner.
+///
+/// kills: a marker written for another owner; a write that replaces the row
+/// (losing flags or quest history); a second call that adds a second marker;
+/// `starter_claimed` answering from another owner's row or from row presence.
+#[test]
+fn mark_starter_claimed_inserts_or_adds_the_marker_once_and_starter_claimed_reads_it() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx
+        .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+            r.owner_identity
+        })
+        .writable()
+        .unique();
+    let ctx = fx.ctx();
+    let fresh = Identity::from_byte_array([41u8; 32]);
+    let seasoned = Identity::from_byte_array([42u8; 32]);
+    let stranger = Identity::from_byte_array([43u8; 32]);
+    assert_eq!(crate::npc::STARTER_CLAIMED_FLAG, MARKER);
+    t.seed(&PlayerDialogueStateRow {
+        owner_identity: seasoned,
+        flags: strings(&["met_elder_oak"]),
+        done_quests: strings(&["quest_001"]),
+    });
+    t.seed(&PlayerDialogueStateRow {
+        owner_identity: stranger,
+        flags: strings(&[MARKER]),
+        done_quests: vec![],
+    });
+    assert!(
+        !crate::npc::starter_claimed(&ctx, fresh),
+        "another owner's marker does not count"
+    );
+    assert!(
+        !crate::npc::starter_claimed(&ctx, seasoned),
+        "a dialogue row without the marker is not a claim"
+    );
+
+    crate::npc::mark_starter_claimed(&ctx, fresh);
+    assert_eq!(
+        dialogue_rows_of(&t, fresh),
+        vec![(strings(&[MARKER]), strings(&[]))],
+        "an absent row is inserted holding only the marker"
+    );
+    assert!(crate::npc::starter_claimed(&ctx, fresh));
+
+    crate::npc::mark_starter_claimed(&ctx, seasoned);
+    crate::npc::mark_starter_claimed(&ctx, seasoned);
+    crate::npc::mark_starter_claimed(&ctx, fresh);
+    assert_eq!(
+        dialogue_rows_of(&t, seasoned),
+        vec![(strings(&["met_elder_oak", MARKER]), strings(&["quest_001"]))],
+        "the marker is added once; other flags and the done quests stay"
+    );
+    assert_eq!(
+        dialogue_rows_of(&t, fresh),
+        vec![(strings(&[MARKER]), strings(&[]))],
+        "a second mark adds nothing"
+    );
+    assert!(crate::npc::starter_claimed(&ctx, seasoned));
+    assert_eq!(
+        dialogue_rows_of(&t, stranger),
+        vec![(strings(&[MARKER]), strings(&[]))],
+        "the stranger's row is untouched"
+    );
+}
+
 /// Seed the one `player` row Step 1 / Step 1.5's joined check needs.
 ///
 /// The handle is registered against the SAME fixture the caller's account handle
@@ -2043,6 +2229,42 @@ mod ctl16_battle_guard {
                 "{label}: only the caller's conversation is removed"
             );
         }
+    }
+
+    /// The starter marker survives the dialogue write path: a caller whose row
+    /// holds `sys:starter_claimed` talks to the elder (the greeting stores
+    /// `met_elder_oak`) and takes choice 0 (StartQuest). Afterwards the caller has
+    /// one dialogue row holding both flags.
+    ///
+    /// kills: a dialogue-state write that rebuilds the flags from content-visible
+    /// state only (the marker is lost, and the next join grants a second starter).
+    #[test]
+    fn the_starter_marker_survives_talk_and_advance_dialogue() {
+        let fx = fixture();
+        let w = world(&fx);
+        let marker = "sys:starter_claimed".to_string();
+        w.states.seed(&PlayerDialogueStateRow {
+            owner_identity: ME,
+            flags: vec![marker.clone()],
+            done_quests: vec![],
+        });
+        assert_eq!(fx.run_as(ME, |ctx| super::talk(ctx, NPC)), Ok(()), "talk");
+        assert_eq!(
+            fx.run_as(ME, |ctx| super::advance_dialogue(ctx, 0)),
+            Ok(()),
+            "advance_dialogue"
+        );
+        let states = w.states.rows();
+        assert_eq!(states.len(), 1, "one dialogue row");
+        assert_eq!(states[0].owner_identity, ME);
+        let mut flags = states[0].flags.clone();
+        flags.sort();
+        assert_eq!(
+            flags,
+            vec![FLAG.to_string(), marker],
+            "the greeting's flag joins the marker; the marker stays"
+        );
+        assert_eq!(w.quests.rows().len(), 1, "choice 0 started quest_001");
     }
 }
 

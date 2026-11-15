@@ -36,11 +36,14 @@ import { ownerSql, sqlRows } from './stdb';
 //     rows and its schedule row; each received monster lands in the receiver's lowest free party
 //     slot once its own outgoing monster has left (game-core trading/session.rs `arrival_slots`);
 //     item and coin legs debit the giver and credit the receiver by exactly the offered amount.
-//   - a fresh identity has exactly one starter monster, no items and no wallet row.
+//   - a fresh identity has exactly one starter monster and the starter kit: one stack of item 1
+//     (count 2), one of item 3 (count 1) and a wallet row of 200.
 //
-// SEEDED STATE (owner SQL, ./stdb.ts `ownerSql`). A fresh identity holds no item and no coin, so
-// without seeding the conservation checks below could not fail for items or coins. Before the
-// open the swap test seeds: A a stack of ITEM_X and a wallet, B a stack of ITEM_X and a wallet,
+// SEEDED STATE (owner SQL, ./stdb.ts `ownerSql`). A fresh identity holds the kit's equal stacks and
+// balances, so the swap test sets them apart before the open, by UPDATE of the kit's own rows (one
+// stack per owner and item is a server invariant, and owner_identity keys the wallet, so a second
+// INSERTed row would break the one and collide with the other): A's ITEM_X stack and wallet, B's
+// ITEM_X stack and wallet, each to a value the kit does not hold, read back before the trade;
 // and gives B a second monster that STAYS in party slot 0 (a third identity C's starter, moved to
 // B by owner SQL on `monster` and `monster_pub`), with B's own starter moved to party slot 2. So
 // B's lowest free slot after its outgoing monster leaves is 1: a received monster parked in a
@@ -119,17 +122,24 @@ const HOOK_MEMBERS = [
 const PARTY_SIZE = 6;
 
 /** A KNOWN item id (`item_row` holds it; the swap test re-proves that): an unknown id is refused
- *  by set_trade_offer before the stack rule. Item 1 is the bait recruit.spec.ts seeds. */
+ *  by set_trade_offer before the stack rule. Item 1 is the starter kit's Lure Berry. */
 const ITEM_X = 1;
-/** A's seeded stack of ITEM_X and how many of it A gives: a partial stack, so A keeps a row. */
+/** The starter kit every fresh identity holds: ITEM_X x2, KIT_OTHER_ITEM (Antidote) x1, 200 coins. */
+const KIT_ITEM_X_COUNT = 2;
+const KIT_OTHER_ITEM = 3;
+const KIT_OTHER_COUNT = 1;
+const KIT_BALANCE = 200;
+/** A's seeded stack of ITEM_X and how many of it A gives: a partial stack, so A keeps a row. It
+ *  differs from the kit's 2, so the seed's read-back proves the UPDATE landed. */
 const A_STACK = 5;
 const A_ITEM_LEG = 2;
 /** B's seeded stack of ITEM_X: non-zero, so a receiver credit that overwrites instead of adding
- *  shows. */
+ *  shows, and not the kit's 2, so the seed's read-back proves the UPDATE landed. */
 const B_STACK = 3;
-/** The seeded balances and the coins B gives A. A's balance is non-zero for the same reason. */
+/** The seeded balances and the coins B gives A. A's balance is non-zero for the same reason; both
+ *  differ from each other and from the kit's 200, so each seed's read-back proves its UPDATE. */
 const A_WALLET = 300;
-const B_WALLET = 200;
+const B_WALLET = 250;
 const B_COIN_LEG = 50;
 /** Where B's own starter (the monster B gives) is moved before the open, and where the monster
  *  B keeps sits: B's lowest free slot once its outgoing monster leaves is then 1. */
@@ -336,18 +346,23 @@ function serverBalances(owners: string[]): Record<string, number> {
 
 const sum = (m: Record<string, number>): number => Object.values(m).reduce((a, b) => a + b, 0);
 
-/** Owner SQL: one stack of `itemId` for `ownerHex` (inv_id 0 asks auto_inc for a fresh id). */
+/** Owner SQL: set the count of `ownerHex`'s ONE stack of `itemId` (the kit's row), addressed by
+ *  its inv_id. Throws unless exactly one such stack exists, so it never creates a second one. */
 function seedStack(ownerHex: string, itemId: number, count: number, label: string): void {
-  ownerSql(
-    `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${ownerHex}, ${itemId}, ${count})`,
-    label,
+  const rows = sqlRows(ownerSql('SELECT * FROM inventory', label), label).filter(
+    (r) => norm(r.owner_identity ?? '') === ownerHex && (r.item_id ?? '').trim() === `${itemId}`,
   );
+  if (rows.length !== 1) {
+    throw new Error(`${label}: expected the kit's one stack of item ${itemId}, got ${rows.length}`);
+  }
+  const invId = decimal((rows[0]?.inv_id ?? '').trim(), label);
+  ownerSql(`UPDATE inventory SET count = ${count} WHERE inv_id = ${invId}`, label);
 }
 
-/** Owner SQL: a wallet row for `ownerHex`, which must have none yet. */
+/** Owner SQL: set the balance of `ownerHex`'s wallet row, which the kit wrote at join. */
 function seedWallet(ownerHex: string, balance: number, label: string): void {
   ownerSql(
-    `INSERT INTO player_wallet (owner_identity, balance) VALUES (0x${ownerHex}, ${balance})`,
+    `UPDATE player_wallet SET balance = ${balance} WHERE owner_identity = 0x${ownerHex}`,
     label,
   );
 }
@@ -492,8 +507,8 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // Scenario: B is given a kept monster in slot 0 and its starter moves to slot 2; A and B are
-    // seeded a stack of ITEM_X and a wallet. A walks onto B's tile and opens a session; A offers
+    // Scenario: B is given a kept monster in slot 0 and its starter moves to slot 2; A's and B's
+    // kit stacks of ITEM_X and kit wallets are set to distinct seeded values. A walks onto B's tile and opens a session; A offers
     // its starter plus A_ITEM_LEG of ITEM_X, B offers its starter plus B_COIN_LEG coins; A
     // confirms, B confirms last and the swap executes.
     //
@@ -528,7 +543,7 @@ test.describe
       const hC = hexOf(cBefore.identity, 'C');
       expect([hC === hA, hC === hB], 'C is a third identity').toEqual([false, false]);
 
-      // Each fresh identity holds exactly its one starter, in the party, and no item or coin.
+      // Each fresh identity holds exactly its one starter, in the party, and the starter kit.
       expect(aBefore.ownMonsters.length, 'A holds exactly its starter').toBe(1);
       expect(bBefore.ownMonsters.length, 'B holds exactly its starter').toBe(1);
       expect(cBefore.ownMonsters.length, 'C holds exactly its starter').toBe(1);
@@ -537,8 +552,19 @@ test.describe
       const monC = decimal(cBefore.ownMonsters[0]?.monsterId ?? '', 'C starter');
       expect(aBefore.ownMonsters[0]?.partySlot ?? PARTY_SIZE).toBeLessThan(PARTY_SIZE);
       expect(bBefore.ownMonsters[0]?.partySlot ?? PARTY_SIZE).toBeLessThan(PARTY_SIZE);
-      expect(serverItemTotals([hA, hB]), 'precondition: A and B hold no item').toEqual({});
-      expect(serverBalances([hA, hB]), 'precondition: A and B have no wallet row').toEqual({});
+      expect(
+        serverItemTotals([hA, hB]),
+        'precondition: A and B hold exactly the kit items',
+      ).toEqual({
+        [`${hA}:${ITEM_X}`]: KIT_ITEM_X_COUNT,
+        [`${hA}:${KIT_OTHER_ITEM}`]: KIT_OTHER_COUNT,
+        [`${hB}:${ITEM_X}`]: KIT_ITEM_X_COUNT,
+        [`${hB}:${KIT_OTHER_ITEM}`]: KIT_OTHER_COUNT,
+      });
+      expect(serverBalances([hA, hB]), 'precondition: A and B hold exactly the kit coins').toEqual({
+        [hA]: KIT_BALANCE,
+        [hB]: KIT_BALANCE,
+      });
       const known = sqlRows(ownerSql('SELECT id FROM item_row', 'item_row'), 'item_row').map((r) =>
         (r.id ?? '').trim(),
       );
@@ -579,9 +605,11 @@ test.describe
       );
       const itemsBefore = serverItemTotals([hA, hB]);
       const balancesBefore = serverBalances([hA, hB]);
-      expect(itemsBefore, 'server: the seeded stacks').toEqual({
+      expect(itemsBefore, 'server: the seeded stacks, beside the untouched kit Antidotes').toEqual({
         [`${hA}:${ITEM_X}`]: A_STACK,
+        [`${hA}:${KIT_OTHER_ITEM}`]: KIT_OTHER_COUNT,
         [`${hB}:${ITEM_X}`]: B_STACK,
+        [`${hB}:${KIT_OTHER_ITEM}`]: KIT_OTHER_COUNT,
       });
       expect(balancesBefore, 'server: the seeded wallets').toEqual({
         [hA]: A_WALLET,
@@ -718,10 +746,12 @@ test.describe
         const balancesAfter = serverBalances([hA, hB]);
         expect(
           itemsAfter,
-          'server: A`s stack fell and B`s rose by exactly the item leg, nothing else held',
+          'server: A`s stack fell and B`s rose by exactly the item leg, the kit Antidotes untouched, nothing else held',
         ).toEqual({
           [`${hA}:${ITEM_X}`]: A_STACK - A_ITEM_LEG,
+          [`${hA}:${KIT_OTHER_ITEM}`]: KIT_OTHER_COUNT,
           [`${hB}:${ITEM_X}`]: B_STACK + A_ITEM_LEG,
+          [`${hB}:${KIT_OTHER_ITEM}`]: KIT_OTHER_COUNT,
         });
         expect(
           balancesAfter,
@@ -735,7 +765,7 @@ test.describe
           'server: the item and coin totals are conserved',
         ).toEqual([sum(itemsBefore), sum(balancesBefore)]);
         expect([sum(itemsBefore), sum(balancesBefore)], 'the seeded totals').toEqual([
-          A_STACK + B_STACK,
+          A_STACK + B_STACK + 2 * KIT_OTHER_COUNT,
           A_WALLET + B_WALLET,
         ]);
 

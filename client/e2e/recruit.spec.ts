@@ -54,8 +54,9 @@ import {
 // battle. SURVIVING CHECKS, each named at its test:
 //   - R1: retired "`recruit-action` visible + an empty `bait-selector`" → on an own turn NOT
 //     adjacent to the wild the Recruit row is GREYED, and on an own turn ADJACENT (a full budget)
-//     it is live and its bait list shows NO bait row for a fresh inventory — only the no-bait choice
-//     (`bait:none`, tacticsBattle.ts).
+//     it is live and its bait list offers the starter kit's bait row (`bait:1`) beside the no-bait
+//     choice (`bait:none`, tacticsBattle.ts); once the berries are gone from the bag, the same
+//     list offers ONLY the no-bait choice.
 //   - R2: retired the 1v1 weaken + Recruit loop → tactics-wild's weaken-then-recruit loop by
 //     buttons (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with the
 //     seeded bait) → ownMonsters +1, the recruit in the BOX (partySlot 255).
@@ -63,10 +64,13 @@ import {
 //     to a WIN by buttons (`fightToOutcome`; the starter seeded to win) → the results title is the
 //     catalog victory string and the server's battle row is SideAWins.
 //
-// SEEDING (owner SQL, after R1 so R1's "fresh inventory" holds): R2 makes the starter sturdy (300
-// HP, 250 defences — tactics-wild's precedent) and puts one bait (item 1) per possible recruit
-// attempt in its bag (see BAIT_SEED); R3 raises attack to 250 and HP to 999 so any landed hit KOs
-// a zone-0 wild (battle-dpad's precedent).
+// SEEDING (owner SQL). A fresh identity holds the starter kit, Lure Berry (item 1) x2 among it. R1
+// empties the bag of its berries for the no-bait case (the row a sale of the whole stack deletes;
+// the page exposes no sell call) and puts the kit's stack back after. R2 makes the starter sturdy
+// (300 HP, 250 defences — tactics-wild's precedent) and raises the kit's ONE bait stack, by UPDATE
+// of its row (one stack per owner and item is a server invariant), to one bait per possible
+// recruit attempt (see BAIT_SEED); R3 raises attack to 250 and HP to 999 so any landed hit KOs a
+// zone-0 wild (battle-dpad's precedent).
 //
 // BOUNDED-RETRY POLICY
 // ====================
@@ -155,6 +159,8 @@ const WEAK_PCT = 45;
 const SEED_HP = 300;
 const SEED_DEFENSE = 250;
 const BAIT_ITEM_ID = 1;
+/** The starter kit's bait: every identity's first join grants one stack of Lure Berry (item 1) x2. */
+const KIT_BAIT_COUNT = 2;
 /** One bait per possible recruit attempt: a live Recruit debits one bait, success or not
  *  (inventory `consume_one` deletes the row at 0), and the bait list hides an empty bag — a seed
  *  below the loop's attempt budget dies at `bait:1` mid-loop (master red 2026-11-07, CI run
@@ -606,91 +612,155 @@ test.describe
     //   WHEN the player walks onto a grass tile, a wild battle MAY start.
     //   SURVIVING CHECK (bt-16): retired "`recruit-action` visible + `bait-selector` with zero
     //   `data-recruit-bonus` rows" → the Recruit row is GREYED on an own turn not adjacent to the
-    //   wild, LIVE on an own turn adjacent to it (a full budget), and its bait list offers NO bait
-    //   row for a fresh inventory — exactly one `bait:` row, the no-bait choice. Then Flee.
+    //   wild, LIVE on an own turn adjacent to it (a full budget), and its bait list offers the
+    //   starter kit's bait row — exactly two `bait:` rows, `bait:1` and the no-bait choice. Then,
+    //   on the same own turn, with the berries gone from the bag, the list offers exactly one
+    //   `bait:` row, the no-bait choice. Then Flee.
     // -------------------------------------------------------------------------
-    test('R1: the Recruit row is greyed when not adjacent and live when adjacent, and its bait list offers no bait row in a fresh inventory (bt-16: was recruit-action + an empty bait-selector)', async () => {
+    test('R1: the Recruit row is greyed when not adjacent and live when adjacent, and its bait list offers the starter kit bait row, and only the no-bait choice once the bag holds no bait (bt-16: was recruit-action + an empty bait-selector)', async () => {
       // A battle that runs the whole approach bound takes up to ≈ 37 s on a CI runner (battle-dpad's
       // measurement), so MAX_R1_BATTLES of them fit with room for the hunts between.
       test.setTimeout(600_000);
+      const kitBait = (await snap(page)).ownInventory.filter((s) => s.itemId === BAIT_ITEM_ID);
       expect(
-        (await snap(page)).ownInventory.filter((s) => s.itemId === BAIT_ITEM_ID).length,
-        'fixture: a fresh inventory holds no bait',
-      ).toBe(0);
+        kitBait.map((s) => s.count),
+        `fixture: a fresh inventory holds the starter kit's one bait stack of ${KIT_BAIT_COUNT}`,
+      ).toEqual([KIT_BAIT_COUNT]);
+      const kitBaitInvId = kitBait[0]?.invId ?? '';
+      if (!/^[0-9]+$/.test(kitBaitInvId)) {
+        throw new Error(`R1: the kit bait stack has a non-decimal inv_id ${kitBaitInvId}`);
+      }
+      let baitRemoved = false;
+      const baitRows = page.locator('.tactics-menu-row[data-row^="bait:"]');
 
       let sawGreyed = false;
       let checked = false;
       // One line per battle (how it ended and the distance at each own turn) for the final throw.
       const battles: string[] = [];
-      // Both halves are required: a wild already adjacent on the first own turn gives the live
-      // half only, so the battle is fled and the grass re-hunted until the greyed half is seen too.
-      for (let battle = 0; battle < MAX_R1_BATTLES && !(checked && sawGreyed); battle += 1) {
-        await huntEncounter(page, `R1 battle ${battle}`);
-        let last: string | null = null;
-        let doneHere = false;
-        let outcome = `bound@${MAX_APPROACH_TURNS}`;
-        const distances: number[] = [];
-        for (let turn = 0; turn < MAX_APPROACH_TURNS && !doneHere; turn += 1) {
-          const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
-          if (tt.phase !== 'Active') {
-            outcome = `ended:${tt.phase}@${turn}`;
-            break;
-          }
-          last = turnKey(tt);
-          const { me, enemy } = sides(tt);
-          distances.push(tileDistance(me, enemy));
-          await openMenu(page, me);
-          const recruitRow = page.locator(TACTICS.menuRow('recruit'));
-          await expect(recruitRow, 'R1: a wild battle`s menu offers the Recruit row').toHaveCount(
-            1,
-            {
-              timeout: 5_000,
-            },
-          );
-          if (tileDistance(me, enemy) > 1) {
+      try {
+        // Both halves are required: a wild already adjacent on the first own turn gives the live
+        // half only, so the battle is fled and the grass re-hunted until the greyed half is seen.
+        for (let battle = 0; battle < MAX_R1_BATTLES && !(checked && sawGreyed); battle += 1) {
+          await huntEncounter(page, `R1 battle ${battle}`);
+          let last: string | null = null;
+          let doneHere = false;
+          let outcome = `bound@${MAX_APPROACH_TURNS}`;
+          const distances: number[] = [];
+          for (let turn = 0; turn < MAX_APPROACH_TURNS && !doneHere; turn += 1) {
+            const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
+            if (tt.phase !== 'Active') {
+              outcome = `ended:${tt.phase}@${turn}`;
+              break;
+            }
+            last = turnKey(tt);
+            const { me, enemy } = sides(tt);
+            distances.push(tileDistance(me, enemy));
+            await openMenu(page, me);
+            const recruitRow = page.locator(TACTICS.menuRow('recruit'));
+            await expect(recruitRow, 'R1: a wild battle`s menu offers the Recruit row').toHaveCount(
+              1,
+              {
+                timeout: 5_000,
+              },
+            );
+            if (tileDistance(me, enemy) > 1) {
+              await expect(
+                recruitRow,
+                'R1: NOT adjacent to the wild, the Recruit row is greyed',
+              ).toHaveAttribute('aria-disabled', 'true');
+              sawGreyed = true;
+              await draftMoveToward(page, enemy);
+              await endTurn(page);
+              continue;
+            }
+            // Adjacent on a fresh own turn: the row is live and its bait list offers the kit bait.
             await expect(
               recruitRow,
-              'R1: NOT adjacent to the wild, the Recruit row is greyed',
-            ).toHaveAttribute('aria-disabled', 'true');
-            sawGreyed = true;
-            await draftMoveToward(page, enemy);
-            await endTurn(page);
-            continue;
+              'R1: adjacent with a full budget, the Recruit row is live',
+            ).not.toHaveAttribute('aria-disabled', 'true');
+            // The kit half runs on the first adjacent turn only: a later battle (one re-hunted for
+            // the greyed half) meets a bag already emptied below and checks the no-bait half.
+            if (!baitRemoved) {
+              await menuCursorTo(page, 'recruit');
+              await pressButton(page, 'A');
+              await expect(
+                page.locator(TACTICS.menuRow(NO_BAIT_ROW)),
+                'R1: the bait list offers the no-bait choice',
+              ).toHaveCount(1, { timeout: 5_000 });
+              await expect(
+                page.locator(TACTICS.menuRow(`bait:${BAIT_ITEM_ID}`)),
+                'R1: the bait list offers the starter kit bait row',
+              ).toHaveCount(1);
+              await expect(
+                baitRows,
+                'R1: the kit bait row and the no-bait choice, and no other bait row',
+              ).toHaveCount(2);
+              await pressButton(page, 'B'); // the bait list → the root menu
+              await expect(page.locator(TACTICS.menuRow('flee'))).toHaveCount(1, {
+                timeout: 5_000,
+              });
+
+              // The no-bait case, on the same own turn (opening the list spent nothing): the
+              // bag's berries are gone — the row a sale of the whole stack deletes — so the list
+              // offers the no-bait choice alone.
+              ownerSql(`DELETE FROM inventory WHERE inv_id = ${kitBaitInvId}`, 'R1 empty the bag');
+              baitRemoved = true;
+            }
+            await expect
+              .poll(
+                async () =>
+                  (await snap(page)).ownInventory.filter((s) => s.itemId === BAIT_ITEM_ID).length,
+                { message: 'R1: the emptied bait stack leaves the page', timeout: 15_000 },
+              )
+              .toBe(0);
+            await menuCursorTo(page, 'recruit');
+            await pressButton(page, 'A');
+            await expect(
+              page.locator(TACTICS.menuRow(NO_BAIT_ROW)),
+              'R1: the bait list of a bag without bait still offers the no-bait choice',
+            ).toHaveCount(1, { timeout: 5_000 });
+            await expect(
+              baitRows,
+              'R1: a bag without bait offers NO bait row — only the no-bait choice',
+            ).toHaveCount(1);
+            await pressButton(page, 'B'); // the bait list → the root menu
+            await expect(page.locator(TACTICS.menuRow('flee'))).toHaveCount(1, { timeout: 5_000 });
+            checked = true;
+            doneHere = true;
+            outcome = `adjacent@${turn + 1}`;
+            // Flee from the open root menu (Flee needs the whole budget: nothing was spent).
+            await fleeByButtons(page);
           }
-          // Adjacent on a fresh own turn: the row is live and its bait list holds no bait.
-          await expect(
-            recruitRow,
-            'R1: adjacent with a full budget, the Recruit row is live',
-          ).not.toHaveAttribute('aria-disabled', 'true');
-          await menuCursorTo(page, 'recruit');
-          await pressButton(page, 'A');
-          await expect(
-            page.locator(TACTICS.menuRow(NO_BAIT_ROW)),
-            'R1: the bait list offers the no-bait choice',
-          ).toHaveCount(1, { timeout: 5_000 });
-          await expect(
-            page.locator('.tactics-menu-row[data-row^="bait:"]'),
-            'R1: a fresh inventory offers NO bait row — only the no-bait choice',
-          ).toHaveCount(1);
-          await pressButton(page, 'B'); // the bait list → the root menu
-          await expect(page.locator(TACTICS.menuRow('flee'))).toHaveCount(1, { timeout: 5_000 });
-          checked = true;
-          doneHere = true;
-          outcome = `adjacent@${turn + 1}`;
-          // Flee from the open root menu (Flee needs the whole budget: nothing was spent).
-          await fleeByButtons(page);
-        }
-        if (!doneHere) {
-          // The wild kited out of reach or the battle ended: leave it and re-hunt.
-          const now = await readTactics(page);
-          if (now !== null && now.phase === 'Active') {
-            const next = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
-            if (next.phase === 'Active') await fleeByButtons(page);
+          if (!doneHere) {
+            // The wild kited out of reach or the battle ended: leave it and re-hunt.
+            const now = await readTactics(page);
+            if (now !== null && now.phase === 'Active') {
+              const next = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
+              if (next.phase === 'Active') await fleeByButtons(page);
+            }
           }
+          await waitForBattleCleared(page);
+          await throughResults(page, `R1 battle ${battle}`);
+          battles.push(`battle ${battle}: ${outcome} d[${distances.join(',')}]`);
         }
-        await waitForBattleCleared(page);
-        await throughResults(page, `R1 battle ${battle}`);
-        battles.push(`battle ${battle}: ${outcome} d[${distances.join(',')}]`);
+      } finally {
+        // Put the kit's stack back (no item-1 row exists once it is deleted, so this INSERT is
+        // the one stack), so R2 seeds by UPDATE of a kit row whichever way R1 ended.
+        if (baitRemoved) {
+          ownerSql(
+            `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${normId((await snap(page)).identity)}, ${BAIT_ITEM_ID}, ${KIT_BAIT_COUNT})`,
+            'R1 restore the kit bait',
+          );
+          await expect
+            .poll(
+              async () =>
+                (await snap(page)).ownInventory
+                  .filter((s) => s.itemId === BAIT_ITEM_ID)
+                  .map((s) => s.count),
+              { message: 'R1 restore: the kit bait stack is back', timeout: 15_000 },
+            )
+            .toEqual([KIT_BAIT_COUNT]);
+        }
       }
       expect(
         checked,
@@ -723,17 +793,31 @@ test.describe
         ],
         'R2 seed',
       );
+      // The bag holds the kit's ONE bait stack (R1 puts it back): raise that row, by its inv_id,
+      // so the bag keeps one stack per item.
+      const kitBait = (await snap(page)).ownInventory.filter((s) => s.itemId === BAIT_ITEM_ID);
+      expect(
+        kitBait.map((s) => s.count),
+        `R2: the bag holds the starter kit's one bait stack of ${KIT_BAIT_COUNT} before the seed`,
+      ).toEqual([KIT_BAIT_COUNT]);
+      const kitBaitInvId = kitBait[0]?.invId ?? '';
+      if (!/^[0-9]+$/.test(kitBaitInvId)) {
+        throw new Error(`R2: the kit bait stack has a non-decimal inv_id ${kitBaitInvId}`);
+      }
       ownerSql(
-        `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${normId((await snap(page)).identity)}, ${BAIT_ITEM_ID}, ${BAIT_SEED})`,
+        `UPDATE inventory SET count = ${BAIT_SEED} WHERE inv_id = ${kitBaitInvId}`,
         'R2 seed bait',
       );
+      // Read-back: an UPDATE that matched no row leaves the kit's 2 and fails here.
       await expect
         .poll(
           async () =>
-            (await snap(page)).ownInventory.find((s) => s.itemId === BAIT_ITEM_ID)?.count ?? 0,
-          { message: 'R2: the seeded bait reaches the page', timeout: 15_000 },
+            (await snap(page)).ownInventory
+              .filter((s) => s.itemId === BAIT_ITEM_ID)
+              .map((s) => s.count),
+          { message: 'R2: the seeded bait reaches the page, still one stack', timeout: 15_000 },
         )
-        .toBe(BAIT_SEED);
+        .toEqual([BAIT_SEED]);
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;

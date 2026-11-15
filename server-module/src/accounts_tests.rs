@@ -6921,6 +6921,316 @@ mod acct_nh {
         assert!(w.last_position.rows().is_empty());
     }
 
+    // --- the starter marker across the guest claim and the deletion cascade ------
+
+    const EO1_MARKER: &str = "sys:starter_claimed";
+    /// The elder's entity id (quest_001's NPC, dialogue tree `elder_oak_talk`).
+    const EO1_ELDER: u64 = 70;
+
+    fn eo1_strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// [`world`] plus what a fresh identity's `join_game` and the elder's dialogue
+    /// reach beyond it: [`sr11_join_tables`], auto-inc keys for the rows the starter,
+    /// the kit and a started quest insert (`monster`, `inventory`, `player_quest`), and
+    /// the starter species.
+    fn eo1_world(fx: &Fixture) -> W<'_> {
+        let w = world(fx);
+        let _ = sr11_join_tables(fx);
+        let _ = fx
+            .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+            .auto_inc(|r| r.monster_id, |r, v| r.monster_id = v);
+        let _ = fx
+            .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+            .auto_inc(|r| r.inv_id, |r, v| r.inv_id = v);
+        let _ = fx
+            .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+            .auto_inc(|r| r.pq_id, |r, v| r.pq_id = v);
+        fx.table_keyed::<crate::schema::SpeciesRow, u32>("species_row", "id", |r| r.id)
+            .seed(&crate::schema::SpeciesRow {
+                id: crate::STARTER_SPECIES_ID,
+                name: "s1".to_string(),
+                base_hp: 30,
+                base_attack: 31,
+                base_defense: 32,
+                base_speed: 33,
+                base_sp_attack: 34,
+                base_sp_defense: 35,
+                affinity: game_core::Affinity::Fire,
+                learnable_skill_ids: vec![1],
+                ability: None,
+                tier: 0,
+            });
+        w
+    }
+
+    /// `who`'s dialogue rows as `(sorted flags, done_quests)`.
+    fn eo1_dialogue(w: &W<'_>, who: Identity) -> Vec<(Vec<String>, Vec<String>)> {
+        w.dialogue
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .map(|r| {
+                let mut flags = r.flags;
+                flags.sort();
+                (flags, r.done_quests)
+            })
+            .collect()
+    }
+
+    fn eo1_marked(w: &W<'_>, who: Identity) -> bool {
+        eo1_dialogue(w, who)
+            .iter()
+            .any(|(flags, _)| flags.iter().any(|f| f == EO1_MARKER))
+    }
+
+    /// `who`'s stacks as `(item_id, count)`, by item id.
+    fn eo1_stacks(w: &W<'_>, who: Identity) -> Vec<(u32, u32)> {
+        let mut v: Vec<(u32, u32)> = w
+            .inventory
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .map(|r| (r.item_id, r.count))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// `who`'s wallet balances (one per wallet row).
+    fn eo1_balances(w: &W<'_>, who: Identity) -> Vec<u64> {
+        w.wallet
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .map(|r| r.balance)
+            .collect()
+    }
+
+    fn eo1_monster_count(w: &W<'_>, who: Identity) -> usize {
+        w.monster
+            .rows()
+            .iter()
+            .filter(|m| m.owner_identity == who)
+            .count()
+    }
+
+    /// Guest `g` joins (its join sets the marker), finishes quest_001, starts a
+    /// claim and leaves; account `c` completes the claim. quest_001's completion is
+    /// staged on the guest's dialogue row (the greeting's `met_elder_oak` flag and
+    /// `done_quests: ["quest_001"]`), keeping every flag the join wrote.
+    fn eo1_claimed_guest(fx: &Fixture, w: &W<'_>, g: Identity, c: Identity) {
+        let secret = code('9');
+        assert_eq!(sr11_join(fx, g, T0), Ok(()), "the guest joins");
+        assert_eq!(
+            eo1_dialogue(w, g),
+            vec![(eo1_strings(&[EO1_MARKER]), eo1_strings(&[]))],
+            "the guest's join sets the marker"
+        );
+        let mut row = w
+            .dialogue
+            .rows()
+            .into_iter()
+            .find(|r| r.owner_identity == g)
+            .expect("the guest's dialogue row");
+        row.flags.push("met_elder_oak".to_string());
+        row.done_quests.push("quest_001".to_string());
+        assert_eq!(w.dialogue.remove(g), 1);
+        w.dialogue.seed(&row);
+        assert_eq!(
+            fx.run_as_at(g, at(T0 + 1), |ctx| {
+                crate::accounts::start_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "the guest starts a claim"
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest leaves");
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(fx, c, T0 + 2, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "the account completes the claim"
+        );
+    }
+
+    /// A guest that joined (the marker arrives with its join) and finished quest_001
+    /// is claimed into an account: the account's dialogue row holds the marker, the
+    /// guest's other flag and `done_quests: ["quest_001"]`; the account then joins
+    /// through `join_game` and nothing more is granted — the wallet is still the
+    /// kit's 200, the two kit stacks are unchanged and it owns exactly one monster.
+    ///
+    /// kills: a claim that drops the marker or the quest history; an account join
+    /// that grants a second kit or a second starter because it holds no marker.
+    #[test]
+    fn a_claimed_account_holds_the_guests_marker_and_quests_and_its_join_grants_nothing_eo1_5() {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let (g, c) = (id(0x81), id(0x82));
+        eo1_claimed_guest(&fx, &w, g, c);
+
+        assert_eq!(
+            eo1_dialogue(&w, c),
+            vec![(
+                eo1_strings(&["met_elder_oak", EO1_MARKER]),
+                eo1_strings(&["quest_001"])
+            )],
+            "the account holds the guest's whole dialogue row"
+        );
+        let holdings = |w: &W<'_>| {
+            (
+                eo1_balances(w, c),
+                eo1_stacks(w, c),
+                eo1_monster_count(w, c),
+            )
+        };
+        assert_eq!(
+            holdings(&w),
+            (vec![200], vec![(1, 2), (3, 1)], 1),
+            "the account holds the guest's kit and starter"
+        );
+
+        assert_eq!(sr11_join(&fx, c, T0 + 3), Ok(()), "the account joins");
+        assert_eq!(
+            holdings(&w),
+            (vec![200], vec![(1, 2), (3, 1)], 1),
+            "the account's join grants nothing more"
+        );
+    }
+
+    /// After the same claim the retired guest keeps a tombstone dialogue row holding
+    /// exactly the marker and `done_quests: ["quest_001"]`. It joins again through
+    /// `join_game`: the join succeeds and grants no monster, no stack and no gold
+    /// (its wallet stays the zeroed row the claim's copy-forward left). Then the
+    /// quest loop at quest_001's NPC — `talk`, `advance_dialogue(0)` ("I seek a
+    /// quest." → `StartQuest("quest_001")`), `talk` — starts no quest and pays it
+    /// nothing.
+    ///
+    /// kills: a claim that leaves the guest no row (a second kit and starter); a
+    /// tombstone without the done quests (quest_001 restarts and pays again); a
+    /// tombstone that keeps an ordinary flag.
+    #[test]
+    fn a_retired_guest_rejoins_with_no_kit_no_starter_and_no_quest_reward_eo1_6() {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let (g, c) = (id(0x83), id(0x84));
+        eo1_claimed_guest(&fx, &w, g, c);
+
+        assert_eq!(
+            eo1_dialogue(&w, g),
+            vec![(eo1_strings(&[EO1_MARKER]), eo1_strings(&["quest_001"]))],
+            "the guest keeps only the marker and its done quests"
+        );
+        assert_eq!(
+            eo1_balances(&w, g),
+            vec![0],
+            "the claim zeroed the guest's wallet"
+        );
+
+        assert_eq!(sr11_join(&fx, g, T0 + 3), Ok(()), "the retired guest joins");
+        assert_eq!(eo1_monster_count(&w, g), 0, "no starter monster");
+        assert!(eo1_stacks(&w, g).is_empty(), "no inventory row");
+        assert_eq!(eo1_balances(&w, g), vec![0], "no gold");
+
+        // The elder stands beside the guest's new character, in its zone.
+        let me = sr11_character(&w, g);
+        fx.table_keyed::<crate::schema::Npc, u64>("npc", "entity_id", |r| r.entity_id)
+            .seed(&crate::schema::Npc {
+                entity_id: EO1_ELDER,
+                npc_id: "elder_oak".to_string(),
+                zone_id: me.zone_id,
+                home_x: me.tile_x + 1,
+                home_y: me.tile_y,
+                wander_radius: 0,
+                dialogue_tree_id: "elder_oak_talk".to_string(),
+                interaction: game_core::NpcInteraction::Dialogue,
+            });
+        w.character.seed(&Character {
+            zone_id: me.zone_id,
+            tile_x: me.tile_x + 1,
+            tile_y: me.tile_y,
+            ..character_row(EO1_ELDER)
+        });
+        let talk = |ms: i64| as_conn(&fx, g, None, ms, |ctx| crate::npc::talk(ctx, EO1_ELDER));
+        assert_eq!(talk(T0 + 4), Ok(()), "talk");
+        assert_eq!(
+            as_conn(&fx, g, None, T0 + 5, |ctx| crate::npc::advance_dialogue(
+                ctx, 0
+            )),
+            Ok(()),
+            "advance_dialogue(0)"
+        );
+        assert_eq!(talk(T0 + 6), Ok(()), "talk again");
+        assert!(
+            w.quest.rows().iter().all(|q| q.owner_identity != g),
+            "quest_001 is not started again"
+        );
+        assert_eq!(eo1_balances(&w, g), vec![0], "the quest pays nothing");
+        assert_eq!(
+            eo1_dialogue(&w, g)
+                .into_iter()
+                .map(|(_, done)| done)
+                .collect::<Vec<_>>(),
+            vec![eo1_strings(&["quest_001"])],
+            "quest_001 is still done once"
+        );
+    }
+
+    /// An account joins through `join_game` (the join sets the marker), requests its
+    /// deletion, and the reaper completes the cascade at the grace end: no
+    /// `player_dialogue_state` row remains for it, and its next `join_game` is
+    /// refused with the deletion refusal, writing no marker.
+    ///
+    /// kills: a cascade that leaves the dialogue row (the marker outlives the
+    /// erasure); a terminal account admitted to join.
+    #[test]
+    fn a_completed_deletion_erases_the_marker_and_refuses_the_next_join_eo1_7() {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let v = id(0x85);
+        w.account
+            .seed(&crate::accounts::new_account_row(v, "iss".to_string(), 1));
+        assert_eq!(sr11_join(&fx, v, T0), Ok(()), "the account joins");
+        assert!(eo1_marked(&w, v), "the join sets the marker");
+
+        let requested = T0 + 10;
+        assert_eq!(
+            signed_in(&fx, v, requested, crate::accounts::delete_account),
+            Ok(()),
+            "deletion requested"
+        );
+        let grace_end = crate::accounts::deletion_fire_at_ms(requested);
+        let sched = AccountDeletionReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(grace_end)),
+            account_identity: v,
+        };
+        assert_eq!(
+            fx.run_as_at(scheduler(), at(grace_end), |ctx| {
+                crate::accounts::account_deletion_reaper(ctx, sched)
+            }),
+            Ok(()),
+            "the cascade runs"
+        );
+        assert!(
+            eo1_dialogue(&w, v).is_empty(),
+            "no dialogue row, marker included, remains"
+        );
+
+        assert_eq!(
+            sr11_join(&fx, v, grace_end + 1),
+            Err(crate::guards::REJECT_DELETION_GATED.to_string()),
+            "the erased account's join is refused"
+        );
+        assert!(
+            eo1_dialogue(&w, v).is_empty(),
+            "the refused join writes no marker"
+        );
+    }
+
     // --- guest claim ----------------------------------------------------------
 
     /// Seed a LIVE claim for `guest` (as `start_guest_claim` would write it at

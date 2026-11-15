@@ -8,11 +8,15 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { tf } from '../src/ui/i18n/resolver';
+import { navItemId } from '../src/ui/navRender';
 import {
+  closeAll,
   type Dir,
   interactChip,
   interactWithNpc,
   pressAccel,
+  pressButton,
   WANDER_NPC_MAX_ATTEMPTS,
   WANDER_OPEN_WAIT_MS,
   WANDER_TALK_BUDGET_MS,
@@ -20,19 +24,22 @@ import {
 
 // owner-scoped wallet readout e2e.
 //
-// WHAT THIS PROVES (EARS 11r-e-6 / 11r-e-7 / 11r-e-8 / 11r-e-9)
+// WHAT THIS PROVES (EARS 11r-e-6 / 11r-e-7 / 11r-e-8 / 11r-e-9 / eo-1.10)
 // =============================================================
-//   6. A player whose SERVER-SIDE balance is 50 opens the shop overlay and the client
-//      renders #shop-balance VISIBLE, data-balance-state="known", text exactly `Gold: 50`
-//      — both at FIRST PAINT (the render that accompanied the open) and settled.
+//   6. A player whose SERVER-SIDE balance is 250 (the starter kit's 200 + quest_001's 50)
+//      opens the shop overlay and the client renders #shop-balance VISIBLE,
+//      data-balance-state="known", text exactly `Gold: 250` — both at FIRST PAINT (the
+//      render that accompanied the open) and settled.
 //   7. While that overlay stays open and further store batches are applied, the readout
-//      stays `Gold: 50` and never blanks to the `unknown` arm.
-//   8. A SECOND identity with no wallet row of its own, opening the shop overlay WHILE
-//      the first identity's wallet row exists on the server, renders #shop-balance
-//      HIDDEN, data-balance-state="unknown", text '' — and the #shop-overlay subtree
-//      contains no `Gold:` substring at all.
+//      stays `Gold: 250` and never blanks to the `unknown` arm.
+//   8. A SECOND identity holding only its own starter-kit 200, opening the shop overlay
+//      WHILE the first identity's 250 row exists on the server, reads its OWN `Gold: 200`
+//      and never A's `Gold: 250` — at any point in the session.
 //   9. Both overlays are demonstrably POPULATED (shop title + >=1 priced buy row) — the
 //      anti-vacuity precondition for 6 and 8.
+//   eo-1.10. That second identity is fresh and nothing pays it: before it walks anywhere its
+//      Bag lists `Lure Berry (x2)` (Bait) and `Antidote (x1)` (Medicine), and its shop readout
+//      reads `Gold: 200` — the starter kit `join_game` grants every identity's first join.
 //
 // The whole point, in player terms: a cost has been listed in this shop since M13d and
 // the player has never been able to see how much money they have (Drew's 2026-07-25
@@ -45,7 +52,7 @@ import {
 // server-side view scoping. `store.upsertWallet` stores
 // whatever arrives UNCONDITIONALLY, and `ownWallet(identity)` (:992-995) filters on READ.
 // So if the view were ever widened, B's client would RECEIVE AND STORE A's row and STILL
-// render `unknown` — observably identical to correct behaviour, while another player's
+// render its own `Gold: 200` — observably identical to correct behaviour, while another player's
 // balance sits in B's browser memory (the ADR-0015 must-never-leak condition).
 // NOBODY MAY LATER CITE THIS SPEC AS THE PRIVACY GATE.
 //
@@ -67,25 +74,21 @@ import {
 //   - npc.rs:174-183 — the `QuestAdvance::QuestComplete` arm deletes the `player_quest`
 //     row AND calls `grant_currency(ctx, owner, reward.currency)`; npc.rs:175 is the
 //     module's ONLY `player_quest` delete.
-//   ⇒ talk → choose "I seek a quest." → talk again ⇒ exactly 50 gold, zero RNG.
+//   ⇒ talk → choose "I seek a quest." → talk again ⇒ exactly 50 gold on top of the kit's
+//   200 = 250, zero RNG.
 //   The battle-win faucet (~31 gold, `loser_bst/10`) was rejected by ADR-0169 D6: it needs
 //   recruit.spec's grass shuttle, encounter loop, HP-restore loop and flee heuristics —
 //   hundreds of lines of stochastic machinery for a NON-deterministic amount.
 //
-// A FRESH IDENTITY HAS NO WALLET ROW AT ALL: `join_game` grants a starter monster, no gold
-//   and no items, and `economy.rs`'s `if amount == 0 { return; }` zero-guard prevents a
-//   phantom row. So B's `unknown` is a REAL server state, not a client artifact — and
-//   `Gold: 0` (the "broke, not dark" arm) is unreachable in this run and stays
-//   unit-tested only (shopModel.test.ts [ux2-M2]).
+// A FRESH IDENTITY HOLDS THE STARTER KIT: the first `join_game` of every identity grants a
+//   starter monster, a `player_wallet` row reading 200, Lure Berry x2 (item 1) and Antidote x1
+//   (item 3). So B's `Gold: 200` is a REAL server state (asserted by `spacetime sql` below),
+//   and the `unknown` arm and `Gold: 0` (the "broke, not dark" arm) are unreachable in this
+//   run and stay unit-tested only (shopModel.test.ts [ux2-M2]).
 //
-// 50 GOLD BUYS NOTHING, so the balance is stable for the entire run:
-//   game-core/content/shops/000-core.ron — shop 1 "Pebble Town Shop", stock priced
-//   200 / 300 / 150. The cheapest sink is 150.
-//   (Consequence, disclosed: the A/B differentiator is known-vs-unknown, not two different
-//   amounts. A second identity with a DIFFERENT nonzero balance IS reachable via
-//   a trade session's currency (`open_trade_session`, then `set_trade_offer`, then both
-//   sides' `confirm_trade_session`) and is the strongest named follow-up. It is deferred
-//   for cost, NOT because it is unreachable.)
+// NOBODY BUYS, so both balances are stable for the entire run: no step of this file presses a
+//   Buy button (game-core/content/shops/000-core.ron — shop 1 "Pebble Town Shop", stock priced
+//   200 / 300 / 150). The A/B differentiator is two different amounts: A's 250, B's 200.
 //
 // NPCs (game-core/content/npcs/000-core.ron) + game-core's `npc::TALK_RANGE` = 2 (Manhattan;
 //   the server's talk check reads it through `in_talk_range`):
@@ -158,16 +161,16 @@ import {
 // the characters of the zone it stands in, every step of B's writes a `character` row there,
 // and the M13d shop batch listener re-renders an OPEN overlay on every batch. So an open
 // overlay is re-rendered WITH NO INPUT FROM ITS PLAYER, and a retrying
-// `toHaveText('Gold: 50')` cannot distinguish a correct implementation from one that
+// `toHaveText('Gold: 250')` cannot distinguish a correct implementation from one that
 // patched only the batch-listener call site (:1436) and blanks on open.
 //
 // Worse: `store.flushBatch` invokes batch listeners SYNCHRONOUSLY in
 // registration order, and the deferred-open listener (:1345) is registered BEFORE the shop
 // listener (:1427). In a `:1436`-only patch the open therefore goes
-//   render(no wallet) → blank  →  show()  →  render(wallet) → `Gold: 50`
+//   render(no wallet) → blank  →  show()  →  render(wallet) → `Gold: 250`
 // all inside ONE synchronous turn, before any MutationObserver callback or paint. A latch
 // that merely READS the DOM when the overlay becomes visible would see the settled
-// `Gold: 50` and pass. The recorder below therefore keeps an ORDERED LOG of mutation
+// `Gold: 250` and pass. The recorder below therefore keeps an ORDERED LOG of mutation
 // RECORDS — each `childList` record CARRIES the text that was written in its `addedNodes`,
 // so the transient blank that precedes `show()` is recoverable verbatim. That is the one
 // assertion no source scan and no polled matcher can fake.
@@ -200,9 +203,10 @@ import {
 //     character moved" — proves NOTHING about the shop listener: character rows are written
 //     by the row callback directly, and main.ts:1429-1452 wraps the listener body in
 //     try/catch, so a dead listener still shows movement next to a stale DOM.
-//   - a STICKY "ever known" LATCH for B. A spot read cannot see a leak that arrives later,
-//     and `store.upsertWallet` is unconditional, so a delayed foreign row would be stored
-//     silently. The latch is asserted at B's check AND again at the end of the run.
+//   - a STICKY "every text ever written" LOG for B (the distinct #shop-balance texts, uncapped).
+//     A spot read cannot see a leak that arrives later, and `store.upsertWallet` is
+//     unconditional, so a delayed foreign row would be stored silently. It must hold exactly
+//     B's own `Gold: 200`, asserted at B's check AND again at the end of the run.
 //   - the MIRROR "ever unknown" LATCH for A. 11r-e-7's "WHILE the overlay remains open ...
 //     SHALL NOT blank" is a claim about a whole INTERVAL; a spot read or a retrying matcher
 //     can only sample it, and a blank that lands between two samples is invisible to both.
@@ -216,9 +220,9 @@ import {
 //     because a DEV-gated hook made an e2e green while the production path was broken.
 //     Using addInitScript to OBSERVE THE DOM is fine; reading store state through a debug
 //     hook is not. (`__game()` is used only for tiles/zone/presence, as every walk does.)
-//  2. B's overlay is NEVER asserted to lack the substring `50` — a catalogue price is 150.
-//     The negative is: #shop-balance textContent === '' + data-balance-state="unknown",
-//     plus no `Gold:` anywhere in #shop-overlay.
+//  2. B's overlay is NEVER asserted to lack the substring `250` or `50` — catalogue prices
+//     are 200 / 300 / 150. The negative is: #shop-balance textContent === 'Gold: 200', plus
+//     no `Gold: 250` anywhere in #shop-overlay.
 //  3. The `Gold:`-absence check uses **textContent**, never innerText: #shop-balance is
 //     `hidden`, and innerText would omit it, making the exclusion vacuous.
 //  4. No fixed sleeps — every wait polls a DOM or `__game()` predicate with a bounded timeout.
@@ -246,8 +250,8 @@ import {
 // shop-open flow under test). Bounded by their test timeouts instead of 5 s, they absorb the
 // starvation that reddened (a); measured under far heavier CPU throttle, they starve too.
 // Expected wall clock: ~4-6 min (about 30 steps at well under 1 s each, four
-// dialogue round trips, and three `spacetime sql` invocations — a fourth only on the retry
-// escape valve). Worst case under the declared per-test timeouts (120 + 304 + 304 + 240 +
+// dialogue round trips, one Bag open, and five `spacetime sql` invocations — a sixth only on
+// the retry escape valve). Worst case under the declared per-test timeouts (120 + 304 + 304 + 240 +
 // 240 + 120 s): ~22 min.
 // `just e2e` is a merge gate for every future slice. If a bound proves tight, RAISE IT WITH
 // A WRITTEN JUSTIFICATION (the MAX_ENCOUNTERS precedent, recruit.spec.ts:97-123) — never
@@ -408,12 +412,20 @@ const installShopBalanceRecorder = (): void => {
     __mrBalanceWrites?: number;
     __mrBalanceEverKnown?: boolean;
     __mrBalanceEverUnknown?: boolean;
+    __mrBalanceTextsSeen?: string[];
   };
   w.__mrRecorderInstalled = false;
   w.__mrShopLog = [];
   w.__mrBalanceWrites = 0;
   w.__mrBalanceEverKnown = false;
   w.__mrBalanceEverUnknown = false;
+  w.__mrBalanceTextsSeen = [];
+  // Every DISTINCT #shop-balance text ever written or observed, '' included, uncapped (a
+  // handful of values at most): the whole-session record of what the readout ever said.
+  const seeText = (text: string): void => {
+    const seen = w.__mrBalanceTextsSeen;
+    if (seen !== undefined && !seen.includes(text)) seen.push(text);
+  };
 
   // The log is capped: an open overlay is re-rendered ~5x/second forever (movement_tick),
   // and only the PREFIX up to the first "overlay became visible" record is analysed. No
@@ -430,6 +442,9 @@ const installShopBalanceRecorder = (): void => {
     if (bal === null) return;
     const state = bal.getAttribute('data-balance-state');
     if (state === 'known' || (bal.textContent ?? '') !== '') w.__mrBalanceEverKnown = true;
+    // Before the first render the node has no data-balance-state and no text: that is not
+    // a reading, so only a rendered node's text is recorded.
+    if (state !== null) seeText(bal.textContent ?? '');
     // The mirror latch, asserted on the BUYER: `unknown` is a legitimate state only
     // BEFORE any shop render (when the attribute is absent, not 'unknown'), so once a
     // wallet-owning player has opened the shop, a single 'unknown' write anywhere is a
@@ -466,6 +481,7 @@ const installShopBalanceRecorder = (): void => {
             let text = '';
             for (const n of Array.from(r.addedNodes)) text += n.textContent ?? '';
             push('text', null, text);
+            seeText(text);
             w.__mrBalanceWrites = (w.__mrBalanceWrites ?? 0) + 1;
             if (text !== '') w.__mrBalanceEverKnown = true;
           }
@@ -504,7 +520,7 @@ interface FirstPaint {
  *
  *  TEXT ONLY, deliberately. shopView.ts:97-100
  *  derives `textContent`, `hidden` and `dataset.balanceState` from ONE boolean in three
- *  adjacent statements, so within any SINGLE render `textContent === 'Gold: 50'` ⟺
+ *  adjacent statements, so within any SINGLE render `textContent === 'Gold: 250'` ⟺
  *  `balanceState === 'known'` — the state channel carried no information the text channel
  *  lacks. It was also strictly weaker: a childList record CARRIES the written text in
  *  `addedNodes` (no chaining), whereas recovering a written ATTRIBUTE value needs the next
@@ -559,6 +575,9 @@ const readEverUnknown = (p: Page): Promise<unknown> =>
     () => (window as unknown as { __mrBalanceEverUnknown?: unknown }).__mrBalanceEverUnknown,
   );
 
+const readTextsSeen = (p: Page): Promise<unknown> =>
+  p.evaluate(() => (window as unknown as { __mrBalanceTextsSeen?: unknown }).__mrBalanceTextsSeen);
+
 interface BalanceReading {
   state: string | null;
   text: string;
@@ -567,10 +586,10 @@ interface BalanceReading {
 }
 
 /** THE SAME reading for both identities (vacuity argument (i)): one helper, one run, one
- *  module — it must return known/`Gold: 50` for A and unknown/'' for B, which is what
- *  makes B's negative a demonstration that the machinery DISTINGUISHES the states rather
- *  than being uniformly dead. `overlayText` is textContent (never innerText, which would
- *  silently drop the `hidden` balance node and make the `Gold:` exclusion vacuous). */
+ *  module — it must return known/`Gold: 250` for A and known/`Gold: 200` for B, which is
+ *  what makes B's negative a demonstration that the machinery DISTINGUISHES the owners
+ *  rather than rendering one shared value. `overlayText` is textContent (never innerText,
+ *  which would silently drop a `hidden` balance node and make a `Gold:` exclusion vacuous). */
 const readBalance = (p: Page): Promise<BalanceReading> =>
   p.evaluate(() => {
     const bal = document.getElementById('shop-balance');
@@ -596,9 +615,10 @@ const readBalance = (p: Page): Promise<BalanceReading> =>
 // process (one shard) shares that one database, in alphabetical order. An earlier file of
 // the shard can have paid other identities: `recruit.spec.ts` wins wild battles
 // (battle.rs:1074 pays `bst/10` per KO, accumulating) and `dialogue.spec.ts`'s
-// advance-retry path can itself complete quest_001 for exactly 50. So `player_wallet` is
-// NOT a one-row table here, and a substring test like `output.includes('50')` passes on
-// ANY foreign balance containing "50" (50 / 150 / 250 / 502 / …) while A's own row reads 0.
+// advance-retry path can itself complete quest_001 (200 + 50 = 250), and every identity
+// that ever joined owns a row of at least the kit's 200. So `player_wallet` is NOT a
+// one-row table here, and a substring test like `output.includes('250')` passes on ANY
+// foreign balance containing "250" (250 / 1250 / 2503 / …) while A's own row reads 200.
 // The parse below therefore looks up A's row BY IDENTITY and asserts THAT row's balance.
 //
 // Only `server`/`db`/`query` are interpolated into the shell string and all three are
@@ -780,9 +800,10 @@ const A_TO_WARP: readonly string[] = [
   'West', // (2,5)
   'West', // (1,5) — WARP → zone 1 (1,5)
 ];
-/** B: zone 0 spawn (1,1) → the warp tile (1,5), straight down column x=1. B presses NO key in
- *  zone 0 — it must never talk to elder_oak (a second quest_001 completion would give B 50
- *  gold and destroy the whole 11r-e-8 premise). */
+/** B: zone 0 spawn (1,1) → the warp tile (1,5), straight down column x=1. B never presses A
+ *  in zone 0 (its only keys there open, page and close the Bag) — it must never talk to
+ *  elder_oak (a quest_001 completion would lift B to 250 and destroy the whole 11r-e-8 and
+ *  eo-1.10 premise). */
 const B_TO_WARP: readonly string[] = [
   'South', // (1,2)
   'South', // (1,3)
@@ -814,7 +835,17 @@ const QUEST_ID = 'quest_001';
 const QUEST_CHOICE = 'I seek a quest.';
 const SHOPKEEPER_GREETING = 'Hello, customer!';
 const SHOP_NAME = 'Pebble Town Shop';
-const EXPECTED_BALANCE_TEXT = 'Gold: 50';
+/** A's readout: the starter kit's 200 + quest_001's reward.currency 50. */
+const EXPECTED_BALANCE_TEXT = 'Gold: 250';
+/** B's readout, and A's server balance before the quest pays: the starter kit's 200 alone. */
+const KIT_BALANCE = '200';
+const KIT_BALANCE_TEXT = `Gold: ${KIT_BALANCE}`;
+/** A's server balance after quest_001 completes: 200 + 50. */
+const QUEST_PAID_BALANCE = '250';
+/** The kit's Bag rows (game-core/content/items/000-core.ron: item 1 Lure Berry is Bait — a
+ *  recruit bonus; item 3 Antidote is Medicine — a cured status), in the catalog's row format. */
+const KIT_BERRY_ROW_TEXT = tf('raising.inventory.item', { name: 'Lure Berry', count: 2 });
+const KIT_ANTIDOTE_ROW_TEXT = tf('raising.inventory.item', { name: 'Antidote', count: 1 });
 /** Bounded retries per quest phase. Elder_oak wanders, so a talk ("too far away") or an
  *  advance (walked_away) can be refused, and the phase must be able to retry. The ADVANCE
  *  refusal the wander causes here is the range one ("walked too far away", logged
@@ -921,6 +952,21 @@ test.describe
         await readEverKnown(b),
         "B's sticky latch starts false — a latch that began true would make its negative vacuous",
       ).toBe(false);
+      expect(
+        await readTextsSeen(b),
+        "B's whole-session text record starts empty — B has not rendered a shop yet",
+      ).toEqual([]);
+
+      // SERVER TRUTH before anything pays: both fresh identities hold exactly the starter
+      // kit's 200, so A's 250 below is 200 + quest_001's 50 and B's 200 is the kit alone.
+      expect(
+        walletBalanceFor(identityA, 'setup'),
+        `A's player_wallet row must read the starter kit's 200 before the quest (A=${identityA})`,
+      ).toBe(KIT_BALANCE);
+      expect(
+        walletBalanceFor(identityB, 'setup'),
+        `B's player_wallet row must read the starter kit's 200 (B=${identityB})`,
+      ).toBe(KIT_BALANCE);
 
       await walk(a, A_TO_ELDER);
       const done = await snap(a);
@@ -946,8 +992,9 @@ test.describe
     // advance SUCCEEDED but its hidden-wait or log-read timed out, the NEXT attempt's
     // re-talk COMPLETES the quest — the log would then never be observed containing
     // quest_001 and this phase would fail although the 50 gold was granted. Server truth
-    // decides: if A already owns a player_wallet row, the grant has happened and phase (b)
-    // is skipped. (Deviation from plan R9's pure two-loop form, deliberately narrow.)
+    // decides: if A's player_wallet row reads 250 (the kit's 200 + 50), the grant has
+    // happened and phase (b) is skipped. The row's existence proves nothing: the kit wrote
+    // it at join. (Deviation from plan R9's pure two-loop form, deliberately narrow.)
     // -------------------------------------------------------------------------
     test('precondition (a): A starts quest_001 via the elder_oak dialogue choice', async () => {
       test.setTimeout(TALK_PHASE_TIMEOUT_MS);
@@ -1020,9 +1067,11 @@ test.describe
             outcome = `overlay hid, quest log ${started ? 'shows' : 'lacked'} ${QUEST_ID}`;
           }
           if (hidden && !started) {
-            // Identity-scoped: A is a fresh identity created in this file's beforeAll, so a
-            // row under A's OWN identity can only have come from quest_001's grant.
-            questGrantedDuringRetry = walletBalanceFor(identityA, 'precondition (a)') !== undefined;
+            // Identity-scoped: A is a fresh identity created in this file's beforeAll whose
+            // row holds the kit's 200 (asserted in setup), so 250 under A's OWN identity can
+            // only have come from quest_001's grant.
+            questGrantedDuringRetry =
+              walletBalanceFor(identityA, 'precondition (a)') === QUEST_PAID_BALANCE;
           }
           const attemptStatus = statusLines.slice(statusFrom).map((line) => JSON.stringify(line));
           const entry =
@@ -1057,7 +1106,7 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // Precondition (b): a SECOND talk completes quest_001 ⇒ exactly 50 gold.
+    // Precondition (b): a SECOND talk completes quest_001 ⇒ exactly 50 gold (200 → 250).
     //   npc.rs:269-277 fires the Talked trigger inside `talk` itself, and
     //   npc.rs:174-183's QuestComplete arm deletes the player_quest row AND calls
     //   grant_currency in the SAME arm. npc.rs:175 is the module's only player_quest
@@ -1065,7 +1114,7 @@ test.describe
     // The final assertion is server truth (`spacetime sql`), deliberately independent of
     // the client render path this whole spec is testing.
     // -------------------------------------------------------------------------
-    test('precondition (b): a second talk completes quest_001 ⇒ server-side balance 50', async () => {
+    test('precondition (b): a second talk completes quest_001 ⇒ server-side balance 250', async () => {
       test.setTimeout(TALK_PHASE_TIMEOUT_MS);
       const overlay = a.locator('#dialogue-overlay');
       let completed = questGrantedDuringRetry;
@@ -1096,16 +1145,16 @@ test.describe
 
       // SERVER TRUTH — the precondition for 11r-e-6 stated as an assertion, not as prose.
       // ONE identity-scoped read: A's OWN row's balance cell. A substring test over the
-      // whole table would pass on any foreign balance containing "50" left behind by an
+      // whole table would pass on any foreign balance containing "250" left behind by an
       // earlier spec file in this shared --delete-data database (see the ⚠ note above
-      // sqlQuery) while A's own row read 0.
+      // sqlQuery) while A's own row read 200.
       expect(
         walletBalanceFor(identityA, 'precondition (b)'),
-        `A's OWN server-side player_wallet row must read exactly 50 before the shop ` +
-          `assertions mean anything (quest_001 reward.currency = 50; A=${identityA}). ` +
-          'undefined here = the QuestComplete arm never ran; any other number = the faucet ' +
-          'is not the one this spec derives its expectation from.',
-      ).toBe('50');
+        `A's OWN server-side player_wallet row must read exactly 250 before the shop ` +
+          'assertions mean anything (the starter kit 200 + quest_001 reward.currency 50; ' +
+          `A=${identityA}). 200 here = the QuestComplete arm never ran; any other number = ` +
+          'the faucet or the kit is not the one this spec derives its expectation from.',
+      ).toBe(QUEST_PAID_BALANCE);
     });
 
     // -------------------------------------------------------------------------
@@ -1118,7 +1167,7 @@ test.describe
     // truth table).
     // The overlay is LEFT OPEN for the 11r-e-7 test.
     // -------------------------------------------------------------------------
-    test('11r-e-6/9: A opens the shop and #shop-balance reads exactly "Gold: 50" (first paint AND settled)', async () => {
+    test('11r-e-6/9: A opens the shop and #shop-balance reads exactly "Gold: 250" (first paint AND settled)', async () => {
       test.setTimeout(240_000);
       await walk(a, A_TO_WARP);
       // The warp is server-authoritative and asynchronous w.r.t. the step ack: poll the
@@ -1175,7 +1224,7 @@ test.describe
       await expect(
         balance,
         '11r-e-6: the readout is exactly `Gold: ${amount}` (shopModel.ts:78) for the ' +
-          'server-authoritative 50 granted by quest_001',
+          'server-authoritative 250 (the starter kit 200 + quest_001 50)',
       ).toHaveText(EXPECTED_BALANCE_TEXT, { timeout: 15_000 });
       await expect(balance).toHaveAttribute('data-balance-state', 'known');
       const reading = await readBalance(a);
@@ -1211,26 +1260,65 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // 11r-e-8 + 11r-e-9 (B): a second identity never sees A's gold.
+    // 11r-e-8 + 11r-e-9 + eo-1.10 (B): a fresh second identity holds the starter kit and
+    // reads its own 200, never A's 250.
     //
-    // KILLS: any RENDER path that puts a balance on screen for a player who has none —
-    // a store keyed as a Map over identities that surfaces the first row it holds,
-    // an `ownWallet` call replaced by a raw slot read, a fabricated
-    // `?? 0n` default anywhere between the view and the DOM.
+    // KILLS: any RENDER path that puts another player's balance on screen — a store keyed
+    // as a Map over identities that surfaces the first row it holds, an `ownWallet` call
+    // replaced by a raw slot read, a fabricated default anywhere between the view and the
+    // DOM. And (eo-1.10) a join that grants no kit, a partial kit, or the wrong counts: the
+    // Bag rows and the readout are read exactly.
     //
     // DOES NOT KILL a dropped owner FILTER inside store.ownWallet, and must never be
     // described as if it did (the header says the same, and ADR-0169 D8 is the SSOT):
-    // with the server view correctly scoped, B's slot is EMPTY, so `ownWallet` returns
-    // undefined with or without its `slot.ownerIdentity === identity` test. That mutant
+    // with the server view correctly scoped, B's slot holds only B's row, so `ownWallet`
+    // returns it with or without its `slot.ownerIdentity === identity` test. That mutant
     // is killed by store.test.ts S1/S4.
-    // PASSES VACUOUSLY TODAY: hence 11r-e-9 in the same test, the shared readBalance()
-    // helper, and the server-truth query below.
+    // Hence 11r-e-9 in the same test, the shared readBalance() helper, and the server-truth
+    // queries below.
     // -------------------------------------------------------------------------
-    test('11r-e-8/9: B (no wallet row) opens the same shop and sees NO balance at all', async () => {
+    test('11r-e-8/9 + eo-1.10: fresh B lists the starter kit in its Bag, opens the same shop and reads its own "Gold: 200", never A\'s', async () => {
       test.setTimeout(240_000);
       const startB = await snap(b);
       expect(startB.ownAuthTile, 'B spawns at (1,1) in zone 0').toEqual({ x: 1, y: 1 });
       expect(startB.map.zone_id).toBe(0);
+
+      // --- eo-1.10: before B walks anywhere, its Bag lists the starter kit -------------
+      // Inventory opens by its accelerator I, on its first pocket (Bait); RB pages the
+      // pockets, which are ordered by the lowest item id they define: Bait (1), Food (2),
+      // Medicine (3). Each pocket's list holds one row per owned item.
+      await closeAll(b);
+      await pressAccel(b, 'I');
+      await expect(b.locator('[data-testid="raising-title"]'), 'I opens the Inventory').toBeVisible(
+        { timeout: 15_000 },
+      );
+      await expect(b.locator('#bag-tab-bait'), 'it opens on Bait').toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      const bagRows = b.locator('#bag-list [role="option"]');
+      await expect(
+        b.locator(`#${navItemId('bag', 'bait', '1')}`),
+        'eo-1.10: the Bait pocket lists the kit Lure Berries (item 1, count 2)',
+      ).toHaveText(KIT_BERRY_ROW_TEXT, { timeout: 15_000 });
+      await expect(bagRows, 'eo-1.10: Bait holds the one kit stack and nothing else').toHaveCount(
+        1,
+      );
+      await pressButton(b, 'RB');
+      await expect(b.locator('#bag-tab-food')).toHaveAttribute('aria-selected', 'true');
+      await expect(bagRows, 'eo-1.10: the kit holds no Food').toHaveCount(0);
+      await pressButton(b, 'RB');
+      await expect(b.locator('#bag-tab-medicine')).toHaveAttribute('aria-selected', 'true');
+      await expect(
+        b.locator(`#${navItemId('bag', 'medicine', '3')}`),
+        'eo-1.10: the Medicine pocket lists the kit Antidote (item 3, count 1)',
+      ).toHaveText(KIT_ANTIDOTE_ROW_TEXT, { timeout: 15_000 });
+      await expect(
+        bagRows,
+        'eo-1.10: Medicine holds the one kit stack and nothing else',
+      ).toHaveCount(1);
+      await closeAll(b);
+
       await walk(b, B_TO_WARP);
       await b.waitForFunction(
         () => (window as unknown as GameWindow).__game().map.zone_id === 1,
@@ -1262,54 +1350,67 @@ test.describe
       const forSaleTextB = (await b.locator('#shop-for-sale').textContent()) ?? '';
       expect(forSaleTextB.includes('gold')).toBe(true);
 
+      // --- 11r-e-8 + eo-1.10: B reads its OWN kit balance, never A's ------------------
+      const balanceB = b.locator('#shop-balance');
+      await expect(
+        balanceB,
+        'eo-1.10: #shop-balance must be VISIBLE for a fresh player — the starter kit wrote its ' +
+          'wallet row at join',
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        balanceB,
+        "eo-1.10: a fresh identity's readout is exactly the starter kit's `Gold: 200`",
+      ).toHaveText(KIT_BALANCE_TEXT, { timeout: 15_000 });
+      await expect(balanceB).toHaveAttribute('data-balance-state', 'known');
       const readingB = await readBalance(b);
       expect(
         readingB.state,
-        '11r-e-8: data-balance-state must be "unknown". It is written on EVERY render ' +
-          '(shopView.ts:100), before the no-shop early return, and is ABSENT from index.html ' +
-          'and from the freshly created node — so this also positively proves render() ran.',
-      ).toBe('unknown');
+        '11r-e-8: data-balance-state must be "known" for the 200 B owns. It is written on EVERY ' +
+          'render (shopView.ts:100), before the no-shop early return, and is ABSENT from ' +
+          'index.html and from the freshly created node — so this also positively proves ' +
+          'render() ran.',
+      ).toBe('known');
       expect(
         readingB.text,
-        '11r-e-8: the unknown arm renders EMPTY text, never a fabricated 0',
-      ).toBe('');
-      expect(readingB.hidden, '11r-e-8: the unknown arm hides the node').toBe(true);
-      await expect(b.locator('#shop-balance')).toBeHidden();
+        "11r-e-8: B's readout is its own 200, never A's 250 and never a fabricated value",
+      ).toBe(KIT_BALANCE_TEXT);
+      expect(readingB.hidden, '11r-e-8: the known arm un-hides the node').toBe(false);
       expect(
-        readingB.overlayText.includes('Gold:'),
-        "11r-e-8: no `Gold:` substring may appear ANYWHERE in B's #shop-overlay subtree. " +
-          '(textContent, not innerText — the balance node is `hidden`, and innerText would ' +
-          'drop it and make this exclusion vacuous. And note the absence of `50` is NOT ' +
-          'asserted: a catalogue price is 150.) Got: ' +
+        readingB.overlayText.includes(EXPECTED_BALANCE_TEXT),
+        `11r-e-8: A's \`${EXPECTED_BALANCE_TEXT}\` may appear NOWHERE in B's #shop-overlay ` +
+          'subtree (textContent, not innerText). The bare substrings `250` and `50` are NOT ' +
+          'excluded: catalogue prices are 200 / 300 / 150. Got: ' +
           `${JSON.stringify(readingB.overlayText).slice(0, 300)}`,
       ).toBe(false);
 
-      // Sticky latch: not a spot check but a whole-session claim (store.upsertWallet is
-      // unconditional, so a foreign row arriving LATE would be stored silently).
-      const latch = await readEverKnown(b);
-      expect(typeof latch, "B's sticky latch must be installed (anti-vacuity)").toBe('boolean');
+      // Sticky record: not a spot check but a whole-session claim (store.upsertWallet is
+      // unconditional, so a foreign row arriving LATE would be stored silently). Every text
+      // B's readout ever carried — transient ones between two synchronous renders included —
+      // is its own `Gold: 200`: never A's 250, never a blank.
+      const seenB = await readTextsSeen(b);
+      expect(Array.isArray(seenB), "B's text record must be installed (anti-vacuity)").toBe(true);
       expect(
-        latch,
-        "B's #shop-balance was NEVER allowed to become `known` or non-empty at any point in " +
-          "the session, including transiently between assertions — A's balance is not B's.",
-      ).toBe(false);
+        seenB,
+        "B's #shop-balance carried ONLY its own `Gold: 200` at every point in the session, " +
+          "including transiently between assertions — A's balance is not B's.",
+      ).toEqual([KIT_BALANCE_TEXT]);
 
-      // Server truth AT THE MOMENT B LOOKS: A's row exists, B's does not. This turns the
-      // vacuity argument ("B's `unknown` is not just an empty table") into an assertion.
+      // Server truth AT THE MOMENT B LOOKS: A's row reads 250, B's reads 200. This turns the
+      // vacuity argument ("B's 200 is not just A's row mislabelled") into an assertion.
       // Identity rendering: '0x' + 64 lowercase hex; both sides normalized.
       // If the CLI ever abbreviates identities this check is the ADR-0169 D8 SHOULD and may
       // be dropped — the 11r-e-8 gate itself does not depend on it.
       expect(
         walletBalanceFor(identityA, '11r-e-8'),
-        `A's player_wallet row must still read 50 server-side at the moment B looks ` +
-          `(A=${identityA}) — otherwise B's "no balance" is not a contrast with anything.`,
-      ).toBe('50');
+        `A's player_wallet row must still read 250 server-side at the moment B looks ` +
+          `(A=${identityA}) — otherwise B's 200 is not a contrast with anything.`,
+      ).toBe(QUEST_PAID_BALANCE);
       expect(
         walletBalanceFor(identityB, '11r-e-8'),
-        `B must own NO player_wallet row at all — join_game grants no gold and ` +
-          `grant_currency's zero-guard prevents a phantom row (B=${identityB}). A row here ` +
-          'means B earned currency somewhere in this run and the 11r-e-8 premise is gone.',
-      ).toBeUndefined();
+        "B's player_wallet row must read exactly the starter kit's 200 — nothing in this run " +
+          `pays B (B=${identityB}). Any other number means B earned or spent currency ` +
+          'somewhere in this run and the 11r-e-8 / eo-1.10 premise is gone.',
+      ).toBe(KIT_BALANCE);
     });
 
     // -------------------------------------------------------------------------
@@ -1323,7 +1424,7 @@ test.describe
     // Batches are guaranteed: B's whole walk through zone 1 happened since the baseline, and
     // each of its steps is a `character` row in the zone whose characters A is subscribed to.
     // -------------------------------------------------------------------------
-    test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 50"', async () => {
+    test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 250"', async () => {
       test.setTimeout(120_000);
       await expect(
         a.locator('#shop-overlay'),
@@ -1383,16 +1484,16 @@ test.describe
 
       // End-of-run re-assertion of B's whole-session claim (R5): a leak that arrived after
       // B's own check — while A's overlay was live and re-rendering — is caught here.
-      const latch = await readEverKnown(b);
-      expect(typeof latch, "B's sticky latch must still be installed").toBe('boolean');
+      const seenB = await readTextsSeen(b);
+      expect(Array.isArray(seenB), "B's text record must still be installed").toBe(true);
       expect(
-        latch,
-        "B's #shop-balance never became `known` at ANY point in the run, including after B's " +
-          'own assertions had already passed',
-      ).toBe(false);
+        seenB,
+        "B's #shop-balance carried only its own `Gold: 200` at ANY point in the run, " +
+          "including after B's own assertions had already passed",
+      ).toEqual([KIT_BALANCE_TEXT]);
       const readingB = await readBalance(b);
-      expect(readingB.state).toBe('unknown');
-      expect(readingB.text).toBe('');
-      expect(readingB.overlayText.includes('Gold:')).toBe(false);
+      expect(readingB.state).toBe('known');
+      expect(readingB.text).toBe(KIT_BALANCE_TEXT);
+      expect(readingB.overlayText.includes(EXPECTED_BALANCE_TEXT)).toBe(false);
     });
   });

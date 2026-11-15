@@ -8909,4 +8909,358 @@ mod tests {
             });
         }
     }
+
+    // -----------------------------------------------------------------------
+    // The starter kit (`load_starter_kit` / `validate_starter_kit`) and the
+    // reserved `sys:` flag namespace in `validate_npc_content`.
+    // -----------------------------------------------------------------------
+
+    fn eo1_kit(currency: u64, items: &[(u32, u32)]) -> StarterKit {
+        StarterKit {
+            currency,
+            items: items
+                .iter()
+                .map(|&(item_id, qty)| crate::quest::RewardItem { item_id, qty })
+                .collect(),
+        }
+    }
+
+    /// The item registry the kit rules are checked against: items 1 and 3 exist.
+    fn eo1_items() -> Vec<ItemDef> {
+        vec![fixture_item_def_m12c(1), fixture_item_def_m12c(3)]
+    }
+
+    /// `kit` is refused and the error names `needle`.
+    fn eo1_assert_kit_refused(kit: &StarterKit, needle: &str, rule: &str) {
+        match validate_starter_kit(kit, &eo1_items()) {
+            Ok(()) => panic!("{rule}: validate_starter_kit must refuse {kit:?}"),
+            Err(e) => assert!(
+                e.contains(needle),
+                "{rule}: the error must name the offending entry `{needle}`; got {e:?}"
+            ),
+        }
+    }
+
+    /// The shipped kit parses to 200 gold, 2 Lure Berries (item 1) and 1 Antidote
+    /// (item 3), in that order, and passes its own validator against the shipped items.
+    ///
+    /// Kills: a missing or mis-typed `starter_kit.ron`, other quantities or currency,
+    /// a kit naming an item the registry lacks.
+    #[test]
+    fn shipped_starter_kit_is_200_gold_2_lure_berries_1_antidote_and_validates_eo1_8() {
+        let kit = load_starter_kit().expect("the embedded starter kit parses");
+        assert_eq!(kit, eo1_kit(200, &[(1, 2), (3, 1)]), "the shipped kit");
+        let items = load_items().expect("the embedded items parse");
+        let name = |id: u32| {
+            items
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| i.name.clone())
+                .expect("the kit's item is in the registry")
+        };
+        assert_eq!(
+            (name(1), name(3)),
+            ("Lure Berry".to_string(), "Antidote".to_string()),
+            "item 1 is the Lure Berry and item 3 the Antidote"
+        );
+        assert_eq!(
+            validate_starter_kit(&kit, &items),
+            Ok(()),
+            "the shipped kit validates against the shipped items"
+        );
+    }
+
+    /// A kit item the registry does not hold is refused, naming the item id.
+    ///
+    /// Kills: no existence check; a check against the wrong registry.
+    #[test]
+    fn starter_kit_naming_an_unknown_item_is_refused_eo1_8() {
+        eo1_assert_kit_refused(
+            &eo1_kit(200, &[(1, 2), (999, 1)]),
+            "item_id 999",
+            "unknown item",
+        );
+    }
+
+    /// A kit entry with quantity 0 is refused, naming the item id.
+    ///
+    /// Kills: no quantity floor (a zero entry grants nothing and hides a typo).
+    #[test]
+    fn starter_kit_with_a_zero_quantity_is_refused_eo1_8() {
+        eo1_assert_kit_refused(&eo1_kit(200, &[(1, 2), (3, 0)]), "item_id 3", "zero qty");
+    }
+
+    /// The same item listed twice is refused, naming the item id.
+    ///
+    /// Kills: no duplicate check (two entries would merge into one stack at grant
+    /// time and dodge the per-entry cap check).
+    #[test]
+    fn starter_kit_listing_an_item_twice_is_refused_eo1_8() {
+        eo1_assert_kit_refused(
+            &eo1_kit(200, &[(1, 2), (3, 1), (1, 1)]),
+            "item_id 1",
+            "duplicate item",
+        );
+    }
+
+    /// A quantity one above `MAX_ITEM_STACK` is refused, naming the item id; a
+    /// quantity of exactly `MAX_ITEM_STACK` is accepted.
+    ///
+    /// Kills: no stack cap; a cap off by one in either direction.
+    #[test]
+    fn starter_kit_quantity_above_the_stack_cap_is_refused_the_cap_accepted_eo1_8() {
+        eo1_assert_kit_refused(
+            &eo1_kit(200, &[(3, crate::MAX_ITEM_STACK + 1)]),
+            "item_id 3",
+            "qty above MAX_ITEM_STACK",
+        );
+        assert_eq!(
+            validate_starter_kit(&eo1_kit(200, &[(3, crate::MAX_ITEM_STACK)]), &eo1_items()),
+            Ok(()),
+            "a quantity of exactly MAX_ITEM_STACK is accepted"
+        );
+    }
+
+    /// A currency one above `MAX_BALANCE` is refused, naming the amount; exactly
+    /// `MAX_BALANCE`, zero currency and an empty item list are accepted.
+    ///
+    /// Kills: no balance cap; a cap off by one; a validator that demands items or
+    /// a positive currency.
+    #[test]
+    fn starter_kit_currency_above_the_balance_cap_is_refused_the_cap_accepted_eo1_8() {
+        let over = crate::currency::MAX_BALANCE + 1;
+        eo1_assert_kit_refused(
+            &eo1_kit(over, &[(1, 2)]),
+            &over.to_string(),
+            "currency above MAX_BALANCE",
+        );
+        for (kit, label) in [
+            (
+                eo1_kit(crate::currency::MAX_BALANCE, &[(1, 2)]),
+                "currency == MAX_BALANCE",
+            ),
+            (eo1_kit(0, &[(1, 2)]), "currency 0"),
+            (eo1_kit(200, &[]), "no items"),
+        ] {
+            assert_eq!(
+                validate_starter_kit(&kit, &eo1_items()),
+                Ok(()),
+                "{label} is accepted"
+            );
+        }
+    }
+
+    /// Where a flag sits in the `sys:` fixtures below.
+    #[derive(Clone, Copy, Debug)]
+    enum Eo1Place {
+        NodeEntryHas,
+        NodeEntryNot,
+        NodeAutoSet,
+        NodeAutoClear,
+        ChoiceCondHas,
+        ChoiceCondNot,
+        ChoiceEffectSet,
+        ChoiceEffectClear,
+        QuestStartHas,
+        QuestStartNot,
+        QuestStepHas,
+        QuestStepNot,
+    }
+
+    const EO1_TREE: &str = "eo1_elder_tree";
+    const EO1_QUEST: &str = "eo1_elder_quest";
+
+    /// `validate_npc_content` over an otherwise-valid world (one zone, one NPC, its
+    /// one-node one-choice tree, one Talk quest at that NPC) with `flag` named at
+    /// `place` and nowhere else.
+    fn eo1_validate_flag_at(place: Eo1Place, flag: &str) -> Result<(), String> {
+        use crate::dialogue::{
+            Condition, DialogueChoice, DialogueEffect, DialogueNode, DialogueTree,
+        };
+        use crate::quest::{QuestDef, QuestReward, QuestStep, StepTrigger};
+        let f = || flag.to_string();
+        let (mut entry, mut auto, mut cond, mut effects, mut start, mut step) =
+            (vec![], vec![], vec![], vec![], vec![], vec![]);
+        match place {
+            Eo1Place::NodeEntryHas => entry.push(Condition::HasFlag(f())),
+            Eo1Place::NodeEntryNot => entry.push(Condition::NotFlag(f())),
+            Eo1Place::NodeAutoSet => auto.push(DialogueEffect::SetFlag(f())),
+            Eo1Place::NodeAutoClear => auto.push(DialogueEffect::ClearFlag(f())),
+            Eo1Place::ChoiceCondHas => cond.push(Condition::HasFlag(f())),
+            Eo1Place::ChoiceCondNot => cond.push(Condition::NotFlag(f())),
+            Eo1Place::ChoiceEffectSet => effects.push(DialogueEffect::SetFlag(f())),
+            Eo1Place::ChoiceEffectClear => effects.push(DialogueEffect::ClearFlag(f())),
+            Eo1Place::QuestStartHas => start.push(Condition::HasFlag(f())),
+            Eo1Place::QuestStartNot => start.push(Condition::NotFlag(f())),
+            Eo1Place::QuestStepHas => step.push(Condition::HasFlag(f())),
+            Eo1Place::QuestStepNot => step.push(Condition::NotFlag(f())),
+        }
+        let tree = DialogueTree {
+            id: EO1_TREE.to_string(),
+            root_node_id: "greeting".to_string(),
+            nodes: vec![DialogueNode {
+                id: "greeting".to_string(),
+                text: "Hello.".to_string(),
+                entry_conditions: entry,
+                auto_effects: auto,
+                choices: vec![DialogueChoice {
+                    text: "Bye.".to_string(),
+                    conditions: cond,
+                    effects,
+                    next_node: None,
+                }],
+            }],
+        };
+        let quest = QuestDef {
+            id: EO1_QUEST.to_string(),
+            name: "Elder".to_string(),
+            start_conditions: start,
+            steps: vec![QuestStep {
+                trigger: StepTrigger::Talk {
+                    npc_id: "elder_oak".to_string(),
+                },
+                conditions: step,
+            }],
+            reward: QuestReward {
+                xp: 0,
+                items: vec![],
+                currency: 0,
+            },
+        };
+        let npcs = vec![fixture_npc_def_m12c(1, "elder_oak", 0, EO1_TREE)];
+        validate_npc_content(
+            &npcs,
+            &[tree],
+            &[quest],
+            &[fixture_zone_m12c(0)],
+            &eo1_items(),
+            &[],
+        )
+    }
+
+    /// The marker flag at each of `places` is refused with an error naming the flag
+    /// and `owner` (the tree id or the quest id).
+    fn eo1_assert_sys_flag_refused(places: &[Eo1Place], owner: &str) {
+        let flag = "sys:starter_claimed";
+        for &place in places {
+            match eo1_validate_flag_at(place, flag) {
+                Ok(()) => panic!("{place:?}: a `sys:` flag must be refused"),
+                Err(e) => {
+                    assert!(
+                        e.contains(flag),
+                        "{place:?}: the error must name the flag; got {e:?}"
+                    );
+                    assert!(
+                        e.contains(owner),
+                        "{place:?}: the error must name `{owner}`; got {e:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A node entry condition (`HasFlag` / `NotFlag`) naming a `sys:` flag is refused.
+    ///
+    /// Kills: no reserved-namespace check on node entry conditions.
+    #[test]
+    fn sys_flag_in_a_node_entry_condition_is_refused_eo1_8() {
+        eo1_assert_sys_flag_refused(&[Eo1Place::NodeEntryHas, Eo1Place::NodeEntryNot], EO1_TREE);
+    }
+
+    /// A node auto effect (`SetFlag` / `ClearFlag`) naming a `sys:` flag is refused:
+    /// content could otherwise set or clear the starter marker.
+    ///
+    /// Kills: no reserved-namespace check on node auto effects.
+    #[test]
+    fn sys_flag_in_a_node_auto_effect_is_refused_eo1_8() {
+        eo1_assert_sys_flag_refused(&[Eo1Place::NodeAutoSet, Eo1Place::NodeAutoClear], EO1_TREE);
+    }
+
+    /// A choice condition naming a `sys:` flag is refused.
+    ///
+    /// Kills: no reserved-namespace check on choice conditions.
+    #[test]
+    fn sys_flag_in_a_choice_condition_is_refused_eo1_8() {
+        eo1_assert_sys_flag_refused(
+            &[Eo1Place::ChoiceCondHas, Eo1Place::ChoiceCondNot],
+            EO1_TREE,
+        );
+    }
+
+    /// A choice effect naming a `sys:` flag is refused.
+    ///
+    /// Kills: no reserved-namespace check on choice effects.
+    #[test]
+    fn sys_flag_in_a_choice_effect_is_refused_eo1_8() {
+        eo1_assert_sys_flag_refused(
+            &[Eo1Place::ChoiceEffectSet, Eo1Place::ChoiceEffectClear],
+            EO1_TREE,
+        );
+    }
+
+    /// A quest start condition naming a `sys:` flag is refused, naming the quest.
+    ///
+    /// Kills: no reserved-namespace check on quest start conditions.
+    #[test]
+    fn sys_flag_in_a_quest_start_condition_is_refused_eo1_8() {
+        eo1_assert_sys_flag_refused(
+            &[Eo1Place::QuestStartHas, Eo1Place::QuestStartNot],
+            EO1_QUEST,
+        );
+    }
+
+    /// A quest step condition naming a `sys:` flag is refused, naming the quest.
+    ///
+    /// Kills: no reserved-namespace check on quest step conditions.
+    #[test]
+    fn sys_flag_in_a_quest_step_condition_is_refused_eo1_8() {
+        eo1_assert_sys_flag_refused(&[Eo1Place::QuestStepHas, Eo1Place::QuestStepNot], EO1_QUEST);
+    }
+
+    /// The same fixtures pass with an ordinary flag, and with a flag that holds
+    /// `sys:` past its first character: the refusals above are the reserved prefix,
+    /// not the fixture.
+    ///
+    /// Kills: a validator that refuses every flag, or any flag containing `sys:`.
+    #[test]
+    fn ordinary_flags_in_every_placement_are_accepted_eo1_8() {
+        for place in [
+            Eo1Place::NodeEntryHas,
+            Eo1Place::NodeEntryNot,
+            Eo1Place::NodeAutoSet,
+            Eo1Place::NodeAutoClear,
+            Eo1Place::ChoiceCondHas,
+            Eo1Place::ChoiceCondNot,
+            Eo1Place::ChoiceEffectSet,
+            Eo1Place::ChoiceEffectClear,
+            Eo1Place::QuestStartHas,
+            Eo1Place::QuestStartNot,
+            Eo1Place::QuestStepHas,
+            Eo1Place::QuestStepNot,
+        ] {
+            for flag in ["met_elder_oak", "my_sys:flag"] {
+                assert_eq!(
+                    eo1_validate_flag_at(place, flag),
+                    Ok(()),
+                    "{place:?}: the flag `{flag}` is not reserved"
+                );
+            }
+        }
+    }
+
+    /// `is_system_flag` holds exactly for flags that start with `sys:`.
+    #[test]
+    fn is_system_flag_holds_only_for_the_sys_prefix() {
+        assert_eq!(SYSTEM_FLAG_PREFIX, "sys:");
+        for (flag, reserved) in [
+            ("sys:starter_claimed", true),
+            ("sys:", true),
+            ("my_sys:flag", false),
+            ("sys", false),
+            ("met_elder_oak", false),
+            ("", false),
+        ] {
+            assert_eq!(is_system_flag(flag), reserved, "{flag:?}");
+        }
+    }
 }
