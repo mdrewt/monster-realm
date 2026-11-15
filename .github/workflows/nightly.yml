@@ -188,11 +188,13 @@ jobs:
         run: cat /tmp/stdb-smoke.log || true
 
   # The load driver for a few seconds: the default module build on a fresh in-memory host, one
-  # level of 20 bots (`just load-smoke`). Red when the ramp aborts or the level is invalid — no
-  # join, no zone scope, or no move reaching the server.
+  # level of 20 bots (`just load-smoke`). Red when the driver fails, the ramp aborts or the level is
+  # invalid; the log's last driver line names each invalid level as <concurrency>:<reason>.
   load-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      MR_LOAD_DB: monster-realm-load
     steps:
       - uses: actions/checkout@v6 # v6
       - uses: dtolnay/rust-toolchain@stable # stable
@@ -212,7 +214,7 @@ jobs:
           cat /tmp/stdb-load.log >&2 || true
           exit 1
       - name: Publish the default module
-        run: spacetime publish -s http://127.0.0.1:3000 --module-path server-module -y monster-realm
+        run: spacetime publish -s http://127.0.0.1:3000 --module-path server-module -y "$MR_LOAD_DB"
       - run: just load-smoke
       - name: Dump SpacetimeDB logs on failure
         if: failure()

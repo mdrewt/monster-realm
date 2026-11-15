@@ -43,7 +43,8 @@
 //! - `0` — the report is written. Without `--fail-on-invalid` that includes a
 //!   run whose levels are invalid: the report says so per level.
 //! - `1` — a usage or tool error (no report), or a ramp aborted at a level (the
-//!   partial report is still written, with an `aborted_at_concurrency` note).
+//!   partial report is still written, with an `aborted_at_concurrency` note;
+//!   with `--fail-on-invalid`, the stderr line below names any invalid level).
 //! - `2` — `--scenario chat-flood` (see OBS-28 below; no report).
 //! - [`INVALID_LEVEL_EXIT_CODE`] (`3`) — `--fail-on-invalid` and at least one
 //!   level is invalid. The report is written first; each level carries its
@@ -242,8 +243,10 @@
 //! zero sockets and zero clocks. The nightly workflow's `load-smoke` job does
 //! run it: it publishes the default module build to a fresh in-memory host and
 //! runs `just load-smoke`, one level of 20 bots with `--fail-on-invalid`, so the
-//! night goes red when that level is invalid — no join, no zone scope, or no
-//! move reaching the server. It measures no breaking point: a shared CI runner
+//! night goes red when the run errors or aborts, or when that level is invalid
+//! for any of the reasons under "Level validity" (no join, no zone scope, no
+//! move intent reaching the server, a counter reset, too few samples or an
+//! indeterminate p95). It measures no breaking point: a shared CI runner
 //! is the co-location case above at its worst. The bot model's one map
 //! assumption — zone-0 row 1 is grass-free — is proven by feeding the generated
 //! walk through the REAL `game_core::apply_move` on the REAL zone-0 content
@@ -531,10 +534,17 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
     })
 }
 
-/// Fetch the value that must follow the flag at `i`.
+/// Fetch the value that must follow the flag at `i`. A value that starts with
+/// `--` is a forgotten value, not a value: taking it would silently swallow the
+/// next flag (`--report --fail-on-invalid` would drop the flag).
 fn flag_value<'a>(args: &'a [String], i: usize, flag: &str) -> Result<&'a String, String> {
-    args.get(i + 1)
-        .ok_or_else(|| format!("flag {flag} requires a value"))
+    match args.get(i + 1) {
+        Some(value) if value.starts_with("--") => Err(format!(
+            "flag {flag} requires a value, got the flag {value}"
+        )),
+        Some(value) => Ok(value),
+        None => Err(format!("flag {flag} requires a value")),
+    }
 }
 
 fn parse_u32(s: &str, flag: &str) -> Result<u32, String> {
@@ -2669,8 +2679,22 @@ fn mint_identity(host: &str) -> Result<MintedIdentity, String> {
     })
 }
 
-/// Read an HTTP response head (up to the blank line) from a live socket.
-fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
+/// Split an HTTP response at its first `\r\n\r\n`: the head before it, and
+/// every byte after it. `None` while the head is incomplete. After a 101 the
+/// rest is the start of the WebSocket stream — the host sends its first frame
+/// right behind the head, often in the same read.
+#[must_use]
+pub fn split_response_head(buf: &[u8]) -> Option<(String, Vec<u8>)> {
+    let pos = find_subslice(buf, b"\r\n\r\n")?;
+    Some((
+        String::from_utf8_lossy(&buf[..pos]).into_owned(),
+        buf[pos + 4..].to_vec(),
+    ))
+}
+
+/// Read an HTTP response head (up to the blank line) from a live socket, and
+/// the bytes that arrived behind it ([`split_response_head`]).
+fn read_response_head(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 512];
     loop {
@@ -2681,8 +2705,8 @@ fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-            return Ok(String::from_utf8_lossy(&buf[..pos]).into_owned());
+        if let Some(split) = split_response_head(&buf) {
+            return Ok(split);
         }
         if buf.len() > 65536 {
             return Err("handshake response head too large".to_string());
@@ -2692,14 +2716,15 @@ fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
 }
 
 /// Open a WS connection, handshake, subscribe to the opening set
-/// ([`opening_queries`]), and `join_game`.
+/// ([`opening_queries`]), and `join_game`. Returns the socket and the stream
+/// bytes that arrived behind the 101 head, which the bot's drain parses first.
 /// AM11: sets BOTH a read timeout ([`READ_TIMEOUT_MS`]) and a write timeout.
 fn connect_client(
     host: &str,
     cfg: &Config,
     client_index: u32,
     identity: &MintedIdentity,
-) -> Result<TcpStream, String> {
+) -> Result<(TcpStream, Vec<u8>), String> {
     let token = &identity.token;
     let mut stream = connect_timeout(host)?;
     // Generous timeouts for the connect burst (a large handshake/subscribe/join
@@ -2717,7 +2742,7 @@ fn connect_client(
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("handshake write: {e}"))?;
-    let head = read_response_head(&mut stream)?;
+    let (head, leftover) = read_response_head(&mut stream)?;
     if !handshake_is_101(&head) {
         return Err(format!("websocket handshake rejected: {head}"));
     }
@@ -2747,7 +2772,7 @@ fn connect_client(
     stream
         .set_write_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS * 4)))
         .map_err(|e| e.to_string())?;
-    Ok(stream)
+    Ok((stream, leftover))
 }
 
 /// One thread per client: bounded drain (AM2) → any change of scope → one intent
@@ -2760,10 +2785,10 @@ fn client_thread(
     counters: &ClientCounters,
     running: &AtomicBool,
 ) {
-    let mut stream = match connect_client(host, cfg, client_index, identity) {
-        Ok(stream) => {
+    let (mut stream, leftover) = match connect_client(host, cfg, client_index, identity) {
+        Ok(connected) => {
             counters.connected.fetch_add(1, Ordering::Relaxed);
-            stream
+            connected
         }
         Err(_) => {
             counters.send_errors.fetch_add(1, Ordering::Relaxed);
@@ -2771,7 +2796,13 @@ fn client_thread(
         }
     };
 
-    let mut drain = DrainState::default();
+    // The stream bytes read with the handshake are received bytes too, and the
+    // first thing the drain parses.
+    counters.rx_bytes[client_index as usize].fetch_add(leftover.len() as u64, Ordering::Relaxed);
+    let mut drain = DrainState {
+        buf: leftover,
+        ..DrainState::default()
+    };
     let mut scope = BotScope::new(&identity.identity_hex);
     let mut was_scoped = false;
     let mut buf = [0u8; 8192];
@@ -5235,7 +5266,7 @@ mod tests {
         }
     }
 
-    /// Kills an impl that requires a value or defaults the flag to true.
+    /// Kills an impl that defaults the flag to true.
     #[test]
     fn sr9c_flag_defaults_false() {
         let cfg = parse_args(&min_args()).expect("min args parse");
@@ -5371,6 +5402,199 @@ mod tests {
     fn sr9c_empty_verdicts_exit_zero() {
         assert_eq!(exit_after_report(false, true, &[]), (0, None));
         assert_eq!(exit_after_report(false, false, &[]), (0, None));
+    }
+
+    /// Kills an exit code that truncates to 0 (256) or drifts from 3.
+    #[test]
+    fn sr9c_invalid_exit_code_is_exactly_three() {
+        assert_eq!(INVALID_LEVEL_EXIT_CODE, 3);
+    }
+
+    /// Kills a message with a wrong prefix, separator, order, or a take(N) cap.
+    #[test]
+    fn sr9c_message_exact_format_four_invalid() {
+        let v = vec![
+            invalid_verdict(5, "join_failed"),
+            ok_verdict(10),
+            invalid_verdict(20, "counter_reset"),
+            invalid_verdict(40, "p95_indeterminate"),
+            invalid_verdict(60, "scope_unsettled"),
+        ];
+        let (code, msg) = exit_after_report(false, true, &v);
+        assert_eq!(code, 3);
+        assert_eq!(
+            msg.as_deref(),
+            Some(
+                "--fail-on-invalid: invalid level(s) 5:join_failed 20:counter_reset \
+                 40:p95_indeterminate 60:scope_unsettled"
+            )
+        );
+    }
+
+    /// Kills an impl that ignores `aborted` when there are no levels.
+    #[test]
+    fn sr9c_aborted_with_empty_verdicts_exits_one() {
+        assert_eq!(exit_after_report(true, true, &[]), (1, None));
+        assert_eq!(exit_after_report(true, false, &[]), (1, None));
+    }
+
+    /// Kills prefix/contains matching of the flag name.
+    #[test]
+    fn sr9c_near_miss_flag_spellings_rejected() {
+        for bad in ["--fail-on-invalid=true", "--fail", "--fail-on-invalidx"] {
+            let mut a = min_args();
+            a.push(bad.to_string());
+            assert!(parse_args(&a).is_err(), "{bad} must be rejected");
+        }
+    }
+
+    /// Kills `fail_on_invalid || args.len() > N`.
+    #[test]
+    fn sr9c_default_false_with_every_other_flag_set() {
+        let a = argv(&[
+            "--server",
+            "http://10.0.0.4:3001",
+            "--db",
+            "mr-scratch",
+            "--scenario",
+            "movement",
+            "--clients-start",
+            "3",
+            "--clients-step",
+            "7",
+            "--clients-max",
+            "31",
+            "--hold-scrapes",
+            "12",
+            "--scrape-interval-ms",
+            "250",
+            "--move-rate",
+            "9",
+            "--seed",
+            "12345",
+            "--run-id",
+            "T",
+            "--report",
+            "/tmp/r.json",
+        ]);
+        assert!(!parse_args(&a).expect("valid").fail_on_invalid);
+    }
+
+    /// Kills a value-taking flag swallowing `--fail-on-invalid` as its value.
+    #[test]
+    fn sr9c_value_flag_swallowing_the_flag_is_rejected() {
+        assert!(parse_args(&argv(&["--run-id", "T", "--report", "--fail-on-invalid"])).is_err());
+        assert!(parse_args(&argv(&["--run-id", "--fail-on-invalid"])).is_err());
+    }
+
+    /// Kills over-eager rejection: a single-dash value is still a value.
+    #[test]
+    fn sr9c_single_dash_value_still_accepted() {
+        let a = argv(&["--run-id", "T", "--report", "-x"]);
+        let cfg = parse_args(&a).expect("-x is a valid report path");
+        assert_eq!(cfg.report_path.as_deref(), Some("-x"));
+    }
+
+    /// Kills a negative-number value being accepted after the `--` rule change.
+    #[test]
+    fn sr9c_negative_number_value_still_rejected() {
+        assert!(parse_args(&args_with("--hold-scrapes", "-4")).is_err());
+    }
+
+    /// Kills an impl that errors on a repeated flag.
+    #[test]
+    fn sr9c_repeated_flag_parses_true() {
+        let a = argv(&["--run-id", "T", "--fail-on-invalid", "--fail-on-invalid"]);
+        assert!(parse_args(&a).expect("repeat ok").fail_on_invalid);
+    }
+
+    const SR9C_HEAD_101: &str = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n";
+
+    fn sr9c_buf(head_text: &str, rest: &[u8]) -> Vec<u8> {
+        let mut b = head_text.as_bytes().to_vec();
+        b.extend_from_slice(b"\r\n");
+        b.extend_from_slice(rest);
+        b
+    }
+
+    /// Kills a splitter that returns Some without a full terminator.
+    #[test]
+    fn sr9c_split_no_terminator_is_none() {
+        assert_eq!(split_response_head(b""), None);
+        assert_eq!(
+            split_response_head(b"HTTP/1.1 101 X\r\nUpgrade: websocket\r\n"),
+            None
+        );
+        assert_eq!(split_response_head(b"HTTP/1.1 101 X\r\n\r"), None);
+        assert_eq!(split_response_head(b"HTTP/1.1 101 X\r\n\r\x00\n"), None);
+    }
+
+    /// Kills a splitter that leaves the terminator in the head or invents rest bytes.
+    #[test]
+    fn sr9c_split_head_only_has_empty_rest() {
+        let buf = sr9c_buf(SR9C_HEAD_101, b"");
+        let (head, rest) = split_response_head(&buf).expect("terminated");
+        assert_eq!(head, SR9C_HEAD_101.trim_end_matches("\r\n"));
+        assert!(rest.is_empty());
+    }
+
+    /// Kills the drop-the-rest defect: bytes after the head must survive byte-exact.
+    #[test]
+    fn sr9c_split_keeps_following_frame_byte_exact() {
+        let frame = server_frame(1, true, b"first frame after the 101");
+        let buf = sr9c_buf(SR9C_HEAD_101, &frame);
+        let (head, rest) = split_response_head(&buf).expect("terminated");
+        assert!(head.starts_with("HTTP/1.1 101"));
+        assert_eq!(rest, frame);
+    }
+
+    /// Kills a splitter that cuts at the last terminator (or re-scans the rest).
+    #[test]
+    fn sr9c_split_stops_at_first_terminator() {
+        let tail = b"xx\r\n\r\nyy".to_vec();
+        let buf = sr9c_buf(SR9C_HEAD_101, &tail);
+        let (head, rest) = split_response_head(&buf).expect("terminated");
+        assert_eq!(head, SR9C_HEAD_101.trim_end_matches("\r\n"));
+        assert_eq!(rest, tail);
+    }
+
+    /// Kills the lost-first-frame-header defect end to end: leftover bytes seed the drain.
+    #[test]
+    fn sr9c_leftover_after_head_seeds_drain_and_parses_both_frames() {
+        let a = server_frame(1, true, b"AAAAAAAAAA");
+        let b = server_frame(1, true, b"BBBBBBBBBBBB");
+        let mut wire = a.clone();
+        wire.extend_from_slice(&b[..3]);
+        let buf = sr9c_buf(SR9C_HEAD_101, &wire);
+        let (_, rest) = split_response_head(&buf).expect("terminated");
+        assert_eq!(rest, wire);
+
+        let mut st = DrainState {
+            buf: rest,
+            ..DrainState::default()
+        };
+        let mut sink: Vec<u8> = Vec::new();
+        let out = drain_feed_into(&mut st, &b[3..], &mut |p| sink.extend_from_slice(p))
+            .expect("leftover + remainder parse");
+        assert_eq!(sink, b"AAAAAAAAAABBBBBBBBBBBB".to_vec());
+        assert_eq!(out.data_frames_skipped, 2);
+        assert!(st.buf.is_empty());
+        assert_eq!(st.skip_remaining, 0);
+    }
+
+    /// Shows the defect: seeding with the payload alone (header dropped) loses it.
+    #[test]
+    fn sr9c_dropping_the_frame_header_corrupts_the_payload() {
+        let payload = b"AAAAAAAAAA";
+        let mut st = DrainState {
+            buf: payload.to_vec(),
+            ..DrainState::default()
+        };
+        let mut sink: Vec<u8> = Vec::new();
+        let res = drain_feed_into(&mut st, b"", &mut |p| sink.extend_from_slice(p));
+        if res.is_ok() {
+            assert_ne!(sink, payload.to_vec());
+        }
     }
 
     // =======================================================================
