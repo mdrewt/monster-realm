@@ -512,13 +512,14 @@ pub fn validate_shops(shops: &[ShopDef], items: &[ItemDef]) -> Result<(), String
 }
 
 // ===========================================================================
-// Starter kit (SCAFFOLD, eo-1 red phase)
+// Starter kit — what a first join grants beside the starter monster
 // ===========================================================================
 
-/// Prefix of the flags the server writes for itself; content may not name one.
-pub const SYSTEM_FLAG_PREFIX: &str = "sys:";
+/// Prefix of the flags the server writes for itself in a player's dialogue state.
+const SYSTEM_FLAG_PREFIX: &str = "sys:";
 
-/// True when `flag` is in the reserved server namespace.
+/// True when `flag` is in the reserved server namespace. Content may not name such a
+/// flag: `validate_npc_content` refuses it.
 pub fn is_system_flag(flag: &str) -> bool {
     flag.starts_with(SYSTEM_FLAG_PREFIX)
 }
@@ -531,20 +532,55 @@ pub struct StarterKit {
     pub items: Vec<crate::quest::RewardItem>,
 }
 
-/// SCAFFOLD: no kit is embedded yet.
+const STARTER_KIT_RON: &str = include_str!("../content/starter_kit.ron");
+
+/// Parse the embedded starter kit.
 ///
 /// # Errors
-/// Always, until the kit lands.
+/// Returns `Err` if the embedded file is not a valid kit record.
 pub fn load_starter_kit() -> Result<StarterKit, String> {
-    Err("starter kit: not implemented".to_string())
+    ron::from_str::<StarterKit>(STARTER_KIT_RON)
+        .map_err(|e| format!("starter kit parse error: {e}"))
 }
 
-/// SCAFFOLD: accepts every kit.
+/// Starter-kit validation against the item registry and the holding caps:
+/// - every `item_id` exists in `items` and is listed once
+/// - every `qty` is at least 1 and at most `MAX_ITEM_STACK`
+/// - `currency` is at most `MAX_BALANCE`
+///
+/// A kit that passes fits a fresh identity whole, so the join never has to grant it short.
 ///
 /// # Errors
-/// Never, until the rules land.
+/// Returns `Err` naming the offending entry on the first violation found.
 pub fn validate_starter_kit(kit: &StarterKit, items: &[ItemDef]) -> Result<(), String> {
-    let _ = (kit, items);
+    if kit.currency > crate::currency::MAX_BALANCE {
+        return Err(format!(
+            "starter kit currency {} exceeds the maximum balance {}",
+            kit.currency,
+            crate::currency::MAX_BALANCE
+        ));
+    }
+    let item_ids: std::collections::BTreeSet<u32> = items.iter().map(|i| i.id).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in &kit.items {
+        let id = entry.item_id;
+        if !item_ids.contains(&id) {
+            return Err(format!("starter kit references non-existent item_id {id}"));
+        }
+        if !seen.insert(id) {
+            return Err(format!("starter kit lists item_id {id} twice"));
+        }
+        if entry.qty == 0 {
+            return Err(format!("starter kit item_id {id} has qty 0"));
+        }
+        if entry.qty > crate::MAX_ITEM_STACK {
+            return Err(format!(
+                "starter kit item_id {id} has qty {} above the maximum stack {}",
+                entry.qty,
+                crate::MAX_ITEM_STACK
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1324,6 +1360,9 @@ pub fn load_heal_locations() -> Result<Vec<HealLocationDef>, String> {
 /// 10. Unique heal location ids
 /// 11. Each heal location's zone_id references an existing zone
 /// 12. Each heal location's cost_item_id (when Some) references an existing item
+/// 13. A heal location with a cost_item_id has a cost_qty above 0
+/// 14. No dialogue condition or effect, quest start condition or quest step condition names a
+///     flag in the reserved `sys:` namespace (`is_system_flag`): those flags are the server's
 pub fn validate_npc_content(
     npcs: &[NpcDef],
     dialogue_trees: &[crate::dialogue::DialogueTree],
@@ -1592,7 +1631,61 @@ pub fn validate_npc_content(
         }
     }
 
+    // 14. Reserved flags. The server keeps its own records in a player's flag set (the
+    // once-only starter grant); content that could test, set or clear one could reopen it.
+    for tree in dialogue_trees {
+        for node in &tree.nodes {
+            let conditions = node
+                .entry_conditions
+                .iter()
+                .chain(node.choices.iter().flat_map(|c| c.conditions.iter()));
+            let effects = node
+                .auto_effects
+                .iter()
+                .chain(node.choices.iter().flat_map(|c| c.effects.iter()));
+            if let Some(flag) = reserved_flag(conditions, effects) {
+                return Err(format!(
+                    "dialogue tree '{}' node '{}' names the reserved flag '{flag}'",
+                    tree.id, node.id
+                ));
+            }
+        }
+    }
+    for quest in quests {
+        let conditions = quest
+            .start_conditions
+            .iter()
+            .chain(quest.steps.iter().flat_map(|s| s.conditions.iter()));
+        if let Some(flag) = reserved_flag(conditions, std::iter::empty()) {
+            return Err(format!(
+                "quest '{}' names the reserved flag '{flag}'",
+                quest.id
+            ));
+        }
+    }
+
     Ok(())
+}
+
+/// The first flag in the reserved `sys:` namespace that `conditions` or `effects` name.
+fn reserved_flag<'a>(
+    conditions: impl Iterator<Item = &'a crate::dialogue::Condition>,
+    effects: impl Iterator<Item = &'a crate::dialogue::DialogueEffect>,
+) -> Option<&'a str> {
+    use crate::dialogue::{Condition, DialogueEffect};
+    let from_conditions = conditions.filter_map(|c| match c {
+        Condition::HasFlag(f) | Condition::NotFlag(f) => Some(f.as_str()),
+        Condition::QuestActive(_) | Condition::QuestDone(_) => None,
+    });
+    let from_effects = effects.filter_map(|e| match e {
+        DialogueEffect::SetFlag(f) | DialogueEffect::ClearFlag(f) => Some(f.as_str()),
+        DialogueEffect::StartQuest(_)
+        | DialogueEffect::GrantXp(_)
+        | DialogueEffect::GrantItem(..) => None,
+    });
+    from_conditions
+        .chain(from_effects)
+        .find(|f| is_system_flag(f))
 }
 
 /// Cross-registry integrity check for `NpcDef.interaction` payloads.

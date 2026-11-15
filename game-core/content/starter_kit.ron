@@ -1,0 +1,12 @@
+// Starter kit — DATA, not code. What an identity receives at its first join,
+// beside its starter monster: once per identity, never again.
+// Each `item_id` names an entry of items/000-core.ron and appears once.
+(
+    currency: 200,
+    items: [
+        // Lure Berry (id=1): the bait, for the first recruits.
+        (item_id: 1, qty: 2),
+        // Antidote (id=3): the one healing item.
+        (item_id: 3, qty: 1),
+    ],
+)

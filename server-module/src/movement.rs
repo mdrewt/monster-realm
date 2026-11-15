@@ -202,13 +202,13 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     join_with_kit(ctx, name, crate::content_cache::cached_starter_kit())
 }
 
-/// SCAFFOLD (eo-1 red phase): today's join; the kit is ignored.
+/// `join_game` over the starter kit the content cache answered. A kit that failed to load
+/// refuses the join before anything is written.
 pub(crate) fn join_with_kit(
     ctx: &ReducerContext,
     name: String,
     kit: Result<&game_core::StarterKit, String>,
 ) -> Result<(), String> {
-    let _ = kit;
     let me = ctx.sender();
     let name = validate_name(&name).inspect_err(|e| log_reject("join_game", me, e))?;
     if ctx.db.player().identity().find(me).is_some() {
@@ -216,6 +216,7 @@ pub(crate) fn join_with_kit(
         log_reject("join_game", me, &e);
         return Err(e);
     }
+    let kit = kit.inspect_err(|e| log_reject("join_game", me, e))?;
     let (zone_id, pos, facing) = take_start(ctx, me);
     let ch = ctx.db.character().insert(Character {
         entity_id: 0,
@@ -244,15 +245,9 @@ pub(crate) fn join_with_kit(
     });
     arm_zone_tick(ctx, zone_id);
 
-    // Grant starter if this identity has no monsters yet (idempotent on reconnect).
-    let has_monsters = ctx
-        .db
-        .monster()
-        .owner_identity()
-        .filter(me)
-        .next()
-        .is_some();
-    if !has_monsters {
+    // The starter grant: the kit is granted (or skipped) inside `onboard`, the monster here.
+    let grant = crate::onboarding::onboard(ctx, me, kit);
+    if grant.monster {
         let Some(species) = ctx.db.species_row().id().find(STARTER_SPECIES_ID) else {
             let e =
                 format!("starter species {STARTER_SPECIES_ID} not found — content sync required");

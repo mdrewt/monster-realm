@@ -6758,12 +6758,16 @@ mod acct_nh {
 
     // --- SR11: a session resumes where it left off -----------------------------
 
-    /// What `join_game` needs beyond [`world`]: an auto-inc `character` key and
-    /// the zone schedule table `arm_zone_tick` scans and inserts into.
+    /// What `join_game` needs beyond [`world`]: an auto-inc `character` key, an
+    /// auto-inc `inventory` key (the starter kit's stacks are inserted with
+    /// `inv_id: 0`) and the zone schedule table `arm_zone_tick` scans and inserts into.
     fn sr11_join_tables(fx: &Fixture) -> Handle<'_, crate::movement::MovementTickSchedule, u64> {
         let _ = fx
             .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
             .auto_inc(|r| r.entity_id, |r, v| r.entity_id = v);
+        let _ = fx
+            .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+            .auto_inc(|r| r.inv_id, |r, v| r.inv_id = v);
         fx.table_keyed::<crate::movement::MovementTickSchedule, u64>(
             "movement_tick_schedule",
             "id",
@@ -6932,18 +6936,15 @@ mod acct_nh {
     }
 
     /// [`world`] plus what a fresh identity's `join_game` and the elder's dialogue
-    /// reach beyond it: [`sr11_join_tables`], auto-inc keys for the rows the starter,
-    /// the kit and a started quest insert (`monster`, `inventory`, `player_quest`), and
-    /// the starter species.
+    /// reach beyond it: [`sr11_join_tables`] (the `character` and `inventory`
+    /// auto-inc keys), auto-inc keys for the rows the starter monster and a started
+    /// quest insert (`monster`, `player_quest`), and the starter species.
     fn eo1_world(fx: &Fixture) -> W<'_> {
         let w = world(fx);
         let _ = sr11_join_tables(fx);
         let _ = fx
             .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
             .auto_inc(|r| r.monster_id, |r, v| r.monster_id = v);
-        let _ = fx
-            .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
-            .auto_inc(|r| r.inv_id, |r, v| r.inv_id = v);
         let _ = fx
             .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
             .auto_inc(|r| r.pq_id, |r, v| r.pq_id = v);
