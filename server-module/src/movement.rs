@@ -859,6 +859,39 @@ fn conversation_is_live(ctx: &ReducerContext, conv: &PlayerConversation, zone: u
     me.zone_id == zone && in_talk_range(char_state(&me).pos, char_state(&npc_ch).pos)
 }
 
+/// LOAD TEST (`load_dev::dev_place_in_load_zone`): put character `entity_id` on `pos` of
+/// `zone_id` as the tick's warp arm does. It arrives Idle, keeps its facing, and is stamped with
+/// the call's time. Its queued moves are cleared, with the seq kept, and published on the same row
+/// write. The zone's tick is armed as a join arms it. The zone it left disarms on its own next tick
+/// once empty. Returns false, writing nothing, when the character or its intent row is missing.
+///
+/// Gated after the file's last production item, so no line of the default build moves for it.
+#[cfg(feature = "load_test_zones")]
+pub(crate) fn dev_place_character(
+    ctx: &ReducerContext,
+    entity_id: u64,
+    zone_id: u32,
+    pos: TilePos,
+) -> bool {
+    let Some(mut row) = ctx.db.character().entity_id().find(entity_id) else {
+        return false;
+    };
+    let Some(mut intent) = ctx.db.move_intent().entity_id().find(entity_id) else {
+        return false;
+    };
+    row.zone_id = zone_id;
+    row.tile_x = pos.x;
+    row.tile_y = pos.y;
+    row.action = ActionState::Idle;
+    row.move_started_at_ms = now_ms(ctx);
+    intent.queue.clear();
+    publish_intent(&mut row, &intent.queue, intent.last_input_seq);
+    ctx.db.character().entity_id().update(row);
+    ctx.db.move_intent().entity_id().update(intent);
+    arm_zone_tick(ctx, zone_id);
+    true
+}
+
 // movement.rs is a file-module (declared `mod movement;` in `lib.rs`), so a plain
 // `mod movement_tests;` would resolve under `src/movement/`; `#[path]` keeps the
 // test file a sibling in `src/`.

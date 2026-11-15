@@ -127,6 +127,8 @@ pub fn tick_seed(state: u64, input: u64, seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+// The generated load-test zones. Declared after the last production item, so no line of this
+// file moves for it; the default build compiles only its constants.
 pub mod load_test_zones;
 
 #[cfg(test)]

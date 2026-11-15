@@ -27,6 +27,9 @@
 //! | `--run-id <string>` | **required** | the injected wall-clock label (the driver never reads a clock) |
 //! | `--report <path>` | — | optional; default is stdout |
 //! | `--fail-on-invalid` | off | takes no value; see "Exit codes" |
+//! | `--zones <n>` | — | 1..=100; after joining, bot `i` moves to load zone `10000 + i mod n` |
+//! | `--hot-zone <n>` | `0` | ≤ `MAX_CLIENTS`, needs `--zones`; the first `n` bots all go to zone 10000 |
+//! | `--walking-share <pct>` | `100` | 1..=100; only that share of bots sends moves, spread over the zones ([`walking_set`]) |
 //!
 //! A flag's value may not begin with `--`: that is a forgotten value, and taking
 //! it would swallow the next flag.
@@ -205,6 +208,10 @@
 //!    `SELECT * FROM character WHERE zone_id = <Z>`.
 //! 4. A later own row in another zone: all three again with the new `<Z>`.
 //!
+//! With `--zones` the bot calls `dev_place_in_load_zone` right after `join_game`, so
+//! its own row reaches step 3 in its load zone, or reaches step 4 when the join's row
+//! arrived first.
+//!
 //! This protocol's `Subscribe` REPLACES the connection's whole query set, so
 //! each step sends every string the bot is to hold, the player query included.
 //! `character` is never subscribed whole. A bot holds none of the client's other
@@ -216,6 +223,10 @@
 //! - `join_failed` — the cumulative `join_game{committed="true"}` delta is short
 //!   of the level's client count. A driver-side auth/name/validation drift, and
 //!   therefore a LOUD tool error, never a server verdict.
+//! - `placement_failed` — with `--zones`, the cumulative
+//!   `dev_place_in_load_zone{committed="true"}` delta is short of the level's client
+//!   count: some bot still stands where it joined. A module without that reducer (any
+//!   build but the load build) refuses every call, so the run did not spread its bots.
 //! - `scope_unsettled` — fewer bots than the level's client count subscribed
 //!   their own row and its zone. A bot without its zone receives no one else's
 //!   steps, so the level's fan-out is short of its concurrency and its readings
@@ -256,7 +267,8 @@
 //! walk through the REAL `game_core::apply_move` on the REAL zone-0 content
 //! (T13), not by runtime logic: this driver models no game rules (AM23 records
 //! that no occupancy/collision rule exists anywhere in the movement pipeline, so
-//! N bots stack freely on row 1).
+//! N bots stack freely on row 1). A load zone (`--zones`, the load build of
+//! `just load-host`) is floor on every tile, so the same walk holds there.
 //!
 //! Protocol-real, not SDK-real: `spacetimedb-sdk` would drag in tokio +
 //! tokio-tungstenite + generated bindings, all outside this touch set. The
@@ -265,6 +277,7 @@
 
 #![forbid(unsafe_code)]
 
+use game_core::load_test_zones::{LOAD_ZONE_COUNT, LOAD_ZONE_FIRST_ID};
 use game_core::{tick_seed, Direction, MoveInput, STEP_MS};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -383,6 +396,9 @@ pub const REDUCER_MOVEMENT_TICK: &str = "movement_tick";
 pub const REDUCER_ENQUEUE_MOVE: &str = "enqueue_move";
 /// See [`REDUCER_MOVEMENT_TICK`].
 pub const REDUCER_JOIN_GAME: &str = "join_game";
+/// The load build's placement reducer (`server-module/src/load_dev.rs`), called once per bot
+/// after its join when `--zones` is set.
+pub const REDUCER_DEV_PLACE_IN_LOAD_ZONE: &str = "dev_place_in_load_zone";
 
 /// The `v1.json` WS subprotocol (live-verified).
 pub const WS_SUBPROTOCOL: &str = "v1.json.spacetimedb";
@@ -436,8 +452,14 @@ pub struct Config {
     /// `--fail-on-invalid`: an invalid level makes the run exit
     /// [`INVALID_LEVEL_EXIT_CODE`] once the report is written.
     pub fail_on_invalid: bool,
+    /// `--zones <n>`: after joining, each bot moves its character to load-test zone
+    /// [`placement_zone`] through [`REDUCER_DEV_PLACE_IN_LOAD_ZONE`]. `None`: no bot is placed and
+    /// every bot stays in the zone it joined.
     pub zones: Option<u32>,
+    /// `--hot-zone <n>`: the first `n` bots all go to the first load zone (only with `--zones`).
     pub hot_zone: u32,
+    /// `--walking-share <pct>`: the share of bots that send moves ([`walking_set`]); the rest
+    /// only hold their subscriptions.
     pub walking_share: u32,
 }
 
@@ -461,6 +483,9 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut run_id: Option<String> = None;
     let mut report_path: Option<String> = None;
     let mut fail_on_invalid = false;
+    let mut zones: Option<u32> = None;
+    let mut hot_zone: Option<u32> = None;
+    let mut walking_share: u32 = 100;
 
     let mut i = 0usize;
     while i < args.len() {
@@ -486,6 +511,9 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
             "--seed" => seed = parse_u64(flag_value(args, i, flag)?, flag)?,
             "--run-id" => run_id = Some(flag_value(args, i, flag)?.clone()),
             "--report" => report_path = Some(flag_value(args, i, flag)?.clone()),
+            "--zones" => zones = Some(parse_u32(flag_value(args, i, flag)?, flag)?),
+            "--hot-zone" => hot_zone = Some(parse_u32(flag_value(args, i, flag)?, flag)?),
+            "--walking-share" => walking_share = parse_u32(flag_value(args, i, flag)?, flag)?,
             other => return Err(format!("unknown flag: {other}")),
         }
         i += 2;
@@ -523,6 +551,19 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
     if !(1..=MAX_MOVE_RATE).contains(&move_rate) {
         return Err(format!("--move-rate must be in 1..={MAX_MOVE_RATE}"));
     }
+    if zones.is_some_and(|n| !(1..=LOAD_ZONE_COUNT).contains(&n)) {
+        return Err(format!("--zones must be in 1..={LOAD_ZONE_COUNT}"));
+    }
+    if hot_zone.is_some() && zones.is_none() {
+        return Err("--hot-zone requires --zones".to_string());
+    }
+    let hot_zone = hot_zone.unwrap_or(0);
+    if hot_zone > MAX_CLIENTS {
+        return Err(format!("--hot-zone must be <= {MAX_CLIENTS}"));
+    }
+    if !(1..=100).contains(&walking_share) {
+        return Err("--walking-share must be in 1..=100".to_string());
+    }
 
     Ok(Config {
         server,
@@ -538,30 +579,10 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
         run_id,
         report_path,
         fail_on_invalid,
-        zones: None,
-        hot_zone: 0,
-        walking_share: 100,
+        zones,
+        hot_zone,
+        walking_share,
     })
-}
-
-// RED-PHASE STUBS (sr-9b)
-pub const REDUCER_DEV_PLACE_IN_LOAD_ZONE: &str = "";
-#[must_use]
-pub fn placement_zone(_bot_index: u32, _zones: u32, _hot_zone: u32) -> u32 {
-    0
-}
-#[must_use]
-pub fn walking_set(
-    clients: u32,
-    _zones: Option<u32>,
-    _hot_zone: u32,
-    _walking_share: u32,
-) -> Vec<bool> {
-    vec![true; clients as usize]
-}
-#[must_use]
-pub fn args_dev_place_in_load_zone(_zone_id: u32) -> String {
-    String::new()
 }
 
 /// Fetch the value that must follow the flag at `i`. A value that starts with
@@ -1333,6 +1354,8 @@ pub struct LevelSample {
     pub clients_scoped: u32,
     /// Cumulative `join_game{committed="true"}` delta since RUN start (AM5).
     pub join_committed_total_delta: f64,
+    /// Cumulative `dev_place_in_load_zone{committed="true"}` delta since RUN start; `None` when
+    /// the run places no bot (no `--zones`).
     pub placement_committed_delta: Option<f64>,
     pub enqueue_accepted_delta: f64,
     pub enqueue_rejected_delta: f64,
@@ -1375,10 +1398,13 @@ pub struct LevelVerdict {
 ///
 /// 1. `counter_reset` — `counter_decreased`, or the p95 window saw a decrease.
 /// 2. `join_failed` — `join_committed_total_delta < concurrency`.
-/// 3. `scope_unsettled` — `clients_scoped < concurrency`.
-/// 4. `no_load_reached` — `accepted + rejected == 0`.
-/// 5. `insufficient_samples` — [`P95::TooFew`].
-/// 6. `p95_indeterminate` — [`P95::AboveTop`] below the budget.
+/// 3. `placement_failed` — `placement_committed_delta` is `Some` and `< concurrency`: a bot
+///    still stands where it joined, which a module without the placement reducer (any build but
+///    the load build) leaves every bot doing.
+/// 4. `scope_unsettled` — `clients_scoped < concurrency`.
+/// 5. `no_load_reached` — `accepted + rejected == 0`.
+/// 6. `insufficient_samples` — [`P95::TooFew`].
+/// 7. `p95_indeterminate` — [`P95::AboveTop`] below the budget.
 ///
 /// `accepted == 0 && rejected > 0` is VALID and gains [`REJECTION_STORM_NOTE`]:
 /// a saturated server's readings are real measurements, and rejection volume is
@@ -1415,6 +1441,11 @@ pub fn evaluate_level(sample: &LevelSample) -> Result<LevelVerdict, String> {
             Some("counter_reset")
         } else if sample.join_committed_total_delta < f64::from(sample.concurrency) {
             Some("join_failed")
+        } else if sample
+            .placement_committed_delta
+            .is_some_and(|placed| placed < f64::from(sample.concurrency))
+        {
+            Some("placement_failed")
         } else if sample.clients_scoped < sample.concurrency {
             Some("scope_unsettled")
         } else if accepted + rejected <= 0.0 {
@@ -1860,6 +1891,46 @@ pub fn next_input(client_index: u32, seq: u64, seed: u64) -> MoveInput {
     } else {
         MoveInput::Step(Direction::West)
     }
+}
+
+/// The load-test zone bot `bot_index` is placed in with `--zones zones --hot-zone hot_zone`: the
+/// first zone for each of the first `hot_zone` bots, else `bot_index mod zones` counted from the
+/// first zone, so the hot zone also takes its round-robin share. `zones` is at least 1 (the CLI's
+/// bound).
+#[must_use]
+pub fn placement_zone(bot_index: u32, zones: u32, hot_zone: u32) -> u32 {
+    if bot_index < hot_zone {
+        LOAD_ZONE_FIRST_ID
+    } else {
+        LOAD_ZONE_FIRST_ID + bot_index % zones
+    }
+}
+
+/// Which of a level's `clients` bots send moves, indexed by bot: `clients * walking_share / 100`
+/// of them (rounded down), spread over the zones in proportion to how many bots each holds.
+///
+/// The bots are ranked by (zone, index) — every bot is in one zone without `--zones` — and every
+/// rank where the running count `rank * share / 100` steps up walks. A zone's bots hold a
+/// contiguous run of ranks, so each zone's walkers are its occupancy times the share, rounded
+/// either way. Picking by bot index alone would not do this: at 30% it repeats every 10 bots,
+/// the same period as `placement_zone`'s modulus, and would put every walker in 30 of 100 zones.
+#[must_use]
+pub fn walking_set(
+    clients: u32,
+    zones: Option<u32>,
+    hot_zone: u32,
+    walking_share: u32,
+) -> Vec<bool> {
+    let mut ranked: Vec<u32> = (0..clients).collect();
+    if let Some(zones) = zones {
+        ranked.sort_by_key(|&bot| (placement_zone(bot, zones, hot_zone), bot));
+    }
+    let share = u64::from(walking_share);
+    let mut walks = vec![false; ranked.len()];
+    for (rank, &bot) in (0u64..).zip(&ranked) {
+        walks[bot as usize] = (rank + 1) * share / 100 > rank * share / 100;
+    }
+    walks
 }
 
 // ===========================================================================
@@ -2561,6 +2632,12 @@ pub fn args_join_game(name: &str) -> String {
     format!("[{}]", json_str(name))
 }
 
+/// `dev_place_in_load_zone` args ARRAY: `[10000]`.
+#[must_use]
+pub fn args_dev_place_in_load_zone(zone_id: u32) -> String {
+    format!("[{zone_id}]")
+}
+
 /// `enqueue_move` args ARRAY: `[{"step":{"east":[]}},7]`.
 #[must_use]
 pub fn args_enqueue_move(input: MoveInput, seq: u64) -> String {
@@ -2748,15 +2825,16 @@ fn read_response_head(stream: &mut TcpStream) -> Result<(String, Vec<u8>), Strin
 }
 
 /// Open a WS connection, handshake, subscribe to the opening set
-/// ([`opening_queries`]), and `join_game`. Returns the socket and the stream
-/// bytes that arrived behind the 101 head, which the bot's drain parses first.
+/// ([`opening_queries`]), `join_game`, and with `--zones` the placement call. Returns the socket,
+/// the stream bytes that arrived behind the 101 head (which the bot's drain parses first), and
+/// the index of the next frame to mask.
 /// AM11: sets BOTH a read timeout ([`READ_TIMEOUT_MS`]) and a write timeout.
 fn connect_client(
     host: &str,
     cfg: &Config,
     client_index: u32,
     identity: &MintedIdentity,
-) -> Result<(TcpStream, Vec<u8>), String> {
+) -> Result<(TcpStream, Vec<u8>, u64), String> {
     let token = &identity.token;
     let mut stream = connect_timeout(host)?;
     // Generous timeouts for the connect burst (a large handshake/subscribe/join
@@ -2795,6 +2873,23 @@ fn connect_client(
     stream
         .write_all(&encode_text_frame(&join, join_mask))
         .map_err(|e| format!("join write: {e}"))?;
+    let mut next_frame = 2u64;
+
+    // With --zones, the placement call (frame 2). The host runs one connection's calls in the
+    // order they arrive, so the join has committed when it runs.
+    if let Some(zones) = cfg.zones {
+        let zone = placement_zone(client_index, zones, cfg.hot_zone);
+        let place = client_msg_call_reducer(
+            REDUCER_DEV_PLACE_IN_LOAD_ZONE,
+            &args_dev_place_in_load_zone(zone),
+            4,
+        );
+        let place_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), next_frame);
+        next_frame += 1;
+        stream
+            .write_all(&encode_text_frame(&place, place_mask))
+            .map_err(|e| format!("placement write: {e}"))?;
+    }
 
     // Steady state: a tight read timeout so the per-iteration drain returns
     // promptly (AM1), and a bounded write timeout for the send loop.
@@ -2804,29 +2899,31 @@ fn connect_client(
     stream
         .set_write_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS * 4)))
         .map_err(|e| e.to_string())?;
-    Ok((stream, leftover))
+    Ok((stream, leftover, next_frame))
 }
 
 /// One thread per client: bounded drain (AM2) → any change of scope → one intent
-/// → open-loop sleep (AM1).
+/// when `walks` ([`walking_set`]) → open-loop sleep (AM1).
 fn client_thread(
     host: &str,
     cfg: &Config,
     client_index: u32,
+    walks: bool,
     identity: &MintedIdentity,
     counters: &ClientCounters,
     running: &AtomicBool,
 ) {
-    let (mut stream, leftover) = match connect_client(host, cfg, client_index, identity) {
-        Ok(connected) => {
-            counters.connected.fetch_add(1, Ordering::Relaxed);
-            connected
-        }
-        Err(_) => {
-            counters.send_errors.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-    };
+    let (mut stream, leftover, mut frame_index) =
+        match connect_client(host, cfg, client_index, identity) {
+            Ok(connected) => {
+                counters.connected.fetch_add(1, Ordering::Relaxed);
+                connected
+            }
+            Err(_) => {
+                counters.send_errors.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
 
     // The stream bytes read with the handshake are received bytes too, and the
     // first thing the drain parses — at the first read that returns data, which
@@ -2840,7 +2937,6 @@ fn client_thread(
     let mut was_scoped = false;
     let mut buf = [0u8; 8192];
     let mut step_index = 0u64;
-    let mut frame_index = 2u64; // frames 0 (subscribe) and 1 (join) are spent
 
     while running.load(Ordering::Relaxed) {
         // AM2 bounded drain: keep reading + skipping until the socket would block
@@ -2924,22 +3020,24 @@ fn client_thread(
             }
         }
 
-        // One movement intent.
-        let seq = seq_for(step_index);
-        let input = next_input(client_index, seq, cfg.seed);
-        let args = args_enqueue_move(input, seq);
-        let message = client_msg_call_reducer(REDUCER_ENQUEUE_MOVE, &args, 3);
-        let mask = mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
-        frame_index += 1;
-        match stream.write_all(&encode_text_frame(&message, mask)) {
-            Ok(()) => {
-                counters.attempted_sends.fetch_add(1, Ordering::Relaxed);
+        // One movement intent, from a walking bot only; the others just hold their scope.
+        if walks {
+            let seq = seq_for(step_index);
+            let input = next_input(client_index, seq, cfg.seed);
+            let args = args_enqueue_move(input, seq);
+            let message = client_msg_call_reducer(REDUCER_ENQUEUE_MOVE, &args, 3);
+            let mask = mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
+            frame_index += 1;
+            match stream.write_all(&encode_text_frame(&message, mask)) {
+                Ok(()) => {
+                    counters.attempted_sends.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_) => {
+                    counters.send_errors.fetch_add(1, Ordering::Relaxed);
+                }
             }
-            Err(_) => {
-                counters.send_errors.fetch_add(1, Ordering::Relaxed);
-            }
+            step_index += 1;
         }
-        step_index += 1;
 
         let sleep = pacing_sleep_ms(cfg.move_rate);
         if sleep > 0 {
@@ -3058,6 +3156,7 @@ fn build_level_sample(
     baseline: &[Sample],
     scrapes: &[Vec<Sample>],
     rx_bytes_by_scrape: Vec<Vec<u64>>,
+    places: bool,
 ) -> Result<LevelSample, String> {
     let p95_snapshots = tick_snapshots(scrapes, db_identity)?;
 
@@ -3076,9 +3175,10 @@ fn build_level_sample(
     let last = scrapes.last();
     let delta = |reducer: &str, committed: &str| -> f64 {
         // An absent cumulative counter == 0 is arithmetically correct here, AND a
-        // systematic absence fails toward INVALID (join_failed / no_load_reached),
-        // the safe direction — unlike a queue gauge whose absence would falsely
-        // read as "no growth". So .unwrap_or(0.0) stays for the counter deltas.
+        // systematic absence fails toward INVALID (join_failed / placement_failed /
+        // no_load_reached), the safe direction — unlike a queue gauge whose absence
+        // would falsely read as "no growth". So .unwrap_or(0.0) stays for the counter
+        // deltas.
         let pin = txn_count_match(db_identity, reducer, committed);
         let start = counter_sum(baseline, TXN_COUNT_FAMILY, &pin).unwrap_or(0.0);
         let end = last.map_or(0.0, |s| {
@@ -3093,7 +3193,7 @@ fn build_level_sample(
             .unwrap_or(u32::MAX),
         clients_scoped: u32::try_from(counters.scoped.load(Ordering::Relaxed)).unwrap_or(u32::MAX),
         join_committed_total_delta: delta(REDUCER_JOIN_GAME, "true"),
-        placement_committed_delta: None,
+        placement_committed_delta: places.then(|| delta(REDUCER_DEV_PLACE_IN_LOAD_ZONE, "true")),
         enqueue_accepted_delta: delta(REDUCER_ENQUEUE_MOVE, "true"),
         enqueue_rejected_delta: delta(REDUCER_ENQUEUE_MOVE, "false"),
         movement_tick_txn_delta: delta(REDUCER_MOVEMENT_TICK, "true"),
@@ -3116,7 +3216,8 @@ fn run_level(
     concurrency: u32,
 ) -> Result<LevelReport, String> {
     // One fresh identity PER simulated client — distinct players → N characters
-    // stacking on zone-0 row 1 (no collision rule) → real O(N²) fan-out.
+    // stacking on row 1 of zone 0, or of their load zones with --zones (no
+    // collision rule) → real fan-out within each zone.
     let mut client_tokens = Vec::with_capacity(concurrency as usize);
     for _ in 0..concurrency {
         client_tokens.push(mint_identity(host)?);
@@ -3141,6 +3242,8 @@ fn run_level(
     let running_ref = &running;
     let scrapes_ref = &scrapes;
     let client_tokens_ref = &client_tokens;
+    let walkers = walking_set(concurrency, cfg.zones, cfg.hot_zone, cfg.walking_share);
+    let walkers_ref = &walkers;
     let scrape_result = std::thread::scope(|scope| -> Result<(), String> {
         for client_index in 0..concurrency {
             // 256 KiB stacks (not the ~2 MiB default) so MAX_CLIENTS=1000 is
@@ -3152,6 +3255,7 @@ fn run_level(
                         host,
                         cfg,
                         client_index,
+                        walkers_ref[client_index as usize],
                         &client_tokens_ref[client_index as usize],
                         counters_ref,
                         running_ref,
@@ -3184,6 +3288,7 @@ fn run_level(
         &baseline,
         &raw,
         rx_bytes_by_scrape,
+        cfg.zones.is_some(),
     )?;
     let verdict = evaluate_level(&sample)?;
     Ok(LevelReport { sample, verdict })

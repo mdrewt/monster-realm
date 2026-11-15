@@ -221,9 +221,10 @@ not.
 
 A tick drains at most one move per character through `game_core::apply_move`, moves NPCs
 with `npc_decide`, and rolls grass encounters. The tick is the only writer of
-`character.move_queue` and `character.acked_seq`: it copies the private queue and seq
-onto the character row (`movement::publish_intent`) in the same update that carries
-the position, and writes the row only when something changed. The owner therefore
+`character.move_queue` and `character.acked_seq` in every build but the load-test one, where
+`dev_place_in_load_zone` also writes them as the warp arm does. The tick copies the private
+queue and seq onto the character row (`movement::publish_intent`) in the same update that
+carries the position, and writes the row only when something changed. The owner therefore
 receives the acknowledgement and what is left of the queue together with the position,
 up to one tick after the input was accepted, and every other client receives one
 `character` update per step. A character whose player is in a battle drains nothing

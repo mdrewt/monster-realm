@@ -47,4 +47,7 @@ syn = { version = "2", features = ["full", "visit"] }
 # arguably more stable (the vendor has a TODO to rename the flag), so this is a
 # recorded correction, not a mandate to change. Never add to `default`.
 dev_reducers = []
+# The load-test build (`just load-host`): game-core's 100 generated zones and the dev reducer
+# `dev_place_in_load_zone`. It implies `dev_reducers`, so nothing that refuses a dev build publishes
+# it. Never add to `default`.
 load_test_zones = ["game-core/load_test_zones", "dev_reducers"]

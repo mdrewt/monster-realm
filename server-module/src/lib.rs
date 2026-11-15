@@ -343,4 +343,7 @@ pub fn on_disconnect(ctx: &ReducerContext) {
 // Dev-only clock control: its reducer and imports are behind `dev_reducers`. The module line
 // carries no `cfg` because the deletion-gate census parses only bare and `cfg(test)` module lines.
 mod dev_clock;
+
+// Load-test placement: its reducer and imports are behind `load_test_zones`; the module line is
+// bare for the same reason as `dev_clock`'s.
 mod load_dev;

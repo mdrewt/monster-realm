@@ -311,14 +311,16 @@ without the others, so it cannot replay an input the position already includes.
 
 **Rules out.** A `character` or `player` write in an intent reducer; a view or a second
 public table for the ack; any writer of `character.move_queue` or `character.acked_seq`
-other than `movement_tick`; a tick branch that holds an intent row and does not call
-`publish_intent`.
+other than `movement_tick` and, in the load-test build only, `dev_place_in_load_zone`'s
+placement (it clears and publishes the queue as the warp arm does, in the same row write);
+a tick branch that holds an intent row and does not call `publish_intent`.
 
 ## An empty zone does no work; no state depends on a tick having run
 
 **Decision.** A zone's `movement_tick` is scheduled only while a player's character is in the zone.
-Entering arms it (`movement::arm_zone_tick`, from `join_game` for the zone the character starts in
-and from the tick's warp arm; one row per zone at most). The tick that finds no player's character in its zone resets the zone's ambient state
+Entering arms it (`movement::arm_zone_tick`, from `join_game` for the zone the character starts in,
+from the tick's warp arm and, in the load-test build, from `dev_place_in_load_zone`; one row per
+zone at most). The tick that finds no player's character in its zone resets the zone's ambient state
 and removes its own schedule row, so every way of leaving — walking out through a warp,
 disconnecting, timing out, account deletion — ends in the same code path one tick later. State is one
 of three kinds, and the kind decides what an empty zone does with it:
@@ -1252,8 +1254,9 @@ product function until a survivor is found for it.
 
 ## Dev-only reducers never ship
 
-**Decision.** The dev reducers, `grant_bait` and `dev_expire_tactical_window`, compile
-only with the `dev_reducers` feature (`server-module/Cargo.toml`), which is never in
+**Decision.** The dev reducers, `grant_bait`, `dev_expire_tactical_window` and
+`dev_place_in_load_zone`, compile only with the `dev_reducers` feature
+(`server-module/Cargo.toml`) or with `load_test_zones`, which implies it. Neither is ever in
 `default`. The playtest recipes publish the default build and then check the *published*
 module with `spacetime describe --json` (`scripts/verify-release-reducers.mjs`, whose
 `FORBIDDEN_REDUCERS` lists every dev reducer name, so a new dev reducer joins it in the
@@ -1271,7 +1274,18 @@ a test that does so keeps one real-time expiry in the same test.
 `dev_expire_tactical_window` names the side whose window it expires and refuses a call that finds
 the other side's window open, so a slow test cannot strike the wrong player. It acts on any Active
 tactical battle, wild, PvP or Practice; a wild expiry is the AutoFlee a real deadline gives. It
-refuses a Deploying or Finished battle. A change that adds a dev reducer must also:
+refuses a Deploying or Finished battle.
+
+`dev_place_in_load_zone` exists only in the load-test build: `load_test_zones`, which `just
+load-host` publishes to a `monster-realm-load*` database on a loopback host. That build also
+appends game-core's 100 generated zones to the zone, zone-map and tactics-zone registries. The
+zones are 16×16 floor with ids 10000–10099 (`game-core/src/load_test_zones.rs`). Any caller may
+call the reducer, but only for itself. It moves the caller's own character to a load zone's spawn
+tile as the tick's warp arm moves a character. The character arrives Idle, its queued moves are
+cleared and published with the seq kept, and the zone's tick is armed. The reducer refuses an id
+outside the band, a caller with no character and a caller in an ongoing battle. The load driver
+(`mr_load_driver --zones`) calls it once per bot after the join, to spread its bots over the
+zones. A change that adds a dev reducer must also:
 
 - call the deletion gate first;
 - join the census's `EXPECTED_GATED` (`privacy_enforcement_tests.rs`), and, when it adds a module,
@@ -1279,7 +1293,11 @@ refuses a Deploying or Finished battle. A change that adds a dev reducer must al
   `cfg` but `cfg(test)`, so the feature gate goes on the module's items;
 - add `exclude_re` keys for its surviving mutants to `.cargo/mutants.toml` entry 8;
 - prove the default release wasm byte-identical to its base's: one checkout path and one target
-  dir, the pinned toolchain, the base built first, and both sha256 sums in the PR.
+  dir, the pinned toolchain, the base built first, and both sha256 sums in the PR. The default
+  game-core build compiles no new function for a dev or load feature. sr-9b measured that even
+  an uncalled `pub fn` changes the sum. A game-core loader reaches gated code through a macro on
+  its own line, whose feature-off arm expands to the loader's original expression
+  (`load_test_zones::zones!`).
 
 A dev caller reaches a private production function through a dev-gated forwarder placed after the
 file's last production item (`tactics.rs` `dev_arm_deadline`). It never widens the function itself.
@@ -1298,7 +1316,9 @@ recorded identical sums for base and slice, and `arm_deadline` stays callable on
 `tactics.rs`.
 
 **Rules out.** Runtime flags for dev reducers; trusting the source tree as proof of what was
-published; a dev reducer a player can call; a fake or overridden clock for tests; an e2e that
+published; a dev reducer a player can call to act on anything but the caller's own state
+(`grant_bait` and `dev_place_in_load_zone` act on the caller's own;
+`dev_expire_tactical_window` is owner-only); a fake or overridden clock for tests; an e2e that
 takes every expiry through the dev path; a `cfg(feature)` module line; widening a
 production function's visibility for a dev caller.
 
