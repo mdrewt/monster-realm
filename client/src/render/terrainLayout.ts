@@ -61,12 +61,15 @@ export interface ChunkPlan {
   readonly animated: readonly TilePlacement[];
 }
 
-/** What a chunk texture is created with: the device scale and nearest sampling
- *  (Constraint 7a — a 32 px tile edge stays a hard step at every integer scale). */
+/** What a chunk texture is created with: resolution 1 and nearest sampling at every device
+ *  scale. The integer stage scale upsamples it, so a 32 px tile edge stays a hard step
+ *  (Constraint 7a) and a chunk costs 4 KB per tile whatever the display. */
 export interface ChunkTextureOptions {
-  readonly resolution: number;
+  readonly resolution: 1;
   readonly scaleMode: 'nearest';
 }
+
+const CHUNK_TEXTURE_OPTIONS: ChunkTextureOptions = { resolution: 1, scaleMode: 'nearest' };
 
 /** The `Assets.load` descriptor for a spritesheet atlas: Pixi's spritesheet parser
  *  forwards `data.textureOptions` to the atlas image's texture source. */
@@ -275,15 +278,15 @@ export function kitAtlasAsset(url: string): AtlasAsset {
 }
 
 /** What world.ts spreads into Pixi's `renderer.generateTexture` for a chunk:
- *  the device-scale resolution and nearest sampling of the baked texture. */
+ *  the resolution and nearest sampling of the baked texture. */
 export function chunkTextureRequest(options: ChunkTextureOptions): {
-  readonly resolution: number;
+  readonly resolution: 1;
   readonly textureSourceOptions: { readonly scaleMode: 'nearest' };
 } {
   return { resolution: options.resolution, textureSourceOptions: { scaleMode: options.scaleMode } };
 }
 
-/** Owns every chunk texture it creates. `build` (the setMap / rescale path) is
+/** Owns every chunk texture it creates. `build` (the setMap / context-restore path) is
  *  atomic: it creates the next set first and only then destroys the previous one,
  *  so a factory throw destroys the partial new set and leaves the previous set
  *  live. `clear` (the destroy path) destroys whatever is live. Each created
@@ -301,11 +304,10 @@ export class ChunkCache<T> {
     this.#destroy = destroy;
   }
 
-  build(chunks: readonly Chunk[], deviceScale: number): readonly T[] {
-    const options: ChunkTextureOptions = { resolution: deviceScale, scaleMode: 'nearest' };
+  build(chunks: readonly Chunk[]): readonly T[] {
     const next: T[] = [];
     try {
-      for (const chunk of chunks) next.push(this.#create(chunk, options));
+      for (const chunk of chunks) next.push(this.#create(chunk, CHUNK_TEXTURE_OPTIONS));
     } catch (err) {
       for (const texture of next) this.#destroy(texture);
       throw err;

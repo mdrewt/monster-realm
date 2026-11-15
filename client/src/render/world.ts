@@ -11,7 +11,8 @@
 // (map / interpolation / slideClock / zorder / viewRegistry / terrainLayout).
 //
 // wap-4: the terrain is the kit atlas laid out by `terrainLayout.ts` — static tiles
-// baked into nearest-sampled chunk textures at the device scale, animated water as
+// baked into nearest-sampled chunk textures at resolution 1 (the integer stage scale
+// upsamples them, so a device-scale change re-bakes nothing), animated water as
 // per-tile sprites whose texture swaps only when its frame index changes. Without
 // the kit or a terrain layer it falls back to the flat wall/grass rects.
 //
@@ -231,11 +232,10 @@ export class WorldRenderer {
   // camera recomputation, which desyncs by the sub-tile slide amount).
   #lastOffset = { x: 0, y: 0 };
   // wap-4 terrain: the loaded kit (undefined ⟹ flat fallback), the chunk textures it
-  // bakes (owned by the cache, destroyed on setMap / rescale / destroy), the device
-  // scale they were baked at, and the animated water tiles.
+  // bakes (owned by the cache, destroyed on setMap / context restore / destroy), and the
+  // animated water tiles.
   #kit: Spritesheet | undefined;
   #chunks: ChunkCache<Texture> | undefined;
-  #chunkScale = 0;
   #water: AnimatedTile[] = [];
   // wap-6 decor: the loaded landmarks atlas (undefined ⟹ no decor), the landmark
   // sprites it placed in #actors (tracked explicitly: #actors also holds the
@@ -484,11 +484,9 @@ export class WorldRenderer {
       return;
     }
     const { chunks, animated } = planChunks(map.width, map.height, plan.tiles);
-    const deviceScale = this.#vs.deviceScale;
     // Bake BEFORE tearing down: the build is atomic, so a Pixi/GPU throw here leaves
     // the previous terrain on screen (RT-SZ-01) instead of a blank world.
-    const textures = chunkCache.build(chunks, deviceScale);
-    this.#chunkScale = deviceScale;
+    const textures = chunkCache.build(chunks);
     const histogram: Partial<Record<TerrainKind, number>> = {};
     for (const tile of plan.tiles) {
       const kind = map.terrainAt(tile.x, tile.y);
@@ -695,11 +693,6 @@ export class WorldRenderer {
     if (app === undefined) return;
     app.renderer.resize(vs.cssW, vs.cssH, vs.dpr);
     app.stage.scale.set(vs.stageScale);
-    // Chunk textures are baked at the device scale (Constraint 7a): re-bake on a change.
-    const map = this.#map;
-    if (map !== undefined && (this.#chunks?.size ?? 0) > 0 && vs.deviceScale !== this.#chunkScale) {
-      this.#drawMap(map);
-    }
     // The filters render at the renderer's resolution: a dpr change rebuilds them.
     if (this.#filters.length > 0 && app.renderer.resolution !== this.#postResolution) {
       this.#applyPostStack();
