@@ -345,6 +345,14 @@
 .mr-nav-list[aria-readonly="true"] > .mr-nav-item.is-active::before {
   content: none;
 }
+/* A player's tag after their name (leaderboardView.ts, the Players tab): quieter than the name. */
+.mr-player-tag {
+  color: var(--mr-text-muted);
+}
+/* Muted text on the cursor's inverted fill would be unreadable: there the tag takes the row's. */
+.mr-nav-item.is-active > .mr-player-tag {
+  color: inherit;
+}
 
 /*
  * Focus policy (qf-1, QF1.1-QF1.2). The overlay initial-focus anchors stay focusable (the trap and

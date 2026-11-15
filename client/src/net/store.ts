@@ -53,6 +53,10 @@ export interface StorePlayer {
   readonly entityId: bigint;
   readonly name: string;
   readonly online: boolean;
+  /** The minted number behind the player's tag; 0 when the row carries none. */
+  readonly discriminator: number;
+  /** The level of the player's lead monster; 0 with no party. */
+  readonly leadLevel: number;
 }
 
 // NOTE: StoreMonsterPub is a `type` alias (not `interface`) — store.test.ts and

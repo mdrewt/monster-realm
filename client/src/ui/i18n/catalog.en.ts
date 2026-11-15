@@ -985,6 +985,14 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: The Yes / No question before a PvP challenge is declined; No is the default answer.
   // tradeView.ts (the Social prompt)
   'social.confirm.declineChallenge': 'Decline this challenge?',
+  // @desc: A player's tag, shown after their name where two players can share a name. {digits} is
+  // the player's number, at least four digits. Keep it short: it sits inside a list row.
+  // playerTag.ts (formatTag)
+  'identity.tag': (p) => `#${p.digits}`,
+  // @desc: A player's name followed by their tag, in a one-line notice or list row. {name} is the
+  // player's display name, {tag} the tag already formatted.
+  // playerTag.ts (taggedName)
+  'identity.taggedName': (p) => `${p.name} ${p.tag}`,
   // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72

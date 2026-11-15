@@ -172,6 +172,8 @@ export interface SdkPlayerRow {
   readonly entityId: bigint;
   readonly name: string;
   readonly online: boolean;
+  readonly discriminator: number;
+  readonly leadLevel: number;
 }
 
 export function characterRowToStore(row: SdkCharacterRow): StoreCharacter {
@@ -194,6 +196,8 @@ export function playerRowToStore(row: SdkPlayerRow): StorePlayer {
     entityId: row.entityId,
     name: row.name,
     online: row.online,
+    discriminator: row.discriminator,
+    leadLevel: row.leadLevel,
   };
 }
 
