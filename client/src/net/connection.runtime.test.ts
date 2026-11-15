@@ -2403,6 +2403,32 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     await sr6bExpectDrained(spies);
   });
 
+  it.each(
+    SR6B_HANDLERS,
+  )('the %s %s handler of a rebuilt connection marks that view alone: the next batch reconciles it and no other view, and then it is clean [SR6B.2]', async (view, event) => {
+    // WRONG IMPL KILLED: the owner-view handlers wired on the first connection only (after any
+    // rebuild no view change is marked, and every view freezes on its last rows).
+    const { handle, spies } = await sr6bConnected();
+    handle.reconnectNow();
+    await settle();
+    expect(H.builds, 'the rebuild built a second connection').toHaveLength(2);
+    const b1 = npBuild(1);
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    const events = H.rowEvents[view];
+    expect(events?.insert.length, `${view}: one insert handler per build`).toBe(2);
+    expect(events?.delete.length, `${view}: one delete handler per build`).toBe(2);
+    expect(events?.update ?? [], `${view}: no onUpdate on a view`).toEqual([]);
+    // The rebuilt connection's first batch rebuilds every view; then every view is clean.
+    await sr6bCharacterBurst(1);
+    await sr6bExpectDrained(spies, 1);
+    // Build 1's handler only (index 1): build 0's never runs here.
+    sr6bFire(view, event, 1);
+    await settle();
+    sr6bExpect(spies, [view], `after one ${view} ${event} on the rebuilt connection`);
+    await sr6bExpectDrained(spies, 1);
+  });
+
   it('a burst of a character row and a view row is one batch: the view is rebuilt first, then the hydration edge fires once, then the batch listener runs once and already reads the rebuilt view [SR6B.2]', async () => {
     // WRONG IMPL KILLED: the reconcile moved after flushBatch with a second flush (the listener
     // runs twice, first on the stale view); onHydrated fired before the reconcile (the hydrated
