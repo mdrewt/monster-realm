@@ -533,6 +533,10 @@ export interface StoredCharacter {
   readonly turnedInPlace?: boolean;
 }
 
+/** The last profiles version handed out, by any store: versions are unique across instances, so a
+ *  memo keyed on one can never mistake one store's profiles for another's. */
+let lastProfilesVersion = 0;
+
 export class AuthoritativeStore {
   readonly #chars = new Map<bigint, StoredCharacter>();
   readonly #players = new Map<string, StorePlayer>();
@@ -567,6 +571,8 @@ export class AuthoritativeStore {
   // leaderboard). Deliberately NO removeProfile: profile rows are never deleted
   // server-side (RL-2), so a remove path would be unreachable dead code.
   readonly #profiles = new Map<string, StoreProfile>();
+  /** Changes on every `upsertProfile` and `reset()`, and on nothing else (`profilesVersion()`). */
+  #profilesVersion = ++lastProfilesVersion;
   // The caller's own wallet row. A SLOT, not a Map: the
   // `my_wallet` view returns exactly one row — the caller's — so a keyed map
   // would make another player's balance representable in the client cache.
@@ -999,6 +1005,7 @@ export class AuthoritativeStore {
     // Profile rows — cleared on disconnect; repopulated from the initial
     // onInsert burst when the subscription re-applies on reconnect.
     this.#profiles.clear();
+    this.#profilesVersion = ++lastProfilesVersion;
     // Own-wallet slot — cleared on disconnect so a previous identity's balance
     // can never be surfaced to the next one; repopulated from the `my_wallet` view's
     // initial onInsert when the subscription re-applies.
@@ -1351,7 +1358,15 @@ export class AuthoritativeStore {
    *  server-side (RL-2). */
   upsertProfile(row: StoreProfile): void {
     this.#profiles.set(row.identity, row);
+    this.#profilesVersion = ++lastProfilesVersion;
     this.#dirty = true;
+  }
+
+  /** An opaque stamp of the profile rows: a new value after every `upsertProfile` (an identical row
+   *  included) and every `reset()`, the same value otherwise, and never one another store has
+   *  handed out. The leaderboard model memoises on it. */
+  profilesVersion(): number {
+    return this.#profilesVersion;
   }
 
   profile(identity: string): StoreProfile | undefined {

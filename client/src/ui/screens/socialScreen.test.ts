@@ -149,11 +149,27 @@ const world = (over: Partial<World> = {}): World => ({
   ...over,
 });
 
+/** sr-4a: the fake store's `profilesVersion()`. A version is minted per profiles ARRAY OBJECT, so a
+ *  case that assigns a new `w.profiles` sees a new version and one that leaves it sees the same. */
+const PROFILES_VERSIONS = new WeakMap<object, number>();
+let profilesVersionSeq = 0;
+function profilesVersionOf(profiles: readonly StoreProfile[]): number {
+  let version = PROFILES_VERSIONS.get(profiles);
+  if (version === undefined) {
+    profilesVersionSeq += 1;
+    version = profilesVersionSeq;
+    PROFILES_VERSIONS.set(profiles, version);
+  }
+  return version;
+}
+
 function ctxOf(w: World): ScreenContext {
   // `characters()` answers a FRESH one-shot iterator of `{ row }` entries (the store's shape), the
-  // others fresh copies, as every read in this file does. The store has no other member: a view
+  // others fresh copies, as every read in this file does. `profilesVersion()` (sr-4a) answers the
+  // version of the current `w.profiles` array object. The store has no other member: a view
   // model that reads anything else throws a TypeError here.
   const store = {
+    profilesVersion: () => profilesVersionOf(w.profiles),
     allChallenges: () => w.challenges.map((c) => ({ ...c })),
     allPlayers: () => w.players.map((p) => ({ ...p })),
     characters: () => w.characters.map((c) => ({ row: { ...c } })).values(),
@@ -2219,16 +2235,19 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
     ]);
   });
 
-  it('ts-4.6 the view model reads no trade offers: over a store whose only members are allChallenges, allPlayers, characters, allProfiles and allTradeSessions it builds, every member it reads is one of those, and Trades lists exactly the viewer`s session rows', () => {
+  it('ts-4.6 the view model reads no trade offers: over a store whose only members are allChallenges, allPlayers, characters, allProfiles, allTradeSessions and profilesVersion it builds, every member it reads is one of those, and Trades lists exactly the viewer`s session rows', () => {
     // WRONG IMPL KILLED: a viewModel that still calls `store.allTradeOffers()` (a TypeError on
     // this store), or reads any other store member; one whose Trades tab lists anything but the
     // viewer's two sessions.
+    // INTENTIONAL CHANGE (sr-4a): the sixth member, `profilesVersion`, joins the allowed reads (the
+    // view model hands the store's profiles version to the leaderboard model).
     const ALLOWED = [
       'allChallenges',
       'allPlayers',
       'characters',
       'allProfiles',
       'allTradeSessions',
+      'profilesVersion',
     ];
     const reads = new Set<string>();
     const base = ctxOf(MIXED) as unknown as { store: Record<string, unknown> };
@@ -2245,12 +2264,46 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
     const vm = socialScreen.viewModel(ctx);
     expect(
       [...reads].filter((r) => !ALLOWED.includes(r)),
-      'store members read beyond the five',
+      'store members read beyond the six',
     ).toEqual([]);
     expect(reads.has('allTradeSessions'), 'the session read is made').toBe(true);
     expect(vm.trades.map((r) => [r.key, r.kind])).toEqual([
       ['session-31', 'session'],
       ['session-32', 'session'],
     ]);
+  });
+});
+
+// sr-4a: the view model hands the store's profiles version to the model, so an unchanged profile
+// table reuses the model's rows, and the Rankings tab lists the top 100 plus the viewer's `100+` row.
+describe('socialScreen — the Rankings rows under the memoised top-100 model (sr-4a)', () => {
+  it('SR4A.2-SCREEN-MEMO BITES: two view models over an unchanged profile table share one `rankings` array; a new profiles array (the version moved) rebuilds it with the new content', () => {
+    const w = ranked('rankings');
+    const first = socialScreen.viewModel(ctxOf(w));
+    const second = socialScreen.viewModel(ctxOf(w));
+    expect(second.rankings, 'unchanged world: the same rows').toBe(first.rankings);
+    expect(first.rankings.map((r) => r.identityHex)).toEqual([...RANK_ORDER]);
+
+    // A batch that changed a profile: a new array, a new version, a rebuilt model.
+    w.profiles = [...RANKED, profile(DAN, 'Dan', 5000)];
+    const third = socialScreen.viewModel(ctxOf(w));
+    expect(third.rankings).not.toBe(first.rankings);
+    expect(third.rankings.map((r) => r.identityHex)).toEqual([DAN, ...RANK_ORDER]);
+
+    // And the version it keys on is the store's, read through `profilesVersion()` on every build.
+    const fourth = socialScreen.viewModel(ctxOf(w));
+    expect(fourth.rankings).toBe(third.rankings);
+  });
+
+  it('SR4A.3-SCREEN-OWNROW BITES: with more than 100 profiles and the viewer below them, the Rankings list holds 101 rows ending with the viewer`s `100+` row', () => {
+    const others: StoreProfile[] = [];
+    for (let i = 0; i < 120; i++) {
+      others.push(profile(`${String(i).padStart(4, '0')}${'ab'.repeat(30)}`, `P${i}`, 5000 - i));
+    }
+    const w = world({ tab: 'rankings', profiles: [...others, profile(ME, 'Me', 1)] });
+    const vm = socialScreen.viewModel(ctxOf(w));
+    expect(vm.rankings).toHaveLength(101);
+    expect(vm.rankings[100]).toMatchObject({ identityHex: ME, isOwn: true, rank: '100+' });
+    expect(vm.rankings.slice(0, 100).some((r) => r.identityHex === ME)).toBe(false);
   });
 });

@@ -3802,6 +3802,70 @@ describe('AuthoritativeStore m17b: no removeProfile method (RL-2 structural guar
   });
 });
 
+// sr-4a: `profilesVersion()` — an opaque number a memo can key on. Only equality / inequality is
+// asserted, never a specific number.
+describe('AuthoritativeStore sr-4a: profilesVersion (sr-4a.2)', () => {
+  it('SR4A.2-VERSION-BUMP BITES: every upsertProfile (even an identical re-upsert) and every reset() changes the version', () => {
+    const s = new AuthoritativeStore();
+    const seen: number[] = [s.profilesVersion()];
+    const step = (what: string, act: () => void): void => {
+      const before = s.profilesVersion();
+      act();
+      expect(s.profilesVersion(), what).not.toBe(before);
+      seen.push(s.profilesVersion());
+    };
+    const row = makeProfile('aaa', 'Alice', 1000);
+    step('first upsert', () => s.upsertProfile(row));
+    step('the SAME row object upserted again', () => s.upsertProfile(row));
+    step('a deep-equal copy upserted again', () => s.upsertProfile({ ...row }));
+    step('a changed row', () => s.upsertProfile(makeProfile('aaa', 'Alice', 1001)));
+    step('reset() of a non-empty store', () => s.reset());
+    step('reset() of an already-empty store', () => s.reset());
+    // No version is ever handed out twice by one store (a memo keyed on it would go stale).
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('SR4A.2-VERSION-STABLE BITES: no other write, no flushBatch and no read changes the version', () => {
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1000));
+    const v = s.profilesVersion();
+    // One table: every non-profile write the store takes cheaply, then the flush and the reads.
+    const others: ReadonlyArray<readonly [string, () => void]> = [
+      ['upsertPlayer', () => s.upsertPlayer(player('p1', 1n))],
+      ['upsertPlayer again', () => s.upsertPlayer({ ...player('p1', 1n), online: false })],
+      ['upsertCharacter', () => s.upsertCharacter(char(1n, 3, 4), 0)],
+      ['upsertZoneName', () => s.upsertZoneName(7, 'Meadow')],
+      ['flushBatch', () => s.flushBatch()],
+      ['allProfiles', () => void s.allProfiles()],
+      ['profile', () => void s.profile('aaa')],
+      ['profile (missing)', () => void s.profile('nobody')],
+    ];
+    for (const [what, act] of others) {
+      act();
+      expect(s.profilesVersion(), what).toBe(v);
+    }
+  });
+
+  it('SR4A.2-VERSION-UNIQUE BITES: versions are unique across store instances — two fresh stores differ and never share a version later', () => {
+    const a = new AuthoritativeStore();
+    const b = new AuthoritativeStore();
+    expect(a.profilesVersion()).not.toBe(b.profilesVersion());
+    const fromA = new Set<number>([a.profilesVersion()]);
+    const fromB = new Set<number>([b.profilesVersion()]);
+    for (let i = 0; i < 3; i++) {
+      a.upsertProfile(makeProfile('aaa', 'Alice', 1000 + i));
+      b.upsertProfile(makeProfile('aaa', 'Alice', 1000 + i));
+      fromA.add(a.profilesVersion());
+      fromB.add(b.profilesVersion());
+    }
+    a.reset();
+    b.reset();
+    fromA.add(a.profilesVersion());
+    fromB.add(b.profilesVersion());
+    expect([...fromA].filter((v) => fromB.has(v))).toEqual([]);
+  });
+});
+
 // =============================================================================
 // ADR-0142 (D3): burst-spread reachability bound (pins ADR-0090)
 //

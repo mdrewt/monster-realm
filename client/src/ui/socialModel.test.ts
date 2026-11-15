@@ -1715,3 +1715,83 @@ describe('socialModel — the Trades-tab session row names its partner with the 
     ).toBe(socialSessionsKey(arrived));
   });
 });
+
+// sr-4a: the Rankings tab holds the leaderboard's top 100 and the viewer's own `100+` row, and
+// shares the overlay's memoised model when the store's profiles version rides along.
+let socialVersionSeq = 2_000_000;
+const freshSocialVersion = (): number => {
+  socialVersionSeq += 1;
+  return socialVersionSeq;
+};
+
+/** `n` other profiles (positions 1..n by rating) plus the viewer at `mePos` (1-based; > n means
+ *  last, below everyone). Distinct ratings, so the order is unambiguous. */
+function crowdWithMe(n: number, mePos: number): StoreProfile[] {
+  const others: StoreProfile[] = [];
+  for (let i = 0; i < n; i++) {
+    others.push(profile(`${String(i).padStart(4, '0')}${'ab'.repeat(30)}`, `P${i}`, 5000 - i * 2));
+  }
+  const meRating = mePos > n ? 1 : 5000 - (mePos - 1) * 2 + 1;
+  return [...others, profile(ME, 'Me', meRating, 3, 4)];
+}
+
+const rankingsOf = (profiles: readonly StoreProfile[], profilesVersion?: number) =>
+  buildSocialVm(
+    null,
+    [],
+    ME,
+    profilesVersion === undefined
+      ? { players: [], characters: [], profiles }
+      : { players: [], characters: [], profiles, profilesVersion },
+  );
+
+describe('socialModel — the Rankings tab under the top-100 window (sr-4a)', () => {
+  it('SR4A.3-SOCIAL-OWNROW BITES: more than 100 profiles with the viewer below them → 101 Rankings rows, the last the viewer`s `100+` row, and the layout lists 101 keys ending with the viewer', () => {
+    const vm = rankingsOf(crowdWithMe(130, 200));
+    expect(vm.rankings).toHaveLength(101);
+    expect(vm.rankings[100]).toMatchObject({
+      identityHex: ME,
+      isOwn: true,
+      rank: '100+',
+      displayName: 'Me',
+      rating: 1,
+      wins: 3,
+      losses: 4,
+    });
+    expect(vm.rankings.slice(0, 100).map((r) => r.rank)).toEqual(
+      Array.from({ length: 100 }, (_, i) => i + 1),
+    );
+    expect(vm.rankings.slice(0, 100).some((r) => r.identityHex === ME)).toBe(false);
+    const keys = itemKeys(socialLayout(vm), 'rankings');
+    expect(keys).toHaveLength(101);
+    expect(keys[100]).toBe(ME);
+    expect(new Set(keys).size).toBe(101);
+  });
+
+  it('SR4A.3-SOCIAL-INSIDE BITES: a viewer inside the top 100 adds no row — 100 rows, their own carrying its number, 100 layout keys', () => {
+    const vm = rankingsOf(crowdWithMe(130, 7));
+    expect(vm.rankings).toHaveLength(100);
+    const own = vm.rankings.filter((r) => r.isOwn);
+    expect(own).toHaveLength(1);
+    expect(own[0]).toMatchObject({ identityHex: ME, rank: 7 });
+    const keys = itemKeys(socialLayout(vm), 'rankings');
+    expect(keys).toHaveLength(100);
+    expect(keys.filter((k) => k === ME)).toHaveLength(1);
+  });
+
+  it('SR4A.2-SOCIAL-SHARE BITES: with a profiles version the Rankings rows ARE the leaderboard model`s rows array (one memoised model for the overlay and the tab); the version is read, not the profiles', () => {
+    const v = freshSocialVersion();
+    const profiles = crowdWithMe(130, 200);
+    const model = buildLeaderboardViewModel(profiles, ME, v);
+    const vm = rankingsOf(profiles, v);
+    expect(vm.rankings).toBe(model.rows);
+    // Same (version, identity) with other profiles: the memoised rows come back.
+    expect(rankingsOf([], v).rankings).toBe(model.rows);
+    // A new version rebuilds from the profiles it is given.
+    const next = rankingsOf(crowdWithMe(3, 1), freshSocialVersion());
+    expect(next.rankings).not.toBe(model.rows);
+    expect(next.rankings).toHaveLength(4);
+    // Without a version the rows are equal in content (a fresh array each time).
+    expect(rankingsOf(profiles).rankings).toEqual(model.rows);
+  });
+});

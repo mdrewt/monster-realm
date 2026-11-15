@@ -996,12 +996,13 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
       board().map((li) => li.getAttribute('role')),
       'options',
     ).toEqual(['option', 'option', 'option']);
+    // INTENTIONAL CHANGE (sr-4a): every model-built row starts with its 1-based rank span and a space.
     expect(board().map((li) => li.textContent)).toEqual(
       PROFILES.slice()
         .reverse()
         .map(
-          (p) =>
-            `${p.name}${i18n.tf('leaderboard.row', { rating: p.rating, wins: p.wins, losses: p.losses })}`,
+          (p, i) =>
+            `${i + 1} ${p.name}${i18n.tf('leaderboard.row', { rating: p.rating, wins: p.wins, losses: p.losses })}`,
         ),
     );
     expectCursor('L', ZED);
@@ -1028,6 +1029,60 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     key('ArrowDown');
     expectCursor('a fresh Down wraps', ZED);
     expect(shownRoots(), 'still the leaderboard root alone').toEqual(['leaderboard-overlay']);
+  });
+
+  it('SR4A.2-BOOT: opening Rankings and then a batch that writes no profile row keep every `#leaderboard-list` row node (the open render and the batch render share one memoised model); a batch that upserts a profile rebuilds the rows with the new content', async () => {
+    // WRONG IMPL KILLED: a main.ts call site (the open-panel render, the per-batch render) that
+    // builds the model WITHOUT the store's profiles version: a fresh object each time, so the view
+    // never sees the same model twice and replaces every row on every batch; and a memo that never
+    // notices a profile change (the rebuilt rows below carry the new rating and order).
+    await bootReady();
+    server(1000);
+    const PROFILES = [
+      { identity: OTHER2, name: 'Amy', rating: 800, wins: 1, losses: 3 },
+      { identity: H.identity, name: 'P', rating: 1000, wins: 2, losses: 2 },
+      { identity: OTHER, name: 'Zed', rating: 1200, wins: 3, losses: 1 },
+    ];
+    for (const p of PROFILES) opts.store.upsertProfile(p);
+    server(1010);
+    let at = 1100;
+    const board = (): HTMLElement[] => [...el('leaderboard-list').children] as HTMLElement[];
+
+    press('KeyL', at);
+    at += 10;
+    expectSocialOn('L', 'rankings');
+    // IMMEDIATELY after the open, before any further batch.
+    const opened = board();
+    expect(opened, 'ANTI-VACUITY: the open painted the three ranked rows').toHaveLength(3);
+
+    // A batch with no profile row in it: the same nodes, none replaced.
+    server(at);
+    at += 10;
+    const afterQuiet = board();
+    expect(afterQuiet).toHaveLength(opened.length);
+    for (const [i, li] of afterQuiet.entries()) {
+      expect(li, `row ${i} kept across a batch that wrote no profile`).toBe(opened[i]);
+    }
+    server(at);
+    at += 10;
+    for (const [i, li] of board().entries()) {
+      expect(li, `row ${i} kept across a second quiet batch`).toBe(opened[i]);
+    }
+
+    // A batch that changes a profile: Amy overtakes everyone; the rows are rebuilt.
+    opts.store.upsertProfile({ identity: OTHER2, name: 'Amy', rating: 1500, wins: 9, losses: 0 });
+    server(at);
+    at += 10;
+    const rebuilt = board();
+    expect(rebuilt).toHaveLength(3);
+    for (const [i, li] of rebuilt.entries()) {
+      expect(li, `row ${i} rebuilt after a profile changed`).not.toBe(opened[i]);
+    }
+    expect(rebuilt.map((li) => li.textContent)).toEqual([
+      `1 Amy${i18n.tf('leaderboard.row', { rating: 1500, wins: 9, losses: 0 })}`,
+      `2 Zed${i18n.tf('leaderboard.row', { rating: 1200, wins: 3, losses: 1 })}`,
+      `3 P${i18n.tf('leaderboard.row', { rating: 1000, wins: 2, losses: 2 })}`,
+    ]);
   });
 
   it('CTL11A-SOCIAL-U-CLOSES-ON-PLAYERS: U, then LB to Players, then U again returns the stack to the bare world with no Social root and no menu shown; and U, P and L each do the same from every one of the four tabs (Players, Trades, Challenges, Rankings), whichever key opened Social', async () => {

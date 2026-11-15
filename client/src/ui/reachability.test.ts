@@ -3005,6 +3005,8 @@ function qf8SocialHarness(
       allPlayers: () => [],
       characters: () => [].values(),
       allProfiles: () => [],
+      // INTENTIONAL CHANGE (sr-4a): socialScreen.viewModel reads the profiles version.
+      profilesVersion: () => 0,
     },
     identity: QF8_ME,
     socialTab: tab,

@@ -2962,3 +2962,203 @@ describe('LeaderboardView — the Players row shows the tag and the lead level',
     checkOwnValues([second, other, first], 'swapped repaint');
   });
 });
+
+// ==========================================================================================
+// sr-4a: the rank on a row (sr-4a.3) and the render skip on an unchanged model (sr-4a.2).
+// ==========================================================================================
+
+type Rank = number | '100+';
+
+/** A row that carries its rank, as the model builds every row. */
+function rankedRow(
+  identityHex: string,
+  displayName: string,
+  rating: number,
+  wins: number,
+  losses: number,
+  isOwn: boolean,
+  rank: Rank,
+): import('./leaderboardModel').LeaderboardRowViewModel {
+  return { ...makeRow(identityHex, displayName, rating, wins, losses, isOwn), rank };
+}
+
+const liNodes = (): HTMLElement[] => [
+  ...document.querySelectorAll<HTMLElement>('#leaderboard-list > li'),
+];
+
+describe('LeaderboardView — the rank on a row (sr-4a.3)', () => {
+  it('SR4A.3-RANK-ROW BITES: a row with a rank is `<span>rank</span>`, one space, the `<bdi>` name, then the catalogued numbers; a row without a rank is exactly the legacy `<bdi>` + text', () => {
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(
+      makeVm([
+        rankedRow('zz', 'Zed', 1200, 10, 2, false, 1),
+        rankedRow('yy', 'Yan', 1100, 4, 4, false, 42),
+        rankedRow('me', 'Me', 900, 1, 1, true, '100+'),
+        makeRow('nn', 'NoRank', 800, 0, 0),
+      ]),
+    );
+    const items = liNodes();
+    expect(items.map((li) => li.textContent)).toEqual([
+      `1 Zed ${EM} 1200 (W10/L2)`,
+      `42 Yan ${EM} 1100 (W4/L4)`,
+      `100+ Me ${EM} 900 (W1/L1)`,
+      `NoRank ${EM} 800 (W0/L0)`,
+    ]);
+    for (const [i, rank] of ['1', '42', '100+'].entries()) {
+      const li = items[i] as HTMLElement;
+      const nodes = [...li.childNodes];
+      expect(nodes.length, `${rank}: span, space, bdi, numbers`).toBe(4);
+      expect((nodes[0] as HTMLElement).tagName, `${rank}: the rank span`).toBe('SPAN');
+      expect(nodes[0]?.textContent).toBe(rank);
+      expect((nodes[0] as HTMLElement).children.length).toBe(0);
+      expect(nodes[1]?.nodeType, `${rank}: a text node`).toBe(3);
+      expect(nodes[1]?.textContent, `${rank}: one space`).toBe(' ');
+      expect((nodes[2] as HTMLElement).tagName, `${rank}: the name`).toBe('BDI');
+      expect(nodes[3]?.nodeType).toBe(3);
+    }
+    // No rank, no span: the legacy shape.
+    const legacy = [...(items[3] as HTMLElement).childNodes];
+    expect(legacy.length).toBe(2);
+    expect((legacy[0] as HTMLElement).tagName).toBe('BDI');
+    expect(legacy[1]?.nodeType).toBe(3);
+  });
+
+  it('SR4A.3-OWN-MARK BITES: the `100+` own row keeps data-own and its identity; non-own rows carry no data-own', () => {
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(
+      makeVm([
+        rankedRow('zz', 'Zed', 1200, 10, 2, false, 1),
+        rankedRow('me', 'Me', 900, 1, 1, true, '100+'),
+      ]),
+    );
+    const [first, own] = liNodes() as [HTMLElement, HTMLElement];
+    expect(own.dataset.own).toBe('true');
+    expect(own.dataset.identity).toBe('me');
+    expect(first.dataset.own).toBeUndefined();
+    expect(own.firstElementChild?.textContent).toBe('100+');
+  });
+
+  it('SR4A.3-OWN-SOCIAL BITES: under a Social Rankings paint the `100+` own row is an option like the rest — role, id, identity, data-own and its rank span all kept', () => {
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    const vm = makeVm([
+      rankedRow('zz', 'Zed', 1200, 10, 2, false, 1),
+      rankedRow('yy', 'Yan', 1100, 4, 4, false, 2),
+      rankedRow('me', 'Me', 900, 1, 1, true, '100+'),
+    ]);
+    view.render(vm);
+    view.paintSocial(rankingsPaint('me'));
+    const items = liNodes();
+    expect(items.map((li) => li.getAttribute('role'))).toEqual(['option', 'option', 'option']);
+    expect(items.map((li) => li.id)).toEqual([
+      'social-rankings-zz',
+      'social-rankings-yy',
+      'social-rankings-me',
+    ]);
+    const own = items[2] as HTMLElement;
+    expect(own.dataset.identity).toBe('me');
+    expect(own.dataset.own).toBe('true');
+    expect(own.getAttribute('aria-selected')).toBe('true');
+    expect(items.filter((li) => li.getAttribute('aria-selected') === 'true')).toHaveLength(1);
+    expect(byId('leaderboard-list')?.getAttribute('aria-activedescendant')).toBe(
+      'social-rankings-me',
+    );
+    expect(own.firstElementChild?.tagName).toBe('SPAN');
+    expect(own.firstElementChild?.textContent).toBe('100+');
+    expect(own.textContent).toBe(`100+ Me ${EM} 900 (W1/L1)`);
+    // A kept paint survives a skipped render with the marks and the rank span intact.
+    view.render(vm);
+    expect(liNodes()[2]?.getAttribute('role')).toBe('option');
+    expect(liNodes()[2]?.firstElementChild?.textContent).toBe('100+');
+  });
+});
+
+describe('LeaderboardView — render skips an unchanged model (sr-4a.2)', () => {
+  it('SR4A.2-SKIP BITES: the SAME vm object again keeps every <li> node; a new vm — even deep-equal — rebuilds them', () => {
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    const rows = [
+      rankedRow('zz', 'Zed', 1200, 10, 2, false, 1),
+      rankedRow('me', 'Me', 900, 1, 1, true, '100+'),
+    ];
+    const vm = makeVm(rows);
+    view.render(vm);
+    const before = liNodes();
+    expect(before).toHaveLength(2);
+
+    view.render(vm);
+    const same = liNodes();
+    expect(same).toHaveLength(2);
+    expect(same[0], 'row 0 not replaced').toBe(before[0]);
+    expect(same[1], 'row 1 not replaced').toBe(before[1]);
+
+    // Deep-equal but a new object: rebuilt (identity, not structure, is the skip key).
+    view.render(makeVm(rows.map((r) => ({ ...r }))));
+    const rebuilt = liNodes();
+    expect(rebuilt).toHaveLength(2);
+    expect(rebuilt[0], 'row 0 replaced').not.toBe(before[0]);
+    expect(rebuilt[1], 'row 1 replaced').not.toBe(before[1]);
+    expect(rebuilt.map((li) => li.textContent)).toEqual(before.map((li) => li.textContent));
+
+    // A different vm in between breaks the run: going back to `vm` rebuilds, then it skips again.
+    view.render(makeVm([rankedRow('qq', 'Q', 1, 0, 0, false, 1)]));
+    view.render(vm);
+    const back = liNodes();
+    expect(back.map((li) => li.dataset.identity)).toEqual(['zz', 'me']);
+    view.render(vm);
+    expect(liNodes()[0]).toBe(back[0]);
+  });
+
+  it('SR4A.2-SKIP-EMPTY BITES: the same EMPTY vm again keeps its one line; a changed vm after it still renders', () => {
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    const empty = makeVm([]);
+    view.render(empty);
+    const line = liNodes();
+    expect(line).toHaveLength(1);
+    view.render(empty);
+    expect(liNodes()[0]).toBe(line[0]);
+    view.render(makeVm([rankedRow('zz', 'Zed', 1200, 10, 2, false, 1)]));
+    expect(liNodes().map((li) => li.dataset.identity)).toEqual(['zz']);
+  });
+
+  it('SR4A.2-SKIP-PAINT BITES: a skipped render still applies the kept Social paint — and a cursor moved by a repaint is honoured', () => {
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    const vm = makeVm([
+      rankedRow('zz', 'Zed', 1200, 10, 2, false, 1),
+      rankedRow('yy', 'Yan', 1100, 4, 4, false, 2),
+    ]);
+    view.render(vm);
+    view.paintSocial(rankingsPaint('zz'));
+    const nodes = liNodes();
+    view.render(vm);
+    const after = liNodes();
+    expect(after[0], 'rows kept').toBe(nodes[0]);
+    expect(after[1]).toBe(nodes[1]);
+    expect(after.map((li) => li.getAttribute('role'))).toEqual(['option', 'option']);
+    expect(after.map((li) => li.getAttribute('aria-selected'))).toEqual(['true', 'false']);
+    expect(after.map((li) => li.id)).toEqual(['social-rankings-zz', 'social-rankings-yy']);
+
+    view.paintSocial(rankingsPaint('yy'));
+    view.render(vm);
+    expect(liNodes().map((li) => li.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+    expect(liNodes()[1]).toBe(nodes[1]);
+
+    // Dropping the paint (hide) then reopening and rendering the SAME vm leaves the legacy board:
+    // the skip must not resurrect the dropped marks.
+    view.hide();
+    view.show();
+    view.render(vm);
+    expect(liNodes().map((li) => li.getAttribute('role'))).toEqual([null, null]);
+    expect(liNodes().map((li) => li.id)).toEqual(['', '']);
+  });
+});

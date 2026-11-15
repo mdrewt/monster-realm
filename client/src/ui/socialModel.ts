@@ -81,6 +81,9 @@ interface SocialPeople {
   readonly players: readonly StorePlayer[];
   readonly characters: Iterable<StoreCharacter>;
   readonly profiles: readonly StoreProfile[];
+  /** The store's `profilesVersion()` for `profiles`: the Rankings rows are then the leaderboard
+   *  overlay's memoised model's. */
+  readonly profilesVersion?: number;
 }
 
 export interface SocialVm {
@@ -92,7 +95,8 @@ export interface SocialVm {
   readonly challenges: readonly SocialRow[];
   /** The other online players, by name, then tag number. */
   readonly players: readonly SocialPlayerRow[];
-  /** The leaderboard's rows, in its order. */
+  /** The leaderboard's rows, in its order: the top 100 ranked, then the viewer's own row ranked
+   *  `100+` when the viewer ranks below them. */
   readonly rankings: readonly LeaderboardRowViewModel[];
 }
 
@@ -218,7 +222,7 @@ export function buildSocialVm(
     ),
     challenges: rows,
     players: socialPlayers(people.players, people.characters, identity),
-    rankings: buildLeaderboardViewModel(people.profiles, identity).rows,
+    rankings: buildLeaderboardViewModel(people.profiles, identity, people.profilesVersion).rows,
   };
 }
 

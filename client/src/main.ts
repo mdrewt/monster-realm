@@ -1223,7 +1223,9 @@ function showSocialPanel(panel: SocialPanelId): void {
         );
         break;
       case 'leaderboardView':
-        leaderboardView?.render(buildLeaderboardViewModel(store.allProfiles(), identity));
+        leaderboardView?.render(
+          buildLeaderboardViewModel(store.allProfiles(), identity, store.profilesVersion()),
+        );
         leaderboardView?.show();
         break;
       default:
@@ -4101,12 +4103,15 @@ store.onBatchApplied(() => {
 
 // --- leaderboard batch listener -----------------------------------
 // Refresh-only-when-visible: ratings/W/L stay live while the
-// board is open as profile rows update. MUST be total (never throw): defense-in-depth
+// board is open as profile rows update; a batch that writes no profile hands the view the
+// object it already shows, so nothing is rebuilt. MUST be total (never throw): defense-in-depth
 // (store.flushBatch has per-listener try/catch since M10.5d).
 store.onBatchApplied(() => {
   if (!leaderboardView?.visible || identity === '') return;
   try {
-    leaderboardView.render(buildLeaderboardViewModel(store.allProfiles(), identity));
+    leaderboardView.render(
+      buildLeaderboardViewModel(store.allProfiles(), identity, store.profilesVersion()),
+    );
   } catch (err) {
     console.error('[leaderboard] batch listener error', err);
   }

@@ -154,6 +154,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
         players: ctx.store.allPlayers(),
         characters: Array.from(ctx.store.characters(), (character) => character.row),
         profiles: ctx.store.allProfiles(),
+        profilesVersion: ctx.store.profilesVersion(),
       },
       ctx.store.allTradeSessions(),
     ),

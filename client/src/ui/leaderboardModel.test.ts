@@ -16,9 +16,9 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { StoreProfile } from '../net/store';
-import { buildLeaderboardViewModel } from './leaderboardModel';
+import { buildLeaderboardViewModel, LEADERBOARD_TOP_K, RANK_BELOW_TOP_K } from './leaderboardModel';
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -361,5 +361,304 @@ describe('RL15-structural: leaderboardModel.ts source contains no server write p
         `leaderboardModel.ts must not contain "${needle}" (RL-15: pure subscription view, no write path)`,
       ).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sr-4a: top-100 window, the caller's `100+` row, and the one-entry memo.
+//
+// The memo is module-level and persists across every case in this file, so no case assumes a cold
+// memo: each takes its own never-reused version numbers from `freshVersion()`.
+// ---------------------------------------------------------------------------
+
+let versionSeq = 1_000_000;
+function freshVersion(): number {
+  versionSeq += 1;
+  return versionSeq;
+}
+
+/** An identity hex that sorts ascending with `i` and is longer than 8 chars (the `#<hex8>` slice). */
+const idOf = (i: number): string => `i${String(i).padStart(7, '0')}abcd`;
+
+/** `n` profiles with distinct ratings, descending in `i`: profile `i` sits at 1-based position
+ *  `i + 1`. Handed back in REVERSED order so no case leans on the input order. */
+function ladder(n: number): StoreProfile[] {
+  const out: StoreProfile[] = [];
+  for (let i = 0; i < n; i++) out.push(makeProfile(idOf(i), 5000 - i, `N${i}`, i, 1));
+  return out.reverse();
+}
+
+describe('sr-4a constants', () => {
+  it('SR4A.1-CONSTS BITES: the window is 100 and the marker is the string "100+" — kills K=99/101 and a numeric marker', () => {
+    expect(LEADERBOARD_TOP_K).toBe(100);
+    expect(RANK_BELOW_TOP_K).toBe('100+');
+    expect(typeof RANK_BELOW_TOP_K).toBe('string');
+  });
+});
+
+describe('sr-4a.1: the model holds the top 100 in the total order, ranks 1-100', () => {
+  it('SR4A.1-TOPK BITES: 150 profiles, no own row — exactly the 100 best in order, ranks 1..100, nothing marked, a frozen input untouched', () => {
+    const profiles = Object.freeze(ladder(150));
+    const vm = buildLeaderboardViewModel(profiles, '');
+    expect(vm.rows).toHaveLength(100);
+    expect(vm.isEmpty).toBe(false);
+    expect(vm.rows.map((r) => r.identityHex)).toEqual(
+      Array.from({ length: 100 }, (_, i) => idOf(i)),
+    );
+    // 1-based, in order, numbers (kills 0-based ranks and a string rank on a plain row).
+    expect(vm.rows.map((r) => r.rank)).toEqual(Array.from({ length: 100 }, (_, i) => i + 1));
+    expect(vm.rows.some((r) => r.isOwn)).toBe(false);
+    expect(vm.rows.some((r) => r.rank === RANK_BELOW_TOP_K)).toBe(false);
+    expect(profiles).toHaveLength(150);
+  });
+
+  it('SR4A.1-SMALL BITES: under 100 profiles every profile is listed with ranks 1..n — kills a window that pads or drops', () => {
+    const vm = buildLeaderboardViewModel(ladder(3), idOf(1));
+    expect(vm.rows.map((r) => [r.identityHex, r.rank, r.isOwn])).toEqual([
+      [idOf(0), 1, false],
+      [idOf(1), 2, true],
+      [idOf(2), 3, false],
+    ]);
+  });
+
+  it('SR4A.1-BOUNDARY BITES: ties across the 100/101 cut resolve by name, then identity — the cut is on the TOTAL order, and the caller just below gets the extra row', () => {
+    // 99 clear leaders (positions 1-99), then three profiles on one rating: by raw name
+    // 'Aaa' < 'Same', and the two 'Same' by identity. Order: m (pos 100), a (pos 101), z (pos 102).
+    const leaders = ladder(99);
+    const tied = [
+      makeProfile('z1000000zz', 1000, 'Same'),
+      makeProfile('a1000000aa', 1000, 'Same'),
+      makeProfile('m1000000mm', 1000, 'Aaa'),
+    ];
+    const all = [...tied, ...leaders];
+    const asA = buildLeaderboardViewModel(all, 'a1000000aa');
+    expect(asA.rows).toHaveLength(101);
+    expect(asA.rows[99]).toMatchObject({ identityHex: 'm1000000mm', rank: 100, isOwn: false });
+    expect(asA.rows[100]).toMatchObject({ identityHex: 'a1000000aa', rank: '100+', isOwn: true });
+    const asZ = buildLeaderboardViewModel(all, 'z1000000zz');
+    expect(asZ.rows).toHaveLength(101);
+    expect(asZ.rows[99]).toMatchObject({ identityHex: 'm1000000mm', rank: 100 });
+    expect(asZ.rows[100]).toMatchObject({ identityHex: 'z1000000zz', rank: '100+', isOwn: true });
+    // A caller who is the 100th is inside: no extra row.
+    const asM = buildLeaderboardViewModel(all, 'm1000000mm');
+    expect(asM.rows).toHaveLength(100);
+    expect(asM.rows[99]).toMatchObject({ identityHex: 'm1000000mm', rank: 100, isOwn: true });
+  });
+
+  it('SR4A.1-NOEXTRA BITES: the extra `100+` row appears exactly when the caller has a profile ranked below 100 — exactly 100 profiles, a caller inside the top 100, no profile, and identity "" add none; 101 profiles with the caller last add one', () => {
+    interface Scenario {
+      readonly name: string;
+      readonly profiles: StoreProfile[];
+      readonly identity: string;
+      readonly length: number;
+      /** How many rows carry isOwn. */
+      readonly own: number;
+      /** Whether a `100+` row exists. */
+      readonly below: boolean;
+      /** Rows pinned by index. */
+      readonly at: ReadonlyArray<readonly [number, Record<string, unknown>]>;
+    }
+    const scenarios: readonly Scenario[] = [
+      {
+        name: 'exactly 100 profiles, caller last',
+        profiles: ladder(100),
+        identity: idOf(99),
+        length: 100,
+        own: 1,
+        below: false,
+        at: [[99, { identityHex: idOf(99), rank: 100, isOwn: true }]],
+      },
+      {
+        name: '101 profiles, caller last',
+        profiles: ladder(101),
+        identity: idOf(100),
+        length: 101,
+        own: 1,
+        below: true,
+        at: [
+          [99, { identityHex: idOf(99), rank: 100, isOwn: false }],
+          [100, { identityHex: idOf(100), rank: '100+', isOwn: true }],
+        ],
+      },
+      {
+        name: 'caller inside the top 100 of 150',
+        profiles: ladder(150),
+        identity: idOf(36),
+        length: 100,
+        own: 1,
+        below: false,
+        at: [[36, { identityHex: idOf(36), rank: 37, isOwn: true }]],
+      },
+      {
+        name: 'caller with no profile',
+        profiles: ladder(150),
+        identity: idOf(9999),
+        length: 100,
+        own: 0,
+        below: false,
+        at: [],
+      },
+      {
+        name: 'identity "" (pre-onReady)',
+        profiles: ladder(150),
+        identity: '',
+        length: 100,
+        own: 0,
+        below: false,
+        at: [],
+      },
+      {
+        name: 'an identity that is no hex at all',
+        profiles: ladder(150),
+        identity: 'not-a-profile',
+        length: 100,
+        own: 0,
+        below: false,
+        at: [],
+      },
+    ];
+    for (const s of scenarios) {
+      const vm = buildLeaderboardViewModel(s.profiles, s.identity);
+      expect(vm.rows, `${s.name}: row count`).toHaveLength(s.length);
+      expect(
+        vm.rows.filter((r) => r.isOwn),
+        `${s.name}: own rows`,
+      ).toHaveLength(s.own);
+      expect(
+        vm.rows.some((r) => r.rank === RANK_BELOW_TOP_K),
+        `${s.name}: a 100+ row`,
+      ).toBe(s.below);
+      for (const [index, match] of s.at) {
+        expect(vm.rows[index], `${s.name}: row ${index}`).toMatchObject(match);
+      }
+    }
+  });
+
+  it('SR4A.1-OWNROW BITES: the caller below 100 → one extra row after rank 100, with its own fields, isOwn, and the STRING rank "100+"', () => {
+    const profiles = ladder(150).map((p) =>
+      p.identity === idOf(119) ? { ...p, name: '', wins: 7, losses: 9 } : p,
+    );
+    const vm = buildLeaderboardViewModel(profiles, idOf(119));
+    expect(vm.rows).toHaveLength(101);
+    expect(vm.rows.slice(0, 100).map((r) => r.rank)).toEqual(
+      Array.from({ length: 100 }, (_, i) => i + 1),
+    );
+    expect(vm.rows.slice(0, 100).some((r) => r.isOwn)).toBe(false);
+    expect(vm.rows[100]).toEqual({
+      identityHex: idOf(119),
+      displayName: `#${idOf(119).slice(0, 8)}`,
+      rating: 5000 - 119,
+      wins: 7,
+      losses: 9,
+      isOwn: true,
+      rank: '100+',
+    });
+    expect(vm.isEmpty).toBe(false);
+  });
+
+  it('SR4A.1-TIES BITES: tied ratings still get positional ranks 1,2,3,4 — never a shared rank', () => {
+    const vm = buildLeaderboardViewModel(
+      [
+        makeProfile('t0000000aa', 10, 'Cy'),
+        makeProfile('t0000000bb', 5, 'Dee'),
+        makeProfile('t0000000cc', 10, 'Al'),
+        makeProfile('t0000000dd', 10, 'Bo'),
+      ],
+      '',
+    );
+    expect(vm.rows.map((r) => [r.displayName, r.rank])).toEqual([
+      ['Al', 1],
+      ['Bo', 2],
+      ['Cy', 3],
+      ['Dee', 4],
+    ]);
+  });
+});
+
+describe('sr-4a.2: the one-entry memo keyed on (profilesVersion, identity)', () => {
+  it('SR4A.2-MEMO-HIT BITES: the same (version, identity) returns the IDENTICAL object without reading profiles — a different or empty array changes nothing', () => {
+    const v = freshVersion();
+    const first = buildLeaderboardViewModel(ladder(120), idOf(110), v);
+    const sameInputs = buildLeaderboardViewModel(ladder(120), idOf(110), v);
+    expect(sameInputs).toBe(first);
+    // Profiles that would sort and window differently are never looked at.
+    const changed = buildLeaderboardViewModel(ladder(120).reverse().slice(5), idOf(110), v);
+    expect(changed).toBe(first);
+    expect(buildLeaderboardViewModel([], idOf(110), v)).toBe(first);
+    expect(first.rows).toHaveLength(101);
+  });
+
+  it('SR4A.2-MEMO-ZERO BITES: version 0 is a real version — two back-to-back calls with (0, id) return the identical object, kills a falsy `!profilesVersion` check', () => {
+    const first = buildLeaderboardViewModel(ladder(4), idOf(1), 0);
+    const second = buildLeaderboardViewModel([], idOf(1), 0);
+    expect(second).toBe(first);
+    expect(first.rows).toHaveLength(4);
+  });
+
+  it('SR4A.2-MEMO-NOSORT BITES: a memo hit never sorts (Array.prototype.sort is not called)', () => {
+    const v = freshVersion();
+    const first = buildLeaderboardViewModel(ladder(120), idOf(3), v);
+    const sort = vi.spyOn(Array.prototype, 'sort');
+    try {
+      const again = buildLeaderboardViewModel(ladder(120), idOf(3), v);
+      expect(again).toBe(first);
+      expect(sort).not.toHaveBeenCalled();
+    } finally {
+      sort.mockRestore();
+    }
+  });
+
+  it('SR4A.2-MEMO-VERSION BITES: a new version rebuilds from the profiles passed — kills a memo that ignores the version', () => {
+    const v1 = freshVersion();
+    const v2 = freshVersion();
+    const a = buildLeaderboardViewModel(ladder(5), idOf(0), v1);
+    const more = [...ladder(5), makeProfile('top00000000', 9999, 'Top')];
+    const b = buildLeaderboardViewModel(more, idOf(0), v2);
+    expect(b).not.toBe(a);
+    expect(b.rows).toHaveLength(6);
+    expect(b.rows[0]).toMatchObject({ identityHex: 'top00000000', rank: 1 });
+    // ONE entry: v2 replaced v1, so going back to v1 builds again (and the new object is correct).
+    const c = buildLeaderboardViewModel(ladder(5), idOf(0), v1);
+    expect(c).not.toBe(a);
+    expect(c).toEqual(a);
+  });
+
+  it('SR4A.2-MEMO-IDENTITY BITES: the same version with a new identity rebuilds — kills a memo keyed only on the version, and one keyed only on the identity', () => {
+    const v = freshVersion();
+    const profiles = ladder(120);
+    const asTop = buildLeaderboardViewModel(profiles, idOf(0), v);
+    expect(asTop.rows[0]?.isOwn).toBe(true);
+    expect(asTop.rows).toHaveLength(100);
+    const asLow = buildLeaderboardViewModel(profiles, idOf(115), v);
+    expect(asLow).not.toBe(asTop);
+    expect(asLow.rows[0]?.isOwn).toBe(false);
+    expect(asLow.rows).toHaveLength(101);
+    expect(asLow.rows[100]).toMatchObject({ identityHex: idOf(115), rank: '100+', isOwn: true });
+    // Same identity under a new version, with different profiles, also rebuilds.
+    const v2 = freshVersion();
+    const rebuilt = buildLeaderboardViewModel(ladder(3), idOf(115), v2);
+    expect(rebuilt).not.toBe(asLow);
+    expect(rebuilt.rows).toHaveLength(3);
+  });
+
+  it('SR4A.2-MEMO-VERSIONLESS BITES: a call without a version always builds fresh and neither reads nor replaces the memo', () => {
+    const v = freshVersion();
+    const kept = buildLeaderboardViewModel(ladder(4), idOf(1), v);
+    const plainA = buildLeaderboardViewModel(ladder(4), idOf(1));
+    const plainB = buildLeaderboardViewModel(ladder(4), idOf(1));
+    expect(plainA).not.toBe(kept);
+    expect(plainB).not.toBe(plainA);
+    expect(plainA).toEqual(kept);
+    // A versionless call over DIFFERENT profiles/identity does not clobber the entry...
+    const other = buildLeaderboardViewModel([makeProfile('zzz00000000', 1, 'Zed')], 'zzz00000000');
+    expect(other.rows).toHaveLength(1);
+    // ...so the pair still hits, and still ignores the profiles it is handed.
+    expect(buildLeaderboardViewModel([], idOf(1), v)).toBe(kept);
+  });
+
+  it('SR4A.2-MEMO-EQUIV BITES: a versioned build is deep-equal to the versionless build of the same inputs', () => {
+    const profiles = ladder(130);
+    const versioned = buildLeaderboardViewModel(profiles, idOf(125), freshVersion());
+    expect(versioned).toEqual(buildLeaderboardViewModel(profiles, idOf(125)));
   });
 });
