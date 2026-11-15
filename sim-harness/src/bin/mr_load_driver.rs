@@ -3579,6 +3579,11 @@ mod tests {
             None,
             "usable readings of differing length"
         );
+        assert_eq!(
+            rx_rates(&[vec![0, 0], vec![1, 2], vec![3, 4, 5]], 1000),
+            None,
+            "a longer usable reading"
+        );
         assert!(
             rx_rates(&[vec![0, 0], vec![1, 2], vec![3, 4]], 1000).is_some(),
             "exactly two usable readings is a window"
