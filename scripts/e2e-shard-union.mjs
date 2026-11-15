@@ -12,12 +12,12 @@
 // Exits 1 unless every such report has tests and no unexpected or flaky result, no test is in
 // two reports, and the reports' tests are exactly the listed tests.
 //
-// The lower attempts change no verdict. A test unexpected on one of them and expected on its
-// shard's highest attempt passed only on a rerun: it gets a `rerun-passed:` line and a
-// `::warning` annotation, and a lower attempt with no readable e2e.json gets a
-// `rerun-unreadable:` line. When GITHUB_STEP_SUMMARY names a file, the same listing is appended
-// to it as a table, on a failing run too. GitHub caps a step's annotations; the table is the
-// complete list.
+// The lower attempts change no verdict; they are read only for a shard whose highest attempt
+// is readable. A test unexpected on one of them and expected on the highest attempt passed only
+// on a rerun: it gets a `rerun-passed:` line and a `::warning` annotation, and a lower attempt
+// with no readable e2e.json gets a `rerun-unreadable:` line. When GITHUB_STEP_SUMMARY names a
+// file, the same listing is appended to it as a table, on a failing run too. GitHub caps a
+// step's annotations; the table is the complete list.
 import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -31,7 +31,8 @@ function testsOf(path) {
   const byId = new Map();
   const walk = (suite, describes) => {
     for (const spec of suite.specs ?? []) {
-      const title = [...describes, spec.title].join(' › ');
+      // A title is one line: it is printed on one stdout line and in one table row.
+      const title = [...describes, spec.title].join(' › ').replace(/\r\n|\r|\n/g, ' ');
       for (const t of spec.tests) {
         tests.push(`${spec.id}/${t.projectId}  ${spec.file}:${spec.line}`);
         byId.set(`${spec.id}/${t.projectId}`, {
@@ -58,8 +59,9 @@ function readableTestsOf(path) {
   }
 }
 
-/** GitHub workflow-command message escaping. */
+/** GitHub workflow-command escaping of a message, and of a property value. */
 const escapeData = (s) => s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+const escapeProperty = (s) => escapeData(s).replace(/:/g, '%3A').replace(/,/g, '%2C');
 
 const dir = process.argv[2];
 if (!dir) {
@@ -100,7 +102,7 @@ for (const { shard, attempts } of shards) {
   const listPath = join(dir, name, 'e2e-list.json');
   const suite = readableTestsOf(listPath);
   const report = readableTestsOf(reportPath);
-  if (!suite || !report) {
+  if (!suite || !report || typeof report.stats !== 'object' || report.stats === null) {
     problems.push(`${name}: e2e.json or e2e-list.json is missing or unreadable`);
     continue;
   }
@@ -147,14 +149,14 @@ for (const t of rerunPassed) {
   );
   const message = `${t.title} (shard ${t.shard}, failed on attempt ${failed}, passed on attempt ${t.passed})`;
   console.log(
-    `::warning file=${path},line=${t.line},title=Passed only on a rerun::${escapeData(message)}`,
+    `::warning file=${escapeProperty(path)},line=${t.line},title=Passed only on a rerun::${escapeData(message)}`,
   );
 }
 for (const name of unreadable) console.log(`rerun-unreadable: ${name}: no readable e2e.json`);
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 if (summaryPath) {
-  const out = ['', '## e2e tests that passed only on a rerun', ''];
+  const out = ['## e2e tests that passed only on a rerun', ''];
   if (rerunPassed.length === 0) out.push('No e2e test passed only on a rerun.');
   else {
     out.push('| Test | File | Shard | Failed on attempt | Passed on attempt |');
@@ -169,7 +171,14 @@ if (summaryPath) {
   }
   if (unreadable.length > 0) out.push('');
   for (const name of unreadable) out.push(`Unreadable: ${name} had no readable e2e.json.`);
-  appendFileSync(summaryPath, `${out.join('\n')}\n`);
+  // The summary is a report, not a rule: a failed write is named and changes no verdict.
+  try {
+    appendFileSync(summaryPath, `${out.join('\n')}\n`);
+  } catch (err) {
+    console.error(
+      `e2e-shard-union: cannot write the step summary to ${summaryPath}: ${err.message}`,
+    );
+  }
 }
 
 for (const t of listed) if (!ran.has(t)) problems.push(`listed but in no shard: ${t}`);
