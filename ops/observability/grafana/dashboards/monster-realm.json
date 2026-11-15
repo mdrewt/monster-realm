@@ -273,9 +273,10 @@
       "id": 16,
       "type": "timeseries",
       "title": "Reducer-thread share by reducer (stacked; total = sum)",
-      "description": "Seconds of transaction time per second, by reducer, stacked: the host runs one writer for the whole world, so the stack's height is how busy that thread is (1.0 = saturated). The dashed `total` line is sum(mr:reducer_thread_share:rate5m) and is not stacked. The series with no reducer name is non-reducer work (subscribe, SQL, internal). Why every txn_type is summed is in the comment above the rule in rules/recording.rules.yml (group mr-slo).",
+      "description": "Seconds of transaction time per second, by reducer, stacked. The host runs one writer for the whole world, so for reducer work the stack approximates how busy that thread is (1.0 = saturated). The dashed `total` line is sum(mr:reducer_thread_share:rate5m) and is not stacked. The series without a reducer label is non-reducer work (subscribe, SQL, internal); whether it overlaps the writer is unmeasured, so the total may exceed 1.0. Which txn_type rows are summed is in the comment above the rule in rules/recording.rules.yml (group mr-slo).",
       "datasource": { "type": "prometheus", "uid": "mr-prometheus" },
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 43 },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" } },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
@@ -284,9 +285,9 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "total" },
+            "matcher": { "id": "byFrameRefID", "options": "B" },
             "properties": [
-              { "id": "custom.stacking", "value": { "mode": "none", "group": "A" } },
+              { "id": "custom.stacking", "value": { "mode": "none" } },
               { "id": "custom.fillOpacity", "value": 0 },
               { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
             ]

@@ -3,28 +3,47 @@ rule_files:
 
 evaluation_interval: 15s
 
-# rate()'s extrapolation leaves each result one ULP from the decimal literal;
-# the tolerance is 1 ULP, so any wrong aggregation still fails.
+# Samples are 25 s apart (index i is at 25*i s). At 10m the 5m window holds the
+# samples at 325 s..600 s (index 13..24), so a rate is (v600 - v325) / 275 after
+# extrapolation; at 20m it holds 925 s..1200 s (index 37..48). Extrapolation
+# leaves each result one ULP from the decimal literal, so fuzzy_compare is
+# 1 ULP: any wrong aggregation or window still fails.
 fuzzy_compare: true
 
 tests:
   - interval: 25s
-    # Counters are seconds of transaction time; samples are 25 s apart, so
-    # rate = increment / 25. Linear series, eval at 10m with the 5m window
-    # fully inside the data.
+    # job/instance labels are present as on a real scrape, so an extra `by`
+    # label shows up in the output. The slope change and the counter reset are
+    # inside the 5m window at 10m, so another window length, irate/deriv/delta,
+    # or a constant gives different values.
     input_series:
-      # movement_tick Reducer rows: +2.5 per step = 0.10 s/s
-      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="movement_tick",txn_type="Reducer"}'
-        values: "0+2.5x48"
-      # movement_tick Update row: +0.5 per step = 0.02 s/s (0.10 + 0.02 = 0.12)
-      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="movement_tick",txn_type="Update"}'
-        values: "0+0.5x48"
-      # enqueue_move Reducer row: +0.75 per step = 0.03 s/s
-      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="enqueue_move",txn_type="Reducer"}'
-        values: "0+0.75x48"
-      # non-reducer work (empty reducer label): +1.25 per step = 0.05 s/s
-      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="",txn_type="Subscribe"}'
-        values: "0+1.25x48"
+      # movement_tick Reducer: +1 per step to index 16, a +3.0625 step into
+      # index 17, then +3.0625 to index 24 (40.5), then +5 per step from 625 s.
+      # At 10m (5m window): 3 steps of +1 then 8 of +3.0625 = 27.5 -> 27.5 / 275 = 0.10;
+      # other window lengths take a different mix of the two slopes (a 1m window
+      # sees only +3.0625 steps -> 0.1225; a 10m window mixes in more +1 steps),
+      # so only the 5m window yields 0.10. 20m: 11 steps of +5 = 55 -> 0.20.
+      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200aa",instance="spacetime:3000",job="spacetime",reducer="movement_tick",txn_type="Reducer"}'
+        values: "0+1x16 19.0625+3.0625x7 45.5+5x23"
+      # movement_tick Update: +0.5 per step to index 24 (12), then +1 per step
+      # from 625 s. 10m: 5.5 / 275 = 0.02; 20m: 11 / 275 = 0.04.
+      # movement_tick totals 0.10 + 0.02 = 0.12 at 10m and 0.20 + 0.04 = 0.24 at 20m.
+      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200aa",instance="spacetime:3000",job="spacetime",reducer="movement_tick",txn_type="Update"}'
+        values: "0+0.5x24 13+1x23"
+      # enqueue_move: counter reset at 500 s (index 20) inside the 5m window at 10m;
+      # rate() adds the pre-reset value back: (14.25 - 9.75) + 3.75 = 8.25
+      # -> 8.25 / 275 = 0.03. Then +1.5625 per step: 11 * 1.5625 = 17.1875
+      # -> 0.0625 at 20m.
+      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200aa",instance="spacetime:3000",job="spacetime",reducer="enqueue_move",txn_type="Reducer"}'
+        values: "0+0.75x19 0.75+0.75x4 5.3125+1.5625x23"
+      # Two empty-reducer rows (Subscribe on one db, Sql on another), +0.78125
+      # per step: 11 * 0.78125 = 8.59375 -> 0.03125 each. Non-reducer work
+      # records as the series with no reducer label, summed across db and
+      # txn_type: 0.0625.
+      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200aa",instance="spacetime:3000",job="spacetime",reducer="",txn_type="Subscribe"}'
+        values: "0+0.78125x48"
+      - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200bb",instance="spacetime:3000",job="spacetime",reducer="",txn_type="Sql"}'
+        values: "0+0.78125x48"
     promql_expr_test:
       # One sample per reducer value; every other label is aggregated away.
       - expr: mr:reducer_thread_share:rate5m
@@ -34,12 +53,22 @@ tests:
             value: 0.12
           - labels: 'mr:reducer_thread_share:rate5m{reducer="enqueue_move"}'
             value: 0.03
-          # An empty reducer label is no label: the non-reducer row is {}.
+          # An empty reducer label is no label: non-reducer work is {}.
           - labels: 'mr:reducer_thread_share:rate5m{}'
-            value: 0.05
-      # The dashboard total: 0.12 + 0.03 + 0.05.
+            value: 0.0625
+      # Different values at the second eval time, so a constant cannot pass.
+      - expr: mr:reducer_thread_share:rate5m
+        eval_time: 20m
+        exp_samples:
+          - labels: 'mr:reducer_thread_share:rate5m{reducer="movement_tick"}'
+            value: 0.24
+          - labels: 'mr:reducer_thread_share:rate5m{reducer="enqueue_move"}'
+            value: 0.0625
+          - labels: 'mr:reducer_thread_share:rate5m{}'
+            value: 0.0625
+      # The dashboard total: 0.12 + 0.03 + 0.0625.
       - expr: sum(mr:reducer_thread_share:rate5m)
         eval_time: 10m
         exp_samples:
           - labels: "{}"
-            value: 0.2
+            value: 0.2125

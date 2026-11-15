@@ -58,12 +58,14 @@ groups:
           histogram_quantile(0.95, sum by (le) (rate(spacetime_reducer_wait_time_sec_bucket[5m])))
 
       # Reducer-thread share — seconds of transaction time per second, by reducer. The host runs
-      # one writer for the whole world, so 0.12 reads "12% of that thread". The dashboard's total
-      # is `sum()` of this series; no second rule records it.
+      # one writer for the whole world, so for reducer work 0.12 approximates "12% of that
+      # thread". The dashboard's total is `sum()` of this series; no second rule records it.
       #
-      # Summed across every `txn_type`: the host emits a `Reducer` row and a smaller `Update` row
-      # per reducer, and non-reducer work (`Subscribe`, `Sql`, `Internal`, …) carries an empty
-      # `reducer` label, so it records as the one series with no `reducer` label at all.
+      # Every `txn_type` row is summed, so each reducer's figure is all the transaction time the
+      # host attributes to it: a `Reducer` row plus a smaller `Update` row. Non-reducer work
+      # (`Subscribe`, `Sql`, `Internal`, …) carries an empty `reducer` label and records as the
+      # one series with no `reducer` label. Whether that work overlaps the writer in time is
+      # unmeasured, so the summed total is transaction-seconds per second and may exceed 1.0.
       # Behaviour is pinned by recording.rules.test.yml (`promtool test rules`).
       - record: mr:reducer_thread_share:rate5m
         expr: |
