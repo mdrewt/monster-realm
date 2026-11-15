@@ -4393,4 +4393,185 @@ mod nh {
             );
         }
     }
+
+    // --- ih-2.1: a join writes the lead monster's level onto the player row ----
+
+    /// The movement world plus what a join needs beyond it (as `sr11_world`, with no
+    /// monster seeded): an auto-inc `character` key, the starter-kit tables and the
+    /// `player_handle` table.
+    fn ih2_join_world(fx: &Fixture) -> World<'_> {
+        let w = world(fx);
+        let _ = fx
+            .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
+        // The starter insert draws its `monster_id` from the key's sequence.
+        let _ = fx
+            .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+            .unique()
+            .auto_inc(|r| r.monster_id, |r, id| r.monster_id = id);
+        sr10_kit_tables(fx);
+        sr10_handle_table(fx);
+        w
+    }
+
+    /// `who` already holds the starter marker, so its join grants neither the kit nor
+    /// a starter monster.
+    fn ih2_mark_claimed(fx: &Fixture, who: Identity) {
+        fx.table::<crate::schema::PlayerDialogueStateRow>(
+            "player_dialogue_state",
+            "owner_identity",
+            |r| r.owner_identity,
+        )
+        .writable()
+        .unique()
+        .seed(&crate::schema::PlayerDialogueStateRow {
+            owner_identity: who,
+            flags: vec![crate::npc::STARTER_CLAIMED_FLAG.to_string()],
+            done_quests: Vec::new(),
+        });
+    }
+
+    /// A movement-world monster at `level` in `party_slot`.
+    fn ih2_monster(monster_id: u64, owner: Identity, party_slot: u8, level: u8) -> Monster {
+        Monster {
+            level,
+            ..monster(monster_id, owner, party_slot)
+        }
+    }
+
+    /// `who`'s `player.lead_level` values, one per row.
+    fn ih2_lead_levels(w: &World<'_>, who: Identity) -> Vec<u8> {
+        w.players
+            .rows()
+            .into_iter()
+            .filter(|p| p.identity == who)
+            .map(|p| p.lead_level)
+            .collect()
+    }
+
+    fn ih2_join(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
+        fx.run_as_at(who, at(ms), |ctx| {
+            crate::movement::join_game(ctx, "Ada".to_string())
+        })
+    }
+
+    /// A fresh identity (no monster, no marker) joins and is granted the starter: its
+    /// `player.lead_level` is the level of the one `monster` row the join inserted.
+    ///
+    /// kills: no refresh at join (the row keeps the 0 the insert wrote).
+    #[test]
+    fn a_first_join_mirrors_the_granted_starters_level_on_the_player_row_ih2_1() {
+        let fx = fixture();
+        let w = ih2_join_world(&fx);
+        assert_eq!(ih2_join(&fx, a(), T0), Ok(()), "the first join completes");
+        let starters: Vec<Monster> = w
+            .monsters
+            .rows()
+            .into_iter()
+            .filter(|m| m.owner_identity == a())
+            .collect();
+        let [starter] = starters.as_slice() else {
+            panic!(
+                "the first join inserts exactly one monster for the joiner, got {}",
+                starters.len()
+            );
+        };
+        assert_ne!(
+            starter.party_slot,
+            crate::PARTY_SLOT_NONE,
+            "fixture: the starter goes into the party"
+        );
+        assert_ne!(starter.level, 0, "fixture: the starter's level is non-zero");
+        assert_eq!(
+            ih2_lead_levels(&w, a()),
+            vec![starter.level],
+            "the joiner's lead_level is its starter's level"
+        );
+    }
+
+    /// An identity that already owns a party and holds the starter marker joins: no
+    /// monster is granted, and `lead_level` is the level of its lowest-slot party
+    /// monster. The lead (22, slot 1) has a higher id than the other party monster
+    /// (21, slot 4), and a higher-level monster (20) sits in Storage.
+    ///
+    /// kills: a join that copies the level of a starter it rolled; a lead picked by
+    /// `monster_id` (21 -> 19); a lead picked from Storage (20 -> 33); no refresh at
+    /// join (0).
+    #[test]
+    fn a_rejoin_with_a_party_mirrors_the_lowest_slot_monsters_level_ih2_1() {
+        let fx = fixture();
+        let w = ih2_join_world(&fx);
+        ih2_mark_claimed(&fx, a());
+        let lead = ih2_monster(22, a(), 1, 12);
+        w.seed_monster(&ih2_monster(20, a(), crate::PARTY_SLOT_NONE, 33));
+        w.seed_monster(&ih2_monster(21, a(), 4, 19));
+        w.seed_monster(&lead);
+        assert_eq!(ih2_join(&fx, a(), T0), Ok(()), "the rejoin completes");
+        let mut ids: Vec<u64> = w
+            .monsters
+            .rows()
+            .iter()
+            .filter(|m| m.owner_identity == a())
+            .map(|m| m.monster_id)
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec![20, 21, 22],
+            "a marked joiner is granted no monster"
+        );
+        assert_eq!(
+            ih2_lead_levels(&w, a()),
+            vec![lead.level],
+            "lead_level is the lowest-slot party monster's level"
+        );
+    }
+
+    /// An identity that owns only boxed monsters (one of them level 40) and holds the
+    /// marker joins: its `lead_level` is 0 and `player` took exactly one write, the
+    /// insert. A second identity with a party joining in the same fixture first shows
+    /// the join refreshes at all here (its row reads its lead's level).
+    ///
+    /// kills: a lead picked from Storage (40 or 9); an unconditional second `player`
+    /// write; no refresh at join (the positive control reads 0).
+    #[test]
+    fn a_join_with_only_boxed_monsters_mirrors_zero_in_one_player_write_ih2_1() {
+        let fx = fixture();
+        let w = ih2_join_world(&fx);
+        ih2_mark_claimed(&fx, a());
+        ih2_mark_claimed(&fx, b());
+        w.seed_monster(&ih2_monster(31, a(), crate::PARTY_SLOT_NONE, 40));
+        w.seed_monster(&ih2_monster(32, a(), crate::PARTY_SLOT_NONE, 9));
+        let b_lead = ih2_monster(41, b(), 0, 15);
+        w.seed_monster(&b_lead);
+
+        assert_eq!(ih2_join(&fx, b(), T0), Ok(()), "the control join completes");
+        assert_eq!(
+            ih2_lead_levels(&w, b()),
+            vec![b_lead.level],
+            "positive control: a joiner with a party reads its lead's level"
+        );
+
+        fx.reset_writes();
+        assert_eq!(ih2_join(&fx, a(), T0 + 1), Ok(()), "the join completes");
+        assert_eq!(
+            w.monsters
+                .rows()
+                .iter()
+                .filter(|m| m.owner_identity == a())
+                .count(),
+            2,
+            "a marked joiner is granted no monster"
+        );
+        assert_eq!(
+            ih2_lead_levels(&w, a()),
+            vec![0],
+            "no party monster: lead_level is 0, whatever sits in Storage"
+        );
+        assert_eq!(
+            fx.writes_to("player"),
+            1,
+            "the join wrote player exactly once (the insert)"
+        );
+    }
 }

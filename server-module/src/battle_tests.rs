@@ -3055,3 +3055,258 @@ fn bn_disconnect_auto_flee_pays_nothing_bt17_2() {
         "no XP, level, essence or trust for a disconnect"
     );
 }
+
+// ===========================================================================
+// ih-2.2 — a battle write-back keeps `player.lead_level` on the lead's level
+//
+// Each case drives `write_back_battle_results` over `bn_world` with `player` registered
+// writable. XP is the shipped formula over the battle-side levels (`bn_mon`, level 7) and
+// the species-2 loser (BST 300): every conscious winner gains `IH2_GAIN` per win. Stored
+// levels follow `level_for_xp` (level = the cube root floor of xp), so a monster seeded one
+// XP short of its next level levels up on a win and one seeded at its level's floor does
+// not. The lead (12, slot 0) has a higher id than the non-lead (11, slot 1), and the two
+// never share a level.
+// ===========================================================================
+
+/// `player` (registered read-only by `bn_world`) as a writable handle.
+fn ih2_bn_players(fx: &Fixture) -> Handle<'_, Player> {
+    fx.table::<Player>("player", "identity", |r| r.identity)
+        .writable()
+        .unique()
+}
+
+fn ih2_bn_player(who: Identity, lead_level: u8) -> Player {
+    Player {
+        identity: who,
+        entity_id: 1,
+        name: "Ada".to_string(),
+        online: true,
+        last_input_seq: 0,
+        discriminator: 7,
+        lead_level,
+    }
+}
+
+/// The XP one won wild battle pays each conscious `bn_battle` side-A member.
+fn ih2_gain() -> u32 {
+    let lvl7 = game_core::Level::new(7).expect("level 7");
+    game_core::battle_xp_reward(lvl7, 300, lvl7).value()
+}
+
+/// The XP at which a monster stands exactly on `level`.
+fn ih2_floor(level: u8) -> u32 {
+    game_core::xp_for_level(game_core::Level::new(level).expect("a valid level")).value()
+}
+
+impl BnWorld<'_> {
+    /// A `bn_monster` at `level` holding `xp`, plus its projection.
+    fn leveled(&self, id: u64, party_slot: u8, level: u8, xp: u32) {
+        let m = Monster {
+            level,
+            xp,
+            ..bn_monster(id, bn_a(), party_slot)
+        };
+        self.pubs.seed(&crate::marshal::pub_from_monster(&m, 2));
+        self.monsters.seed(&m);
+    }
+}
+
+fn ih2_bn_lead_levels(players: &Handle<'_, Player>, who: Identity) -> Vec<u8> {
+    players
+        .rows()
+        .into_iter()
+        .filter(|p| p.identity == who)
+        .map(|p| p.lead_level)
+        .collect()
+}
+
+fn ih2_bn_win(team: &[u64]) -> Battle {
+    bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        team,
+        &[],
+        BattleOutcome::SideAWins,
+    )
+}
+
+/// A won write-back whose XP levels the lead (12, level 9, one XP short of 10) up: the
+/// owner's `lead_level` is the lead's new stored level, above the 9 the row held. The
+/// lead is credited LAST (team order 11, 12), and the non-lead 11 (level 14) does not
+/// level up.
+///
+/// kills: no refresh in the seam (stays 9); a refresh that reads before the monster write
+/// (reads 9); a lead picked by `monster_id` (11 -> 14).
+#[test]
+fn a_write_back_that_levels_the_lead_up_mirrors_its_new_level_ih2_2() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    let players = ih2_bn_players(&fx);
+    let gain = ih2_gain();
+    assert!(
+        gain < ih2_floor(15) - ih2_floor(14) && gain < ih2_floor(11) - ih2_floor(10),
+        "fixture: one win levels a monster by at most one, gain {gain}"
+    );
+    w.leveled(11, 1, 14, ih2_floor(14));
+    w.leveled(12, 0, 9, ih2_floor(10) - 1);
+    players.seed(&ih2_bn_player(bn_a(), w.mon(12).level));
+    assert_eq!(
+        ih2_bn_lead_levels(&players, bn_a()),
+        vec![9],
+        "pre-state: the row holds the lead's level"
+    );
+
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(
+        super::write_back_battle_results(&ctx, &ih2_bn_win(&[11, 12])),
+        Ok(())
+    );
+    let lead = w.mon(12).level;
+    assert!(lead > 9, "fixture: the lead levelled up, now {lead}");
+    assert_eq!(
+        w.mon(11).level,
+        14,
+        "fixture: the non-lead did not level up"
+    );
+    assert_eq!(
+        ih2_bn_lead_levels(&players, bn_a()),
+        vec![lead],
+        "lead_level is the lead's new stored level"
+    );
+    w.assert_mirrored("lead level-up");
+}
+
+/// A won write-back that levels up only the non-lead (11, level 14 -> 15) leaves
+/// `lead_level` on the lead's level (10) and writes `player` 0 times. The row reaches 10
+/// through an earlier win in the same test that levels the lead (12) from 9, so the
+/// "unchanged" check starts from a value the refresh wrote. The non-lead is written LAST
+/// in each write-back (team order 12, 11).
+///
+/// kills: a seam that copies the written monster's level (15); an unconditional `player`
+/// write on a level change; no refresh at all (the first win leaves 9).
+#[test]
+fn a_write_back_that_levels_a_non_lead_up_writes_no_player_row_ih2_2() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    let players = ih2_bn_players(&fx);
+    let gain = ih2_gain();
+    // 11 levels on the SECOND win only; 12 levels on the FIRST only.
+    w.leveled(11, 1, 14, ih2_floor(15) - 1 - gain);
+    w.leveled(12, 0, 9, ih2_floor(10) - 1);
+    assert!(
+        ih2_floor(10) - 1 + 2 * gain < ih2_floor(11),
+        "fixture: a second win does not level the lead again, gain {gain}"
+    );
+    players.seed(&ih2_bn_player(bn_a(), 9));
+
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(
+        super::write_back_battle_results(&ctx, &ih2_bn_win(&[12, 11])),
+        Ok(()),
+        "the first win"
+    );
+    let lead = w.mon(12).level;
+    assert_eq!(
+        (lead, w.mon(11).level),
+        (10, 14),
+        "fixture: the first win levels only the lead"
+    );
+    assert_eq!(
+        ih2_bn_lead_levels(&players, bn_a()),
+        vec![lead],
+        "pre-state: the row holds the lead's new level"
+    );
+
+    fx.reset_writes();
+    let ctx = fx.ctx_at(bn_at(BN_T0 + BN_DAY));
+    assert_eq!(
+        super::write_back_battle_results(&ctx, &ih2_bn_win(&[12, 11])),
+        Ok(()),
+        "the second win"
+    );
+    assert_eq!(
+        (w.mon(12).level, w.mon(11).level),
+        (lead, 15),
+        "fixture: the second win levels only the non-lead"
+    );
+    assert_eq!(
+        ih2_bn_lead_levels(&players, bn_a()),
+        vec![lead],
+        "the lead did not change, so neither did lead_level"
+    );
+    assert_eq!(
+        fx.writes_to("player"),
+        0,
+        "a non-lead level-up writes no player row"
+    );
+    w.assert_mirrored("non-lead level-up");
+}
+
+/// A lost write-back changes HP only: `lead_level` keeps its correct non-zero value (10,
+/// reached through an earlier win in the same test that levels the lead up from 9) and
+/// `player` takes 0 writes.
+///
+/// kills: a write of an unchanged value on every monster write (the HP-only write-back
+/// writes both monsters); no refresh at all (the first win leaves 9).
+#[test]
+fn an_hp_only_write_back_writes_no_player_row_ih2_2() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    let players = ih2_bn_players(&fx);
+    w.leveled(11, 1, 14, ih2_floor(14));
+    w.leveled(12, 0, 9, ih2_floor(10) - 1);
+    players.seed(&ih2_bn_player(bn_a(), 9));
+
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(
+        super::write_back_battle_results(&ctx, &ih2_bn_win(&[12, 11])),
+        Ok(()),
+        "the win"
+    );
+    let lead = w.mon(12).level;
+    assert!(lead > 9, "fixture: the win levelled the lead, now {lead}");
+    assert_eq!(
+        ih2_bn_lead_levels(&players, bn_a()),
+        vec![lead],
+        "pre-state: the row holds the lead's new level"
+    );
+    let levels_before = (w.mon(12).level, w.mon(11).level);
+
+    fx.reset_writes();
+    let mut loss = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[12, 11],
+        &[],
+        BattleOutcome::SideBWins,
+    );
+    loss.state.side_a.team[0].current_hp = 33;
+    loss.state.side_a.team[1].current_hp = 21;
+    let ctx = fx.ctx_at(bn_at(BN_T0 + BN_DAY));
+    assert_eq!(
+        super::write_back_battle_results(&ctx, &loss),
+        Ok(()),
+        "the loss"
+    );
+    assert_eq!(
+        (w.mon(12).current_hp, w.mon(11).current_hp),
+        (33, 21),
+        "fixture: the loss wrote HP back"
+    );
+    assert_eq!(
+        (w.mon(12).level, w.mon(11).level),
+        levels_before,
+        "fixture: a loss levels nobody"
+    );
+    assert_eq!(
+        ih2_bn_lead_levels(&players, bn_a()),
+        vec![lead],
+        "lead_level is unchanged"
+    );
+    assert_eq!(
+        fx.writes_to("player"),
+        0,
+        "an HP-only write-back writes no player row"
+    );
+    w.assert_mirrored("HP-only write-back");
+}

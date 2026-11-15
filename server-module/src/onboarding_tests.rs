@@ -447,6 +447,22 @@ impl Ob<'_> {
             .collect()
     }
 
+    /// The level of `who`'s lead: its owned `monster` row with the lowest party slot
+    /// (ih-2), asserted non-zero so an expected `lead_level` read from it is never a
+    /// vacuous 0.
+    fn lead_level_of(&self, who: Identity) -> u8 {
+        let level = self
+            .monsters
+            .rows()
+            .into_iter()
+            .filter(|m| m.owner_identity == who && m.party_slot != crate::PARTY_SLOT_NONE)
+            .min_by_key(|m| m.party_slot)
+            .map(|m| m.level)
+            .unwrap_or_else(|| panic!("{who} owns a party monster"));
+        assert_ne!(level, 0, "{who}: its lead's level is non-zero");
+        level
+    }
+
     /// `who`'s session ends the way a departure leaves the store: its `player`,
     /// `character` and `move_intent` rows go.
     fn leave(&self, who: Identity) {
@@ -1007,7 +1023,7 @@ fn a_kit_that_cannot_load_refuses_a_joiner_holding_the_marker_too_eo1_9() {
 /// Two identities join under different names, then a fresh identity joins through
 /// `join_game`: that join writes `player_handle` exactly once and leaves the joiner one
 /// handle row whose discriminator is non-zero and held by no other row; the joiner's
-/// new `player` row carries the same value and `lead_level` 0, and each earlier
+/// new `player` row carries the same value and its starter's level (ih-2), and each earlier
 /// joiner's `player` row carries its own handle's value. The value is drawn from the
 /// table's sequence: after the last minted row is removed, a further fresh joiner is
 /// minted a value none of the earlier mints held.
@@ -1050,8 +1066,8 @@ fn a_first_join_mints_one_nonzero_handle_and_mirrors_it_on_the_player_row_ih1_1(
     );
     assert_eq!(
         w.player_tags(joiner()),
-        vec![(d, 0)],
-        "the joiner's player row mirrors its handle, lead level 0"
+        vec![(d, w.lead_level_of(joiner()))],
+        "the joiner's player row mirrors its handle and its lead's level"
     );
     let mut minted = vec![d];
     for who in [first, second] {
@@ -1060,8 +1076,8 @@ fn a_first_join_mints_one_nonzero_handle_and_mirrors_it_on_the_player_row_ih1_1(
         assert_ne!(held[0], 0, "{who}: a non-zero discriminator");
         assert_eq!(
             w.player_tags(who),
-            vec![(held[0], 0)],
-            "{who}: its player row mirrors its own handle"
+            vec![(held[0], w.lead_level_of(who))],
+            "{who}: its player row mirrors its own handle and its lead's level"
         );
         minted.push(held[0]);
     }
@@ -1085,7 +1101,11 @@ fn a_first_join_mints_one_nonzero_handle_and_mirrors_it_on_the_player_row_ih1_1(
         "the sequence never hands out a value it minted before: {} in {minted:?}",
         next[0]
     );
-    assert_eq!(w.player_tags(later), vec![(next[0], 0)], "mirrored");
+    assert_eq!(
+        w.player_tags(later),
+        vec![(next[0], w.lead_level_of(later))],
+        "mirrored, with its lead's level"
+    );
 }
 
 /// An identity joins (that join writes `player_handle` once), leaves (its `player`,
@@ -1131,8 +1151,8 @@ fn a_rejoin_mints_nothing_and_mirrors_the_same_discriminator_ih1_2() {
     );
     assert_eq!(
         w.player_tags(joiner()),
-        vec![(d, 0)],
-        "the new player row carries the same discriminator"
+        vec![(d, w.lead_level_of(joiner()))],
+        "the new player row carries the same discriminator and its lead's level"
     );
 }
 
@@ -1156,8 +1176,8 @@ fn two_joiners_with_one_name_carry_different_discriminators_ih1_3() {
         assert_ne!(held[0], 0, "{who}: a non-zero discriminator");
         assert_eq!(
             w.player_tags(who),
-            vec![(held[0], 0)],
-            "{who}: its player row carries its own handle's value"
+            vec![(held[0], w.lead_level_of(who))],
+            "{who}: its player row carries its own handle's value and its lead's level"
         );
         tags.push(held[0]);
     }

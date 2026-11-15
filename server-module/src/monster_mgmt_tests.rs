@@ -1792,3 +1792,276 @@ fn ts2_auto_cancel_not_on_a_sibling_session() {
     );
     w.assert_mirrored("sibling sessions");
 }
+
+// ===========================================================================
+// ih-2.3 / ih-2.5 — a party change keeps `player.lead_level` on the lead's level
+//
+// Every case runs the shipped `set_party_slot` on `dw_world` (which registers `player`
+// writable). Each owner's monsters carry distinct levels, and the lead's slot order
+// disagrees with `monster_id` order, so a lead picked by id, from Storage, or from the
+// monster just written reads a different level than the lowest-slot party monster.
+// ===========================================================================
+
+/// The `player` table `dw_world` registered, as a handle (registration is per name).
+fn ih2_players(fx: &Fixture) -> Handle<'_, crate::schema::Player> {
+    fx.table::<crate::schema::Player>("player", "identity", |r| r.identity)
+        .writable()
+        .unique()
+}
+
+fn ih2_player(who: Identity, entity_id: u64, lead_level: u8) -> crate::schema::Player {
+    crate::schema::Player {
+        identity: who,
+        entity_id,
+        name: format!("p{entity_id}"),
+        online: true,
+        last_input_seq: 0,
+        discriminator: 7,
+        lead_level,
+    }
+}
+
+impl DwWorld<'_> {
+    /// A `dw_monster` at `level` (private row and projection).
+    fn leveled(&self, id: u64, owner: Identity, party_slot: u8, level: u8) {
+        let m = Monster {
+            level,
+            ..dw_monster(id, owner, party_slot)
+        };
+        self.pubs.seed(&crate::marshal::pub_from_monster(&m, 0));
+        self.monsters.seed(&m);
+    }
+    fn level_of(&self, id: u64) -> u8 {
+        let level = self.row(id).expect("seeded monster").level;
+        assert_ne!(level, 0, "fixture: monster {id} has a non-zero level");
+        level
+    }
+}
+
+/// `who`'s `player.lead_level` values, one per row.
+fn ih2_lead_levels(players: &Handle<'_, crate::schema::Player>, who: Identity) -> Vec<u8> {
+    players
+        .rows()
+        .into_iter()
+        .filter(|p| p.identity == who)
+        .map(|p| p.lead_level)
+        .collect()
+}
+
+fn ih2_move(fx: &Fixture, who: Identity, id: u64, slot: u8) -> Result<(), String> {
+    fx.run_as_at(who, dw_at(DW_T0), |ctx| {
+        crate::monster_mgmt::set_party_slot(ctx, id, slot)
+    })
+}
+
+/// `set_party_slot` moves monster 12 (level 14) into slot 0, below the lead 11's slot 2:
+/// `lead_level` becomes 12's level. After the move the lead (12) has a higher id than the
+/// other party monster (11).
+///
+/// kills: no refresh on a slot change (stays 9); a lead picked by `monster_id` (11 -> 9);
+/// a lead picked from Storage (13 -> 30).
+#[test]
+fn moving_a_monster_below_the_leads_slot_makes_it_the_mirrored_lead_ih2_3() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let players = ih2_players(&fx);
+    w.leveled(11, dw_a(), 2, 9);
+    w.leveled(12, dw_a(), 3, 14);
+    w.leveled(13, dw_a(), crate::PARTY_SLOT_NONE, 30);
+    players.seed(&ih2_player(dw_a(), 1, w.level_of(11)));
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![9],
+        "pre-state: the row holds the lead 11's level"
+    );
+
+    assert_eq!(ih2_move(&fx, dw_a(), 12, 0), Ok(()), "the move is accepted");
+    assert_eq!(
+        w.row(12).map(|m| m.party_slot),
+        Some(0),
+        "fixture: 12 moved"
+    );
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![w.level_of(12)],
+        "lead_level is the new lowest-slot monster 12's level"
+    );
+    w.assert_mirrored("move below the lead");
+}
+
+/// `set_party_slot(lead, 255)` with two party monsters left: `lead_level` becomes the
+/// next-lowest-slot monster's level. The next lead (14, slot 1) has a higher id than the
+/// other remaining party monster (12, slot 3), and 11 (level 40) is boxed.
+///
+/// kills: no refresh when the lead is boxed (stays 9); a lead picked by `monster_id`
+/// among the party (12 -> 21) or over every monster (11 -> 40); a refresh that copies
+/// the written monster's level (9).
+#[test]
+fn boxing_the_lead_mirrors_the_next_lowest_slot_monsters_level_ih2_3() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let players = ih2_players(&fx);
+    w.leveled(11, dw_a(), crate::PARTY_SLOT_NONE, 40);
+    w.leveled(12, dw_a(), 3, 21);
+    w.leveled(13, dw_a(), 0, 9);
+    w.leveled(14, dw_a(), 1, 16);
+    players.seed(&ih2_player(dw_a(), 1, w.level_of(13)));
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![9],
+        "pre-state: the row holds the lead 13's level"
+    );
+
+    assert_eq!(
+        ih2_move(&fx, dw_a(), 13, crate::PARTY_SLOT_NONE),
+        Ok(()),
+        "boxing the lead is accepted"
+    );
+    assert_eq!(
+        w.row(13).map(|m| m.party_slot),
+        Some(crate::PARTY_SLOT_NONE),
+        "fixture: 13 is boxed"
+    );
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![w.level_of(14)],
+        "lead_level is the next-lowest-slot monster 14's level"
+    );
+    w.assert_mirrored("box the lead");
+}
+
+/// Boxing the last party monster (12, level 9) while a higher-level monster (11, level 35)
+/// sits in Storage: `lead_level` becomes 0 from its non-zero pre-state.
+///
+/// kills: a lead picked from Storage (35); a stale value kept when the party empties (9);
+/// no refresh on a slot change (9).
+#[test]
+fn boxing_the_last_party_monster_mirrors_zero_whatever_sits_in_storage_ih2_3() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let players = ih2_players(&fx);
+    w.leveled(11, dw_a(), crate::PARTY_SLOT_NONE, 35);
+    w.leveled(12, dw_a(), 0, 9);
+    players.seed(&ih2_player(dw_a(), 1, w.level_of(12)));
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![9],
+        "pre-state: the row holds the lead 12's level"
+    );
+
+    assert_eq!(
+        ih2_move(&fx, dw_a(), 12, crate::PARTY_SLOT_NONE),
+        Ok(()),
+        "boxing the last party monster is accepted"
+    );
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![0],
+        "an empty party mirrors 0"
+    );
+    w.assert_mirrored("box the last party monster");
+}
+
+/// Moving a non-lead monster (12, level 16) from slot 2 to slot 3, both above the lead
+/// 13's slot 0: `lead_level` keeps the lead's level and `player` takes 0 writes. The row
+/// reaches the lead's level through an earlier qualifying move in the same test (it is
+/// seeded stale at 0, and re-seating the lead 13 from slot 1 to slot 0 refreshes it), so
+/// the "unchanged" assertion starts from a value the refresh itself wrote.
+///
+/// kills: a seam that copies the written monster's level (16); an unconditional `player`
+/// write on every monster write; a lead picked by `monster_id` (11 -> 21); no refresh at
+/// all (the qualifying move leaves 0).
+#[test]
+fn moving_a_non_lead_between_slots_above_the_lead_writes_no_player_row_ih2_3() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let players = ih2_players(&fx);
+    w.leveled(11, dw_a(), 4, 21);
+    w.leveled(12, dw_a(), 2, 16);
+    w.leveled(13, dw_a(), 1, 9);
+    players.seed(&ih2_player(dw_a(), 1, 0));
+
+    assert_eq!(
+        ih2_move(&fx, dw_a(), 13, 0),
+        Ok(()),
+        "re-seating the lead is accepted"
+    );
+    let lead = w.level_of(13);
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![lead],
+        "pre-state: the qualifying move mirrors the lead 13's level"
+    );
+
+    fx.reset_writes();
+    assert_eq!(
+        ih2_move(&fx, dw_a(), 12, 3),
+        Ok(()),
+        "the non-lead move is accepted"
+    );
+    assert_eq!(
+        w.row(12).map(|m| m.party_slot),
+        Some(3),
+        "fixture: 12 moved"
+    );
+    assert_eq!(
+        ih2_lead_levels(&players, dw_a()),
+        vec![lead],
+        "the lead is unchanged, so is lead_level"
+    );
+    assert_eq!(
+        fx.writes_to("player"),
+        0,
+        "a non-lead move writes no player row"
+    );
+    w.assert_mirrored("non-lead move");
+}
+
+/// An owner with a party and NO `player` row (A; `player` is registered writable, so an
+/// insert would land rather than abort) moves its lead out of slot 0: `set_party_slot`
+/// returns `Ok`, the monster row moved, A still has no `player` row and `player` took no
+/// write. Owner B, who does hold a row, moves its lead first in the same fixture and its
+/// row is refreshed, so the refresh is live here and A's empty result is not vacuous.
+///
+/// kills: a helper that inserts a row for an owner with none, or errors on one; no
+/// refresh at all (B's positive control reads its seeded stale 0).
+#[test]
+fn a_party_change_for_an_owner_with_no_player_row_succeeds_and_writes_no_player_ih2_5() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let players = ih2_players(&fx);
+    w.leveled(21, dw_b(), 1, 11);
+    players.seed(&ih2_player(dw_b(), 2, 0));
+    w.leveled(12, dw_a(), 0, 9);
+    w.leveled(11, dw_a(), 1, 16);
+
+    assert_eq!(
+        ih2_move(&fx, dw_b(), 21, 0),
+        Ok(()),
+        "control: B re-seats its lead"
+    );
+    assert_eq!(
+        ih2_lead_levels(&players, dw_b()),
+        vec![w.level_of(21)],
+        "positive control: B's row mirrors its lead's level"
+    );
+
+    fx.reset_writes();
+    assert_eq!(
+        ih2_move(&fx, dw_a(), 12, 3),
+        Ok(()),
+        "a party change for an owner with no player row succeeds"
+    );
+    assert_eq!(
+        w.row(12).map(|m| m.party_slot),
+        Some(3),
+        "the monster row moved"
+    );
+    assert!(
+        ih2_lead_levels(&players, dw_a()).is_empty(),
+        "no player row appears for A"
+    );
+    assert_eq!(players.rows().len(), 1, "only B's row exists");
+    assert_eq!(fx.writes_to("player"), 0, "player took no write");
+    w.assert_mirrored("owner with no player row");
+}

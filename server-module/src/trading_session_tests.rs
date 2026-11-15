@@ -1008,7 +1008,10 @@ fn s2_base(fx: &Fixture) -> S2World<'_> {
     let offers = fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator);
     let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
     let w = S2World {
-        players: fx.table::<Player>("player", "identity", |r| r.identity),
+        // Writable since ih-2: an executed swap refreshes both sides' `player.lead_level`.
+        players: fx
+            .table::<Player>("player", "identity", |r| r.identity)
+            .writable(),
         chars: fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id),
         accounts: fx.table::<Account>("account", "identity", |r| r.identity),
         items: fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id),
@@ -4579,4 +4582,231 @@ fn ts2_auto_cancel_on_legacy_swap() {
             "the execute's own apply deletes no other session"
         );
     }
+}
+
+// ===========================================================================
+// ih-2.4 — an executed session swap keeps both sides' `player.lead_level` on
+// their leads' levels
+//
+// Each case joins alice and bob on the shared tile with `player` rows already holding
+// their real, non-zero lead levels, runs a session to its completing confirm, and reads
+// each side's expected lead back from `monster` (the lowest party slot it owns after
+// the execute). Every monster carries its own level, and in each case some owner's
+// lowest `monster_id` is not its lead.
+// ===========================================================================
+
+/// `who` joined on the shared tile (zone 1, 10, 10), its `player` row holding
+/// `lead_level`.
+fn ih2_join(w: &S2World<'_>, who: Identity, lead_level: u8) {
+    w.players.seed(&Player {
+        identity: who,
+        entity_id: entity_of(who),
+        name: String::new(),
+        online: true,
+        last_input_seq: 0,
+        discriminator: 0,
+        lead_level,
+    });
+    w.place(who, 1, 10, 10);
+}
+
+/// A session monster at `level`.
+fn ih2_mon(w: &S2World<'_>, monster_id: u64, owner: Identity, party_slot: u8, level: u8) {
+    w.put(&Monster {
+        level,
+        ..s2_mon(monster_id, owner, party_slot)
+    });
+}
+
+/// `who`'s `player.lead_level` values, one per row.
+fn ih2_lead_levels(w: &S2World<'_>, who: Identity) -> Vec<u8> {
+    w.players
+        .rows()
+        .into_iter()
+        .filter(|p| p.identity == who)
+        .map(|p| p.lead_level)
+        .collect()
+}
+
+/// The level of `who`'s lead as `monster` holds it now: its owned row with the lowest
+/// party slot, asserted non-zero.
+fn ih2_lead_of(w: &S2World<'_>, who: Identity) -> u8 {
+    let level = w
+        .monsters
+        .rows()
+        .into_iter()
+        .filter(|m| m.owner_identity == who && m.party_slot != crate::PARTY_SLOT_NONE)
+        .min_by_key(|m| m.party_slot)
+        .map(|m| m.level)
+        .unwrap_or_else(|| panic!("{who} owns a party monster"));
+    assert_ne!(level, 0, "fixture: {who}'s lead has a non-zero level");
+    level
+}
+
+/// Run `opener -> partner` with the two offers through both confirms (opener first).
+fn ih2_execute(fx: &Fixture, w: &S2World<'_>, opener_offer: &Off, partner_offer: &Off) {
+    let sid = s2_session(fx, w, alice(), bob(), opener_offer, partner_offer);
+    assert_eq!(
+        s2_confirm_now(fx, w, alice(), sid),
+        Ok(()),
+        "alice confirms"
+    );
+    assert_eq!(
+        s2_confirm_now(fx, w, bob(), sid),
+        Ok(()),
+        "bob's completing confirm executes"
+    );
+    assert!(w.session_opt(sid).is_none(), "the session executed");
+}
+
+/// The two sides' leads before any swap: alice's lead 12 (slot 0, level 9) beside 11
+/// (slot 1, level 16); bob's lead 22 (slot 0, level 13) beside 21 (slot 2, level 24).
+fn ih2_two_leads(w: &S2World<'_>) {
+    ih2_mon(w, 12, alice(), 0, 9);
+    ih2_mon(w, 11, alice(), 1, 16);
+    ih2_mon(w, 22, bob(), 0, 13);
+    ih2_mon(w, 21, bob(), 2, 24);
+    ih2_join(w, alice(), 9);
+    ih2_join(w, bob(), 13);
+}
+
+/// A session swap in which each side gives its lead (alice 12, bob 22): each arrival takes
+/// the slot its giver's lead vacated, so after the execute alice's lead is 22 and bob's is
+/// 12, and each side's `lead_level` is its own new lead's level read back from `monster`.
+///
+/// kills: no refresh in the swap (both keep 9 / 13); a refresh of one side only; a
+/// refresh before the transfer loop (reads the pre-swap leads); a lead picked by
+/// `monster_id` (alice's 11 -> 16).
+#[test]
+fn a_swap_of_both_leads_mirrors_each_sides_new_lead_level_ih2_4() {
+    let fx = fixture();
+    let w = s2_base(&fx);
+    ih2_two_leads(&w);
+    assert_eq!(
+        (ih2_lead_levels(&w, alice()), ih2_lead_levels(&w, bob())),
+        (vec![ih2_lead_of(&w, alice())], vec![ih2_lead_of(&w, bob())]),
+        "pre-state: each row holds its own lead's level"
+    );
+
+    ih2_execute(&fx, &w, &off(&[12], &[], 0), &off(&[22], &[], 0));
+
+    assert_eq!(
+        (w.monster(12).owner_identity, w.monster(22).owner_identity),
+        (bob(), alice()),
+        "fixture: the two leads changed hands"
+    );
+    let (alice_lead, bob_lead) = (ih2_lead_of(&w, alice()), ih2_lead_of(&w, bob()));
+    assert_eq!(
+        (alice_lead, bob_lead),
+        (w.monster(22).level, w.monster(12).level),
+        "fixture: each side's new lead is the monster it received"
+    );
+    assert_eq!(
+        (ih2_lead_levels(&w, alice()), ih2_lead_levels(&w, bob())),
+        (vec![alice_lead], vec![bob_lead]),
+        "each side's lead_level is its own new lead's level"
+    );
+}
+
+/// A one-sided swap: alice gives her lead 12 (slot 0, level 9) and keeps 11 (slot 1,
+/// level 16); bob gives no monster, only one item 6 (a session refuses a confirm while the
+/// other offer is empty). Bob's lead was 22 (slot 1, level 13) and 12 arrives in
+/// his free slot 0, so 12 becomes his lead; his other monster 5 (slot 3, level 24) has the
+/// lowest id. The giver's `lead_level` is its remaining lead's level and the receiver's
+/// is its new lead's.
+///
+/// kills: a refresh of only the side that received a monster (alice keeps 9); a refresh
+/// of only the giver (bob keeps 13); a lead picked by `monster_id` (bob's 5 -> 24).
+#[test]
+fn a_one_sided_swap_mirrors_the_givers_and_the_receivers_lead_levels_ih2_4() {
+    let fx = fixture();
+    let w = s2_base(&fx);
+    ih2_mon(&w, 12, alice(), 0, 9);
+    ih2_mon(&w, 11, alice(), 1, 16);
+    ih2_mon(&w, 22, bob(), 1, 13);
+    ih2_mon(&w, 5, bob(), 3, 24);
+    ih2_join(&w, alice(), 9);
+    ih2_join(&w, bob(), 13);
+    w.set_stack(bob(), 6, 10);
+    assert_eq!(
+        (ih2_lead_levels(&w, alice()), ih2_lead_levels(&w, bob())),
+        (vec![ih2_lead_of(&w, alice())], vec![ih2_lead_of(&w, bob())]),
+        "pre-state: each row holds its own lead's level"
+    );
+
+    ih2_execute(&fx, &w, &off(&[12], &[], 0), &off(&[], &[item(6, 1)], 0));
+    assert_eq!(
+        (w.count(alice(), 6), w.count(bob(), 6)),
+        (1, 9),
+        "fixture: bob's one item 6 moved to alice"
+    );
+
+    assert_eq!(
+        (w.monster(12).owner_identity, w.monster(12).party_slot),
+        (bob(), 0),
+        "fixture: 12 arrived in bob's free slot 0"
+    );
+    let (alice_lead, bob_lead) = (ih2_lead_of(&w, alice()), ih2_lead_of(&w, bob()));
+    assert_eq!(
+        (alice_lead, bob_lead),
+        (w.monster(11).level, w.monster(12).level),
+        "fixture: alice's lead is now 11, bob's is 12"
+    );
+    assert_eq!(
+        (ih2_lead_levels(&w, alice()), ih2_lead_levels(&w, bob())),
+        (vec![alice_lead], vec![bob_lead]),
+        "the giver and the receiver each mirror their own new lead"
+    );
+}
+
+/// A swap that moves no monster (alice's item 5 for bob's item 6) leaves both
+/// `lead_level` values unchanged and writes `player` 0 times. Both rows reach their
+/// correct non-zero values through an earlier lead swap in the same test (a session that
+/// trades the two leads), so the "unchanged" check starts from values the refresh wrote.
+///
+/// kills: an unconditional `player` write in the swap (2 writes); no refresh at all (the
+/// earlier lead swap leaves 9 / 13).
+#[test]
+fn a_swap_that_moves_no_monster_writes_no_player_row_ih2_4() {
+    let fx = fixture();
+    let w = s2_base(&fx);
+    ih2_two_leads(&w);
+    w.set_stack(alice(), 5, 10);
+    w.set_stack(bob(), 6, 10);
+
+    ih2_execute(&fx, &w, &off(&[12], &[], 0), &off(&[22], &[], 0));
+    let (alice_lead, bob_lead) = (ih2_lead_of(&w, alice()), ih2_lead_of(&w, bob()));
+    assert_eq!(
+        (ih2_lead_levels(&w, alice()), ih2_lead_levels(&w, bob())),
+        (vec![alice_lead], vec![bob_lead]),
+        "pre-state: the lead swap mirrored each side's new lead"
+    );
+    let monsters_before = sorted_bytes(&w.monsters.rows());
+
+    fx.reset_writes();
+    ih2_execute(
+        &fx,
+        &w,
+        &off(&[], &[item(5, 1)], 0),
+        &off(&[], &[item(6, 1)], 0),
+    );
+    assert_eq!(
+        (w.count(alice(), 6), w.count(bob(), 5)),
+        (1, 1),
+        "fixture: the items moved"
+    );
+    assert!(
+        sorted_bytes(&w.monsters.rows()) == monsters_before,
+        "fixture: no monster moved"
+    );
+    assert_eq!(
+        (ih2_lead_levels(&w, alice()), ih2_lead_levels(&w, bob())),
+        (vec![alice_lead], vec![bob_lead]),
+        "both lead_level values are unchanged"
+    );
+    assert_eq!(
+        fx.writes_to("player"),
+        0,
+        "a swap that moves no monster writes no player row"
+    );
 }
