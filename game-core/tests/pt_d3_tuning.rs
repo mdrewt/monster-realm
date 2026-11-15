@@ -4,13 +4,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use game_core::interact::npc_offers_shop;
 use game_core::tactics::{effective_pack, roll_pack_size, MAX_PACK};
 use game_core::{
     base_stat_total, battle_currency_reward, build_monster, derive_stats, eligible_evolution_paths,
     load_encounters, load_evolution_paths, load_heal_locations, load_items, load_npc_defs,
     load_shops, load_species, load_starter_kit, load_tactics_items, load_tactics_zones,
     recruit_chance, roll_encounter, EVs, EncounterTable, HealLocationDef, IVs, Level, Nature,
-    NatureKind, NpcDef, NpcInteraction, ShopDef, Species, RECRUIT_BASE_RATE,
+    NatureKind, NpcDef, ShopDef, Species, RECRUIT_BASE_RATE,
 };
 
 // ===========================================================================
@@ -457,26 +458,23 @@ const ZONE0_ID: u32 = 0;
 /// The most zone-0 recruit-heavy battles one Lure Berry may cost.
 const LURE_BERRY_BATTLE_BUDGET: u64 = 15;
 
-/// The shops a player can open: those whose id some NPC names with
-/// `NpcInteraction::Shop(id)`. A shop no NPC opens has no price a player pays.
-fn reachable_shops<'a>(shops: &'a [ShopDef], npcs: &[NpcDef]) -> Vec<&'a ShopDef> {
-    let opened: BTreeSet<u32> = npcs
-        .iter()
-        .filter_map(|npc| match npc.interaction {
-            NpcInteraction::Shop(shop_id) => Some(shop_id),
-            NpcInteraction::Dialogue | NpcInteraction::Heal(_) => None,
-        })
-        .collect();
+/// The shops some NPC offers, by the server's own predicate (`npc_offers_shop`). A shop no NPC
+/// offers has no price a player pays. Whether the NPC's tile can be walked to is world content
+/// this file does not check.
+fn npc_opened_shops<'a>(shops: &'a [ShopDef], npcs: &[NpcDef]) -> Vec<&'a ShopDef> {
     shops
         .iter()
-        .filter(|shop| opened.contains(&shop.id))
+        .filter(|shop| {
+            npcs.iter()
+                .any(|npc| npc_offers_shop(npc.interaction, Some(shop.id)))
+        })
         .collect()
 }
 
-/// The Lure Berry's price: the lowest `buy_price` any reachable shop asks for it. No reachable
-/// shop stocking it is a panic, and the price is above 0.
-fn lure_berry_price(reachable: &[&ShopDef]) -> u64 {
-    let price = reachable
+/// The Lure Berry's price: the lowest `buy_price` any NPC-opened shop asks for it. No
+/// NPC-opened shop stocking it is a panic, and the price is above 0.
+fn lure_berry_price(opened: &[&ShopDef]) -> u64 {
+    let price = opened
         .iter()
         .flat_map(|shop| shop.stock.iter())
         .filter(|entry| entry.item_id == LURE_BERRY_ITEM_ID)
@@ -484,22 +482,22 @@ fn lure_berry_price(reachable: &[&ShopDef]) -> u64 {
         .min()
         .unwrap_or_else(|| {
             panic!(
-                "no reachable shop stocks the Lure Berry (item {LURE_BERRY_ITEM_ID}): stock it in a \
-                 shop in game-core/content/shops/000-core.ron that an NPC opens with \
+                "no shop an NPC opens stocks the Lure Berry (item {LURE_BERRY_ITEM_ID}): stock it \
+                 in a shop in game-core/content/shops/000-core.ron that an NPC opens with \
                  `interaction: Shop(id)` in game-core/content/npcs/000-core.ron (reasoning: \
                  docs/economy-tuning.md)"
             )
         });
     assert!(
         price > 0,
-        "the Lure Berry (item {LURE_BERRY_ITEM_ID}) has buy_price 0 in a reachable shop: a 0 \
+        "the Lure Berry (item {LURE_BERRY_ITEM_ID}) has buy_price 0 in a shop an NPC opens: a 0 \
          price means not for sale — fix its `buy_price` in game-core/content/shops/000-core.ron \
          (reasoning: docs/economy-tuning.md)"
     );
     price
 }
 
-// The starter kit's currency alone buys one Lure Berry at the cheapest reachable shop.
+// The starter kit's currency alone buys one Lure Berry at the cheapest shop an NPC opens.
 #[test]
 fn starter_kit_currency_buys_one_lure_berry() {
     let items = load_items().expect("items registry must parse");
@@ -524,8 +522,8 @@ fn starter_kit_currency_buys_one_lure_berry() {
         lure.name
     );
 
-    let reachable = reachable_shops(&shops, &npcs);
-    let price = lure_berry_price(&reachable);
+    let opened = npc_opened_shops(&shops, &npcs);
+    let price = lure_berry_price(&opened);
     assert!(
         kit.currency >= price,
         "the starter kit's currency {} cannot buy one Lure Berry at {price}: raise `currency` in \
@@ -583,7 +581,7 @@ fn shipped_heal_locations_charge_nothing() {
 // paying the reward of the zone's spawn-weighted mean BST. The model assumes a party of
 // MAX_PACK conscious monsters; a smaller party meets smaller packs.
 #[test]
-fn recruit_heavy_zone0_battles_buy_a_lure_berry_within_15() {
+fn recruit_heavy_zone0_battles_buy_a_lure_berry_within_the_battle_budget() {
     let tactics_zones = load_tactics_zones().expect("tactics_zones registry must parse");
     let encounters = load_encounters().expect("encounters registry must parse");
     let species_rows = load_species().expect("species registry must parse");
@@ -658,8 +656,8 @@ fn recruit_heavy_zone0_battles_buy_a_lure_berry_within_15() {
         .expect("a weighted mean of u16 base-stat totals fits in u16");
     let ko_reward = battle_currency_reward(mean_bst);
 
-    let reachable = reachable_shops(&shops, &npcs);
-    let lure_price = lure_berry_price(&reachable);
+    let opened = npc_opened_shops(&shops, &npcs);
+    let lure_price = lure_berry_price(&opened);
 
     assert!(
         LURE_BERRY_BATTLE_BUDGET * ko_reward * kos_per_1000 >= lure_price * 1000,
@@ -681,7 +679,7 @@ fn median_buy_price(shop: &ShopDef) -> Option<u64> {
     prices.get(index).copied()
 }
 
-// Every battle-usable item is sold by a reachable shop at a price above 0 and at or below
+// Every battle-usable item is sold by an NPC-opened shop at a price above 0 and at or below
 // that shop's median buy price, so its flat AP cost is balanced by a price a player pays.
 #[test]
 fn every_battle_usable_item_sells_at_or_below_its_shop_median() {
@@ -696,7 +694,7 @@ fn every_battle_usable_item_sells_at_or_below_its_shop_median() {
          nothing to check (reasoning: docs/economy-tuning.md)"
     );
 
-    let reachable = reachable_shops(&shops, &npcs);
+    let opened = npc_opened_shops(&shops, &npcs);
     for row in &tactics_items {
         let item = items
             .iter()
@@ -710,7 +708,7 @@ fn every_battle_usable_item_sells_at_or_below_its_shop_median() {
             });
 
         // (shop id, the item's price there, that shop's median)
-        let offers: Vec<(u32, u64, u64)> = reachable
+        let offers: Vec<(u32, u64, u64)> = opened
             .iter()
             .flat_map(|shop| {
                 let median = median_buy_price(shop);
@@ -734,8 +732,8 @@ fn every_battle_usable_item_sells_at_or_below_its_shop_median() {
             .any(|&(_, price, median)| price > 0 && price <= median);
         assert!(
             sold_fairly,
-            "battle-usable item {} ({}) is sold by no reachable shop at a buy_price above 0 and \
-             at or below that shop's median; reachable offers as (shop, price, median): \
+            "battle-usable item {} ({}) is sold by no NPC-opened shop at a buy_price above 0 \
+             and at or below that shop's median; NPC-opened offers as (shop, price, median): \
              {offers:?} — fix its `buy_price` in game-core/content/shops/000-core.ron or stock it \
              in a shop an NPC opens (game-core/content/npcs/000-core.ron) (reasoning: \
              docs/economy-tuning.md)",

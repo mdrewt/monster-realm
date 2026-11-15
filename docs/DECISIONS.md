@@ -792,12 +792,9 @@ knocked out earlier in the same battle still pay `battle_currency_reward`
 (`game-core/src/currency.rs`), so a battle against a lone wild that ends in a recruit
 pays nothing. Quest rewards are the faucet for recruit-heavy play: one quest ships
 (quest_001), its `reward.currency` is content (`game-core/content/quests/`), and the
-server credits exactly what the content names, once. The relations are tests over the
-shipped content in `game-core/tests/pt_d3_tuning.rs`:
-`starter_kit_currency_buys_one_lure_berry`, `shipped_heal_locations_charge_nothing`,
-`recruit_heavy_zone0_battles_buy_a_lure_berry_within_15` and
-`every_battle_usable_item_sells_at_or_below_its_shop_median`. `docs/economy-tuning.md`
-holds the reasoning and names those tests instead of copying their values.
+server credits exactly what the content names, once. `docs/economy-tuning.md` holds the
+reasoning, says where each number lives, and names the test over the shipped content
+(`game-core/tests/pt_d3_tuning.rs`) that fails when a retune breaks a relation.
 
 **Why.** The economy is not a major part of the game (operator's balance stance): items,
 prices and rewards are tuned as for a single-player game, and every number must feel fair
@@ -811,10 +808,9 @@ small party earns less from recruit-heavy play and a one-monster party meets onl
 wilds. No mechanic consumes a monster (there is no monster sink).
 
 **Rules out.** Charging currency or an item to heal as a currency sink; paying currency
-for a successful recruit; restating prices, rewards or battle budgets in prose docs;
-moving a price, a reward or the starter kit without the tuning tests passing. A heal
-charge, a recruit payout or a monster sink changes the reasoning: it changes the tests,
-the worksheet and this entry together.
+for a successful recruit; restating prices, rewards or battle budgets in prose docs. A
+heal charge, a recruit payout or a monster sink changes the reasoning: it changes the
+tests, the worksheet and this entry together.
 
 ## Battle lifecycle and PvP
 

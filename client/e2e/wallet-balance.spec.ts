@@ -88,7 +88,8 @@ import {
 //
 // NOBODY BUYS, so both balances are stable for the entire run: no step of this file presses a
 //   Buy button (game-core/content/shops/000-core.ron — shop 1 "Pebble Town Shop", stock priced
-//   200 / 300 / 150). The A/B differentiator is two different amounts: A's 350, B's 200.
+//   200 / 300 / 150 / 500 / 500). The A/B differentiator is two different amounts: A's 350,
+//   B's 200.
 //
 // NPCs (game-core/content/npcs/000-core.ron) + game-core's `npc::TALK_RANGE` = 2 (Manhattan;
 //   the server's talk check reads it through `in_talk_range`):
