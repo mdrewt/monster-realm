@@ -5059,21 +5059,4 @@ describe('the player tag and the name-with-tag join in both catalogs', () => {
     expect(enFn({ name: 'Drew', tag: '#0042' })).toBe('Drew #0042');
     expect(enFn({ name: 'Drew', tag: '#0042' })).not.toBe(enFn({ name: 'Amy', tag: '#123456' }));
   });
-
-  it('tf resolves identity.tag and identity.taggedName in en and in fr to the same text [ih-3.2]', () => {
-    // WRONG IMPL KILLED: a French catalog missing either key (the resolver throws or falls back to
-    // the key id under `fr`); a resolver path that formats the tag itself.
-    try {
-      for (const locale of ['en', 'fr']) {
-        setLocale(locale);
-        expect(tf('identity.tag', { digits: '0042' }), `${locale}: the tag`).toBe('#0042');
-        expect(
-          tf('identity.taggedName', { name: 'Bob', tag: '#0042' }),
-          `${locale}: the tagged name`,
-        ).toBe('Bob #0042');
-      }
-    } finally {
-      setLocale('en');
-    }
-  });
 });

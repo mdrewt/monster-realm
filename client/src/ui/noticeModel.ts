@@ -1,10 +1,10 @@
 // ui/noticeModel.ts — the world's notices and the request action sheet (ctl-13, CTL13.2, CTL13.3).
-// No DOM, SDK or clock; the only catalog text is a sender's tag (playerTag.ts). Notices are three
-// kinds: the pending error, the shown evolution reveal (ts-6b-5: its banner's OK, for the player
-// with no pointer) and a pending incoming request (a trade session opened with the viewer, a
-// challenge aimed at them). The hint bar shows Y and B for them, Y opens a request's Accept /
-// Decline / View sheet and B at the world dismisses the top notice. Nothing here opens a frame or
-// moves focus.
+// No DOM, SDK or clock; the only catalog text is a sender's tag and the name-with-tag join
+// (playerTag.ts). Notices are three kinds: the pending error, the shown evolution reveal (ts-6b-5:
+// its banner's OK, for the player with no pointer) and a pending incoming request (a trade session
+// opened with the viewer, a challenge aimed at them). The hint bar shows Y and B for them, Y opens
+// a request's Accept / Decline / View sheet and B at the world dismisses the top notice. Nothing
+// here opens a frame or moves focus.
 //
 // A trade request is an incoming session the viewer has not acted in and whose editor this client
 // has not opened. Accept opens that editor, Decline cancels the session. Several waiting trade
@@ -26,8 +26,8 @@ export interface RequestNotice {
   readonly request: RequestKind;
   /** The sessionId or the challengeId. */
   readonly id: bigint;
-  /** The sender's name with their tag; the name alone when they have no tag, and `#<hex8>` when
-   *  the name is empty or the player is unknown. */
+  /** The sender's name with their tag, or the name alone when they have no tag. `#<hex8>` stands
+   *  in for an empty name and for a player the store does not hold. */
   readonly fromName: string;
   readonly createdAtMs: bigint;
   /** On the banner's notice when it stands for several waiting trade requests: how many (2 or

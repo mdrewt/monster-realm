@@ -1519,6 +1519,38 @@ describe('socialModel — the tag and the lead level on the Players rows', () =>
     ).toEqual(expected.map((r) => r.key));
   });
 
+  it('same-named rows whose tags pass four digits still come in tag-number order: #9999 before #10000 before #123456 [ih-3.3]', () => {
+    // WRONG IMPL KILLED: a tie broken by the tag TEXT (`#10000` < `#123456` < `#9999` as text) or by
+    // the raw discriminator as text (`10000` < `123456` < `42` < `9999`); both agree with number
+    // order only while every tag has four digits. The identity hex order runs against number order,
+    // so an identity tie-break dies too.
+    const SIX = '11'.repeat(32);
+    const FIVE = '22'.repeat(32);
+    const FOUR = '33'.repeat(32);
+    const SMALL = '44'.repeat(32);
+    const players = [
+      person(ME, 'Me', ME_EID),
+      tagged(SIX, 'Sam', 2n, 123456, 4),
+      tagged(FIVE, 'Sam', 3n, 10000, 5),
+      tagged(FOUR, 'Sam', 4n, 9999, 6),
+      tagged(SMALL, 'Sam', 5n, 42, 7),
+    ];
+    const expected = [
+      { key: SMALL, name: 'Sam', tag: '#0042', level: 7 },
+      { key: FOUR, name: 'Sam', tag: '#9999', level: 6 },
+      { key: FIVE, name: 'Sam', tag: '#10000', level: 5 },
+      { key: SIX, name: 'Sam', tag: '#123456', level: 4 },
+    ];
+    for (const order of [
+      players,
+      [...players].reverse(),
+      [players[2], players[4], players[0], players[1], players[3]],
+    ]) {
+      const rows = socialPlayers(order as readonly StorePlayer[], [], ME);
+      expect(shown(rows), 'tag number order past four digits').toEqual(expected);
+    }
+  });
+
   it('a row whose lead level is 0 carries no level and still its tag, and a row whose discriminator is 0 carries no tag and still its level [ih-3.3]', () => {
     // WRONG IMPL KILLED: a `leadLevel >= 0` guard (level 0 shown as `Lv.0`); a level read from the
     // discriminator (Bob's 42 would read as his level, Carol's 0 as no level); a tag read from the
@@ -1612,6 +1644,12 @@ describe('socialModel — the tag and the lead level on the Players rows', () =>
       keyOf([{ key: 'a', name: 'Bob', tag: '', level: null, nearby: false }]),
       'an empty tag is not no tag',
     ).not.toBe(keyOf([{ key: 'a', name: 'Bob', tag: null, level: null, nearby: false }]));
+    // The tag and the level are separate parts: `#1234` with level 56 and `#12345` with level 6
+    // read the same once run together (`#123456`).
+    expect(
+      keyOf([{ key: 'a', name: 'Bob', tag: '#1234', level: 56, nearby: false }]),
+      'tag + level run together',
+    ).not.toBe(keyOf([{ key: 'a', name: 'Bob', tag: '#12345', level: 6, nearby: false }]));
   });
 });
 

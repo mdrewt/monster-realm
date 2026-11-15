@@ -1,6 +1,6 @@
 // ui/socialModel.ts — the Social frame's view model (design §5 row 4; CTL8D.1, CTL8D.2).
-// No DOM, SDK or clock; the only catalog text is a player's tag (playerTag.ts). Total: never throws
-// on any input.
+// No DOM, SDK or clock; the only catalog text is a player's tag and the name-with-tag join
+// (playerTag.ts). Total: never throws on any input.
 //
 // Challenges lists the request and the sent challenge the pvp root shows, each picked through that
 // root's own selector, so A on a row always acts on what the player sees. Trades lists one row per
@@ -36,8 +36,8 @@ export type SocialRowKind = 'session' | 'incoming' | 'outgoing';
 
 /** What a session row paints beside its key. */
 export interface SocialSessionFacts {
-  /** The other player's name with their tag; the name alone when they have no tag, and `#<hex8>`
-   *  when the name is empty or the player is unknown. */
+  /** The other player's name with their tag, or the name alone when they have no tag. `#<hex8>`
+   *  stands in for an empty name and for a player the store does not hold. */
   readonly partnerName: string;
   readonly mineConfirmed: boolean;
   readonly theirsConfirmed: boolean;
@@ -90,7 +90,7 @@ export interface SocialVm {
   readonly trades: readonly SocialRow[];
   /** The request the pvp root shows, then the viewer's own sent challenge. */
   readonly challenges: readonly SocialRow[];
-  /** The other online players, by name. */
+  /** The other online players, by name, then tag number. */
   readonly players: readonly SocialPlayerRow[];
   /** The leaderboard's rows, in its order. */
   readonly rankings: readonly LeaderboardRowViewModel[];

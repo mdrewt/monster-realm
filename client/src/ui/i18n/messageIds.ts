@@ -778,8 +778,8 @@ export interface MessageParams {
   readonly 'quest.complete.reward': { readonly name: string; readonly amount: bigint };
   readonly 'quest.complete.done': { readonly name: string };
   readonly 'social.players.walkUp': { readonly name: string };
-  // `digits` is the minted number in decimal, zero-padded to four digits; `tag` is the resolved
-  // `identity.tag`.
+  // `digits` is the minted number in decimal, zero-padded to at least four digits; `tag` is the
+  // resolved `identity.tag`.
   readonly 'identity.tag': { readonly digits: string };
   readonly 'identity.taggedName': { readonly name: string; readonly tag: string };
   // The build's provider name, or its issuer string when the build names none: build text, never

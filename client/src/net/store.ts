@@ -53,9 +53,9 @@ export interface StorePlayer {
   readonly entityId: bigint;
   readonly name: string;
   readonly online: boolean;
-  /** The minted number behind the player's tag; 0 when the row carries none. */
+  /** The minted number behind the player's tag (the row's `u32`); 0 when the row carries none. */
   readonly discriminator: number;
-  /** The level of the player's lead monster; 0 with no party. */
+  /** The level of the player's lead monster (the row's `u8`); 0 with no party. */
   readonly leadLevel: number;
 }
 

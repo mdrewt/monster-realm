@@ -7,12 +7,41 @@
 // identity)` alone when the store holds no such player or the player has no tag, else
 // `tf('identity.taggedName', { name: playerName(...), tag })`. Both resolve through the real
 // catalogs; the French run switches the locale and restores it.
+//
+// The resolver is spied with `{ spy: true }`: every call is recorded AND reaches the real
+// implementation, so every case reads real catalog text. The catalog cases read the recorded calls
+// and swap in a sentinel `tf` for one block, restoring the real one in a `finally`.
 import * as fc from 'fast-check';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StorePlayer } from '../net/store';
 import { setLocale, tf } from './i18n/resolver';
 import { formatTag, taggedName } from './playerTag';
 import { playerName } from './tradeSessionModel';
+
+vi.mock('./i18n/resolver', { spy: true });
+
+const TAG_SENTINEL = 'TAG-SENTINEL';
+const NAME_SENTINEL = 'TAGGED-NAME-SENTINEL';
+
+/** Swaps in a `tf` that answers the two identity keys with fixed sentinels and every other key
+ *  with the real catalog text. */
+function sentinelTf(actualTf: typeof tf): void {
+  vi.mocked(tf).mockImplementation(((key: string, params: unknown) =>
+    key === 'identity.tag'
+      ? TAG_SENTINEL
+      : key === 'identity.taggedName'
+        ? NAME_SENTINEL
+        : (actualTf as (k: string, p: unknown) => string)(key, params)) as typeof tf);
+}
+
+/** The recorded `tf` calls for one key. */
+function tfCallsFor(key: string): unknown[][] {
+  return vi.mocked(tf).mock.calls.filter((c) => c[0] === key) as unknown[][];
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 const ME = 'aa'.repeat(32);
 const BOB = 'bb'.repeat(32);
@@ -85,14 +114,36 @@ describe('formatTag — the tag text for a discriminator', () => {
     );
   });
 
-  it('formatTag resolves through the catalog: its output is tf(`identity.tag`) of the padded digits, in en and in fr [ih-3.2]', () => {
-    // WRONG IMPL KILLED: a tag concatenated in code with no catalog key (the key is then dead and
-    // a locale cannot restyle it), checked against the resolver itself in both locales.
+  it('formatTag resolves through the catalog: it calls tf(`identity.tag`) with exactly the padded digits and returns what tf returns, in en and in fr [ih-3.2]', async () => {
+    // WRONG IMPL KILLED: a tag concatenated in code with no catalog key (no recorded call, and the
+    // sentinel never shows); digits passed unpadded or with the `#` (`{ digits: '42' }`,
+    // `{ digits: '#0042' }`); an extra param; text concatenated around the catalog's output.
     for (const locale of ['en', 'fr']) {
       setLocale(locale);
-      expect(formatTag(42), `${locale}: 42`).toBe(tf('identity.tag', { digits: '0042' }));
-      expect(formatTag(123456), `${locale}: 123456`).toBe(tf('identity.tag', { digits: '123456' }));
-      expect(formatTag(42), `${locale}: the literal`).toBe('#0042');
+      vi.mocked(tf).mockClear();
+      const out42 = formatTag(42);
+      expect(tfCallsFor('identity.tag'), `${locale}: the one identity.tag call for 42`).toEqual([
+        ['identity.tag', { digits: '0042' }],
+      ]);
+      expect(out42, `${locale}: 42`).toBe(tf('identity.tag', { digits: '0042' }));
+      expect(out42, `${locale}: the literal`).toBe('#0042');
+
+      vi.mocked(tf).mockClear();
+      const out123456 = formatTag(123456);
+      expect(tfCallsFor('identity.tag'), `${locale}: the one identity.tag call for 123456`).toEqual(
+        [['identity.tag', { digits: '123456' }]],
+      );
+      expect(out123456, `${locale}: 123456`).toBe(tf('identity.tag', { digits: '123456' }));
+    }
+
+    const actual = await vi.importActual<typeof import('./i18n/resolver')>('./i18n/resolver');
+    sentinelTf(actual.tf);
+    try {
+      expect(formatTag(42), 'the resolver`s output, as is').toBe(TAG_SENTINEL);
+      expect(formatTag(123456), 'the resolver`s output, as is').toBe(TAG_SENTINEL);
+      expect(formatTag(0), 'no tag for 0, whatever the catalog says').toBeNull();
+    } finally {
+      vi.mocked(tf).mockImplementation(actual.tf);
     }
   });
 });
@@ -142,17 +193,46 @@ describe('taggedName — the name with its tag', () => {
     }
   });
 
-  it('taggedName joins through the catalog: its output is tf(`identity.taggedName`) of the name and the tag, in en and in fr [ih-3.2]', () => {
+  it('taggedName joins through the catalog: it calls tf(`identity.taggedName`) with exactly the name and the tag and returns what tf returns, and makes no such call for discriminator 0, in en and in fr [ih-3.2]', async () => {
     // WRONG IMPL KILLED: a join concatenated in code (`${name} ${tag}`) that never resolves the
-    // key, checked against the resolver in both locales as well as against the literal.
+    // key (no recorded call, and the sentinel never shows); a tag built in code instead of by
+    // formatTag (the sentinel tag never reaches the join); the name or the tag swapped or missing;
+    // text concatenated around the catalog's output; a join called for an untagged player.
     const players = [player(BOB, 'Bob', 42), player(CAROL, 'Carol', 0)];
     for (const locale of ['en', 'fr']) {
       setLocale(locale);
-      expect(taggedName(players, BOB), `${locale}: Bob`).toBe(
+      vi.mocked(tf).mockClear();
+      const bob = taggedName(players, BOB);
+      expect(
+        tfCallsFor('identity.taggedName'),
+        `${locale}: the one identity.taggedName call for Bob`,
+      ).toEqual([['identity.taggedName', { name: 'Bob', tag: '#0042' }]]);
+      expect(bob, `${locale}: Bob`).toBe(
         tf('identity.taggedName', { name: 'Bob', tag: tf('identity.tag', { digits: '0042' }) }),
       );
-      expect(taggedName(players, BOB), `${locale}: the literal`).toBe('Bob #0042');
-      expect(taggedName(players, CAROL), `${locale}: no tag`).toBe('Carol');
+      expect(bob, `${locale}: the literal`).toBe('Bob #0042');
+
+      vi.mocked(tf).mockClear();
+      const carol = taggedName(players, CAROL);
+      expect(tfCallsFor('identity.taggedName'), `${locale}: no join for discriminator 0`).toEqual(
+        [],
+      );
+      expect(carol, `${locale}: no tag`).toBe('Carol');
+    }
+
+    const actual = await vi.importActual<typeof import('./i18n/resolver')>('./i18n/resolver');
+    sentinelTf(actual.tf);
+    try {
+      vi.mocked(tf).mockClear();
+      expect(taggedName(players, BOB), 'the resolver`s output, as is').toBe(NAME_SENTINEL);
+      expect(tfCallsFor('identity.taggedName'), 'the join is handed formatTag`s output').toEqual([
+        ['identity.taggedName', { name: 'Bob', tag: TAG_SENTINEL }],
+      ]);
+      vi.mocked(tf).mockClear();
+      expect(taggedName(players, CAROL), 'discriminator 0: the bare name').toBe('Carol');
+      expect(tfCallsFor('identity.taggedName'), 'discriminator 0: no join').toEqual([]);
+    } finally {
+      vi.mocked(tf).mockImplementation(actual.tf);
     }
   });
 });
