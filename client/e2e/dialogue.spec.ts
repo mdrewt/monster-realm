@@ -43,7 +43,7 @@ import {
 //     combined with any client keying that surfaces it — end-to-end silence is
 //     asserted via a sticky MutationObserver latch, not spot checks.
 //   - "re-talking completes quest_001" (qf-6, QF6.4): the silent quest-completion
-//     row delete — the status line must acknowledge the quest and its 50 gold.
+//     row delete — the status line must acknowledge the quest and its 150 gold.
 //   - "a reply after walking away ends the conversation" (qf-6, QF6.1 + QF6.2):
 //     the delete-then-Err wedge (the refused advance's delete rolled back, the
 //     overlay stuck open forever) and the raw "advance: walked too far away" line.
@@ -492,13 +492,13 @@ test.describe
     // -------------------------------------------------------------------------
     // Quest completion is acknowledged (qf-6, QF6.4). quest_001, started by the
     // advance above, is ONE Talk step at the elder, so the next talk completes it:
-    // that transaction deletes the player_quest row, credits the 50-gold reward
+    // that transaction deletes the player_quest row, credits the 150-gold reward
     // and opens the conversation. The status line must name the quest and the
     // gold. Kills: the silent row delete (the reward goes unseen), a line without
     // the amount, and the new balance reported instead of the gain.
     // The conversation this talk opens is left open for the next test.
     // -------------------------------------------------------------------------
-    test('UIF4.2 re-talking the elder completes quest_001 and the toast acknowledges its 50 gold above the open dialogue frame', async () => {
+    test('UIF4.2 re-talking the elder completes quest_001 and the toast acknowledges its 150 gold above the open dialogue frame', async () => {
       test.setTimeout(TALK_TEST_TIMEOUT_MS);
       // uif-4 (UIF4.2): a recorder armed BEFORE the talk captures, in the very microtask after the
       // toast un-hides (the same synchronous batch that opens the dialogue), the dialogue frame's
@@ -532,7 +532,7 @@ test.describe
       // uif-4 (named intentional change, UIF4.2): quest-complete is a toast kind, so the line is
       // read off #toast (was #status), and the status line stays empty.
       await expect(a.locator('#toast')).toHaveText(
-        'Quest complete: quest_001. You received 50 gold.',
+        'Quest complete: quest_001. You received 150 gold.',
         { timeout: 20_000 },
       );
       await expect(a.locator('#status')).toHaveText('');

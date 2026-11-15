@@ -26,15 +26,15 @@ import {
 //
 // WHAT THIS PROVES (EARS 11r-e-6 / 11r-e-7 / 11r-e-8 / 11r-e-9 / eo-1.10)
 // =============================================================
-//   6. A player whose SERVER-SIDE balance is 250 (the starter kit's 200 + quest_001's 50)
+//   6. A player whose SERVER-SIDE balance is 350 (the starter kit's 200 + quest_001's 150)
 //      opens the shop overlay and the client renders #shop-balance VISIBLE,
-//      data-balance-state="known", text exactly `Gold: 250` — both at FIRST PAINT (the
+//      data-balance-state="known", text exactly `Gold: 350` — both at FIRST PAINT (the
 //      render that accompanied the open) and settled.
 //   7. While that overlay stays open and further store batches are applied, the readout
-//      stays `Gold: 250` and never blanks to the `unknown` arm.
+//      stays `Gold: 350` and never blanks to the `unknown` arm.
 //   8. A SECOND identity holding only its own starter-kit 200, opening the shop overlay
-//      WHILE the first identity's 250 row exists on the server, reads its OWN `Gold: 200`
-//      and never A's `Gold: 250` — at any point in the session.
+//      WHILE the first identity's 350 row exists on the server, reads its OWN `Gold: 200`
+//      and never A's `Gold: 350` — at any point in the session.
 //   9. Both overlays are demonstrably POPULATED (shop title + >=1 priced buy row) — the
 //      anti-vacuity precondition for 6 and 8.
 //   eo-1.10. That second identity is fresh and nothing pays it: before it walks anywhere its
@@ -62,7 +62,7 @@ import {
 // THE GOLD FAUCET IS DETERMINISTIC (no battle win, no RNG):
 //   - game-core/content/quests/000-core.ron — `quest_001` "Find the Elder":
 //     `start_conditions: []`, ONE step `trigger: Talk(npc_id: "elder_oak")`,
-//     `reward: (xp: 0, items: [], currency: 50)`.
+//     `reward: (xp: 0, items: [], currency: 150)`.
 //   - game-core/content/dialogue_trees/000-core.ron — `elder_oak_talk` is a single
 //     "greeting" node whose only choice, "I seek a quest.", has
 //     `effects: [StartQuest("quest_001")]` and `next_node: None` (a successful advance
@@ -74,8 +74,8 @@ import {
 //   - npc.rs:174-183 — the `QuestAdvance::QuestComplete` arm deletes the `player_quest`
 //     row AND calls `grant_currency(ctx, owner, reward.currency)`; npc.rs:175 is the
 //     module's ONLY `player_quest` delete.
-//   ⇒ talk → choose "I seek a quest." → talk again ⇒ exactly 50 gold on top of the kit's
-//   200 = 250, zero RNG.
+//   ⇒ talk → choose "I seek a quest." → talk again ⇒ exactly 150 gold on top of the kit's
+//   200 = 350, zero RNG.
 //   The battle-win faucet (~31 gold, `loser_bst/10`) was rejected by ADR-0169 D6: it needs
 //   recruit.spec's grass shuttle, encounter loop, HP-restore loop and flee heuristics —
 //   hundreds of lines of stochastic machinery for a NON-deterministic amount.
@@ -88,7 +88,7 @@ import {
 //
 // NOBODY BUYS, so both balances are stable for the entire run: no step of this file presses a
 //   Buy button (game-core/content/shops/000-core.ron — shop 1 "Pebble Town Shop", stock priced
-//   200 / 300 / 150). The A/B differentiator is two different amounts: A's 250, B's 200.
+//   200 / 300 / 150). The A/B differentiator is two different amounts: A's 350, B's 200.
 //
 // NPCs (game-core/content/npcs/000-core.ron) + game-core's `npc::TALK_RANGE` = 2 (Manhattan;
 //   the server's talk check reads it through `in_talk_range`):
@@ -161,16 +161,16 @@ import {
 // the characters of the zone it stands in, every step of B's writes a `character` row there,
 // and the M13d shop batch listener re-renders an OPEN overlay on every batch. So an open
 // overlay is re-rendered WITH NO INPUT FROM ITS PLAYER, and a retrying
-// `toHaveText('Gold: 250')` cannot distinguish a correct implementation from one that
+// `toHaveText('Gold: 350')` cannot distinguish a correct implementation from one that
 // patched only the batch-listener call site (:1436) and blanks on open.
 //
 // Worse: `store.flushBatch` invokes batch listeners SYNCHRONOUSLY in
 // registration order, and the deferred-open listener (:1345) is registered BEFORE the shop
 // listener (:1427). In a `:1436`-only patch the open therefore goes
-//   render(no wallet) → blank  →  show()  →  render(wallet) → `Gold: 250`
+//   render(no wallet) → blank  →  show()  →  render(wallet) → `Gold: 350`
 // all inside ONE synchronous turn, before any MutationObserver callback or paint. A latch
 // that merely READS the DOM when the overlay becomes visible would see the settled
-// `Gold: 250` and pass. The recorder below therefore keeps an ORDERED LOG of mutation
+// `Gold: 350` and pass. The recorder below therefore keeps an ORDERED LOG of mutation
 // RECORDS — each `childList` record CARRIES the text that was written in its `addedNodes`,
 // so the transient blank that precedes `show()` is recoverable verbatim. That is the one
 // assertion no source scan and no polled matcher can fake.
@@ -220,9 +220,9 @@ import {
 //     because a DEV-gated hook made an e2e green while the production path was broken.
 //     Using addInitScript to OBSERVE THE DOM is fine; reading store state through a debug
 //     hook is not. (`__game()` is used only for tiles/zone/presence, as every walk does.)
-//  2. B's overlay is NEVER asserted to lack the substring `250` or `50` — catalogue prices
-//     are 200 / 300 / 150. The negative is: #shop-balance textContent === 'Gold: 200', plus
-//     no `Gold: 250` anywhere in #shop-overlay.
+//  2. B's overlay is NEVER asserted to lack the substring `350` or `150` — `150` is itself a
+//     catalogue price (200 / 300 / 150 / 500 / 500). The negative is: #shop-balance
+//     textContent === 'Gold: 200', plus no `Gold: 350` anywhere in #shop-overlay.
 //  3. The `Gold:`-absence check uses **textContent**, never innerText: #shop-balance is
 //     `hidden`, and innerText would omit it, making the exclusion vacuous.
 //  4. No fixed sleeps — every wait polls a DOM or `__game()` predicate with a bounded timeout.
@@ -520,7 +520,7 @@ interface FirstPaint {
  *
  *  TEXT ONLY, deliberately. shopView.ts:97-100
  *  derives `textContent`, `hidden` and `dataset.balanceState` from ONE boolean in three
- *  adjacent statements, so within any SINGLE render `textContent === 'Gold: 250'` ⟺
+ *  adjacent statements, so within any SINGLE render `textContent === 'Gold: 350'` ⟺
  *  `balanceState === 'known'` — the state channel carried no information the text channel
  *  lacks. It was also strictly weaker: a childList record CARRIES the written text in
  *  `addedNodes` (no chaining), whereas recovering a written ATTRIBUTE value needs the next
@@ -586,7 +586,7 @@ interface BalanceReading {
 }
 
 /** THE SAME reading for both identities (vacuity argument (i)): one helper, one run, one
- *  module — it must return known/`Gold: 250` for A and known/`Gold: 200` for B, which is
+ *  module — it must return known/`Gold: 350` for A and known/`Gold: 200` for B, which is
  *  what makes B's negative a demonstration that the machinery DISTINGUISHES the owners
  *  rather than rendering one shared value. `overlayText` is textContent (never innerText,
  *  which would silently drop a `hidden` balance node and make a `Gold:` exclusion vacuous). */
@@ -615,10 +615,10 @@ const readBalance = (p: Page): Promise<BalanceReading> =>
 // process (one shard) shares that one database, in alphabetical order. An earlier file of
 // the shard can have paid other identities: `recruit.spec.ts` wins wild battles
 // (battle.rs:1074 pays `bst/10` per KO, accumulating) and `dialogue.spec.ts`'s
-// advance-retry path can itself complete quest_001 (200 + 50 = 250), and every identity
+// advance-retry path can itself complete quest_001 (200 + 150 = 350), and every identity
 // that ever joined owns a row of at least the kit's 200. So `player_wallet` is NOT a
-// one-row table here, and a substring test like `output.includes('250')` passes on ANY
-// foreign balance containing "250" (250 / 1250 / 2503 / …) while A's own row reads 200.
+// one-row table here, and a substring test like `output.includes('350')` passes on ANY
+// foreign balance containing "350" (350 / 1350 / 3502 / …) while A's own row reads 200.
 // The parse below therefore looks up A's row BY IDENTITY and asserts THAT row's balance.
 //
 // Only `server`/`db`/`query` are interpolated into the shell string and all three are
@@ -802,7 +802,7 @@ const A_TO_WARP: readonly string[] = [
 ];
 /** B: zone 0 spawn (1,1) → the warp tile (1,5), straight down column x=1. B never presses A
  *  in zone 0 (its only keys there open, page and close the Bag) — it must never talk to
- *  elder_oak (a quest_001 completion would lift B to 250 and destroy the whole 11r-e-8 and
+ *  elder_oak (a quest_001 completion would lift B to 350 and destroy the whole 11r-e-8 and
  *  eo-1.10 premise). */
 const B_TO_WARP: readonly string[] = [
   'South', // (1,2)
@@ -835,13 +835,13 @@ const QUEST_ID = 'quest_001';
 const QUEST_CHOICE = 'I seek a quest.';
 const SHOPKEEPER_GREETING = 'Hello, customer!';
 const SHOP_NAME = 'Pebble Town Shop';
-/** A's readout: the starter kit's 200 + quest_001's reward.currency 50. */
-const EXPECTED_BALANCE_TEXT = 'Gold: 250';
+/** A's readout: the starter kit's 200 + quest_001's reward.currency 150. */
+const EXPECTED_BALANCE_TEXT = 'Gold: 350';
 /** B's readout, and A's server balance before the quest pays: the starter kit's 200 alone. */
 const KIT_BALANCE = '200';
 const KIT_BALANCE_TEXT = `Gold: ${KIT_BALANCE}`;
-/** A's server balance after quest_001 completes: 200 + 50. */
-const QUEST_PAID_BALANCE = '250';
+/** A's server balance after quest_001 completes: 200 + 150. */
+const QUEST_PAID_BALANCE = '350';
 /** The kit's Bag rows (game-core/content/items/000-core.ron: item 1 Lure Berry is Bait — a
  *  recruit bonus; item 3 Antidote is Medicine — a cured status), in the catalog's row format. */
 const KIT_BERRY_ROW_TEXT = tf('raising.inventory.item', { name: 'Lure Berry', count: 2 });
@@ -958,7 +958,7 @@ test.describe
       ).toEqual([]);
 
       // SERVER TRUTH before anything pays: both fresh identities hold exactly the starter
-      // kit's 200, so A's 250 below is 200 + quest_001's 50 and B's 200 is the kit alone.
+      // kit's 200, so A's 350 below is 200 + quest_001's 150 and B's 200 is the kit alone.
       expect(
         walletBalanceFor(identityA, 'setup'),
         `A's player_wallet row must read the starter kit's 200 before the quest (A=${identityA})`,
@@ -991,8 +991,8 @@ test.describe
     // ESCAPE VALVE (the one race two sequential loops cannot absorb): if an attempt's
     // advance SUCCEEDED but its hidden-wait or log-read timed out, the NEXT attempt's
     // re-talk COMPLETES the quest — the log would then never be observed containing
-    // quest_001 and this phase would fail although the 50 gold was granted. Server truth
-    // decides: if A's player_wallet row reads 250 (the kit's 200 + 50), the grant has
+    // quest_001 and this phase would fail although the 150 gold was granted. Server truth
+    // decides: if A's player_wallet row reads 350 (the kit's 200 + 150), the grant has
     // happened and phase (b) is skipped. The row's existence proves nothing: the kit wrote
     // it at join. (Deviation from plan R9's pure two-loop form, deliberately narrow.)
     // -------------------------------------------------------------------------
@@ -1068,7 +1068,7 @@ test.describe
           }
           if (hidden && !started) {
             // Identity-scoped: A is a fresh identity created in this file's beforeAll whose
-            // row holds the kit's 200 (asserted in setup), so 250 under A's OWN identity can
+            // row holds the kit's 200 (asserted in setup), so 350 under A's OWN identity can
             // only have come from quest_001's grant.
             questGrantedDuringRetry =
               walletBalanceFor(identityA, 'precondition (a)') === QUEST_PAID_BALANCE;
@@ -1106,7 +1106,7 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // Precondition (b): a SECOND talk completes quest_001 ⇒ exactly 50 gold (200 → 250).
+    // Precondition (b): a SECOND talk completes quest_001 ⇒ exactly 150 gold (200 → 350).
     //   npc.rs:269-277 fires the Talked trigger inside `talk` itself, and
     //   npc.rs:174-183's QuestComplete arm deletes the player_quest row AND calls
     //   grant_currency in the SAME arm. npc.rs:175 is the module's only player_quest
@@ -1114,7 +1114,7 @@ test.describe
     // The final assertion is server truth (`spacetime sql`), deliberately independent of
     // the client render path this whole spec is testing.
     // -------------------------------------------------------------------------
-    test('precondition (b): a second talk completes quest_001 ⇒ server-side balance 250', async () => {
+    test('precondition (b): a second talk completes quest_001 ⇒ server-side balance 350', async () => {
       test.setTimeout(TALK_PHASE_TIMEOUT_MS);
       const overlay = a.locator('#dialogue-overlay');
       let completed = questGrantedDuringRetry;
@@ -1140,18 +1140,18 @@ test.describe
         `quest_001 did not leave A's quest log after ${MAX_QUEST_ATTEMPTS} talk attempts. ` +
           'Contract: game-core/content/quests/000-core.ron gives quest_001 the single step ' +
           'trigger Talk(npc_id: "elder_oak"), and server-module/src/npc.rs:174-183 deletes the ' +
-          'player_quest row and calls grant_currency(reward.currency = 50) in the same arm.',
+          'player_quest row and calls grant_currency(reward.currency = 150) in the same arm.',
       ).toBe(true);
 
       // SERVER TRUTH — the precondition for 11r-e-6 stated as an assertion, not as prose.
       // ONE identity-scoped read: A's OWN row's balance cell. A substring test over the
-      // whole table would pass on any foreign balance containing "250" left behind by an
+      // whole table would pass on any foreign balance containing "350" left behind by an
       // earlier spec file in this shared --delete-data database (see the ⚠ note above
       // sqlQuery) while A's own row read 200.
       expect(
         walletBalanceFor(identityA, 'precondition (b)'),
-        `A's OWN server-side player_wallet row must read exactly 250 before the shop ` +
-          'assertions mean anything (the starter kit 200 + quest_001 reward.currency 50; ' +
+        `A's OWN server-side player_wallet row must read exactly 350 before the shop ` +
+          'assertions mean anything (the starter kit 200 + quest_001 reward.currency 150; ' +
           `A=${identityA}). 200 here = the QuestComplete arm never ran; any other number = ` +
           'the faucet or the kit is not the one this spec derives its expectation from.',
       ).toBe(QUEST_PAID_BALANCE);
@@ -1167,7 +1167,7 @@ test.describe
     // truth table).
     // The overlay is LEFT OPEN for the 11r-e-7 test.
     // -------------------------------------------------------------------------
-    test('11r-e-6/9: A opens the shop and #shop-balance reads exactly "Gold: 250" (first paint AND settled)', async () => {
+    test('11r-e-6/9: A opens the shop and #shop-balance reads exactly "Gold: 350" (first paint AND settled)', async () => {
       test.setTimeout(240_000);
       await walk(a, A_TO_WARP);
       // The warp is server-authoritative and asynchronous w.r.t. the step ack: poll the
@@ -1224,7 +1224,7 @@ test.describe
       await expect(
         balance,
         '11r-e-6: the readout is exactly `Gold: ${amount}` (shopModel.ts:78) for the ' +
-          'server-authoritative 250 (the starter kit 200 + quest_001 50)',
+          'server-authoritative 350 (the starter kit 200 + quest_001 150)',
       ).toHaveText(EXPECTED_BALANCE_TEXT, { timeout: 15_000 });
       await expect(balance).toHaveAttribute('data-balance-state', 'known');
       const reading = await readBalance(a);
@@ -1261,7 +1261,7 @@ test.describe
 
     // -------------------------------------------------------------------------
     // 11r-e-8 + 11r-e-9 + eo-1.10 (B): a fresh second identity holds the starter kit and
-    // reads its own 200, never A's 250.
+    // reads its own 200, never A's 350.
     //
     // KILLS: any RENDER path that puts another player's balance on screen — a store keyed
     // as a Map over identities that surfaces the first row it holds, an `ownWallet` call
@@ -1372,21 +1372,21 @@ test.describe
       ).toBe('known');
       expect(
         readingB.text,
-        "11r-e-8: B's readout is its own 200, never A's 250 and never a fabricated value",
+        "11r-e-8: B's readout is its own 200, never A's 350 and never a fabricated value",
       ).toBe(KIT_BALANCE_TEXT);
       expect(readingB.hidden, '11r-e-8: the known arm un-hides the node').toBe(false);
       expect(
         readingB.overlayText.includes(EXPECTED_BALANCE_TEXT),
         `11r-e-8: A's \`${EXPECTED_BALANCE_TEXT}\` may appear NOWHERE in B's #shop-overlay ` +
-          'subtree (textContent, not innerText). The bare substrings `250` and `50` are NOT ' +
-          'excluded: catalogue prices are 200 / 300 / 150. Got: ' +
+          'subtree (textContent, not innerText). The bare substrings `350` and `150` are NOT ' +
+          'excluded: `150` is itself a catalogue price (200 / 300 / 150 / 500 / 500). Got: ' +
           `${JSON.stringify(readingB.overlayText).slice(0, 300)}`,
       ).toBe(false);
 
       // Sticky record: not a spot check but a whole-session claim (store.upsertWallet is
       // unconditional, so a foreign row arriving LATE would be stored silently). Every text
       // B's readout ever carried — transient ones between two synchronous renders included —
-      // is its own `Gold: 200`: never A's 250, never a blank.
+      // is its own `Gold: 200`: never A's 350, never a blank.
       const seenB = await readTextsSeen(b);
       expect(Array.isArray(seenB), "B's text record must be installed (anti-vacuity)").toBe(true);
       expect(
@@ -1395,14 +1395,14 @@ test.describe
           "including transiently between assertions — A's balance is not B's.",
       ).toEqual([KIT_BALANCE_TEXT]);
 
-      // Server truth AT THE MOMENT B LOOKS: A's row reads 250, B's reads 200. This turns the
+      // Server truth AT THE MOMENT B LOOKS: A's row reads 350, B's reads 200. This turns the
       // vacuity argument ("B's 200 is not just A's row mislabelled") into an assertion.
       // Identity rendering: '0x' + 64 lowercase hex; both sides normalized.
       // If the CLI ever abbreviates identities this check is the ADR-0169 D8 SHOULD and may
       // be dropped — the 11r-e-8 gate itself does not depend on it.
       expect(
         walletBalanceFor(identityA, '11r-e-8'),
-        `A's player_wallet row must still read 250 server-side at the moment B looks ` +
+        `A's player_wallet row must still read 350 server-side at the moment B looks ` +
           `(A=${identityA}) — otherwise B's 200 is not a contrast with anything.`,
       ).toBe(QUEST_PAID_BALANCE);
       expect(
@@ -1424,7 +1424,7 @@ test.describe
     // Batches are guaranteed: B's whole walk through zone 1 happened since the baseline, and
     // each of its steps is a `character` row in the zone whose characters A is subscribed to.
     // -------------------------------------------------------------------------
-    test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 250"', async () => {
+    test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 350"', async () => {
       test.setTimeout(120_000);
       await expect(
         a.locator('#shop-overlay'),
