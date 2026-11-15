@@ -143,10 +143,24 @@ describe('buildPvpChallengeViewModel (ts-6b-13)', () => {
   ];
   // Alice is online, not self, and in no Pending challenge: a roster field would list her.
   const players: readonly StorePlayer[] = [
-    { identity: ME, entityId: 1n, name: 'Me', online: true },
-    { identity: '0xbbb', entityId: 2n, name: 'Bob', online: true },
-    { identity: '0xccc', entityId: 3n, name: 'Carol', online: true },
-    { identity: '0xaaa1', entityId: 4n, name: 'Alice', online: true },
+    { identity: ME, entityId: 1n, name: 'Me', online: true, discriminator: 0, leadLevel: 0 },
+    { identity: '0xbbb', entityId: 2n, name: 'Bob', online: true, discriminator: 0, leadLevel: 0 },
+    {
+      identity: '0xccc',
+      entityId: 3n,
+      name: 'Carol',
+      online: true,
+      discriminator: 0,
+      leadLevel: 0,
+    },
+    {
+      identity: '0xaaa1',
+      entityId: 4n,
+      name: 'Alice',
+      online: true,
+      discriminator: 0,
+      leadLevel: 0,
+    },
   ];
 
   it('returns exactly the keys incoming and outgoing, with an online non-busy player in the store', () => {

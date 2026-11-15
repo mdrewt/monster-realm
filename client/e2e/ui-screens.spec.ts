@@ -116,8 +116,8 @@ const UIF10_MOUNT = `(async () => {
       openerConfirmed: false, partnerConfirmed: true, revision: 3n, createdAtMs: 0n };
     return tsm.buildTradeSessionVm({
       sessions: [session], identity: me, sessionId: 7n,
-      players: [{ identity: me, entityId: 1n, name: 'Me', online: true },
-        { identity: them, entityId: 2n, name: 'Bob', online: true }],
+      players: [{ identity: me, entityId: 1n, name: 'Me', online: true, discriminator: 0, leadLevel: 0 },
+        { identity: them, entityId: 2n, name: 'Bob', online: true, discriminator: 0, leadLevel: 0 }],
       ownMonsters, speciesMap: new Map([[1, { name: 'Flameling' }]]), itemDefs, inventory,
       balance: 250n, battleMonsterIds: new Set(),
       partySize: 6, maxMonstersPerSide: 6 });

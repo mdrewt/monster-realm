@@ -62,9 +62,9 @@ const UIF9_MOUNT = `(async () => {
   const pvp = new pv.PvpView({ onAccept: noop, onDecline: noop, onCancel: noop });
   const board = new lv.LeaderboardView();
   const players = [
-    { identity: me, entityId: 1n, name: 'Me', online: true },
-    { identity: p1, entityId: 2n, name: 'Alice', online: true },
-    { identity: p2, entityId: 3n, name: 'Bob', online: true },
+    { identity: me, entityId: 1n, name: 'Me', online: true, discriminator: 0, leadLevel: 0 },
+    { identity: p1, entityId: 2n, name: 'Alice', online: true, discriminator: 0, leadLevel: 0 },
+    { identity: p2, entityId: 3n, name: 'Bob', online: true, discriminator: 0, leadLevel: 0 },
   ];
   const challenges = [
     { challengeId: 1n, challenger: p1, target: me, challengerPartyIds: [], status: 'Pending', createdAtMs: 1n },

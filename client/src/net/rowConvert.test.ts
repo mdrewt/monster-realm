@@ -79,12 +79,66 @@ describe('rowConvert: player row -> store', () => {
       entityId: 7n,
       name: 'Drew',
       online: true,
+      discriminator: 0,
+      leadLevel: 0,
     });
     expect(store.identity).toBe('abc123');
     expect(store.entityId).toBe(7n);
     expect(typeof store.entityId).toBe('bigint'); // never downcast to number
     expect(store.name).toBe('Drew');
     expect(store.online).toBe(true);
+  });
+
+  it('carries the discriminator and the lead level from the row, each from its own column, with the largest u32 and u8 values unchanged and a 0/0 row as 0/0 [ih-3.1]', () => {
+    // WRONG IMPL KILLED: a converter that drops the two fields (undefined), hard-codes 0, swaps
+    // them, reads the lead level from the discriminator, or clamps / truncates a large value (a
+    // `| 0` turns 4294967295 into -1; a `& 0xffff` or `% 10000` cuts it).
+    const convert = (discriminator: number, leadLevel: number) =>
+      playerRowToStore({
+        identity: { toHexString: () => 'abc123' },
+        entityId: 7n,
+        name: 'Drew',
+        online: true,
+        discriminator,
+        leadLevel,
+      });
+    const cases: ReadonlyArray<readonly [number, number]> = [
+      [42, 7],
+      [9, 31],
+      [0, 0],
+      [4_294_967_295, 255],
+      [1, 0],
+      [0, 5],
+    ];
+    for (const [discriminator, leadLevel] of cases) {
+      const store = convert(discriminator, leadLevel);
+      expect(
+        { discriminator: store.discriminator, leadLevel: store.leadLevel },
+        `row ${discriminator}/${leadLevel}`,
+      ).toEqual({ discriminator, leadLevel });
+      expect(typeof store.discriminator, 'a number, never a bigint or string').toBe('number');
+      expect(typeof store.leadLevel, 'a number, never a bigint or string').toBe('number');
+    }
+  });
+
+  it('keeps the player name byte for byte when the row carries a non-zero discriminator: no `#`, no digits, no space folded in, for a plain name, a name ending in digits and a name with spaces at its ends [ih-3.6]', () => {
+    // WRONG IMPL KILLED: a converter that folds the tag into the name (`Drew #0042`, `Drew#42`,
+    // `Drew 42`), trims it, or pads it; the name-only surfaces that read `StorePlayer.name` (the
+    // battle clock, the rename view) would then show a tag.
+    const names = ['Drew', 'Drew2024', ' Ann ', 'Bob #0042'];
+    for (const name of names) {
+      const store = playerRowToStore({
+        identity: { toHexString: () => 'abc123' },
+        entityId: 7n,
+        name,
+        online: true,
+        discriminator: 42,
+        leadLevel: 6,
+      });
+      expect(store.name, `the raw name ${JSON.stringify(name)}`).toBe(name);
+      expect(store.name.length, `the same length as ${JSON.stringify(name)}`).toBe(name.length);
+      expect(store.discriminator, 'the tag stays in its own field').toBe(42);
+    }
   });
 });
 

@@ -248,6 +248,8 @@ function ownRows(store: AuthoritativeStore, t: number, zoneId: number, tileX = 2
     entityId: EID,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   store.upsertCharacter(character(zoneId, tileX, tileY), t);
 }

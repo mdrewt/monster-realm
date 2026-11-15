@@ -1,5 +1,6 @@
-// ui/socialModel.ts — the Social frame's pure view model (design §5 row 4; CTL8D.1, CTL8D.2).
-// No DOM, SDK, resolver, clock or module state. Total: never throws on any input.
+// ui/socialModel.ts — the Social frame's view model (design §5 row 4; CTL8D.1, CTL8D.2).
+// No DOM, SDK or clock; the only catalog text is a player's tag and the name-with-tag join
+// (playerTag.ts). Total: never throws on any input.
 //
 // Challenges lists the request and the sent challenge the pvp root shows, each picked through that
 // root's own selector, so A on a row always acts on what the player sees. Trades lists one row per
@@ -14,9 +15,10 @@ import type {
 } from '../net/store';
 import { buildLeaderboardViewModel, type LeaderboardRowViewModel } from './leaderboardModel';
 import { list, type NavLayout, tabs } from './nav';
+import { formatTag, taggedName } from './playerTag';
 import { incomingChallenge, outgoingChallenge } from './pvpModel';
 import type { SocialTab } from './screens/types';
-import { incomingUntouched, ownSessions, partnerOf, playerName } from './tradeSessionModel';
+import { incomingUntouched, ownSessions, partnerOf } from './tradeSessionModel';
 
 /** The tabs in strip order. Built from a `Record`, so a new `SocialTab` fails client-typecheck
  *  here. */
@@ -34,7 +36,8 @@ export type SocialRowKind = 'session' | 'incoming' | 'outgoing';
 
 /** What a session row paints beside its key. */
 export interface SocialSessionFacts {
-  /** The other player's name, `#<hex8>` when it is empty or the player is unknown. */
+  /** The other player's name with their tag, or the name alone when they have no tag. `#<hex8>`
+   *  stands in for an empty name and for a player the store does not hold. */
   readonly partnerName: string;
   readonly mineConfirmed: boolean;
   readonly theirsConfirmed: boolean;
@@ -66,6 +69,10 @@ export interface SocialPlayerRow {
   readonly key: string;
   /** The display name: the raw name, `#<hex8>` when it is empty. */
   readonly name: string;
+  /** The player's tag (`#0042`), null when the row carries none. */
+  readonly tag: string | null;
+  /** The level of the player's lead monster, null with no party. */
+  readonly level: number | null;
   readonly nearby: boolean;
 }
 
@@ -83,7 +90,7 @@ export interface SocialVm {
   readonly trades: readonly SocialRow[];
   /** The request the pvp root shows, then the viewer's own sent challenge. */
   readonly challenges: readonly SocialRow[];
-  /** The other online players, by name. */
+  /** The other online players, by name, then tag number. */
   readonly players: readonly SocialPlayerRow[];
   /** The leaderboard's rows, in its order. */
   readonly rankings: readonly LeaderboardRowViewModel[];
@@ -106,7 +113,7 @@ function sessionRow(
     waiting: incomingUntouched(session, identity),
     createdAtMs: session.createdAtMs,
     session: {
-      partnerName: playerName(players, partnerOf(session, identity)),
+      partnerName: taggedName(players, partnerOf(session, identity)),
       mineConfirmed: viewerIsOpener ? session.openerConfirmed : session.partnerConfirmed,
       theirsConfirmed: viewerIsOpener ? session.partnerConfirmed : session.openerConfirmed,
     },
@@ -128,9 +135,9 @@ function challengeRow(challenge: StoreBattleChallenge, kind: 'incoming' | 'outgo
 /** Code-unit order (never localeCompare: locale collation is platform-dependent). */
 const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
-/** The online players other than the viewer, by raw name then identity. A player is nearby when
- *  both characters are known, in one zone, within `NEARBY_TILES`; one with no character row is
- *  listed, never nearby. */
+/** The online players other than the viewer, by raw name, then tag number, then identity. A player
+ *  is nearby when both characters are known, in one zone, within `NEARBY_TILES`; one with no
+ *  character row is listed, never nearby. */
 export function socialPlayers(
   players: readonly StorePlayer[],
   characters: Iterable<StoreCharacter>,
@@ -142,7 +149,12 @@ export function socialPlayers(
   const own = ownEntity === undefined ? undefined : byEntity.get(ownEntity);
   return players
     .filter((p) => p.online && p.identity !== identity)
-    .sort((a, b) => byCodeUnit(a.name, b.name) || byCodeUnit(a.identity, b.identity))
+    .sort(
+      (a, b) =>
+        byCodeUnit(a.name, b.name) ||
+        a.discriminator - b.discriminator ||
+        byCodeUnit(a.identity, b.identity),
+    )
     .map((p) => {
       const them = byEntity.get(p.entityId);
       const nearby =
@@ -153,15 +165,18 @@ export function socialPlayers(
       return {
         key: p.identity,
         name: p.name !== '' ? p.name : `#${p.identity.slice(0, 8)}`,
+        tag: formatTag(p.discriminator),
+        level: p.leadLevel > 0 ? p.leadLevel : null,
         nearby,
       };
     });
 }
 
-/** What the Players tab shows, as one string: equal exactly when the rows' keys, names and nearby
- *  flags are equal in order (JSON quotes every name, so no name forges another list). */
+/** What the Players tab shows, as one string: equal exactly when the rows' keys, names, tags,
+ *  levels and nearby flags are equal in order (JSON quotes every name, so no name forges another
+ *  list). */
 export const socialPeopleKey = (vm: SocialVm): string =>
-  JSON.stringify(vm.players.map((row) => [row.key, row.name, row.nearby]));
+  JSON.stringify(vm.players.map((row) => [row.key, row.name, row.tag, row.level, row.nearby]));
 
 /** What the session rows paint, as one string: equal exactly when their keys, names and marks are
  *  equal in order. */

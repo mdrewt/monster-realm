@@ -44,6 +44,7 @@ import {
   openedSessionWith,
   ownSessions,
   partnerOf,
+  playerName,
   sameOffer,
   sessionWith,
   stepCurrency,
@@ -183,9 +184,9 @@ const inv = (invId: bigint, itemId: number, count: number, ownerIdentity = ME): 
 });
 
 const PLAYERS: readonly StorePlayer[] = [
-  { identity: ME, entityId: 1n, name: 'Me', online: true },
-  { identity: BOB, entityId: 2n, name: 'Bob', online: true },
-  { identity: CAROL, entityId: 3n, name: '', online: true },
+  { identity: ME, entityId: 1n, name: 'Me', online: true, discriminator: 0, leadLevel: 0 },
+  { identity: BOB, entityId: 2n, name: 'Bob', online: true, discriminator: 0, leadLevel: 0 },
+  { identity: CAROL, entityId: 3n, name: '', online: true, discriminator: 0, leadLevel: 0 },
 ];
 
 function input(over: Partial<TradeSessionInput> = {}): TradeSessionInput {
@@ -824,5 +825,39 @@ describe('tradeSessionModel — session lookups (ts-3.5, ts-3.6)', () => {
     expect(closedSessionIds(before, [S1], ME)).toEqual([5n, 102n, 103n, REV]);
     expect(closedSessionIds(new Set(), [S1, S2], ME)).toEqual([]);
     expect(closedSessionIds(new Set([101n, 102n]), [S2, S1], ME)).toEqual([]);
+  });
+});
+
+describe('tradeSessionModel — the editor names the partner without a tag', () => {
+  /** The fixture players, each with a non-zero discriminator and lead level. */
+  const TAGGED: readonly StorePlayer[] = PLAYERS.map((p, i) => ({
+    ...p,
+    discriminator: 42 + i,
+    leadLevel: 5 + i,
+  }));
+
+  it('playerName and the editor heading`s partnerName stay the bare name for a partner whose discriminator is non-zero, from either seat, with the #hex8 fallback for an empty name [ih-3.6]', async () => {
+    // WRONG IMPL KILLED: a playerName that folds the tag in (`Bob #0043`, every other caller of
+    // playerName would show it); an editor heading switched to the tagged name; a tag appended to
+    // the #hex8 fallback.
+    expect(
+      TAGGED.map((p) => p.discriminator),
+      'fixture: every player carries a tag',
+    ).toEqual([42, 43, 44]);
+    // Control: the tag is live for these players, so a heading that folded it in would show it.
+    const { taggedName } = await import('./playerTag');
+    expect(taggedName(TAGGED, BOB), 'control: Bob`s tagged name').toBe('Bob #0043');
+    expect(playerName(TAGGED, BOB), 'Bob').toBe('Bob');
+    expect(playerName(TAGGED, ME), 'Me').toBe('Me');
+    expect(playerName(TAGGED, CAROL), 'Carol`s empty name').toBe(`#${CAROL.slice(0, 8)}`);
+    expect(sessionVm({ players: TAGGED }).partnerName, 'ME opened with Bob').toBe('Bob');
+    expect(
+      sessionVm({ players: TAGGED, identity: BOB, ownMonsters: [], inventory: [], balance: 0n })
+        .partnerName,
+      'Bob`s seat: ME',
+    ).toBe('Me');
+    expect(sessionVm({ players: TAGGED, sessionId: 102n }).partnerName, 'Carol opened').toBe(
+      `#${CAROL.slice(0, 8)}`,
+    );
   });
 });

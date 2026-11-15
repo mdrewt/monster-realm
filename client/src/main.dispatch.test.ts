@@ -531,6 +531,8 @@ function server(t: number): void {
     entityId: EID,
     name: 'P',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   opts.store.upsertCharacter(
     {
@@ -1046,6 +1048,8 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       entityId: 8n,
       name: 'Bob',
       online: true,
+      discriminator: 0,
+      leadLevel: 0,
     });
     opts.store.reconcileTradeSessionsFromView([
       tsSession(11n, OTHER_IDENTITY, H.identity, { createdAtMs: 1_000n }),
@@ -7612,6 +7616,8 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
       entityId: 99n,
       name: BT15B_RIVAL_NAME,
       online: true,
+      discriminator: 0,
+      leadLevel: 0,
     });
     const B = 2n ** 60n + 351n;
     const [P1, P2] = [B + 2n, B + 4n];
@@ -7710,6 +7716,8 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
       entityId: 99n,
       name: BT15B_RIVAL_NAME,
       online: true,
+      discriminator: 0,
+      leadLevel: 0,
     });
     const B = 2n ** 60n + 361n;
     const [P1, P2] = [B + 2n, B + 4n];
@@ -8220,12 +8228,16 @@ function tsSeedPlayers(): void {
     entityId: TS_FACED_ENTITY,
     name: 'Zed',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
   opts.store.upsertPlayer({
     identity: TS_THIRD,
     entityId: 32n,
     name: 'Ivy',
     online: true,
+    discriminator: 0,
+    leadLevel: 0,
   });
 }
 
@@ -9474,6 +9486,8 @@ describe('ts-6b-7: the server-time estimate and the results drain', { sequential
       entityId: 99n,
       name: BT15B_RIVAL_NAME,
       online: true,
+      discriminator: 0,
+      leadLevel: 0,
     });
     const V = 2n ** 60n + 451n;
     const [V1, V2] = [V + 2n, V + 4n];

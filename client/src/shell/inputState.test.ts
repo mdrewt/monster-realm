@@ -161,7 +161,14 @@ const EID = 7n;
 /** One authoritative batch: the own player and character at (2, 6), every send acked. */
 function server(t: number): void {
   clock.t = t;
-  opts.store.upsertPlayer({ identity: H.identity, entityId: EID, name: 'P', online: true });
+  opts.store.upsertPlayer({
+    identity: H.identity,
+    entityId: EID,
+    name: 'P',
+    online: true,
+    discriminator: 0,
+    leadLevel: 0,
+  });
   opts.store.upsertCharacter(
     {
       entityId: EID,

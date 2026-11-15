@@ -853,11 +853,18 @@ const CIFIX_CHALLENGES: readonly StoreBattleChallenge[] = [
   },
 ];
 const CIFIX_PLAYERS: readonly StorePlayer[] = [
-  { identity: CIFIX_ME, entityId: 1n, name: 'Me', online: true },
-  { identity: '0xbbb', entityId: 2n, name: 'Bob', online: true },
-  { identity: '0xccc', entityId: 3n, name: 'Carol', online: true },
-  { identity: '0xaaa1', entityId: 4n, name: 'Alice', online: true },
-  { identity: '0xddd4', entityId: 5n, name: 'Dave', online: true },
+  { identity: CIFIX_ME, entityId: 1n, name: 'Me', online: true, discriminator: 0, leadLevel: 0 },
+  { identity: '0xbbb', entityId: 2n, name: 'Bob', online: true, discriminator: 0, leadLevel: 0 },
+  { identity: '0xccc', entityId: 3n, name: 'Carol', online: true, discriminator: 0, leadLevel: 0 },
+  {
+    identity: '0xaaa1',
+    entityId: 4n,
+    name: 'Alice',
+    online: true,
+    discriminator: 0,
+    leadLevel: 0,
+  },
+  { identity: '0xddd4', entityId: 5n, name: 'Dave', online: true, discriminator: 0, leadLevel: 0 },
 ];
 
 function cifixShown(testId: string): boolean {

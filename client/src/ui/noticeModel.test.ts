@@ -93,8 +93,8 @@ function challenge(
   return { challengeId, challenger, target, challengerPartyIds: [], status, createdAtMs };
 }
 
-function player(identity: string, name: string, entityId = 1n): StorePlayer {
-  return { identity, entityId, name, online: true };
+function player(identity: string, name: string, entityId = 1n, discriminator = 0): StorePlayer {
+  return { identity, entityId, name, online: true, discriminator, leadLevel: 0 };
 }
 
 const PLAYERS: readonly StorePlayer[] = [
@@ -610,5 +610,70 @@ describe('noticeModel: incoming trade sessions (ts-3)', () => {
     const chal = challengeNotice(21n, 'Bob', 1n);
     expect(requestCommand(chal, 'accept')).toEqual({ kind: 'acceptChallenge', challengeId: 21n });
     expect(requestCommand(chal, 'decline')).toEqual({ kind: 'declineChallenge', challengeId: 21n });
+  });
+});
+
+describe('noticeModel: the requester`s name carries the tag', () => {
+  /** Bob and Dan share the name Sam; Bob's tag is #0042, Dan's #0007; Carol (empty name) #0003;
+   *  Eve has no tag. */
+  const TAGGED_PLAYERS: readonly StorePlayer[] = [
+    player(ME, 'Me', 1n, 99),
+    player(BOB, 'Sam', 2n, 42),
+    player(DAN, 'Sam', 4n, 7),
+    player(CAROL, '', 3n, 3),
+    player(STRANGER, 'Eve', 5n, 0),
+  ];
+
+  it('a trade request`s fromName is the session opener`s tagged name, the bare name for an opener whose discriminator is 0, and two same-named openers differ by tag [ih-3.5]', () => {
+    // WRONG IMPL KILLED: fromName still from playerName (no tag; the two Sams read the same); a tag
+    // for the challenge kind only; the viewer's own tag (#0099) on the banner; a tag for 0.
+    const requests = pendingRequests(
+      input({
+        players: TAGGED_PLAYERS,
+        sessions: [
+          tradeSession(11n, BOB, ME, 1_000n),
+          tradeSession(12n, DAN, ME, 2_000n),
+          tradeSession(13n, STRANGER, ME, 3_000n),
+          tradeSession(14n, CAROL, ME, 4_000n),
+        ],
+      }),
+    );
+    expect(requests).toEqual([
+      tradeNotice(11n, 'Sam #0042', 1_000n),
+      tradeNotice(12n, 'Sam #0007', 2_000n),
+      tradeNotice(13n, 'Eve', 3_000n),
+      tradeNotice(14n, `#${CAROL.slice(0, 8)} #0003`, 4_000n),
+    ]);
+    expect(requests[0]?.fromName, 'the two Sams differ').not.toBe(requests[1]?.fromName);
+  });
+
+  it('a challenge request`s fromName is the challenger`s tagged name, the bare name for a challenger whose discriminator is 0, and two same-named challengers differ by tag [ih-3.5]', () => {
+    // WRONG IMPL KILLED: a tag on trade requests only (the challenge banner would read a bare `Sam`
+    // for both Sams); the target's (the viewer's) tag in place of the challenger's.
+    const fromBob = pendingRequests(
+      input({ players: TAGGED_PLAYERS, challenges: [challenge(21n, BOB, ME, 'Pending', 2_000n)] }),
+    );
+    const fromDan = pendingRequests(
+      input({ players: TAGGED_PLAYERS, challenges: [challenge(22n, DAN, ME, 'Pending', 2_000n)] }),
+    );
+    const fromEve = pendingRequests(
+      input({
+        players: TAGGED_PLAYERS,
+        challenges: [challenge(23n, STRANGER, ME, 'Pending', 2_000n)],
+      }),
+    );
+    expect(fromBob).toEqual([challengeNotice(21n, 'Sam #0042', 2_000n)]);
+    expect(fromDan).toEqual([challengeNotice(22n, 'Sam #0007', 2_000n)]);
+    expect(fromEve, 'no tag: the bare name').toEqual([challengeNotice(23n, 'Eve', 2_000n)]);
+    expect(fromBob[0]?.fromName, 'the two Sams differ').not.toBe(fromDan[0]?.fromName);
+    // The banner buildNotices puts on top carries the same name.
+    expect(
+      buildNotices(
+        input({
+          players: TAGGED_PLAYERS,
+          challenges: [challenge(21n, BOB, ME, 'Pending', 2_000n)],
+        }),
+      ),
+    ).toEqual([challengeNotice(21n, 'Sam #0042', 2_000n)]);
   });
 });

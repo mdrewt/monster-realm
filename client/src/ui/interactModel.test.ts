@@ -99,7 +99,14 @@ function charRow(entityId: bigint, zoneId: number, tileX: number, tileY: number)
 }
 
 function playerRow(entityId: bigint, name: string): StorePlayer {
-  return { identity: `id-${entityId}`, entityId, name, online: true };
+  return {
+    identity: `id-${entityId}`,
+    entityId,
+    name,
+    online: true,
+    discriminator: 0,
+    leadLevel: 0,
+  };
 }
 
 function healRow(
@@ -679,7 +686,7 @@ const AMY_ID = 'bb'.repeat(32);
 
 /** A player row with an explicit hex identity (the reducer argument) and online flag. */
 function hexPlayer(entityId: bigint, name: string, identity: string, online = true): StorePlayer {
-  return { identity, entityId, name, online };
+  return { identity, entityId, name, online, discriminator: 0, leadLevel: 0 };
 }
 
 const tradeOf = (playerIdentity: string): InteractAction => ({ kind: 'trade', playerIdentity });

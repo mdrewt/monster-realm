@@ -354,7 +354,14 @@ function pressWindow(code: string): void {
 function openAccount(opts: ConnectionOptions, label: string): void {
   opts.onReady(H.identity);
   clock.t += 100;
-  opts.store.upsertPlayer({ identity: H.identity, entityId: 7n, name: 'P', online: true });
+  opts.store.upsertPlayer({
+    identity: H.identity,
+    entityId: 7n,
+    name: 'P',
+    online: true,
+    discriminator: 0,
+    leadLevel: 0,
+  });
   opts.store.upsertCharacter(
     {
       entityId: 7n,

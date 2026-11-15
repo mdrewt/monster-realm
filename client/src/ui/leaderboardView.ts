@@ -26,9 +26,12 @@
 // and the paint zeroes the list's UA margin and padding so its rows start where every other Social
 // panel's rows do (UIF9.3, measured in e2e/ui-social.spec.ts). Players hides the board and renders
 // `#leaderboard-players` through the kit, with `#leaderboard-walkup` after it, both built by the
-// first Players paint. A list hidden under the focus hands it to the
-// root's anchor first (tradeView's rule). Player names stay out of the resolver here too: the
-// walk-up line is resolved around a sentinel and the name goes in a `<bdi>`.
+// first Players paint. A Players row is built from parts: the name in a `<bdi>`, then, each in its
+// own span after one space and only when the row carries it, the tag (`.mr-player-tag`, the model's
+// string), the lead level (`.mr-player-level`, `tactics.hud.level`) and the Nearby badge. A list
+// hidden under the focus hands it to the root's anchor first (tradeView's rule). Player names stay
+// out of the resolver here too: the walk-up line is resolved around a sentinel and the name goes in
+// a `<bdi>`.
 
 import { t, tf } from './i18n/resolver';
 import type { LeaderboardViewModel } from './leaderboardModel';
@@ -62,6 +65,9 @@ const LIST_MARKS = [
 const ROW_MARKS = ['id', 'class', 'role', 'aria-selected'] as const;
 /** The kit's shared scroll-cue class (uif-3), worn by the list while Rankings shows. */
 const SCROLL_CLASS = 'mr-scroll';
+/** A Players row's tag (styles.css paints it muted) and its lead-monster level. */
+const PLAYER_TAG_CLASS = 'mr-player-tag';
+const PLAYER_LEVEL_CLASS = 'mr-player-level';
 
 export class LeaderboardView {
   readonly #overlay: HTMLElement;
@@ -235,6 +241,18 @@ export class LeaderboardView {
             const name = document.createElement('bdi');
             name.textContent = row?.name ?? '';
             el.append(name);
+            if (row !== undefined && row.tag !== null) {
+              const tag = document.createElement('span');
+              tag.className = PLAYER_TAG_CLASS;
+              tag.textContent = row.tag;
+              el.append(' ', tag);
+            }
+            if (row !== undefined && row.level !== null) {
+              const level = document.createElement('span');
+              level.className = PLAYER_LEVEL_CLASS;
+              level.textContent = tf('tactics.hud.level', { level: row.level });
+              el.append(' ', level);
+            }
             if (row?.nearby === true) {
               const badge = document.createElement('span');
               badge.textContent = t('social.players.nearby');

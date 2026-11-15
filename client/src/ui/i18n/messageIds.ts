@@ -316,6 +316,9 @@ export type MessageId =
   | 'social.action.decline'
   | 'social.action.cancel'
   | 'social.confirm.declineChallenge'
+  // identity.* : a player's tag and the name-with-tag join (playerTag.ts).
+  | 'identity.tag'
+  | 'identity.taggedName'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
   // Claim.* : the guest-claim overlay — four button labels (claimView.ts); its titles, bodies,
@@ -775,6 +778,10 @@ export interface MessageParams {
   readonly 'quest.complete.reward': { readonly name: string; readonly amount: bigint };
   readonly 'quest.complete.done': { readonly name: string };
   readonly 'social.players.walkUp': { readonly name: string };
+  // `digits` is the minted number in decimal, zero-padded to at least four digits; `tag` is the
+  // resolved `identity.tag`.
+  readonly 'identity.tag': { readonly digits: string };
+  readonly 'identity.taggedName': { readonly name: string; readonly tag: string };
   // The build's provider name, or its issuer string when the build names none: build text, never
   // player data.
   readonly 'claim.signInWithProvider': { readonly provider: string };
