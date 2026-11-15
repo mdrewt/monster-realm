@@ -219,8 +219,8 @@ pub(crate) fn join_with_kit(
         return Err(e);
     }
     let kit = kit.inspect_err(|e| log_reject("join_game", me, e))?;
-    // The last refusal, and the first write when it mints: a join that cannot be given a
-    // handle writes no presence row.
+    // Before the first presence write: a join that cannot be given a handle writes no
+    // presence row. The mint, when there is one, is the join's first write.
     let discriminator = crate::onboarding::ensure_handle(ctx, me)
         .inspect_err(|e| log_reject("join_game", me, e))?;
     let (zone_id, pos, facing) = take_start(ctx, me);

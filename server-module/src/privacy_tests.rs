@@ -7943,7 +7943,7 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// Kills: the status-quo body (the population clause, before the tick); a mint
 /// that reuses a live stamp under any spelling (same clause); a tick that
 /// stopped at the window's edge (reaped 256 rather than 270); the read cap
-/// dropped (read 324, planned 18, reaped 324); a `due` count that is not the
+/// dropped (read 324, due 18, planned 16 at the stamp cap, reaped 16 x 18 = 288); a `due` count that is not the
 /// window's distinct expired stamps; a survivor set of the right SIZE but the
 /// wrong IDENTITY, which every count clause here is blind to (the triple
 /// comparison); numbers moved to match the code rather than re-derived (the
@@ -8069,7 +8069,8 @@ fn rb111_one_tick_reaps_fifteen_whole_bundles_from_a_same_millisecond_burst() {
          due; the read window touches {touched} distinct stamps, below the per-tick WRITE bound \
          of {stamp_cap}, so every one of them is both due and planned. ONE is the status quo — a \
          single shared stamp under every bundle the burst committed — and it is the number that \
-         makes the write set unbounded; {bundles} is the read cap dropped."
+         makes the write set unbounded; a `due` of {bundles} beside a `planned` of {stamp_cap} \
+         is the read cap dropped."
     );
     assert_eq!(
         reaped,

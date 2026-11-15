@@ -8188,9 +8188,9 @@ mod acct_nh {
     /// nothing moves: the guest's rows, both handle rows and the claim are
     /// byte-identical, and the account gains nothing.
     ///
-    /// kills: `has_handle` missing from `account_has_game_data` (the claim
-    /// completes and the account ends up with two handles' worth of identity); a
-    /// game-data predicate that ignores its argument (paired with the round trip,
+    /// kills: `has_handle` missing from `account_has_game_data` (the claim is
+    /// not refused, it reaches the handle re-key, whose insert collides on the
+    /// account's own handle row and panics); a game-data predicate that ignores its argument (paired with the round trip,
     /// where the GUEST's handle must not block the claim).
     #[test]
     fn an_account_holding_only_a_handle_cannot_claim_a_guest_ih1_6() {

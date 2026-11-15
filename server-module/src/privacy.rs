@@ -1776,8 +1776,9 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 18 = 288 >= 256), which is what makes
 // a tick retire at least as many rows as it read. Stamps are deleted WHOLE, so
 // no bundle is ever partly reaped and the floor holds whatever order the window
-// arrives in; Draining a FULL store therefore takes about 159 ticks (6.6 days), so
-// a row's worst case is two retention windows, not one. THREE thresholds, one
+// arrives in; Draining a FULL store therefore takes at most 168 ticks (seven days),
+// about 159 over minimum-size bundles, so a row's worst case is two retention
+// windows, not one. THREE thresholds, one
 // count, shed in order of what the caller has invested: a caller with no account
 // row gets half, so anonymous identities can never take the account holders' half;
 // a caller with no wallet row either, a caller never credited currency, gets a

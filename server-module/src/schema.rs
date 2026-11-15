@@ -80,10 +80,11 @@ pub struct Player {
 /// `player` row for the session.
 ///
 /// `discriminator` is drawn from the column's sequence (insert 0, read back the
-/// assigned value), so it is never 0, never derived from the identity and never
-/// handed to a second identity: a sequence only grows, and a deleted row's value
-/// is not drawn again. The guest claim moves the row to the account identity
-/// with its value unchanged (an explicit non-zero insert draws nothing).
+/// assigned value), so it is never 0, never derived from the identity, never held
+/// by two identities at once and never minted twice: a sequence only grows, and a
+/// deleted row's value is not drawn again. The guest claim moves the row to the
+/// account identity with its value unchanged (an explicit non-zero insert draws
+/// nothing).
 #[spacetimedb::table(accessor = player_handle)]
 pub struct PlayerHandle {
     #[primary_key]
