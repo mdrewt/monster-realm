@@ -582,25 +582,30 @@ NPC crossing zones.
 **Decision.** Movement is driven by virtual D-pad edges from the input router
 (`client/src/input/router.ts`), refcounted across physical keys, so releasing ArrowUp
 does not stop a held W. OS key-repeat drives neither movement nor menus (`e.repeat` is
-ignored). A press sends one step immediately; continuation comes from the frame loop
-re-issuing the held direction only after the key has been held for `HOLD_COMMIT_MS`
-(150 ms, `client/src/prediction/heldKeys.ts`), only when the predictor has no
-outstanding steps, and only while `movementEnabled` (the world base with no frame above
-it and the session gate open). Every push of a non-base frame clears the held set, so a
-direction held through a menu does not resume when the menu closes; the player presses
-again. Menu auto-repeat is synthesized by the router on an injected clock (350 ms, then
-100 ms) and clamps at list ends. A zone warp keeps the held-key stack across the
-prediction reset; a reconnect does not.
+ignored). A press sends one `Face` immediately (see "Turning in place"): a turn for a
+character facing another way, a step for one already facing the direction. Continuation
+comes from the frame loop sending `Step` in the held direction only after the key has
+been held for `HOLD_COMMIT_MS` (150 ms, `client/src/prediction/heldKeys.ts`), only when
+the predictor has no outstanding steps and no sent input is still owed, and only while
+`movementEnabled` (the world base with no frame above it and the session gate open). A
+hold from another facing therefore turns, waits for the row that drains the `Face`, then
+walks with no second press; a tap only turns. Every push of a non-base frame clears the
+held set, so a direction held through a menu does not resume when the menu closes. Menu auto-repeat is synthesized by the router on an
+injected clock (350 ms, then 100 ms) and clamps at list ends. A zone warp keeps the
+held-key stack across the prediction reset; a reconnect does not.
 
 **Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a
-tap (one tile) from a hold (walk), and waiting for outstanding steps to clear stops
-the client from queueing moves faster than the server drains them. Keeping the stack
-across a warp lets a player walk through a door without re-pressing the key. A walk
-that resumes behind a closing menu is a step the player did not ask for, and stale hold
-stamps would skip the commit threshold.
+tap (one input) from a hold (walk), and waiting for outstanding steps stops the client
+queueing moves faster than the server drains them. The continuation sends `Step`, which
+turns and moves in one input, so a walk that falls back to a second held key or resumes
+after a server correction does not stop for a turn slot. Keeping the stack across a
+warp lets a player walk through a door without re-pressing. A walk that resumes behind
+a closing menu is a step the player did not ask for, and stale hold stamps would skip
+the commit threshold.
 
-**Rules out.** Repeat-driven movement or menus; emitting continuation steps while
-earlier ones are still in flight; resuming a held walk after a frame closes.
+**Rules out.** Repeat-driven movement or menus; continuation steps while earlier ones
+are in flight; resuming a held walk after a frame closes; `Step` on a fresh press (a
+tap would move instead of turning); `Face` from the continuation.
 
 ## Turning in place: `Face` turns, or steps when already facing
 

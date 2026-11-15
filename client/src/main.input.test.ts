@@ -15,9 +15,12 @@
  * exist (the PvP and rename overlays are subjects of these tests). The renderer stub
  * appends a focusable canvas, as main.a11yFocus.test.ts does.
  *
- * Positions: the stubbed apply_move steps one tile, North is y - 1. Each test seeds the
- * character at (2, 6) and acks every send with the tile the predictor already holds, so a
- * reconcile never diverges and the only intents sent are the ones the input path issues.
+ * Positions: the stubbed apply_move is game-core's rule (a Step moves one tile, North is y - 1;
+ * a press sends a Face, which turns a character not facing that way in place and steps one that
+ * does). Each test seeds the character at (2, 6) and acks every send with the tile the predictor
+ * already holds, so a reconcile never diverges and the only intents sent are the ones the input
+ * path issues. A case whose subject is not the turn seeds the row facing the pressed direction,
+ * so its press steps.
  *
  * The contract proven here: the keyboard feeds the router through one binding table; two keys
  * of one direction are refcounted (the walk ends when the last is released); Ctrl/Alt/Meta
@@ -93,9 +96,9 @@ const H = vi.hoisted(() => ({
   /** ctl-10a: what the stubbed export answers. The stub IS the interaction rule (CTL10A.1): each
    *  case installs its own through `useRule`. Reset to "no candidate" by every boot. */
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
-  /** ctl-10a: tiles ("x,y") the stubbed apply_move will not enter: a step into one turns the
-   *  character to face it and moves nothing (a facing-only change). Reset by every boot. */
-  blocked: new Set<string>(),
+  /** What the connection stub's `linkFrozen()` answers. Reset to false by every boot, so only
+   *  the case that sets it sees a frozen link. */
+  frozen: false,
   /** ctl-11a: the EvolutionView instance main.ts built (recorded by the transparent subclass in the
    *  module mock below). The Evolution screen has no key, so CTL3-3-BOOT-HIDE-ALL opens it through
    *  the view's own `show()`. Reset to null by every boot. */
@@ -105,10 +108,11 @@ const H = vi.hoisted(() => ({
   rejectTalk: null as unknown,
 }));
 
-// wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
-// ctl-10a: named fixture change. A step into an `H.blocked` tile only turns the character (no
-// existing case blocks a tile), and the new interact export is a recording stub driven by
-// `H.interact`.
+// wasm pkg: every name main.ts imports. apply_move is game-core's movement rule on an open grid:
+// `Step(d)` turns to `d` and moves one tile; `Face(d)` for a character not facing `d` turns it in
+// place (same tile, Idle, stamped); `Face(d)` for a character already facing `d` is exactly
+// `Step(d)` (one shared step path). `Jump` only stamps the jump.
+// The interact export is a recording stub driven by `H.interact`.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 8;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
@@ -120,22 +124,24 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   };
   return {
     apply_move: (
-      state: { pos: { x: number; y: number } },
-      input: 'Jump' | { Step: string },
+      state: { pos: { x: number; y: number }; facing: string },
+      input: 'Jump' | { Step: string } | { Face: string },
       now: number,
     ) => {
       const stamp = Math.floor(now);
       if (input === 'Jump') return { ...state, action: 'Jumping', move_started_at: stamp };
-      const [dx, dy] = DELTA[input.Step];
-      const to = { x: state.pos.x + dx, y: state.pos.y + dy };
-      if (H.blocked.has(`${to.x},${to.y}`)) {
-        return { ...state, facing: input.Step, move_started_at: stamp };
+      // A Face of a direction the character does not face is a turn in place.
+      if ('Face' in input && state.facing !== input.Face) {
+        return { ...state, facing: input.Face, action: 'Idle', move_started_at: stamp };
       }
+      // Step(d), and Face(d) while already facing d: the one step path.
+      const dir = 'Face' in input ? input.Face : input.Step;
+      const [dx, dy] = DELTA[dir];
       return {
         ...state,
-        facing: input.Step,
+        facing: dir,
         action: 'Walking',
-        pos: to,
+        pos: { x: state.pos.x + dx, y: state.pos.y + dy },
         move_started_at: stamp,
       };
     },
@@ -241,7 +247,7 @@ vi.mock('./net/connection', () => {
     conn: undefined,
     live: () => live,
     identity: () => H.identity,
-    linkFrozen: () => false,
+    linkFrozen: () => H.frozen,
     worldScope: () => ({ own: null, zones: [], settled: false }),
     continueAnonymously: () => undefined,
     sessionState: () => H.sessionState,
@@ -351,7 +357,7 @@ async function boot(): Promise<void> {
   H.callArgs = [];
   H.interactCalls = [];
   H.interact = () => [];
-  H.blocked = new Set<string>();
+  H.frozen = false;
   H.evolution = null;
   H.rejectTalk = null;
   clock.t = 1000;
@@ -378,8 +384,10 @@ async function bootReady(): Promise<void> {
 }
 
 const EID = 7n;
-/** Deliver one authoritative batch: own player + character row at clock `t`. */
-function server(t: number, s: { x: number; y: number; ack: number }): void {
+type Dir = 'North' | 'South' | 'East' | 'West';
+/** Deliver one authoritative batch: own player + character row at clock `t`. The row faces
+ *  `s.facing` (East when omitted). */
+function server(t: number, s: { x: number; y: number; ack: number; facing?: Dir }): void {
   clock.t = t;
   opts.store.upsertPlayer({
     identity: H.identity,
@@ -393,7 +401,7 @@ function server(t: number, s: { x: number; y: number; ack: number }): void {
       zoneId: 0,
       tileX: s.x,
       tileY: s.y,
-      facing: 'East',
+      facing: s.facing ?? 'East',
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
@@ -405,10 +413,12 @@ function server(t: number, s: { x: number; y: number; ack: number }): void {
 }
 
 /** Ack everything sent so far, the character standing where the predictor already put it.
- *  Only valid for North-only walks from (2, 6): after n sends it stands at (2, 6 - n). */
-function ackAllNorth(t: number, startY = 6): void {
+ *  Only valid for North-only walks from (2, 6) in which every send moves a tile (a Step, or a
+ *  Face from a character already facing North): after n sends it stands at (2, 6 - n). The row
+ *  faces `facing` (East when omitted); a walk whose next press must step passes 'North'. */
+function ackAllNorth(t: number, startY = 6, facing: Dir = 'East'): void {
   const n = H.sends.length;
-  server(t, { x: 2, y: startY - n, ack: n });
+  server(t, { x: 2, y: startY - n, ack: n, facing });
 }
 
 interface FireOpts {
@@ -424,9 +434,20 @@ function fire(type: 'keydown' | 'keyup', code: string, t: number, o: FireOpts = 
   return event;
 }
 
-const step = (s: Sent): string | undefined =>
-  s.input.tag === 'Step' ? s.input.value?.tag : s.input.tag;
+/** One send as text: a Step reads as its direction ('North'), a Jump as 'Jump', and a Face as
+ *  'Face:' + its direction ('Face:North'), so a list tells the three inputs apart. */
+const step = (s: Sent): string | undefined => {
+  if (s.input.tag === 'Step') return s.input.value?.tag;
+  if (s.input.tag === 'Face') return `Face:${s.input.value?.tag}`;
+  return s.input.tag;
+};
 const dirs = (): Array<string | undefined> => H.sends.map(step);
+
+/** The DEV hook's read-only predicted own tile (main.ts `snapshot().ownPredictedTile`). */
+const predictedTile = (): { x: number; y: number } | null =>
+  (
+    window as unknown as { __game: () => { ownPredictedTile: { x: number; y: number } | null } }
+  ).__game().ownPredictedTile;
 
 const overlayShown = (id: string): boolean => {
   const el = document.getElementById(id);
@@ -492,12 +513,17 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // the reconcile-divergence emitter, so only growth / no growth across an action is the
     // contract. The server is acked at the tile the predictor holds (start y = 7 leaves room
     // for the handful of North steps this walk can issue).
+    // The row faces North (every batch here does), so each W press is a Face that steps exactly
+    // as a Step does and the ackAllNorth arithmetic holds; the subject is the release, not the
+    // turn.
     const Y0 = 7;
     await bootReady();
-    server(1000, { x: 2, y: Y0, ack: 0 });
+    server(1000, { x: 2, y: Y0, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    expect(dirs()).toEqual(['North']);
-    ackAllNorth(1050, Y0);
+    // np-c2 (named intentional change): the press sends a Face of North (the continuation sends
+    // stay Steps). Was: ['North'].
+    expect(dirs()).toEqual(['Face:North']);
+    ackAllNorth(1050, Y0, 'North');
 
     // Control: a VISIBLE visibilitychange keeps the hold alive, so the continuation fires.
     setVisibility('visible');
@@ -507,7 +533,7 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     expect(H.sends.length, 'visible visibilitychange must not release').toBeGreaterThan(
       beforeVisible,
     );
-    ackAllNorth(1200, Y0);
+    ackAllNorth(1200, Y0, 'North');
 
     // Hidden: everything is released, the walk stops. After the dispatch the server is
     // acked, so a still-held key WOULD send on the next frame.
@@ -515,7 +541,7 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     setVisibility('hidden');
     document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
     setVisibility('visible');
-    ackAllNorth(1300, Y0);
+    ackAllNorth(1300, Y0, 'North');
     frame(1310);
     frame(1400);
     expect(H.sends.length, 'hidden visibilitychange must stop the continuation').toBe(beforeHidden);
@@ -523,16 +549,16 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // The release reset the router and the source: a fresh press steps again, then holds.
     fire('keydown', 'KeyW', 1500);
     expect(H.sends.length, 'a fresh press after the release steps').toBe(beforeHidden + 1);
-    ackAllNorth(1550, Y0);
+    ackAllNorth(1550, Y0, 'North');
     const beforeContinuation = H.sends.length;
     frame(1660);
     expect(H.sends.length, 'control: the fresh hold continues').toBeGreaterThan(beforeContinuation);
-    ackAllNorth(1700, Y0);
+    ackAllNorth(1700, Y0, 'North');
 
     // Blur releases too.
     const beforeBlur = H.sends.length;
     window.dispatchEvent(new Event('blur'));
-    ackAllNorth(1750, Y0);
+    ackAllNorth(1750, Y0, 'North');
     frame(1800);
     frame(1900);
     expect(H.sends.length, 'blur must stop the continuation').toBe(beforeBlur);
@@ -542,21 +568,27 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // WRONG IMPL KILLED: the ArrowUp keyup releasing North (today's defect, KEY_DIR keyed by
     // direction), a router that releases on the first up, and one that never releases (the
     // walk would not stop when W finally lets go).
+    // The row faces North, so the W press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the refcount, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    expect(dirs()).toEqual(['North']);
+    // np-c2 (named intentional change): the press sends a Face of North. Was: ['North'].
+    expect(dirs()).toEqual(['Face:North']);
     fire('keydown', 'ArrowUp', 1005);
-    expect(dirs(), 'a second key of a held direction sends nothing').toEqual(['North']);
+    // np-c2 (named intentional change): the one send is the press's Face. Was: ['North'].
+    expect(dirs(), 'a second key of a held direction sends nothing').toEqual(['Face:North']);
     fire('keyup', 'ArrowUp', 1020);
-    ackAllNorth(1050);
+    ackAllNorth(1050, 6, 'North');
 
     frame(1160); // W has been held 160 ms: committed, and the server owes nothing.
-    expect(dirs(), 'W is still held, so the walk continues').toEqual(['North', 'North']);
-    ackAllNorth(1200);
+    // np-c2 (named intentional change): the press's Face, then the continuation's Step. Was:
+    // ['North', 'North'].
+    expect(dirs(), 'W is still held, so the walk continues').toEqual(['Face:North', 'North']);
+    ackAllNorth(1200, 6, 'North');
     frame(1210);
     expect(dirs(), 'and keeps continuing while W stays down').toHaveLength(3);
-    ackAllNorth(1250);
+    ackAllNorth(1250, 6, 'North');
 
     fire('keyup', 'KeyW', 1260);
     frame(1400);
@@ -609,12 +641,14 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // WRONG IMPL KILLED: preventDefault on every key (an unbound key's default is
     // swallowed), none on repeat or under an overlay (the page scrolls under a held arrow),
     // and preventDefault on a chord.
+    // The row faces North, so the W press is a Face that steps; the subject is preventDefault.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
 
     const w = fire('keydown', 'KeyW', 1000);
     expect(w.defaultPrevented, 'a consumed D-pad press is prevented').toBe(true);
-    expect(dirs()).toEqual(['North']);
+    // np-c2 (named intentional change): the press sends a Face of North. Was: ['North'].
+    expect(dirs()).toEqual(['Face:North']);
     const repeat = fire('keydown', 'KeyW', 1020, { init: { repeat: true } });
     expect(repeat.defaultPrevented, 'an OS repeat of a D-pad key is still prevented').toBe(true);
     fire('keyup', 'KeyW', 1040);
@@ -628,7 +662,8 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     const ctrlD = fire('keydown', 'KeyD', 1090, { init: { ctrlKey: true } });
     expect(ctrlD.defaultPrevented, 'a chord is not prevented').toBe(false);
     fire('keyup', 'KeyD', 1095, { init: { ctrlKey: true } });
-    expect(dirs(), 'only the bare W stepped').toEqual(['North']);
+    // np-c2 (named intentional change): the bare W's one send is its Face. Was: ['North'].
+    expect(dirs(), 'only the bare W stepped').toEqual(['Face:North']);
 
     // Gated: with an overlay open the D-pad press is still consumed (no page scroll) but
     // sends nothing.
@@ -636,7 +671,8 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     expect(pvpShown(), 'precondition: PvP is open').toBe(true);
     const gated = fire('keydown', 'ArrowDown', 1120);
     expect(gated.defaultPrevented, 'a D-pad press under an overlay is prevented').toBe(true);
-    expect(dirs(), 'and moves nothing').toEqual(['North']);
+    // np-c2 (named intentional change): the one send is still the bare W's Face. Was: ['North'].
+    expect(dirs(), 'and moves nothing').toEqual(['Face:North']);
     fire('keyup', 'ArrowDown', 1140);
   });
 
@@ -644,8 +680,9 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // WRONG IMPL KILLED: the router ignoring the event target (typing "w" into a field walks
     // the character and eats the character), ownership applied to the window only, and a
     // field-owned keyup that is mistaken for a release of a world key.
+    // The row faces North, so the world W press is a Face that steps; the subject is ownership.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     expect(pvpShown() || renameShown(), 'precondition: no overlay is open').toBe(false);
 
     const input = document.createElement('input');
@@ -682,22 +719,31 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     document.body.focus();
     const atWorld = fire('keydown', 'KeyW', 1100);
     expect(atWorld.defaultPrevented).toBe(true);
-    expect(dirs()).toEqual(['North']);
+    // np-c2 (named intentional change): the world W press sends a Face of North. Was: ['North'].
+    expect(dirs()).toEqual(['Face:North']);
     fire('keyup', 'KeyW', 1110);
     fire('keydown', 'Space', 1120);
-    expect(dirs()).toEqual(['North', 'Jump']);
+    // np-c2 (named intentional change): the W press's Face, then the Jump. Was: ['North', 'Jump'].
+    expect(dirs()).toEqual(['Face:North', 'Jump']);
   });
 
   it('a keydown whose keyup is lost does not leave the key held: down, down again, up ends the walk', async () => {
     // WRONG IMPL KILLED: a source that counts the second non-repeat down as a second holder
     // (the one up that follows would leave the direction held forever).
+    // The row faces North, so each W press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the lost keyup, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    ackAllNorth(1005);
+    ackAllNorth(1005, 6, 'North');
     fire('keydown', 'KeyW', 1010, { init: { repeat: false } }); // the first keyup was lost
-    expect(dirs(), 'the re-press is a fresh press and steps at once').toEqual(['North', 'North']);
-    ackAllNorth(1015);
+    // np-c2 (named intentional change): each of the two presses sends a Face of North. Was:
+    // ['North', 'North'].
+    expect(dirs(), 'the re-press is a fresh press and steps at once').toEqual([
+      'Face:North',
+      'Face:North',
+    ]);
+    ackAllNorth(1015, 6, 'North');
     const sentBeforeUp = H.sends.length;
     expect(sentBeforeUp, 'the walk started').toBeGreaterThan(0);
     fire('keyup', 'KeyW', 1020);
@@ -710,11 +756,14 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // WRONG IMPL KILLED: dropping the keyup because an overlay (or a focused field inside
     // it) is up, so the direction's count stays 1 and a LATER release of another key of that
     // direction no longer ends the walk.
+    // The row faces North, so each press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the release under an overlay, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    expect(dirs()).toEqual(['North']);
-    ackAllNorth(1005);
+    // np-c2 (named intentional change): the press sends a Face of North. Was: ['North'].
+    expect(dirs()).toEqual(['Face:North']);
+    ackAllNorth(1005, 6, 'North');
 
     fire('keydown', 'KeyN', 1010);
     expect(renameShown(), 'precondition: the rename overlay opened').toBe(true);
@@ -731,9 +780,11 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
 
     // Nothing is held now: a fresh ArrowUp tap steps once and does not keep walking.
     fire('keydown', 'ArrowUp', 1100);
-    expect(dirs(), 'a fresh press steps').toEqual(['North', 'North']);
+    // np-c2 (named intentional change): both presses send a Face of North. Was:
+    // ['North', 'North'].
+    expect(dirs(), 'a fresh press steps').toEqual(['Face:North', 'Face:North']);
     fire('keyup', 'ArrowUp', 1120);
-    ackAllNorth(1130);
+    ackAllNorth(1130, 6, 'North');
     frame(1400);
     frame(1600);
     expect(dirs(), 'the tap must not continue: North has no holder left').toHaveLength(2);
@@ -743,18 +794,20 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // WRONG IMPL KILLED: a release-all that clears the shell's held set and the source but
     // not the router's counts (the pre-blur press stays counted, so the one release after the
     // post-blur press leaves the direction held forever).
+    // The row faces North, so each W press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the blur, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    ackAllNorth(1005);
+    ackAllNorth(1005, 6, 'North');
     window.dispatchEvent(new Event('blur'));
     fire('keydown', 'KeyW', 1100);
-    ackAllNorth(1105);
+    ackAllNorth(1105, 6, 'North');
     fire('keyup', 'KeyW', 1110);
     const sent = H.sends.length;
     expect(sent, 'the post-blur press stepped').toBeGreaterThan(1);
     frame(1400);
-    ackAllNorth(1410);
+    ackAllNorth(1410, 6, 'North');
     frame(1600);
     expect(H.sends.length, 'the release after the blur must end the walk').toBe(sent);
   });
@@ -762,46 +815,61 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
   it('a keyup carrying Meta or Ctrl still releases the key it presses up', async () => {
     // WRONG IMPL KILLED: a keyup handler that drops chorded events (macOS reports Cmd while
     // a key is released; the direction would stay held and the character walk on).
+    // The row faces North, so each W press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the chorded keyup, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 7, ack: 0 });
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    ackAllNorth(1005, 7);
+    ackAllNorth(1005, 7, 'North');
     fire('keyup', 'KeyW', 1010, { init: { metaKey: true } });
     const afterMeta = H.sends.length;
     frame(1400);
-    ackAllNorth(1410, 7);
+    ackAllNorth(1410, 7, 'North');
     frame(1600);
     expect(H.sends.length, 'a Meta keyup must release').toBe(afterMeta);
 
     fire('keydown', 'KeyW', 1700);
     expect(H.sends.length, 'a fresh press after the release steps').toBe(afterMeta + 1);
-    ackAllNorth(1705, 7);
+    ackAllNorth(1705, 7, 'North');
     fire('keyup', 'KeyW', 1710, { init: { ctrlKey: true } });
     const afterCtrl = H.sends.length;
     frame(2000);
-    ackAllNorth(2010, 7);
+    ackAllNorth(2010, 7, 'North');
     frame(2200);
     expect(H.sends.length, 'a Ctrl keyup must release').toBe(afterCtrl);
   });
 
   it('releasing one direction does not release another: hold W and D, release D, W keeps walking', async () => {
     // WRONG IMPL KILLED: a direction release that clears the whole held set.
+    // The row faces North, so the W press is a Face that steps to (2, 5); the D press is then a
+    // Face of East from a character facing North: a turn on (2, 5) that moves nobody. The batch
+    // below is that server answer (re-derived from the rule).
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
     fire('keydown', 'KeyD', 1005);
     fire('keyup', 'KeyD', 1010);
-    expect(dirs(), 'both presses stepped').toEqual(['North', 'East']);
-    server(1020, { x: 3, y: 5, ack: 2 }); // North then East, as predicted
+    // np-c2 (named intentional change): each press sends a Face of its direction. Was:
+    // ['North', 'East'].
+    expect(dirs(), 'both presses sent').toEqual(['Face:North', 'Face:East']);
+    // np-c2 (named intentional change): the Face of North steps, the Face of East turns in place,
+    // so the row stands on (2, 5) facing East. Was: { x: 3, y: 5, ack: 2 } (North then East).
+    server(1020, { x: 2, y: 5, ack: 2, facing: 'East' });
     frame(1200); // W has been held 200 ms: committed
+    // np-c2 (named intentional change): the presses' two Faces, then exactly one continuation
+    // Step of North from the one frame. Was: more than one 'North' in the list (the W press read
+    // 'North' too).
+    expect(dirs(), 'W is still held: North continues').toEqual([
+      'Face:North',
+      'Face:East',
+      'North',
+    ]);
+    // np-c2 (named intentional change): the one East send is the D press's Face. Was: exactly one
+    // 'East'.
     expect(
-      dirs().filter((d) => d === 'North').length,
-      'W is still held: North continues',
-    ).toBeGreaterThan(1);
-    expect(
-      dirs().filter((d) => d === 'East'),
+      dirs().filter((d) => d === 'East' || d === 'Face:East'),
       'D was released: no East continuation',
-    ).toHaveLength(1);
+    ).toEqual(['Face:East']);
   });
 
   it('key repeat honours ownership and the consumed set: not prevented on a field or for Enter or a chord, prevented for a D-pad key at the world', async () => {
@@ -859,19 +927,281 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // WRONG IMPL KILLED: a router that emits dirDown only for the first holder (count 0 to 1).
     // Opening an overlay clears the shell's held set but not the physical key, so the next
     // press of ANY key of that direction must start the walk again.
+    // The row faces North, so each press is a Face that steps exactly as a Step does and the
+    // ackAllNorth arithmetic holds; the subject is the second key after the clear, not the turn.
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
-    ackAllNorth(1005);
+    ackAllNorth(1005, 6, 'North');
     fire('keydown', 'KeyN', 1010);
     expect(renameShown(), 'precondition: the rename overlay opened').toBe(true);
     fire('keydown', 'Escape', 1020);
     expect(renameShown(), 'precondition: the rename overlay closed').toBe(false);
-    ackAllNorth(1050);
+    ackAllNorth(1050, 6, 'North');
     const before = H.sends.length;
     fire('keydown', 'ArrowUp', 1100);
     expect(H.sends.length, 'ArrowUp steps although W is still physically down').toBe(before + 1);
-    expect(step(H.sends[before])).toBe('North');
+    // np-c2 (named intentional change): the ArrowUp press sends a Face of North. Was: 'North'.
+    expect(step(H.sends[before])).toBe('Face:North');
+  });
+
+  // --- np-c2: a press sends Face; game-core decides turn or step --------------------------------
+
+  it.each([
+    { dir: 'North', code: 'KeyW', facing: 'South' },
+    { dir: 'South', code: 'KeyS', facing: 'North' },
+    { dir: 'East', code: 'KeyD', facing: 'West' },
+    { dir: 'West', code: 'KeyA', facing: 'East' },
+  ] as const)('a $code press at the world from a character facing $facing sends exactly one Face of $dir and no Step, and its keyup adds nothing [np-c2.1]', async ({
+    dir,
+    code,
+    facing,
+  }) => {
+    // WRONG IMPL KILLED: a press that still sends Step (the character would walk where the player
+    // only meant to turn), a press that sends Face of another direction (a direction table off by
+    // one), two sends for one press, and a keyup that sends anything.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing });
+    expect(stack(), 'precondition: the world is the base, with nothing above it').toEqual([
+      { kind: 'world' },
+    ]);
+    fire('keydown', code, 1010);
+    expect(H.sends, 'one press, one enqueueMove').toHaveLength(1);
+    expect(H.sends[0].input, 'the press is a Face of the pressed direction').toEqual({
+      tag: 'Face',
+      value: { tag: dir },
+    });
+    expect(H.sends[0].seq).toBe(1n);
+    expect(
+      H.sends.filter((s) => s.input.tag === 'Step'),
+      'the press sends no Step',
+    ).toHaveLength(0);
+    fire('keyup', code, 1050);
+    expect(dirs(), 'the keyup adds nothing').toEqual([`Face:${dir}`]);
+    expect(H.calls, 'and calls no other reducer').toEqual([]);
+  });
+
+  it('a press of the direction the character already faces also sends exactly one Face and no Step: the client does not choose between turn and step [np-c2.1]', async () => {
+    // WRONG IMPL KILLED: a client that computes an "effective facing" and sends Step when the
+    // character already faces the pressed direction (game-core makes that choice when the input
+    // drains, on the server and in the predictor replay).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    fire('keydown', 'KeyW', 1010);
+    expect(H.sends, 'one press, one enqueueMove').toHaveLength(1);
+    expect(H.sends[0].input, 'a Face of North, although the character faces North').toEqual({
+      tag: 'Face',
+      value: { tag: 'North' },
+    });
+    fire('keyup', 'KeyW', 1050);
+    expect(dirs(), 'no Step anywhere').toEqual(['Face:North']);
+  });
+
+  it('while a direction is held, a keydown of its other key code sends nothing [np-c2.1]', async () => {
+    // WRONG IMPL KILLED: a Face sent for every key of a direction (W held, then ArrowUp, would turn
+    // or step the character a second time).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' });
+    fire('keydown', 'KeyW', 1010);
+    expect(dirs(), 'precondition: the W press sent its Face').toEqual(['Face:North']);
+    fire('keydown', 'ArrowUp', 1030);
+    expect(dirs(), 'ArrowUp while W holds North sends nothing').toEqual(['Face:North']);
+    fire('keyup', 'ArrowUp', 1050);
+    fire('keyup', 'KeyW', 1060);
+    expect(dirs(), 'and neither keyup sends anything').toEqual(['Face:North']);
+  });
+
+  it('the other key of a held direction buried under a newer press sends nothing [np-c2.1]', async () => {
+    // WRONG IMPL KILLED: a dedup written against the top of the held stack instead of membership
+    // (once D is down North is held but is not the newest press, so ArrowUp would send a third
+    // Face).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'South' });
+    fire('keydown', 'KeyW', 1010);
+    fire('keydown', 'KeyD', 1020);
+    expect(dirs(), 'precondition: each press sent its Face').toEqual(['Face:North', 'Face:East']);
+    fire('keydown', 'ArrowUp', 1030);
+    expect(dirs(), 'ArrowUp while W holds North under D sends nothing').toEqual([
+      'Face:North',
+      'Face:East',
+    ]);
+  });
+
+  it('a direction held from a character facing another way sends its Face, then a Step once the Face is acknowledged and the hold is committed, with no second press [np-c2.2]', async () => {
+    // WRONG IMPL KILLED: a continuation that ignores the un-acked Face (a Step races the turn and
+    // the server walks the character before it shows the new facing), one that never follows a
+    // Face with a Step (a held key turns the character and stops), a continuation that sends Face
+    // again instead of Step, and one that fires before HOLD_COMMIT_MS (a tap would walk).
+    // Timing (predictor.ts): the batch at 1000 rebases the baseline to 600, so the Face is due at
+    // 800 and every frame drains it on (2, 6); until a batch acks seq 1, `outstandingSteps` is 1
+    // and the continuation is shut; the ack batch stands on (2, 6) facing North, which is where
+    // the predictor holds the character, so it does not diverge and sends nothing itself.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' });
+    fire('keydown', 'KeyW', 1010);
+    expect(dirs(), 'the press sends a Face of North only').toEqual(['Face:North']);
+
+    for (const t of [1050, 1100, 1010 + HOLD_COMMIT_MS - 1]) frame(t);
+    expect(dirs(), 'before HOLD_COMMIT_MS nothing more is sent').toEqual(['Face:North']);
+
+    for (const t of [1010 + HOLD_COMMIT_MS, 1300, 1500]) frame(t);
+    expect(dirs(), 'committed, but the Face is not acknowledged: nothing more').toEqual([
+      'Face:North',
+    ]);
+
+    // The tick drains the Face: a turn on (2, 6), the row facing North, the queue empty.
+    server(1600, { x: 2, y: 6, ack: 1, facing: 'North' });
+    expect(dirs(), 'the acknowledging batch itself sends nothing').toEqual(['Face:North']);
+    frame(1610);
+    expect(H.sends, 'the next frame sends exactly one more input').toHaveLength(2);
+    expect(H.sends[1].input, 'and it is a Step of North').toEqual({
+      tag: 'Step',
+      value: { tag: 'North' },
+    });
+    expect(H.sends[1].seq).toBe(2n);
+    expect(dirs(), 'the full send list').toEqual(['Face:North', 'North']);
+  });
+
+  it('a direction pressed from a character facing another way and released before the Face is acknowledged sends no Step at all: a tap is a turn [np-c2.2]', async () => {
+    // WRONG IMPL KILLED: a client that completes a turn into a step (a Step sent when the Face is
+    // acknowledged, whether or not the key is still down), and a continuation that keeps a
+    // released direction.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' });
+    fire('keydown', 'KeyW', 1010);
+    frame(1050);
+    fire('keyup', 'KeyW', 1100);
+    expect(dirs(), 'precondition: the press sent its Face').toEqual(['Face:North']);
+
+    server(1300, { x: 2, y: 6, ack: 1, facing: 'North' });
+    for (const t of [1310, 1010 + HOLD_COMMIT_MS + 400, 1700, 1900]) frame(t);
+    expect(dirs(), 'only the Face, after the ack and many frames').toEqual(['Face:North']);
+  });
+
+  it('an OS key-repeat of a held direction sends nothing after the press`s Face, however many arrive [np-c2.7]', async () => {
+    // WRONG IMPL KILLED: a keydown handler that treats a repeat as a fresh press (every repeat
+    // would send another Face, a walk at the OS repeat rate).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' });
+    fire('keydown', 'KeyW', 1010);
+    expect(dirs(), 'precondition: the press sent its Face').toEqual(['Face:North']);
+    for (let i = 1; i <= 12; i++) {
+      const repeat = fire('keydown', 'KeyW', 1010 + i * 30, { init: { repeat: true } });
+      expect(repeat.defaultPrevented, `repeat ${i} is still consumed`).toBe(true);
+    }
+    expect(dirs(), 'twelve repeats send nothing').toEqual(['Face:North']);
+    expect(H.calls, 'and call no other reducer').toEqual([]);
+  });
+
+  it('a keyup calls no reducer: after a press and its release only the press`s Face was sent, with no clearQueue or setMove [np-c2.7]', async () => {
+    // WRONG IMPL KILLED: a keyup that cancels the walk through clear_queue or replaces it through
+    // set_move (the server would drop a queued move the player already made).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    fire('keydown', 'KeyD', 1010);
+    fire('keyup', 'KeyD', 1050);
+    frame(1100);
+    frame(1300);
+    expect(H.calls, 'no reducer call of any kind (no clearQueue, no setMove)').toEqual([]);
+    expect(H.callArgs).toEqual([]);
+    expect(dirs(), 'only the press`s Face of East').toEqual(['Face:East']);
+  });
+
+  it('a frame push clears the held set: a committed hold sends nothing after the frame closes, until a fresh press sends Face again [np-c2.7]', async () => {
+    // WRONG IMPL KILLED: a push that leaves the held set alone (the hold resumes walking the moment
+    // the Box closes, with the server owing nothing), and a re-press after the clear that is eaten
+    // as a duplicate of the cleared hold.
+    // Timing (predictor.ts): the Face is acked at 1050 as a turn on (2, 6); the frame at 1170 is
+    // past HOLD_COMMIT_MS with nothing owed, so it sends the continuation Step; the frame at 1175
+    // drains that Step to (2, 5), and the batch at 1180 acks it there, so no batch diverges.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' });
+    fire('keydown', 'KeyW', 1010);
+    server(1050, { x: 2, y: 6, ack: 1, facing: 'North' });
+    frame(1170);
+    expect(dirs(), 'precondition: the hold is committed and walks').toEqual([
+      'Face:North',
+      'North',
+    ]);
+    frame(1175);
+    server(1180, { x: 2, y: 5, ack: 2, facing: 'North' });
+    expect(dirs(), 'precondition: the ack batch sends nothing').toEqual(['Face:North', 'North']);
+
+    tapKey('KeyB', 1200);
+    expect(boxShown(), 'precondition: the Box opened').toBe(true);
+    frame(1300);
+    frame(1400);
+    tapKey('KeyB', 1500);
+    expect(boxShown(), 'precondition: the Box closed').toBe(false);
+    server(1510, { x: 2, y: 5, ack: 2, facing: 'North' });
+    for (const t of [1520, 1700, 1900]) frame(t);
+    expect(dirs(), 'W is still down, but the push cleared it: nothing is sent').toEqual([
+      'Face:North',
+      'North',
+    ]);
+
+    fire('keyup', 'KeyW', 2000);
+    fire('keydown', 'KeyW', 2010);
+    expect(dirs(), 'a fresh press sends Face again').toEqual(['Face:North', 'North', 'Face:North']);
+  });
+
+  it('a direction press against a frozen link sends nothing and predicts nothing; once the link is live a fresh press sends its Face as seq 1', async () => {
+    // WRONG IMPL KILLED: a press that bypasses the freeze gate (an enqueueMove on a frozen link), a
+    // gate on the send alone (the predictor would record the Face, step the character to (2, 5)
+    // on the next frame, and consume seq 1), and a held continuation that sends on a frozen link.
+    // Timing (predictor.ts): the batch at 1000 rebases the baseline to 600, so any queued input is
+    // due at 800 and the first frame after it drains it. The row faces North, so a recorded Face
+    // of North would step to (2, 5); sendIntent returns before predictor.enqueue while the link is
+    // frozen, so the queue stays empty, the tile stays (2, 6) and no seq is consumed.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    H.frozen = true;
+    fire('keydown', 'KeyW', 1010);
+    expect(H.sends, 'a press on a frozen link sends nothing').toHaveLength(0);
+    // 1300 is past HOLD_COMMIT_MS with W still down: the continuation is gated too.
+    for (const t of [1100, 1010 + HOLD_COMMIT_MS + 10, 1300]) frame(t);
+    expect(H.sends, 'a committed hold on a frozen link sends nothing').toHaveLength(0);
+    expect(predictedTile(), 'and nothing was predicted: the character stays on (2, 6)').toEqual({
+      x: 2,
+      y: 6,
+    });
+    fire('keyup', 'KeyW', 1350);
+
+    H.frozen = false;
+    fire('keydown', 'KeyW', 1400);
+    expect(H.sends, 'once live, a fresh press sends exactly one input').toHaveLength(1);
+    expect(H.sends[0].input, 'its Face of North').toEqual({ tag: 'Face', value: { tag: 'North' } });
+    expect(H.sends[0].seq, 'the frozen press consumed no seq').toBe(1n);
+    frame(1410);
+    expect(predictedTile(), 'control: the live Face, facing North, steps to (2, 5)').toEqual({
+      x: 2,
+      y: 5,
+    });
+  });
+
+  it('the DEV hook`s step sends a Step, not a Face: from a character facing East, step(North) turns and moves it one tile', async () => {
+    // WRONG IMPL KILLED: a hook routed through the press path (a Face of North from a row facing
+    // East is a turn in place, so the setup walks the e2e specs make with `__game().step` would
+    // stall on their first tile).
+    // Timing (predictor.ts): the batch at 1000 rebases the baseline to 600, so the Step is due at
+    // 800 and the frame at 1020 drains it to (2, 5); the batch at 1050 acks it there, so the
+    // reconcile does not diverge and nothing is held, so nothing more is sent.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' });
+    clock.t = 1010;
+    (window as unknown as { __game: () => { step: (dir: Dir) => void } }).__game().step('North');
+    expect(dirs(), 'exactly one send, a Step of North').toEqual(['North']);
+    expect(H.sends[0].input).toEqual({ tag: 'Step', value: { tag: 'North' } });
+    expect(H.sends[0].seq).toBe(1n);
+    frame(1020);
+    expect(predictedTile(), 'the Step turns and moves the character to (2, 5)').toEqual({
+      x: 2,
+      y: 5,
+    });
+    server(1050, { x: 2, y: 5, ack: 1, facing: 'North' });
+    frame(1060);
+    expect(predictedTile(), 'the acknowledging batch agrees: (2, 5)').toEqual({ x: 2, y: 5 });
+    expect(dirs(), 'and nothing more is sent').toEqual(['North']);
   });
 });
 
@@ -1044,14 +1374,14 @@ function settle(t: number): void {
 }
 
 /** Start a FRESH committed hold of W at the world and return the time it is settled at. The keyup
- *  first clears any hold an earlier phase left behind; the fresh press steps at once; the hold
+ *  first clears any hold an earlier phase left behind; the fresh press sends at once; the hold
  *  then commits and takes exactly one continuation step; both are acked. Every precondition is
  *  asserted, so a later "no further step" cannot be vacuous. */
 function committedHold(t: number): number {
   fire('keyup', 'KeyW', t);
   const before = H.sends.length;
   fire('keydown', 'KeyW', t + 1);
-  expect(H.sends.length, 'precondition: a fresh W press at the world steps at once').toBe(
+  expect(H.sends.length, 'precondition: a fresh W press at the world sends at once').toBe(
     before + 1,
   );
   settle(t + 20);
@@ -1182,11 +1512,16 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     fire('keyup', 'Enter', 1007);
     expect(talkCalls(), 'control: A at the world talks to the NPC the rule names').toBe(1);
 
+    // The row faces East, so the W press is a Face that turns the character on (2, 6): the settle
+    // fixture's (2, 6) is exactly the server's answer to it, and no batch here changes behaviour.
     fire('keydown', 'KeyW', 1010);
-    expect(dirs()).toEqual(['North']);
+    // np-c2 (named intentional change): the press sends a Face of North. Was: ['North'].
+    expect(dirs()).toEqual(['Face:North']);
     settle(1030);
     frame(1010 + HOLD_COMMIT_MS + 10);
-    expect(dirs(), 'control: the committed hold continues').toEqual(['North', 'North']);
+    // np-c2 (named intentional change): the press's Face, then the continuation's Step. Was:
+    // ['North', 'North'].
+    expect(dirs(), 'control: the committed hold continues').toEqual(['Face:North', 'North']);
     const sent = H.sends.length;
 
     // ONE batch carries the battle row AND a server pullback to a tile the predictor does not
@@ -1261,7 +1596,13 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // Anti-vacuity: the world walks again for a fresh press.
     fire('keyup', 'KeyW', 2500);
     fire('keydown', 'KeyW', 2510);
-    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['North', 'North', 'North']);
+    // np-c2 (named intentional change): the first press's Face, the continuation's Step, then the
+    // fresh press's Face. Was: ['North', 'North', 'North'].
+    expect(dirs(), 'a fresh W press at the world sends once').toEqual([
+      'Face:North',
+      'North',
+      'Face:North',
+    ]);
   });
 
   it('CTL2-3-BOOT-BATTLE-HELD: a hold that was live when a battle began does not resume when the battle ends', async () => {
@@ -1329,7 +1670,8 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // Anti-vacuity: the world walks for a fresh press.
     fire('keyup', 'KeyW', 2500);
     fire('keydown', 'KeyW', 2510);
-    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['North']);
+    // np-c2 (named intentional change): the fresh press sends a Face of North. Was: ['North'].
+    expect(dirs(), 'a fresh W press at the world sends once').toEqual(['Face:North']);
   });
 
   it('CTL2-3-BOOT-SESSION: a server pullback sends no re-issued step while a session terminal owns the screen', async () => {
@@ -1339,15 +1681,21 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // gate, and one that holds the session gate permanently (the control below must still send).
     await bootReady();
     seedWorld(1000);
+    // The row faces East, so the W press is a Face that turns the character on (2, 6), which is
+    // the settle fixture's (2, 6); the pullback below diverges exactly as before.
     fire('keydown', 'KeyW', 1010);
     settle(1030);
     frame(1010 + HOLD_COMMIT_MS + 10);
-    expect(dirs(), 'precondition: the committed hold is live').toEqual(['North', 'North']);
+    // np-c2 (named intentional change): the press's Face, then the continuation's Step. Was:
+    // ['North', 'North'].
+    expect(dirs(), 'precondition: the committed hold is live').toEqual(['Face:North', 'North']);
 
     // Control: with the session live, a pullback batch re-issues the held step.
     server(1200, { x: 2, y: 7, ack: 2 });
+    // np-c2 (named intentional change): the press's Face, then the frame-loop Step and the
+    // re-issued Step (both continuation emitters still send Step). Was: ['North', 'North', 'North'].
     expect(dirs(), 'control: a pullback re-issues the held step').toEqual([
-      'North',
+      'Face:North',
       'North',
       'North',
     ]);
@@ -1500,7 +1848,8 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // The world walks: one press, one step.
     expect(H.sends.length, 'precondition: nothing has been sent yet').toBe(0);
     fire('keydown', 'KeyW', 1200);
-    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['North']);
+    // np-c2 (named intentional change): the press sends a Face of North. Was: ['North'].
+    expect(dirs(), 'a fresh W press at the world sends once').toEqual(['Face:North']);
   });
 
   it('CTL2-4-BOOT-CLICK-OPEN: an overlay opened by a connection callback (no key, no batch) still clears the held direction when it is closed before any frame', async () => {
@@ -1546,11 +1895,16 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // nothing when it closes and a surviving hold would walk on the first frame after.
     await bootReady();
     seedWorld(1000);
+    // The row faces East, so each W press is a Face that turns the character on (2, 6), which is
+    // the settle fixture's (2, 6); the continuation Steps are unchanged.
     fire('keydown', 'KeyW', 1000);
-    expect(dirs()).toEqual(['North']);
+    // np-c2 (named intentional change): the press sends a Face of North. Was: ['North'].
+    expect(dirs()).toEqual(['Face:North']);
     settle(1020);
     frame(1000 + HOLD_COMMIT_MS + 10);
-    expect(dirs(), 'precondition: the committed hold continues').toEqual(['North', 'North']);
+    // np-c2 (named intentional change): the press's Face, then the continuation's Step. Was:
+    // ['North', 'North'].
+    expect(dirs(), 'precondition: the committed hold continues').toEqual(['Face:North', 'North']);
 
     fire('keydown', 'KeyB', 1200);
     expect(boxShown(), 'precondition: the box opened').toBe(true);
@@ -1571,7 +1925,8 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     fire('keyup', 'KeyW', 2300);
     fire('keydown', 'KeyW', 2310);
     expect(H.sends.length, 'a fresh press steps immediately').toBe(sent + 1);
-    expect(step(H.sends[sent])).toBe('North');
+    // np-c2 (named intentional change): the fresh press sends a Face of North. Was: 'North'.
+    expect(step(H.sends[sent])).toBe('Face:North');
     settle(2330);
     frame(2310 + HOLD_COMMIT_MS + 10);
     expect(H.sends.length, 'and the fresh hold walks on once it commits').toBe(sent + 2);
@@ -3212,7 +3567,9 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
 
     // Movement is live again.
     tapKey('KeyW', 1140);
-    expect(dirs(), 'a W press with no picker walks').toEqual(['North']);
+    // np-c2 (named intentional change): the W press sends a Face of North (the row faces East, so
+    // game-core turns the character; the subject is that movement is live). Was: ['North'].
+    expect(dirs(), 'a W press with no picker walks').toEqual(['Face:North']);
   });
 
   it('CTL10A-1-BOOT-NONE: with no candidate A consults the rule and does nothing: no reducer, no frame, an empty #status, no chip; Y does nothing either', async () => {
@@ -3395,10 +3752,12 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     frame(1085);
     expect(calls(), 'A, Y and the frames after them reuse the memo').toBe(1);
 
-    // A facing-only change: North is blocked, so W turns the character and moves nothing.
-    H.blocked.add('2,5');
+    // A facing-only change: the character faces East, so the W press is a Face of North that
+    // turns it on (2, 6) and moves nothing (game-core's rule; no tile needs blocking).
     tapKey('KeyW', 1100);
-    expect(dirs(), 'precondition: the turn was sent as a step').toEqual(['North']);
+    // np-c2 (named intentional change): the turn is the press's own Face of North, from a row
+    // facing East, with no tile blocked. Was: ['North'], a Step turned by a blocked (2, 5).
+    expect(dirs(), 'precondition: the turn was sent as a Face').toEqual(['Face:North']);
     for (const t of [1110, 1120, 1130]) frame(t);
     expect(calls(), 'the predicted facing changed, the position did not: one more call').toBe(2);
     expect(H.interactCalls.at(-1)?.slice(0, 3), 'asked about the same tile, facing North').toEqual([
@@ -3453,7 +3812,9 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
       `[Enter] Choose${ELLIPSIS}`,
     );
     tapKey('KeyW', 1060);
-    expect(dirs(), 'movement works after').toEqual(['North']);
+    // np-c2 (named intentional change): the W press sends a Face of North (the row faces East, so
+    // game-core turns the character; the subject is that movement is live). Was: ['North'].
+    expect(dirs(), 'movement works after').toEqual(['Face:North']);
   });
 
   it('CTL10A-1-BOOT-PREDICTED: the rule is asked about the PREDICTED position and facing (what is drawn), not the authoritative row, with the zone from the row', async () => {
@@ -3466,14 +3827,25 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     expect(H.interactCalls.at(-1)?.slice(0, 4), 'precondition: asked about the row').toEqual([
       2, 6, 2, 0,
     ]);
+    // np-c2 (named intentional change): a press is a Face, so the first S tap from the East-facing
+    // row is a turn in place and a second tap steps; the predicted FACING is proven after the turn
+    // and the predicted TILE after the step, re-derived from the rule. Was: one S tap sent
+    // ['South'] and the predictor drew (2, 7) facing South after it.
     tapKey('KeyS', 1010);
-    expect(dirs(), 'precondition: one step South').toEqual(['South']);
-    frame(1020); // the predictor draws (2, 7) facing South; no batch has acked it
+    expect(dirs(), 'precondition: one Face of South').toEqual(['Face:South']);
+    frame(1020); // the predictor draws (2, 6) facing South (a turn); no batch has acked it
+    expect(
+      H.interactCalls.at(-1)?.slice(0, 4),
+      'asked about the predicted facing (South is 1), not the row`s East',
+    ).toEqual([2, 6, 1, 0]);
+    tapKey('KeyS', 1025);
+    expect(dirs(), 'precondition: a second Face of South').toEqual(['Face:South', 'Face:South']);
+    frame(1040); // the predictor draws (2, 7) facing South; still no batch has acked anything
     expect(
       H.interactCalls.at(-1)?.slice(0, 4),
       'asked about the predicted tile and facing (South is 1)',
     ).toEqual([2, 7, 1, 0]);
-    tapKey('Enter', 1030);
+    tapKey('Enter', 1050);
     expect(talkCalls(), 'facing away from the guide, as drawn: A talks to nobody').toBe(0);
   });
 
@@ -3587,7 +3959,9 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     frame(1155);
     expect(H.sends, 'precondition: nothing walked so far').toHaveLength(0);
     tapKey('KeyW', 1160);
-    expect(dirs(), 'movement is live after the sheets closed').toEqual(['North']);
+    // np-c2 (named intentional change): the W press sends a Face of North (the row faces East, so
+    // game-core turns the character; the subject is that movement is live). Was: ['North'].
+    expect(dirs(), 'movement is live after the sheets closed').toEqual(['Face:North']);
   });
 
   it('CTL10A-3-BOOT-T-NOOP: KeyT does nothing at all, with an NPC or a heal location faced: no reducer, no frame, the stack stays [world], no toast; A in the same state does act', async () => {
@@ -3832,15 +4206,18 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     // the moment B closes it, although the player never pressed it again.
     await bootReady();
     useRule(() => []);
-    server(1000, { x: 2, y: 6, ack: 0 }); // nothing faced
+    // The row faces East, so the D press is a Face of East that steps exactly as a Step does: the
+    // tiles below are unchanged; the subject is the held clear, not the turn.
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'East' }); // nothing faced
     fire('keydown', 'KeyD', 1010); // held: no keyup
-    expect(dirs(), 'precondition: the press stepped East').toEqual(['East']);
+    // np-c2 (named intentional change): the press sends a Face of East. Was: ['East'].
+    expect(dirs(), 'precondition: the press stepped East').toEqual(['Face:East']);
     frame(1015); // the predictor draws (3, 6)
 
     placeNpc(NPC_ENTITY, 'guide', 4, 6, { kind: 'dialogue' }, 1020);
     healLocation(9, 3, 5);
     useRule(pick(['npc', '11'], ['heal', '9']));
-    server(1020, { x: 3, y: 6, ack: 1 }); // the step acked where it was drawn: nothing owed
+    server(1020, { x: 3, y: 6, ack: 1, facing: 'East' }); // the step acked where it was drawn
     tapKey('Enter', 1030);
     frame(1035);
     // uif-12 (UIF12.2, named intentional change): two rows + Close.
@@ -3856,7 +4233,8 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
 
     fire('keyup', 'KeyD', 2400);
     fire('keydown', 'KeyD', 2410);
-    expect(dirs(), 'control: a fresh D press walks').toEqual(['East', 'East']);
+    // np-c2 (named intentional change): both presses send a Face of East. Was: ['East', 'East'].
+    expect(dirs(), 'control: a fresh D press walks').toEqual(['Face:East', 'Face:East']);
   });
 
   it('CTL10A-1-BOOT-SHEET-NAME: the open picker`s listbox is named exactly "[Enter] Choose…"', async () => {

@@ -30,8 +30,9 @@ import {
 //            unchanged by the sheet; the sheet sits above that point and is centred on it), and a
 //            REAL click on the row runs it (the greeting opens: the Shop NPC's `talk`).
 //   UIF12.4  A real click on the world canvas well away from the open sheet closes it and does
-//            NOTHING else: no dialogue, no shop, no frame, the stack stays the bare world, and
-//            the next movement press walks exactly one tile.
+//            NOTHING else: no dialogue, no shop, no frame, the stack stays the bare world, the
+//            next movement press turns the character in place and the one after walks exactly
+//            one tile.
 //
 // Setup: the shop-npc.spec.ts route and post — the stationary tideglass_shopkeeper at (8,1) in
 // zone 1, faced from (7,1) facing East (WORLD FACTS: see that file's header). Nothing here needs a
@@ -208,8 +209,9 @@ test.describe
 
     // KILLS: a world sheet that is not the kit's (an outside click never closes it, or falls
     // through to the canvas and presses A: the greeting would open); a close that also fires the
-    // cursor row; a close that leaves the held input armed (the next press must walk exactly once).
-    test('UIF12.4 a real click on the world canvas away from the open sheet closes it and does nothing else; the next movement press walks one tile', async () => {
+    // cursor row; a close that leaves the held input armed (the next press must turn the
+    // character in place, and the press after it must walk exactly one tile).
+    test('UIF12.4 a real click on the world canvas away from the open sheet closes it and does nothing else; the next movement press turns the character and the one after walks one tile', async () => {
       test.setTimeout(180_000);
       // Close the greeting (and anything above the world), then reopen the sheet.
       await closeAll(page);
@@ -250,7 +252,12 @@ test.describe
       expect(shopOpened, 'and open no shop').toBe(false);
       expect((await readWorld(page)).stackLength, 'still a bare world after the waits').toBe(1);
 
-      // The next movement press walks exactly one tile (west, off the post).
+      // np-c2 (named intentional change): the next movement press, Left from the post faced
+      // East, turns the character in place to face West on (7,1) (a press sends Face, which
+      // turns a character that does not face that way). Was: the one press walked to (6,1).
+      await pressButton(page, 'Left');
+      await expectPosted(page, SHOP_POST, 'West', 'uif-12 after the close: the turn');
+      // The press after it, now facing West, walks exactly one tile (west, off the post).
       await pressButton(page, 'Left');
       await expectPosted(page, { x: 6, y: 1 }, 'West', 'uif-12 after the close');
     });
