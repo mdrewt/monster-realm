@@ -6549,7 +6549,7 @@ mod tests {
             reward: QuestReward {
                 xp: 0,
                 items: vec![],
-                currency: 50,
+                currency: 150,
             },
         };
         assert_eq!(

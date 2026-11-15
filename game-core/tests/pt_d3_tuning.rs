@@ -4,11 +4,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use game_core::interact::npc_offers_shop;
+use game_core::tactics::{effective_pack, roll_pack_size, MAX_PACK};
 use game_core::{
     base_stat_total, battle_currency_reward, build_monster, derive_stats, eligible_evolution_paths,
-    load_encounters, load_evolution_paths, load_items, load_shops, load_species, recruit_chance,
-    roll_encounter, EVs, EncounterTable, IVs, Level, Nature, NatureKind, Species,
-    RECRUIT_BASE_RATE,
+    load_encounters, load_evolution_paths, load_heal_locations, load_items, load_npc_defs,
+    load_shops, load_species, load_starter_kit, load_tactics_items, load_tactics_zones,
+    recruit_chance, roll_encounter, EVs, EncounterTable, HealLocationDef, IVs, Level, Nature,
+    NatureKind, NpcDef, ShopDef, Species, RECRUIT_BASE_RATE,
 };
 
 // ===========================================================================
@@ -439,4 +442,302 @@ fn no_wild_catch_is_evolution_eligible_on_the_spot() {
         "no band reaches an out-edge min_level, so this test no longer exercises the non-level \
          gates (species 7 used to): re-check the oracle"
     );
+}
+
+// ===========================================================================
+// Faucet/sink tuning — the kit, the heal sink, the recruit loop and battle-item prices.
+// The reasoning behind each relation lives in docs/economy-tuning.md.
+// ===========================================================================
+
+/// The Lure Berry's item id (item ids are append-only, so the constant is a stable handle).
+const LURE_BERRY_ITEM_ID: u32 = 1;
+
+/// Zone 0, Verdant Hollow: the zone a fresh player battles in first.
+const ZONE0_ID: u32 = 0;
+
+/// The most zone-0 recruit-heavy battles one Lure Berry may cost.
+const LURE_BERRY_BATTLE_BUDGET: u64 = 15;
+
+/// The shops some NPC offers, by the server's own predicate (`npc_offers_shop`). A shop no NPC
+/// offers has no price a player pays. Whether the NPC's tile can be walked to is world content
+/// this file does not check.
+fn npc_opened_shops<'a>(shops: &'a [ShopDef], npcs: &[NpcDef]) -> Vec<&'a ShopDef> {
+    shops
+        .iter()
+        .filter(|shop| {
+            npcs.iter()
+                .any(|npc| npc_offers_shop(npc.interaction, Some(shop.id)))
+        })
+        .collect()
+}
+
+/// The Lure Berry's price: the lowest `buy_price` any NPC-opened shop asks for it. No
+/// NPC-opened shop stocking it is a panic, and the price is above 0.
+fn lure_berry_price(opened: &[&ShopDef]) -> u64 {
+    let price = opened
+        .iter()
+        .flat_map(|shop| shop.stock.iter())
+        .filter(|entry| entry.item_id == LURE_BERRY_ITEM_ID)
+        .map(|entry| entry.buy_price)
+        .min()
+        .unwrap_or_else(|| {
+            panic!(
+                "no shop an NPC opens stocks the Lure Berry (item {LURE_BERRY_ITEM_ID}): stock it \
+                 in a shop in game-core/content/shops/000-core.ron that an NPC opens with \
+                 `interaction: Shop(id)` in game-core/content/npcs/000-core.ron (reasoning: \
+                 docs/economy-tuning.md)"
+            )
+        });
+    assert!(
+        price > 0,
+        "the Lure Berry (item {LURE_BERRY_ITEM_ID}) has buy_price 0 in a shop an NPC opens: a 0 \
+         price means not for sale — fix its `buy_price` in game-core/content/shops/000-core.ron \
+         (reasoning: docs/economy-tuning.md)"
+    );
+    price
+}
+
+// The starter kit's currency alone buys one Lure Berry at the cheapest shop an NPC opens.
+#[test]
+fn starter_kit_currency_buys_one_lure_berry() {
+    let items = load_items().expect("items registry must parse");
+    let shops = load_shops().expect("shops registry must parse");
+    let npcs = load_npc_defs().expect("npc registry must parse");
+    let kit = load_starter_kit().expect("starter kit must parse");
+
+    let lure = items
+        .iter()
+        .find(|item| item.id == LURE_BERRY_ITEM_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "item {LURE_BERRY_ITEM_ID} (the Lure Berry) is missing from \
+                 game-core/content/items/000-core.ron (reasoning: docs/economy-tuning.md)"
+            )
+        });
+    assert!(
+        lure.recruit_bonus > 0,
+        "item {LURE_BERRY_ITEM_ID} ({}) has recruit_bonus 0, so it is not a bait: the Lure Berry \
+         constant points at the wrong item in game-core/content/items/000-core.ron (reasoning: \
+         docs/economy-tuning.md)",
+        lure.name
+    );
+
+    let opened = npc_opened_shops(&shops, &npcs);
+    let price = lure_berry_price(&opened);
+    assert!(
+        kit.currency >= price,
+        "the starter kit's currency {} cannot buy one Lure Berry at {price}: raise `currency` in \
+         game-core/content/starter_kit.ron or lower the Lure Berry's `buy_price` in \
+         game-core/content/shops/000-core.ron (reasoning: docs/economy-tuning.md)",
+        kit.currency
+    );
+}
+
+// Every shipped heal location heals for free: no currency, no item, no quantity.
+#[test]
+fn shipped_heal_locations_charge_nothing() {
+    let locations = load_heal_locations().expect("heal_locations registry must parse");
+    assert!(
+        !locations.is_empty(),
+        "game-core/content/heal_locations/000-core.ron ships no heal location, so there is \
+         nothing to check (reasoning: docs/economy-tuning.md)"
+    );
+
+    for location in &locations {
+        // No `..`: a cost field added to HealLocationDef stops this compiling until "charges
+        // nothing" is decided for it.
+        let HealLocationDef {
+            location_id,
+            zone_id: _,
+            tile_x: _,
+            tile_y: _,
+            cost_item_id,
+            cost_qty,
+            cooldown_ms: _,
+            cost_currency,
+        } = location;
+        assert_eq!(
+            *cost_currency, 0,
+            "heal location {location_id} charges cost_currency {cost_currency}: set \
+             `cost_currency: 0` in game-core/content/heal_locations/000-core.ron (reasoning: \
+             docs/economy-tuning.md)"
+        );
+        assert!(
+            cost_item_id.is_none(),
+            "heal location {location_id} charges cost_item_id {cost_item_id:?}: set \
+             `cost_item_id: None` in game-core/content/heal_locations/000-core.ron (reasoning: \
+             docs/economy-tuning.md)"
+        );
+        assert_eq!(
+            *cost_qty, 0,
+            "heal location {location_id} charges cost_qty {cost_qty}: set `cost_qty: 0` in \
+             game-core/content/heal_locations/000-core.ron (reasoning: docs/economy-tuning.md)"
+        );
+    }
+}
+
+// The expected currency of one recruit-heavy zone-0 wild battle buys a Lure Berry within
+// LURE_BERRY_BATTLE_BUDGET battles. The battle KOs every wild but the one recruited, each KO
+// paying the reward of the zone's spawn-weighted mean BST. The model assumes a party of
+// MAX_PACK conscious monsters; a smaller party meets smaller packs.
+#[test]
+fn recruit_heavy_zone0_battles_buy_a_lure_berry_within_the_battle_budget() {
+    let tactics_zones = load_tactics_zones().expect("tactics_zones registry must parse");
+    let encounters = load_encounters().expect("encounters registry must parse");
+    let species_rows = load_species().expect("species registry must parse");
+    let shops = load_shops().expect("shops registry must parse");
+    let npcs = load_npc_defs().expect("npc registry must parse");
+
+    let zone0 = tactics_zones
+        .iter()
+        .find(|zone| zone.zone_id == ZONE0_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "zone {ZONE0_ID} has no row in game-core/content/tactics_zones/000-core.ron \
+                 (reasoning: docs/economy-tuning.md)"
+            )
+        });
+
+    // The production pack roll over each per-mille residue once.
+    let mut kos_per_1000: u64 = 0;
+    for r in 0u64..1000 {
+        let rolled = roll_pack_size(&zone0.pack_weights, r).unwrap_or_else(|e| {
+            panic!(
+                "roll_pack_size rejects zone {ZONE0_ID}'s pack_weights at r={r}: {e:?} — fix \
+                 `pack_weights` in game-core/content/tactics_zones/000-core.ron (reasoning: \
+                 docs/economy-tuning.md)"
+            )
+        });
+        let pack = effective_pack(rolled, MAX_PACK).unwrap_or_else(|e| {
+            panic!("effective_pack rejects rolled={rolled} for a party of {MAX_PACK}: {e:?}")
+        });
+        let kos = u64::from(pack)
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("effective_pack returned an empty pack at r={r}"));
+        kos_per_1000 += kos;
+    }
+    assert!(
+        kos_per_1000 > 0,
+        "zone {ZONE0_ID}'s pack_weights field only single-wild packs, so a recruit-heavy battle \
+         KOs nothing and pays nothing: fix `pack_weights` in \
+         game-core/content/tactics_zones/000-core.ron (reasoning: docs/economy-tuning.md)"
+    );
+
+    let table = encounters
+        .iter()
+        .find(|table| table.zone_id == ZONE0_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "zone {ZONE0_ID} has no table in game-core/content/encounters/000-core.ron \
+                 (reasoning: docs/economy-tuning.md)"
+            )
+        });
+    let mut weight_sum: u64 = 0;
+    let mut weighted_bst: u64 = 0;
+    for entry in &table.entries {
+        let sp = find_species(&species_rows, entry.species_id).unwrap_or_else(|| {
+            panic!(
+                "zone {ZONE0_ID} encounter species {} is not in load_species() \
+                 (game-core/content/species/)",
+                entry.species_id
+            )
+        });
+        let weight = u64::from(entry.weight);
+        weight_sum += weight;
+        weighted_bst += weight * u64::from(base_stat_total(&sp.base_stats));
+    }
+    assert!(
+        weight_sum > 0,
+        "zone {ZONE0_ID}'s encounter entries carry zero total weight in \
+         game-core/content/encounters/000-core.ron, so the mean wild BST is undefined \
+         (reasoning: docs/economy-tuning.md)"
+    );
+    let mean_bst = u16::try_from(weighted_bst / weight_sum)
+        .expect("a weighted mean of u16 base-stat totals fits in u16");
+    let ko_reward = battle_currency_reward(mean_bst);
+
+    let opened = npc_opened_shops(&shops, &npcs);
+    let lure_price = lure_berry_price(&opened);
+
+    assert!(
+        LURE_BERRY_BATTLE_BUDGET * ko_reward * kos_per_1000 >= lure_price * 1000,
+        "{LURE_BERRY_BATTLE_BUDGET} recruit-heavy zone-{ZONE0_ID} battles pay \
+         {LURE_BERRY_BATTLE_BUDGET} x {ko_reward} gold per KO x {kos_per_1000} KOs per 1000 \
+         battles / 1000, short of the Lure Berry's {lure_price}: tune zone {ZONE0_ID}'s \
+         `pack_weights` (game-core/content/tactics_zones/000-core.ron), its encounter `weight`s \
+         (game-core/content/encounters/000-core.ron) or the Lure Berry's `buy_price` \
+         (game-core/content/shops/000-core.ron) (reasoning: docs/economy-tuning.md)"
+    );
+}
+
+/// The median buy price of a shop's stock: the sorted prices at index `(n - 1) / 2` (the lower
+/// middle when n is even). `None` for an empty stock.
+fn median_buy_price(shop: &ShopDef) -> Option<u64> {
+    let mut prices: Vec<u64> = shop.stock.iter().map(|entry| entry.buy_price).collect();
+    prices.sort_unstable();
+    let index = prices.len().checked_sub(1)? / 2;
+    prices.get(index).copied()
+}
+
+// Every battle-usable item is sold by an NPC-opened shop at a price above 0 and at or below
+// that shop's median buy price, so its flat AP cost is balanced by a price a player pays.
+#[test]
+fn every_battle_usable_item_sells_at_or_below_its_shop_median() {
+    let tactics_items = load_tactics_items().expect("tactics_items registry must parse");
+    let items = load_items().expect("items registry must parse");
+    let shops = load_shops().expect("shops registry must parse");
+    let npcs = load_npc_defs().expect("npc registry must parse");
+
+    assert!(
+        !tactics_items.is_empty(),
+        "game-core/content/tactics_items/000-core.ron ships no battle-usable item, so there is \
+         nothing to check (reasoning: docs/economy-tuning.md)"
+    );
+
+    let opened = npc_opened_shops(&shops, &npcs);
+    for row in &tactics_items {
+        let item = items
+            .iter()
+            .find(|item| item.id == row.item_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "battle-usable item {} in game-core/content/tactics_items/000-core.ron is \
+                     missing from game-core/content/items/000-core.ron",
+                    row.item_id
+                )
+            });
+
+        // (shop id, the item's price there, that shop's median)
+        let offers: Vec<(u32, u64, u64)> = opened
+            .iter()
+            .flat_map(|shop| {
+                let median = median_buy_price(shop);
+                shop.stock
+                    .iter()
+                    .filter(|entry| entry.item_id == row.item_id)
+                    .map(move |entry| {
+                        let median = median.unwrap_or_else(|| {
+                            panic!(
+                                "shop {} stocks item {} but has no median",
+                                shop.id, entry.item_id
+                            )
+                        });
+                        (shop.id, entry.buy_price, median)
+                    })
+            })
+            .collect();
+
+        let sold_fairly = offers
+            .iter()
+            .any(|&(_, price, median)| price > 0 && price <= median);
+        assert!(
+            sold_fairly,
+            "battle-usable item {} ({}) is sold by no NPC-opened shop at a buy_price above 0 \
+             and at or below that shop's median; NPC-opened offers as (shop, price, median): \
+             {offers:?} — fix its `buy_price` in game-core/content/shops/000-core.ron or stock it \
+             in a shop an NPC opens (game-core/content/npcs/000-core.ron) (reasoning: \
+             docs/economy-tuning.md)",
+            item.id, item.name
+        );
+    }
 }
