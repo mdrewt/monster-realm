@@ -51,6 +51,11 @@ pub struct Character {
 /// `move_intent.last_input_seq`). The column stays because schema changes are
 /// additive; `seed_intent` reads it once for a session that pre-dates
 /// `move_intent`.
+///
+/// `discriminator` is the public copy of the identity's `player_handle` value,
+/// written by `join_game`; 0 means no tag (a row that pre-dates the column, or
+/// one the deletion cascade tombstoned). `lead_level` is the level of the
+/// owner's lead party monster; 0 means no party.
 #[spacetimedb::table(accessor = player, public)]
 pub struct Player {
     #[primary_key]
@@ -60,6 +65,30 @@ pub struct Player {
     pub name: String,
     pub online: bool,
     pub last_input_seq: u64,
+    #[default(0u32)]
+    pub discriminator: u32,
+    #[default(0u8)]
+    pub lead_level: u8,
+}
+
+/// One minted discriminator per identity: the number that tells two players
+/// with the same name apart. PRIVATE and durable: the `player` row is deleted at
+/// every disconnect, and a public table would list every identity that ever
+/// joined, so the value lives here and `join_game` copies it onto the public
+/// `player` row for the session.
+///
+/// `discriminator` is drawn from the column's sequence (insert 0, read back the
+/// assigned value), so it is never 0, never derived from the identity and never
+/// handed to a second identity: a sequence only grows, and a deleted row's value
+/// is not drawn again. The guest claim moves the row to the account identity
+/// with its value unchanged (an explicit non-zero insert draws nothing).
+#[spacetimedb::table(accessor = player_handle)]
+pub struct PlayerHandle {
+    #[primary_key]
+    pub owner_identity: Identity,
+    #[unique]
+    #[auto_inc]
+    pub discriminator: u32,
 }
 
 /// One player character's movement intent: the undrained input queue and the

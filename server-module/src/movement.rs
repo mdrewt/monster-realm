@@ -242,6 +242,8 @@ pub(crate) fn join_with_kit(
         name,
         online: true,
         last_input_seq: 0,
+        discriminator: 0,
+        lead_level: 0,
     });
     arm_zone_tick(ctx, zone_id);
 

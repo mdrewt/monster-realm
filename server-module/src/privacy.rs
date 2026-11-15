@@ -913,6 +913,8 @@ fn json_player(row: &Player) -> String {
         name,
         online,
         last_input_seq,
+        discriminator: _,
+        lead_level: _,
     } = row;
     let mut out = String::new();
     let mut first = true;

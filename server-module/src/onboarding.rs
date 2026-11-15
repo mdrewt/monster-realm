@@ -68,6 +68,22 @@ pub(crate) fn onboard(ctx: &ReducerContext, owner: Identity, kit: &StarterKit) -
     grant
 }
 
+/// `owner`'s discriminator, minted on first use. SCAFFOLD: mints nothing.
+pub(crate) fn ensure_handle(_ctx: &ReducerContext, _owner: Identity) -> u32 {
+    0
+}
+
+/// Move `from`'s handle onto `to`. SCAFFOLD: moves nothing.
+pub(crate) fn rekey_handle(_ctx: &ReducerContext, _from: Identity, _to: Identity) {}
+
+/// Delete `owner`'s handle. SCAFFOLD: deletes nothing.
+pub(crate) fn erase_handle(_ctx: &ReducerContext, _owner: Identity) {}
+
+/// True if `owner` holds a handle. SCAFFOLD: always false.
+pub(crate) fn has_handle(_ctx: &ReducerContext, _owner: Identity) -> bool {
+    false
+}
+
 #[cfg(test)]
 #[path = "onboarding_tests.rs"]
 mod onboarding_tests;
