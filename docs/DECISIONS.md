@@ -1784,7 +1784,9 @@ but `official` and `test` resolves disabled) and `client/src/main.targetKindGate
 assume we run the server"). Metrics from a friend's or a single-player world would reach our ingest
 carrying the client's address, timing, build and device class though the player never used our
 service. The account token is our issuer's id_token addressed to the build-wide client id, so a host
-that received it could replay it against the official server. Both gates are allow-lists, so a kind
+that received it could replay it against the official server. The Sign In control follows the value
+`connect` received, so it shows exactly where a sign-in can start and the two cannot disagree; with no
+issuer the prompt says accounts are not available on that server. Both gates are allow-lists, so a kind
 added later is off until someone classifies it. The kind is the host's claim and is trusted exactly as
 far as the client code the host serves; a host that claims `official` or `test` can send its players'
 metrics to our ingest, which is accepted (the metrics carry no account identity).
@@ -1795,10 +1797,9 @@ moving the telemetry endpoint into the shell document (a friends host copying ou
 it); reading `import.meta.env.VITE_MR_OIDC_ISSUER` anywhere but that one assignment, or deciding the
 Sign In control from anything but the value `connect` received (a second read or a second kind test
 lets the control and the connection disagree); treating the hidden control or the empty issuer as a
-complete off switch. Hiding the control is presentation: a hidden button still dispatches, so the
-`claimSignIn` command checks the offer itself, and a tab that holds an earlier signed-in session or
-returns from a sign-in redirect still runs the token renewal at connect, which with an empty issuer
-fetches discovery from the page's own origin and fails unless that origin serves one. The `connect`
-gate stays the boundary that keeps the build's issuer and client id from a server we do not operate.
-A per-world telemetry opt-in or per-world sign-in changes these two gates and their tests, not a side
-path.
+complete off switch (hiding is presentation: a hidden button still dispatches, so the `claimSignIn`
+command checks the offer itself; and a tab that holds a stored refresh token or a sign-in redirect's
+code still runs the token exchange at connect, which with an empty issuer fetches discovery from the
+page's own origin and fails unless that origin serves one; the `connect` gate is the boundary that
+keeps the build's issuer and client id from a server we do not operate). A per-world telemetry
+opt-in or per-world sign-in changes these two gates and their tests, not a side path.

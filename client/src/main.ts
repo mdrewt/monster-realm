@@ -399,7 +399,9 @@ const TELEMETRY_CONFIG = resolveTelemetryConfig(
 // OIDC_ISSUER is the one read of the issuer: `connect` and the Account section's Sign In offer
 // both take it, so the control shows exactly where the OIDC flow holds an issuer.
 const OPERATED_BY_US = TARGET_KIND === 'official' || TARGET_KIND === 'test';
-const OIDC_ISSUER: string = OPERATED_BY_US ? (import.meta.env.VITE_MR_OIDC_ISSUER ?? '') : '';
+const OIDC_ISSUER = OPERATED_BY_US
+  ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
+  : '';
 const SIGN_IN_OFFER = signInOffer(
   OIDC_ISSUER,
   (import.meta.env.VITE_MR_OIDC_PROVIDER_NAME as string | undefined) ?? '',

@@ -42,7 +42,8 @@ running instance or a secret.
      `VITE_MR_OIDC_REDIRECT_URI` and `VITE_MR_OIDC_PROVIDER_NAME`. The provider name is
      the text on the Account screen's button ("Sign in / create account with
      <name>"); a build that sets the issuer and not the name shows the issuer URL
-     there. A build with no issuer shows no Sign In control.
+     there. A build with no issuer shows no Sign In control, and no build shows one
+     toward a `local` or `private` server.
 
 The monitoring stack's Caddy (`ops/observability/`) also listens on port 8443. Do not
 run both on one host without moving one of them.
