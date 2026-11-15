@@ -11,7 +11,7 @@ use crate::guards::log_reject;
 #[cfg(feature = "dev_reducers")]
 use crate::marshal::now_ms;
 #[cfg(feature = "dev_reducers")]
-use crate::schema::{battle_clock, battle_tactical, battle_unit, config, BattleClock, SideRow};
+use crate::schema::{battle_clock, battle_tactical, battle_unit, config, SideRow};
 #[cfg(feature = "dev_reducers")]
 use crate::tactics::{dev_arm_deadline, tactical_deadline_sched};
 #[cfg(feature = "dev_reducers")]
@@ -70,7 +70,7 @@ pub fn dev_expire_tactical_window(
     let Some(unit) = ctx.db.battle_unit().unit_id().find(unit_id) else {
         return reject("no open turn window");
     };
-    let Some(clock) = ctx
+    let Some(mut clock) = ctx
         .db
         .battle_clock()
         .battle_id()
@@ -93,10 +93,8 @@ pub fn dev_expire_tactical_window(
         return reject("no pending deadline for the open window");
     }
     let now = now_ms(ctx);
-    ctx.db.battle_clock().clock_id().update(BattleClock {
-        deadline_ms: Some(now),
-        ..clock
-    });
+    clock.deadline_ms = Some(now);
+    ctx.db.battle_clock().clock_id().update(clock);
     dev_arm_deadline(ctx, battle_id, unit_id, window_seq, now);
     Ok(())
 }
