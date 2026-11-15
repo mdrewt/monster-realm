@@ -20,12 +20,13 @@ import {
 // 1. HELD walk (east). The walker's outgoing WebSocket messages are held, and released by the
 //    walker's own Idle row. The client sends its next step only once the row acknowledging the
 //    previous one arrives; that tick writes the row with action Walking, and the NEXT tick,
-//    finding the queue empty (the step is held), writes the same-tile Idle row. Releasing on
-//    that Idle row puts the step on the server just after one tick and a whole step before the
-//    next, so every step misses exactly one tick on any machine, and the watcher receives the
-//    stream players reported: position change, a same-tile Idle row one step later, the next
-//    position change two steps after the previous one. Asserted as a precondition, so a run
-//    where the hold did not shape the stream cannot pass.
+//    finding the queue empty (the step is held), writes the same-tile Idle row. Released on
+//    that Idle row, the step reaches the server just after that tick and well before the next
+//    (the release costs one walker frame and a call into the test process), so every step
+//    misses exactly one tick, and the watcher receives the stream players reported: position
+//    change, a same-tile Idle row one step later, the next position change two steps after the
+//    previous one. Asserted as a precondition, so a run where the hold did not shape the
+//    stream, or where a step missed two ticks, cannot pass.
 // 2. UNHELD walk (back west). Localhost: a step on every tick, no Idle row between steps.
 //    It protects the one-step-per-tick stream: the ring, the order, the glide, no snap, the
 //    settle.
@@ -85,8 +86,8 @@ const WINDOW_STEPS = 3;
 const MAX_DELAY_STEPS = 2.5;
 /**
  * Read by the walker's WebSocket route on every message the page sends: when set, the message
- * is held in `heldWalkerSends` instead of reaching the server. Rows from the server always reach
- * the walker undelayed. The held walk sets it, and a walker-page observer releases the held step
+ * is held in `heldWalkerSends` instead of reaching the server. Rows from the server reach the
+ * walker as they arrive. The held walk sets it, and a walker-page observer releases the held step
  * on the walker's own same-tile Idle row, so the step lands on the server just after the tick
  * that wrote that row. A fixed delay cannot give this stream: the walker's frame time adds to
  * it, so on a slow machine a step misses two ticks and arrives a whole continuation window
@@ -230,7 +231,9 @@ test.describe
       // change is no jitter sample (the store takes one only from position changes at most that
       // window apart, and a same-tile row moves no base) and the render delay starts from the
       // value it holds at rest. A walk that starts sooner after the walker's row first arrives
-      // raises the delay early and shortens what a renderer that never continues stands still.
+      // raises the delay early and shortens how long a renderer that never continues stands
+      // still. The wait is the window plus one step: the step of slack puts the first change
+      // strictly past the store's `<=` gate at the window.
       await watcher.waitForTimeout((WINDOW_STEPS + 1) * stepMs);
 
       await watcher.evaluate((id: string) => {
@@ -492,10 +495,13 @@ test.describe
 
     test('with a step every other tick and an Idle row between steps, the remote keeps walking, never pausing 100 ms, and settles on the last tile [np-a.9]', async () => {
       // The walker's sends are held for the whole walk. Once per walker frame the observer
-      // notices a new send and remembers the ack the walker held when it went out; the walker's
-      // own row turning Idle with that same ack is the tick that found the queue empty, and the
-      // observer releases the held step then. A row that is already Idle when the send goes out
-      // (the standing start, a turn in place) releases it at once.
+      // notices a new send, and releases the held step once the walker's own row is Idle. The
+      // client sends its next step only after the row acknowledging the previous one arrives,
+      // and the tick that drained that step wrote it with action Walking; a held step cannot
+      // reach the server, so only the next tick, finding the queue empty, writes Idle. A row
+      // that is already Idle when the send goes out releases it at once: the press at the
+      // standing start (the row is Idle at rest) and the step after a turn in place (the turn's
+      // row is Idle).
       holdWalkerSends = true;
       let w: Walk;
       try {
@@ -503,7 +509,6 @@ test.describe
           const win = window as unknown as {
             __game: () => {
               moveSendCount: number;
-              ownSync: { ackedSeq: string } | null;
               ownEntityId: string | null;
               characters: { entityId: string; action: string }[];
             };
@@ -513,19 +518,19 @@ test.describe
           win.__holdObserving = true;
           let sent = win.__game().moveSendCount;
           let pending = false;
-          let ackAtSend: string | undefined;
           const observe = (): void => {
             if (!win.__holdObserving) return;
             const g = win.__game();
             if (g.moveSendCount !== sent) {
               sent = g.moveSendCount;
-              ackAtSend = g.ownSync?.ackedSeq;
               pending = true;
             }
             const me = g.characters.find((c) => c.entityId === g.ownEntityId);
-            if (pending && me?.action === 'Idle' && g.ownSync?.ackedSeq === ackAtSend) {
+            if (pending && me?.action === 'Idle') {
               pending = false;
-              void win.__releaseWalkerSends();
+              // Handled: main.ts records an unhandled rejection as a client error and shows its
+              // error overlay, and a fault in the test's release is not the client's.
+              win.__releaseWalkerSends().catch(() => {});
             }
             requestAnimationFrame(observe);
           };
@@ -535,17 +540,21 @@ test.describe
       } finally {
         holdWalkerSends = false;
         releaseHeldWalkerSends();
-        await walker.evaluate(() => {
-          (window as unknown as { __holdObserving: boolean }).__holdObserving = false;
-        });
+        // Tolerant: a closed walker page must not replace the walk's own error.
+        await walker
+          .evaluate(() => {
+            (window as unknown as { __holdObserving: boolean }).__holdObserving = false;
+          })
+          .catch(() => {});
       }
       const { frames, releaseAt, stepMs } = w;
       const { tiles, arrivals, log } = arrivalsOf(w);
 
       // PRECONDITION — the hold shaped the stream: the watcher received the reported stream.
       // Between consecutive position changes it saw a same-tile Idle row, and the changes came
-      // about two steps apart, not three. Without it this test would only repeat the unheld one,
-      // or test a stream where every step misses two ticks.
+      // about two steps apart, not three, and no step inside the checked span missed two ticks.
+      // Without it this test would only repeat the unheld one, or test a stream where a step
+      // misses two ticks.
       let withIdle = 0;
       const gaps: number[] = [];
       for (let k = 2; k < arrivals.length; k += 1) {
@@ -571,17 +580,36 @@ test.describe
         median,
         `PRECONDITION: position changes about two steps apart (arrivals ${log})`,
       ).toBeGreaterThanOrEqual(1.5 * stepMs);
+      // 2.5 steps: midway between the two-step stream and the three-step stream of a step that
+      // missed two ticks.
       expect(
         median,
         `PRECONDITION: position changes about two steps apart, not three (arrivals ${log})`,
       ).toBeLessThan(2.5 * stepMs);
+      // Every gap inside the checked span [arrivals[2], releaseAt]: k = 2 ends at the second
+      // change, before the span. Read from `arrivals`, since `gaps` is sorted above.
+      const missedTwo: string[] = [];
+      for (let k = 3; k < arrivals.length; k += 1) {
+        const at = arrivals[k] as number;
+        const gap = at - (arrivals[k - 1] as number);
+        if (at <= releaseAt && gap >= 2.5 * stepMs) {
+          missedTwo.push(`${Math.round(gap)} ms ending at ${tiles[k]}@${Math.round(at)}`);
+        }
+      }
+      expect(
+        missedTwo,
+        `PRECONDITION: a step missed two ticks inside the checked span (gaps ` +
+          `${missedTwo.join(', ')}; arrivals ${log})`,
+      ).toEqual([]);
 
       // np-a.9 for this stream. np-a.3 states the bound for exactly this stream (steps two
       // STEP_MS apart with same-tile Idle rows between them): no interval of 100 ms (STEP_MS / 2)
       // or more standing still. np-a.9's own "STEP_MS or longer" reads 183 ms of stand-still per
-      // tile as a pass, so the browser proof of the defect is this bound, between the second
-      // authoritative position change and the release (stalls exempt, as in checkWalk).
-      // Measured: today about 183 ms on every tile; with continuation at most about 33 ms.
+      // tile as a pass, so this bound, between the second authoritative position change and the
+      // release (stalls exempt, as in checkWalk), is what proves the remote keeps walking on
+      // this stream. Measured: about 33 ms at most; 133 ms on the first checked tile for a
+      // renderer that never continues a walk; about 183 ms on every tile for a store that keeps
+      // a snapshot per same-tile row.
       const secondChange = arrivals[2];
       if (secondChange === undefined) throw new Error('the watcher saw fewer than two changes');
       const still = longestStill(frames, secondChange, releaseAt, stalledIn(arrivals, stepMs));
