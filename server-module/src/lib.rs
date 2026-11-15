@@ -339,3 +339,7 @@ pub fn on_disconnect(ctx: &ReducerContext) {
         ctx.db.player().identity().delete(me);
     }
 }
+
+// Dev-only reducers: every item inside is behind `dev_reducers`. The module line carries no `cfg`
+// because the deletion-gate census parses only bare and `cfg(test)` module lines.
+mod dev_clock;

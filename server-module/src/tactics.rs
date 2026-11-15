@@ -3122,6 +3122,18 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
     }
 }
 
+/// `arm_deadline` for `dev_clock.rs`, which expires an open window by arming its fire now.
+#[cfg(feature = "dev_reducers")]
+pub(crate) fn dev_arm_deadline(
+    ctx: &ReducerContext,
+    battle_id: u64,
+    unit_id: u32,
+    window_seq: u32,
+    at_ms: i64,
+) {
+    arm_deadline(ctx, battle_id, unit_id, window_seq, at_ms);
+}
+
 #[cfg(test)]
 #[path = "tactics_tests.rs"]
 pub(crate) mod tactics_tests;
