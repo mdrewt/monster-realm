@@ -268,6 +268,45 @@
           "expr": "mr:guest_claim_export_purge:rate5m"
         }
       ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Reducer-thread share by reducer (stacked; total = sum)",
+      "description": "Seconds of transaction time per second, by reducer, stacked: the host runs one writer for the whole world, so the stack's height is how busy that thread is (1.0 = saturated). The dashed `total` line is sum(mr:reducer_thread_share:rate5m) and is not stacked. The series with no reducer name is non-reducer work (subscribe, SQL, internal). Why every txn_type is summed is in the comment above the rule in rules/recording.rules.yml (group mr-slo).",
+      "datasource": { "type": "prometheus", "uid": "mr-prometheus" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 43 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "stacking": { "mode": "normal", "group": "A" }, "fillOpacity": 60 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "total" },
+            "properties": [
+              { "id": "custom.stacking", "value": { "mode": "none", "group": "A" } },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{reducer}}",
+          "expr": "mr:reducer_thread_share:rate5m"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "legendFormat": "total",
+          "expr": "sum(mr:reducer_thread_share:rate5m)"
+        }
+      ]
     }
   ]
 }

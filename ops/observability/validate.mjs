@@ -234,6 +234,13 @@ function runDockerChecks() {
       'rules',
       'rules/recording.rules.yml',
     ]),
+    // The recording rules' behaviour over fixture series, beside their syntax check above.
+    inImage('promtool test rules', IMAGES.prometheus, [
+      'promtool',
+      'test',
+      'rules',
+      'rules/recording.rules.test.yml',
+    ]),
     inImage('alloy fmt', IMAGES.alloy, ['alloy', 'fmt', 'alloy/config.alloy']),
     inImage('loki verify-config', IMAGES.loki, [
       'loki',

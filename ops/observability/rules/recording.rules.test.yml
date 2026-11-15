@@ -3,24 +3,28 @@ rule_files:
 
 evaluation_interval: 15s
 
+# rate()'s extrapolation leaves each result one ULP from the decimal literal;
+# the tolerance is 1 ULP, so any wrong aggregation still fails.
+fuzzy_compare: true
+
 tests:
-  - interval: 15s
-    # Counters are seconds of transaction time; each step is 15 s, so
-    # rate = increment / 15. Linear series, samples every 15 s, eval at 10m
-    # with the 5m window fully inside the data, so rate() is exact.
+  - interval: 25s
+    # Counters are seconds of transaction time; samples are 25 s apart, so
+    # rate = increment / 25. Linear series, eval at 10m with the 5m window
+    # fully inside the data.
     input_series:
-      # movement_tick Reducer rows: +1.5 per step = 0.10 s/s
+      # movement_tick Reducer rows: +2.5 per step = 0.10 s/s
       - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="movement_tick",txn_type="Reducer"}'
-        values: "0+1.5x44"
-      # movement_tick Update row: +0.3 per step = 0.02 s/s (0.10 + 0.02 = 0.12)
+        values: "0+2.5x48"
+      # movement_tick Update row: +0.5 per step = 0.02 s/s (0.10 + 0.02 = 0.12)
       - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="movement_tick",txn_type="Update"}'
-        values: "0+0.3x44"
-      # enqueue_move Reducer row: +0.45 per step = 0.03 s/s
+        values: "0+0.5x48"
+      # enqueue_move Reducer row: +0.75 per step = 0.03 s/s
       - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="enqueue_move",txn_type="Reducer"}'
-        values: "0+0.45x44"
-      # non-reducer work (empty reducer label): +0.75 per step = 0.05 s/s
+        values: "0+0.75x48"
+      # non-reducer work (empty reducer label): +1.25 per step = 0.05 s/s
       - series: 'spacetime_txn_elapsed_time_sec_sum{db="c200a1b2c3d4e5f6a7b8c9d0e1f2a3b4",reducer="",txn_type="Subscribe"}'
-        values: "0+0.75x44"
+        values: "0+1.25x48"
     promql_expr_test:
       # One sample per reducer value; every other label is aggregated away.
       - expr: mr:reducer_thread_share:rate5m
