@@ -1,7 +1,7 @@
-// sr-6a (SR6A.1): reconcileOwnerViews — the owner-view reconcile block moved verbatim out of
-// connect()'s batcher callback. The converters in ./rowConvert are the ORACLE; the store is the real
-// AuthoritativeStore with its thirteen reconcile methods spied (no call-through: only the arguments
-// and the call order are under test).
+// sr-6a (SR6A.1): reconcileOwnerViews — rebuilds the thirteen owner-view store collections from a
+// view cache, containing every throw to its try group. The converters in ./rowConvert are the
+// ORACLE; the store is the real AuthoritativeStore with its thirteen reconcile methods spied (no
+// call-through: only the arguments, the call order and the logged throws are under test).
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import {
   battleClockRowToStore,
@@ -92,9 +92,9 @@ const sdkExportChunk = (chunkId: bigint) => ({
   payloadJson: '{"a":"1"}',
   createdAtMs: 5n,
 });
-const sdkEvolutionNotice = () => ({
-  ownerIdentity: ID,
-  entries: [{ monsterId: 5n, fromSpecies: 1, toSpecies: 2, evolvedAtMs: 9n }],
+const sdkEvolutionNotice = (monsterId: bigint, owner: { toHexString(): string }) => ({
+  ownerIdentity: owner,
+  entries: [{ monsterId, fromSpecies: 1, toSpecies: 2, evolvedAtMs: 9n }],
 });
 const sdkInventory = (invId: bigint) => ({ invId, ownerIdentity: ID, itemId: 5, count: 3 });
 const sdkTactical = (battleId: bigint, mapId: number, turnStateTag = 'NotActive') => ({
@@ -189,22 +189,22 @@ const sdkTrade = (sessionId: bigint) => ({
 });
 
 /** A row whose every property read throws: any converter that touches it throws a plain Error. */
-const malformed = (): unknown =>
+const malformed = (thrown: unknown = new Error('malformed row')): unknown =>
   new Proxy(
     {},
     {
       get: () => {
-        throw new Error('malformed row');
+        throw thrown;
       },
     },
   );
 
-// --- the thirteen views, in the inline order ---------------------------------------------------
+// --- the thirteen views, in call order ---------------------------------------------------------
 interface View {
   readonly key: keyof OwnerViewCache;
   readonly method: string;
   readonly valid: () => unknown[];
-  /** The oracle: what the inline block handed the store for these rows. */
+  /** The oracle: what the store must be handed for these rows. */
   readonly expected: (rows: unknown[]) => unknown[];
 }
 
@@ -223,7 +223,7 @@ const VIEWS: readonly View[] = [
   {
     key: 'myBattle',
     method: 'reconcileBattlesFromView',
-    valid: () => [sdkBattle(47n)],
+    valid: () => [sdkBattle(47n), sdkBattle(48n)],
     expected: conv(battleRowToStore),
   },
   {
@@ -235,7 +235,7 @@ const VIEWS: readonly View[] = [
   {
     key: 'myPendingEvolutionNotices',
     method: 'reconcileEvolutionNoticesFromView',
-    valid: () => [sdkEvolutionNotice()],
+    valid: () => [sdkEvolutionNotice(5n, ID), sdkEvolutionNotice(6n, OTHER)],
     expected: conv(pendingEvolutionNoticeRowToStore),
   },
   {
@@ -265,13 +265,13 @@ const VIEWS: readonly View[] = [
   {
     key: 'myBattleDeploy',
     method: 'reconcileBattleDeploysFromView',
-    valid: () => [sdkDeploy(13n)],
+    valid: () => [sdkDeploy(13n), sdkDeploy(14n)],
     expected: conv(battleDeployRowToStore),
   },
   {
     key: 'myBattleClock',
     method: 'reconcileBattleClocksFromView',
-    valid: () => [sdkClock(19n)],
+    valid: () => [sdkClock(19n), sdkClock(20n)],
     expected: conv(battleClockRowToStore),
   },
   {
@@ -283,7 +283,7 @@ const VIEWS: readonly View[] = [
   {
     key: 'myFormation',
     method: 'reconcileFormationFromView',
-    valid: () => [sdkFormation([37n, 41n])],
+    valid: () => [sdkFormation([37n, 41n]), sdkFormation([43n])],
     expected: conv(formationRowToStore),
   },
   {
@@ -375,9 +375,10 @@ describe('reconcileOwnerViews (sr-6a)', () => {
       );
     }
     expect(errors).not.toHaveBeenCalled();
+    expect(warns).not.toHaveBeenCalled();
   });
 
-  it('SR6A.1 the thirteen reconciles run in the inline order', () => {
+  it('SR6A.1 the thirteen reconciles run in call order', () => {
     reconcileOwnerViews(store, makeCache(allValid()));
     const order = VIEWS.map((v) => spyOf(v.key).mock.invocationCallOrder[0]);
     expect(order.every((n) => typeof n === 'number')).toBe(true);
@@ -393,6 +394,7 @@ describe('reconcileOwnerViews (sr-6a)', () => {
       expect(spy.mock.calls[0], key).toEqual([[]]);
     }
     expect(errors).not.toHaveBeenCalled();
+    expect(warns).not.toHaveBeenCalled();
   });
 
   it('SR6A.1 a tactical battle row with an unknown turn-state tag is dropped and its sibling delivered', () => {
@@ -415,18 +417,47 @@ describe('reconcileOwnerViews (sr-6a)', () => {
     expect(errors).not.toHaveBeenCalled();
   });
 
-  function throwingRows(key: keyof OwnerViewCache): Rows {
+  type Key = keyof OwnerViewCache;
+
+  function throwingRows(key: Key, thrown: unknown): Rows {
     const rows = allValid();
-    rows[key] = [malformed(), ...(rows[key] ?? [])];
+    rows[key] = [malformed(thrown), ...(rows[key] ?? [])];
     return rows;
   }
 
-  function runContained(key: keyof OwnerViewCache, skipped: readonly (keyof OwnerViewCache)[]) {
-    const rows = throwingRows(key);
+  /** The logged throws, in order, must be exactly `thrown` (same objects, never re-wrapped). */
+  function expectLogged(thrown: readonly unknown[]): void {
+    expect(errors, 'one logged throw per fault').toHaveBeenCalledTimes(thrown.length);
+    thrown.forEach((value, i) => {
+      expect(errors.mock.calls[i]?.[0]).toBe(LOG_MESSAGE);
+      expect(errors.mock.calls[i]?.[1], `logged throw ${i} is the thrown value`).toBe(value);
+    });
+  }
+
+  function runContained(key: Key, skipped: readonly Key[], thrown: unknown = new Error('bad row')) {
+    const rows = throwingRows(key, thrown);
     expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
     expectAllBut(rows, skipped);
-    expect(errors, 'exactly one logged throw').toHaveBeenCalledTimes(1);
-    expect(errors).toHaveBeenCalledWith(LOG_MESSAGE, expect.any(Error));
+    expectLogged([thrown]);
+    expect(warns).not.toHaveBeenCalled();
+  }
+
+  /** A cache whose `key` view throws `thrown` from iter() itself. */
+  function iterThrowing(rows: Rows, key: Key, thrown: unknown): OwnerViewCache {
+    const cache = makeCache(rows);
+    const throwing = {
+      iter: (): never => {
+        throw thrown;
+      },
+    };
+    return { ...cache, [key]: throwing } as OwnerViewCache;
+  }
+
+  /** The store reconcile of `key` throws `thrown` once (after being recorded as called). */
+  function storeThrows(key: Key, thrown: unknown): void {
+    spyOf(key).mockImplementationOnce(() => {
+      throw thrown;
+    });
   }
 
   it('SR6A.1 a throwing monster row skips the rest of the shared group only; inventory, tactical and trade still land', () => {
@@ -454,28 +485,123 @@ describe('reconcileOwnerViews (sr-6a)', () => {
     runContained('my_inventory', ['my_inventory']);
   });
 
-  it.each(GUARDED.map((v) => [v.key] as const))(
-    'SR6A.1 a throwing %s row is contained to that view, every other view reconciles',
-    (key) => {
-      runContained(key, [key]);
-    },
-  );
-
-  it('SR6A.1 the throw of a shared-group view is logged and the converter never reaches the store', () => {
-    const rows = throwingRows('myBattle');
-    reconcileOwnerViews(store, makeCache(rows));
-    expect(errors.mock.calls[0]?.[0]).toBe(LOG_MESSAGE);
-    expect(errors.mock.calls[0]?.[1]).toBeInstanceOf(Error);
+  it.each(
+    GUARDED.map((v) => [v.key] as const),
+  )('SR6A.1 a throwing %s row is contained to that view, every other view reconciles', (key) => {
+    runContained(key, [key]);
   });
 
-  it('SR6A.1 a store reconcile that throws is contained the same way as a converter that throws', () => {
-    spyOf('myBattleUnits').mockImplementationOnce(() => {
-      throw new Error('store refused units');
-    });
+  it('SR6A.1 a throwing battle row is logged as the very object thrown and its reconcile never reaches the store', () => {
+    const thrown = new Error('battle row bad');
+    const rows = throwingRows('myBattle', thrown);
+    reconcileOwnerViews(store, makeCache(rows));
+    expect(spyOf('myBattle')).not.toHaveBeenCalled();
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 a store reconcile that throws in a guarded view is contained and logged as the thrown object', () => {
+    const thrown = new Error('store refused units');
+    storeThrows('myBattleUnits', thrown);
     const rows = allValid();
     expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
-    for (const v of VIEWS) expect(spyOf(v.key), v.key).toHaveBeenCalledTimes(1);
-    expect(errors).toHaveBeenCalledTimes(1);
-    expect(errors).toHaveBeenCalledWith(LOG_MESSAGE, expect.any(Error));
+    expectAllBut(rows, []);
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 a store throw in the monsters reconcile skips battles, export and evolution only', () => {
+    const thrown = new Error('store refused monsters');
+    storeThrows('my_monster_pub', thrown);
+    const rows = allValid();
+    expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
+    expectAllBut(rows, ['myBattle', 'my_export_bundle', 'myPendingEvolutionNotices']);
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 a store throw in the battles reconcile skips export and evolution only', () => {
+    const thrown = new Error('store refused battles');
+    storeThrows('myBattle', thrown);
+    const rows = allValid();
+    expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
+    expectAllBut(rows, ['my_export_bundle', 'myPendingEvolutionNotices']);
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 a store throw in the export reconcile skips evolution only', () => {
+    const thrown = new Error('store refused export');
+    storeThrows('my_export_bundle', thrown);
+    const rows = allValid();
+    expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
+    expectAllBut(rows, ['myPendingEvolutionNotices']);
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 a store throw in the inventory reconcile leaves every other view reconciled', () => {
+    const thrown = new Error('store refused inventory');
+    storeThrows('my_inventory', thrown);
+    const rows = allValid();
+    expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
+    expectAllBut(rows, []);
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 an iter() that throws in the shared group skips the later members of that group only', () => {
+    const thrown = new Error('iter blew up');
+    const rows = allValid();
+    expect(() => reconcileOwnerViews(store, iterThrowing(rows, 'myBattle', thrown))).not.toThrow();
+    expectAllBut(rows, ['myBattle', 'my_export_bundle', 'myPendingEvolutionNotices']);
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 an iter() that throws in a guarded view skips that view only', () => {
+    const thrown = new Error('iter blew up');
+    const rows = allValid();
+    expect(() =>
+      reconcileOwnerViews(store, iterThrowing(rows, 'myBattleClock', thrown)),
+    ).not.toThrow();
+    expectAllBut(rows, ['myBattleClock']);
+    expectLogged([thrown]);
+  });
+
+  it('SR6A.1 one throw in the shared group and one in a guarded view are each logged, everything else lands', () => {
+    const first = new Error('battle row bad');
+    const second = new Error('formation row bad');
+    const rows = allValid();
+    rows.myBattle = [malformed(first), ...(rows.myBattle ?? [])];
+    rows.myFormation = [malformed(second), ...(rows.myFormation ?? [])];
+    expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
+    expectAllBut(rows, [
+      'myBattle',
+      'my_export_bundle',
+      'myPendingEvolutionNotices',
+      'myFormation',
+    ]);
+    expectLogged([first, second]);
+  });
+
+  it('SR6A.1 a non-Error thrown by a guarded view converter is contained and logged as thrown', () => {
+    runContained('myBattleDeploy', ['myBattleDeploy'], 'boom');
+  });
+
+  it('SR6A.1 a non-Error thrown by a guarded view iter() is contained and logged as thrown', () => {
+    const rows = allValid();
+    expect(() =>
+      reconcileOwnerViews(store, iterThrowing(rows, 'myTradeSession', 'boom')),
+    ).not.toThrow();
+    expectAllBut(rows, ['myTradeSession']);
+    expectLogged(['boom']);
+  });
+
+  it('SR6A.1 a non-Error thrown in the shared group and in the inventory view is contained and logged as thrown', () => {
+    const rows = allValid();
+    rows.myBattle = [malformed('shared boom'), ...(rows.myBattle ?? [])];
+    rows.my_inventory = [malformed(42), ...(rows.my_inventory ?? [])];
+    expect(() => reconcileOwnerViews(store, makeCache(rows))).not.toThrow();
+    expectAllBut(rows, [
+      'myBattle',
+      'my_export_bundle',
+      'myPendingEvolutionNotices',
+      'my_inventory',
+    ]);
+    expectLogged(['shared boom', 42]);
   });
 });

@@ -5,7 +5,8 @@
 // transaction's row burst via MicrotaskBatcher -> ONE flushBatch), and
 // surface lifecycle. It owns NO game state and never writes anything but the store
 // (one-way flow). Behavior is validated by the M5 two-window e2e; here it
-// wires the tested cores (store / batch / rowConvert / reconnectPolicy / statusModel).
+// wires the tested cores (store / batch / rowConvert / viewReconcile / reconnectPolicy /
+// statusModel).
 // Reducer-rejection routing lands HERE (joinGame + subscription errors) and in
 // main.ts (movement + non-movement sends) — SDK 2.6 has no per-reducer
 // callbacks; the reducer-promise rejection surface is the mechanism.
