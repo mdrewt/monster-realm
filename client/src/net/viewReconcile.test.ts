@@ -454,11 +454,12 @@ describe('reconcileOwnerViews (sr-6a)', () => {
     runContained('my_inventory', ['my_inventory']);
   });
 
-  it.each(
-    GUARDED.map((v) => [v.key] as const),
-  )('SR6A.1 a throwing %s row is contained to that view, every other view reconciles', (key) => {
-    runContained(key, [key]);
-  });
+  it.each(GUARDED.map((v) => [v.key] as const))(
+    'SR6A.1 a throwing %s row is contained to that view, every other view reconciles',
+    (key) => {
+      runContained(key, [key]);
+    },
+  );
 
   it('SR6A.1 the throw of a shared-group view is logged and the converter never reaches the store', () => {
     const rows = throwingRows('myBattle');
