@@ -399,8 +399,12 @@ describe('the booted client offers Sign In only toward a kind it hands the OIDC 
         openAccount(opts, label);
         const button = el('claim-signin-btn');
         expect(isShown(button), `${label}: Sign In is shown`).toBe(true);
+        const issuer = opts.authIssuer;
+        if (issuer === undefined) {
+          throw new Error(`${label}: connect() received no authIssuer`);
+        }
         expect(button.textContent, `${label}: the label names connect()'s issuer`).toBe(
-          tf('claim.signInWithProvider', { provider: opts.authIssuer }),
+          tf('claim.signInWithProvider', { provider: issuer }),
         );
       });
     } else {
