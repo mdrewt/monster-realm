@@ -445,29 +445,93 @@ describe('sr-4a.1: the model holds the top 100 in the total order, ranks 1-100',
     expect(asM.rows[99]).toMatchObject({ identityHex: 'm1000000mm', rank: 100, isOwn: true });
   });
 
-  it('SR4A.1-EXACT BITES: exactly 100 profiles → 100 rows and no `100+`; 101 profiles with the caller last → 101 rows', () => {
-    const lastOf100 = buildLeaderboardViewModel(ladder(100), idOf(99));
-    expect(lastOf100.rows).toHaveLength(100);
-    expect(lastOf100.rows[99]).toMatchObject({ identityHex: idOf(99), rank: 100, isOwn: true });
-    expect(lastOf100.rows.some((r) => r.rank === RANK_BELOW_TOP_K)).toBe(false);
-
-    const firstOf101 = buildLeaderboardViewModel(ladder(101), idOf(100));
-    expect(firstOf101.rows).toHaveLength(101);
-    expect(firstOf101.rows[99]).toMatchObject({ identityHex: idOf(99), rank: 100, isOwn: false });
-    expect(firstOf101.rows[100]).toMatchObject({
-      identityHex: idOf(100),
-      rank: '100+',
-      isOwn: true,
-    });
-  });
-
-  it('SR4A.1-OWNIN BITES: the caller inside the top 100 gets no extra row — their row carries its number and isOwn', () => {
-    const vm = buildLeaderboardViewModel(ladder(150), idOf(36));
-    expect(vm.rows).toHaveLength(100);
-    const own = vm.rows.filter((r) => r.isOwn);
-    expect(own).toHaveLength(1);
-    expect(own[0]).toMatchObject({ identityHex: idOf(36), rank: 37 });
-    expect(vm.rows.some((r) => r.rank === RANK_BELOW_TOP_K)).toBe(false);
+  it('SR4A.1-NOEXTRA BITES: the extra `100+` row appears exactly when the caller has a profile ranked below 100 — exactly 100 profiles, a caller inside the top 100, no profile, and identity "" add none; 101 profiles with the caller last add one', () => {
+    interface Scenario {
+      readonly name: string;
+      readonly profiles: StoreProfile[];
+      readonly identity: string;
+      readonly length: number;
+      /** How many rows carry isOwn. */
+      readonly own: number;
+      /** Whether a `100+` row exists. */
+      readonly below: boolean;
+      /** Rows pinned by index. */
+      readonly at: ReadonlyArray<readonly [number, Record<string, unknown>]>;
+    }
+    const scenarios: readonly Scenario[] = [
+      {
+        name: 'exactly 100 profiles, caller last',
+        profiles: ladder(100),
+        identity: idOf(99),
+        length: 100,
+        own: 1,
+        below: false,
+        at: [[99, { identityHex: idOf(99), rank: 100, isOwn: true }]],
+      },
+      {
+        name: '101 profiles, caller last',
+        profiles: ladder(101),
+        identity: idOf(100),
+        length: 101,
+        own: 1,
+        below: true,
+        at: [
+          [99, { identityHex: idOf(99), rank: 100, isOwn: false }],
+          [100, { identityHex: idOf(100), rank: '100+', isOwn: true }],
+        ],
+      },
+      {
+        name: 'caller inside the top 100 of 150',
+        profiles: ladder(150),
+        identity: idOf(36),
+        length: 100,
+        own: 1,
+        below: false,
+        at: [[36, { identityHex: idOf(36), rank: 37, isOwn: true }]],
+      },
+      {
+        name: 'caller with no profile',
+        profiles: ladder(150),
+        identity: idOf(9999),
+        length: 100,
+        own: 0,
+        below: false,
+        at: [],
+      },
+      {
+        name: 'identity "" (pre-onReady)',
+        profiles: ladder(150),
+        identity: '',
+        length: 100,
+        own: 0,
+        below: false,
+        at: [],
+      },
+      {
+        name: 'an identity that is no hex at all',
+        profiles: ladder(150),
+        identity: 'not-a-profile',
+        length: 100,
+        own: 0,
+        below: false,
+        at: [],
+      },
+    ];
+    for (const s of scenarios) {
+      const vm = buildLeaderboardViewModel(s.profiles, s.identity);
+      expect(vm.rows, `${s.name}: row count`).toHaveLength(s.length);
+      expect(
+        vm.rows.filter((r) => r.isOwn),
+        `${s.name}: own rows`,
+      ).toHaveLength(s.own);
+      expect(
+        vm.rows.some((r) => r.rank === RANK_BELOW_TOP_K),
+        `${s.name}: a 100+ row`,
+      ).toBe(s.below);
+      for (const [index, match] of s.at) {
+        expect(vm.rows[index], `${s.name}: row ${index}`).toMatchObject(match);
+      }
+    }
   });
 
   it('SR4A.1-OWNROW BITES: the caller below 100 → one extra row after rank 100, with its own fields, isOwn, and the STRING rank "100+"', () => {
@@ -492,14 +556,22 @@ describe('sr-4a.1: the model holds the top 100 in the total order, ranks 1-100',
     expect(vm.isEmpty).toBe(false);
   });
 
-  it('SR4A.1-NOOWN BITES: a caller with no profile, and identity "", get exactly 100 rows and no extra', () => {
-    const profiles = ladder(150);
-    for (const identity of ['', idOf(9999), 'not-a-profile']) {
-      const vm = buildLeaderboardViewModel(profiles, identity);
-      expect(vm.rows, `identity ${JSON.stringify(identity)}`).toHaveLength(100);
-      expect(vm.rows.some((r) => r.isOwn)).toBe(false);
-      expect(vm.rows.some((r) => r.rank === RANK_BELOW_TOP_K)).toBe(false);
-    }
+  it('SR4A.1-TIES BITES: tied ratings still get positional ranks 1,2,3,4 — never a shared rank', () => {
+    const vm = buildLeaderboardViewModel(
+      [
+        makeProfile('t0000000aa', 10, 'Cy'),
+        makeProfile('t0000000bb', 5, 'Dee'),
+        makeProfile('t0000000cc', 10, 'Al'),
+        makeProfile('t0000000dd', 10, 'Bo'),
+      ],
+      '',
+    );
+    expect(vm.rows.map((r) => [r.displayName, r.rank])).toEqual([
+      ['Al', 1],
+      ['Bo', 2],
+      ['Cy', 3],
+      ['Dee', 4],
+    ]);
   });
 });
 
@@ -514,6 +586,13 @@ describe('sr-4a.2: the one-entry memo keyed on (profilesVersion, identity)', () 
     expect(changed).toBe(first);
     expect(buildLeaderboardViewModel([], idOf(110), v)).toBe(first);
     expect(first.rows).toHaveLength(101);
+  });
+
+  it('SR4A.2-MEMO-ZERO BITES: version 0 is a real version — two back-to-back calls with (0, id) return the identical object, kills a falsy `!profilesVersion` check', () => {
+    const first = buildLeaderboardViewModel(ladder(4), idOf(1), 0);
+    const second = buildLeaderboardViewModel([], idOf(1), 0);
+    expect(second).toBe(first);
+    expect(first.rows).toHaveLength(4);
   });
 
   it('SR4A.2-MEMO-NOSORT BITES: a memo hit never sorts (Array.prototype.sort is not called)', () => {

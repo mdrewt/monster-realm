@@ -2239,6 +2239,8 @@ describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4
     // WRONG IMPL KILLED: a viewModel that still calls `store.allTradeOffers()` (a TypeError on
     // this store), or reads any other store member; one whose Trades tab lists anything but the
     // viewer's two sessions.
+    // INTENTIONAL CHANGE (sr-4a): the sixth member, `profilesVersion`, joins the allowed reads (the
+    // view model hands the store's profiles version to the leaderboard model).
     const ALLOWED = [
       'allChallenges',
       'allPlayers',

@@ -3125,6 +3125,8 @@ function socialHostCtx(w: SocialHostWorld): ScreenContext {
     allPlayers: () => [],
     characters: () => [].values(),
     allProfiles: () => [],
+    // INTENTIONAL CHANGE (sr-4a): socialScreen.viewModel reads the profiles version.
+    profilesVersion: () => 0,
   };
   return {
     store,
