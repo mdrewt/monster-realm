@@ -3271,6 +3271,18 @@ fn an_hp_only_write_back_writes_no_player_row_ih2_2() {
         "pre-state: the row holds the lead's new level"
     );
     let levels_before = (w.mon(12).level, w.mon(11).level);
+    // The loss carries HP the write-back cannot clamp (`min(stat_hp)`): below each
+    // monster's stored `stat_hp` after the win, and different from its HP before the loss.
+    let (lead_hp, other_hp) = (5u16, 3u16);
+    for (id, hp) in [(12, lead_hp), (11, other_hp)] {
+        let m = w.mon(id);
+        assert!(
+            hp < m.stat_hp && hp != m.current_hp,
+            "fixture: monster {id} (stat_hp {}, current_hp {}) takes {hp} unclamped and visibly",
+            m.stat_hp,
+            m.current_hp
+        );
+    }
 
     fx.reset_writes();
     let mut loss = bn_battle(
@@ -3280,8 +3292,8 @@ fn an_hp_only_write_back_writes_no_player_row_ih2_2() {
         &[],
         BattleOutcome::SideBWins,
     );
-    loss.state.side_a.team[0].current_hp = 33;
-    loss.state.side_a.team[1].current_hp = 21;
+    loss.state.side_a.team[0].current_hp = lead_hp;
+    loss.state.side_a.team[1].current_hp = other_hp;
     let ctx = fx.ctx_at(bn_at(BN_T0 + BN_DAY));
     assert_eq!(
         super::write_back_battle_results(&ctx, &loss),
@@ -3290,7 +3302,7 @@ fn an_hp_only_write_back_writes_no_player_row_ih2_2() {
     );
     assert_eq!(
         (w.mon(12).current_hp, w.mon(11).current_hp),
-        (33, 21),
+        (lead_hp, other_hp),
         "fixture: the loss wrote HP back"
     );
     assert_eq!(

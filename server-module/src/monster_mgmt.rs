@@ -28,6 +28,15 @@ use spacetimedb::{Identity, ReducerContext};
 /// that lists the monster and cannot be honoured
 /// (`trading_session::cancel_sessions_listing`).
 ///
+/// A write whose `level` or `party_slot` differs from the stored projection can
+/// change which monster leads the owner's party, or the lead's level, so it then
+/// refreshes the owner's public `player.lead_level`
+/// (`battle::refresh_lead_level`). An explicit site that writes `level` or
+/// `party_slot` outside this seam calls `battle::refresh_lead_level` itself. A
+/// write that changes only the owner does not refresh: the one such caller is
+/// the guest claim (`rekey_monsters`), whose guards leave neither identity a
+/// `player` row.
+///
 /// # Errors
 /// `monster_pub row missing for monster {id}` when the projection is absent.
 pub(crate) fn update_monster_synced(ctx: &ReducerContext, m: Monster) -> Result<(), String> {
@@ -35,10 +44,14 @@ pub(crate) fn update_monster_synced(ctx: &ReducerContext, m: Monster) -> Result<
     let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(id) else {
         return Err(format!("monster_pub row missing for monster {id}"));
     };
+    let lead_may_change = existing_pub.level != m.level || existing_pub.party_slot != m.party_slot;
     let pub_row = pub_from_monster(&m, existing_pub.tier);
     let written = ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
     crate::trading_session::cancel_sessions_listing(ctx, &written);
+    if lead_may_change {
+        crate::battle::refresh_lead_level(ctx, written.owner_identity);
+    }
     Ok(())
 }
 

@@ -2,7 +2,8 @@
 //!
 //! The 1v1 battle cluster's survivors (bt-17 deleted the 1v1 start and per-turn reducers): the
 //! write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical settle funnel and
-//! the account lifecycle call, plus the party readers `movement_tick` and the tactical starts share.
+//! the account lifecycle call, plus the party readers `movement_tick` and the tactical starts share
+//! and the `player.lead_level` refresh that reads the same lead.
 //! No battle is started or advanced here. Helpers are thin: delegate the rule to `game-core` (the
 //! SSOT), write tables; reject with `Err`, never clamp.
 
@@ -13,7 +14,7 @@ use crate::marshal::{loser_base_stat_total, now_ms, write_back_hp};
 use crate::monster_mgmt::update_monster_synced;
 use crate::movement::RateLimiter;
 use crate::raising::{accrue_quality_time, grant_essence};
-use crate::schema::{battle, battle_wild, monster, species_row, Battle, Monster};
+use crate::schema::{battle, battle_wild, monster, player, species_row, Battle, Monster, Player};
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
@@ -96,6 +97,35 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
         }
     };
     Some((ids, lead_level))
+}
+
+/// Keep `owner`'s public `player.lead_level` equal to the stored level of its lead
+/// party monster (the first of `lead_party_ids`), or 0 with no party.
+///
+/// Infallible, so no caller's write fails on it. An owner with no `player` row
+/// (offline) is skipped before any party read, and none is inserted. The row is
+/// written only when the value differs, so a refresh that changes nothing reaches
+/// no subscriber. The level byte is copied as stored; `lead_party` owns the
+/// `Level` check.
+///
+/// Every site that can change which monster leads, or the lead's level, calls
+/// this after its write: the dual-write seam (`monster_mgmt::update_monster_synced`)
+/// does on a `level` or `party_slot` change, and `join_game` and the session-trade
+/// transfer (`trading_session::apply_swap`) call it themselves.
+pub(crate) fn refresh_lead_level(ctx: &ReducerContext, owner: Identity) {
+    let Some(row) = ctx.db.player().identity().find(owner) else {
+        return;
+    };
+    let level = lead_party_ids(ctx, owner)
+        .and_then(|ids| ids.first().copied())
+        .and_then(|lead_id| ctx.db.monster().monster_id().find(lead_id))
+        .map_or(0, |lead| lead.level);
+    if row.lead_level != level {
+        ctx.db.player().identity().update(Player {
+            lead_level: level,
+            ..row
+        });
+    }
 }
 
 /// `tactics::start_wild_tactical`'s ROUTINE rejection: the party has zero conscious
