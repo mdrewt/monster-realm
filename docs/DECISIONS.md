@@ -782,6 +782,40 @@ JavaScript's safe integers, so `Number()` parsing would corrupt large amounts.
 **Rules out.** Physical escrow rows; credit-then-debit ordering; parsing currency with
 `Number`/`parseInt`.
 
+## Healing is free, and quests are the recruit loop's faucet
+
+**Decision.** Every shipped heal location charges nothing: no currency cost, no cost item,
+no cost quantity (`game-core/content/heal_locations/`). `heal_party`
+(`server-module/src/raising.rs`) charges whatever a heal location names, so the price is
+data and the shipped data names none. A successful recruit pays no currency; wilds
+knocked out earlier in the same battle still pay `battle_currency_reward`
+(`game-core/src/currency.rs`), so a battle against a lone wild that ends in a recruit
+pays nothing. Quest rewards are the faucet for recruit-heavy play: one quest ships
+(quest_001), its `reward.currency` is content (`game-core/content/quests/`), and the
+server credits exactly what the content names, once. The relations are tests over the
+shipped content in `game-core/tests/pt_d3_tuning.rs`:
+`starter_kit_currency_buys_one_lure_berry`, `shipped_heal_locations_charge_nothing`,
+`recruit_heavy_zone0_battles_buy_a_lure_berry_within_15` and
+`every_battle_usable_item_sells_at_or_below_its_shop_median`. `docs/economy-tuning.md`
+holds the reasoning and names those tests instead of copying their values.
+
+**Why.** The economy is not a major part of the game (operator's balance stance): items,
+prices and rewards are tuned as for a single-player game, and every number must feel fair
+to one player with nobody to trade with. A heal charge is then a sink against one
+player's faucet and it taxes losing. A recruit pays nothing because the monster is the
+reward (operator ruling, <https://github.com/mdrewt/monster-realm/issues/587>), so a
+player who mostly recruits has less battle income than one who mostly fights; a quest
+pays for play that is not knocking wilds out. A wild pack is clamped to the conscious
+monsters in the party (`effective_pack`, `game-core/src/tactics/encounter.rs`), so a
+small party earns less from recruit-heavy play and a one-monster party meets only lone
+wilds. No mechanic consumes a monster (there is no monster sink).
+
+**Rules out.** Charging currency or an item to heal as a currency sink; paying currency
+for a successful recruit; restating prices, rewards or battle budgets in prose docs;
+moving a price, a reward or the starter kit without the tuning tests passing. A heal
+charge, a recruit payout or a monster sink changes the reasoning: it changes the tests,
+the worksheet and this entry together.
+
 ## Battle lifecycle and PvP
 
 **Decision.** The battle table is private; participants read it through `my_battle`.
