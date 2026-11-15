@@ -390,6 +390,54 @@ describe('the booted shell drives the input devices of shell/inputState', {
     expect(ns.navHeldCodes.has('Enter'), 'its keyup let it go').toBe(false);
   }, 60_000);
 
+  it('Enter committing in a focused text field while no button is bound to Enter is still let go by its keyup', async () => {
+    const ns = await boot(storedTable((raw) => (raw.buttons.A = ['KeyK'])));
+    expect(ns.keyboard.buttonFor('Enter'), 'precondition: no button is bound to Enter').toBe(
+      undefined,
+    );
+    expect(ns.keyboard.buttonFor('NumpadEnter'), 'precondition: nor to its alias').toBe(undefined);
+    openMenuOn('help');
+    const field = document.createElement('input');
+    field.type = 'text';
+    byId('menu-overlay').appendChild(field);
+    field.focus();
+    expect(document.activeElement, 'precondition: the field has focus').toBe(field);
+    expect(ns.navHeldCodes.has('Enter'), 'precondition: Enter is not held').toBe(false);
+
+    const enter = fire('keydown', 'Enter', { key: 'Enter' }, field);
+    expect(enter.defaultPrevented, 'precondition: Enter committed as A').toBe(true);
+    expect(stackNames(), 'precondition: the commit picked Help').toEqual([
+      'world',
+      'menuView',
+      'helpView',
+    ]);
+    expect(ns.navHeldCodes.has('Enter'), 'the unbound committing code is held').toBe(true);
+    fire('keyup', 'Enter', { key: 'q' }, field);
+    expect(ns.navHeldCodes.has('Enter'), 'its keyup let the unbound code go').toBe(false);
+    expect(ns.navHeldCodes.size, 'nothing is left held').toBe(0);
+  }, 60_000);
+
+  it('a keyup whose routing throws still lets its held code go', async () => {
+    const ns = await boot();
+    const down = fire('keydown', 'KeyD');
+    expect(down.defaultPrevented, 'precondition: the world consumed it').toBe(true);
+    expect(ns.navHeldCodes.has('KeyD'), 'precondition: the consumed code is held').toBe(true);
+    const keyup = vi.spyOn(ns.keyboard, 'keyup').mockImplementation(() => {
+      throw new Error('keyup routing failed');
+    });
+
+    // happy-dom may rethrow a listener's exception or report it to window `error`: either way the
+    // test only reads what the listener did before the throw.
+    try {
+      fire('keyup', 'KeyD', { key: 'q' });
+    } catch {
+      // the routing failure itself is not under test
+    }
+    expect(keyup, 'precondition: the keyup routing really threw on this path').toHaveBeenCalled();
+    expect(keyup.mock.results[0]?.type, 'precondition: and it threw').toBe('throw');
+    expect(ns.navHeldCodes.has('KeyD'), 'the held code was let go despite the throw').toBe(false);
+  }, 60_000);
+
   it('a key taken by the Controls capture is held by its code in navHeldCodes, added after the remap released everything held before it', async () => {
     const ns = await boot();
     startCaptureOnA0();
