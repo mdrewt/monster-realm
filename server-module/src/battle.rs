@@ -110,9 +110,9 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
 ///
 /// Callers, each after its own write: the dual-write seam
 /// (`monster_mgmt::update_monster_synced`) on a `level` or `party_slot` change,
-/// `join_game` after the starter grant, and the session-trade transfer
-/// (`trading_session::apply_swap`). The deletion cascade does not call it: it
-/// zeroes the column when it tombstones the row
+/// the join (`movement::join_with_kit`) after the starter grant, and the
+/// session-trade transfer (`trading_session::apply_swap`). The deletion cascade
+/// does not call it: it zeroes the column when it tombstones the row
 /// (`ranking::player_with_deleted_name`).
 pub(crate) fn refresh_lead_level(ctx: &ReducerContext, owner: Identity) {
     let Some(row) = ctx.db.player().identity().find(owner) else {
