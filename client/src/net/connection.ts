@@ -362,8 +362,8 @@ export function connect(opts: ConnectionOptions): Connection {
       recoverViewsOnThrow((_ctx, oldRow, row) => {
         const newSdkRow = row as unknown as SdkCharacterRow;
         // detect own-entity zone transition via isOwnZoneChange
-        // (warpDetect.ts — pure predicate, unit-tested independently; M12.5d-5: raw SDK
-        // scalars avoid characterRowToStore() double-conversion just to compare zoneId).
+        // (warpDetect.ts — pure predicate, unit-tested independently; the raw SDK scalars
+        // avoid a characterRowToStore() double-conversion just to compare zoneId).
         if (opts.onOwnWarp !== undefined) {
           const oldSdkRow = oldRow as unknown as SdkCharacterRow;
           const ownEntityId = store.ownEntityId(identity);

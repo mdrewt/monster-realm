@@ -19,19 +19,6 @@ import {
   inventoryRowToStore,
   monsterPubRowToStore,
   pendingEvolutionNoticeRowToStore,
-  type SdkBattleClockRow,
-  type SdkBattleDeployRow,
-  type SdkBattleEventRow,
-  type SdkBattleQueueRow,
-  type SdkBattleRow,
-  type SdkBattleUnitRow,
-  type SdkExportChunkRow,
-  type SdkFormationRow,
-  type SdkInventoryRow,
-  type SdkMonsterPubRow,
-  type SdkPendingEvolutionNoticeRow,
-  type SdkTacticalBattleRow,
-  type SdkTradeSessionRow,
   tacticalBattleRowToStore,
   tradeSessionRowToStore,
 } from './rowConvert';
@@ -70,100 +57,53 @@ type Reconcile = (store: AuthoritativeStore, db: OwnerViewCache) => void;
 const present = <T>(rows: readonly (T | null)[]): T[] =>
   rows.filter((row): row is T => row !== null);
 
+/** A view's cache rows through its converter; the SDK row type is the converter's parameter. */
+const rowsOf = <S, T>(view: ViewHandle, convert: (row: S) => T): T[] =>
+  [...view.iter()].map((row) => convert(row as S));
+
 const RECONCILE: Record<OwnerView, Reconcile> = {
   my_monster_pub: (store, db) =>
-    store.reconcileMonstersFromView(
-      [...db.my_monster_pub.iter()].map((row) =>
-        monsterPubRowToStore(row as unknown as SdkMonsterPubRow),
-      ),
-    ),
-  myBattle: (store, db) =>
-    store.reconcileBattlesFromView(
-      [...db.myBattle.iter()].map((row) => battleRowToStore(row as unknown as SdkBattleRow)),
-    ),
+    store.reconcileMonstersFromView(rowsOf(db.my_monster_pub, monsterPubRowToStore)),
+  myBattle: (store, db) => store.reconcileBattlesFromView(rowsOf(db.myBattle, battleRowToStore)),
   // AUTHORITATIVE — a chunkId absent from the cache is deleted, which is how a server-side purge
   // withdraws the client's download offer. It runs BEFORE flushBatch() because main.ts's batch
   // listener is the sole assembleExportBundle() call site, and a reconcile after the flush would
   // leave it assembling the PRE-burst chunk set.
   my_export_bundle: (store, db) =>
-    store.reconcileExportChunksFromView(
-      [...db.my_export_bundle.iter()].map((row) =>
-        exportChunkRowToStore(row as unknown as SdkExportChunkRow),
-      ),
-    ),
+    store.reconcileExportChunksFromView(rowsOf(db.my_export_bundle, exportChunkRowToStore)),
   // AUTHORITATIVE: an absent row CLEARS the slot, which is how the account-deletion cascade and
   // the guest-claim rekey withdraw a reveal instead of stranding it on screen. It runs BEFORE
   // flushBatch() because main.ts's batch listener is the sole banner render site.
   myPendingEvolutionNotices: (store, db) =>
     store.reconcileEvolutionNoticesFromView(
-      [...db.myPendingEvolutionNotices.iter()].map((row) =>
-        pendingEvolutionNoticeRowToStore(row as unknown as SdkPendingEvolutionNoticeRow),
-      ),
+      rowsOf(db.myPendingEvolutionNotices, pendingEvolutionNoticeRowToStore),
     ),
   // The owner-scoped view over the private inventory table: a consumed-to-zero stack disappears.
   my_inventory: (store, db) =>
-    store.reconcileInventoryFromView(
-      [...db.my_inventory.iter()].map((row) =>
-        inventoryRowToStore(row as unknown as SdkInventoryRow),
-      ),
-    ),
+    store.reconcileInventoryFromView(rowsOf(db.my_inventory, inventoryRowToStore)),
   // The seven tactical views run BEFORE flushBatch(): main.ts's refreshBattle reads the phase in a
   // batch listener, so a reconcile after the flush would show the deploy panel one batch late. A
   // finished battle's rows go with the GC, a cancelled plan with its row.
   myTacticalBattle: (store, db) =>
     store.reconcileTacticalBattlesFromView(
-      present(
-        [...db.myTacticalBattle.iter()].map((row) =>
-          tacticalBattleRowToStore(row as unknown as SdkTacticalBattleRow),
-        ),
-      ),
+      present(rowsOf(db.myTacticalBattle, tacticalBattleRowToStore)),
     ),
   myBattleUnits: (store, db) =>
-    store.reconcileBattleUnitsFromView(
-      [...db.myBattleUnits.iter()].map((row) =>
-        battleUnitRowToStore(row as unknown as SdkBattleUnitRow),
-      ),
-    ),
+    store.reconcileBattleUnitsFromView(rowsOf(db.myBattleUnits, battleUnitRowToStore)),
   myBattleQueue: (store, db) =>
-    store.reconcileBattleQueuesFromView(
-      present(
-        [...db.myBattleQueue.iter()].map((row) =>
-          battleQueueRowToStore(row as unknown as SdkBattleQueueRow),
-        ),
-      ),
-    ),
+    store.reconcileBattleQueuesFromView(present(rowsOf(db.myBattleQueue, battleQueueRowToStore))),
   myBattleDeploy: (store, db) =>
-    store.reconcileBattleDeploysFromView(
-      [...db.myBattleDeploy.iter()].map((row) =>
-        battleDeployRowToStore(row as unknown as SdkBattleDeployRow),
-      ),
-    ),
+    store.reconcileBattleDeploysFromView(rowsOf(db.myBattleDeploy, battleDeployRowToStore)),
   myBattleClock: (store, db) =>
-    store.reconcileBattleClocksFromView(
-      [...db.myBattleClock.iter()].map((row) =>
-        battleClockRowToStore(row as unknown as SdkBattleClockRow),
-      ),
-    ),
+    store.reconcileBattleClocksFromView(rowsOf(db.myBattleClock, battleClockRowToStore)),
   myBattleEvents: (store, db) =>
-    store.reconcileBattleEventsFromView(
-      [...db.myBattleEvents.iter()].map((row) =>
-        battleEventRowToStore(row as unknown as SdkBattleEventRow),
-      ),
-    ),
+    store.reconcileBattleEventsFromView(rowsOf(db.myBattleEvents, battleEventRowToStore)),
   myFormation: (store, db) =>
-    store.reconcileFormationFromView(
-      [...db.myFormation.iter()].map((row) =>
-        formationRowToStore(row as unknown as SdkFormationRow),
-      ),
-    ),
+    store.reconcileFormationFromView(rowsOf(db.myFormation, formationRowToStore)),
   // The participant-scoped view over the private trade_session table: a session absent from the
   // cache has closed.
   myTradeSession: (store, db) =>
-    store.reconcileTradeSessionsFromView(
-      [...db.myTradeSession.iter()].map((row) =>
-        tradeSessionRowToStore(row as unknown as SdkTradeSessionRow),
-      ),
-    ),
+    store.reconcileTradeSessionsFromView(rowsOf(db.myTradeSession, tradeSessionRowToStore)),
 };
 
 // The try groups, in run order. The reconciles run UPSTREAM of flushBatch in the batcher's shared
