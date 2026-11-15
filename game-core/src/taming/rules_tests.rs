@@ -10,8 +10,8 @@
 
 #[allow(unused_imports)]
 use crate::content::{
-    load_encounters, load_species, load_zones, parse_encounters, validate_encounters, ItemDef,
-    Species, ZoneDef,
+    load_encounters, load_species, load_zones, parse_encounters_parts, validate_encounters,
+    ItemDef, Species, ZoneDef,
 };
 use crate::monster::types::{Affinity, Level, StatBlock};
 use crate::taming::rules::{
@@ -557,10 +557,10 @@ fn validate_encounters_passes_for_embedded() {
 }
 
 /// Kills: an impl that silently returns empty on garbage input.
-/// EARS C1: parse_encounters on garbage → Err.
+/// EARS C1: parse_encounters_parts on garbage → Err.
 #[test]
 fn rejects_malformed_encounters_ron() {
-    let result = parse_encounters("not ron at all {{{");
+    let result = parse_encounters_parts(&[("inline", "not ron at all {{{")]);
     assert!(
         result.is_err(),
         "malformed RON must be rejected; got Ok({result:?})"

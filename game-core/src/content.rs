@@ -1906,21 +1906,21 @@ mod tests {
 
     #[test]
     fn rejects_malformed_ron() {
-        assert!(parse_zones("not ron at all {{{").is_err());
+        assert!(parse_zones_parts(&[("inline", "not ron at all {{{")]).is_err());
     }
 
     #[test]
     fn rejects_duplicate_ids() {
         let dup =
             r#"[(id: 0, name: "A", width: 1, height: 1), (id: 0, name: "B", width: 1, height: 1)]"#;
-        let zones = parse_zones(dup).expect("parses");
+        let zones = parse_zones_parts(&[("inline", dup)]).expect("parses");
         assert!(validate_zones(&zones).is_err());
     }
 
     #[test]
     fn rejects_zero_dimension() {
         let bad = r#"[(id: 0, name: "Flat", width: 0, height: 5)]"#;
-        let zones = parse_zones(bad).expect("parses");
+        let zones = parse_zones_parts(&[("inline", bad)]).expect("parses");
         assert!(validate_zones(&zones).is_err());
     }
 
@@ -1941,7 +1941,7 @@ mod tests {
     #[test]
     fn validate_zones_accepts_nonempty_registry() {
         let ok = r#"[(id: 0, name: "A", width: 1, height: 1)]"#;
-        let zones = parse_zones(ok).expect("parses");
+        let zones = parse_zones_parts(&[("inline", ok)]).expect("parses");
         assert!(validate_zones(&zones).is_ok());
     }
 
@@ -2078,11 +2078,11 @@ mod tests {
         validate_abilities(&abilities, &species).expect("embedded abilities must be valid");
     }
 
-    /// #60: parse_species rejects garbage input.
+    /// #60: parse_species_parts rejects garbage input.
     /// Kills: an impl that silently returns empty on parse failure.
     #[test]
     fn rejects_malformed_species_ron() {
-        assert!(parse_species("garbage not ron {{{").is_err());
+        assert!(parse_species_parts(&[("inline", "garbage not ron {{{")]).is_err());
     }
 
     /// #61: validate_content rejects duplicate species ids.
@@ -2470,8 +2470,8 @@ mod tests {
         let merged = parse_species_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)])
             .expect("two valid species parts must merge without error");
 
-        let expected_a = parse_species(part_a).expect("part_a must parse");
-        let expected_b = parse_species(part_b).expect("part_b must parse");
+        let expected_a = parse_species_parts(&[("inline", part_a)]).expect("part_a must parse");
+        let expected_b = parse_species_parts(&[("inline", part_b)]).expect("part_b must parse");
         let expected: Vec<Species> = expected_a.into_iter().chain(expected_b).collect();
 
         assert_eq!(
@@ -2540,14 +2540,15 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// load_species() after migration returns the same rows as
-    /// parse_species(SPECIES_GOLDEN) as a prefix.
+    /// parse_species_parts(SPECIES_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops species, reverses them, or loads from a
     /// different file entirely.
     #[test]
     fn m8_9e_species_migration_parity() {
         let merged = load_species().expect("load_species must succeed after migration");
-        let golden = parse_species(SPECIES_GOLDEN).expect("golden species must parse");
+        let golden =
+            parse_species_parts(&[("inline", SPECIES_GOLDEN)]).expect("golden species must parse");
         assert!(
             merged.len() >= golden.len(),
             "M8.9e: merged species ({}) must have at least as many rows as golden ({})",
@@ -2585,13 +2586,14 @@ mod tests {
     }
 
     /// load_zones() after migration returns the same rows as
-    /// parse_zones(ZONES_GOLDEN) as a prefix.
+    /// parse_zones_parts(ZONES_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops zones or reorders them.
     #[test]
     fn m8_9e_zones_migration_parity() {
         let merged = load_zones().expect("load_zones must succeed after migration");
-        let golden = parse_zones(ZONES_GOLDEN).expect("golden zones must parse");
+        let golden =
+            parse_zones_parts(&[("inline", ZONES_GOLDEN)]).expect("golden zones must parse");
         assert!(
             merged.len() >= golden.len(),
             "M8.9e: merged zones ({}) must have at least as many rows as golden ({})",
@@ -2629,13 +2631,14 @@ mod tests {
     }
 
     /// load_encounters() after migration returns the same rows as
-    /// parse_encounters(ENCOUNTERS_GOLDEN) as a prefix.
+    /// parse_encounters_parts(ENCOUNTERS_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops encounter tables or reorders them.
     #[test]
     fn m8_9e_encounters_migration_parity() {
         let merged = load_encounters().expect("load_encounters must succeed after migration");
-        let golden = parse_encounters(ENCOUNTERS_GOLDEN).expect("golden encounters must parse");
+        let golden = parse_encounters_parts(&[("inline", ENCOUNTERS_GOLDEN)])
+            .expect("golden encounters must parse");
         assert!(
             merged.len() >= golden.len(),
             "M8.9e: merged encounters ({}) must have at least as many rows as golden ({})",
@@ -3253,7 +3256,8 @@ mod tests {
     #[test]
     fn m10a_derived_species_still_pass_validate_content() {
         let species = load_species().expect("load_species must succeed with 010-derived.ron");
-        let golden = parse_species(SPECIES_GOLDEN).expect("golden species must parse");
+        let golden =
+            parse_species_parts(&[("inline", SPECIES_GOLDEN)]).expect("golden species must parse");
 
         // After 010-derived.ron is added, load_species returns MORE than the 3 golden rows.
         assert!(
@@ -4607,14 +4611,14 @@ mod tests {
             )
         };
         assert!(
-            parse_evolution_paths(&path_ron("0")).is_err(),
+            parse_evolution_paths_parts(&[("inline", &path_ron("0"))]).is_err(),
             "D4 TEETH: min_level 0 must be rejected at parse time by Level::new"
         );
         assert!(
-            parse_evolution_paths(&path_ron("101")).is_err(),
+            parse_evolution_paths_parts(&[("inline", &path_ron("101"))]).is_err(),
             "D4 TEETH: min_level 101 must be rejected at parse time by Level::new"
         );
-        let ok = parse_evolution_paths(&path_ron("20"))
+        let ok = parse_evolution_paths_parts(&[("inline", &path_ron("20"))])
             .expect("D4: min_level 20 is in range and must parse");
         assert_eq!(ok.len(), 1, "D4: the in-range fixture must parse one path");
         assert_eq!(
@@ -5560,7 +5564,7 @@ mod tests {
     // Criterion 1 — NPC defs RON parse
     // -----------------------------------------------------------------------
 
-    /// parse_npc_defs parses a minimal valid NPC def from RON.
+    /// parse_npc_defs_parts parses a minimal valid NPC def from RON.
     ///
     /// Kills: an impl that returns Ok for everything regardless of input, or
     /// one that rejects valid input as malformed.
@@ -5580,7 +5584,8 @@ mod tests {
         sprite_id: 10,
     ),
 ]"#;
-        let defs = parse_npc_defs(ron).expect("parse_npc_defs must accept a valid NpcDef RON list");
+        let defs = parse_npc_defs_parts(&[("inline", ron)])
+            .expect("parse_npc_defs must accept a valid NpcDef RON list");
         assert_eq!(
             defs.len(),
             1,
@@ -5599,14 +5604,14 @@ mod tests {
         );
     }
 
-    /// parse_npc_defs rejects malformed RON loudly (not silently empty).
+    /// parse_npc_defs_parts rejects malformed RON loudly (not silently empty).
     ///
     /// Kills: an impl that returns Ok([]) on bad input instead of Err.
     /// A silent empty return would mask bad content files at load time.
     #[test]
     fn m12c_parse_npc_defs_rejects_malformed() {
         let bad = "this is not valid ron {{{";
-        let result = parse_npc_defs(bad);
+        let result = parse_npc_defs_parts(&[("inline", bad)]);
         assert!(
             result.is_err(),
             "M12c: parse_npc_defs must return Err for malformed RON, not Ok; \
@@ -5618,7 +5623,7 @@ mod tests {
     // Criterion 2 — Dialogue trees RON parse
     // -----------------------------------------------------------------------
 
-    /// parse_dialogue_trees parses a minimal valid dialogue tree from RON.
+    /// parse_dialogue_trees_parts parses a minimal valid dialogue tree from RON.
     ///
     /// Kills: an impl that panics on load, or rejects valid tree RON.
     #[test]
@@ -5645,7 +5650,7 @@ mod tests {
         ],
     ),
 ]"#;
-        let trees = parse_dialogue_trees(ron)
+        let trees = parse_dialogue_trees_parts(&[("inline", ron)])
             .expect("parse_dialogue_trees must accept a valid DialogueTree RON list");
         assert_eq!(
             trees.len(),
@@ -5666,13 +5671,13 @@ mod tests {
         );
     }
 
-    /// parse_dialogue_trees rejects malformed RON loudly.
+    /// parse_dialogue_trees_parts rejects malformed RON loudly.
     ///
     /// Kills: an impl that silently returns Ok([]) on parse failure.
     #[test]
     fn m12c_parse_dialogue_trees_rejects_malformed() {
         let bad = "not ron at all <<<";
-        let result = parse_dialogue_trees(bad);
+        let result = parse_dialogue_trees_parts(&[("inline", bad)]);
         assert!(
             result.is_err(),
             "M12c: parse_dialogue_trees must return Err for malformed RON; \
@@ -5684,7 +5689,7 @@ mod tests {
     // Criterion 3 — Quest defs RON parse
     // -----------------------------------------------------------------------
 
-    /// parse_quest_defs parses a minimal valid quest def from RON.
+    /// parse_quest_defs_parts parses a minimal valid quest def from RON.
     ///
     /// Kills: an impl that fails on the Talk(npc_id:) RON struct-variant syntax.
     #[test]
@@ -5703,8 +5708,8 @@ mod tests {
         reward: (xp: 0, items: []),
     ),
 ]"#;
-        let quests =
-            parse_quest_defs(ron).expect("parse_quest_defs must accept a valid QuestDef RON list");
+        let quests = parse_quest_defs_parts(&[("inline", ron)])
+            .expect("parse_quest_defs must accept a valid QuestDef RON list");
         assert_eq!(
             quests.len(),
             1,
@@ -5728,7 +5733,7 @@ mod tests {
     // Criterion 4 — Heal locations RON parse
     // -----------------------------------------------------------------------
 
-    /// parse_heal_locations parses a minimal valid heal location from RON.
+    /// parse_heal_locations_parts parses a minimal valid heal location from RON.
     ///
     /// Kills: an impl that panics on None cost_item_id, or rejects valid RON.
     #[test]
@@ -5744,7 +5749,7 @@ mod tests {
         cooldown_ms: 30000,
     ),
 ]"#;
-        let locs = parse_heal_locations(ron)
+        let locs = parse_heal_locations_parts(&[("inline", ron)])
             .expect("parse_heal_locations must accept a valid HealLocationDef RON list");
         assert_eq!(
             locs.len(),
@@ -6512,7 +6517,7 @@ mod tests {
         );
     }
 
-    /// M12c: parse_dialogue_trees correctly round-trips a GrantItem(u32, u32) tuple variant.
+    /// M12c: parse_dialogue_trees_parts correctly round-trips a GrantItem(u32, u32) tuple variant.
     ///
     /// Kills: an impl whose Deserialize for DialogueEffect drops the second field of
     /// GrantItem — e.g. RON `GrantItem(1, 2)` silently becoming GrantItem(1, 0).
@@ -6538,7 +6543,7 @@ mod tests {
         )],
     ),
 ]"#;
-        let trees = parse_dialogue_trees(ron)
+        let trees = parse_dialogue_trees_parts(&[("inline", ron)])
             .expect("parse_dialogue_trees must accept a GrantItem(1,2) effect");
         let effect = trees
             .first()
@@ -6945,12 +6950,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_shops round-trip
+    // parse_shops_parts round-trip
     // -----------------------------------------------------------------------
 
-    /// M13b: parse_shops returns a typed Vec with the correct ShopDef fields.
+    /// M13b: parse_shops_parts returns a typed Vec with the correct ShopDef fields.
     ///
-    /// Kills: a parse_shops that silently returns empty, or one that swaps
+    /// Kills: a parse_shops_parts that silently returns empty, or one that swaps
     /// shop id / item_id / buy_price fields.
     #[test]
     fn parse_shops_round_trip() {
@@ -6960,7 +6965,7 @@ mod tests {
                 (item_id: 3, buy_price: 250),
             ]),
         ]"#;
-        let shops = parse_shops(ron_str).expect("valid shop RON must parse");
+        let shops = parse_shops_parts(&[("inline", ron_str)]).expect("valid shop RON must parse");
         assert_eq!(shops.len(), 1, "M13b TEETH: must parse exactly 1 ShopDef");
         assert_eq!(shops[0].id, 1, "M13b TEETH: shop id must be 1");
         assert_eq!(
@@ -6990,12 +6995,12 @@ mod tests {
         );
     }
 
-    /// M13b: parse_shops rejects malformed RON.
-    /// Kills: a parse_shops that silently returns empty on bad input.
+    /// M13b: parse_shops_parts rejects malformed RON.
+    /// Kills: a parse_shops_parts that silently returns empty on bad input.
     #[test]
     fn parse_shops_rejects_malformed_ron() {
         assert!(
-            parse_shops("not ron at all {{{").is_err(),
+            parse_shops_parts(&[("inline", "not ron at all {{{")]).is_err(),
             "M13b TEETH: malformed RON must return Err from parse_shops"
         );
     }
@@ -7155,7 +7160,7 @@ mod tests {
                 cooldown_ms: 30000,
             )
         ]"#;
-        let locs = parse_heal_locations(ron_str)
+        let locs = parse_heal_locations_parts(&[("inline", ron_str)])
             .expect("HealLocationDef without cost_currency must parse — cost_currency must carry #[serde(default)]");
         assert_eq!(locs.len(), 1, "expected exactly one heal location");
         assert_eq!(
@@ -7187,7 +7192,7 @@ mod tests {
                 cost_currency: 50,
             )
         ]"#;
-        let locs = parse_heal_locations(ron_str)
+        let locs = parse_heal_locations_parts(&[("inline", ron_str)])
             .expect("HealLocationDef with cost_currency: 50 must parse successfully");
         assert_eq!(locs.len(), 1, "expected exactly one heal location");
         assert_eq!(
@@ -7656,7 +7661,7 @@ mod tests {
         sprite_id: 10,
     ),
 ]"#;
-        let defs = parse_npc_defs(ron_10_field).expect(
+        let defs = parse_npc_defs_parts(&[("inline", ron_10_field)]).expect(
             "AC-9: a 10-field NPC row (no `interaction`) must still parse — \
              `interaction` must carry #[serde(default)]",
         );
@@ -7694,7 +7699,7 @@ mod tests {
         interaction: Shop(1),
     ),
 ]"#;
-        let defs = parse_npc_defs(ron_11_field)
+        let defs = parse_npc_defs_parts(&[("inline", ron_11_field)])
             .expect("an NPC row carrying `interaction: Shop(1)` must parse");
         assert_eq!(
             defs[0].interaction,
@@ -7727,7 +7732,7 @@ mod tests {
         interaction: Heal(2),
     ),
 ]"#;
-        let defs = parse_npc_defs(ron_11_field)
+        let defs = parse_npc_defs_parts(&[("inline", ron_11_field)])
             .expect("an NPC row carrying `interaction: Heal(2)` must parse");
         assert_eq!(
             defs[0].interaction,

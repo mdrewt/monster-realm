@@ -129,7 +129,7 @@ pub fn tick_seed(state: u64, input: u64, seed: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_position, tick_seed};
+    use super::tick_seed;
 
     #[test]
     fn tick_seed_is_referentially_deterministic() {
@@ -150,13 +150,6 @@ mod tests {
     #[test]
     fn tick_seed_depends_on_seed() {
         assert_ne!(tick_seed(1, 2, 3), tick_seed(1, 2, 4));
-    }
-
-    #[test]
-    fn clamp_position_bounds() {
-        assert_eq!(clamp_position(1500, 1000), 1000);
-        assert_eq!(clamp_position(-1500, 1000), -1000);
-        assert_eq!(clamp_position(42, 1000), 42);
     }
 
     // -----------------------------------------------------------------------

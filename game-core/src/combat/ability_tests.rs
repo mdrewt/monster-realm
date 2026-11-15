@@ -12,7 +12,9 @@ pub mod passive_system {
     use crate::combat::types::{
         BattleMonster, BattleOutcome, BattleSide, BattleState, SideId, StatusEffect,
     };
-    use crate::content::{parse_abilities, parse_species, validate_abilities, AbilityDef, Species};
+    use crate::content::{
+        parse_abilities_parts, parse_species_parts, validate_abilities, AbilityDef, Species,
+    };
     use crate::monster::types::{Affinity, StatBlock};
 
     // ---------------------------------------------------------------------------
@@ -560,7 +562,7 @@ pub mod passive_system {
     }
 
     // ===========================================================================
-    // EARS-17: parse_abilities parses embedded RON correctly
+    // EARS-17: parse_abilities_parts parses embedded RON correctly
     //
     // Parse the literal 000-core.ron content. Must yield 3 entries with exact
     // values: id=1 "Flame Body" StatusImmunity(Burn), id=3 "Regeneration" EntryHeal(4).
@@ -590,7 +592,7 @@ pub mod passive_system {
     ),
 ]"#;
 
-        let abilities = parse_abilities(ron_str).expect(
+        let abilities = parse_abilities_parts(&[("inline", ron_str)]).expect(
             "TEETH (EARS-17): parse_abilities must parse the 3-entry abilities RON without error",
         );
 
@@ -685,7 +687,7 @@ pub mod passive_system {
     ),
 ]"#;
 
-        let species_list = parse_species(ron_str).expect(
+        let species_list = parse_species_parts(&[("inline", ron_str)]).expect(
             "TEETH (EARS-19): parse_species must succeed even when the `ability` field is absent; \
                  a missing #[serde(default)] causes a deserialization error here",
         );
