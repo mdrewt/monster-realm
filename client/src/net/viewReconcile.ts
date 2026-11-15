@@ -1,10 +1,12 @@
 // net/viewReconcile.ts — the owner-view reconciles the connection's batcher runs once per
-// coalesced row burst, before the hydration edge and store.flushBatch().
+// coalesced row burst, before the hydration edge and store.flushBatch(), and the dirty set that
+// limits each burst to the views whose rows changed.
 //
 // The owner views declare no primary key, so the SDK never fires onUpdate for them: every row
 // change arrives as an unordered insert+delete pair. Each reconcile therefore rebuilds its store
 // collection from the view's post-burst client cache, which is ordering-immune and immune to
-// multi-transaction coalescing.
+// multi-transaction coalescing. A view's row handlers mark it dirty; a view that is not dirty is
+// not read, so a burst of `character` or `player` rows reconciles nothing here.
 import {
   battleClockRowToStore,
   battleDeployRowToStore,
@@ -57,82 +59,58 @@ export interface OwnerViewCache {
   readonly myTradeSession: ViewHandle;
 }
 
-/** Rebuilds the thirteen owner-view collections of `store` from `db`'s client cache, in the
- *  order and try groups below. Never throws: a converter or reconcile throw is logged and
- *  contained to its group. */
-export function reconcileOwnerViews(store: AuthoritativeStore, db: OwnerViewCache): void {
-  // 15r-sec-a hardening: the reconciles run UPSTREAM of flushBatch in the batcher's
-  // shared closure, so a converter throw (bindings skew, a partially
-  // decoded row) would starve EVERY batch listener — including the
-  // movement reconcile that drives prediction snap. Catch and continue:
-  // a stale battle map is recoverable, a starved flush is not.
-  try {
+/** One owner view: its handle name on the connection's `db`. */
+export type OwnerView = keyof OwnerViewCache;
+
+/** Rebuilds one view's store collection from its cache rows. AUTHORITATIVE, as every reconcile
+ *  here is: a row absent from the cache leaves the store. */
+type Reconcile = (store: AuthoritativeStore, db: OwnerViewCache) => void;
+
+/** Drops the rows a converter returned null for (an unknown payload-enum tag): only that row. */
+const present = <T>(rows: readonly (T | null)[]): T[] =>
+  rows.filter((row): row is T => row !== null);
+
+const RECONCILE: Record<OwnerView, Reconcile> = {
+  my_monster_pub: (store, db) =>
     store.reconcileMonstersFromView(
       [...db.my_monster_pub.iter()].map((row) =>
         monsterPubRowToStore(row as unknown as SdkMonsterPubRow),
       ),
-    );
-    // same countermeasure for the `my_battle` view —
-    // no PK in the view binding even on 2.11.0 codegen, so onUpdate never
-    // fires and every turn arrives as an unordered insert+delete pair;
-    // rebuild the battle map from the post-burst cache instead.
+    ),
+  myBattle: (store, db) =>
     store.reconcileBattlesFromView(
       [...db.myBattle.iter()].map((row) => battleRowToStore(row as unknown as SdkBattleRow)),
-    );
-    // the third Vec-view reconcile. AUTHORITATIVE — a chunkId absent
-    // from this argument is deleted, which is how a server-side purge withdraws the client's
-    // download offer. It runs BEFORE flushBatch() because main.ts's batch listener is the
-    // sole assembleExportBundle() call site, and a reconcile after the flush would leave it
-    // assembling the PRE-burst chunk set.
+    ),
+  // AUTHORITATIVE — a chunkId absent from the cache is deleted, which is how a server-side purge
+  // withdraws the client's download offer. It runs BEFORE flushBatch() because main.ts's batch
+  // listener is the sole assembleExportBundle() call site, and a reconcile after the flush would
+  // leave it assembling the PRE-burst chunk set.
+  my_export_bundle: (store, db) =>
     store.reconcileExportChunksFromView(
       [...db.my_export_bundle.iter()].map((row) =>
         exportChunkRowToStore(row as unknown as SdkExportChunkRow),
       ),
-    );
-    // The fourth Vec-shaped reconcile, and deliberately the LAST call
-    // inside this try — a throw from the newest converter can then never starve the
-    // movement-driving monster/battle reconciles above it. AUTHORITATIVE: an absent row
-    // CLEARS the slot, which is how the account-deletion cascade and the guest-claim rekey
-    // withdraw a reveal instead of stranding it on screen. It runs BEFORE flushBatch()
-    // because main.ts's batch listener is the sole banner render site.
+    ),
+  // AUTHORITATIVE: an absent row CLEARS the slot, which is how the account-deletion cascade and
+  // the guest-claim rekey withdraw a reveal instead of stranding it on screen. It runs BEFORE
+  // flushBatch() because main.ts's batch listener is the sole banner render site.
+  myPendingEvolutionNotices: (store, db) =>
     store.reconcileEvolutionNoticesFromView(
       [...db.myPendingEvolutionNotices.iter()].map((row) =>
         pendingEvolutionNoticeRowToStore(row as unknown as SdkPendingEvolutionNoticeRow),
       ),
-    );
-  } catch (err) {
-    console.error('[net] view reconcile threw; flushing anyway', err);
-  }
-  // `my_inventory` — the owner-scoped Vec view over the private inventory table. PK-less, so
-  // no onUpdate ever fires and a count change is an unordered insert+delete pair: rebuild the
-  // map from the post-burst cache (AUTHORITATIVE — a consumed-to-zero stack disappears). Its
-  // own try: a converter throw in either block cannot starve the other.
-  try {
+    ),
+  // The owner-scoped view over the private inventory table: a consumed-to-zero stack disappears.
+  my_inventory: (store, db) =>
     store.reconcileInventoryFromView(
       [...db.my_inventory.iter()].map((row) =>
         inventoryRowToStore(row as unknown as SdkInventoryRow),
       ),
-    );
-  } catch (err) {
-    console.error('[net] view reconcile threw; flushing anyway', err);
-  }
-  // bt-12 (BT12.1): the seven tactical views, each rebuilt from the post-burst cache in its OWN
-  // try (a throwing converter — bindings skew, a malformed row — is contained to that view; the
-  // other six and every reconcile above still land and the flush is still delivered). All seven
-  // run BEFORE flushBatch(): main.ts's refreshBattle reads the phase in a batch listener, so a
-  // reconcile after the flush would show the deploy panel one batch late. AUTHORITATIVE: a row
-  // absent from the cache is deleted (a finished battle's rows go with the GC, a cancelled plan
-  // with its row); a converter's null (an unknown payload-enum tag) drops only that row.
-  const guarded = (reconcile: () => void): void => {
-    try {
-      reconcile();
-    } catch (err) {
-      console.error('[net] view reconcile threw; flushing anyway', err);
-    }
-  };
-  const present = <T>(rows: readonly (T | null)[]): T[] =>
-    rows.filter((row): row is T => row !== null);
-  guarded(() =>
+    ),
+  // The seven tactical views run BEFORE flushBatch(): main.ts's refreshBattle reads the phase in a
+  // batch listener, so a reconcile after the flush would show the deploy panel one batch late. A
+  // finished battle's rows go with the GC, a cancelled plan with its row.
+  myTacticalBattle: (store, db) =>
     store.reconcileTacticalBattlesFromView(
       present(
         [...db.myTacticalBattle.iter()].map((row) =>
@@ -140,15 +118,13 @@ export function reconcileOwnerViews(store: AuthoritativeStore, db: OwnerViewCach
         ),
       ),
     ),
-  );
-  guarded(() =>
+  myBattleUnits: (store, db) =>
     store.reconcileBattleUnitsFromView(
       [...db.myBattleUnits.iter()].map((row) =>
         battleUnitRowToStore(row as unknown as SdkBattleUnitRow),
       ),
     ),
-  );
-  guarded(() =>
+  myBattleQueue: (store, db) =>
     store.reconcileBattleQueuesFromView(
       present(
         [...db.myBattleQueue.iter()].map((row) =>
@@ -156,43 +132,98 @@ export function reconcileOwnerViews(store: AuthoritativeStore, db: OwnerViewCach
         ),
       ),
     ),
-  );
-  guarded(() =>
+  myBattleDeploy: (store, db) =>
     store.reconcileBattleDeploysFromView(
       [...db.myBattleDeploy.iter()].map((row) =>
         battleDeployRowToStore(row as unknown as SdkBattleDeployRow),
       ),
     ),
-  );
-  guarded(() =>
+  myBattleClock: (store, db) =>
     store.reconcileBattleClocksFromView(
       [...db.myBattleClock.iter()].map((row) =>
         battleClockRowToStore(row as unknown as SdkBattleClockRow),
       ),
     ),
-  );
-  guarded(() =>
+  myBattleEvents: (store, db) =>
     store.reconcileBattleEventsFromView(
       [...db.myBattleEvents.iter()].map((row) =>
         battleEventRowToStore(row as unknown as SdkBattleEventRow),
       ),
     ),
-  );
-  guarded(() =>
+  myFormation: (store, db) =>
     store.reconcileFormationFromView(
       [...db.myFormation.iter()].map((row) =>
         formationRowToStore(row as unknown as SdkFormationRow),
       ),
     ),
-  );
-  // `my_trade_session` — the participant-scoped Vec view over the private trade_session table.
-  // PK-less, so every change is an unordered insert+delete pair: rebuild from the cache
-  // (AUTHORITATIVE — a session absent from it has closed).
-  guarded(() =>
+  // The participant-scoped view over the private trade_session table: a session absent from the
+  // cache has closed.
+  myTradeSession: (store, db) =>
     store.reconcileTradeSessionsFromView(
       [...db.myTradeSession.iter()].map((row) =>
         tradeSessionRowToStore(row as unknown as SdkTradeSessionRow),
       ),
     ),
-  );
+};
+
+// The try groups, in run order. The reconciles run UPSTREAM of flushBatch in the batcher's shared
+// closure, so a throw (bindings skew, a partially decoded row) must never escape: it would starve
+// EVERY batch listener, including the movement reconcile that drives prediction snap. A throw is
+// logged and ends only its own group. The monster, battle, export and evolution-notice reconciles
+// share one try (the evolution notices last, so the newest converter can never starve the
+// movement-driving monster and battle reconciles); the inventory has its own; each tactical view
+// and the trade session view is alone.
+const TRY_GROUPS: readonly (readonly OwnerView[])[] = [
+  ['my_monster_pub', 'myBattle', 'my_export_bundle', 'myPendingEvolutionNotices'],
+  ['my_inventory'],
+  ['myTacticalBattle'],
+  ['myBattleUnits'],
+  ['myBattleQueue'],
+  ['myBattleDeploy'],
+  ['myBattleClock'],
+  ['myBattleEvents'],
+  ['myFormation'],
+  ['myTradeSession'],
+];
+
+/** Every owner view, in reconcile order. */
+export const OWNER_VIEWS: readonly OwnerView[] = TRY_GROUPS.flat();
+
+/** The owner views of one connection: which need a rebuild, and the rebuild itself. */
+export interface OwnerViewReconciler {
+  /** `view`'s rows changed: the next reconcile rebuilds it. */
+  markDirty(view: OwnerView): void;
+  /** Every view needs a rebuild: a snapshot applied, a new connection, a reset store. */
+  markAllDirty(): void;
+  /** Rebuilds each dirty view's store collection from `db`, in the order and try groups above,
+   *  and clears a view once its reconcile returns. A clean view is not read. Never throws: a throw
+   *  is logged, and the view that threw and every later dirty view of its group stay dirty for the
+   *  next call. */
+  reconcileOwnerViews(store: AuthoritativeStore, db: OwnerViewCache): void;
+}
+
+/** A reconciler whose views all start dirty, so its first reconcile rebuilds every view. */
+export function createOwnerViewReconciler(): OwnerViewReconciler {
+  const dirty = new Set<OwnerView>(OWNER_VIEWS);
+  return {
+    markDirty(view) {
+      dirty.add(view);
+    },
+    markAllDirty() {
+      for (const view of OWNER_VIEWS) dirty.add(view);
+    },
+    reconcileOwnerViews(store, db) {
+      for (const group of TRY_GROUPS) {
+        try {
+          for (const view of group) {
+            if (!dirty.has(view)) continue;
+            RECONCILE[view](store, db);
+            dirty.delete(view);
+          }
+        } catch (err) {
+          console.error('[net] view reconcile threw; flushing anyway', err);
+        }
+      }
+    },
+  };
 }

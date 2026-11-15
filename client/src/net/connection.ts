@@ -63,7 +63,7 @@ import {
   speciesRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
-import { reconcileOwnerViews } from './viewReconcile';
+import { createOwnerViewReconciler, OWNER_VIEWS } from './viewReconcile';
 import { isOwnZoneChange } from './warpDetect';
 import {
   describeScope,
@@ -184,6 +184,10 @@ export function connect(opts: ConnectionOptions): Connection {
   const { store, name } = opts;
   // Armed by each applied snapshot (stale-guarded), consumed by the FIRST flush after it.
   let snapshotApplied = false;
+  // Which owner views changed since their last rebuild. ONE for ALL rebuilds, like the batcher:
+  // every build's view handlers mark it, and each build, applied snapshot and store reset marks
+  // every view.
+  const ownerViews = createOwnerViewReconciler();
   // Reconcile once per transaction: each row callback schedules; the batcher fires
   // store.flushBatch() once on the next microtask (no per-transaction SDK hook in 2.6).
   // ONE batcher for ALL rebuilds: a per-build batcher could fire a
@@ -191,12 +195,12 @@ export function connect(opts: ConnectionOptions): Connection {
   // re-registers row handlers per build, but every handler schedules through THIS
   // single instance, so a scheduled flush always reflects the current store.
   const batcher = new MicrotaskBatcher(() => {
-    // Rebuild the owner-view collections from the SDK's post-burst cache BEFORE notifying
-    // listeners (viewReconcile.ts). Stale-build guarded: `live !== undefined` is the
-    // sanctioned spelling.
+    // Rebuild the changed owner-view collections from the SDK's post-burst cache BEFORE
+    // notifying listeners (viewReconcile.ts). Stale-build guarded: `live !== undefined` is the
+    // sanctioned spelling; while no build is live the marks wait for the next one.
     const live = current;
     if (live !== undefined) {
-      reconcileOwnerViews(store, live.db);
+      ownerViews.reconcileOwnerViews(store, live.db);
     }
     // hydration-complete — AFTER the reconciles (the store now holds the applied snapshot)
     // and BEFORE flushBatch (listeners observe it delivered). Outside the live-guard on purpose:
@@ -279,6 +283,7 @@ export function connect(opts: ConnectionOptions): Connection {
   function handleDrop(): void {
     stopScope?.();
     store.reset();
+    ownerViews.markAllDirty();
     const wasConnected = state.link === 'connected';
     state = onDisconnected(state);
     if (wasConnected) opts.onError('link', 'connection lost — reconnecting…');
@@ -322,6 +327,21 @@ export function connect(opts: ConnectionOptions): Connection {
    * everything or the reconnect looks connected but stays empty).
    */
   function wireTables(conn: DbConnection, runScope: () => void): void {
+    // A row handler that throws stops the SDK dispatching the rest of that message, whose rows are
+    // already in the SDK cache: a view whose own handler never ran would stay clean and stale. So
+    // a throw from any other table's handler marks every owner view and schedules the flush, then
+    // propagates unchanged.
+    const recoverViewsOnThrow =
+      <A extends unknown[]>(handler: (...args: A) => void) =>
+      (...args: A): void => {
+        try {
+          handler(...args);
+        } catch (err) {
+          ownerViews.markAllDirty();
+          batcher.schedule();
+          throw err;
+        }
+      };
     const ingestChar = (row: SdkCharacterRow): void => {
       store.upsertCharacter(characterRowToStore(row), performance.now());
       batcher.schedule();
@@ -332,31 +352,37 @@ export function connect(opts: ConnectionOptions): Connection {
     const scopeIfOwn = (row: SdkCharacterRow): void => {
       if (row.entityId === store.ownEntityId(identity)) runScope();
     };
-    conn.db.character.onInsert((_ctx, row) => {
-      ingestChar(row as unknown as SdkCharacterRow);
-      scopeIfOwn(row as unknown as SdkCharacterRow);
-    });
-    conn.db.character.onUpdate((_ctx, oldRow, row) => {
-      const newSdkRow = row as unknown as SdkCharacterRow;
-      // detect own-entity zone transition via isOwnZoneChange
-      // (warpDetect.ts — pure predicate, unit-tested independently; M12.5d-5: raw SDK
-      // scalars avoid characterRowToStore() double-conversion just to compare zoneId).
-      if (opts.onOwnWarp !== undefined) {
-        const oldSdkRow = oldRow as unknown as SdkCharacterRow;
-        const ownEntityId = store.ownEntityId(identity);
-        if (ownEntityId !== undefined && isOwnZoneChange(oldSdkRow, newSdkRow, ownEntityId)) {
-          opts.onOwnWarp(newSdkRow.zoneId);
+    conn.db.character.onInsert(
+      recoverViewsOnThrow((_ctx, row) => {
+        ingestChar(row as unknown as SdkCharacterRow);
+        scopeIfOwn(row as unknown as SdkCharacterRow);
+      }),
+    );
+    conn.db.character.onUpdate(
+      recoverViewsOnThrow((_ctx, oldRow, row) => {
+        const newSdkRow = row as unknown as SdkCharacterRow;
+        // detect own-entity zone transition via isOwnZoneChange
+        // (warpDetect.ts — pure predicate, unit-tested independently; M12.5d-5: raw SDK
+        // scalars avoid characterRowToStore() double-conversion just to compare zoneId).
+        if (opts.onOwnWarp !== undefined) {
+          const oldSdkRow = oldRow as unknown as SdkCharacterRow;
+          const ownEntityId = store.ownEntityId(identity);
+          if (ownEntityId !== undefined && isOwnZoneChange(oldSdkRow, newSdkRow, ownEntityId)) {
+            opts.onOwnWarp(newSdkRow.zoneId);
+          }
         }
-      }
-      ingestChar(newSdkRow);
-      scopeIfOwn(newSdkRow);
-    });
-    conn.db.character.onDelete((_ctx, row) => {
-      const own = (row as unknown as SdkCharacterRow).entityId === store.ownEntityId(identity);
-      store.removeCharacter((row as unknown as SdkCharacterRow).entityId);
-      batcher.schedule();
-      if (own) runScope();
-    });
+        ingestChar(newSdkRow);
+        scopeIfOwn(newSdkRow);
+      }),
+    );
+    conn.db.character.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        const own = (row as unknown as SdkCharacterRow).entityId === store.ownEntityId(identity);
+        store.removeCharacter((row as unknown as SdkCharacterRow).entityId);
+        batcher.schedule();
+        if (own) runScope();
+      }),
+    );
 
     const ingestPlayer = (row: SdkPlayerRow): void => {
       const player = playerRowToStore(row);
@@ -364,73 +390,71 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
       if (player.identity === identity) runScope();
     };
-    conn.db.player.onInsert((_ctx, row) => ingestPlayer(row as unknown as SdkPlayerRow));
-    conn.db.player.onUpdate((_ctx, _old, row) => ingestPlayer(row as unknown as SdkPlayerRow));
-    conn.db.player.onDelete((_ctx, row) => {
-      const hex = (row as unknown as SdkPlayerRow).identity.toHexString();
-      store.removePlayer(hex);
-      batcher.schedule();
-      if (hex === identity) runScope();
-    });
-
-    // `my_monster_pub` is a PK-less VIEW — the SDK never
-    // fires onUpdate for it, so do NOT wire one, and
-    // per-row store writes are banned here: the batcher's flush closure
-    // reconciles the whole monster map from the SDK cache, so these handlers
-    // only schedule that flush.
-    conn.db.my_monster_pub.onInsert(() => batcher.schedule());
-    conn.db.my_monster_pub.onDelete(() => batcher.schedule());
+    conn.db.player.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestPlayer(row as unknown as SdkPlayerRow)),
+    );
+    conn.db.player.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestPlayer(row as unknown as SdkPlayerRow)),
+    );
+    conn.db.player.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        const hex = (row as unknown as SdkPlayerRow).identity.toHexString();
+        store.removePlayer(hex);
+        batcher.schedule();
+        if (hex === identity) runScope();
+      }),
+    );
 
     const ingestSpecies = (row: SdkSpeciesRowRow): void => {
       store.upsertSpecies(speciesRowToStore(row));
       batcher.schedule();
     };
-    conn.db.species_row.onInsert((_ctx, row) => ingestSpecies(row as unknown as SdkSpeciesRowRow));
-    conn.db.species_row.onUpdate((_ctx, _old, row) =>
-      ingestSpecies(row as unknown as SdkSpeciesRowRow),
+    conn.db.species_row.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestSpecies(row as unknown as SdkSpeciesRowRow)),
     );
-    conn.db.species_row.onDelete((_ctx, row) => {
-      store.removeSpecies((row as unknown as SdkSpeciesRowRow).id);
-      batcher.schedule();
-    });
-
-    // `my_battle` is a PK-less VIEW — the SDK never
-    // fires onUpdate for it, so do NOT wire one,
-    // and per-row store writes are banned here: the batcher's flush closure
-    // reconciles the whole battle map from the SDK cache, so these handlers
-    // only schedule that flush (the my_monster_pub pattern above).
-    conn.db.myBattle.onInsert(() => batcher.schedule());
-    conn.db.myBattle.onDelete(() => batcher.schedule());
+    conn.db.species_row.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestSpecies(row as unknown as SdkSpeciesRowRow)),
+    );
+    conn.db.species_row.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeSpecies((row as unknown as SdkSpeciesRowRow).id);
+        batcher.schedule();
+      }),
+    );
 
     const ingestSkill = (row: SdkSkillRowRow): void => {
       store.upsertSkill(skillRowToStore(row));
       batcher.schedule();
     };
-    conn.db.skill_row.onInsert((_ctx, row) => ingestSkill(row as unknown as SdkSkillRowRow));
-    conn.db.skill_row.onUpdate((_ctx, _old, row) => ingestSkill(row as unknown as SdkSkillRowRow));
-    conn.db.skill_row.onDelete((_ctx, row) => {
-      store.removeSkill((row as unknown as SdkSkillRowRow).id);
-      batcher.schedule();
-    });
-
-    // `my_inventory` is a PK-less VIEW (the private inventory table's owner-scoped read
-    // path) — the SDK never fires onUpdate for it, so do NOT wire one, and per-row store
-    // writes are banned here: the batcher's flush closure reconciles the whole inventory
-    // from the SDK cache, so these handlers only schedule that flush (the my_monster_pub
-    // pattern above).
-    conn.db.my_inventory.onInsert(() => batcher.schedule());
-    conn.db.my_inventory.onDelete(() => batcher.schedule());
+    conn.db.skill_row.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestSkill(row as unknown as SdkSkillRowRow)),
+    );
+    conn.db.skill_row.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestSkill(row as unknown as SdkSkillRowRow)),
+    );
+    conn.db.skill_row.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeSkill((row as unknown as SdkSkillRowRow).id);
+        batcher.schedule();
+      }),
+    );
 
     const ingestItemDef = (row: SdkItemRowRow): void => {
       store.upsertItemDef(itemRowToStore(row));
       batcher.schedule();
     };
-    conn.db.item_row.onInsert((_ctx, row) => ingestItemDef(row as unknown as SdkItemRowRow));
-    conn.db.item_row.onUpdate((_ctx, _old, row) => ingestItemDef(row as unknown as SdkItemRowRow));
-    conn.db.item_row.onDelete((_ctx, row) => {
-      store.removeItemDef((row as unknown as SdkItemRowRow).id);
-      batcher.schedule();
-    });
+    conn.db.item_row.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestItemDef(row as unknown as SdkItemRowRow)),
+    );
+    conn.db.item_row.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestItemDef(row as unknown as SdkItemRowRow)),
+    );
+    conn.db.item_row.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeItemDef((row as unknown as SdkItemRowRow).id);
+        batcher.schedule();
+      }),
+    );
 
     // The essence-graph edges. `sync_content` republishes this table as
     // N deletes + N inserts in ONE unordered transaction, RE-MINTING path_id while
@@ -441,16 +465,22 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertEvolutionPath(evolutionPathRowToStore(row));
       batcher.schedule();
     };
-    conn.db.evolution_path.onInsert((_ctx, row) =>
-      ingestEvolutionPath(row as unknown as SdkEvolutionPathRow),
+    conn.db.evolution_path.onInsert(
+      recoverViewsOnThrow((_ctx, row) =>
+        ingestEvolutionPath(row as unknown as SdkEvolutionPathRow),
+      ),
     );
-    conn.db.evolution_path.onUpdate((_ctx, _old, row) =>
-      ingestEvolutionPath(row as unknown as SdkEvolutionPathRow),
+    conn.db.evolution_path.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) =>
+        ingestEvolutionPath(row as unknown as SdkEvolutionPathRow),
+      ),
     );
-    conn.db.evolution_path.onDelete((_ctx, row) => {
-      store.removeEvolutionPath((row as unknown as SdkEvolutionPathRow).pathId);
-      batcher.schedule();
-    });
+    conn.db.evolution_path.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeEvolutionPath((row as unknown as SdkEvolutionPathRow).pathId);
+        batcher.schedule();
+      }),
+    );
 
     // conversation / player_quest / heal_location_row / npc.
     // conversations now arrive through the owner-scoped
@@ -466,17 +496,23 @@ export function connect(opts: ConnectionOptions): Connection {
       npcEntityId: bigint;
       currentNodeId: string;
     };
-    conn.db.my_conversation.onInsert((_ctx, row) => {
-      store.upsertConversation(playerConversationRowToStore(row as unknown as SdkConversationRow));
-      batcher.schedule();
-    });
-    conn.db.my_conversation.onDelete((_ctx, row) => {
-      const deleted = playerConversationRowToStore(row as unknown as SdkConversationRow);
-      if (shouldRemoveOnViewDelete(store.ownConversation(deleted.ownerIdentity), deleted)) {
-        store.removeConversation(deleted.ownerIdentity);
-      }
-      batcher.schedule();
-    });
+    conn.db.my_conversation.onInsert(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.upsertConversation(
+          playerConversationRowToStore(row as unknown as SdkConversationRow),
+        );
+        batcher.schedule();
+      }),
+    );
+    conn.db.my_conversation.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        const deleted = playerConversationRowToStore(row as unknown as SdkConversationRow);
+        if (shouldRemoveOnViewDelete(store.ownConversation(deleted.ownerIdentity), deleted)) {
+          store.removeConversation(deleted.ownerIdentity);
+        }
+        batcher.schedule();
+      }),
+    );
 
     type SdkQuestRow = {
       pqId: bigint;
@@ -488,12 +524,18 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertQuest(playerQuestRowToStore(row));
       batcher.schedule();
     };
-    conn.db.player_quest.onInsert((_ctx, row) => ingestQuest(row as unknown as SdkQuestRow));
-    conn.db.player_quest.onUpdate((_ctx, _old, row) => ingestQuest(row as unknown as SdkQuestRow));
-    conn.db.player_quest.onDelete((_ctx, row) => {
-      store.removeQuest((row as unknown as SdkQuestRow).pqId);
-      batcher.schedule();
-    });
+    conn.db.player_quest.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestQuest(row as unknown as SdkQuestRow)),
+    );
+    conn.db.player_quest.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestQuest(row as unknown as SdkQuestRow)),
+    );
+    conn.db.player_quest.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeQuest((row as unknown as SdkQuestRow).pqId);
+        batcher.schedule();
+      }),
+    );
 
     type SdkHealRow = {
       locationId: number;
@@ -509,16 +551,18 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertHealLocation(healLocationRowToStore(row));
       batcher.schedule();
     };
-    conn.db.heal_location_row.onInsert((_ctx, row) =>
-      ingestHealLocation(row as unknown as SdkHealRow),
+    conn.db.heal_location_row.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestHealLocation(row as unknown as SdkHealRow)),
     );
-    conn.db.heal_location_row.onUpdate((_ctx, _old, row) =>
-      ingestHealLocation(row as unknown as SdkHealRow),
+    conn.db.heal_location_row.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestHealLocation(row as unknown as SdkHealRow)),
     );
-    conn.db.heal_location_row.onDelete((_ctx, row) => {
-      store.removeHealLocation((row as unknown as SdkHealRow).locationId);
-      batcher.schedule();
-    });
+    conn.db.heal_location_row.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeHealLocation((row as unknown as SdkHealRow).locationId);
+        batcher.schedule();
+      }),
+    );
 
     // zone_def (public content, PK zone_id): the client's only zone-name source, read by main.ts's
     // zone cue (qf-15). A regular table, so onUpdate fires — the heal_location_row per-row idiom,
@@ -527,12 +571,14 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertZoneName(row.zoneId, row.name);
       batcher.schedule();
     };
-    conn.db.zoneDef.onInsert((_ctx, row) => ingestZoneName(row));
-    conn.db.zoneDef.onUpdate((_ctx, _old, row) => ingestZoneName(row));
-    conn.db.zoneDef.onDelete((_ctx, row) => {
-      store.removeZoneName(row.zoneId);
-      batcher.schedule();
-    });
+    conn.db.zoneDef.onInsert(recoverViewsOnThrow((_ctx, row) => ingestZoneName(row)));
+    conn.db.zoneDef.onUpdate(recoverViewsOnThrow((_ctx, _old, row) => ingestZoneName(row)));
+    conn.db.zoneDef.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeZoneName(row.zoneId);
+        batcher.schedule();
+      }),
+    );
 
     type SdkNpcRow = {
       entityId: bigint;
@@ -550,39 +596,53 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertNpc(npcRowToStore(row));
       batcher.schedule();
     };
-    conn.db.npc.onInsert((_ctx, row) => ingestNpc(row as unknown as SdkNpcRow));
-    conn.db.npc.onUpdate((_ctx, _old, row) => ingestNpc(row as unknown as SdkNpcRow));
-    conn.db.npc.onDelete((_ctx, row) => {
-      store.removeNpc((row as unknown as SdkNpcRow).entityId);
-      batcher.schedule();
-    });
+    conn.db.npc.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestNpc(row as unknown as SdkNpcRow)),
+    );
+    conn.db.npc.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestNpc(row as unknown as SdkNpcRow)),
+    );
+    conn.db.npc.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeNpc((row as unknown as SdkNpcRow).entityId);
+        batcher.schedule();
+      }),
+    );
 
     // shop_row / shop_item_row — public content tables.
     const ingestShop = (row: SdkShopRowRow): void => {
       store.upsertShop(shopRowToStore(row));
       batcher.schedule();
     };
-    conn.db.shop_row.onInsert((_ctx, row) => ingestShop(row as unknown as SdkShopRowRow));
-    conn.db.shop_row.onUpdate((_ctx, _old, row) => ingestShop(row as unknown as SdkShopRowRow));
-    conn.db.shop_row.onDelete((_ctx, row) => {
-      store.removeShop((row as unknown as SdkShopRowRow).shopId);
-      batcher.schedule();
-    });
+    conn.db.shop_row.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestShop(row as unknown as SdkShopRowRow)),
+    );
+    conn.db.shop_row.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestShop(row as unknown as SdkShopRowRow)),
+    );
+    conn.db.shop_row.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeShop((row as unknown as SdkShopRowRow).shopId);
+        batcher.schedule();
+      }),
+    );
 
     const ingestShopItem = (row: SdkShopItemRowRow): void => {
       store.upsertShopItem(shopItemRowToStore(row));
       batcher.schedule();
     };
-    conn.db.shop_item_row.onInsert((_ctx, row) =>
-      ingestShopItem(row as unknown as SdkShopItemRowRow),
+    conn.db.shop_item_row.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestShopItem(row as unknown as SdkShopItemRowRow)),
     );
-    conn.db.shop_item_row.onUpdate((_ctx, _old, row) =>
-      ingestShopItem(row as unknown as SdkShopItemRowRow),
+    conn.db.shop_item_row.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestShopItem(row as unknown as SdkShopItemRowRow)),
     );
-    conn.db.shop_item_row.onDelete((_ctx, row) => {
-      store.removeShopItem((row as unknown as SdkShopItemRowRow).shopItemId);
-      batcher.schedule();
-    });
+    conn.db.shop_item_row.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeShopItem((row as unknown as SdkShopItemRowRow).shopItemId);
+        batcher.schedule();
+      }),
+    );
 
     // ux2b: my_wallet — the owner-scoped VIEW over the PRIVATE
     // player_wallet table. INSERT-ONLY, on purpose.
@@ -601,10 +661,12 @@ export function connect(opts: ConnectionOptions): Connection {
     //     wiring one implies a delivery guarantee the transport does not make.
     // If the server ever grows a wallet-delete path, this absence is the review tripwire:
     // revisit the no-delete wallet decision first, then wire removal + the store API in the same change.
-    conn.db.my_wallet.onInsert((_ctx, row) => {
-      store.upsertWallet(playerWalletRowToStore(row as unknown as SdkPlayerWalletRow));
-      batcher.schedule();
-    });
+    conn.db.my_wallet.onInsert(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.upsertWallet(playerWalletRowToStore(row as unknown as SdkPlayerWalletRow));
+        batcher.schedule();
+      }),
+    );
 
     // battle_challenge (public table — challenger + target subscribe).
     // Challenges are deleted server-side when Accepted/Declined/Cancelled
@@ -613,16 +675,20 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertChallenge(battleChallengeRowToStore(row));
       batcher.schedule();
     };
-    conn.db.battle_challenge.onInsert((_ctx, row) =>
-      ingestChallenge(row as unknown as SdkBattleChallengeRow),
+    conn.db.battle_challenge.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestChallenge(row as unknown as SdkBattleChallengeRow)),
     );
-    conn.db.battle_challenge.onUpdate((_ctx, _old, row) =>
-      ingestChallenge(row as unknown as SdkBattleChallengeRow),
+    conn.db.battle_challenge.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) =>
+        ingestChallenge(row as unknown as SdkBattleChallengeRow),
+      ),
     );
-    conn.db.battle_challenge.onDelete((_ctx, row) => {
-      store.removeChallenge((row as unknown as SdkBattleChallengeRow).challengeId);
-      batcher.schedule();
-    });
+    conn.db.battle_challenge.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeChallenge((row as unknown as SdkBattleChallengeRow).challengeId);
+        batcher.schedule();
+      }),
+    );
 
     // Profile (PUBLIC table — world-readable ranked leaderboard).
     // profile is a REGULAR table (not a view), so onUpdate fires normally — the
@@ -635,8 +701,12 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertProfile(profileRowToStore(row));
       batcher.schedule();
     };
-    conn.db.profile.onInsert((_ctx, row) => ingestProfile(row as unknown as SdkProfileRow));
-    conn.db.profile.onUpdate((_ctx, _old, row) => ingestProfile(row as unknown as SdkProfileRow));
+    conn.db.profile.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestProfile(row as unknown as SdkProfileRow)),
+    );
+    conn.db.profile.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestProfile(row as unknown as SdkProfileRow)),
+    );
 
     // my_account is the owner-scoped VIEW over the PRIVATE account table
     // (subscribed above) and is the sole reconciliation authority for "am I signed in" (AUTH-51).
@@ -665,54 +735,26 @@ export function connect(opts: ConnectionOptions): Connection {
         attemptJoin(live, name, opts.onError);
       }
     };
-    conn.db.my_account.onInsert((_ctx, row) => ingestAccount(row as unknown as SdkAccountRow));
-    conn.db.my_account.onUpdate((_ctx, _old, row) =>
-      ingestAccount(row as unknown as SdkAccountRow),
+    conn.db.my_account.onInsert(
+      recoverViewsOnThrow((_ctx, row) => ingestAccount(row as unknown as SdkAccountRow)),
+    );
+    conn.db.my_account.onUpdate(
+      recoverViewsOnThrow((_ctx, _old, row) => ingestAccount(row as unknown as SdkAccountRow)),
     );
 
-    // `my_export_bundle` is a PK-less Vec-VIEW — the my_monster_pub /
-    // my_battle shape, NOT the my_account/my_wallet one. The SDK never fires onUpdate for it, so
-    // do NOT wire one, and per-row store writes are banned here: the batcher's flush closure
-    // reconciles the whole chunk map from the SDK cache, so these handlers only schedule that
-    // flush. onDelete IS wired (unlike my_account/my_wallet, whose rows are never deleted
-    // server-side): export chunks leave this view via the 7-day TTL reaper and the deletion
-    // cascade, and with no delete handler the batcher is never scheduled for that burst — the
-    // client would keep offering a download of data the server has already purged.
-    conn.db.my_export_bundle.onInsert(() => batcher.schedule());
-    conn.db.my_export_bundle.onDelete(() => batcher.schedule());
-
-    // `my_pending_evolution_notices` is a PK-less Option-VIEW — the
-    // my_monster_pub / my_battle / my_export_bundle shape, NOT the my_account/my_wallet one.
-    // The SDK never fires onUpdate for it, so do NOT wire one, and per-row store writes are
-    // banned here: with no primary key the delete half of an unordered pair would remove the
-    // row the insert half just wrote (the my_conversation coalescing wipe). These
-    // handlers only schedule the flush, whose closure reconciles the whole slot from the SDK
-    // cache. onDelete IS wired (unlike my_account/my_wallet, whose rows are never deleted
-    // server-side): a notice row leaves this view on the account-deletion cascade and on the
-    // guest-claim rekey, and with no delete handler the batcher is never scheduled for that
-    // burst — the client would keep showing a reveal the server has already erased.
-    conn.db.myPendingEvolutionNotices.onInsert(() => batcher.schedule());
-    conn.db.myPendingEvolutionNotices.onDelete(() => batcher.schedule());
-    // bt-12 (BT12.1): the seven tactical views — PK-less (a Vec or an Option view), so the SDK
-    // never fires onUpdate (do NOT wire one) and every change is an unordered insert+delete pair;
-    // no per-row store write here: the batcher's flush closure rebuilds each map from the cache.
-    conn.db.myTacticalBattle.onInsert(() => batcher.schedule());
-    conn.db.myTacticalBattle.onDelete(() => batcher.schedule());
-    conn.db.myBattleUnits.onInsert(() => batcher.schedule());
-    conn.db.myBattleUnits.onDelete(() => batcher.schedule());
-    conn.db.myBattleQueue.onInsert(() => batcher.schedule());
-    conn.db.myBattleQueue.onDelete(() => batcher.schedule());
-    conn.db.myBattleDeploy.onInsert(() => batcher.schedule());
-    conn.db.myBattleDeploy.onDelete(() => batcher.schedule());
-    conn.db.myBattleClock.onInsert(() => batcher.schedule());
-    conn.db.myBattleClock.onDelete(() => batcher.schedule());
-    conn.db.myBattleEvents.onInsert(() => batcher.schedule());
-    conn.db.myBattleEvents.onDelete(() => batcher.schedule());
-    conn.db.myFormation.onInsert(() => batcher.schedule());
-    conn.db.myFormation.onDelete(() => batcher.schedule());
-    // `my_trade_session`: the same PK-less shape — no onUpdate, no per-row store write.
-    conn.db.myTradeSession.onInsert(() => batcher.schedule());
-    conn.db.myTradeSession.onDelete(() => batcher.schedule());
+    // The owner views (viewReconcile.ts) are PK-less, so the SDK never fires onUpdate for them
+    // (none is wired) and every change is an unordered insert+delete pair: a handler writes
+    // nothing to the store, it marks its view and schedules the flush, which rebuilds that view
+    // from the cache. onDelete is wired for every view: a row leaving one (the export TTL reaper,
+    // the deletion cascade, the guest-claim rekey, a finished battle's GC) must rebuild it too.
+    for (const view of OWNER_VIEWS) {
+      const viewChanged = (): void => {
+        ownerViews.markDirty(view);
+        batcher.schedule();
+      };
+      conn.db[view].onInsert(viewChanged);
+      conn.db[view].onDelete(viewChanged);
+    }
   }
 
   /** Issue joinGame through a WRAPPED connection — the ONE join path (onApplied, the
@@ -861,6 +903,9 @@ export function connect(opts: ConnectionOptions): Connection {
         c.subscriptionBuilder()
           .onApplied(() => {
             if (stale()) return; // superseded build: never unfreeze/join on a dead link
+            // The snapshot is in the cache: every owner view is rebuilt on the next batch. First,
+            // so a throwing callback below cannot skip it.
+            ownerViews.markAllDirty();
             // The link is fully usable only once the initial snapshot applies: unfreeze + reset
             // the backoff ladder here (the ONLY attempt reset), and clear any session terminal.
             state = onConnected(state);
@@ -1025,6 +1070,9 @@ export function connect(opts: ConnectionOptions): Connection {
       })
       .build();
     wireTables(conn, runScope);
+    // A new connection is a new cache: every owner view is rebuilt from it on the next batch,
+    // whether or not this rebuild reset the store (reconnectNow and continueAnonymously do not).
+    ownerViews.markAllDirty();
     // dev-observability: wrap AFTER wireTables so the inbound row callbacks
     // stay wired to the RAW connection. Identity when opts.onSend is undefined.
     const wrapped = wrapReducerLogging(conn, opts.onSend);
