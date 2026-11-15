@@ -3475,6 +3475,53 @@ mod tests {
     }
 
     #[test]
+    fn sr9a_1_rx_rates_saturate_at_u64_max_when_the_rate_exceeds_it() {
+        // one usable interval of 1 ms: u64::MAX * 1000 / (1 * 1) > u64::MAX.
+        assert_eq!(
+            rx_rates(&[vec![0], vec![0], vec![u64::MAX]], 1),
+            Some(RxRates {
+                mean: u64::MAX,
+                max: u64::MAX
+            })
+        );
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_mean_is_total_over_bots_not_a_mean_of_floored_rates() {
+        // 4 raw readings, warm-up dropped: 3 usable, 2 intervals, span
+        // 2 * 750 = 1500 ms; deltas [1, 2]. Total: 3 * 1000 / (2 * 1500) = 1.
+        // Per-bot floored rates are 0 and 1, whose average floors to 0.
+        assert_eq!(
+            rx_rates(&[vec![0, 0], vec![0, 0], vec![0, 0], vec![1, 2]], 750),
+            Some(RxRates { mean: 1, max: 1 })
+        );
+    }
+
+    #[test]
+    fn sr9a_1_rx_rates_none_when_a_middle_usable_reading_is_short() {
+        assert_eq!(
+            rx_rates(&[vec![0, 0], vec![0, 0], vec![1], vec![3, 4]], 1000),
+            None
+        );
+    }
+
+    #[test]
+    fn sr9a_1_table_uses_the_configured_scrape_interval() {
+        let mut run = run_fixture("T-rx", vec![rx_sample(3, rx_fixture())]);
+        run.config.scrape_interval_ms = 250;
+        let (header, rows) = table_cells(&run);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0][column(&header, "rx_bytes_per_client_per_s")],
+            "4666"
+        );
+        assert_eq!(
+            rows[0][column(&header, "rx_bytes_per_client_per_s_max")],
+            "10000"
+        );
+    }
+
+    #[test]
     fn sr9a_1_rx_rates_floor_the_max_too() {
         // usable [5] -> [15], span 3000 ms: 10 * 1000 / 3000 = 3.33 -> 3.
         assert_eq!(
@@ -3810,6 +3857,33 @@ mod tests {
                     scan_in_pieces(&mut RowScan::own_player(CAP_IDENTITY), &msg, size),
                     Some(9),
                     "{label} in pieces of {size}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sr9a_2_row_scan_rejects_a_rival_identity_differing_in_the_last_digit() {
+        let rival = format!("{}8", &CAP_IDENTITY[..CAP_IDENTITY.len() - 1]);
+        assert_ne!(rival, CAP_IDENTITY);
+        assert!(CAP_IDENTITY.ends_with('9'));
+        for spelling in [obj_row as fn(&str, u64) -> String, arr_row] {
+            let rows = [spelling(CAP_IDENTITY, 9), spelling(&rival, 55)];
+            for msg in [initial_msg(&rows), txn_msg(&rows)] {
+                for size in [1, 7, 4096] {
+                    assert_eq!(
+                        scan_in_pieces(&mut RowScan::own_player(CAP_IDENTITY), &msg, size),
+                        Some(9),
+                        "pieces of {size}"
+                    );
+                }
+            }
+            // and the rival alone is nobody's own row
+            let alone = [spelling(&rival, 55)];
+            for msg in [initial_msg(&alone), txn_msg(&alone)] {
+                assert_eq!(
+                    scan_in_pieces(&mut RowScan::own_player(CAP_IDENTITY), &msg, 4096),
+                    None
                 );
             }
         }
@@ -7251,7 +7325,8 @@ mod tests {
     }
 
     /// the whole login and a warp, from the captured stream: the own row names
-    /// the entity, then the zone, and a new zone resends BOTH strings.
+    /// the entity, then the zone, and a new zone resends the
+    /// whole set: the player query, the own-row query and the zone query.
     #[test]
     fn t19_bot_scope_follows_its_own_rows() {
         for size in [1, 3, 64, 4096] {
