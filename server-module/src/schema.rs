@@ -2004,12 +2004,19 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         basis: "the owner remembered deploy order, deleted outright at cascade time; re-keyed by the claim flow; never exported",
         exportable: false,
     },
+    DataLifecycleEntry {
+        table: "player_handle",
+        policy: DeletionPolicy::Erase,
+        basis: "the owner minted discriminator, deleted outright at cascade time so the tag names nobody afterwards; re-keyed by the claim flow; exported as the number other players saw beside the owner name",
+        exportable: true,
+    },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---
     DataLifecycleEntry {
         table: "player",
         policy: DeletionPolicy::Anonymize,
         basis: "the presence row survives as the anchor that character and live multi-user \
-                rows point at; name is overwritten with the tombstone",
+                rows point at; name is overwritten with the tombstone and the discriminator \
+                and lead level mirrors are zeroed",
         exportable: true,
     },
     DataLifecycleEntry {

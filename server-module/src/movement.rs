@@ -193,6 +193,8 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 /// Join: one `player` + one `character` + its `move_intent` row, and the starter grant
 /// `onboarding` decides (the starter kit and the starter `monster`, once per identity: an
 /// identity whose starter marker is set gets the three presence rows and nothing else).
+/// The `player` row carries the identity's discriminator, minted by its first join and
+/// read back by every later one (`onboarding::ensure_handle`).
 /// The character stands where the account's last one stood when it disconnected
 /// (`take_start`), or on the spawn. Rejects a double-join within the same session.
 #[spacetimedb::reducer]
@@ -217,6 +219,10 @@ pub(crate) fn join_with_kit(
         return Err(e);
     }
     let kit = kit.inspect_err(|e| log_reject("join_game", me, e))?;
+    // The last refusal, and the first write when it mints: a join that cannot be given a
+    // handle writes no presence row.
+    let discriminator = crate::onboarding::ensure_handle(ctx, me)
+        .inspect_err(|e| log_reject("join_game", me, e))?;
     let (zone_id, pos, facing) = take_start(ctx, me);
     let ch = ctx.db.character().insert(Character {
         entity_id: 0,
@@ -242,7 +248,7 @@ pub(crate) fn join_with_kit(
         name,
         online: true,
         last_input_seq: 0,
-        discriminator: 0,
+        discriminator,
         lead_level: 0,
     });
     arm_zone_tick(ctx, zone_id);

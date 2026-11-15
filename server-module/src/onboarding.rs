@@ -1,5 +1,5 @@
 //! `onboarding` — what a join grants: the starter monster and the starter kit, once per
-//! identity.
+//! identity, and the identity's handle (its minted discriminator), which this module owns.
 //!
 //! "New player" is never inferred from what an identity owns. The grant is recorded by a
 //! persistent marker (`npc::STARTER_CLAIMED_FLAG`) set in the same transaction as the kit,
@@ -8,8 +8,9 @@
 use crate::economy::grant_currency;
 use crate::inventory::grant_item;
 use crate::npc::{check_reward_headroom, RewardCredits};
+use crate::schema::{player_handle, PlayerHandle};
 use game_core::StarterKit;
-use spacetimedb::{Identity, ReducerContext};
+use spacetimedb::{Identity, ReducerContext, Table};
 
 /// What one join grants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,20 +69,55 @@ pub(crate) fn onboard(ctx: &ReducerContext, owner: Identity, kit: &StarterKit) -
     grant
 }
 
-/// `owner`'s discriminator, minted on first use. SCAFFOLD: mints nothing.
-pub(crate) fn ensure_handle(_ctx: &ReducerContext, _owner: Identity) -> u32 {
-    0
+/// The refusal a join returns when the datastore will not mint a handle (the sequence is
+/// exhausted, or the value it drew is taken). One static reason: no row value is ever
+/// formatted into it.
+const REJECT_HANDLE_UNAVAILABLE: &str = "handle unavailable";
+
+/// `owner`'s discriminator: the one its handle row holds, or a freshly minted one when it
+/// has no row. The mint inserts 0, which makes the column's sequence assign the value. A
+/// mint the datastore refuses is an `Err`, never a panic and never a value of 0.
+pub(crate) fn ensure_handle(ctx: &ReducerContext, owner: Identity) -> Result<u32, String> {
+    if let Some(handle) = ctx.db.player_handle().owner_identity().find(owner) {
+        return Ok(handle.discriminator);
+    }
+    ctx.db
+        .player_handle()
+        .try_insert(PlayerHandle {
+            owner_identity: owner,
+            discriminator: 0,
+        })
+        .map(|handle| handle.discriminator)
+        .map_err(|_| REJECT_HANDLE_UNAVAILABLE.to_string())
 }
 
-/// Move `from`'s handle onto `to`. SCAFFOLD: moves nothing.
-pub(crate) fn rekey_handle(_ctx: &ReducerContext, _from: Identity, _to: Identity) {}
+/// Move `from`'s handle onto `to` with its discriminator unchanged (the guest claim). The
+/// claim refuses a destination that holds a handle, so the two rows never coexist. The
+/// explicit non-zero insert draws nothing from the sequence.
+pub(crate) fn rekey_handle(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let Some(handle) = ctx.db.player_handle().owner_identity().find(from) else {
+        return;
+    };
+    ctx.db.player_handle().owner_identity().delete(from);
+    ctx.db.player_handle().insert(PlayerHandle {
+        owner_identity: to,
+        ..handle
+    });
+}
 
-/// Delete `owner`'s handle. SCAFFOLD: deletes nothing.
-pub(crate) fn erase_handle(_ctx: &ReducerContext, _owner: Identity) {}
+/// Delete `owner`'s handle (the deletion cascade). Its discriminator is never minted again.
+pub(crate) fn erase_handle(ctx: &ReducerContext, owner: Identity) {
+    ctx.db.player_handle().owner_identity().delete(owner);
+}
 
-/// True if `owner` holds a handle. SCAFFOLD: always false.
-pub(crate) fn has_handle(_ctx: &ReducerContext, _owner: Identity) -> bool {
-    false
+/// True if `owner` holds a handle (a re-keyed table, so it counts as game data for
+/// `accounts::account_has_game_data`).
+pub(crate) fn has_handle(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db
+        .player_handle()
+        .owner_identity()
+        .find(owner)
+        .is_some()
 }
 
 #[cfg(test)]

@@ -43,11 +43,11 @@ use crate::playtest::{playtest_event, PlaytestEvent};
 use crate::schema::{
     account, battle, battle_action, battle_challenge, character, export_bundle,
     export_bundle__view, heal_cooldown, inventory, monster, monster_pub, player,
-    player_conversation, player_dialogue_state, player_quest, player_wallet, profile, trade_offer,
-    Account, AccountStatus, Battle, BattleAction, BattleChallenge, ChallengeStatus, Character,
-    DataLifecycleEntry, ExportBundle, HealCooldown, Inventory, Monster, MonsterPub, Player,
-    PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow, PlayerWallet, Profile, TradeOffer,
-    DATA_LIFECYCLE_MANIFEST,
+    player_conversation, player_dialogue_state, player_handle, player_quest, player_wallet,
+    profile, trade_offer, Account, AccountStatus, Battle, BattleAction, BattleChallenge,
+    ChallengeStatus, Character, DataLifecycleEntry, ExportBundle, HealCooldown, Inventory, Monster,
+    MonsterPub, Player, PlayerConversation, PlayerDialogueStateRow, PlayerHandle, PlayerQuestRow,
+    PlayerWallet, Profile, TradeOffer, DATA_LIFECYCLE_MANIFEST,
 };
 use game_core::{
     ActionState, Direction, MonsterCard, MoveInput, NatureKind, PvpAction, TradeItem, TradeStatus,
@@ -913,8 +913,8 @@ fn json_player(row: &Player) -> String {
         name,
         online,
         last_input_seq,
-        discriminator: _,
-        lead_level: _,
+        discriminator,
+        lead_level,
     } = row;
     let mut out = String::new();
     let mut first = true;
@@ -929,13 +929,28 @@ fn json_player(row: &Player) -> String {
     json_bool_into(&mut out, *online);
     json_field_into(&mut out, &mut first, stringify!(last_input_seq));
     json_u64_into(&mut out, *last_input_seq);
+    json_field_into(&mut out, &mut first, stringify!(discriminator));
+    json_u32_into(&mut out, *discriminator);
+    json_field_into(&mut out, &mut first, stringify!(lead_level));
+    json_u8_into(&mut out, *lead_level);
     out.push('}');
     out
 }
 
-/// SCAFFOLD: serializes nothing.
-fn json_player_handle(_row: &crate::schema::PlayerHandle) -> String {
-    String::new()
+fn json_player_handle(row: &PlayerHandle) -> String {
+    let PlayerHandle {
+        owner_identity,
+        discriminator,
+    } = row;
+    let mut out = String::new();
+    let mut first = true;
+    out.push('{');
+    json_field_into(&mut out, &mut first, stringify!(owner_identity));
+    json_identity_into(&mut out, *owner_identity);
+    json_field_into(&mut out, &mut first, stringify!(discriminator));
+    json_u32_into(&mut out, *discriminator);
+    out.push('}');
+    out
 }
 
 fn json_profile(row: &Profile) -> String {
@@ -1206,7 +1221,7 @@ fn plan_export_chunks(per_table: Vec<(&'static str, Vec<String>)>) -> Vec<Planne
 // ===========================================================================
 
 // A DoS knob (reducers serialize under one global write lock and this reducer
-// walks 17 tables), not a legal figure.
+// walks 18 tables), not a legal figure.
 const EXPORT_REQUEST_COOLDOWN_MS: i64 = 60_000;
 
 fn export_cooldown_elapsed(last_at_ms: Option<i64>, now_ms: i64) -> bool {
@@ -1283,6 +1298,7 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(trade_offer), rows_trade_offer),
     (stringify!(battle_challenge), rows_battle_challenge),
     (stringify!(battle_action), rows_battle_action),
+    (stringify!(player_handle), rows_player_handle),
     (stringify!(player), rows_player),
     (stringify!(profile), rows_profile),
     (stringify!(account), rows_account),
@@ -1487,6 +1503,14 @@ fn rows_battle_action(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
         .filter(|row| battle_action_is_own(row, owner))
         .map(|row| json_battle_action(&row))
         .collect())
+}
+
+fn rows_player_handle(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let mut rows = Vec::new();
+    if let Some(row) = ctx.db.player_handle().owner_identity().find(owner) {
+        rows.push(json_player_handle(&row));
+    }
+    Ok(rows)
 }
 
 fn rows_player(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
@@ -1737,9 +1761,10 @@ pub(crate) const EXPORT_REAP_MAX_READ_PER_TICK: usize = 256;
 // most this many stamps — and a stamp is exactly one
 // bundle minted since then, because the write site refuses a stamp a live row
 // already carries. Sixteen
-// minimum-size bundles (17 chunks, one per exportable table) is 272 rows, the
-// drain rate of the 256-row cap it replaces; a 256-row window in ascending stamp
-// order holds at most fifteen whole bundles and one straddler anyway.
+// minimum-size bundles (18 chunks, one per exportable table) is 288 rows, more
+// than the 256-row read window: a window in ascending stamp order holds at most
+// fourteen whole bundles and one straddler, so over bundles this module writes
+// the read window binds first and this cap bounds a window of shorter stamps.
 pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 
 // ===========================================================================
@@ -1748,10 +1773,10 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // the reaper retires in one whole retention window, so the write side cannot
 // outpace the drain. the inequality it rests on: EXPORT_REAP_MAX_STAMPS_PER_TICK *
 // EXPORT_MIN_BUNDLE_ROWS
-// >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 17 = 272 >= 256), which is what makes
+// >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 18 = 288 >= 256), which is what makes
 // a tick retire at least as many rows as it read. Stamps are deleted WHOLE, so
 // no bundle is ever partly reaped and the floor holds whatever order the window
-// arrives in; Draining a FULL store therefore takes about 158 ticks (6.6 days), so
+// arrives in; Draining a FULL store therefore takes about 159 ticks (6.6 days), so
 // a row's worst case is two retention windows, not one. THREE thresholds, one
 // count, shed in order of what the caller has invested: a caller with no account
 // row gets half, so anonymous identities can never take the account holders' half;
@@ -1925,7 +1950,7 @@ pub fn export_bundle_reaper(
 // thresholds belong in ops/observability, where they can change without a
 // module publish, and a boolean the module derives is a second retention policy
 // nobody reviewed. `due` above `planned` means the stamp cap bound, observed
-// rather than inferred; sixteen minimum-size bundles (272 rows) overfill the
+// rather than inferred; sixteen minimum-size bundles (288 rows) overfill the
 // 256-row window, so that needs a stamp of at most fifteen rows or a range read
 // that interleaves stamps — for bundles this module writes it is a tripwire, not
 // a backlog signal. A FULL window is silent about rows past its edge (an open

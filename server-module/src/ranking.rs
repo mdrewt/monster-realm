@@ -247,11 +247,15 @@ pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
 /// the `player` row with its display name
 /// replaced by the DELETION tombstone — `game_core::TOMBSTONE_DISPLAY_NAME`,
 /// never the module-private guest-claim sentinel above (that one means
-/// "unclaimed guest, stats carried forward" and zeroing semantics ride it).
-/// Every other field, including the `entity_id` join key, survives untouched.
+/// "unclaimed guest, stats carried forward" and zeroing semantics ride it) —
+/// and its `discriminator` and `lead_level` mirrors zeroed, so the row cannot be
+/// linked back to a tag another player saw. Every other field, including the
+/// `entity_id` join key, survives untouched.
 pub(crate) fn player_with_deleted_name(p: Player) -> Player {
     Player {
         name: game_core::TOMBSTONE_DISPLAY_NAME.to_string(),
+        discriminator: 0,
+        lead_level: 0,
         ..p
     }
 }
