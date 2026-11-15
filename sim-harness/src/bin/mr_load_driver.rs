@@ -153,12 +153,18 @@
 //!   would double-count accepted/rejected deltas.
 //! - Download (`rx_bytes_per_client_per_s`, `_max`): every bot counts the bytes
 //!   it reads off its socket after the handshake, and the scraper copies all the
-//!   counts right after each scrape. Over the same usable window as the p95 (AM6
-//!   discard), the mean is all bots' bytes divided by the bot count and the
-//!   window's seconds, and the max is the single largest bot's rate. The seconds
-//!   are `(usable scrapes − 1) × --scrape-interval-ms`, the driver's own schedule
-//!   ([`rx_rates`]); a scrape's own duration is not counted, so the rates lean
-//!   high. Both are integers, rounded down.
+//!   counts right after each scrape. Over the AM6 usable window (the first scrape
+//!   discarded), the mean is all bots' bytes divided by the bot count — the
+//!   level's concurrency, a bot that never connected counting as 0 — and the
+//!   window's seconds; the max is the single largest bot's rate. The seconds are
+//!   `(usable scrapes − 1) × --scrape-interval-ms`, the driver's own schedule
+//!   ([`rx_rates`]). A scrape's own duration and a retried scrape's extra wait
+//!   are not counted, so the rates lean high. Both are integers, rounded down.
+//! - The connect burst is not separated out beyond the warm-up discard. Each
+//!   `Subscribe` replaces the set and re-sends its initial rows, so a bot
+//!   downloads the whole `player` table at each of its three sends, where a client
+//!   downloads it once; a bot still connecting when the first usable scrape is
+//!   taken carries that into the window and can set `_max`.
 //! - Accept/reject truth comes from `spacetime_num_txns_total` deltas alone
 //!   (S1), so the WS reader never parses a data payload as JSON. It reads two
 //!   numbers out of the stream by their surrounding text ([`RowScan`]): the
@@ -184,7 +190,8 @@
 //! This protocol's `Subscribe` REPLACES the connection's whole query set, so
 //! each step sends every string the bot is to hold, the player query included.
 //! `character` is never subscribed whole. A bot holds none of the client's other
-//! tables: walking writes none of them, so they add no per-step fan-out.
+//! tables: the bots' grass-free walk writes none of them, so they add no per-step
+//! fan-out.
 //!
 //! ## Level validity (AM5) — an invalid level can never be the breaking point
 //!
@@ -270,7 +277,7 @@ pub const QUEUE_FAMILIES: [&str; 2] = [
 
 /// The whole `player` table, world-wide. Byte-identical to the real client's
 /// `player` query in `client/src/net/connection.ts`, so a bot receives the
-/// `player` fan-out a client does. The bot's own row is picked out of it by
+/// per-step `player` fan-out a client does. The bot's own row is picked out of it by
 /// identity ([`RowScan::own_player`]); that row names the entity `join_game` gave it.
 pub const PLAYER_QUERY: &str = "SELECT * FROM player";
 
@@ -1430,8 +1437,9 @@ pub struct RxRates {
 /// (raw; this owns the AM6 discard). The window runs from the first usable reading
 /// to the last, and its length is the driver's own scrape schedule —
 /// `(usable readings − 1) × scrape_interval_ms` — never a clock read. A scrape's
-/// own duration is not in that length, so the rates lean high, never low.
-/// Both rates round down.
+/// own duration and a retried scrape's wait are not in that length, so the rates
+/// lean high, never low. The bot count is the length of a reading. Both rates
+/// round down.
 ///
 /// `None` with fewer than two usable readings, no bots, a zero interval, or
 /// usable readings of unequal length.
@@ -1535,10 +1543,6 @@ pub struct Run {
     pub notes: Vec<String>,
 }
 
-/// Render the `schema:1` report: compact JSON, fixed key order, no newline, no
-/// token. The breaking point is computed HERE from the level verdicts via
-/// [`breaking_point`], so the report can never disagree with the state machine.
-#[must_use]
 /// `"..."` — a JSON string literal, escaped.
 fn json_str(s: &str) -> String {
     format!("\"{}\"", json_escape(s))
@@ -1628,6 +1632,10 @@ fn render_level(report: &LevelReport, scrape_interval_ms: u64) -> String {
     )
 }
 
+/// Render the `schema:1` report: compact JSON, fixed key order, no newline, no
+/// token. The breaking point is computed HERE from the level verdicts via
+/// [`breaking_point`], so the report can never disagree with the state machine.
+#[must_use]
 pub fn render_report(run: &Run) -> String {
     let cfg = &run.config;
 
@@ -2384,8 +2392,9 @@ impl RowScan {
 }
 
 /// What a bot subscribes to, driven by its own rows as they arrive: the real
-/// client's sequence (`client/src/net/worldScope.ts`). It opens with its own
-/// `player` row; that row's `entity_id` names the own-row `character` query; the
+/// client's sequence (`client/src/net/worldScope.ts`). It opens with the whole
+/// `player` table and picks its own row out of it by identity; that row's
+/// `entity_id` names the own-row `character` query; the
 /// own `character` row's `zone_id` names the zone query; and a later `zone_id`
 /// replaces it. Zone 0 is never assumed.
 #[derive(Debug, Clone, PartialEq, Eq)]
