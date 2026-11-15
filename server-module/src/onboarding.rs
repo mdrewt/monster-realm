@@ -69,14 +69,10 @@ pub(crate) fn onboard(ctx: &ReducerContext, owner: Identity, kit: &StarterKit) -
     grant
 }
 
-/// The refusal a join returns when the datastore will not mint a handle (the sequence is
-/// exhausted, or the value it drew is taken). One static reason: no row value is ever
-/// formatted into it.
-const REJECT_HANDLE_UNAVAILABLE: &str = "handle unavailable";
-
 /// `owner`'s discriminator: the one its handle row holds, or a freshly minted one when it
 /// has no row. The mint inserts 0, which makes the column's sequence assign the value. A
-/// mint the datastore refuses is an `Err`, never a panic and never a value of 0.
+/// mint the datastore refuses (the sequence is exhausted, or the value it drew is taken) is
+/// an `Err` with one static reason, never a panic and never a value of 0.
 pub(crate) fn ensure_handle(ctx: &ReducerContext, owner: Identity) -> Result<u32, String> {
     if let Some(handle) = ctx.db.player_handle().owner_identity().find(owner) {
         return Ok(handle.discriminator);
@@ -88,7 +84,7 @@ pub(crate) fn ensure_handle(ctx: &ReducerContext, owner: Identity) -> Result<u32
             discriminator: 0,
         })
         .map(|handle| handle.discriminator)
-        .map_err(|_| REJECT_HANDLE_UNAVAILABLE.to_string())
+        .map_err(|_| "handle unavailable".to_string())
 }
 
 /// Move `from`'s handle onto `to` with its discriminator unchanged (the guest claim). The

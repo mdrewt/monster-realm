@@ -54,8 +54,10 @@ pub struct Character {
 ///
 /// `discriminator` is the public copy of the identity's `player_handle` value,
 /// written by `join_game`; 0 means no tag (a row that pre-dates the column, or
-/// one the deletion cascade tombstoned). `lead_level` is the level of the
-/// owner's lead party monster; 0 means no party.
+/// one the deletion cascade tombstoned). `lead_level` is the public column for
+/// the level of the owner's lead party monster, where 0 reads as no party:
+/// `join_game` writes 0, the deletion cascade zeroes it, and nothing else
+/// writes it.
 #[spacetimedb::table(accessor = player, public)]
 pub struct Player {
     #[primary_key]
