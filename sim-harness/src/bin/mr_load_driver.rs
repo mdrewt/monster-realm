@@ -26,6 +26,7 @@
 //! | `--seed <u64>` | `0x5EED_0D20` | seeds WS masks + per-client walk phase |
 //! | `--run-id <string>` | **required** | the injected wall-clock label (the driver never reads a clock) |
 //! | `--report <path>` | — | optional; default is stdout |
+//! | `--fail-on-invalid` | off | takes no value; see "Exit codes" |
 //!
 //! There is deliberately **no** `--transport` (AM25: WS is the only viable
 //! transport — see below), **no** `--queue-metric` (AM17: `QUEUE_FAMILIES` is a
@@ -36,6 +37,18 @@
 //! the fixed-concurrency pairing-on / pairing-off A/B:
 //! `--run-id "$(date -u +%Y%m%dT%H%M%SZ)-pairing-on"` (AM18 convention — the
 //! run-id is free text and the ONLY place a timestamp enters this tool).
+//!
+//! ## Exit codes
+//!
+//! - `0` — the report is written. Without `--fail-on-invalid` that includes a
+//!   run whose levels are invalid: the report says so per level.
+//! - `1` — a usage or tool error (no report), or a ramp aborted at a level (the
+//!   partial report is still written, with an `aborted_at_concurrency` note).
+//! - `2` — `--scenario chat-flood` (see OBS-28 below; no report).
+//! - [`INVALID_LEVEL_EXIT_CODE`] (`3`) — `--fail-on-invalid` and at least one
+//!   level is invalid. The report is written first; each level carries its
+//!   `invalid_reason`, and stderr ends with a line naming every invalid level as
+//!   `<concurrency>:<invalid_reason>` ([`exit_after_report`]).
 //!
 //! # The criteria this tool encodes
 //!
@@ -220,13 +233,18 @@
 //! separate host wherever possible, and Phase-3 verification watches the DRIVER
 //! process's CPU alongside the server's (AM21).
 //!
-//! ## This binary never runs in CI
+//! ## Where this binary runs
 //!
-//! It needs a live SpacetimeDB host and a published module, the same
-//! skip-by-design posture as the metrics-contract eval's live half. What CI runs
-//! is the `#[cfg(test)] mod tests` below: the whole pure core (CLI, Prometheus
-//! parser, estimators, verdict machine, renderer, bot model, WS codec, envelope
-//! builders) with zero sockets and zero clocks. The bot model's one map
+//! It needs a live SpacetimeDB host and a published module, so the merge gate
+//! never runs it. What the merge gate runs is the `#[cfg(test)] mod tests`
+//! below: the whole pure core (CLI, Prometheus parser, estimators, verdict
+//! machine, exit mapping, renderer, bot model, WS codec, envelope builders) with
+//! zero sockets and zero clocks. The nightly workflow's `load-smoke` job does
+//! run it: it publishes the default module build to a fresh in-memory host and
+//! runs `just load-smoke`, one level of 20 bots with `--fail-on-invalid`, so the
+//! night goes red when that level is invalid — no join, no zone scope, or no
+//! move reaching the server. It measures no breaking point: a shared CI runner
+//! is the co-location case above at its worst. The bot model's one map
 //! assumption — zone-0 row 1 is grass-free — is proven by feeding the generated
 //! walk through the REAL `game_core::apply_move` on the REAL zone-0 content
 //! (T13), not by runtime logic: this driver models no game rules (AM23 records
@@ -408,6 +426,9 @@ pub struct Config {
     pub seed: u64,
     pub run_id: String,
     pub report_path: Option<String>,
+    /// `--fail-on-invalid`: an invalid level makes the run exit
+    /// [`INVALID_LEVEL_EXIT_CODE`] once the report is written.
+    pub fail_on_invalid: bool,
 }
 
 /// Parse + validate argv (WITHOUT argv[0]).
@@ -429,10 +450,17 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut seed: u64 = 0x5EED_0D20;
     let mut run_id: Option<String> = None;
     let mut report_path: Option<String> = None;
+    let mut fail_on_invalid = false;
 
     let mut i = 0usize;
     while i < args.len() {
         let flag = args[i].as_str();
+        // The one flag that takes no value.
+        if flag == "--fail-on-invalid" {
+            fail_on_invalid = true;
+            i += 1;
+            continue;
+        }
         match flag {
             "--server" => server = flag_value(args, i, flag)?.clone(),
             "--db" => db = flag_value(args, i, flag)?.clone(),
@@ -499,6 +527,7 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
         seed,
         run_id,
         report_path,
+        fail_on_invalid,
     })
 }
 
@@ -535,6 +564,47 @@ pub fn exit_code_for_error(msg: &str) -> i32 {
     } else {
         1
     }
+}
+
+/// The exit code of a completed run in which `--fail-on-invalid` found an
+/// invalid level. Distinct from 1 (a tool error or an aborted ramp) and 2
+/// (the reserved scenario).
+pub const INVALID_LEVEL_EXIT_CODE: i32 = 3;
+
+/// The process exit code once the report is written, and the stderr line
+/// naming the invalid levels as `<concurrency>:<invalid_reason>` tokens.
+///
+/// An aborted ramp exits 1 whatever the levels say. Otherwise, with
+/// `fail_on_invalid`, any level whose verdict is not valid exits
+/// [`INVALID_LEVEL_EXIT_CODE`]; every other run exits 0. The line is present
+/// exactly when `fail_on_invalid` is set and some level is invalid.
+#[must_use]
+pub fn exit_after_report(
+    aborted: bool,
+    fail_on_invalid: bool,
+    verdicts: &[LevelVerdict],
+) -> (i32, Option<String>) {
+    let invalid: Vec<String> = verdicts
+        .iter()
+        .filter(|v| !v.valid)
+        .map(|v| {
+            format!(
+                "{}:{}",
+                v.concurrency,
+                v.invalid_reason.as_deref().unwrap_or("unknown")
+            )
+        })
+        .collect();
+    let message = (fail_on_invalid && !invalid.is_empty())
+        .then(|| format!("--fail-on-invalid: invalid level(s) {}", invalid.join(" ")));
+    let code = if aborted {
+        1
+    } else if message.is_some() {
+        INVALID_LEVEL_EXIT_CODE
+    } else {
+        0
+    };
+    (code, message)
 }
 
 /// Open-loop pacing sleep in ms, derived purely from `--move-rate` (AM1): the
@@ -3100,6 +3170,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         notes.push(format!("cross_level_growth:{family}"));
     }
 
+    let (code, message) = exit_after_report(aborted, cfg.fail_on_invalid, &verdicts);
     let run = Run {
         config: cfg,
         db_identity,
@@ -3113,7 +3184,10 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some(path) => std::fs::write(path, &report).map_err(|e| format!("write {path}: {e}"))?,
         None => println!("{report}"),
     }
-    Ok(i32::from(aborted))
+    if let Some(message) = message {
+        eprintln!("mr_load_driver: {message}");
+    }
+    Ok(code)
 }
 
 fn main() {
@@ -5147,6 +5221,156 @@ mod tests {
         assert_eq!(median(&[1.0, 2.0, 3.0, 4.0]), Some(2.5));
         assert_eq!(median(&[7.0]), Some(7.0));
         assert_eq!(median(&[]), None);
+    }
+
+    // =======================================================================
+    // sr-9c — --fail-on-invalid: verdict-to-exit mapping
+    // =======================================================================
+
+    fn invalid_verdict(n: u32, reason: &str) -> LevelVerdict {
+        LevelVerdict {
+            valid: false,
+            invalid_reason: Some(reason.to_string()),
+            ..ok_verdict(n)
+        }
+    }
+
+    /// Kills an impl that requires a value or defaults the flag to true.
+    #[test]
+    fn sr9c_flag_defaults_false() {
+        let cfg = parse_args(&min_args()).expect("min args parse");
+        assert!(!cfg.fail_on_invalid);
+    }
+
+    /// Kills an impl that ignores the flag.
+    #[test]
+    fn sr9c_flag_alone_sets_true() {
+        let cfg =
+            parse_args(&argv(&["--run-id", "T-0001", "--fail-on-invalid"])).expect("flag parses");
+        assert!(cfg.fail_on_invalid);
+    }
+
+    /// Kills an impl treating the flag as value-taking (swallows the next flag).
+    #[test]
+    fn sr9c_flag_does_not_swallow_next_flag() {
+        let cfg = parse_args(&argv(&[
+            "--run-id",
+            "T",
+            "--fail-on-invalid",
+            "--clients-max",
+            "20",
+        ]))
+        .expect("flag then another flag parses");
+        assert!(cfg.fail_on_invalid);
+        assert_eq!(cfg.clients_max, 20);
+    }
+
+    /// Kills an impl that accepts (and consumes) a value for the boolean flag.
+    #[test]
+    fn sr9c_flag_with_value_is_rejected() {
+        assert!(parse_args(&args_with("--fail-on-invalid", "true")).is_err());
+    }
+
+    /// Kills an impl that fails when every level is valid.
+    #[test]
+    fn sr9c_all_valid_with_flag_exits_zero_no_message() {
+        let v = vec![ok_verdict(5), ok_verdict(10), ok_verdict(20)];
+        assert_eq!(exit_after_report(false, true, &v), (0, None));
+    }
+
+    /// Kills an impl that returns the wrong code, omits the reason, or names
+    /// valid levels.
+    #[test]
+    fn sr9c_one_invalid_with_flag_exits_invalid_code_and_names_it() {
+        let v = vec![
+            ok_verdict(5),
+            ok_verdict(10),
+            invalid_verdict(20, "no_load_reached"),
+        ];
+        let (code, msg) = exit_after_report(false, true, &v);
+        assert_eq!(code, INVALID_LEVEL_EXIT_CODE);
+        let msg = msg.expect("message when failing on invalid");
+        assert!(msg.contains("20:no_load_reached"), "msg: {msg}");
+        assert!(!msg.contains("5:"), "valid level named: {msg}");
+        assert!(!msg.contains("10:"), "valid level named: {msg}");
+    }
+
+    /// Kills an impl that names only the first (or last) invalid level.
+    #[test]
+    fn sr9c_every_invalid_level_is_named_with_its_reason() {
+        let v = vec![
+            invalid_verdict(5, "join_failed"),
+            ok_verdict(10),
+            invalid_verdict(20, "counter_reset"),
+            invalid_verdict(40, "p95_indeterminate"),
+        ];
+        let (code, msg) = exit_after_report(false, true, &v);
+        assert_eq!(code, INVALID_LEVEL_EXIT_CODE);
+        let msg = msg.expect("message");
+        assert!(msg.contains("5:join_failed"), "msg: {msg}");
+        assert!(msg.contains("20:counter_reset"), "msg: {msg}");
+        assert!(msg.contains("40:p95_indeterminate"), "msg: {msg}");
+        assert!(!msg.contains("10:"), "valid level named: {msg}");
+    }
+
+    /// Kills an impl that fails invalid levels without the opt-in flag.
+    #[test]
+    fn sr9c_invalid_without_flag_stays_exit_zero() {
+        let v = vec![ok_verdict(5), invalid_verdict(10, "scope_unsettled")];
+        assert_eq!(exit_after_report(false, false, &v), (0, None));
+    }
+
+    /// Kills an impl where the flag overrides the aborted-ramp exit code, or
+    /// where an abort suppresses the message.
+    #[test]
+    fn sr9c_aborted_exits_one_regardless() {
+        assert_eq!(exit_after_report(true, false, &[ok_verdict(5)]).0, 1);
+        assert_eq!(exit_after_report(true, true, &[ok_verdict(5)]), (1, None));
+        let v = vec![invalid_verdict(10, "insufficient_samples")];
+        let (code, msg) = exit_after_report(true, true, &v);
+        assert_eq!(code, 1);
+        let msg = msg.expect("message even when aborted");
+        assert!(msg.contains("10:insufficient_samples"), "msg: {msg}");
+        assert_eq!(exit_after_report(true, false, &v), (1, None));
+    }
+
+    /// Kills a colliding exit code (success, tool error, reserved scenario).
+    #[test]
+    fn sr9c_invalid_exit_code_is_distinct() {
+        assert_ne!(INVALID_LEVEL_EXIT_CODE, 0);
+        assert_ne!(INVALID_LEVEL_EXIT_CODE, 1);
+        assert_ne!(INVALID_LEVEL_EXIT_CODE, 2);
+        assert_ne!(
+            INVALID_LEVEL_EXIT_CODE,
+            exit_code_for_error(SCENARIO_RESERVED_ERR)
+        );
+    }
+
+    /// Kills an impl keyed on `invalid_reason` presence instead of `valid`.
+    #[test]
+    fn sr9c_decision_keys_on_valid_not_reason() {
+        let no_reason = LevelVerdict {
+            valid: false,
+            invalid_reason: None,
+            ..ok_verdict(30)
+        };
+        let (code, msg) = exit_after_report(false, true, &[no_reason]);
+        assert_eq!(code, INVALID_LEVEL_EXIT_CODE);
+        assert!(msg.expect("message").contains("30:unknown"));
+
+        let stray_reason = LevelVerdict {
+            valid: true,
+            invalid_reason: Some("join_failed".to_string()),
+            ..ok_verdict(30)
+        };
+        assert_eq!(exit_after_report(false, true, &[stray_reason]), (0, None));
+    }
+
+    /// Kills an impl that panics or fails on an empty ramp.
+    #[test]
+    fn sr9c_empty_verdicts_exit_zero() {
+        assert_eq!(exit_after_report(false, true, &[]), (0, None));
+        assert_eq!(exit_after_report(false, false, &[]), (0, None));
     }
 
     // =======================================================================

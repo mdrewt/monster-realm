@@ -310,6 +310,13 @@ mutate-server shard="":
 smoke-republish:
     bash scripts/smoke-republish.sh "${STDB_SERVER:-http://127.0.0.1:3000}" "${MR_SMOKE_DB:-monster-realm-smoke}"
 
+# The load driver for a few seconds: one level of 20 bots against the database {{db}}, which must
+# already hold a published default module build. Needs a running SpacetimeDB (STDB_SERVER, default
+# http://127.0.0.1:3000). Prints the JSON report on stdout and the level table on stderr, then
+# exits non-zero when the ramp aborted or the level is invalid (--fail-on-invalid).
+load-smoke:
+    cargo run -q -p sim-harness --bin mr_load_driver -- --server "${STDB_SERVER:-http://127.0.0.1:3000}" --db {{db}} --clients-start 20 --clients-max 20 --hold-scrapes 5 --scrape-interval-ms 1000 --run-id "$(date -u +%Y%m%dT%H%M%SZ)-load-smoke" --fail-on-invalid
+
 # ---- local playtest ops (need a live SpacetimeDB; docs/runbooks/playtest-ops.md) ----
 # Env: STDB_SERVER (default http://127.0.0.1:3000), MR_PLAYTEST_DB (default monster-realm-playtest).
 
