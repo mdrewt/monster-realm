@@ -428,6 +428,7 @@ describe('the booted shell drives the input devices of shell/inputState', {
 
     // happy-dom may rethrow a listener's exception or report it to window `error`: either way the
     // test only reads what the listener did before the throw.
+    // The error may also reach main.ts's window `error` path; that path is not under test here.
     try {
       fire('keyup', 'KeyD', { key: 'q' });
     } catch {
@@ -609,6 +610,113 @@ describe('shell/inputState functions', { sequential: true }, () => {
     expect(ns.inputRouter.releaseAll(), `${label}: the router holds nothing`).toEqual([]);
   }
 
+  it('importing the module registers no window or document listener and writes nothing to storage or the document', async () => {
+    // Storage is observed by state only: happy-dom's localStorage does not reliably route
+    // setItem through Storage.prototype (see main.remap.test.ts), so a prototype spy could miss
+    // a write.
+    const scenarios: ReadonlyArray<readonly [string, string | undefined]> = [
+      ['nothing saved', undefined],
+      ['a table saved', storedTable((raw) => (raw.buttons.A = ['KeyK']))],
+    ];
+    let visited = 0;
+    for (const [label, stored] of scenarios) {
+      localStorage.clear();
+      if (stored !== undefined) localStorage.setItem(CONTROLS_STORAGE_KEY, stored);
+      const lengthBefore = localStorage.length;
+      expect(lengthBefore, `${label}: precondition: the storage holds what was saved`).toBe(
+        stored === undefined ? 0 : 1,
+      );
+      // Document writes are watched as writes, not as state: an earlier import in this file may
+      // already have made an idempotent write, which a before/after count cannot see. Records the
+      // observer delivers during the awaited import land in `mutations` through its callback.
+      const mutations: MutationRecord[] = [];
+      const observer = new MutationObserver((records) => {
+        mutations.push(...records);
+      });
+      observer.observe(document, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+
+      // An observer of this test's own, undone by ASSIGNING the previous function back: on the
+      // global `window`, addEventListener is an own accessor, so redefining the old descriptor
+      // would leave a wrapper in place (and wrappers left by earlier boots stack under it).
+      const seen: Recorded[] = [];
+      type Adder = { addEventListener: EventTarget['addEventListener'] };
+      const undo: Array<() => void> = [];
+      const targets: readonly EventTarget[] = [window, document];
+      for (const target of targets) {
+        const hadOwn = Object.getOwnPropertyDescriptor(target, 'addEventListener') !== undefined;
+        const previous = target.addEventListener;
+        (target as Adder).addEventListener = (
+          type: string,
+          handler: EventListenerOrEventListenerObject | null,
+          options?: boolean | AddEventListenerOptions,
+        ): void => {
+          seen.push({ target, type, handler, options });
+          previous.call(target, type, handler, options);
+        };
+        undo.push(() => {
+          if (hadOwn) (target as Adder).addEventListener = previous;
+          else delete (target as unknown as { addEventListener?: unknown }).addEventListener;
+        });
+      }
+      try {
+        // The observer works: one probe listener of the test's own is seen once on each target.
+        const probe = (): void => undefined;
+        window.addEventListener('mr-probe', probe);
+        document.addEventListener('mr-probe', probe);
+        expect(
+          seen.map((r) => [r.target === window, r.target === document, r.type]),
+          `${label}: precondition: the observer sees each target's probe exactly once`,
+        ).toEqual([
+          [true, false, 'mr-probe'],
+          [false, true, 'mr-probe'],
+        ]);
+        window.removeEventListener('mr-probe', probe);
+        document.removeEventListener('mr-probe', probe);
+        seen.length = 0;
+
+        // The observer works: a probe write of the test's own is reported.
+        document.documentElement.setAttribute('data-mr-probe', '1');
+        document.documentElement.removeAttribute('data-mr-probe');
+        mutations.push(...observer.takeRecords());
+        expect(
+          mutations.map((m) => `${m.type}:${m.attributeName ?? ''}`),
+          `${label}: precondition: the observer reports the probe's set and remove`,
+        ).toEqual(['attributes:data-mr-probe', 'attributes:data-mr-probe']);
+        mutations.length = 0;
+
+        vi.resetModules();
+        const ns = await import('./inputState');
+        expect(ns.navHeldCodes.size, `${label}: precondition: the module loaded`).toBe(0);
+
+        expect(
+          seen.map((r) => [r.target === window, r.type]),
+          `${label}: the import registered no listener on window or document`,
+        ).toEqual([]);
+        expect(localStorage.length, `${label}: the import added no storage key`).toBe(lengthBefore);
+        expect(
+          localStorage.getItem(CONTROLS_STORAGE_KEY),
+          `${label}: the saved table is byte-identical`,
+        ).toBe(stored ?? null);
+        mutations.push(...observer.takeRecords());
+        expect(
+          mutations.map((m) => `${m.type}:${m.attributeName ?? ''}`),
+          `${label}: the import wrote nothing to the document`,
+        ).toEqual([]);
+      } finally {
+        observer.disconnect();
+        for (const r of seen) r.target.removeEventListener(r.type, r.handler, r.options);
+        while (undo.length > 0) undo.pop()?.();
+      }
+      visited += 1;
+    }
+    expect(visited, 'both storage states were checked').toBe(2);
+  });
+
   it('noteNavHeld adds exactly its code and releaseNavHeld deletes exactly its code', async () => {
     const ns = await fresh();
     expect(ns.navHeldCodes.size, 'the set starts empty').toBe(0);
@@ -705,7 +813,7 @@ describe('shell/inputState functions', { sequential: true }, () => {
       if (ownStorage !== undefined) Object.defineProperty(window, 'localStorage', ownStorage);
       else delete (window as unknown as { localStorage?: unknown }).localStorage;
     });
-    expect(window.localStorage, 'precondition: the module reads the wrapper').toBe(wrapper);
+    expect(window.localStorage, 'precondition: window.localStorage is the wrapper').toBe(wrapper);
     holdEverything(ns);
     const oldKeyboard = ns.keyboard;
     const next = JSON.parse(storedTable((raw) => (raw.buttons.A = ['KeyK']))) as Bindings;
