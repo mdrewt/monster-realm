@@ -114,6 +114,11 @@ function rich(tests) {
       }
       suite = child;
     }
+    const same = suite.specs.find((s) => s.id === t.id);
+    if (same) {
+      same.tests.push({ projectId: t.projectId, status: t.status });
+      continue;
+    }
     suite.specs.push({
       id: t.id,
       title: t.title,
@@ -135,7 +140,7 @@ function rich(tests) {
 }
 
 /** [name, tests] for a readable attempt; [name, 'omit' | 'invalid'] for an unreadable e2e.json. */
-function run(attempts, { summary } = {}) {
+function run(attempts, { summary, summaryPathOverride } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-union-th3-'));
   const cwd = mkdtempSync(join(tmpdir(), 'e2e-union-cwd-'));
   const seen = new Map();
@@ -148,6 +153,8 @@ function run(attempts, { summary } = {}) {
     mkdirSync(join(dir, name));
     writeFileSync(join(dir, name, 'e2e-list.json'), JSON.stringify(suite));
     if (tests === 'invalid') writeFileSync(join(dir, name, 'e2e.json'), '{ not json');
+    else if (tests === 'nostats')
+      writeFileSync(join(dir, name, 'e2e.json'), JSON.stringify({ suites: suite.suites }));
     else if (tests !== 'omit')
       writeFileSync(join(dir, name, 'e2e.json'), JSON.stringify(rich(tests)));
   }
@@ -159,6 +166,7 @@ function run(attempts, { summary } = {}) {
     writeFileSync(summaryPath, summary);
     env.GITHUB_STEP_SUMMARY = summaryPath;
   }
+  if (summaryPathOverride !== undefined) env.GITHUB_STEP_SUMMARY = summaryPathOverride;
   const before = readdirSync(dir).sort().join(',');
   const r = spawnSync(process.execPath, [SCRIPT, dir], { encoding: 'utf8', env, cwd });
   const lines = r.stdout.split('\n');
@@ -410,7 +418,8 @@ test('th-3.3: a nested describe title is in the warning message', () => {
   ]);
 });
 
-test('th-3.3: percent, carriage return and newline in a title are escaped in the message', () => {
+// Round 2: titles are normalised to one line before escaping, so only '%' needs escaping here.
+test('th-3.3: percent in a title is escaped in the message and a line break becomes one space', () => {
   const title = '100% sure\r\nsecond';
   const r = run([
     ['e2e-timings-1-1', [X('unexpected', { title })]],
@@ -418,7 +427,7 @@ test('th-3.3: percent, carriage return and newline in a title are escaped in the
   ]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(r.warnings, [
-    '::warning file=client/e2e/a.spec.ts,line=12,title=Passed only on a rerun::100%25 sure%0D%0Asecond (shard 1, failed on attempt 1, passed on attempt 2)',
+    '::warning file=client/e2e/a.spec.ts,line=12,title=Passed only on a rerun::100%25 sure second (shard 1, failed on attempt 1, passed on attempt 2)',
   ]);
 });
 
@@ -493,4 +502,185 @@ test('th-3.5: a highest attempt with no e2e.json still fails the run', () => {
   ]);
   assert.equal(r.status, 1, r.stdout + r.stderr);
   assert.match(r.stderr, /e2e-timings-1-2: e2e.json or e2e-list.json is missing/);
+});
+
+// ---- round 2 ----
+
+const STDERR_UNREADABLE =
+  'e2e-shard-union: e2e-timings-1-2: e2e.json or e2e-list.json is missing or unreadable';
+
+test('th-3.1: shard 2 is listed before shard 10 (numeric shard order)', () => {
+  const r = run([
+    ['e2e-timings-10-1', [X('unexpected')]],
+    ['e2e-timings-10-2', [X('expected')]],
+    ['e2e-timings-2-1', [Z('unexpected')]],
+    ['e2e-timings-2-2', [Z('expected')]],
+  ]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.passed, [
+    'rerun-passed: client/e2e/z.spec.ts:3 shard 2 failed on attempt 1 passed on attempt 2: does z',
+    'rerun-passed: client/e2e/a.spec.ts:12 shard 10 failed on attempt 1 passed on attempt 2: does x',
+  ]);
+});
+
+test('th-3.1: a test is keyed by spec and project: one failing project passing on rerun is one line', () => {
+  const P = (status, projectId) => X(status, { projectId });
+  const r = run([
+    ['e2e-timings-1-1', [P('unexpected', 'default'), P('expected', 'reduced-motion')]],
+    ['e2e-timings-1-2', [P('expected', 'default'), P('expected', 'reduced-motion')]],
+  ]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.passed, [
+    'rerun-passed: client/e2e/a.spec.ts:12 shard 1 failed on attempt 1 passed on attempt 2: does x',
+  ]);
+});
+
+test('th-3.1: a project that is unexpected on both attempts is not listed because its sibling project passed', () => {
+  const P = (status, projectId) => X(status, { projectId });
+  const r = run([
+    ['e2e-timings-1-1', [P('expected', 'default'), P('unexpected', 'reduced-motion')]],
+    ['e2e-timings-1-2', [P('expected', 'default'), P('unexpected', 'reduced-motion')]],
+  ]);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.deepEqual(r.passed, []);
+  assert.deepEqual(r.warnings, []);
+});
+
+test('th-3.4: unexpected on attempt 1 and skipped on the highest attempt is not listed', () => {
+  const r = run([
+    ['e2e-timings-1-1', [X('unexpected')]],
+    ['e2e-timings-1-2', [X('skipped')]],
+  ]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.passed, []);
+  assert.deepEqual(r.warnings, []);
+});
+
+test('th-3.4: a test unexpected on a lower attempt and absent from the highest report is not listed and does not crash', () => {
+  const r = run([
+    ['e2e-timings-1-1', [X('unexpected'), Y()]],
+    ['e2e-timings-1-2', [Y()]],
+  ]);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.deepEqual(r.passed, []);
+  assert.deepEqual(r.warnings, []);
+  assert.doesNotMatch(r.stderr, /TypeError/);
+});
+
+test('th-3.1: line breaks in a title become one space each in the rerun-passed line', () => {
+  for (const [raw, flat] of [
+    ['first\nsecond', 'first second'],
+    ['first\r\nsecond', 'first second'],
+  ]) {
+    const r = run([
+      ['e2e-timings-1-1', [X('unexpected', { title: raw })]],
+      ['e2e-timings-1-2', [X('expected', { title: raw })]],
+    ]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(r.passed, [
+      `rerun-passed: client/e2e/a.spec.ts:12 shard 1 failed on attempt 1 passed on attempt 2: ${flat}`,
+    ]);
+  }
+});
+
+test('th-3.3: line breaks in a title become spaces in the warning, with no %0A or %0D', () => {
+  for (const [raw, flat] of [
+    ['first\nsecond', 'first second'],
+    ['first\r\nsecond', 'first second'],
+  ]) {
+    const r = run([
+      ['e2e-timings-1-1', [X('unexpected', { title: raw })]],
+      ['e2e-timings-1-2', [X('expected', { title: raw })]],
+    ]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(r.warnings, [
+      `::warning file=client/e2e/a.spec.ts,line=12,title=Passed only on a rerun::${flat} (shard 1, failed on attempt 1, passed on attempt 2)`,
+    ]);
+    assert.doesNotMatch(r.stdout, /%0[AD]/);
+  }
+});
+
+test('th-3.2: line breaks in a title become spaces in the summary row', () => {
+  const r = run(
+    [
+      ['e2e-timings-1-1', [X('unexpected', { title: 'first\r\nsecond\nthird' })]],
+      ['e2e-timings-1-2', [X('expected', { title: 'first\r\nsecond\nthird' })]],
+    ],
+    { summary: '' },
+  );
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(
+    r.summary.trim(),
+    `${HEADING}\n\n${TABLE_HEAD}\n| first second third | \`client/e2e/a.spec.ts:12\` | 1 | 1 | 2 |`,
+  );
+});
+
+test('th-3.2: an unwritable step summary path warns on stderr and does not fail a green run', () => {
+  const missing = join(mkdtempSync(join(tmpdir(), 'e2e-union-nodir-')), 'absent', 'summary.md');
+  const r = run(TWO_FAILS(), { summaryPathOverride: missing });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.passed, [LINE_X]);
+  assert.ok(
+    r.stderr
+      .split('\n')
+      .some((l) => l.startsWith('e2e-shard-union: cannot write the step summary')),
+    r.stderr,
+  );
+});
+
+test('th-3.2: a highest attempt whose e2e.json is not valid JSON fails the run and the summary is still written', () => {
+  const r = run(
+    [
+      ['e2e-timings-1-1', [X('expected')]],
+      ['e2e-timings-1-2', 'invalid'],
+    ],
+    { summary: '' },
+  );
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.ok(r.stderr.split('\n').includes(STDERR_UNREADABLE), r.stderr);
+  assert.equal(r.summary.split('\n')[0], HEADING);
+});
+
+test('th-3.2: a highest attempt whose e2e.json has no stats fails the run and the summary is still written', () => {
+  const r = run(
+    [
+      ['e2e-timings-1-1', [X('expected')]],
+      ['e2e-timings-1-2', 'nostats'],
+    ],
+    { summary: '' },
+  );
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.ok(r.stderr.split('\n').includes(STDERR_UNREADABLE), r.stderr);
+  assert.equal(r.summary.split('\n')[0], HEADING);
+});
+
+test('th-3.3: a file name with a comma, colon and percent is escaped in file= and raw in the listing', () => {
+  const file = 'a,b:c%d.spec.ts';
+  const r = run([
+    ['e2e-timings-1-1', [X('unexpected', { file })]],
+    ['e2e-timings-1-2', [X('expected', { file })]],
+  ]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.warnings, [
+    '::warning file=client/e2e/a%2Cb%3Ac%25d.spec.ts,line=12,title=Passed only on a rerun::does x (shard 1, failed on attempt 1, passed on attempt 2)',
+  ]);
+  assert.deepEqual(r.passed, [
+    'rerun-passed: client/e2e/a,b:c%d.spec.ts:12 shard 1 failed on attempt 1 passed on attempt 2: does x',
+  ]);
+});
+
+test('th-3.5: unreadable lower attempts are named ascending by shard then attempt', () => {
+  const r = run([
+    ['e2e-timings-2-2', 'invalid'],
+    ['e2e-timings-2-3', [Z()]],
+    ['e2e-timings-1-3', 'omit'],
+    ['e2e-timings-1-1', 'omit'],
+    ['e2e-timings-1-4', [X('expected')]],
+  ]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.unreadable, [
+    'rerun-unreadable: e2e-timings-1-1: no readable e2e.json',
+    'rerun-unreadable: e2e-timings-1-3: no readable e2e.json',
+    'rerun-unreadable: e2e-timings-2-2: no readable e2e.json',
+  ]);
 });
