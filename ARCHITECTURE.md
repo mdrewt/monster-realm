@@ -475,9 +475,15 @@ flushes once per burst, and the predictor reconciles against a consistent snapsh
 
 Views behave differently from tables on the client. None of the module's views
 declares a primary key, so the SDK never fires `onUpdate` for a view row: a change
-arrives as an unordered delete and insert. Before each flush, `connection.ts` rebuilds
-every view-backed collection (`my_monster_pub`, `my_battle`, `my_inventory`, ...) from
-the SDK's cache rather than applying those row events one by one.
+arrives as an unordered delete and insert. The owner views (`my_monster_pub`, `my_battle`,
+`my_inventory`, the tactical views and the others in `net/viewReconcile.ts`'s
+`OWNER_VIEWS`) are therefore rebuilt whole from the SDK's cache rather than applied row by
+row. A view's row events only mark it dirty, and before each flush `viewReconcile.ts`
+rebuilds the dirty views and no others, so a batch of `character` or `player` rows rebuilds
+none. Every owner view is marked when the subscription's snapshot applies, when a connection
+is built, when the store is reset, and when another table's row handler throws (the SDK then
+skips the rest of that message, whose rows are already in its cache). `my_conversation`,
+`my_wallet` and `my_account` are views too, but are ingested row by row.
 
 `net/store.ts` is a read-only mirror of the subscription. Only the connection adapter
 writes to it; the predictor and renderer only read (`server → store → render`). It
