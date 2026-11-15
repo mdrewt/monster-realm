@@ -70,7 +70,7 @@ type Toggles = Record<(typeof FULL_STACK)[number], boolean>;
 const CHANNEL_THRESH = 24;
 /** The share of a sampled rect's pixels that must differ from a ground tile. */
 const LAND_MIN = 0.3;
-/** The warp marker's own floor: a decal covering less of its tile (measured 0.293). With a
+/** The warp marker's own floor: a decal covering less of its tile (measured 0.293 at dpr 1). With a
  *  stack-off noise of 0.000 the noise + NOISE_MARGIN rule dominates, so the EFFECTIVE floor for
  *  the warp is 0.2; this constant only documents that the absolute floor is below the margin. */
 const WARP_MIN = 0.15;
@@ -78,7 +78,7 @@ const WARP_MIN = 0.15;
 const NOISE_MARGIN = 0.2;
 /** The share of the whole frame that must change when the stack goes off. Measured: the day
  *  keyframe is a light warm lift, so the full stack moves 0.217 of the frame (199708 of 921600
- *  pixels by >= 24 per channel); an unattached stack reads ~0. */
+ *  pixels by >= 24 per channel, at dpr 1); an unattached stack reads ~0. */
 const STACK_FRAME_MIN = 0.1;
 /** The heal post (8,3) and the warp source (1,5), both tiles of zone 0 (Verdant Hollow); the
  *  warp lands in zone 1 (Tideglass Cove). */
@@ -279,10 +279,10 @@ async function diffRects(
 /** A CSS-px rect as an integer DEVICE-px rect (the screenshot's pixels), shrunk 2 CSS px (2*dpr
  *  device px) each side (edge anti-aliasing, sub-pixel seams). At dpr 1 this is the CSS rect. */
 const toPx = (r: ScreenRect, dpr: number): Px => ({
-  x: Math.round(r.x * dpr) + 2 * dpr,
-  y: Math.round(r.y * dpr) + 2 * dpr,
-  w: Math.max(1, Math.round(r.w * dpr) - 4 * dpr),
-  h: Math.max(1, Math.round(r.h * dpr) - 4 * dpr),
+  x: Math.round(r.x * dpr) + Math.round(2 * dpr),
+  y: Math.round(r.y * dpr) + Math.round(2 * dpr),
+  w: Math.max(1, Math.round(r.w * dpr) - Math.round(4 * dpr)),
+  h: Math.max(1, Math.round(r.h * dpr) - Math.round(4 * dpr)),
 });
 
 const overlaps = (a: ScreenRect, b: ScreenRect): boolean =>
@@ -895,7 +895,7 @@ for (const dpr of DEVICE_SCALES) {
           dpr,
           kinds: [warpKind],
           // The marker is a ground DECAL (a pulse ring over the tile), not a sprite: measured, its
-          // drawn footprint differs on 0.293 of the lower tile's pixels (1056/3600) against a
+          // drawn footprint differs on 0.293 of the lower tile's pixels (1056/3600, at dpr 1) against a
           // same-key reference, with a stack-off noise floor of 0.000. An undrawn marker reads ~0.
           min: WARP_MIN,
         });

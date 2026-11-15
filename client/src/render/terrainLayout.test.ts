@@ -1,12 +1,12 @@
 /**
  * render/terrainLayout.test.ts — gating tests for the terrain renderer's pure core (wap-4,
- * WAP4.1–WAP4.6 and sr-8.1; WAP4.4's main.ts wiring half lives in
- * main.reducedMotionWiring.test.ts; sr-8.1: every chunk texture is requested at resolution 1 with
- * nearest sampling, the cache takes no device scale).
+ * WAP4.1–WAP4.6; WAP4.4's main.ts wiring half lives in main.reducedMotionWiring.test.ts).
+ * Every chunk texture is requested at resolution 1 with nearest sampling, whatever the device
+ * scale; the cache takes no device scale.
  * Real `TileMap`s, the TS kit manifest for the frame key set, injected fake texture factory:
  * no Pixi, no wasm, no clock.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ShoreSlot,
   TERRAIN_KIT_CLASSES,
@@ -571,24 +571,40 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
     expect(cache.size).toBe(0);
   });
 
-  it('sr-8.1 (was WAP4.6) chunkTextureRequest maps the cache options to resolution 1 nearest', () => {
-    const { cache, created } = harness();
-    cache.build(mkChunks().slice(0, 1));
-    const opts = (created[0] as Token).options;
-    expect(chunkTextureRequest(opts)).toEqual({
-      resolution: 1,
-      textureSourceOptions: { scaleMode: 'nearest' },
-    });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it('sr-8.1 (was WAP4.6) every create call receives resolution 1 with nearest scaling', () => {
-    const { cache, created } = harness();
-    cache.build(mkChunks());
-    expect(created).toHaveLength(6);
-    for (const tok of created) expect(tok.options).toEqual({ resolution: 1, scaleMode: 'nearest' });
+  it('chunkTextureRequest maps the cache options to resolution 1 nearest at any device scale sr-8.1', () => {
+    for (const scale of [1, 1.5, 2, 3]) {
+      vi.stubGlobal('devicePixelRatio', scale);
+      const { cache, created } = harness();
+      cache.build(mkChunks().slice(0, 1));
+      const opts = (created[0] as Token).options;
+      expect(chunkTextureRequest(opts)).toEqual({
+        resolution: 1,
+        textureSourceOptions: { scaleMode: 'nearest' },
+      });
+    }
   });
 
-  it('sr-8.1 (was WAP4.6) a rebuild creates every texture at resolution 1 with nearest scaling', () => {
+  it('every create call receives resolution 1 with nearest scaling at any device scale sr-8.1', () => {
+    for (const scale of [1, 1.5, 2, 3]) {
+      vi.stubGlobal('devicePixelRatio', scale);
+      const { cache, created } = harness();
+      cache.build(mkChunks());
+      expect(created).toHaveLength(6);
+      for (const tok of created) {
+        expect(tok.options).toEqual({ resolution: 1, scaleMode: 'nearest' });
+        expect(chunkTextureRequest(tok.options)).toEqual({
+          resolution: 1,
+          textureSourceOptions: { scaleMode: 'nearest' },
+        });
+      }
+    }
+  });
+
+  it('a rebuild creates every texture at resolution 1 with nearest scaling sr-8.1', () => {
     const { cache, created } = harness();
     const chunks = mkChunks();
     cache.build(chunks);

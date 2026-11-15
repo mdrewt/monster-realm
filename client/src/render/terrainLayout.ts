@@ -62,7 +62,7 @@ export interface ChunkPlan {
 }
 
 /** What a chunk texture is created with: resolution 1 and nearest sampling at every device
- *  scale. The integer stage scale upsamples it, so a 32 px tile edge stays a hard step
+ *  scale. The integer device scale upsamples it, so a 32 px tile edge stays a hard step
  *  (Constraint 7a) and a chunk costs 4 KB per tile whatever the display. */
 export interface ChunkTextureOptions {
   readonly resolution: 1;
@@ -286,7 +286,7 @@ export function chunkTextureRequest(options: ChunkTextureOptions): {
   return { resolution: options.resolution, textureSourceOptions: { scaleMode: options.scaleMode } };
 }
 
-/** Owns every chunk texture it creates. `build` (the setMap / context-restore path) is
+/** Owns every chunk texture it creates. `build` (every terrain draw) is
  *  atomic: it creates the next set first and only then destroys the previous one,
  *  so a factory throw destroys the partial new set and leaves the previous set
  *  live. `clear` (the destroy path) destroys whatever is live. Each created

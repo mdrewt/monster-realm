@@ -11,7 +11,7 @@
 // (map / interpolation / slideClock / zorder / viewRegistry / terrainLayout).
 //
 // wap-4: the terrain is the kit atlas laid out by `terrainLayout.ts` — static tiles
-// baked into nearest-sampled chunk textures at resolution 1 (the integer stage scale
+// baked into nearest-sampled chunk textures at resolution 1 (the integer device scale
 // upsamples them, so a device-scale change re-bakes nothing), animated water as
 // per-tile sprites whose texture swaps only when its frame index changes. Without
 // the kit or a terrain layer it falls back to the flat wall/grass rects.
