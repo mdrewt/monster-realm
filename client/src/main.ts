@@ -32,17 +32,16 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
-import { browserStorage, loadBindings, saveBindings } from './input/bindingStore';
-import { accelForCode, type Bindings, DEFAULT_BINDINGS } from './input/bindings';
+import { browserStorage } from './input/bindingStore';
+import { accelForCode, DEFAULT_BINDINGS } from './input/bindings';
 import type { ButtonEdge, VButton } from './input/buttons';
 import { glyph, learnKey } from './input/glyphs';
-import { isChord, KeyboardSource } from './input/keyboardSource';
+import { isChord } from './input/keyboardSource';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
   ACCEL_PATHS,
   type AccelPath,
   accelDecision,
-  InputRouter,
   type MenuAccel,
   outsideGameScreen,
   ownership,
@@ -74,7 +73,7 @@ import {
   NOOP_TELEMETRY,
   startClientTelemetry,
 } from './observability/telemetry';
-import { HeldDirections, reissueDir } from './prediction/heldKeys';
+import { reissueDir } from './prediction/heldKeys';
 import { OwedInputs } from './prediction/owedInputs';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { type RawWarpDef, TileMap } from './render/map';
@@ -97,6 +96,17 @@ import {
   WASM_READY_MS,
   ZONE_ID,
 } from './shell/config';
+import {
+  applyBindings,
+  bindings,
+  held,
+  inputRouter,
+  keyboard,
+  navHeldCodes,
+  noteNavHeld,
+  releaseAllInput,
+  releaseNavHeld,
+} from './shell/inputState';
 import {
   boxView,
   claimView,
@@ -388,9 +398,6 @@ let telemetry: ClientTelemetry = NOOP_TELEMETRY;
 // Frame accumulator — created ONCE, carried across rAF frames by the frame hunk.
 let frameWindow = createFrameWindow(performance.now());
 
-// The ONE binding table every input path and keycap reads: the player's saved table, else the
-// defaults (CTL12.4). Read at boot; Controls replaces it live (`applyBindings`).
-let bindings = loadBindings(browserStorage());
 // The player's text size (uif-13, UIF13.4): read and written on the root here, at import, so the
 // stored step is in place before the first frame; Controls › Display changes it live.
 let textStep = loadTextStep(browserStorage());
@@ -410,9 +417,6 @@ const resolver = new RenderResolver(STEP_MS);
 // (its change listener is page-lifetime by design); `.reduceMotion` is a live getter, so the
 // per-frame read at the resolve() call below re-reads it rather than a boot-time snapshot.
 const motionPreference = motionPreferenceFromWindow();
-// Held movement keys (most-recently-pressed stack) — drives the frame-loop
-// continuation re-issue so a held key keeps walking.
-const held = new HeldDirections();
 // renderer is module-scope so switchZone (below) can call setMap without
 // being inside main(). Defined here; assigned once inside main() after async init.
 let renderer: WorldRenderer | undefined;
@@ -2837,14 +2841,6 @@ function sendIntent(input: WasmMoveInput): void {
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
 const jump = (): void => sendIntent('Jump');
 
-// The input pipeline (design §12): the keyboard source maps keys through the ONE binding
-// table into `{button, down}` edges; the pure router decides what each edge does. The router
-// owns the D-pad and X (Jump), plus A, B and Y while the main menu is up, and hands every other
-// button (and a nav-capable screen's D-pad) to the top frame's adapter. It also decides each
-// accelerator (`accelDecision`).
-let keyboard = new KeyboardSource(bindings);
-const inputRouter = new InputRouter();
-
 // What the router needs to know: whether the world takes input, the nav frame (a nav-capable
 // screen on top, else the main menu, on top or covered by a legacy frame) plus the clock its
 // auto-repeat runs on, and the top frame's adapter.
@@ -2982,30 +2978,6 @@ const openAccelPath = (path: AccelPath): void => {
   for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key), path.tab);
 };
 
-// Codes whose press the menu or a nav-capable screen consumed: their OS key-repeats are cancelled
-// until the keyup, so a held Enter that opened a child cannot activate the child's focused button.
-const navHeldCodes = new Set<string>();
-
-// Drop every held button so nothing stays "held" while the page cannot see the keyup.
-const releaseAllInput = (): void => {
-  keyboard.releaseAll();
-  inputRouter.releaseAll();
-  navHeldCodes.clear();
-  held.clear();
-};
-
-// A remap applies at once (CTL12B.2): saved, then every input path reads the new table. The
-// keyboard source takes its table at construction, so it is replaced; whatever was held is
-// released first, or its keyup (unknown to the new source) would leave a button stuck. False when
-// the table could not be saved: it still applies, until the page reloads.
-const applyBindings = (next: Bindings): boolean => {
-  const saved = saveBindings(browserStorage(), next);
-  releaseAllInput();
-  bindings = next;
-  keyboard = new KeyboardSource(next);
-  return saved;
-};
-
 // The slot of Controls waiting for a key, while that frame is the top one; else null.
 const controlsCapture = (): SlotTarget | null => {
   const top = contextStack[contextStack.length - 1];
@@ -3033,7 +3005,7 @@ const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
   else if (applyBindings(step.bindings)) toastControls('controls-saved', step.text);
   else toastControls('controls-save-failed', step.text, false);
   // The captured key's OS repeats are not presses of its new button.
-  navHeldCodes.add(e.code);
+  noteNavHeld(e.code);
   endControlsCapture();
 };
 
@@ -3228,7 +3200,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // Enter (after A := K the field types K, so Enter is the only key left to commit with).
   if (typing === 'commit') {
     if (routeEdge({ button: 'A', down: true })) {
-      navHeldCodes.add(e.code);
+      noteNavHeld(e.code);
       e.preventDefault();
     }
     return;
@@ -3247,7 +3219,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
     let consumed = false;
     for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
     if (consumed) {
-      navHeldCodes.add(e.code);
+      noteNavHeld(e.code);
       e.preventDefault();
       return;
     }
@@ -3265,7 +3237,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
   if (consumed) {
     // A press the world consumed (A opening the heal frame) cancels its OS repeats too.
-    navHeldCodes.add(e.code);
+    noteNavHeld(e.code);
     e.preventDefault();
   }
 };
@@ -3298,7 +3270,7 @@ window.addEventListener('keydown', (e) => {
 // A release ends a hold only when the last key or source holding that direction lets go. Synced
 // first, as a keydown is: a gate read does not sync (so-2).
 window.addEventListener('keyup', (e) => {
-  navHeldCodes.delete(e.code);
+  releaseNavHeld(e.code);
   syncStack();
   for (const edge of keyboard.keyup(e)) routeEdge(edge);
 });
