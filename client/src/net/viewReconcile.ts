@@ -193,7 +193,7 @@ export const OWNER_VIEWS: readonly OwnerView[] = TRY_GROUPS.flat();
 export interface OwnerViewReconciler {
   /** `view`'s rows changed: the next reconcile rebuilds it. */
   markDirty(view: OwnerView): void;
-  /** Every view needs a rebuild: a snapshot applied, a new connection, a reset store. */
+  /** Every view needs a rebuild: the next reconcile rebuilds them all. */
   markAllDirty(): void;
   /** Rebuilds each dirty view's store collection from `db`, in the order and try groups above,
    *  and clears a view once its reconcile returns. A clean view is not read. Never throws: a throw

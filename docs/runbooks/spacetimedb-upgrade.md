@@ -125,8 +125,8 @@ eval fails against the new CLI on PATH.
 - Row-level security filters (`#[client_visibility_filter]`) are not enforced.
   Privacy uses private tables with owner-scoped views (see `docs/DECISIONS.md`).
 - None of the module's views declares a primary key, so the SDK never fires row updates
-  for them. The client rebuilds view-backed collections from the SDK cache after each
-  batch (`client/src/net/connection.ts`).
+  for them. The client rebuilds each owner view whose rows changed from the SDK cache
+  before the batch flushes (`client/src/net/viewReconcile.ts`).
 - `spacetime publish` has no visible feature flag in `--help`. The e2e job builds the
   `dev_reducers` wasm with `cargo build ... --features dev_reducers` and publishes it
   with `--bin-path` (`client/e2e/global-setup.ts`).

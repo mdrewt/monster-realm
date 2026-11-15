@@ -185,8 +185,8 @@ export function connect(opts: ConnectionOptions): Connection {
   // Armed by each applied snapshot (stale-guarded), consumed by the FIRST flush after it.
   let snapshotApplied = false;
   // Which owner views changed since their last rebuild. ONE for ALL rebuilds, like the batcher:
-  // every build's view handlers mark it, and each build, applied snapshot and store reset marks
-  // every view.
+  // every build's view handlers mark it, and each build, applied snapshot, store reset and
+  // throwing row handler marks every view.
   const ownerViews = createOwnerViewReconciler();
   // Reconcile once per transaction: each row callback schedules; the batcher fires
   // store.flushBatch() once on the next microtask (no per-transaction SDK hook in 2.6).
