@@ -38,8 +38,11 @@ running instance or a secret.
      `client_id` in `server-module/src/accounts.rs`, then republish. Until then both
      hold a fail-closed `.invalid` placeholder, and no account can be created. When
      you do this, tighten `audience_allowed` to exact equality.
-   - client: build with `VITE_MR_OIDC_ISSUER`, `VITE_MR_OIDC_CLIENT_ID` and
-     `VITE_MR_OIDC_REDIRECT_URI`.
+   - client: build with `VITE_MR_OIDC_ISSUER`, `VITE_MR_OIDC_CLIENT_ID`,
+     `VITE_MR_OIDC_REDIRECT_URI` and `VITE_MR_OIDC_PROVIDER_NAME`. The provider name is
+     the text on the Account screen's button ("Sign in / create account with
+     <name>"); a build that sets the issuer and not the name shows the issuer URL
+     there. A build with no issuer shows no Sign In control.
 
 The monitoring stack's Caddy (`ops/observability/`) also listens on port 8443. Do not
 run both on one host without moving one of them.

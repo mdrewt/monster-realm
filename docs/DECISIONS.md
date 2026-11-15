@@ -1769,12 +1769,16 @@ friends-server memory and disk numbers as a ceiling for play with battles and tr
 `TARGET_KIND` in `client/src/shell/config.ts`). `resolveTelemetryConfig` takes it as a required
 parameter and runs an exhaustive `switch` before it reads any env value: only `official` and `test`
 reach the endpoint and interval rules, and `local` and `private` resolve `disabled`, so the
-OpenTelemetry SDK never loads. `main.ts` passes `connect` the build's `VITE_MR_OIDC_ISSUER` and
-`VITE_MR_OIDC_CLIENT_ID` only for `official` or `test`; any other kind gets the empty string for both.
-A production document that omits `kind` resolves to `private`, so it gets neither. The OTLP endpoint
-stays a build value; the run-time decision is only whether to use it. Two tests hold both gates:
-`client/src/observability/config.test.ts` (every kind but `official` and `test` resolves disabled)
-and `client/src/main.targetKindGate.test.ts` (boots `main.ts` under each kind).
+OpenTelemetry SDK never loads. `main.ts` reads the build's `VITE_MR_OIDC_ISSUER` in one module-scope
+assignment that keeps it only for `official` or `test`; any other kind holds the empty string. That
+one value goes to `connect` and to `signInOffer` (`client/src/ui/claimModel.ts`), which decides
+whether the Profile screen's Account section offers Sign In and under which name: the build's
+`VITE_MR_OIDC_PROVIDER_NAME`, or the issuer string when the build names none. `VITE_MR_OIDC_CLIENT_ID`
+reaches `connect` under the same kind test. A production document that omits `kind` resolves to
+`private`, so it gets neither. The OTLP endpoint stays a build value; the run-time decision is only
+whether to use it. Two tests hold both gates: `client/src/observability/config.test.ts` (every kind
+but `official` and `test` resolves disabled) and `client/src/main.targetKindGate.test.ts` (boots
+`main.ts` under each kind, and reads the Sign In control and the connection's sign-in calls).
 
 **Why.** The same build joins worlds we do not operate (see "One game, three ways to play: no code may
 assume we run the server"). Metrics from a friend's or a single-player world would reach our ingest
@@ -1788,8 +1792,13 @@ metrics to our ingest, which is accepted (the metrics carry no account identity)
 **Rules out.** Gating either on a build-time flag or on the page's `location` (the build must not know
 its server; a desktop shell's page origin is not the server); a deny-list of `local` and `private`;
 moving the telemetry endpoint into the shell document (a friends host copying our document would carry
-it); reading `import.meta.env.VITE_MR_OIDC_ISSUER` anywhere but that one `connect` call; treating the
-empty issuer as a complete off switch (the Account section's Sign in control still shows there;
-pressing it registers a claim code with that world's server and then fetches discovery from the page's
-own origin, which fails unless that origin serves one). A per-world telemetry opt-in or per-world
-sign-in changes these two gates and their tests, not a side path.
+it); reading `import.meta.env.VITE_MR_OIDC_ISSUER` anywhere but that one assignment, or deciding the
+Sign In control from anything but the value `connect` received (a second read or a second kind test
+lets the control and the connection disagree); treating the hidden control or the empty issuer as a
+complete off switch. Hiding the control is presentation: a hidden button still dispatches, so the
+`claimSignIn` command checks the offer itself, and a tab that holds an earlier signed-in session or
+returns from a sign-in redirect still runs the token renewal at connect, which with an empty issuer
+fetches discovery from the page's own origin and fails unless that origin serves one. The `connect`
+gate stays the boundary that keeps the build's issuer and client id from a server we do not operate.
+A per-world telemetry opt-in or per-world sign-in changes these two gates and their tests, not a side
+path.

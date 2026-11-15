@@ -497,6 +497,9 @@ the player their identity. Sign-in is OIDC (authorization code with
 PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`. `main.ts` hands
 `connect` the issuer and client id only for a target of kind `official` or `test`; a
 `local` or `private` target gets both empty and connects under the anonymous token.
+The Profile screen's Account section offers Sign In only when `connect` received an
+issuer, labelled with the build's `VITE_MR_OIDC_PROVIDER_NAME` (the issuer when the
+build names none); `signInOffer` in `ui/claimModel.ts` decides it from that one value.
 
 ### Prediction and reconciliation
 
@@ -719,7 +722,8 @@ root, so opening one never closes a sibling.
   `.invalid` placeholder, so no account can be created until a real issuer is
   deployed and the constants are changed. `ops/auth/README.md` has the deployment
   steps and the client build variables (`VITE_MR_OIDC_ISSUER`,
-  `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`).
+  `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`,
+  `VITE_MR_OIDC_PROVIDER_NAME`).
 - **Claiming guest progress.** The client mints a 64-hex-character claim code
   (`net/claimCode.ts`), stores it per tab, and calls `start_guest_claim(code)` as the
   guest before redirecting to sign-in. The server stores it in the private
