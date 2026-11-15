@@ -117,59 +117,69 @@ GPU is far faster. These numbers are a record, not a gate.
 
 ## Low-end frame times
 
-Frame intervals of the live client, read against the client frame-rate objective: the
-median of the client's one-second frame-rate windows is at least 55 fps
-(`mr:client_fps_p50`, `ops/observability/rules/recording.rules.yml`), which is a median
-frame interval of at most 18.2 ms. These numbers are a record, not a gate.
+Frame intervals of the live client, read against the client frame-rate objective:
+`mr:client_fps_p50` at least 55 fps (`ops/observability/rules/recording.rules.yml`), the
+five-minute median over all clients of each client's one-second frame-rate windows. The
+same objective read per frame is a median interval of at most 18.2 ms; every row gives its
+median, but on a 60 Hz tick that reading is necessary, not sufficient (a row with 45%
+two-tick frames keeps a 16.7 ms median), so rows are judged on fps. These numbers are a
+record, not a gate.
 
 **What ran.** The production client and the release module, served by `just playtest-up`
-with `STDB_SERVER`, `MR_PLAYTEST_DB` and `VITE_STDB_URI` naming a scratch SpacetimeDB. One
-player stands in zone 0 (28×20 tiles, one NPC in view) with the hint bar up and the post
-stack off, in a 1280×720 viewport at DPR 1. The post-stack-on rows use the development
-build (`npm run dev`), the only one with the switch (`__game().setPostStack`). Host: the
-16-core Ryzen 9 9950X under WSL2 (Ubuntu 24.04, Mesa 25.2.8). Browser: Playwright
-1.61.1's Chromium 149, headless (`channel: 'chromium'`).
+with `STDB_SERVER=http://127.0.0.1:<port>`, `VITE_STDB_URI=ws://127.0.0.1:<port>` and a
+scratch `MR_PLAYTEST_DB`, against `spacetime start --in-memory --data-dir <tmp>
+--listen-addr 127.0.0.1:<port>`. One player joins zone 0 (28×20 tiles) at tile (1, 1),
+with one NPC in view, the HUD (the hint bar) up and the post stack off, in a 1280×720
+viewport at DPR 1. The stack-on rows use the Vite dev server (`npm run dev` with the same
+variables and `VITE_STDB_DB`), the only build with the switch (`__game().setPostStack`).
+Host: the 16-core Ryzen 9 9950X under WSL2 (Ubuntu 24.04, Mesa 25.2.8). Browser:
+Playwright 1.61.1's Chromium 149, headless (`channel: 'chromium'`).
 
-**Renderers.** Chromium reaches hardware GL on this host, and the host exposes an
-integrated GPU: the Ryzen's own Radeon, beside a GeForce RTX 5080. The tables name each
-renderer by the device part of its WebGL renderer string (`UNMASKED_RENDERER_WEBGL`, read
-from the game's canvas):
+**Renderers.** With the launch flags below, Chromium reaches hardware GL on this host, and
+the host exposes an integrated GPU: the Ryzen's own Radeon, beside a GeForce RTX 5080.
+Headless Chromium's default is SwiftShader. Rows name each renderer by its WebGL renderer
+string (`UNMASKED_RENDERER_WEBGL`, read in the page):
 
 | Row name | Renderer string | Launch |
 |---|---|---|
 | RTX 5080 | `ANGLE (Microsoft Corporation, D3D12 (NVIDIA GeForce RTX 5080), OpenGL ES 3.1)` | args `--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist --enable-gpu`, env `GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` |
 | Radeon (integrated) | `ANGLE (Microsoft Corporation, D3D12 (AMD Radeon(TM) Graphics), OpenGL ES 3.1)` | the same args, env `GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=AMD` |
-| SwiftShader | `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)` | no args (headless Chromium's default) |
+| SwiftShader | `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)` | no args |
 | llvmpipe | `ANGLE (Mesa, llvmpipe (LLVM 20.1.2 256 bits), OpenGL ES 3.2)` | the same args, env `LIBGL_ALWAYS_SOFTWARE=1` |
 
 Both GPUs are reached through WSL2's D3D12 layer (Mesa's `d3d12` driver under ANGLE's
 OpenGL backend). The Radeon rows are an integrated GPU behind a desktop CPU, not a low-end
-laptop.
+laptop. `chrome://gpu` reports WebGL as "Software only" for SwiftShader and as "Hardware
+accelerated" for the other three, llvmpipe included, and a WebGL context requested with
+`failIfMajorPerformanceCaveat` is created on all four.
 
 **Method.** A Playwright page loads the client, waits for the hint bar and 3 s more, sets
 `Emulation.setCPUThrottlingRate` over CDP, lets 120 frames pass, then records 600
-consecutive `requestAnimationFrame` timestamp deltas from a second callback loop. A row
-pools that sample from separate browser launches, interleaved across the rows: three
-launches (1,800 intervals) or two (1,200), as each table says. It is the steady state
-only: no load, battle or menu frames.
+consecutive `requestAnimationFrame` timestamp deltas from a second callback loop it adds.
+Each row pools that sample over separate browser launches, three (1,800 intervals) or two
+(1,200) as each table says, interleaved across the configurations; the stack-on launches
+above 1280×720 ran back to back after the rest. Steady state only: no load, battle or menu
+frames.
 
 - **Median and p95** are nearest-rank.
 - **Shares.** Headless Chromium ticks frames at 60 Hz, so every interval is a whole number
-  of 16.67 ms ticks (within 0.17 ms here), and the timestamps have a 0.1 ms grain. The
-  share columns count ticks: "> 16.7 ms" is an interval of two ticks or more, "> 33.3 ms"
-  one of three or more. Compared literally, 4–6% of one-tick intervals read 16.8 ms and
-  over a third of two-tick intervals read 33.4 ms.
-- **fps** is the median of the client's one-second windows
-  (`client/src/observability/frameWindow.ts`) over the same intervals, the quantity the
-  objective is defined on. A row meets the objective at 55 fps or more. The median
-  interval cannot decide it: a row with 45% two-tick frames keeps a 16.7 ms median.
+  of 16.67 ms ticks (within 0.17 ms here) on a 0.1 ms grain. The share columns count
+  ticks: "> 16.7 ms" is an interval of two ticks or more, "> 33.3 ms" one of three or
+  more. Compared literally, 4–6% of one-tick intervals read 16.8 ms and 31–38% of two-tick
+  intervals read 33.4 ms.
+- **fps** is the median of the one-second windows the client forms
+  (`client/src/observability/frameWindow.ts`), replayed over the same intervals. The
+  recording rule estimates that median from the client's histogram buckets (`50, 55, 60,
+  90`, …); recomputed that way a row moves by up to 6.5 fps and no verdict changes.
 - **CPU throttling slows the page's main thread only.** SwiftShader and llvmpipe rasterise
-  in the GPU process at the host's full speed, with all 32 threads available. The "2 cores" rows
-  pin every browser process to two physical cores (`taskset -c 0,2`).
-- **The sample registers both kinds of load.** On the RTX 5080, a 20 ms busy loop
-  in each frame turns 22% of intervals into two ticks. On the Radeon, a full-canvas
-  fragment shader costing 20.8 ms a frame gives a 20.2 ms mean interval, and one costing
-  68.0 ms gives 68.8 ms.
+  in the GPU process at the host's full speed. The "2 cores" rows run the Playwright driver
+  under `taskset -c 0,2` (two different cores), and every browser process inherits the pin.
+- **The sample registers both kinds of load.** On the RTX 5080, a 20 ms busy loop in each
+  frame turns 22% of intervals into two ticks. On the Radeon, a full-canvas fragment shader
+  costing 20.8 ms a frame gives a 20.2 ms mean interval, and one costing 68.0 ms gives
+  68.8 ms.
+- **Synced frame** is the per-pass table's sync applied to the live game: a one-pixel
+  `readPixels` straight after the game's own frame, the median of 300 frames.
 
 **Post stack off, 1280×720 at DPR 1** (1,800 intervals a row):
 
@@ -195,7 +205,7 @@ canvas is in device pixels: 2560×1440 is the 1280×720 viewport at DPR 2, and 3
 |---|---|---|---|---|---|---|---|---|
 | SwiftShader | 1920×1080 | all | 16.7 | 16.8 | 0% | 0% | 60.0 | meets |
 | SwiftShader | 2560×1440 | all | 16.7 | 33.3 | 7.3% | 0% | 56.0 | meets |
-| SwiftShader | 3840×2160 | all | 33.4 | 50.0 | 100% | 30.5% | 26.1 | misses |
+| SwiftShader | 3840×2160 | all | 33.4 | 50.0 | 100% | 30.5% | 26.0 | misses |
 | SwiftShader | 1280×720 | 2 | 16.7 | 16.8 | 0% | 0% | 60.0 | meets |
 | SwiftShader | 1920×1080 | 2 | 16.7 | 33.3 | 6.6% | 0% | 56.1 | meets |
 | SwiftShader | 3840×2160 | 2 | 66.8 | 83.4 | 100% | 100% | 13.5 | misses |
@@ -203,8 +213,11 @@ canvas is in device pixels: 2560×1440 is the 1280×720 viewport at DPR 2, and 3
 | Radeon (integrated) | 3840×2160 | all | 16.7 | 16.8 | 0% | 0% | 60.0 | meets |
 | RTX 5080 | 3840×2160 | all | 16.7 | 16.7 | 0% | 0% | 60.0 | meets |
 
-**Post stack on** (all four passes, development build), CPU 1×, all cores (1,800 intervals
-a row at 1280×720, 1,200 at the larger canvases):
+The two 56 fps rows are close to the line: their launches read 56.0 and 56.0 (2560×1440)
+and 55.1 and 57.1 (two cores, 1920×1080).
+
+**Post stack on** (all four passes, Vite dev server), CPU 1×, all cores (1,800 intervals a
+row at 1280×720, 1,200 at the larger canvases):
 
 | Renderer | Canvas | Median ms | p95 ms | > 16.7 ms | > 33.3 ms | fps | Objective |
 |---|---|---|---|---|---|---|---|
@@ -219,43 +232,44 @@ a row at 1280×720, 1,200 at the larger canvases):
 
 **Reading.**
 
-- **Stack off, every renderer meets the objective at 1280×720**, at every throttle
-  measured, and SwiftShader does on two cores. A hero walking a two-tile shuttle changes
-  nothing: at most 0.2% of frames take more than one tick, at 6× on either GPU, at 4× on
-  SwiftShader, and on SwiftShader's two cores.
-- **The 60 Hz tick hides the margin**, so each frame was also timed as the per-pass table
-  above was, by a one-pixel `readPixels` after the game's own frame. Stack off at
-  1280×720 that is 2.3 ms on SwiftShader and 3.5 ms on llvmpipe. On the GPUs it is 4.3 ms
-  (RTX 5080) and 6.4 ms (Radeon), an upper bound: the readback itself takes 1.6 ms and
-  7.0 ms after a light full-canvas draw. The frame loop's script is 0.25 ms a frame, half
-  of it Pixi's scene render.
-- **Raising the throttle further** costs frames only once the main thread is full: 48.0
-  and 51.2 fps at 40× on the RTX 5080 and the Radeon (60.0 at 20×), and 37.7 fps at 20× on
-  SwiftShader (60.0 at 10×). The browser's own work outside the client's script is the
-  larger share there (29 ms against 7.5 ms of frame-loop script on SwiftShader at 20×, in
-  a CPU profile of the development build). A
-  throttle factor is not a device model, so these are the method's range, not rows.
+- **Stack off, every renderer meets the objective at 1280×720** at 1×, 4× and 6×, and
+  SwiftShader does on two cores at 1× and 4×. A hero walking a two-tile shuttle (Up then
+  Down, each held 450 ms) changes nothing: at most 0.2% of frames take more than one tick,
+  at 6× on either GPU, at 4× on SwiftShader, and at 1× on SwiftShader's two cores.
+- **The 60 Hz tick hides the margin**, which the synced frame shows. Stack off at 1280×720
+  it is 2.3 ms on SwiftShader (the look-dev scene's 2.0 ms above, in live zone 0) and
+  3.5 ms on llvmpipe. On the GPUs it is 4.3 ms (RTX 5080) and 6.4 ms (Radeon), an upper
+  bound: a second readback straight after the first takes 1.6 ms and 1.7 ms. The frame
+  loop's script is 0.25 ms a frame in the production build; in a profile of the dev
+  server's build it is 0.28 ms, about half of it Pixi's scene render.
+- **Raising the throttle further** costs frames only once the main thread is full: 48.2
+  and 51.2 fps at 40× on the RTX 5080 and the Radeon (60.0 at 20×), and 38.0 fps at 20× on
+  SwiftShader (60.0 at 10×). Most of that time is the browser's own work outside the
+  client's script (29 ms against 7.5 ms of frame-loop script on SwiftShader at 20×, in a
+  dev-server profile). These factors lie beyond the 6× this record targets and model no
+  device, so they carry no follow-up.
 
 **Rows that miss**, with the largest per-frame cost and the follow-up row of each:
 
-- **SwiftShader at 3840×2160, stack off** (26.1 fps, 13.5 fps on two cores). The cost is
-  software rasterisation and presentation, which grow with device pixels: the synced frame
-  is 2.3 ms at 1280×720 and 15.1 ms at 3840×2160, and the browser then composites 8.3 M
-  pixels in software. The renderer's backing store follows the device pixel ratio.
-  Follow-up: `R-th-6-SWRASTER-PIXELS`.
+- **SwiftShader at 3840×2160, stack off** (26.0 fps; 13.5 fps on two cores, whose launches
+  ran at 66.7 and 83.2 ms medians). The cost is software rasterisation and compositing,
+  which grow with device pixels: the synced frame is 2.3 ms at 1280×720 and 15.1 ms at
+  3840×2160, and the browser then composites 8.3 M pixels in software. The renderer's
+  backing store follows the device pixel ratio. Follow-up: `R-th-6-SWRASTER-PIXELS`.
 - **Stack on, SwiftShader and llvmpipe** (21.0 and 41.3 fps at 1280×720, and 29.0 fps on
-  llvmpipe at 1920×1080). The cost is the four passes: the synced frame is 47.0 ms
-  against 2.3 ms on SwiftShader and 21.7 ms against 3.5 ms on llvmpipe, with godray and
-  bloom the largest (per-pass table above). DECISIONS.md "The world post stack is
-  `pixi-filters`…" keeps the stack off on a software rasteriser. Follow-up:
-  `R-th-6-POSTSTACK-GUARD`.
+  llvmpipe at 1920×1080). The cost is the four passes: the synced frame is 47.0 ms against
+  2.3 ms on SwiftShader and 21.7 ms against 3.5 ms on llvmpipe, with godray and bloom the
+  largest (per-pass table above). DECISIONS.md "The world post stack is `pixi-filters`…"
+  keeps the stack off on a software rasteriser. Follow-up: `R-th-6-POSTSTACK-GUARD`.
 - **Stack on, the Radeon at 1920×1080 and above** (34.4 fps, 10.3 fps at 3840×2160). The
   cost is the same four passes on a small GPU: the synced frame is 11.9 ms at 1280×720 and
   97.5 ms at 3840×2160, where the RTX 5080 takes 5.7 ms. The software-rasteriser rule does
-  not cover this. Follow-up: `R-th-6-POSTSTACK-GUARD`.
+  not cover this, and a GPU driven without the WSL2 layer may differ. Follow-up:
+  `R-th-6-POSTSTACK-GUARD`.
 
-Not measured: a displayed browser, a GPU driven without the WSL2 layer, a browser other
-than Chromium, more than one player in view, and the battle, tactics and menu screens.
+Not measured: a displayed browser, a GPU driven without the WSL2 layer, a laptop
+integrated GPU, a browser other than Chromium, more than one player in view, and the
+battle, tactics and menu screens.
 
 ## Names and atlas keys
 
