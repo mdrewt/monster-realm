@@ -846,7 +846,11 @@ pays nothing. Quest rewards are the faucet for recruit-heavy play: one quest shi
 (quest_001), its `reward.currency` is content (`game-core/content/quests/`), and the
 server credits exactly what the content names, once. `docs/economy-tuning.md` holds the
 reasoning, says where each number lives, and names the test over the shipped content
-(`game-core/tests/pt_d3_tuning.rs`) that fails when a retune breaks a relation.
+(`game-core/tests/pt_d3_tuning.rs`) that fails when a retune breaks a relation. Shop prices,
+the sell price's fraction of the buy price and `BATTLE_CURRENCY_BST_DIVISOR` are not the lever
+for recruit-heavy play; the quest reward is. With a full party, recruit-heavy play in zone 0
+buys a Lure Berry within a fixed battle budget, a test over the shipped content
+(`recruit_heavy_zone0_battles_buy_a_lure_berry_within_the_battle_budget`).
 
 **Why.** The economy is not a major part of the game (operator's balance stance): items,
 prices and rewards are tuned as for a single-player game, and every number must feel fair
@@ -860,8 +864,8 @@ small party earns less from recruit-heavy play and a one-monster party meets onl
 wilds. No mechanic consumes a monster (there is no monster sink).
 
 **Rules out.** Charging currency or an item to heal as a currency sink; paying currency
-for a successful recruit; restating prices, rewards or battle budgets in prose docs. A
-heal charge, a recruit payout or a monster sink changes the reasoning: it changes the
+for a successful recruit; restating prices, rewards or battle budgets in prose docs; raising
+battle payouts or cutting shop prices to fund recruit-heavy play. A heal charge, a recruit payout or a monster sink changes the reasoning: it changes the
 tests, the worksheet and this entry together.
 
 ## Battle lifecycle and PvP
@@ -1050,7 +1054,9 @@ carry history that only telemetry reads).
 
 **Decision.** A first `join_game` grants the starter monster and the starter kit, once per
 identity. The kit is data (`game-core/content/starter_kit.ron`: 200 gold, 2 Lure Berries, 1
-Antidote), checked at publish by `validate_starter_kit`. The grant is recorded by the flag
+Antidote), checked at publish by `validate_starter_kit`. Kit items are ordinary items: they can
+be traded and sold. The join shows no notice for the kit, because the wallet readout and the Bag
+already show it. The grant is recorded by the flag
 `sys:starter_claimed` in the owner's private `player_dialogue_state.flags`, set in the same
 transaction as the kit. `onboarding::starter_grant(claimed, owns_monster)` is the rule: a set
 marker grants nothing, whatever the identity owns; an unset marker grants the kit, and the
@@ -1071,7 +1077,11 @@ marker lives in `player_dialogue_state` rather than a new table because that row
 private, re-keyed by the claim, erased by the deletion cascade, counted as game data and part of
 the owner's export; a new table would need all of that wiring again. The tombstone is the one
 place the claim copies instead of moving: without it the retired guest would be granted a second
-starter and kit, and could redo a finished quest.
+starter and kit, and could redo a finished quest. Making the kit untradeable would need a new item
+field and a trade rule, and would not stop one player farming throwaway identities on its own:
+each fresh identity already gets a tradeable starter monster. How the official server keeps those
+payouts from reaching a main identity is an open launch condition (`docs/economy-tuning.md`,
+"Shared-economy caveat").
 
 **Rules out.** Inferring "new player" from owned monsters, items or a wallet row. A re-grant for
 an identity that holds the marker and owns no monster: a release or loss mechanic added later
@@ -1147,7 +1157,10 @@ than 7 days, within an hour of their expiry (`server-module/src/privacy.rs`).
 classification is part of the schema. Blocking new commitments during the grace
 period stops a deleting account from laundering assets to a confederate. The export
 caps and tiers bound storage abuse, with anonymous identities limited before account
-holders.
+holders. The starter kit's currency creates the wallet row at an identity's first join, and
+only an identity with a `player` or `account` row can request an export, so the no-wallet tier
+holds almost no caller and a join alone reaches the anonymous tier. The wallet signal stays:
+any per-identity signal an anonymous identity can earn is cheap, and sign-in is the fix.
 
 **Export scope.** The export is for the data held about the person. Game state is
 included where a query on existing tables provides it; it is assembled from the tables
