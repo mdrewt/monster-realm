@@ -1839,6 +1839,12 @@ wall clock or `Math.random`. Three things disable the whole stack: an unsupporte
 construction throws, and a throw from the probe frame drawn after the stack is built. In each case the plan is
 empty with one warning, and the world draws unfiltered. A driver that fails a shader without throwing is not
 detected. The renderer starts with the stack off at the `day` keyframe, and `setPostStack` turns passes on.
+A production build that turns the stack on must keep it off on a software rasteriser, recognised from the
+WebGL renderer string (`UNMASKED_RENDERER_WEBGL`) read at init and again after a context restore: a string
+naming SwiftShader or llvmpipe, in any letter case, would be one more reason for the empty plan and its
+warning. A string that names neither, or that the browser masks, counts as hardware, so another software
+rasteriser runs the stack until it is measured and added to the check's list. No production build turns the
+stack on, so the check is not written.
 
 **Why.** `pixi-filters` was the vetted USE verdict for this stack (`docs/research/pixijs-ecosystem-ui-and-assets.md`
 §0/§6 in the harness). It is MIT-licensed, has no install scripts, and its single runtime dependency is a types
@@ -1848,13 +1854,23 @@ filters in use. Filtering the world container alone keeps the UI unfiltered. The
 edges stay one-pixel hard steps because every pass renders on the device-pixel grid. A filter below the
 renderer's resolution would be resampled, and the chain runs at the lowest resolution of any of its filters.
 Injected time keeps two frames with the same inputs pixel-identical, which is what the look-dev scene asserts.
-Measured on software GL at 1280×720 (`docs/art/style-guide.md`), the four passes cost 35 ms/frame against 2 ms
-unfiltered, and godray and bloom account for most of it. A canvas clear per filter pass also breaks the
-one-clear-per-frame count in `client/e2e/render-context.spec.ts`. So the live game does not turn the stack on yet.
+Measured on software GL at 1280×720 (`docs/art/style-guide.md` §Post stack), the four passes cost 35.1
+ms/frame against 2.0 ms unfiltered, and godray and bloom account for most of it. That is the reason for the
+software-rasteriser rule: with the stack on, the live client misses the 55 fps frame-rate objective on
+SwiftShader and on llvmpipe, and meets it on both GPUs of the same host at 1280×720 (§Low-end frame times). The
+renderer string decides it because the plan can take it as an input a unit test supplies. The rule stops at
+software rasterisers: through WSL2's D3D12 layer the host's integrated Radeon also misses the objective with the
+stack on at 1920×1080 and above, so a build that turns the stack on also needs a bound for a weak hardware GPU,
+which this entry does not set. A canvas clear per filter pass also breaks the one-clear-per-frame count in
+`client/e2e/render-context.spec.ts`. So the live game keeps the stack off.
 
 **Rules out.** Filters on `app.stage`, on a DOM layer or per sprite; a pass kept in the chain at zero strength; a
 shader, filter or animation reading a clock other than the injected `nowMs`; a filter at a resolution below the
-renderer's; a linearly sampled LUT; adding another filter package without a new entry here.
+renderer's; a linearly sampled LUT; adding another filter package without a new entry here; turning the stack
+on in a production build without the software-rasteriser check; recognising a software rasteriser from measured
+frame time (a clock in the plan, and the stack must run slow before it is measured);
+`failIfMajorPerformanceCaveat` in the check's place (headless Chromium created a context with it on both
+SwiftShader and llvmpipe); a player setting as the only guard.
 
 ## The connection target is run-time configuration: a shell document set before the client module runs
 
