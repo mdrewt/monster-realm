@@ -28,6 +28,9 @@
 //! | `--report <path>` | — | optional; default is stdout |
 //! | `--fail-on-invalid` | off | takes no value; see "Exit codes" |
 //!
+//! A flag's value may not begin with `--`: that is a forgotten value, and taking
+//! it would swallow the next flag.
+//!
 //! There is deliberately **no** `--transport` (AM25: WS is the only viable
 //! transport — see below), **no** `--queue-metric` (AM17: `QUEUE_FAMILIES` is a
 //! const), and **no** `--label` (AM18: `--run-id` already carries the pairing
@@ -165,8 +168,9 @@
 //!   `db=`, queue gauges use `database_identity=`. All txn matches also pin
 //!   `txn_type="Reducer"` — an `txn_type="Update"` row exists per reducer and
 //!   would double-count accepted/rejected deltas.
-//! - Download (`rx_bytes_per_client_per_s`, `_max`): every bot counts the bytes
-//!   it reads off its socket after the handshake, and the scraper copies all the
+//! - Download (`rx_bytes_per_client_per_s`, `_max`): every bot counts every byte
+//!   it receives after the 101 response head (including any that arrived in the
+//!   same read as the head), and the scraper copies all the
 //!   counts right after each scrape. Over the AM6 usable window (the first scrape
 //!   discarded), the mean is all bots' bytes divided by the bot count — the
 //!   level's concurrency, a bot that never connected counting as 0 — and the
@@ -2016,7 +2020,8 @@ pub enum ControlFrame {
 pub struct DrainState {
     /// Payload bytes of the current DATA frame still to be discarded.
     pub skip_remaining: u64,
-    /// Bytes received but not yet consumed (a partial header or control frame).
+    /// Bytes received but not yet consumed (a partial header or control frame,
+    /// or the stream bytes that arrived behind the 101 head).
     pub buf: Vec<u8>,
 }
 
@@ -2797,7 +2802,8 @@ fn client_thread(
     };
 
     // The stream bytes read with the handshake are received bytes too, and the
-    // first thing the drain parses.
+    // first thing the drain parses — at the first read that returns data, which
+    // always comes: the subscribe and join are already sent.
     counters.rx_bytes[client_index as usize].fetch_add(leftover.len() as u64, Ordering::Relaxed);
     let mut drain = DrainState {
         buf: leftover,
