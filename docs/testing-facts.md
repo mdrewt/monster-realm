@@ -20,9 +20,8 @@ test fails for a reason this file would have prevented.
   speech (`tactics/tacticsBattle.ts`, `render`). Render before you ingest events.
 - **Dialogue resend guard:** `DIALOGUE_RESEND_MS` (`ui/screens/dialogueScreen.ts`) swallows a
   second A for 1 s after any issued command, sent or not; a new dialogue node lifts it (under
-  reduced motion the new node re-arms it from its arrival). While the
-  text is still revealing, A finishes the reveal instead of acting. This is intended, not a
-  dropped input.
+  reduced motion the new node re-arms it from its arrival). While the text is still revealing,
+  A finishes the reveal instead of acting. This is intended, not a dropped input.
 
 ## Server (native test host, `server-module/src/native_host_tests.rs`)
 
@@ -30,7 +29,8 @@ test fails for a reason this file would have prevented.
   `fixture()` again while the first is alive hangs the test. `fixture()` wipes rows, index
   registrations and write counts.
 - **Write counts:** `Fixture::writes_to(table)` counts write calls on a table, including no-op
-  deletes and identical updates, not changed rows. Rows seeded with `Handle::seed` are not counted. Call `reset_writes()` before the code under test.
+  deletes and identical updates, not changed rows. Rows seeded with `Handle::seed` are not
+  counted. Call `reset_writes()` before the code under test.
 - **No rollback:** a reducer that returns `Err` aborts its transaction in production, but the
   native host keeps the writes made before the `Err`. Assert a refusal leaves rows unchanged only
   when the refusal comes before the first write.
