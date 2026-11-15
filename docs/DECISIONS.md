@@ -750,6 +750,32 @@ second account clears a Hostile tier; that is the accepted price of the rule. Se
 owners; re-implementing the zeroing in the reducer or in TypeScript; resetting on the
 guest-claim re-key.
 
+## Trade sessions open face to face, one per pair, and are never one-sided
+
+**Decision.** A trade is a `trade_session` that two players open face to face (`open_trade_session`,
+range-checked as "Interaction target: the tile in front, then your own tile" says) and then edit,
+confirm or cancel from Social › Trades. Each side offers any mix of monsters, items and currency.
+Two players share at most one session, whichever of them opened it, and a player may have at most
+`MAX_OPEN_TRADE_SESSIONS` (4) sessions they opened; sessions others opened with them never count
+(`check_session_open`, `game-core/src/trading/session.rs`). A confirmed side cannot edit (cancelling
+is the way out), and a confirm names the session revision it reviewed: every accepted edit advances
+the revision and clears both confirms. A confirm is refused when either offer is empty or when the
+side would own no monster afterwards (`side_check`), and no other soft-lock check exists. A received
+monster takes the receiver's lowest free party slot, else Storage (`arrival_slots`); the receiver's
+party size never refuses a trade.
+
+**Why.** The operator's trade-scope ruling (monster-realm #585): all three asset classes,
+face-to-face initiation, one active trade per pair, no one-sided gifts, simple soft-lock guards
+("90% of cases with 0 false positives" beats a frustrating 95%), arrival in the party else Storage.
+Counting only the sessions a player opened stops sockpuppets from locking someone out of trading,
+and never reading the partner's count keeps the cap from answering questions about them. The
+revision makes "each side confirms what it saw" hold under concurrent edits.
+
+**Rules out.** Opening a trade remotely; two sessions between the same players; a cap that counts
+sessions others opened or reads the partner's count; gifts; soft-lock heuristics beyond the
+last-monster count; refusing a trade because the receiver's party is full; a separate execute
+reducer; a confirm that names no revision.
+
 ## Economy: bounded balances, headroom before transfer
 
 **Decision.** Currency is a private `player_wallet` (`u64` balance, `MAX_BALANCE`
@@ -1592,9 +1618,12 @@ page gives Summary room for all stats without a second overlay.
 
 **Rules out.** A fixed corner, beside-the-slot placement, in-slot buttons, a dim layer, a second sheet
 root per sub-list, and a Summary implemented as a sheet or an overlay. Later sheets (Inventory uif-8,
-Social uif-9) reuse this placement and the `kit.sheet.close` / `kit.sheet.back` rows; the world sheets
-(uif-12) reuse the Close row but keep their own anchor (see "Select is Help everywhere; a world sheet
-closes under it and ends with a Close row").
+Social uif-9) reuse this placement and the `kit.sheet.close` / `kit.sheet.back` rows. The Social row
+sheet ends with Back, not Close (`BACK_KEY` of `client/src/ui/monstersModel.ts`, appended in
+`client/src/ui/screens/socialScreen.ts` and `client/src/ui/tradeView.ts`): it opens from a row of the
+Social list, and A on Back returns to that list with nothing sent. The world sheets (uif-12) reuse the
+Close row but keep their own anchor (see "Select is Help everywhere; a world sheet closes under it and
+ends with a Close row").
 
 ## Select is Help everywhere; a world sheet closes under it and ends with a Close row
 
