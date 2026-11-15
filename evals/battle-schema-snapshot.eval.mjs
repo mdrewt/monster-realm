@@ -109,9 +109,10 @@ export function parseField(chunk) {
 const COMPOSITE_INDEX =
   /^index\s*\(\s*accessor\s*=\s*(\w+)\s*,\s*btree\s*\(\s*columns\s*=\s*\[([\w\s,]*)\]\s*\)\s*\)$/;
 
-// A table-level index argument -> { accessor, columns } (columns in declared order). It must
-// name two or more distinct columns of the struct; any other table-level form throws, and a
-// one-column index belongs on its field as #[index(btree)].
+// A table-level index argument (any depth-0 table argument whose first word is `index`, so a
+// leading character Rust lexes as whitespace cannot hide one) -> { accessor, columns }, columns
+// in declared order. It must name two or more distinct columns of the struct; any other
+// table-level form throws, and a one-column index belongs on its field as #[index(btree)].
 export function parseCompositeIndex(table, arg, order) {
   const fail = (why) => {
     throw new Error(`${table}: table-level index \`${arg}\` ${why}`);
@@ -142,7 +143,7 @@ export function parseTables(src) {
     const withAttr = (a) => fields.filter((f) => has(f, a)).map((f) => f.name);
     const order = fields.map((f) => f.name);
     const composite = args
-      .filter((a) => /^index\b/.test(a))
+      .filter((a) => /^\W*index\b/.test(a))
       .map((a) => parseCompositeIndex(name, a, order));
     const accessors = composite.map((c) => c.accessor);
     if (new Set(accessors).size !== accessors.length)
@@ -294,36 +295,49 @@ function selfTeeth() {
   const decoy = `const S: &str = "${TABLE_ATTR}accessor = fake)] pub struct F { pub x: u8 }"; // ${TABLE_ATTR}accessor = f2)]`;
   if (Object.keys(parseTables(stripRustSource(decoy))).length !== 0)
     bad.push('string/comment decoy parsed as a table');
-  const table = (extra) =>
+  // Rust lexes U+200E (left-to-right mark) as whitespace; JS's \s and trim() do not.
+  const LRM = String.fromCharCode(0x200e);
+  const table = (args) =>
     parseTables(
-      stripRustSource(
-        `${TABLE_ATTR}accessor = t${extra})] pub struct T { pub a: u32, pub b: u32 }`,
-      ),
+      stripRustSource(`${TABLE_ATTR}${args})] pub struct T { pub a: u32, pub b: u32, pub c: u32 }`),
     ).t;
-  const composite = table(', index(accessor = ba, btree(columns = [b, a]))').composite_indexes;
-  if (JSON.stringify(composite) !== '[{"accessor":"ba","columns":["b","a"]}]')
+  const recorded = (args) => JSON.stringify(table(args).composite_indexes);
+  if (
+    recorded('accessor = t, index(accessor = cba, btree(columns = [c, b, a]))') !==
+    '[{"accessor":"cba","columns":["c","b","a"]}]'
+  )
     bad.push('composite index not recorded with its columns in declared order');
-  if ('composite_indexes' in table('')) bad.push('composite_indexes key on a table without one');
-  for (const form of [
-    'index(accessor = x, hash(columns = [a, b]))',
-    'index(accessor = x, direct(column = a))',
-    'index(name = x, btree(columns = [a, b]))',
-    'index(btree(columns = [a, b]))',
-    'index(accessor = x, btree(columns = [a, b]), y)',
-    'index (accessor = x, hash(columns = [a, b]))',
-    'index(accessor = x, btree(columns = [a]))',
-    'index(accessor = x, btree(columns = [a, b,]))',
-    'index(accessor = x, btree(columns = [a, c]))',
-    'index(accessor = x, btree(columns = [a, a]))',
-    'index(accessor = x, btree(columns = [a, b])), index(accessor = x, btree(columns = [b, a]))',
+  if (
+    recorded(
+      'index(accessor = y, btree(columns = [b, c])), accessor = t, index(accessor = x, btree(columns = [a, b]))',
+    ) !== '[{"accessor":"y","columns":["b","c"]},{"accessor":"x","columns":["a","b"]}]'
+  )
+    bad.push('two composite indexes not both recorded in declared order');
+  if ('composite_indexes' in table('accessor = t'))
+    bad.push('composite_indexes key on a table without one');
+  for (const args of [
+    'accessor = t, index(accessor = x, hash(columns = [a, b]))',
+    'accessor = t, index(accessor = x, direct(column = a))',
+    'accessor = t, index(name = x, btree(columns = [a, b]))',
+    'accessor = t, index(accessor = x, name = "n", btree(columns = [a, b]))',
+    'accessor = t, index(btree(columns = [a, b]))',
+    'accessor = t, index(accessor = x, btree(columns = [a, b]), y)',
+    'accessor = t, index (accessor = x, hash(columns = [a, b]))',
+    `accessor = t, ${LRM}index(accessor = x, hash(columns = [a, b]))`,
+    'index(accessor = x, hash(columns = [a, b])), accessor = t',
+    'accessor = t, index(accessor = x, btree(columns = [a]))',
+    'accessor = t, index(accessor = x, btree(columns = [a, b,]))',
+    'accessor = t, index(accessor = x, btree(columns = [a, d]))',
+    'accessor = t, index(accessor = x, btree(columns = [a, b, a]))',
+    'accessor = t, index(accessor = x, btree(columns = [a, b])), index(accessor = x, btree(columns = [b, a]))',
   ]) {
     let message = '';
     try {
-      table(`, ${form}`);
+      table(args);
     } catch (err) {
       message = err.message;
     }
-    if (!message.includes('table-level index')) bad.push(`table-level \`${form}\` did not throw`);
+    if (!message.includes('table-level index')) bad.push(`table-level \`${args}\` did not throw`);
   }
   return bad;
 }
