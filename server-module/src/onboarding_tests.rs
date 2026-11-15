@@ -15,7 +15,7 @@ use crate::native_host_tests::{fixture, Fixture, Handle};
 use crate::onboarding::{starter_grant, StarterGrant};
 use crate::schema::{
     Character, Inventory, Monster, MonsterPub, MoveIntent, Player, PlayerDialogueStateRow,
-    PlayerWallet, SpeciesRow,
+    PlayerHandle, PlayerWallet, SpeciesRow,
 };
 use game_core::currency::MAX_BALANCE;
 use game_core::{Affinity, MAX_ITEM_STACK};
@@ -32,7 +32,7 @@ const ANTIDOTE: u32 = 3;
 const KIT_STACKS: [(u32, u32); 2] = [(LURE_BERRY, 2), (ANTIDOTE, 1)];
 
 /// Every table a join writes.
-const JOIN_TABLES: [&str; 9] = [
+const JOIN_TABLES: [&str; 10] = [
     "player",
     "character",
     "move_intent",
@@ -42,6 +42,7 @@ const JOIN_TABLES: [&str; 9] = [
     "inventory",
     "player_wallet",
     "player_dialogue_state",
+    "player_handle",
 ];
 
 fn joiner() -> Identity {
@@ -139,13 +140,15 @@ struct Ob<'a> {
     stacks: Handle<'a, Inventory>,
     wallets: Handle<'a, PlayerWallet>,
     dialogue: Handle<'a, PlayerDialogueStateRow>,
+    handles: Handle<'a, PlayerHandle>,
 }
 
 /// Every table `join_game` reaches for a fresh identity, writable, with the auto-inc
 /// keys the inserts need: `player`, `character`, `move_intent`, the zone tick schedule
 /// (`arm_zone_tick` scans it), `monster` / `monster_pub` (read by owner, inserted by
-/// the starter block), `inventory` (read by owner, updated by `inv_id`), `player_wallet`
-/// and `player_dialogue_state`. The starter species is seeded.
+/// the starter block), `inventory` (read by owner, updated by `inv_id`), `player_wallet`,
+/// `player_dialogue_state` and `player_handle` (read by owner, its `discriminator` drawn
+/// from the table's sequence and unique). The starter species is seeded.
 fn ob_world(fx: &Fixture) -> Ob<'_> {
     fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id)
         .seed(&species1());
@@ -154,7 +157,19 @@ fn ob_world(fx: &Fixture) -> Ob<'_> {
     let _ = fx
         .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
         .unique();
+    let handles = fx
+        .table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .unique()
+        .auto_inc(
+            |r| u64::from(r.discriminator),
+            |r, v| r.discriminator = u32::try_from(v).expect("a test sequence value fits a u32"),
+        );
+    let _ = fx
+        .table_keyed::<PlayerHandle, u32>("player_handle", "discriminator", |r| r.discriminator)
+        .unique();
     Ob {
+        handles,
         players: fx
             .table::<Player>("player", "identity", |r| r.identity)
             .writable()
@@ -377,7 +392,8 @@ impl Ob<'_> {
         has_char && has_intent
     }
 
-    /// Row counts of every table a join writes, in `JOIN_TABLES` order.
+    /// Row counts of the first nine `JOIN_TABLES`, in that order (every table a join
+    /// writes except `player_handle`, which `handles_of` reads).
     fn row_counts(&self) -> [usize; 9] {
         [
             self.players.rows().len(),
@@ -391,12 +407,71 @@ impl Ob<'_> {
             self.dialogue.rows().len(),
         ]
     }
+
+    /// `who`'s `player_handle` discriminators, in store order.
+    fn handles_of(&self, who: Identity) -> Vec<u32> {
+        self.handles
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .map(|r| r.discriminator)
+            .collect()
+    }
+
+    /// Every `player_handle` discriminator, in store order.
+    fn all_handles(&self) -> Vec<u32> {
+        self.handles
+            .rows()
+            .into_iter()
+            .map(|r| r.discriminator)
+            .collect()
+    }
+
+    /// `who`'s `player_handle` rows, as BSATN.
+    fn handle_bytes(&self, who: Identity) -> Vec<Vec<u8>> {
+        self.handles
+            .rows()
+            .iter()
+            .filter(|r| r.owner_identity == who)
+            .map(bytes)
+            .collect()
+    }
+
+    /// `who`'s `player` rows as `(discriminator, lead_level)`.
+    fn player_tags(&self, who: Identity) -> Vec<(u32, u8)> {
+        self.players
+            .rows()
+            .into_iter()
+            .filter(|p| p.identity == who)
+            .map(|p| (p.discriminator, p.lead_level))
+            .collect()
+    }
+
+    /// `who`'s session ends the way a departure leaves the store: its `player`,
+    /// `character` and `move_intent` rows go.
+    fn leave(&self, who: Identity) {
+        let entity_ids: Vec<u64> = self
+            .players
+            .rows()
+            .into_iter()
+            .filter(|p| p.identity == who)
+            .map(|p| p.entity_id)
+            .collect();
+        let [entity_id] = entity_ids.as_slice() else {
+            panic!("{who} holds exactly one player row before it leaves: {entity_ids:?}");
+        };
+        assert_eq!(self.players.remove(who), 1, "the player row goes");
+        assert_eq!(self.chars.remove(*entity_id), 1, "the character goes");
+        assert_eq!(self.intents.remove(*entity_id), 1, "the move intent goes");
+    }
 }
 
 fn join(fx: &Fixture, who: Identity) -> Result<(), String> {
-    fx.run_as(who, |ctx| {
-        crate::movement::join_game(ctx, "Ada".to_string())
-    })
+    join_named(fx, who, "Ada")
+}
+
+fn join_named(fx: &Fixture, who: Identity, name: &str) -> Result<(), String> {
+    fx.run_as(who, |ctx| crate::movement::join_game(ctx, name.to_string()))
 }
 
 // --- the process-wide log sink -------------------------------------------------
@@ -923,6 +998,232 @@ fn a_kit_that_cannot_load_refuses_a_joiner_holding_the_marker_too_eo1_9() {
     assert_eq!(
         log_lines("reject"),
         vec![(log::Level::Warn, reject_line(joiner(), reason))],
+        "one reject line for join_game carrying the reason"
+    );
+}
+
+// --- the minted discriminator ------------------------------------------------------
+
+/// Two identities join under different names, then a fresh identity joins through
+/// `join_game`: that join writes `player_handle` exactly once and leaves the joiner one
+/// handle row whose discriminator is non-zero and held by no other row; the joiner's
+/// new `player` row carries the same value and `lead_level` 0, and each earlier
+/// joiner's `player` row carries its own handle's value. The value is drawn from the
+/// table's sequence: after the last minted row is removed, a further fresh joiner is
+/// minted a value none of the earlier mints held.
+///
+/// kills: a mint of 0; a per-name counter (every first joiner of a name would share a
+/// value); a mint of `max + 1` or `count + 1` (it hands the removed value out again);
+/// a `player` row left at 0 or given a second draw; a second handle row per join.
+#[test]
+fn a_first_join_mints_one_nonzero_handle_and_mirrors_it_on_the_player_row_ih1_1() {
+    let fx = fixture();
+    let w = ob_world(&fx);
+    let first = Identity::from_byte_array([0x61; 32]);
+    let second = Identity::from_byte_array([0x62; 32]);
+    let later = Identity::from_byte_array([0x63; 32]);
+    assert_eq!(join_named(&fx, first, "Bea"), Ok(()), "the first join");
+    assert_eq!(join_named(&fx, second, "Cid"), Ok(()), "the second join");
+    fx.reset_writes();
+
+    assert_eq!(join(&fx, joiner()), Ok(()), "the fresh identity joins");
+
+    assert_eq!(
+        fx.writes_to("player_handle"),
+        1,
+        "the join writes player_handle exactly once"
+    );
+    let mine = w.handles_of(joiner());
+    assert_eq!(
+        mine.len(),
+        1,
+        "exactly one handle row for the joiner: {mine:?}"
+    );
+    let d = mine[0];
+    assert_ne!(d, 0, "the minted discriminator is non-zero");
+    let all = w.all_handles();
+    assert_eq!(all.len(), 3, "one handle row per joined identity: {all:?}");
+    assert_eq!(
+        all.iter().filter(|&&v| v == d).count(),
+        1,
+        "no other row holds {d}: {all:?}"
+    );
+    assert_eq!(
+        w.player_tags(joiner()),
+        vec![(d, 0)],
+        "the joiner's player row mirrors its handle, lead level 0"
+    );
+    let mut minted = vec![d];
+    for who in [first, second] {
+        let held = w.handles_of(who);
+        assert_eq!(held.len(), 1, "{who}: one handle row: {held:?}");
+        assert_ne!(held[0], 0, "{who}: a non-zero discriminator");
+        assert_eq!(
+            w.player_tags(who),
+            vec![(held[0], 0)],
+            "{who}: its player row mirrors its own handle"
+        );
+        minted.push(held[0]);
+    }
+
+    assert_eq!(w.handles.remove(joiner()), 1, "the last minted row goes");
+    assert_eq!(
+        join_named(&fx, later, "Dee"),
+        Ok(()),
+        "a further fresh join"
+    );
+
+    let next = w.handles_of(later);
+    assert_eq!(
+        next.len(),
+        1,
+        "one handle row for the later joiner: {next:?}"
+    );
+    assert_ne!(next[0], 0, "a non-zero discriminator");
+    assert!(
+        !minted.contains(&next[0]),
+        "the sequence never hands out a value it minted before: {} in {minted:?}",
+        next[0]
+    );
+    assert_eq!(w.player_tags(later), vec![(next[0], 0)], "mirrored");
+}
+
+/// An identity joins (that join writes `player_handle` once), leaves (its `player`,
+/// `character` and `move_intent` rows go), another identity joins meanwhile, and the
+/// first joins again: the second join writes nothing to `player_handle`, the identity
+/// still holds exactly one handle row with the same bytes, and its new `player` row
+/// carries that same value.
+///
+/// kills: a mint per join; a mirror read from anything but the identity's own handle
+/// (the sequence's last value, a count of handles, a fresh draw).
+#[test]
+fn a_rejoin_mints_nothing_and_mirrors_the_same_discriminator_ih1_2() {
+    let fx = fixture();
+    let w = ob_world(&fx);
+    fx.reset_writes();
+    assert_eq!(join(&fx, joiner()), Ok(()), "the first join");
+    assert_eq!(
+        fx.writes_to("player_handle"),
+        1,
+        "control: the first join mints"
+    );
+    let held = w.handles_of(joiner());
+    assert_eq!(held.len(), 1, "one handle row: {held:?}");
+    let d = held[0];
+    assert_ne!(d, 0, "a non-zero discriminator");
+    let handle_before = w.handle_bytes(joiner());
+
+    w.leave(joiner());
+    assert_eq!(
+        join_named(&fx, other(), "Bea"),
+        Ok(()),
+        "another identity joins"
+    );
+    fx.reset_writes();
+
+    assert_eq!(join(&fx, joiner()), Ok(()), "the rejoin");
+
+    assert_eq!(fx.writes_to("player_handle"), 0, "a rejoin mints nothing");
+    assert_eq!(
+        w.handle_bytes(joiner()),
+        handle_before,
+        "the handle row is byte-identical"
+    );
+    assert_eq!(
+        w.player_tags(joiner()),
+        vec![(d, 0)],
+        "the new player row carries the same discriminator"
+    );
+}
+
+/// Two identities join with the same name: both `player` rows carry non-zero,
+/// different discriminators, each equal to its own handle row's.
+///
+/// kills: a tag derived from the name; a shared or constant tag; a `player` row
+/// carrying another identity's value.
+#[test]
+fn two_joiners_with_one_name_carry_different_discriminators_ih1_3() {
+    let fx = fixture();
+    let w = ob_world(&fx);
+
+    assert_eq!(join(&fx, joiner()), Ok(()), "the first Ada joins");
+    assert_eq!(join(&fx, other()), Ok(()), "the second Ada joins");
+
+    let mut tags = Vec::new();
+    for who in [joiner(), other()] {
+        let held = w.handles_of(who);
+        assert_eq!(held.len(), 1, "{who}: one handle row: {held:?}");
+        assert_ne!(held[0], 0, "{who}: a non-zero discriminator");
+        assert_eq!(
+            w.player_tags(who),
+            vec![(held[0], 0)],
+            "{who}: its player row carries its own handle's value"
+        );
+        tags.push(held[0]);
+    }
+    assert_ne!(tags[0], tags[1], "one name, two discriminators");
+}
+
+/// A join whose handle insert the datastore refuses fails with `handle unavailable`,
+/// after exactly one WARN reject line for `join_game`, and writes no presence row: no
+/// write reaches `player`, `character`, `move_intent` or `last_position` (the joiner's
+/// saved position is still there, so `take_start` never ran), the joiner holds no
+/// handle, and the seeded handle row is untouched. The refusal is staged through the
+/// host's seed-does-not-advance property: another identity's row is seeded holding 1,
+/// the value the sequence draws next on a fresh fixture, so the insert collides on the
+/// unique `discriminator` index. That collision stands in for any insert the datastore
+/// refuses, an exhausted sequence included.
+///
+/// kills: a refused mint that panics; one that joins the player with tag 0; a mint
+/// placed after the presence writes or after `take_start`; the refusal unlogged.
+#[test]
+fn a_join_whose_mint_is_refused_fails_with_a_reject_line_and_writes_no_presence_row() {
+    install_log_sink();
+    let fx = fixture();
+    let w = ob_world(&fx);
+    w.handles.seed(&PlayerHandle {
+        owner_identity: other(),
+        discriminator: 1,
+    });
+    let seeded = bytes(&w.handles.rows());
+    let saved = seed_saved_position(&fx, joiner());
+    let saved_before = bytes(&saved.rows());
+    clear_log_lines();
+    fx.reset_writes();
+
+    let got = join(&fx, joiner());
+
+    assert_eq!(
+        got,
+        Err("handle unavailable".to_string()),
+        "the refused mint refuses the join"
+    );
+    for t in ["player", "character", "move_intent", "last_position"] {
+        assert_eq!(fx.writes_to(t), 0, "`{t}`: nothing is written");
+    }
+    assert!(w.players.rows().is_empty(), "no player row");
+    assert!(w.chars.rows().is_empty(), "no character row");
+    assert!(w.intents.rows().is_empty(), "no move intent row");
+    assert_eq!(
+        bytes(&saved.rows()),
+        saved_before,
+        "the joiner's saved position is still there"
+    );
+    assert!(
+        w.handles_of(joiner()).is_empty(),
+        "the joiner holds no handle"
+    );
+    assert_eq!(
+        bytes(&w.handles.rows()),
+        seeded,
+        "the seeded handle row is untouched"
+    );
+    assert_eq!(
+        log_lines("reject"),
+        vec![(
+            log::Level::Warn,
+            reject_line(joiner(), "handle unavailable")
+        )],
         "one reject line for join_game carrying the reason"
     );
 }

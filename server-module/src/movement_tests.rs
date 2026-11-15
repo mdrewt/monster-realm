@@ -384,7 +384,8 @@ mod nh {
     use crate::native_host_tests::{fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY};
     use crate::raising::QT_TICK_MS;
     use crate::schema::{
-        Battle, Character, Monster, MonsterPub, MoveIntent, Player, SpeciesRow, TradeOffer,
+        Battle, Character, Monster, MonsterPub, MoveIntent, Player, PlayerHandle, SpeciesRow,
+        TradeOffer,
     };
     // bt-16: the grass-path tests run over the tactical world (its tables, content and helpers).
     use crate::tactics::tactics_tests as tt;
@@ -629,6 +630,8 @@ mod nh {
                 name: String::new(),
                 online: true,
                 last_input_seq: 0,
+                discriminator: 0,
+                lead_level: 0,
             });
             self.intents
                 .seed(&intent(entity_id, ch.move_queue.clone(), ch.acked_seq));
@@ -1219,6 +1222,8 @@ mod nh {
             name: String::new(),
             online: true,
             last_input_seq,
+            discriminator: 0,
+            lead_level: 0,
         };
         for (label, acked, from_player, want) in [
             ("player column higher", 4, Some(9), 9),
@@ -1607,6 +1612,8 @@ mod nh {
                 name: String::new(),
                 online: true,
                 last_input_seq: player_seq,
+                discriminator: 0,
+                lead_level: 0,
             });
             w.chars.seed(&Character {
                 acked_seq: acked,
@@ -1643,6 +1650,8 @@ mod nh {
             name: String::new(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
         assert_eq!(
             fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 1)),
@@ -1675,6 +1684,8 @@ mod nh {
             name: String::new(),
             online: true,
             last_input_seq: 8,
+            discriminator: 0,
+            lead_level: 0,
         });
         w.chars
             .seed(&walk.character(vec![walk.step(), MoveInput::Jump], 6));
@@ -1778,6 +1789,8 @@ mod nh {
             name: String::new(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
         w.characters.seed(&Character {
             zone_id: 0,
@@ -2142,6 +2155,8 @@ mod nh {
                 name: String::new(),
                 online: true,
                 last_input_seq: 0,
+                discriminator: 0,
+                lead_level: 0,
             });
             w.characters.seed(&Character {
                 zone_id: 0,
@@ -3081,6 +3096,8 @@ mod nh {
                     name: String::new(),
                     online: true,
                     last_input_seq: 0,
+                    discriminator: 0,
+                    lead_level: 0,
                 }),
             }
         }
@@ -3548,6 +3565,24 @@ mod nh {
             .unique();
     }
 
+    /// The `player_handle` table a join mints the caller's handle into: keyed by owner, its
+    /// `discriminator` drawn from the table's sequence (cast through `u64`) and unique.
+    fn sr10_handle_table(fx: &Fixture) {
+        let _ = fx
+            .table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique()
+            .auto_inc(
+                |r| u64::from(r.discriminator),
+                |r, v| {
+                    r.discriminator = u32::try_from(v).expect("a test sequence value fits a u32")
+                },
+            );
+        let _ = fx
+            .table_keyed::<PlayerHandle, u32>("player_handle", "discriminator", |r| r.discriminator)
+            .unique();
+    }
+
     /// `join_game` arms the spawn zone; a second player joining the armed zone
     /// adds no row.
     ///
@@ -3560,6 +3595,7 @@ mod nh {
             .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
             .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
         sr10_kit_tables(&fx);
+        sr10_handle_table(&fx);
         // A monster each, so join_game grants no starter monster; the joiners hold no
         // starter marker, so each join grants the starter kit.
         w.seed_monster(&monster(11, a(), 0));
@@ -3594,7 +3630,7 @@ mod nh {
     use crate::schema::LastPosition;
 
     /// The movement world plus what `join_game` needs beyond it: an auto-inc
-    /// `character` key and the `last_position` table.
+    /// `character` key, the `last_position` table and the `player_handle` table.
     fn sr11_world(fx: &Fixture) -> (World<'_>, Handle<'_, LastPosition>) {
         let w = world(fx);
         let _ = fx
@@ -3605,6 +3641,7 @@ mod nh {
             .writable()
             .unique();
         sr10_kit_tables(fx);
+        sr10_handle_table(fx);
         // A monster each, so join_game grants no starter monster; the joiners hold no
         // starter marker, so each join grants the starter kit.
         w.seed_monster(&monster(11, a(), 0));

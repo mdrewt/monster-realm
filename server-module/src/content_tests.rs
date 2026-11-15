@@ -2534,6 +2534,8 @@ mod nh_sync {
             name: "Ada".to_string(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
         let before: Vec<(u32, u64)> = ticks_by_zone(&w)
             .into_iter()

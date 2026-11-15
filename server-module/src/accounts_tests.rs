@@ -853,7 +853,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
     // + rb-73's `player_session`
     // + 20r-d's `pending_evolution_notice`
     // + the five identity-bearing tactical tables
-    // + `trade_session` (an open session names both participants).
+    // + `trade_session` (an open session names both participants)
+    // + `player_handle` (the identity's minted discriminator).
     let expected_erase = [
         "battle_action",
         "battle_challenge",
@@ -871,6 +872,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "player_conversation",
         "player_dialogue_state",
         "player_formation",
+        "player_handle",
         "player_quest",
         "player_session",
         "player_wallet",
@@ -888,8 +890,9 @@ fn data_lifecycle_partition_matches_spec_section3() {
          D1), 20r-d adds `pending_evolution_notice` (ADR-0254 D2) and bt-7 adds the five \
          tactical tables that carry the identity themselves (battle_unit, battle_queue, \
          battle_deploy, battle_clock, player_formation), `trade_session` names both \
-         participants of an open trade session and `last_position` is the owner's saved \
-         zone and tile: twenty-two in all. A table moved OUT of \
+         participants of an open trade session, `last_position` is the owner's saved \
+         zone and tile and `player_handle` is the owner's minted discriminator (erased so a \
+         deleted player's tag cannot be linked back): twenty-three in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
@@ -1059,8 +1062,8 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
 
-/// the `exportable == true` set equals EXACTLY the seventeen tables
-/// spec §5 admits — set equality, BOTH directions.
+/// the `exportable == true` set equals EXACTLY the eighteen tables
+/// spec §5 and the identity-handles spec admit — set equality, BOTH directions.
 ///
 /// a negative-only spot check ("battle_wild is false, guest_claim is false") is
 /// satisfied by an ALL-FALSE manifest, which ships a dead export feature — spec
@@ -1069,8 +1072,8 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 /// Set equality in both directions is the only shape that rejects an over-broad
 /// AND an empty export scope.
 ///
-/// The seventeen are the twelve spec-ERASE tables + the four ANONYMIZE tables +
-/// `character`. The `false` side includes the three the spec calls out by name:
+/// The eighteen are the twelve spec-ERASE tables + the four ANONYMIZE tables +
+/// `character` + `player_handle`. The `false` side includes the three the spec calls out by name:
 /// `battle_wild` (the raw RNG individuality seed, a must-never-leak),
 /// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
 /// own output — including it makes the walk self-feeding).
@@ -1104,6 +1107,7 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         "player",
         "player_conversation",
         "player_dialogue_state",
+        "player_handle",
         "player_quest",
         "player_wallet",
         "playtest_event",
@@ -1113,7 +1117,8 @@ fn data_lifecycle_export_scope_structurally_narrower() {
     assert_eq!(
         exportable, expected_exportable,
         "T4 / spec §5: the exportable set is wrong. It must be EXACTLY the twelve ERASE \
-         tables + the four ANONYMIZE tables + `character`. Both directions matter: an \
+         tables + the four ANONYMIZE tables + `character` + `player_handle` (the owner's \
+         own discriminator). Both directions matter: an \
          all-false manifest passes every negative spot check and ships an export feature \
          that returns an empty bundle for every request (§5's walk filters on \
          `exportable: true`), while a manifest that exports one table too many leaks either \
@@ -3027,6 +3032,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::PlayerFormation as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "player_handle",
+            <crate::schema::PlayerHandle as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "player_quest",
             <crate::schema::PlayerQuestRow as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3204,15 +3213,15 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 61,
+        registry_len, 62,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 61 (22 ERASE + 5 ANONYMIZE + 15 JOIN-ONLY + 19 NOT-OWNED) — \
+         manifest carries exactly 62 (23 ERASE + 5 ANONYMIZE + 15 JOIN-ONLY + 19 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
          trade-session tables (`trade_session`, `trade_session_snapshot`, \
-         `trade_session_reaper_schedule`), plus `move_intent`, plus `last_position`. \
-         A registry that grew or shrank without a matching manifest change is a registry nobody \
+         `trade_session_reaper_schedule`), plus `move_intent`, plus `last_position`, plus \
+         `player_handle`. A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
 
@@ -3223,11 +3232,12 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 31,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 61 registered row types \
-         carry an Identity column at some depth; exactly 31 is the live count (the 27 \
+        identity_bearing, 32,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 62 registered row types \
+         carry an Identity column at some depth; exactly 32 is the live count (the 28 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). `last_position` adds one (its `owner_identity` key). \
+         exceptions R3 below names). `player_handle` adds one (its `owner_identity` key). \
+         `last_position` adds one (its `owner_identity` key). \
          `trade_session` adds one (its `opener` and `partner` \
          columns), while its snapshot and schedule tables, both ViaJoin, add none. bt-7 adds six — battle_unit (its `Option<Identity>` \
          owner, visible only to this deep walk), battle_queue and battle_deploy (`owner`), \
@@ -3313,11 +3323,12 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 27,
+        population, 28,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 27 (22 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
+         the live partition is exactly 28 (23 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
          20r-d's `pending_evolution_notice`, bt-7's five Erase tactical tables plus its \
-         Anonymize `battle_summary`, the Erase `trade_session` and the Erase `last_position` included). A floor would let this population grow \
+         Anonymize `battle_summary`, the Erase `trade_session`, the Erase `last_position` and \
+         the Erase `player_handle` included). A floor would let this population grow \
          silently; an exact count forces a conscious edit to this test alongside any \
          reclassification."
     );
@@ -4228,6 +4239,8 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
         name: "rb72-subject".to_string(),
         online: true,
         last_input_seq: 0,
+        discriminator: 0,
+        lead_level: 0,
     });
     character_t.seed(&Character {
         entity_id: ENTITY_ID,
@@ -4928,9 +4941,9 @@ fn tactical_view_row_types_reach_no_secret_or_staging_field_bt7_3() {
 /// BT7.4 (manifest half) — each of the ten tactical tables is classified
 /// exactly once with the plan's policy (five Erase, `battle_summary`
 /// Anonymize, four `ViaJoin("battle")`), none is exportable, and the export
-/// bundle's table set is EXACTLY the seventeen it was before this slice — the
-/// transcripts are GC-bound and the summary is telemetry, so bt-7 adds no
-/// exporter.
+/// bundle's table set is EXACTLY the seventeen it was before the tactical tables
+/// plus `player_handle` — the transcripts are GC-bound and the summary is
+/// telemetry, so the tactical tables add no exporter.
 ///
 /// Kills: a tactical table flipped to `exportable: true` (the export grows a
 ///        table with no `rows_*` exporter, or ships seeds and plans to the
@@ -5005,19 +5018,22 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
             "player",
             "player_conversation",
             "player_dialogue_state",
+            "player_handle",
             "player_quest",
             "player_wallet",
             "playtest_event",
             "profile",
             "trade_offer",
         ],
-        "[bt7/export-unchanged] the exportable set must be EXACTLY the seventeen pre-bt-7 tables"
+        "[bt7/export-unchanged] the exportable set must be EXACTLY the seventeen pre-bt-7 tables \
+         plus `player_handle`: eighteen"
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        61,
+        62,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
-         schedule tables plus the three trade-session tables plus move_intent plus last_position"
+         schedule tables plus the three trade-session tables plus move_intent plus last_position \
+         plus player_handle"
     );
 }
 
@@ -5055,8 +5071,9 @@ mod acct_nh {
         ChallengeStatus, Character, DeletionPolicy, DeployPick, EvolutionRevealRow, ExportBundle,
         GuestClaim, HealCooldown, Inventory, LastPosition, Monster, MonsterPub, MoveClassRow,
         PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
-        PlayerFormation, PlayerQuestRow, PlayerSession, PlayerWallet, Profile, SideRow, StanceRow,
-        TradeOffer, TradeSession, TradeSessionSnapshot, DATA_LIFECYCLE_MANIFEST,
+        PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerSession, PlayerWallet, Profile,
+        SideRow, StanceRow, TradeOffer, TradeSession, TradeSessionSnapshot,
+        DATA_LIFECYCLE_MANIFEST,
     };
     use crate::trading::TradeOfferReaperSchedule;
     use crate::trading_session::TradeSessionReaperSchedule;
@@ -5187,6 +5204,8 @@ mod acct_nh {
         event: Handle<'a, BattleEvent, u64>,
         summary: Handle<'a, BattleSummary, u64>,
         formation: Handle<'a, PlayerFormation>,
+        // The identity's minted discriminator, on its `owner_identity` key.
+        handle: Handle<'a, PlayerHandle>,
         // Trade sessions: the session row on its primary key, its snapshot and
         // reaper-schedule children on their `session_id` btree.
         trade_session: Handle<'a, TradeSession, u64>,
@@ -5342,7 +5361,25 @@ mod acct_nh {
             "scheduled_id",
             |r| r.scheduled_id,
         );
+        // `player_handle`: the owner key draws `discriminator` from the table's
+        // sequence (the host models one u64 sequence per table; the u32 column
+        // goes through the cast closures), and the `discriminator` index is
+        // unique so an insert collision is an error, as on the real host.
+        let handles = fx
+            .table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique()
+            .auto_inc(
+                |r| u64::from(r.discriminator),
+                |r, v| {
+                    r.discriminator = u32::try_from(v).expect("a test sequence value fits a u32")
+                },
+            );
+        let _ = fx
+            .table_keyed::<PlayerHandle, u32>("player_handle", "discriminator", |r| r.discriminator)
+            .unique();
         W {
+            handle: handles,
             account: fx
                 .table::<Account>("account", "identity", |r| r.identity)
                 .unique()
@@ -5588,6 +5625,8 @@ mod acct_nh {
             name: name.to_string(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         }
     }
 
@@ -6039,8 +6078,9 @@ mod acct_nh {
         ]
     }
 
-    /// One row in each of the NINE re-key tables (monster + its projection,
-    /// notice, inventory, quest, dialogue, heal cooldown, wallet, profile).
+    /// One row in each of these re-key tables: monster + its projection,
+    /// notice, inventory, quest, dialogue, heal cooldown, saved position,
+    /// wallet, profile and the identity's handle.
     /// `k` keeps auto-inc keys and values distinct per owner.
     fn seed_rekey_rows(w: &W<'_>, who: Identity, k: u64) {
         let m = monster_row(100 + k, who);
@@ -6088,6 +6128,17 @@ mod acct_nh {
             wins: 7,
             losses: 2,
         });
+        w.handle.seed(&handle_row(who, k));
+    }
+
+    /// `who`'s handle row for [`seed_rekey_rows`]: a value far above anything the
+    /// host's sequence draws in a test (a seed does not advance the sequence, so a
+    /// small value would collide with a later mint), distinct per `k`.
+    fn handle_row(who: Identity, k: u64) -> PlayerHandle {
+        PlayerHandle {
+            owner_identity: who,
+            discriminator: 9_100_000 + k as u32,
+        }
     }
 
     /// A saved position distinct per `k`, in zone 1 so no default reproduces it.
@@ -6358,7 +6409,47 @@ mod acct_nh {
                         .collect::<Vec<_>>(),
                 ),
             ),
+            (
+                "player_handle",
+                encs(
+                    &w.handle
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
         ]
+    }
+
+    /// `who`'s handle rows (zero or one on a well-formed table).
+    fn handles_of(w: &W<'_>, who: Identity) -> Vec<PlayerHandle> {
+        w.handle
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .collect()
+    }
+
+    /// `who`'s minted discriminator: exactly one handle row, its value.
+    fn minted(w: &W<'_>, who: Identity) -> u32 {
+        let rows = handles_of(w, who);
+        assert_eq!(
+            rows.len(),
+            1,
+            "fixture: `{who}` holds exactly one handle row, got {}",
+            rows.len()
+        );
+        rows[0].discriminator
+    }
+
+    /// `who`'s `player` row.
+    fn player_of(w: &W<'_>, who: Identity) -> Player {
+        w.player
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .expect("a player row")
     }
 
     fn owned_tables(snapshot: &[(&'static str, Vec<Vec<u8>>)]) -> Vec<&'static str> {
@@ -7603,7 +7694,9 @@ mod acct_nh {
     /// Every re-key table moves onto the claimer (moves leave NOTHING under the
     /// guest, except the dialogue row's starter-marker tombstone: exactly
     /// `sys:starter_claimed` and a copy of the done quests; the two copy-forward
-    /// re-keys leave the guest's wallet at zero and its profile tombstoned), the
+    /// re-keys leave the guest's wallet at zero and its profile tombstoned; the
+    /// guest's handle arrives under the claimer with the same discriminator, and
+    /// the guest's own handle does not count as the claimer's game data), the
     /// guest's export chunks are purged, the code
     /// and its reaper are consumed, provenance is stamped. A second account
     /// replaying the SAME code gets the no-oracle invalid-code answer and gains
@@ -7685,6 +7778,7 @@ mod acct_nh {
             "heal_cooldown",
             "last_position",
             "export_bundle",
+            "player_handle",
         ] {
             if t == "player_dialogue_state" {
                 // The one row the retired guest keeps: the starter-marker tombstone,
@@ -7724,6 +7818,16 @@ mod acct_nh {
             encs(&[last_position_row(c, 1)]),
             "the guest's saved position arrives under the claimer unchanged, so the claimed \
              account's first join resumes where the guest stood"
+        );
+        assert!(
+            handles_of(&w, g).is_empty(),
+            "the retired guest identity holds no handle row"
+        );
+        assert_eq!(
+            encs(&w.handle.rows()),
+            encs(&[handle_row(c, 1), handle_row(b, 2)]),
+            "the claimer holds the guest's discriminator unchanged, and the bystander's handle \
+             is the only other row, unchanged"
         );
         // Copy-forward re-keys: the guest row is RETAINED but emptied.
         let wallet = |who: Identity| {
@@ -7823,7 +7927,7 @@ mod acct_nh {
     /// owner-keyed table added to the manifest without a re-key decision.
     #[test]
     fn acct_rekey_roster_is_total_and_game_data_sees_every_rekeyed_table() {
-        const REKEYED: [&str; 11] = [
+        const REKEYED: [&str; 12] = [
             "monster",
             "monster_pub",
             "pending_evolution_notice",
@@ -7835,6 +7939,7 @@ mod acct_nh {
             "profile",
             "player_formation",
             "last_position",
+            "player_handle",
         ];
         // Never moved onto the claimer: presence / session rows die with the
         // connection (guard 9), live interactions block the claim (guard 10),
@@ -7895,10 +8000,11 @@ mod acct_nh {
             w.profile.remove(g);
             w.formation.remove(g);
             w.last_position.remove(g);
+            w.handle.remove(g);
         };
         wipe(&w);
         assert!(owned_tables(&owned_by(&w, g)).is_empty());
-        let singles: [(&str, &dyn Fn()); 10] = [
+        let singles: [(&str, &dyn Fn()); 11] = [
             ("monster", &|| w.monster.seed(&monster_row(103, g))),
             ("pending_evolution_notice", &|| {
                 w.notice.seed(&PendingEvolutionNotice {
@@ -7959,6 +8065,7 @@ mod acct_nh {
             ("last_position", &|| {
                 w.last_position.seed(&last_position_row(g, 3))
             }),
+            ("player_handle", &|| w.handle.seed(&handle_row(g, 3))),
         ];
         for (table, seed) in singles {
             seed();
@@ -7966,6 +8073,423 @@ mod acct_nh {
             assert!(has, "a lone `{table}` row must count as game data");
             wipe(&w);
         }
+    }
+
+    // --- the minted discriminator across the claim, the cascade and the gate ----
+
+    /// `who` requests its deletion at `requested` and the real
+    /// `account_deletion_reaper` runs at the grace end. Returns the grace end.
+    fn deletion_completed_for(fx: &Fixture, who: Identity, requested: i64) -> i64 {
+        assert_eq!(
+            signed_in(fx, who, requested, crate::accounts::delete_account),
+            Ok(()),
+            "deletion requested"
+        );
+        let grace_end = crate::accounts::deletion_fire_at_ms(requested);
+        let sched = AccountDeletionReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(grace_end)),
+            account_identity: who,
+        };
+        assert_eq!(
+            fx.run_as_at(scheduler(), at(grace_end), |ctx| {
+                crate::accounts::account_deletion_reaper(ctx, sched)
+            }),
+            Ok(()),
+            "the cascade runs"
+        );
+        grace_end
+    }
+
+    /// A guest joins through `join_game` (minted `d`), starts a claim and leaves;
+    /// an account completes the claim and holds `d`, and the guest identity holds
+    /// no handle. The retired guest then joins again through `join_game`: its new
+    /// handle row and its new `player` row carry one value, non-zero and not `d`,
+    /// while the account still holds exactly `d`.
+    ///
+    /// kills: a tag derived from the identity (the rejoin would be handed `d`
+    /// again, or the account a value of its own); a re-key that copies instead of
+    /// moving (the guest keeps `d`, so its rejoin mints nothing new); a rejoin
+    /// whose `player` row is left at 0.
+    #[test]
+    fn a_retired_guest_that_rejoins_is_minted_a_fresh_discriminator_ih1_5() {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let (g, c) = (id(0x88), id(0x89));
+        let secret = code('6');
+        assert_eq!(sr11_join(&fx, g, T0), Ok(()), "the guest joins");
+        let d = minted(&w, g);
+        assert_ne!(d, 0, "the guest's join mints a non-zero discriminator");
+        assert_eq!(
+            player_of(&w, g).discriminator,
+            d,
+            "the guest's player row mirrors its handle"
+        );
+        assert_eq!(
+            fx.run_as_at(g, at(T0 + 1), |ctx| {
+                crate::accounts::start_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "the guest starts a claim"
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest leaves");
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(&fx, c, T0 + 2, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "the account completes the claim"
+        );
+        let account_holds_d = || {
+            encs(&[PlayerHandle {
+                owner_identity: c,
+                discriminator: d,
+            }])
+        };
+        assert!(
+            handles_of(&w, g).is_empty(),
+            "the claim leaves the retired guest identity no handle row"
+        );
+        assert_eq!(
+            encs(&handles_of(&w, c)),
+            account_holds_d(),
+            "the account holds the guest's discriminator"
+        );
+
+        assert_eq!(
+            sr11_join(&fx, g, T0 + 3),
+            Ok(()),
+            "the retired guest joins again"
+        );
+        let fresh = minted(&w, g);
+        assert_ne!(fresh, 0, "the retired guest is minted a non-zero value");
+        assert_ne!(
+            fresh, d,
+            "the retired guest is minted a value other than the one the account now holds"
+        );
+        assert_eq!(
+            player_of(&w, g).discriminator,
+            fresh,
+            "the retired guest's new player row mirrors its new handle"
+        );
+        assert_eq!(
+            encs(&handles_of(&w, c)),
+            account_holds_d(),
+            "the account still holds exactly the guest's original discriminator"
+        );
+    }
+
+    /// An account identity that holds a `player_handle` row and nothing else (a
+    /// seeded fixture: a real join mints the handle and grants the starter
+    /// together) tries to complete a live claim on a guest that has game data and
+    /// its own handle. The claim is refused with `already has game data`, and
+    /// nothing moves: the guest's rows, both handle rows and the claim are
+    /// byte-identical, and the account gains nothing.
+    ///
+    /// kills: `has_handle` missing from `account_has_game_data` (the claim
+    /// completes and the account ends up with two handles' worth of identity); a
+    /// game-data predicate that ignores its argument (paired with the round trip,
+    /// where the GUEST's handle must not block the claim).
+    #[test]
+    fn an_account_holding_only_a_handle_cannot_claim_a_guest_ih1_6() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (g, c) = (id(0x8A), id(0x8B));
+        let secret = code('5');
+        let claim = seed_live_claim(&w, g, &secret, 1);
+        seed_rekey_rows(&w, g, 1);
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        let account_handle = PlayerHandle {
+            owner_identity: c,
+            discriminator: 9_000_001,
+        };
+        w.handle.seed(&account_handle);
+        assert_eq!(
+            owned_tables(&owned_by(&w, c)),
+            vec!["account", "player_handle"],
+            "fixture: the account holds a handle and no other game data"
+        );
+        let guest_before = owned_by(&w, g);
+        let handles_before = encs(&w.handle.rows());
+
+        assert_eq!(
+            signed_in(&fx, c, T0 + 10, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Err("already has game data".to_string()),
+            "an account holding a handle already has game data"
+        );
+        assert_eq!(owned_by(&w, g), guest_before, "no guest row moved");
+        assert_eq!(
+            encs(&w.handle.rows()),
+            handles_before,
+            "both handle rows are byte-identical"
+        );
+        assert_eq!(
+            encs(&handles_of(&w, c)),
+            encs(&[account_handle]),
+            "the account keeps exactly its own handle"
+        );
+        assert_eq!(
+            encs(&w.claim.rows()),
+            encs(&[claim]),
+            "the refusal consumed no claim"
+        );
+        assert_eq!(
+            w.claim_reaper.rows().len(),
+            1,
+            "the refusal disarmed no reaper"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, c)),
+            vec!["account", "player_handle"],
+            "the account gained nothing"
+        );
+    }
+
+    /// A bystander joins through `join_game`, then an account joins (minted `d`,
+    /// the latest mint) and stays connected, so its `player` row survives the
+    /// cascade; that row is given a non-zero `lead_level` before the cascade.
+    /// Deletion is requested and the real `account_deletion_reaper` runs at the
+    /// grace end. The subject holds no handle row; its surviving `player` row has
+    /// `discriminator` 0, `lead_level` 0 and the tombstone name, with `identity`
+    /// and `entity_id` untouched; the bystander's handle and `player` row are
+    /// byte-identical. A third identity's first join is then minted a value that
+    /// is non-zero, not `d` and not the bystander's.
+    ///
+    /// kills: the handle erase not wired into the cascade; an erase that takes
+    /// every handle row or keys on the wrong identity; the tombstone leaving
+    /// either column set; a zeroing applied to every `player` row; a mint of
+    /// `max + 1` or `count + 1` (with `d` the latest mint, both hand `d` out
+    /// again).
+    #[test]
+    fn a_completed_deletion_erases_the_handle_zeroes_the_player_mirror_and_never_reissues_the_tag_ih1_7(
+    ) {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let (b, v, n) = (id(0x8C), id(0x8D), id(0x8E));
+        w.account
+            .seed(&crate::accounts::new_account_row(v, "iss".to_string(), 1));
+        assert_eq!(sr11_join(&fx, b, T0), Ok(()), "the bystander joins");
+        assert_eq!(sr11_join(&fx, v, T0 + 1), Ok(()), "the account joins");
+        let (db, d) = (minted(&w, b), minted(&w, v));
+        assert!(
+            db != 0 && d != 0 && db != d,
+            "two joins mint two distinct non-zero values, got {db} and {d}"
+        );
+        let joined = player_of(&w, v);
+        assert_eq!(
+            joined.discriminator, d,
+            "the account's player row mirrors its handle"
+        );
+        let entity = joined.entity_id;
+        assert_eq!(w.player.remove(v), 1);
+        w.player.seed(&Player {
+            lead_level: 7,
+            ..joined
+        });
+        let bystander = |w: &W<'_>| (encs(&handles_of(w, b)), enc(&player_of(w, b)));
+        let bystander_before = bystander(&w);
+
+        let grace_end = deletion_completed_for(&fx, v, T0 + 10);
+        assert!(
+            handles_of(&w, v).is_empty(),
+            "the cascade erases the subject's handle row"
+        );
+        let p = player_of(&w, v);
+        assert_eq!(
+            (p.discriminator, p.lead_level),
+            (0, 0),
+            "the surviving player row carries neither the tag nor the lead level"
+        );
+        assert_eq!(
+            p.name,
+            game_core::TOMBSTONE_DISPLAY_NAME,
+            "the surviving player row is tombstoned"
+        );
+        assert_eq!(
+            (p.identity, p.entity_id),
+            (v, entity),
+            "the tombstone keeps the row's identity and entity id"
+        );
+        assert_eq!(
+            bystander(&w),
+            bystander_before,
+            "the bystander's handle and player row are byte-identical"
+        );
+
+        assert_eq!(
+            sr11_join(&fx, n, grace_end + 1),
+            Ok(()),
+            "a third identity's first join"
+        );
+        let dn = minted(&w, n);
+        assert!(
+            dn != 0 && dn != d && dn != db,
+            "a later mint is non-zero and is neither the erased value {d} nor the bystander's \
+             {db}, got {dn}"
+        );
+        assert_eq!(
+            player_of(&w, n).discriminator,
+            dn,
+            "the third identity's player row mirrors its handle"
+        );
+    }
+
+    /// Two accounts request deletion: one that has never joined, and one that
+    /// joined (minted `d`, its `player` row present). Each one's `join_game` is
+    /// refused with the deletion refusal and makes zero writes to
+    /// `player_handle`; the never-joined identity holds no handle, and the joined
+    /// one's `player` row and handle are byte-identical (still `d`). Control on
+    /// the same fixture: a non-deleting identity's first join makes exactly one
+    /// `player_handle` write, so the counter is live.
+    ///
+    /// kills: the mint placed ahead of the deletion gate (the never-joined
+    /// identity would be minted a handle by a refused join); a refused join that
+    /// rewrites the `player` row's discriminator.
+    #[test]
+    fn a_join_during_pending_deletion_is_refused_and_mints_no_handle_ih1_9() {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let (j, n, k) = (id(0x8F), id(0x90), id(0x91));
+        for who in [j, n] {
+            w.account
+                .seed(&crate::accounts::new_account_row(who, "iss".to_string(), 1));
+        }
+        assert_eq!(sr11_join(&fx, j, T0), Ok(()), "the connected account joins");
+        let d = minted(&w, j);
+        let joined = enc(&player_of(&w, j));
+        for who in [j, n] {
+            assert_eq!(
+                signed_in(&fx, who, T0 + 10, crate::accounts::delete_account),
+                Ok(()),
+                "deletion requested"
+            );
+        }
+        let refused: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+
+        fx.reset_writes();
+        assert_eq!(
+            sr11_join(&fx, n, T0 + 11),
+            refused,
+            "a never-joined account pending deletion cannot join"
+        );
+        assert_eq!(
+            fx.writes_to("player_handle"),
+            0,
+            "the refused join mints nothing"
+        );
+        assert!(
+            handles_of(&w, n).is_empty(),
+            "the never-joined account holds no handle"
+        );
+
+        fx.reset_writes();
+        assert_eq!(
+            sr11_join(&fx, j, T0 + 12),
+            refused,
+            "a joined account pending deletion cannot join again"
+        );
+        assert_eq!(
+            fx.writes_to("player_handle"),
+            0,
+            "the refused join writes no handle"
+        );
+        assert_eq!(
+            enc(&player_of(&w, j)),
+            joined,
+            "the player row is byte-identical, its discriminator still the minted value"
+        );
+        assert_eq!(
+            encs(&handles_of(&w, j)),
+            encs(&[PlayerHandle {
+                owner_identity: j,
+                discriminator: d,
+            }]),
+            "the joined account's handle is unchanged"
+        );
+
+        fx.reset_writes();
+        assert_eq!(
+            sr11_join(&fx, k, T0 + 13),
+            Ok(()),
+            "control: a non-deleting identity joins"
+        );
+        assert_eq!(
+            fx.writes_to("player_handle"),
+            1,
+            "control: a first join writes exactly one handle row"
+        );
+        assert_ne!(minted(&w, k), d, "control: a fresh value");
+    }
+
+    /// An account joins (its handle minted), requests deletion, and the real
+    /// cascade completes at the grace end, leaving its `player` row tombstoned
+    /// with `discriminator` 0. Its next `join_game` is refused with the deletion
+    /// refusal, makes zero writes to `player_handle`, leaves it holding no handle,
+    /// and leaves the surviving `player` row byte-identical to what the cascade
+    /// left. Control on the same fixture: a non-deleting identity's first join
+    /// makes exactly one `player_handle` write.
+    ///
+    /// kills: the mint placed ahead of the deletion gate (the erased identity
+    /// would be handed a fresh tag by a refused join); a refused join that
+    /// rewrites the surviving row's discriminator.
+    #[test]
+    fn a_join_after_completed_deletion_is_refused_and_mints_no_handle_ih1_9() {
+        let fx = fixture();
+        let w = eo1_world(&fx);
+        let (v, k) = (id(0x92), id(0x93));
+        w.account
+            .seed(&crate::accounts::new_account_row(v, "iss".to_string(), 1));
+        assert_eq!(sr11_join(&fx, v, T0), Ok(()), "the account joins");
+        assert_ne!(minted(&w, v), 0, "fixture: the join minted the handle");
+        let grace_end = deletion_completed_for(&fx, v, T0 + 10);
+        assert!(
+            handles_of(&w, v).is_empty(),
+            "fixture: the cascade erased the handle"
+        );
+        let left = player_of(&w, v);
+        assert_eq!(
+            left.discriminator, 0,
+            "fixture: the cascade left the mirror at 0"
+        );
+        let left = enc(&left);
+
+        fx.reset_writes();
+        assert_eq!(
+            sr11_join(&fx, v, grace_end + 1),
+            Err(crate::guards::REJECT_DELETION_GATED.to_string()),
+            "the erased account's join is refused"
+        );
+        assert_eq!(
+            fx.writes_to("player_handle"),
+            0,
+            "the refused join mints nothing"
+        );
+        assert!(
+            handles_of(&w, v).is_empty(),
+            "the erased account still holds no handle"
+        );
+        assert_eq!(
+            enc(&player_of(&w, v)),
+            left,
+            "the surviving player row is what the cascade left"
+        );
+
+        fx.reset_writes();
+        assert_eq!(
+            sr11_join(&fx, k, grace_end + 2),
+            Ok(()),
+            "control: a non-deleting identity joins"
+        );
+        assert_eq!(
+            fx.writes_to("player_handle"),
+            1,
+            "control: a first join writes exactly one handle row"
+        );
     }
 
     // --- deletion lifecycle ----------------------------------------------------
@@ -8802,6 +9326,7 @@ mod acct_nh {
                 vec![q("7701".into()), q("7702".into()), q("7703".into())],
             ),
             ("character", "entity_id", vec![q("1401".into())]),
+            ("player_handle", "owner_identity", vec![me.clone()]),
         ];
         for (table, key, want) in &cases {
             let p = payload(table);
@@ -8820,6 +9345,16 @@ mod acct_nh {
                 );
             }
         }
+        let handle = payload("player_handle");
+        assert_eq!(
+            (
+                handle.matches("\"discriminator\":9100001").count(),
+                handle.matches("9100002").count()
+            ),
+            (1, 0),
+            "the `player_handle` chunk carries the caller's discriminator and never the \
+             stranger's: {handle}"
+        );
         let mut covered: Vec<&str> = cases.iter().map(|(t, _, _)| *t).collect();
         covered.push("battle_action");
         covered.sort_unstable();
@@ -9422,10 +9957,10 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            61,
+            62,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
-             plus last_position"
+             plus last_position plus player_handle"
         );
         for table in [
             "battle_tactical",

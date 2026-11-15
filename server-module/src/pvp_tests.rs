@@ -545,6 +545,8 @@ impl PvWorld<'_> {
             name: format!("p{:02x}", who.to_byte_array()[0]),
             online,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
     }
     /// Replace `who`'s `player` row with one naming character `entity_id`; character rows stay.

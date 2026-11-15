@@ -1054,6 +1054,8 @@ impl S2World<'_> {
             name: String::new(),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
     }
     fn place(&self, who: Identity, zone_id: u32, tile_x: i32, tile_y: i32) {

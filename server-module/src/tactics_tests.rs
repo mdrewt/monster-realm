@@ -656,6 +656,8 @@ impl World<'_> {
             name: format!("p{entity_id}"),
             online: true,
             last_input_seq: 0,
+            discriminator: 0,
+            lead_level: 0,
         });
         self.characters.seed(&Character {
             entity_id,
@@ -7337,6 +7339,8 @@ fn npd_join_queued(
         name: format!("p{entity_id}"),
         online: true,
         last_input_seq: 0,
+        discriminator: 0,
+        lead_level: 0,
     });
     w.characters.seed(&Character {
         entity_id,

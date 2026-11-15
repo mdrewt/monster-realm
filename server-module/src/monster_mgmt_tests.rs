@@ -604,6 +604,8 @@ fn dw_raising_sites() {
                 name: String::new(),
                 online: true,
                 last_input_seq: 0,
+                discriminator: 0,
+                lead_level: 0,
             });
         fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
             .seed(&Character {
@@ -692,7 +694,7 @@ fn dw_apply_evolution_site() {
 /// species' fresh tier).
 #[test]
 fn dw_insert_sites() {
-    use crate::schema::Character;
+    use crate::schema::{Character, PlayerHandle};
     // join_game: a brand-new player gets a starter pair.
     {
         let fx = fixture();
@@ -727,6 +729,21 @@ fn dw_insert_sites() {
                 |r| r.owner_identity,
             )
             .writable()
+            .unique();
+        // The join mints the joiner's handle: keyed by owner, its `discriminator` drawn from
+        // the table's sequence (cast through `u64`) and unique.
+        let _ = fx
+            .table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique()
+            .auto_inc(
+                |r| u64::from(r.discriminator),
+                |r, v| {
+                    r.discriminator = u32::try_from(v).expect("a test sequence value fits a u32")
+                },
+            );
+        let _ = fx
+            .table_keyed::<PlayerHandle, u32>("player_handle", "discriminator", |r| r.discriminator)
             .unique();
         // An earlier character, so the new one's auto-inc id is not the default 0 or 1.
         characters.seed(&Character {
