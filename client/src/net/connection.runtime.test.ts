@@ -7,13 +7,23 @@
  * Replaces the connection.ts text pins (ledger CT-src-net-connection#credential-wiring).
  * credentialDecision.ts's pure logic has its own tests; this file covers its WIRING in connect().
  */
-import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  type MockInstance,
+  vi,
+} from 'vitest';
 import { writeAuthKind } from './authToken';
 import { claimCode } from './claimCode';
 import { type ConnectionOptions, connect } from './connection';
 import type { RenewalOutcome } from './credentialDecision';
 import { AuthoritativeStore } from './store';
-import { LINGER_MS } from './worldScope';
+import { OWNER_VIEWS, type OwnerView } from './viewReconcile';
+import { APPLY_TIMEOUT_MS, LINGER_MS } from './worldScope';
 
 type Cb = (...args: unknown[]) => void;
 /** One `subscriptionBuilder().subscribe(...)` call on the connection handed to onConnect. */
@@ -40,6 +50,11 @@ interface BuildRec {
   readonly disconnect: ReturnType<typeof vi.fn>;
   /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
   queries?: readonly string[];
+  /**
+   * This build's own SDK cache by table name, read by its `db` before `H.viewRows`. Additive:
+   * undefined by default, so every build reads `H.viewRows`.
+   */
+  viewRows?: Record<string, unknown[]>;
 }
 
 const H = vi.hoisted(() => ({
@@ -64,6 +79,11 @@ const H = vi.hoisted(() => ({
    * `beforeEach`.
    */
   builderThrows: false,
+  /**
+   * How many times each table's `iter()` (an SDK cache read) was called, by table name. Additive:
+   * counting changes nothing `iter()` returns; reset by the describes that read it.
+   */
+  iterCalls: {} as Record<string, number>,
 }));
 
 vi.mock('../module_bindings', () => {
@@ -72,12 +92,17 @@ vi.mock('../module_bindings', () => {
     ['onUpdate', 'update'],
     ['onDelete', 'delete'],
   ]);
-  const tableFor = (name: string) =>
+  const tableFor = (name: string, rec: BuildRec) =>
     new Proxy(
       {},
       {
         get: (_t, k) => {
-          if (k === 'iter') return () => (H.viewRows[name] ?? [])[Symbol.iterator]();
+          if (k === 'iter') {
+            return () => {
+              H.iterCalls[name] = (H.iterCalls[name] ?? 0) + 1;
+              return (rec.viewRows?.[name] ?? H.viewRows[name] ?? [])[Symbol.iterator]();
+            };
+          }
           return (cb: Cb) => {
             if (k === 'onInsert' || k === 'onDelete') {
               H.rowCbs[name] = [...(H.rowCbs[name] ?? []), cb];
@@ -116,7 +141,7 @@ vi.mock('../module_bindings', () => {
           subscribe: () => sub,
         };
         const conn = {
-          db: new Proxy({}, { get: (_t, name) => tableFor(String(name)) }),
+          db: new Proxy({}, { get: (_t, name) => tableFor(String(name), rec) }),
           reducers: {
             joinGame: rec.joinGame,
             completeGuestClaim: rec.completeGuestClaim,
@@ -2141,6 +2166,645 @@ describe('connect(): one backoff rung per failed reconnect attempt', { sequentia
     await npExpectNextAttemptAfter(4000);
     npConnectedDrop(npBuild(3));
     await npExpectNextAttemptAfter(1000);
+  });
+});
+
+// =============================================================================================
+// sr-6b: the owner views reconcile only when dirty. Each owner view's onInsert / onDelete marks
+// that view for the next batch; an applied snapshot, a connection build() builds and a reset
+// store mark every view; a non-view row handler that throws marks every view and schedules the
+// flush before its error goes on to the SDK. Observed through the store's reconcile methods
+// (spied, calling through) and the SDK cache reads (`H.iterCalls`). A new connection's views all
+// start dirty, so each test first proves every view clean (a burst of character rows reconciles
+// nothing) and only then pulls the one trigger it is about.
+// =============================================================================================
+
+type Sr6bMethod = Extract<keyof AuthoritativeStore, `reconcile${string}FromView`>;
+/** The store method each owner view's reconcile calls: the expected wiring, written by hand. */
+const SR6B_METHOD: Record<OwnerView, Sr6bMethod> = {
+  my_monster_pub: 'reconcileMonstersFromView',
+  myBattle: 'reconcileBattlesFromView',
+  my_export_bundle: 'reconcileExportChunksFromView',
+  myPendingEvolutionNotices: 'reconcileEvolutionNoticesFromView',
+  my_inventory: 'reconcileInventoryFromView',
+  myTacticalBattle: 'reconcileTacticalBattlesFromView',
+  myBattleUnits: 'reconcileBattleUnitsFromView',
+  myBattleQueue: 'reconcileBattleQueuesFromView',
+  myBattleDeploy: 'reconcileBattleDeploysFromView',
+  myBattleClock: 'reconcileBattleClocksFromView',
+  myBattleEvents: 'reconcileBattleEventsFromView',
+  myFormation: 'reconcileFormationFromView',
+  myTradeSession: 'reconcileTradeSessionsFromView',
+};
+/** The owner views of the table above, in no particular order. A test that expects every view
+ *  in reconcile order takes that order from OWNER_VIEWS, whose roster test is in
+ *  viewReconcile.test.ts. */
+const SR6B_VIEWS = Object.keys(SR6B_METHOD) as OwnerView[];
+/** The owner-view tables, to tell them from every other table connect() wires. */
+const SR6B_VIEW_TABLES = new Set<string>(SR6B_VIEWS);
+/** Every owner-view row handler: each view's insert and delete. */
+const SR6B_HANDLERS = SR6B_VIEWS.flatMap((view) =>
+  (['insert', 'delete'] as const).map((event) => [view, event] as const),
+);
+/** Two callbacks the base subscription's onApplied makes, either of which may throw: the earliest
+ *  after its stale check, and one near its end. */
+const SR6B_APPLIED_THROWERS = (['claimCode.hasUnconsumed', 'onScopeSettled'] as const).map(
+  (thrower) => [thrower] as const,
+);
+type Sr6bSpies = Record<OwnerView, MockInstance>;
+
+const sr6bOther = { toHexString: () => 'ee'.repeat(32) };
+const sr6bInventory = (invId: bigint, count: number) => ({
+  invId,
+  ownerIdentity: ID,
+  itemId: 5,
+  count,
+});
+/** The store row an `sr6bInventory` row lands as. */
+const sr6bStoredInventory = (invId: bigint, count: number) => ({
+  invId,
+  ownerIdentity: BT12_ME,
+  itemId: 5,
+  count,
+});
+const sr6bChunk = (chunkId: bigint) => ({
+  chunkId,
+  ownerIdentity: ID,
+  requestId: 3n,
+  tableName: 'monster',
+  chunkIndex: 0,
+  totalChunks: 1,
+  payloadJson: '{"a":"1"}',
+  createdAtMs: 5n,
+});
+/** A row whose every property read throws `thrown`. */
+const sr6bMalformed = (thrown: unknown): unknown =>
+  new Proxy(
+    {},
+    {
+      get: () => {
+        throw thrown;
+      },
+    },
+  );
+
+/** Spies, calling through, on the store's owner-view reconcile methods. */
+function sr6bSpy(store: AuthoritativeStore): Sr6bSpies {
+  const target = store as unknown as Record<Sr6bMethod, (...args: unknown[]) => void>;
+  const spies: Partial<Sr6bSpies> = {};
+  for (const view of SR6B_VIEWS) spies[view] = vi.spyOn(target, SR6B_METHOD[view]);
+  return spies as Sr6bSpies;
+}
+
+/** The owner views whose store reconcile ran since the last clear, in call order. */
+function sr6bReconciled(spies: Sr6bSpies): OwnerView[] {
+  const calls = SR6B_VIEWS.flatMap((view) =>
+    spies[view].mock.invocationCallOrder.map((at) => ({ at, view })),
+  );
+  return calls.sort((a, b) => a.at - b.at).map(({ view }) => view);
+}
+
+/** How many times each owner view's SDK cache was read since the last clear (unread: omitted). */
+function sr6bReads(): Record<string, number> {
+  const read = SR6B_VIEWS.filter((view) => (H.iterCalls[view] ?? 0) > 0);
+  return Object.fromEntries(read.map((view) => [view, H.iterCalls[view]]));
+}
+
+/** Since the last clear: exactly `views` were reconciled, once each and in this order, and theirs
+ *  are the only owner-view caches read, once each. */
+function sr6bExpect(spies: Sr6bSpies, views: readonly OwnerView[], when: string): void {
+  expect(sr6bReconciled(spies), `${when}: the reconciles that ran, in order`).toEqual(views);
+  expect(sr6bReads(), `${when}: the view caches read`).toEqual(
+    Object.fromEntries(views.map((view) => [view, 1])),
+  );
+}
+
+function sr6bClear(spies: Sr6bSpies): void {
+  for (const view of SR6B_VIEWS) spies[view].mockClear();
+  H.iterCalls = {};
+}
+
+/** One burst of a single `character` insert (a row of no owner view) on build `buildIdx`, and its
+ *  flush. */
+async function sr6bCharacterBurst(buildIdx = 0): Promise<void> {
+  wsFire('character', 'insert', [wsChar(900n, 0)], buildIdx);
+  await settle();
+}
+
+/** Every view is clean: a burst of character rows only reconciles nothing and reads no view. */
+async function sr6bExpectDrained(spies: Sr6bSpies, buildIdx = 0): Promise<void> {
+  sr6bClear(spies);
+  await sr6bCharacterBurst(buildIdx);
+  sr6bExpect(spies, [], 'drained (a burst of character rows only)');
+  sr6bClear(spies);
+}
+
+/** Run build `buildIdx`'s `event` handler of the owner view `view` once, as the SDK would. */
+function sr6bFire(view: OwnerView, event: 'insert' | 'delete', buildIdx = 0): void {
+  const cb = H.rowEvents[view]?.[event][buildIdx];
+  if (cb === undefined) throw new Error(`no ${view}.${event} handler for build ${buildIdx}`);
+  cb({}, {});
+}
+
+/** What `call` threw (a sentinel string when it returned). */
+function sr6bThrown(call: () => void): unknown {
+  try {
+    call();
+  } catch (err) {
+    return err;
+  }
+  return 'returned without a throw';
+}
+
+/** Connect, open build 0, apply its snapshot unless `applied` is false, and land one burst (it
+ *  reconciles every view of the new connection from `H.viewRows`); then spy on the store's
+ *  reconcile methods. */
+async function sr6bConnected(opts: ConnectionOptions = makeOpts(), applied = true) {
+  const handle = connect(opts);
+  await settle();
+  const b0 = npBuild(0);
+  b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+  if (applied) b0.onApplied?.();
+  await sr6bCharacterBurst();
+  return { handle, b0, spies: sr6bSpy(opts.store) };
+}
+
+describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequential: true }, () => {
+  beforeEach(() => {
+    // The world scope's tick is a setInterval and its apply timeout is measured on
+    // performance.now(): both are faked so advancing the timers drives the scope's drop path.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.iterCalls = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  it('a burst of only character and player rows flushes one batch that carries them, runs no owner-view reconcile and reads no view cache [SR6B.1]', async () => {
+    // WRONG IMPL KILLED: every view reconciled on every batch (each movement step pays for every
+    // owned row); a clean view's cache read or converted with only the store call skipped; a batch
+    // with no dirty view that skips the flush too (the step never reaches a listener).
+    const opts = makeOpts();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    H.viewRows.myBattle = [bt12SdkBattle(47n)];
+    const { spies } = await sr6bConnected(opts);
+    const leaver = wsPlayer(6n, { toHexString: () => 'ab'.repeat(32) });
+    wsFire('player', 'insert', [leaver]);
+    await sr6bExpectDrained(spies);
+
+    const flushed = vi.fn();
+    opts.store.onBatchApplied(flushed);
+    const mover = wsChar(901n, 0, 2, 2);
+    const other = wsPlayer(7n, sr6bOther);
+    wsFire('character', 'insert', [mover]);
+    wsFire('character', 'update', [mover, wsChar(901n, 0, 3, 2)]);
+    wsFire('player', 'insert', [other]);
+    wsFire('player', 'update', [other, { ...other, leadLevel: 9 }]);
+    wsFire('player', 'delete', [leaver]);
+    await settle();
+    expect(flushed, 'one burst, one flushed batch').toHaveBeenCalledTimes(1);
+    expect(opts.store.character(901n)?.row.tileX, 'the step is in the store').toBe(3);
+    expect(opts.store.player(sr6bOther.toHexString())?.leadLevel, 'the updated player').toBe(9);
+    expect(opts.store.player('ab'.repeat(32)), 'the deleted player is gone').toBeUndefined();
+    sr6bExpect(spies, [], 'a burst of character and player rows');
+    expect(opts.store.ownInventory(BT12_ME), 'the owner views keep their rows').toEqual([
+      sr6bStoredInventory(1n, 3),
+    ]);
+    expect(opts.store.ongoingBattle(BT12_ME)?.battleId).toBe(47n);
+  });
+
+  it.each(
+    SR6B_HANDLERS,
+  )('the %s %s handler marks that view alone: the next batch reconciles it and no other view, and then it is clean [SR6B.2]', async (view, event) => {
+    // WRONG IMPL KILLED: a handler that marks another view (myBattleUnits marking myBattleQueue:
+    // the units view stays stale); a view handler that marks every view; a handler that schedules
+    // without marking (a deleted row stays in the store) or marks without scheduling (nothing
+    // flushes); an onUpdate wired on a view.
+    const { spies } = await sr6bConnected();
+    expect(H.rowEvents[view]?.update ?? [], `${view}: no onUpdate on a view`).toEqual([]);
+    await sr6bExpectDrained(spies);
+    sr6bFire(view, event);
+    await settle();
+    sr6bExpect(spies, [view], `after one ${view} ${event}`);
+    await sr6bExpectDrained(spies);
+  });
+
+  it.each(
+    SR6B_HANDLERS,
+  )('the %s %s handler of a rebuilt connection marks that view alone: the next batch reconciles it and no other view, and then it is clean [SR6B.2]', async (view, event) => {
+    // WRONG IMPL KILLED: the owner-view handlers wired on the first connection only (after any
+    // rebuild no view change is marked, and every view freezes on its last rows).
+    const { handle, spies } = await sr6bConnected();
+    handle.reconnectNow();
+    await settle();
+    expect(H.builds, 'the rebuild built a second connection').toHaveLength(2);
+    const b1 = npBuild(1);
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    const events = H.rowEvents[view];
+    expect(events?.insert.length, `${view}: one insert handler per build`).toBe(2);
+    expect(events?.delete.length, `${view}: one delete handler per build`).toBe(2);
+    expect(events?.update ?? [], `${view}: no onUpdate on a view`).toEqual([]);
+    // The rebuilt connection's first batch rebuilds every view; then every view is clean.
+    await sr6bCharacterBurst(1);
+    await sr6bExpectDrained(spies, 1);
+    // Build 1's handler only (index 1): build 0's never runs here.
+    sr6bFire(view, event, 1);
+    await settle();
+    sr6bExpect(spies, [view], `after one ${view} ${event} on the rebuilt connection`);
+    await sr6bExpectDrained(spies, 1);
+  });
+
+  it('a burst of a character row and a view row is one batch: the view is rebuilt first, then the hydration edge fires once, then the batch listener runs once and already reads the rebuilt view [SR6B.2]', async () => {
+    // WRONG IMPL KILLED: the reconcile moved after flushBatch with a second flush (the listener
+    // runs twice, first on the stale view); onHydrated fired before the reconcile (the hydrated
+    // screen reads the pre-snapshot view); onHydrated fired after the flush (the listener runs on
+    // a store not yet announced as hydrated).
+    const opts = makeOpts();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    const { b0, spies } = await sr6bConnected(opts, false);
+    await sr6bExpectDrained(spies);
+    expect(
+      opts.onHydrated,
+      'precondition: no snapshot yet, so no hydration edge',
+    ).not.toHaveBeenCalled();
+    const seen: unknown[] = [];
+    const listener = vi.fn(() => {
+      seen.push(opts.store.ownInventory(BT12_ME));
+    });
+    opts.store.onBatchApplied(listener);
+    // The snapshot arms the hydration edge; then one burst of a character row and a view row.
+    b0.onApplied?.();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 4)];
+    wsFire('character', 'insert', [wsChar(903n, 0)]);
+    sr6bFire('my_inventory', 'insert');
+    await settle();
+    expect(listener, 'one burst, one batch').toHaveBeenCalledTimes(1);
+    expect(seen, 'inside the listener the view is already rebuilt').toEqual([
+      [sr6bStoredInventory(1n, 4)],
+    ]);
+    expect(opts.onHydrated, 'the hydration edge fires once').toHaveBeenCalledTimes(1);
+    const reconciledAt = spies.my_inventory.mock.invocationCallOrder[0];
+    const hydratedAt = vi.mocked(opts.onHydrated).mock.invocationCallOrder[0];
+    const listenedAt = listener.mock.invocationCallOrder[0];
+    expect(reconciledAt, 'the view is rebuilt before the hydration edge').toBeLessThan(hydratedAt);
+    expect(hydratedAt, 'the hydration edge fires before the listener').toBeLessThan(listenedAt);
+  });
+
+  it('an applied snapshot marks every view: the next batch, of character rows only, reconciles each one, and the store takes the rows the snapshot left in the cache [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: no mark in the base subscription's onApplied (a view the snapshot changed
+    // with no row callback for it keeps its old rows until it next changes).
+    const opts = makeOpts();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    const { b0, spies } = await sr6bConnected(opts, false);
+    await sr6bExpectDrained(spies);
+    H.viewRows.my_inventory = [sr6bInventory(1n, 2), sr6bInventory(2n, 1)];
+    b0.onApplied?.();
+    await sr6bCharacterBurst();
+    sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the snapshot');
+    expect(opts.store.ownInventory(BT12_ME)).toEqual([
+      sr6bStoredInventory(1n, 2),
+      sr6bStoredInventory(2n, 1),
+    ]);
+    await sr6bExpectDrained(spies);
+  });
+
+  it.each(
+    (['reconnectNow', 'continueAnonymously'] as const).map((how) => [how] as const),
+  )('a connection rebuilt by %s marks every view: the first batch on it, of character rows only, reconciles each one from the new cache [SR6B.3]', async (how) => {
+    // WRONG IMPL KILLED: no mark when build() builds a connection (this rebuild resets nothing and
+    // applies no snapshot, so every view keeps the old connection's rows until it next changes);
+    // a reconcile that keeps reading the first connection's cache (the old rows land instead).
+    const opts = makeOpts();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    H.viewRows.myFormation = [bt12Formation([37n])];
+    H.viewRows.myTradeSession = [ts3Row(9n)];
+    const { handle, spies } = await sr6bConnected(opts);
+    await sr6bExpectDrained(spies);
+    // The first connection's cache moves on too, with no row callback: only the new
+    // connection's rows may land.
+    H.viewRows.my_inventory = [sr6bInventory(1n, 7)];
+    H.viewRows.myFormation = [bt12Formation([43n])];
+    H.viewRows.myTradeSession = [ts3Row(5n)];
+    handle[how]();
+    await settle();
+    expect(H.builds, 'the rebuild built a second connection').toHaveLength(2);
+    const b1 = npBuild(1);
+    b1.viewRows = {
+      my_inventory: [sr6bInventory(1n, 2)],
+      myFormation: [bt12Formation([41n])],
+      myTradeSession: [ts3Row(4n)],
+    };
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    await sr6bCharacterBurst(1);
+    sr6bExpect(spies, OWNER_VIEWS, `the first batch on the connection ${how} built`);
+    expect(opts.store.ownInventory(BT12_ME), 'the new connection`s inventory').toEqual([
+      sr6bStoredInventory(1n, 2),
+    ]);
+    expect(opts.store.ownFormation(BT12_ME)?.monsterIds, 'its formation').toEqual([41n]);
+    expect(
+      opts.store.allTradeSessions().map((s) => s.sessionId),
+      'its trade session',
+    ).toEqual([4n]);
+    await sr6bExpectDrained(spies, 1);
+  });
+
+  it('a dropped connection resets the store and marks every view: the next batch, of character rows only, reconciles each one [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: no mark beside store.reset() on the drop path (the reset store holds no
+    // owner-view rows, and nothing rebuilds them until each view next changes). The rows that
+    // batch reads are not asserted: before the rebuild it reads the dropped connection's cache, a
+    // known residual and not behaviour to pin.
+    const { b0, spies } = await sr6bConnected();
+    await sr6bExpectDrained(spies);
+    b0.onDisconnect?.();
+    expect(H.builds, 'no rebuild yet: its timer has not run').toHaveLength(1);
+    await sr6bCharacterBurst();
+    sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the drop');
+  });
+
+  it('a world scope that takes its drop path resets the store and marks every view with no onDisconnect: the next batch, of character rows only, reconciles each one [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: the reset-site mark placed in the onDisconnect callback instead of
+    // handleDrop() (the scope's drop path, like a pageshow restore, resets the store through
+    // handleDrop() with no onDisconnect, so every view would stay empty until it next changed). As
+    // on the onDisconnect path, the rows that batch reads are not asserted.
+    const { b0, spies } = await sr6bConnected();
+    // The login sequence: the own player row, its own-row set applied, then the own character
+    // row, whose zone set is issued and never applies.
+    wsFire('player', 'insert', [wsPlayer()]);
+    wsApply(wsSubs(b0)[0]);
+    wsFire('character', 'insert', [wsChar(WS_E, 0)]);
+    expect(wsQueries(b0), 'precondition: the own zone set is pending').toEqual([
+      WS_OWN_QUERY,
+      wsZoneQuery(0),
+    ]);
+    await sr6bExpectDrained(spies);
+    expect(b0.disconnect, 'precondition: no drop yet').not.toHaveBeenCalled();
+
+    // The tick APPLY_TIMEOUT_MS after the zone set was issued takes the drop path; the rebuild it
+    // schedules is a backoff later, beyond this advance.
+    await vi.advanceTimersByTimeAsync(APPLY_TIMEOUT_MS);
+    expect(
+      b0.disconnect,
+      'the scope took its drop path and closed the socket',
+    ).toHaveBeenCalledTimes(1);
+    expect(H.builds, 'no rebuild yet: its timer has not run').toHaveLength(1);
+    await sr6bCharacterBurst();
+    sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the scope`s drop');
+  });
+
+  it('each connect() has its own reconciler: a view marked on one connection is reconciled by that connection`s next batch and never by another connection`s [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: one reconciler for the module (the second connection's batch, queued first
+    // in the turn, takes the first connection's mark: the first store never gets the new row, and
+    // the second rebuilds a view that never changed for it). A rebuild marks every view, so only
+    // two live connections tell the two apart.
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    const first = makeOpts();
+    const second = makeOpts();
+    connect(first);
+    await settle();
+    connect(second);
+    await settle();
+    expect(H.builds, 'one build per connect()').toHaveLength(2);
+    const b0 = npBuild(0);
+    const b1 = npBuild(1);
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    await sr6bCharacterBurst(0);
+    await sr6bCharacterBurst(1);
+    const firstSpies = sr6bSpy(first.store);
+    const secondSpies = sr6bSpy(second.store);
+    H.iterCalls = {};
+    await sr6bCharacterBurst(0);
+    await sr6bCharacterBurst(1);
+    sr6bExpect(firstSpies, [], 'the first connection, drained');
+    sr6bExpect(secondSpies, [], 'the second connection, drained');
+
+    // One turn: the second connection's batch is queued first, then the first connection's
+    // inventory changes and its batch is queued.
+    H.viewRows.my_inventory = [sr6bInventory(1n, 2)];
+    wsFire('character', 'insert', [wsChar(902n, 0)], 1);
+    sr6bFire('my_inventory', 'insert', 0);
+    await settle();
+    expect(sr6bReconciled(secondSpies), 'the second connection marked nothing').toEqual([]);
+    expect(sr6bReconciled(firstSpies), 'the first connection reconciles its own mark').toEqual([
+      'my_inventory',
+    ]);
+    expect(sr6bReads(), 'one cache read, by the first connection').toEqual({ my_inventory: 1 });
+    expect(first.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 2)]);
+    expect(second.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 3)]);
+  });
+
+  it('a view whose converter throws stays dirty: its batch still flushes once with the other groups landed and the throw logged, and the next batch, of character rows only, lands it from the fixed cache [SR6B.4]', async () => {
+    // WRONG IMPL KILLED: the throwing view cleared with the rest (the battle never lands until it
+    // next changes); the later view of its group that never ran cleared too (the export chunk
+    // never lands); the retry left to a batch the batcher queues for itself (a second flush in
+    // the same turn); the throw escaping the batcher (no batch at all).
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const opts = makeOpts();
+      const { spies } = await sr6bConnected(opts);
+      await sr6bExpectDrained(spies);
+      errors.mockClear();
+      const thrown = new Error('malformed my_battle row');
+      H.viewRows.myBattle = [sr6bMalformed(thrown), bt12SdkBattle(47n)];
+      H.viewRows.my_export_bundle = [sr6bChunk(1n)];
+      H.viewRows.my_inventory = [sr6bInventory(43n, 3)];
+      H.viewRows.myFormation = [bt12Formation([37n])];
+      const seen: Record<string, unknown>[] = [];
+      opts.store.onBatchApplied(() => {
+        seen.push({
+          battle: opts.store.ongoingBattle(BT12_ME)?.battleId,
+          chunks: opts.store.ownExportChunks(BT12_ME).map((c) => c.chunkId),
+          inventory: opts.store.ownInventory(BT12_ME).map((i) => i.invId),
+          formation: opts.store.ownFormation(BT12_ME)?.monsterIds,
+        });
+        // The cache is fixed as the throwing batch is delivered, with no row callback: only a
+        // later batch may land it.
+        H.viewRows.myBattle = [bt12SdkBattle(47n)];
+      });
+      for (const view of ['myBattle', 'my_export_bundle', 'my_inventory', 'myFormation'] as const) {
+        sr6bFire(view, 'insert');
+      }
+      await settle();
+      expect(seen, 'the throwing batch is delivered once, with the other groups landed').toEqual([
+        { battle: undefined, chunks: [], inventory: [43n], formation: [37n] },
+      ]);
+      expect(sr6bReconciled(spies), 'the reconciles that returned').toEqual([
+        'my_inventory',
+        'myFormation',
+      ]);
+      expect(errors.mock.calls, 'the throw is logged once, as thrown').toEqual([
+        ['[net] view reconcile threw; flushing anyway', thrown],
+      ]);
+
+      sr6bClear(spies);
+      await sr6bCharacterBurst();
+      expect(
+        sr6bReconciled(spies),
+        'the view that threw and the later view of its group that did not run',
+      ).toEqual(['myBattle', 'my_export_bundle']);
+      expect(opts.store.ongoingBattle(BT12_ME)?.battleId, 'the battle lands').toBe(47n);
+      expect(
+        opts.store.ownExportChunks(BT12_ME).map((c) => c.chunkId),
+        'the export chunk lands',
+      ).toEqual([1n]);
+      await sr6bExpectDrained(spies);
+      expect(errors, 'nothing more is logged').toHaveBeenCalledTimes(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('a character row handler that throws marks every owner view and schedules the flush before the same error goes on to the SDK: that flush reconciles every view, so view rows whose own callbacks the SDK then skips still land [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: no recovery around a non-view handler (the SDK stops dispatching that
+    // message, whose view rows are already in its cache: their callbacks never run, and the views
+    // stay stale and clean); a recovery that swallows the error or throws another; a mark with no
+    // schedule (nothing flushes until some later row arrives).
+    const opts = makeOpts();
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    const { spies } = await sr6bConnected(opts);
+    await sr6bExpectDrained(spies);
+    const flushed = vi.fn();
+    opts.store.onBatchApplied(flushed);
+    // The rest of the message: rows already in the SDK cache whose callbacks never run.
+    H.viewRows.my_inventory = [sr6bInventory(1n, 2)];
+    H.viewRows.myBattle = [bt12SdkBattle(47n)];
+    const thrown = new Error('malformed character row');
+    expect(
+      sr6bThrown(() => wsFire('character', 'insert', [sr6bMalformed(thrown)])),
+      'the handler`s own error goes on to the SDK',
+    ).toBe(thrown);
+    await settle();
+    expect(flushed, 'one flushed batch').toHaveBeenCalledTimes(1);
+    sr6bExpect(spies, OWNER_VIEWS, 'the flush the throwing handler scheduled');
+    expect(opts.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 2)]);
+    expect(opts.store.ongoingBattle(BT12_ME)?.battleId).toBe(47n);
+  });
+
+  it('a player row handler that throws marks every owner view and schedules the flush before the same error goes on to the SDK [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: the recovery around the character handlers only, or around inserts only.
+    const opts = makeOpts();
+    const { spies } = await sr6bConnected(opts);
+    const before = wsPlayer(8n, sr6bOther);
+    wsFire('player', 'insert', [before]);
+    await sr6bExpectDrained(spies);
+    H.viewRows.myFormation = [bt12Formation([37n])];
+    H.viewRows.myTradeSession = [ts3Row(9n)];
+    const thrown = new Error('malformed player identity');
+    const broken = {
+      ...before,
+      identity: {
+        toHexString: () => {
+          throw thrown;
+        },
+      },
+    };
+    expect(
+      sr6bThrown(() => wsFire('player', 'update', [before, broken])),
+      'the handler`s own error goes on to the SDK',
+    ).toBe(thrown);
+    await settle();
+    sr6bExpect(spies, OWNER_VIEWS, 'the flush the throwing handler scheduled');
+    expect(opts.store.ownFormation(BT12_ME)?.monsterIds).toEqual([37n]);
+    expect(opts.store.allTradeSessions().map((s) => s.sessionId)).toEqual([9n]);
+  });
+
+  it('every row handler connect() wires on a table that is not an owner view, whatever value it throws, marks every owner view and schedules the flush before that same value goes on to the SDK [SR6B.3]', async () => {
+    // WRONG IMPL KILLED: any one non-view handler left without the recovery (my_wallet's insert,
+    // my_account's update, my_conversation's delete, character's delete: the views of the message
+    // the SDK stops dispatching stay stale and clean); a recovery that marks only on an Error, so a
+    // thrown string or object goes on unmarked.
+    const opts = makeOpts();
+    const { spies } = await sr6bConnected(opts);
+    // What connect() registered on the tables that are not owner views.
+    const handlers = Object.entries(H.rowEvents)
+      .filter(([table]) => !SR6B_VIEW_TABLES.has(table))
+      .flatMap(([table, events]) =>
+        (['insert', 'update', 'delete'] as const).flatMap((event) =>
+          events[event].map((handler) => ({ table, event, handler })),
+        ),
+      );
+    expect(handlers.length, 'connect() wires non-view row handlers').toBeGreaterThan(0);
+    const tables = new Set(handlers.map(({ table }) => table));
+    for (const table of ['character', 'player', 'my_wallet', 'my_account', 'my_conversation']) {
+      expect(tables.has(table), `a handler on ${table}`).toBe(true);
+    }
+    // An Error, a string and a plain object, in turn.
+    const throwables = [
+      (at: string): unknown => new Error(`${at} threw`),
+      (at: string): unknown => `${at} threw`,
+      (at: string): unknown => ({ at }),
+    ];
+    for (const [i, { table, event, handler }] of handlers.entries()) {
+      const at = `${table}.${event}`;
+      await sr6bExpectDrained(spies);
+      // The rest of the message: a view row already in the SDK cache whose callback never runs.
+      H.viewRows.my_inventory = [sr6bInventory(1n, 10 + i)];
+      const thrown = throwables[i % throwables.length](at);
+      const row = sr6bMalformed(thrown);
+      const args = event === 'update' ? [row, row] : [row];
+      expect(
+        sr6bThrown(() => handler({}, ...args)),
+        `${at}: the value it threw goes on to the SDK`,
+      ).toBe(thrown);
+      await settle();
+      sr6bExpect(spies, OWNER_VIEWS, `the flush the ${at} throw scheduled`);
+      expect(opts.store.ownInventory(BT12_ME), `${at}: the view row landed`).toEqual([
+        sr6bStoredInventory(1n, 10 + i),
+      ]);
+    }
+  });
+
+  it.each(
+    SR6B_APPLIED_THROWERS,
+  )('an applied snapshot marks every owner view before anything in it can throw: a throw from %s escapes onApplied and the next batch still reconciles every view [SR6B.3]', async (thrower) => {
+    // WRONG IMPL KILLED: the snapshot's mark placed after a call onApplied makes that can throw
+    // (claimCode.hasUnconsumed is the earliest after the stale check, onScopeSettled is near the
+    // end): the throw skips the mark, and the rows the snapshot left in the cache never land.
+    const onScopeSettled = vi.fn<(settled: boolean) => void>();
+    const opts: ConnectionOptions = { ...makeOpts(), onScopeSettled };
+    H.viewRows.my_inventory = [sr6bInventory(1n, 3)];
+    const { b0, spies } = await sr6bConnected(opts, false);
+    await sr6bExpectDrained(spies);
+    expect(onScopeSettled, 'precondition: no scope before the snapshot').not.toHaveBeenCalled();
+    const thrown = new Error(`${thrower} threw`);
+    const hasUnconsumed = vi.spyOn(claimCode, 'hasUnconsumed');
+    try {
+      const fail = (): never => {
+        throw thrown;
+      };
+      if (thrower === 'claimCode.hasUnconsumed') hasUnconsumed.mockImplementationOnce(fail);
+      else onScopeSettled.mockImplementation(fail);
+      H.viewRows.my_inventory = [sr6bInventory(1n, 2)];
+      expect(
+        sr6bThrown(() => b0.onApplied?.()),
+        `the ${thrower} throw escapes onApplied`,
+      ).toBe(thrown);
+      expect(hasUnconsumed, 'onApplied reached the claim-code check once').toHaveBeenCalledTimes(1);
+      expect(
+        onScopeSettled.mock.calls.length,
+        'the scope listener is reached only when the claim-code check returns',
+      ).toBe(thrower === 'claimCode.hasUnconsumed' ? 0 : 1);
+      await sr6bCharacterBurst();
+      sr6bExpect(spies, OWNER_VIEWS, 'the first batch after the snapshot');
+      expect(opts.store.ownInventory(BT12_ME)).toEqual([sr6bStoredInventory(1n, 2)]);
+    } finally {
+      hasUnconsumed.mockRestore();
+    }
   });
 });
 
