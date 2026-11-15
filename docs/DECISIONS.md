@@ -1268,6 +1268,22 @@ arms one deadline fire there; the scheduler's own `tactical_deadline_fire` expir
 window as at a real deadline. An e2e may expire a window through it instead of waiting, and
 a test that does so keeps one real-time expiry in the same test.
 
+`dev_expire_tactical_window` names the side whose window it expires and refuses a call that finds
+the other side's window open, so a slow test cannot strike the wrong player. It acts on any Active
+tactical battle, wild, PvP or Practice; a wild expiry is the AutoFlee a real deadline gives. It
+refuses a Deploying or Finished battle. A change that adds a dev reducer must also:
+
+- call the deletion gate first;
+- join the census's `EXPECTED_GATED` (`privacy_enforcement_tests.rs`), and, when it adds a module,
+  `EXPECTED_MODULES`. That module's `mod` line carries no `cfg`, because the census refuses every
+  `cfg` but `cfg(test)`, so the feature gate goes on the module's items;
+- add `exclude_re` keys for its surviving mutants to `.cargo/mutants.toml` entry 8;
+- prove the default release wasm byte-identical to its base's: one checkout path and one target
+  dir, the pinned toolchain, the base built first, and both sha256 sums in the PR.
+
+A dev caller reaches a private production function through a dev-gated forwarder placed after the
+file's last production item (`tactics.rs` `dev_arm_deadline`). It never widens the function itself.
+
 **Why.** A dev reducer in a real deployment is an exploit: free items, or expiring another
 player's turn window. Checking the published module rather than the source catches a wrong
 build flag in the publish path, which a source grep would not. A test that waits real
@@ -1275,9 +1291,16 @@ deadlines spends a full turn window per expiry (30 s in PvP); overriding `now` w
 windows ahead of real time, so the reducer moves one deadline and leaves every timestamp real.
 One real-time expiry per test keeps the real scheduler covered by the two-browser flow.
 
+Widening `arm_deadline` to `pub(crate)` pushes its signature past rustfmt's width. th-4 (#794)
+measured the result: the reflow moves every later line of `tactics.rs`, and with them the panic
+locations baked into the release wasm, so the default build changed. With the forwarder, th-4
+recorded identical sums for base and slice, and `arm_deadline` stays callable only from
+`tactics.rs`.
+
 **Rules out.** Runtime flags for dev reducers; trusting the source tree as proof of what was
 published; a dev reducer a player can call; a fake or overridden clock for tests; an e2e that
-takes every expiry through the dev path.
+takes every expiry through the dev path; a `cfg(feature)` module line; widening a
+production function's visibility for a dev caller.
 
 ## SpacetimeDB versions move in lockstep
 
@@ -2008,3 +2031,31 @@ the `connect` gate is the boundary that keeps the build's issuer and client id f
 not operate). Client logic that assumes a provider, or a provider label derived by parsing the
 issuer URL (the OIDC flow already refuses an issuer it cannot use). A per-world telemetry opt-in or
 per-world sign-in changes these two gates and their tests, not a side path.
+
+## The e2e job lists the tests that passed only on a rerun; a flake stays in `docs/e2e-flakes.md` until its fix merges
+
+**Decision.** The CI `e2e` job (`scripts/e2e-shard-union.mjs`) judges each shard by its highest
+attempt. When that attempt's reports are readable, it also reads every lower attempt of the shard.
+A test that is `unexpected` on a lower attempt and `expected` on the highest passed only on a
+rerun. The script prints a `rerun-passed:` line and one `::warning` annotation for each such test.
+It also appends a table of them to `$GITHUB_STEP_SUMMARY`, or "No e2e test passed only on a
+rerun." when there are none, on a failing run too. A lower attempt with no readable `e2e.json`
+gets a `rerun-unreadable:` line. The listing changes no verdict: a green highest attempt still
+passes the job. Playwright `retries` is unset, so a rerun of failed jobs is the only second
+attempt, and a report's `flaky` count stays a failure. `docs/e2e-flakes.md` registers the e2e
+flakes whose fix has not merged. Each entry gives the test, the runs, the signature, every forcing
+recipe tried with its counts, the verdict (product or test) and the next step. The change that
+fixes a flake deletes its entry. A test the listing names that has neither an entry nor a residual
+row of its own is a new flake and gets an entry. A flake that its own row holds may stay a row
+until a study takes it.
+
+**Why.** Before the listing, a test that failed and then passed on a rerun left no mark on the run.
+The only way to find one was to read the attempt-1 jobs of every rerun run by hand. Failing a run
+that needed a rerun would instead turn every flake into a red `master` and push reruns into fix
+slices. GitHub caps a step's annotations, so the summary table is the complete list. Up to that
+cap, the annotations let a later tool count rerun-passed tests per run through the check-runs API
+without reading logs. A single register keeps a flake's evidence in one place until a merged fix
+makes it history.
+
+**Rules out.** Failing the `e2e` job for a test that passed on a rerun; a flake entry that outlives
+its merged fix; a second flake list beside the register.
