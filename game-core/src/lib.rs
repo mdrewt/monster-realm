@@ -127,6 +127,8 @@ pub fn tick_seed(state: u64, input: u64, seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+pub mod load_test_zones;
+
 #[cfg(test)]
 mod tests {
     use super::tick_seed;

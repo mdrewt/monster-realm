@@ -15,6 +15,7 @@ autobenches = false
 # the optional `spacetimedb` dep (for the derive macro).
 default = []
 spacetimedb = ["dep:spacetimedb"]
+load_test_zones = []
 
 [dependencies]
 serde = { workspace = true }

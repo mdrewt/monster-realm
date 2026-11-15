@@ -436,6 +436,9 @@ pub struct Config {
     /// `--fail-on-invalid`: an invalid level makes the run exit
     /// [`INVALID_LEVEL_EXIT_CODE`] once the report is written.
     pub fail_on_invalid: bool,
+    pub zones: Option<u32>,
+    pub hot_zone: u32,
+    pub walking_share: u32,
 }
 
 /// Parse + validate argv (WITHOUT argv[0]).
@@ -535,7 +538,30 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
         run_id,
         report_path,
         fail_on_invalid,
+        zones: None,
+        hot_zone: 0,
+        walking_share: 100,
     })
+}
+
+// RED-PHASE STUBS (sr-9b)
+pub const REDUCER_DEV_PLACE_IN_LOAD_ZONE: &str = "";
+#[must_use]
+pub fn placement_zone(_bot_index: u32, _zones: u32, _hot_zone: u32) -> u32 {
+    0
+}
+#[must_use]
+pub fn walking_set(
+    clients: u32,
+    _zones: Option<u32>,
+    _hot_zone: u32,
+    _walking_share: u32,
+) -> Vec<bool> {
+    vec![true; clients as usize]
+}
+#[must_use]
+pub fn args_dev_place_in_load_zone(_zone_id: u32) -> String {
+    String::new()
 }
 
 /// Fetch the value that must follow the flag at `i`. A value that starts with
@@ -1307,6 +1333,7 @@ pub struct LevelSample {
     pub clients_scoped: u32,
     /// Cumulative `join_game{committed="true"}` delta since RUN start (AM5).
     pub join_committed_total_delta: f64,
+    pub placement_committed_delta: Option<f64>,
     pub enqueue_accepted_delta: f64,
     pub enqueue_rejected_delta: f64,
     pub movement_tick_txn_delta: f64,
@@ -3066,6 +3093,7 @@ fn build_level_sample(
             .unwrap_or(u32::MAX),
         clients_scoped: u32::try_from(counters.scoped.load(Ordering::Relaxed)).unwrap_or(u32::MAX),
         join_committed_total_delta: delta(REDUCER_JOIN_GAME, "true"),
+        placement_committed_delta: None,
         enqueue_accepted_delta: delta(REDUCER_ENQUEUE_MOVE, "true"),
         enqueue_rejected_delta: delta(REDUCER_ENQUEUE_MOVE, "false"),
         movement_tick_txn_delta: delta(REDUCER_MOVEMENT_TICK, "true"),
@@ -5895,6 +5923,8 @@ mod tests {
             rx_bytes_by_scrape: (0..4u64)
                 .map(|k| vec![k * 1000; concurrency as usize])
                 .collect(),
+            // sr-9b (named intentional change): the baseline run places no bot.
+            placement_committed_delta: None,
         }
     }
 
@@ -7989,5 +8019,345 @@ mod tests {
         assert_eq!(P95_BREACH_REASON, "movement_tick_p95_over_step_ms");
         assert_eq!(QUEUE_BREACH_PREFIX, "queue_growth:");
         assert_eq!(REJECTION_STORM_NOTE, "rejection_storm");
+    }
+
+    // =======================================================================
+    // sr-9b.4 — --zones / --hot-zone / --walking-share: the placement and
+    // walking-set plans (pure; the run of record is the milestone DoD).
+    // =======================================================================
+
+    /// The bots of a level as `(zone, bot index)` sorted: the rank the walkers are drawn over
+    /// (every bot in zone 10000 without `--zones`).
+    fn walker_rank(clients: u32, zones: Option<u32>, hot_zone: u32) -> Vec<u32> {
+        let mut bots: Vec<(u32, u32)> = (0..clients)
+            .map(|i| (zones.map_or(10_000, |n| placement_zone(i, n, hot_zone)), i))
+            .collect();
+        bots.sort_unstable();
+        bots.into_iter().map(|(_, i)| i).collect()
+    }
+
+    /// Bresenham spread over `rank`: among the first `k` ranked bots, for every `k`, the walker
+    /// count is `floor(k * share / 100)` or its ceiling — never a run of walkers or of idlers.
+    fn assert_spread_over_rank(set: &[bool], rank: &[u32], share: u32, label: &str) {
+        let share = u64::from(share);
+        let mut walkers = 0u64;
+        for (k, &bot) in rank.iter().enumerate() {
+            if set[bot as usize] {
+                walkers += 1;
+            }
+            let seen = k as u64 + 1;
+            let lo = seen * share / 100;
+            let hi = (seen * share).div_ceil(100);
+            assert!(
+                (lo..=hi).contains(&walkers),
+                "{label}: {walkers} walkers among the first {seen} ranked bots, want {lo}..={hi}"
+            );
+        }
+    }
+
+    /// Per placement zone `(zone, occupancy, walkers)`, ascending by zone.
+    fn walkers_by_zone(set: &[bool], zones: u32, hot_zone: u32) -> Vec<(u32, u64, u64)> {
+        let mut by_zone: std::collections::BTreeMap<u32, (u64, u64)> = Default::default();
+        for (i, &walks) in set.iter().enumerate() {
+            let zone = placement_zone(i as u32, zones, hot_zone);
+            let entry = by_zone.entry(zone).or_default();
+            entry.0 += 1;
+            entry.1 += u64::from(walks);
+        }
+        by_zone.into_iter().map(|(z, (o, w))| (z, o, w)).collect()
+    }
+
+    fn walker_count(set: &[bool]) -> usize {
+        set.iter().filter(|&&w| w).count()
+    }
+
+    /// `parse_args` of `--run-id T-0001` followed by `args`.
+    fn with_run_id(args: &[&str]) -> Result<Config, String> {
+        let mut v = vec!["--run-id", "T-0001"];
+        v.extend_from_slice(args);
+        parse_args(&argv(&v))
+    }
+
+    /// `args` is refused with an error naming `flag`.
+    fn refused(args: &[&str], flag: &str) {
+        match with_run_id(args) {
+            Err(e) => assert!(e.contains(flag), "{args:?}: the error names {flag}: {e}"),
+            Ok(cfg) => panic!("{args:?} must be refused, got {cfg:?}"),
+        }
+    }
+
+    /// `args` parses.
+    fn parsed(args: &[&str]) -> Config {
+        with_run_id(args).unwrap_or_else(|e| panic!("{args:?} must parse: {e}"))
+    }
+
+    /// The spec's run: `--zones 100 --hot-zone 50 --walking-share 30` parse into the config.
+    ///
+    /// Kills: a flag not wired (unknown flag), a value read into another field.
+    #[test]
+    fn zones_hot_zone_and_walking_share_parse_into_the_config_sr9b_4() {
+        let cfg = parse_args(&argv(&[
+            "--run-id",
+            "T-0001",
+            "--zones",
+            "100",
+            "--hot-zone",
+            "50",
+            "--walking-share",
+            "30",
+        ]))
+        .expect("the load-zone flags parse");
+        assert_eq!(cfg.zones, Some(100));
+        assert_eq!(cfg.hot_zone, 50);
+        assert_eq!(cfg.walking_share, 30);
+    }
+
+    /// Without the flags a run places no bot and every bot walks: zones `None`, hot zone 0,
+    /// walking share 100 (the pre-sr-9b behaviour).
+    ///
+    /// Kills: a default that places bots, a default hot zone, a default share below 100.
+    #[test]
+    fn the_load_zone_flags_default_to_no_placement_and_every_bot_walking_sr9b_4() {
+        let cfg = parse_args(&min_args()).expect("min args parse");
+        assert_eq!(cfg.zones, None);
+        assert_eq!(cfg.hot_zone, 0);
+        assert_eq!(cfg.walking_share, 100);
+    }
+
+    /// The bounds, each edge on both sides: `--zones` 1..=100, `--hot-zone` 0..=1000 and only
+    /// with `--zones`, `--walking-share` 1..=100. A refusal is an `Err` naming the flag.
+    ///
+    /// Kills: a missing bound; an off-by-one edge (`<` / `<=`); `--hot-zone` accepted without
+    /// `--zones`; an error that does not name the offending flag.
+    #[test]
+    fn out_of_range_load_zone_flags_are_refused_naming_the_flag_sr9b_4() {
+        refused(&["--zones", "0"], "--zones");
+        refused(&["--zones", "101"], "--zones");
+        assert_eq!(parsed(&["--zones", "1"]).zones, Some(1));
+        assert_eq!(parsed(&["--zones", "100"]).zones, Some(100));
+
+        refused(&["--hot-zone", "50"], "--hot-zone");
+        refused(&["--zones", "100", "--hot-zone", "1001"], "--hot-zone");
+        assert_eq!(parsed(&["--zones", "100", "--hot-zone", "0"]).hot_zone, 0);
+        assert_eq!(
+            parsed(&["--zones", "100", "--hot-zone", "1000"]).hot_zone,
+            1000
+        );
+        assert_eq!(
+            parsed(&["--hot-zone", "1000", "--zones", "100"]).hot_zone,
+            1000,
+            "flag order does not matter"
+        );
+
+        refused(&["--walking-share", "0"], "--walking-share");
+        refused(&["--walking-share", "101"], "--walking-share");
+        assert_eq!(parsed(&["--walking-share", "1"]).walking_share, 1);
+        assert_eq!(parsed(&["--walking-share", "100"]).walking_share, 100);
+    }
+
+    /// The full 1,000-bot placement table at 100 zones with 50 hot: bots 0..=49 in 10000, then
+    /// `10000 + (i mod 100)` — bot 50 in 10050, 99 in 10099, 100 back in 10000, 999 in 10099 —
+    /// so zone 10000 holds 50 + 9 = 59 bots, 10001..=10049 hold 9 each and 10050..=10099 hold
+    /// 10 each: every zone of the band is used and the table sums to 1,000.
+    ///
+    /// Kills: the hot bots not all in 10000; the round robin restarting at the first non-hot
+    /// bot (`(i - hot) mod n`, which puts bot 50 in 10000); a modulus off by one (10100 used);
+    /// zones counted from 10001.
+    #[test]
+    fn placement_puts_the_first_50_bots_in_10000_and_round_robins_the_rest_sr9b_4() {
+        for i in 0..50 {
+            assert_eq!(placement_zone(i, 100, 50), 10_000, "hot bot {i}");
+        }
+        assert_eq!(placement_zone(50, 100, 50), 10_050);
+        assert_eq!(placement_zone(51, 100, 50), 10_051);
+        assert_eq!(placement_zone(99, 100, 50), 10_099);
+        assert_eq!(placement_zone(100, 100, 50), 10_000);
+        assert_eq!(placement_zone(149, 100, 50), 10_049);
+        assert_eq!(placement_zone(999, 100, 50), 10_099);
+
+        let mut occupancy = vec![0u32; 100];
+        for i in 0..1000 {
+            let zone = placement_zone(i, 100, 50);
+            assert!(
+                (10_000..10_100).contains(&zone),
+                "bot {i} placed outside the band: {zone}"
+            );
+            occupancy[(zone - 10_000) as usize] += 1;
+        }
+        let mut want: Vec<u32> = vec![59];
+        want.extend([9; 49]);
+        want.extend([10; 50]);
+        assert_eq!(occupancy, want, "per-zone occupancy of 10000..=10099");
+        assert_eq!(occupancy.iter().sum::<u32>(), 1000);
+    }
+
+    /// Without a hot zone the round robin starts at bot 0; one zone puts everyone in 10000; a
+    /// hot zone larger than the level puts every bot in 10000.
+    ///
+    /// Kills: a hot-zone branch that fires at 0 (`<=`), a modulus by `zones - 1`, the hot count
+    /// read as a zone index.
+    #[test]
+    fn placement_without_a_hot_zone_or_with_one_zone_sr9b_4() {
+        let plain: Vec<u32> = (0..5).map(|i| placement_zone(i, 3, 0)).collect();
+        assert_eq!(plain, vec![10_000, 10_001, 10_002, 10_000, 10_001]);
+        let one: Vec<u32> = (0..4).map(|i| placement_zone(i, 1, 2)).collect();
+        assert_eq!(one, vec![10_000; 4]);
+        assert_eq!(placement_zone(999, 100, 1000), 10_000, "all hot");
+    }
+
+    /// `walking_set(1000, Some(100), 50, 30)`: exactly 300 walkers; each zone's walkers are the
+    /// floor or ceiling of 30% of its occupancy (59 → 17 or 18; 9 → 2 or 3; 10 → 3), so no
+    /// zone is silent; drawn Bresenham-style over the (zone, index) rank; not the first 300
+    /// bots; deterministic.
+    ///
+    /// Kills: Bresenham by bot index alone (every walker in the 30 zones whose index ends in
+    /// 3, 6 or 9: 70 zones get none); the first 300 bots (52 walkers in zone 10000); a rounding
+    /// that walks 301 or 299; a per-zone share computed from the wrong occupancy.
+    #[test]
+    fn walking_set_takes_30_percent_of_the_bots_spread_over_every_zone_sr9b_4() {
+        let set = walking_set(1000, Some(100), 50, 30);
+        assert_eq!(set.len(), 1000, "one entry per bot");
+        assert_eq!(walker_count(&set), 300, "exactly 1000 * 30 / 100 walkers");
+        assert_eq!(set, walking_set(1000, Some(100), 50, 30), "deterministic");
+
+        let zones = walkers_by_zone(&set, 100, 50);
+        assert_eq!(zones.len(), 100, "every zone of the band is occupied");
+        for &(zone, occ, walkers) in &zones {
+            let lo = occ * 30 / 100;
+            let hi = (occ * 30).div_ceil(100);
+            assert!(
+                (lo..=hi).contains(&walkers),
+                "zone {zone}: {walkers} walkers of {occ} bots, want {lo}..={hi}"
+            );
+            assert!(walkers > 0, "zone {zone} ({occ} bots) has no walker");
+        }
+        assert!(
+            walker_count(&set[..300]) < 300,
+            "the walkers are not simply the first 300 bots"
+        );
+        assert!(
+            walker_count(&set[..50]) <= 18,
+            "the 50 hot bots hold at most 18 walkers, got {}",
+            walker_count(&set[..50])
+        );
+        let rank = walker_rank(1000, Some(100), 50);
+        assert_spread_over_rank(&set, &rank, 30, "1000 bots, 100 zones, 50 hot");
+    }
+
+    /// Without `--zones` every bot is ranked by index: 30% of 20 bots is exactly 6, spread (never
+    /// the first 6); 30% of 7 is 2 (integer division, not 2.1 rounded up); 25% of 10 over three
+    /// zones is 2 (not 2.5 rounded up).
+    ///
+    /// Kills: the first N bots; a rounded (not floored) total; a per-zone rounding that sums
+    /// above the floored total.
+    #[test]
+    fn walking_set_floors_the_total_and_spreads_it_without_zones_sr9b_4() {
+        let set = walking_set(20, None, 0, 30);
+        assert_eq!(set.len(), 20);
+        assert_eq!(walker_count(&set), 6, "20 * 30 / 100");
+        assert_spread_over_rank(&set, &walker_rank(20, None, 0), 30, "20 bots, no zones");
+        assert!(
+            walker_count(&set[..6]) < 6,
+            "the walkers are not the first 6 bots"
+        );
+
+        let seven = walking_set(7, None, 0, 30);
+        assert_eq!(walker_count(&seven), 2, "7 * 30 / 100");
+        let three = walking_set(10, Some(3), 0, 25);
+        assert_eq!(walker_count(&three), 2, "10 * 25 / 100");
+        let rank = walker_rank(10, Some(3), 0);
+        assert_spread_over_rank(&three, &rank, 25, "10 bots, 3 zones");
+    }
+
+    /// Share 100 walks every bot (the default run); share 1 of 1,000 walks exactly 10, at most
+    /// one per zone.
+    ///
+    /// Kills: a share that drops a bot at 100 (`<` vs `<=`); a share applied per zone and summed
+    /// (100 zones × ceil(occupancy / 100) = 100 walkers at 1%).
+    #[test]
+    fn walking_set_at_full_and_minimal_share_sr9b_4() {
+        let all = walking_set(1000, Some(100), 50, 100);
+        assert_eq!(all, vec![true; 1000], "share 100: every bot walks");
+        assert_eq!(walking_set(5, None, 0, 100), vec![true; 5]);
+
+        let few = walking_set(1000, Some(100), 50, 1);
+        assert_eq!(walker_count(&few), 10, "1000 * 1 / 100");
+        for &(zone, occ, walkers) in &walkers_by_zone(&few, 100, 50) {
+            assert!(
+                walkers <= 1,
+                "zone {zone}: {walkers} walkers of {occ} at 1%"
+            );
+        }
+        let rank = walker_rank(1000, Some(100), 50);
+        assert_spread_over_rank(&few, &rank, 1, "1000 bots at 1%");
+    }
+
+    /// The placement call, byte-exact on the wire: `args` is a JSON string holding `[zone]`, the
+    /// reducer name is the load build's, and it carries request id 4 (frames 0 and 1 are the
+    /// subscribe and the join).
+    ///
+    /// Kills: a raw array for `args`, a quoted zone id, a misspelled reducer name.
+    #[test]
+    fn the_placement_call_reducer_envelope_is_byte_exact_sr9b_4() {
+        assert_eq!(REDUCER_DEV_PLACE_IN_LOAD_ZONE, "dev_place_in_load_zone");
+        assert_eq!(args_dev_place_in_load_zone(10_000), "[10000]");
+        assert_eq!(args_dev_place_in_load_zone(10_099), "[10099]");
+        assert_eq!(
+            client_msg_call_reducer(
+                REDUCER_DEV_PLACE_IN_LOAD_ZONE,
+                &args_dev_place_in_load_zone(10_000),
+                4
+            ),
+            r#"{"CallReducer":{"reducer":"dev_place_in_load_zone","args":"[10000]","request_id":4,"flags":0}}"#
+        );
+    }
+
+    /// A level whose placement committed for fewer bots than it holds is invalid
+    /// `placement_failed` (the bots it lists are not where the run says they are). Exactly
+    /// `concurrency` commits, or more (the delta is cumulative), is valid; `None` (no
+    /// `--zones`) never fails it.
+    ///
+    /// Kills: the reason never raised; a `<=` that invalidates an exact count; `None` read as 0.
+    #[test]
+    fn a_placement_shortfall_is_invalid_placement_failed_sr9b_4() {
+        let short = LevelSample {
+            placement_committed_delta: Some(9.0),
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&short).expect("consistent bounds");
+        assert!(!v.valid);
+        assert_eq!(v.invalid_reason.as_deref(), Some("placement_failed"));
+        for enough in [10.0, 11.0] {
+            let s = LevelSample {
+                placement_committed_delta: Some(enough),
+                ..base_sample(10)
+            };
+            let v = evaluate_level(&s).expect("consistent bounds");
+            assert!(v.valid, "{enough} placements for 10 bots is enough");
+        }
+        let unplaced = evaluate_level(&base_sample(10)).expect("consistent bounds");
+        assert!(unplaced.valid, "no --zones: never placement_failed");
+    }
+
+    /// Precedence: `join_failed` outranks `placement_failed` (a bot that never joined was
+    /// never placed), and `placement_failed` outranks `scope_unsettled`.
+    ///
+    /// Kills: `placement_failed` checked before the join, or after the scope check.
+    #[test]
+    fn placement_failed_sits_between_join_failed_and_scope_unsettled_sr9b_4() {
+        let unjoined = LevelSample {
+            join_committed_total_delta: 9.0,
+            placement_committed_delta: Some(0.0),
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&unjoined).expect("consistent bounds");
+        assert_eq!(v.invalid_reason.as_deref(), Some("join_failed"));
+        let unscoped = LevelSample {
+            placement_committed_delta: Some(0.0),
+            clients_scoped: 0,
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&unscoped).expect("consistent bounds");
+        assert_eq!(v.invalid_reason.as_deref(), Some("placement_failed"));
     }
 }

@@ -47,3 +47,4 @@ syn = { version = "2", features = ["full", "visit"] }
 # arguably more stable (the vendor has a TODO to rename the flag), so this is a
 # recorded correction, not a mandate to change. Never add to `default`.
 dev_reducers = []
+load_test_zones = ["game-core/load_test_zones", "dev_reducers"]

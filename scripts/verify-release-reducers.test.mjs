@@ -8,11 +8,13 @@ import {
   parseReducerNames,
 } from './verify-release-reducers.mjs';
 
-test('the forbidden set is exactly the three dev_reducers-only reducer names', () => {
-  // `start_wild_battle` (no source defines it), `grant_bait` and `dev_expire_tactical_window`: a
-  // published module exporting any of them was built with `--features dev_reducers`.
+test('the forbidden set is exactly the four dev-only reducer names (sr-9b.3)', () => {
+  // `start_wild_battle` (no source defines it), `grant_bait`, `dev_expire_tactical_window` and
+  // `dev_place_in_load_zone` (the `load_test_zones` build only): a published module exporting any
+  // of them was built with `--features dev_reducers` or `--features load_test_zones`.
   assert.deepEqual([...FORBIDDEN_REDUCERS].sort(), [
     'dev_expire_tactical_window',
+    'dev_place_in_load_zone',
     'grant_bait',
     'start_wild_battle',
   ]);
@@ -86,5 +88,41 @@ test('th-4.7: a published V10 module exporting dev_expire_tactical_window is ref
   assert.deepEqual(check(['join_game', 'grant_bait', 'sync_content']), ['grant_bait']);
   // Exact name only: a near-miss is a different reducer and is not flagged.
   assert.deepEqual(check(['join_game', 'dev_expire_tactical_window_v2', 'sync_content']), []);
+  assert.deepEqual(check(['join_game', 'sync_content']), []);
+});
+
+test('a published V10 module exporting dev_place_in_load_zone is refused, a near-miss is not (sr-9b.3)', () => {
+  // The load build's placement reducer (`--features load_test_zones`) in a published-module
+  // describe payload (V10 sections shape), parsed and checked exactly as the driver does.
+  const describe = (reducerNames) =>
+    JSON.stringify({
+      sections: [
+        { Typespace: { types: [] } },
+        { Tables: [] },
+        {
+          Reducers: reducerNames.map((name) => ({
+            source_name: name,
+            params: { elements: [] },
+            visibility: { Public: [] },
+          })),
+        },
+      ],
+    });
+  const check = (reducerNames) =>
+    findForbiddenReducers(parseReducerNames(describe(reducerNames)), FORBIDDEN_REDUCERS);
+
+  assert.deepEqual(check(['join_game', 'dev_place_in_load_zone', 'sync_content']), [
+    'dev_place_in_load_zone',
+  ]);
+  // Both dev builds' reducers in one module: each is reported, in the module's order.
+  assert.deepEqual(
+    check(['dev_place_in_load_zone', 'join_game', 'dev_expire_tactical_window', 'sync_content']),
+    ['dev_place_in_load_zone', 'dev_expire_tactical_window'],
+  );
+  // Exact name only: near-misses are different reducers and are not flagged.
+  assert.deepEqual(
+    check(['join_game', 'dev_place_in_load_zone_v2', 'place_in_load_zone', 'sync_content']),
+    [],
+  );
   assert.deepEqual(check(['join_game', 'sync_content']), []);
 });
