@@ -111,8 +111,9 @@ impl SoloState {
         }
     }
 
-    /// A fresh player has no flags and content may not name system flags, so `NotFlag` can
-    /// always hold.
+    /// `NotFlag` is treated as holding on its own: a fresh player has no flags and content may
+    /// not name `sys:` flags. The audit over-approximates: it does not model a flag being both
+    /// set and unset, or a quest leaving the active set once done.
     fn holds(&self, condition: &Condition) -> bool {
         match condition {
             Condition::HasFlag(flag) => self.flags.contains(flag),
@@ -142,26 +143,32 @@ impl SoloState {
     }
 
     /// Walk a tree as the server does. A conversation opens at the first node whose entry
-    /// conditions hold, so candidates are the nodes in order up to and including the first
-    /// node with none (it always matches and shadows the rest). Other nodes are reached only
-    /// through a choice's `next_node`.
-    fn walk(&mut self, tree: &DialogueTree) {
-        let mut todo = Vec::new();
+    /// conditions hold, so entry candidates are the nodes in order up to and including the
+    /// first node with none (it always matches and shadows the rest). Only an entry node's
+    /// `auto_effects` run; a node reached through a choice's `next_node` offers its choices
+    /// but runs no `auto_effects`. Returns whether any entry candidate holds, that is whether
+    /// the conversation can open at all.
+    fn walk(&mut self, tree: &DialogueTree) -> bool {
+        let mut entries = Vec::new();
         for (index, node) in tree.nodes.iter().enumerate() {
             if self.all_hold(&node.entry_conditions) {
-                todo.push(index);
+                entries.push(index);
             }
             if node.entry_conditions.is_empty() {
                 break;
             }
         }
+        for &index in &entries {
+            self.apply(&tree.nodes[index].auto_effects);
+        }
+        let opened = !entries.is_empty();
+        let mut todo = entries;
         let mut reached = BTreeSet::new();
         while let Some(index) = todo.pop() {
             if !reached.insert(index) {
                 continue;
             }
             let node = &tree.nodes[index];
-            self.apply(&node.auto_effects);
             for choice in &node.choices {
                 if !self.all_hold(&choice.conditions) {
                     continue;
@@ -172,6 +179,7 @@ impl SoloState {
                 todo.extend(target);
             }
         }
+        opened
     }
 }
 
@@ -192,7 +200,7 @@ fn obtainable_items() -> BTreeSet<u32> {
     // action opens the heal frame only, so its tree is never spoken.
     let mut bound_shops = BTreeSet::new();
     let mut spoken_trees = BTreeSet::new();
-    let mut spoken_npcs = BTreeSet::new();
+    let mut spoken_npcs = BTreeMap::new();
     for npc in npcs.iter().filter(|npc| zones.contains(&npc.zone_id)) {
         match npc.interaction {
             NpcInteraction::Shop(shop_id) => {
@@ -202,7 +210,7 @@ fn obtainable_items() -> BTreeSet<u32> {
             NpcInteraction::Heal(_) => continue,
         }
         spoken_trees.insert(npc.dialogue_tree_id.as_str());
-        spoken_npcs.insert(npc.npc_id.as_str());
+        spoken_npcs.insert(npc.npc_id.as_str(), npc.dialogue_tree_id.as_str());
     }
     for shop in shops.iter().filter(|shop| bound_shops.contains(&shop.id)) {
         let stock = shop.stock.iter().filter(|s| s.buy_price > 0);
@@ -213,20 +221,30 @@ fn obtainable_items() -> BTreeSet<u32> {
     // until nothing grows.
     loop {
         let before = state.size();
+        let mut opened_trees = BTreeSet::new();
         for tree in trees
             .iter()
             .filter(|t| spoken_trees.contains(t.id.as_str()))
         {
-            state.walk(tree);
+            if state.walk(tree) {
+                opened_trees.insert(tree.id.as_str());
+            }
         }
+        // The server fires a talk trigger only once a conversation opens: the NPC's tree must
+        // exist and one of its entry candidates must hold. A missing tree is never opened.
+        let talkable: BTreeSet<&str> = spoken_npcs
+            .iter()
+            .filter(|(_, tree_id)| opened_trees.contains(*tree_id))
+            .map(|(npc_id, _)| *npc_id)
+            .collect();
         for quest in &quests {
             // The server inserts the quest row on `StartQuest` without evaluating the quest's
-            // `start_conditions`, so they are not checked. It advances quests only on talk,
-            // so a collect or defeat step never completes.
+            // `start_conditions`, so they are not checked. It advances a quest step only when
+            // a conversation opens through `talk`, so a collect or defeat step never completes.
             let finishable = state.started_quests.contains(&quest.id)
                 && quest.steps.iter().all(|step| match &step.trigger {
                     StepTrigger::Talk { npc_id } => {
-                        spoken_npcs.contains(npc_id.as_str()) && state.all_hold(&step.conditions)
+                        talkable.contains(npc_id.as_str()) && state.all_hold(&step.conditions)
                     }
                     StepTrigger::Collect { item_id: _, qty: _ } => false,
                     StepTrigger::Defeat { species_id: _ } => false,
