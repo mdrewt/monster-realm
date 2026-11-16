@@ -10,8 +10,9 @@
  * rejection keeps today's `advance: …` report and sends no dismiss.
  *
  * QF6.4: `talk` is the only path that completes a quest, and it always upserts the conversation row
- * in the same transaction. So a batch in which one of my player_quest rows leaves while my
- * conversation row is present is a completion: the status line names the quest and the wallet's gain.
+ * in the same transaction. So a batch in which one of my quest rows (read through the owner-scoped
+ * `my_player_quest` view) leaves while my conversation row is present is a completion: the status
+ * line names the quest and the wallet's gain.
  *
  * Both notices go to the live region too, and must survive its 500 ms coalescer: the overlay's open
  * or close label lands around the same moment, and only the newest message inside a window is
@@ -827,8 +828,9 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
     // too, so it cannot tell pqId keying from questId keying: statusModel.test.ts's re-keyed-row
     // test does); one on any balance gain (a trade payout, a sale); one that ignores the conversation row
     // (account deletion erases both rows in one transaction); one over every player's quest rows
-    // (player_quest is a public table); and a baseline kept across a reconnect (the fresh snapshot
-    // would read as a completion of the quest the old one held).
+    // (the client receives only its own through the owner-scoped my_player_quest view, but the
+    // store's owner filter still scopes the read); and a baseline kept across a reconnect (the
+    // fresh snapshot would read as a completion of the quest the old one held).
     await bootReady();
     run();
     expect(statusText(), 'nothing on the status line').toBe('');

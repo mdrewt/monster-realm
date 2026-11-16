@@ -17,6 +17,7 @@ import {
   inventoryRowToStore,
   monsterPubRowToStore,
   pendingEvolutionNoticeRowToStore,
+  playerQuestRowToStore,
   tacticalBattleRowToStore,
   tradeSessionRowToStore,
 } from './rowConvert';
@@ -195,6 +196,12 @@ const sdkTrade = (sessionId: bigint) => ({
   revision: 1n,
   createdAtMs: 1n,
 });
+const sdkQuest = (pqId: bigint, questId: string, stepIndex: number) => ({
+  pqId,
+  ownerIdentity: ID,
+  questId,
+  stepIndex,
+});
 
 /** A row whose every property read throws: any converter that touches it throws a plain Error. */
 const malformed = (thrown: unknown = new Error('malformed row')): unknown =>
@@ -224,6 +231,7 @@ const ROSTER: readonly OwnerView[] = [
   'myBattleEvents',
   'myFormation',
   'myTradeSession',
+  'myPlayerQuest',
 ];
 
 interface ViewRow {
@@ -308,6 +316,11 @@ const VIEW_TABLE: Record<OwnerView, ViewRow> = {
     valid: () => [sdkTrade(9n), sdkTrade(4n)],
     expected: conv(tradeSessionRowToStore),
   },
+  myPlayerQuest: {
+    method: 'reconcileQuestsFromView',
+    valid: () => [sdkQuest(3n, 'quest_001', 0), sdkQuest(5n, 'quest_002', 1)],
+    expected: conv(playerQuestRowToStore),
+  },
 };
 
 const VIEWS: readonly View[] = ROSTER.map((key) => ({ key, ...VIEW_TABLE[key] }));
@@ -333,6 +346,7 @@ function makeCache(rows: Rows): OwnerViewCache {
     myBattleEvents: handle('myBattleEvents'),
     myFormation: handle('myFormation'),
     myTradeSession: handle('myTradeSession'),
+    myPlayerQuest: handle('myPlayerQuest'),
   };
 }
 
@@ -1066,5 +1080,100 @@ describe('createOwnerViewReconciler: only the dirty views reconcile (sr-6b)', ()
     }
     fix();
     expectRetriedNext(r, p, rows, ['myTradeSession']);
+  });
+
+  // sr-3 (sr-3.3): the owner-scoped `my_player_quest` view is the fourteenth owner view, its own
+  // try group, appended last; its reconcile is `store.reconcileQuestsFromView` over
+  // `playerQuestRowToStore`. The roster, VIEW_TABLE and makeCache above carry it, so every generic
+  // test of both describes covers it too.
+
+  it('the player quest view is the fourteenth owner view, reconciled last [SR3.3]', () => {
+    // WRONG IMPL KILLED: the quest view left out of the roster (it is never reconciled, and every
+    // quest change is lost); put in the shared group or the inventory's (it is no longer last);
+    // inserted ahead of an existing view (that view moves).
+    expect(OWNER_VIEWS).toHaveLength(14);
+    expect(OWNER_VIEWS.at(-1)).toBe('myPlayerQuest');
+  });
+
+  it('after a full reconcile, a reconcile with every other view marked never reads the quest view, never calls reconcileQuestsFromView and converts no quest row [SR3.3]', () => {
+    // WRONG IMPL KILLED: the quest reconcile chained onto another view's (the trade session's, the
+    // inventory's) or run whenever any view is dirty; a mark on another view that also dirties the
+    // quest view; a clean quest view whose rows are converted with only the store call skipped.
+    const rows = allValid();
+    const p = probe(rows);
+    const r = drained(p);
+    // A quest row no converter accepts: reading and converting it would log a throw.
+    rows.myPlayerQuest = [malformed()];
+    const others = allBut(['myPlayerQuest']);
+    for (const view of others) r.markDirty(view);
+    run(r, p);
+    expectReconciled(rows, others);
+    expect(p.reads, 'the quest view is never read').toEqual(others);
+    expect(spyOf('myPlayerQuest')).not.toHaveBeenCalled();
+    expectLogged([]);
+  });
+
+  it('marking the quest view after a step advance reconciles it alone, once, handing the store the advanced rows under their own pqIds, and then it is clean [SR3.3]', () => {
+    // WRONG IMPL KILLED: a mark on the quest view ignored, or one that also runs another view; the
+    // quest view left dirty after its reconcile (it re-reads the cache on every batch); the SDK row
+    // handed to the store unconverted (the owner an Identity object, not its hex); rows taken from
+    // anywhere but the cache at reconcile time (the step-0 rows of the first reconcile).
+    const rows = allValid();
+    const p = probe(rows);
+    const r = drained(p);
+    const me = ID.toHexString();
+    rows.myPlayerQuest = [sdkQuest(3n, 'quest_001', 1), sdkQuest(5n, 'quest_002', 2)];
+    r.markDirty('myPlayerQuest');
+    run(r, p);
+    expect(reconciled(), 'the quest reconcile alone').toEqual(['myPlayerQuest']);
+    expect(spyOf('myPlayerQuest').mock.calls, 'one call, with the advanced store rows').toEqual([
+      [
+        [
+          { pqId: 3n, ownerIdentity: me, questId: 'quest_001', stepIndex: 1 },
+          { pqId: 5n, ownerIdentity: me, questId: 'quest_002', stepIndex: 2 },
+        ],
+      ],
+    ]);
+    expect(p.reads, 'only the quest view is read').toEqual(['myPlayerQuest']);
+    clear(p);
+    run(r, p);
+    expectReconciled(rows, []);
+    expect(p.reads, 'once reconciled, the quest view is clean').toEqual([]);
+    expectLogged([]);
+  });
+
+  it('a quest row that throws leaves only the quest view dirty while every other view lands, and its retry lands the quests in the same reconcile as an inventory row and a trade-session row that throw [SR3.3]', () => {
+    // WRONG IMPL KILLED: the quest view in a try group with the inventory or the trade session
+    // (their throw skips the quests); a throwing quest view cleared (the quests never land until a
+    // quest row next changes); a quest throw that stops another group; the quest view dirtied
+    // again by the inventory's or the trade session's throw.
+    const questThrow = new Error('bad quest row');
+    const rows = allValid();
+    const fixQuests = breakView(rows, 'myPlayerQuest', questThrow);
+    const p = probe(rows);
+    const r = createOwnerViewReconciler();
+    run(r, p);
+    expectReconciled(rows, allBut(['myPlayerQuest']));
+    expectLogged([questThrow]);
+
+    fixQuests();
+    const inventoryThrow = new Error('bad inventory row');
+    const tradeThrow = new Error('bad trade row');
+    const fixInventory = breakView(rows, 'my_inventory', inventoryThrow);
+    const fixTrade = breakView(rows, 'myTradeSession', tradeThrow);
+    r.markDirty('my_inventory');
+    r.markDirty('myTradeSession');
+    clear(p);
+    run(r, p);
+    expectReconciled(rows, ['myPlayerQuest']);
+    expect(p.reads, 'the two throwing views, then the retried quest view').toEqual([
+      'my_inventory',
+      'myTradeSession',
+      'myPlayerQuest',
+    ]);
+    expectLogged([inventoryThrow, tradeThrow]);
+    fixInventory();
+    fixTrade();
+    expectRetriedNext(r, p, rows, ['my_inventory', 'myTradeSession']);
   });
 });

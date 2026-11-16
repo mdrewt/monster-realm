@@ -751,7 +751,7 @@ describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it'
       'item_row',
       'evolution_path',
       'my_conversation',
-      'player_quest',
+      'my_player_quest',
       'heal_location_row',
       'npc',
       'zone_def',
@@ -782,6 +782,11 @@ describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it'
     ).toEqual([]);
     expect((b.queries ?? []).filter((q) => /\bcharacter\b/.test(q))).toEqual([]);
     expect((b.queries ?? []).filter((q) => q.includes('trade_offer'))).toEqual([]);
+    // sr-3: player_quest is private; the client reads its own rows through my_player_quest.
+    expect(
+      (b.queries ?? []).filter((q) => /FROM\s+player_quest\b/.test(q)),
+      'the private player_quest table is never subscribed',
+    ).toEqual([]);
     const handled = [...Object.keys(H.rowCbs), ...Object.keys(H.updCbs)];
     expect(handled, 'precondition: the row handlers were wired').toContain('my_account');
     expect(handled.filter((name) => /trade_?offer/i.test(name))).toEqual([]);
