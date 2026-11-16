@@ -2815,13 +2815,11 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
   });
 
   // ===========================================================================================
-  // sr-3 (sr-3.3): `player_quest` is private. The client reads its own quest rows through the
-  // owner-scoped `my_player_quest` view (`conn.db.myPlayerQuest`), an owner view like the others:
-  // its onInsert / onDelete mark it, and the batch rebuilds the store's quests from the view's
+  // `player_quest` is private. The client reads its own quest rows through the owner-scoped
+  // `my_player_quest` view (`conn.db.myPlayerQuest`), an owner view like the others: its
+  // onInsert / onDelete mark it, and the batch rebuilds the store's quests from the view's
   // post-burst cache (`store.reconcileQuestsFromView`). The sr-6b helpers above drive it; the
-  // generic sr-6b tests cover its handlers through SR6B_METHOD. RED REASON: connect() subscribes
-  // `player_quest` and writes each row through upsertQuest / removeQuest; nothing is wired on
-  // `myPlayerQuest`, and `reconcileQuestsFromView` is not a store method.
+  // generic sr-6b tests cover its handlers through SR6B_METHOD.
   // ===========================================================================================
   describe('the player quest view (sr-3)', { sequential: true }, () => {
     /** One quest row: its pqId, questId and step. */

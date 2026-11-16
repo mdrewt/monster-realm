@@ -1082,7 +1082,7 @@ describe('createOwnerViewReconciler: only the dirty views reconcile (sr-6b)', ()
     expectRetriedNext(r, p, rows, ['myTradeSession']);
   });
 
-  // sr-3 (sr-3.3): the owner-scoped `my_player_quest` view is the fourteenth owner view, its own
+  // The owner-scoped `my_player_quest` view is the fourteenth owner view, its own
   // try group, appended last; its reconcile is `store.reconcileQuestsFromView` over
   // `playerQuestRowToStore`. The roster, VIEW_TABLE and makeCache above carry it, so every generic
   // test of both describes covers it too.

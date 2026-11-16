@@ -1448,21 +1448,7 @@ export class AuthoritativeStore {
    *  AUTHORITATIVE: a `pqId` absent from `rows` is DELETED (a completed quest's row is deleted
    *  server-side). `#dirty` is set only on a REAL change. */
   reconcileQuestsFromView(rows: readonly StorePlayerQuest[]): void {
-    const keep = new Set<bigint>();
-    for (const q of rows) {
-      keep.add(q.pqId);
-      const prev = this.#quests.get(q.pqId);
-      if (prev === undefined || !shallowRowEq(prev, q)) {
-        this.#quests.set(q.pqId, q);
-        this.#dirty = true;
-      }
-    }
-    for (const id of [...this.#quests.keys()]) {
-      if (!keep.has(id)) {
-        this.#quests.delete(id);
-        this.#dirty = true;
-      }
-    }
+    this.#reconcileKeyed(this.#quests, rows, (r) => r.pqId);
   }
 
   /** Rebuild the whole chunk map from the post-burst `my_export_bundle` cache —

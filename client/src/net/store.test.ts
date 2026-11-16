@@ -6406,14 +6406,13 @@ describe('AuthoritativeStore ts-4.4: no trade-offer state', () => {
 });
 
 // =============================================================================
-// sr-3 (sr-3.3): the quest map follows the owner-scoped `my_player_quest` view. A PK-less Vec view,
-// so the map is rebuilt from the post-burst SDK cache by `reconcileQuestsFromView(rows)`:
+// The quest map follows the owner-scoped `my_player_quest` view. A PK-less Vec view, so the map
+// is rebuilt from the post-burst SDK cache by `reconcileQuestsFromView(rows)`:
 // AUTHORITATIVE and keyed by `pqId` (a quest the view no longer holds is deleted; a step advance
 // replaces its row under the same `pqId`), dirtying the batch only on a real change and never
 // clearing a change already pending. Read back through `ownQuests(owner)`, the batch signal through
 // the `flushBatch()` listeners (`bt12sWakes`). Fixtures: the M12d block's `questRow` and its local
-// `StorePlayerQuest`. RED REASON: `reconcileQuestsFromView` does not exist on AuthoritativeStore
-// (TypeError: not a function).
+// `StorePlayerQuest`.
 // =============================================================================
 
 const SR3_ME = 'ef'.repeat(32);
