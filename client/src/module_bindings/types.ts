@@ -302,6 +302,12 @@ export const BattleSummary = __t.object("BattleSummary", {
 });
 export type BattleSummary = __Infer<typeof BattleSummary>;
 
+export const BattleSummaryReaperSchedule = __t.object("BattleSummaryReaperSchedule", {
+  id: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+});
+export type BattleSummaryReaperSchedule = __Infer<typeof BattleSummaryReaperSchedule>;
+
 export const BattleTactical = __t.object("BattleTactical", {
   battleId: __t.u64(),
   get kind() {

@@ -1273,6 +1273,8 @@ unsafe extern "C" {
     fn register_table_playtest_event();
     #[link_name = "__preinit__20_register_describer_playtest_reaper_schedule"]
     fn register_table_playtest_reaper_schedule();
+    #[link_name = "__preinit__20_register_describer_battle_summary_reaper_schedule"]
+    fn register_table_battle_summary_reaper_schedule();
     #[link_name = "__preinit__20_register_describer_pvp_deadline_schedule"]
     fn register_table_pvp_deadline_schedule();
     #[link_name = "__preinit__20_register_describer_battle_challenge_reaper_schedule"]
@@ -1401,12 +1403,13 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 62] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 63] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
     register_table_playtest_event,
     register_table_playtest_reaper_schedule,
+    register_table_battle_summary_reaper_schedule,
     register_table_pvp_deadline_schedule,
     register_table_battle_challenge_reaper_schedule,
     register_table_character,

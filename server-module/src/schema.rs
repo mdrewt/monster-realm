@@ -1427,7 +1427,9 @@ pub struct BattleEvent {
 }
 
 /// PRIVATE per-battle telemetry (design §8.1 `battle_summary`): one row per
-/// finished battle, the H1 and H2 match-length source. NO view. The two
+/// finished battle, the H1 and H2 match-length source. NO view. Capped at the
+/// newest `summary_reaper::BATTLE_SUMMARY_CAP` rows by `battle_id`; a row whose
+/// battle is still held by `battle` or `battle_tactical` is never reaped. The two
 /// identity columns mirror `battle` (a wild battle's `opponent_identity` is
 /// zero) so the deletion cascade can tombstone the deleting side while the
 /// row survives. `windows_histogram[k]` counts unit-turns that opened `k`
@@ -2058,7 +2060,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "battle_summary",
         policy: DeletionPolicy::Anonymize,
-        basis: "per-battle telemetry (the H1 and H2 match-length source) survives with the deleting side identity column swapped to TOMBSTONE_IDENTITY, mirroring battle; never exported",
+        basis: "per-battle telemetry (the H1 and H2 match-length source) survives with the deleting side identity column swapped to TOMBSTONE_IDENTITY, mirroring battle; capped by summary_reaper at the newest BATTLE_SUMMARY_CAP rows by battle_id, never reaping a row whose battle or battle_tactical row still exists; never exported",
         exportable: false,
     },
     // --- JOIN-ONLY: no Identity column; swept via the owning parent's step. ---
@@ -2281,6 +2283,13 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "playtest_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
         basis: "global TTL reaper schedule for playtest_event, not keyed to any player",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "battle_summary_reaper_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "global cap reaper schedule for battle_summary: at most one one-shot row, \
+                armed only while that table is over its cap; not keyed to any player",
         exportable: false,
     },
 ];

@@ -1878,6 +1878,8 @@ mod nh_sync {
         npcs: Handle<'a, Npc, u64>,
         heals: Handle<'a, HealLocationRow, u32>,
         ticks: Handle<'a, MovementTickSchedule, u64>,
+        summaries: Handle<'a, crate::schema::BattleSummary, u64>,
+        summary_reaper: Handle<'a, crate::summary_reaper::BattleSummaryReaperSchedule, u64>,
     }
 
     fn world(fx: &Fixture) -> World<'_> {
@@ -2027,6 +2029,27 @@ mod nh_sync {
                 .unique(),
             ticks: fx
                 .table_keyed::<MovementTickSchedule, u64>("movement_tick_schedule", "id", |r| r.id)
+                .writable()
+                .scannable()
+                .unique()
+                .auto_inc(|r| r.id, |r, id| r.id = id),
+            // init and sync_content arm the battle_summary reaper from this table's row
+            // count and bring its schedule in line.
+            summaries: fx
+                .table_keyed::<crate::schema::BattleSummary, u64>(
+                    "battle_summary",
+                    "battle_id",
+                    |r| r.battle_id,
+                )
+                .writable()
+                .scannable()
+                .unique(),
+            summary_reaper: fx
+                .table_keyed::<crate::summary_reaper::BattleSummaryReaperSchedule, u64>(
+                    "battle_summary_reaper_schedule",
+                    "id",
+                    |r| r.id,
+                )
                 .writable()
                 .scannable()
                 .unique()
@@ -2473,6 +2496,154 @@ mod nh_sync {
             beat_after[0].scheduled_at,
             every(60),
             "still a 60 s interval"
+        );
+    }
+
+    // --- init and sync_content arm the battle_summary reaper ---------------------
+
+    /// The spec's cap on `battle_summary` rows and the reaper's retry delay, as
+    /// literals (never the module's constants).
+    const SR7_CAP: u64 = 100_000;
+    const SR7_RETRY_MS: i64 = 300_000;
+    const SR7_NOW: i64 = 1_700_000_000_000;
+
+    fn sr7_at(ms: i64) -> spacetimedb::Timestamp {
+        spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    /// A finished wild battle's summary row.
+    fn sr7_summary(battle_id: u64) -> crate::schema::BattleSummary {
+        crate::schema::BattleSummary {
+            battle_id,
+            player_identity: Identity::from_byte_array([0x52; 32]),
+            opponent_identity: crate::WILD_IDENTITY,
+            kind: game_core::tactics::tuning::BattleKind::Wild,
+            outcome: game_core::BattleOutcome::SideAWins,
+            rounds: 4,
+            wall_ms: 60_000,
+            idle_ms_a: 0,
+            idle_ms_b: 0,
+            windows_histogram: vec![],
+            autopasses: 0,
+            recruit_attempts: 0,
+            recruit_successes: 0,
+            weaken_first: false,
+            items_used: 0,
+            damage_dealt_a: 0,
+            damage_dealt_b: 0,
+            hits: 0,
+            misses: 0,
+            unit_turns_prequeued: 0,
+            unit_turns_live: 0,
+            halted_plans: 0,
+            se_kos_after_r1: 0,
+            kos_after_r1: 0,
+            end_how: None,
+        }
+    }
+
+    /// `n` summary rows with non-contiguous ids `1 000 + 3·i`, highest first.
+    fn sr7_seed_summaries(w: &World<'_>, n: u64) {
+        for i in (0..n).rev() {
+            w.summaries.seed(&sr7_summary(1_000 + 3 * i));
+        }
+    }
+
+    /// Every battle_summary reaper schedule row as (id, one-shot fire ms; `None` = an
+    /// interval row), by id.
+    fn sr7_wakes(w: &World<'_>) -> Vec<(u64, Option<i64>)> {
+        let mut v: Vec<(u64, Option<i64>)> = w
+            .summary_reaper
+            .rows()
+            .iter()
+            .map(|s| (s.id, crate::playtest::one_shot_ms(&s.scheduled_at)))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// `init` over a `battle_summary` already one row past the cap arms exactly one
+    /// reaper run, a one-shot five minutes out.
+    ///
+    /// kills: the ensure call missing from `init`; the run armed at once, at the wrong
+    /// delay, as an interval row, or twice.
+    #[test]
+    fn sr7_5_init_over_the_cap_arms_exactly_one_reaper_run() {
+        let fx = fixture();
+        let w = world(&fx);
+        sr7_seed_summaries(&w, SR7_CAP + 1);
+        fx.run_as_at(owner(), sr7_at(SR7_NOW), crate::init);
+        let armed = sr7_wakes(&w);
+        assert_eq!(armed.len(), 1, "exactly one run: {armed:?}");
+        assert_eq!(
+            armed[0].1,
+            Some(SR7_NOW + SR7_RETRY_MS),
+            "a one-shot five minutes out"
+        );
+    }
+
+    /// `sync_content` (the owner's republish step, here on its equal-version skip
+    /// path) brings the reaper's schedule in line with `battle_summary`. `init` over an
+    /// empty table arms nothing; at exactly the cap a sync leaves no run, removing a
+    /// stale one that an over-the-cap ensure would keep; one row past the cap with
+    /// nothing armed it arms exactly one, five minutes out; a repeat sync keeps that
+    /// run and writes no schedule row.
+    ///
+    /// kills: the ensure call missing from `sync_content`, or reached only on its
+    /// reseed path; `>=` for `>` on the cap; a stale row left at the cap; a run armed
+    /// for an empty table; a fresh schedule row written by every sync.
+    #[test]
+    fn sr7_5_sync_content_arms_one_run_over_the_cap_and_none_at_it() {
+        use crate::summary_reaper::BattleSummaryReaperSchedule;
+        use spacetimedb::ScheduleAt;
+        let fx = fixture();
+        let w = world(&fx);
+        let sync = |ms: i64| {
+            assert_eq!(
+                fx.run_as_at(owner(), sr7_at(ms), crate::sync_content),
+                Ok(())
+            );
+        };
+        fx.run_as_at(owner(), sr7_at(SR7_NOW), crate::init);
+        assert_eq!(
+            sr7_wakes(&w),
+            vec![],
+            "init over an empty table arms nothing"
+        );
+
+        sr7_seed_summaries(&w, SR7_CAP);
+        w.summary_reaper.seed(&BattleSummaryReaperSchedule {
+            id: 900,
+            scheduled_at: ScheduleAt::Time(sr7_at(SR7_NOW + 1_000)),
+        });
+        sync(SR7_NOW);
+        assert_eq!(
+            sr7_wakes(&w),
+            vec![],
+            "exactly at the cap: no run, and the stale row is removed"
+        );
+
+        w.summaries.seed(&sr7_summary(9_000_000));
+        sync(SR7_NOW);
+        let armed = sr7_wakes(&w);
+        assert_eq!(
+            armed.len(),
+            1,
+            "one over the cap, nothing armed: exactly one run: {armed:?}"
+        );
+        assert_eq!(
+            armed[0].1,
+            Some(SR7_NOW + SR7_RETRY_MS),
+            "a one-shot five minutes out"
+        );
+
+        fx.reset_writes();
+        sync(SR7_NOW + 5);
+        assert_eq!(sr7_wakes(&w), armed, "a repeat sync keeps the armed run");
+        assert_eq!(
+            fx.writes_to("battle_summary_reaper_schedule"),
+            0,
+            "and writes no schedule row"
         );
     }
 
