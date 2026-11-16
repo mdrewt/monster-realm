@@ -27,6 +27,8 @@ mod nh {
 
     const NOT_A_LOAD_ZONE: &str = "zone is not a load zone";
     const NO_CHARACTER: &str = "caller has no character";
+    /// sr-9b round 2 (named intentional change): a missing `move_intent` row has its own reason.
+    const NO_INTENT: &str = "caller has no move intent row";
     const IN_BATTLE: &str = "cannot move during an ongoing battle";
 
     const T0: i64 = 1_750_000_000_000;
@@ -657,13 +659,15 @@ mod nh {
         assert_admitted(&fx, &w, a(), A_ENTITY, 10_000);
     }
 
-    /// A caller whose `player` row stands but whose `character` row, or `move_intent` row, is
-    /// missing is refused with no row changed: no intent cleared, no character moved, no tick
+    /// A caller whose `player` row stands but whose `character` row is missing is refused
+    /// "caller has no character"; one whose `character` row stands but whose `move_intent` row is
+    /// missing is refused "caller has no move intent row" (round 2: a named intentional change of
+    /// that reason). Either way no row changes: no intent cleared, no character moved, no tick
     /// armed. Positive control: the missing row restored.
     ///
     /// WRONG IMPL KILLED: a placement that clears the intent and then finds no character (or
     /// moves the character and then finds no intent); a tick armed before the rows are checked;
-    /// a panic on a missing row.
+    /// a panic on a missing row; the two missing rows reported with one reason.
     #[test]
     fn a_caller_missing_its_character_or_intent_row_is_refused_sr9b_2() {
         {
@@ -680,7 +684,7 @@ mod nh {
             let w = world(&fx);
             w.join(a(), &a_character(), &a_intent());
             assert_eq!(w.intents.remove(A_ENTITY), 1, "fixture: A's intent goes");
-            assert_refused(&fx, &w, a(), 10_000, NO_CHARACTER);
+            assert_refused(&fx, &w, a(), 10_000, NO_INTENT);
             w.intents.seed(&a_intent());
             assert_admitted(&fx, &w, a(), A_ENTITY, 10_000);
         }

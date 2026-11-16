@@ -29,7 +29,7 @@
 //! | `--fail-on-invalid` | off | takes no value; see "Exit codes" |
 //! | `--zones <n>` | — | 1..=100; after joining, bot `i` moves to load zone `10000 + i mod n` |
 //! | `--hot-zone <n>` | `0` | ≤ `MAX_CLIENTS`, needs `--zones`; the first `n` bots all go to zone 10000 |
-//! | `--walking-share <pct>` | `100` | 1..=100; only that share of bots sends moves, spread over the zones ([`walking_set`]) |
+//! | `--walking-share <pct>` | `100` | 1..=100, ≥1 walker at `--clients-start`; that share of bots sends moves ([`walking_set`]) |
 //!
 //! A flag's value may not begin with `--`: that is a forgotten value, and taking
 //! it would swallow the next flag.
@@ -183,7 +183,8 @@
 //!   are not counted, so the rates lean high. Both are integers, rounded down.
 //! - The connect burst is not separated out beyond the warm-up discard. Each
 //!   `Subscribe` replaces the set and re-sends its initial rows, so a bot
-//!   downloads the whole `player` table at each of its three sends, where a client
+//!   downloads the whole `player` table at each of its three sends (four when
+//!   `--zones` places it after its own row first arrived in zone 0), where a client
 //!   downloads it once; a bot still connecting when the first usable scrape is
 //!   taken carries that into the window and can set `_max`.
 //! - Accept/reject truth comes from `spacetime_num_txns_total` deltas alone
@@ -563,6 +564,11 @@ pub fn parse_args(args: &[String]) -> Result<Config, String> {
     }
     if !(1..=100).contains(&walking_share) {
         return Err("--walking-share must be in 1..=100".to_string());
+    }
+    if u64::from(clients_start) * u64::from(walking_share) / 100 == 0 {
+        return Err(format!(
+            "--walking-share {walking_share} leaves no bot walking at --clients-start {clients_start}"
+        ));
     }
 
     Ok(Config {
@@ -1352,10 +1358,10 @@ pub struct LevelSample {
     pub clients_connected: u32,
     /// Bots that subscribed their own `character` row and its zone.
     pub clients_scoped: u32,
-    /// Cumulative `join_game{committed="true"}` delta since RUN start (AM5).
+    /// Cumulative `join_game{committed="true"}` delta since the level's baseline scrape (AM5).
     pub join_committed_total_delta: f64,
-    /// Cumulative `dev_place_in_load_zone{committed="true"}` delta since RUN start; `None` when
-    /// the run places no bot (no `--zones`).
+    /// Cumulative `dev_place_in_load_zone{committed="true"}` delta since the level's baseline
+    /// scrape; `None` when the run places no bot (no `--zones`).
     pub placement_committed_delta: Option<f64>,
     pub enqueue_accepted_delta: f64,
     pub enqueue_rejected_delta: f64,
@@ -1931,6 +1937,46 @@ pub fn walking_set(
         walks[bot as usize] = (rank + 1) * share / 100 > rank * share / 100;
     }
     walks
+}
+
+/// One bot's part in a level: the load zone it moves to after joining (`--zones`), and whether
+/// it sends moves (`--walking-share`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BotPlan {
+    pub place_in: Option<u32>,
+    pub walks: bool,
+}
+
+/// Every bot's [`BotPlan`] for a level of `concurrency` bots, indexed by bot: [`placement_zone`]
+/// with `--zones`, and the level's [`walking_set`].
+#[must_use]
+pub fn bot_plan(cfg: &Config, concurrency: u32) -> Vec<BotPlan> {
+    let walks = walking_set(concurrency, cfg.zones, cfg.hot_zone, cfg.walking_share);
+    (0..concurrency)
+        .zip(walks)
+        .map(|(bot, walks)| BotPlan {
+            place_in: cfg
+                .zones
+                .map(|zones| placement_zone(bot, zones, cfg.hot_zone)),
+            walks,
+        })
+        .collect()
+}
+
+/// The run-level report note that records the bot layout, when it is not the default of every
+/// bot walking where it joined: `load_shape:zones=<n|none>,hot_zone=<n>,walking_share=<pct>`.
+#[must_use]
+pub fn load_shape_note(cfg: &Config) -> Option<String> {
+    if cfg.zones.is_none() && cfg.walking_share == 100 {
+        return None;
+    }
+    let zones = cfg
+        .zones
+        .map_or_else(|| "none".to_string(), |n| n.to_string());
+    Some(format!(
+        "load_shape:zones={zones},hot_zone={},walking_share={}",
+        cfg.hot_zone, cfg.walking_share
+    ))
 }
 
 // ===========================================================================
@@ -2638,6 +2684,31 @@ pub fn args_dev_place_in_load_zone(zone_id: u32) -> String {
     format!("[{zone_id}]")
 }
 
+/// A bot's opening frames, in send order: the whole `player` table (request 1), `join_game`
+/// (request 2) and, for a bot placed in a load zone, `dev_place_in_load_zone` (request 4). The
+/// host runs one connection's calls in the order they arrive, so the join has committed when the
+/// placement runs. The join's own row names the entity, and `BotScope` takes the subscription
+/// from there.
+#[must_use]
+pub fn opening_messages(client_index: u32, plan: BotPlan) -> Vec<String> {
+    let mut messages = vec![
+        client_msg_subscribe(&opening_queries(), 1),
+        client_msg_call_reducer(
+            REDUCER_JOIN_GAME,
+            &args_join_game(&bot_name(client_index)),
+            2,
+        ),
+    ];
+    if let Some(zone) = plan.place_in {
+        messages.push(client_msg_call_reducer(
+            REDUCER_DEV_PLACE_IN_LOAD_ZONE,
+            &args_dev_place_in_load_zone(zone),
+            4,
+        ));
+    }
+    messages
+}
+
 /// `enqueue_move` args ARRAY: `[{"step":{"east":[]}},7]`.
 #[must_use]
 pub fn args_enqueue_move(input: MoveInput, seq: u64) -> String {
@@ -2824,8 +2895,7 @@ fn read_response_head(stream: &mut TcpStream) -> Result<(String, Vec<u8>), Strin
     Err("connection closed before the handshake completed".to_string())
 }
 
-/// Open a WS connection, handshake, subscribe to the opening set
-/// ([`opening_queries`]), `join_game`, and with `--zones` the placement call. Returns the socket,
+/// Open a WS connection, handshake, and send the bot's [`opening_messages`]. Returns the socket,
 /// the stream bytes that arrived behind the 101 head (which the bot's drain parses first), and
 /// the index of the next frame to mask.
 /// AM11: sets BOTH a read timeout ([`READ_TIMEOUT_MS`]) and a write timeout.
@@ -2833,6 +2903,7 @@ fn connect_client(
     host: &str,
     cfg: &Config,
     client_index: u32,
+    plan: BotPlan,
     identity: &MintedIdentity,
 ) -> Result<(TcpStream, Vec<u8>, u64), String> {
     let token = &identity.token;
@@ -2857,39 +2928,15 @@ fn connect_client(
         return Err(format!("websocket handshake rejected: {head}"));
     }
 
-    // The whole `player` table (frame 0), then join_game (frame 1): the join's
-    // own row names the entity, and BotScope takes the subscription from there.
-    let subscribe = client_msg_subscribe(&opening_queries(), 1);
-    let sub_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), 0);
-    stream
-        .write_all(&encode_text_frame(&subscribe, sub_mask))
-        .map_err(|e| format!("subscribe write: {e}"))?;
-    let join = client_msg_call_reducer(
-        REDUCER_JOIN_GAME,
-        &args_join_game(&bot_name(client_index)),
-        2,
-    );
-    let join_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), 1);
-    stream
-        .write_all(&encode_text_frame(&join, join_mask))
-        .map_err(|e| format!("join write: {e}"))?;
-    let mut next_frame = 2u64;
-
-    // With --zones, the placement call (frame 2). The host runs one connection's calls in the
-    // order they arrive, so the join has committed when it runs.
-    if let Some(zones) = cfg.zones {
-        let zone = placement_zone(client_index, zones, cfg.hot_zone);
-        let place = client_msg_call_reducer(
-            REDUCER_DEV_PLACE_IN_LOAD_ZONE,
-            &args_dev_place_in_load_zone(zone),
-            4,
-        );
-        let place_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), next_frame);
-        next_frame += 1;
+    // Each opening frame is masked by its frame index, from 0.
+    let messages = opening_messages(client_index, plan);
+    for (frame, message) in (0u64..).zip(&messages) {
+        let mask = mask_from_seed(cfg.seed ^ u64::from(client_index), frame);
         stream
-            .write_all(&encode_text_frame(&place, place_mask))
-            .map_err(|e| format!("placement write: {e}"))?;
+            .write_all(&encode_text_frame(message, mask))
+            .map_err(|e| format!("opening frame {frame} write: {e}"))?;
     }
+    let next_frame = messages.len() as u64;
 
     // Steady state: a tight read timeout so the per-iteration drain returns
     // promptly (AM1), and a bounded write timeout for the send loop.
@@ -2903,18 +2950,18 @@ fn connect_client(
 }
 
 /// One thread per client: bounded drain (AM2) → any change of scope → one intent
-/// when `walks` ([`walking_set`]) → open-loop sleep (AM1).
+/// when its [`BotPlan`] walks → open-loop sleep (AM1).
 fn client_thread(
     host: &str,
     cfg: &Config,
     client_index: u32,
-    walks: bool,
+    plan: BotPlan,
     identity: &MintedIdentity,
     counters: &ClientCounters,
     running: &AtomicBool,
 ) {
     let (mut stream, leftover, mut frame_index) =
-        match connect_client(host, cfg, client_index, identity) {
+        match connect_client(host, cfg, client_index, plan, identity) {
             Ok(connected) => {
                 counters.connected.fetch_add(1, Ordering::Relaxed);
                 connected
@@ -3021,7 +3068,7 @@ fn client_thread(
         }
 
         // One movement intent, from a walking bot only; the others just hold their scope.
-        if walks {
+        if plan.walks {
             let seq = seq_for(step_index);
             let input = next_input(client_index, seq, cfg.seed);
             let args = args_enqueue_move(input, seq);
@@ -3242,8 +3289,8 @@ fn run_level(
     let running_ref = &running;
     let scrapes_ref = &scrapes;
     let client_tokens_ref = &client_tokens;
-    let walkers = walking_set(concurrency, cfg.zones, cfg.hot_zone, cfg.walking_share);
-    let walkers_ref = &walkers;
+    let plan = bot_plan(cfg, concurrency);
+    let plan_ref = &plan;
     let scrape_result = std::thread::scope(|scope| -> Result<(), String> {
         for client_index in 0..concurrency {
             // 256 KiB stacks (not the ~2 MiB default) so MAX_CLIENTS=1000 is
@@ -3255,7 +3302,7 @@ fn run_level(
                         host,
                         cfg,
                         client_index,
-                        walkers_ref[client_index as usize],
+                        plan_ref[client_index as usize],
                         &client_tokens_ref[client_index as usize],
                         counters_ref,
                         running_ref,
@@ -3288,7 +3335,7 @@ fn run_level(
         &baseline,
         &raw,
         rx_bytes_by_scrape,
-        cfg.zones.is_some(),
+        plan.iter().any(|bot| bot.place_in.is_some()),
     )?;
     let verdict = evaluate_level(&sample)?;
     Ok(LevelReport { sample, verdict })
@@ -3316,6 +3363,9 @@ fn run(args: &[String]) -> Result<i32, String> {
     let parallelism = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let mut notes = Vec::new();
     if let Some(note) = co_location_note(total_driver_threads(cfg.clients_max), parallelism) {
+        notes.push(note);
+    }
+    if let Some(note) = load_shape_note(&cfg) {
         notes.push(note);
     }
 
@@ -8256,8 +8306,43 @@ mod tests {
 
         refused(&["--walking-share", "0"], "--walking-share");
         refused(&["--walking-share", "101"], "--walking-share");
-        assert_eq!(parsed(&["--walking-share", "1"]).walking_share, 1);
+        // sr-9b round 2 (named intentional change): share 1 needs a first level of 100 bots to
+        // walk anyone (1 * 100 / 100 = 1), or the new no-walker refusal fires; the bound itself
+        // is unchanged.
+        let one_percent = [
+            "--clients-start",
+            "100",
+            "--clients-max",
+            "100",
+            "--walking-share",
+            "1",
+        ];
+        assert_eq!(parsed(&one_percent).walking_share, 1);
         assert_eq!(parsed(&["--walking-share", "100"]).walking_share, 100);
+    }
+
+    /// A share that leaves the FIRST level without a single walker
+    /// (`clients_start * walking_share / 100 == 0`, integer) is refused naming `--walking-share`;
+    /// the smallest first level that walks one bot parses, whatever the flag order.
+    ///
+    /// Kills: no such refusal (a run whose first level offers no load); the product computed with
+    /// `clients_max` or rounded up; a `<=` that refuses exactly one walker.
+    #[test]
+    fn a_share_that_walks_nobody_at_the_first_level_is_refused_sr9b_4() {
+        refused(
+            &["--clients-start", "5", "--walking-share", "10"],
+            "--walking-share",
+        );
+        refused(
+            &["--clients-start", "9", "--walking-share", "10"],
+            "--walking-share",
+        );
+        refused(&["--walking-share", "19"], "--walking-share");
+        let ten = parsed(&["--clients-start", "10", "--walking-share", "10"]);
+        assert_eq!((ten.clients_start, ten.walking_share), (10, 10));
+        let reordered = parsed(&["--walking-share", "10", "--clients-start", "10"]);
+        assert_eq!(reordered.walking_share, 10, "validated after every flag");
+        assert_eq!(parsed(&["--walking-share", "20"]).walking_share, 20);
     }
 
     /// The full 1,000-bot placement table at 100 zones with 50 hot: bots 0..=49 in 10000, then
@@ -8398,8 +8483,9 @@ mod tests {
     }
 
     /// The placement call, byte-exact on the wire: `args` is a JSON string holding `[zone]`, the
-    /// reducer name is the load build's, and it carries request id 4 (frames 0 and 1 are the
-    /// subscribe and the join).
+    /// reducer name is the load build's, and it carries `request_id` 4. It is the bot's third
+    /// opening frame (frame index 2), after the subscribe (frame 0, `request_id` 1) and the join
+    /// (frame 1, `request_id` 2).
     ///
     /// Kills: a raw array for `args`, a quoted zone id, a misspelled reducer name.
     #[test]
@@ -8464,5 +8550,211 @@ mod tests {
         };
         let v = evaluate_level(&unscoped).expect("consistent bounds");
         assert_eq!(v.invalid_reason.as_deref(), Some("placement_failed"));
+    }
+
+    // -----------------------------------------------------------------------
+    // sr-9b.4 round 2 — the wiring: each bot's plan, its opening frames, and
+    // the run-level load-shape note.
+    // -----------------------------------------------------------------------
+
+    /// The spec's run, `--zones 100 --hot-zone 50 --walking-share 30`, at a 1,000-bot level:
+    /// bot i is placed in `placement_zone(i, 100, 50)` (bots 0..=49 in 10000, bot 50 in 10050)
+    /// and its `walks` is `walking_set(1000, Some(100), 50, 30)[i]` — exactly 300 walkers, the
+    /// zone-spread set and not the index-only one.
+    ///
+    /// Kills: the hot zone ignored (`placement_zone(i, n, 0)` puts bot 1 in 10001); every bot in
+    /// one zone; `walks` forced true (1,000 walkers); the zone spread dropped from the walking
+    /// set (`walking_set(n, None, …)`).
+    #[test]
+    fn each_bots_plan_is_its_placement_zone_and_its_walking_set_entry_sr9b_4() {
+        let cfg = parsed(&[
+            "--zones",
+            "100",
+            "--hot-zone",
+            "50",
+            "--walking-share",
+            "30",
+        ]);
+        let plan = bot_plan(&cfg, 1000);
+        assert_eq!(plan.len(), 1000, "one plan per bot of the level");
+        for (i, p) in (0u32..).zip(&plan) {
+            assert_eq!(p.place_in, Some(placement_zone(i, 100, 50)), "bot {i}");
+        }
+        assert_eq!(plan[1].place_in, Some(10_000), "bot 1 is hot");
+        assert_eq!(plan[49].place_in, Some(10_000), "bot 49 is hot");
+        assert_eq!(plan[50].place_in, Some(10_050), "bot 50 is not");
+        let walks: Vec<bool> = plan.iter().map(|p| p.walks).collect();
+        let spread = walking_set(1000, Some(100), 50, 30);
+        assert_ne!(
+            spread,
+            walking_set(1000, None, 50, 30),
+            "PRECONDITION: the zone-spread set differs from the index-only one"
+        );
+        assert_eq!(walks, spread, "walks is the zone-spread walking set");
+        assert_eq!(walker_count(&walks), 300, "30% of 1,000");
+    }
+
+    /// The plan is built for the LEVEL's bot count, not the run's maximum: at 6 bots over 3
+    /// zones (no hot zone) at 50%, the zones are 10000, 10001, 10002, 10000, 10001, 10002 and
+    /// `walks` is `walking_set(6, Some(3), 0, 50)` — which differs from both the index-only set
+    /// and the first 6 entries of the 50-bot (`--clients-max`) set.
+    ///
+    /// Kills: a plan sized or ranked by `clients_max`; the zone spread dropped.
+    #[test]
+    fn the_plan_is_built_for_the_levels_bot_count_sr9b_4() {
+        let cfg = parsed(&["--zones", "3", "--walking-share", "50"]);
+        assert_eq!(cfg.clients_max, 50, "PRECONDITION: the default maximum");
+        let plan = bot_plan(&cfg, 6);
+        let zones: Vec<Option<u32>> = plan.iter().map(|p| p.place_in).collect();
+        let want: Vec<Option<u32>> = [10_000, 10_001, 10_002, 10_000, 10_001, 10_002]
+            .into_iter()
+            .map(Some)
+            .collect();
+        assert_eq!(zones, want);
+        let walks: Vec<bool> = plan.iter().map(|p| p.walks).collect();
+        let level = walking_set(6, Some(3), 0, 50);
+        assert_ne!(level, walking_set(6, None, 0, 50), "PRECONDITION");
+        assert_ne!(level, walking_set(50, Some(3), 0, 50)[..6], "PRECONDITION");
+        assert_eq!(walks, level);
+        assert_eq!(walker_count(&walks), 3, "50% of 6");
+    }
+
+    /// Without `--zones` no bot is placed and `walks` is the index-ranked set: 30% of 20 bots is
+    /// 6 walkers. With every default, every bot walks and none is placed.
+    ///
+    /// Kills: a placement invented without `--zones`; `walks` forced true under a share; the
+    /// share ignored.
+    #[test]
+    fn without_zones_no_bot_is_placed_and_the_share_still_applies_sr9b_4() {
+        let cfg = parsed(&["--walking-share", "30"]);
+        let plan = bot_plan(&cfg, 20);
+        assert_eq!(plan.len(), 20);
+        assert!(plan.iter().all(|p| p.place_in.is_none()), "nobody placed");
+        let walks: Vec<bool> = plan.iter().map(|p| p.walks).collect();
+        assert_eq!(walks, walking_set(20, None, 0, 30));
+        assert_eq!(walker_count(&walks), 6, "30% of 20");
+
+        let defaults = bot_plan(&parsed(&[]), 5);
+        let every: BotPlan = BotPlan {
+            place_in: None,
+            walks: true,
+        };
+        assert_eq!(
+            defaults,
+            vec![every; 5],
+            "the default run: all walk, none placed"
+        );
+    }
+
+    /// A placed bot's opening frames, in send order and byte-exact: the `player` subscribe
+    /// (request 1), its `join_game` under its own bot name (request 2), then the placement call
+    /// for its zone (request 4). `walks` does not change them.
+    ///
+    /// Kills: the placement sent before the join (it would find no player row); the placement
+    /// dropped; another zone, bot name or request id; frames that depend on `walks`.
+    #[test]
+    fn a_placed_bot_opens_with_subscribe_join_then_its_placement_sr9b_4() {
+        let placed = BotPlan {
+            place_in: Some(10_042),
+            walks: false,
+        };
+        let frames = opening_messages(7, placed);
+        assert_eq!(frames.len(), 3, "subscribe, join, placement: {frames:?}");
+        assert_eq!(frames[0], client_msg_subscribe(&opening_queries(), 1));
+        assert_eq!(
+            frames[1],
+            client_msg_call_reducer(REDUCER_JOIN_GAME, &args_join_game(&bot_name(7)), 2)
+        );
+        assert_eq!(
+            frames[2],
+            client_msg_call_reducer(
+                REDUCER_DEV_PLACE_IN_LOAD_ZONE,
+                &args_dev_place_in_load_zone(10_042),
+                4
+            )
+        );
+        assert_eq!(
+            frames,
+            vec![
+                r#"{"Subscribe":{"query_strings":["SELECT * FROM player"],"request_id":1}}"#
+                    .to_string(),
+                r#"{"CallReducer":{"reducer":"join_game","args":"[\"LoadBot 7\"]","request_id":2,"flags":0}}"#
+                    .to_string(),
+                r#"{"CallReducer":{"reducer":"dev_place_in_load_zone","args":"[10042]","request_id":4,"flags":0}}"#
+                    .to_string(),
+            ],
+            "the literal wire frames, in order"
+        );
+        let walking = BotPlan {
+            walks: true,
+            ..placed
+        };
+        assert_eq!(
+            opening_messages(7, walking),
+            frames,
+            "walks changes nothing"
+        );
+    }
+
+    /// An unplaced bot opens with exactly the subscribe and its join, walking or not.
+    ///
+    /// Kills: a placement frame sent without `--zones` (refused by a default-build host, or a
+    /// teleport into zone 10000 by a load host); a join under another bot's name.
+    #[test]
+    fn an_unplaced_bot_opens_with_subscribe_and_join_only_sr9b_4() {
+        for walks in [true, false] {
+            let frames = opening_messages(
+                0,
+                BotPlan {
+                    place_in: None,
+                    walks,
+                },
+            );
+            assert_eq!(
+                frames,
+                vec![
+                    client_msg_subscribe(&opening_queries(), 1),
+                    client_msg_call_reducer(REDUCER_JOIN_GAME, &args_join_game(&bot_name(0)), 2),
+                ],
+                "walks = {walks}"
+            );
+            assert_eq!(
+                frames[1],
+                r#"{"CallReducer":{"reducer":"join_game","args":"[\"LoadBot 0\"]","request_id":2,"flags":0}}"#
+            );
+        }
+    }
+
+    /// The run-level note states the load shape whenever the run is not the plain zone-0
+    /// all-walk run: zone count (or `none`), hot zone and share, exactly; `None` only when there
+    /// is no `--zones` AND the share is 100.
+    ///
+    /// Kills: the note dropped; `&&` and `||` swapped (a `--zones` run at share 100 unnoted);
+    /// `none` spelled another way; the fields out of order.
+    #[test]
+    fn the_load_shape_note_names_zones_hot_zone_and_share_sr9b_4() {
+        let spec_run = parsed(&[
+            "--zones",
+            "100",
+            "--hot-zone",
+            "50",
+            "--walking-share",
+            "30",
+        ]);
+        assert_eq!(
+            load_shape_note(&spec_run).as_deref(),
+            Some("load_shape:zones=100,hot_zone=50,walking_share=30")
+        );
+        let share_only = parsed(&["--walking-share", "30"]);
+        assert_eq!(
+            load_shape_note(&share_only).as_deref(),
+            Some("load_shape:zones=none,hot_zone=0,walking_share=30")
+        );
+        let zones_only = parsed(&["--zones", "1"]);
+        assert_eq!(
+            load_shape_note(&zones_only).as_deref(),
+            Some("load_shape:zones=1,hot_zone=0,walking_share=100")
+        );
+        assert_eq!(load_shape_note(&parsed(&[])), None, "the plain run");
     }
 }

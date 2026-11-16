@@ -323,19 +323,24 @@ load-smoke:
 
 # Build the load-only module (feature load_test_zones: game-core's 100 generated 16x16 zones, ids
 # 10000-10099, and the dev reducer dev_place_in_load_zone) and publish it, data deleted, to
-# MR_LOAD_DB (default monster-realm-load-zones) on STDB_SERVER (default http://127.0.0.1:3000). Then
-# drive it, e.g. `cargo run -q -p sim-harness --bin mr_load_driver -- --db monster-realm-load-zones
-# --zones 100 --hot-zone 50 --walking-share 30 ...`. A dev build: it publishes only to a database
-# named monster-realm-load*, only on a loopback host unless MR_LOAD_ALLOW_REMOTE=1, and builds in its
-# own target dir so no default or e2e wasm is overwritten.
+# MR_LOAD_HOST_DB (default monster-realm-load-zones) on STDB_SERVER (default
+# http://127.0.0.1:3000). Then drive it, e.g. `cargo run -q -p sim-harness --bin mr_load_driver --
+# --db monster-realm-load-zones --zones 100 --hot-zone 50 --walking-share 30 ...`. It is a dev build
+# (every dev reducer is in it), so it publishes only to a database named monster-realm-load-zones*,
+# only to an http(s) URL on a loopback host unless MR_LOAD_ALLOW_REMOTE=1, and builds in its own
+# target dir so no default or e2e wasm is overwritten.
 load-host:
     #!/usr/bin/env bash
     set -euo pipefail
     server="${STDB_SERVER:-http://127.0.0.1:3000}"
-    db="${MR_LOAD_DB:-monster-realm-load-zones}"
+    db="${MR_LOAD_HOST_DB:-monster-realm-load-zones}"
     case "${db,,}" in
-        monster-realm-load*) ;;
-        *) echo "load-host: refusing to publish the load build to '$db': the name must start with monster-realm-load" >&2; exit 1 ;;
+        monster-realm-load-zones*) ;;
+        *) echo "load-host: refusing to publish the load build to '$db': the name must start with monster-realm-load-zones" >&2; exit 1 ;;
+    esac
+    case "$server" in
+        http://*|https://*) ;;
+        *) if [ "${MR_LOAD_ALLOW_REMOTE:-}" != "1" ]; then echo "load-host: STDB_SERVER '$server' is not an http(s) URL, so its host cannot be checked (set MR_LOAD_ALLOW_REMOTE=1 to allow)" >&2; exit 1; fi ;;
     esac
     hostport="${server#*://}"
     hostport="${hostport%%/*}"

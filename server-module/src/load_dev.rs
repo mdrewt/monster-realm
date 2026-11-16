@@ -5,6 +5,14 @@
 //! item compiles only with the `load_test_zones` feature (the `just load-host` build, which implies
 //! `dev_reducers`), so no release, playtest or e2e build holds the reducer.
 
+// The load build is a dev build: everything that refuses a `dev_reducers` build (the release-module
+// check, the playtest recipes) refuses it too, so the feature may never stop implying it.
+#[cfg(feature = "load_test_zones")]
+const _: () = assert!(
+    cfg!(feature = "dev_reducers"),
+    "the load_test_zones feature must enable dev_reducers (server-module/Cargo.toml)"
+);
+
 // Each import is gated like its only user: ungated, it would be an unused-import warning in every
 // other build.
 #[cfg(feature = "load_test_zones")]
@@ -23,8 +31,8 @@ use spacetimedb::ReducerContext;
 /// zone's tick armed as a join does. Any caller may call it, for itself only (`ctx.sender()`).
 ///
 /// It refuses an id outside the load band (so no shipped zone is reachable through it), a caller
-/// with no character, and a caller in an ongoing battle, which a warp also skips. Every refusal is
-/// logged and writes nothing.
+/// with no character (or no move intent row), and a caller in an ongoing battle, which a warp also
+/// skips. Every refusal is logged and writes nothing.
 #[cfg(feature = "load_test_zones")]
 #[spacetimedb::reducer]
 pub fn dev_place_in_load_zone(ctx: &ReducerContext, zone_id: u32) -> Result<(), String> {
@@ -44,8 +52,8 @@ pub fn dev_place_in_load_zone(ctx: &ReducerContext, zone_id: u32) -> Result<(), 
     if is_in_ongoing_battle(ctx, me) {
         return reject("cannot move during an ongoing battle");
     }
-    if !dev_place_character(ctx, caller.entity_id, zone_id, LOAD_ZONE_SPAWN) {
-        return reject("caller has no character");
+    if let Err(reason) = dev_place_character(ctx, caller.entity_id, zone_id, LOAD_ZONE_SPAWN) {
+        return reject(reason);
     }
     Ok(())
 }

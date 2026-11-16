@@ -208,7 +208,8 @@ client subscribes to.
 
 A zone has an interval schedule row that runs `movement_tick` every `STEP_MS` only
 while a player's character is in it. `movement::arm_zone_tick` inserts the row when a
-player enters (`join_game` for the zone it starts in, the tick's warp arm) and never
+player enters (`join_game` for the zone it starts in, the tick's warp arm, and in the
+load-test build `dev_place_in_load_zone`) and never
 adds a second row for a zone. The tick that finds no player's character in its zone puts each of the zone's
 NPCs back on its home tile, Idle, writing only the rows that differ, and deletes the
 zone's row, so leaving, warping out, disconnecting and timing out all disarm the zone

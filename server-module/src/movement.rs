@@ -57,9 +57,9 @@ pub struct MovementTickSchedule {
 
 /// Arm `zone_id`'s tick. Idempotent: a zone that already holds a schedule row
 /// keeps that row, so there is never more than one tick per zone per `STEP_MS`.
-/// Called by every path that puts a player's character into a zone (`join_game`
-/// for the zone it starts in, the tick's warp arm) and by the content sync's
-/// reconcile. The scan is over at most one row per occupied zone.
+/// Called by every path that puts a player's character into a zone (`join_game`,
+/// the tick's warp arm, the load build's `dev_place_character`) and by the content
+/// sync's reconcile. The scan is over at most one row per occupied zone.
 pub(crate) fn arm_zone_tick(ctx: &ReducerContext, zone_id: u32) {
     if ctx
         .db
@@ -863,7 +863,8 @@ fn conversation_is_live(ctx: &ReducerContext, conv: &PlayerConversation, zone: u
 /// `zone_id` as the tick's warp arm does. It arrives Idle, keeps its facing, and is stamped with
 /// the call's time. Its queued moves are cleared, with the seq kept, and published on the same row
 /// write. The zone's tick is armed as a join arms it. The zone it left disarms on its own next tick
-/// once empty. Returns false, writing nothing, when the character or its intent row is missing.
+/// once empty. Refuses with the reason, writing nothing, when the character or its intent row is
+/// missing.
 ///
 /// Gated after the file's last production item, so no line of the default build moves for it.
 #[cfg(feature = "load_test_zones")]
@@ -872,12 +873,12 @@ pub(crate) fn dev_place_character(
     entity_id: u64,
     zone_id: u32,
     pos: TilePos,
-) -> bool {
+) -> Result<(), &'static str> {
     let Some(mut row) = ctx.db.character().entity_id().find(entity_id) else {
-        return false;
+        return Err("caller has no character");
     };
     let Some(mut intent) = ctx.db.move_intent().entity_id().find(entity_id) else {
-        return false;
+        return Err("caller has no move intent row");
     };
     row.zone_id = zone_id;
     row.tile_x = pos.x;
@@ -889,7 +890,7 @@ pub(crate) fn dev_place_character(
     ctx.db.character().entity_id().update(row);
     ctx.db.move_intent().entity_id().update(intent);
     arm_zone_tick(ctx, zone_id);
-    true
+    Ok(())
 }
 
 // movement.rs is a file-module (declared `mod movement;` in `lib.rs`), so a plain

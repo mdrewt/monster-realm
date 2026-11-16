@@ -133,7 +133,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const offenders = findForbiddenReducers(names, FORBIDDEN_REDUCERS);
   if (offenders.length > 0) {
     console.error(
-      `verify-release-reducers: FAIL — forbidden dev reducer(s) present in published module "${db}": ${offenders.join(', ')}. The publish must NOT carry --features dev_reducers.`,
+      `verify-release-reducers: FAIL — forbidden dev reducer(s) present in published module "${db}": ${offenders.join(', ')}. The publish must NOT carry --features dev_reducers or load_test_zones.`,
     );
     process.exit(1);
   }

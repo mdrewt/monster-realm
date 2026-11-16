@@ -1254,10 +1254,9 @@ product function until a survivor is found for it.
 
 ## Dev-only reducers never ship
 
-**Decision.** The dev reducers, `grant_bait`, `dev_expire_tactical_window` and
-`dev_place_in_load_zone`, compile only with the `dev_reducers` feature
-(`server-module/Cargo.toml`) or with `load_test_zones`, which implies it. Neither is ever in
-`default`. The playtest recipes publish the default build and then check the *published*
+**Decision.** The dev reducers `grant_bait` and `dev_expire_tactical_window` compile only with
+the `dev_reducers` feature (`server-module/Cargo.toml`). `dev_place_in_load_zone` compiles only
+with `load_test_zones`, which implies `dev_reducers`. Neither feature is ever in `default`. The playtest recipes publish the default build and then check the *published*
 module with `spacetime describe --json` (`scripts/verify-release-reducers.mjs`, whose
 `FORBIDDEN_REDUCERS` lists every dev reducer name, so a new dev reducer joins it in the
 change that adds it), and check that the production client bundle contains no DEV debug
@@ -1285,7 +1284,8 @@ tile as the tick's warp arm moves a character. The character arrives Idle, its q
 cleared and published with the seq kept, and the zone's tick is armed. The reducer refuses an id
 outside the band, a caller with no character and a caller in an ongoing battle. The load driver
 (`mr_load_driver --zones`) calls it once per bot after the join, to spread its bots over the
-zones. A change that adds a dev reducer must also:
+zones. The browser client is not supported in a load zone: its wasm has no load-zone map, so it
+cannot predict there. A change that adds a dev reducer must also:
 
 - call the deletion gate first;
 - join the census's `EXPECTED_GATED` (`privacy_enforcement_tests.rs`), and, when it adds a module,
@@ -1294,10 +1294,9 @@ zones. A change that adds a dev reducer must also:
 - add `exclude_re` keys for its surviving mutants to `.cargo/mutants.toml` entry 8;
 - prove the default release wasm byte-identical to its base's: one checkout path and one target
   dir, the pinned toolchain, the base built first, and both sha256 sums in the PR. The default
-  game-core build compiles no new function for a dev or load feature. sr-9b measured that even
-  an uncalled `pub fn` changes the sum. A game-core loader reaches gated code through a macro on
-  its own line, whose feature-off arm expands to the loader's original expression
-  (`load_test_zones::zones!`).
+  game-core build compiles no new function for a dev or load feature. A game-core loader reaches
+  gated code through a macro on the loader's existing line, whose feature-off arm expands to the
+  loader's original expression (`load_test_zones::zones!`).
 
 A dev caller reaches a private production function through a dev-gated forwarder placed after the
 file's last production item (`tactics.rs` `dev_arm_deadline`). It never widens the function itself.
@@ -1313,7 +1312,9 @@ Widening `arm_deadline` to `pub(crate)` pushes its signature past rustfmt's widt
 measured the result: the reflow moves every later line of `tactics.rs`, and with them the panic
 locations baked into the release wasm, so the default build changed. With the forwarder, th-4
 recorded identical sums for base and slice, and `arm_deadline` stays callable only from
-`tactics.rs`.
+`tactics.rs`. sr-9b measured the game-core side: one ungated `pub fn` in a new game-core module
+changed the default sum even though nothing called it, while constants and the macro hooks left it
+unchanged.
 
 **Rules out.** Runtime flags for dev reducers; trusting the source tree as proof of what was
 published; a dev reducer a player can call to act on anything but the caller's own state
