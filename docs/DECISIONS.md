@@ -2329,16 +2329,40 @@ the bind reducer, and binds to new worlds that outlive an account's suspension u
 expires. It stays the upgrade path, as a second attestation source, if either of those gains becomes
 a requirement.
 
-## A friends server may serve plaintext `ws:` only to loopback and private-range addresses
+## Private servers carry their own encryption: a real certificate for a domain, a pinned self-signed one otherwise; plaintext only on loopback
 
-**Decision.** The client accepts a shell document whose `uri` is plaintext `ws:` only when its host
-is a loopback address or a private-range address (RFC 1918 IPv4, IPv6 ULA `fc00::/7`); any other
-host must be `wss:`. Operator ruling, <https://github.com/mdrewt/monster-realm/issues/821>; the
-harness spec's lpw-14 enforces it in the shell-document resolver.
+**Decision.** The client opens plaintext `ws:` only to a loopback address: a single-player world,
+or the desktop shell talking to its own host. Every other server is `wss:`, in one of two ways. A
+server with a registered domain serves a certificate a browser trusts: the standalone server
+obtains and renews one over ACME when given the domain, or the host puts their own certificate or
+reverse proxy in front. A server reached by a bare IP address, public or on a LAN, and a shell world
+opened to friends, serves a self-signed certificate made once per world and kept with the world's
+data and its backups. The invite and the shell document carry that certificate's fingerprint
+(SHA-256 of its public key), and the desktop shell completes a connection only to a matching
+certificate, even one a certificate authority would accept. A plain browser joining such a server
+loads the client page from the server's gate over `https:` and accepts the certificate once; the
+shell is the recommended way to join. For a pinned target the client keys its stored reconnect
+token on the fingerprint and the database name, not the address. Operator ruling, 2026-11-16,
+<https://github.com/mdrewt/monster-realm/issues/821> (revising the same day's "plaintext only to
+loopback and private-range addresses"); built by the harness spec `M-local-play.spec.md` lpw-18
+(transport, certificate, pins, reconnect key) and lpw-17 (ACME for a domain).
 
-**Why.** A friends server on a home network has no TLS certificate, so requiring `wss:` everywhere
-would stop LAN play; plaintext over the internet would expose the world token, which the client
-keeps across launches, and all traffic to anyone on the path.
+**Why.** The case that matters is a player hosting for friends over the internet, by bare IP or
+domain, the way Minecraft servers are run. A home host has no certificate a browser trusts, so
+requiring one would stop that hosting, and plaintext over the internet exposes the world token
+(kept across launches) and all traffic to anyone on the path. A browser also refuses plaintext
+`ws:` to anything but localhost from an `https:` page, so the plaintext rule would not work for
+the browser client served over `https:`. A pinned fingerprint gives encryption and proof that the
+joiner reached the server the invite named, with no certificate authority, and works on a LAN
+with no internet. Public certificate authorities do not certify private addresses, so a LAN server
+has no other choice. A home or LAN address changes; keying the reconnect token on the certificate
+keeps returning players' characters when it does. TLS adds one round trip when a connection opens
+and microseconds per message, which is negligible for long-lived WebSockets and the 32-connection
+cap. The fingerprint is also a world identity a hostile host cannot forge without that world's
+private key; lpw-8 weighs naming it in the account attestation to close the relay between private
+worlds, as Minecraft's online mode binds its session check to the server's key.
 
-**Rules out.** Plaintext `ws:` to a public address, with or without a warning; requiring every LAN
-host to provision a certificate.
+**Rules out.** Plaintext `ws:` to any non-loopback address, LAN included, with or without a
+warning; trusting a self-signed certificate without the invite's fingerprint in the shell;
+regenerating a world's certificate on restart or upgrade (every friend's pin would break); a relay
+or tunnel service we operate to carry friends' traffic; requiring every host to own a domain.
