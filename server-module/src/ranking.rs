@@ -14,10 +14,13 @@
 //! display-name mirror and are exercised directly by ranking_tests.rs via
 //! `super::`.
 //!
-//! This module also owns `leaderboard_top`, the leaderboard's membership:
-//! every function here that writes `profile` ends its transaction's profile
-//! writes with `refresh_leaderboard_top`, a full rescan that leaves exactly the
-//! top `LEADERBOARD_TOP_K` identities in the table.
+//! This module also owns `leaderboard_top`, the leaderboard's membership. The
+//! three crate-visible `profile` writers — `apply_pvp_rating`, `rekey_profile`
+//! and `anonymize_display_names` — end their profile writes with
+//! `refresh_leaderboard_top`, a full rescan that leaves exactly the top
+//! `LEADERBOARD_TOP_K` identities in the table. `get_or_init_profile` inserts
+//! too, but it is private and reached only through the first two, so its insert
+//! is always followed by their rescan.
 
 use crate::guards::{log_reject, validate_name};
 use crate::schema::{leaderboard_top, player, profile, Battle, LeaderboardTop, Player, Profile};
@@ -43,7 +46,7 @@ use std::collections::BTreeSet;
 /// defensive fallback only: all three decisive paths run before
 /// `on_disconnect` deletes the player row, so the name seeds correctly even
 /// on disconnect-forfeit).
-pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
+fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
     match ctx.db.profile().identity().find(identity) {
         Some(existing) => refresh_profile_name(existing, live_player_name(ctx, identity)),
         None => {

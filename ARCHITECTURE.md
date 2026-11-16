@@ -258,7 +258,8 @@ writes it again.
 - **PvP.** Challenges are public rows with a 120 s TTL. Accepting one opens a tactical
   battle (`tactics::start_pvp_tactical`) whose deploy picks are revealed by copy; the
   tactical clocks and auto-pass rules end a stalled battle. Ranked results update the
-  public `profile` table.
+  public `profile` table, and `ranking.rs` then rescans it into `leaderboard_top`, the
+  identities of the top 100.
 - **Trading.** Trades run through trade sessions (next item). The public
   `trade_offer` table is drain-only: no reducer inserts a row. A row still in it keeps
   its assets guarded (they cannot be spent, sold or evolved) until `cancel_trade`, a
@@ -314,7 +315,7 @@ part of the schema:
 | Class | Tables | Client read path |
 |---|---|---|
 | Public content | `species_row`, `skill_row`, `item_row`, `type_relation_row`, `zone_def`, `shop_row`, `shop_item_row`, `heal_location_row`, `npc`, `evolution_path`, `config` | direct subscription |
-| Public world state | `character`, `player`, `profile`, `battle_challenge` | direct subscription; `character` only for the own row and per zone (see "Connection and store") |
+| Public world state | `character`, `player`, `profile`, `leaderboard_top`, `battle_challenge` | direct subscription; `character` only for the own row and per zone (see "Connection and store"); `profile` only for the `leaderboard_top` members (a join) and the own row |
 | Public, drain-only | `trade_offer` | none in the client: no query subscribes to it and the store holds no offer state |
 | Private, owner-readable | `monster_pub`, `inventory`, `player_quest`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_player_quest`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |

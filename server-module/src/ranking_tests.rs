@@ -1277,8 +1277,8 @@ impl RkWorld<'_> {
 /// A first rated game between two players with no profile inserts both profiles and makes both
 /// members: the board is exactly the two of them, written by exactly two inserts.
 ///
-/// kills: no rescan at the end of `apply_pvp_rating` (an empty board); a rescan run before the
-/// two profile writes; a rescan that clears and rewrites the board.
+/// kills: no rescan at the end of `apply_pvp_rating` (an empty board); a rescan that clears and
+/// rewrites the board.
 #[test]
 fn a_first_rated_game_makes_both_players_members_sr4b_1() {
     let fx = rk_fixture();
@@ -1378,6 +1378,65 @@ fn a_settle_that_drops_a_member_below_the_100th_swaps_it_for_the_riser_sr4b_1() 
         fx.writes_to("leaderboard_top"),
         2,
         "one delete (the loser) and one insert (the winner)"
+    );
+}
+
+/// A settle whose loser falls below the 101st lets that non-participant in. 99 profiles far
+/// above; `rk_b` ("Bob", 1210) the 100th; a non-participant at 1200 the 101st; `rk_a` ("Alice",
+/// 500) below both, three more further down. `rk_a` wins: Bob drops below 1200, so the 101st
+/// is now the 100th and Bob is out, while Alice stays below the cut before and after, so her
+/// own rating write changes no membership.
+///
+/// kills: a rescan run before the loser's profile write in `apply_pvp_rating`, whether between
+/// the winner's and the loser's write or before both (it sees Bob still at 1210, so the board
+/// keeps Bob and leaves the 101st out); no rescan after the settle.
+#[test]
+fn a_loser_falling_below_the_100th_lets_the_101st_in_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let riser = sr4b_filler(120);
+    let (winner_rating, loser_rating, riser_rating) = (500, 1210, 1200);
+    let (new_winner_rating, new_loser_rating) =
+        game_core::compute_rating_update(winner_rating, loser_rating);
+    assert!(
+        new_loser_rating < riser_rating,
+        "fixture: the loser's new rating {new_loser_rating} is below the 101st's {riser_rating}"
+    );
+    assert!(
+        new_winner_rating < riser_rating,
+        "fixture: the winner's new rating {new_winner_rating} is below the cut ({riser_rating}), \
+         so the winner's own write changes no membership"
+    );
+    sr4b_seed_fillers(&w, 0, 99, |i| 2000 + (i as i32 * 7) % 50);
+    w.seed_profile(rk_b(), "Bob", loser_rating, 6, 3);
+    w.seed_profile(riser, "Kit", riser_rating, 4, 4);
+    w.seed_profile(rk_a(), "Alice", winner_rating, 1, 9);
+    sr4b_seed_fillers(&w, 99, 3, |i| 300 - i as i32);
+    w.seed_true_board();
+    assert!(
+        w.is_member(rk_b()) && !w.is_member(riser) && !w.is_member(rk_a()),
+        "precondition: Bob is the 100th, the non-participant the 101st, Alice below both"
+    );
+    fx.reset_writes();
+    super::apply_pvp_rating(&fx.ctx(), &sr4b_battle(RkOutcome::SideAWins));
+    let rating_of = |who| w.profile(who).map(|p| p.1);
+    assert_eq!(
+        (rating_of(rk_a()), rating_of(rk_b())),
+        (Some(new_winner_rating), Some(new_loser_rating)),
+        "precondition: the settle wrote both players' new ratings"
+    );
+    assert_eq!(
+        w.members(),
+        w.true_top(),
+        "the board is the true ladder after the settle"
+    );
+    assert!(!w.is_member(rk_b()), "the loser fell below the 101st");
+    assert!(w.is_member(riser), "the 101st rose into the top 100");
+    assert!(!w.is_member(rk_a()), "the winner stays below the cut");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        2,
+        "one delete (the loser) and one insert (the 101st)"
     );
 }
 

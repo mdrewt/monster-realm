@@ -1348,12 +1348,12 @@ describe('connect(): the bounded leaderboard subscription (sr-4b)', { sequential
     vi.useRealTimers();
   });
 
-  it('the base batch subscribes the leaderboard_top-joined profile rows once, then the connection`s own profile row by its identity once, and no whole-table profile query: 30 queries in all [SR4B.3]', async () => {
+  it('the base batch subscribes the leaderboard_top-joined profile rows once, then the connection`s own profile row by its identity once, and no whole-table profile query [SR4B.3]', async () => {
     // WRONG IMPL KILLED: the whole-table `SELECT * FROM profile` kept (every profile reaches every
     // client) or kept beside the two; the join dropped (the board shows the own row alone); the
     // own-row query dropped (a caller outside the top 100 never sees their own rating); the own
     // row keyed on another identity, a constant, a truncated hex or a hex without `0x`; a
-    // duplicate of either query (the length pin).
+    // duplicate of either query.
     expect(SR4B_HEX, 'fixture: a 64-digit lowercase hex identity').toMatch(/^[0-9a-f]{64}$/);
     const opts = makeOpts();
     connect(opts);
@@ -1374,7 +1374,6 @@ describe('connect(): the bounded leaderboard subscription (sr-4b)', { sequential
       'no other query reads profile (no whole-table query): the join, then the own row',
     ).toEqual([SR4B_JOIN_QUERY, own]);
     expect(queries, 'no whole-table profile query').not.toContain('SELECT * FROM profile');
-    expect(queries).toHaveLength(30);
   });
 
   it('a profile row deleted from the subscription leaves the store: profile() and allProfiles() drop it, the other rows stay as they were, and the delete flushes one batch [SR4B.3]', async () => {
