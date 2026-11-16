@@ -36,7 +36,9 @@
 //   OR-HIDEALLEXCEPT-BATTLE-SUBSET              -> CTL3-2-DROP-EXACT (partial stack, world rows) and
 //                                                  CTL3-2-OUTCOME-KEPT (contextStack.test.ts)
 //   OR-HANDLES-DIALOGUE-HAS-NO-HIDE, invariant -> CTL3-3-NEVER-CLOSE-DIALOGUE; its handle-table
-//     half (the NEVER_FORCE_HIDE half is deleted)   half STAYS below, with a literal ['dialogueView']
+//     half (the NEVER_FORCE_HIDE half is deleted)   half -> SO2-6-SHAPE (main.dispatch.test.ts): it
+//                                                  requires main.ts's own `overlayHandles` row
+//                                                  `dialogueView: undefined`
 //   OR-CANOPEN-BATTLE-TARGET-MATCHES-FORCEHIDE  -> OR-CANOPEN-BATTLE-TARGET-DENIES (below): the
 //                                                  battle target row is a plain deny
 // The reference oracle (`refDecide`) and the A1 carve-outs in OR-CANOPEN-GUARDONLY-ALL describe the
@@ -70,7 +72,6 @@ import {
   canOpen,
   OVERLAY_IDS,
   OVERLAY_TIERS,
-  type OverlayHandles,
   type OverlayId,
   type OverlayProbes,
   visibleIds,
@@ -745,8 +746,8 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
 });
 
 // ===========================================================================
-// BLOCK 7 — uxd3-c (pending): visibleIds(probes) + OverlayHandles, the WRITE
-// substrate (adjudication B4 / plan §A / §C1).
+// BLOCK 7 — uxd3-c (pending): visibleIds(probes), the ordered visible-set
+// read (adjudication B4 / plan §A / §C1).
 //
 // WHY EXHAUSTIVE LOOPS AND NOT fast-check (same rationale as BLOCK 6, adjudication §B2): over 15
 // ids the domain is finitely enumerable, so a loop is strictly stronger than sampling.
@@ -890,55 +891,6 @@ describe("overlayRegistry — visibleIds(probes), the write substrate's read hal
         'of its own between calls, exactly as main.ts building overlayProbes at module scope ' +
         'while every view is still undefined requires',
     ).toEqual([]);
-  });
-});
-
-describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c, ADR-0164 D7-mandated)', () => {
-  it('OR-HANDLES-DIALOGUE-HAS-NO-HIDE BITES: only dialogueView may omit a hide thunk (ctl-3: the NEVER_FORCE_HIDE half moved to CTL3-3-NEVER-CLOSE-DIALOGUE)', () => {
-    // ADJUDICATION B4 (ADR-0163 D7 mandate): the shipped shape is a BARE optional-thunk table —
-    // `export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>` — NOT
-    // a `{ readonly hide?: () => void }` wrapper. `dialogueView` is the SOLE member allowed to
-    // supply `undefined` instead of a thunk: a client-side hide of a live conversation strands
-    // the server `player_conversation` row, and
-    // `W-ESCAPE-DIALOGUE-NEVER-BARE-HIDE` (main.wiring.test.ts) is a whole-file ZERO-count on
-    // `dialogueView?.hide` / `dialogueView.hide` in main.ts — so a table of REQUIRED thunks
-    // cannot compile in this codebase at all.
-    //
-    // HONEST LIMIT (state it here AND in ADR-0164 — do not overclaim): the LOAD-BEARING half of
-    // this guarantee is the TYPE CHECK, not the runtime assertions below. A table typed
-    // `Record<OverlayId, () => void>` (no `| undefined`) simply CANNOT be given
-    // `dialogueView: undefined` — `tsc --noEmit` reds on THIS file and on main.ts's own handle
-    // table before a single test runs. The runtime assertions here can only prove that a
-    // CONFORMING table (built here from a literal ['dialogueView']) looks right; they CANNOT catch a
-    // LOOSENING of the type to `Partial<Record<OverlayId, () => void>>` (which would let ANY id
-    // go missing, not just dialogueView), so asserting the type is not `Partial<>`-loosened is
-    // NOT this tooth's job. That loosening is caught instead by
-    // `W-UXD3C-HANDLE-TABLE` (main.wiring.test.ts), whose bidirectional per-id loop over
-    // `main.ts`'s ACTUAL handle table checks every one of the OTHER 14 ids too, so a `Partial<>`
-    // table that dropped a random id (not just dialogueView) reds there.
-    const NO_HIDE_THUNK: readonly OverlayId[] = ['dialogueView'];
-
-    const built = {} as Record<OverlayId, (() => void) | undefined>;
-    for (const id of OVERLAY_IDS) {
-      built[id] = NO_HIDE_THUNK.includes(id) ? undefined : () => {};
-    }
-    const handles: OverlayHandles = built;
-
-    expect(
-      handles.dialogueView,
-      'handles.dialogueView must be undefined — dialogueView must NEVER get a hide thunk, ' +
-        'because a bare hide strands the server player_conversation row',
-    ).toBeUndefined();
-
-    let checked = 0;
-    for (const id of OVERLAY_IDS) {
-      if (id === 'dialogueView') continue;
-      expect(typeof handles[id], `typeof handles.${id} must be 'function'`).toBe('function');
-      checked += 1;
-    }
-    // uif-16b (named intentional change): 17 -> 15 non-dialogue ids: renameView, claimView,
-    // privacyView left, profileView joined.
-    expect(checked, 'ANTI-VACUITY: all 15 non-dialogue ids must have been checked').toBe(15);
   });
 });
 
