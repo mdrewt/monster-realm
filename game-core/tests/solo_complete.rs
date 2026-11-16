@@ -1,38 +1,58 @@
 //! Solo-completeness audit over the compiled content.
 //!
 //! Nothing a solo player needs to progress or to complete the collection may require another
-//! player (game-design.md section 14): an evolution, a species or an item must not be locked
-//! behind trading or PvP. This audit computes what a lone player can obtain from the content's
-//! own sources and compares it with every species and item id in the registries.
+//! player (the harness's game-design.md section 14): an evolution, a species or an item must
+//! not be locked behind trading or PvP. This audit computes what a lone player can obtain from
+//! the content's own sources and compares it with every species and item id in the registries.
 //!
-//! Species come from wild encounters, closed over the evolution graph. Items come from the
-//! starter kit, from shops a placed NPC runs, from dialogue grants on a placed NPC's tree, and
-//! from the rewards of quests that such a tree starts and a lone player can finish.
+//! Species come from wild encounters in zones a player can walk to, closed over the evolution
+//! graph. Items come from the starter kit, from shops a reachable NPC runs, from dialogue grants
+//! on a reachable spoken tree, and from the rewards of quests such a tree starts and a lone
+//! player can finish.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use game_core::{
     load_dialogue_trees, load_encounters, load_evolution_paths, load_items, load_npc_defs,
-    load_quest_defs, load_shops, load_species, load_starter_kit, DialogueEffect, EvolutionPath,
-    NpcInteraction, StepTrigger,
+    load_quest_defs, load_shops, load_species, load_starter_kit, load_zone_maps, zone_0, Condition,
+    DialogueEffect, DialogueTree, EvolutionPath, NpcInteraction, StepTrigger, MAX_ITEM_STACK,
 };
 
 /// Species ids that only group content can provide, each with the group content that owns it.
-/// An entry is allowed only for content built for groups (game-design.md section 14) and must
-/// name its owner, for example `"raid: <name>"`.
+/// An entry is allowed only for content built for groups (the harness's game-design.md
+/// section 14) and must name its owner, for example `"raid: <name>"`.
 const SPECIES_EXCEPTIONS: &[(u32, &str)] = &[];
 
 /// Item ids that only group content can provide, each with the group content that owns it.
-/// An entry is allowed only for content built for groups (game-design.md section 14) and must
-/// name its owner, for example `"raid: <name>"`.
+/// An entry is allowed only for content built for groups (the harness's game-design.md
+/// section 14) and must name its owner, for example `"raid: <name>"`.
 const ITEM_EXCEPTIONS: &[(u32, &str)] = &[];
 
-/// Species a lone player meets in the wild: entries with weight in a table that can trigger.
+/// Zones a player can walk to: a search from the spawn zone over the warps.
+fn reachable_zones() -> BTreeSet<u32> {
+    let maps = load_zone_maps().expect("zone maps load");
+    let mut seen = BTreeSet::from([zone_0().zone_id]);
+    let mut todo: Vec<u32> = seen.iter().copied().collect();
+    while let Some(zone) = todo.pop() {
+        let warps = maps.iter().filter(|map| map.zone_id == zone);
+        for warp in warps.flat_map(|map| map.warps.iter()) {
+            if seen.insert(warp.to_zone) {
+                todo.push(warp.to_zone);
+            }
+        }
+    }
+    seen
+}
+
+/// Species a lone player meets in the wild: entries with weight in a table that can trigger,
+/// in a zone a player can walk to.
 fn wild_species() -> BTreeSet<u32> {
+    let zones = reachable_zones();
     let tables = load_encounters().expect("encounter tables load");
     tables
         .iter()
         .filter(|table| table.encounter_rate > 0)
+        .filter(|table| zones.contains(&table.zone_id))
         .flat_map(|table| table.entries.iter())
         .filter(|entry| entry.weight > 0)
         .map(|entry| entry.species_id)
@@ -46,9 +66,10 @@ fn obtainable_species() -> BTreeSet<u32> {
     loop {
         let before = obtained.len();
         for path in &paths {
-            // Every gate an edge carries (level, essence, trust, quality time, nutrition) is
-            // reached by one player alone. Destructuring every field means a new gate, such as
-            // a trade or PvP requirement, stops compiling until a reviewer decides about it.
+            // Level, essence, trust, quality time and nutrition are progress one player makes
+            // alone; this audit does not check where essence comes from. Destructuring every
+            // field means a new gate, such as a trade or PvP requirement, is a compile error
+            // until a reviewer decides about it.
             let EvolutionPath {
                 edge_id: _,
                 from_species,
@@ -69,90 +90,155 @@ fn obtainable_species() -> BTreeSet<u32> {
     }
 }
 
+/// What a lone player can have accumulated, as a growing over-approximation.
+#[derive(Default)]
+struct SoloState {
+    flags: BTreeSet<String>,
+    started_quests: BTreeSet<String>,
+    done_quests: BTreeSet<String>,
+    items: BTreeSet<u32>,
+}
+
+impl SoloState {
+    fn size(&self) -> usize {
+        self.flags.len() + self.started_quests.len() + self.done_quests.len() + self.items.len()
+    }
+
+    /// A grant counts only inside the stack cap: the server refuses a whole reward above it.
+    fn grant(&mut self, item_id: u32, qty: u32) {
+        if (1..=MAX_ITEM_STACK).contains(&qty) {
+            self.items.insert(item_id);
+        }
+    }
+
+    /// A fresh player has no flags and content may not name system flags, so `NotFlag` can
+    /// always hold.
+    fn holds(&self, condition: &Condition) -> bool {
+        match condition {
+            Condition::HasFlag(flag) => self.flags.contains(flag),
+            Condition::NotFlag(_) => true,
+            Condition::QuestActive(quest) => self.started_quests.contains(quest),
+            Condition::QuestDone(quest) => self.done_quests.contains(quest),
+        }
+    }
+
+    fn all_hold(&self, conditions: &[Condition]) -> bool {
+        conditions.iter().all(|condition| self.holds(condition))
+    }
+
+    fn apply(&mut self, effects: &[DialogueEffect]) {
+        for effect in effects {
+            match effect {
+                DialogueEffect::SetFlag(flag) => {
+                    self.flags.insert(flag.clone());
+                }
+                DialogueEffect::StartQuest(quest) => {
+                    self.started_quests.insert(quest.clone());
+                }
+                DialogueEffect::GrantItem(item_id, qty) => self.grant(*item_id, *qty),
+                DialogueEffect::ClearFlag(_) | DialogueEffect::GrantXp(_) => {}
+            }
+        }
+    }
+
+    /// Walk a tree as the server does. A conversation opens at the first node whose entry
+    /// conditions hold, so candidates are the nodes in order up to and including the first
+    /// node with none (it always matches and shadows the rest). Other nodes are reached only
+    /// through a choice's `next_node`.
+    fn walk(&mut self, tree: &DialogueTree) {
+        let mut todo = Vec::new();
+        for (index, node) in tree.nodes.iter().enumerate() {
+            if self.all_hold(&node.entry_conditions) {
+                todo.push(index);
+            }
+            if node.entry_conditions.is_empty() {
+                break;
+            }
+        }
+        let mut reached = BTreeSet::new();
+        while let Some(index) = todo.pop() {
+            if !reached.insert(index) {
+                continue;
+            }
+            let node = &tree.nodes[index];
+            self.apply(&node.auto_effects);
+            for choice in &node.choices {
+                if !self.all_hold(&choice.conditions) {
+                    continue;
+                }
+                self.apply(&choice.effects);
+                let next = choice.next_node.as_ref();
+                let target = next.and_then(|id| tree.nodes.iter().position(|n| &n.id == id));
+                todo.extend(target);
+            }
+        }
+    }
+}
+
 /// Every item id a lone player can obtain.
 fn obtainable_items() -> BTreeSet<u32> {
+    let zones = reachable_zones();
     let npcs = load_npc_defs().expect("npc defs load");
     let trees = load_dialogue_trees().expect("dialogue trees load");
     let shops = load_shops().expect("shops load");
     let quests = load_quest_defs().expect("quest defs load");
-    let wild = wild_species();
 
-    let mut obtained: BTreeSet<u32> = load_starter_kit()
-        .expect("starter kit loads")
-        .items
-        .iter()
-        .filter(|reward| reward.qty > 0)
-        .map(|reward| reward.item_id)
-        .collect();
+    let mut state = SoloState::default();
+    for reward in &load_starter_kit().expect("starter kit loads").items {
+        state.grant(reward.item_id, reward.qty);
+    }
 
-    // Shops some NPC binds, and dialogue trees some NPC speaks.
+    // A dialogue or shop NPC opens its tree; a shop NPC greets, then shops. A heal NPC's
+    // action opens the heal frame only, so its tree is never spoken.
     let mut bound_shops = BTreeSet::new();
-    for npc in &npcs {
+    let mut spoken_trees = BTreeSet::new();
+    let mut spoken_npcs = BTreeSet::new();
+    for npc in npcs.iter().filter(|npc| zones.contains(&npc.zone_id)) {
         match npc.interaction {
             NpcInteraction::Shop(shop_id) => {
                 bound_shops.insert(shop_id);
             }
-            NpcInteraction::Dialogue | NpcInteraction::Heal(_) => {}
+            NpcInteraction::Dialogue => {}
+            NpcInteraction::Heal(_) => continue,
         }
+        spoken_trees.insert(npc.dialogue_tree_id.as_str());
+        spoken_npcs.insert(npc.npc_id.as_str());
     }
     for shop in shops.iter().filter(|shop| bound_shops.contains(&shop.id)) {
-        obtained.extend(
-            shop.stock
-                .iter()
-                .filter(|s| s.buy_price > 0)
-                .map(|s| s.item_id),
-        );
+        let stock = shop.stock.iter().filter(|s| s.buy_price > 0);
+        state.items.extend(stock.map(|s| s.item_id));
     }
 
-    let spoken: BTreeSet<&str> = npcs
-        .iter()
-        .map(|npc| npc.dialogue_tree_id.as_str())
-        .collect();
-    let mut started_quests: BTreeSet<&str> = BTreeSet::new();
-    for tree in trees
-        .iter()
-        .filter(|tree| spoken.contains(tree.id.as_str()))
-    {
-        for node in &tree.nodes {
-            let choice_effects = node.choices.iter().flat_map(|choice| choice.effects.iter());
-            for effect in node.auto_effects.iter().chain(choice_effects) {
-                match effect {
-                    DialogueEffect::GrantItem(item_id, qty) if *qty > 0 => {
-                        obtained.insert(*item_id);
+    // Quest rewards can unlock later dialogue and dialogue can start later quests, so iterate
+    // until nothing grows.
+    loop {
+        let before = state.size();
+        for tree in trees
+            .iter()
+            .filter(|t| spoken_trees.contains(t.id.as_str()))
+        {
+            state.walk(tree);
+        }
+        for quest in &quests {
+            // The server inserts the quest row on `StartQuest` without evaluating the quest's
+            // `start_conditions`, so they are not checked. It advances quests only on talk,
+            // so a collect or defeat step never completes.
+            let finishable = state.started_quests.contains(&quest.id)
+                && quest.steps.iter().all(|step| match &step.trigger {
+                    StepTrigger::Talk { npc_id } => {
+                        spoken_npcs.contains(npc_id.as_str()) && state.all_hold(&step.conditions)
                     }
-                    DialogueEffect::StartQuest(quest_id) => {
-                        started_quests.insert(quest_id.as_str());
-                    }
-                    DialogueEffect::GrantItem(..)
-                    | DialogueEffect::SetFlag(_)
-                    | DialogueEffect::ClearFlag(_)
-                    | DialogueEffect::GrantXp(_) => {}
+                    StepTrigger::Collect { item_id: _, qty: _ } => false,
+                    StepTrigger::Defeat { species_id: _ } => false,
+                });
+            if finishable && state.done_quests.insert(quest.id.clone()) {
+                for reward in &quest.reward.items {
+                    state.grant(reward.item_id, reward.qty);
                 }
             }
         }
-    }
-
-    // Quest rewards can feed later collect steps, so iterate to a fixpoint.
-    let npc_ids: BTreeSet<&str> = npcs.iter().map(|npc| npc.npc_id.as_str()).collect();
-    let mut finished: BTreeSet<&str> = BTreeSet::new();
-    loop {
-        let before = obtained.len() + finished.len();
-        for quest in quests
-            .iter()
-            .filter(|q| started_quests.contains(q.id.as_str()))
-        {
-            let completable = quest.steps.iter().all(|step| match &step.trigger {
-                StepTrigger::Talk { npc_id } => npc_ids.contains(npc_id.as_str()),
-                StepTrigger::Collect { item_id, qty: _ } => obtained.contains(item_id),
-                StepTrigger::Defeat { species_id } => wild.contains(species_id),
-            });
-            if completable && finished.insert(quest.id.as_str()) {
-                let rewards = quest.reward.items.iter().filter(|reward| reward.qty > 0);
-                obtained.extend(rewards.map(|reward| reward.item_id));
-            }
-        }
-        if obtained.len() + finished.len() == before {
-            return obtained;
+        if state.size() == before {
+            return state.items;
         }
     }
 }
