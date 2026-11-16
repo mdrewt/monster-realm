@@ -202,6 +202,10 @@ groups:
       #         - `playtest_reaper`: the TTL-and-cap sweep of `playtest_event`, a one-shot at the
       #           oldest row's 7-day expiry (armed only while rows exist, at most one run per
       #           300 s); minutes of lateness are harmless.
+      #         - `battle_summary_reaper`: the cap sweep of `battle_summary`, a one-shot 300 s after
+      #           the table goes over its 100,000-row cap (armed only while it is over); a run that
+      #           starts minutes late leaves a few more telemetry rows for minutes, which no
+      #           player or operator sees.
       #         - `export_bundle_reaper`: the TTL sweep of `export_bundle` chunks, a one-shot at
       #           the oldest bundle's 7-day expiry (armed only while bundles exist, at most one
       #           run per hour) — the same

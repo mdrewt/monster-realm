@@ -1369,6 +1369,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "raising",
     "ranking",
     "schema",
+    "summary_reaper",
     "tactics",
     "tactics_settle",
     "taming",
@@ -1383,6 +1384,7 @@ const EXPECTED_LIFECYCLE: &[&str] = &["init", "on_connect", "on_disconnect"];
 const EXPECTED_SCHEDULED: &[&str] = &[
     "battle_challenge_reaper",
     "battle_gc",
+    "battle_summary_reaper",
     "export_bundle_reaper",
     "guest_claim_reaper",
     "movement_tick",

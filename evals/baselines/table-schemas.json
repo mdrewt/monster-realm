@@ -1806,5 +1806,21 @@
     ],
     "indexes": [],
     "scheduled": null
+  },
+  "battle_summary_reaper_schedule": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u64",
+      "scheduled_at": "ScheduleAt"
+    },
+    "order": [
+      "id",
+      "scheduled_at"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": "battle_summary_reaper"
   }
 }
