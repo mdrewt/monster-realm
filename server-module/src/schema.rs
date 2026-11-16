@@ -1112,6 +1112,20 @@ pub struct Profile {
     pub losses: u32,
 }
 
+/// The leaderboard's membership: the identities of the top
+/// `ranking::LEADERBOARD_TOP_K` profiles in ladder order (rating desc, name asc,
+/// identity asc). PUBLIC: clients subscribe the members' `profile` rows through a
+/// join on this table, plus their own row, instead of every profile. Only
+/// `ranking.rs` writes it, and every transaction that writes `profile` ends by
+/// rewriting it from a full rescan (`ranking::refresh_leaderboard_top`), as do
+/// `init` and `sync_content`. It holds no display data: a rename or a tombstone
+/// reaches the board through `profile` itself.
+#[spacetimedb::table(accessor = leaderboard_top, public)]
+pub struct LeaderboardTop {
+    #[primary_key]
+    pub identity: Identity,
+}
+
 // --- M16a PvP tables ----------------------------------------------
 
 /// Lifecycle state of a PvP challenge.
@@ -2057,6 +2071,15 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
                 overwritten with the tombstone (anonymize is a field update, never a delete, \
                 so the invariant holds by construction)",
         exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "leaderboard_top",
+        policy: DeletionPolicy::Anonymize,
+        basis: "derived membership of the top profiles in ladder order; holds only the identity \
+                its public profile row already shows; the cascade re-derives it after \
+                tombstoning the profile name, so the row survives exactly while that \
+                anonymized profile still ranks",
+        exportable: false,
     },
     DataLifecycleEntry {
         table: "account",

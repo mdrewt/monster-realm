@@ -292,6 +292,22 @@ pub(crate) fn anonymize_display_names(ctx: &ReducerContext, owner: Identity) {
     }
 }
 
+// --- sr-4b leaderboard membership (SKELETON: bodies land in the green phase) ---
+
+/// How many profiles `leaderboard_top` holds.
+pub(crate) const LEADERBOARD_TOP_K: usize = 100;
+
+/// SKELETON stub.
+pub(crate) fn top_identities(profiles: Vec<Profile>, k: usize) -> Vec<Identity> {
+    let _ = (profiles, k);
+    Vec::new()
+}
+
+/// SKELETON stub.
+pub(crate) fn refresh_leaderboard_top(ctx: &ReducerContext) {
+    let _ = ctx;
+}
+
 #[cfg(test)]
 #[path = "ranking_tests.rs"]
 mod ranking_tests;
