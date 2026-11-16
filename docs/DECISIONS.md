@@ -1256,8 +1256,9 @@ product function until a survivor is found for it.
 
 **Decision.** The dev reducers `grant_bait` and `dev_expire_tactical_window` compile only with
 the `dev_reducers` feature (`server-module/Cargo.toml`). `dev_place_in_load_zone` compiles only
-with `load_test_zones`, which implies `dev_reducers`. Neither feature is ever in `default`. The playtest recipes publish the default build and then check the *published*
-module with `spacetime describe --json` (`scripts/verify-release-reducers.mjs`, whose
+with `load_test_zones`, which implies `dev_reducers`. Neither feature is ever in `default`.
+The playtest recipes publish the default build and then check the *published* module with
+`spacetime describe --json` (`scripts/verify-release-reducers.mjs`, whose
 `FORBIDDEN_REDUCERS` lists every dev reducer name, so a new dev reducer joins it in the
 change that adds it), and check that the production client bundle contains no DEV debug
 hooks (`scripts/verify-build-hooks.mjs`). The committed client bindings are generated from
@@ -1276,13 +1277,15 @@ tactical battle, wild, PvP or Practice; a wild expiry is the AutoFlee a real dea
 refuses a Deploying or Finished battle.
 
 `dev_place_in_load_zone` exists only in the load-test build: `load_test_zones`, which `just
-load-host` publishes to a `monster-realm-load*` database on a loopback host. That build also
+load-host` publishes to a `monster-realm-load-zones*` database on a loopback host (a remote one
+only with `MR_LOAD_ALLOW_REMOTE=1`). That build also
 appends game-core's 100 generated zones to the zone, zone-map and tactics-zone registries. The
 zones are 16×16 floor with ids 10000–10099 (`game-core/src/load_test_zones.rs`). Any caller may
 call the reducer, but only for itself. It moves the caller's own character to a load zone's spawn
 tile as the tick's warp arm moves a character. The character arrives Idle, its queued moves are
 cleared and published with the seq kept, and the zone's tick is armed. The reducer refuses an id
-outside the band, a caller with no character and a caller in an ongoing battle. The load driver
+outside the band, a caller with no character or move intent row, and a caller in an ongoing
+battle. The load driver
 (`mr_load_driver --zones`) calls it once per bot after the join, to spread its bots over the
 zones. The browser client is not supported in a load zone: its wasm has no load-zone map, so it
 cannot predict there. A change that adds a dev reducer must also:

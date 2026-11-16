@@ -80,12 +80,12 @@
 #    (the release module has no dev reducers) and are killed for real by tests that `just test`
 #    runs with `--features dev_reducers`: the `_th4_` tests of dev_clock_tests.rs kill every
 #    dev_expire_tactical_window mutant and the forwarder's. The load build's code is the same
-#    case under `load_test_zones`: dev_place_in_load_zone (load_dev.rs, both `delete !`), its
-#    forwarder dev_place_character (movement.rs, `-> true` / `-> false`) and game-core's
-#    generators (load_test_zones.rs: each generated_* body replacement and the zone-0 `==`).
-#    The `just test` line with `--features load_test_zones` kills them (the sr9b_1 and sr9b_2
-#    tests). A dev reducer's body replacement (`-> Ok(())`) needs no entry: the deletion-gate
-#    census (privacy_enforcement_tests.rs) reads the source, so it fails in the default build too.
+#    case under `load_test_zones`: dev_place_in_load_zone (load_dev.rs, its `delete !`) and
+#    game-core's generators (load_test_zones.rs: each generated_* body replacement and the zone-0
+#    `==`). The `just test` line with `--features load_test_zones` kills them (the sr9b_1 and
+#    sr9b_2 tests). A dev reducer's body replacement (`-> Ok(())`) needs no entry, nor does its
+#    write forwarder's (dev_place_character, movement.rs): the deletion-gate census
+#    (privacy_enforcement_tests.rs) reads the source, so it fails in the default build too.
 #
 # 9. apply_delta (tactics_settle.rs:362:36) `<` -> `<=` on the resize guard: Vec::resize(n, 0) at
 #    len == n is a no-op, so the two comparisons differ only where the result is identical (an
@@ -136,7 +136,6 @@ exclude_re = [
     "dev_clock\\.rs:\\d+:9: delete match arm [01] in dev_expire_tactical_window$",
     "tactics\\.rs:\\d+:5: replace dev_arm_deadline with \\(\\)$",
     "load_dev\\.rs:\\d+:8: delete ! in dev_place_in_load_zone$",
-    "movement\\.rs:\\d+:5: replace dev_place_character -> bool with (true|false)$",
     "load_test_zones\\.rs:\\d+:5: replace generated_(zones|zone_maps|tactics_zones) -> Vec<crate::(content|tactics)::\\w+> with vec!\\[(Default::default\\(\\))?\\]$",
     "load_test_zones\\.rs:\\d+:65: replace == with != in generated_tactics_zones$",
     "tactics_settle\\.rs:\\d+:36: replace < with <= in apply_delta",

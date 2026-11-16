@@ -58,8 +58,8 @@ pub struct MovementTickSchedule {
 /// Arm `zone_id`'s tick. Idempotent: a zone that already holds a schedule row
 /// keeps that row, so there is never more than one tick per zone per `STEP_MS`.
 /// Called by every path that puts a player's character into a zone (`join_game`,
-/// the tick's warp arm, the load build's `dev_place_character`) and by the content
-/// sync's reconcile. The scan is over at most one row per occupied zone.
+/// the tick's warp arm, the load build's `dev_place_character`) and by
+/// `ensure_zone_schedules` (init, content sync). The scan is over one row per armed zone.
 pub(crate) fn arm_zone_tick(ctx: &ReducerContext, zone_id: u32) {
     if ctx
         .db
