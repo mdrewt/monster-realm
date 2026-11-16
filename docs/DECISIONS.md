@@ -1243,9 +1243,10 @@ holds almost no caller and a join alone reaches the anonymous tier. The wallet s
 any per-identity signal an anonymous identity can earn is cheap, and sign-in is the fix. A
 configured real sign-in issuer (`ALLOWED_ISSUERS` in `server-module/src/accounts.rs`, today the
 fail-closed placeholder) is therefore a launch condition for the official server. Until then no
-caller has an account, every caller draws on the anonymous tier, and identities that each earn a
-wallet row can hold that tier full so other players' export requests are refused for up to the
-7-day retention (R-rb-132-WALLETSYBIL). The operator accepted that exposure until launch
+caller has an account, so no caller reaches the account holders' ceiling, and identities that
+each earn a wallet row can keep the anonymous tier full: other players' export requests are
+refused for as long as those identities keep re-exporting, and for up to the 7-day retention
+after they stop (R-rb-132-WALLETSYBIL). The operator accepted that exposure until launch
 (monster-realm#757).
 
 **Export scope.** The export is for the data held about the person. Game state is

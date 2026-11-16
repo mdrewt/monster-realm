@@ -1212,8 +1212,8 @@ fn my_monster_pub_exposes_last_care_at_ms_to_the_owner_only_qf3() {
 
 // ===========================================================================
 // PRV1-11 / X1 — eighteen of the twenty pure per-table serializers; the other
-// two (battle_summary, player_formation) are gated by the rb137_ tests at the
-// end of this file.
+// two (battle_summary, player_formation) are gated by their own serializer tests
+// at the end of this file.
 // ===========================================================================
 
 /// PRV1-11 / X1: every exportable table's row serializes to EXACTLY the
@@ -2142,10 +2142,10 @@ fn m22s4_exporter_set_equals_manifest_both_directions() {
         manifest_order.len(),
         20,
         "m22s4 [X2/floor]: DATA_LIFECYCLE_MANIFEST carries {} exportable entries; the spec's \
-         export scope is exactly TWENTY: fourteen erase tables (player_handle and rb-137's \
-         player_formation among them) plus five anonymize tables (rb-137's battle_summary the \
-         fifth) plus character, 14 + 5 + 1. If that number legitimately changed, the registry \
-         and this floor move together, in one reviewed diff.",
+         export scope is exactly TWENTY: fourteen erase tables (player_handle and \
+         player_formation among them) plus five anonymize tables (battle_summary among them) \
+         plus character, 14 + 5 + 1. If that number legitimately changed, the registry and \
+         this floor move together, in one reviewed diff.",
         manifest_order.len()
     );
 
@@ -2678,7 +2678,7 @@ fn m22s4_playtest_event_own_predicate() {
 
 // ===========================================================================
 // X6 — the battle redaction, one of the two side-redacting serializers; the
-// other, the battle summary's, is gated by the rb137_ tests at the end of this
+// other, the battle summary's, is gated by its own tests at the end of this
 // file.
 // ===========================================================================
 
@@ -6573,9 +6573,9 @@ fn rb109_store_stamps(
 /// PLANS at most the stamp cap, and deletes the OLDEST expired bundles WHOLE —
 /// their tails beyond the read window included.
 ///
-/// Twenty-six owners, seventeen chunks each (the minimum bundle when this was
-/// written; three below today's twenty-table minimum, and the arithmetic below
-/// is for seventeen), 8 KiB of payload per chunk.
+/// Twenty-six owners, seventeen chunks each (three below the twenty-table
+/// minimum bundle; the arithmetic below is for seventeen), 8 KiB of payload per
+/// chunk.
 /// Twenty of the bundles are expired — entry zero sitting EXACTLY on the cutoff
 /// — and six are live, the first of them one millisecond above it.
 ///
@@ -7921,8 +7921,8 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// — which the population clause below reports BEFORE the tick runs at all.
 ///
 /// THE ARITHMETIC, derived from the shipped constants and never transcribed:
-/// the minimum bundle is one chunk per exportable table, twenty since rb-137
-/// (fourteen erase tables plus five anonymize tables plus character), so
+/// the minimum bundle is one chunk per exportable table, twenty (fourteen
+/// erase tables plus five anonymize tables plus character), so
 /// eighteen minimum-size bundles of twenty chunks are 18 x 20 = 360 rows and
 /// the 256-row read window BINDS; that window in ascending stamp order covers
 /// twelve whole bundles (12 x 20 = 240 rows) and 256 - 240 = 16 rows of the
@@ -8585,11 +8585,10 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
 ///     is 208 rows plus 48 of the sixty-row bundle: SEVENTEEN stamps, the same
 ///     sixteen planned, the same 208 reaped.
 ///   - B, rb-109's oversized population: twenty expired bundles of seventeen
-///     rows and six live. Seventeen rows is the minimum bundle as written
-///     before the eighteenth exportable table, 20 - 17 = three rows short of
-///     the shipped minimum of twenty (one chunk per exportable table since
-///     rb-137). The window is fifteen whole bundles (15 x 17 = 255 rows) and one
-///     row of a sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
+///     rows and six live. Seventeen rows is 20 - 17 = three rows short of the
+///     shipped minimum bundle of twenty (one chunk per exportable table). The
+///     window is fifteen whole bundles (15 x 17 = 255 rows) and one row of a
+///     sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
 ///   - C, the rb-87 residual's own case: twenty expired bundles of FIVE rows and
 ///     none live. The range runs out at 100 rows holding twenty stamps; sixteen
 ///     are planned and 80 rows reaped.
@@ -8622,8 +8621,8 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
          minimum, which is what lets the cap bind at all on an ascending read (sixteen bundles \
          of twenty rows are 16 x 20 = 320, past the 256-row window, so a window of minimum-size \
          bundles holds at most ceil(256 / 20) = thirteen stamps), and B's seventeen-row bundles \
-         are the minimum as written before the eighteenth exportable table, three rows short of \
-         today's. The four populations are hand-sized, so none of their tuples moves with the \
+         are three rows short of that minimum. The four populations are hand-sized, so none of \
+         their tuples moves with the \
          minimum; a value that moves makes every tuple below a different, still \
          self-consistent claim: re-derive each one from the spec before touching anything else."
     );
@@ -9185,7 +9184,7 @@ fn export_wake_rules_are_the_expiry_and_the_hourly_floor() {
 }
 
 // ===========================================================================
-// rb-137 — the caller's `battle_summary` rows and `player_formation` row in the
+// The caller's `battle_summary` rows and `player_formation` row in the
 // export. A summary row names both sides, so it is redacted the way the
 // `battle` exporter treats the other participant: the side the reader does not
 // hold renders its identity and its two per-side columns as null, a practice
@@ -9931,11 +9930,13 @@ fn a_player_formation_row_serializes_its_owner_and_its_ids_in_order_rb137_2() {
 /// caller's and the stranger's row stored first. The caller's bundle holds
 /// exactly one `player_formation` chunk carrying exactly the caller's row; no
 /// chunk names the stranger or the id only the stranger saved. A caller with no
-/// formation gets one `player_formation` chunk with an empty rows array.
+/// formation gets one `player_formation` chunk with an empty rows array; a
+/// caller whose stored formation holds no ids gets that one row, ids `[]`.
 ///
 /// kills: no `player_formation` exporter; a reader that returns every formation,
 /// the first one stored, or every formation sharing a monster id with the
-/// caller's; the empty chunk dropped for a caller with no formation.
+/// caller's; the empty chunk dropped for a caller with no formation; a reader
+/// that skips a stored formation whose id list is empty.
 #[test]
 fn an_export_holds_the_callers_formation_and_no_other_players_rb137_2() {
     let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
@@ -9944,6 +9945,7 @@ fn an_export_holds_the_callers_formation_and_no_other_players_rb137_2() {
     let caller = m22s4_id(me);
     let stranger = m22s4_id(0xC6);
     let formless = m22s4_id(0xC7);
+    let cleared = m22s4_id(0xC8);
     let shared: u64 = 8_100_000_000_000_032;
     let stranger_only: u64 = 8_100_000_000_000_039;
     let fx = crate::native_host_tests::fixture();
@@ -9953,9 +9955,14 @@ fn an_export_holds_the_callers_formation_and_no_other_players_rb137_2() {
         .unique();
     w.seed_player(caller, 61, 0, 0);
     w.seed_player(formless, 62, 0, 0);
+    w.seed_player(cleared, 63, 0, 0);
     formations.seed(&PlayerFormation {
         owner_identity: stranger,
         monster_ids: vec![shared, stranger_only],
+    });
+    formations.seed(&PlayerFormation {
+        owner_identity: cleared,
+        monster_ids: vec![],
     });
     formations.seed(&PlayerFormation {
         owner_identity: caller,
@@ -10023,5 +10030,28 @@ fn an_export_holds_the_callers_formation_and_no_other_players_rb137_2() {
         vec![m22s4_expected_payload("player_formation", &[])],
         "[rb137/formation-empty-chunk]: a caller with no formation gets one player_formation \
          chunk with an empty rows array"
+    );
+
+    assert_eq!(
+        fx.run_as_at(cleared, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "a caller whose saved formation is empty is served too"
+    );
+    let saved_empty: Vec<String> = w
+        .chunks_of(cleared)
+        .into_iter()
+        .filter(|(t, _)| t == "player_formation")
+        .map(|(_, p)| p)
+        .collect();
+    let empty_row = m22s4_obj(&[
+        ("owner_identity", rb137_qhex(0xC8)),
+        ("monster_ids", m22s4_arr(&[])),
+    ]);
+    assert_eq!(
+        saved_empty,
+        vec![m22s4_expected_payload("player_formation", &[empty_row])],
+        "[rb137/formation-saved-empty]: a STORED formation with no monster ids is still the \
+         caller's row and exports as one row with an empty id array — not as the empty rows \
+         array of a caller who stored no formation at all"
     );
 }

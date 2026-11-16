@@ -1561,8 +1561,8 @@ const _: () = assert!(exporters_cover_manifest(DATA_LIFECYCLE_MANIFEST, EXPORTER
 // owner (derived from ctx.sender() by the reducer — the sole identity source).
 // Index-backed except battle_action and playtest_event, which have no identity
 // index and take a bounded full scan narrowed IMMEDIATELY by the pure own-row
-// predicate. battle, battle_summary and the two dual-column tables dedup with
-// the my_battle chain idiom — the trailing exclusion is dedup by construction, so a practice
+// predicate. The four two-sided tables (trade_offer, battle_challenge, battle,
+// battle_summary) dedup with the my_battle chain idiom — the trailing exclusion is dedup by construction, so a practice
 // battle arrives exactly once (never a self-comparison of the two columns,
 // which would delete every practice battle from its own export).
 // ===========================================================================
@@ -2170,7 +2170,7 @@ pub fn export_bundle_reaper(
 // thresholds belong in ops/observability, where they can change without a
 // module publish, and a boolean the module derives is a second retention policy
 // nobody reviewed. `due` above `planned` means the stamp cap bound, observed
-// rather than inferred; sixteen minimum-size bundles (288 rows) overfill the
+// rather than inferred; sixteen minimum-size bundles (320 rows) overfill the
 // 256-row window, so that needs a stamp of at most fifteen rows or a range read
 // that interleaves stamps — for bundles this module writes it is a tripwire, not
 // a backlog signal. A FULL window is silent about rows past its edge (an open

@@ -1063,9 +1063,8 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
 
-/// the `exportable == true` set equals EXACTLY the twenty tables
-/// spec §5, the identity-handles spec and rb-137 admit — set equality, BOTH
-/// directions.
+/// the `exportable == true` set equals EXACTLY the twenty tables the export
+/// scope admits — set equality, BOTH directions.
 ///
 /// a negative-only spot check ("battle_wild is false, guest_claim is false") is
 /// satisfied by an ALL-FALSE manifest, which ships a dead export feature — spec
@@ -1074,10 +1073,10 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 /// Set equality in both directions is the only shape that rejects an over-broad
 /// AND an empty export scope.
 ///
-/// The twenty are fourteen ERASE tables (the twelve spec-ERASE tables +
-/// `player_handle` + rb-137's `player_formation`) + five ANONYMIZE tables (the
-/// four spec-ANONYMIZE tables + rb-137's `battle_summary`) + `character`:
-/// 14 + 5 + 1 = 20. The `false` side includes the three the spec calls out by name:
+/// The twenty are fourteen ERASE tables (`player_handle` and `player_formation`
+/// among them) + five ANONYMIZE tables (`battle_summary` among them) +
+/// `character`: 14 + 5 + 1 = 20. The `false` side includes the three the spec
+/// calls out by name:
 /// `battle_wild` (the raw RNG individuality seed, a must-never-leak),
 /// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
 /// own output — including it makes the walk self-feeding).
@@ -1124,8 +1123,8 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         exportable, expected_exportable,
         "T4 / spec §5: the exportable set is wrong. It must be EXACTLY the twelve ERASE \
          tables + the four ANONYMIZE tables + `character` + `player_handle` (the owner's \
-         own discriminator) + rb-137's `battle_summary` (the caller's side of each battle \
-         summary) and `player_formation` (the caller's saved deploy order): twenty. Both \
+         own discriminator) + `battle_summary` (the caller's side of each battle summary) \
+         + `player_formation` (the caller's saved deploy order): twenty. Both \
          directions matter: an \
          all-false manifest passes every negative spot check and ships an export feature \
          that returns an empty bundle for every request (§5's walk filters on \
@@ -4954,15 +4953,14 @@ fn tactical_view_row_types_reach_no_secret_or_staging_field_bt7_3() {
     }
 }
 
-/// BT7.4 (manifest half), as rb-137 amends it — each of the ten tactical tables
-/// is classified exactly once with the plan's policy (five Erase,
-/// `battle_summary` Anonymize, four `ViaJoin("battle")`); exactly two of them
-/// are exportable, `battle_summary` (the caller's side of each battle summary,
-/// redacted like `battle`) and `player_formation` (the caller's saved deploy
-/// order), while the other eight stay `exportable: false` — the transcripts are
-/// GC-bound and the staging rows are secrets. The export bundle's table set is
-/// EXACTLY the seventeen pre-bt-7 tables plus `player_handle` plus those two:
-/// 17 + 1 + 2 = 20.
+/// BT7.4 (manifest half) — each of the ten tactical tables is classified
+/// exactly once with the plan's policy (five Erase, `battle_summary`
+/// Anonymize, four `ViaJoin("battle")`); exactly two of them are exportable,
+/// `battle_summary` (the caller's side of each battle summary, redacted like
+/// `battle`) and `player_formation` (the caller's saved deploy order), while the
+/// other eight are `exportable: false` — the transcripts are GC-bound and the
+/// staging rows are secrets. The export bundle's table set is EXACTLY the
+/// eighteen non-tactical exportable tables plus those two: 18 + 2 = 20.
 ///
 /// Kills: one of the eight other tactical tables flipped to `exportable: true`
 ///        (the export ships seeds, plans or staging rows to the subject's
@@ -5013,9 +5011,9 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
         );
         assert_eq!(
             entries[0].exportable, exported,
-            "[bt7/manifest-export-flag] `{table}` must carry `exportable: {exported}` — rb-137 \
-             exports the battle summary and the saved formation; every other tactical table \
-             stays out of the export, because the transcript is GC-bound telemetry and the \
+            "[bt7/manifest-export-flag] `{table}` must carry `exportable: {exported}` — the \
+             export carries the battle summary and the saved formation; every other tactical \
+             table stays out of it, because the transcript is GC-bound telemetry and the \
              staging rows are secrets"
         );
     }
@@ -5050,8 +5048,8 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
             "profile",
             "trade_offer",
         ],
-        "[bt7/export-set] the exportable set must be EXACTLY the seventeen pre-bt-7 tables plus \
-         `player_handle` plus rb-137's `battle_summary` and `player_formation`: 17 + 1 + 2 = 20"
+        "[bt7/export-set] the exportable set must be EXACTLY the eighteen non-tactical \
+         exportable tables plus `battle_summary` and `player_formation`: 18 + 2 = 20"
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
