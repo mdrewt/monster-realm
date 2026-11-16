@@ -16,11 +16,9 @@
 // testable instead of implicit in fourteen hand-maintained guard lists.
 //
 // SCOPE: this module holds the DECISIONS, plus the READ substrate
-// — `OverlayProbes` and `anyVisible` — plus the WRITE substrate: `visibleIds()` and the
-// `OverlayHandles` TYPE, which together let all twelve `main.ts` hotkey open-guards route
-// through `canOpen` instead of hand-maintained guard lists, and let `main.ts` run the
-// context stack's `close` commands (ui/contextStack.ts `reconcile`) through each view's own
-// hide path. What a battle or a server conversation closes is NOT decided here: that is
+// — `OverlayProbes`, `anyVisible` and `visibleIds()`, the visible set `canOpen` takes, so
+// `main.ts` hotkey open-guards route through `canOpen` instead of hand-maintained guard
+// lists. What a battle or a server conversation closes is NOT decided here: that is
 // `SCREEN_POLICY` in ui/contextStack.ts. What deliberately did NOT ship — zero consumers,
 // the A7/A15 precedent — is per-id `open` thunks, `isVisible(id)` and `anyVisibleExcept()`.
 
@@ -134,7 +132,7 @@ export interface A11yMeta {
  * caller-supplied table. A CSS selector string and an ARIA role name are STRINGS IN A DATA
  * TABLE — none of those five things. This module still has zero imports, touches no browser
  * globals, and stays node-testable with zero mocks. `A11yMeta` is the exact analogue of
- * `OverlayProbes`/`OverlayHandles` (`:362`, `:393`): this module owns the SHAPE of the a11y
+ * `OverlayProbes`: this module owns the SHAPE of the a11y
  * contract, and S1's `ui/overlayA11y.ts` owns the writes it implies.
  *
  * HARD CONSTRAINT FOR EVERY LATER SLICE: this table holds NO thunks and NO functions. If a
@@ -326,16 +324,3 @@ export function anyVisible(probes: OverlayProbes, exempt?: OverlayId): boolean {
 export function visibleIds(probes: OverlayProbes): readonly OverlayId[] {
   return OVERLAY_IDS.filter((id) => probes[id]());
 }
-
-/** Per-id hide thunks (what the context stack's `close` commands run) — the WRITE mirror of `OverlayProbes`, and the same division of
- *  labour: this module owns the SHAPE of the write, `main.ts` owns the handles.
- *
- *  Total `Record<OverlayId, _>` on purpose, so a 17th overlay is a COMPILE error here rather
- *  than a silently unhidable overlay. The value type admits `undefined`, and only
- *  `dialogueView` supplies it. That is not style: `main.ts` must
- *  contain ZERO `dialogueView?.hide` occurrences,
- *  because a client-side hide strands the server
- *  `player_conversation` row — so a table of REQUIRED thunks cannot compile in this codebase
- *  at all. Deliberately NOT `Partial<>`: that would let ANY id go missing, not just the one
- *  that must. */
-export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>;

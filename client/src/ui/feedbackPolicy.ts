@@ -152,8 +152,6 @@ export const FEEDBACK_POLICY = {
   'npc-dialogue': acts('blocking', 'the dialogue box'),
 } as const satisfies Record<MessageKind, PolicyRow>;
 
-export const MESSAGE_KINDS = Object.keys(FEEDBACK_POLICY) as readonly MessageKind[];
-
 export function channelOf(kind: MessageKind): Channel {
   return FEEDBACK_POLICY[kind].channel;
 }
