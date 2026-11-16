@@ -345,7 +345,9 @@ oldest row's expiry: the insert arms it, the reaper re-arms it from the rows it 
 empty table has none. Each has a fixed delay (300 s and 3600 s). The reaper arms its own next run
 no sooner than that delay from now, so it runs at most once per delay however closely rows expire,
 and a row is reaped within one delay of its expiry. Work owed at once (a table over its cap, a
-backlog one run could not finish) also runs after that delay, never immediately.
+backlog one run could not finish) also runs after that delay, never immediately. A third,
+`battle_summary_reaper`, bounds a table by row count instead of age, in the same shape (see
+"`battle_summary` keeps the newest 100,000 battles").
 
 A one-shot row is consumed by the runtime even when its reducer's transaction fails, and the re-arm
 rolls back with that transaction, so a failed reaper run leaves rows with no run armed. The next
@@ -383,6 +385,44 @@ zone is entered; a second schedule row for a zone; disarming a zone from the pat
 character instead of from the tick; resetting anything a player caused; arming every zone at
 `init` or `sync_content`; an interval schedule for a reaper; a schedule row for a table with nothing
 to reap.
+
+## `battle_summary` keeps the newest 100,000 battles
+
+**Decision.** The private `battle_summary` telemetry table keeps its newest `BATTLE_SUMMARY_CAP`
+(100,000) rows by `battle_id`, twice the 50,000 stored accounts the official server is sized for
+(`server-module/src/summary_reaper.rs`). Older rows are deleted by the scheduler-only
+`battle_summary_reaper`, which runs only when something is owed, as the other table reapers do:
+
+- **Armed by the insert that takes the table over the cap.** `tactics_settle`'s one summary insert
+  reads the row count. Over the cap with no run armed, it arms one one-shot 300 s out. At or below
+  the cap it writes nothing. `init` and `sync_content` arm the same run, so a database already over
+  the cap at publish is reaped.
+- **A run deletes the lowest ids down to the cap, at most 8,192.** It never deletes a row whose
+  `battle_id` still has a `battle` or a `battle_tactical` row (the row is "held"). It re-arms 300 s
+  out only when it stopped at its 8,192 limit with the table still over the cap. A run that walked
+  every row and is still over the cap left only held rows, so it arms nothing. The next insert over
+  the cap arms the next run.
+- **What "held" covers.** A live battle, a finished battle whose anchor is kept until its player's
+  next battle, and an erased account's last battle, whose tombstoned anchor is never deleted. The
+  table can therefore exceed the cap by the number of held rows.
+- **Drain rate.** At 8,192 rows per 300 s a run removes about 27 rows a second. The cap holds while
+  battles start more slowly than that. The official server is sized for about 30,000 battles a day
+  (0.35 a second).
+
+**Why.** Every battle adds a row and nothing else removes one, so the table would grow forever.
+100,000 rows is about three days of battles at 1,000 daily players. That is more than the H1/H2
+match-length and BT9.5 tuning reads need, and it is the same at any population. A live battle's row
+is skipped because `tactics_settle` re-inserts a zeroed summary for a battle whose row is missing.
+Deleting that row would lose the battle's telemetry so far and write a row that is wrong. The
+300 s delay batches the inserts that arrive in between into one run. It also holds the reaper (a
+scan and sort of the whole table) to one run per 300 s. The primary key's accessor has no range
+filter, so the reaper cannot walk only the lowest ids. A run that left only held rows does not
+re-arm, so a table held over the cap does not repeat that scan every 300 s while no battle starts.
+
+**Rules out.** An age-based TTL on `battle_summary` (the reads want a row count, not a window);
+reaping a held row; a schedule row while the table is at or below the cap; a re-arm after a run
+that left only held rows; exporting the table (it stays not exportable, as its data-lifecycle
+row says).
 
 ## A session resumes where it left off
 
@@ -1043,7 +1083,8 @@ cannot be used to test whether a code exists; malformed and already-used codes r
 the same error. Registering the code before the redirect is what lets the claim
 survive the round trip to the identity provider. A finished battle is history shared
 with an opponent, not progress, and the guest identity retires at the claim. Nothing
-else reliably removes what names it: every sweep and the 24 h GC keep `battle_summary`,
+else reliably removes what names it: every sweep and the 24 h GC keep `battle_summary` (only
+its cap reaper deletes rows, oldest first, once 100,000 newer rows exist),
 a wild or practice anchor is swept only on its own player's next battle, and a PvP
 anchor waits on the opponent's next battle in the same role.
 

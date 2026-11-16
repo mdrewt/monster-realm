@@ -1,10 +1,16 @@
 //! `summary_reaper` — server-module domain submodule.
 //! Caps the private `battle_summary` telemetry table at its newest `BATTLE_SUMMARY_CAP` rows by
 //! `battle_id`. The reaper runs only when something is owed, in `playtest.rs`'s on-demand shape:
-//! one one-shot schedule row while the table is over the cap, none otherwise. A row whose battle is
-//! still held by a `battle` or `battle_tactical` row is never reaped: the oldest battle can be an
-//! idle or long one that is still live, and `tactics_settle` re-inserts a zeroed summary for a
-//! battle whose row is missing.
+//! at most one one-shot schedule row, armed by the summary insert that takes the table over the
+//! cap and by a run that stopped at its delete limit, and none while the table is at or below it.
+//! A row whose battle is still held by a `battle` or `battle_tactical` row is never reaped: the
+//! oldest battle can be an idle or long one that is still live, and `tactics_settle` re-inserts a
+//! zeroed summary for a battle whose row is missing. A finished battle's anchor stays until its
+//! player's next battle, and an erased account's last anchor stays for good, so "held" also covers
+//! those rows: the table can stay over the cap by that many rows, with no run armed until the next
+//! insert. A run deletes at most `BATTLE_SUMMARY_REAP_MAX_DELETE_PER_RUN` rows per
+//! `BATTLE_SUMMARY_REAP_RETRY_MS`, about 27 rows a second, so the cap holds while battles start
+//! slower than that.
 use crate::marshal::now_ms;
 use crate::playtest::{firing_one_shot, ms_to_schedule, one_shot_ms, plan_wake};
 use crate::schema::{battle, battle_summary, battle_tactical};
@@ -75,7 +81,7 @@ pub(crate) fn summary_rearm_ms(
 }
 
 // Sole writer of `battle_summary_reaper_schedule`: apply `plan_wake`. `firing` is the row the
-// running reaper was called with, which the runtime deletes once the reducer returns.
+// running reaper was called with, when it is a one-shot the runtime is about to delete.
 fn set_summary_wake(ctx: &ReducerContext, wanted_at_ms: Option<i64>, firing: Option<u64>) {
     let existing: Vec<(u64, Option<i64>)> = ctx
         .db
@@ -99,8 +105,9 @@ fn set_summary_wake(ctx: &ReducerContext, wanted_at_ms: Option<i64>, firing: Opt
 }
 
 // Called by `tactics_settle` after it inserts a summary row. At or below the cap it reads only the
-// row count. Over it, a run already armed is kept, so only the insert that crosses the cap (or the
-// first one after a lost run) writes a schedule row.
+// row count. Over it, a run already armed is kept, so a schedule row is written only by an insert
+// over the cap with no run armed: the one that crosses the cap, the first one after a lost run,
+// and the first one after a run that left only held rows.
 pub(crate) fn arm_battle_summary_reaper(ctx: &ReducerContext) {
     let wanted = summary_wake_ms(
         ctx.db.battle_summary().count(),

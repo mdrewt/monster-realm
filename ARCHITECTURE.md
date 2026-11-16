@@ -163,6 +163,7 @@ writes:
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
 | `observability` | scheduled `mr_heartbeat` |
 | `playtest` | scheduled `playtest_reaper` |
+| `summary_reaper` | scheduled `battle_summary_reaper` (caps `battle_summary` at its newest 100,000 rows; armed by `tactics_settle`'s summary insert and by `init`/`sync_content`) |
 
 Supporting modules have no reducers: `schema` (tables, views, the data-lifecycle
 manifest), `guards` (shared validation), `marshal` (row ⇄ `game-core` conversion,
@@ -351,7 +352,9 @@ body is the whole security boundary.
   queue, clock, secret, wild-unit and staging rows are deleted 24 h later by the
   scheduled `battle_gc`; `battle_tactical`, `battle_summary` and the anchor survive. A
   player's PRIOR terminal anchors are swept at every tactical battle end with
-  their tactical rows; only their `battle_summary` rows survive, finalised.
+  their tactical rows; only their `battle_summary` rows survive, finalised. `battle_summary`
+  itself keeps its newest 100,000 rows: `summary_reaper` deletes older ones whose battle has no
+  `battle` or `battle_tactical` row left.
 
 **Tactical battles (`tactics.rs` + `tactics_settle.rs`, M-battle-tactics bt-8/bt-9).** The server is a shell over
 `game_core::tactics::queue::TacticalBattle`: a reducer hydrates the bt-7 rows into the
@@ -381,7 +384,8 @@ credit, Quality Time and the evolution check keep their carried scope; the curre
 the wallet; one `Awards` line per paid monster plus one `unit 0` line for the currency is
 appended after `BattleEnd`. The faint penalty (`battle::apply_faint_penalties`) and the
 prior-terminal sweep run from the same place, so a recruit success penalises and sweeps like
-every other end. `battle_summary` is one row per battle: inserted at the Active start,
+every other end. `battle_summary` is one row per battle: inserted at the Active start (an insert
+that takes the table over its cap arms `summary_reaper`),
 accumulated every step (windows per unit-turn, pre-queued vs live turns, halted pre-queued
 plans, hits/misses, recruit attempts, items, autopasses, single-hit super-effective KOs after
 round 1) and finalised at the end (`outcome == Ongoing` marks an unfinished battle). The

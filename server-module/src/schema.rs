@@ -2060,7 +2060,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "battle_summary",
         policy: DeletionPolicy::Anonymize,
-        basis: "per-battle telemetry (the H1 and H2 match-length source) survives with the deleting side identity column swapped to TOMBSTONE_IDENTITY, mirroring battle; capped at the newest 100000 rows by battle_id (summary_reaper), never reaping a row whose battle or battle_tactical row still exists; never exported",
+        basis: "per-battle telemetry (the H1 and H2 match-length source) survives with the deleting side identity column swapped to TOMBSTONE_IDENTITY, mirroring battle; capped by summary_reaper at the newest BATTLE_SUMMARY_CAP rows by battle_id, never reaping a row whose battle or battle_tactical row still exists; never exported",
         exportable: false,
     },
     // --- JOIN-ONLY: no Identity column; swept via the owning parent's step. ---
