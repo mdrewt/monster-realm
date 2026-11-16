@@ -27,7 +27,9 @@ import {
   AUTH_SERVICE_TRANSIENT_THRESHOLD,
   type ConnectCredential,
   decideConnectCredential,
+  mayReachOidc,
   type RenewalOutcome,
+  type SignInMode,
 } from './credentialDecision';
 
 // ---------------------------------------------------------------------------
@@ -460,6 +462,99 @@ describe('decideConnectCredential G16: totality property (fast-check)', () => {
         fc.option(fc.string(), { nil: undefined }),
         (outcome, ever, n, anonToken) => {
           expect(() => decideConnectCredential(outcome, ever, n, anonToken)).not.toThrow();
+        },
+      ),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lpw-1: whether a credential attempt may reach the OIDC client at all.
+//
+// A `local` or `private` target runs with `signIn: 'off'` and must make zero OIDC requests
+// whatever its storage and URL hold (lpw-1.1): an `account` kind marker or an OIDC return leg
+// opens the attempt gate ONLY in the `'oidc'` mode. The mode is compared EXACTLY, so any other
+// runtime value (an omitted option, a case variant) is off — the fail-closed direction.
+// ---------------------------------------------------------------------------
+
+/** The full table, written out as data (never re-derived with the implementation's expression):
+ *  mode x everAuthenticated x returnLeg -> may reach the OIDC client. */
+const MAY_REACH_OIDC_TABLE: readonly {
+  readonly signIn: SignInMode;
+  readonly everAuthenticated: boolean;
+  readonly returnLeg: boolean;
+  readonly expected: boolean;
+}[] = [
+  { signIn: 'oidc', everAuthenticated: false, returnLeg: false, expected: false },
+  { signIn: 'oidc', everAuthenticated: false, returnLeg: true, expected: true },
+  { signIn: 'oidc', everAuthenticated: true, returnLeg: false, expected: true },
+  { signIn: 'oidc', everAuthenticated: true, returnLeg: true, expected: true },
+  { signIn: 'off', everAuthenticated: false, returnLeg: false, expected: false },
+  { signIn: 'off', everAuthenticated: false, returnLeg: true, expected: false },
+  { signIn: 'off', everAuthenticated: true, returnLeg: false, expected: false },
+  { signIn: 'off', everAuthenticated: true, returnLeg: true, expected: false },
+];
+
+describe('mayReachOidc: a credential attempt reaches the OIDC client only in the oidc mode', () => {
+  it('reaches the OIDC client only in oidc mode with an account marker or a return leg, never with sign-in off: all 8 rows of mode x marker x return leg [lpw-1.1]', () => {
+    // WRONG IMPLS KILLED: ignoring the mode (the four `off` rows with a marker or a return leg
+    // answer true: a local world with a stale marker contacts the issuer); ignoring the marker
+    // (`oidc`, marker, no return leg answers false: a signed-in tab never renews); ignoring the
+    // return leg (`oidc`, no marker, return leg answers false: a first sign-in never exchanges its
+    // code); `&&` for `||` (both single-input `oidc` rows answer false).
+    let rows = 0;
+    for (const row of MAY_REACH_OIDC_TABLE) {
+      const actual = mayReachOidc({
+        signIn: row.signIn,
+        everAuthenticated: row.everAuthenticated,
+        returnLeg: row.returnLeg,
+      });
+      expect(
+        actual,
+        `row: signIn=${row.signIn} everAuthenticated=${row.everAuthenticated} returnLeg=${row.returnLeg}`,
+      ).toBe(row.expected);
+      rows += 1;
+    }
+    // Anti-vacuity: a loop that iterated nothing would pass every assertion above.
+    expect(rows, 'the table must exercise 2 modes x 2 markers x 2 return legs').toBe(8);
+  });
+
+  // Each runtime value below is NOT the exact string 'oidc'. Both gate inputs are true, so only
+  // the mode can answer false: an implementation written `signIn !== 'off'` (fail-open) answers
+  // true for every one of them.
+  const NOT_OIDC: readonly { readonly label: string; readonly value: unknown }[] = [
+    { label: 'undefined (the option omitted)', value: undefined },
+    { label: "'' (an empty string)", value: '' },
+    { label: "'OIDC' (a case variant)", value: 'OIDC' },
+    { label: "'on'", value: 'on' },
+  ];
+  for (const { label, value } of NOT_OIDC) {
+    it(`treats a sign-in mode of ${label} as off, even with an account marker and a return leg [lpw-1.1]`, () => {
+      expect(
+        mayReachOidc({
+          signIn: value as unknown as SignInMode,
+          everAuthenticated: true,
+          returnLeg: true,
+        }),
+      ).toBe(false);
+    });
+  }
+
+  it('treats every mode string other than exactly oidc as off, whatever the marker and the return leg hold [lpw-1.1]', () => {
+    // The property form of the fail-closed rows above: a trimming or case-folding comparison, or
+    // a deny-list of known-off values, is a second copy of the mode contract that can drift open.
+    fc.assert(
+      fc.property(
+        fc.string().filter((s) => s !== 'oidc'),
+        fc.boolean(),
+        fc.boolean(),
+        (mode, everAuthenticated, returnLeg) => {
+          const actual = mayReachOidc({
+            signIn: mode as unknown as SignInMode,
+            everAuthenticated,
+            returnLeg,
+          });
+          expect(actual).toBe(false);
         },
       ),
     );
