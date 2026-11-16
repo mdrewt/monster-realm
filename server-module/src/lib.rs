@@ -41,6 +41,7 @@ mod pvp;
 mod raising;
 mod ranking;
 mod schema;
+mod summary_reaper;
 mod tactics;
 mod tactics_settle;
 mod taming;
