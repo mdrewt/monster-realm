@@ -1848,7 +1848,7 @@ mod nh_sync {
     use crate::accounts::AccountDeletionReaperSchedule;
     use crate::marshal::pub_from_monster;
     use crate::movement::MovementTickSchedule;
-    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::native_host_tests::{fixture, ladder_oracle, sorted_hexes, Fixture, Handle};
     use crate::observability::MrHeartbeatSchedule;
     use crate::playtest::PlaytestReaperSchedule;
     use crate::privacy::ExportBundleReaperSchedule;
@@ -1880,6 +1880,8 @@ mod nh_sync {
         ticks: Handle<'a, MovementTickSchedule, u64>,
         summaries: Handle<'a, crate::schema::BattleSummary, u64>,
         summary_reaper: Handle<'a, crate::summary_reaper::BattleSummaryReaperSchedule, u64>,
+        /// sr-4b: `init` and `sync_content` end with the leaderboard membership rescan.
+        ladder: Handle<'a, crate::schema::LeaderboardTop>,
     }
 
     fn world(fx: &Fixture) -> World<'_> {
@@ -2054,6 +2056,7 @@ mod nh_sync {
                 .scannable()
                 .unique()
                 .auto_inc(|r| r.id, |r, id| r.id = id),
+            ladder: fx.ladder(),
         }
     }
 
@@ -2962,6 +2965,144 @@ mod nh_sync {
                 "monster {id}: the rewritten pub carries its OWN monster's anchor"
             );
         }
+    }
+
+    // --- sr-4b.5: init and sync_content fill the leaderboard membership ----------
+    //
+    // SOURCE OF TRUTH: specs/monster-realm-v2/M-scale-readiness.spec.md §sr-4b.5: WHEN `init`
+    // or `sync_content` runs over 150 profiles and an empty `leaderboard_top`, the table holds
+    // the true top 100 when it returns (a database published over existing profiles is filled
+    // at once). The oracle is `native_host_tests::ladder_oracle`, an independent sort.
+
+    /// The spec's board size (`decision-defaulted:leaderboard-top-k=100`), as a literal.
+    const SR4B_K: usize = 100;
+
+    fn sr4b_id(n: u8) -> Identity {
+        Identity::from_byte_array([n; 32])
+    }
+
+    /// Seeds 150 profiles `[n; 32]`, n = 1..=150, and returns their handle. Ratings fall in
+    /// groups of three, 250 down to -250 (`250 - 10 * (n / 3)`), so many rows tie and a third of
+    /// them are negative. The boundary is a three-way tie at -80 (n = 99, 100, 101, the 99th to
+    /// the 101st): "Abe" (101) ranks first on the name, then the two "Mira" rows by identity,
+    /// so 101 and 99 are members and 100 is the first row out. Every other name recurs.
+    fn sr4b_seed_150(fx: &Fixture) -> Handle<'_, crate::schema::Profile> {
+        let profiles = fx
+            .table::<crate::schema::Profile>("profile", "identity", |r| r.identity)
+            .scannable()
+            .unique();
+        for n in 1u8..=150 {
+            let name = match n {
+                99 | 100 => "Mira".to_string(),
+                101 => "Abe".to_string(),
+                _ => format!("P{}", n % 17),
+            };
+            profiles.seed(&crate::schema::Profile {
+                identity: sr4b_id(n),
+                name,
+                rating: 250 - 10 * i32::from(n / 3),
+                wins: u32::from(n % 9),
+                losses: u32::from(n % 4),
+            });
+        }
+        profiles
+    }
+
+    /// The true top 100 of `profiles`, as sorted hex, with the fixture's boundary checked: the
+    /// three-way tie at -80 really is decided by name and then by identity.
+    fn sr4b_true_top(profiles: &[crate::schema::Profile]) -> Vec<String> {
+        let top = ladder_oracle(profiles, SR4B_K);
+        assert_eq!(top.len(), SR4B_K, "fixture: 150 profiles fill the board");
+        let has = |n: u8| top.contains(&sr4b_id(n));
+        assert!(
+            has(101) && has(99) && !has(100),
+            "fixture: the boundary tie puts Abe (101) and the smaller Mira (99) in, 100 out"
+        );
+        sorted_hexes(top)
+    }
+
+    fn sr4b_members(w: &World<'_>) -> Vec<String> {
+        sorted_hexes(w.ladder.rows().into_iter().map(|r| r.identity))
+    }
+
+    fn sr4b_clear_board(w: &World<'_>) {
+        for member in w.ladder.rows() {
+            w.ladder.remove(member.identity);
+        }
+        assert!(w.ladder.rows().is_empty(), "the board is cleared");
+    }
+
+    /// `init` over 150 profiles and an empty `leaderboard_top` leaves the board holding exactly
+    /// the true top 100.
+    ///
+    /// kills: no rescan in `init`; a rescan before the profiles are read; a board capped at
+    /// another size; a boundary tie decided by input order or byte order instead of name, then
+    /// identity.
+    #[test]
+    fn init_over_150_profiles_fills_the_board_with_the_true_top_100_sr4b_5() {
+        let fx = fixture();
+        let w = world(&fx);
+        let profiles = sr4b_seed_150(&fx);
+        let want = sr4b_true_top(&profiles.rows());
+        assert!(w.ladder.rows().is_empty(), "precondition: an empty board");
+        fx.run_as(owner(), crate::init);
+        assert_eq!(sr4b_members(&w), want, "init leaves the true top 100");
+    }
+
+    /// `sync_content` fills the board with the true top 100 of 150 profiles on the reseed path
+    /// (a stale version) and on the equal-version skip path, each from an empty board; and on
+    /// the skip path it repairs a stale board holding a non-member and missing a member.
+    ///
+    /// kills: no rescan in `sync_content`, or one reached only on the reseed path (a republish
+    /// over data at the current content version never fills the board); a rescan that only
+    /// inserts (the stale non-member stays) or only deletes (the missing member stays out).
+    #[test]
+    fn sync_content_fills_the_board_on_the_reseed_and_the_skip_path_sr4b_5() {
+        let fx = fixture();
+        let w = world(&fx);
+        fx.run_as(owner(), crate::init);
+        let profiles = sr4b_seed_150(&fx);
+        let want = sr4b_true_top(&profiles.rows());
+
+        sr4b_clear_board(&w);
+        seed_config(&w, 0);
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "reseed");
+        assert_eq!(
+            sr4b_members(&w),
+            want,
+            "the reseed path leaves the true top 100"
+        );
+
+        sr4b_clear_board(&w);
+        assert_eq!(
+            version(&w),
+            CONTENT_VERSION,
+            "precondition: the version is current, so the next sync takes the skip path"
+        );
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "skip path");
+        assert_eq!(
+            sr4b_members(&w),
+            want,
+            "the skip path over an empty board leaves the true top 100"
+        );
+
+        // A stale board: member 101 missing, the non-member 100 present.
+        sr4b_clear_board(&w);
+        for identity in ladder_oracle(&profiles.rows(), SR4B_K) {
+            if identity != sr4b_id(101) {
+                w.ladder.seed(&crate::schema::LeaderboardTop { identity });
+            }
+        }
+        w.ladder.seed(&crate::schema::LeaderboardTop {
+            identity: sr4b_id(100),
+        });
+        assert_ne!(sr4b_members(&w), want, "precondition: the board is stale");
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "skip path");
+        assert_eq!(
+            sr4b_members(&w),
+            want,
+            "the skip path repairs a stale board to the true top 100"
+        );
     }
 
     struct CsLogSink(std::sync::Mutex<Vec<String>>);

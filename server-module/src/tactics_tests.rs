@@ -642,6 +642,8 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
             .writable()
             .unique(),
     };
+    // sr-4b: a rated PvP settle ends with the leaderboard membership rescan.
+    let _ = fx.ladder();
     w.configs.seed(&Config {
         id: 0,
         content_version: crate::CONTENT_VERSION,

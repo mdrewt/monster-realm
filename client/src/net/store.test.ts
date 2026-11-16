@@ -3623,7 +3623,9 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
 //   profile(identity: string): StoreProfile | undefined
 //   allProfiles(): StoreProfile[]  — fresh array each call (mutating it must not corrupt the store)
 //   reset() clears profiles  (pattern: store.ts:597-604)
-//   NO removeProfile — RL-2/ADR-0119 D1: profile rows are never deleted
+//   removeProfile(identity: string): void — sr-4b: the client holds the leaderboard_top members
+//     plus its own row, so a member that falls out of the top 100 arrives as a delete and is
+//     dropped (the server still never deletes a profile row, RL-2/ADR-0119 D1)
 //
 // WRONG-IMPL-KILLED list:
 //   - "array store instead of Map"       → idempotency test (RT-PR-01b)
@@ -3631,7 +3633,7 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
 //   - "reset does not clear profiles"    → reset test (RT-PR-04)
 //   - "upsertProfile not dirty"          → dirty-flag test (RT-PR-05)
 //   - "profile() case-normalizes identity" → identity equality test (RT-PR-02)
-//   - "removeProfile exists"             → absence test (RT-PR-06)
+//   - "removeProfile keeps the row, clears every row or never repaints" → SR4B.3 removal test
 // =============================================================================
 
 /** Factory for StoreProfile test fixtures. */
@@ -3794,20 +3796,44 @@ describe('AuthoritativeStore m17b: upsertProfile dirty flag (RL-13)', () => {
   });
 });
 
-describe('AuthoritativeStore m17b: no removeProfile method (RL-2 structural guarantee)', () => {
-  it('RT-PR-06 BITES: AuthoritativeStore does NOT expose a removeProfile method — kills RL-2 violation impl', () => {
-    // RL-2 / ADR-0119 D1: profile rows are NEVER deleted. Wiring a removeProfile
-    // would be unreachable dead code and create a silent violation risk.
-    // Kills: an impl that adds removeProfile "just in case" (violates ADR-0119 D1).
+// sr-4b (SR4B.3): the subscription holds the leaderboard_top members plus the own row, so a
+// member that falls out of the top 100 is delivered as a delete and the store drops it. (The
+// version half of the contract rides the table-driven sr-4a version tests below.)
+describe('AuthoritativeStore sr-4b: removeProfile (sr-4b.3)', () => {
+  it('removeProfile drops exactly that identity`s row from profile() and allProfiles(), leaves every other row as it was, and the removal reaches the batch listeners [SR4B.3]', () => {
+    // Kills: no removeProfile (a member that left the subscription stays on the board); a removal
+    // that clears every profile; a removal keyed case-insensitively or by a prefix; a removal that
+    // never marks the batch dirty (the board does not repaint until some other row arrives).
     const s = new AuthoritativeStore();
-    expect(typeof (s as unknown as Record<string, unknown>).removeProfile).not.toBe('function');
+    const left = makeProfile('aaa1', 'Leaver', 1500, 4, 1);
+    const kept = makeProfile('aaa', 'Kept', 1400, 2, 2);
+    const upper = makeProfile('AAA1', 'Upper', 1300, 1, 0);
+    for (const p of [left, kept, upper]) s.upsertProfile(p);
+    s.flushBatch();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.removeProfile('aaa1');
+
+    expect(s.profile('aaa1'), 'the removed row is gone').toBeUndefined();
+    expect(
+      s
+        .allProfiles()
+        .map((p) => p.identity)
+        .sort(),
+      'only that row left',
+    ).toEqual(['AAA1', 'aaa']);
+    expect(s.profile('aaa'), 'a prefix of the removed identity is another row').toEqual(kept);
+    expect(s.profile('AAA1'), 'the identity match is exact (case-sensitive)').toEqual(upper);
+    s.flushBatch();
+    expect(cb, 'the removal is one batch for the listeners').toHaveBeenCalledTimes(1);
   });
 });
 
 // sr-4a: `profilesVersion()` — an opaque number a memo can key on. Only equality / inequality is
 // asserted, never a specific number.
 describe('AuthoritativeStore sr-4a: profilesVersion (sr-4a.2)', () => {
-  it('SR4A.2-VERSION-BUMP BITES: every upsertProfile (even an identical re-upsert) and every reset() changes the version', () => {
+  it('SR4A.2-VERSION-BUMP BITES: every upsertProfile (even an identical re-upsert), every removeProfile that drops a row (sr-4b.3) and every reset() changes the version', () => {
     const s = new AuthoritativeStore();
     const seen: number[] = [s.profilesVersion()];
     const step = (what: string, act: () => void): void => {
@@ -3821,13 +3847,15 @@ describe('AuthoritativeStore sr-4a: profilesVersion (sr-4a.2)', () => {
     step('the SAME row object upserted again', () => s.upsertProfile(row));
     step('a deep-equal copy upserted again', () => s.upsertProfile({ ...row }));
     step('a changed row', () => s.upsertProfile(makeProfile('aaa', 'Alice', 1001)));
+    step('a second identity', () => s.upsertProfile(makeProfile('bbb', 'Bob', 900)));
+    step('removeProfile of a stored identity', () => s.removeProfile('bbb'));
     step('reset() of a non-empty store', () => s.reset());
     step('reset() of an already-empty store', () => s.reset());
     // No version is ever handed out twice by one store (a memo keyed on it would go stale).
     expect(new Set(seen).size).toBe(seen.length);
   });
 
-  it('SR4A.2-VERSION-STABLE BITES: no other write, no flushBatch and no read changes the version', () => {
+  it('SR4A.2-VERSION-STABLE BITES: no other write, no flushBatch, no read and no removeProfile of an absent identity (sr-4b.3) changes the version', () => {
     const s = new AuthoritativeStore();
     s.upsertProfile(makeProfile('aaa', 'Alice', 1000));
     const v = s.profilesVersion();
@@ -3841,6 +3869,7 @@ describe('AuthoritativeStore sr-4a: profilesVersion (sr-4a.2)', () => {
       ['allProfiles', () => void s.allProfiles()],
       ['profile', () => void s.profile('aaa')],
       ['profile (missing)', () => void s.profile('nobody')],
+      ['removeProfile (absent identity)', () => s.removeProfile('nobody')],
     ];
     for (const [what, act] of others) {
       act();

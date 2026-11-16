@@ -736,43 +736,50 @@ describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it'
     vi.useRealTimers();
   });
 
-  it('ts-4.4 the subscription batch is exactly the 29 queries below, none naming trade_offer, none an unfiltered character query, and no row handler is registered on the trade_offer table', async () => {
+  it('ts-4.4 the subscription batch is exactly the 30 queries below, none naming trade_offer, none an unfiltered character query, and no row handler is registered on the trade_offer table', async () => {
     // WRONG IMPL KILLED: `SELECT * FROM trade_offer` kept (every public offer reaches the
     // client); it swapped for another table (the exact set); a duplicate (the sorted list);
     // the query dropped but the trade_offer onInsert / onUpdate / onDelete handlers kept.
     const { b } = await bootAnon(makeOpts());
+    const whole = (tables: string[]): string[] => tables.map((table) => `SELECT * FROM ${table}`);
     const want = [
-      'player',
-      'my_monster_pub',
-      'species_row',
-      'my_battle',
-      'skill_row',
-      'my_inventory',
-      'item_row',
-      'evolution_path',
-      'my_conversation',
-      'my_player_quest',
-      'heal_location_row',
-      'npc',
-      'zone_def',
-      'shop_row',
-      'shop_item_row',
-      'my_wallet',
-      'battle_challenge',
-      'profile',
-      'my_account',
-      'my_export_bundle',
-      'my_pending_evolution_notices',
-      'my_tactical_battle',
-      'my_battle_units',
-      'my_battle_queue',
-      'my_battle_deploy',
-      'my_battle_clock',
-      'my_battle_events',
-      'my_formation',
-      'my_trade_session',
-    ].map((table) => `SELECT * FROM ${table}`);
-    expect(want).toHaveLength(29);
+      ...whole([
+        'player',
+        'my_monster_pub',
+        'species_row',
+        'my_battle',
+        'skill_row',
+        'my_inventory',
+        'item_row',
+        'evolution_path',
+        'my_conversation',
+        'my_player_quest',
+        'heal_location_row',
+        'npc',
+        'zone_def',
+        'shop_row',
+        'shop_item_row',
+        'my_wallet',
+        'battle_challenge',
+      ]),
+      // sr-4b: `profile` is read as the leaderboard_top members (a join) plus the own row.
+      'SELECT profile.* FROM profile JOIN leaderboard_top ON profile.identity = leaderboard_top.identity',
+      `SELECT * FROM profile WHERE identity = 0x${ID.toHexString()}`,
+      ...whole([
+        'my_account',
+        'my_export_bundle',
+        'my_pending_evolution_notices',
+        'my_tactical_battle',
+        'my_battle_units',
+        'my_battle_queue',
+        'my_battle_deploy',
+        'my_battle_clock',
+        'my_battle_events',
+        'my_formation',
+        'my_trade_session',
+      ]),
+    ];
+    expect(want).toHaveLength(30);
     expect([...(b.queries ?? [])].sort()).toEqual([...want].sort());
     // `character` is written on every step of every player, so the base set never carries it
     // whole; the world scope subscribes the own row and each wanted zone as sets of their own.

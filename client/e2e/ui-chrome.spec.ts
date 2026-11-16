@@ -52,8 +52,9 @@ import {
 // browser context, closed in afterAll, so the server's on_disconnect deletes the `player` row and no
 // later spec sees an extra presence (golden.spec.ts sorts before this file and asserts an exact
 // presenceCount === 2; adding a second context here would break the one-player rule and must not be
-// done without renaming). The two `profile` rows the Rankings cases need are seeded by owner SQL in
-// beforeAll and DELETED in afterAll. No encounter, no battle, no RNG, no fixed sleep: every wait polls
+// done without renaming). The two `profile` rows the Rankings cases need, and their
+// `leaderboard_top` membership rows, are seeded by owner SQL in beforeAll and DELETED in afterAll.
+// No encounter, no battle, no RNG, no fixed sleep: every wait polls
 // a DOM or `__game()` predicate with a bound.
 
 interface GameSnap {
@@ -144,11 +145,21 @@ function seedProfile(row: ProfileSeed): void {
     `INSERT INTO profile (identity, name, rating, wins, losses) VALUES (0x${hex}, '${name}', ${rating}, ${wins}, ${losses})`,
     `seed the ${name} profile`,
   );
+  // sr-4b: the client reads the board through the `leaderboard_top` join, and an owner-SQL
+  // profile row bypasses the reducers that keep the membership, so the row is made a member here.
+  ownerSql(
+    `INSERT INTO leaderboard_top (identity) VALUES (0x${hex})`,
+    `seed the ${name} leaderboard membership`,
+  );
 }
 
 function deleteProfile(hex: string): void {
   if (!/^[0-9a-f]{64}$/.test(hex))
     throw new Error(`deleteProfile: not a 64-digit hex identity: ${hex}`);
+  ownerSql(
+    `DELETE FROM leaderboard_top WHERE identity = 0x${hex}`,
+    `delete the leaderboard membership ${hex.slice(0, 8)}`,
+  );
   ownerSql(
     `DELETE FROM profile WHERE identity = 0x${hex}`,
     `delete the profile ${hex.slice(0, 8)}`,

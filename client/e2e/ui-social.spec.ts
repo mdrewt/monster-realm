@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
@@ -6,6 +7,21 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import {
+  awaitTacticalActive,
+  closeAll,
+  EM_DASH,
+  menuCursorTo,
+  openFaceToFace,
+  openMenu,
+  pressAccel,
+  pressButton,
+  readTactics,
+  TACTICS,
+  type TacticsSnap,
+  throughResults,
+} from './controls';
+import { ownerSql, sqlRows } from './stdb';
 import {
   contrastRatio,
   effectiveBackground,
@@ -774,5 +790,396 @@ test.describe
         'the read-only cursor row keeps its left bar',
       ).toBeGreaterThan(0);
       expect(bar['border-left-style'], 'drawn, not none').not.toBe('none');
+    });
+  });
+
+// ---------------------------------------------------------------------------------------------
+// sr-4b (SR4B.4): the Social Rankings tab after a real ranked match, on the LIVE server.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-scale-readiness.spec.md §sr-4b (sr-4b.4): WHEN two
+// players finish a ranked match, THE Social rankings tab of each SHALL list both with their new
+// ratings and ranks through the real UI, and a challenge counterpart who is online SHALL still show
+// their name. The client reads `profile` as the `leaderboard_top` members (a join) plus its own row.
+//
+// TWO BROWSERS (tactics-pvp.spec.ts): two `chromium.launch()` instances are two identities. A's
+// display name is set by owner SQL to a name B's default name is not, so B's Challenges row naming A
+// is a real oracle. A challenges B face to face, B opens Social on its Challenges row (the name
+// is read there) and accepts by buttons, both deploy by buttons, and A forfeits through its unit
+// menu (BT15-3's path). Then each page opens Social, Rankings by buttons.
+//
+// ORACLE: server truth by owner SQL, never the client's own model. Each row shows the profile's
+// rating and its rank = 1 + the number of server profiles that sort before it (rating desc, name asc
+// by UTF-16 code units, identity asc) over EVERY profile: the e2e database is shared with the specs
+// that ran before this one. The server's `leaderboard_top` must hold the true top 100 of those
+// profiles (every one of them while fewer than 100 exist).
+//
+// CLEANUP: afterAll closes both browsers (the server deletes their presence rows on disconnect).
+// The two profile rows the match wrote stay: profile rows are never deleted.
+// ---------------------------------------------------------------------------------------------
+
+const SR4B_JOIN_MS = 30_000;
+/** A press's effect on a page: a banner, a sheet, a cursor. */
+const SR4B_UI_MS = 15_000;
+/** A battle phase change reaching a page. */
+const SR4B_PHASE_MS = 15_000;
+/** The forfeit confirm's Yes finishing the battle on both pages (BT15-3's bound). */
+const SR4B_FINISH_MS = 10_000;
+/** A rating change reaching the Rankings rows. */
+const SR4B_BOARD_MS = 15_000;
+/** The spec's board size (`decision-defaulted:leaderboard-top-k=100`). */
+const SR4B_TOP_K = 100;
+/** A's display name: letters only, and not the client's default name B joins with. */
+const SR4B_NAME_A = 'SrfbChallenger';
+
+interface Sr4bGame {
+  identity: string;
+  ownAuthTile: { x: number; y: number } | null;
+  ownMonsters: Array<{ monsterId: string }>;
+}
+
+/** One server profile, as the ladder orders it. */
+interface Sr4bProfile {
+  readonly hex: string;
+  readonly name: string;
+  readonly rating: number;
+}
+
+/** One Rankings row as the page paints it, or null when no row carries that identity. */
+interface Sr4bBoardRow {
+  readonly rank: string;
+  readonly name: string;
+  readonly rating: number;
+}
+
+const sr4bNormId = (id: string): string => id.trim().toLowerCase().replace(/^0x/, '');
+
+/** The 64 lowercase hex digits of an Identity cell (`0x…`); throws on anything else. */
+function sr4bCellHex(cell: string | undefined, label: string): string {
+  const hex = /[0-9a-fA-F]{64}/.exec(cell ?? '');
+  if (hex === null) throw new Error(`${label}: not an identity cell: ${cell}`);
+  return hex[0].toLowerCase();
+}
+
+/** A `spacetime sql` string cell without its surrounding double quotes. */
+const sr4bUnquote = (cell: string): string =>
+  cell.length >= 2 && cell.startsWith('"') && cell.endsWith('"') ? cell.slice(1, -1) : cell;
+
+async function sr4bReady(p: Page): Promise<void> {
+  await p.waitForFunction(
+    () => {
+      const w = window as unknown as { __game?: () => Sr4bGame };
+      if (!w.__game) return false;
+      const g = w.__game();
+      return g.identity !== '' && g.ownAuthTile !== null && g.ownMonsters.length > 0;
+    },
+    null,
+    { timeout: SR4B_JOIN_MS },
+  );
+}
+
+const sr4bIdentity = async (p: Page): Promise<string> =>
+  sr4bNormId(
+    await p.evaluate(() => (window as unknown as { __game: () => Sr4bGame }).__game().identity),
+  );
+
+/** Sets a player's display name by owner SQL. The only quoted literal this block writes: a checked
+ *  hex identity and a letters-only name, run without a shell. */
+function sr4bRenamePlayer(hex: string, name: string, label: string): void {
+  const server = process.env.STDB_SERVER ?? 'local';
+  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+  if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
+    throw new Error(`${label}: STDB_SERVER/VITE_STDB_DB failed charset validation`);
+  }
+  if (!/^[0-9a-f]{64}$/.test(hex) || !/^[A-Za-z]{4,16}$/.test(name)) {
+    throw new Error(`${label}: refusing non-literal-shaped input ${hex} / ${name}`);
+  }
+  try {
+    execFileSync(
+      'spacetime',
+      ['sql', '-s', server, db, `UPDATE player SET name = '${name}' WHERE identity = 0x${hex}`],
+      { encoding: 'utf8', timeout: 15_000 },
+    );
+  } catch (err) {
+    throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
+  }
+}
+
+/** Every server profile (owner SQL). */
+function sr4bServerProfiles(label: string): Sr4bProfile[] {
+  return sqlRows(ownerSql('SELECT identity, name, rating FROM profile', label), label).map(
+    (row) => {
+      const rating = Number(row.rating);
+      if (!Number.isInteger(rating))
+        throw new Error(`${label}: a non-integer rating ${row.rating}`);
+      return { hex: sr4bCellHex(row.identity, label), name: sr4bUnquote(row.name ?? ''), rating };
+    },
+  );
+}
+
+/** The ladder order: rating desc, then name asc by UTF-16 code units (JS `<`), then identity hex
+ *  asc (the fixed-width hex order is the identity value order). */
+const sr4bSortsBefore = (a: Sr4bProfile, b: Sr4bProfile): boolean => {
+  if (a.rating !== b.rating) return a.rating > b.rating;
+  if (a.name !== b.name) return a.name < b.name;
+  return a.hex < b.hex;
+};
+
+/** 1 + the number of profiles that sort before `hex`'s row. */
+function sr4bRank(profiles: readonly Sr4bProfile[], hex: string, label: string): number {
+  const me = profiles.find((p) => p.hex === hex);
+  if (me === undefined) throw new Error(`${label}: no server profile for ${hex.slice(0, 8)}`);
+  return 1 + profiles.filter((p) => p.hex !== hex && sr4bSortsBefore(p, me)).length;
+}
+
+/** The identities of the true top 100, sorted as strings. */
+function sr4bTrueTop(profiles: readonly Sr4bProfile[]): string[] {
+  return [...profiles]
+    .sort((a, b) => (sr4bSortsBefore(a, b) ? -1 : sr4bSortsBefore(b, a) ? 1 : 0))
+    .slice(0, SR4B_TOP_K)
+    .map((p) => p.hex)
+    .sort();
+}
+
+/** The server's `leaderboard_top` identities (owner SQL), sorted as strings. */
+const sr4bServerMembers = (label: string): string[] =>
+  sqlRows(ownerSql('SELECT identity FROM leaderboard_top', label), label)
+    .map((row) => sr4bCellHex(row.identity, label))
+    .sort();
+
+/** Social on Rankings, by buttons: P opens Social on Challenges, RB until Rankings (bounded by
+ *  the four tabs), then the read-only list shows (ui-chrome.spec.ts `openRankings`). */
+async function sr4bOpenRankings(p: Page): Promise<void> {
+  await closeAll(p);
+  await pressAccel(p, 'P');
+  await expect(p.locator('#pvp-challenge-overlay'), 'P opens Social').toBeVisible({
+    timeout: SR4B_UI_MS,
+  });
+  const rankings = p.locator('#social-tab-rankings');
+  for (let presses = 0; presses < 4; presses += 1) {
+    if ((await rankings.getAttribute('aria-selected')) === 'true') break;
+    await pressButton(p, 'RB');
+  }
+  await expect(rankings, 'RB reached the Rankings tab').toHaveAttribute('aria-selected', 'true');
+  await expect(
+    p.locator('#leaderboard-list[aria-readonly="true"]'),
+    'the Rankings list shows',
+  ).toBeVisible({ timeout: SR4B_UI_MS });
+}
+
+/** The Rankings row carrying `hex`: its rank (the leading span), its name and its rating. */
+const sr4bBoardRow = (p: Page, hex: string): Promise<Sr4bBoardRow | null> =>
+  p.evaluate(
+    ({ id, dash }) => {
+      const li = document.querySelector(`#leaderboard-list > li[data-identity="${id}"]`);
+      if (li === null) return null;
+      const text = li.textContent ?? '';
+      const at = text.indexOf(`${dash} `);
+      const tail = at === -1 ? '' : text.slice(at + dash.length + 1);
+      const end = tail.indexOf(' (');
+      return {
+        rank: li.querySelector('span')?.textContent ?? '',
+        name: li.querySelector('bdi')?.textContent ?? '',
+        rating: end === -1 ? Number.NaN : Number(tail.slice(0, end)),
+      };
+    },
+    { id: hex, dash: EM_DASH },
+  );
+
+/** Polls `__mrTactics.battle()` until `pred` holds; returns that snapshot. */
+async function sr4bWaitTactics(
+  p: Page,
+  pred: (t: TacticsSnap) => boolean,
+  timeout: number,
+  message: string,
+): Promise<TacticsSnap> {
+  let last: TacticsSnap | null = null;
+  await expect
+    .poll(
+      async () => {
+        last = await readTactics(p);
+        return last !== null && pred(last);
+      },
+      { message, timeout, intervals: [100, 250, 500] },
+    )
+    .toBe(true);
+  // `last` is written inside the poll closure, which control-flow analysis does not follow.
+  const seen = last as TacticsSnap | null;
+  if (seen === null) throw new Error(`${message}: no battle`);
+  return seen;
+}
+
+test.describe
+  .serial('sr-4b — the Social Rankings tab after a ranked match (live server, two browsers)', () => {
+    let browserA: Browser;
+    let browserB: Browser;
+    let pageA: Page;
+    let pageB: Page;
+    let hexA = '';
+    let hexB = '';
+
+    test.beforeAll(async () => {
+      test.setTimeout(90_000);
+      browserA = await chromium.launch();
+      browserB = await chromium.launch();
+      pageA = await (await browserA.newContext({ viewport: VIEWPORT })).newPage();
+      pageB = await (await browserB.newContext({ viewport: VIEWPORT })).newPage();
+      await pageA.goto('/');
+      await pageB.goto('/');
+      await Promise.all([sr4bReady(pageA), sr4bReady(pageB)]);
+      hexA = await sr4bIdentity(pageA);
+      hexB = await sr4bIdentity(pageB);
+      expect(hexA, 'two browsers, two identities').not.toBe(hexB);
+      expect(/^[0-9a-f]{64}$/.test(hexA) && /^[0-9a-f]{64}$/.test(hexB)).toBe(true);
+    });
+
+    test.afterAll(async () => {
+      for (const browser of [browserA, browserB]) {
+        try {
+          await browser?.close();
+        } catch {
+          // already closed on an error path
+        }
+      }
+    });
+
+    test('after a ranked match each player`s Social Rankings tab lists both players with their server rating and their rank over every server profile, the server`s leaderboard_top is the true top 100, and while the challenge is open the challenged player`s Challenges row names the online challenger [SR4B.4]', async () => {
+      // WRONG IMPL KILLED: the membership never written by the settle (the server's
+      // leaderboard_top is empty, and the join subscription delivers no rival row: the opponent is
+      // missing from the board); a client that subscribes only the members and never its own row,
+      // or only its own row (the rival's row is missing); a stale rating (the row shows the
+      // pre-match rating); a rank counted over the client's rows in another order; the
+      // challenger's name resolved from `profile` only (an online challenger with no ranked row
+      // reads as its hex prefix).
+      test.setTimeout(240_000);
+
+      // A's display name, distinct from B's default, reaches B's player directory.
+      sr4bRenamePlayer(hexA, SR4B_NAME_A, 'rename A');
+      await expect
+        .poll(
+          () =>
+            pageB.evaluate((id) => {
+              const w = window as unknown as {
+                __mrTrade: { allPlayers(): Array<{ identity: string; name: string }> };
+              };
+              const row = w.__mrTrade
+                .allPlayers()
+                .find((p) => p.identity.toLowerCase().replace(/^0x/, '') === id);
+              return row?.name ?? null;
+            }, hexA),
+          { message: 'B`s player directory carries A`s new name', timeout: SR4B_UI_MS },
+        )
+        .toBe(SR4B_NAME_A);
+
+      // A challenges B face to face; B reads A's name on its Challenges row, then accepts.
+      await closeAll(pageA);
+      await closeAll(pageB);
+      await openFaceToFace(pageA, 'Challenge', undefined, pageB);
+      await expect(pageB.locator('#notice-banner'), 'the incoming challenge banner').toBeVisible({
+        timeout: SR4B_UI_MS,
+      });
+      await pressAccel(pageB, 'P');
+      const incoming = pageB.locator('#pvp-challenge-incoming[aria-current="true"]');
+      await expect(incoming, 'Social opens on the incoming request').toBeVisible({
+        timeout: SR4B_UI_MS,
+      });
+      await expect(incoming, 'B`s Challenges row names the online challenger').toContainText(
+        SR4B_NAME_A,
+      );
+      await expect(incoming, 'by name, not by an identity prefix').not.toContainText(
+        hexA.slice(0, 8),
+      );
+      await pressButton(pageB, 'A');
+      await expect(
+        pageB.locator('#social-sheet [aria-selected="true"]'),
+        'the request sheet opens on Accept',
+      ).toHaveText('Accept', { timeout: SR4B_UI_MS });
+      await pressButton(pageB, 'A');
+
+      // Both deploy by buttons and reach Active.
+      const [activeA] = await Promise.all([
+        awaitTacticalActive(pageA, 'SR4B A'),
+        awaitTacticalActive(pageB, 'SR4B B'),
+      ]);
+      expect([activeA.kind, activeA.phase], 'a PvP battle, Active').toEqual(['Pvp', 'Active']);
+      const battleId = activeA.battleId;
+
+      // A forfeits through its unit's menu: Forfeit, the confirm on Keep fighting, Up to Yes, A.
+      const waiting = await sr4bWaitTactics(
+        pageA,
+        (t) => t.battleId === battleId && t.phase === 'Active' && t.turnState === 'Waiting',
+        SR4B_PHASE_MS,
+        'a unit waits',
+      );
+      const mine = waiting.units.find((u) => u.mine);
+      if (mine === undefined) throw new Error('A has no unit');
+      await openMenu(pageA, { x: mine.x, y: mine.y });
+      await menuCursorTo(pageA, 'forfeit');
+      await pressButton(pageA, 'A');
+      await expect(
+        pageA.locator(`${TACTICS.menuRow('forfeitNo')}[aria-selected="true"]`),
+        'the confirm opens on Keep fighting',
+      ).toHaveCount(1, { timeout: SR4B_UI_MS });
+      await pressButton(pageA, 'Up');
+      await expect(
+        pageA.locator(`${TACTICS.menuRow('forfeitYes')}[aria-selected="true"]`),
+        'Up: Yes',
+      ).toHaveCount(1, { timeout: SR4B_UI_MS });
+      await pressButton(pageA, 'A');
+      await sr4bWaitTactics(
+        pageA,
+        (t) => t.battleId === battleId && t.phase === 'Finished',
+        SR4B_FINISH_MS,
+        'A sees the battle Finished',
+      );
+      await sr4bWaitTactics(
+        pageB,
+        (t) => t.battleId === battleId && t.phase === 'Finished',
+        SR4B_FINISH_MS,
+        'B sees the battle Finished',
+      );
+      await Promise.all([throughResults(pageA, 'SR4B A'), throughResults(pageB, 'SR4B B')]);
+
+      // Server truth: every profile, both players rated, B (the winner) above A.
+      const profiles = sr4bServerProfiles('profiles after the match');
+      const a = profiles.find((p) => p.hex === hexA);
+      const b = profiles.find((p) => p.hex === hexB);
+      if (a === undefined || b === undefined) {
+        throw new Error('the ranked match wrote no profile for A or for B');
+      }
+      expect(b.rating, 'the forfeit rated B above A').toBeGreaterThan(a.rating);
+      expect(a.name, 'A`s profile carries A`s display name').toBe(SR4B_NAME_A);
+      // The board shows an empty name as `#` and the identity's first eight digits.
+      const shown = (p: Sr4bProfile): string => (p.name !== '' ? p.name : `#${p.hex.slice(0, 8)}`);
+      const want = new Map([
+        [hexA, { rank: sr4bRank(profiles, hexA, 'A'), name: shown(a), rating: a.rating }],
+        [hexB, { rank: sr4bRank(profiles, hexB, 'B'), name: shown(b), rating: b.rating }],
+      ]);
+      for (const [hex, row] of want) {
+        expect(
+          row.rank,
+          `${hex.slice(0, 8)} ranks inside the top ${SR4B_TOP_K} (the e2e world holds few profiles)`,
+        ).toBeLessThanOrEqual(SR4B_TOP_K);
+      }
+      expect(
+        sr4bServerMembers('leaderboard_top after the match'),
+        `the server's leaderboard_top is the true top ${SR4B_TOP_K} of the ${profiles.length} profiles`,
+      ).toEqual(sr4bTrueTop(profiles));
+
+      // Each page's Rankings tab: both rows, the server rating, the ladder rank.
+      for (const [who, page] of [
+        ['A', pageA],
+        ['B', pageB],
+      ] as const) {
+        await sr4bOpenRankings(page);
+        for (const [hex, row] of want) {
+          const subject = hex === hexA ? 'A' : 'B';
+          await expect
+            .poll(() => sr4bBoardRow(page, hex), {
+              message: `${who}'s Rankings: ${subject}'s row shows rank ${row.rank}, ${row.name}, rating ${row.rating}`,
+              timeout: SR4B_BOARD_MS,
+            })
+            .toEqual({ rank: String(row.rank), name: row.name, rating: row.rating });
+        }
+      }
     });
   });

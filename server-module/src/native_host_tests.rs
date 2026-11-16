@@ -1342,6 +1342,8 @@ unsafe extern "C" {
     fn register_table_guest_claim();
     #[link_name = "__preinit__20_register_describer_profile"]
     fn register_table_profile();
+    #[link_name = "__preinit__20_register_describer_leaderboard_top"]
+    fn register_table_leaderboard_top();
     #[link_name = "__preinit__20_register_describer_battle_challenge"]
     fn register_table_battle_challenge();
     #[link_name = "__preinit__20_register_describer_battle_action"]
@@ -1406,7 +1408,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 63] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 64] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1445,6 +1447,7 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 63] = [
     register_table_account,
     register_table_guest_claim,
     register_table_profile,
+    register_table_leaderboard_top,
     register_table_battle_challenge,
     register_table_battle_action,
     register_table_trade_offer_reaper_schedule,
@@ -1603,6 +1606,67 @@ impl Fixture {
             other => panic!("native_host_tests: expected a V10 module def, got {other:?}"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// sr-4b: the leaderboard membership. Every transaction that writes `profile` (and
+// `init` / `sync_content`) ends with a full rescan: it scans `profile`, scans
+// `leaderboard_top`, deletes the members that left and inserts the ones that
+// entered. A world whose test reaches one of those calls `Fixture::ladder` once.
+// ---------------------------------------------------------------------------
+
+impl Fixture {
+    /// Opts the leaderboard membership into this fixture: registers `leaderboard_top` on its
+    /// `identity` key (writable, scannable, unique) and makes `profile` scannable on its
+    /// `identity` key (unique, as its primary key is). Registration is idempotent per index
+    /// name and the opt-ins accumulate, so this composes with a world that already registered
+    /// `profile` writable. Returns the `leaderboard_top` handle.
+    pub(crate) fn ladder(&self) -> Handle<'_, crate::schema::LeaderboardTop> {
+        let _ = self
+            .table::<crate::schema::Profile>("profile", "identity", |r| r.identity)
+            .scannable()
+            .unique();
+        self.table::<crate::schema::LeaderboardTop>("leaderboard_top", "identity", |r| r.identity)
+            .writable()
+            .scannable()
+            .unique()
+    }
+}
+
+/// The ladder tests' oracle: the identities of the first `k` of `profiles` in ladder order —
+/// rating descending, then name ascending by UTF-16 code units (the client's JS `<`), then
+/// identity ascending by its big-endian hex (the u256 value). Sorted here, independently of
+/// `ranking::top_identities`; the raw byte array is never compared (`from_byte_array` is
+/// little-endian).
+pub(crate) fn ladder_oracle(profiles: &[crate::schema::Profile], k: usize) -> Vec<Identity> {
+    let mut keyed: Vec<(i32, Vec<u16>, String, Identity)> = profiles
+        .iter()
+        .map(|p| {
+            (
+                p.rating,
+                p.name.encode_utf16().collect(),
+                p.identity.to_hex().to_string(),
+                p.identity,
+            )
+        })
+        .collect();
+    keyed.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    keyed.into_iter().take(k).map(|(_, _, _, id)| id).collect()
+}
+
+/// `ids` as their hex strings, sorted: a membership compared as a multiset (a duplicate
+/// member shows up as a duplicate string).
+pub(crate) fn sorted_hexes(ids: impl IntoIterator<Item = Identity>) -> Vec<String> {
+    let mut out: Vec<String> = ids
+        .into_iter()
+        .map(|id| id.to_hex().to_string())
+        .collect();
+    out.sort();
+    out
 }
 
 /// Registers the trampoline and publishes `REDUCERS`, once per process.

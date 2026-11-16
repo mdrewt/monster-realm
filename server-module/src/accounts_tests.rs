@@ -897,16 +897,26 @@ fn data_lifecycle_partition_matches_spec_section3() {
          must survive."
     );
 
-    let expected_anonymize = ["account", "battle", "battle_summary", "player", "profile"];
+    let expected_anonymize = [
+        "account",
+        "battle",
+        "battle_summary",
+        "leaderboard_top",
+        "player",
+        "profile",
+    ];
     assert_eq!(
         anonymize, expected_anonymize,
-        "T2 / spec §3 ANONYMIZE: exactly five rows survive with their identity/PII fields \
-         overwritten — `player` (the anchor `character` and every still-live multi-user row \
-         point at), `profile` (ADR-0119's explicit never-delete invariant), `account` \
-         (auth_issuer becomes the tombstone SENTINEL, keeping the column non-nullable), \
-         `battle` (terminal PvP rows demonstrably persist, so a surviving opponent's \
-         my_battle view must still resolve them months later) and bt-7's `battle_summary` \
-         (per-battle telemetry: the deleting side is tombstoned, the row survives)."
+        "T2 / spec §3 ANONYMIZE: exactly six tables survive the cascade with their identity/PII \
+         fields overwritten or re-derived — `player` (the anchor `character` and every \
+         still-live multi-user row point at), `profile` (ADR-0119's explicit never-delete \
+         invariant), `account` (auth_issuer becomes the tombstone SENTINEL, keeping the column \
+         non-nullable), `battle` (terminal PvP rows demonstrably persist, so a surviving \
+         opponent's my_battle view must still resolve them months later), bt-7's \
+         `battle_summary` (per-battle telemetry: the deleting side is tombstoned, the row \
+         survives) and sr-4b's `leaderboard_top` (the derived top-100 membership: the cascade \
+         re-derives it after tombstoning the profile name, so the row survives exactly while \
+         that anonymized profile still ranks)."
     );
 
     let expected_join_only = [
@@ -2993,6 +3003,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::LastPosition as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "leaderboard_top",
+            <crate::schema::LeaderboardTop as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "inventory",
             <crate::schema::Inventory as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3226,16 +3240,17 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 63,
+        registry_len, 64,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 63 (23 ERASE + 5 ANONYMIZE + 15 JOIN-ONLY + 20 NOT-OWNED) — \
+         manifest carries exactly 64 (23 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 20 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
          trade-session tables (`trade_session`, `trade_session_snapshot`, \
          `trade_session_reaper_schedule`), plus `move_intent`, plus `last_position`, plus \
-         `player_handle`, plus sr-7's `battle_summary_reaper_schedule`. A registry that grew or shrank without a matching manifest change is a registry nobody \
-         reviewed against the schema it claims to cover."
+         `player_handle`, plus sr-7's `battle_summary_reaper_schedule`, plus sr-4b's \
+         `leaderboard_top`. A registry that grew or shrank without a matching manifest change is \
+         a registry nobody reviewed against the schema it claims to cover."
     );
 
     let mut identity_bearing = 0usize;
@@ -3245,11 +3260,12 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 32,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 63 registered row types \
-         carry an Identity column at some depth; exactly 32 is the live count (the 28 \
+        identity_bearing, 33,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 64 registered row types \
+         carry an Identity column at some depth; exactly 33 is the live count (the 29 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). `player_handle` adds one (its `owner_identity` key). \
+         exceptions R3 below names). sr-4b's `leaderboard_top` adds one (its `identity` key). \
+         `player_handle` adds one (its `owner_identity` key). \
          `last_position` adds one (its `owner_identity` key). \
          `trade_session` adds one (its `opener` and `partner` \
          columns), while its snapshot and schedule tables, both ViaJoin, add none. bt-7 adds six — battle_unit (its `Option<Identity>` \
@@ -3337,14 +3353,14 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 28,
+        population, 29,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 28 (23 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
+         the live partition is exactly 29 (23 ERASE + 6 ANONYMIZE — rb-73's `player_session`, \
          20r-d's `pending_evolution_notice`, bt-7's five Erase tactical tables plus its \
-         Anonymize `battle_summary`, the Erase `trade_session`, the Erase `last_position` and \
-         the Erase `player_handle` included). A floor would let this population grow \
-         silently; an exact count forces a conscious edit to this test alongside any \
-         reclassification."
+         Anonymize `battle_summary`, the Erase `trade_session`, the Erase `last_position`, \
+         the Erase `player_handle` and sr-4b's Anonymize `leaderboard_top` included). A floor \
+         would let this population grow silently; an exact count forces a conscious edit to \
+         this test alongside any reclassification."
     );
 }
 
@@ -5053,10 +5069,10 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        63,
+        64,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
          schedule tables plus the three trade-session tables plus move_intent plus last_position \
-         plus player_handle plus battle_summary_reaper_schedule"
+         plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top"
     );
 }
 
@@ -5083,7 +5099,8 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
 mod acct_nh {
     use crate::accounts::{AccountDeletionReaperSchedule, GuestClaimReaperSchedule};
     use crate::native_host_tests::{
-        fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY, VIEW_MY_ACCOUNT,
+        fixture, ladder_oracle, sorted_hexes, Fixture, Handle, DEFAULT_DATABASE_IDENTITY,
+        VIEW_MY_ACCOUNT,
     };
     use crate::playtest::PlaytestEvent;
     use crate::privacy::ExportBundleReaperSchedule;
@@ -5204,6 +5221,9 @@ mod acct_nh {
         last_position: Handle<'a, LastPosition>,
         wallet: Handle<'a, PlayerWallet>,
         profile: Handle<'a, Profile>,
+        // sr-4b: the leaderboard membership every `profile` writer ends by rescanning (the
+        // claim's `rekey_profile`, the cascade's `anonymize_display_names`).
+        ladder: Handle<'a, crate::schema::LeaderboardTop>,
         character: Handle<'a, Character, u64>,
         intent: Handle<'a, crate::schema::MoveIntent, u64>,
         trade: Handle<'a, TradeOffer>,
@@ -5241,9 +5261,10 @@ mod acct_nh {
     /// assertions, not the write wall, are this suite's oracle) and opens full
     /// scans ONLY where the shipped code scans (`playtest_event`,
     /// `battle_action`, the `export_bundle` count, the export reaper singleton,
-    /// `pvp_deadline_schedule` for `pvp::disarm_pvp_deadlines`, and `battle_unit`
+    /// `pvp_deadline_schedule` for `pvp::disarm_pvp_deadlines`, `battle_unit`
     /// for the tactical cascade's `owner == Some(..)` scan — a sum type carries
-    /// no index).
+    /// no index — and, through `Fixture::ladder`, `profile` and `leaderboard_top`
+    /// for the membership rescan that ends every `profile` write).
     ///
     /// bt-7: EVERY index of the ten tactical tables is registered here,
     /// unconditionally — the participant / owner views read through them, and
@@ -5482,6 +5503,7 @@ mod acct_nh {
             profile: fx
                 .table::<Profile>("profile", "identity", |r| r.identity)
                 .writable(),
+            ladder: fx.ladder(),
             character: fx
                 .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
                 .writable(),
@@ -7762,6 +7784,10 @@ mod acct_nh {
 
         seed_rekey_rows(&w, g, 1);
         seed_rekey_rows(&w, b, 2);
+        // sr-4b: the board holds the true ladder before the claim (the guest and the bystander).
+        for identity in ladder_oracle(&w.profile.rows(), 100) {
+            w.ladder.seed(&crate::schema::LeaderboardTop { identity });
+        }
         w.export.seed(&export_row(1, g, T0 - 5));
         w.export.seed(&export_row(2, b, T0 - 5));
         let guest_before = owned_by(&w, g);
@@ -7893,6 +7919,19 @@ mod acct_nh {
             (0, 0, 0),
             "the guest's profile is tombstoned"
         );
+        // sr-4b.2: the claim's re-key ends with the membership rescan. Three profiles rank here
+        // (the claimer, the guest's tombstone, the bystander), fewer than 100, so every one is
+        // a member: the claimer by the carried stats, the zero-rated tombstone like any row.
+        let members = sorted_hexes(w.ladder.rows().into_iter().map(|r| r.identity));
+        assert_eq!(
+            members,
+            sorted_hexes(ladder_oracle(&w.profile.rows(), 100)),
+            "sr-4b.2: after the claim the board is the true ladder over every profile row"
+        );
+        assert!(
+            members.contains(&c.to_hex().to_string()),
+            "sr-4b.2: the claimer is a member after the claim"
+        );
 
         // Single use.
         assert!(w.claim.rows().is_empty(), "the claim row is consumed");
@@ -7955,7 +7994,11 @@ mod acct_nh {
     /// owner-keyed table added to the manifest without a re-key decision.
     #[test]
     fn acct_rekey_roster_is_total_and_game_data_sees_every_rekeyed_table() {
-        const REKEYED: [&str; 12] = [
+        // `leaderboard_top` is re-keyed as a derived projection, like `monster_pub`: the
+        // rescan that ends `rekey_profile` puts the claimer in the guest's place.
+        // `account_has_game_data` reads neither projection, so neither has a `singles` row
+        // below.
+        const REKEYED: [&str; 13] = [
             "monster",
             "monster_pub",
             "pending_evolution_notice",
@@ -7968,6 +8011,7 @@ mod acct_nh {
             "player_formation",
             "last_position",
             "player_handle",
+            "leaderboard_top",
         ];
         // Never moved onto the claimer: presence / session rows die with the
         // connection (guard 9), live interactions block the claim (guard 10),
@@ -10001,10 +10045,11 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            63,
+            64,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
-             plus last_position plus player_handle plus battle_summary_reaper_schedule"
+             plus last_position plus player_handle plus battle_summary_reaper_schedule plus \
+             leaderboard_top"
         );
         for table in [
             "battle_tactical",
