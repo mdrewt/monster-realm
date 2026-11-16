@@ -34,6 +34,9 @@ test:
     # `--workspace` plus a package filter keeps the workspace's unified dependency features, so
     # only the module recompiles; `-p` resolves features for the one package and rebuilds its deps.
     cargo nextest run --workspace --features monster-realm-module/dev_reducers -E 'package(monster-realm-module)'
+    # The load build's game-core and module tests (the generated zones, dev_place_in_load_zone) are
+    # compiled out of every other build; this line runs both packages whole with that feature.
+    cargo nextest run --workspace --features monster-realm-module/load_test_zones -E 'package(game-core) | package(monster-realm-module)'
     cargo test --doc --workspace
     door() {
         local label=$1 want=$2 floor=$3 out pass fail
@@ -317,6 +320,38 @@ smoke-republish:
 # ramp aborts or the level is invalid (--fail-on-invalid).
 load-smoke:
     cargo run -q -p sim-harness --bin mr_load_driver -- --server "${STDB_SERVER:-http://127.0.0.1:3000}" --db "${MR_LOAD_DB:-monster-realm-load}" --clients-start 20 --clients-max 20 --hold-scrapes 8 --scrape-interval-ms 1000 --run-id "$(date -u +%Y%m%dT%H%M%SZ)-load-smoke" --fail-on-invalid
+
+# Build the load-only module (feature load_test_zones: game-core's 100 generated 16x16 zones, ids
+# 10000-10099, and the dev reducer dev_place_in_load_zone) and publish it, data deleted, to
+# MR_LOAD_HOST_DB (default monster-realm-load-zones) on STDB_SERVER (default
+# http://127.0.0.1:3000). Then drive it, e.g. `cargo run -q -p sim-harness --bin mr_load_driver --
+# --db monster-realm-load-zones --zones 100 --hot-zone 50 --walking-share 30 ...`. It is a dev build
+# (every dev reducer is in it), so it publishes only to a database named monster-realm-load-zones*,
+# only to an http(s) URL on a loopback host unless MR_LOAD_ALLOW_REMOTE=1, and builds in its own
+# target dir so no default or e2e wasm is overwritten.
+load-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    server="${STDB_SERVER:-http://127.0.0.1:3000}"
+    db="${MR_LOAD_HOST_DB:-monster-realm-load-zones}"
+    case "${db,,}" in
+        monster-realm-load-zones*) ;;
+        *) echo "load-host: refusing to publish the load build to '$db': the name must start with monster-realm-load-zones" >&2; exit 1 ;;
+    esac
+    case "$server" in
+        http://*|https://*) ;;
+        *) if [ "${MR_LOAD_ALLOW_REMOTE:-}" != "1" ]; then echo "load-host: STDB_SERVER '$server' is not an http(s) URL, so its host cannot be checked (set MR_LOAD_ALLOW_REMOTE=1 to allow)" >&2; exit 1; fi ;;
+    esac
+    hostport="${server#*://}"
+    hostport="${hostport%%/*}"
+    case "$hostport" in *@*) hostport="userinfo" ;; esac
+    case "${hostport%:*}" in
+        127.0.0.1|localhost|\[::1\]) ;;
+        *) if [ "${MR_LOAD_ALLOW_REMOTE:-}" != "1" ]; then echo "load-host: refusing to publish a dev build to non-loopback '$server' (set MR_LOAD_ALLOW_REMOTE=1 to allow)" >&2; exit 1; fi ;;
+    esac
+    target_dir="${CARGO_TARGET_DIR:-target}/load-host"
+    cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features load_test_zones --target-dir "$target_dir"
+    spacetime publish -s "$server" --bin-path "$target_dir/wasm32-unknown-unknown/release/monster_realm_module.wasm" --delete-data -y "$db"
 
 # ---- local playtest ops (need a live SpacetimeDB; docs/runbooks/playtest-ops.md) ----
 # Env: STDB_SERVER (default http://127.0.0.1:3000), MR_PLAYTEST_DB (default monster-realm-playtest).

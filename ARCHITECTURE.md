@@ -208,8 +208,8 @@ client subscribes to.
 
 A zone has an interval schedule row that runs `movement_tick` every `STEP_MS` only
 while a player's character is in it. `movement::arm_zone_tick` inserts the row when a
-player enters (`join_game` for the zone it starts in, the tick's warp arm) and never
-adds a second row for a zone. The tick that finds no player's character in its zone puts each of the zone's
+player enters (`join_game` for the zone it starts in, the tick's warp arm, and in the
+load-test build `dev_place_in_load_zone`) and never adds a second row for a zone. The tick that finds no player's character in its zone puts each of the zone's
 NPCs back on its home tile, Idle, writing only the rows that differ, and deletes the
 zone's row, so leaving, warping out, disconnecting and timing out all disarm the zone
 through that one path and a world with nobody connected runs no `movement_tick`. A
@@ -221,9 +221,10 @@ not.
 
 A tick drains at most one move per character through `game_core::apply_move`, moves NPCs
 with `npc_decide`, and rolls grass encounters. The tick is the only writer of
-`character.move_queue` and `character.acked_seq`: it copies the private queue and seq
-onto the character row (`movement::publish_intent`) in the same update that carries
-the position, and writes the row only when something changed. The owner therefore
+`character.move_queue` and `character.acked_seq` in every build but the load-test one, where
+`dev_place_in_load_zone` also writes them as the warp arm does. The tick copies the private
+queue and seq onto the character row (`movement::publish_intent`) in the same update that
+carries the position, and writes the row only when something changed. The owner therefore
 receives the acknowledgement and what is left of the queue together with the position,
 up to one tick after the input was accepted, and every other client receives one
 `character` update per step. A character whose player is in a battle drains nothing

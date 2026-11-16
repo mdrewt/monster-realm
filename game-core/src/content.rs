@@ -74,7 +74,7 @@ pub fn parse_zone_maps_parts(parts: &[(&str, &str)]) -> Result<Vec<ZoneMapDef>, 
 /// # Errors
 /// Returns `Err` if any embedded part fails to parse.
 pub fn load_zone_maps() -> Result<Vec<ZoneMapDef>, String> {
-    parse_zone_maps_parts(ZONE_MAPS_RON_PARTS)
+    crate::load_test_zones::zone_maps!(parse_zone_maps_parts(ZONE_MAPS_RON_PARTS))
 }
 
 // ===========================================================================
@@ -302,7 +302,7 @@ where
 /// # Errors
 /// Returns `Err` if any embedded part fails to parse (the message names the file).
 pub fn load_zones() -> Result<Vec<ZoneDef>, String> {
-    parse_zones_parts(ZONES_RON_PARTS)
+    crate::load_test_zones::zones!(parse_zones_parts(ZONES_RON_PARTS))
 }
 
 /// Parse + concatenate zone parts in the given slice order (no row re-sorting).

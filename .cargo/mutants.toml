@@ -72,16 +72,20 @@
 # keyed by file + function + operator + column, never by a bare line. Each is deleted the moment
 # the code around it makes the mutant observable.
 #
-# 8. dev-only code (`#[cfg(feature = "dev_reducers")]`): grant_bait (taming.rs, `==`->`!=`),
-#    dev_expire_tactical_window (dev_clock.rs: every operator, `!` and match-arm mutant of its
-#    body) and its arm forwarder dev_arm_deadline (tactics.rs, `-> ()`). The nightly mutates the
-#    default-feature build, which does not compile these functions, so their mutants survive
+# 8. dev-only code (`#[cfg(feature = "dev_reducers")]`, or `load_test_zones`, which implies it):
+#    grant_bait (taming.rs, `==`->`!=`), dev_expire_tactical_window (dev_clock.rs: every
+#    operator, `!` and match-arm mutant of its body) and its arm forwarder dev_arm_deadline
+#    (tactics.rs, `-> ()`). The nightly mutates the default-feature build, which does not compile these functions, so their mutants survive
 #    vacuously (the mutated source never builds into the test binary). They are never shipped
 #    (the release module has no dev reducers) and are killed for real by tests that `just test`
 #    runs with `--features dev_reducers`: the `_th4_` tests of dev_clock_tests.rs kill every
-#    dev_expire_tactical_window mutant and the forwarder's. A dev reducer's body replacement
-#    (`-> Ok(())`) needs no entry: the deletion-gate census (privacy_enforcement_tests.rs) reads
-#    the source, so it fails in the default build too.
+#    dev_expire_tactical_window mutant and the forwarder's. The load build's code is the same
+#    case under `load_test_zones`: dev_place_in_load_zone (load_dev.rs, its `delete !`) and
+#    game-core's generators (load_test_zones.rs: each generated_* body replacement and the zone-0
+#    `==`). The `just test` line with `--features load_test_zones` kills them (the sr9b_1 and
+#    sr9b_2 tests). A dev reducer's body replacement (`-> Ok(())`) needs no entry, nor does its
+#    write forwarder's (dev_place_character, movement.rs): the deletion-gate census
+#    (privacy_enforcement_tests.rs) reads the source, so it fails in the default build too.
 #
 # 9. apply_delta (tactics_settle.rs:362:36) `<` -> `<=` on the resize guard: Vec::resize(n, 0) at
 #    len == n is a no-op, so the two comparisons differ only where the result is identical (an
@@ -131,6 +135,9 @@ exclude_re = [
     "dev_clock\\.rs:\\d+:8: delete ! in dev_expire_tactical_window$",
     "dev_clock\\.rs:\\d+:9: delete match arm [01] in dev_expire_tactical_window$",
     "tactics\\.rs:\\d+:5: replace dev_arm_deadline with \\(\\)$",
+    "load_dev\\.rs:\\d+:8: delete ! in dev_place_in_load_zone$",
+    "load_test_zones\\.rs:\\d+:5: replace generated_(zones|zone_maps|tactics_zones) -> Vec<crate::(content|tactics)::\\w+> with vec!\\[(Default::default\\(\\))?\\]$",
+    "load_test_zones\\.rs:\\d+:65: replace == with != in generated_tactics_zones$",
     "tactics_settle\\.rs:\\d+:36: replace < with <= in apply_delta",
     "accounts\\.rs:\\d+:17: replace && with \\|\\| in account_state_is_legal",
     "playtest\\.rs:\\d+:20: replace > with >= in plan_reap",

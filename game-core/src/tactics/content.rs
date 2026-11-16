@@ -265,7 +265,7 @@ pub fn load_tactics_items() -> Result<Vec<TacticsItemDef>, String> {
 /// # Errors
 /// A malformed part (the message names the file).
 pub fn load_tactics_zones() -> Result<Vec<TacticsZoneDef>, String> {
-    parse_parts(TACTICS_ZONES_RON_PARTS, "tactics_zones")
+    crate::load_test_zones::tactics_zones!(parse_parts(TACTICS_ZONES_RON_PARTS, "tactics_zones"))
 }
 
 /// Parse the embedded `battle_maps/` registry (parse only — [`validate_battle_maps`] validates).

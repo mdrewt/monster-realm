@@ -20,11 +20,17 @@ import { pathToFileURL } from 'node:url';
 
 // The forbidden reducer set: every dev reducer name. Two functions carry both
 // `#[cfg(feature = "dev_reducers")]` and `#[spacetimedb::reducer]`: `grant_bait` (taming.rs) and
-// `dev_expire_tactical_window` (dev_clock.rs). No source defines `start_wild_battle`; a module
-// exporting it is an old dev build and is refused. `grant_item` (inventory.rs) is a `pub(crate)`
-// helper, NOT a reducer — it can never surface in `describe`, so including it would guard a
-// non-existent surface. A new dev reducer joins this list in the change that adds it.
-export const FORBIDDEN_REDUCERS = ['start_wild_battle', 'grant_bait', 'dev_expire_tactical_window'];
+// `dev_expire_tactical_window` (dev_clock.rs). `dev_place_in_load_zone` (load_dev.rs) is gated on
+// `load_test_zones`, a feature that implies `dev_reducers`. No source defines `start_wild_battle`;
+// a module exporting it is an old dev build and is refused. `grant_item` (inventory.rs) is a
+// `pub(crate)` helper, NOT a reducer — it can never surface in `describe`, so including it would
+// guard a non-existent surface. A new dev reducer joins this list in the change that adds it.
+export const FORBIDDEN_REDUCERS = [
+  'start_wild_battle',
+  'grant_bait',
+  'dev_expire_tactical_window',
+  'dev_place_in_load_zone',
+];
 
 // parseReducerNames(describeOutput) -> string[]
 //
@@ -127,7 +133,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const offenders = findForbiddenReducers(names, FORBIDDEN_REDUCERS);
   if (offenders.length > 0) {
     console.error(
-      `verify-release-reducers: FAIL — forbidden dev reducer(s) present in published module "${db}": ${offenders.join(', ')}. The publish must NOT carry --features dev_reducers.`,
+      `verify-release-reducers: FAIL — forbidden dev reducer(s) present in published module "${db}": ${offenders.join(', ')}. The publish must NOT carry --features dev_reducers or load_test_zones.`,
     );
     process.exit(1);
   }

@@ -1375,6 +1375,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "trading",
     "trading_session",
     "dev_clock",
+    "load_dev",
 ];
 
 const EXPECTED_LIFECYCLE: &[&str] = &["init", "on_connect", "on_disconnect"];
@@ -1413,6 +1414,7 @@ const EXPECTED_GATED: &[&str] = &[
     "consume_crystalized_essence",
     "deploy_units",
     "dev_expire_tactical_window",
+    "dev_place_in_load_zone",
     "dismiss_dialogue",
     "enqueue_move",
     "essence_train",

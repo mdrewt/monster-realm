@@ -15,6 +15,10 @@ autobenches = false
 # the optional `spacetimedb` dep (for the derive macro).
 default = []
 spacetimedb = ["dep:spacetimedb"]
+# The 100 generated load-test zones (`load_test_zones.rs`), appended to the zone, zone-map and
+# tactics-zone registries. Enabled only by server-module's `load_test_zones` (the `just load-host`
+# build); never in `default`, never by `client-wasm` or the e2e build.
+load_test_zones = []
 
 [dependencies]
 serde = { workspace = true }
