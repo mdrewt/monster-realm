@@ -86,13 +86,13 @@ const H = vi.hoisted(() => ({
    */
   iterCalls: {} as Record<string, number>,
   /**
-   * lpw-1: how many OIDC clients connect() constructed (the `./oidc` mock counts each
-   * createOidcClient call). Additive: reset by the describes that read it.
+   * How many OIDC clients connect() constructed (the `./oidc` mock counts each createOidcClient
+   * call); reset by the describes that read it.
    */
   oidcClients: 0,
   /**
-   * lpw-1: when true the `./oidc` mock hands back the REAL createOidcClient's client, so its
-   * URL, storage and fetch effects are what a test observes. Additive: false by default.
+   * When true the `./oidc` mock hands back the REAL createOidcClient's client, so its URL, storage
+   * and fetch effects are what a test observes. False by default.
    */
   realOidc: false,
 }));
@@ -190,9 +190,9 @@ vi.mock('../module_bindings', () => {
   };
 });
 
-// lpw-1 (additive): the module's other exports are the real ones (the tests read
-// oidcFlowStorageKey), every createOidcClient call is counted on H.oidcClients, and with
-// H.realOidc the REAL client is returned instead of the scripted one.
+// The OIDC client: the module's other exports are the real ones (the tests read
+// oidcFlowStorageKey), every createOidcClient call is counted on H.oidcClients, and the client is
+// the scripted one below, or with H.realOidc the REAL one.
 vi.mock('./oidc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./oidc')>();
   return {
@@ -223,7 +223,7 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     db: DB,
     name: 'Tester',
     store: new AuthoritativeStore(200),
-    // lpw-1: the existing cases exercise account builds, which only the OIDC mode reaches.
+    // The OIDC mode: the account builds these cases drive are reachable only in it.
     signIn: 'oidc',
     onReady: vi.fn(),
     onReconnect: vi.fn(),
@@ -3182,20 +3182,17 @@ function conn0(rec: BuildRec) {
 }
 
 // =============================================================================================
-// lpw-1: sign-in off. A `local` or `private` target hands connect() `signIn: 'off'`: no OIDC
-// client is constructed, so nothing can reach an issuer; every build carries only the anonymous
-// reconnect token; and startSignIn refuses at once with 'sign-in-off'.
+// Sign-in off. A `local` or `private` target hands connect() `signIn: 'off'`: no OIDC client is
+// constructed, so nothing can reach an issuer; every build carries only the anonymous reconnect
+// token; and startSignIn refuses at once with 'sign-in-off'.
 // =============================================================================================
 //
 // Every `off` case still hands connect() a NON-EMPTY issuer, client id and redirect URI: the mode,
 // never an empty issuer, is what must keep the OIDC client away, so an implementation that keys on
-// the issuer fails here. The lpw-1.1 cases run the REAL OIDC client (H.realOidc) over a fetch spy,
-// with a real return leg on the page and a real account marker in storage, so "no OIDC request"
-// is observed at the network boundary itself; the two `oidc` controls prove the same setup does
-// reach the issuer when sign-in is on.
-// RED REASON (before lpw-1): connect() ignores `signIn`: it always constructs the OIDC client,
-// consumes the return leg, renews through the account marker, and startSignIn mints and registers
-// a claim code (or reports 'transient-error' while no live link exists).
+// the issuer fails here. The zero-request cases run the REAL OIDC client (H.realOidc) over a fetch
+// spy, with a real return leg on the page and a real account marker in storage, so "no OIDC
+// request" is observed at the network boundary itself; the two `oidc` controls prove the same
+// setup does reach the issuer when sign-in is on.
 
 const LPW1_ISSUER = 'https://auth.example/realms/r/';
 /** The first request the real OIDC client makes for LPW1_ISSUER: the issuer, its trailing slash
@@ -3287,7 +3284,7 @@ function lpw1SignInFailures(opts: Lpw1Opts): unknown[][] {
   return (opts.onSignInFailed as unknown as ReturnType<typeof vi.fn>).mock.calls;
 }
 
-describe('connect() with sign-in off (lpw-1)', { sequential: true }, () => {
+describe('connect() with sign-in off', { sequential: true }, () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     H.builds = [];
@@ -3315,7 +3312,7 @@ describe('connect() with sign-in off (lpw-1)', { sequential: true }, () => {
     window.history.replaceState(null, '', '/');
   });
 
-  // --- lpw-1.1: zero OIDC requests --------------------------------------------------------------
+  // --- zero OIDC requests -------------------------------------------------------------------------
 
   it('makes zero OIDC requests with sign-in off from the cold start through an SDK drop and its reconnect, reconnectNow and continueAnonymously, though the URL carries a code and state and storage holds the account marker, the state, the verifier and a refresh token [lpw-1.1]', async () => {
     // WRONG IMPL KILLED: an OIDC client constructed whatever the mode (the return leg is consumed
@@ -3432,7 +3429,7 @@ describe('connect() with sign-in off (lpw-1)', { sequential: true }, () => {
     });
   }
 
-  // --- lpw-1.2: only the anonymous reconnect token ----------------------------------------------
+  // --- only the anonymous reconnect token -------------------------------------------------------
 
   it('hands every build only the stored anonymous reconnect token with sign-in off, across an SDK drop and its reconnect, reconnectNow and continueAnonymously, though the account marker is stored and a renewal would succeed [lpw-1.2]', async () => {
     // WRONG IMPL KILLED: the marker still renewing under off (build 0 carries the account JWT);
@@ -3499,7 +3496,7 @@ describe('connect() with sign-in off (lpw-1)', { sequential: true }, () => {
     expect(H.oidcClients, 'no OIDC client was constructed').toBe(0);
   });
 
-  // --- lpw-1.3: startSignIn refuses at once ------------------------------------------------------
+  // --- startSignIn refuses at once ----------------------------------------------------------------
 
   it('reports sign-in-off and does nothing else when sign-in is started with sign-in off before the first build lands [lpw-1.3]', async () => {
     // WRONG IMPL KILLED: startSignIn falling through to the live-link check (reports
@@ -3533,9 +3530,9 @@ describe('connect() with sign-in off (lpw-1)', { sequential: true }, () => {
   });
 
   it('reports sign-in-off once per call on a live connected link with sign-in off, and mints no claim code, calls no reducer, makes no request and does not navigate [lpw-1.3]', async () => {
-    // WRONG IMPL KILLED: today's startSignIn under off (a claim code minted into storage, then
-    // start_guest_claim, then the OIDC redirect); a code minted BEFORE the report; a report only
-    // on the first call; a report followed by the redirect anyway.
+    // WRONG IMPL KILLED: a startSignIn that ignores the mode (a claim code minted into storage,
+    // then start_guest_claim, then the OIDC redirect); a code minted BEFORE the report; a report
+    // only on the first call; a report followed by the redirect anyway.
     const assign = lpw1StubNavigation();
     const fetchSpy = lpw1StubFetch();
     H.beginSignIn = vi.fn(() =>

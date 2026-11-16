@@ -108,6 +108,7 @@ function start(): AuthoritativeStore {
     db: 'mr-test',
     name: 'Tester',
     store,
+    signIn: 'off',
     onReady: noop,
     onReconnect: noop,
     onHydrated: noop,

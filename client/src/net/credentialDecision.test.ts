@@ -469,11 +469,11 @@ describe('decideConnectCredential G16: totality property (fast-check)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// lpw-1: whether a credential attempt may reach the OIDC client at all.
+// Whether a credential attempt may reach the OIDC client at all.
 //
-// A `local` or `private` target runs with `signIn: 'off'` and must make zero OIDC requests
-// whatever its storage and URL hold (lpw-1.1): an `account` kind marker or an OIDC return leg
-// opens the attempt gate ONLY in the `'oidc'` mode. The mode is compared EXACTLY, so any other
+// A `local` or `private` target runs with `signIn: 'off'` and makes zero OIDC requests whatever
+// its storage and URL hold: an `account` kind marker or an OIDC return leg opens the attempt gate
+// ONLY in the `'oidc'` mode. The mode is compared EXACTLY, so any other
 // runtime value (an omitted option, a case variant) is off — the fail-closed direction.
 // ---------------------------------------------------------------------------
 

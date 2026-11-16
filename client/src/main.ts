@@ -403,9 +403,10 @@ const OPERATED_BY_US = TARGET_KIND === 'official' || TARGET_KIND === 'test';
 const OIDC_ISSUER = OPERATED_BY_US
   ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
   : '';
-// Sign-in is on only toward a server we operate whose build names an issuer. Off, `connect` builds
-// no OIDC client, so no OIDC request leaves the page whatever the URL or storage holds.
-const SIGN_IN_MODE: SignInMode = OPERATED_BY_US && OIDC_ISSUER !== '' ? 'oidc' : 'off';
+// Sign-in is on only where OIDC_ISSUER holds an issuer: a server we operate whose build names one.
+// Off, `connect` builds no OIDC client, so no OIDC request leaves the page whatever the URL or
+// storage holds.
+const SIGN_IN_MODE: SignInMode = OIDC_ISSUER === '' ? 'off' : 'oidc';
 const SIGN_IN_OFFER = signInOffer(
   OIDC_ISSUER,
   (import.meta.env.VITE_MR_OIDC_PROVIDER_NAME as string | undefined) ?? '',

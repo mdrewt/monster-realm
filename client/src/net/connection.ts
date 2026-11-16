@@ -138,9 +138,8 @@ export interface ConnectionOptions {
   readonly onClaimAwaitingAccount?: () => void;
   /** The guest-claim reducer settled. */
   readonly onClaimResult?: (result: { readonly ok: boolean; readonly message: string }) => void;
-  /** Whether this connection may sign in to an account. `'off'` (the target is not a server we
-   *  operate, or the build names no issuer) builds no OIDC client: every build is anonymous, no
-   *  OIDC request is made, and startSignIn reports `'sign-in-off'`. */
+  /** Whether this connection may sign in to an account. `'off'` builds no OIDC client: every
+   *  build is anonymous, no OIDC request is made, and startSignIn reports `'sign-in-off'`. */
   readonly signIn: SignInMode;
   /** The OIDC issuer / client-id / redirect for this target, read only when `signIn` is
    *  `'oidc'`. */
@@ -269,8 +268,9 @@ export function connect(opts: ConnectionOptions): Connection {
   let forcedAnon = false; // set ONLY by continueAnonymously(); sticky for the tab's page life
   // The session terminal state the registry-external overlay reads through sessionState().
   let sessionMode: SessionState = 'hidden';
-  // Consume the OIDC return leg exactly once on cold start (D12): a matched state records the
-  // authorization code and arms this attempt's gate so the first sign-in exchanges its verifier.
+  // In `'oidc'` mode, consume the OIDC return leg exactly once on cold start (D12): a matched state
+  // records the authorization code and arms this attempt's gate so the first sign-in exchanges its
+  // verifier.
   if (oidc?.consumeReturnLeg() === true) isReturnLegAttempt = true;
 
   /** Schedule ONE rebuild after the current backoff delay. */

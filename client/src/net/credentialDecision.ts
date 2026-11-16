@@ -8,9 +8,8 @@
 // a real behaviour test — see credentialDecision.test.ts (G16).
 
 /**
- * Whether this connection may sign in to an account at all. `'off'` (a single-player world, a
- * friends server, or a build that names no issuer) builds no OIDC client: every connection is
- * anonymous and no OIDC request is ever made.
+ * Whether this connection may sign in to an account at all. `'off'` builds no OIDC client: every
+ * connection is anonymous and no OIDC request is ever made.
  */
 export type SignInMode = 'oidc' | 'off';
 

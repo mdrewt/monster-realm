@@ -155,7 +155,7 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     db: DB,
     name: 'Tester',
     store: new AuthoritativeStore(200),
-    // lpw-1: these cases drive account builds (bootAccount), which only the OIDC mode reaches.
+    // The OIDC mode: the account builds the bootAccount cases drive are reachable only in it.
     signIn: 'oidc',
     onReady: vi.fn(),
     onReconnect: vi.fn(),

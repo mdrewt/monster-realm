@@ -140,7 +140,7 @@ development, CI or playtests), `local` (a single-player world the game started) 
 in a production build. The build's OIDC variables (`VITE_MR_OIDC_ISSUER`, `VITE_MR_OIDC_CLIENT_ID`,
 `VITE_MR_OIDC_REDIRECT_URI`, `VITE_MR_OIDC_PROVIDER_NAME`) and `VITE_MR_OTLP_ENDPOINT` take effect
 only for a target of kind `official` or `test`. Toward a `local` or `private` target the client
-runs with sign-in off: it offers no Sign In, makes no OIDC request and loads no telemetry,
+loads no telemetry and runs with sign-in off: it offers no Sign In and makes no OIDC request,
 whatever those variables hold.
 
 A production build made with `VITE_STDB_DB` set writes `shell-config.js` into `dist/`. One made

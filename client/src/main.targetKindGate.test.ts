@@ -23,14 +23,15 @@
  * window / document listeners detached in teardown, a stubbed wasm pkg, SDK connection and
  * renderer), plus main.claimCode.test.ts's shell document on the page global.
  *
- * lpw-1 (sign-in off): the boot also hands `connect()` a sign-in mode, `'oidc'` only toward an
- * official or test server built with an issuer and `'off'` otherwise, and those cases read
- * `opts.signIn`. The lpw-1.1 cases boot the whole page over the REAL `connect()` (with
- * `H.realConnect`; only the SDK's `DbConnection.builder` is faked) and the real OIDC client, with
- * `fetch` stubbed by a spy and an OIDC return leg and an account marker left on the page, and count
- * the requests from boot through an SDK drop's reconnect and `reconnectNow()`. Each of those cases
- * dispatches `pagehide` before the teardown below detaches the connection's listeners, so no
- * rebuild timer outlives it.
+ * The boot also hands `connect()` a sign-in mode: `'oidc'` only toward an official or test server
+ * built with an issuer, `'off'` otherwise; the sign-in mode cases read `opts.signIn`. The
+ * whole-page cases boot over the REAL `connect()` (a case puts it on `H.realConnect` before the
+ * boot; only the SDK's `DbConnection.builder` is faked) and the real OIDC client, with `fetch`
+ * stubbed by a spy and an OIDC return leg and an account marker left on the page, and count the
+ * requests from boot through an SDK drop's reconnect and `reconnectNow()`, the reconnect driven on
+ * fake timers once the boot is done. Each of those cases dispatches `pagehide` before the teardown
+ * below detaches the connection's listeners, so no rebuild timer outlives it. Every other case
+ * uses the recording connection and never loads the real one.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -43,9 +44,7 @@ import {
   worldRendererMock,
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
-import { wasEverAuthenticated, writeAuthKind } from './net/authToken';
 import type { Connection, ConnectionOptions } from './net/connection';
-import { oidcFlowStorageKey } from './net/oidc';
 import {
   SHELL_CONFIG_GLOBAL,
   type ShellDocument,
@@ -72,11 +71,12 @@ const H = vi.hoisted(() => {
     loadSdk: vi.fn((_init: TelemetryInit): Promise<TelemetryMeter> => Promise.resolve(meter)),
     /** How many times the connection was asked to start a sign-in. */
     signIns: 0,
-    /** lpw-1.1: when true, `connect()` is the REAL one, over the faked SDK builder below. */
-    realConnect: false,
-    /** lpw-1.1: the real connection the boot built, while `realConnect`. */
+    /** The REAL `connect`, put here by a whole-page case before its boot; null: the recording
+     *  connection below answers. */
+    realConnect: null as ((opts: ConnectionOptions) => Connection) | null,
+    /** The real connection the boot built, while `realConnect` is set. */
     realConn: null as Connection | null,
-    /** lpw-1.1: every DbConnection the real `connect()` built through the faked builder. */
+    /** Every DbConnection the real `connect()` built through the faked SDK builder. */
     sdkBuilds: [] as SdkBuild[],
   };
 });
@@ -84,18 +84,17 @@ const H = vi.hoisted(() => {
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgWalkingMock({ interact: () => [] }));
 
 // The connection: capture the options; every reducer records its call and resolves at once; and
-// startSignIn is counted on H. lpw-1.1 (additive): with H.realConnect the options are captured the
-// same way and the REAL connect() runs instead.
-vi.mock('./net/connection', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./net/connection')>();
+// startSignIn is counted on H. While a case has put the real `connect` on H.realConnect, the
+// options are captured the same way and that real connect() runs instead.
+vi.mock('./net/connection', () => {
   const recording = connectionRecordingMock(H);
   return {
     connect: (opts: ConnectionOptions): Connection => {
-      if (H.realConnect) {
+      const real = H.realConnect;
+      if (real !== null) {
         H.connectOpts = opts;
-        const real = actual.connect(opts);
-        H.realConn = real;
-        return real;
+        H.realConn = real(opts);
+        return H.realConn;
       }
       return {
         ...(recording.connect(opts) as unknown as Record<string, unknown>),
@@ -107,11 +106,11 @@ vi.mock('./net/connection', async (importOriginal) => {
   };
 });
 
-// lpw-1.1: the SDK's DbConnection builder, faked for the real connect(). Each build records the
-// token it was handed and its lifecycle callbacks; the built connection's tables accept every
-// handler and iterate nothing, every reducer resolves, and a subscription's builder chains.
-vi.mock('./module_bindings', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./module_bindings')>();
+// The SDK's DbConnection builder, for the real connect() of the whole-page cases (the recording
+// connection never loads these bindings). Each build records the token it was handed and its
+// lifecycle callbacks; the built connection's tables accept every handler and iterate nothing,
+// every reducer resolves, and a subscription's builder chains.
+vi.mock('./module_bindings', () => {
   /** Never a thenable: an awaited table or reducer set must not hang on a `then` the Proxy made. */
   const noThen = (k: string | symbol): boolean => k === 'then';
   const table = () =>
@@ -126,7 +125,6 @@ vi.mock('./module_bindings', async (importOriginal) => {
       },
     );
   return {
-    ...actual,
     DbConnection: {
       builder: () => {
         const rec: SdkBuild = { token: 'UNSET' };
@@ -182,10 +180,10 @@ vi.mock('./observability/telemetry', async (importOriginal) => ({
 // The renderer: init(mount) appends a focusable canvas so main.ts can resolve its world focus.
 vi.mock('./render/world', () => worldRendererMock());
 
-/** lpw-1.1: one SDK lifecycle callback as the faked builder records it. */
+/** One SDK lifecycle callback as the faked builder records it. */
 type SdkCallback = (...args: unknown[]) => void;
 
-/** lpw-1.1: one DbConnection the real `connect()` built through the faked SDK builder. */
+/** One DbConnection the real `connect()` built through the faked SDK builder. */
 interface SdkBuild {
   /** What `.withToken()` was handed ('UNSET' if it was never called). */
   token: unknown;
@@ -273,7 +271,7 @@ interface BuildEnv {
   readonly oidc: boolean;
   /** `VITE_MR_OIDC_PROVIDER_NAME` (PROVIDER_NAME); left out when absent. */
   readonly providerName?: boolean;
-  /** lpw-1: with `oidc`, `VITE_MR_OIDC_ISSUER` is set to the EMPTY string (the client id stays
+  /** With `oidc`, `VITE_MR_OIDC_ISSUER` is set to the EMPTY string (the client id stays
    *  set), so the variable is present but names no issuer. Left out: the issuer as `oidc` says. */
   readonly emptyIssuer?: boolean;
 }
@@ -348,7 +346,7 @@ beforeEach(() => {
   H.calls = [];
   H.loadSdk.mockClear();
   H.signIns = 0;
-  H.realConnect = false;
+  H.realConnect = null;
   H.realConn = null;
   H.sdkBuilds = [];
 });
@@ -564,7 +562,7 @@ describe('the booted client offers Sign In only toward a kind it hands the OIDC 
   });
 });
 
-// --- lpw-1: the sign-in mode the booted client hands connect() --------------------------------
+// --- the sign-in mode the booted client hands connect() ---------------------------------------
 
 describe('the booted client hands connect() sign-in off unless an official or test server names an issuer', () => {
   // WRONG IMPL KILLED: the mode derived from the build's issuer alone (a local or private server
@@ -622,7 +620,7 @@ describe('the booted client hands connect() sign-in off unless an official or te
   });
 });
 
-// --- lpw-1.1: the whole booted page, over the real connection --------------------------------
+// --- the whole booted page, over the real connection ------------------------------------------
 
 /** documentFor's connection target: the OIDC flow and the kind marker are keyed on it. */
 const DOC_URI = 'wss://gate.example:4443/';
@@ -635,18 +633,26 @@ const STORED_REFRESH = 'lpw1-refresh-token';
  *  plus the discovery path (oidc.ts getDiscovery). */
 const OIDC_DISCOVERY_URL =
   'https://auth.example/realms/monster-realm/.well-known/openid-configuration';
+/** The longest reconnect backoff rung: advancing the fake clock this far fires a pending rebuild
+ *  whichever rung it is on. */
+const LONGEST_BACKOFF_MS = 30_000;
 
-/** One slot of the OIDC flow's storage for the document's target (oidc.ts:
- *  `<oidcFlowStorageKey>|<slot>` in sessionStorage). */
-function flowKey(slot: 'state' | 'verifier' | 'code' | 'refresh'): string {
-  return `${oidcFlowStorageKey(DOC_URI, DOC_DB)}|${slot}`;
-}
-
-/** Leave an OIDC sign-in on the page for the document's target (a `?code&state` return leg in
- *  the URL, the matching state, the PKCE verifier and a refresh token stored, the `account` kind
- *  marker stored), and stub fetch with a spy that answers every request with a bare 503. Each
- *  seed is asserted in place, so a seeding mistake fails HERE. */
-function leaveOidcOnThePage() {
+/**
+ * Prepare a whole-page boot: put the REAL `connect` on H for the next boot, leave an OIDC sign-in
+ * on the page for the document's target (a `?code&state` return leg in the URL, the matching
+ * state, the PKCE verifier and a refresh token stored, the `account` kind marker stored), and stub
+ * fetch with a spy that answers every request with a bare 503. The real connection, auth-token and
+ * OIDC modules are loaded here, so no other case loads them. Each seed is asserted in place, so a
+ * seeding mistake fails HERE. Returns the fetch spy and the OIDC flow's storage key for a slot.
+ */
+async function prepareWholePage() {
+  const { connect } = await vi.importActual<typeof import('./net/connection')>('./net/connection');
+  const { wasEverAuthenticated, writeAuthKind } = await import('./net/authToken');
+  const { oidcFlowStorageKey } = await import('./net/oidc');
+  /** One slot of the OIDC flow's storage for the document's target (oidc.ts:
+   *  `<oidcFlowStorageKey>|<slot>` in sessionStorage). */
+  const flowKey = (slot: 'state' | 'verifier' | 'refresh'): string =>
+    `${oidcFlowStorageKey(DOC_URI, DOC_DB)}|${slot}`;
   expect(
     documentFor('local').connection,
     'precondition: the seeded target is the document target',
@@ -677,11 +683,11 @@ function leaveOidcOnThePage() {
     Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) }),
   );
   vi.stubGlobal('fetch', fetchSpy);
-  return fetchSpy;
+  H.realConnect = connect;
+  return { fetchSpy, flowKey };
 }
 
-/** The real connect()'s `index`th build, waited for on real timers (a reconnect after an attempt
- *  that dropped before its snapshot applied waits out a 2000 ms backoff rung). */
+/** The real connect()'s `index`th build, waited for on real timers. */
 function sdkBuild(index: number): Promise<SdkBuild> {
   return vi.waitFor(
     () => {
@@ -689,15 +695,17 @@ function sdkBuild(index: number): Promise<SdkBuild> {
       if (build === undefined) throw new Error(`build ${index} not reached yet`);
       return build;
     },
-    { timeout: 10_000, interval: 10 },
+    { timeout: 5_000, interval: 10 },
   );
 }
 
 /** End the real connection while its listeners are still attached (the afterEach detaches them):
- *  pagehide clears a pending rebuild and stops every later one, so no timer outlives the case. */
+ *  pagehide clears a pending rebuild (on whichever clock holds it) and stops every later one, so no
+ *  timer outlives the case; then the real timers are back. */
 function endRealConnection(): void {
   window.dispatchEvent(new Event('pagehide'));
-  H.realConnect = false;
+  vi.useRealTimers();
+  H.realConnect = null;
   H.realConn = null;
   sessionStorage.clear();
   localStorage.clear();
@@ -709,8 +717,7 @@ describe('the booted page makes no OIDC request toward a local or private server
       // WRONG IMPL KILLED: main.ts handing 'oidc' (or no mode) to a local or private target while
       // connect() still constructs the OIDC client: the return leg and the marker send the
       // discovery request at boot, to the page's own origin when the issuer is empty.
-      const fetchSpy = leaveOidcOnThePage();
-      H.realConnect = true;
+      const { fetchSpy, flowKey } = await prepareWholePage();
       try {
         const label = `a ${kind} document, an OIDC sign-in left on the page`;
         await bootWith(documentFor(kind), label, FULL_BUILD_ENV);
@@ -718,15 +725,20 @@ describe('the booted page makes no OIDC request toward a local or private server
         const b0 = await sdkBuild(0);
         const real = H.realConn;
         if (real === null) throw new Error(`${label}: the boot built no real connection`);
+        // The boot is done: the reconnect below runs on a fake clock.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
         b0.onConnect?.(b0.conn, { toHexString: () => H.identity }, 'lpw1-anon-token');
         b0.onDisconnect?.();
-        await sdkBuild(1);
+        await vi.advanceTimersByTimeAsync(LONGEST_BACKOFF_MS);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(H.sdkBuilds, `${label}: the SDK drop was rebuilt`).toHaveLength(2);
         expect(
           fetchSpy.mock.calls,
           `${label}: no request through the drop and its reconnect`,
         ).toEqual([]);
         real.reconnectNow();
-        await sdkBuild(2);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(H.sdkBuilds, `${label}: reconnectNow built`).toHaveLength(3);
         expect(fetchSpy.mock.calls, `${label}: no request through reconnectNow`).toEqual([]);
         // Liveness: three real builds, the first connection's token handed back on each rebuild.
         expect(
@@ -749,15 +761,21 @@ describe('the booted page makes no OIDC request toward a local or private server
   it('requests the issuer discovery document from the same page toward an official server built with an issuer [lpw-1.1]', async () => {
     // The control: the same OIDC sign-in left on the page DOES reach the issuer toward a server
     // that signs in, so the zero-request result above is the target kind's doing.
-    const fetchSpy = leaveOidcOnThePage();
-    H.realConnect = true;
+    const { fetchSpy } = await prepareWholePage();
     try {
       const label = 'an official document, an OIDC sign-in left on the page';
       await bootWith(documentFor('official'), label, FULL_BUILD_ENV);
-      expect(
-        fetchSpy.mock.calls[0]?.[0],
-        `${label}: the first request is the issuer discovery`,
-      ).toBe(OIDC_DISCOVERY_URL);
+      const firstUrl = await vi.waitFor(
+        () => {
+          const first = fetchSpy.mock.calls[0];
+          if (first === undefined) throw new Error(`${label}: no request yet`);
+          return first[0];
+        },
+        { timeout: 5_000, interval: 10 },
+      );
+      expect(firstUrl, `${label}: the first request is the issuer discovery`).toBe(
+        OIDC_DISCOVERY_URL,
+      );
     } finally {
       endRealConnection();
     }
