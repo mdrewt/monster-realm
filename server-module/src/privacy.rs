@@ -41,17 +41,20 @@
 use crate::marshal::now_ms;
 use crate::playtest::{playtest_event, PlaytestEvent};
 use crate::schema::{
-    account, battle, battle_action, battle_challenge, character, export_bundle,
+    account, battle, battle_action, battle_challenge, battle_summary, character, export_bundle,
     export_bundle__view, heal_cooldown, inventory, monster, monster_pub, player,
-    player_conversation, player_dialogue_state, player_handle, player_quest, player_wallet,
-    profile, trade_offer, Account, AccountStatus, Battle, BattleAction, BattleChallenge,
-    ChallengeStatus, Character, DataLifecycleEntry, ExportBundle, HealCooldown, Inventory, Monster,
-    MonsterPub, Player, PlayerConversation, PlayerDialogueStateRow, PlayerHandle, PlayerQuestRow,
-    PlayerWallet, Profile, TradeOffer, DATA_LIFECYCLE_MANIFEST,
+    player_conversation, player_dialogue_state, player_formation, player_handle, player_quest,
+    player_wallet, profile, trade_offer, Account, AccountStatus, Battle, BattleAction,
+    BattleChallenge, BattleSummary, ChallengeStatus, Character, DataLifecycleEntry, ExportBundle,
+    HealCooldown, Inventory, Monster, MonsterPub, Player, PlayerConversation,
+    PlayerDialogueStateRow, PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerWallet, Profile,
+    TradeOffer, DATA_LIFECYCLE_MANIFEST,
 };
+use game_core::tactics::events::EndHow;
+use game_core::tactics::tuning::BattleKind;
 use game_core::{
-    ActionState, Direction, MonsterCard, MoveInput, NatureKind, PvpAction, TradeItem, TradeStatus,
-    TrustTier, EXPORT_CHUNK_ROWS,
+    ActionState, BattleOutcome, Direction, MonsterCard, MoveInput, NatureKind, PvpAction,
+    TradeItem, TradeStatus, TrustTier, EXPORT_CHUNK_ROWS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -213,6 +216,20 @@ fn json_opt_identity_into(out: &mut String, v: Option<Identity>) {
     }
 }
 
+fn json_opt_u64_into(out: &mut String, v: Option<u64>) {
+    match v {
+        Some(x) => json_u64_into(out, x),
+        None => json_null_into(out),
+    }
+}
+
+fn json_opt_u32_into(out: &mut String, v: Option<u32>) {
+    match v {
+        Some(x) => json_u32_into(out, x),
+        None => json_null_into(out),
+    }
+}
+
 fn json_u64_array_into(out: &mut String, items: &[u64]) {
     out.push('[');
     let mut first = true;
@@ -223,6 +240,20 @@ fn json_u64_array_into(out: &mut String, items: &[u64]) {
             out.push(',');
         }
         json_u64_into(out, *v);
+    }
+    out.push(']');
+}
+
+fn json_u32_array_into(out: &mut String, items: &[u32]) {
+    out.push('[');
+    let mut first = true;
+    for v in items {
+        if first {
+            first = false;
+        } else {
+            out.push(',');
+        }
+        json_u32_into(out, *v);
     }
     out.push(']');
 }
@@ -311,6 +342,45 @@ fn json_account_status_into(out: &mut String, v: &AccountStatus) {
     let name = match v {
         AccountStatus::Active => stringify!(Active),
         AccountStatus::PendingDeletion => stringify!(PendingDeletion),
+    };
+    json_str_into(out, name);
+}
+
+fn json_battle_kind_into(out: &mut String, v: &BattleKind) {
+    let name = match v {
+        BattleKind::Wild => stringify!(Wild),
+        BattleKind::Pvp => stringify!(Pvp),
+        BattleKind::Practice => stringify!(Practice),
+    };
+    json_str_into(out, name);
+}
+
+fn json_battle_outcome_into(out: &mut String, v: &BattleOutcome) {
+    let name = match v {
+        BattleOutcome::Ongoing => stringify!(Ongoing),
+        BattleOutcome::SideAWins => stringify!(SideAWins),
+        BattleOutcome::SideBWins => stringify!(SideBWins),
+        BattleOutcome::Fled => stringify!(Fled),
+    };
+    json_str_into(out, name);
+}
+
+fn json_opt_end_how_into(out: &mut String, v: &Option<EndHow>) {
+    let name = match v {
+        None => {
+            json_null_into(out);
+            return;
+        }
+        Some(EndHow::SideEmpty) => stringify!(SideEmpty),
+        Some(EndHow::AdjudicatedHpPercent) => stringify!(AdjudicatedHpPercent),
+        Some(EndHow::AdjudicatedConscious) => stringify!(AdjudicatedConscious),
+        Some(EndHow::AdjudicatedDamageDealt) => stringify!(AdjudicatedDamageDealt),
+        Some(EndHow::AdjudicatedCoin) => stringify!(AdjudicatedCoin),
+        Some(EndHow::FixedOrder) => stringify!(FixedOrder),
+        Some(EndHow::RoundCap) => stringify!(RoundCap),
+        Some(EndHow::Forfeit) => stringify!(Forfeit),
+        Some(EndHow::Fled) => stringify!(Fled),
+        Some(EndHow::AutoFlee) => stringify!(AutoFlee),
     };
     json_str_into(out, name);
 }
@@ -1056,13 +1126,15 @@ fn json_character(row: &Character) -> String {
 }
 
 // ===========================================================================
-// battle redaction. The one serializer whose output is NOT
-// every column: state is omitted entirely (the counterparty half of a durable
-// artifact; the requester keeps live access via my_battle), and the
-// counterparty identity and monster-id list are the null literal per side. A
-// practice battle — one identity on both columns — is wholly owned and never
-// redacted. A row the requester participates in on neither side is a loud Err,
-// never a silent skip: reaching that arm means the own-rows filter is broken.
+// battle and battle_summary redaction. Both rows name two sides, and the
+// requester gets only their own: the counterparty identity and every per-side
+// column of the counterparty side are the null literal. battle is the one
+// serializer whose output is NOT every column: state is omitted entirely (the
+// counterparty half of a durable artifact; the requester keeps live access via
+// my_battle). A practice battle — one identity on both columns — is wholly
+// owned and never redacted. A row the requester participates in on neither
+// side is a loud Err, never a silent skip: reaching that arm means the
+// own-rows filter is broken.
 // ===========================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1074,9 +1146,12 @@ enum BattleSideOwnership {
 }
 
 fn battle_side_of(me: Identity, row: &Battle) -> BattleSideOwnership {
-    let holds_a = row.player_identity == me;
-    let holds_b = row.opponent_identity == me;
-    match (holds_a, holds_b) {
+    side_ownership(me, row.player_identity, row.opponent_identity)
+}
+
+// Which of a two-sided row's identity columns name `me`.
+fn side_ownership(me: Identity, side_a: Identity, side_b: Identity) -> BattleSideOwnership {
+    match (side_a == me, side_b == me) {
         (true, true) => BattleSideOwnership::Both,
         (true, false) => BattleSideOwnership::A,
         (false, true) => BattleSideOwnership::B,
@@ -1135,6 +1210,120 @@ fn json_battle(row: &Battle, me: Identity) -> Result<String, String> {
     json_i64_into(&mut out, *created_at_ms);
     out.push('}');
     Ok(out)
+}
+
+// Every column, the counterparty side redacted as in json_battle: side A is
+// player_identity, idle_ms_a and damage_dealt_a; side B is opponent_identity,
+// idle_ms_b and damage_dealt_b. The other columns count the whole battle and are
+// built from what both participants read while it ran (the transcript, the turn
+// state, the clocks), so a pending plan moves none of them.
+fn json_battle_summary(row: &BattleSummary, me: Identity) -> Result<String, String> {
+    let (own_a, own_b) = match side_ownership(me, row.player_identity, row.opponent_identity) {
+        BattleSideOwnership::Neither => {
+            return Err(stringify!(export_summary_row_not_own).to_string());
+        }
+        BattleSideOwnership::Both => (true, true),
+        BattleSideOwnership::A => (true, false),
+        BattleSideOwnership::B => (false, true),
+    };
+    let BattleSummary {
+        battle_id,
+        player_identity,
+        opponent_identity,
+        kind,
+        outcome,
+        rounds,
+        wall_ms,
+        idle_ms_a,
+        idle_ms_b,
+        windows_histogram,
+        autopasses,
+        recruit_attempts,
+        recruit_successes,
+        weaken_first,
+        items_used,
+        damage_dealt_a,
+        damage_dealt_b,
+        hits,
+        misses,
+        unit_turns_prequeued,
+        unit_turns_live,
+        halted_plans,
+        se_kos_after_r1,
+        kos_after_r1,
+        end_how,
+    } = row;
+    let mut out = String::new();
+    let mut first = true;
+    out.push('{');
+    json_field_into(&mut out, &mut first, stringify!(battle_id));
+    json_u64_into(&mut out, *battle_id);
+    json_field_into(&mut out, &mut first, stringify!(player_identity));
+    json_opt_identity_into(&mut out, own_a.then_some(*player_identity));
+    json_field_into(&mut out, &mut first, stringify!(opponent_identity));
+    json_opt_identity_into(&mut out, own_b.then_some(*opponent_identity));
+    json_field_into(&mut out, &mut first, stringify!(kind));
+    json_battle_kind_into(&mut out, kind);
+    json_field_into(&mut out, &mut first, stringify!(outcome));
+    json_battle_outcome_into(&mut out, outcome);
+    json_field_into(&mut out, &mut first, stringify!(rounds));
+    json_u16_into(&mut out, *rounds);
+    json_field_into(&mut out, &mut first, stringify!(wall_ms));
+    json_u64_into(&mut out, *wall_ms);
+    json_field_into(&mut out, &mut first, stringify!(idle_ms_a));
+    json_opt_u64_into(&mut out, own_a.then_some(*idle_ms_a));
+    json_field_into(&mut out, &mut first, stringify!(idle_ms_b));
+    json_opt_u64_into(&mut out, own_b.then_some(*idle_ms_b));
+    json_field_into(&mut out, &mut first, stringify!(windows_histogram));
+    json_u32_array_into(&mut out, windows_histogram);
+    json_field_into(&mut out, &mut first, stringify!(autopasses));
+    json_u16_into(&mut out, *autopasses);
+    json_field_into(&mut out, &mut first, stringify!(recruit_attempts));
+    json_u16_into(&mut out, *recruit_attempts);
+    json_field_into(&mut out, &mut first, stringify!(recruit_successes));
+    json_u16_into(&mut out, *recruit_successes);
+    json_field_into(&mut out, &mut first, stringify!(weaken_first));
+    json_bool_into(&mut out, *weaken_first);
+    json_field_into(&mut out, &mut first, stringify!(items_used));
+    json_u16_into(&mut out, *items_used);
+    json_field_into(&mut out, &mut first, stringify!(damage_dealt_a));
+    json_opt_u32_into(&mut out, own_a.then_some(*damage_dealt_a));
+    json_field_into(&mut out, &mut first, stringify!(damage_dealt_b));
+    json_opt_u32_into(&mut out, own_b.then_some(*damage_dealt_b));
+    json_field_into(&mut out, &mut first, stringify!(hits));
+    json_u16_into(&mut out, *hits);
+    json_field_into(&mut out, &mut first, stringify!(misses));
+    json_u16_into(&mut out, *misses);
+    json_field_into(&mut out, &mut first, stringify!(unit_turns_prequeued));
+    json_u16_into(&mut out, *unit_turns_prequeued);
+    json_field_into(&mut out, &mut first, stringify!(unit_turns_live));
+    json_u16_into(&mut out, *unit_turns_live);
+    json_field_into(&mut out, &mut first, stringify!(halted_plans));
+    json_u16_into(&mut out, *halted_plans);
+    json_field_into(&mut out, &mut first, stringify!(se_kos_after_r1));
+    json_u16_into(&mut out, *se_kos_after_r1);
+    json_field_into(&mut out, &mut first, stringify!(kos_after_r1));
+    json_u16_into(&mut out, *kos_after_r1);
+    json_field_into(&mut out, &mut first, stringify!(end_how));
+    json_opt_end_how_into(&mut out, end_how);
+    out.push('}');
+    Ok(out)
+}
+
+fn json_player_formation(row: &PlayerFormation) -> String {
+    let PlayerFormation {
+        owner_identity,
+        monster_ids,
+    } = row;
+    let mut out = String::new();
+    let mut first = true;
+    out.push('{');
+    json_field_into(&mut out, &mut first, stringify!(owner_identity));
+    json_identity_into(&mut out, *owner_identity);
+    json_field_into(&mut out, &mut first, stringify!(monster_ids));
+    json_u64_array_into(&mut out, monster_ids);
+    out.push('}');
+    out
 }
 
 // Own-row predicates for the two unindexed scans.
@@ -1221,7 +1410,7 @@ fn plan_export_chunks(per_table: Vec<(&'static str, Vec<String>)>) -> Vec<Planne
 // ===========================================================================
 
 // A DoS knob (reducers serialize under one global write lock and this reducer
-// walks 18 tables), not a legal figure.
+// walks every exportable table), not a legal figure.
 const EXPORT_REQUEST_COOLDOWN_MS: i64 = 60_000;
 
 fn export_cooldown_elapsed(last_at_ms: Option<i64>, now_ms: i64) -> bool {
@@ -1298,11 +1487,13 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(trade_offer), rows_trade_offer),
     (stringify!(battle_challenge), rows_battle_challenge),
     (stringify!(battle_action), rows_battle_action),
+    (stringify!(player_formation), rows_player_formation),
     (stringify!(player_handle), rows_player_handle),
     (stringify!(player), rows_player),
     (stringify!(profile), rows_profile),
     (stringify!(account), rows_account),
     (stringify!(battle), rows_battle),
+    (stringify!(battle_summary), rows_battle_summary),
     (stringify!(character), rows_character),
 ];
 
@@ -1370,8 +1561,8 @@ const _: () = assert!(exporters_cover_manifest(DATA_LIFECYCLE_MANIFEST, EXPORTER
 // owner (derived from ctx.sender() by the reducer — the sole identity source).
 // Index-backed except battle_action and playtest_event, which have no identity
 // index and take a bounded full scan narrowed IMMEDIATELY by the pure own-row
-// predicate. battle and the two dual-column tables dedup with the my_battle
-// chain idiom — the trailing exclusion is dedup by construction, so a practice
+// predicate. The four two-sided tables (trade_offer, battle_challenge, battle,
+// battle_summary) dedup with the my_battle chain idiom — the trailing exclusion is dedup by construction, so a practice
 // battle arrives exactly once (never a self-comparison of the two columns,
 // which would delete every practice battle from its own export).
 // ===========================================================================
@@ -1505,6 +1696,14 @@ fn rows_battle_action(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
         .collect())
 }
 
+fn rows_player_formation(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let mut rows = Vec::new();
+    if let Some(row) = ctx.db.player_formation().owner_identity().find(owner) {
+        rows.push(json_player_formation(&row));
+    }
+    Ok(rows)
+}
+
 fn rows_player_handle(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
     let mut rows = Vec::new();
     if let Some(row) = ctx.db.player_handle().owner_identity().find(owner) {
@@ -1549,6 +1748,26 @@ fn rows_battle(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, Str
             .filter(|b| b.player_identity != owner),
     ) {
         rows.push(json_battle(&row, owner)?);
+    }
+    Ok(rows)
+}
+
+fn rows_battle_summary(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let mut rows = Vec::new();
+    for row in ctx
+        .db
+        .battle_summary()
+        .player_identity()
+        .filter(owner)
+        .chain(
+            ctx.db
+                .battle_summary()
+                .opponent_identity()
+                .filter(owner)
+                .filter(|s| s.player_identity != owner),
+        )
+    {
+        rows.push(json_battle_summary(&row, owner)?);
     }
     Ok(rows)
 }
@@ -1761,9 +1980,9 @@ pub(crate) const EXPORT_REAP_MAX_READ_PER_TICK: usize = 256;
 // most this many stamps — and a stamp is exactly one
 // bundle minted since then, because the write site refuses a stamp a live row
 // already carries. Sixteen
-// minimum-size bundles (18 chunks, one per exportable table) is 288 rows, more
+// minimum-size bundles (20 chunks, one per exportable table) is 320 rows, more
 // than the 256-row read window: a window in ascending stamp order holds at most
-// fourteen whole bundles and one straddler, so over bundles this module writes
+// twelve whole bundles and one straddler, so over bundles this module writes
 // the read window binds first and this cap bounds a window of shorter stamps.
 pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 
@@ -1773,11 +1992,11 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // the reaper retires in one whole retention window, so the write side cannot
 // outpace the drain. the inequality it rests on: EXPORT_REAP_MAX_STAMPS_PER_TICK *
 // EXPORT_MIN_BUNDLE_ROWS
-// >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 18 = 288 >= 256), which is what makes
+// >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 20 = 320 >= 256), which is what makes
 // a tick retire at least as many rows as it read. Stamps are deleted WHOLE, so
 // no bundle is ever partly reaped and the floor holds whatever order the window
 // arrives in; Draining a FULL store therefore takes at most 168 ticks (seven days),
-// about 159 over minimum-size bundles, so a row's worst case is two retention
+// about 165 over minimum-size bundles, so a row's worst case is two retention
 // windows, not one. THREE thresholds, one
 // count, shed in order of what the caller has invested: a caller with no account
 // row gets half, so anonymous identities can never take the account holders' half;
@@ -1951,7 +2170,7 @@ pub fn export_bundle_reaper(
 // thresholds belong in ops/observability, where they can change without a
 // module publish, and a boolean the module derives is a second retention policy
 // nobody reviewed. `due` above `planned` means the stamp cap bound, observed
-// rather than inferred; sixteen minimum-size bundles (288 rows) overfill the
+// rather than inferred; sixteen minimum-size bundles (320 rows) overfill the
 // 256-row window, so that needs a stamp of at most fifteen rows or a range read
 // that interleaves stamps — for bundles this module writes it is a tripwire, not
 // a backlog signal. A FULL window is silent about rows past its edge (an open

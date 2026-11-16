@@ -244,7 +244,7 @@ argument. Tables that are public on purpose: content, `character`, `player`,
 a row still in it leaves by `cancel_trade`, a disconnect, account deletion or its TTL
 reaper.
 
-## Tactical battle privacy is structural, and tactical rows are not exportable
+## Tactical battle privacy is structural; only the summary and the formation are exported
 
 **Decision.** The tactical tables (`server-module/src/schema.rs`, M-battle-tactics
 bt-7) are all private. Both participants read `battle_tactical`, `battle_unit`,
@@ -254,8 +254,13 @@ two identity indexes (`my_tactical_battle`, `my_battle_units`, `my_battle_events
 `player_formation` rows (`my_battle_queue`, `my_battle_deploy`, `my_formation`); and
 `battle_secret` (the seed), `battle_wild_unit` (wild individuality seeds) and
 `battle_summary` (telemetry) have no view at all. `battle_unit` carries no queue or
-ready field. Deploy is reveal-by-copy: each side's picks go to its own owner-only `battle_deploy` row (`locked`, written in `tactics::stage_pvp`). The second lock, or the 45 s window's auto-fill in `tactics::expire_pvp_deploy` (`pvp_deploy_ms`, `game-core/src/tactics/tuning.rs`), calls `tactics::materialize`, which copies both stagings into `battle_unit` rows and flips the phase in one transaction. No unit row exists before that, so the only participant-visible deploy fact is the phase flip. `battle_clock` holds one row per side (a PvP battle holds two; a Practice battle's two name one player), and both participants read both through `my_battle_clock`: the opponent's window and strike count are match state, not a secret. `tactics::store` writes a row only when it moved, so a pre-queue or a cancel leaves nothing participant-visible. Forfeit is a client-confirmed reducer (`tactics::forfeit`), not a queue entry, and costs 0 AP. Forfeit, disconnect, the 4th auto-pass, Surge and adjudication all reach `tactics::finish` as `Close::Settled`, which settles through `pvp::settle_pvp_battle` in `SideAWriteBack::HpOnly` mode. That is the one caller of `ranking::apply_pvp_rating`; the tactical settlement pays essence to both sides, with no XP and no currency. Practice rates and pays nothing. Every tactical table is `exportable: false` in `DATA_LIFECYCLE_MANIFEST`;
-the cascade step (`schema::erase_tactical_rows`, beside the tables it writes) collects
+ready field. Deploy is reveal-by-copy: each side's picks go to its own owner-only `battle_deploy` row (`locked`, written in `tactics::stage_pvp`). The second lock, or the 45 s window's auto-fill in `tactics::expire_pvp_deploy` (`pvp_deploy_ms`, `game-core/src/tactics/tuning.rs`), calls `tactics::materialize`, which copies both stagings into `battle_unit` rows and flips the phase in one transaction. No unit row exists before that, so the only participant-visible deploy fact is the phase flip. `battle_clock` holds one row per side (a PvP battle holds two; a Practice battle's two name one player), and both participants read both through `my_battle_clock`: the opponent's window and strike count are match state, not a secret. `tactics::store` writes a row only when it moved, so a pre-queue or a cancel leaves nothing participant-visible. Forfeit is a client-confirmed reducer (`tactics::forfeit`), not a queue entry, and costs 0 AP. Forfeit, disconnect, the 4th auto-pass, Surge and adjudication all reach `tactics::finish` as `Close::Settled`, which settles through `pvp::settle_pvp_battle` in `SideAWriteBack::HpOnly` mode. That is the one caller of `ranking::apply_pvp_rating`; the tactical settlement pays essence to both sides, with no XP and no currency. Practice rates and pays nothing. Of the tactical tables only `battle_summary` and
+`player_formation` are `exportable: true` in `DATA_LIFECYCLE_MANIFEST`. A player's export
+(`privacy.rs`) carries their formation row and every summary row naming them on either side,
+`Ongoing` rows included, with the other side's identity, idle time and damage dealt as the null
+literal, as the `battle` export treats the other participant; a practice row names the player on
+both sides and is exported whole. The summary's other columns count the whole battle and are
+exported as they stand. The cascade step (`schema::erase_tactical_rows`, beside the tables it writes) collects
 the battle ids from every row that still names the identity (the `battle` anchor chain,
 the clock, queue, deploy and summary identity columns, and a scan of `battle_unit`),
 sweeps the whole battle's per-battle rows by `battle_id` before `battle::anonymize_battles`
@@ -272,17 +277,23 @@ as integer codes.
 §6.3), so it must not be derivable from any participant-visible row: the queue is
 owner-only and the unit row has no flag for it. The seed replays every roll; the wild
 seeds rebuild a recruited wild. Transcripts are deleted 24 h after a battle, so an
-export would copy nothing durable of them. The summary (one row per battle naming both
-sides, with the counters bt-9 reads) and the formation (a live preference the owner
-already reads through `my_formation`) are kept out of the export bundle by the spec
-(BT7.4); whether a player's export should include them is an open spec question.
+export would copy nothing durable of them; the queue and the deploy staging are secrets while a
+battle runs and are gone after it. The summary and the formation are game state an owner-keyed
+index query on an existing table provides, so the export scope rule includes them (operator,
+monster-realm#755). A summary row names both sides, so each side's own columns follow the
+`battle` export's side rule. The whole-battle columns (the pre-queued and live unit-turn counts,
+the windows histogram, halted plans, auto-passes, hits, misses and the rest) change only when a
+step executes or the battle closes (`tactics_settle.rs`), and every step they count is one the
+participants watched through `my_battle_events`, `my_tactical_battle` and `my_battle_clock`. A
+plan still waiting moves none of them, so exporting a summary mid-battle reveals no READY plan.
 `battle_unit.owner` is `Option<Identity>` (a wild unit has none, and a
 future two-ally side is just more rows), which no index can key, so unit rows are reached
 through the battle they belong to. Accepted reveals, stated as such: the legacy `my_battle` anchor (`schema.rs`) returns the whole `Battle` row, so from Deploying on both participants see the opponent's roster (species, level, stats, known skills in `state.side_b.team`, filled at `tactics.rs` `start_pvp_tactical`); slots and positions stay secret until the copy, and the anchor shape is the cutover's to retire. `QueueVoided{unit}` after a KO, turn-skip or battle end shows that a plan existed (see "Queued actions halt-and-return").
 
 **Rules out.** A ready or queued flag on `battle_unit`; a view over `battle_secret`,
-`battle_wild_unit` or `battle_summary`; a view taking an identity argument; adding an
-exporter for a tactical table; an owner-keyed-only cascade step for `battle_unit` (it
+`battle_wild_unit` or `battle_summary`; a view taking an identity argument; an exporter for any
+other tactical table; exporting the other side's identity or per-side columns of a summary
+row; a summary column whose value moves while a plan waits, unless the export redacts it; an owner-keyed-only cascade step for `battle_unit` (it
 would miss wild units and could never be indexed); a cascade that finds tactical rows
 only through the `battle` anchor (the reaper's first step can delete an ongoing wild
 anchor before the sweep runs); `u8` codes for game-core enums in a row. Also ruled out: a lock flag on `battle_tactical` or a lock mirror on `battle_unit`; writing one side's units at its own lock (`materialize` runs only once both are locked, `tactics.rs` `stage_pvp`); routing a tactical anchor through `battle::write_back_battle_results` (its side-A XP and currency grant, `battle.rs`, are the M16a asymmetry that design §7 removes); a second `apply_pvp_rating` caller.
@@ -422,8 +433,7 @@ re-arm, so a table held over the cap does not repeat that scan every 300 s while
 
 **Rules out.** An age-based TTL on `battle_summary` (the reads want a row count, not a window);
 reaping a held row; a schedule row while the table is at or below the cap; a re-arm after a run
-that left only held rows; exporting the table (it stays not exportable, as its data-lifecycle
-row says).
+that left only held rows.
 
 ## A session resumes where it left off
 
@@ -1230,7 +1240,14 @@ caps and tiers bound storage abuse, with anonymous identities limited before acc
 holders. The starter kit's currency creates the wallet row at an identity's first join, and
 only an identity with a `player` or `account` row can request an export, so the no-wallet tier
 holds almost no caller and a join alone reaches the anonymous tier. The wallet signal stays:
-any per-identity signal an anonymous identity can earn is cheap, and sign-in is the fix.
+any per-identity signal an anonymous identity can earn is cheap, and sign-in is the fix. A
+configured real sign-in issuer (`ALLOWED_ISSUERS` in `server-module/src/accounts.rs`, today the
+fail-closed placeholder) is therefore a launch condition for the official server. Until then no
+caller has an account, so no caller reaches the account holders' ceiling, and identities that
+each earn a wallet row can keep the anonymous tier full: other players' export requests are
+refused for as long as those identities keep re-exporting, and for up to the 7-day retention
+after they stop (R-rb-132-WALLETSYBIL). The operator accepted that exposure until launch
+(monster-realm#757).
 
 **Export scope.** The export is for the data held about the person. Game state is
 included where a query on existing tables provides it; it is assembled from the tables

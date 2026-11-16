@@ -1063,8 +1063,8 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
 
-/// the `exportable == true` set equals EXACTLY the eighteen tables
-/// spec §5 and the identity-handles spec admit — set equality, BOTH directions.
+/// the `exportable == true` set equals EXACTLY the twenty tables the export
+/// scope admits — set equality, BOTH directions.
 ///
 /// a negative-only spot check ("battle_wild is false, guest_claim is false") is
 /// satisfied by an ALL-FALSE manifest, which ships a dead export feature — spec
@@ -1073,8 +1073,10 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 /// Set equality in both directions is the only shape that rejects an over-broad
 /// AND an empty export scope.
 ///
-/// The eighteen are the twelve spec-ERASE tables + the four ANONYMIZE tables +
-/// `character` + `player_handle`. The `false` side includes the three the spec calls out by name:
+/// The twenty are fourteen ERASE tables (`player_handle` and `player_formation`
+/// among them) + five ANONYMIZE tables (`battle_summary` among them) +
+/// `character`: 14 + 5 + 1 = 20. The `false` side includes the three the spec
+/// calls out by name:
 /// `battle_wild` (the raw RNG individuality seed, a must-never-leak),
 /// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
 /// own output — including it makes the walk self-feeding).
@@ -1100,6 +1102,7 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         "battle",
         "battle_action",
         "battle_challenge",
+        "battle_summary",
         "character",
         "heal_cooldown",
         "inventory",
@@ -1108,6 +1111,7 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         "player",
         "player_conversation",
         "player_dialogue_state",
+        "player_formation",
         "player_handle",
         "player_quest",
         "player_wallet",
@@ -1119,7 +1123,9 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         exportable, expected_exportable,
         "T4 / spec §5: the exportable set is wrong. It must be EXACTLY the twelve ERASE \
          tables + the four ANONYMIZE tables + `character` + `player_handle` (the owner's \
-         own discriminator). Both directions matter: an \
+         own discriminator) + `battle_summary` (the caller's side of each battle summary) \
+         + `player_formation` (the caller's saved deploy order): twenty. Both \
+         directions matter: an \
          all-false manifest passes every negative spot check and ships an export feature \
          that returns an empty bundle for every request (§5's walk filters on \
          `exportable: true`), while a manifest that exports one table too many leaks either \
@@ -4949,20 +4955,24 @@ fn tactical_view_row_types_reach_no_secret_or_staging_field_bt7_3() {
 
 /// BT7.4 (manifest half) — each of the ten tactical tables is classified
 /// exactly once with the plan's policy (five Erase, `battle_summary`
-/// Anonymize, four `ViaJoin("battle")`), none is exportable, and the export
-/// bundle's table set is EXACTLY the seventeen it was before the tactical tables
-/// plus `player_handle` — the transcripts are GC-bound and the summary is
-/// telemetry, so the tactical tables add no exporter.
+/// Anonymize, four `ViaJoin("battle")`); exactly two of them are exportable,
+/// `battle_summary` (the caller's side of each battle summary, redacted like
+/// `battle`) and `player_formation` (the caller's saved deploy order), while the
+/// other eight are `exportable: false` — the transcripts are GC-bound and the
+/// staging rows are secrets. The export bundle's table set is EXACTLY the
+/// eighteen non-tactical exportable tables plus those two: 18 + 2 = 20.
 ///
-/// Kills: a tactical table flipped to `exportable: true` (the export grows a
-///        table with no `rows_*` exporter, or ships seeds and plans to the
-///        subject's download); `battle_summary` classified Erase (telemetry the
-///        H1/H2 tuning reads is destroyed by every deletion) or `battle_unit`
-///        ViaJoin (its `Option<Identity>` owner would be invisible to every
-///        per-owner rule); a ViaJoin parent other than `battle`; a duplicate
-///        entry; any existing table's export flag changed in passing.
+/// Kills: one of the eight other tactical tables flipped to `exportable: true`
+///        (the export ships seeds, plans or staging rows to the subject's
+///        download); `battle_summary` or `player_formation` left non-exportable
+///        (the subject-access response silently omits them); `battle_summary`
+///        classified Erase (telemetry the H1/H2 tuning reads is destroyed by
+///        every deletion) or `battle_unit` ViaJoin (its `Option<Identity>` owner
+///        would be invisible to every per-owner rule); a ViaJoin parent other
+///        than `battle`; a duplicate entry; any existing table's export flag
+///        changed in passing.
 #[test]
-fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
+fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_exported_bt7_4() {
     let label = |p: &DeletionPolicy| -> String {
         match p {
             DeletionPolicy::Erase => "Erase".to_string(),
@@ -4971,19 +4981,20 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
             DeletionPolicy::NotOwned => "NotOwned".to_string(),
         }
     };
-    let expected: [(&str, &str); 10] = [
-        ("battle_clock", "Erase"),
-        ("battle_deploy", "Erase"),
-        ("battle_event", "ViaJoin(battle)"),
-        ("battle_queue", "Erase"),
-        ("battle_secret", "ViaJoin(battle)"),
-        ("battle_summary", "Anonymize"),
-        ("battle_tactical", "ViaJoin(battle)"),
-        ("battle_unit", "Erase"),
-        ("battle_wild_unit", "ViaJoin(battle)"),
-        ("player_formation", "Erase"),
+    // (table, deletion policy, exportable)
+    let expected: [(&str, &str, bool); 10] = [
+        ("battle_clock", "Erase", false),
+        ("battle_deploy", "Erase", false),
+        ("battle_event", "ViaJoin(battle)", false),
+        ("battle_queue", "Erase", false),
+        ("battle_secret", "ViaJoin(battle)", false),
+        ("battle_summary", "Anonymize", true),
+        ("battle_tactical", "ViaJoin(battle)", false),
+        ("battle_unit", "Erase", false),
+        ("battle_wild_unit", "ViaJoin(battle)", false),
+        ("player_formation", "Erase", true),
     ];
-    for (table, policy) in expected {
+    for (table, policy, exported) in expected {
         let entries: Vec<&DataLifecycleEntry> = DATA_LIFECYCLE_MANIFEST
             .iter()
             .filter(|e| e.table == table)
@@ -4998,11 +5009,12 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
             policy,
             "[bt7/manifest-policy] `{table}` carries the wrong deletion policy"
         );
-        assert!(
-            !entries[0].exportable,
-            "[bt7/manifest-not-exported] `{table}` must carry `exportable: false` — the \
-             transcript is GC-bound telemetry and the staging rows are secrets; BT7.4 says the \
-             export bundle is unchanged"
+        assert_eq!(
+            entries[0].exportable, exported,
+            "[bt7/manifest-export-flag] `{table}` must carry `exportable: {exported}` — the \
+             export carries the battle summary and the saved formation; every other tactical \
+             table stays out of it, because the transcript is GC-bound telemetry and the \
+             staging rows are secrets"
         );
     }
 
@@ -5019,6 +5031,7 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
             "battle",
             "battle_action",
             "battle_challenge",
+            "battle_summary",
             "character",
             "heal_cooldown",
             "inventory",
@@ -5027,6 +5040,7 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
             "player",
             "player_conversation",
             "player_dialogue_state",
+            "player_formation",
             "player_handle",
             "player_quest",
             "player_wallet",
@@ -5034,8 +5048,8 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
             "profile",
             "trade_offer",
         ],
-        "[bt7/export-unchanged] the exportable set must be EXACTLY the seventeen pre-bt-7 tables \
-         plus `player_handle`: eighteen"
+        "[bt7/export-set] the exportable set must be EXACTLY the eighteen non-tactical \
+         exportable tables plus `battle_summary` and `player_formation`: 18 + 2 = 20"
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
@@ -9250,19 +9264,22 @@ mod acct_nh {
     }
 
     /// Every exportable table's chunk carries EXACTLY the caller's rows: one
-    /// seeded own row per single-owner table, and for the three dual-column
-    /// tables (trade_offer, battle_challenge, battle) the row the caller
-    /// initiated, the row naming the caller only in the second column, and the
-    /// caller's self-row — each exactly once — while a row between two
-    /// strangers never appears. Rows are counted by their row-opening key, so
-    /// an empty, blank or placeholder exporter and a doubled or dropped row all
-    /// fail. (The admission/stamp contract is the acct_export_* tests above;
-    /// this is the `rows_*` projection and owner-filter surface.)
+    /// seeded own row per single-owner table (`player_formation` among them,
+    /// with a second owner's formation beside it), and for the four dual-column
+    /// tables (trade_offer, battle_challenge, battle, battle_summary) the row
+    /// the caller initiated, the row naming the caller only in the second
+    /// column, and the caller's self-row — each exactly once — while a row
+    /// between two strangers never appears. Rows are counted by their
+    /// row-opening key, so an empty, blank or placeholder exporter and a doubled
+    /// or dropped row all fail. (The admission/stamp contract is the
+    /// acct_export_* tests above; this is the `rows_*` projection and
+    /// owner-filter surface.)
     ///
     /// kills: any `rows_*` exporter replaced by an empty / blank / placeholder
     /// row list; the trailing dedup filter in rows_trade_offer,
-    /// rows_battle_challenge or rows_battle inverted (drops the second-column
-    /// row and doubles the self-row).
+    /// rows_battle_challenge, rows_battle or rows_battle_summary inverted (drops
+    /// the second-column row and doubles the self-row); a rows_player_formation
+    /// that returns the other owner's formation.
     #[test]
     fn acct_export_chunks_carry_exactly_the_callers_rows_per_table() {
         let fx = fixture();
@@ -9290,6 +9307,7 @@ mod acct_nh {
                 bait_item_id: 0,
                 success: false,
             });
+            w.formation.seed(&formation_row(who, k));
         }
         // Dual-column tables: a->b, b->a, a->a, b->c.
         for (n, x, y) in [(1u64, a, b), (2, b, a), (3, a, a), (4, b, c)] {
@@ -9299,6 +9317,12 @@ mod acct_nh {
             let mut bt = battle_row(x, y);
             bt.battle_id = 7700 + n;
             w.battle.seed(&bt);
+            let kind = if x == y {
+                BattleKind::Practice
+            } else {
+                BattleKind::Pvp
+            };
+            w.summary.seed(&summary_row(7900 + n, x, y, kind));
         }
         assert_eq!(export_as(&fx, a, T0), Ok(()));
 
@@ -9331,6 +9355,7 @@ mod acct_nh {
                 "challenge_id",
                 vec![q("7501".into()), q("7502".into()), q("7503".into())],
             ),
+            ("player_formation", "owner_identity", vec![me.clone()]),
             ("player", "identity", vec![me.clone()]),
             ("profile", "identity", vec![me.clone()]),
             ("account", "identity", vec![me.clone()]),
@@ -9338,6 +9363,11 @@ mod acct_nh {
                 "battle",
                 "battle_id",
                 vec![q("7701".into()), q("7702".into()), q("7703".into())],
+            ),
+            (
+                "battle_summary",
+                "battle_id",
+                vec![q("7901".into()), q("7902".into()), q("7903".into())],
             ),
             ("character", "entity_id", vec![q("1401".into())]),
             ("player_handle", "owner_identity", vec![me.clone()]),

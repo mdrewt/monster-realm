@@ -1211,7 +1211,9 @@ fn my_monster_pub_exposes_last_care_at_ms_to_the_owner_only_qf3() {
 }
 
 // ===========================================================================
-// PRV1-11 / X1 — the eighteen pure per-table serializers.
+// PRV1-11 / X1 — eighteen of the twenty pure per-table serializers; the other
+// two (battle_summary, player_formation) are gated by their own serializer tests
+// at the end of this file.
 // ===========================================================================
 
 /// PRV1-11 / X1: every exportable table's row serializes to EXACTLY the
@@ -2118,7 +2120,7 @@ fn m22s4_serializer_empty_owner() {
 // ===========================================================================
 
 /// X2: the exporter registry and the manifest's exportable set are the SAME
-/// SET, in BOTH directions, at exactly eighteen tables, in manifest ORDER.
+/// SET, in BOTH directions, at exactly twenty tables, in manifest ORDER.
 ///
 /// Neither direction alone is enough. A forward-only check (every exporter
 /// names an exportable table) is green on a registry that exports three tables
@@ -2138,20 +2140,21 @@ fn m22s4_exporter_set_equals_manifest_both_directions() {
     let manifest_order = m22s4_manifest_exportable();
     assert_eq!(
         manifest_order.len(),
-        18,
+        20,
         "m22s4 [X2/floor]: DATA_LIFECYCLE_MANIFEST carries {} exportable entries; the spec's \
-         export scope is exactly EIGHTEEN (thirteen erase tables, player_handle among them, plus \
-         four anonymize tables plus character). If that number legitimately changed, the \
-         registry and this floor move together, in one reviewed diff.",
+         export scope is exactly TWENTY: fourteen erase tables (player_handle and \
+         player_formation among them) plus five anonymize tables (battle_summary among them) \
+         plus character, 14 + 5 + 1. If that number legitimately changed, the registry and \
+         this floor move together, in one reviewed diff.",
         manifest_order.len()
     );
 
     let registry: Vec<String> = super::EXPORTERS.iter().map(|e| e.0.to_string()).collect();
     assert_eq!(
         registry.len(),
-        18,
+        20,
         "m22s4 [X2/floor]: the exporter registry carries {} entries; the manifest's exportable \
-         set is 18.",
+         set is 20.",
         registry.len()
     );
 
@@ -2674,7 +2677,9 @@ fn m22s4_playtest_event_own_predicate() {
 }
 
 // ===========================================================================
-// X6 — the battle redaction (the only redaction that does anything).
+// X6 — the battle redaction, one of the two side-redacting serializers; the
+// other, the battle summary's, is gated by its own tests at the end of this
+// file.
 // ===========================================================================
 
 /// X6: the side-of-the-battle classifier is TOTAL and answers all four cases.
@@ -5684,7 +5689,8 @@ fn rb107_admit_rows() -> [(&'static str, u64, u32, u64, bool); 27] {
             true,
         ),
         (
-            "full tier: a minimum bundle into an empty store",
+            "full tier: a seventeen-row bundle (three below the twenty-table minimum) into an \
+             empty store",
             0,
             17,
             full,
@@ -5743,7 +5749,7 @@ fn rb107_admit_rows() -> [(&'static str, u64, u32, u64, bool); 27] {
             true,
         ),
         (
-            "full tier: exactly at the cap with a minimum bundle",
+            "full tier: exactly at the cap with a seventeen-row bundle",
             43_008,
             17,
             full,
@@ -5764,7 +5770,7 @@ fn rb107_admit_rows() -> [(&'static str, u64, u32, u64, bool); 27] {
             false,
         ),
         (
-            "anon tier: the EXACT fit at cap minus a minimum bundle",
+            "anon tier: the EXACT fit at cap minus a seventeen-row bundle",
             21_487,
             17,
             anon,
@@ -5988,7 +5994,7 @@ fn rb107_admission_is_exact_at_both_caps_and_saturates() {
             1u32,
         ),
         (
-            "five rows below saturation with a minimum bundle",
+            "five rows below saturation with a seventeen-row bundle",
             u64::MAX - 5,
             17u32,
         ),
@@ -6567,8 +6573,9 @@ fn rb109_store_stamps(
 /// PLANS at most the stamp cap, and deletes the OLDEST expired bundles WHOLE —
 /// their tails beyond the read window included.
 ///
-/// Twenty-six owners, seventeen chunks each (one per exportable table: the
-/// smallest bundle the export reducer can write), 8 KiB of payload per chunk.
+/// Twenty-six owners, seventeen chunks each (three below the twenty-table
+/// minimum bundle; the arithmetic below is for seventeen), 8 KiB of payload per
+/// chunk.
 /// Twenty of the bundles are expired — entry zero sitting EXACTLY on the cutoff
 /// — and six are live, the first of them one millisecond above it.
 ///
@@ -7898,7 +7905,7 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 }
 
 /// T3, THE CRITERION END TO END: eighteen bundles committed through
-/// the mint at one clock, then ONE reaper tick — the fifteen WHOLE BUNDLES its
+/// the mint at one clock, then ONE reaper tick — the thirteen WHOLE BUNDLES its
 /// read window touches leave, not one delete unit.
 ///
 /// THE POPULATION IS MINTED, NEVER HAND-SEEDED, and that is the difference
@@ -7914,21 +7921,24 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// — which the population clause below reports BEFORE the tick runs at all.
 ///
 /// THE ARITHMETIC, derived from the shipped constants and never transcribed:
-/// eighteen minimum-size bundles of eighteen chunks are 324 rows, so the
-/// 256-row read window BINDS; that window in ascending stamp order covers
-/// fourteen whole bundles (252 rows) and four rows of the fifteenth, so it
-/// touches FIFTEEN distinct stamps, one below the write cap of sixteen; each
-/// is deleted whole, tail beyond the window included, so 15 x 18 = 270 rows go
-/// (more than the 256 read) and the three newest bundles (54 rows) survive
-/// intact. Under the status-quo shared stamp the same tick plans ONE stamp and
-/// reaps all 324 rows in one transaction — the unbounded delete unit, and the
-/// abort-loop hazard that silently retains expired personal data past the
-/// seven-day ceiling.
+/// the minimum bundle is one chunk per exportable table, twenty (fourteen
+/// erase tables plus five anonymize tables plus character), so
+/// eighteen minimum-size bundles of twenty chunks are 18 x 20 = 360 rows and
+/// the 256-row read window BINDS; that window in ascending stamp order covers
+/// twelve whole bundles (12 x 20 = 240 rows) and 256 - 240 = 16 rows of the
+/// thirteenth, so it touches ceil(256 / 20) = THIRTEEN distinct stamps, three
+/// below the write cap of sixteen; each is deleted whole, tail beyond the
+/// window included, so 13 x 20 = 260 rows go (more than the 256 read) and the
+/// 18 - 13 = five newest bundles (5 x 20 = 100 rows) survive intact. Under the
+/// status-quo shared stamp the same tick plans ONE stamp and reaps all 360 rows
+/// in one transaction — the unbounded delete unit, and the abort-loop hazard
+/// that silently retains expired personal data past the seven-day ceiling.
 ///
-/// WHAT THIS TEST DOES NOT SHOW. With an eighteen-chunk minimum bundle the
-/// read window binds BEFORE the stamp cap: sixteen minimum bundles are 288
-/// rows, more than the 256 a tick reads, so a population of minimum-size
-/// minted bundles can never put a seventeenth stamp in the window. The stamp
+/// WHAT THIS TEST DOES NOT SHOW. With a twenty-chunk minimum bundle the
+/// read window binds BEFORE the stamp cap: sixteen minimum bundles are
+/// 16 x 20 = 320 rows, more than the 256 a tick reads, so a population of
+/// minimum-size minted bundles can never put a seventeenth stamp in the
+/// window (it holds at most thirteen). The stamp
 /// cap binding is proven by `rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps`
 /// (thirteen-chunk bundles, planned 16 of 20) and by the short-stamp populations
 /// in `rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows`
@@ -7942,16 +7952,17 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 ///
 /// Kills: the status-quo body (the population clause, before the tick); a mint
 /// that reuses a live stamp under any spelling (same clause); a tick that
-/// stopped at the window's edge (reaped 256 rather than 270); the read cap
-/// dropped (read 324, due 18, planned 16 at the stamp cap, reaped 16 x 18 = 288); a `due` count that is not the
+/// stopped at the window's edge (reaped 256 rather than 260); the read cap
+/// dropped (read 360, due 18, planned 16 at the stamp cap, reaped
+/// 16 x 20 = 320); a `due` count that is not the
 /// window's distinct expired stamps; a survivor set of the right SIZE but the
 /// wrong IDENTITY, which every count clause here is blind to (the triple
 /// comparison); numbers moved to match the code rather than re-derived (the
 /// constants pin). NOT killed here: the stamp cap dropped (the window holds
-/// fifteen stamps, so planned is 15 either way; the two tests named above own
+/// thirteen stamps, so planned is 13 either way; the two tests named above own
 /// that mutant).
 #[test]
-fn rb111_one_tick_reaps_fifteen_whole_bundles_from_a_same_millisecond_burst() {
+fn rb111_one_tick_reaps_thirteen_whole_bundles_from_a_same_millisecond_burst() {
     let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
     let read_cap = crate::privacy::EXPORT_REAP_MAX_READ_PER_TICK;
     let stamp_cap = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK;
@@ -7967,17 +7978,17 @@ fn rb111_one_tick_reaps_fifteen_whole_bundles_from_a_same_millisecond_burst() {
     // so it is re-derived from the spec rather than quietly followed.
     assert_eq!(
         (read_cap, stamp_cap, min_bundle, window),
-        (256usize, 16usize, 18usize, 16usize),
+        (256usize, 16usize, 20usize, 16usize),
         "[rb111/bound-attribution]: the shipped read cap, stamp cap, minimum bundle and probe \
          window read ({read_cap}, {stamp_cap}, {min_bundle}, {window}); this population was \
-         sized against (256, 16, 18, 16) — 18 bundles of 18 chunks is 324 rows, which makes the \
-         256-row read window BIND and leaves the window touching exactly 15 distinct stamps, \
-         one below the stamp cap. Re-derive every number in this test from the spec before \
+         sized against (256, 16, 20, 16) — 18 bundles of 20 chunks is 360 rows, which makes the \
+         256-row read window BIND and leaves the window touching exactly 13 distinct stamps, \
+         three below the stamp cap. Re-derive every number in this test from the spec before \
          touching anything else."
     );
     // The stamps a full ascending read window touches when every bundle is
-    // `min_bundle` rows: ceil(256 / 18) = 15 (fourteen whole bundles and four
-    // rows of a fifteenth).
+    // `min_bundle` rows: ceil(256 / 20) = 13 (twelve whole bundles, 240 rows,
+    // and sixteen rows of a thirteenth).
     let touched = read_cap.div_ceil(min_bundle);
     assert!(
         touched < stamp_cap && touched < bundles,
@@ -8124,8 +8135,8 @@ fn rb111_one_tick_reaps_fifteen_whole_bundles_from_a_same_millisecond_burst() {
         observed,
         expected_survivors,
         "[rb111/bound-survivors]: the store holds {} row(s) and must hold the {} rows of the \
-         three NEWEST bundles, whole. Compared as a sorted SET of (owner, stamp, chunk id) \
-         triples and not as a count: a tick that retired the wrong fifteen bundles leaves the \
+         five NEWEST bundles, whole. Compared as a sorted SET of (owner, stamp, chunk id) \
+         triples and not as a count: a tick that retired the wrong thirteen bundles leaves the \
          same number of rows behind with a disjoint identity, and every numeric clause above \
          stays green over it. WHICH bundles survive is the fairness claim — the read window \
          takes the oldest stamps first, so the oldest personal data always leaves first.",
@@ -8574,10 +8585,10 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
 ///     is 208 rows plus 48 of the sixty-row bundle: SEVENTEEN stamps, the same
 ///     sixteen planned, the same 208 reaped.
 ///   - B, rb-109's oversized population: twenty expired bundles of seventeen
-///     rows and six live. Seventeen rows is the minimum bundle as written
-///     before the eighteenth exportable table, one row short of the shipped
-///     minimum of eighteen. The window is fifteen whole bundles and one row of
-///     a sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
+///     rows and six live. Seventeen rows is 20 - 17 = three rows short of the
+///     shipped minimum bundle of twenty (one chunk per exportable table). The
+///     window is fifteen whole bundles (15 x 17 = 255 rows) and one row of a
+///     sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
 ///   - C, the rb-87 residual's own case: twenty expired bundles of FIVE rows and
 ///     none live. The range runs out at 100 rows holding twenty stamps; sixteen
 ///     are planned and 80 rows reaped.
@@ -8603,16 +8614,17 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
 
     assert_eq!(
         (read_cap, stamp_cap, min_bundle),
-        (256usize, 16usize, 18usize),
+        (256usize, 16usize, 20usize),
         "[rb115/tick-sizing]: the shipped read cap, stamp cap and minimum bundle read \
-         ({read_cap}, {stamp_cap}, {min_bundle}); the four populations below were sized against \
-         (256, 16, 18) — thirteen- and five-row bundles are SHORT stamps against an eighteen-row \
+         ({read_cap}, {stamp_cap}, {min_bundle}); the four populations below are sized against \
+         (256, 16, 20) — thirteen- and five-row bundles are SHORT stamps against a twenty-row \
          minimum, which is what lets the cap bind at all on an ascending read (sixteen bundles \
-         of eighteen rows are 288, past the 256-row window, so a window of minimum-size bundles \
-         holds at most fifteen stamps), and B's seventeen-row bundles are the minimum as written \
-         before the eighteenth exportable table. A value that moves makes every tuple below a \
-         different, still self-consistent claim: re-derive each one from the spec before \
-         touching anything else."
+         of twenty rows are 16 x 20 = 320, past the 256-row window, so a window of minimum-size \
+         bundles holds at most ceil(256 / 20) = thirteen stamps), and B's seventeen-row bundles \
+         are three rows short of that minimum. The four populations are hand-sized, so none of \
+         their tuples moves with the \
+         minimum; a value that moves makes every tuple below a different, still \
+         self-consistent claim: re-derive each one from the spec before touching anything else."
     );
 
     let pop_a = rb115_uniform(cutoff, 20, 2, 13);
@@ -8668,7 +8680,7 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
          holds exactly SIXTEEN stamps, all of them planned, each deleted whole with its tail. \
          `due` equal to `planned` here is not a coincidence: a full window over bundles of \
          seventeen rows or more holds at most sixteen stamps, so a well-formed tick over bundles \
-         this module writes (eighteen rows or more) reports it, which is why the new field is a \
+         this module writes (twenty rows or more) reports it, which is why the new field is a \
          tripwire and not a backlog signal."
     );
     let b_expired_left = b_left.iter().filter(|stamp| **stamp <= cutoff).count();
@@ -9088,7 +9100,8 @@ fn rb132_tier_selection_is_exhaustive_over_account_and_wallet() {
     assert_eq!(
         newcomer, 10_752,
         "[rb132/newcomer-value]: the newcomer ceiling must be exactly 10_752 live rows, a quarter \
-         of the reaper's one-window drain and about 632 minimum-size bundles. It is the most the \
+         of the reaper's one-window drain and 537 whole twenty-row minimum-size bundles (10_752 / \
+         20 = 537.6). It is the most the \
          residual's named pattern, a join and then an export per identity, can ever occupy; set \
          equal to the anonymous ceiling (R1) the tier is deleted, and a value one off it moves \
          the threshold every never-credited guest is shed at."
@@ -9168,4 +9181,877 @@ fn export_wake_rules_are_the_expiry_and_the_hourly_floor() {
     assert_eq!(rearm(Some(NOW - TTL), NOW), Some(NOW + HOUR));
     assert_eq!(wake(Some(NOW - 5), NOW), Some(NOW - 5 + TTL));
     assert_eq!(rearm(Some(NOW - 5), NOW), Some(NOW - 5 + TTL));
+}
+
+// ===========================================================================
+// The caller's `battle_summary` rows and `player_formation` row in the
+// export. A summary row names both sides, so it is redacted the way the
+// `battle` exporter treats the other participant: the side the reader does not
+// hold renders its identity and its two per-side columns as null, a practice
+// row (the reader on both sides) is whole, and a row the reader holds neither
+// side of is a loud Err.
+// ===========================================================================
+
+use crate::schema::{BattleSummary, PlayerFormation};
+use game_core::tactics::events::EndHow;
+use game_core::tactics::tuning::BattleKind;
+
+// One value per column, each distinct from every other, so a column emitted in
+// another column's place, or one side's value under the other side's key,
+// changes the text. The u64 columns sit past 2^53 (JSON.parse rounds above it);
+// the two u32 per-side columns sit past i32::MAX (a signed narrowing turns them
+// negative); the histogram holds a zero and a value past u16::MAX.
+const RB137_ROUNDS: u16 = 37;
+const RB137_WALL_MS: u64 = 9_007_199_254_741_001;
+const RB137_IDLE_MS_A: u64 = 9_007_199_254_740_995;
+const RB137_IDLE_MS_B: u64 = 9_007_199_254_740_997;
+const RB137_WINDOWS_HISTOGRAM: [u32; 3] = [5, 0, 70_001];
+const RB137_AUTOPASSES: u16 = 41;
+const RB137_RECRUIT_ATTEMPTS: u16 = 47;
+const RB137_RECRUIT_SUCCESSES: u16 = 43;
+const RB137_ITEMS_USED: u16 = 53;
+const RB137_DAMAGE_DEALT_A: u32 = 4_000_000_021;
+const RB137_DAMAGE_DEALT_B: u32 = 4_000_000_023;
+const RB137_HITS: u16 = 59;
+const RB137_MISSES: u16 = 61;
+const RB137_UNIT_TURNS_PREQUEUED: u16 = 67;
+const RB137_UNIT_TURNS_LIVE: u16 = 71;
+const RB137_HALTED_PLANS: u16 = 73;
+const RB137_SE_KOS_AFTER_R1: u16 = 79;
+const RB137_KOS_AFTER_R1: u16 = 83;
+
+/// A summary row carrying the constants above. EXHAUSTIVE, no spread: a column
+/// added to `BattleSummary` is a compile error here, which forces a deliberate
+/// export-or-redact decision for it (the X1 posture).
+fn rb137_summary_row(
+    battle_id: u64,
+    player_identity: Identity,
+    opponent_identity: Identity,
+    kind: BattleKind,
+    outcome: BattleOutcome,
+    end_how: Option<EndHow>,
+) -> BattleSummary {
+    BattleSummary {
+        battle_id,
+        player_identity,
+        opponent_identity,
+        kind,
+        outcome,
+        rounds: RB137_ROUNDS,
+        wall_ms: RB137_WALL_MS,
+        idle_ms_a: RB137_IDLE_MS_A,
+        idle_ms_b: RB137_IDLE_MS_B,
+        windows_histogram: RB137_WINDOWS_HISTOGRAM.to_vec(),
+        autopasses: RB137_AUTOPASSES,
+        recruit_attempts: RB137_RECRUIT_ATTEMPTS,
+        recruit_successes: RB137_RECRUIT_SUCCESSES,
+        weaken_first: true,
+        items_used: RB137_ITEMS_USED,
+        damage_dealt_a: RB137_DAMAGE_DEALT_A,
+        damage_dealt_b: RB137_DAMAGE_DEALT_B,
+        hits: RB137_HITS,
+        misses: RB137_MISSES,
+        unit_turns_prequeued: RB137_UNIT_TURNS_PREQUEUED,
+        unit_turns_live: RB137_UNIT_TURNS_LIVE,
+        halted_plans: RB137_HALTED_PLANS,
+        se_kos_after_r1: RB137_SE_KOS_AFTER_R1,
+        kos_after_r1: RB137_KOS_AFTER_R1,
+        end_how,
+    }
+}
+
+/// The quoted hex an all-`byte` identity must export as, built WITHOUT calling
+/// Display (the `m22s4_id_hex` oracle).
+fn rb137_qhex(byte: u8) -> String {
+    m22s4_qtxt(&m22s4_id_hex(byte))
+}
+
+/// The JSON `json_battle_summary` must emit for an `rb137_summary_row`, written
+/// from the contract: every column in declaration order; u64 a quoted decimal,
+/// u32 and narrower bare, the histogram an array of bare numbers, each enum its
+/// variant NAME, `end_how: None` the null literal. `side_a` / `side_b` is the
+/// identity byte when the reader holds that side; a side it does not hold
+/// renders its three columns — identity, idle time, damage dealt — as null.
+fn rb137_expected_summary(
+    battle_id: u64,
+    side_a: Option<u8>,
+    side_b: Option<u8>,
+    kind: &str,
+    outcome: &str,
+    end_how: Option<&str>,
+) -> String {
+    rb137_expected_summary_with_windows(
+        battle_id,
+        side_a,
+        side_b,
+        kind,
+        outcome,
+        end_how,
+        &RB137_WINDOWS_HISTOGRAM,
+    )
+}
+
+/// `rb137_expected_summary` for a row whose `windows_histogram` is `windows`
+/// (an empty one renders `[]`, never null — the X1 empty-collection rule).
+fn rb137_expected_summary_with_windows(
+    battle_id: u64,
+    side_a: Option<u8>,
+    side_b: Option<u8>,
+    kind: &str,
+    outcome: &str,
+    end_how: Option<&str>,
+    windows: &[u32],
+) -> String {
+    let side = |holder: Option<u8>, idle: u64, dealt: u32| -> [String; 3] {
+        match holder {
+            Some(byte) => [
+                rb137_qhex(byte),
+                m22s4_quoted_num(i128::from(idle)),
+                m22s4_bare(i128::from(dealt)),
+            ],
+            None => [m22s4_null(), m22s4_null(), m22s4_null()],
+        }
+    };
+    let [player, idle_a, dealt_a] = side(side_a, RB137_IDLE_MS_A, RB137_DAMAGE_DEALT_A);
+    let [opponent, idle_b, dealt_b] = side(side_b, RB137_IDLE_MS_B, RB137_DAMAGE_DEALT_B);
+    let histogram: Vec<String> = windows.iter().map(|v| m22s4_bare(i128::from(*v))).collect();
+    let bare16 = |v: u16| m22s4_bare(i128::from(v));
+    m22s4_obj(&[
+        ("battle_id", m22s4_quoted_num(i128::from(battle_id))),
+        ("player_identity", player),
+        ("opponent_identity", opponent),
+        ("kind", m22s4_qtxt(kind)),
+        ("outcome", m22s4_qtxt(outcome)),
+        ("rounds", bare16(RB137_ROUNDS)),
+        ("wall_ms", m22s4_quoted_num(i128::from(RB137_WALL_MS))),
+        ("idle_ms_a", idle_a),
+        ("idle_ms_b", idle_b),
+        ("windows_histogram", m22s4_arr(&histogram)),
+        ("autopasses", bare16(RB137_AUTOPASSES)),
+        ("recruit_attempts", bare16(RB137_RECRUIT_ATTEMPTS)),
+        ("recruit_successes", bare16(RB137_RECRUIT_SUCCESSES)),
+        ("weaken_first", m22s4_bool(true)),
+        ("items_used", bare16(RB137_ITEMS_USED)),
+        ("damage_dealt_a", dealt_a),
+        ("damage_dealt_b", dealt_b),
+        ("hits", bare16(RB137_HITS)),
+        ("misses", bare16(RB137_MISSES)),
+        ("unit_turns_prequeued", bare16(RB137_UNIT_TURNS_PREQUEUED)),
+        ("unit_turns_live", bare16(RB137_UNIT_TURNS_LIVE)),
+        ("halted_plans", bare16(RB137_HALTED_PLANS)),
+        ("se_kos_after_r1", bare16(RB137_SE_KOS_AFTER_R1)),
+        ("kos_after_r1", bare16(RB137_KOS_AFTER_R1)),
+        ("end_how", end_how.map_or_else(m22s4_null, m22s4_qtxt)),
+    ])
+}
+
+/// Register `battle_summary` with the native host on BOTH identity indexes (an
+/// index no fixture registered reads empty, so a reader broken on either column
+/// would otherwise pass as "no rows") and return the `player_identity` handle to
+/// seed through; a seeded row is visible through both.
+fn rb137_summary_table(
+    fx: &crate::native_host_tests::Fixture,
+) -> crate::native_host_tests::Handle<'_, BattleSummary> {
+    let _ = fx.table::<BattleSummary>("battle_summary", "opponent_identity", |r| {
+        r.opponent_identity
+    });
+    fx.table::<BattleSummary>("battle_summary", "player_identity", |r| r.player_identity)
+}
+
+/// `payload` is the `table` chunk envelope around EXACTLY the rows of `want`,
+/// each once, in any order, and nothing else: each row is cut out once, and only
+/// the comma separators may be left. Order is not part of the contract (a reader
+/// walks two indexes); a doubled, missing or foreign row is.
+fn rb137_assert_rows_once(table: &str, payload: &str, want: &[String]) {
+    let prefix = m22s4_chunk_prefix(table);
+    assert!(
+        payload.starts_with(&prefix) && payload.ends_with("]}"),
+        "[rb137/rows]: the `{table}` chunk is not that table's rows envelope: {payload}"
+    );
+    let mut rest = payload[prefix.len()..payload.len() - 2].to_string();
+    for row in want {
+        let seen = rest.matches(row.as_str()).count();
+        assert_eq!(
+            seen, 1,
+            "[rb137/rows]: the `{table}` chunk carries the row {row} {seen} time(s), not once: \
+             {payload}"
+        );
+        rest = rest.replacen(row.as_str(), "", 1);
+    }
+    assert_eq!(
+        rest,
+        ",".repeat(want.len().saturating_sub(1)),
+        "[rb137/rows]: the `{table}` chunk carries more than the caller's {} row(s): {payload}",
+        want.len()
+    );
+}
+
+/// No chunk of the bundle contains any of the `never` needles.
+fn rb137_assert_bundle_never_names(chunks: &[(String, String)], never: &[(&str, String)]) {
+    for (table, payload) in chunks {
+        for (what, needle) in never {
+            assert!(
+                !payload.contains(needle.as_str()),
+                "[rb137/never]: the `{table}` chunk names {what} ({needle}): {payload}"
+            );
+        }
+    }
+}
+
+/// `json_battle_summary` over one PvP row read by each side, a practice row and
+/// a stranger: every column of `BattleSummary` in declaration order with the
+/// contract's encoding, and the three columns of the side the reader does not
+/// hold (its identity, idle time and damage dealt) null. The practice row is
+/// whole; a reader on neither side gets `export_summary_row_not_own`. Every
+/// variant of the three enums is then read through the side-A row.
+///
+/// kills: the side-A and side-B redactions swapped or mirrored (the two sides'
+/// values are distinct); the identity nulled while the other side's idle time or
+/// damage dealt is still emitted; a practice row with half of it nulled; a row
+/// the reader holds neither side of serialized, skipped or refused under another
+/// reason; a u64 emitted bare or a u16 / u32 quoted; the histogram emitted as a
+/// string or with quoted elements, or an empty one as null; an enum emitted by
+/// discriminant, or with two
+/// arms swapped or collapsed onto one name; `end_how: None` omitted or quoted; a
+/// column dropped, renamed or out of declaration order.
+#[test]
+fn a_battle_summary_row_serializes_whole_but_for_the_other_sides_columns_rb137_1() {
+    let (a, b, c) = (0xABu8, 0x3Cu8, 0x77u8);
+    let pvp_id: u64 = 9_007_199_254_740_993;
+    let end = Some(EndHow::AdjudicatedDamageDealt);
+    let pvp = rb137_summary_row(
+        pvp_id,
+        m22s4_id(a),
+        m22s4_id(b),
+        BattleKind::Pvp,
+        BattleOutcome::SideBWins,
+        end,
+    );
+
+    let out_a = super::json_battle_summary(&pvp, m22s4_id(a));
+    assert_eq!(
+        out_a,
+        Ok(rb137_expected_summary(
+            pvp_id,
+            Some(a),
+            None,
+            "Pvp",
+            "SideBWins",
+            Some("AdjudicatedDamageDealt"),
+        )),
+        "[rb137/summary-side-a]: a reader on side A gets every column, with side B's identity, \
+         idle_ms_b and damage_dealt_b null and its own three intact"
+    );
+
+    let out_b = super::json_battle_summary(&pvp, m22s4_id(b));
+    assert_eq!(
+        out_b,
+        Ok(rb137_expected_summary(
+            pvp_id,
+            None,
+            Some(b),
+            "Pvp",
+            "SideBWins",
+            Some("AdjudicatedDamageDealt"),
+        )),
+        "[rb137/summary-side-b]: the mirror image: a reader on side B gets side A's identity, \
+         idle_ms_a and damage_dealt_a null. A serializer that always nulls the opponent columns \
+         passes side A and hands side A's values to every side-B reader"
+    );
+
+    let practice_id: u64 = 9_007_199_254_740_999;
+    let practice = rb137_summary_row(
+        practice_id,
+        m22s4_id(a),
+        m22s4_id(a),
+        BattleKind::Practice,
+        BattleOutcome::Fled,
+        None,
+    );
+    let out_p = super::json_battle_summary(&practice, m22s4_id(a));
+    assert_eq!(
+        out_p,
+        Ok(rb137_expected_summary(
+            practice_id,
+            Some(a),
+            Some(a),
+            "Practice",
+            "Fled",
+            None,
+        )),
+        "[rb137/summary-practice]: a practice row holds the reader on BOTH sides, so nothing is \
+         redacted; the one null is end_how's None"
+    );
+
+    // A battle that closed before any unit-turn opened a window: the row was
+    // built by the exhaustive literal above, then its histogram emptied.
+    let mut no_windows = rb137_summary_row(
+        pvp_id,
+        m22s4_id(a),
+        m22s4_id(b),
+        BattleKind::Pvp,
+        BattleOutcome::SideBWins,
+        end,
+    );
+    no_windows.windows_histogram = Vec::new();
+    let out_w = super::json_battle_summary(&no_windows, m22s4_id(a));
+    assert_eq!(
+        out_w,
+        Ok(rb137_expected_summary_with_windows(
+            pvp_id,
+            Some(a),
+            None,
+            "Pvp",
+            "SideBWins",
+            Some("AdjudicatedDamageDealt"),
+            &[],
+        )),
+        "[rb137/summary-empty-histogram]: an EMPTY windows_histogram exports `[]`, never null \
+         and never an omitted key"
+    );
+
+    let not_own: Result<String, String> = Err("export_summary_row_not_own".to_string());
+    assert_eq!(
+        super::json_battle_summary(&pvp, m22s4_id(c)),
+        not_own,
+        "[rb137/summary-neither]: a reader on neither side of a PvP row is a loud Err with the \
+         contract's reason, never a redacted row and never a silent skip"
+    );
+    assert_eq!(
+        super::json_battle_summary(&practice, m22s4_id(b)),
+        not_own,
+        "[rb137/summary-neither]: a stranger to a practice row holds neither side either"
+    );
+
+    for (label, out) in [
+        ("side A", &out_a),
+        ("side B", &out_b),
+        ("practice", &out_p),
+        ("empty-histogram", &out_w),
+    ] {
+        let text = out.as_deref().unwrap_or("");
+        assert!(
+            m22s4_json_is_wellformed(text),
+            "[rb137/summary-wellformed]: the {label} output is not exactly one compact JSON \
+             value: {text:?}"
+        );
+    }
+
+    // --- every enum variant, by NAME --------------------------------------------
+    let kinds = [
+        (BattleKind::Wild, "Wild"),
+        (BattleKind::Pvp, "Pvp"),
+        (BattleKind::Practice, "Practice"),
+    ];
+    for (kind, name) in kinds {
+        let row = rb137_summary_row(
+            pvp_id,
+            m22s4_id(a),
+            m22s4_id(b),
+            kind,
+            BattleOutcome::SideBWins,
+            end,
+        );
+        assert_eq!(
+            super::json_battle_summary(&row, m22s4_id(a)),
+            Ok(rb137_expected_summary(
+                pvp_id,
+                Some(a),
+                None,
+                name,
+                "SideBWins",
+                Some("AdjudicatedDamageDealt"),
+            )),
+            "[rb137/summary-kind]: the kind `{name}` exports as its variant name"
+        );
+    }
+    let outcomes = [
+        (BattleOutcome::Ongoing, "Ongoing"),
+        (BattleOutcome::SideAWins, "SideAWins"),
+        (BattleOutcome::SideBWins, "SideBWins"),
+        (BattleOutcome::Fled, "Fled"),
+    ];
+    for (outcome, name) in outcomes {
+        let row = rb137_summary_row(
+            pvp_id,
+            m22s4_id(a),
+            m22s4_id(b),
+            BattleKind::Pvp,
+            outcome,
+            end,
+        );
+        assert_eq!(
+            super::json_battle_summary(&row, m22s4_id(a)),
+            Ok(rb137_expected_summary(
+                pvp_id,
+                Some(a),
+                None,
+                "Pvp",
+                name,
+                Some("AdjudicatedDamageDealt"),
+            )),
+            "[rb137/summary-outcome]: the outcome `{name}` exports as its variant name"
+        );
+    }
+    let ends = [
+        (EndHow::SideEmpty, "SideEmpty"),
+        (EndHow::AdjudicatedHpPercent, "AdjudicatedHpPercent"),
+        (EndHow::AdjudicatedConscious, "AdjudicatedConscious"),
+        (EndHow::AdjudicatedDamageDealt, "AdjudicatedDamageDealt"),
+        (EndHow::AdjudicatedCoin, "AdjudicatedCoin"),
+        (EndHow::FixedOrder, "FixedOrder"),
+        (EndHow::RoundCap, "RoundCap"),
+        (EndHow::Forfeit, "Forfeit"),
+        (EndHow::Fled, "Fled"),
+        (EndHow::AutoFlee, "AutoFlee"),
+    ];
+    for (how, name) in ends {
+        let row = rb137_summary_row(
+            pvp_id,
+            m22s4_id(a),
+            m22s4_id(b),
+            BattleKind::Pvp,
+            BattleOutcome::SideBWins,
+            Some(how),
+        );
+        assert_eq!(
+            super::json_battle_summary(&row, m22s4_id(a)),
+            Ok(rb137_expected_summary(
+                pvp_id,
+                Some(a),
+                None,
+                "Pvp",
+                "SideBWins",
+                Some(name),
+            )),
+            "[rb137/summary-end-how]: `Some({name})` exports as the variant name"
+        );
+    }
+}
+
+/// Through the shipped `request_data_export` on the native host, with
+/// `battle_summary` registered on BOTH identity indexes: the caller holds side A
+/// of one PvP battle, side B (only) of another, both sides of a practice battle,
+/// side A of a wild battle (its opponent the zero identity) and side B of a
+/// battle whose side A a deletion tombstoned; three rows name only strangers (two
+/// strangers, a stranger's wild battle, a stranger against the tombstone), seeded
+/// in between. The caller's bundle holds ONE `battle_summary` chunk carrying
+/// exactly the caller's five rows, each once and each redacted; no chunk of the
+/// bundle names a counterparty, a stranger, the tombstone or a stranger-only
+/// battle. A caller with no summary rows gets one `battle_summary` chunk with an
+/// empty rows array.
+///
+/// kills: no `battle_summary` exporter; a reader on `player_identity` only (the
+/// side-B and tombstone rows go missing) or on `opponent_identity` only (the
+/// side-A and wild rows go missing); the practice dedup dropped (the practice row
+/// twice) or inverted (the side-B rows dropped); a reader that returns every row,
+/// or that also matches the zero identity or the tombstone (a stranger's row
+/// appears); a counterparty's identity, idle time or damage dealt left in the
+/// export; the tombstone exported as its hex; the empty chunk dropped for a
+/// caller with no summary rows.
+#[test]
+fn an_export_holds_every_summary_of_the_callers_battles_and_no_strangers_rb137_1() {
+    let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
+    let t0: i64 = 1_700_000_000_000;
+    let me = 0xB1u8;
+    let caller = m22s4_id(me);
+    let (foe_a, foe_b) = (m22s4_id(0xB2), m22s4_id(0xB3));
+    let strangers = [
+        m22s4_id(0xB4),
+        m22s4_id(0xB5),
+        m22s4_id(0xB6),
+        m22s4_id(0xB7),
+    ];
+    let unfought = m22s4_id(0xB8);
+    let tomb = crate::TOMBSTONE_IDENTITY;
+    let zero = Identity::ZERO;
+    let fx = crate::native_host_tests::fixture();
+    let w = ih1_export_world(&fx);
+    let summaries = rb137_summary_table(&fx);
+    w.seed_player(caller, 51, 0, 0);
+    w.seed_player(unfought, 52, 0, 0);
+
+    // (the caller's row, the JSON its export must carry for it)
+    let own = [
+        (
+            rb137_summary_row(
+                7_100_000_000_000_011,
+                caller,
+                foe_a,
+                BattleKind::Pvp,
+                BattleOutcome::SideAWins,
+                Some(EndHow::Forfeit),
+            ),
+            rb137_expected_summary(
+                7_100_000_000_000_011,
+                Some(me),
+                None,
+                "Pvp",
+                "SideAWins",
+                Some("Forfeit"),
+            ),
+        ),
+        (
+            rb137_summary_row(
+                7_100_000_000_000_012,
+                foe_b,
+                caller,
+                BattleKind::Pvp,
+                BattleOutcome::SideBWins,
+                Some(EndHow::AdjudicatedHpPercent),
+            ),
+            rb137_expected_summary(
+                7_100_000_000_000_012,
+                None,
+                Some(me),
+                "Pvp",
+                "SideBWins",
+                Some("AdjudicatedHpPercent"),
+            ),
+        ),
+        (
+            rb137_summary_row(
+                7_100_000_000_000_013,
+                caller,
+                caller,
+                BattleKind::Practice,
+                BattleOutcome::SideBWins,
+                None,
+            ),
+            rb137_expected_summary(
+                7_100_000_000_000_013,
+                Some(me),
+                Some(me),
+                "Practice",
+                "SideBWins",
+                None,
+            ),
+        ),
+        (
+            rb137_summary_row(
+                7_100_000_000_000_014,
+                caller,
+                zero,
+                BattleKind::Wild,
+                BattleOutcome::Fled,
+                Some(EndHow::AutoFlee),
+            ),
+            rb137_expected_summary(
+                7_100_000_000_000_014,
+                Some(me),
+                None,
+                "Wild",
+                "Fled",
+                Some("AutoFlee"),
+            ),
+        ),
+        (
+            rb137_summary_row(
+                7_100_000_000_000_015,
+                tomb,
+                caller,
+                BattleKind::Pvp,
+                BattleOutcome::SideAWins,
+                Some(EndHow::RoundCap),
+            ),
+            rb137_expected_summary(
+                7_100_000_000_000_015,
+                None,
+                Some(me),
+                "Pvp",
+                "SideAWins",
+                Some("RoundCap"),
+            ),
+        ),
+    ];
+    let stranger_ids: [u64; 3] = [
+        7_200_000_000_000_021,
+        7_200_000_000_000_022,
+        7_200_000_000_000_023,
+    ];
+    let foreign = [
+        rb137_summary_row(
+            stranger_ids[0],
+            strangers[0],
+            strangers[1],
+            BattleKind::Pvp,
+            BattleOutcome::SideAWins,
+            Some(EndHow::AdjudicatedCoin),
+        ),
+        rb137_summary_row(
+            stranger_ids[1],
+            strangers[2],
+            zero,
+            BattleKind::Wild,
+            BattleOutcome::SideAWins,
+            Some(EndHow::SideEmpty),
+        ),
+        rb137_summary_row(
+            stranger_ids[2],
+            strangers[3],
+            tomb,
+            BattleKind::Pvp,
+            BattleOutcome::SideAWins,
+            Some(EndHow::Forfeit),
+        ),
+    ];
+    // Interleaved, so no reader passes by taking a prefix or a suffix of the table.
+    summaries.seed(&foreign[0]);
+    summaries.seed(&own[0].0);
+    summaries.seed(&own[1].0);
+    summaries.seed(&foreign[1]);
+    summaries.seed(&own[2].0);
+    summaries.seed(&own[3].0);
+    summaries.seed(&foreign[2]);
+    summaries.seed(&own[4].0);
+
+    assert_eq!(
+        fx.run_as_at(caller, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "the caller's export is served"
+    );
+
+    let chunks = w.chunks_of(caller);
+    let mut names: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
+    names.sort_unstable();
+    let mut exportable = m22s4_manifest_exportable();
+    exportable.sort_unstable();
+    assert_eq!(
+        names, exportable,
+        "[rb137/summary-bundle]: one chunk per exportable table"
+    );
+    let summary: Vec<&str> = chunks
+        .iter()
+        .filter(|(t, _)| t == "battle_summary")
+        .map(|(_, p)| p.as_str())
+        .collect();
+    assert_eq!(
+        summary.len(),
+        1,
+        "[rb137/summary-chunk]: the caller's bundle must hold exactly one battle_summary chunk; \
+         it holds the tables {names:?}"
+    );
+    let want: Vec<String> = own.iter().map(|(_, json)| json.clone()).collect();
+    rb137_assert_rows_once("battle_summary", summary[0], &want);
+
+    let mut never: Vec<(&str, String)> = vec![
+        (
+            "the counterparty the caller met on side A",
+            foe_a.to_string(),
+        ),
+        (
+            "the counterparty the caller met on side B",
+            foe_b.to_string(),
+        ),
+        ("the deletion tombstone", tomb.to_string()),
+    ];
+    for s in &strangers {
+        never.push(("a stranger", s.to_string()));
+    }
+    for id in &stranger_ids {
+        never.push(("a battle the caller was not in", id.to_string()));
+    }
+    rb137_assert_bundle_never_names(&chunks, &never);
+
+    assert_eq!(
+        fx.run_as_at(unfought, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "a caller with no summary rows is served too"
+    );
+    let empty: Vec<String> = w
+        .chunks_of(unfought)
+        .into_iter()
+        .filter(|(t, _)| t == "battle_summary")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        empty,
+        vec![m22s4_expected_payload("battle_summary", &[])],
+        "[rb137/summary-empty]: a caller with no summary rows gets one battle_summary chunk with \
+         an empty rows array"
+    );
+}
+
+/// `json_player_formation` is exactly `{owner_identity, monster_ids}`: the owner
+/// as quoted lowercase hex and the ids as an array of QUOTED decimal strings in
+/// the stored (deploy) order, one of them past 2^53; an empty formation exports
+/// an empty array.
+///
+/// kills: an empty or placeholder serializer; the ids emitted bare (one sits past
+/// 2^53, where JSON.parse rounds) or sorted or reversed; an empty list emitted as
+/// null or omitted; the owner left out, or a column added.
+#[test]
+fn a_player_formation_row_serializes_its_owner_and_its_ids_in_order_rb137_2() {
+    let saved = PlayerFormation {
+        owner_identity: m22s4_id(0xAB),
+        monster_ids: vec![9_007_199_254_740_993, 7, 4_294_967_297],
+    };
+    let out = super::json_player_formation(&saved);
+    assert_eq!(
+        out,
+        m22s4_obj(&[
+            ("owner_identity", rb137_qhex(0xAB)),
+            (
+                "monster_ids",
+                m22s4_arr(&[
+                    m22s4_quoted_num(9_007_199_254_740_993),
+                    m22s4_quoted_num(7),
+                    m22s4_quoted_num(4_294_967_297),
+                ]),
+            ),
+        ]),
+        "[rb137/formation-shape]: the formation exports its owner and its monster ids, each id a \
+         QUOTED decimal string, in the order the row stores them"
+    );
+    let unsaved = PlayerFormation {
+        owner_identity: m22s4_id(0x3C),
+        monster_ids: Vec::new(),
+    };
+    let out_empty = super::json_player_formation(&unsaved);
+    assert_eq!(
+        out_empty,
+        m22s4_obj(&[
+            ("owner_identity", rb137_qhex(0x3C)),
+            ("monster_ids", m22s4_arr(&[])),
+        ]),
+        "[rb137/formation-empty]: an empty formation exports an empty array, never null"
+    );
+    for (label, text) in [("three ids", &out), ("no ids", &out_empty)] {
+        assert!(
+            m22s4_json_is_wellformed(text),
+            "[rb137/formation-wellformed]: the {label} output is not exactly one compact JSON \
+             value: {text:?}"
+        );
+    }
+}
+
+/// Through the shipped `request_data_export` on the native host: the caller and
+/// a stranger each hold a saved formation, the stranger's ids OVERLAPPING the
+/// caller's and the stranger's row stored first. The caller's bundle holds
+/// exactly one `player_formation` chunk carrying exactly the caller's row; no
+/// chunk names the stranger or the id only the stranger saved. A caller with no
+/// formation gets one `player_formation` chunk with an empty rows array; a
+/// caller whose stored formation holds no ids gets that one row, ids `[]`.
+///
+/// kills: no `player_formation` exporter; a reader that returns every formation,
+/// the first one stored, or every formation sharing a monster id with the
+/// caller's; the empty chunk dropped for a caller with no formation; a reader
+/// that skips a stored formation whose id list is empty.
+#[test]
+fn an_export_holds_the_callers_formation_and_no_other_players_rb137_2() {
+    let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
+    let t0: i64 = 1_700_000_000_000;
+    let me = 0xC5u8;
+    let caller = m22s4_id(me);
+    let stranger = m22s4_id(0xC6);
+    let formless = m22s4_id(0xC7);
+    let cleared = m22s4_id(0xC8);
+    let shared: u64 = 8_100_000_000_000_032;
+    let stranger_only: u64 = 8_100_000_000_000_039;
+    let fx = crate::native_host_tests::fixture();
+    let w = ih1_export_world(&fx);
+    let formations = fx
+        .table::<PlayerFormation>("player_formation", "owner_identity", |r| r.owner_identity)
+        .unique();
+    w.seed_player(caller, 61, 0, 0);
+    w.seed_player(formless, 62, 0, 0);
+    w.seed_player(cleared, 63, 0, 0);
+    formations.seed(&PlayerFormation {
+        owner_identity: stranger,
+        monster_ids: vec![shared, stranger_only],
+    });
+    formations.seed(&PlayerFormation {
+        owner_identity: cleared,
+        monster_ids: vec![],
+    });
+    formations.seed(&PlayerFormation {
+        owner_identity: caller,
+        monster_ids: vec![8_100_000_000_000_033, 8_100_000_000_000_031, shared],
+    });
+
+    assert_eq!(
+        fx.run_as_at(caller, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "the caller's export is served"
+    );
+
+    let chunks = w.chunks_of(caller);
+    let mut names: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
+    names.sort_unstable();
+    let mut exportable = m22s4_manifest_exportable();
+    exportable.sort_unstable();
+    assert_eq!(
+        names, exportable,
+        "[rb137/formation-bundle]: one chunk per exportable table"
+    );
+    let formation: Vec<String> = chunks
+        .iter()
+        .filter(|(t, _)| t == "player_formation")
+        .map(|(_, p)| p.clone())
+        .collect();
+    let own = m22s4_obj(&[
+        ("owner_identity", rb137_qhex(me)),
+        (
+            "monster_ids",
+            m22s4_arr(&[
+                m22s4_quoted_num(8_100_000_000_000_033),
+                m22s4_quoted_num(8_100_000_000_000_031),
+                m22s4_quoted_num(i128::from(shared)),
+            ]),
+        ),
+    ]);
+    assert_eq!(
+        formation,
+        vec![m22s4_expected_payload("player_formation", &[own])],
+        "[rb137/formation-chunk]: exactly one player_formation chunk, holding exactly the \
+         caller's row"
+    );
+    rb137_assert_bundle_never_names(
+        &chunks,
+        &[
+            ("the stranger", stranger.to_string()),
+            ("the id only the stranger saved", stranger_only.to_string()),
+        ],
+    );
+
+    assert_eq!(
+        fx.run_as_at(formless, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "a caller with no formation is served too"
+    );
+    let empty: Vec<String> = w
+        .chunks_of(formless)
+        .into_iter()
+        .filter(|(t, _)| t == "player_formation")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        empty,
+        vec![m22s4_expected_payload("player_formation", &[])],
+        "[rb137/formation-empty-chunk]: a caller with no formation gets one player_formation \
+         chunk with an empty rows array"
+    );
+
+    assert_eq!(
+        fx.run_as_at(cleared, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "a caller whose saved formation is empty is served too"
+    );
+    let saved_empty: Vec<String> = w
+        .chunks_of(cleared)
+        .into_iter()
+        .filter(|(t, _)| t == "player_formation")
+        .map(|(_, p)| p)
+        .collect();
+    let empty_row = m22s4_obj(&[
+        ("owner_identity", rb137_qhex(0xC8)),
+        ("monster_ids", m22s4_arr(&[])),
+    ]);
+    assert_eq!(
+        saved_empty,
+        vec![m22s4_expected_payload("player_formation", &[empty_row])],
+        "[rb137/formation-saved-empty]: a STORED formation with no monster ids is still the \
+         caller's row and exports as one row with an empty id array — not as the empty rows \
+         array of a caller who stored no formation at all"
+    );
 }
