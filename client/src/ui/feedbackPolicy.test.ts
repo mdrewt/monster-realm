@@ -27,7 +27,6 @@ import {
   channelOf,
   FEEDBACK_POLICY,
   hintRank,
-  MESSAGE_KINDS,
   type MessageKind,
   outranks,
   type PolicyRow,
@@ -135,19 +134,8 @@ const rows = (): Array<[MessageKind, PolicyRow]> =>
 
 describe('feedbackPolicy (uif-4)', () => {
   // ---------------------------------------------------------------- UIF4.1
-  it('UIF4.1 MESSAGE_KINDS is exactly the channel table roster, no extras and none missing', () => {
-    // WRONG IMPL KILLED: a dropped kind, an invented kind, a renamed kind (a typo'd table name).
-    expect([...MESSAGE_KINDS].sort()).toEqual([...TABLE_KINDS].sort());
-  });
-
-  it('UIF4.1 MESSAGE_KINDS lists every kind once', () => {
-    // WRONG IMPL KILLED: a roster with a duplicated kind (a set-equal sort would hide it).
-    expect(new Set(MESSAGE_KINDS).size).toBe(MESSAGE_KINDS.length);
-  });
-
   it('UIF4.1 FEEDBACK_POLICY has a row for exactly the table kinds', () => {
-    // WRONG IMPL KILLED: a policy object that omits a kind or carries an extra one, while
-    // MESSAGE_KINDS still reads right.
+    // WRONG IMPL KILLED: a policy object that omits a kind or carries an extra one.
     expect(Object.keys(FEEDBACK_POLICY).sort()).toEqual([...TABLE_KINDS].sort());
   });
 
@@ -281,21 +269,6 @@ describe('feedbackPolicy (uif-4)', () => {
       expect(typeof carried, kind).toBe('string');
       expect((carried ?? '').trim().length, kind).toBeGreaterThan(0);
     }
-  });
-
-  it('UIF16B.7 the privacy-busy kind is retired: no MESSAGE_KINDS entry, no policy row (WF1-A10)', () => {
-    // WRONG IMPL KILLED: the kind left in the roster after its only producer (openPrivacy's
-    // hide-claim verdict) is gone (a dead row the table no longer has), or left in the policy alone.
-    expect(MESSAGE_KINDS as readonly string[]).not.toContain('privacy-busy');
-    expect(Object.keys(FEEDBACK_POLICY)).not.toContain('privacy-busy');
-    expect(MESSAGE_KINDS, 'ANTI-VACUITY: 58 kinds remain (16 + 31 + 10 + 1)').toHaveLength(58);
-  });
-
-  it('ts-6b-13 the heal-unavailable kind is retired: no MESSAGE_KINDS entry, no policy row', () => {
-    // WRONG IMPL KILLED: the kind left in the roster or the table after the location-less heal
-    // path (its only producer) is gone.
-    expect(MESSAGE_KINDS as readonly string[]).not.toContain('heal-unavailable');
-    expect(Object.keys(FEEDBACK_POLICY)).not.toContain('heal-unavailable');
   });
 
   it('UIF4.6 every row that does not need the player to act has alsoCarriedBy null', () => {
