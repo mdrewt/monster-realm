@@ -2303,7 +2303,7 @@ a verifier compiled in, against a `kid`-keyed list of accepted attestation keys 
 then records the binding; the world needs no network afterwards. The route rate-limits binds per
 account and does not keep the world an attestation was addressed to past the request. In the client
 the attestation is fetched behind one source interface, beside the sign-in seam
-(`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-6). Operator ruling,
+(`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-3). Operator ruling,
 <https://github.com/mdrewt/monster-realm/issues/821>; the design and its open conditions (the
 verifier spike, the official server's refusal, the relay between private worlds) are
 `docs/local-play.md` §3 and the harness spec `M-local-play.spec.md` (lpw-7, lpw-8, lpw-15). Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
@@ -2379,8 +2379,7 @@ claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence
 themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
 removes entitlement at the next issuance (an hour at most on the official server). Test and dev
 builds of the module do not enforce it, so the e2e suite and local development still join
-anonymously; the build input that switches it on is designed by the harness spec's lpw-8 (e) and
-built by acs-8 and lpw-15. Operator ruling, 2026-11-16 ("for now, all players, including browser
+anonymously; the build input that switches it on is designed by the harness spec's lpw-8 (e) and built by acs-6 and lpw-15. Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
 players, must own the game in order to play").
 
 **Why.** The operator's ruling. The claim is checked by the module, not implied by the issuer, so
@@ -2409,9 +2408,7 @@ browser refresh tokens live 30 days and rotate, and reusing a rotated one revoke
 separate deployment with its own issuer name and keys offers email and password for development
 and QA only, with accounts made by an admin command. The same service signs world attestations
 with a separate key. Storage is one SQLite file on one instance; discovery and the key set are also
-served from a CDN; signing keys live in the host's key service through external signing. Built by
-the harness spec `M-account-service.spec.md`; the never-deployed Better Auth recipe in `ops/auth/`
-is replaced by its deployment slice (acs-7).
+served from a CDN; signing keys live in the host's key service through external signing. It is built in two phases (harness spec `M-account-service.spec.md`). Phase 1, now: the same provider and token shape with an email-and-password sign-in step and a per-account entitlement flag, run as two dev and test issuers with their own keys, `http://localhost:4455` for development and tests and `https://auth.monster-realm.spookyowltech.com` (the operator's domain, `monster-realm`'s own subdomain) for testing from other machines; test and dev builds of the module trust both, release builds trust neither. Phase 2, when the operator supplies the Steam app id and publisher key about two months before early access: the two Steam sign-in steps, the ownership check, and the production deployment at a host the operator names then. The never-deployed Better Auth recipe in `ops/auth/` is replaced by the deployment recipe (acs-4).
 
 **Why.** SpacetimeDB trusts only an OIDC issuer's signed JWTs, and Steam issues none, so a service
 of ours must check Steam and sign. A certified provider library carries the protocol (codes, PKCE,
@@ -2424,7 +2421,6 @@ either way. BitCraft, Clockwork Labs' own Steam game on SpacetimeDB, appears fro
 tooling to sign in through its own API: the same shape, though unconfirmed.
 
 **Rules out.** SpacetimeAuth or Better Auth as the issuer (revisit SpacetimeAuth if it gains a
-browser Steam sign-in and SteamID subjects); a second issuer for players beside this one; the dev
-password method or a dev key in a production deployment (the service refuses to start);
+browser Steam sign-in and SteamID subjects); a second issuer for players beside this one; the dev password method, a dev issuer or a dev key in a production deployment, and a dev issuer in a release build's trusted list (the service refuses to start; the release recipe's test refuses the build);
 refresh tokens for the desktop (it exchanges a fresh ticket); the publisher key anywhere but the
 service's secret store, read by one module and never logged.
