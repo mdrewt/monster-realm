@@ -348,7 +348,9 @@ body is the whole security boundary.
   flag. A test in `accounts_tests.rs` compares it with the generated module
   definition's table set, so a table missing from it or listed but gone fails. The tactical tables are swept by `schema::erase_tactical_rows` (by
   `battle_id`, before the `battle` anchor is tombstoned — the three tactical schedule
-  tables included) and none is exportable. A finished tactical battle's event, unit,
+  tables included). Of them only `battle_summary` and `player_formation` are exportable: the
+  export carries the caller's formation and every summary naming them, the other side's
+  identity, idle time and damage as null, as for `battle`. A finished tactical battle's event, unit,
   queue, clock, secret, wild-unit and staging rows are deleted 24 h later by the
   scheduled `battle_gc`; `battle_tactical`, `battle_summary` and the anchor survive. A
   player's PRIOR terminal anchors are swept at every tactical battle end with
