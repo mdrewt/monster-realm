@@ -2033,8 +2033,8 @@ mod nh_sync {
                 .scannable()
                 .unique()
                 .auto_inc(|r| r.id, |r, id| r.id = id),
-            // sr-7: init and sync_content arm the battle_summary reaper from this
-            // table's row count and bring its schedule in line.
+            // init and sync_content arm the battle_summary reaper from this table's row
+            // count and bring its schedule in line.
             summaries: fx
                 .table_keyed::<crate::schema::BattleSummary, u64>(
                     "battle_summary",
@@ -2499,7 +2499,7 @@ mod nh_sync {
         );
     }
 
-    // --- sr-7: init and sync_content arm the battle_summary reaper ---------------
+    // --- init and sync_content arm the battle_summary reaper ---------------------
 
     /// The spec's cap on `battle_summary` rows and the reaper's retry delay, as
     /// literals (never the module's constants).

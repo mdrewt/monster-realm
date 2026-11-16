@@ -1,4 +1,4 @@
-//! `summary_reaper` tests (sr-7): `battle_summary` is capped by an on-demand reaper.
+//! `summary_reaper` tests: `battle_summary` is capped by an on-demand reaper.
 //!
 //! Declared from `server-module/src/summary_reaper.rs` as
 //! `#[cfg(test)] #[path = "summary_reaper_tests.rs"] mod summary_reaper_tests;`,
@@ -202,7 +202,7 @@ fn seed_many(w: &World<'_>, n: u64) -> Vec<u64> {
     seeded
 }
 
-/// The seeded ids no longer in the table, ascending (`seeded` is ascending).
+/// The seeded ids absent from the table, ascending (`seeded` is ascending).
 fn gone(w: &World<'_>, seeded: &[u64]) -> Vec<u64> {
     let left: BTreeSet<u64> = w.summaries.rows().iter().map(|s| s.battle_id).collect();
     let missing: Vec<u64> = seeded
@@ -248,8 +248,8 @@ fn find_or_insert(fx: &Fixture, battle_id: u64, at_ms: i64) -> Option<u64> {
 }
 
 // ===========================================================================
-// sr-7.1 — an insert over the cap with no run scheduled schedules exactly one;
-// at or below the cap, none.
+// An insert over the cap with no run scheduled schedules exactly one; at or below
+// the cap, none.
 // ===========================================================================
 
 /// `summary_wake_ms`: a table over its cap is owed one run, one retry delay from now;
@@ -322,34 +322,22 @@ fn sr7_1_the_insert_that_takes_the_table_over_the_cap_arms_exactly_one_run() {
 }
 
 /// A table left over the cap with no run scheduled (the reaper's transaction lost
-/// after the runtime consumed its row) is picked up by the next INSERT, not by a
-/// lookup. Reading an existing summary arms nothing; the next insert, here through
-/// `accumulate` (the per-step path), arms exactly one run five minutes out; an insert
-/// after that run fell due keeps it and writes no schedule row.
+/// after the runtime consumed its row) is picked up by the next insert: here through
+/// `accumulate` (the per-step path), which arms exactly one run five minutes out. An
+/// insert after that run fell due keeps it and writes no schedule row.
 ///
 /// kills: an arm only on the exact crossing to cap + 1 (a lost run is never re-armed);
-/// the arm reached from `find_or_insert_summary` but not from `accumulate`; an arm on
-/// every summary lookup (a count and a schedule write per battle step); a due run
+/// the arm reached from `find_or_insert_summary` but not from `accumulate`; a due run
 /// replaced by a later one (a schedule write per insert, and a run that slides away for
 /// as long as inserts keep coming); a schedule row per insert.
 #[test]
 fn sr7_1_an_insert_over_the_cap_with_nothing_scheduled_arms_one_run() {
     let fx = fixture();
     let w = world(&fx);
-    let seeded = seed_many(&w, SPEC_CAP + 1);
-    let existing = seeded[0];
+    seed_many(&w, SPEC_CAP + 1);
     let [x1, x2, _] = NEW;
-    for id in [existing, x1, x2] {
-        open_battle(&w, id);
-    }
-
-    assert_eq!(find_or_insert(&fx, existing, NOW), Some(existing));
-    assert_eq!(
-        fx.writes_to("battle_summary"),
-        0,
-        "the summary exists: nothing is inserted"
-    );
-    assert_eq!(wakes(&w.schedule), vec![], "no insert, no arm");
+    open_battle(&w, x1);
+    open_battle(&w, x2);
 
     let delta = crate::tactics_settle::StepDelta::default();
     fx.run_as_at(player(), ts(NOW), |ctx| {
@@ -380,9 +368,98 @@ fn sr7_1_an_insert_over_the_cap_with_nothing_scheduled_arms_one_run() {
     assert_eq!(fx.writes_to("battle_summary_reaper_schedule"), 0);
 }
 
+/// A lookup of a summary that already exists is not an insert, so it arms nothing, even
+/// with the table over the cap and nothing armed. This holds through both lookups: the
+/// early return in `find_or_insert_summary`, and `summary_row` (reached by `accumulate`
+/// with a zero step, since `summary_row` runs before the zero check). With a run armed,
+/// neither lookup reads the schedule at all.
+///
+/// kills: an arm in `summary_row`'s existing-row arm or ahead of its match (a row count
+/// and a schedule scan on every battle step, and a schedule write whenever none is
+/// armed); an arm in `find_or_insert_summary`'s early return.
+#[test]
+fn sr7_1_a_lookup_of_an_existing_summary_arms_nothing_over_the_cap() {
+    let fx = fixture();
+    let w = world(&fx);
+    let seeded = seed_many(&w, SPEC_CAP + 1);
+    let existing = seeded[0];
+    open_battle(&w, existing);
+    let (anchor, live) = (battle(existing), tactical(existing));
+    let delta = crate::tactics_settle::StepDelta::default();
+    let step = || {
+        fx.run_as_at(player(), ts(NOW), |ctx| {
+            crate::tactics_settle::accumulate(ctx, &anchor, &live, &delta);
+        });
+    };
+
+    assert_eq!(find_or_insert(&fx, existing, NOW), Some(existing));
+    step();
+    assert_eq!(
+        fx.writes_to("battle_summary"),
+        0,
+        "the summary exists: nothing is inserted"
+    );
+    assert_eq!(
+        wakes(&w.schedule),
+        vec![],
+        "over the cap with nothing armed: a lookup arms nothing"
+    );
+
+    w.schedule.seed(&one_shot(77, NOW + SPEC_RETRY_MS));
+    assert_eq!(find_or_insert(&fx, existing, NOW), Some(existing));
+    step();
+    assert_eq!(
+        fx.rows_read("battle_summary_reaper_schedule"),
+        0,
+        "a lookup never reads the schedule"
+    );
+    assert_eq!(fx.writes_to("battle_summary_reaper_schedule"), 0);
+    assert_eq!(wakes(&w.schedule), vec![(77, Some(NOW + SPEC_RETRY_MS))]);
+}
+
+/// The third caller of the summary insert is the settlement. A Deploying battle with no
+/// summary row yet is closed by `tactics_settle::settle` the way `tactics::finish` closes
+/// it on a Deploying timeout: anchor `Fled`, tactical row `Finished`, no HP written. The
+/// close inserts one zeroed row and finalises it. When that insert takes the table over
+/// the cap with nothing armed, exactly one run is armed, five minutes out.
+///
+/// kills: the arm placed in `find_or_insert_summary` and `accumulate` instead of in the
+/// shared insert, so a battle closed in Deploying never arms the reaper.
+#[test]
+fn sr7_1_a_deploying_close_that_takes_the_table_over_the_cap_arms_one_run() {
+    let fx = fixture();
+    let w = world(&fx);
+    seed_many(&w, SPEC_CAP);
+    let [x1, _, _] = NEW;
+    let mut anchor = battle(x1);
+    anchor.state.outcome = game_core::BattleOutcome::Fled;
+    let mut finished = tactical(x1);
+    finished.phase = game_core::tactics::types::Phase::Finished;
+    finished.turn_state = game_core::tactics::types::TurnState::NotActive;
+    w.battles.seed(&anchor);
+    w.tacticals.seed(&finished);
+    let close = crate::tactics_settle::Close::Deploying;
+
+    fx.run_as_at(player(), ts(NOW), |ctx| {
+        crate::tactics_settle::settle(ctx, &anchor, &finished, &close, false, false, NOW);
+    });
+    assert_eq!(
+        fx.writes_to("battle_summary"),
+        2,
+        "the close inserted the zeroed row, then finalised it"
+    );
+    let armed = wakes(&w.schedule);
+    assert_eq!(armed.len(), 1, "exactly one run: {armed:?}");
+    assert_eq!(
+        armed[0].1,
+        Some(NOW + SPEC_RETRY_MS),
+        "a one-shot five minutes after the close"
+    );
+}
+
 // ===========================================================================
-// sr-7.2 — the reaper deletes the lowest unheld ids down to the cap, at most its
-// limit per run, and schedules one more run only while it may have more to do.
+// The reaper deletes the lowest unheld ids down to the cap, at most its limit per
+// run, and schedules one more run only while it may have more to do.
 // ===========================================================================
 
 /// `plan_summary_reap` deletes the lowest ids, as many as the table is over the cap
@@ -458,6 +535,29 @@ fn sr7_2_plan_deletes_fewer_when_only_held_ids_are_left() {
         plan_with(table, SMALL_CAP, SMALL_MAX, &held),
         (vec![90, 99], table.to_vec()),
         "three over, two unheld ids: both, after a walk over all thirteen"
+    );
+}
+
+/// One run deletes at most the spec's 8 192 rows, stated as a literal. At the shipped cap
+/// and limit, a table 8 193 rows over the cap loses exactly its 8 192 lowest ids in one
+/// run.
+///
+/// kills: the per-run limit constant changed (9 000 lets this run delete 8 193 rows).
+#[test]
+fn sr7_2_a_run_deletes_at_most_8192_rows() {
+    assert_eq!(super::BATTLE_SUMMARY_REAP_MAX_DELETE_PER_RUN, 8_192);
+    let table: Vec<u64> = (1..=SPEC_CAP + 8_193).collect();
+    let deleted = super::plan_summary_reap(
+        &table,
+        super::BATTLE_SUMMARY_CAP,
+        super::BATTLE_SUMMARY_REAP_MAX_DELETE_PER_RUN,
+        |_| false,
+    );
+    assert_eq!(deleted.len(), 8_192, "one run's limit");
+    assert_eq!(
+        (deleted.first(), deleted.last()),
+        (Some(&1), Some(&8_192)),
+        "the lowest ids"
     );
 }
 
@@ -690,25 +790,31 @@ fn sr7_2_the_reducer_three_over_the_cap_reaps_the_three_lowest_unheld_ids() {
 }
 
 // ===========================================================================
-// sr-7.3 — a client call to the reaper is refused and changes no row.
+// A client call to the reaper is refused and changes no row.
 // ===========================================================================
 
-/// `battle_summary_reaper` is scheduler-only. Over a table three rows past the real
-/// cap, a player, the all-zero identity and the identity that WAS the module before it
-/// changed are each refused with the scheduler-only error before a single row is read
-/// or written: neither `battle_summary` nor the schedule is read, written or changed.
-/// The module identity is then admitted and reaps the three lowest ids.
+/// `battle_summary_reaper` is scheduler-only. A player calling it over a table at
+/// exactly the real cap is refused, and the schedule (the firing one-shot and an
+/// interval row) is left as it was. Then, three rows past the cap, a player, the
+/// all-zero identity and the identity that WAS the module before it changed are each
+/// refused with the scheduler-only error before a single row is read or written:
+/// neither `battle_summary` nor the schedule is read, written or changed. The module
+/// identity is then admitted, reaps the three lowest ids, and with the table back at
+/// the cap removes the interval row.
 ///
 /// kills: the guard missing, inverted, or compared with a fixed identity instead of
 /// `ctx.database_identity()`; the guard after the scan (rows read) or after the deletes
-/// (three rows gone); an "at or below the cap" early return placed before the guard; a
-/// guard that refuses the module too.
+/// (three rows gone); an "at or below the cap" early return placed before the guard
+/// (it answers the at-cap client with `Ok`, or clears the schedule); a guard that
+/// refuses the module too.
 #[test]
 fn sr7_3_a_client_call_is_refused_before_any_row_is_read_or_written() {
     let fx = fixture();
     let w = world(&fx);
-    let seeded = seed_many(&w, SPEC_CAP + 3);
+    let seeded = seed_many(&w, SPEC_CAP);
     w.schedule.seed(&one_shot(FIRING, NOW));
+    w.schedule.seed(&interval(60));
+    let before = wakes(&w.schedule);
     let module = Identity::from_byte_array(MODULE);
     fx.set_database_identity(module);
     let call = |who: Identity| {
@@ -716,6 +822,22 @@ fn sr7_3_a_client_call_is_refused_before_any_row_is_read_or_written() {
             super::battle_summary_reaper(ctx, one_shot(FIRING, NOW))
         })
     };
+
+    assert_eq!(
+        call(player()),
+        Err("battle_summary_reaper is scheduler-only".to_string()),
+        "a player is refused at exactly the cap"
+    );
+    assert_eq!(
+        wakes(&w.schedule),
+        before,
+        "at the cap: the refused call leaves the schedule as it was"
+    );
+    assert_eq!(fx.writes_to("battle_summary_reaper_schedule"), 0);
+
+    for id in NEW {
+        w.summaries.seed(&summary(id));
+    }
     let stale_module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
     for (label, caller) in [
         ("a player", player()),
@@ -749,7 +871,7 @@ fn sr7_3_a_client_call_is_refused_before_any_row_is_read_or_written() {
         );
         assert_eq!(
             wakes(&w.schedule),
-            vec![(FIRING, Some(NOW))],
+            before,
             "{label}: the schedule is unchanged"
         );
     }
@@ -758,5 +880,10 @@ fn sr7_3_a_client_call_is_refused_before_any_row_is_read_or_written() {
         gone(&w, &seeded),
         seeded[..3].to_vec(),
         "the module reaps the three lowest ids"
+    );
+    assert_eq!(
+        wakes(&w.schedule),
+        vec![(FIRING, Some(NOW))],
+        "back at the cap: no next run, the interval row is gone"
     );
 }
