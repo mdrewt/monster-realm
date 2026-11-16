@@ -462,20 +462,23 @@ fn future_last_care_at_ms_only_over_rejects() {
 //   - Future last_heal_at_ms only over-rejects, never bypasses the gate.
 // ---------------------------------------------------------------------------
 
+/// Cooldown the evaluate_heal boundary cases run against; any positive value keeps each boundary meaningful.
+const HEAL_TEST_COOLDOWN_MS: i64 = 30_000;
+
 /// evaluate_heal allows the heal action when elapsed == cooldown exactly.
 /// kills: an impl that uses `<=` instead of `<` — `<=` would reject at exactly
 /// the boundary where the spec requires the action to be ALLOWED.
 /// Spec: "IF the heal cooldown has not elapsed THEN reject" — at elapsed ==
-/// HEAL_COOLDOWN_MS the cooldown HAS elapsed, so Ok is required.
+/// HEAL_TEST_COOLDOWN_MS the cooldown HAS elapsed, so Ok is required.
 #[test]
 fn evaluate_heal_passes_when_cooldown_elapsed() {
-    // last_heal_at_ms = 0, now = HEAL_COOLDOWN_MS → elapsed == HEAL_COOLDOWN_MS.
-    // With strict `<`: elapsed < HEAL_COOLDOWN_MS is FALSE → allowed → Ok.
-    // With `<=`:        elapsed <= HEAL_COOLDOWN_MS is TRUE  → rejected → Err (WRONG).
-    let result = evaluate_heal(0, HEAL_COOLDOWN_MS, HEAL_COOLDOWN_MS);
+    // last_heal_at_ms = 0, now = HEAL_TEST_COOLDOWN_MS → elapsed == HEAL_TEST_COOLDOWN_MS.
+    // With strict `<`: elapsed < HEAL_TEST_COOLDOWN_MS is FALSE → allowed → Ok.
+    // With `<=`:        elapsed <= HEAL_TEST_COOLDOWN_MS is TRUE  → rejected → Err (WRONG).
+    let result = evaluate_heal(0, HEAL_TEST_COOLDOWN_MS, HEAL_TEST_COOLDOWN_MS);
     assert!(
         result.is_ok(),
-        "evaluate_heal(last=0, now=HEAL_COOLDOWN_MS, cooldown=HEAL_COOLDOWN_MS) must be Ok \
+        "evaluate_heal(last=0, now=HEAL_TEST_COOLDOWN_MS, cooldown=HEAL_TEST_COOLDOWN_MS) must be Ok \
          (elapsed == cooldown is exactly at the boundary — operator must be < not <=); \
          got Err: {:?}",
         result.err()
@@ -487,11 +490,11 @@ fn evaluate_heal_passes_when_cooldown_elapsed() {
 /// where the impl uses `< cooldown - 1` instead of `< cooldown`.
 #[test]
 fn evaluate_heal_rejects_when_within_cooldown() {
-    // elapsed = HEAL_COOLDOWN_MS - 1 → one ms short of the boundary → must reject.
-    let result = evaluate_heal(0, HEAL_COOLDOWN_MS - 1, HEAL_COOLDOWN_MS);
+    // elapsed = HEAL_TEST_COOLDOWN_MS - 1 → one ms short of the boundary → must reject.
+    let result = evaluate_heal(0, HEAL_TEST_COOLDOWN_MS - 1, HEAL_TEST_COOLDOWN_MS);
     assert!(
         result.is_err(),
-        "evaluate_heal(last=0, now=HEAL_COOLDOWN_MS-1, cooldown=HEAL_COOLDOWN_MS) must be Err \
+        "evaluate_heal(last=0, now=HEAL_TEST_COOLDOWN_MS-1, cooldown=HEAL_TEST_COOLDOWN_MS) must be Err \
          (cooldown not yet elapsed — exactly one ms short of the boundary); \
          got Ok: {:?}",
         result.ok()
@@ -501,18 +504,18 @@ fn evaluate_heal_rejects_when_within_cooldown() {
 /// a last_heal_at_ms in the future (relative to now) only over-rejects —
 /// it never wraps around to produce a spuriously large elapsed that bypasses the gate.
 /// kills: an impl using wrapping/unchecked subtraction on i64; `0i64 - 10_000`
-/// would yield -10_000 which is less than HEAL_COOLDOWN_MS, so the gate would
+/// would yield -10_000 which is less than HEAL_TEST_COOLDOWN_MS, so the gate would
 /// reject, but the safe invariant must be upheld even for signed overflow edge cases.
-/// saturating_sub(0, 10_000) = 0 < HEAL_COOLDOWN_MS → Err (safe-direction, correct).
+/// saturating_sub(0, 10_000) = 0 < HEAL_TEST_COOLDOWN_MS → Err (safe-direction, correct).
 #[test]
 fn evaluate_heal_rejects_future_last_heal() {
     // now = 0, last_heal_at_ms = 10_000 (last heal is "in the future" relative to now).
-    // Correct with saturating_sub: saturating_sub(0, 10_000) = 0 < HEAL_COOLDOWN_MS → Err.
+    // Correct with saturating_sub: saturating_sub(0, 10_000) = 0 < HEAL_TEST_COOLDOWN_MS → Err.
     // Safe direction: over-reject acceptable; gate bypass by a future timestamp is never OK.
-    let result = evaluate_heal(10_000, 0, HEAL_COOLDOWN_MS);
+    let result = evaluate_heal(10_000, 0, HEAL_TEST_COOLDOWN_MS);
     assert!(
         result.is_err(),
-        "evaluate_heal(last=10_000, now=0, cooldown=HEAL_COOLDOWN_MS) must be Err \
+        "evaluate_heal(last=10_000, now=0, cooldown=HEAL_TEST_COOLDOWN_MS) must be Err \
          (last_heal_at_ms is in the future relative to now — safe-direction: \
          over-reject is fine, but the gate must never be bypassed); \
          got Ok: {:?}",
