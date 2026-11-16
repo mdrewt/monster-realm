@@ -36,7 +36,9 @@
 //   OR-HIDEALLEXCEPT-BATTLE-SUBSET              -> CTL3-2-DROP-EXACT (partial stack, world rows) and
 //                                                  CTL3-2-OUTCOME-KEPT (contextStack.test.ts)
 //   OR-HANDLES-DIALOGUE-HAS-NO-HIDE, invariant -> CTL3-3-NEVER-CLOSE-DIALOGUE; its handle-table
-//     half (the NEVER_FORCE_HIDE half is deleted)   half STAYS below, with a literal ['dialogueView']
+//     half (the NEVER_FORCE_HIDE half is deleted)   half -> SO2-6-SHAPE (main.dispatch.test.ts): it
+//                                                  requires main.ts's own `overlayHandles` row
+//                                                  `dialogueView: undefined`
 //   OR-CANOPEN-BATTLE-TARGET-MATCHES-FORCEHIDE  -> OR-CANOPEN-BATTLE-TARGET-DENIES (below): the
 //                                                  battle target row is a plain deny
 // The reference oracle (`refDecide`) and the A1 carve-outs in OR-CANOPEN-GUARDONLY-ALL describe the
@@ -744,8 +746,8 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
 });
 
 // ===========================================================================
-// BLOCK 7 — uxd3-c (pending): visibleIds(probes), the read half of the WRITE
-// substrate (adjudication B4 / plan §A / §C1).
+// BLOCK 7 — uxd3-c (pending): visibleIds(probes), the ordered visible-set
+// read (adjudication B4 / plan §A / §C1).
 //
 // WHY EXHAUSTIVE LOOPS AND NOT fast-check (same rationale as BLOCK 6, adjudication §B2): over 15
 // ids the domain is finitely enumerable, so a loop is strictly stronger than sampling.

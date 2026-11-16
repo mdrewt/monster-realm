@@ -15,10 +15,12 @@
 // the `dismissDialogue` reducer, `main.ts`). `canOpen` makes that distinction explicit and
 // testable instead of implicit in fourteen hand-maintained guard lists.
 //
-// SCOPE: this module holds the DECISIONS, plus the READ substrate
-// — `OverlayProbes`, `anyVisible` and `visibleIds()`, the visible set `canOpen` takes, so
-// `main.ts` hotkey open-guards route through `canOpen` instead of hand-maintained guard
-// lists. What a battle or a server conversation closes is NOT decided here: that is
+// SCOPE: this module holds the DECISIONS (`canOpen`), plus read helpers over a
+// caller-supplied probe table — `OverlayProbes`, `anyVisible` and `visibleIds()`. The
+// `main.ts` hotkey open-guards route through `canOpen` (its `overlayVerdict`) instead of
+// hand-maintained guard lists, handing it the visible set `shownOverlays()` reads off the
+// context stack (ui/contextStack.ts), not `visibleIds()`; no production file calls the
+// read helpers. What a battle or a server conversation closes is NOT decided here: that is
 // `SCREEN_POLICY` in ui/contextStack.ts. What deliberately did NOT ship — zero consumers,
 // the A7/A15 precedent — is per-id `open` thunks, `isVisible(id)` and `anyVisibleExcept()`.
 
