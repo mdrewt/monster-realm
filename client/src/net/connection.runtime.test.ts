@@ -555,13 +555,14 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
   // qf-15 (QF15.1): the zone cue names the destination zone from the `zone_def` content table. It
   // is a REGULAR public table with a primary key (`zone_id`), so unlike the PK-less views above it
   // is fed row by row (heal_location_row's idiom) and onUpdate DOES fire.
-  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 29 in all [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
+  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 30 in all [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
     // WRONG IMPL KILLED: no subscription (the client never receives a zone name and the cue stays
     // silent forever); a second subscription call or a duplicate entry (the length pin); a query
     // for a table nobody named riding along (the length pin); the table spelled differently
     // (`zoneDef`, `zone_defs`); `character` in the base set (every step of every player in the
     // world would reach every client).
-    // The 29: 20 base queries, zone_def, the seven tactical views (BT12-1-SUBSCRIBE-SEVEN pins
+    // The 30: 21 base queries (the two `profile` queries among them: the leaderboard_top join
+    // and the own row, SR4B.3), zone_def, the seven tactical views (BT12-1-SUBSCRIBE-SEVEN pins
     // which seven) and `my_trade_session` (TS3-SUBSCRIBE-SESSION-VIEW). Not among them:
     // `trade_offer` (TS4-4-NO-TRADE-OFFER) and `character` (the world scope's sets).
     const opts = makeOpts();
@@ -576,8 +577,8 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     ).toHaveLength(1);
     expect(
       queries,
-      'the 20 base queries, zone_def, the seven tactical views and my_trade_session',
-    ).toHaveLength(29);
+      'the 21 base queries, zone_def, the seven tactical views and my_trade_session',
+    ).toHaveLength(30);
     expect(
       queries.filter((q) => /\bcharacter\b/.test(q)),
       'no base query reads `character`: the world scope subscribes it by own row and by zone',
@@ -871,7 +872,7 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
     vi.useRealTimers();
   });
 
-  it('the one subscription batch names each of the seven owner-scoped tactical views exactly once and no private battle table, 29 queries in all [BT12-1-SUBSCRIBE-SEVEN]', async () => {
+  it('the one subscription batch names each of the seven owner-scoped tactical views exactly once and no private battle table, 30 queries in all [BT12-1-SUBSCRIBE-SEVEN]', async () => {
     // WRONG IMPL KILLED: a view left out (its rows never reach the client: the deploy panel or the
     // results never show); a view subscribed twice (the length pin); the PRIVATE table subscribed
     // instead of its view (`battle_unit`, `player_formation`: a private table errors the WHOLE
@@ -889,8 +890,9 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
       queries.filter((q) => BT12_PRIVATE_TABLES.some((table) => q.endsWith(` ${table}`))),
       'no private battle table is subscribed',
     ).toEqual([]);
-    // The 21 non-tactical queries (no `trade_offer`, no `character`), the seven, my_trade_session.
-    expect(queries, 'the 21 non-tactical queries, the seven, my_trade_session').toHaveLength(29);
+    // The 22 non-tactical queries (no `trade_offer`, no `character`; the two `profile` queries,
+    // SR4B.3), the seven, my_trade_session.
+    expect(queries, 'the 22 non-tactical queries, the seven, my_trade_session').toHaveLength(30);
     expect(
       queries.filter((q) => /\bcharacter\b/.test(q)),
       'no base query reads `character`: the world scope subscribes it by own row and by zone',
@@ -1159,7 +1161,7 @@ describe('connect(): the trade session view (ts-3)', { sequential: true }, () =>
     vi.useRealTimers();
   });
 
-  it('the one subscription batch names my_trade_session exactly once and never the private trade_session, 29 queries in all [TS3-SUBSCRIBE-SESSION-VIEW]', async () => {
+  it('the one subscription batch names my_trade_session exactly once and never the private trade_session, 30 queries in all [TS3-SUBSCRIBE-SESSION-VIEW]', async () => {
     // WRONG IMPL KILLED: the view left out (the editor and the Trades rows never see a session);
     // the PRIVATE table subscribed (it errors the whole batch: onApplied never fires and every
     // session hangs); the view subscribed twice; another query riding along (the length pin).
@@ -1168,7 +1170,7 @@ describe('connect(): the trade session view (ts-3)', { sequential: true }, () =>
     expect(queries.filter((q) => q === 'SELECT * FROM my_trade_session')).toHaveLength(1);
     expect(queries, 'never the private table').not.toContain('SELECT * FROM trade_session');
     expect(queries.filter((q) => q.endsWith(' trade_session'))).toEqual([]);
-    expect(queries).toHaveLength(29);
+    expect(queries).toHaveLength(30);
     expect(
       queries.filter((q) => /\bcharacter\b/.test(q)),
       'no base query reads `character`: the world scope subscribes it by own row and by zone',
@@ -1297,6 +1299,133 @@ describe('connect(): the trade session view (ts-3)', { sequential: true }, () =>
     } finally {
       errors.mockRestore();
     }
+  });
+});
+
+// =============================================================================================
+// sr-4b (SR4B.3): the bounded leaderboard. The base batch subscribes the profile rows of the
+// `leaderboard_top` members through a join, then the connection's own profile row by its
+// identity, and no whole-table `profile` query; a profile row that leaves the subscription (a
+// member that fell out of the top 100) is dropped from the store.
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-scale-readiness.spec.md §sr-4b (sr-4b.3).
+// =============================================================================================
+
+/** The members' profile rows: the join on the membership table, as subscribed. */
+const SR4B_JOIN_QUERY =
+  'SELECT profile.* FROM profile JOIN leaderboard_top ON profile.identity = leaderboard_top.identity';
+/** A connection identity unlike `ID` and with no period, so a reversed, truncated, borrowed or
+ *  constant hex in the own-row query shows. */
+const SR4B_HEX = Array.from({ length: 32 }, (_, i) =>
+  ((i * 37 + 11) % 256).toString(16).padStart(2, '0'),
+).join('');
+const SR4B_ID = { toHexString: () => SR4B_HEX };
+/** The SDK's profile row, as the handlers receive it. */
+const sr4bProfileRow = (hex: string, name: string, rating: number) => ({
+  identity: { toHexString: () => hex },
+  name,
+  rating,
+  wins: 3,
+  losses: 1,
+});
+
+describe('connect(): the bounded leaderboard subscription (sr-4b)', { sequential: true }, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  it('the base batch subscribes the leaderboard_top-joined profile rows once, then the connection`s own profile row by its identity once, and no whole-table profile query [SR4B.3]', async () => {
+    // WRONG IMPL KILLED: the whole-table `SELECT * FROM profile` kept (every profile reaches every
+    // client) or kept beside the two; the join dropped (the board shows the own row alone); the
+    // own-row query dropped (a caller outside the top 100 never sees their own rating); the own
+    // row keyed on another identity, a constant, a truncated hex or a hex without `0x`; a
+    // duplicate of either query.
+    expect(SR4B_HEX, 'fixture: a 64-digit lowercase hex identity').toMatch(/^[0-9a-f]{64}$/);
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), SR4B_ID, 'anon-tok');
+    const queries = H.builds[0].queries ?? [];
+    const own = `SELECT * FROM profile WHERE identity = 0x${SR4B_HEX}`;
+    expect(
+      queries.filter((q) => q === SR4B_JOIN_QUERY),
+      'the leaderboard_top join, once',
+    ).toHaveLength(1);
+    expect(
+      queries.filter((q) => /^SELECT \* FROM profile WHERE identity = 0x[0-9a-f]{64}$/.test(q)),
+      'one own-row query, and it names this connection`s identity',
+    ).toEqual([own]);
+    expect(
+      queries.filter((q) => /\bprofile\b/.test(q)),
+      'no other query reads profile (no whole-table query): the join, then the own row',
+    ).toEqual([SR4B_JOIN_QUERY, own]);
+    expect(queries, 'no whole-table profile query').not.toContain('SELECT * FROM profile');
+  });
+
+  it('a profile row deleted from the subscription leaves the store: profile() and allProfiles() drop it, the other rows stay as they were, and the delete flushes one batch [SR4B.3]', async () => {
+    // WRONG IMPL KILLED: no onDelete on `conn.db.profile` (a member that fell out of the top 100
+    // stays on every board); a removal keyed on anything but the row's identity hex; a removal
+    // that clears every profile; a handler that removes and never schedules the batcher (the
+    // board does not repaint until some other row arrives).
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), SR4B_ID, 'anon-tok');
+    await settle();
+    const events = H.rowEvents.profile;
+    expect(events, 'precondition: row handlers on conn.db.profile').toBeDefined();
+    if (events === undefined) return;
+    expect(events.insert.length, 'an onInsert handler').toBeGreaterThan(0);
+    expect(events.delete.length, 'an onDelete handler').toBeGreaterThan(0);
+
+    const leaver = 'ab'.repeat(32);
+    const stayer = 'ef'.repeat(32);
+    for (const cb of events.insert) cb({}, sr4bProfileRow(leaver, 'Leaver', 1500));
+    for (const cb of events.insert) cb({}, sr4bProfileRow(stayer, 'Stayer', 1400));
+    for (const cb of events.insert) cb({}, sr4bProfileRow(SR4B_HEX, 'Own', 900));
+    await settle();
+    expect(
+      opts.store
+        .allProfiles()
+        .map((p) => p.identity)
+        .sort(),
+      'precondition: the three rows are stored',
+    ).toEqual([leaver, stayer, SR4B_HEX].sort());
+
+    const flushed = vi.fn();
+    opts.store.onBatchApplied(flushed);
+    for (const cb of events.delete) cb({}, sr4bProfileRow(leaver, 'Leaver', 1500));
+    await settle();
+    expect(flushed, 'the delete flushes one batch').toHaveBeenCalledTimes(1);
+    expect(opts.store.profile(leaver), 'the deleted row is gone').toBeUndefined();
+    expect(
+      opts.store
+        .allProfiles()
+        .map((p) => p.identity)
+        .sort(),
+      'only the deleted row left',
+    ).toEqual([stayer, SR4B_HEX].sort());
+    expect(opts.store.profile(stayer), 'the other rows are untouched').toEqual({
+      identity: stayer,
+      name: 'Stayer',
+      rating: 1400,
+      wins: 3,
+      losses: 1,
+    });
   });
 });
 

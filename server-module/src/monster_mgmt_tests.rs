@@ -859,6 +859,8 @@ fn dw_pvp_side_b_site() {
         .table::<Profile>("profile", "identity", |r| r.identity)
         .writable()
         .unique();
+    // sr-4b: the settle's rating ends with the leaderboard membership rescan.
+    let _ = fx.ladder();
     let _ = fx
         .table_keyed::<BattleAction, u64>("battle_action", "battle_id", |r| r.battle_id)
         .writable();
@@ -1549,6 +1551,8 @@ fn ts2_auto_cancel_on_pvp_settle_writeback() {
         .table::<Profile>("profile", "identity", |r| r.identity)
         .writable()
         .unique();
+    // sr-4b: the settle's rating ends with the leaderboard membership rescan.
+    let _ = fx.ladder();
     let _ = fx
         .table_keyed::<BattleAction, u64>("battle_action", "battle_id", |r| r.battle_id)
         .writable();

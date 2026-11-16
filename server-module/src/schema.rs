@@ -1097,9 +1097,10 @@ pub struct GuestClaim {
 ///
 /// PUBLIC = world-readable leaderboard record. NEVER deleted: no code path
 /// removes a `profile` row — `on_disconnect` does not touch it. Runtime table,
-/// not seeded content → NO CONTENT_VERSION bump. No `#[index(btree)]` on
-/// `rating` client-side over a full `profile` subscription; add an index
-/// if/when server-side range queries land.
+/// not seeded content → NO CONTENT_VERSION bump. Clients do not subscribe the
+/// whole table: they read the `leaderboard_top` members' rows through a join,
+/// plus their own row. No `#[index(btree)]` on `rating`: the membership is
+/// rebuilt by a full rescan in `ranking.rs`.
 #[spacetimedb::table(accessor = profile, public)]
 pub struct Profile {
     #[primary_key]
@@ -1110,6 +1111,20 @@ pub struct Profile {
     pub rating: i32,
     pub wins: u32,
     pub losses: u32,
+}
+
+/// The leaderboard's membership: the identities of the top
+/// `ranking::LEADERBOARD_TOP_K` profiles in ladder order (rating desc, name asc,
+/// identity asc). PUBLIC: clients subscribe the members' `profile` rows through a
+/// join on this table, plus their own row, instead of every profile. Only
+/// `ranking.rs` writes it, and every transaction that writes `profile` ends by
+/// rewriting it from a full rescan (`ranking::refresh_leaderboard_top`), as do
+/// `init` and `sync_content`. It holds no display data: a rename or a tombstone
+/// reaches the board through `profile` itself.
+#[spacetimedb::table(accessor = leaderboard_top, public)]
+pub struct LeaderboardTop {
+    #[primary_key]
+    pub identity: Identity,
 }
 
 // --- M16a PvP tables ----------------------------------------------
@@ -1863,7 +1878,9 @@ pub enum DeletionPolicy {
     /// Row deleted outright at cascade time.
     Erase,
     /// Row survives; its identity or PII fields are overwritten with the S1
-    /// tombstone constants via a PK-keyed update.
+    /// tombstone constants via a PK-keyed update. Also a row derived from an
+    /// anonymized table that holds only an identity the parent row keeps
+    /// (`leaderboard_top`): the cascade re-derives it instead of overwriting it.
     Anonymize,
     /// No `Identity` column; swept transitively via the named parent table.
     ViaJoin(&'static str),
@@ -2057,6 +2074,15 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
                 overwritten with the tombstone (anonymize is a field update, never a delete, \
                 so the invariant holds by construction)",
         exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "leaderboard_top",
+        policy: DeletionPolicy::Anonymize,
+        basis: "derived membership of the top profiles in ladder order; holds only the identity \
+                its public profile row already shows; the cascade re-derives it after \
+                tombstoning the profile name, so the row survives exactly while that \
+                anonymized profile still ranks",
+        exportable: false,
     },
     DataLifecycleEntry {
         table: "account",

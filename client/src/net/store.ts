@@ -567,11 +567,12 @@ export class AuthoritativeStore {
   readonly #challenges = new Map<bigint, StoreBattleChallenge>();
   // my_trade_session rows (the sessions this identity is in), by sessionId
   readonly #tradeSessions = new Map<bigint, StoreTradeSession>();
-  // Profile rows keyed by identity hex (public table — world-readable
-  // leaderboard). Deliberately NO removeProfile: profile rows are never deleted
-  // server-side (RL-2), so a remove path would be unreachable dead code.
+  // Profile rows keyed by identity hex: the leaderboard members' rows plus the caller's own
+  // (the two `profile` queries in connection.ts). A member that leaves the top 100 arrives as a
+  // delete (`removeProfile`); the server never deletes a profile row itself.
   readonly #profiles = new Map<string, StoreProfile>();
-  /** Changes on every `upsertProfile` and `reset()`, and on nothing else (`profilesVersion()`). */
+  /** Changes on every `upsertProfile`, every `removeProfile` that drops a row and `reset()`, and on
+   *  nothing else (`profilesVersion()`). */
   #profilesVersion = ++lastProfilesVersion;
   // The caller's own wallet row. A SLOT, not a Map: the
   // `my_wallet` view returns exactly one row — the caller's — so a keyed map
@@ -1355,18 +1356,24 @@ export class AuthoritativeStore {
 
   // --- profile ingest/read (RL-13 leaderboard; adapter writes, view reads) --
 
-  /** Upsert keyed by identity hex — reconnect re-inserts overwrite, never duplicate.
-   *  Deliberately NO removeProfile counterpart: profile rows are never deleted
-   *  server-side (RL-2). */
+  /** Upsert keyed by identity hex — reconnect re-inserts overwrite, never duplicate. */
   upsertProfile(row: StoreProfile): void {
     this.#profiles.set(row.identity, row);
     this.#profilesVersion = ++lastProfilesVersion;
     this.#dirty = true;
   }
 
+  /** Drop a profile row that left the subscription: a member that fell out of the top 100 and is
+   *  not the caller. An identity the store does not hold changes nothing. */
+  removeProfile(identity: string): void {
+    if (!this.#profiles.delete(identity)) return;
+    this.#profilesVersion = ++lastProfilesVersion;
+    this.#dirty = true;
+  }
+
   /** An opaque stamp of the profile rows: a new value after every `upsertProfile` (an identical row
-   *  included) and every `reset()`, the same value otherwise, and never one another store has
-   *  handed out. The leaderboard model memoises on it. */
+   *  included), every `removeProfile` that drops a row and every `reset()`, the same value
+   *  otherwise, and never one another store has handed out. The leaderboard model memoises on it. */
   profilesVersion(): number {
     return this.#profilesVersion;
   }

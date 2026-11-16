@@ -239,10 +239,42 @@ context: an extra "owner" parameter would let a caller choose whose rows to read
 
 **Rules out.** Marking a per-player table `public`; a view that takes an identity
 argument. Tables that are public on purpose: content, `character`, `player`,
-`profile` (the leaderboard), `battle_challenge` (both parties need it), and
+`profile` (the leaderboard; clients read only the members' rows and their own),
+`leaderboard_top` (the top 100's identities, which their profile rows already show),
+`battle_challenge` (both parties need it), and
 `trade_offer`, which is drain-only: no reducer inserts a row, and
 a row still in it leaves by `cancel_trade`, a disconnect, account deletion or its TTL
 reaper.
+
+## The leaderboard is a membership table that the client joins
+
+**Decision.** The public `leaderboard_top` table (`server-module/src/schema.rs`) holds only the
+identities of the top `LEADERBOARD_TOP_K` (100) profiles in the ladder order: rating descending,
+name ascending by UTF-16 code units, identity ascending. `ranking.rs`, the only writer of
+`profile`, rewrites it from a full rescan (`refresh_leaderboard_top`) after the profile writes of
+`apply_pvp_rating`, `rekey_profile` and `anonymize_display_names`, and in `init` and
+`sync_content`. The rescan deletes only the members that left and inserts only those that
+entered, so an unchanged membership writes nothing. The client subscribes
+`SELECT profile.* FROM profile JOIN leaderboard_top ON profile.identity = leaderboard_top.identity`
+plus its own row by identity. A member that leaves the top 100 arrives as a profile delete
+(`store.removeProfile`); the SDK counts rows per primary key across queries, so the own row
+survives leaving the top 100.
+
+**Why.** A whole-table `profile` subscription sent every profile to every joining client:
+2,440,224 bytes at 50,002 profiles, against 5,041 bytes for the join and the own row (measured
+2026-11-16). The membership is an invariant recomputed from `profile`, not an incremental guess,
+and display data stays in `profile`, so a rename or a tombstone needs no second write. One rescan
+costs about 7.5 ms of reducer thread at 50,000 profiles, and profile writes come at human rates.
+Names compare by UTF-16 code units because the client ranks the rows it holds with JavaScript's
+`<` (`ui/leaderboardModel.ts`), and the two orders must agree at the 100th place.
+
+**Rules out.** Subscribing `profile` whole again; copying display columns into `leaderboard_top`;
+incremental or boundary upkeep, or a `rating` index, before the rescan's measured cost binds. Two
+colluding account holders can loop challenge, accept, deploy and forfeit with no cooldown and pay
+one rescan per loop; if that shows in the reducer-thread share, the next step is skipping the scan
+when no written row is or becomes a member. A publish over existing data runs no `init`: the table
+fills at the deploy's owner `sync_content` call or the first rated settle, and until then a client
+sees only its own row.
 
 ## Tactical battle privacy is structural; only the summary and the formation are exported
 
@@ -496,7 +528,7 @@ that need the spawn use a new identity); arming zone 0 for a character that resu
 
 ## World rows are subscribed by zone
 
-**Decision.** The client never subscribes `character` whole. Beside the base set (29 queries,
+**Decision.** The client never subscribes `character` whole. Beside the base set (30 queries,
 `client/src/net/connection.ts`) a connection holds three kinds of subscription set: the base set,
 one set for its own character row (`SELECT * FROM character WHERE entity_id = <E>`), and one set per
 wanted zone (`SELECT * FROM character WHERE zone_id = <Z>`). `client/src/net/worldScope.ts` owns
@@ -1224,7 +1256,9 @@ table set, so a missing or stale entry fails. `delete_account` sets
 `game-core/src/accounts/deletion.rs`); `cancel_account_deletion` reverses it. When
 the reaper fires, the cascade force-resolves live interactions first, forces ongoing
 battles naming the account to a terminal result, erases or anonymises per the
-manifest, and stamps `terminal_at_ms`. A deletion-pending caller cannot open new
+manifest, and stamps `terminal_at_ms`. `Anonymize` also covers `leaderboard_top`, which
+holds only an identity its anonymized `profile` row keeps: the cascade re-derives it after
+tombstoning the name instead of overwriting it. A deletion-pending caller cannot open new
 commitments: 25 reducer call sites call `guards::require_not_deleting`, while
 commitments that predate the request stay completable. `request_data_export` writes
 private `export_bundle` chunks (`EXPORT_CHUNK_ROWS` 500) for `my_export_bundle`, gives

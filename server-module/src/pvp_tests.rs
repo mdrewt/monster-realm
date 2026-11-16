@@ -464,6 +464,8 @@ fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
         .table::<PvProfile>("profile", "identity", |r| r.identity)
         .writable()
         .unique();
+    // sr-4b: a rated settle ends with the leaderboard membership rescan.
+    let _ = fx.ladder();
     let _ = fx
         .table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
         .writable()

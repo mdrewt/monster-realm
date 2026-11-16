@@ -666,13 +666,12 @@ export function connect(opts: ConnectionOptions): Connection {
       }),
     );
 
-    // Profile (PUBLIC table — world-readable ranked leaderboard).
-    // profile is a REGULAR table (not a view), so onUpdate fires normally — the
-    // my_conversation view-delete gating above does NOT apply here.
-    // TRIPWIRE — deliberately NO onDelete: profile rows are never deleted
-    // server-side (RL-2 — Elo losses update the row, never remove it).
-    // If the server ever starts deleting profile rows, this missing handler is the
-    // review tripwire: wire onDelete + a store removal in the same change.
+    // Profile (PUBLIC table — the ranked leaderboard). The client holds the leaderboard_top
+    // members' rows and its own row (the two profile queries in the subscription below).
+    // profile is a REGULAR table with a primary key, so onUpdate fires normally — the
+    // my_conversation view-delete gating above does NOT apply here. The server never deletes a
+    // profile row; a delete is a member leaving the top 100. The own row is held by its own query
+    // too, and the SDK counts rows per primary key across queries, so it never sees that delete.
     const ingestProfile = (row: SdkProfileRow): void => {
       store.upsertProfile(profileRowToStore(row));
       batcher.schedule();
@@ -682,6 +681,12 @@ export function connect(opts: ConnectionOptions): Connection {
     );
     conn.db.profile.onUpdate(
       recoverViewsOnThrow((_ctx, _old, row) => ingestProfile(row as unknown as SdkProfileRow)),
+    );
+    conn.db.profile.onDelete(
+      recoverViewsOnThrow((_ctx, row) => {
+        store.removeProfile((row as unknown as SdkProfileRow).identity.toHexString());
+        batcher.schedule();
+      }),
     );
 
     // my_account is the owner-scoped VIEW over the PRIVATE account table
@@ -993,9 +998,11 @@ export function connect(opts: ConnectionOptions): Connection {
             // and target subscribe. battle_action is PRIVATE (must-never-leak)
             // and MUST NEVER be subscribed here.
             'SELECT * FROM battle_challenge',
-            // Profile is a PUBLIC regular table (world-readable leaderboard —
-            // RL-13); onUpdate fires normally (unlike the my_conversation view).
-            'SELECT * FROM profile',
+            // The leaderboard (RL-13): the profile rows of the leaderboard_top members (the top
+            // 100, kept by the server) and the caller's own row, never the whole profile table,
+            // which grows with every account that ever rated.
+            'SELECT profile.* FROM profile JOIN leaderboard_top ON profile.identity = leaderboard_top.identity',
+            `SELECT * FROM profile WHERE identity = 0x${identity}`,
             // my_account is the owner-scoped VIEW over the PRIVATE account
             // table — the sole reconciliation authority for "am I signed in" (AUTH-51). Ingested
             // with onInsert + onUpdate (and NO onDelete) in wireTables above. Subscribing the

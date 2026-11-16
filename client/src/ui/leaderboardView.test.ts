@@ -468,37 +468,7 @@ describe('RL15-structural: leaderboardView.ts source contains no server write pa
   });
 });
 
-// ---------------------------------------------------------------------------
-// RL-13 subscription wiring tooth: connection.ts must subscribe to 'profile'
-// ---------------------------------------------------------------------------
-
-describe('RL13-conn-subscription: connection.ts must wire the profile subscription', () => {
-  it('RL13-conn-sub-01 BITES: connection.ts contains "SELECT * FROM profile" — kills missing-subscription impl', () => {
-    // RL-13: the leaderboard overlay subscribes to `profile`. If connection.ts does
-    // not include the subscription line, the store never receives profile rows and
-    // the leaderboard is always empty even when profiles exist on the server.
-    // Fails loudly (throw) if the file can't be read — no vacuous-pass.
-    // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
-    const connPath = path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      '../net/connection.ts',
-    );
-    let src: string;
-    try {
-      src = readFileSync(connPath, 'utf8');
-    } catch (err) {
-      throw new Error(
-        'connection.ts could not be read — the file must exist for the subscription tooth: ' +
-          String(err),
-      );
-    }
-    // The exact subscription line that connection.ts must contain.
-    expect(
-      src.includes("'SELECT * FROM profile'"),
-      'connection.ts must contain "\'SELECT * FROM profile\'" — the profile subscription wires the leaderboard store (RL-13)',
-    ).toBe(true);
-  });
-});
+// The board's profile subscription is asserted through connect(): connection.runtime.test.ts SR4B.3.
 
 // ---------------------------------------------------------------------------
 // Overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)

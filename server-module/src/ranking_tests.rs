@@ -736,6 +736,8 @@ struct RkWorld<'a> {
     players: RkHandle<'a, RkPlayer>,
     profiles: RkHandle<'a, Profile>,
     accounts: RkHandle<'a, RkAccount>,
+    /// sr-4b: every `profile` writer ends with the membership rescan.
+    ladder: RkHandle<'a, crate::schema::LeaderboardTop>,
 }
 
 fn rk_world(fx: &RkFixture) -> RkWorld<'_> {
@@ -749,6 +751,7 @@ fn rk_world(fx: &RkFixture) -> RkWorld<'_> {
             .writable()
             .unique(),
         accounts: fx.table::<RkAccount>("account", "identity", |r| r.identity),
+        ladder: fx.ladder(),
     };
     for (who, name) in [(rk_a(), "Alice"), (rk_b(), "Bob")] {
         w.players.seed(&RkPlayer {
@@ -1162,4 +1165,647 @@ fn the_deletion_tombstone_zeroes_the_discriminator_and_the_lead_level_ih1_7() {
     assert_eq!(after.entity_id, 4_243, "the entity id survives");
     assert!(after.online, "the presence flag survives");
     assert_eq!(after.last_input_seq, 910, "the input ack survives");
+}
+
+// ===========================================================================
+// sr-4b — the leaderboard membership (`leaderboard_top`).
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-scale-readiness.spec.md §sr-4b (sr-4b.1, sr-4b.2)
+// and §Decisions `leaderboard-shape=membership-table-plus-join`: after every transaction that
+// writes `profile`, `leaderboard_top` holds exactly the identities of the top 100 profiles by
+// rating desc, name asc (UTF-16 code units, the client's order), identity asc. The oracle is
+// `native_host_tests::ladder_oracle`, an independent sort; `top_identities` never checks itself.
+// A board that changes no member is written nothing (an unchanged write still reaches every
+// join subscriber), so the write counts below are part of the contract.
+// ===========================================================================
+
+use crate::native_host_tests::{ladder_oracle, sorted_hexes};
+use crate::schema::LeaderboardTop;
+
+/// The spec's board size (`decision-defaulted:leaderboard-top-k=100`), as a literal.
+const SR4B_K: usize = 100;
+
+/// The `n`th filler identity `[b; 32]`: `b` counts up from 1, skipping the two players
+/// (`rk_a`, `rk_b`), the absent owner `0x3F` and the module identity `0xDB`.
+fn sr4b_filler(n: usize) -> Identity {
+    let b = (1u8..=250)
+        .filter(|b| ![0x3A, 0x3B, 0x3F, 0xDB].contains(b))
+        .nth(n)
+        .expect("a test asks for at most 245 fillers");
+    Identity::from_byte_array([b; 32])
+}
+
+/// Seeds fillers `from..from + count`, rated `rating(i)`, named from a small pool (equal names
+/// recur, an empty one included), with records that vary.
+fn sr4b_seed_fillers(w: &RkWorld<'_>, from: usize, count: usize, rating: impl Fn(usize) -> i32) {
+    const NAMES: [&str; 6] = ["Ivy", "Oak", "ivy", "Ash", "", "Oak2"];
+    for i in from..from + count {
+        w.seed_profile(
+            sr4b_filler(i),
+            NAMES[i % NAMES.len()],
+            rating(i),
+            (i % 7) as u32,
+            (i % 5) as u32,
+        );
+    }
+}
+
+/// A ranked PvP battle, `rk_a` on side A against `rk_b` on side B, that ended with `outcome`.
+fn sr4b_battle(outcome: RkOutcome) -> RkBattle {
+    RkBattle {
+        battle_id: 1,
+        player_identity: rk_a(),
+        opponent_identity: rk_b(),
+        state: game_core::BattleState {
+            side_a: game_core::BattleSide {
+                active: 0,
+                team: vec![],
+            },
+            side_b: game_core::BattleSide {
+                active: 0,
+                team: vec![],
+            },
+            outcome,
+            turn_number: 3,
+            weather: None,
+        },
+        party_monster_ids: vec![],
+        opponent_monster_ids: vec![],
+        created_at_ms: 0,
+    }
+}
+
+fn sr4b_profile(identity: Identity, name: &str, rating: i32) -> Profile {
+    Profile {
+        identity,
+        name: name.to_string(),
+        rating,
+        wins: 0,
+        losses: 0,
+    }
+}
+
+impl RkWorld<'_> {
+    /// The board's members as sorted hex (a duplicate member shows twice).
+    fn members(&self) -> Vec<String> {
+        sorted_hexes(self.ladder.rows().into_iter().map(|r| r.identity))
+    }
+
+    /// The true top 100 over every profile row stored now, as sorted hex.
+    fn true_top(&self) -> Vec<String> {
+        sorted_hexes(ladder_oracle(&self.profiles.rows(), SR4B_K))
+    }
+
+    /// Every stored profile's identity, as sorted hex.
+    fn every_profile(&self) -> Vec<String> {
+        sorted_hexes(self.profiles.rows().into_iter().map(|p| p.identity))
+    }
+
+    fn is_member(&self, who: Identity) -> bool {
+        self.ladder.rows().iter().any(|r| r.identity == who)
+    }
+
+    /// Seeds the board with the true top 100 of the profiles stored now: the invariant holds
+    /// before the transaction under test.
+    fn seed_true_board(&self) {
+        for identity in ladder_oracle(&self.profiles.rows(), SR4B_K) {
+            self.ladder.seed(&LeaderboardTop { identity });
+        }
+    }
+}
+
+/// A first rated game between two players with no profile inserts both profiles and makes both
+/// members: the board is exactly the two of them, written by exactly two inserts.
+///
+/// kills: no rescan at the end of `apply_pvp_rating` (an empty board); a rescan that clears and
+/// rewrites the board.
+#[test]
+fn a_first_rated_game_makes_both_players_members_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    fx.reset_writes();
+    super::apply_pvp_rating(&fx.ctx(), &sr4b_battle(RkOutcome::SideAWins));
+    assert_eq!(
+        w.every_profile(),
+        sorted_hexes([rk_a(), rk_b()]),
+        "precondition: the settle inserted both players' profiles"
+    );
+    assert_eq!(
+        w.members(),
+        sorted_hexes([rk_a(), rk_b()]),
+        "both players are members after their first rated game"
+    );
+    assert_eq!(w.members(), w.true_top(), "the board is the true ladder");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        2,
+        "the two members are inserted and nothing else is written"
+    );
+}
+
+/// With fewer than 100 profiles every profile is a member, whatever its rating, name or record:
+/// forty seeded rows (negative ratings, equal ratings, an empty name, both tombstone names)
+/// plus the two players a settle rates for the first time.
+///
+/// kills: a rescan that adds only the two settled players; a board capped below the profile
+/// count; a filter that drops tombstoned, empty-named or negative-rated rows.
+#[test]
+fn with_fewer_than_100_profiles_every_profile_is_a_member_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let names = [
+        "Ivy",
+        "",
+        "(claimed guest)",
+        game_core::TOMBSTONE_DISPLAY_NAME,
+        "ivy",
+        "Oak",
+    ];
+    for i in 0..40usize {
+        let rating = 1500 - 97 * (i % 23) as i32;
+        w.seed_profile(
+            sr4b_filler(i),
+            names[i % names.len()],
+            rating,
+            (i % 7) as u32,
+            (i % 5) as u32,
+        );
+    }
+    assert!(
+        w.profiles.rows().iter().any(|p| p.rating < 0),
+        "fixture: a negative rating is seeded"
+    );
+    super::apply_pvp_rating(&fx.ctx(), &sr4b_battle(RkOutcome::SideBWins));
+    assert_eq!(
+        w.every_profile().len(),
+        42,
+        "precondition: forty seeded profiles plus the two players"
+    );
+    assert_eq!(w.members(), w.every_profile(), "every profile is a member");
+    assert_eq!(w.members(), w.true_top(), "the board is the true ladder");
+}
+
+/// A settle that moves a member below the 100th swaps it out and the riser in. 99 profiles far
+/// above; the two players tied at 1200, `rk_a` ("Alice") the 100th on the name and `rk_b`
+/// ("Bob") the 101st; three far below. `rk_b` wins: it is now the 100th and `rk_a` the 101st.
+///
+/// kills: no rescan after the settle (the loser stays, the winner stays out); a rescan that
+/// only inserts (the loser stays: 101 members); a rescan that rewrites every row (more than one
+/// delete and one insert).
+#[test]
+fn a_settle_that_drops_a_member_below_the_100th_swaps_it_for_the_riser_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    sr4b_seed_fillers(&w, 0, 99, |i| 2000 + (i as i32 * 7) % 50);
+    w.seed_profile(rk_a(), "Alice", 1200, 4, 4);
+    w.seed_profile(rk_b(), "Bob", 1200, 2, 6);
+    sr4b_seed_fillers(&w, 99, 3, |i| 600 - i as i32);
+    w.seed_true_board();
+    assert!(
+        w.is_member(rk_a()) && !w.is_member(rk_b()),
+        "precondition: Alice is the 100th and Bob the 101st"
+    );
+    fx.reset_writes();
+    super::apply_pvp_rating(&fx.ctx(), &sr4b_battle(RkOutcome::SideBWins));
+    assert_eq!(
+        w.members(),
+        w.true_top(),
+        "the board is the true ladder after the settle"
+    );
+    assert!(!w.is_member(rk_a()), "the loser fell below the 100th");
+    assert!(w.is_member(rk_b()), "the winner rose into the top 100");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        2,
+        "one delete (the loser) and one insert (the winner)"
+    );
+}
+
+/// A settle whose loser falls below the 101st lets that non-participant in. 99 profiles far
+/// above; `rk_b` ("Bob", 1210) the 100th; a non-participant at 1200 the 101st; `rk_a` ("Alice",
+/// 500) below both, three more further down. `rk_a` wins: Bob drops below 1200, so the 101st
+/// is now the 100th and Bob is out, while Alice stays below the cut before and after, so her
+/// own rating write changes no membership.
+///
+/// kills: a rescan run before the loser's profile write in `apply_pvp_rating`, whether between
+/// the winner's and the loser's write or before both (it sees Bob still at 1210, so the board
+/// keeps Bob and leaves the 101st out); no rescan after the settle.
+#[test]
+fn a_loser_falling_below_the_100th_lets_the_101st_in_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let riser = sr4b_filler(120);
+    let (winner_rating, loser_rating, riser_rating) = (500, 1210, 1200);
+    let (new_winner_rating, new_loser_rating) =
+        game_core::compute_rating_update(winner_rating, loser_rating);
+    assert!(
+        new_loser_rating < riser_rating,
+        "fixture: the loser's new rating {new_loser_rating} is below the 101st's {riser_rating}"
+    );
+    assert!(
+        new_winner_rating < riser_rating,
+        "fixture: the winner's new rating {new_winner_rating} is below the cut ({riser_rating}), \
+         so the winner's own write changes no membership"
+    );
+    sr4b_seed_fillers(&w, 0, 99, |i| 2000 + (i as i32 * 7) % 50);
+    w.seed_profile(rk_b(), "Bob", loser_rating, 6, 3);
+    w.seed_profile(riser, "Kit", riser_rating, 4, 4);
+    w.seed_profile(rk_a(), "Alice", winner_rating, 1, 9);
+    sr4b_seed_fillers(&w, 99, 3, |i| 300 - i as i32);
+    w.seed_true_board();
+    assert!(
+        w.is_member(rk_b()) && !w.is_member(riser) && !w.is_member(rk_a()),
+        "precondition: Bob is the 100th, the non-participant the 101st, Alice below both"
+    );
+    fx.reset_writes();
+    super::apply_pvp_rating(&fx.ctx(), &sr4b_battle(RkOutcome::SideAWins));
+    let rating_of = |who| w.profile(who).map(|p| p.1);
+    assert_eq!(
+        (rating_of(rk_a()), rating_of(rk_b())),
+        (Some(new_winner_rating), Some(new_loser_rating)),
+        "precondition: the settle wrote both players' new ratings"
+    );
+    assert_eq!(
+        w.members(),
+        w.true_top(),
+        "the board is the true ladder after the settle"
+    );
+    assert!(!w.is_member(rk_b()), "the loser fell below the 101st");
+    assert!(w.is_member(riser), "the 101st rose into the top 100");
+    assert!(!w.is_member(rk_a()), "the winner stays below the cut");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        2,
+        "one delete (the loser) and one insert (the 101st)"
+    );
+}
+
+/// A rating tie at the 100th, decided by name, re-ordered by an anonymize: "Mia" is the 100th
+/// and "Zed" the 101st at 1200. Deleting an account that never ranked writes no profile row,
+/// so it reads no profile and writes no member. Deleting Zed's account tombstones his name to
+/// `TOMBSTONE_DISPLAY_NAME`, which sorts before "Mia": Zed is in and Mia is out.
+///
+/// kills: no rescan at the end of `anonymize_display_names` (Zed stays out); a rescan before
+/// the name write; a rescan on every deletion, ranked or not (the never-ranked deletion reads
+/// every profile); a rescan that rewrites every row.
+#[test]
+fn a_rating_tie_at_the_100th_is_broken_by_the_anonymized_name_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let (mia, zed) = (sr4b_filler(120), sr4b_filler(121));
+    sr4b_seed_fillers(&w, 0, 99, |i| 1500 + (i as i32 % 13) * 11);
+    w.seed_profile(mia, "Mia", 1200, 3, 3);
+    w.seed_profile(zed, "Zed", 1200, 8, 1);
+    sr4b_seed_fillers(&w, 99, 4, |i| -40 - i as i32);
+    w.seed_true_board();
+    assert!(
+        w.is_member(mia) && !w.is_member(zed),
+        "precondition: Mia is the 100th and Zed the 101st on the name"
+    );
+    assert!(
+        "Mia".cmp(game_core::TOMBSTONE_DISPLAY_NAME).is_gt(),
+        "fixture: the deletion tombstone sorts before Mia"
+    );
+
+    let never_ranked = Identity::from_byte_array([0x3F; 32]);
+    fx.reset_reads();
+    fx.reset_writes();
+    super::anonymize_display_names(&fx.ctx(), never_ranked);
+    assert_eq!(
+        fx.rows_read("profile"),
+        0,
+        "deleting an account that never ranked writes no profile row and scans no profile"
+    );
+    assert_eq!(fx.writes_to("leaderboard_top"), 0, "and writes no member");
+
+    fx.reset_writes();
+    super::anonymize_display_names(&fx.ctx(), zed);
+    assert_eq!(
+        w.profile(zed).map(|p| p.0),
+        Some(game_core::TOMBSTONE_DISPLAY_NAME.to_string()),
+        "precondition: Zed's profile name is tombstoned"
+    );
+    assert_eq!(
+        w.members(),
+        w.true_top(),
+        "the board is the true ladder after the anonymize"
+    );
+    assert!(
+        w.is_member(zed),
+        "the tombstoned name moved Zed into the 100th"
+    );
+    assert!(!w.is_member(mia), "and Mia out to the 101st");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        2,
+        "one delete (Mia) and one insert (Zed)"
+    );
+}
+
+/// A full tie at the 100th (rating and name) is broken by the identity's value. Two rows at
+/// 1200 differ in the low and the high byte in opposite directions, so their value order (the
+/// big-endian hex) is the reverse of their raw byte-array order. "Bea" is the 100th; deleting
+/// her account keeps her there (the tombstone sorts before "Cal" too), which writes no member;
+/// deleting Cal's account ties the two, and the smaller value takes the 100th.
+///
+/// kills: identities compared by their little-endian byte array; no rescan after the anonymize;
+/// a rescan that rewrites an unchanged board.
+#[test]
+fn a_full_tie_at_the_100th_is_broken_by_the_identity_value_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let bytes = |low: u8, high: u8| {
+        let mut b = [0x5C; 32];
+        b[0] = low;
+        b[31] = high;
+        b
+    };
+    let (high_bytes, low_bytes) = (bytes(0x01, 0x02), bytes(0x02, 0x01));
+    let (high, low) = (
+        Identity::from_byte_array(high_bytes),
+        Identity::from_byte_array(low_bytes),
+    );
+    assert!(
+        low.to_hex().to_string() < high.to_hex().to_string(),
+        "fixture: `low` is the smaller value"
+    );
+    assert!(
+        high_bytes < low_bytes,
+        "fixture: the raw byte arrays order the other way, so the case discriminates"
+    );
+    sr4b_seed_fillers(&w, 0, 99, |i| 1500 + (i as i32 % 13) * 11);
+    w.seed_profile(high, "Bea", 1200, 1, 0);
+    w.seed_profile(low, "Cal", 1200, 0, 1);
+    sr4b_seed_fillers(&w, 99, 2, |i| 100 - i as i32);
+    w.seed_true_board();
+    assert!(
+        w.is_member(high) && !w.is_member(low),
+        "precondition: Bea is the 100th on the name"
+    );
+
+    fx.reset_writes();
+    super::anonymize_display_names(&fx.ctx(), high);
+    assert_eq!(w.members(), w.true_top(), "Bea's deletion: the true ladder");
+    assert!(w.is_member(high), "Bea keeps the 100th");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        0,
+        "an anonymize that changes no member writes nothing to the board"
+    );
+
+    super::anonymize_display_names(&fx.ctx(), low);
+    assert_eq!(w.members(), w.true_top(), "Cal's deletion: the true ladder");
+    assert!(
+        w.is_member(low),
+        "rating and name tie: the smaller identity value takes the 100th"
+    );
+    assert!(!w.is_member(high), "the larger value is the 101st");
+}
+
+/// A settle that leaves the membership as it was writes nothing to the board. The first settle
+/// fills an empty board with the true top 100 (106 profiles); the two players then play again,
+/// both far above the 100th, and the board is untouched: zero writes.
+///
+/// kills: a rescan that clears and re-inserts the board, or re-inserts every wanted member
+/// (each a write every join subscriber hears about); no rescan (the first settle leaves the
+/// board empty).
+#[test]
+fn a_settle_that_changes_no_membership_writes_nothing_to_the_board_sr4b_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    sr4b_seed_fillers(&w, 0, 99, |i| 1500 + (i as i32 % 17) * 9);
+    w.seed_profile(rk_a(), "Alice", 3000, 30, 2);
+    w.seed_profile(rk_b(), "Bob", 2990, 28, 4);
+    sr4b_seed_fillers(&w, 99, 5, |i| 900 - 2 * i as i32);
+    super::apply_pvp_rating(&fx.ctx(), &sr4b_battle(RkOutcome::SideAWins));
+    assert_eq!(
+        w.members(),
+        w.true_top(),
+        "the first settle fills the board with the true ladder"
+    );
+    assert_eq!(w.members().len(), SR4B_K, "a full board holds 100 members");
+
+    let before = w.members();
+    fx.reset_writes();
+    super::apply_pvp_rating(&fx.ctx(), &sr4b_battle(RkOutcome::SideBWins));
+    assert_eq!(
+        w.members(),
+        before,
+        "both players stay far above the 100th: the membership is unchanged"
+    );
+    assert_eq!(w.members(), w.true_top(), "and still the true ladder");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        0,
+        "an unchanged membership writes nothing to the board"
+    );
+}
+
+/// `top_identities` returns at most `k` identities in ladder order (rating desc, name asc,
+/// identity asc) for input lengths 0, 1, k and k + 1, for k = 0 and for k above the length,
+/// whatever order the input arrives in. An empty name sorts before "Ann"; the two "Ann" rows at
+/// one rating are ordered by identity.
+///
+/// kills: no truncation to `k`; a `len > k` guard written `>=` (len == k is cut short) or a
+/// panic at k = 0 / an empty input; the rating sorted ascending; the name sorted descending or
+/// ignored; the identity tie-break missing (input order leaks through).
+#[test]
+fn top_identities_lists_at_most_k_in_ladder_order_sr4b_1() {
+    let id = |b: u8| Identity::from_byte_array([b; 32]);
+    // `Profile` is not `Clone`: each fixture row is rebuilt per use.
+    let bob = || sr4b_profile(id(2), "Bob", 1300);
+    let empty = || sr4b_profile(id(5), "", 1200);
+    let ann1 = || sr4b_profile(id(1), "Ann", 1200);
+    let ann3 = || sr4b_profile(id(3), "Ann", 1200);
+    let zoe = || sr4b_profile(id(4), "Zoe", -5);
+    let all = || vec![zoe(), ann3(), bob(), empty(), ann1()];
+    // The ladder: Bob; at 1200 the empty name, then "Ann" ([1; 32] before [3; 32]); Zoe.
+    let ladder = vec![id(2), id(5), id(1), id(3), id(4)];
+    let cases: Vec<(&str, Vec<Profile>, usize, Vec<Identity>)> = vec![
+        ("no profiles", vec![], 3, vec![]),
+        ("one profile", vec![zoe()], 3, vec![id(4)]),
+        (
+            "len == k",
+            vec![ann1(), empty(), bob()],
+            3,
+            ladder[..3].to_vec(),
+        ),
+        (
+            "len == k + 1: the last one is cut",
+            vec![ann3(), ann1(), empty(), bob()],
+            3,
+            ladder[..3].to_vec(),
+        ),
+        ("k = 0", all(), 0, vec![]),
+        ("len == k, all five", all(), 5, ladder.clone()),
+        ("len == k + 1, all five", all(), 4, ladder[..4].to_vec()),
+        ("k above the length", all(), 10, ladder),
+    ];
+    for (label, input, k, want) in cases {
+        assert_eq!(super::top_identities(input, k), want, "{label}");
+    }
+}
+
+/// Names compare by UTF-16 code units, the order the client's board sorts by: at one rating, a
+/// name opening with the supplementary-plane letter U+1D400 (a surrogate pair from 0xD835)
+/// ranks before one opening with U+FF21 (0xFF21), which UTF-8 byte order and code-point order
+/// both put first. Both are names `validate_name` accepts.
+///
+/// kills: names compared as Rust strings (bytes) or by chars; identity order standing in for
+/// the name order.
+#[test]
+fn top_identities_orders_names_by_utf16_code_units_sr4b_1() {
+    let bold_a = char::from_u32(0x1D400).expect("U+1D400 is a scalar value");
+    let wide_a = char::from_u32(0xFF21).expect("U+FF21 is a scalar value");
+    let supplementary = format!("{bold_a}x");
+    let fullwidth = format!("{wide_a}x");
+    for name in [&supplementary, &fullwidth] {
+        assert_eq!(
+            crate::guards::validate_name(name),
+            Ok(name.clone()),
+            "fixture: {name:?} is a name a player can choose"
+        );
+    }
+    assert!(
+        fullwidth < supplementary,
+        "fixture: Rust's string order puts the U+FF21 name first, so the case discriminates"
+    );
+    let id = |b: u8| Identity::from_byte_array([b; 32]);
+    let input = vec![
+        sr4b_profile(id(7), &fullwidth, 900),
+        sr4b_profile(id(9), "zz", 900),
+        sr4b_profile(id(8), &supplementary, 900),
+    ];
+    assert_eq!(
+        super::top_identities(input, 3),
+        vec![id(9), id(8), id(7)],
+        "\"zz\" (0x007A), then the U+1D400 name (0xD835), then the U+FF21 name (0xFF21)"
+    );
+}
+
+/// A full tie (rating and name) is broken by the identity's value, the big-endian hex order:
+/// two identities whose low and high bytes differ in opposite directions (the raw byte arrays
+/// order them the other way) and two that differ only in the high byte. k = 3 cuts the largest.
+///
+/// kills: identities compared by their little-endian byte array, or by a prefix of it.
+#[test]
+fn top_identities_breaks_a_full_tie_by_the_identity_value_sr4b_1() {
+    let with = |low: u8, high: u8| {
+        let mut b = [0x66; 32];
+        b[0] = low;
+        b[31] = high;
+        b
+    };
+    let raw = [
+        with(0x01, 0x02),
+        with(0x02, 0x01),
+        with(0x66, 0x09),
+        with(0x66, 0x08),
+    ];
+    let ids: Vec<Identity> = raw.iter().map(|b| Identity::from_byte_array(*b)).collect();
+    let mut want = ids.clone();
+    want.sort_by_key(|id| id.to_hex().to_string());
+    let mut by_bytes = raw;
+    by_bytes.sort();
+    let byte_order: Vec<Identity> = by_bytes
+        .iter()
+        .map(|b| Identity::from_byte_array(*b))
+        .collect();
+    assert_ne!(
+        byte_order, want,
+        "fixture: the raw byte-array order differs from the value order"
+    );
+    // `Profile` is not `Clone`: the input is rebuilt per call.
+    let input = || -> Vec<Profile> {
+        ids.iter()
+            .map(|&identity| sr4b_profile(identity, "Twin", 500))
+            .collect()
+    };
+    assert_eq!(
+        super::top_identities(input(), 4),
+        want,
+        "the four tied rows in value order"
+    );
+    assert_eq!(
+        super::top_identities(input(), 3),
+        want[..3].to_vec(),
+        "k = 3 cuts the largest value"
+    );
+}
+
+/// A guest claim re-keys a member over a full board: the guest (1800) is a member, the claimer
+/// has no profile, and 100 other profiles are rated above zero. After `rekey_profile` the
+/// claimer, carrying the guest's 1800, is a member; the guest's tombstone (rating 0) ranks below
+/// all 100 others and is gone; the board is the true ladder, changed by one delete and one
+/// insert.
+///
+/// kills: no rescan at the end of `rekey_profile` (the guest stays, the claimer stays out); a
+/// rescan run before the tombstone write (the guest's 1800 keeps it in); a rescan that rewrites
+/// every row.
+#[test]
+fn a_claim_over_a_full_board_swaps_the_guest_for_the_claimer_sr4b_2() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let (guest, claimer) = (rk_a(), rk_b());
+    sr4b_seed_fillers(&w, 0, 100, |i| 1 + (i as i32 * 37) % 1500);
+    w.seed_profile(guest, "Guest", 1800, 12, 3);
+    w.seed_true_board();
+    assert!(
+        w.is_member(guest) && !w.is_member(claimer),
+        "precondition: the guest is a member, the claimer has no profile"
+    );
+    fx.reset_writes();
+    super::rekey_profile(&fx.ctx(), guest, claimer);
+    assert_eq!(
+        w.profile(claimer).map(|p| p.1),
+        Some(1800),
+        "precondition: the claimer carries the guest's rating"
+    );
+    assert_eq!(
+        w.profile(guest).map(|p| p.1),
+        Some(0),
+        "precondition: the guest's row is tombstoned at 0"
+    );
+    assert_eq!(
+        w.members(),
+        w.true_top(),
+        "the board is the true ladder after the claim"
+    );
+    assert!(w.is_member(claimer), "the claimer's row is a member");
+    assert!(
+        !w.is_member(guest),
+        "the retired guest's tombstone ranks below the 100 others and is gone"
+    );
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        2,
+        "one delete (the guest) and one insert (the claimer)"
+    );
+}
+
+/// The same claim in a world of fewer than 100 profiles: every profile is a member (sr-4b.1),
+/// so the guest's zero-rated tombstone stays one beside the claimer.
+///
+/// kills: no rescan at the end of `rekey_profile` (the claimer stays out); a rescan that drops
+/// tombstoned or zero-rated rows.
+#[test]
+fn a_claim_in_a_small_world_keeps_the_guest_tombstone_a_member_sr4b_2() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let (guest, claimer) = (rk_a(), rk_b());
+    sr4b_seed_fillers(&w, 0, 10, |i| 900 + (i as i32 % 4) * 25);
+    w.seed_profile(guest, "Guest", 1300, 5, 2);
+    w.seed_true_board();
+    super::rekey_profile(&fx.ctx(), guest, claimer);
+    assert_eq!(
+        w.every_profile().len(),
+        12,
+        "precondition: ten others, the guest's tombstone and the claimer"
+    );
+    assert_eq!(w.members(), w.every_profile(), "every profile is a member");
+    assert!(w.is_member(claimer), "the claimer is a member");
+    assert!(
+        w.is_member(guest),
+        "the zero-rated tombstone still ranks in a world of fewer than 100"
+    );
 }

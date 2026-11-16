@@ -120,13 +120,13 @@ export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
 export const TOMBSTONE_IDENTITY_HEX_E2E =
   '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
-// THE 63-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// THE 64-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
 // entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:1|battle_summary_reaper_schedule:NotOwned::0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|last_position:Erase:owner_identity:0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|move_intent:ViaJoin(player)::0|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:1|player_handle:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:1|battle_summary_reaper_schedule:NotOwned::0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|last_position:Erase:owner_identity:0|leaderboard_top:Anonymize:identity:0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|move_intent:ViaJoin(player)::0|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:1|player_handle:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED (red-team MEDIUM-8): the
@@ -1140,9 +1140,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 63) {
+  if (!Array.isArray(entries) || entries.length !== 64) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 63',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 64',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1156,7 +1156,14 @@ export function checkCascadeTruth(input) {
   const allowed = new Set(allowlist.map(([t]) => t));
   const vacuous = [];
   let seededSum = 0;
-  const anonymizeHandled = new Set(['account', 'player', 'profile', 'battle', 'battle_summary']);
+  const anonymizeHandled = new Set([
+    'account',
+    'player',
+    'profile',
+    'battle',
+    'battle_summary',
+    'leaderboard_top',
+  ]);
 
   for (const e of entries) {
     if (e.policy === 'Erase') {
@@ -1271,6 +1278,41 @@ export function checkCascadeTruth(input) {
     return fail(
       '[s9/profile-tombstone] the profile row is missing or not tombstoned: ' +
         JSON.stringify(post.profile),
+    );
+  }
+  // sr-4b `leaderboard_top` (Anonymize): the membership survives the cascade re-derived — the
+  // anonymize step rescans it after tombstoning A's profile name. The e2e world holds far fewer
+  // than 100 profiles, so every profile row is a member, A's tombstoned row included.
+  const lt = post.leaderboardTop;
+  if (
+    !lt ||
+    !Array.isArray(lt.members) ||
+    !Array.isArray(lt.profiles) ||
+    typeof lt.aMember !== 'boolean'
+  ) {
+    return fail('[s9/leaderboard-unattempted] no leaderboard_top census was taken post-cascade');
+  }
+  if (lt.profiles.length >= 100) {
+    return fail(
+      '[s9/leaderboard-world] ' +
+        lt.profiles.length +
+        ' profiles: the every-profile-is-a-member assert needs fewer than 100',
+    );
+  }
+  const ltMembers = [...lt.members].sort().join(',');
+  const ltProfiles = [...lt.profiles].sort().join(',');
+  if (ltMembers !== ltProfiles) {
+    return fail(
+      '[s9/leaderboard-membership] after the cascade leaderboard_top holds [' +
+        ltMembers +
+        '] but the profile rows are [' +
+        ltProfiles +
+        ']: with fewer than 100 profiles every profile is a member',
+    );
+  }
+  if (lt.aMember !== true) {
+    return fail(
+      '[s9/leaderboard-anonymized-member] the deleted account`s anonymized profile is not a member: the cascade dropped or never re-derived its row',
     );
   }
   if (!post.battle1 || post.battle1.present !== true) {
@@ -2609,6 +2651,18 @@ async function runLivePhase() {
         const pr = await sqlJsonRows('SELECT name FROM profile WHERE identity = ' + refs.aHex);
         snap.profile =
           pr.length === 1 ? { present: true, name: String(pr[0].name) } : { present: false };
+        // sr-4b: the leaderboard membership and the profile identities it is derived from.
+        const ltMembers = (await sqlJsonRows('SELECT identity FROM leaderboard_top')).map((r) =>
+          identityCellHex(r.identity),
+        );
+        const profileIds = (await sqlJsonRows('SELECT identity FROM profile')).map((r) =>
+          identityCellHex(r.identity),
+        );
+        snap.leaderboardTop = {
+          members: ltMembers,
+          profiles: profileIds,
+          aMember: ltMembers.includes(normHex(refs.aHex)),
+        };
         const b1 = await sqlJsonRows(
           'SELECT player_identity, opponent_identity FROM battle WHERE battle_id = ' +
             refs.battle1Id,
