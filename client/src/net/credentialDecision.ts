@@ -8,6 +8,26 @@
 // a real behaviour test — see credentialDecision.test.ts (G16).
 
 /**
+ * Whether this connection may sign in to an account at all. `'off'` (a single-player world, a
+ * friends server, or a build that names no issuer) builds no OIDC client: every connection is
+ * anonymous and no OIDC request is ever made.
+ */
+export type SignInMode = 'oidc' | 'off';
+
+/**
+ * Pure decision: may this credential attempt reach the OIDC client? Only in `'oidc'` mode, and
+ * only when the tab was ever signed in to an account on this target (`everAuthenticated`) or this
+ * attempt carries the OIDC return leg (`returnLeg`). Any mode other than exactly `'oidc'` is off.
+ */
+export function mayReachOidc(input: {
+  readonly signIn: SignInMode;
+  readonly everAuthenticated: boolean;
+  readonly returnLeg: boolean;
+}): boolean {
+  return input.signIn === 'oidc' && (input.everAuthenticated || input.returnLeg);
+}
+
+/**
  * The result of `oidc.renewOrExchange()`. `reason` on `exchange-failed` is ALREADY
  * mapped onto a static kebab-case string by `oidc.classifySignInReason` — this module
  * forwards it byte-for-byte and never re-classifies (AUTH-57 / G21).

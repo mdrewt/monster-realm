@@ -2120,12 +2120,16 @@ assignment that keeps it only for `official` or `test`; any other kind holds the
 one value goes to `connect` and to `signInOffer` (`client/src/ui/claimModel.ts`), which decides
 whether the Profile screen's Account section offers Sign In and under which name: the build's
 `VITE_MR_OIDC_PROVIDER_NAME`, or the issuer string when the build names none.
-`VITE_MR_OIDC_CLIENT_ID` reaches `connect` under the same kind test. A production document that
-omits `kind` resolves to `private`, so it gets neither. The OTLP endpoint stays a build value; the
+`VITE_MR_OIDC_CLIENT_ID` reaches `connect` under the same kind test, and `connect` gets
+`signIn: 'oidc'` only when that issuer is non-empty, `'off'` otherwise. With `'off'` it builds no
+OIDC client (`mayReachOidc` in `client/src/net/credentialDecision.ts` keeps every attempt
+anonymous, and `startSignIn` only reports `'sign-in-off'`), so no OIDC request leaves the page
+whatever its URL or storage holds. A production document that omits `kind` resolves to `private`,
+so it gets neither. The OTLP endpoint stays a build value; the
 run-time decision is only whether to use it. Two tests hold both gates:
 `client/src/observability/config.test.ts` (every kind but `official` and `test` resolves disabled)
 and `client/src/main.targetKindGate.test.ts` (boots `main.ts` under each kind, and reads the Sign In
-control and the connection's sign-in calls). The control reads "Sign in / create account with
+control, the connection's sign-in calls and, through the real connection, every OIDC request). The control reads "Sign in / create account with
 <provider>" (`claim.signInWithProvider`), because registration happens at the provider (operator
 ruling, <https://github.com/mdrewt/monster-realm/issues/588>). The e2e build sets the server's
 placeholder issuer `https://auth.monster-realm.invalid/` and a provider name
@@ -2152,11 +2156,10 @@ document would carry it); reading `import.meta.env.VITE_MR_OIDC_ISSUER` anywhere
 assignment, or deciding the Sign In control from anything but the value `connect` received (a second
 read or a second kind test lets the control and the connection disagree); treating the hidden
 control or the empty issuer as a complete off switch (hiding is presentation: a hidden button still
-dispatches, so the `claimSignIn` command checks the offer itself; and a tab that holds a stored
-refresh token or a sign-in redirect's code still runs the token exchange at connect, which with an
-empty issuer fetches discovery from the page's own origin and fails unless that origin serves one;
-the `connect` gate is the boundary that keeps the build's issuer and client id from a server we do
-not operate). Client logic that assumes a provider, or a provider label derived by parsing the
+dispatches, so the `claimSignIn` command checks the offer itself; and an OIDC client built with an
+empty issuer still consumes a sign-in redirect's code and runs the token exchange for a tab that
+holds an account marker, fetching discovery from the page's own origin, which is why `'off'` builds
+no client at all). Client logic that assumes a provider, or a provider label derived by parsing the
 issuer URL (the OIDC flow already refuses an issuer it cannot use). A per-world telemetry opt-in or
 per-world sign-in changes these two gates and their tests, not a side path.
 
