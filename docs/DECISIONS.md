@@ -259,9 +259,13 @@ entered, so an unchanged membership writes nothing. The client subscribes
 plus its own row by identity. A member that leaves the top 100 arrives as a profile delete
 (`store.removeProfile`); the SDK counts rows per primary key across queries, so the own row
 survives leaving the top 100.
+The client ranks the rows it holds (`ui/leaderboardModel.ts` `buildLeaderboardViewModel`). It
+shows the top `LEADERBOARD_TOP_K` with their ranks, and when the caller is not among them, it adds
+the caller's own row marked `100+` (`RANK_BELOW_TOP_K`). The client holds no profile below the top
+100, so a true rank there cannot be computed.
 
 **Why.** A whole-table `profile` subscription sent every profile to every joining client:
-2,440,224 bytes at 50,002 profiles, against 5,041 bytes for the join and the own row (measured
+2,440,223 bytes at 50,002 profiles, against 5,041 bytes for the join and the own row (measured
 2026-11-16). The membership is an invariant recomputed from `profile`, not an incremental guess,
 and display data stays in `profile`, so a rename or a tombstone needs no second write. One rescan
 costs about 7.5 ms of reducer thread at 50,000 profiles, and profile writes come at human rates.
@@ -793,10 +797,17 @@ global interpolation delay.
 (`TARGET_VISIBLE_TILES` 11, clamped to 7..16 in `client/src/render/config.ts`). The CSS
 stage scale is that integer divided by `devicePixelRatio`, so it is fractional whenever
 the ratio is not 1. When the map is smaller than the viewport, the camera centres it.
+Terrain chunk textures bake at resolution 1 with nearest sampling at every device scale
+(`client/src/render/terrainLayout.ts` `CHUNK_TEXTURE_OPTIONS`). The integer device scale upsamples
+each texel to a whole number of device pixels, so a device-scale change re-bakes nothing; a
+context restore still re-bakes.
 
 **Why.** Non-integer scaling blurs or shimmers pixel art.
+A chunk baked at the device scale costs 4 KB × scale² per tile, about 165 MB for today's zone on a
+4K display. At resolution 1 it costs 4 KB per tile, about 10 MB.
 
-**Rules out.** Fractional device scales; fitting the map by stretching.
+**Rules out.** Fractional device scales; fitting the map by stretching; baking terrain at the
+device scale, or re-baking it when the device scale changes.
 
 ## Evolution graph and the auto-evolve rule
 
@@ -2176,3 +2187,106 @@ makes it history.
 
 **Rules out.** Failing the `e2e` job for a test that passed on a rerun; a flake entry that outlives
 its merged fix; a second flake list beside the register.
+
+## The party is read through an `(owner_identity, party_slot)` index
+
+**Decision.** The private `monster` table has two indexes over its owner
+(`server-module/src/schema.rs`). The single-column `owner_identity` serves reads that need every
+monster an owner holds: re-key, erase, export and `has_monsters`. `owner_party` is a btree over
+`(owner_identity, party_slot)`. Every party read on a per-input or per-tick path goes through its
+`(owner, 0..PARTY_SLOT_NONE)` range, which yields the party in slot order. Those reads are
+`battle::lead_party_ids` (every accepted `enqueue_move`, the tick's band check, the tactical start,
+`refresh_lead_level`) and `monster_mgmt::set_party_slot`'s occupied-slot read; `raising::heal_party`,
+once per heal, still filters `owner_identity`. A compile-time
+assert in `battle.rs` pins `PARTY_SLOT_NONE == u8::MAX`, because only then does the range mean
+"not in Storage".
+
+**Why.** Storage has no cap, and the owner filter read every monster the player held on every
+input. With 1,000 Storage monsters, `enqueue_move` cost 13.9 times its cost with one (549.9 µs
+against 39.6 µs). Through the range it costs 1.37 times (57.6 µs against 42.0 µs), and a control
+shows that the remainder follows the table's size, not the owner's Storage (`mr_load_driver`, 20
+clients, median of 5).
+
+**Rules out.** Reading the party on a per-input path through `owner_identity` and dropping Storage
+rows; capping
+Storage to bound per-input cost; a `PARTY_SLOT_NONE` other than `u8::MAX` without changing the
+range.
+
+## Owner views are rebuilt only when dirty
+
+**Decision.** `client/src/net/viewReconcile.ts` owns the owner-view reconciles and a dirty set
+(`createOwnerViewReconciler`: `markDirty`, `markAllDirty`, `reconcileOwnerViews`). A batch rebuilds
+a view from the SDK cache only when that view is dirty. Each view's `onInsert`/`onDelete` handler
+marks it: `connection.ts` loops over `OWNER_VIEWS`, and there is no `onUpdate` and no per-row store
+write. `markAllDirty` runs in three places: beside `store.reset()` on a drop, after every build's
+`wireTables`, and first in the base subscription's `onApplied`. A view is cleared once its
+reconcile returns. A throw leaves that view, and the later dirty views of its try group, dirty for
+the next batch. Every non-view row handler is wrapped in `recoverViewsOnThrow`, which marks every
+view, schedules the flush and rethrows. A new owner view gets a `RECONCILE` entry and a
+`TRY_GROUPS` slot.
+
+**Why.** Rebuilding every owner view (thirteen when measured) on every batch cost about 0.5 ms with 1,000 Storage
+monsters. That included a batch of only `character` and `player` rows, which arrives on every
+movement step. With the dirty set that batch costs about 0.0005 ms (node, median of 400). A view's
+update arrives as an unordered insert and delete pair, so a rebuild stays whole-view and is read
+from the cache; only how often it runs changed. The SDK's dispatch loop has no try/catch, so a
+throwing row handler skips the rest of a message whose rows are already cached. Without marking
+every view on a throw, those views would stay stale and clean.
+
+**Rules out.** Rebuilding every view on every batch; writing a view's rows into the store from its
+row handlers; a row handler that throws without marking every view.
+
+## Load is measured at the client's scope: `mr_load_driver`, a nightly smoke, reducer share by reducer
+
+**Decision.** `sim-harness/src/bin/mr_load_driver.rs` is the load tool. Each bot holds what a
+walking client holds of `player` and `character`: `SELECT * FROM player`, byte-identical to the
+client's, plus its per-zone `character` queries. It holds none of the client's other tables, which
+walking does not write. The report gives each level's received bytes per client per second,
+as a mean and for the worst bot (`rx_bytes_per_client_per_s`, `rx_bytes_per_client_per_s_max`),
+over the driver's own scrape window. `MAX_CLIENTS` is 1,000. With `--fail-on-invalid`, an invalid
+level exits 3. The nightly `load-smoke` job publishes the default module build to an in-memory
+host and runs `just load-smoke` (20 clients, one level, `--fail-on-invalid`), so the nightly goes
+red when a level is invalid: no bot joins, a bot's zone scope never settles, or no move reaches
+the server. A level where every move is rejected stays valid, as a measurement of a saturated
+server. Runs over many zones use the load-only build from `just load-host`
+(see "Dev-only reducers never ship"). Reducer-thread share is the recording rule
+`mr:reducer_thread_share:rate5m`, `sum by (reducer) (rate(spacetime_txn_elapsed_time_sec_sum[5m]))`
+(`ops/observability/rules/recording.rules.yml`). `promtool test rules` tests it under
+`just observability-validate`.
+
+**Why.** The host's `spacetime_num_bytes_sent_to_clients_total` counts a delta once, not once per
+subscriber, so only a client's received bytes measure fan-out, and a bot that subscribes less than
+the client under-counts it. The host series also holds each reducer's `Update` rows beside its
+`Reducer` rows, and non-reducer transactions as one series with no reducer label. The rule's total
+is therefore transaction-seconds per second and can exceed 1.0. It is a share by reducer, not a
+utilisation.
+
+**Rules out.** A host-side byte counter as the per-client budget signal; a driver whose
+subscription differs from the client's; a CI load run that exits 0 on an invalid level.
+
+## The official server is sized for 1,000 concurrent players over 100 zones
+
+**Decision.** The operator set the official server's population target on 2026-11-12 (the
+harness's `game-design.md` §14). The world has up to about 100 zones. A zone holds 8–12 players
+on average, and about 50 in a few zones. The world holds about 600 concurrent players on average
+and about 1,000 at peak. It stores 50,000 accounts; that count is a default, not an operator
+figure. The budgets every population-scaled cost is held
+to are:
+- a zone tick's p95 under `STEP_MS`;
+- input round-trip p95 under 50 ms;
+- download under 20 KB/s per client;
+- the reducer thread under 50% at a 30% walking share.
+
+The run of record is `mr_load_driver` against `just load-host`: 1,000 clients over 100 zones, one
+zone filled to 50, 30% walking. A breached budget becomes a follow-up. Revisit the target if the
+game outgrows it.
+
+**Why.** Single-player and private worlds run on a player's own machine and are budgeted in
+`docs/local-play.md`. Only the official server holds many players, so it alone sizes scaling work.
+A client's download follows the walkers in its subscription scope: about 0.85 KB/s plus 0.077 KB/s
+per walker, measured in one zone up to 100 walkers. By that line the 20 KB/s budget is reached near
+220 walkers in one zone; that figure is extrapolated, not measured. The reducer thread is one writer
+for the whole world. The target also sets `battle_summary`'s cap and the leaderboard's rescan size.
+
+**Rules out.** Sizing scale work from playtest populations, where 2–5 players hide every such cost;
+a per-input, per-batch or per-join cost that grows with stored accounts or monsters owned.
