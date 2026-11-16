@@ -1440,7 +1440,11 @@ pub struct BattleEvent {
 }
 
 /// PRIVATE per-battle telemetry (design §8.1 `battle_summary`): one row per
-/// finished battle, the H1 and H2 match-length source. NO view. Capped at the
+/// battle, inserted zeroed the first time a step of it is stored (at the latest
+/// when it closes), accumulated while it runs and finalised when it ends; the H1
+/// and H2 match-length source. NO view; a
+/// participant's data export carries it with the other side redacted
+/// (`privacy::json_battle_summary`). Capped at the
 /// newest `summary_reaper::BATTLE_SUMMARY_CAP` rows by `battle_id`; a row whose
 /// battle is still held by `battle` or `battle_tactical` is never reaped. The two
 /// identity columns mirror `battle` (a wild battle's `opponent_identity` is
@@ -1491,7 +1495,8 @@ pub struct BattleSummary {
 
 /// PRIVATE remembered formation (design §3.3, §8.1 `player_formation`): the
 /// owner's preferred deploy order, at most three monster ids. One row per
-/// owner (the identity IS the key); owner-only read path (`my_formation`).
+/// owner (the identity IS the key); owner-only read path (`my_formation`), and
+/// the owner's data export carries it.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = player_formation)]
 pub struct PlayerFormation {
@@ -2027,8 +2032,8 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "player_formation",
         policy: DeletionPolicy::Erase,
-        basis: "the owner remembered deploy order, deleted outright at cascade time; re-keyed by the claim flow; never exported",
-        exportable: false,
+        basis: "the owner remembered deploy order, deleted outright at cascade time; re-keyed by the claim flow; exported as the owner row",
+        exportable: true,
     },
     DataLifecycleEntry {
         table: "player_handle",
@@ -2073,8 +2078,8 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "battle_summary",
         policy: DeletionPolicy::Anonymize,
-        basis: "per-battle telemetry (the H1 and H2 match-length source) survives with the deleting side identity column swapped to TOMBSTONE_IDENTITY, mirroring battle; capped by summary_reaper at the newest BATTLE_SUMMARY_CAP rows by battle_id, never reaping a row whose battle or battle_tactical row still exists; never exported",
-        exportable: false,
+        basis: "per-battle telemetry (the H1 and H2 match-length source) survives with the deleting side identity column swapped to TOMBSTONE_IDENTITY, mirroring battle; capped by summary_reaper at the newest BATTLE_SUMMARY_CAP rows by battle_id, never reaping a row whose battle or battle_tactical row still exists; exported for every battle the owner is a side of, the other side identity and per-side columns as the null literal, as battle is",
+        exportable: true,
     },
     // --- JOIN-ONLY: no Identity column; swept via the owning parent's step. ---
     DataLifecycleEntry {
