@@ -2303,10 +2303,10 @@ a verifier compiled in, against a `kid`-keyed list of accepted attestation keys 
 then records the binding; the world needs no network afterwards. The route rate-limits binds per
 account and does not keep the world an attestation was addressed to past the request. In the client
 the attestation is fetched behind one source interface, beside the sign-in seam
-(`ConnectCredential`). The official server refuses attestation binding outright. Operator ruling,
+(`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-6). Operator ruling,
 <https://github.com/mdrewt/monster-realm/issues/821>; the design and its open conditions (the
 verifier spike, the official server's refusal, the relay between private worlds) are
-`docs/local-play.md` §3 and the harness spec `M-local-play.spec.md` (lpw-7, lpw-8, lpw-15).
+`docs/local-play.md` §3 and the harness spec `M-local-play.spec.md` (lpw-7, lpw-8, lpw-15). Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
 
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
 itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
@@ -2366,3 +2366,65 @@ worlds, as Minecraft's online mode binds its session check to the server's key.
 warning; trusting a self-signed certificate without the invite's fingerprint in the shell;
 regenerating a world's certificate on restart or upgrade (every friend's pin would break); a relay
 or tunnel service we operate to carry friends' traffic; requiring every host to own a domain.
+
+## Every player must own the game on Steam, for now
+
+**Decision.** Playing requires owning the game on Steam, in every way to play: the official
+server, a friend's server and a single-player world, and in a browser as well as the desktop
+build. On the official server `join_game` admits only a connection whose token, from our account
+service, carries the entitlement claim `mr_ent: ["base-game"]`; in a single-player or friends world
+it admits only a connection bound by an attestation that carried it (see "A private world verifies
+an account by a per-world attestation our account service signs"). The account service issues the
+claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence held by the player
+themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
+removes entitlement at the next issuance (an hour at most on the official server). Test and dev
+builds of the module do not enforce it, so the e2e suite and local development still join
+anonymously; the build input that switches it on is designed by the harness spec's lpw-8 (e) and
+built by acs-8 and lpw-15. Operator ruling, 2026-11-16 ("for now, all players, including browser
+players, must own the game in order to play").
+
+**Why.** The operator's ruling. The claim is checked by the module, not implied by the issuer, so
+a later free tier or demo changes what the service issues, not the module. Enforcing in `join_game`
+covers every gameplay reducer, because a player row exists only through it. Checking ownership at
+every issuance, not once, lets a refund or a ban reach the official server within a token's life.
+
+**Rules out.** Anonymous (guest) play on an enforcing build; the guest claim flow stays built
+("Accounts, guest identity and the claim flow") and is unreachable there until the ruling changes.
+A sign-in method that cannot prove a Steam licence (Google, Discord, email) for players. Treating a
+Family Sharing borrower as an owner (one policy function in the account service changes it). Known
+limits, accepted: a host can patch the module on its own server to switch the rule off, and a
+player refunded after binding a world keeps playing there until its host removes them.
+
+## The account service is our own small OIDC issuer; Steam is the only player sign-in
+
+**Decision.** One service in this repository (`account-service/`, TypeScript) built on
+`oidc-provider` 9.x (MIT, OpenID Certified) is the issuer every module trusts. Players sign in two
+ways, both giving the subject `steam:<steamid64>` so a browser and a desktop session are one
+account: the desktop shell exchanges a Steam ticket (`GetAuthTicketForWebApi` with the identity
+`monster-realm-account`, checked by `AuthenticateUserTicket`) at a custom grant; a browser uses
+authorization code with PKCE, where the service's sign-in step is Steam's OpenID 2.0, verified with
+`check_authentication` and exact checks of the return address, endpoint, claimed id and a
+single-use nonce. Both check ownership before issuing. ID tokens are ES256 and live an hour;
+browser refresh tokens live 30 days and rotate, and reusing a rotated one revokes its chain. A
+separate deployment with its own issuer name and keys offers email and password for development
+and QA only, with accounts made by an admin command. The same service signs world attestations
+with a separate key. Storage is one SQLite file on one instance; discovery and the key set are also
+served from a CDN; signing keys live in the host's key service through external signing. Built by
+the harness spec `M-account-service.spec.md`; the never-deployed Better Auth recipe in `ops/auth/`
+is replaced by its deployment slice (acs-7).
+
+**Why.** SpacetimeDB trusts only an OIDC issuer's signed JWTs, and Steam issues none, so a service
+of ours must check Steam and sign. A certified provider library carries the protocol (codes, PKCE,
+refresh rotation, discovery, keys) so the code we write is only the Steam steps, the ownership rule
+and the attestation. SpacetimeAuth, Clockwork Labs' hosted issuer, exchanges Steam tickets and
+reports owned apps, but has no Steam sign-in for a browser, gives its own user id as the subject (a
+browser and a desktop session would be two accounts) and has no per-world attestation; it is also in
+beta. Better Auth has no official Steam method, and the ticket grant and attestation would be ours
+either way. BitCraft, Clockwork Labs' own Steam game on SpacetimeDB, appears from third-party
+tooling to sign in through its own API: the same shape, though unconfirmed.
+
+**Rules out.** SpacetimeAuth or Better Auth as the issuer (revisit SpacetimeAuth if it gains a
+browser Steam sign-in and SteamID subjects); a second issuer for players beside this one; the dev
+password method or a dev key in a production deployment (the service refuses to start);
+refresh tokens for the desktop (it exchanges a fresh ticket); the publisher key anywhere but the
+service's secret store, read by one module and never logged.

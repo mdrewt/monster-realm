@@ -1,5 +1,7 @@
 # Better Auth issuer (Monster Realm accounts)
 
+> **Superseded (2026-11-16).** The account issuer is now this repository's own `account-service/` (`docs/DECISIONS.md` "The account service is our own small OIDC issuer; Steam is the only player sign-in"). This Better Auth recipe was never deployed; it is replaced by the harness spec `M-account-service.spec.md` acs-7.
+
 The deployment recipe for the self-hosted OIDC issuer behind player accounts.
 SpacetimeDB derives an account's `Identity` from a verified JWT's issuer and subject,
 so this service is on the authentication path, and losing its database orphans every

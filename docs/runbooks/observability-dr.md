@@ -126,6 +126,8 @@ host-side permissions. Do not grant the containers extra capabilities; they run 
 
 ## 7. Identity provider (Better Auth)
 
+> **Superseded (2026-11-16).** The issuer is now `account-service/` (`docs/DECISIONS.md` "The account service is our own small OIDC issuer; Steam is the only player sign-in"); its runbook replaces this section in the harness spec `M-account-service.spec.md` acs-7. The custody rules below (the database is on the authentication path; keep signing keys out of the routine backup) still hold.
+
 The issuer in `ops/auth/` (loopback port 8443, SQLite) is backed up separately from the
 game (`restic` tag `better-auth`). Losing it is worse than losing the game database:
 SpacetimeDB derives each account's `Identity` from the token's issuer and subject, so
