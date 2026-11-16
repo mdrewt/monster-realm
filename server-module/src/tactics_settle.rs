@@ -418,11 +418,16 @@ fn zero_row(anchor: &Battle, tactical: &BattleTactical) -> BattleSummary {
     }
 }
 
-/// The battle's summary row, inserted zeroed when absent (the given anchor and tactical rows).
+/// The battle's summary row, inserted zeroed when absent (the given anchor and tactical rows). An
+/// insert that takes the table over its cap arms the summary reaper.
 fn summary_row(ctx: &ReducerContext, anchor: &Battle, tactical: &BattleTactical) -> BattleSummary {
     match ctx.db.battle_summary().battle_id().find(anchor.battle_id) {
         Some(row) => row,
-        None => ctx.db.battle_summary().insert(zero_row(anchor, tactical)),
+        None => {
+            let row = ctx.db.battle_summary().insert(zero_row(anchor, tactical));
+            crate::summary_reaper::arm_battle_summary_reaper(ctx);
+            row
+        }
     }
 }
 

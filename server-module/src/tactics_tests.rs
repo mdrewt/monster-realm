@@ -593,6 +593,7 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
         summaries: fx
             .table_keyed::<BattleSummary, u64>("battle_summary", "battle_id", |r| r.battle_id)
             .writable()
+            .scannable()
             .unique(),
         formations: fx
             .table::<PlayerFormation>("player_formation", "owner_identity", |r| r.owner_identity)

@@ -160,6 +160,7 @@ pub fn init(ctx: &ReducerContext) {
     sync_content_inner(ctx).expect("content seeding failed on init");
     ensure_zone_schedules(ctx);
     crate::playtest::ensure_playtest_reaper(ctx);
+    crate::summary_reaper::ensure_battle_summary_reaper(ctx);
     crate::observability::ensure_mr_heartbeat(ctx);
     crate::accounts::ensure_deletion_reapers_armed(ctx);
     crate::privacy::ensure_export_bundle_reaper(ctx);
@@ -196,6 +197,7 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     sync_content_inner(ctx)?;
     ensure_zone_schedules(ctx);
     crate::playtest::ensure_playtest_reaper(ctx);
+    crate::summary_reaper::ensure_battle_summary_reaper(ctx);
     crate::observability::ensure_mr_heartbeat(ctx);
     crate::accounts::ensure_deletion_reapers_armed(ctx);
     crate::privacy::ensure_export_bundle_reaper(ctx);
