@@ -218,7 +218,7 @@ at a cap.
 **Decision.** Any table holding per-player state another player must not see is
 private (no `public` in its `#[spacetimedb::table]`). Each owner reads their own rows
 through a `#[spacetimedb::view]` whose body filters on `ctx.sender()`
-(`server-module/src/schema.rs`): `my_monster_pub`, `my_inventory`, `my_wallet`,
+(`server-module/src/schema.rs`): `my_monster_pub`, `my_inventory`, `my_player_quest`, `my_wallet`,
 `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_battle` (either
 participant), `my_trade_session` (either participant), `my_export_bundle` (`privacy.rs`), and the tactical set (`my_tactical_battle`,
 `my_battle_units`, `my_battle_events`, `my_battle_clock` for either participant;
@@ -233,13 +233,14 @@ an account's character stood at its last disconnect), `heal_cooldown`,
 `guest_claim`, `player_session`.
 
 **Why.** Hidden stats, item stock, balances and a pending PvP pick are competitive
-information. The view body is the entire boundary, so each view takes only the
+information. Quest progress is personal, and a public table sends every player's rows to
+every client, a cost that grows with the stored accounts. The view body is the entire boundary, so each view takes only the
 context: an extra "owner" parameter would let a caller choose whose rows to read.
 
 **Rules out.** Marking a per-player table `public`; a view that takes an identity
 argument. Tables that are public on purpose: content, `character`, `player`,
-`profile` (the leaderboard), `battle_challenge` (both parties need it),
-`player_quest`, and `trade_offer`, which is drain-only: no reducer inserts a row, and
+`profile` (the leaderboard), `battle_challenge` (both parties need it), and
+`trade_offer`, which is drain-only: no reducer inserts a row, and
 a row still in it leaves by `cancel_trade`, a disconnect, account deletion or its TTL
 reaper.
 
