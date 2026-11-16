@@ -264,7 +264,7 @@ survives leaving the top 100.
 2,440,224 bytes at 50,002 profiles, against 5,041 bytes for the join and the own row (measured
 2026-11-16). The membership is an invariant recomputed from `profile`, not an incremental guess,
 and display data stays in `profile`, so a rename or a tombstone needs no second write. One rescan
-costs about 7.7 ms of reducer thread at 50,000 profiles, and profile writes come at human rates.
+costs about 7.5 ms of reducer thread at 50,000 profiles, and profile writes come at human rates.
 Names compare by UTF-16 code units because the client ranks the rows it holds with JavaScript's
 `<` (`ui/leaderboardModel.ts`), and the two orders must agree at the 100th place.
 
