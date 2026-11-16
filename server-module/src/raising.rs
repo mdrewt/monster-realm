@@ -223,10 +223,6 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     Ok(())
 }
 
-/// Minimum ms between heals (used by raising_tests.rs; heal_party uses loc.cooldown_ms).
-#[cfg(test)]
-pub(crate) const HEAL_COOLDOWN_MS: i64 = 30_000;
-
 /// Pure cooldown seam (testable without DB). Delegates the elapsed check to the
 /// SSOT `game_core::is_cooldown_ready` — the SAME predicate `care` uses
 /// — instead of open-coding a second `saturating_sub`/`<` copy. Ready ⟺ elapsed
