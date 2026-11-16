@@ -1822,5 +1822,19 @@
     "unique": [],
     "indexes": [],
     "scheduled": "battle_summary_reaper"
+  },
+  "leaderboard_top": {
+    "pk": "identity",
+    "visibility": "public",
+    "columns": {
+      "identity": "Identity"
+    },
+    "order": [
+      "identity"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   }
 }

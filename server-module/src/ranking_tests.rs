@@ -1431,7 +1431,10 @@ fn a_rating_tie_at_the_100th_is_broken_by_the_anonymized_name_sr4b_1() {
         w.true_top(),
         "the board is the true ladder after the anonymize"
     );
-    assert!(w.is_member(zed), "the tombstoned name moved Zed into the 100th");
+    assert!(
+        w.is_member(zed),
+        "the tombstoned name moved Zed into the 100th"
+    );
     assert!(!w.is_member(mia), "and Mia out to the 101st");
     assert_eq!(
         fx.writes_to("leaderboard_top"),
@@ -1562,7 +1565,12 @@ fn top_identities_lists_at_most_k_in_ladder_order_sr4b_1() {
     let cases: Vec<(&str, Vec<Profile>, usize, Vec<Identity>)> = vec![
         ("no profiles", vec![], 3, vec![]),
         ("one profile", vec![zoe()], 3, vec![id(4)]),
-        ("len == k", vec![ann1(), empty(), bob()], 3, ladder[..3].to_vec()),
+        (
+            "len == k",
+            vec![ann1(), empty(), bob()],
+            3,
+            ladder[..3].to_vec(),
+        ),
         (
             "len == k + 1: the last one is cut",
             vec![ann3(), ann1(), empty(), bob()],

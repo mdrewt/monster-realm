@@ -1661,10 +1661,7 @@ pub(crate) fn ladder_oracle(profiles: &[crate::schema::Profile], k: usize) -> Ve
 /// `ids` as their hex strings, sorted: a membership compared as a multiset (a duplicate
 /// member shows up as a duplicate string).
 pub(crate) fn sorted_hexes(ids: impl IntoIterator<Item = Identity>) -> Vec<String> {
-    let mut out: Vec<String> = ids
-        .into_iter()
-        .map(|id| id.to_hex().to_string())
-        .collect();
+    let mut out: Vec<String> = ids.into_iter().map(|id| id.to_hex().to_string()).collect();
     out.sort();
     out
 }

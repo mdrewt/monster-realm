@@ -13,11 +13,17 @@
 //! `refresh_profile_name` + `live_player_name` implement the passive
 //! display-name mirror and are exercised directly by ranking_tests.rs via
 //! `super::`.
+//!
+//! This module also owns `leaderboard_top`, the leaderboard's membership:
+//! every function here that writes `profile` ends its transaction's profile
+//! writes with `refresh_leaderboard_top`, a full rescan that leaves exactly the
+//! top `LEADERBOARD_TOP_K` identities in the table.
 
 use crate::guards::{log_reject, validate_name};
-use crate::schema::{player, profile, Battle, Player, Profile};
+use crate::schema::{leaderboard_top, player, profile, Battle, LeaderboardTop, Player, Profile};
 use game_core::BattleOutcome;
 use spacetimedb::{Identity, ReducerContext, Table};
+use std::collections::BTreeSet;
 
 /// Find-or-insert the `profile` row for `identity` — the total seam that
 /// makes the rating path infallible (RL-1).
@@ -84,7 +90,8 @@ fn live_player_name(ctx: &ReducerContext, identity: Identity) -> Option<String> 
 /// unrepresentable. No-op (early return) unless the battle is ranked PvP
 /// (`guards::is_ranked_pvp` — wild and practice self-battles never rate,
 /// RL-6) AND the outcome is decisive. Profile rows are updated in place,
-/// NEVER deleted (RL-2).
+/// NEVER deleted (RL-2). After both writes the leaderboard membership is
+/// rescanned; the early returns write no profile and rescan nothing.
 pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
     if !crate::guards::is_ranked_pvp(battle) {
         return;
@@ -116,6 +123,7 @@ pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
         losses: loser.losses.saturating_add(1),
         ..loser
     });
+    refresh_leaderboard_top(ctx);
 }
 
 /// Rename the caller's display name. The single client-callable
@@ -210,7 +218,8 @@ fn tombstoned_profile(guest: Profile) -> Profile {
 /// Re-key the guest's ranked profile onto `to`: copy stats forward onto the
 /// destination row (created via the single `get_or_init_profile` insert seam if
 /// absent — no new insert site), THEN zero and tombstone the guest's OWN row in
-/// place. NEVER deletes a `profile` row. Called only from
+/// place, then rescans the leaderboard membership (the claimer can enter it and
+/// the zeroed guest row can leave it). NEVER deletes a `profile` row. Called only from
 /// `accounts::rekey_all`. Reads the guest via `match`, not a split-binding.
 /// No-op when the guest never played ranked.
 pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) {
@@ -234,6 +243,7 @@ pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) 
         .profile()
         .identity()
         .update(tombstoned_profile(guest));
+    refresh_leaderboard_top(ctx);
 }
 
 /// True if `identity` has a `profile` row (for
@@ -273,7 +283,9 @@ pub(crate) fn profile_with_deleted_name(p: Profile) -> Profile {
 /// tombstone `owner`'s display
 /// name on BOTH surviving rows — `player` (the anchor row, after the
 /// cascade's `character` join sweep) and `profile`.
-/// Field updates only, never a delete, each through its pure seam. Called
+/// Field updates only, never a delete, each through its pure seam. The
+/// tombstone name is part of the ladder order, so a written `profile` row is
+/// followed by a membership rescan; an owner who never ranked costs no scan. Called
 /// only from `accounts::account_deletion_reaper`. The
 /// `for`-over-`into_iter` shape is load-bearing: any `let`/`if let` binding
 /// of these reads.
@@ -289,23 +301,71 @@ pub(crate) fn anonymize_display_names(ctx: &ReducerContext, owner: Identity) {
             .profile()
             .identity()
             .update(profile_with_deleted_name(p));
+        refresh_leaderboard_top(ctx);
     }
 }
 
-// --- sr-4b leaderboard membership (SKELETON: bodies land in the green phase) ---
+// --- leaderboard membership (`leaderboard_top`) -----------------------------
 
-/// How many profiles `leaderboard_top` holds.
+/// How many profiles `leaderboard_top` holds. The client's
+/// `ui/leaderboardModel.ts` `LEADERBOARD_TOP_K` is the same number: the board
+/// lists exactly the members, plus the caller's own row marked `100+` when it
+/// is not one.
 pub(crate) const LEADERBOARD_TOP_K: usize = 100;
 
-/// SKELETON stub.
-pub(crate) fn top_identities(profiles: Vec<Profile>, k: usize) -> Vec<Identity> {
-    let _ = (profiles, k);
-    Vec::new()
+/// Pure core of the membership: the identities of at most `k` of `profiles`,
+/// in ladder order (rank 1 first). Average O(n): a selection partitions out
+/// the first `k`, and only those are sorted.
+///
+/// The ladder order is rating descending, then name ascending, then identity
+/// ascending — total, since the identity is the primary key. Names compare by
+/// UTF-16 code units, which is the order of JavaScript's `<` that the client's
+/// `ui/leaderboardModel.ts` `compareProfiles` ranks with (Rust's byte order
+/// disagrees for a supplementary-plane letter against one in U+E000..U+FFFF,
+/// and `guards::validate_name` admits both). `Identity`'s `Ord` is its u256
+/// value, which is the client's fixed-width hex-string order.
+pub(crate) fn top_identities(mut profiles: Vec<Profile>, k: usize) -> Vec<Identity> {
+    let ladder = |a: &Profile, b: &Profile| {
+        b.rating
+            .cmp(&a.rating)
+            .then_with(|| a.name.encode_utf16().cmp(b.name.encode_utf16()))
+            .then_with(|| a.identity.cmp(&b.identity))
+    };
+    if profiles.len() > k {
+        profiles.select_nth_unstable_by(k, ladder);
+        profiles.truncate(k);
+    }
+    profiles.sort_unstable_by(ladder);
+    profiles.into_iter().map(|p| p.identity).collect()
 }
 
-/// SKELETON stub.
+/// Rewrite `leaderboard_top` to the true top `LEADERBOARD_TOP_K` profiles,
+/// from a full rescan of `profile`. Every transaction that writes `profile`
+/// calls this after its last write, as do `init` and `sync_content`, so after
+/// any commit the table holds exactly the members. Only rows that left are
+/// deleted and only rows that entered are inserted: a rescan that changes no
+/// membership writes nothing, because every write reaches each client's join
+/// subscription. O(profiles) per call, by design: profile writes come at human
+/// rates (first ratings, settles, claims, deletions).
 pub(crate) fn refresh_leaderboard_top(ctx: &ReducerContext) {
-    let _ = ctx;
+    let mut entering: BTreeSet<Identity> =
+        top_identities(ctx.db.profile().iter().collect(), LEADERBOARD_TOP_K)
+            .into_iter()
+            .collect();
+    let held: Vec<Identity> = ctx
+        .db
+        .leaderboard_top()
+        .iter()
+        .map(|row| row.identity)
+        .collect();
+    for identity in held {
+        if !entering.remove(&identity) {
+            ctx.db.leaderboard_top().identity().delete(identity);
+        }
+    }
+    for identity in entering {
+        ctx.db.leaderboard_top().insert(LeaderboardTop { identity });
+    }
 }
 
 #[cfg(test)]

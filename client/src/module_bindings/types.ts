@@ -734,6 +734,11 @@ export const LastPosition = __t.object("LastPosition", {
 });
 export type LastPosition = __Infer<typeof LastPosition>;
 
+export const LeaderboardTop = __t.object("LeaderboardTop", {
+  identity: __t.identity(),
+});
+export type LeaderboardTop = __Infer<typeof LeaderboardTop>;
+
 export const MissedEvent = __t.object("MissedEvent", {
   attacker: __t.u32(),
   target: __t.u32(),
