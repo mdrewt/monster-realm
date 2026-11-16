@@ -98,12 +98,12 @@ import MyFormationRow from "./my_formation_table";
 import MyInventoryRow from "./my_inventory_table";
 import MyMonsterPubRow from "./my_monster_pub_table";
 import MyPendingEvolutionNoticesRow from "./my_pending_evolution_notices_table";
+import MyPlayerQuestRow from "./my_player_quest_table";
 import MyTacticalBattleRow from "./my_tactical_battle_table";
 import MyTradeSessionRow from "./my_trade_session_table";
 import MyWalletRow from "./my_wallet_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
-import PlayerQuestRow from "./player_quest_table";
 import ProfileRow from "./profile_table";
 import ShopItemRowRow from "./shop_item_row_table";
 import ShopRowRow from "./shop_row_table";
@@ -230,20 +230,6 @@ const tablesSchema = __schema({
       { name: 'player_identity_key', constraint: 'unique', columns: ['identity'] },
     ],
   }, PlayerRow),
-  playerQuest: __table({
-    name: 'player_quest',
-    indexes: [
-      { accessor: 'owner_identity', name: 'player_quest_owner_identity_idx_btree', algorithm: 'btree', columns: [
-        'ownerIdentity',
-      ] },
-      { accessor: 'pq_id', name: 'player_quest_pq_id_idx_btree', algorithm: 'btree', columns: [
-        'pqId',
-      ] },
-    ],
-    constraints: [
-      { name: 'player_quest_pq_id_key', constraint: 'unique', columns: ['pqId'] },
-    ],
-  }, PlayerQuestRow),
   profile: __table({
     name: 'profile',
     indexes: [
@@ -432,6 +418,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyPendingEvolutionNoticesRow),
+  myPlayerQuest: __table({
+    name: 'my_player_quest',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyPlayerQuestRow),
   myTacticalBattle: __table({
     name: 'my_tactical_battle',
     indexes: [
@@ -514,8 +507,6 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "heal_location_row": Omit<typeof tablesSchema.schemaType.tables["healLocationRow"], "accessorName"> & { readonly accessorName: "heal_location_row" };
     /** @deprecated Use `itemRow` instead. This alias will be removed in the next major version. */
     readonly "item_row": Omit<typeof tablesSchema.schemaType.tables["itemRow"], "accessorName"> & { readonly accessorName: "item_row" };
-    /** @deprecated Use `playerQuest` instead. This alias will be removed in the next major version. */
-    readonly "player_quest": Omit<typeof tablesSchema.schemaType.tables["playerQuest"], "accessorName"> & { readonly accessorName: "player_quest" };
     /** @deprecated Use `shopItemRow` instead. This alias will be removed in the next major version. */
     readonly "shop_item_row": Omit<typeof tablesSchema.schemaType.tables["shopItemRow"], "accessorName"> & { readonly accessorName: "shop_item_row" };
     /** @deprecated Use `shopRow` instead. This alias will be removed in the next major version. */
@@ -556,6 +547,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_monster_pub": Omit<typeof tablesSchema.schemaType.tables["myMonsterPub"], "accessorName"> & { readonly accessorName: "my_monster_pub" };
     /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
     readonly "my_pending_evolution_notices": Omit<typeof tablesSchema.schemaType.tables["myPendingEvolutionNotices"], "accessorName"> & { readonly accessorName: "my_pending_evolution_notices" };
+    /** @deprecated Use `myPlayerQuest` instead. This alias will be removed in the next major version. */
+    readonly "my_player_quest": Omit<typeof tablesSchema.schemaType.tables["myPlayerQuest"], "accessorName"> & { readonly accessorName: "my_player_quest" };
     /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
     readonly "my_tactical_battle": Omit<typeof tablesSchema.schemaType.tables["myTacticalBattle"], "accessorName"> & { readonly accessorName: "my_tactical_battle" };
     /** @deprecated Use `myTradeSession` instead. This alias will be removed in the next major version. */
@@ -584,7 +577,6 @@ const tableAccessorAliases = {
   "evolution_path": "evolutionPath",
   "heal_location_row": "healLocationRow",
   "item_row": "itemRow",
-  "player_quest": "playerQuest",
   "shop_item_row": "shopItemRow",
   "shop_row": "shopRow",
   "skill_row": "skillRow",
@@ -605,6 +597,7 @@ const tableAccessorAliases = {
   "my_inventory": "myInventory",
   "my_monster_pub": "myMonsterPub",
   "my_pending_evolution_notices": "myPendingEvolutionNotices",
+  "my_player_quest": "myPlayerQuest",
   "my_tactical_battle": "myTacticalBattle",
   "my_trade_session": "myTradeSession",
   "my_wallet": "myWallet",
@@ -636,8 +629,6 @@ export type DbView = __DbViewBase & {
   readonly "heal_location_row": __DbViewBase["healLocationRow"];
   /** @deprecated Use `itemRow` instead. This alias will be removed in the next major version. */
   readonly "item_row": __DbViewBase["itemRow"];
-  /** @deprecated Use `playerQuest` instead. This alias will be removed in the next major version. */
-  readonly "player_quest": __DbViewBase["playerQuest"];
   /** @deprecated Use `shopItemRow` instead. This alias will be removed in the next major version. */
   readonly "shop_item_row": __DbViewBase["shopItemRow"];
   /** @deprecated Use `shopRow` instead. This alias will be removed in the next major version. */
@@ -678,6 +669,8 @@ export type DbView = __DbViewBase & {
   readonly "my_monster_pub": __DbViewBase["myMonsterPub"];
   /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
   readonly "my_pending_evolution_notices": __DbViewBase["myPendingEvolutionNotices"];
+  /** @deprecated Use `myPlayerQuest` instead. This alias will be removed in the next major version. */
+  readonly "my_player_quest": __DbViewBase["myPlayerQuest"];
   /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
   readonly "my_tactical_battle": __DbViewBase["myTacticalBattle"];
   /** @deprecated Use `myTradeSession` instead. This alias will be removed in the next major version. */
@@ -696,8 +689,6 @@ export type Tables = __TablesBase & {
   readonly "heal_location_row": __TablesBase["healLocationRow"];
   /** @deprecated Use `itemRow` instead. This alias will be removed in the next major version. */
   readonly "item_row": __TablesBase["itemRow"];
-  /** @deprecated Use `playerQuest` instead. This alias will be removed in the next major version. */
-  readonly "player_quest": __TablesBase["playerQuest"];
   /** @deprecated Use `shopItemRow` instead. This alias will be removed in the next major version. */
   readonly "shop_item_row": __TablesBase["shopItemRow"];
   /** @deprecated Use `shopRow` instead. This alias will be removed in the next major version. */
@@ -738,6 +729,8 @@ export type Tables = __TablesBase & {
   readonly "my_monster_pub": __TablesBase["myMonsterPub"];
   /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
   readonly "my_pending_evolution_notices": __TablesBase["myPendingEvolutionNotices"];
+  /** @deprecated Use `myPlayerQuest` instead. This alias will be removed in the next major version. */
+  readonly "my_player_quest": __TablesBase["myPlayerQuest"];
   /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
   readonly "my_tactical_battle": __TablesBase["myTacticalBattle"];
   /** @deprecated Use `myTradeSession` instead. This alias will be removed in the next major version. */

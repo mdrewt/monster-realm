@@ -895,6 +895,8 @@ export class AuthoritativeStore {
     if (this.#conversations.delete(ownerIdentity)) this.#dirty = true;
   }
 
+  // The connection writes quests only through reconcileQuestsFromView; upsertQuest and
+  // removeQuest are the per-row seeds tests use.
   upsertQuest(row: StorePlayerQuest): void {
     this.#quests.set(row.pqId, row);
     this.#dirty = true;
@@ -1434,6 +1436,30 @@ export class AuthoritativeStore {
     for (const id of [...this.#inventory.keys()]) {
       if (!keep.has(id)) {
         this.#inventory.delete(id);
+        this.#dirty = true;
+      }
+    }
+  }
+
+  /** Rebuild the quest map from the post-burst `my_player_quest` cache — the
+   *  `reconcileInventoryFromView` shape. The view is PK-less, so a step advance arrives as an
+   *  unordered insert+delete pair under one `pqId`; rebuilding from the cache is ordering-immune.
+   *
+   *  AUTHORITATIVE: a `pqId` absent from `rows` is DELETED (a completed quest's row is deleted
+   *  server-side). `#dirty` is set only on a REAL change. */
+  reconcileQuestsFromView(rows: readonly StorePlayerQuest[]): void {
+    const keep = new Set<bigint>();
+    for (const q of rows) {
+      keep.add(q.pqId);
+      const prev = this.#quests.get(q.pqId);
+      if (prev === undefined || !shallowRowEq(prev, q)) {
+        this.#quests.set(q.pqId, q);
+        this.#dirty = true;
+      }
+    }
+    for (const id of [...this.#quests.keys()]) {
+      if (!keep.has(id)) {
+        this.#quests.delete(id);
         this.#dirty = true;
       }
     }

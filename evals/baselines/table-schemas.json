@@ -777,7 +777,7 @@
   },
   "player_quest": {
     "pk": "pq_id",
-    "visibility": "public",
+    "visibility": "private",
     "columns": {
       "pq_id": "u64",
       "owner_identity": "Identity",
