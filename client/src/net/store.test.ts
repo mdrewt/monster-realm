@@ -2853,8 +2853,9 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
   // --- Fix 3: removeQuest / removeHealLocation / removeNpc ---
 
   it('BITES: removeQuest removes the quest from ownQuests', () => {
-    // The connection.ts onDelete handler calls removeQuest; an impl that is a no-op
-    // leaves stale quest rows in the store after server deletion.
+    // removeQuest is a direct store write with no connection.ts caller: the connection rebuilds
+    // the quest map from the my_player_quest view (reconcileQuestsFromView). A no-op impl would
+    // still leave the row in ownQuests.
     // Kills: an impl that ignores removeQuest or removes from the wrong map.
     const s = new AuthoritativeStore();
     (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
@@ -2982,8 +2983,9 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
   });
 
   it('BITES: removeQuest marks batch dirty so flushBatch fires (quest log refreshes)', () => {
-    // Server deletes player_quest on completion. removeQuest must mark dirty so
-    // the quest log view re-renders and drops the completed quest.
+    // removeQuest is a direct store write (the connection drops a completed quest through the
+    // my_player_quest view reconcile instead); a removal must still mark dirty so a listener
+    // sees it.
     // Kills: an impl that no-ops removeQuest or forgets #dirty=true.
     const s = new AuthoritativeStore();
     (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
@@ -6400,5 +6402,97 @@ describe('AuthoritativeStore ts-4.4: no trade-offer state', () => {
     expect(s.allTradeSessions().map((r) => r.sessionId)).toEqual([3n]);
     s.reset();
     expect(s.allTradeSessions()).toEqual([]);
+  });
+});
+
+// =============================================================================
+// The quest map follows the owner-scoped `my_player_quest` view. A PK-less Vec view, so the map
+// is rebuilt from the post-burst SDK cache by `reconcileQuestsFromView(rows)`:
+// AUTHORITATIVE and keyed by `pqId` (a quest the view no longer holds is deleted; a step advance
+// replaces its row under the same `pqId`), dirtying the batch only on a real change and never
+// clearing a change already pending. Read back through `ownQuests(owner)`, the batch signal through
+// the `flushBatch()` listeners (`bt12sWakes`). Fixtures: the M12d block's `questRow` and its local
+// `StorePlayerQuest`.
+// =============================================================================
+
+const SR3_ME = 'ef'.repeat(32);
+
+describe('AuthoritativeStore sr-3: the quest map follows my_player_quest', () => {
+  it('reconcileQuestsFromView is authoritative and wakes the batch only on a real change: a new quest, an advanced step, a removed quest and an emptied view each wake once, an equal re-delivery wakes nobody [SR3.3]', () => {
+    // WRONG IMPL KILLED: an upsert-only reconcile (a completed quest stays in the log: the 2-then-1
+    // delivery wakes nobody and ownQuests still shows it); an `if (rows.length === 0) return` guard
+    // (the last quest completed never leaves); `#dirty` set on every call (every batch that
+    // rebuilds the view wakes every listener though no quest changed); a compare keyed on the pqId
+    // alone (a step advance never repaints the quest log); an appending store (the advanced quest
+    // shows twice).
+    bt12sAuthoritative<StorePlayerQuest>({
+      name: 'player quests',
+      deliver: (s, rows) => s.reconcileQuestsFromView(rows),
+      a: () => questRow(1n, SR3_ME, 'quest_001', 0),
+      b: () => questRow(2n, SR3_ME, 'quest_002', 0),
+      bChanged: () => questRow(2n, SR3_ME, 'quest_002', 1),
+      read: (s) => s.ownQuests(SR3_ME).map((q) => [q.pqId, q.questId, q.stepIndex]),
+      two: [
+        [1n, 'quest_001', 0],
+        [2n, 'quest_002', 0],
+      ],
+      changed: [
+        [1n, 'quest_001', 0],
+        [2n, 'quest_002', 1],
+      ],
+      one: [[1n, 'quest_001', 0]],
+      none: [],
+    });
+  });
+
+  it('reconcileQuestsFromView keys quests by pqId: a quest upsertQuest wrote is gone once the view omits it, a quest restarted under a new pqId replaces the old row, and two pqIds on one questId are two quests [SR3.3]', () => {
+    // WRONG IMPL KILLED: an upsert-only reconcile, or one that prunes only the rows it wrote itself
+    // (the row upsertQuest wrote lingers beside the view's); a map keyed by questId (the restart
+    // keeps the old pqId, so statusModel's pqId diff misses both the completion and the start; two
+    // rows on one questId collapse into one); a reconcile that merges a delivered row into the
+    // stored row of the same questId instead of replacing it.
+    const s = new AuthoritativeStore();
+    s.upsertQuest(questRow(1n, SR3_ME, 'quest_001', 0));
+    s.upsertQuest(questRow(2n, SR3_ME, 'quest_002', 0));
+    s.reconcileQuestsFromView([questRow(1n, SR3_ME, 'quest_001', 0)]);
+    expect(s.ownQuests(SR3_ME), 'only the quest the view holds').toEqual([
+      questRow(1n, SR3_ME, 'quest_001', 0),
+    ]);
+
+    s.reconcileQuestsFromView([questRow(3n, SR3_ME, 'quest_001', 0)]);
+    expect(s.ownQuests(SR3_ME), 'the new pqId replaces the old one').toEqual([
+      questRow(3n, SR3_ME, 'quest_001', 0),
+    ]);
+
+    s.reconcileQuestsFromView([
+      questRow(3n, SR3_ME, 'quest_001', 0),
+      questRow(4n, SR3_ME, 'quest_001', 2),
+    ]);
+    expect(s.ownQuests(SR3_ME), 'two pqIds on one questId are two quests').toEqual([
+      questRow(3n, SR3_ME, 'quest_001', 0),
+      questRow(4n, SR3_ME, 'quest_001', 2),
+    ]);
+  });
+
+  it('a quest reconcile that changes nothing never clears a change already pending, and an empty view over an empty store wakes nobody [SR3.3]', () => {
+    // WRONG IMPL KILLED: `#dirty = changed` (a zone name delivered in the same burst as an
+    // unchanged quest view never reaches a listener); `#dirty = true` on any call (a fresh client's
+    // first, empty quest view wakes every listener).
+    const s = new AuthoritativeStore();
+    expect(
+      bt12sWakes(s, () => s.reconcileQuestsFromView([])),
+      'an empty view over an empty store',
+    ).toBe(0);
+    s.reconcileQuestsFromView([questRow(1n, SR3_ME, 'quest_001', 1)]);
+    s.flushBatch();
+    expect(
+      bt12sWakes(s, () => {
+        s.upsertZoneName(3, 'Ash Hollow');
+        s.reconcileQuestsFromView([questRow(1n, SR3_ME, 'quest_001', 1)]);
+      }),
+      'the zone name delivered beside an unchanged quest view still flushes',
+    ).toBe(1);
+    expect(s.zoneName(3)).toBe('Ash Hollow');
+    expect(s.ownQuests(SR3_ME)).toEqual([questRow(1n, SR3_ME, 'quest_001', 1)]);
   });
 });

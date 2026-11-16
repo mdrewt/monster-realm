@@ -1259,6 +1259,9 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_trade_session, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_trade_session"]
     fn register_view_my_trade_session();
+    /// `#[spacetimedb::view(accessor = my_player_quest, public)]` in schema.rs (sr-3).
+    #[link_name = "__preinit__20_register_describer_my_player_quest"]
+    fn register_view_my_player_quest();
     // Every `#[spacetimedb::table]` describer (macro `table.rs:1176`
     // `__preinit__20_register_describer_<accessor>`), registered before the views
     // so `Fixture::module_def` carries the full generated table set — the
@@ -1470,7 +1473,7 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 63] = [
 ];
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 16] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 17] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1487,6 +1490,7 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 16] = [
     register_view_my_battle_deploy,
     register_view_my_formation,
     register_view_my_trade_session,
+    register_view_my_player_quest,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1533,6 +1537,9 @@ pub(crate) const VIEW_MY_BATTLE_DEPLOY: usize = 13;
 
 /// `VIEWS` id of `my_formation` (bt-7).
 pub(crate) const VIEW_MY_FORMATION: usize = 14;
+
+/// `VIEWS` id of `my_player_quest` (its index in [`VIEW_DESCRIBERS`]; sr-3).
+pub(crate) const VIEW_MY_PLAYER_QUEST: usize = 16;
 
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
 /// `RawModuleDef` (V10 on 2.11.0), captured once per process so a test can read

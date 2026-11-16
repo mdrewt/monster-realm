@@ -314,9 +314,9 @@ part of the schema:
 | Class | Tables | Client read path |
 |---|---|---|
 | Public content | `species_row`, `skill_row`, `item_row`, `type_relation_row`, `zone_def`, `shop_row`, `shop_item_row`, `heal_location_row`, `npc`, `evolution_path`, `config` | direct subscription |
-| Public world state | `character`, `player`, `profile`, `battle_challenge`, `player_quest` | direct subscription; `character` only for the own row and per zone (see "Connection and store") |
+| Public world state | `character`, `player`, `profile`, `battle_challenge` | direct subscription; `character` only for the own row and per zone (see "Connection and store") |
 | Public, drain-only | `trade_offer` | none in the client: no query subscribes to it and the store holds no offer state |
-| Private, owner-readable | `monster_pub`, `inventory`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
+| Private, owner-readable | `monster_pub`, `inventory`, `player_quest`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_player_quest`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
 | Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
 | Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, all schedule tables | none |

@@ -11,7 +11,7 @@ import {
 } from "spacetimedb";
 
 export default __t.row({
-  pqId: __t.u64().primaryKey().name("pq_id"),
+  pqId: __t.u64().name("pq_id"),
   ownerIdentity: __t.identity().name("owner_identity"),
   questId: __t.string().name("quest_id"),
   stepIndex: __t.u32().name("step_index"),

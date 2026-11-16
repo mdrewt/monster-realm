@@ -708,12 +708,11 @@ pub struct PlayerDialogueStateRow {
     pub done_quests: Vec<String>,
 }
 
-/// Active quest progress. PUBLIC: every client receives every player's quest rows
-/// and the client filters to its own (`store.ownQuests`). `inventory` is no longer a
-/// precedent — it is private behind the owner-scoped `my_inventory` view; moving this
-/// table to the same pattern is possible but not done.
+/// PRIVATE active quest progress (no `public`): one row per quest a player has
+/// accepted and not finished. Clients read ONLY their own rows through the
+/// `my_player_quest` view below; reducers read the table directly.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = player_quest, public)]
+#[spacetimedb::table(accessor = player_quest)]
 pub struct PlayerQuestRow {
     #[primary_key]
     #[auto_inc]
@@ -722,6 +721,20 @@ pub struct PlayerQuestRow {
     pub owner_identity: Identity,
     pub quest_id: String,
     pub step_index: u32,
+}
+
+/// Owner-scoped read path for `player_quest`: each client's subscription sees ONLY
+/// its own quests, via the `owner_identity` btree index (a point index scan). A
+/// multi-row (`Vec`) view, so THIS BODY is the entire security boundary: the
+/// one-parameter signature is load-bearing (an extra `owner` param would be a
+/// caller-chosen-owner leak). Same shape as `my_inventory`.
+#[spacetimedb::view(accessor = my_player_quest, public)]
+fn my_player_quest(ctx: &spacetimedb::ViewContext) -> Vec<PlayerQuestRow> {
+    ctx.db
+        .player_quest()
+        .owner_identity()
+        .filter(ctx.sender())
+        .collect()
 }
 
 /// In-progress dialogue node. Single row per player (PK = owner_identity).

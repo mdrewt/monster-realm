@@ -2195,6 +2195,7 @@ const SR6B_METHOD: Record<OwnerView, Sr6bMethod> = {
   myBattleEvents: 'reconcileBattleEventsFromView',
   myFormation: 'reconcileFormationFromView',
   myTradeSession: 'reconcileTradeSessionsFromView',
+  myPlayerQuest: 'reconcileQuestsFromView',
 };
 /** The owner views of the table above, in no particular order. A test that expects every view
  *  in reconcile order takes that order from OWNER_VIEWS, whose roster test is in
@@ -2299,11 +2300,17 @@ async function sr6bExpectDrained(spies: Sr6bSpies, buildIdx = 0): Promise<void> 
   sr6bClear(spies);
 }
 
-/** Run build `buildIdx`'s `event` handler of the owner view `view` once, as the SDK would. */
-function sr6bFire(view: OwnerView, event: 'insert' | 'delete', buildIdx = 0): void {
+/** Run build `buildIdx`'s `event` handler of the owner view `view` once, as the SDK would, with
+ *  `row` as the row argument (an empty object unless a test hands the row the SDK would pass). */
+function sr6bFire(
+  view: OwnerView,
+  event: 'insert' | 'delete',
+  buildIdx = 0,
+  row: unknown = {},
+): void {
   const cb = H.rowEvents[view]?.[event][buildIdx];
   if (cb === undefined) throw new Error(`no ${view}.${event} handler for build ${buildIdx}`);
-  cb({}, {});
+  cb({}, row);
 }
 
 /** What `call` threw (a sentinel string when it returned). */
@@ -2805,6 +2812,172 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
     } finally {
       hasUnconsumed.mockRestore();
     }
+  });
+
+  // ===========================================================================================
+  // `player_quest` is private. The client reads its own quest rows through the owner-scoped
+  // `my_player_quest` view (`conn.db.myPlayerQuest`), an owner view like the others: its
+  // onInsert / onDelete mark it, and the batch rebuilds the store's quests from the view's
+  // post-burst cache (`store.reconcileQuestsFromView`). The sr-6b helpers above drive it; the
+  // generic sr-6b tests cover its handlers through SR6B_METHOD.
+  // ===========================================================================================
+  describe('the player quest view (sr-3)', { sequential: true }, () => {
+    /** One quest row: its pqId, questId and step. */
+    type Sr3Quest = readonly [pqId: bigint, questId: string, stepIndex: number];
+    const Q1: Sr3Quest = [1n, 'quest_001', 0];
+    const Q1_ADVANCED: Sr3Quest = [1n, 'quest_001', 1];
+    const Q2: Sr3Quest = [2n, 'quest_002', 0];
+    /** The row as the bindings deliver it (the owner an SDK identity). */
+    const sdkQuest = ([pqId, questId, stepIndex]: Sr3Quest) => ({
+      pqId,
+      ownerIdentity: ID,
+      questId,
+      stepIndex,
+    });
+    /** The row as the store must hold it (the owner as hex). */
+    const storedQuest = ([pqId, questId, stepIndex]: Sr3Quest) => ({
+      pqId,
+      ownerIdentity: BT12_ME,
+      questId,
+      stepIndex,
+    });
+    /** The caller's quests the store shows, in pqId order. */
+    const questsOf = (store: AuthoritativeStore) =>
+      store.ownQuests(BT12_ME).sort((a, b) => Number(a.pqId - b.pqId));
+
+    /** One burst on the quest view: the cache before it, the row events the SDK runs (each with
+     *  the row it passes) and the cache after it. */
+    interface Sr3Burst {
+      readonly burst: string;
+      readonly before: readonly Sr3Quest[];
+      readonly events: readonly (readonly ['insert' | 'delete', Sr3Quest])[];
+      readonly after: readonly Sr3Quest[];
+    }
+    const BURSTS: readonly Sr3Burst[] = [
+      { burst: 'a delete-only burst', before: [Q1, Q2], events: [['delete', Q1]], after: [Q2] },
+      { burst: 'an insert-only burst', before: [Q1], events: [['insert', Q2]], after: [Q1, Q2] },
+      {
+        burst: 'a step advance delivered delete first',
+        before: [Q1, Q2],
+        events: [
+          ['delete', Q1],
+          ['insert', Q1_ADVANCED],
+        ],
+        after: [Q1_ADVANCED, Q2],
+      },
+      {
+        burst: 'a step advance delivered insert first',
+        before: [Q1, Q2],
+        events: [
+          ['insert', Q1_ADVANCED],
+          ['delete', Q1],
+        ],
+        after: [Q1_ADVANCED, Q2],
+      },
+    ];
+
+    it.each(
+      BURSTS,
+    )('$burst on myPlayerQuest leaves the store`s quests equal to the view cache, in one flushed batch that reconciles the quest view alone and reads it once [SR3.3]', async (c) => {
+      // WRONG IMPL KILLED: an upsert-only reconcile (the deleted quest stays); no onDelete or no
+      // onInsert on `conn.db.myPlayerQuest` (that burst marks nothing: no reconcile, no flush); a
+      // per-row store write (insert-first, the advance's delete half removes the row its insert
+      // half just wrote, since both carry the same pqId); an appending store (the advanced quest
+      // shows twice); a reconcile per row event (the cache read twice for one advance); a quest
+      // reconcile that runs another view too.
+      const opts = makeOpts();
+      H.viewRows.myPlayerQuest = c.before.map(sdkQuest);
+      const { spies } = await sr6bConnected(opts);
+      expect(questsOf(opts.store), 'precondition: the first batch stored the cache').toEqual(
+        c.before.map(storedQuest),
+      );
+      await sr6bExpectDrained(spies);
+      const flushed = vi.fn();
+      opts.store.onBatchApplied(flushed);
+      H.viewRows.myPlayerQuest = c.after.map(sdkQuest);
+      for (const [event, quest] of c.events) sr6bFire('myPlayerQuest', event, 0, sdkQuest(quest));
+      await settle();
+      expect(flushed, 'one burst, one flushed batch').toHaveBeenCalledTimes(1);
+      sr6bExpect(spies, ['myPlayerQuest'], c.burst);
+      expect(questsOf(opts.store), 'the store`s quests are the cache`s rows').toEqual(
+        c.after.map(storedQuest),
+      );
+    });
+
+    it('after the snapshot burst, a burst of character and player rows reads the quest view 0 times and runs no quest reconcile, and a burst of quest rows reads it exactly once [SR3.3]', async () => {
+      // WRONG IMPL KILLED: the quest reconcile run on every batch, outside the dirty set (every
+      // movement step pays for the quest log); the quest view marked by the character or player
+      // handlers; a reconcile per row event (an insert+delete pair reads the cache twice).
+      const opts = makeOpts();
+      H.viewRows.myPlayerQuest = [sdkQuest(Q1)];
+      const { spies } = await sr6bConnected(opts);
+      sr6bClear(spies);
+      const flushed = vi.fn();
+      opts.store.onBatchApplied(flushed);
+      wsFire('character', 'insert', [wsChar(904n, 0)]);
+      wsFire('player', 'insert', [wsPlayer(9n, sr6bOther)]);
+      await settle();
+      expect(flushed, 'the character and player burst flushes').toHaveBeenCalledTimes(1);
+      expect(H.iterCalls.myPlayerQuest ?? 0, 'the quest view is not read').toBe(0);
+      expect(spies.myPlayerQuest, 'no quest reconcile runs').not.toHaveBeenCalled();
+
+      H.viewRows.myPlayerQuest = [sdkQuest(Q1_ADVANCED)];
+      sr6bFire('myPlayerQuest', 'delete', 0, sdkQuest(Q1));
+      sr6bFire('myPlayerQuest', 'insert', 0, sdkQuest(Q1_ADVANCED));
+      await settle();
+      expect(H.iterCalls.myPlayerQuest, 'the quest burst reads the view once').toBe(1);
+      expect(spies.myPlayerQuest, 'and reconciles it once').toHaveBeenCalledTimes(1);
+      expect(questsOf(opts.store)).toEqual([storedQuest(Q1_ADVANCED)]);
+    });
+
+    it('a quest completion burst, the quest row leaving the view as my conversation row is inserted, reaches the batch listener once, with the quest gone and the conversation present [SR3.3]', async () => {
+      // WRONG IMPL KILLED: the quest reconcile after flushBatch, or in a batch of its own (the
+      // listener first sees the open conversation beside the finished quest, so the completion
+      // toast's pqId diff misses it); a quest delete that marks nothing (the finished quest stays);
+      // a reconcile that empties every quest (the other quest goes too).
+      const opts = makeOpts();
+      H.viewRows.myPlayerQuest = [sdkQuest(Q1), sdkQuest(Q2)];
+      const { spies } = await sr6bConnected(opts);
+      await sr6bExpectDrained(spies);
+      const seen: unknown[] = [];
+      opts.store.onBatchApplied(() => {
+        seen.push({
+          quests: questsOf(opts.store).map((q) => q.pqId),
+          node: opts.store.ownConversation(BT12_ME)?.currentNodeId,
+        });
+      });
+      const conversationInsert = H.rowEvents.my_conversation?.insert[0];
+      if (conversationInsert === undefined) throw new Error('no my_conversation.insert handler');
+      H.viewRows.myPlayerQuest = [sdkQuest(Q2)];
+      conversationInsert({}, { ownerIdentity: ID, npcEntityId: 3n, currentNodeId: 'quest_done' });
+      sr6bFire('myPlayerQuest', 'delete', 0, sdkQuest(Q1));
+      await settle();
+      expect(seen, 'one batch: the finished quest gone, the conversation open').toEqual([
+        { quests: [2n], node: 'quest_done' },
+      ]);
+    });
+
+    it('a connection rebuilt with an empty quest view drops the quest the old connection stored, on its first batch, with no store reset [SR3.3]', async () => {
+      // WRONG IMPL KILLED: the quest view left out of the every-view mark a build makes (the old
+      // connection's quest stays in the log until a quest row next changes); an
+      // `if (rows.length === 0) return` guard in the quest reconcile; quests written row by row
+      // (the new connection's empty cache fires no delete, so nothing removes the stale quest).
+      const opts = makeOpts();
+      H.viewRows.myPlayerQuest = [sdkQuest(Q1)];
+      const { handle, spies } = await sr6bConnected(opts);
+      expect(questsOf(opts.store), 'precondition: the old connection stored the quest').toEqual([
+        storedQuest(Q1),
+      ]);
+      await sr6bExpectDrained(spies);
+      handle.reconnectNow();
+      await settle();
+      expect(H.builds, 'the rebuild built a second connection').toHaveLength(2);
+      const b1 = npBuild(1);
+      b1.viewRows = { myPlayerQuest: [] };
+      b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+      await sr6bCharacterBurst(1);
+      expect(questsOf(opts.store), 'the stale quest is gone').toEqual([]);
+    });
   });
 });
 

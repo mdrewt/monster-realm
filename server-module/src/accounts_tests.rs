@@ -10234,10 +10234,11 @@ mod acct_nh {
         }
     }
 
-    /// BT7.1 — the GENERATED view roster is exactly the sixteen views (the
-    /// eight pre-bt-7, the seven tactical ones and `my_trade_session`), each at
-    /// the position its id names, every one public, caller-scoped (not
-    /// anonymous) and parameterless; no view is named for a secret table; and
+    /// BT7.1 — the GENERATED view roster is exactly the seventeen views (the
+    /// eight pre-bt-7, the seven tactical ones, `my_trade_session` and
+    /// `my_player_quest`), each at the position its id names, every one public,
+    /// caller-scoped (not anonymous) and parameterless; no view is named for a
+    /// secret table; and
     /// each tactical view and `my_trade_session` serves exactly its own
     /// table's row (its generated return type resolved through the typespace).
     ///
@@ -10249,14 +10250,17 @@ mod acct_nh {
     ///        `my_battle_events -> Vec<BattleSecret>`); `my_formation` widened to
     ///        a `Vec`; a dropped or renamed view; a `VIEW_MY_*` id pointing at the
     ///        wrong view (every `call_view` test below would then read a
-    ///        different boundary than it names).
+    ///        different boundary than it names); `my_player_quest` registered
+    ///        non-public (it would pass every native-host call and be invisible
+    ///        to clients).
     #[test]
-    fn generated_view_roster_is_exactly_sixteen_caller_scoped_views_bt7_1() {
+    fn generated_view_roster_is_exactly_seventeen_caller_scoped_views_bt7_1() {
         use crate::native_host_tests::{
             VIEW_MY_BATTLE, VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_EVENTS,
             VIEW_MY_BATTLE_QUEUE, VIEW_MY_BATTLE_UNITS, VIEW_MY_CONVERSATION,
             VIEW_MY_EXPORT_BUNDLE, VIEW_MY_FORMATION, VIEW_MY_INVENTORY, VIEW_MY_MONSTER_PUB,
-            VIEW_MY_PENDING_EVOLUTION_NOTICES, VIEW_MY_TACTICAL_BATTLE, VIEW_MY_WALLET,
+            VIEW_MY_PENDING_EVOLUTION_NOTICES, VIEW_MY_PLAYER_QUEST, VIEW_MY_TACTICAL_BATTLE,
+            VIEW_MY_WALLET,
         };
         let fx = fixture();
         let def = fx.module_def();
@@ -10282,11 +10286,12 @@ mod acct_nh {
                 "my_inventory",
                 "my_monster_pub",
                 "my_pending_evolution_notices",
+                "my_player_quest",
                 "my_tactical_battle",
                 "my_trade_session",
                 "my_wallet",
             ],
-            "[bt7/view-roster] the generated view set (sixteen views)"
+            "[bt7/view-roster] the generated view set (seventeen views)"
         );
 
         for (id, name) in [
@@ -10308,8 +10313,10 @@ mod acct_nh {
             (VIEW_MY_BATTLE_QUEUE, "my_battle_queue"),
             (VIEW_MY_BATTLE_DEPLOY, "my_battle_deploy"),
             (VIEW_MY_FORMATION, "my_formation"),
-            // `my_trade_session` is registered last, after `my_formation`.
+            // `my_trade_session` is registered after `my_formation`.
             (VIEW_MY_FORMATION + 1, "my_trade_session"),
+            // sr-3: `my_player_quest` is registered last.
+            (VIEW_MY_PLAYER_QUEST, "my_player_quest"),
         ] {
             let v = &views[id];
             assert_eq!(

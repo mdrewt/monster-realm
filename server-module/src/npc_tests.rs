@@ -1235,6 +1235,115 @@ fn nh_quest_complete_grants_exactly_the_content_currency_reward() {
 }
 
 // ===========================================================================
+// sr-3 (sr-3.1): `player_quest` is PRIVATE and clients read it ONLY through the
+// SHIPPED `my_player_quest` view, run here through the runtime's own view entry
+// point (`Fixture::call_view`) with a chosen sender. The table registers its
+// `owner_identity` index (the `my_inventory` view test's shape) and is also
+// scannable, so a view that reads the whole table gets every row back and fails
+// on the rows it leaks, not on an unmodelled scan.
+// ===========================================================================
+
+/// Every field of each row, sorted: the comparison is order-insensitive and
+/// covers the whole row, not only its key.
+fn quest_row_fields(rows: &[PlayerQuestRow]) -> Vec<(u64, Identity, String, u32)> {
+    let mut out: Vec<(u64, Identity, String, u32)> = rows
+        .iter()
+        .map(|r| (r.pq_id, r.owner_identity, r.quest_id.clone(), r.step_index))
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// A `player_quest` row on `quest_001`.
+fn quest_001_row(pq_id: u64, owner_identity: Identity, step_index: u32) -> PlayerQuestRow {
+    PlayerQuestRow {
+        pq_id,
+        owner_identity,
+        quest_id: "quest_001".to_string(),
+        step_index,
+    }
+}
+
+/// A holds two `player_quest` rows and B one, ALL on the same `quest_id` and
+/// each at a different step: `my_player_quest` serves A exactly A's two rows and
+/// B exactly B's one, every field intact.
+///
+/// kills: a whole-table view (`iter().collect()`: A and B each see all three);
+/// a view keyed on `quest_id` (all three rows share it); a view keyed on
+/// anything but `ctx.sender()`; a view that returns only the first matching
+/// row (`find` for `filter`: A sees one of its two).
+#[test]
+fn my_player_quest_view_serves_each_caller_exactly_its_own_rows_sr3_1() {
+    use crate::native_host_tests::VIEW_MY_PLAYER_QUEST;
+    let fx = crate::native_host_tests::fixture();
+    let t = fx
+        .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+        .scannable();
+    let a = Identity::from_byte_array([0x31; 32]);
+    let b = Identity::from_byte_array([0x32; 32]);
+    let a_rows = [quest_001_row(7_001, a, 0), quest_001_row(7_003, a, 2)];
+    let b_rows = [quest_001_row(7_002, b, 1)];
+    for row in a_rows.iter().chain(b_rows.iter()) {
+        t.seed(row);
+    }
+    let seen = |who: Identity| {
+        quest_row_fields(&fx.call_view::<PlayerQuestRow>(VIEW_MY_PLAYER_QUEST, who))
+    };
+
+    assert_eq!(
+        seen(a),
+        quest_row_fields(&a_rows),
+        "A sees exactly its own two quest rows, every field intact, and none of B's \
+         (all three rows share quest_001)"
+    );
+    assert_eq!(
+        seen(b),
+        quest_row_fields(&b_rows),
+        "B sees exactly its own quest row and none of A's"
+    );
+}
+
+/// A caller C that holds no `player_quest` row gets exactly no row from
+/// `my_player_quest` while A and B hold rows; A's call, the control, still
+/// returns A's rows, so C's empty answer is owed to the owner filter and not to
+/// an empty view.
+///
+/// kills: a view that falls back to every row when the caller has none
+/// (`if mine.is_empty() { iter().collect() }`, or a full-range read of the
+/// `owner_identity` index); a whole-table view; a view that serves the first
+/// row of the table to a caller with none of its own.
+#[test]
+fn my_player_quest_view_serves_a_caller_with_no_quests_nothing_sr3_1() {
+    use crate::native_host_tests::VIEW_MY_PLAYER_QUEST;
+    let fx = crate::native_host_tests::fixture();
+    let t = fx
+        .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+        .scannable();
+    let a = Identity::from_byte_array([0x41; 32]);
+    let b = Identity::from_byte_array([0x42; 32]);
+    let c = Identity::from_byte_array([0x43; 32]);
+    let a_rows = [quest_001_row(8_001, a, 0), quest_001_row(8_002, a, 1)];
+    for row in &a_rows {
+        t.seed(row);
+    }
+    t.seed(&quest_001_row(8_003, b, 3));
+    let seen = |who: Identity| {
+        quest_row_fields(&fx.call_view::<PlayerQuestRow>(VIEW_MY_PLAYER_QUEST, who))
+    };
+
+    assert_eq!(
+        seen(a),
+        quest_row_fields(&a_rows),
+        "control: the view serves A its own rows from this table"
+    );
+    assert_eq!(
+        seen(c),
+        Vec::<(u64, Identity, String, u32)>::new(),
+        "C holds no quest row, so C receives none of A's or B's"
+    );
+}
+
+// ===========================================================================
 // Native-host behaviour. Replaces the talk / advance_dialogue operator-mutant
 // text pins (`*_uses_ne_not_eq`, `*_uses_subtraction_not_addition`,
 // `*_uses_gt_not_lt`, ...): the SHIPPED reducers run with a real sender

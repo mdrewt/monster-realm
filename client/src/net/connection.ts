@@ -40,7 +40,6 @@ import {
   itemRowToStore,
   npcRowToStore,
   playerConversationRowToStore,
-  playerQuestRowToStore,
   playerRowToStore,
   playerWalletRowToStore,
   profileRowToStore,
@@ -482,8 +481,8 @@ export function connect(opts: ConnectionOptions): Connection {
       }),
     );
 
-    // conversation / player_quest / heal_location_row / npc.
-    // conversations now arrive through the owner-scoped
+    // conversation / heal_location_row / npc (quests are an owner view, viewReconcile.ts).
+    // conversations arrive through the owner-scoped
     // `my_conversation` VIEW. Delivery shape (T0 spike finding 4): a row UPDATE
     // propagates as onInsert(new) + onDelete(old) — NO onUpdate (the view table
     // has no PK for SDK correlation), and the pair is UNORDERED. onDelete is
@@ -510,29 +509,6 @@ export function connect(opts: ConnectionOptions): Connection {
         if (shouldRemoveOnViewDelete(store.ownConversation(deleted.ownerIdentity), deleted)) {
           store.removeConversation(deleted.ownerIdentity);
         }
-        batcher.schedule();
-      }),
-    );
-
-    type SdkQuestRow = {
-      pqId: bigint;
-      ownerIdentity: { toHexString(): string };
-      questId: string;
-      stepIndex: number;
-    };
-    const ingestQuest = (row: SdkQuestRow): void => {
-      store.upsertQuest(playerQuestRowToStore(row));
-      batcher.schedule();
-    };
-    conn.db.player_quest.onInsert(
-      recoverViewsOnThrow((_ctx, row) => ingestQuest(row as unknown as SdkQuestRow)),
-    );
-    conn.db.player_quest.onUpdate(
-      recoverViewsOnThrow((_ctx, _old, row) => ingestQuest(row as unknown as SdkQuestRow)),
-    );
-    conn.db.player_quest.onDelete(
-      recoverViewsOnThrow((_ctx, row) => {
-        store.removeQuest((row as unknown as SdkQuestRow).pqId);
         batcher.schedule();
       }),
     );
@@ -746,7 +722,8 @@ export function connect(opts: ConnectionOptions): Connection {
     // (none is wired) and every change is an unordered insert+delete pair: a handler writes
     // nothing to the store, it marks its view and schedules the flush, which rebuilds that view
     // from the cache. onDelete is wired for every view: a row leaving one (the export TTL reaper,
-    // the deletion cascade, the guest-claim rekey, a finished battle's GC) must rebuild it too.
+    // the deletion cascade, the guest-claim rekey, a finished battle's GC, a completed quest) must
+    // rebuild it too.
     for (const view of OWNER_VIEWS) {
       const viewChanged = (): void => {
         ownerViews.markDirty(view);
@@ -997,7 +974,10 @@ export function connect(opts: ConnectionOptions): Connection {
             // owner-scoped my_conversation view instead (subscribing the private
             // table errors the whole batch and onApplied never fires).
             'SELECT * FROM my_conversation',
-            'SELECT * FROM player_quest',
+            // player_quest is PRIVATE — subscribe the owner-scoped my_player_quest view instead
+            // (the my_inventory pattern; subscribing the private table errors the whole batch).
+            // store.ownQuests's owner filter stays as defense in depth.
+            'SELECT * FROM my_player_quest',
             'SELECT * FROM heal_location_row',
             'SELECT * FROM npc',
             'SELECT * FROM zone_def',

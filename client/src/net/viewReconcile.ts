@@ -19,6 +19,7 @@ import {
   inventoryRowToStore,
   monsterPubRowToStore,
   pendingEvolutionNoticeRowToStore,
+  playerQuestRowToStore,
   tacticalBattleRowToStore,
   tradeSessionRowToStore,
 } from './rowConvert';
@@ -44,6 +45,7 @@ export interface OwnerViewCache {
   readonly myBattleEvents: ViewHandle;
   readonly myFormation: ViewHandle;
   readonly myTradeSession: ViewHandle;
+  readonly myPlayerQuest: ViewHandle;
 }
 
 /** One owner view: its handle name on the connection's `db`. */
@@ -104,6 +106,11 @@ const RECONCILE: Record<OwnerView, Reconcile> = {
   // cache has closed.
   myTradeSession: (store, db) =>
     store.reconcileTradeSessionsFromView(rowsOf(db.myTradeSession, tradeSessionRowToStore)),
+  // The owner-scoped view over the private player_quest table: a completed quest's row leaves the
+  // cache, and a step advance keeps its pqId. It runs BEFORE flushBatch() because main.ts's batch
+  // listener reads the quest set beside the conversation row the same transaction wrote.
+  myPlayerQuest: (store, db) =>
+    store.reconcileQuestsFromView(rowsOf(db.myPlayerQuest, playerQuestRowToStore)),
 };
 
 // The try groups, in run order. The reconciles run UPSTREAM of flushBatch in the batcher's shared
@@ -111,8 +118,8 @@ const RECONCILE: Record<OwnerView, Reconcile> = {
 // EVERY batch listener, including the movement reconcile that drives prediction snap. A throw is
 // logged and ends only its own group. The monster, battle, export and evolution-notice reconciles
 // share one try (the evolution notices last, so the newest converter can never starve the
-// movement-driving monster and battle reconciles); the inventory has its own; each tactical view
-// and the trade session view is alone.
+// movement-driving monster and battle reconciles); the inventory has its own; each tactical view,
+// the trade session view and the quest view is alone.
 const TRY_GROUPS: readonly (readonly OwnerView[])[] = [
   ['my_monster_pub', 'myBattle', 'my_export_bundle', 'myPendingEvolutionNotices'],
   ['my_inventory'],
@@ -124,6 +131,7 @@ const TRY_GROUPS: readonly (readonly OwnerView[])[] = [
   ['myBattleEvents'],
   ['myFormation'],
   ['myTradeSession'],
+  ['myPlayerQuest'],
 ];
 
 /** Every owner view, in reconcile order. */
