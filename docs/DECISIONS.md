@@ -2290,3 +2290,55 @@ for the whole world. The target also sets `battle_summary`'s cap and the leaderb
 
 **Rules out.** Sizing scale work from playtest populations, where 2–5 players hide every such cost;
 a per-input, per-batch or per-join cost that grows with stored accounts or monsters owned.
+
+## A private world verifies an account by a per-world attestation our account service signs
+
+**Decision.** In a single-player or friends world the player connects under that world's own
+anonymous token and never sends an account token. To bind the world to an account, the client asks
+a small attestation route beside our account service (the sign-in broker) for a short-lived
+attestation and passes it to a reducer. The route signs with its own key and issuer name, neither of
+which the official server trusts. The attestation is a compact signed JWT with a key id (`kid`); it
+lives minutes, names one world and carries the nonce that world chose. The module verifies it with
+a verifier compiled in, against a `kid`-keyed list of accepted attestation keys held as module data,
+then records the binding; the world needs no network afterwards. The route rate-limits binds per
+account and does not keep the world an attestation was addressed to past the request. In the client
+the attestation is fetched behind one source interface, beside the sign-in seam
+(`ConnectCredential`). The official server refuses attestation binding outright. Operator ruling,
+<https://github.com/mdrewt/monster-realm/issues/821>; the design and its open conditions (the
+verifier spike, the official server's refusal, the relay between private worlds) are
+`docs/local-play.md` §3 and the harness spec `M-local-play.spec.md` (lpw-7, lpw-8, lpw-15).
+
+**Why.** A world's host owns its database and its signing key, and every standalone host calls
+itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
+account token given to it could be replayed against the official server. A provider such as Steam
+or a hosted OIDC service issues only ordinary sign-in tokens and cannot sign a per-world statement
+under a separate key, so the signer has to be ours. A per-world attestation that lives minutes
+needs one signature check in the module, puts no long-lived secret on the client, makes revoking an
+account's ability to bind new worlds automatic, and passes every bind through a service where abuse
+can be rate-limited and seen. A key list with `kid` lets the attestation key rotate by shipping the
+next key before the old one retires.
+
+**Rules out.** Sending an account token to a world we do not operate (see "A target's kind gates
+telemetry and account sign-in"); a third-party provider as the attestation signer; signing
+attestations with the account issuer's own key or issuer name; a single compiled-in key with no key
+id; keeping a log of which world each account bound to. A holder-bound credential (a JWT carrying a
+device key in `cnf`, about a day long, with a client-signed proof per world) was weighed and not
+chosen: it would let a first bind happen on a LAN with no internet and keep who-plays-with-whom from
+our service, at the cost of a device key to store safely in every build, a second signature check in
+the bind reducer, and binds to new worlds that outlive an account's suspension until the credential
+expires. It stays the upgrade path, as a second attestation source, if either of those gains becomes
+a requirement.
+
+## A friends server may serve plaintext `ws:` only to loopback and private-range addresses
+
+**Decision.** The client accepts a shell document whose `uri` is plaintext `ws:` only when its host
+is a loopback address or a private-range address (RFC 1918 IPv4, IPv6 ULA `fc00::/7`); any other
+host must be `wss:`. Operator ruling, <https://github.com/mdrewt/monster-realm/issues/821>; the
+harness spec's lpw-14 enforces it in the shell-document resolver.
+
+**Why.** A friends server on a home network has no TLS certificate, so requiring `wss:` everywhere
+would stop LAN play; plaintext over the internet would expose the world token, which the client
+keeps across launches, and all traffic to anyone on the path.
+
+**Rules out.** Plaintext `ws:` to a public address, with or without a warning; requiring every LAN
+host to provision a certificate.
