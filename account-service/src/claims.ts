@@ -8,7 +8,7 @@ export const ID_TOKEN_TTL_SECONDS = 3600;
  * Every claim of an entitled account's ID token. The provider supplies `iss`, `aud`, `iat` and
  * `exp`; `accountClaims` supplies the other two.
  */
-export const ID_TOKEN_CLAIMS = ['iss', 'sub', 'aud', 'mr_ent', 'iat', 'exp'] as const;
+export const ID_TOKEN_CLAIMS = ['iss', 'sub', 'aud', ENTITLEMENT_CLAIM, 'iat', 'exp'] as const;
 
 /**
  * Claims OpenID Connect adds when the authorization request asks: `nonce` echoes the request's,

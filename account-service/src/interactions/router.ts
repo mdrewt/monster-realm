@@ -191,16 +191,11 @@ function mediaType(req: IncomingMessage): string {
 }
 
 /**
- * The request body as text, or undefined when it is over the limit. The rest of an oversized body
- * is discarded as it arrives, so the refusal still reaches the sender.
+ * The request body as text, or undefined when it is over the limit or its sender went away. The
+ * rest of an oversized body is discarded as it arrives, so the refusal still reaches the sender.
  */
 function readBody(req: IncomingMessage): Promise<string | undefined> {
-  return new Promise((resolve, reject) => {
-    if (Number(req.headers['content-length'] ?? 0) > MAX_BODY_BYTES) {
-      req.resume();
-      resolve(undefined);
-      return;
-    }
+  return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
     const onData = (chunk: Buffer): void => {
@@ -217,7 +212,9 @@ function readBody(req: IncomingMessage): Promise<string | undefined> {
     req.once('end', () => {
       resolve(Buffer.concat(chunks).toString('utf8'));
     });
-    req.once('error', reject);
+    req.once('error', () => {
+      resolve(undefined);
+    });
   });
 }
 

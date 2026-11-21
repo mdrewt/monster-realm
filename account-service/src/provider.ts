@@ -4,6 +4,7 @@ import Provider, {
   type Adapter,
   type AdapterPayload,
   type Configuration,
+  errors,
   interactionPolicy,
 } from 'oidc-provider';
 import { accountClaims, ENTITLEMENT_CLAIM, ID_TOKEN_TTL_SECONDS } from './claims.ts';
@@ -21,8 +22,10 @@ const AUTHORIZATION_CODE_TTL_SECONDS = 60;
 const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 /** How long a sign-in may take from the authorization request to the code. */
 export const SIGN_IN_TTL_SECONDS = 600;
-/** Each authorization request stores one record of about 600 bytes for that long; this bounds them. */
+/** Each sign-in started stores one record for that long; this bounds how many there are. */
 const MAX_PENDING_SIGN_INS = 20_000;
+/** A sign-in's record holds its authorization request, so this bounds a record at about 3 KB. */
+const MAX_TARGET_LENGTH = 2048;
 
 export interface AccountProvider {
   readonly provider: Provider;
@@ -52,18 +55,30 @@ export function createAccountProvider(options: {
 }): AccountProvider {
   const { signIn } = options;
 
+  const signInsStarted = createRateLimiter({
+    limit: options.maxPendingSignIns ?? MAX_PENDING_SIGN_INS,
+    windowSeconds: SIGN_IN_TTL_SECONDS,
+  });
+  const policy = interactionPolicy.base();
+  const login = policy.get('login');
   // The session names an account the step no longer answers for: it stopped being entitled
   // between the password step and the resume. Ask again instead of going on without an account.
-  const policy = interactionPolicy.base();
-  policy
-    .get('login')
-    ?.checks.add(
-      new interactionPolicy.Check(
-        'account_refused',
-        'the account can no longer sign in',
-        (ctx) => ctx.oidc.session?.accountId !== undefined && ctx.oidc.account === undefined,
-      ),
-    );
+  login?.checks.add(
+    new interactionPolicy.Check(
+      'account_refused',
+      'the account can no longer sign in',
+      (ctx) => ctx.oidc.session?.accountId !== undefined && ctx.oidc.account === undefined,
+    ),
+  );
+  // The cap on sign-ins started. It asks for no prompt of its own; it is here because the
+  // provider runs these checks for every authorization request about to store a sign-in, however
+  // the request spelled its path or method, and before anything is stored.
+  login?.checks.add(
+    new interactionPolicy.Check('sign_in_started', 'a sign-in is started', (ctx) => {
+      if (ctx.oidc.route !== 'resume' && !signInsStarted.take('sign-in')) throw tooManySignIns();
+      return false;
+    }),
+  );
 
   const revokeGrant = async (grantId: string): Promise<void> => {
     await Promise.all([
@@ -124,9 +139,13 @@ export function createAccountProvider(options: {
       Session: 60,
       // A grant outlives every refresh token of its chain: it is made before the code is.
       Grant: REFRESH_TOKEN_TTL_SECONDS + SIGN_IN_TTL_SECONDS + AUTHORIZATION_CODE_TTL_SECONDS,
-      // A rotated token inherits what its predecessor had left, so a chain ends 30 days after its sign-in.
+      // A rotated token inherits what its predecessor had left (a second at least: the provider
+      // takes no shorter life), so a chain ends 30 days after its sign-in.
       RefreshToken: (ctx) =>
-        ctx?.oidc?.entities?.RotatedRefreshToken?.remainingTTL ?? REFRESH_TOKEN_TTL_SECONDS,
+        Math.max(
+          1,
+          ctx?.oidc?.entities?.RotatedRefreshToken?.remainingTTL ?? REFRESH_TOKEN_TTL_SECONDS,
+        ),
     },
     // The library's own error page loads a font from a third party.
     renderError(ctx, out) {
@@ -147,10 +166,6 @@ export function createAccountProvider(options: {
     signIn === undefined
       ? undefined
       : createInteractionRouter({ provider, issuer: options.issuer, signIn });
-  const signInsStarted = createRateLimiter({
-    limit: options.maxPendingSignIns ?? MAX_PENDING_SIGN_INS,
-    windowSeconds: SIGN_IN_TTL_SECONDS,
-  });
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
     // An absolute-form target would name its own origin.
@@ -160,6 +175,10 @@ export function createAccountProvider(options: {
     }
     if (req.headers.host?.toLowerCase() !== issuer.host) {
       refuse(res, 421, `this server answers only as ${options.issuer}`);
+      return;
+    }
+    if (req.url.length > MAX_TARGET_LENGTH) {
+      refuse(res, 414, `a request target is at most ${MAX_TARGET_LENGTH} characters`);
       return;
     }
     for (const name of Object.keys(req.headers)) {
@@ -174,25 +193,23 @@ export function createAccountProvider(options: {
     req.headers.host = issuer.host;
     req.headers['x-forwarded-proto'] = scheme;
 
-    if (router !== undefined) {
-      const path = req.url.split('?', 1)[0];
-      const uid = interactionUid(path);
-      if (uid !== undefined) {
-        void router(req, res, uid);
-        return;
-      }
-      if (
-        path === '/auth' &&
-        (req.method === 'GET' || req.method === 'POST') &&
-        !signInsStarted.take('auth')
-      ) {
-        refuse(res, 503, 'too many sign-ins are in progress; try again in a few minutes');
-        return;
-      }
+    const uid = router === undefined ? undefined : interactionUid(req.url.split('?', 1)[0]);
+    if (router !== undefined && uid !== undefined) {
+      void router(req, res, uid);
+      return;
     }
     callback(req, res);
   };
   return { provider, handler };
+}
+
+/** Answered by this service with 503, never sent on to the client's redirect address. */
+function tooManySignIns(): errors.OIDCProviderError {
+  const error = new errors.OIDCProviderError(503, 'temporarily_unavailable');
+  error.error_description = 'too many sign-ins are in progress; try again in a few minutes';
+  error.expose = true;
+  error.allow_redirect = false;
+  return error;
 }
 
 const CLIENT_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -215,7 +232,7 @@ export async function registerClient(
   }
   const url = new URL(redirectUri);
   if (url.href !== redirectUri) {
-    throw new TypeError(`a redirect address is written in its canonical form, as ${url.origin}/`);
+    throw new TypeError(`a redirect address is written in its canonical form, as ${url.href}`);
   }
   if (url.username !== '' || url.password !== '' || redirectUri.includes('#')) {
     throw new TypeError('a redirect address has no user, password or fragment');

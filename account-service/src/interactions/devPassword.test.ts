@@ -30,6 +30,9 @@ const FULLWIDTH_PLAYER = String.fromCharCode(0xff30, 0xff2c, 0xff21, 0xff39, 0xf
 const FULLWIDTH_AT = String.fromCharCode(0xff20);
 const FI_LIGATURE = String.fromCharCode(0xfb01);
 const DRAGON = String.fromCodePoint(0x1f409);
+const CROCODILE = String.fromCodePoint(0x1f40a);
+const E_ACUTE = String.fromCharCode(0x00e9);
+const E_GRAVE = String.fromCharCode(0x00e8);
 const CONTROL_SOH = String.fromCharCode(0x01);
 const CONTROL_DEL = String.fromCharCode(0x7f);
 const CONTROL_NEL = String.fromCharCode(0x85);
@@ -316,6 +319,41 @@ describe('hash rule edges', () => {
     ]) {
       expect(recomputes(hash, 'pw'), hash).toBe(true);
       await expect(verifyPassword(hash, 'pw'), hash).resolves.toBe(false);
+    }
+  });
+
+  test('the whole of a long password is hashed: a change past character 72 or at the end is refused acs-2.6', async () => {
+    const changeAt = (password: string, index: number): string =>
+      `${password.slice(0, index)}${password[index] === 'X' ? 'Y' : 'X'}${password.slice(index + 1)}`;
+
+    const long = 'abcdefghij'.repeat(10);
+    expect(long).toHaveLength(100);
+    const hash = await hashPassword(long);
+    expect(recomputes(hash, long)).toBe(true);
+    await expect(verifyPassword(hash, long)).resolves.toBe(true);
+    for (const other of [changeAt(long, 99), changeAt(long, 72), long.slice(0, 72)]) {
+      expect(other).not.toBe(long);
+      await expect(verifyPassword(hash, other), other).resolves.toBe(false);
+    }
+
+    const longest = 'abcdefgh'.repeat(MAX_PASSWORD_LENGTH / 8);
+    expect(longest).toHaveLength(128);
+    const longestHash = await hashPassword(longest);
+    await expect(verifyPassword(longestHash, longest)).resolves.toBe(true);
+    await expect(verifyPassword(longestHash, changeAt(longest, 127))).resolves.toBe(false);
+  });
+
+  test('a password is hashed as its UTF-8 bytes: a non-ASCII character counts as itself acs-2.6', async () => {
+    const pairs: ReadonlyArray<readonly [string, string]> = [
+      [`caf${E_ACUTE}-password`, `caf${E_GRAVE}-password`],
+      [`dragon-${DRAGON}-password`, `dragon-${CROCODILE}-password`],
+    ];
+    for (const [password, other] of pairs) {
+      const hash = await hashPassword(password);
+      expectServiceHashShape(hash);
+      expect(recomputes(hash, password), password).toBe(true); // argon2Sync over Buffer.from(password, 'utf8')
+      await expect(verifyPassword(hash, password), password).resolves.toBe(true);
+      await expect(verifyPassword(hash, other), other).resolves.toBe(false);
     }
   });
 

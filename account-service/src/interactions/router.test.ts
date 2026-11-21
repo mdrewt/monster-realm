@@ -529,6 +529,26 @@ const REFUSALS: ReadonlyArray<readonly [string, Refusal]> = [
     },
   ],
   [
+    "a POST whose Origin only begins with the issuer's origin, as a longer host, is 403",
+    {
+      method: 'POST',
+      headers: { ...GOOD_POST, origin: 'http://localhost:4455.evil.example' },
+      body: VALID_BODY,
+      cookies: true,
+      status: 403,
+    },
+  ],
+  [
+    "a POST whose Origin only begins with the issuer's origin, as a longer port, is 403",
+    {
+      method: 'POST',
+      headers: { ...GOOD_POST, origin: 'http://localhost:44556' },
+      body: VALID_BODY,
+      cookies: true,
+      status: 403,
+    },
+  ],
+  [
     'a POST whose Origin is "null" is 403',
     {
       method: 'POST',

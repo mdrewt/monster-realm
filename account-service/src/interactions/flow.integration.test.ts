@@ -970,6 +970,18 @@ describe('sign-in sessions', () => {
   });
 });
 
+// The spellings of the authorization endpoint the provider answers alike.
+const AUTH_SPELLINGS: ReadonlyArray<readonly [string, string]> = [
+  ['GET', '/auth'],
+  ['HEAD', '/auth'],
+  ['GET', '/AUTH'],
+  ['GET', '/auth/'],
+];
+
+function interactionRows(w: World): Row[] {
+  return rows(w).filter((row) => row.model === 'Interaction');
+}
+
 describe('the cap on sign-ins started', () => {
   test('past maxPendingSignIns within the window /auth gets 503 and writes nothing, the rest still answers, and the window moving on lets it through', async () => {
     freezeAt(T0);
@@ -981,11 +993,20 @@ describe('the cap on sign-ins started', () => {
     for (const jar of jars) started.push(await begin(w, jar));
 
     const before = rows(w).length;
+    // Every spelling of the authorization endpoint the provider answers is refused once full.
+    for (const [method, path] of AUTH_SPELLINGS) {
+      const label = `${method} ${path}`;
+      const refused = await send(w.port, method, `${path}?${authQuery().query}`, { host: HOST });
+      expect(refused.status, label).toBe(503);
+      expect(String(refused.headers['content-type']), label).toMatch(/^text\/plain/);
+      expect(refused.headers['set-cookie'] ?? [], label).toEqual([]);
+      expect(refused.headers.location, label).toBeUndefined();
+      if (method === 'HEAD') expect(refused.body, label).toBe('');
+      else expect(refused.body, label).toMatch(/^temporarily_unavailable/);
+      expect(rows(w).length, label).toBe(before);
+    }
+    // POST is not an authorization request at all.
     const { query } = authQuery();
-    const refused = await send(w.port, 'GET', `/auth?${query}`, { host: HOST });
-    expect(refused.status).toBe(503);
-    expect(String(refused.headers['content-type'])).toMatch(/^text\/plain/);
-    expect(refused.headers['set-cookie'] ?? []).toEqual([]);
     const posted = await send(
       w.port,
       'POST',
@@ -993,7 +1014,8 @@ describe('the cap on sign-ins started', () => {
       { host: HOST, 'content-type': FORM_TYPE },
       query,
     );
-    expect(posted.status).toBe(503);
+    expect(posted.status).toBe(404);
+    expect(posted.headers['set-cookie'] ?? []).toEqual([]);
     expect(rows(w).length).toBe(before);
 
     expect((await send(w.port, 'GET', '/jwks', { host: HOST })).status).toBe(200);
@@ -1022,5 +1044,131 @@ describe('the cap on sign-ins started', () => {
     );
     vi.setSystemTime(T0 + SIGN_IN_TTL_SECONDS * 1000);
     await begin(w, newJar());
+  });
+
+  test('every spelling of the authorization endpoint counts while there is room, and the request after the cap is 503', async () => {
+    freezeAt(T0);
+    const w = await world({ maxPendingSignIns: AUTH_SPELLINGS.length });
+    const uids: string[] = [];
+    for (const [method, path] of AUTH_SPELLINGS) {
+      const reply = await call(w, newJar(), method, `${path}?${authQuery().query}`);
+      expect(reply.status, `${method} ${path}`).toBe(303);
+      uids.push(interactionUid(reply.headers.location));
+    }
+    expect(new Set(uids).size).toBe(AUTH_SPELLINGS.length);
+    expect(interactionRows(w)).toHaveLength(AUTH_SPELLINGS.length);
+    const after = await send(w.port, 'GET', `/auth?${authQuery().query}`, { host: HOST });
+    expect(after.status).toBe(503);
+    expect(interactionRows(w)).toHaveLength(AUTH_SPELLINGS.length);
+  });
+
+  test('requests the provider refuses for its own reasons do not use the cap up', async () => {
+    freezeAt(T0);
+    const cap = 2;
+    const w = await world({ maxPendingSignIns: cap });
+    for (let i = 0; i < cap + 2; i += 1) {
+      const unknown = await send(
+        w.port,
+        'GET',
+        `/auth?${authQuery({ client_id: 'nobody' }).query}`,
+        {
+          host: HOST,
+        },
+      );
+      expect(unknown.status).toBe(400);
+
+      const elsewhere = authQuery({ redirect_uri: 'http://localhost:5291/' }).query;
+      const misdirected = await send(w.port, 'GET', `/auth?${elsewhere}`, { host: HOST });
+      expect(misdirected.status).toBe(400);
+      expect(misdirected.headers.location).toBeUndefined();
+
+      const params = new URLSearchParams(authQuery().query);
+      params.delete('code_challenge');
+      params.delete('code_challenge_method');
+      const unchallenged = await send(w.port, 'GET', `/auth?${params}`, { host: HOST });
+      expect([302, 303]).toContain(unchallenged.status);
+      const back = new URL(String(unchallenged.headers.location));
+      expect(back.searchParams.get('error')).toBe('invalid_request');
+    }
+    expect(interactionRows(w)).toEqual([]);
+    for (let i = 0; i < cap; i += 1) await begin(w, newJar());
+    // The control: the cap is still in force, now full.
+    const full = await send(w.port, 'GET', `/auth?${authQuery().query}`, { host: HOST });
+    expect(full.status).toBe(503);
+  });
+});
+
+/** An authorization request target of exactly `length` characters, padded in `state`. */
+function authTargetOfLength(length: number): string {
+  const params = new URLSearchParams(authQuery().query);
+  params.set('state', '');
+  const empty = `/auth?${params}`;
+  params.set('state', 'a'.repeat(length - empty.length));
+  const target = `/auth?${params}`;
+  expect(target.length).toBe(length);
+  return target;
+}
+
+describe('request targets', () => {
+  test('an authorization request target of 2049 characters is 414 text/plain with no record and no cookie; 2048 starts one sign-in', async () => {
+    const w = await world();
+    const before = rows(w).length;
+    const long = await send(w.port, 'GET', authTargetOfLength(2049), { host: HOST });
+    expect(long.status).toBe(414);
+    expect(String(long.headers['content-type'])).toMatch(/^text\/plain/);
+    expect(long.headers['set-cookie'] ?? []).toEqual([]);
+    expect(long.headers.location).toBeUndefined();
+    expect(rows(w).length).toBe(before);
+
+    const exact = await call(w, newJar(), 'GET', authTargetOfLength(2048));
+    expect(exact.status).toBe(303);
+    interactionUid(exact.headers.location);
+    expect(interactionRows(w)).toHaveLength(1);
+    expect(rows(w).length).toBe(before + 1);
+  });
+
+  test('a /jwks target of 2049 characters is 414 text/plain, and of 2048 is served', async () => {
+    const w = await world();
+    const target = (length: number): string => `/jwks?${'a'.repeat(length - '/jwks?'.length)}`;
+    expect(target(2049)).toHaveLength(2049);
+    const long = await send(w.port, 'GET', target(2049), { host: HOST });
+    expect(long.status).toBe(414);
+    expect(String(long.headers['content-type'])).toMatch(/^text\/plain/);
+    expect(long.body).not.toContain(w.keys[0]!.x);
+    const exact = await send(w.port, 'GET', target(2048), { host: HOST });
+    expect(exact.status).toBe(200);
+    expect(exact.body).toContain(w.keys[0]!.x);
+  });
+});
+
+const INTERACTION_COOKIES = [
+  '_interaction',
+  '_interaction.sig',
+  '_interaction_resume',
+  '_interaction_resume.sig',
+].sort();
+
+describe('only the interaction cookies, by exact name, reach the provider', () => {
+  test.each([
+    ['no cookie (the control)', null],
+    [
+      'session cookies whose values are interaction cookie names',
+      '_session=_interaction; _session.sig=_interaction.sig',
+    ],
+    [
+      'cookies whose names or values merely contain an interaction cookie name',
+      'x_interaction=1; _session=abc._interaction_resume',
+    ],
+  ])('an authorization request with %s starts a sign-in step and stores only its Interaction', async (_name, cookie) => {
+    const w = await world();
+    const key = (row: Row): string => `${row.model}/${row.id}`;
+    const before = new Set(rows(w).map(key));
+    const reply = await call(w, newJar(), 'GET', `/auth?${authQuery().query}`, { cookie });
+    expect(reply.status).toBe(303);
+    interactionUid(reply.headers.location);
+    const names = (reply.headers['set-cookie'] ?? []).map((line) => line.split('=')[0]);
+    expect([...names].sort()).toEqual(INTERACTION_COOKIES);
+    const added = rows(w).filter((row) => !before.has(key(row)));
+    expect(added.map((row) => row.model)).toEqual(['Interaction']);
   });
 });
