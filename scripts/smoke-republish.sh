@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test: publish → edit content → republish WITHOUT --delete-data →
-# assert existing monster data survives AND new content version is served.
+# assert existing monster data survives AND new content version is served. Then, with
+# CONTENT_VERSION unchanged, overwrite the module_info row with other numbers, republish,
+# and assert the owner's sync_content restores the module's protocol numbers.
 #
 # Runs in nightly.yml only (requires a live SpacetimeDB instance — not CI-fast).
 # macOS: uses GNU sed (sed -i without suffix arg); requires GNU sed in PATH.
@@ -151,8 +153,6 @@ fi
 PROTO_ROW=$(grep -oE '"rows":\[\[[0-9]+,[0-9]+\]\]' <<<"$PROTO_OUT" || true)
 [ -n "$PROTO_ROW" ] \
   || fail "expected module_info to hold exactly one row of two numbers; got: $PROTO_OUT"
-[ "$(printf '%s\n' "$PROTO_ROW" | wc -l)" -eq 1 ] \
-  || fail "expected exactly one module_info row; got: $PROTO_OUT"
 PROTOCOL=$(sed -E 's/^"rows":\[\[([0-9]+),([0-9]+)\]\]$/\1/' <<<"$PROTO_ROW")
 MIN_CLIENT=$(sed -E 's/^"rows":\[\[([0-9]+),([0-9]+)\]\]$/\2/' <<<"$PROTO_ROW")
 log "module_info holds protocol $PROTOCOL, min_client_protocol $MIN_CLIENT"
@@ -167,7 +167,8 @@ if ! UPDATE_OUT=$(spacetime sql -s "$SERVER" "$DB" \
 fi
 expect_protocol_row "$OTHER_PROTOCOL" "$OTHER_MIN_CLIENT" "after the overwrite"
 
-# Nothing rebuilt or patched since Phase 4: the same module over the same data.
+# The source is unchanged since Phase 4 (publish builds it again from that same source), over
+# the same data.
 log "Phase 7: republish WITHOUT --delete-data (CONTENT_VERSION unchanged)"
 spacetime publish -s "$SERVER" --module-path server-module -y "$DB"
 # The publish alone restores nothing, so the restore below is the owner's sync_content's.

@@ -89,16 +89,10 @@ function runPublish({ publishExit = 0, callExit = 0 } = {}) {
   }
 }
 
+// The whole argument list, exactly: the database named, the data kept (no `-c` /
+// `--delete-data` in any spelling), the CLI's default server and identity.
 function assertPublishOf(args) {
-  assert.equal(args[0], 'publish', `the first invocation is a publish: ${JSON.stringify(args)}`);
-  assert.ok(args.includes(DB), `the publish names the database ${DB}: ${JSON.stringify(args)}`);
-  assert.ok(!args.includes('--delete-data'), `the publish keeps the data: ${JSON.stringify(args)}`);
-  for (const flag of ['-s', '--server', '--anonymous']) {
-    assert.ok(
-      !args.includes(flag),
-      `the publish uses the CLI's default server and identity: ${JSON.stringify(args)}`,
-    );
-  }
+  assert.deepEqual(args, ['publish', '--module-path', 'server-module', DB]);
 }
 
 test('after a publish that succeeds, just publish calls sync_content on the same database as the publishing identity', () => {

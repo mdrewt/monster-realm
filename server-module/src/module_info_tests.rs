@@ -53,10 +53,12 @@ fn ensure_module_info_inserts_the_modules_numbers_when_the_row_is_missing() {
     assert_eq!(fx.writes_to("module_info"), 1, "one insert");
 }
 
-/// Three starts, each in a fresh host: both numbers differ, only `protocol` differs,
-/// only `min_client_protocol` differs. Each ends with one row holding the module's
-/// numbers after ONE write (an update in place, not a delete and an insert).
-/// kills: a comparison on one column only; an insert that fails over an existing key;
+/// Six starts, each in a fresh host: both numbers, only `protocol`, only
+/// `min_client_protocol` — each once higher and once lower than the module's (lower is
+/// a row an older module wrote). Each ends with one row holding the module's numbers
+/// after ONE write (an update in place, not a delete and an insert).
+/// kills: a comparison on one column only; an ordered (`<=`) comparison that treats an
+/// older row as current; an insert that fails over an existing key;
 /// a delete-then-insert restore; a restore that keeps either stale column.
 #[test]
 fn ensure_module_info_overwrites_a_row_holding_other_numbers() {
@@ -75,6 +77,22 @@ fn ensure_module_info_overwrites_a_row_holding_other_numbers() {
             "only min_client_protocol differs",
             PROTOCOL_VERSION,
             MIN_CLIENT_PROTOCOL.wrapping_add(3),
+        ),
+        // A row last written by an OLDER module holds lower numbers.
+        (
+            "both numbers lower",
+            PROTOCOL_VERSION.wrapping_sub(1),
+            MIN_CLIENT_PROTOCOL.wrapping_sub(1),
+        ),
+        (
+            "only protocol lower",
+            PROTOCOL_VERSION.wrapping_sub(1),
+            MIN_CLIENT_PROTOCOL,
+        ),
+        (
+            "only min_client_protocol lower",
+            PROTOCOL_VERSION,
+            MIN_CLIENT_PROTOCOL.wrapping_sub(1),
         ),
     ];
     for (case, protocol, min_client_protocol) in starts {

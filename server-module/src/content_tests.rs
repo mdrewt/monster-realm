@@ -1883,7 +1883,8 @@ mod nh_sync {
         summary_reaper: Handle<'a, crate::summary_reaper::BattleSummaryReaperSchedule, u64>,
         /// sr-4b: `init` and `sync_content` end with the leaderboard membership rescan.
         ladder: Handle<'a, crate::schema::LeaderboardTop>,
-        /// lpw-3: `init` and `sync_content` end by recording the module's protocol numbers.
+        /// The one-row table holding the module's protocol numbers, which `init` and
+        /// `sync_content` record after their content step.
         module_info: Handle<'a, ModuleInfo, u32>,
     }
 
@@ -2389,6 +2390,15 @@ mod nh_sync {
         }
     }
 
+    /// Row 0 as an OLDER module left it: both numbers lower than the module's.
+    fn older_numbers() -> ModuleInfo {
+        ModuleInfo {
+            id: 0,
+            protocol: PROTOCOL_VERSION.wrapping_sub(1),
+            min_client_protocol: MIN_CLIENT_PROTOCOL.wrapping_sub(1),
+        }
+    }
+
     /// Every stored `module_info` row's BSATN bytes.
     fn module_info_bytes(w: &World<'_>) -> Vec<Vec<u8>> {
         w.module_info.rows().iter().map(bytes).collect()
@@ -2412,22 +2422,22 @@ mod nh_sync {
     }
 
     /// The owner's `sync_content` writes the module's numbers into exactly one row from
-    /// a missing row and from a row holding other numbers, on the reseed path (a stale
-    /// `config.content_version`) and on the skip path (a current one, left untouched
-    /// before the call).
+    /// a missing row, from a row holding higher numbers and from a row holding lower
+    /// numbers (an older module's), on the reseed path (a stale `config.content_version`)
+    /// and on the skip path (a current one, left untouched before the call).
     /// kills: the restore placed inside `sync_content_inner`'s version gate (the skip
     /// path never restores); an insert-only restore (the other numbers stay); a
-    /// delete-and-forget; no restore in `sync_content` at all.
+    /// delete-and-forget; an ordered (`<=`) comparison that treats an older row as
+    /// current; no restore in `sync_content` at all.
     #[test]
     fn sync_content_restores_the_protocol_numbers_on_the_reseed_and_the_skip_path() {
         for reseed in [true, false] {
-            for start in [None, Some(other_numbers())] {
+            for (state, start) in [
+                ("no row", None),
+                ("a row holding higher numbers", Some(other_numbers())),
+                ("a row holding lower numbers", Some(older_numbers())),
+            ] {
                 let path = if reseed { "reseed path" } else { "skip path" };
-                let state = if start.is_some() {
-                    "a row holding other numbers"
-                } else {
-                    "no row"
-                };
                 let fx = fixture();
                 let w = world(&fx);
                 fx.run_as(owner(), crate::init);

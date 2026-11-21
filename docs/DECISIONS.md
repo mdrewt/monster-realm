@@ -1477,32 +1477,28 @@ table.
 
 ## The module publishes its protocol numbers; a publish that keeps data is followed by the owner's `sync_content`
 
-**Decision.** `game-core` holds two `u32` constants. `PROTOCOL_VERSION` rises with every change to
-the server module's tables or reducers. `MIN_CLIENT_PROTOCOL` rises only when an older client can no
-longer speak to the server (a removed or re-typed reducer argument or table column), and never
-exceeds `PROTOCOL_VERSION`. The module records both in the public table `module_info`, which holds
-one row with `id` 0; a reader takes that row. `client-wasm` exports the client's own number as
-`protocol_version()`. `module_info::ensure_module_info` writes the row only when it is missing or
-differs. `init` calls it, and so does the owner's `sync_content`, after the content step and outside
-its content-version check. Every path that publishes over a database and keeps its data then calls
-`sync_content` as the publishing identity: `just publish`, `just playtest-up` and
-`scripts/smoke-republish.sh`. A refused call fails the path through the CLI's exit status (1 for a
-reducer `Err` at 2.11.0).
+**Decision.** `game-core` holds `PROTOCOL_VERSION`, which rises with every change to the server
+module's tables or reducers, and `MIN_CLIENT_PROTOCOL`, which rises only with a change an older
+client cannot talk across (a removed or re-typed reducer argument or table column) and never exceeds
+it. The module records both in row 0 of the public table `module_info`, from `init` and from the
+owner's `sync_content` whether or not the content changed; `client-wasm` exports the client's own
+number as `protocol_version()`. Every recipe and script in this repository that publishes over a
+database and keeps its data then calls `sync_content` as the publishing identity, and fails when
+that call is refused.
 
 **Why.** `init` runs only when a database is created, and nothing in the module runs when a new
-module is published over existing data. The owner's `sync_content` is the one call each publish path
-already made for content, so it also carries the numbers. They must describe the module that is
-running after a publish that changed the schema and left the content alone, which the
-content-version check would skip. The bump rule is a rule and has no test: telling a breaking schema
-change from an additive one would mean restating the schema in the test.
+module is published over existing data, so the owner's call is what makes the row describe the
+module that is running. That has to hold after a publish that changed the schema and left the
+content alone, which the content-version check would skip. The bump rule has no test: telling a
+breaking schema change from an additive one would mean restating the schema in the test.
 
 **Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
-numbers below the content-version check in `sync_content_inner`, or from a reducer any caller may
-run. A recipe or script that publishes over kept data without the owner's call, or that ignores the
-call's exit status. Raising `MIN_CLIENT_PROTOCOL` for an additive change (it turns away every older
-client for nothing), or leaving it when a column or argument an older client uses is removed or
-re-typed. Treating the numbers as a server-side check: they tell a client which side to update, and
-every reducer still validates its own input.
+numbers below the content-version check, or from a reducer any caller may run. A recipe or script
+that publishes over kept data without the owner's call, or that ignores the call's exit status.
+Raising `MIN_CLIENT_PROTOCOL` for an additive change (it turns away every older client for nothing),
+or leaving it when something an older client uses is removed or re-typed. Treating the numbers as a
+server-side check: they tell a client which side to update, and every reducer still validates its
+own input.
 
 ## Observability: the module never times itself or calls out
 
