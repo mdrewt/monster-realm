@@ -21,7 +21,14 @@
 // ROWS ON THE KIT (uif-9, UIF9.3-UIF9.4): each request renders as one RowCard (`ui/rowCard.ts`),
 // the only child of its container, carrying the `pvp-*-label` testid e2e keys on. While the panel
 // shows, a container holding a card is a nav row (`mr-nav-item`, the padding every Social row has)
-// and the cursor adds `is-active` + aria-current; an empty container is no row. `hide()` clears it all.
+// and the cursor adds `is-active` + aria-current; an empty container is no row. `hide()` clears every
+// mark (the cards and the empty line stay in the hidden root).
+//
+// THE EMPTY LINE: with no request in either container, the panel says so with the kit's
+// empty state (`ui/emptyState.ts`), a direct child of the root right after the outgoing container.
+// It is no row and holds nothing focusable; a refresh that shows a request removes it.
+
+import { createEmptyState } from './emptyState';
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
@@ -49,6 +56,8 @@ export class PvpView {
   #visible = false;
   /** The Social cursor's row, re-applied after every refresh; `hide()` drops it. */
   #cursor: 'incoming' | 'outgoing' | null = null;
+  /** The empty line while the panel shows no request; null while it shows one. */
+  #emptyEl: HTMLElement | null = null;
 
   constructor(_callbacks: PvpViewCallbacks) {
     const root = document.getElementById('pvp-challenge-overlay');
@@ -146,7 +155,7 @@ export class PvpView {
    *
    * Both containers are rebuilt on every refresh: they hold one RowCard each (the buttons they
    * carried are deleted, qf-8), and the Social cursor marks the containers themselves
-   * (`paintCursor`), which outlive the rebuild.
+   * (`paintCursor`), which outlive the rebuild. The empty line is rebuilt with them.
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
     if (!forceVisible) {
@@ -160,14 +169,22 @@ export class PvpView {
       this.#statusEl.textContent = t('pvp.title.idle');
       this.#renderIncoming(null);
       this.#renderOutgoing(null);
-      this.#markRows();
-      return;
+    } else {
+      this.#statusEl.textContent = t('pvp.title.challenge');
+      this.#renderIncoming(vm.incoming);
+      this.#renderOutgoing(vm.outgoing);
     }
-
-    this.#statusEl.textContent = t('pvp.title.challenge');
-    this.#renderIncoming(vm.incoming);
-    this.#renderOutgoing(vm.outgoing);
+    this.#renderEmpty();
     this.#markRows();
+  }
+
+  /** The empty line when neither container holds a request card; rebuilt on every refresh. */
+  #renderEmpty(): void {
+    this.#emptyEl?.remove();
+    this.#emptyEl = null;
+    if (this.#incomingEl.childElementCount > 0 || this.#outgoingEl.childElementCount > 0) return;
+    this.#emptyEl = createEmptyState(document, { reason: t('pvp.empty') });
+    this.#outgoingEl.after(this.#emptyEl);
   }
 
   #renderIncoming(incoming: PvpIncomingChallenge | null): void {

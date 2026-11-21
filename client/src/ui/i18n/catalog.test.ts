@@ -663,6 +663,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'battle.outcome.fled': 'Got away safely!', // battleView.ts:635 (pre-migration source)
   'pvp.title.idle': 'PvP', // pvpView.ts:135
   'pvp.title.challenge': 'PvP Challenge', // pvpView.ts:142
+  // lpw-6 (named intentional change, lpw-6.1): +1 plain key (`pvp.empty`), the Challenges panel's
+  // empty line (the other recorded totals above stop at 361; the live roster is 548 -> 549).
+  'pvp.empty': 'No challenges',
   // qf-8 (named intentional change): `pvp.incoming.accept` ('Accept'), `pvp.incoming.decline`
   // ('Decline') and `pvp.outgoing.cancel` ('Cancel Challenge') are RETIRED with the challenge
   // panel's buttons (catalogParity DEAD-KEY); the Social sheet's `social.action.*` rows answer.
@@ -2424,7 +2427,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 548 keys').toHaveLength(548);
+    // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 549 keys').toHaveLength(549);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3641,8 +3645,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 549 keys').toBe(549);
+    // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(549);
   });
 });
 
@@ -3771,8 +3776,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 549 keys').toBe(549);
+    // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(549);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4095,9 +4101,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(548);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 549 keys').toBe(549);
+    // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(549);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(549);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4788,8 +4795,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en), 'the English roster is 548 keys').toHaveLength(548);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(548);
+    // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
+    expect(Object.keys(en), 'the English roster is 549 keys').toHaveLength(549);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(549);
   });
 });
 
@@ -4914,8 +4922,9 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en), 'the English roster is 548 keys').toHaveLength(548);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(548);
+    // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
+    expect(Object.keys(en), 'the English roster is 549 keys').toHaveLength(549);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(549);
   });
 });
 

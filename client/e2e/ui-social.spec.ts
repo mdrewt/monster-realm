@@ -1183,3 +1183,199 @@ test.describe
       }
     });
   });
+
+// ---------------------------------------------------------------------------------------------
+// lpw-6 (lpw-6.2): a lone player opens Social in a fresh world and every tab says why it is empty.
+//
+// EVIDENCE LABEL: real modules + real CSS + a FAKE store. A real server cannot promise a fresh
+// world inside a shared e2e shard (earlier files leave ranked profiles and other players), so the
+// "fresh world" is a fake store holding ONLY the viewer: players = [the viewer, online], no
+// challenges, no trade sessions, no profiles. The page is the real index.html and stylesheet from
+// the Vite dev server (main.ts route-aborted); the page-side code (a STRING) imports the real
+// TradeView, PvpView, LeaderboardView, socialModel, socialScreen, pvpModel and leaderboardModel and
+// paints them as UIF9_MOUNT does (its own hook name, `__lpw6`; UIF9_MOUNT is untouched). The copy
+// is hard-coded English on purpose: the two existing lines keep their wording and the literal pins
+// it. No fixed sleeps: expect / toBeVisible / toHaveText poll.
+// ---------------------------------------------------------------------------------------------
+
+const LPW6_MOUNT = `(async () => {
+  const [tv, pv, lv, sm, ss, pm, lm] = await Promise.all([
+    import('/src/ui/tradeView.ts'), import('/src/ui/pvpView.ts'), import('/src/ui/leaderboardView.ts'),
+    import('/src/ui/socialModel.ts'), import('/src/ui/screens/socialScreen.ts'),
+    import('/src/ui/pvpModel.ts'), import('/src/ui/leaderboardModel.ts'),
+  ]);
+  const me = 'aa'.repeat(16);
+  const noop = async () => {};
+  const trade = new tv.TradeView();
+  const pvp = new pv.PvpView({ onAccept: noop, onDecline: noop, onCancel: noop });
+  const board = new lv.LeaderboardView();
+  const players = [
+    { identity: me, entityId: 1n, name: 'Me', online: true, discriminator: 0, leadLevel: 0 },
+  ];
+  const challenges = [];
+  const sessions = [];
+  const profiles = [];
+  const chrome = document.createElement('div');
+  const views = { tradeView: trade, pvpView: pvp, leaderboardView: board };
+  const view = {
+    trades: trade, challenges: pvp, rankings: board, chrome,
+    show(panel) {
+      if (views[panel].visible) return;
+      if (panel === 'tradeView') trade.show();
+      if (panel === 'pvpView') pvp.refresh(pm.buildPvpChallengeViewModel(challenges, me, players), true);
+      if (panel === 'leaderboardView') { board.render(lm.buildLeaderboardViewModel(profiles, me)); board.show(); }
+      views[panel].hostChrome(chrome);
+      for (const k of Object.keys(views)) if (k !== panel && views[k].visible) views[k].hide();
+    },
+  };
+  const vm = sm.buildSocialVm(null, challenges, me, { players, characters: [], profiles }, sessions);
+  let state = ss.socialScreen.init(vm, undefined);
+  const paint = () => ss.socialScreen.paint(view, vm, state);
+  paint();
+  window.__lpw6 = {
+    press(button) { state = ss.socialScreen.onButton(vm, state, { button, repeat: false }).state; paint(); },
+    tab: () => state.nav.tab,
+  };
+  return true;
+})()`;
+
+interface Lpw6Hook {
+  press(button: string): void;
+  tab(): string;
+}
+
+const lpw6Press = (p: Page, button: string): Promise<void> =>
+  p.evaluate((b) => (window as unknown as { __lpw6: Lpw6Hook }).__lpw6.press(b), button);
+const lpw6Tab = (p: Page): Promise<string> =>
+  p.evaluate(() => (window as unknown as { __lpw6: Lpw6Hook }).__lpw6.tab());
+
+/** RB until `tab` shows (at most one lap). */
+async function lpw6GoTo(p: Page, tab: Tab): Promise<void> {
+  for (let i = 0; i <= TABS.length; i += 1) {
+    if ((await lpw6Tab(p)) === tab) return;
+    await lpw6Press(p, 'RB');
+  }
+  throw new Error(`lpw6GoTo: RB never reached ${tab}`);
+}
+
+/** The ids of the Social roots that show (exactly one must). */
+const lpw6ShownRoots = (p: Page): Promise<string[]> =>
+  p.evaluate(
+    (rootIds) =>
+      rootIds.filter((id) => {
+        const el = document.getElementById(id);
+        return el !== null && el.style.display !== 'none';
+      }),
+    ROOT_IDS,
+  );
+
+test.describe
+  .serial('LPW6 — a lone player in a fresh world: every Social tab says why it is empty (fixture page: real modules, real CSS, fake store)', () => {
+    let browser: Browser;
+    let ctx: BrowserContext;
+    let page: Page;
+
+    test.beforeAll(async () => {
+      test.setTimeout(60_000);
+      browser = await chromium.launch();
+      ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+      await ctx.route('**/src/main.ts*', (route) => route.abort());
+      page = await ctx.newPage();
+    });
+
+    test.afterAll(async () => {
+      await browser.close();
+    });
+
+    test('LPW6-2-LONE-PLAYER: opening Social alone in a fresh world shows an empty line on each of the four tabs: "No other players online", "No active trade", "No challenges" (no focusable row), "No ranked players yet", one Social root at a time [lpw-6.2]', async () => {
+      // WRONG IMPL KILLED: today's bare Challenges panel (no .mr-empty: the locator finds nothing);
+      // a Challenges line that is in the DOM but hidden (display or hidden attribute); one painted
+      // as a focusable row or button; a regression of the two existing lines' wording (Players,
+      // Trades, Rankings); a Players or Rankings tab whose line is missing for a lone viewer
+      // (viewer counted as another player, or the board's empty row dropped); two Social roots
+      // showing at once.
+      test.setTimeout(60_000);
+      await page.goto('/');
+      await page.waitForLoadState('load');
+      expect(
+        await page.evaluate(() => typeof (window as unknown as { __game?: unknown }).__game),
+        'main.ts did not run',
+      ).toBe('undefined');
+      await page.evaluate(LPW6_MOUNT);
+      expect(await lpw6Tab(page), 'no request: the fixture Social screen opens on Players').toBe(
+        'players',
+      );
+
+      for (const tab of TABS) {
+        await lpw6GoTo(page, tab);
+        await expect
+          .poll(() => lpw6ShownRoots(page), {
+            message: `${tab}: exactly the ${ROOT_OF[tab]} root shows`,
+          })
+          .toEqual([ROOT_OF[tab]]);
+
+        if (tab === 'players') {
+          const line = page.locator('#leaderboard-players > div');
+          await expect(line, 'Players: one empty line').toHaveCount(1);
+          await expect(line, 'Players: the line is visible').toBeVisible();
+          await expect(line, 'Players: the existing wording').toHaveText('No other players online');
+        }
+
+        if (tab === 'trades') {
+          const status = page.locator('#trade-status');
+          await expect(status, 'Trades: the status line is visible').toBeVisible();
+          await expect(status, 'Trades: the existing wording').toHaveText('No active trade');
+          await expect(
+            page.locator('#trade-sessions [data-nav-key]'),
+            'Trades: no session row',
+          ).toHaveCount(0);
+        }
+
+        if (tab === 'challenges') {
+          const reason = page.locator('#pvp-challenge-overlay .mr-empty .mr-empty-reason');
+          await expect(reason, 'Challenges: one empty line').toHaveCount(1);
+          await expect(reason, 'Challenges: the line is visible').toBeVisible();
+          await expect(reason, 'Challenges: the copy').toHaveText('No challenges');
+          const marks = await page.evaluate(() => {
+            const root = document.getElementById('pvp-challenge-overlay');
+            if (root === null) throw new Error('#pvp-challenge-overlay is missing');
+            // The Social frame's shared chrome (tab bar + context sheet nav list) is hosted as the
+            // root's FIRST child by hostChrome. `tabbable` EXCLUDES it: its nav container is the
+            // frame's own tab stop, not a row of the Challenges panel. `navItems` and `current`
+            // deliberately INCLUDE it (they count the whole root, so the chrome must carry no
+            // nav-item or aria-current here either). Everything else stays strict.
+            const hosted = root.firstElementChild;
+            const chromeHosted =
+              hosted !== null && hosted.querySelector('.mr-tabbar, #social-tabs') !== null;
+            const tabbable = [...root.querySelectorAll('*')].filter((el) => {
+              if (chromeHosted && hosted?.contains(el)) return false;
+              if (el.matches('button, a[href], input, select, textarea, [contenteditable]')) {
+                return true;
+              }
+              const ti = el.getAttribute('tabindex');
+              return ti !== null && ti !== '-1';
+            });
+            return {
+              navItems: root.querySelectorAll('.mr-nav-item').length,
+              current: root.querySelectorAll('[aria-current]').length,
+              cards: root.querySelectorAll('.mr-card').length,
+              tabbable: tabbable.map((el) => el.id || el.tagName),
+            };
+          });
+          expect(marks, 'Challenges: the panel holds no focusable row').toEqual({
+            navItems: 0,
+            current: 0,
+            cards: 0,
+            tabbable: [],
+          });
+        }
+
+        if (tab === 'rankings') {
+          const rows = page.locator('#leaderboard-list > li');
+          await expect(rows, 'Rankings: exactly one row').toHaveCount(1);
+          await expect(rows, 'Rankings: the row is visible').toBeVisible();
+          await expect(rows, 'Rankings: the existing wording').toHaveText('No ranked players yet');
+        }
+      }
+    });
+  });

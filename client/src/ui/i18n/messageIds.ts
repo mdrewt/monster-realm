@@ -202,6 +202,7 @@ export type MessageId =
   | 'pvp.title.challenge'
   | 'pvp.incoming.label'
   | 'pvp.outgoing.label'
+  | 'pvp.empty'
   // Evolution.* : the evolution screen (evolutionView.ts).
   | 'evolution.title'
   | 'evolution.hint'
