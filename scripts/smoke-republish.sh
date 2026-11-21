@@ -113,4 +113,76 @@ if ! echo "$CFG_ROWS" | grep -qE "(^|[^0-9])${BUMP_VERSION}([^0-9]|$)"; then
   fail "content not updated after sync_content (expected version $BUMP_VERSION in config; got: $CFG_ROWS)"
 fi
 
-log "PASS: starter monster survived republish AND new content served (version $BUMP_VERSION)"
+# Phase 7: the protocol numbers come back after a republish with CONTENT_VERSION UNCHANGED.
+# lib.rs is still patched to BUMP_VERSION, the live module was built from it and
+# config.content_version equals it, so a republish now is a republish with CONTENT_VERSION
+# unchanged and the owner's sync_content takes the skip path: only a protocol-number restore that
+# sits outside sync_content_inner's version gate brings the numbers back.
+# The module's numbers are what the live row holds after a publish and the owner's sync: they are
+# recorded from the database, never read out of a source file.
+
+# One read of module_info. On spacetime 2.11.0 `--format json` prints one JSON line carrying
+# `"rows":[[P,M]]` for exactly one row (two rows read `"rows":[[..],[..]]`, none `"rows":[]`).
+protocol_json() {
+  spacetime sql -s "$SERVER" --format json "$DB" "SELECT protocol, min_client_protocol FROM module_info"
+}
+
+# Fail unless module_info is exactly the one row ($1, $2); $3 names the step.
+expect_protocol_row() {
+  local want="\"rows\":[[$1,$2]]"
+  local got
+  if ! got=$(protocol_json 2>&1); then
+    fail "$3: the module_info read exited non-zero: $got"
+  fi
+  grep -qF -- "$want" <<<"$got" \
+    || fail "$3: expected module_info to be exactly the one row ($1, $2); got: $got"
+}
+
+log "Phase 7: asserting the stored content version is still $BUMP_VERSION"
+CFG_ROWS=$(spacetime sql -s "$SERVER" "$DB" "SELECT content_version FROM config")
+if ! grep -qE "(^|[^0-9])${BUMP_VERSION}([^0-9]|$)" <<<"$CFG_ROWS"; then
+  fail "Phase 7 needs config.content_version == $BUMP_VERSION (the skip path); got: $CFG_ROWS"
+fi
+
+log "Phase 7: recording the module's protocol numbers from the live row"
+if ! PROTO_OUT=$(protocol_json 2>&1); then
+  fail "the module_info read exited non-zero: $PROTO_OUT"
+fi
+PROTO_ROW=$(grep -oE '"rows":\[\[[0-9]+,[0-9]+\]\]' <<<"$PROTO_OUT" || true)
+[ -n "$PROTO_ROW" ] \
+  || fail "expected module_info to hold exactly one row of two numbers; got: $PROTO_OUT"
+[ "$(printf '%s\n' "$PROTO_ROW" | wc -l)" -eq 1 ] \
+  || fail "expected exactly one module_info row; got: $PROTO_OUT"
+PROTOCOL=$(sed -E 's/^"rows":\[\[([0-9]+),([0-9]+)\]\]$/\1/' <<<"$PROTO_ROW")
+MIN_CLIENT=$(sed -E 's/^"rows":\[\[([0-9]+),([0-9]+)\]\]$/\2/' <<<"$PROTO_ROW")
+log "module_info holds protocol $PROTOCOL, min_client_protocol $MIN_CLIENT"
+
+# Two other numbers, offset differently so a swapped column shows.
+OTHER_PROTOCOL=$((PROTOCOL + 4242))
+OTHER_MIN_CLIENT=$((MIN_CLIENT + 4141))
+log "Phase 7: overwriting module_info with ($OTHER_PROTOCOL, $OTHER_MIN_CLIENT)"
+if ! UPDATE_OUT=$(spacetime sql -s "$SERVER" "$DB" \
+  "UPDATE module_info SET protocol = $OTHER_PROTOCOL, min_client_protocol = $OTHER_MIN_CLIENT WHERE id = 0" 2>&1); then
+  fail "the module_info overwrite exited non-zero: $UPDATE_OUT"
+fi
+expect_protocol_row "$OTHER_PROTOCOL" "$OTHER_MIN_CLIENT" "after the overwrite"
+
+# Nothing rebuilt or patched since Phase 4: the same module over the same data.
+log "Phase 7: republish WITHOUT --delete-data (CONTENT_VERSION unchanged)"
+spacetime publish -s "$SERVER" --module-path server-module -y "$DB"
+# The publish alone restores nothing, so the restore below is the owner's sync_content's.
+expect_protocol_row "$OTHER_PROTOCOL" "$OTHER_MIN_CLIENT" "after the republish, before sync_content"
+
+log "Phase 7: calling sync_content as the owner (the skip path)"
+if ! SYNC_OUT=$(spacetime call -s "$SERVER" "$DB" sync_content 2>&1); then
+  fail "the skip-path sync_content call exited non-zero: $SYNC_OUT"
+fi
+log "sync_content result: $SYNC_OUT"
+expect_protocol_row "$PROTOCOL" "$MIN_CLIENT" "after the owner's skip-path sync_content"
+
+CFG_ROWS=$(spacetime sql -s "$SERVER" "$DB" "SELECT content_version FROM config")
+if ! grep -qE "(^|[^0-9])${BUMP_VERSION}([^0-9]|$)" <<<"$CFG_ROWS"; then
+  fail "the stored content version moved off $BUMP_VERSION during Phase 7; got: $CFG_ROWS"
+fi
+
+log "PASS: starter monster survived republish AND new content served (version $BUMP_VERSION) AND protocol numbers restored ($PROTOCOL, $MIN_CLIENT) by the owner's sync_content"

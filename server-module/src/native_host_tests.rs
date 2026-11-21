@@ -1394,6 +1394,8 @@ unsafe extern "C" {
     fn register_table_trade_session_reaper_schedule();
     #[link_name = "__preinit__20_register_describer_player_handle"]
     fn register_table_player_handle();
+    #[link_name = "__preinit__20_register_describer_module_info"]
+    fn register_table_module_info();
     /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1408,7 +1410,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 64] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 65] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1473,6 +1475,7 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 64] = [
     register_table_trade_session_snapshot,
     register_table_trade_session_reaper_schedule,
     register_table_player_handle,
+    register_table_module_info,
 ];
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.

@@ -1827,6 +1827,12 @@ mod tests {
     }
 
     #[test]
+    fn protocol_version_matches_game_core_const() {
+        // Fails to compile until `protocol_version()` export and `game_core::PROTOCOL_VERSION` exist.
+        assert_eq!(super::protocol_version(), game_core::PROTOCOL_VERSION);
+    }
+
+    #[test]
     fn party_slot_none_matches_game_core_const() {
         // Fails to compile until `party_slot_none()` export and `game_core::PARTY_SLOT_NONE` exist.
         assert_eq!(super::party_slot_none(), game_core::PARTY_SLOT_NONE as u32);
