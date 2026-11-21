@@ -24,7 +24,7 @@ const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const SIGN_IN_TTL_SECONDS = 600;
 /** Each sign-in started stores one record for that long; this bounds how many there are. */
 const MAX_PENDING_SIGN_INS = 20_000;
-/** A sign-in's record holds its authorization request, so this bounds a record at about 3 KB. */
+/** A sign-in's record holds its authorization request, so this bounds a record at about 5 KB. */
 const MAX_TARGET_LENGTH = 2048;
 
 export interface AccountProvider {
@@ -134,7 +134,13 @@ export function createAccountProvider(options: {
       AuthorizationCode: AUTHORIZATION_CODE_TTL_SECONDS,
       IdToken: ID_TOKEN_TTL_SECONDS,
       AccessToken: ID_TOKEN_TTL_SECONDS,
-      Interaction: SIGN_IN_TTL_SECONDS,
+      // A resume that still needs the step stores a new record: it gets what the first one had
+      // left, so a sign-in ends ten minutes after it started however often it is resumed, and
+      // the cap on sign-ins started is a cap on the records alive.
+      Interaction: (ctx) =>
+        ctx?.oidc?.route === 'resume'
+          ? Math.max(1, ctx.oidc.entities.Interaction?.remainingTTL ?? SIGN_IN_TTL_SECONDS)
+          : SIGN_IN_TTL_SECONDS,
       // Written when a sign-in completes and never read again: no request's session cookie reaches the provider.
       Session: 60,
       // A grant outlives every refresh token of its chain: it is made before the code is.

@@ -549,6 +549,26 @@ const REFUSALS: ReadonlyArray<readonly [string, Refusal]> = [
     },
   ],
   [
+    "a POST with no Origin but a Referer on the issuer's origin is 403",
+    {
+      method: 'POST',
+      headers: { 'content-type': FORM_TYPE, referer: `${ISSUER}/interaction/x` },
+      body: VALID_BODY,
+      cookies: true,
+      status: 403,
+    },
+  ],
+  [
+    "a POST with no Origin but a Referer that is the issuer's root is 403",
+    {
+      method: 'POST',
+      headers: { 'content-type': FORM_TYPE, referer: `${ISSUER}/` },
+      body: VALID_BODY,
+      cookies: true,
+      status: 403,
+    },
+  ],
+  [
     'a POST whose Origin is "null" is 403',
     {
       method: 'POST',

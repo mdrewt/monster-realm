@@ -13,7 +13,7 @@ import { generateSigningKey, type SigningJwk } from '../keys.ts';
 import { createAccountProvider, registerClient, SIGN_IN_TTL_SECONDS } from '../provider.ts';
 import { type AccountStore, openAccountStore } from '../store/sqliteAdapter.ts';
 import { type DevAccounts, devAccounts, devPasswordStep } from './devPassword.ts';
-import { notOwnedPage, signInPage } from './pages.ts';
+import { endedPage, notOwnedPage, signInPage } from './pages.ts';
 import type { PasswordStep } from './router.ts';
 
 // The whole sign-in over HTTP: the SQLite store, the real password step, the provider's handler.
@@ -203,6 +203,32 @@ function rows(w: World): Row[] {
     return db
       .prepare('SELECT model, id, payload, grant_id FROM oidc_record')
       .all() as unknown as Row[];
+  } finally {
+    db.close();
+  }
+}
+
+function expectStoredUnderDigest(
+  w: World,
+  records: ReadonlyArray<readonly [string, string]>,
+): void {
+  const stored = rows(w);
+  for (const [model, value] of records) {
+    const digest = createHash('sha256').update(value).digest('base64url');
+    const matching = stored.filter((row) => row.id === digest);
+    expect(matching, `${model} under its digest`).toHaveLength(1);
+    expect(matching[0]!.model).toBe(model);
+    expect((JSON.parse(matching[0]!.payload) as Record<string, unknown>).jti).toBe(digest);
+  }
+}
+
+function interactionExpiries(w: World): number[] {
+  const db = new DatabaseSync(w.dbPath, { readOnly: true });
+  try {
+    const found = db
+      .prepare("SELECT expires_at FROM oidc_record WHERE model = 'Interaction'")
+      .all() as unknown as Array<{ expires_at: number | null }>;
+    return found.map((row) => Number(row.expires_at));
   } finally {
     db.close();
   }
@@ -850,8 +876,20 @@ describe('what the store holds', () => {
   test('after a sign-in and a refresh, no row and no byte of the database file holds the code, an access token or a refresh token', async () => {
     const w = await world();
     const who = await person(w);
-    const signed = await signInToTokens(w, who);
+    const code = await signInToCode(w, who.email, who.password);
+    const signed = { ...code, tokens: tokensOf(await exchange(w, code.code, code.verifier)) };
+    // The positive half: each record is keyed by the SHA-256 digest of its value, read while the
+    // records still exist (the code's and first tokens' right after the exchange).
+    expectStoredUnderDigest(w, [
+      ['AuthorizationCode', signed.code],
+      ['AccessToken', signed.tokens.access_token],
+      ['RefreshToken', signed.tokens.refresh_token],
+    ]);
     const rotated = tokensOf(await refresh(w, signed.tokens.refresh_token));
+    expectStoredUnderDigest(w, [
+      ['AccessToken', rotated.access_token],
+      ['RefreshToken', rotated.refresh_token],
+    ]);
     const secrets: ReadonlyArray<readonly [string, string]> = [
       ['the code', signed.code],
       ['the first access token', signed.tokens.access_token],
@@ -1108,6 +1146,52 @@ function authTargetOfLength(length: number): string {
   expect(target.length).toBe(length);
   return target;
 }
+
+describe('a sign-in ends ten minutes after it started', () => {
+  test('resuming a sign-in nobody signed in to starts a new step whose record expires when the first would have', async () => {
+    freezeAt(T0);
+    const w = await world();
+    const jar = newJar();
+    const first = await begin(w, jar);
+    expect(interactionExpiries(w)).toEqual([T0_SECONDS + SIGN_IN_TTL_SECONDS]);
+
+    vi.setSystemTime(T0 + 500_000);
+    const resumed = await call(w, jar, 'GET', `/auth/${first.uid}`);
+    expect(resumed.status).toBe(303);
+    const second = interactionUid(resumed.headers.location);
+    expect(second).not.toBe(first.uid);
+    expect(interactionExpiries(w)).toEqual([T0_SECONDS + 600]);
+
+    const path = `/interaction/${second}`;
+    vi.setSystemTime(T0 + 599_000);
+    const form = await call(w, jar, 'GET', path);
+    expect(form.status).toBe(200);
+    expect(form.body).toBe(signInPage({ action: path }));
+    vi.setSystemTime(T0 + 600_000);
+    const ended = await call(w, jar, 'GET', path);
+    expect(ended.status).toBe(400);
+    expect(ended.body).toBe(endedPage());
+  });
+
+  test('after a not-owned answer, the resumed step still expires when the first would have', async () => {
+    freezeAt(T0);
+    const w = await world();
+    const who = await person(w, false);
+    const jar = newJar();
+    const first = await begin(w, jar);
+    vi.setSystemTime(T0 + 100_000);
+    const posted = await call(w, jar, 'POST', first.path, {
+      headers: GOOD_POST,
+      body: credentials(who.email, who.password),
+    });
+    expect(posted.status).toBe(403);
+    vi.setSystemTime(T0 + 200_000);
+    const resumed = await call(w, jar, 'GET', `/auth/${first.uid}`);
+    expect(resumed.status).toBe(303);
+    expect(interactionUid(resumed.headers.location)).not.toBe(first.uid);
+    expect(interactionExpiries(w)).toEqual([T0_SECONDS + 600]);
+  });
+});
 
 describe('request targets', () => {
   test('an authorization request target of 2049 characters is 414 text/plain with no record and no cookie; 2048 starts one sign-in', async () => {

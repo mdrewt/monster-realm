@@ -71,7 +71,7 @@ mail. The `production` profile has no sign-in step in this build.
   failure. At most four password hashes run at once (more attempts are told the service is busy),
   because hashing shares its threads with token signing. At most 20,000 sign-ins can be started
   per ten minutes, and a request target is at most 2048 characters (`414` past it); together they
-  bound the sign-in records anonymous callers can leave in the store at about 60 MB. Past the cap
+  bound the sign-in records anonymous callers can leave in the store at about 100 MB. Past the cap
   an authorization request is answered `503`, and everything else keeps answering. The lock, the
   hash ceiling and the cap live in the process, so a restart clears them. There is no limit per
   network address: a flood can hold the busy answer or the 503 for as long as it lasts, and anyone
