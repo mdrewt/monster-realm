@@ -106,7 +106,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoreBattleChallenge, StorePlayer } from '../net/store';
 import { t } from './a11yCopy';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { createEmptyState } from './emptyState';
+import { t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import { buildPvpChallengeViewModel, type PvpChallengeViewModel } from './pvpModel';
@@ -119,6 +120,9 @@ vi.mock('./overlayA11y', { spy: true });
 // m24s3 MECHANISM oracle, same shape: records every t()/tf() call AND calls
 // through to the real resolver, so PV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
+// lpw-6 MECHANISM oracle, same shape: the empty Challenges line must be produced by the shared kit's
+// createEmptyState (recorded, called through), not hand-built.
+vi.mock('./emptyState', { spy: true });
 
 const ID: OverlayId = 'pvpView';
 const META = OVERLAY_A11Y[ID];
@@ -560,6 +564,10 @@ function raPvpVm(): PvpChallengeViewModel {
 const M24S3_PV_PLAIN_KEYS = new Set([
   'pvp.title.idle',
   'pvp.title.challenge',
+  // NAMED INTENTIONAL CHANGE (lpw-6, lpw-6.1): the idle Challenges panel now paints its empty line
+  // through `t('pvp.empty')`, so «pvp.empty» is a legitimate sentinel span (the idle `toContain`
+  // below pins that the line really is resolver output).
+  'pvp.empty',
   // INTENTIONAL CHANGE (qf-8): `pvp.incoming.accept`, `pvp.incoming.decline` and
   // `pvp.outgoing.cancel` leave with the lifecycle buttons (such a span is now an unexpected
   // sentinel); 'Accept', 'Decline' and 'Cancel' stay in M24S3_PV_ROSTER, so they appear nowhere.
@@ -744,6 +752,9 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
       let texts = m24s3PvWalkSubtree(root);
       m24s3PvAssertNoRosterWord(texts, 'idle');
       expect(texts.join('\n')).toContain('«pvp.title.idle»');
+      // NAMED INTENTIONAL CHANGE (lpw-6, lpw-6.1): the idle panel also shows the empty line, and it
+      // is resolver output (a hard-coded 'No challenges' would show as raw English here).
+      expect(texts.join('\n')).toContain('«pvp.empty»');
 
       view.refresh(
         pvpVm({ incoming: { challengeId: 77n, challengerId: '0xbbb', challengerName: 'Bob' } }),
@@ -1209,7 +1220,10 @@ describe('PvpView.hostChrome (ctl-8s, CTL8S.3)', () => {
     expect(records.length, 'no node was removed or inserted').toBe(0);
     expect(document.activeElement, 'focus inside the chrome survives').toBe(tab);
     expect(root.firstElementChild).toBe(chrome);
-    expect(root.childElementCount).toBe(before.length + 1);
+    // NAMED INTENTIONAL CHANGE (lpw-6, lpw-6.1): the shown idle panel (refresh(pvpVm(), true) above)
+    // now holds ONE more root child, the `.mr-empty` line; was `before.length + 1` (the chrome alone).
+    // The count still pins that the second hostChrome added nothing.
+    expect(root.childElementCount).toBe(before.length + 1 + 1);
     expect(view.visible, 'the shown panel stays shown').toBe(true);
   });
 });
@@ -1574,5 +1588,197 @@ describe('PvpView rows carry the one row treatment whatever the cursor (uif-9, U
     // Reopened: rows again, cursor only where the screen puts it.
     view.refresh(raPvpVm(), true);
     expect([rowState(incoming), rowState(outgoing)], 'reopened').toEqual([ROW, ROW]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lpw-6 (lpw-6.1): the Challenges panel says why it is empty. With no request and no Pending sent
+// challenge the root holds ONE shared-kit empty line (`createEmptyState`, `pvp.empty`), a direct
+// child of the root right after #pvp-challenge-outgoing, outside the two row containers (they stay
+// empty, so they stay non-rows), and nothing focusable.
+// ---------------------------------------------------------------------------
+
+describe('PvpView empty Challenges panel (lpw-6, lpw-6.1)', () => {
+  const EMPTY_EN = 'No challenges';
+  const E_ACUTE = String.fromCharCode(0x00e9);
+  const EMPTY_FR = `Aucun d${E_ACUTE}fi`;
+  const BOB = { challengeId: 77n, challengerId: '0xbbb', challengerName: 'Bob' };
+  const PENDING = {
+    challengeId: 88n,
+    targetId: '0xccc',
+    targetName: 'Carol',
+    status: 'Pending',
+  };
+
+  const emptyNodes = (root: HTMLElement): Element[] => [...root.querySelectorAll('.mr-empty')];
+
+  /** Tabbable per the contract: a native control, or any tabindex whose value is not -1. */
+  const tabbables = (root: HTMLElement): Element[] =>
+    [...root.querySelectorAll('*')].filter((el) => {
+      if (el.matches('button, a[href], input, select, textarea, [contenteditable]')) return true;
+      const ti = el.getAttribute('tabindex');
+      return ti !== null && ti !== '-1';
+    });
+
+  /** The whole empty-line contract on one shown root. */
+  function expectEmptyLine(root: HTMLElement, text: string, label: string): void {
+    const nodes = emptyNodes(root);
+    expect(nodes, `${label}: exactly one .mr-empty`).toHaveLength(1);
+    const line = nodes[0] as HTMLElement;
+    expect(line.parentElement, `${label}: a DIRECT child of the root`).toBe(root);
+    expect(
+      line.previousElementSibling?.id,
+      `${label}: placed right after #pvp-challenge-outgoing`,
+    ).toBe('pvp-challenge-outgoing');
+    const reasons = line.querySelectorAll('.mr-empty-reason');
+    expect(reasons, `${label}: one reason line`).toHaveLength(1);
+    expect(reasons[0]?.textContent, `${label}: the reason`).toBe(text);
+    expect(line.querySelector('.mr-empty-cue'), `${label}: no cue`).toBeNull();
+    expect(line.querySelector('.mr-empty-next'), `${label}: no next step`).toBeNull();
+    for (const id of ['pvp-challenge-incoming', 'pvp-challenge-outgoing']) {
+      const box = document.getElementById(id) as HTMLElement;
+      expect(box.children.length, `${label}: #${id} stays empty (so it is no row)`).toBe(0);
+      expect(box.querySelector('.mr-empty'), `${label}: the line is not inside #${id}`).toBeNull();
+    }
+  }
+
+  it('the idle panel (vm null) shows one "No challenges" line right after the outgoing container, outside both row containers [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: today's bare panel (no .mr-empty at all); the line nested inside
+    // #pvp-challenge-incoming / -outgoing (those become nav rows via #markRows); the line appended
+    // last (after the player list) or prepended before the chrome; a reason with a cue or next step
+    // the contract does not give it; two lines for one refresh.
+    const root = mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(null, true);
+    expect(view.visible, 'ANTI-VACUITY: the panel really shows').toBe(true);
+    expectEmptyLine(root, EMPTY_EN, 'vm null');
+  });
+
+  it('a view model with neither request (both null) shows the same single empty line [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: an empty line gated on `vm === null` alone (the common, real case is a
+    // non-null vm whose two members are null, which is what Social hands in with no challenge).
+    const root = mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(pvpVm(), true);
+    expectEmptyLine(root, EMPTY_EN, 'both null');
+  });
+
+  it('a sent challenge that is no longer Pending (Accepted, Declined, Cancelled) counts as no request and shows the empty line [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: an empty line gated on `outgoing === null` (a settled sent challenge
+    // renders no card, so the panel would be blank and silent); one keyed on the status text.
+    for (const status of ['Accepted', 'Declined', 'Cancelled']) {
+      const root = mountPvpOverlay();
+      const view = new PvpView(makeCallbacks());
+      view.refresh(pvpVm({ outgoing: { ...PENDING, status } }), true);
+      expectEmptyLine(root, EMPTY_EN, `outgoing ${status}`);
+    }
+  });
+
+  it('an incoming request, or a Pending sent challenge, leaves the root with no empty line [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: an empty line painted unconditionally (it would sit beside a real row);
+    // one suppressed only when BOTH requests exist.
+    const cases = [
+      { name: 'incoming only', vm: pvpVm({ incoming: BOB }) },
+      { name: 'Pending outgoing only', vm: pvpVm({ outgoing: PENDING }) },
+      { name: 'both', vm: pvpVm({ incoming: BOB, outgoing: PENDING }) },
+    ];
+    for (const c of cases) {
+      const root = mountPvpOverlay();
+      const view = new PvpView(makeCallbacks());
+      view.refresh(c.vm, true);
+      expect(root.querySelectorAll('.mr-card').length, `${c.name}: ANTI-VACUITY, a row shows`).toBe(
+        c.name === 'both' ? 2 : 1,
+      );
+      expect(emptyNodes(root), `${c.name}: no empty line beside a request`).toHaveLength(0);
+    }
+  });
+
+  it('empty -> request -> empty -> empty leaves exactly one line (and none while a request shows): refreshes never accumulate [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: an append per refresh (two lines after two idle batches, main.ts refreshes
+    // on every store batch); a line created once and never removed (it survives the request); a
+    // line removed but its node reference kept, so the next idle refresh appends nothing.
+    const root = mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    const counts: number[] = [];
+    view.refresh(null, true);
+    counts.push(emptyNodes(root).length);
+    view.refresh(pvpVm({ incoming: BOB }), true);
+    counts.push(emptyNodes(root).length);
+    view.refresh(pvpVm(), true);
+    counts.push(emptyNodes(root).length);
+    view.refresh(pvpVm(), true);
+    counts.push(emptyNodes(root).length);
+    view.refresh(null, true);
+    counts.push(emptyNodes(root).length);
+    expect(counts, 'empty, request, empty, empty, empty').toEqual([1, 0, 1, 1, 1]);
+    expectEmptyLine(root, EMPTY_EN, 'after the last refresh');
+    view.refresh(pvpVm({ outgoing: PENDING }), true);
+    expect(emptyNodes(root), 'a Pending sent challenge removes it too').toHaveLength(0);
+  });
+
+  it('while the empty line shows the root holds no focusable row: no mr-nav-item, aria-current, is-active, mr-card or tabbable element, paintCursor marks nothing, and #pvp-challenge-status stays tabindex -1 [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: an empty line built as a nav row (mr-nav-item / tabindex 0) or a button
+    // ("Start a challenge"); an empty container that gains mr-nav-item; a paintCursor that marks
+    // the empty container; a status anchor whose tabindex was loosened to 0.
+    const root = mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(pvpVm(), true);
+    expect(emptyNodes(root), 'ANTI-VACUITY: the empty line is up').toHaveLength(1);
+    for (const cursor of [null, 'incoming', 'outgoing'] as const) {
+      view.paintCursor(cursor);
+      const label = `cursor ${String(cursor)}`;
+      expect(root.querySelectorAll('.mr-nav-item'), `${label}: no nav item`).toHaveLength(0);
+      expect(root.querySelectorAll('[aria-current]'), `${label}: no aria-current`).toHaveLength(0);
+      expect(root.querySelectorAll('.is-active'), `${label}: no active mark`).toHaveLength(0);
+      expect(root.querySelectorAll('.mr-card'), `${label}: no card`).toHaveLength(0);
+      expect(tabbables(root), `${label}: nothing tabbable`).toEqual([]);
+      expect(
+        document.getElementById('pvp-challenge-status')?.getAttribute('tabindex'),
+        `${label}: the dialog anchor is not a row`,
+      ).toBe('-1');
+    }
+  });
+
+  it('the line is made by createEmptyState(document, { reason: t("pvp.empty") }): the resolver is asked for pvp.empty, the kit is called once with that reason, and a sentinel resolver output reaches the page [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: a hand-built div.mr-empty with a hard-coded English string (the kit spy
+    // sees no call, the resolver spy never sees 'pvp.empty', and the sentinel text is not shown);
+    // a kit call that adds a cue or nextStep; a kit call on the request path.
+    const root = mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(pvpVm(), true);
+    expect(i18nT).toHaveBeenCalledWith('pvp.empty');
+    expect(createEmptyState).toHaveBeenCalledTimes(1);
+    expect(createEmptyState).toHaveBeenCalledWith(document, { reason: EMPTY_EN });
+
+    vi.mocked(createEmptyState).mockClear();
+    view.refresh(pvpVm({ incoming: BOB }), true);
+    expect(createEmptyState, 'no kit call while a request shows').not.toHaveBeenCalled();
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      view.refresh(pvpVm(), true);
+      expect(
+        root.querySelector('.mr-empty .mr-empty-reason')?.textContent,
+        'the reason is resolver output, not a literal',
+      ).toBe('«pvp.empty»');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+    }
+  });
+
+  it('the line follows the locale: French reads "Aucun défi", and English is restored after [lpw-6.1]', () => {
+    // WRONG IMPL KILLED: an English literal that ignores the locale; a reason resolved once at
+    // construction time instead of per refresh.
+    const root = mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    try {
+      setLocale('fr');
+      view.refresh(pvpVm(), true);
+      expect(root.querySelector('.mr-empty-reason')?.textContent).toBe(EMPTY_FR);
+    } finally {
+      setLocale('en');
+    }
+    view.refresh(pvpVm(), true);
+    expect(root.querySelector('.mr-empty-reason')?.textContent).toBe(EMPTY_EN);
   });
 });
