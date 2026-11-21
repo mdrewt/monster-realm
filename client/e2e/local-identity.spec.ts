@@ -264,6 +264,10 @@ test.describe
 
         const b = await openJoined(ctx, 'shared: page B');
         expect(b.identity, 'shared: page B joins as page A identity').toBe(a.identity);
+        expect(await tokenKeys(b.page), 'shared: page B holds the device token key').toEqual({
+          local: [SUITE_TOKEN_KEY],
+          session: [],
+        });
         await expect
           .poll(() => rowsFor(identity, 'shared: A and B open'), {
             message: 'shared: exactly one player row for the shared identity',

@@ -3887,21 +3887,33 @@ describe('connect(): the reconnect token storage area follows the target kind', 
 
   // --- account builds -------------------------------------------------------------------------
 
-  it('writes nothing to localStorage for an account build toward a local target, though an anonymous token is stored there [lpw-2.4]', async () => {
-    // WRONG IMPL KILLED: the echoed account JWT saved into the anonymous slot (now in
-    // localStorage, where it would outlive the tab and be replayed past its expiry); the account
-    // marker written to localStorage.
-    localStorage.setItem(TOKEN_KEY, 'anon-tok');
+  it.each([
+    { kind: 'local', area: 'device' },
+    { kind: 'private', area: 'device' },
+    { kind: 'official', area: 'tab' },
+    { kind: 'test', area: 'tab' },
+  ] as const)('writes nothing to localStorage for an account build toward a $kind target [lpw-2.4]', async ({
+    kind,
+    area,
+  }) => {
+    // WRONG IMPL KILLED: the echoed account JWT saved into the anonymous slot (in localStorage
+    // for a device kind, where it would outlive the tab and be replayed past its expiry); the
+    // account marker or the JWT written to localStorage under any key, for any one kind.
+    // A device kind starts with its anon token stored, so "unchanged" is a non-empty snapshot;
+    // a tab kind starts, and must stay, completely empty.
+    if (area === 'device') localStorage.setItem(TOKEN_KEY, 'anon-tok');
     writeAuthKind(globalThis, URI, DB, 'account');
     expect(wasEverAuthenticated(globalThis, URI, DB), 'precondition: the account marker').toBe(
       true,
     );
     H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
     const before = entriesOf(localStorage);
-    expect(before, 'precondition: only the anon token').toEqual({ [TOKEN_KEY]: 'anon-tok' });
+    expect(before, `precondition: localStorage before the ${kind} build`).toEqual(
+      area === 'device' ? { [TOKEN_KEY]: 'anon-tok' } : {},
+    );
     const setItem = vi.spyOn(localStorage, 'setItem');
     try {
-      connect(kindOpts('local', { signIn: 'oidc' }));
+      connect(kindOpts(kind, { signIn: 'oidc' }));
       await settle();
       expect(H.renewCalls, 'the account session renewed').toBe(1);
       expect(handedTokens(), 'the build carries the account JWT').toEqual(['acct-jwt']);
@@ -3909,10 +3921,14 @@ describe('connect(): the reconnect token storage area follows the target kind', 
       b0.onConnect?.(conn0(b0), ID, 'acct-jwt');
       b0.onApplied?.();
       expect(b0.joinGame).toHaveBeenCalledTimes(1);
-      expect(entriesOf(localStorage), 'localStorage is exactly as before').toEqual(before);
-      expect(stored(localStorage), 'the account JWT is in no localStorage value').not.toContain(
-        'acct-jwt',
-      );
+      const after = entriesOf(localStorage);
+      expect(after, 'localStorage is exactly as before, every key and value').toEqual(before);
+      expect(
+        Object.entries(after).filter(
+          ([key, value]) => key.includes('acct-jwt') || (value ?? '').includes('acct-jwt'),
+        ),
+        'the account JWT is in no localStorage key or value',
+      ).toEqual([]);
       expect(setItem, 'no localStorage write during the account build').not.toHaveBeenCalled();
     } finally {
       setItem.mockRestore();

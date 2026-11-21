@@ -673,7 +673,7 @@ describe('createAuthTokenGate: re-reads storage on every attempt (not closure-ca
 // sessionStorage, never localStorage — ADR-0150 D3.
 // ---------------------------------------------------------------------------
 
-describe('createAuthTokenGate: reads/writes sessionStorage only, never localStorage (ADR-0150 D3)', () => {
+describe('createAuthTokenGate in tab mode: reads/writes sessionStorage only, never localStorage', () => {
   it('a host exposing ONLY localStorage (no sessionStorage at all) is never touched: tokenForNextAttempt is undefined, onConnected writes nothing, neither throws', () => {
     // WRONG IMPL KILLED: an implementation that reads/writes `host.localStorage`
     // instead of (or as a fallback for) `host.sessionStorage`. ADR-0150 D3: the token
@@ -1442,6 +1442,39 @@ describe('createAuthTokenGate in device mode: the reconnect token lives in local
     expect(second.tokenForNextAttempt()).toBe('tok-FIRST-PAGE');
   });
 
+  it('a device gate returns a stored token VERBATIM: padded, and with dots, dashes and underscores [lpw-2.1]', () => {
+    // Mirrors the tab-mode verbatim round trip: the device read must not trim or mangle.
+    const padded = '  tok with spaces  ';
+    const jwtAlphabet = 'eyJ0.abc-def_ghi.XYZ-09_az';
+    const local = new FakeSessionStorage();
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, { localStorage: local }, 'device');
+    gate.onConnected(padded);
+    expect(gate.tokenForNextAttempt(), 'padded, via onConnected').toBe(padded);
+    gate.onConnected(jwtAlphabet);
+    expect(gate.tokenForNextAttempt(), 'JWT alphabet, via onConnected').toBe(jwtAlphabet);
+    // Stored by another page, read by a fresh gate.
+    const seededPadded = seeded(DEVICE_KEY, padded);
+    expect(
+      createAuthTokenGate(
+        DEVICE_URI,
+        DEVICE_DB,
+        { localStorage: seededPadded },
+        'device',
+      ).tokenForNextAttempt(),
+      'padded, pre-stored',
+    ).toBe(padded);
+    const seededJwt = seeded(DEVICE_KEY, jwtAlphabet);
+    expect(
+      createAuthTokenGate(
+        DEVICE_URI,
+        DEVICE_DB,
+        { localStorage: seededJwt },
+        'device',
+      ).tokenForNextAttempt(),
+      'JWT alphabet, pre-stored',
+    ).toBe(jwtAlphabet);
+  });
+
   it('scopes the device token by uri and by db, injectively across the uri|db split [lpw-2.1]', () => {
     const host: TokenStorageHost = { localStorage: new FakeSessionStorage() };
     const uriA = createAuthTokenGate('ws://127.0.0.1:3000', 'same-db', host, 'device');
@@ -1637,9 +1670,55 @@ describe('createAuthTokenGate in tab mode: the reconnect token never touches loc
       );
     }
   });
+
+  it('a tab gate whose sessionStorage write throws never falls back to localStorage [lpw-2.2]', () => {
+    // Positive control: the same host shape with a working sessionStorage stores the token there.
+    {
+      const session = new FakeSessionStorage();
+      const local = new FakeSessionStorage();
+      const { host, reads } = hostWithAreas(session, local);
+      const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'tab');
+      gate.onConnected('t');
+      expect(session.getItem(DEVICE_KEY), 'control: stored per tab').toBe('t');
+      expect(gate.tokenForNextAttempt(), 'control: supplied').toBe('t');
+      expect(reads.local, 'control: localStorage never read').toBe(0);
+    }
+    const local = new FakeSessionStorage();
+    const { host, reads } = hostWithAreas(new ThrowingSetStorage(), local);
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'tab');
+    expect(() => gate.onConnected('t')).not.toThrow();
+    expect(reads.session, 'liveness: the tab gate reached sessionStorage').toBeGreaterThan(0);
+    expect(reads.local, 'zero reads of the localStorage property').toBe(0);
+    expect(local.calls, 'zero calls on localStorage').toEqual([]);
+    expect(local.size).toBe(0);
+    expect(gate.tokenForNextAttempt(), 'nothing stored anywhere').toBeUndefined();
+  });
 });
 
 describe('createAuthTokenGate in device mode degrades silently when localStorage is unusable', () => {
+  it('a device gate whose localStorage write throws never falls back to sessionStorage [lpw-2.3]', () => {
+    // Positive control: the same host shape with a working localStorage stores the token there.
+    {
+      const session = new FakeSessionStorage();
+      const local = new FakeSessionStorage();
+      const { host, reads } = hostWithAreas(session, local);
+      const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+      gate.onConnected('t');
+      expect(local.getItem(DEVICE_KEY), 'control: stored on the device').toBe('t');
+      expect(gate.tokenForNextAttempt(), 'control: supplied').toBe('t');
+      expect(reads.session, 'control: sessionStorage never read').toBe(0);
+    }
+    const session = new FakeSessionStorage();
+    const { host, reads } = hostWithAreas(session, new ThrowingSetStorage());
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+    expect(() => gate.onConnected('t')).not.toThrow();
+    expect(reads.local, 'liveness: the device gate reached localStorage').toBeGreaterThan(0);
+    expect(reads.session, 'zero reads of the sessionStorage property').toBe(0);
+    expect(session.calls, 'zero calls on sessionStorage').toEqual([]);
+    expect(session.size).toBe(0);
+    expect(gate.tokenForNextAttempt(), 'nothing stored anywhere').toBeUndefined();
+  });
+
   it('host undefined: no token, and onConnected / onConnectFailed do not throw [lpw-2.3]', () => {
     expectHealthyDeviceRoundTrip('host undefined');
     const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, undefined, 'device');
