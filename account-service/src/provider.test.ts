@@ -1,4 +1,4 @@
-import { createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { createServer, type IncomingHttpHeaders, request, type Server } from 'node:http';
 import { type AddressInfo, connect } from 'node:net';
 import type { Adapter, AdapterPayload } from 'oidc-provider';
@@ -671,5 +671,66 @@ describe('discovery with a sign-in step', () => {
     expect(doc).not.toHaveProperty('pushed_authorization_request_endpoint');
     expect(doc.id_token_signing_alg_values_supported).toEqual(['ES256']);
     expect(doc.response_types_supported).toEqual(['code']);
+  });
+});
+
+describe('without a sign-in step, a stored client is not served', () => {
+  const issuer = 'http://localhost:4455';
+  const host = new URL(issuer).host;
+  const counter: Counter = { upserts: 0 };
+  let port = 0;
+  let server: Server | undefined;
+
+  beforeAll(async () => {
+    const adapter = countingAdapter(counter);
+    // The client is in the store before the provider exists.
+    await registerClient(adapter, { clientId: GAME_ID, redirectUri: GAME_REDIRECT });
+    const { handler } = createAccountProvider({
+      issuer,
+      keys: { keys: [generateSigningKey()] },
+      adapter,
+    });
+    const listening = createServer(handler);
+    server = listening;
+    await new Promise<void>((resolve, reject) => {
+      listening.once('error', reject);
+      listening.listen(0, '127.0.0.1', () => {
+        resolve();
+      });
+    });
+    port = (listening.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    const listening = server;
+    if (listening === undefined) return;
+    listening.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      listening.close(() => {
+        resolve();
+      });
+    });
+  });
+
+  test('a well-formed GET /auth for the registered client is invalid_client, sets no cookie and writes nothing', async () => {
+    counter.upserts = 0;
+    const challenge = createHash('sha256')
+      .update('a-code-verifier-of-forty-three-characters-x')
+      .digest('base64url');
+    const query = new URLSearchParams({
+      response_type: 'code',
+      client_id: GAME_ID,
+      redirect_uri: GAME_REDIRECT,
+      scope: 'openid',
+      state: 'state-1',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    const reply = await send(port, `/auth?${query.toString()}`, { host });
+    expect(reply.status).toBe(400);
+    expect(reply.body.startsWith('invalid_client'), reply.body).toBe(true);
+    expect(reply.headers['set-cookie']).toBeUndefined();
+    expect(reply.headers.location).toBeUndefined();
+    expect(counter.upserts).toBe(0);
   });
 });

@@ -307,6 +307,41 @@ describe('hashPassword and verifyPassword', () => {
   });
 });
 
+describe('hash rule edges', () => {
+  test('a correctly computed hash over the parameter ceiling is refused acs-2.6', async () => {
+    for (const hash of [
+      hashOwn('pw', 65537, 1, 1),
+      hashOwn('pw', 1024, 11, 1),
+      hashOwn('pw', 1024, 1, 5),
+    ]) {
+      expect(recomputes(hash, 'pw'), hash).toBe(true);
+      await expect(verifyPassword(hash, 'pw'), hash).resolves.toBe(false);
+    }
+  });
+
+  test('a tag that differs from the true one in its last or a middle byte is refused acs-2.6', async () => {
+    const salt = randomBytes(16);
+    const tag = argon2Sync('argon2id', {
+      message: Buffer.from('pw'),
+      nonce: salt,
+      parallelism: 1,
+      tagLength: 32,
+      memory: 1024,
+      passes: 1,
+    });
+    const altered = (index: number): Buffer => {
+      const copy = Buffer.from(tag);
+      copy[index] = copy[index]! ^ 0x01;
+      return copy;
+    };
+    await expect(verifyPassword(phc({ m: 1024, t: 1, p: 1, salt, tag }), 'pw')).resolves.toBe(true);
+    for (const index of [31, 16]) {
+      const forged = phc({ m: 1024, t: 1, p: 1, salt, tag: altered(index) });
+      await expect(verifyPassword(forged, 'pw'), `byte ${index}`).resolves.toBe(false);
+    }
+  });
+});
+
 describe('devAccounts', () => {
   test('create stores only the hash of a generated password, under the normalised email acs-2.6', async () => {
     const { store, dir, path } = fileStore();

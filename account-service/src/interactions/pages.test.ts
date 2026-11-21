@@ -48,15 +48,28 @@ function decode(text: string): string {
 /** The text inside every element whose opening tag carries role="alert". */
 function alerts(html: string): string[] {
   const texts: string[] = [];
-  const element = /<([a-zA-Z][a-zA-Z0-9-]*)\b((?:"[^"]*"|'[^']*'|[^'">])*)>([\s\S]*?)<\/\1\s*>/g;
-  for (const match of html.matchAll(element)) {
-    if (attributes(match[2]!).get('role') === 'alert') {
-      texts.push(
-        decode(match[3]!.replace(/<[^>]*>/g, ''))
-          .replace(/\s+/g, ' ')
-          .trim(),
-      );
+  // Every opening tag is examined, nested ones included; an alert's text runs to its own
+  // closing tag, counting nested elements of the same name.
+  for (const match of html.matchAll(OPEN_TAG)) {
+    if (attributes(match[2]!).get('role') !== 'alert') continue;
+    const name = match[1]!.toLowerCase();
+    const start = (match.index ?? 0) + match[0].length;
+    const tags = new RegExp(`<(/?)${name}\\b(?:"[^"]*"|'[^']*'|[^'">])*>`, 'gi');
+    tags.lastIndex = start;
+    let depth = 1;
+    let end = html.length;
+    for (let tag = tags.exec(html); tag !== null; tag = tags.exec(html)) {
+      depth += tag[1] === '/' ? -1 : 1;
+      if (depth === 0) {
+        end = tag.index;
+        break;
+      }
     }
+    texts.push(
+      decode(html.slice(start, end).replace(/<[^>]*>/g, ''))
+        .replace(/\s+/g, ' ')
+        .trim(),
+    );
   }
   return texts;
 }

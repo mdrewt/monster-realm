@@ -104,8 +104,8 @@ export function createAccountProvider(options: {
     // to answer throws: that is an error, never "not entitled".
     async findAccount(_ctx, sub, token) {
       const account = await signIn?.account(sub);
-      if (account !== undefined && account.sub === sub && account.entitled) {
-        return { accountId: sub, claims: () => ({ ...accountClaims(account) }) };
+      if (account?.entitled === true) {
+        return { accountId: sub, claims: () => ({ ...accountClaims({ sub, entitled: true }) }) };
       }
       const grantId = (token as { readonly grantId?: unknown } | undefined)?.grantId;
       if (typeof grantId === 'string') await revokeGrant(grantId);
