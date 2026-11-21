@@ -1339,7 +1339,14 @@ test.describe
           const marks = await page.evaluate(() => {
             const root = document.getElementById('pvp-challenge-overlay');
             if (root === null) throw new Error('#pvp-challenge-overlay is missing');
+            // The Social frame's shared chrome (tab bar + context sheet nav list) is hosted as the
+            // root's FIRST child by hostChrome; it is the frame's own tab stop, not a row of the
+            // Challenges panel, so it is excluded. Everything else in the root stays strict.
+            const hosted = root.firstElementChild;
+            const chromeHosted =
+              hosted !== null && hosted.querySelector('.mr-tabbar, #social-tabs') !== null;
             const tabbable = [...root.querySelectorAll('*')].filter((el) => {
+              if (chromeHosted && hosted?.contains(el)) return false;
               if (el.matches('button, a[href], input, select, textarea, [contenteditable]')) {
                 return true;
               }

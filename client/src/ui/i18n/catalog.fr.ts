@@ -597,6 +597,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // sheet's Cancel row withdraws it.
   // pvpView.ts:221
   'pvp.outgoing.label': (p) => `Défi envoyé à ${p.target} — en attente…`,
+  // @desc: The Challenges tab's empty line, shown while the player has no incoming request and no
+  // pending challenge of their own. Two words, one line.
+  // pvpView.ts (#renderEmpty)
+  'pvp.empty': 'Aucun défi',
   // @desc: Heading of the evolution overlay, listing every party monster's evolution paths.
   // One word, fits a 320px-wide column.
   // evolutionView.ts:102 (resolved in show())
