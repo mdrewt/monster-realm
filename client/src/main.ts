@@ -100,6 +100,28 @@ import {
   ZONE_ID,
 } from './shell/config';
 import {
+  announceNow,
+  dismissErrorToast,
+  errorRing,
+  eventRing,
+  hintOnMenu,
+  installHintHost,
+  MOVE_REJECT_PREFIX,
+  mountFeedback,
+  paintToast,
+  paintWorldHint,
+  pumpAnnouncements,
+  pushError,
+  queueNotice,
+  reportError,
+  reportPaintError,
+  resetFeedbackSinks,
+  resetStatusNotice,
+  route,
+  statusNotice,
+  tickToast,
+} from './shell/feedback';
+import {
   applyBindings,
   bindings,
   held,
@@ -158,9 +180,7 @@ import {
   type TacticsClientRules,
   type TacticsTuning,
 } from './tactics/wasm';
-import { t } from './ui/a11yCopy';
 import { CLOSE_KEY, challengeLayout, sheetLayout, sizeOfRow } from './ui/actionSheetModel';
-import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import {
   armReseed,
   BATTLE_EMIT_INITIAL,
@@ -243,10 +263,9 @@ import type { ControlsViewHandlers } from './ui/controlsView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
 import { applyTextStep, loadTextStep, saveTextStep } from './ui/displayPrefs';
-import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
-import { ErrorRing, type ErrorSource, normalizeError } from './ui/errorRing';
-import { EventRing, makeConnect, makeDisconnect, makeZoneChange } from './ui/eventRing';
+import { normalizeError } from './ui/errorRing';
+import { makeConnect, makeDisconnect, makeZoneChange } from './ui/eventRing';
 import {
   EvolutionNoticeBanner,
   evolutionNoticeKey,
@@ -255,7 +274,7 @@ import {
   resolveEvolutionNoticeNames,
 } from './ui/evolutionNotice';
 import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
-import { channelOf, type MessageKind, outranks, type SinkKind } from './ui/feedbackPolicy';
+import type { SinkKind } from './ui/feedbackPolicy';
 import { feedbackAnnouncement } from './ui/frame';
 import { buildHealViewModel, buildHealViewModelForLocation } from './ui/healModel';
 import { buildHelpViewModel } from './ui/helpModel';
@@ -275,7 +294,6 @@ import {
 } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
-import { COALESCE_WINDOW_MS, LiveRegion } from './ui/liveRegion';
 import { type MenuTarget, withRequestBadge } from './ui/menuModel';
 import type { MenuPointerInput } from './ui/menuView';
 import type { MonstersTab } from './ui/monstersModel';
@@ -354,18 +372,8 @@ import {
   questAckSnapshot,
   questCompletionAck,
   reduceErrorMessage,
-  STATUS_NOTICE_INITIAL,
-  type StatusNoticeState,
-  statusNoticeStep,
 } from './ui/statusModel';
-import {
-  createToast,
-  NO_TOAST,
-  renderToast,
-  type ToastChrome,
-  type ToastState,
-  toastStep,
-} from './ui/toast';
+import { createToast } from './ui/toast';
 import {
   closedSessionIds,
   lockedSessionMonsterIds,
@@ -422,6 +430,9 @@ let frameWindow = createFrameWindow(performance.now());
 // stored step is in place before the first frame; Controls › Display changes it live.
 let textStep = loadTextStep(browserStorage());
 applyTextStep(document.documentElement, textStep);
+// The hint host `shell/feedback.ts` reaches up through, installed before the first listener
+// registers: whether the main menu is the top frame, and a repaint of it.
+installHintHost({ menuOnTop: () => menuPlace() === 'top', repaintMenu: renderMenu });
 // stepMs injected so the store can do burst detection + jitter EWMA.
 const store = new AuthoritativeStore(STEP_MS);
 // The injected rule IS the client-wasm export (same compiled code as the server).
@@ -656,23 +667,6 @@ function frameOpenOf(
   view: () => { readonly visible: boolean; hide(): void } | undefined,
 ): FrameOpen {
   return { probe: () => view()?.visible ?? false, hide: () => view()?.hide(), view };
-}
-
-// A view's paint threw, or an adapter threw while observing a batch. Logged every time, and
-// surfaced like an uncaught frame error (tagged, deduped on the message: a held D-pad repeats the
-// same step every 100 ms, a failing observe repeats on every batch, and the error ring is small).
-let lastPaintErrorMessage: string | null = null;
-function reportPaintError(err: unknown): void {
-  console.error('[screen] paint error', err);
-  let message: string;
-  try {
-    message = `screen paint: ${normalizeError('uncaught', err).message}`;
-  } catch {
-    message = 'screen paint: [unstringifiable error]';
-  }
-  if (message === lastPaintErrorMessage) return;
-  lastPaintErrorMessage = message;
-  pushError('uncaught', message);
 }
 
 // The screen host (ui/screens/index.ts) keeps each open frame's adapter state and paints every
@@ -2269,141 +2263,6 @@ let battleSynced = false;
 /** bt-17: the row-less anchor already reported (once per battle id) — see `refreshBattle`. */
 let unrenderableReported: bigint | null = null;
 
-// --- the message sinks (M13.5b status surface; uif-4 channels) -------------------
-// Every message a main.ts sink shows names its `MessageKind`, and `feedbackPolicy` picks the
-// channel (UIF4.1): an outcome is a timed toast (`#toast`, above every frame), a persistent state
-// is the world hint (`#status`, the world line, or the main menu's strip while the menu is on
-// top, WF1-A9). `statusEl` and the toast are created in main() BEFORE `conn = connect(...)` is
-// assigned (C8: no lifecycle callback can ever report into the void) but held at module scope
-// because send sites OUTSIDE main() (the Escape-dismiss keydown handler among them) report
-// through them too. textContent ONLY: server-supplied SenderError text must
-// never become markup.
-let statusEl: HTMLElement | undefined;
-let toastChrome: ToastChrome | undefined;
-let toastState: ToastState = NO_TOAST;
-/** The standing world hints, one per kind, newest last; the shown one is the top of WF1-A9's
- *  precedence (`topHint`). `saidHint` is the last hint text given to the live region, so a repaint
- *  on another host never says it again; `menuHint` is the hint the menu's strip last painted. */
-let worldHints: ReadonlyArray<{ readonly kind: MessageKind; readonly text: string }> = [];
-let saidHint: string | null = null;
-let menuHint: string | null = null;
-
-/** Show `text` on its policy channel: THE one seam every main.ts message goes through, so no view
- *  picks a channel (UIF4B.1). A hint kind paints on `hintHost`, the open frame's own strip, when
- *  the caller has one (Controls' refused key, uif-4b), else it is a world hint. */
-function route(kind: SinkKind, text: string, hintHost?: (text: string) => void): void {
-  if (channelOf(kind) !== 'hint') showToast(text);
-  else if (hintHost !== undefined) hintHost(text);
-  else setWorldHint(kind, text);
-}
-
-/** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or, when there
- *  is none or it no longer paints (the frame was left: the per-sink guard), on its policy channel;
- *  plus console.error for logs and the error ring either way. */
-function reportError(kind: SinkKind, text: string, line?: OutcomeLine): void {
-  if (line?.(text, 'error') !== true) route(kind, text);
-  console.error('[status]', text);
-  // unify UI/reducer failures into the error ring so the F9 bundle captures them.
-  pushError('reducer', text);
-}
-
-/** Paint a toast and queue it for the live region: spoken once by the frame pump, clear of the
- *  announcements that land beside it (qf-6, ui/statusModel.ts statusNoticeStep). */
-function showToast(text: string): void {
-  queueNotice(text, paintToast(text));
-}
-
-/** Queue `text` for the live region: the frame pump speaks it clear of the announcements that land
- *  beside it (qf-6, ui/statusModel.ts statusNoticeStep). */
-function queueNotice(text: string, nowMs: number): void {
-  statusNotice = statusNoticeStep(
-    statusNotice,
-    { kind: 'queue', text, nowMs },
-    COALESCE_WINDOW_MS,
-  ).state;
-}
-
-/** Paint `text` on the toast, timed from now; returns that now. */
-function paintToast(text: string): number {
-  const nowMs = performance.now();
-  toastState = toastStep(toastState, { kind: 'show', text, nowMs });
-  if (toastChrome !== undefined) renderToast(toastChrome, toastState);
-  return nowMs;
-}
-
-/** The frame pump's toast expiry (UIF4.2: through the injected frame clock). */
-function tickToast(nowMs: number): void {
-  const next = toastStep(toastState, { kind: 'tick', nowMs });
-  if (next === toastState) return;
-  toastState = next;
-  if (toastChrome !== undefined) renderToast(toastChrome, toastState);
-}
-
-/** A persistent hint stands until its state ends; a new one of its kind replaces it, and any new
- *  hint overwrites a `download-blocked` ("until overwritten"). The shown hint is said once per new
- *  text and painted on the host the stack picks. */
-function setWorldHint(kind: MessageKind, text: string): void {
-  worldHints = [
-    ...worldHints.filter((h) => h.kind !== kind && h.kind !== 'download-blocked'),
-    { kind, text },
-  ];
-  paintWorldHint();
-}
-
-/** The shown world hint: the highest WF1-A9 rank, the newer of two equals; null when none stands. */
-function topHint(): string | null {
-  let top: { readonly kind: MessageKind; readonly text: string } | null = null;
-  for (const h of worldHints) if (top === null || outranks(h.kind, top.kind)) top = h;
-  return top?.text ?? null;
-}
-
-/** The world hint's text when the main menu, on top, hosts it on its strip; else null. */
-function hintOnMenu(): string | null {
-  return menuPlace() === 'top' ? topHint() : null;
-}
-
-/** Paint the world hint on its host: the menu's strip while the menu is on top, else `#status`
- *  (above every shell, so it stays readable while a frame without a seam strip is open). Runs on
- *  every stack sync, so it writes only on a change. */
-function paintWorldHint(): void {
-  const shown = topHint();
-  if (shown !== saidHint) {
-    saidHint = shown;
-    if (shown !== null) announceNow(shown);
-  }
-  const onMenu = hintOnMenu();
-  const text = shown === null || onMenu !== null ? '' : shown;
-  if (statusEl !== undefined && statusEl.textContent !== text) statusEl.textContent = text;
-  if (onMenu !== menuHint) {
-    menuHint = onMenu;
-    renderMenu();
-  }
-}
-
-/** On reconnect: the link states and the toast are stale (A8); `content-stale` stands until reload. */
-function resetFeedbackSinks(): void {
-  worldHints = worldHints.filter((h) => h.kind === 'content-stale');
-  toastState = NO_TOAST;
-  if (toastChrome !== undefined) renderToast(toastChrome, toastState);
-  paintWorldHint();
-}
-
-// qf-6: a status NOTICE is an outcome that is not an error — a conversation the server ended for
-// a reason, a quest completed. It goes to the toast (uif-4; textContent only, never markup) and is
-// queued for the live region, spoken by the frame pump clear of the announcements that land beside
-// it (ui/statusModel.ts statusNoticeStep: why and when).
-let statusNotice: StatusNoticeState = STATUS_NOTICE_INITIAL;
-/** An announcement made outside the frame pump since its last frame: the pump treats it as a
- *  transition, so a queued notice is held clear of it and a notice it clobbered is said again. */
-let announcedSinceFrame = false;
-
-/** Announce through the live region from outside the frame pump (a refusal, a request line, a
- *  view's own announcement) and let the pump know. */
-function announceNow(text: string): void {
-  liveRegion.announce(text, performance.now());
-  announcedSinceFrame = true;
-}
-
 /** The catalogued line for a server this client cannot speak to: it says which side must update.
  *  A literal switch — catalog keys are never built dynamically. */
 function protocolMismatchLine(side: ProtocolMismatch): string {
@@ -2430,55 +2289,8 @@ function endedLine(reason: ConversationEndReason): string {
   }
 }
 
-// --- F9 bug-bundle observability rings + error overlay -----------
-// The rings are the SESSION buffer (survive reconnect/zone-switch — only the emit
-// latches re-baseline). tMs comes from Date.now() in production; the rings inject the
-// clock so their unit tests stay deterministic. The overlay is mounted in main().
-const eventRing = new EventRing(() => Date.now());
-const errorRing = new ErrorRing(() => Date.now());
-/** The newest ring sequence the error toast showed when it was last dismissed (ctl-13). */
-let toastDismissedSeq = -1;
-
-/** Dismiss the error toast (world B or F8): what it showed is not listed again. */
-function dismissErrorToast(): void {
-  toastDismissedSeq = errorRing
-    .snapshot()
-    .reduce((max, r) => Math.max(max, r.tSeq), toastDismissedSeq);
-  errorOverlayView?.dismiss();
-}
-// Re-entrancy guard: if rendering the overlay itself throws and re-enters pushError,
-// short-circuit so a render fault cannot recurse into a stack overflow.
-let handlingError = false;
 // Collapses a CONSECUTIVE 60Hz thrower to ONE ring slot.
 let lastFrameErrorMessage: string | null = null;
-
-/** Record an error into the ring and reflect it in the overlay. TOTAL (never throws to
- *  the caller): a render/ring fault routes to console.error. */
-function pushError(source: ErrorSource, raw: unknown): void {
-  if (handlingError) return;
-  handlingError = true;
-  try {
-    errorRing.push(source, raw);
-    if (errorOverlayView) {
-      // The movement breadcrumb is BUNDLE-bound, never OVERLAY-bound. This ring
-      // IS the overlay's source (newest 8), so unfiltered the 16 capped breadcrumbs would
-      // surface silent rejections (M2 §3) and evict real errors from the visible window.
-      // The toast lists the errors since its last dismissal (ctl-13): a dismissed one stays gone.
-      errorOverlayView.render(
-        buildErrorOverlayModel(
-          errorRing
-            .snapshot()
-            .filter((r) => r.tSeq > toastDismissedSeq && !r.message.startsWith(MOVE_REJECT_PREFIX)),
-        ),
-      );
-      if (!errorOverlayView.visible) errorOverlayView.show();
-    }
-  } catch (e) {
-    console.error('[obs] pushError', e);
-  } finally {
-    handlingError = false;
-  }
-}
 
 // Global capture of uncaught errors + unhandled rejections into the error ring (E-1/E-2).
 window.addEventListener('error', (e) => pushError('uncaught', e.error ?? e.message));
@@ -2780,9 +2592,9 @@ let lastSentSeq = 0;
 // --- movement-rejection diagnostics -----------------------------
 // Rejections stay SILENT to the player (M2 §3), so an F9 bundle from a rubber-banding
 // session used to show nothing. Two sinks close that: the flag-gated console fate line
-// and a rate-limited errorRing breadcrumb (bundle-only, overlay-filtered). ONE prefix
-// const feeds both the formatter and that filter, so they cannot drift apart.
-const MOVE_REJECT_PREFIX = 'movement-reject ';
+// and a rate-limited errorRing breadcrumb (bundle-only, overlay-filtered). ONE prefix const
+// (`MOVE_REJECT_PREFIX`, shell/feedback.ts) feeds both the formatter and that filter, so they
+// cannot drift apart.
 // 16 breadcrumbs leave >= 48 of the 64 ring slots for real crash records.
 // `minGapMs`, not `windowMs` — the substring `window` reds the dev-observability eval.
 const MOVE_REJECT_POLICY = { minGapMs: 3_000, cap: 16 };
@@ -3108,10 +2920,6 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
 let worldCanvasEl: HTMLElement | null = null;
 // The game screen, read per key so a page that gains or lacks the shell is read as it is now.
 const gameScreenEl = (): HTMLElement | null => document.getElementById('game-screen');
-// The ONE announcer (S1 ships the machine; S5 owns the singleton and pumps it — a live region
-// nothing flushes is permanently silent and nothing else reds).
-const liveRegion = new LiveRegion();
-let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
 
 // the stale-focus discriminator.
 // After a close, real Chromium leaves document.activeElement on a node INSIDE the hidden
@@ -4950,9 +4758,9 @@ async function main(): Promise<void> {
   const frameLayer = document.getElementById('frame-layer') ?? document.body;
   status.className = 'mr-status';
   gameScreen.appendChild(status);
-  statusEl = status;
+  mountFeedback({ statusEl: status });
   // uif-4: the toast region, beside it and out of the flow (.mr-toast), above every frame.
-  toastChrome = createToast(document, gameScreen);
+  mountFeedback({ toastChrome: createToast(document, gameScreen) });
 
   // ONE pointer dispatcher on the game screen (ctl-15): clicks, right-clicks, long-presses and
   // hover become button presses (a dialogue choice too: a seek plus A through its screen). Not
@@ -5119,7 +4927,7 @@ async function main(): Promise<void> {
       hydratedSinceReconnect = false;
       // qf-6: a notice queued for the old link and the quest-acknowledgement baseline are stale;
       // the next baseline is the first hydrated batch of this connection.
-      statusNotice = STATUS_NOTICE_INITIAL;
+      resetStatusNotice();
       questAckBaseline = undefined;
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
@@ -5425,39 +5233,16 @@ async function main(): Promise<void> {
         screenHost.observe(contextStack, screenCtx);
       }
       // the ONE announcement edge and the ONE focus return, at the TOP
-      // of the frame so a recurring throw further down cannot silence the region. The world
-      // branch and announcementsFor are disjoint by construction (the reducer emits only when
-      // next.topOverlay is non-null), so neither transition is ever uttered twice. The top is the
-      // stack's top frame when there is one (a screen opened over the menu is announced).
-      const top = topOverlay();
-      const nextSnapshot: A11ySnapshot = { topOverlay: top, message: '' };
-      const edges = announcementsFor(lastA11ySnapshot, nextSnapshot);
-      for (const m of edges) liveRegion.announce(m, now);
-      const worldEdge = lastA11ySnapshot.topOverlay !== null && top === null;
-      if (worldEdge) {
-        liveRegion.announce(t('a11y.world.region'), now);
+      // of the frame so a recurring throw further down cannot silence the region.
+      pumpAnnouncements({
+        now,
+        topOverlay,
+        countdownSaid,
         // Only a close that itself left focus adrift (judged at its sync), still adrift: never a chip.
-        if (closeLeftFocusAdrift && focusAdrift()) worldCanvasEl?.focus();
-      }
-      lastA11ySnapshot = nextSnapshot;
-      if (countdownSaid !== null) liveRegion.announce(countdownSaid, now);
-      // qf-6: a queued status notice is spoken clear of the transitions above and of anything
-      // announced outside the pump since the last frame (statusNoticeStep holds it a full
-      // coalescing window past them, and re-queues one they clobbered).
-      const notice = statusNoticeStep(
-        statusNotice,
-        {
-          kind: 'frame',
-          nowMs: now,
-          transitionAnnounced:
-            edges.length > 0 || worldEdge || announcedSinceFrame || countdownSaid !== null,
+        returnFocus: () => {
+          if (closeLeftFocusAdrift && focusAdrift()) worldCanvasEl?.focus();
         },
-        COALESCE_WINDOW_MS,
-      );
-      announcedSinceFrame = false;
-      statusNotice = notice.state;
-      if (notice.speak !== null) liveRegion.announce(notice.speak, now);
-      liveRegion.flush(now);
+      });
       // the ticking deletion countdown, ABOVE the render path on purpose — a
       // recurring throw below is swallowed by this frame's catch, and a frozen legal deadline is
       // worse than a blank one.
