@@ -52,7 +52,7 @@ mail. The `production` profile has no sign-in step in this build.
   seconds, with its PKCE verifier; a second exchange revokes everything that sign-in issued. Every
   refresh spends the refresh token and issues a new one; presenting a spent one revokes the chain.
   A chain ends 30 days after its sign-in: a new refresh token inherits what its predecessor had
-  left. The account is read again at every exchange and refresh: when it is gone or no longer
+  left. The account is read again at every exchange and refresh: when it is gone or not
   entitled the request is refused and the chain revoked, so only an entitled account is ever
   issued a token. An ID token already issued stays valid until its `exp`.
 - **Clients.** A client is a stored record: a client id and one redirect address, written by the

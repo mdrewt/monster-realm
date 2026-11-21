@@ -61,8 +61,8 @@ export function createAccountProvider(options: {
   });
   const policy = interactionPolicy.base();
   const login = policy.get('login');
-  // The session names an account the step no longer answers for: it stopped being entitled
-  // between the password step and the resume. Ask again instead of going on without an account.
+  // The session names an account the step does not answer for: it lost its entitlement between
+  // the password step and the resume. Ask again instead of going on without an account.
   login?.checks.add(
     new interactionPolicy.Check(
       'account_refused',
@@ -115,7 +115,7 @@ export function createAccountProvider(options: {
     clientBasedCORS: (_ctx, origin, client) =>
       (client.redirectUris ?? []).some((uri) => new URL(uri).origin === origin),
     // The account is read afresh at every issuance. A code or refresh token of an account that is
-    // gone or no longer entitled is refused, and its whole chain goes with it. A step that fails
+    // gone or not entitled is refused, and its whole chain goes with it. A step that fails
     // to answer throws: that is an error, never "not entitled".
     async findAccount(_ctx, sub, token) {
       const account = await signIn?.account(sub);

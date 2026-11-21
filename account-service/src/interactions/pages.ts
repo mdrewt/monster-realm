@@ -64,7 +64,7 @@ export function notOwnedPage(): string {
   );
 }
 
-/** Shown when a sign-in can no longer be continued: it expired, or its cookies are not this browser's. */
+/** Shown when a sign-in cannot be continued: it expired, or its cookies are not this browser's. */
 export function endedPage(): string {
   return page(
     'Sign-in ended',

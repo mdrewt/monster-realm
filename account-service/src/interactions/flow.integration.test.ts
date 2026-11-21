@@ -26,7 +26,7 @@ const CLIENT_ORIGIN = 'http://localhost:5290';
 const FORM_TYPE = 'application/x-www-form-urlencoded';
 const T0 = 1_800_000_000_000;
 const T0_SECONDS = T0 / 1000;
-// Spec values (acs-2.1, acs-2.4): a code lives 60 seconds, an ID token an hour, a chain 30 days.
+// Values the spec fixes: a code lives 60 seconds, an ID token an hour, a chain 30 days.
 const CODE_SECONDS = 60;
 const ID_TOKEN_SECONDS = 3600;
 const CHAIN_SECONDS = 30 * 24 * 3600;

@@ -61,7 +61,7 @@ function send(
 }
 
 // A browser's cookie jar, as far as this flow needs one: a cookie goes only to a path its `Path`
-// covers, and a cookie set again under the same name and path replaces the old one.
+// covers, and a cookie set again under the same name and path takes the place of the one held.
 interface Cookie {
   readonly name: string;
   readonly value: string;
