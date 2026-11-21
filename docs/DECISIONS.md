@@ -1112,7 +1112,10 @@ a hidden PRNG; a TypeScript planner; range, cost or stride math re-implemented i
 ## Accounts, guest identity and the claim flow
 
 **Decision.** Anonymous play is first-class: every connection gets a SpacetimeDB
-identity, and `on_connect` never rejects a connection that has no account. An
+identity, and `on_connect` never rejects a connection for having no account (a world whose access
+rule is not `Open` refuses an identity it has not admitted, account or not: see "A world that is
+not open refuses an unadmitted identity at connect and in every reducer; the owner relays the
+door"). An
 `account` row is created only for a JWT from an allowed issuer and audience
 (`ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` in `server-module/src/accounts.rs`, still the
 fail-closed `.invalid` placeholder). A token from an unrecognised issuer falls back to
@@ -1145,8 +1148,8 @@ its cap reaper deletes rows, oldest first, once 100,000 newer rows exist),
 a wild or practice anchor is swept only on its own player's next battle, and a PvP
 anchor waits on the opponent's next battle in the same role.
 
-**Rules out.** Server-minted claim codes; storing email or JWT subjects; rejecting
-anonymous connections; widening the audience allowlist to more than this game's client;
+**Rules out.** Server-minted claim codes; storing email or JWT subjects; rejecting a
+connection for being anonymous; widening the audience allowlist to more than this game's client;
 re-keying battle rows onto the claiming account (a re-key helper per tactical table, to
 carry history that only telemetry reads).
 
@@ -2368,7 +2371,7 @@ the attestation is fetched behind one source interface, beside the sign-in seam
 official build holds no attestation key and a world build trusts no login issuer", what the
 attestation names is "An attestation names the server as the player's own software authenticated
 it", and the measurements behind both are `docs/local-play.md` §3; the verifier is "The attestation is signed with Ed25519 and
-checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
+checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket, so a browser that binds needs the attestation anyway ("An attestation names the server as the player's own software authenticated it" says where one can), and one mechanism serves both.
 
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
 itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
@@ -2422,18 +2425,18 @@ tokens, the fallback for a verifier that did not fit.
 
 ## An attestation names the server as the player's own software authenticated it
 
-**Decision.** The `aud` of a world attestation is one string. It is `spki:<fingerprint>/<db>` for a
-server the desktop shell pinned, and for the shell's own world, whose fingerprint the shell wrote
-itself; it is `dns:<host>:<port>/<db>` for a domain server the platform's certificate checks
-validated, the shell refusing every certificate error. Any other target has no name, and the client
-asks for no attestation for it. The name is computed by the party that authenticated the server,
-never by the world and never by a page we did not serve: in the shell the main process computes it,
-holds the login token and calls the attestation route, and the page receives only the attestation.
-A world holds its own names in a private table its owner writes, and `bind_world_account` accepts
-an attestation only when its `aud` equals one of them. On a build that enforces ownership a private
-world is bound from the desktop shell; a page that a world's gate serves makes no request to the
-account service. Designed, not built: `docs/local-play.md` §3, "The access and attestation design",
-fork (c); built by the harness spec's lpw-15, acs-3 and lpw-18 and proved by lpw-15.4.
+**Decision.** The `aud` of a world attestation is one string: `spki:<fingerprint>/<db>` for a server
+the desktop shell pinned and for a `local` world, whose fingerprint the party that started it wrote
+into the shell document; `dns:<host>:<port>/<db>` for a domain server the platform's certificate
+checks validated, the shell refusing every certificate error. Any other target has no name, and the
+client asks for no attestation for it. The name is computed by the party that authenticated the
+server, never by the world and never by a page we did not serve: in the shell the main process
+computes it and calls the attestation route, and toward a `local` or `private` target the page is
+given the attestation and no login token. A world holds its own names in a private table its owner
+writes, and `bind_world_account` accepts an attestation only when its `aud` equals one of them. A
+page that a world's gate serves makes no request to the account service. Designed, not built:
+`docs/local-play.md` §3, "The access and attestation design", fork (c); built by the harness spec's
+lpw-15, acs-3 and lpw-18.
 
 **Why.** A hostile host can have its player's client fetch an attestation addressed to another
 world, carrying that world's nonce, and present it there as its own. An audience and a nonce stop
@@ -2447,22 +2450,20 @@ token, which the official server accepts, must never reach it.
 client to the victim world hands it a genuine token under that world's key, and keeps the token);
 naming the server's address or the database's identity (private addresses repeat on every network,
 and a database's identity is its host's to state); a name supplied by the world or by a page a gate
-served; signing in from such a page; a `dns:` name for an address literal or a name with no
-registrable domain; an invite, shell document or address entry that carries a reconnect token (one
-planted for a world would bind the planter's identity to the player's account). Accepted limit: a
-plain browser cannot bind a friend's server, so it cannot join one on a build that enforces
-ownership. A flow on the account service's own origin, returning an attestation that names the
-origin it returns to, would serve a browser at a domain server; it is not built, and the record
-lists the checks it needs.
+served; signing in from such a page; an invite, shell document or address entry that carries a
+reconnect token. A default the operator may overrule: on a build that enforces ownership a plain
+browser cannot bind, and so cannot join, a friend's server, and the desktop shell is the way in. A
+sign-in on the account service's own origin, returning an attestation that names the origin it
+returns to, would serve a browser at a domain server; it is not built.
 
 ## The official build holds no attestation key and a world build trusts no login issuer
 
 **Decision.** A release build of the module is one of two. The `official` build trusts the
 production login issuer and holds no attestation key. The `world` build, which the desktop shell
 and the standalone server ship, holds the production attestation keys and trusts no login issuer.
-Both lists are constants of the build. On the `official` build `bind_world_account` and the reducer
-that issues bind nonces return one fixed error before they decode, read or write anything, and
-`entitled(ctx)` never reads a binding; on the `world` build every token is an anonymous guest's.
+Both lists are constants of the build. On the `official` build `bind_world_account`, the reducer
+that issues bind nonces and the owner-relayed form of each return one fixed error before they
+decode, read or write anything, and `entitled(ctx)` never reads a binding; on the `world` build every token is an anonymous guest's.
 The two builds have one schema and one set of client bindings. Designed, not built:
 `docs/local-play.md` §3, fork (b); built by acs-6 and lpw-15, whose lpw-15.3 test runs under the
 `official` build.
@@ -2494,7 +2495,9 @@ data and its backups. The invite and the shell document carry that certificate's
 (SHA-256 of its public key), and the desktop shell completes a connection only to a matching
 certificate, even one a certificate authority would accept. A plain browser joining such a server
 loads the client page from the server's gate over `https:` and accepts the certificate once; the
-shell is the recommended way to join. For a pinned target the client keys its stored reconnect
+shell is the recommended way to join, and on a build that enforces ownership the only one, since
+a page a world's gate serves cannot bind the world to an account (see "An attestation names the
+server as the player's own software authenticated it"). For a pinned target the client keys its stored reconnect
 token on the fingerprint and the database name, not the address. Operator ruling, 2026-11-16,
 <https://github.com/mdrewt/monster-realm/issues/821> (revising the same day's "plaintext only to
 loopback and private-range addresses"); built by the harness spec `M-local-play.spec.md` lpw-18
@@ -2513,9 +2516,7 @@ keeps returning players' characters when it does. TLS adds one round trip when a
 and microseconds per message, which is negligible for long-lived WebSockets and the 32-connection
 cap. The fingerprint is also a world identity a hostile host cannot forge without that world's
 private key, and the account attestation names it to close the relay between private worlds, as
-Minecraft's online mode binds its session check to the server's key (see "An attestation names the
-server as the player's own software authenticated it", which also says what a plain browser at
-such a server can and cannot do once ownership is enforced).
+Minecraft's online mode binds its session check to the server's key.
 
 **Rules out.** Plaintext `ws:` to any non-loopback address, LAN included, with or without a
 warning; trusting a self-signed certificate without the invite's fingerprint in the shell;
@@ -2528,12 +2529,11 @@ or tunnel service we operate to carry friends' traffic; requiring every host to 
 statement, an identity that is neither the world's owner nor in its admission table, and every
 reducer a player can call makes the same check. When the rule leaves `Open`, the reducer that sets
 it admits every identity then connected. Admission is granted only by owner-only reducers that take
-the joiner's identity: the owner's admit and `admit(who, password)`. On a shipped world the host
-gate relays them from one door endpoint of its own: it creates the joiner's identity, limits
-attempts by source address, returns a token only for an admitted identity, and closes the sockets
-of an identity the owner removes. The module declares no HTTP handler and no row filter. Designed,
-not built: `docs/local-play.md` §3, "The access and attestation design", fork (a), with the
-measurements; built by the harness spec's lpw-9 (the module) and lpw-14 (the gate).
+the joiner's identity; on a shipped world the host gate relays them from a door endpoint of its
+own, and closes the sockets of an identity the owner removes. The module declares no HTTP handler
+and no row filter. Designed, not built: `docs/local-play.md` §3, "The access and attestation
+design", fork (a), with the measurements; built by the harness spec's lpw-9 (the module) and lpw-14
+(the gate).
 
 **Why.** Measured at SpacetimeDB 2.11.0: every route that reads a row or calls a reducer (the
 WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and its refusal is
@@ -2552,9 +2552,7 @@ subscribed by zone"); a count of wrong attempts across identities in the module 
 every new joiner out); an HTTP handler in the module (the host serves handlers without the connect
 reducer); treating a refusal at connect as closing what is already open. Accepted limits: on a host
 with no gate a removed identity keeps reading what it subscribed to until it disconnects, and a
-joiner is admitted there only by the owner's own call. This narrows "Accounts, guest identity and
-the claim flow": that the connect reducer never refuses a connection with no account holds for a
-world whose rule is `Open`, which the official server's always is.
+joiner is admitted there only by the owner's own call.
 
 ## Every player must own the game on Steam, for now
 
@@ -2589,36 +2587,33 @@ player refunded after binding a world keeps playing there until its host removes
 ownership unless it names `open_join`. `official` and `world` select production trust (see "The
 official build holds no attestation key and a world build trusts no login issuer"); `dev_issuers`
 adds the dev login issuers and dev attestation keys and still enforces; `open_join` implies
-`dev_issuers`, and `dev_reducers` implies `open_join`. The constants are computed in code from the
-features and a release feature wins: no feature set yields production trust with enforcement off,
-`official` with `world` trusts nothing, and a release feature with `dev_reducers` does not compile.
-The default build enforces and trusts nothing, so nobody can join it. One recipe makes a module to
-ship, `just release-module <official|world>`: it reads the build's profile back from the artefact
-(a section built from the same constants), refuses a mismatch or a dev reducer, and records the
-artefact's SHA-256, by which the shell, the standalone server and the official deploy take it. The
-ownership features add or remove no table, reducer, view or type. Designed, not built:
-`docs/local-play.md` §3, fork (e), with the table of every feature set and the tests for both
-sides of the switch; built by acs-6 and lpw-15.
+`dev_issuers`, and `dev_reducers` implies `open_join`. A release feature wins over a dev feature, so
+no feature set yields production trust with enforcement off, and the default build enforces and
+trusts nothing: nobody can join it. One recipe makes a module to ship,
+`just release-module <official|world>`; it checks the profile the artefact itself carries and
+records the artefact's hash, by which the artefact is embedded or published. The ownership features
+add or remove no table, reducer, view or type. Designed, not built: `docs/local-play.md` §3,
+fork (e), with the table of every feature set, the recipe and the tests for both sides of the
+switch; built by acs-6 and lpw-15.
 
-**Why.** With enforcement as the default there is no input whose omission ships an open module.
-`spacetime publish --module-path` and `spacetime generate` build with no features and take none,
-and what they build admits nobody. The only way to an open module is to name a dev feature, which
-no recipe that ships does. It is the rule dev behaviour already follows (see "Dev-only reducers
-never ship"): the dev thing is the opt-in.
+**Why.** With enforcement as the default there is no input whose omission ships an open module:
+`spacetime publish --module-path` and `spacetime generate` build with no features unless told
+otherwise, and what they then build admits nobody. The only way to an open module is to name a dev
+feature, which no recipe that ships does. It is the rule dev behaviour already follows (see
+"Dev-only reducers never ship"): the dev thing is the opt-in.
 
 **Rules out.** A feature that switches enforcement on (the build nobody configured would admit
 anyone and trust the dev keys); an environment variable or a row as the switch; conditional
 compilation of the constants (a branch no build compiles is a branch nothing checks); making a
 module to ship any other way than the recipe; telling builds apart by `spacetime describe --json`,
-which reads the same for every one. Accepted costs: every recipe that publishes for anonymous play
-names `open_join` (`justfile`, `scripts/smoke-republish.sh`, `client/e2e/global-setup.ts`, the
-nightly load smoke), and `spacetime publish --module-path` alone no longer yields a development
-database anyone can join.
+which reads the same for every one. Accepted cost: every site that builds or publishes for
+anonymous play names `open_join`.
 
 ## The account service is our own small OIDC issuer; Steam is the only player sign-in
 
 **Decision.** One service in this repository (`account-service/`, TypeScript) built on
-`oidc-provider` 9.x (MIT, OpenID Certified) is the issuer every module trusts. Players sign in two
+`oidc-provider` 9.x (MIT, OpenID Certified) is the one issuer: the official module trusts its login
+tokens and a world's module its attestations. Players sign in two
 ways, both giving the subject `steam:<steamid64>` so a browser and a desktop session are one
 account: the desktop shell exchanges a Steam ticket (`GetAuthTicketForWebApi` with the identity
 `monster-realm-account`, checked by `AuthenticateUserTicket`) at a custom grant; a browser uses

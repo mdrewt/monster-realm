@@ -475,9 +475,8 @@ it proves.
 
 Each fork was scored by a judge from one evidence dossier, 1 (poor) to 5 (excellent) per criterion,
 with the weights (in brackets) fixed before scoring. An alternative that fails its gate is scored
-and cannot be chosen. The dossier was attacked first by a red-team pass, and three of the designs
-recorded here changed with what it found (a connection already open, the handler routes, and the
-features under `--all-features`). The attacker throughout is a hostile host: it runs its own world
+and cannot be chosen; a gate cell that says more than "pass" carries the judge's qualification. The
+attacker throughout is a hostile host: it runs its own world
 and controls that world's host process, signing key, rows, gate and the page its gate serves; it
 can relay or proxy anything a player's client sends it and can connect to any other world as a
 client. It does not hold another world's TLS private key, cannot get a browser-trusted certificate
@@ -515,8 +514,9 @@ enforced at 2.11.0, as the last three rows show.
 
 - *At connect.* While the world's rule is not `Open`, the connect reducer refuses, as its first
   statement, an identity that is neither the owner (`config.owner_identity`) nor in the admission
-  table. That holds the identity off every row and every reducer on the WebSocket, `call`, `sql`
-  and MCP routes.
+  table. That holds the identity off every row and every reducer on the WebSocket, `call` and
+  `sql` routes (measured on the probe) and through the MCP tools (measured for the audience
+  refusal, which is the same reducer).
 - *In every reducer.* Every reducer a player can call makes the same check before anything else,
   because a connection opened while its identity was admitted, or while the rule was `Open`, is not
   checked again by the host. A census holds it: every reducer in
@@ -533,8 +533,8 @@ enforced at 2.11.0, as the last three rows show.
 - *What the module never declares.* An HTTP handler, which the host serves without the connect
   reducer and without authentication, or a row filter. The same census refuses both.
 - *The door.* An unadmitted identity can call nothing, so admission is granted by reducers only
-  the owner can call, each taking the joiner's identity as an argument: the owner's admit, and
-  `admit(who, password)`, which checks the salted hash and counts wrong attempts against `who`. On
+  the owner can call, each taking the joiner's identity as an argument: the owner's admit, through
+  the reducer that sets the rule, and `admit(who, password)`, which checks the salted hash and counts wrong attempts against `who`. On
   a shipped world the host gate relays them: it serves one door endpoint of its own, which it never
   forwards; for a joiner with no token it creates an identity on the host's internal port, makes
   the door call as the owner, and returns the token only when the module admitted the identity. The
@@ -569,16 +569,12 @@ changed.
 
 | Alternative | Gate: an unadmitted identity gets no row by any route and runs no reducer but an admission step | Complete against every route, measured (3) | Stays complete when a table, view or reducer is added (3) | Cost on the reducer thread and to subscriptions (2) | Rests on stable host behaviour (2) | Fit with lpw-9 as specified (2) | The door (2) | Removal (1) | Unweighted, of 35 | Weighted, of 75 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| A1, as recorded here | pass | 4 | 5 | 5 | 4 | 3 | 4 | 3 | 28 | 62 |
-| A1, as put to the judge | pass | 4 | 4 | 5 | 4 | 3 | 4 | 3 | 27 | 59 |
+| A1, refuse at connect and in every reducer | pass | 4 | 5 | 5 | 4 | 3 | 4 | 3 | 28 | 62 |
 | A1 at connect only | fail | 2 | 3 | 5 | 4 | 2 | 4 | 1 | 21 | 46 |
 | A2, row filters | fail | 1 | 2 | 2 | 1 | 2 | 2 | 5 | 15 | 28 |
 | A3, views | pass | 3 | 3 | 1 | 5 | 1 | 2 | 5 | 20 | 41 |
 
-The judge added four things to A1 as put to it, and the design above has them: a census of its own
-for the reducer check, the rule change admitting open connections inside the module, the check as
-the connect reducer's first statement, and the census refusing handlers and filters. A1 loses its
-points on fit: lpw-9's criteria read as if the joiner's own connection called the door, and
+A1 loses its points on fit: lpw-9's criteria read as if the joiner's own connection called the door, and
 admission by password waits for the gate. The result reverses if a route that reads a row is found
 that does not run the connect reducer, at 2.11.0 or at a later host version (the table in "What the
 host's HTTP routes do…" is measured again at every host upgrade), or if a connection already open
@@ -590,9 +586,11 @@ client-callable roster, taken from the schema and not listed by hand, refuses an
 on a connection that is already open; and the census fails for a reducer without the check, a
 handler or a filter. lpw-9.3: the owner's `admit(who, password)` refuses a wrong password with no
 write to world state, and refuses `who` after five wrong attempts in ten minutes. The tests do not
-assert that an open connection stops reading: it does not. That a refusal at connect delivers no
-row is the measurement above, on a live host; `evals/account-e2e.eval.mjs` repeats its WebSocket
-half on every run (the wrong-audience control).
+assert that an open connection stops reading: it does not. No test of lpw-9 shows an unadmitted
+connection receiving no row either: that half of lpw-9.2 rests on the host running the connect
+reducer before every route, which is the measurement above, on a live host, repeated at every host
+upgrade. The wrong-audience control of `evals/account-e2e.eval.mjs` exercises the same refusal over
+a WebSocket on every run, for the audience check and not for admission.
 
 #### (b) How the official server refuses attestation binding
 
@@ -603,8 +601,9 @@ the standalone server ship, holds the production attestation keys and no login i
 release build has one way to be entitled: a login token on the official server, a binding in a
 world.
 
-- On the `official` build `bind_world_account`, and the reducer that issues bind nonces, return
-  one fixed error of their own before they decode, read or write anything. An empty key list would
+- On the `official` build `bind_world_account`, the reducer that issues bind nonces, and the
+  owner-relayed form of each (see "The order of calls") return one fixed error of their own before
+  they decode, read or write anything. An empty key list would
   fail every signature anyway; the fixed error is what lets a test tell the guard from that
   failure.
 - On the `official` build `entitled(ctx)` never reads a binding. A binding row that reached an
@@ -636,17 +635,18 @@ name into the module.
 | B1, no attestation key in the official build | pass | 4 | 5 | 5 | 3 | 5 | 2 | 24 | 55 |
 | B2, a row or flag | fail | 1 | 1 | 5 | 5 | 3 | 4 | 19 | 36 |
 | B3, the name check and the route | fail | 2 | 2 | 5 | 5 | 2 | 4 | 20 | 40 |
-| B4, a compiled-in database identity | pass | 1 | 4 | 5 | 5 | 2 | 4 | 21 | 43 |
+| B4, a compiled-in database identity | pass, weakly | 1 | 4 | 5 | 5 | 2 | 4 | 21 | 43 |
 
 B1's one loss on failing closed is a `world` artefact published to the official database: it would
 accept bindings, so the official deploy checks the artefact it publishes (fork (e)) and writes no
 world name (fork (c)), which leaves a wrong artefact nothing to accept. The result reverses if the
 host comes to offer a module a deploy-time value signed by a key only the official deployment
-holds, or if only one release artefact may exist, in which case no alternative passes the gate.
+holds, or if only one release artefact may exist, which leaves B4.
 
 **Proved by.** lpw-15.3, under the `official` build: given this identity's outstanding nonce and an
 attestation that the dev-enforcing build accepts byte for byte, `bind_world_account` returns the
-official build's fixed error and no table changes, the nonce row included; then, with a binding row
+official build's fixed error and no table changes, the nonce row included, and the owner-relayed
+forms return the same error; then, with a binding row
 that carries the entitlement put in place for the caller, `join_game` returns the ownership
 refusal and writes no player row. acs-6.5 repeats the join half on the built `official` artefact,
 on a live host.
@@ -667,7 +667,7 @@ own software authenticated it:
 |---|---|---|
 | Pinned: the invite and the shell document carry the certificate fingerprint | `spki:<fingerprint>/<db>` | the shell completes the connection only to that key |
 | A domain server the client did not pin | `dns:<host>:<port>/<db>` | the platform's certificate checks for that name; the shell refuses every certificate error and offers no way past one |
-| The shell's own world, on loopback | `spki:<fingerprint>/<db>` | the shell started the host, confirms the process answering is that child, and wrote the fingerprint into the shell document itself |
+| A `local` target: the shell's own world, on loopback | `spki:<fingerprint>/<db>` | whoever started the host wrote the fingerprint into the shell document: the shell, which confirms the process answering is the child it started, or in development the recipe that started the world |
 | Anything else, such as a `private` target over plaintext loopback | none | nothing: the client asks for no attestation |
 
 - *The spelling.* `<fingerprint>` is the SHA-256 of the world's own certificate key, in the form
@@ -675,10 +675,11 @@ own software authenticated it:
   always written. One function produces a name, for the shell and for whatever writes a world's
   names; it is not the function that keys the reconnect token, which never normalizes a `uri`.
 - *Who supplies it.* The party that authenticated the server, never the world and never a page we
-  did not serve. In the desktop shell the main process computes the name from the pin it enforced
-  or the address it dialled, holds the login token, and calls the attestation route; the page
-  calls one function that takes the nonce and returns the attestation, and can neither supply a
-  name nor see a login token.
+  did not serve. One function computes a name from a target (its kind, `uri`, `db` and
+  fingerprint); it lives in the client, and the shell imports it as it imports the connection
+  resolver. In the desktop shell the main process calls it with the pin it enforced or the address
+  it dialled, and calls the attestation route; toward a `local` or `private` target the page calls
+  one function that takes the nonce and returns the attestation, and is given no login token.
 - *What the world holds.* Its own names, in a private table only its owner writes, and
   `bind_world_account` accepts an attestation only when its `aud` equals one of them, byte for
   byte. The shell and the standalone server write `spki:` for the world's own key; a certificate
@@ -689,12 +690,18 @@ own software authenticated it:
   and port by the host.
 - *What the route is given.* The name as an opaque string of bounded length, in the request body.
   The route does not log it and does not keep it.
-- *A browser.* A page served from an origin the account service has registered for sign-in may
-  sign in and bind; today that is the development origin, and no page we serve in production
-  targets a private world. A page that a world's own gate serves makes no request to the account
+- *A browser.* A page served from an origin the account service registers as a sign-in redirect
+  is our page: it may sign in and bind, computing the name itself. No origin is registered yet;
+  the first is the development origin, and no page we serve in production targets a private
+  world. A page that a world's own gate serves makes no request to the account
   service and tells the player to bind from the desktop app: it may be the hostile host's own
   code, and an account's login token, which the official server accepts, must never reach it.
   Every owner has the desktop build.
+- *Before the shell exists.* The only target a build can bind is a `local` one whose shell document
+  carries a fingerprint. That optional field is therefore needed by the first slice that binds
+  (lpw-15), ahead of the pin that enforces it for a `private` target (lpw-18). A development
+  world's fingerprint is whatever value its recipe writes into both the document and the world's
+  names.
 - *Stored tokens.* An invite, a shell document or the address form carries a `uri`, a `db` and a
   fingerprint and nothing else. A reconnect token planted for a world would let a genuine
   connection to that world bind the planter's identity to the player's account.
@@ -713,10 +720,9 @@ database's identity is whatever its host says. C2 with a browser flow built now:
 account service's own origin that signs in the player and returns an attestation naming the origin
 it returns to. It passes the gate and is not built: it serves only a browser joining a server with
 a domain name, it puts a redirect in front of the route, and the names it needs exist already. If
-it is built it must parse the return address and redirect to the parsed form, require `https:`, no
-user-info and one fixed path, refuse an address literal, a single-label name and a name with no
-registrable domain, put the database inside the name, carry a value the page generated, forbid
-framing, refuse a cookie as a way in, and ask the player each time with the server's name shown.
+it is built, the name it signs must be derived from the parsed address it redirects to (`https:`
+only, one fixed path, a host with a registrable domain), and it must ask the player each time,
+with that name shown.
 
 | Alternative | Gate: a hostile host cannot obtain, by relay or proxy, a binding on another world for an identity it controls | Unforgeable by a hostile host, proxying included (3) | Covers a pinned target, a domain target, the shell's own world and a browser page (3) | What the world must know about itself, and who writes it (2) | Stable across an address change and a certificate renewal (2) | Burden beyond what the specs already hold (2) | What the account service learns (1) | Unweighted, of 30 | Weighted, of 65 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -735,9 +741,11 @@ every other way, whose `aud` is another world's name, `bind_world_account` refus
 to the binding or the nonce, and passing that check unconditionally turns the test red
 (`server-module/src/world_binding_tests.rs`); and the name the client asks for is a function of the
 authenticated target alone, which no message from the server changes
-(`client/src/net/attestation.test.ts`). The proof over two real hosts and their certificates, by
-relay, by proxy and with mixed invites, needs the gate and the shell and runs with lpw-14's
-flow.
+(`client/src/net/attestation.test.ts`). Those are the module's half and the client's half. The run
+over two real hosts and their certificates (a relay, a proxy, invites that mix one world's
+fingerprint with the other's address) needs the gate and the pin, which lpw-14 and lpw-18 build and
+no criterion of theirs asks for; until it has run, the relay is closed by design and proved in
+halves.
 
 #### (e) The build input, and the order of calls
 
@@ -781,7 +789,8 @@ feature at once. The ownership features add or remove no table, reducer, view or
 **The recipe that produces a shipped module cannot omit it.** There is nothing to omit: leaving
 every feature out gives a module that enforces ownership and admits nobody, and enforcement comes
 off only by naming a dev feature. `spacetime publish --module-path` and `spacetime generate` build
-with no features and cannot be given any, so a module published that way is the default build. One
+with no features unless `--build-options` passes one to the build, so a module published without
+saying so is the default build. One
 recipe makes a module to ship, `just release-module <official|world>`: it refuses any other
 argument; it builds the module alone, with exactly that feature, into a target directory of its
 own (the e2e and CI builds write a dev module to the shared one) and with the compiler-flag
@@ -792,11 +801,14 @@ artefact with its SHA-256. The shell, the standalone server and the official dep
 publish that artefact by its hash. The artefact is the thing checked, because
 `spacetime describe --json` reads the same for every profile.
 
-The first consumers change with it. Every recipe that publishes for anonymous play names
-`open_join`: in `justfile`, `scripts/smoke-republish.sh`, `client/e2e/global-setup.ts` and the load
-smoke in `.github/workflows/nightly.yml`. Ranked play reads the same issuer list
-(`ranked_enforcement_active` in `server-module/src/pvp.rs`), so it changes when a build first lists
-a real issuer.
+What changes with it, in the slice that builds it (acs-6). Every site that builds or publishes for
+anonymous play names `open_join`: in `justfile` (the first line of `just test`, `ci-fast` and the
+mutation recipes included, since the module's own tests join), `scripts/smoke-republish.sh`,
+`client/e2e/global-setup.ts` and the load smoke in `.github/workflows/nightly.yml`; a site that
+publishes with `--module-path` passes it through `--build-options`. Ranked play reads the same
+issuer list (`ranked_enforcement_active` in `server-module/src/pvp.rs`), and a test build lists the
+dev issuers, so that gate and its tests change in the same slice. The recipe and the reader of the
+artefact's profile are built there too.
 
 **Rejected.** E1, a feature that switches enforcement on: the build cargo produces when nobody says
 anything is then the one that admits anyone and trusts the dev keys, and only a test stands
@@ -805,17 +817,14 @@ omission, and the input is in no manifest. E4, a row at run time: fork (b)'s B2.
 
 | Alternative | Gate: names a build input, and each side of the switch has a test | A build nobody configured fails closed (3) | Production trust without enforcement cannot be built (3) | Blast radius on existing recipes and tests (2) | Consistent with "Dev-only reducers never ship" (2) | Both sides provable in CI, on the artefact (2) | Simplicity (1) | Unweighted, of 30 | Weighted, of 65 |
 |---|---|---|---|---|---|---|---|---|---|
-| E2, as recorded here | pass | 5 | 5 | 2 | 4 | 5 | 2 | 23 | 54 |
-| E2, as put to the judge | pass | 5 | 5 | 2 | 4 | 4 | 3 | 23 | 53 |
-| E1, a feature switches it on | pass | 1 | 4 | 4 | 2 | 4 | 4 | 19 | 39 |
-| E3, an environment variable | pass | 1 | 2 | 3 | 1 | 3 | 3 | 13 | 26 |
+| E2, enforced unless `open_join` | pass | 5 | 5 | 2 | 4 | 5 | 2 | 23 | 54 |
+| E1, a feature switches it on | pass, narrowly | 1 | 4 | 4 | 2 | 4 | 4 | 19 | 39 |
+| E3, an environment variable | pass, narrowly | 1 | 2 | 3 | 1 | 3 | 3 | 13 | 26 |
 | E4, a row at run time | fail | 1 | 1 | 2 | 1 | 3 | 3 | 11 | 21 |
 
-The judge added three things to E2 as put to it, and the design above has them: the compile error
-for a release build with dev reducers, the profile carried in the artefact, and the precedence
-computed in code, so that a feature set from outside cargo cannot split a release feature from
-enforcement. The result reverses if the ownership features turn out to change the schema or the
-generated bindings, which is measured when they are built.
+Because the precedence is computed in code, a feature given to the compiler from outside cargo
+cannot split a release feature from enforcement. The design is reopened if the ownership features
+turn out to change the schema or the generated bindings, which is measured when they are built.
 
 **Proved by.** Both sides, for each consumer:
 
@@ -848,13 +857,29 @@ an unentitled connection can on the official server: the ownership rule gates `j
 with it every reducer that acts in the world, not reading. A connection that is refused the bind
 plays nothing and can watch.
 
+#### What this changes in the slices as specified
+
+| Slice | What the design changes |
+|---|---|
+| lpw-9 | The admission reducer is `admit(who, password)`, owner-only: an unadmitted identity is refused it as it is refused everything, where lpw-9.2 reads as if its own connection called it. lpw-9.3's count is against `who`. The reducer that sets the rule admits the identities then connected. The census gains the reducer check and the refusal of handlers and filters. The connect refusal's log line is rate-limited, as the unlisted-issuer one is |
+| lpw-11 | The preload exposes one more function, which takes a nonce and returns an attestation; lpw-11.1 and lpw-11.3 allow the shell document and no channel. No typed or imported entry carries a reconnect token |
+| lpw-12, lpw-14 | The gate gains the door endpoint, which it serves itself and never forwards; a limit on door attempts by source address; the identity behind each socket, and the closing of a removed identity's sockets; and reading the world's rule back before it listens beyond loopback. The two-host relay run of fork (c) has no owner yet |
+| lpw-13 | The shell admits its own player before the rule leaves `Open`, writes the world's names at each start, and embeds the artefact `just release-module` wrote, by its hash |
+| lpw-15 | It needs the shell document's fingerprint field, which lpw-18 specifies. The bind and the nonce reducer each gain an owner-only form that takes the joiner's identity, for `Allowlist`. A page a gate serves does not sign in, where the slice has every browser sign in. Its run under the `official` build needs a line in `justfile`, which acs-6 holds |
+| lpw-17 | The standalone command writes the world's names: `spki:` for the world's own key, `dns:` for a domain it holds a certificate for. A host behind its own proxy states its public name and port |
+| lpw-18 | lpw-18.7's browser joiner plays only on a build that does not enforce ownership |
+| acs-3 | The `world` it is given is the name above: opaque, bounded in length, in the request body, logged by neither the route nor the proxy in front of it. Only the `world` and dev builds embed attestation keys, where the slice has every release build embed the production keys |
+| acs-6 | Two release builds, not one: `official` trusts the production issuer and `world` trusts none, where the slice has release builds trust the production issuer. The features, the recipe, the artefact's profile, the build and publish sites and the ranked gate of fork (e) are its to build, several outside the files it lists (`scripts/smoke-republish.sh`, `client/e2e/global-setup.ts`, `.github/workflows/nightly.yml`, `server-module/src/pvp.rs` and its tests). DECISIONS.md's "Dev-only reducers never ship" says the playtest recipes publish the default build, which changes with it |
+| acs-11 | acs-11.3's release module is the `official` build |
+| acs-12 | Toward a `local` or `private` target the preload hands the page an attestation, never the ID token |
+
 ### The design later work elaborates against
 
 The own-issuer design, with the attestation verified as a reducer argument under the world's own
 anonymous token, and the access design above. LP4 (sign in once, then offline) and LP6
 (private-server access) elaborate against it. The in-module verifier is measured: Ed25519,
 108.4 µs a check against a budget of 5 ms. Of the three conditions the design holds on, one is
-decided and being built, an attestation route beside our own account service (DECISIONS.md, "A
+decided and not built, an attestation route beside our own account service (DECISIONS.md, "A
 private world verifies an account by a per-world attestation our account service signs"), and two
 are designed above and not built or tested: the official server refusing attestation binding
 (fork (b)) and the relay between private worlds closed (fork (c)). The audience-scoped fallback
@@ -1159,8 +1184,8 @@ not confined. Every request is plain HTTP from Node 24
 (`fetch`, and its WebSocket client with the `v1.json.spacetimedb` protocol). None of the drivers or
 the probe module is in this repository.
 
-*The wrong-audience token.* The rig is `evals/account-e2e.eval.mjs` itself, loaded as a module
-with its rig functions exported: its stub issuer (two ES256 issuers on one loopback port), its
+*The wrong-audience token.* The rig is a copy of `evals/account-e2e.eval.mjs` with one import path
+made absolute and its rig functions exported: its stub issuer (two ES256 issuers on one loopback port), its
 token minting, and its patches to a copy of this repository at commit `d6d80547`, which set
 `ALLOWED_ISSUERS` to the stub's first issuer and `ALLOWED_AUDIENCE` to `mr-acct-e2e-client`. The
 patched module was built with `cargo build --release --target wasm32-unknown-unknown` and published
@@ -1168,9 +1193,9 @@ over the HTTP API to a fresh host. Four tokens: the listed issuer with the liste
 listed issuer and key with the audience `mr-acct-e2e-wrong-aud`; the stub's second issuer; and a
 token the host minted at `POST /v1/identity`. Each token was sent in three rounds, in each of two
 runs on two fresh hosts: one `call` of `join_game`, two `sql` statements (`SELECT * FROM
-module_info`, `SELECT * FROM player`), one `GET /schema`, and one WebSocket in the first round; the
-second run added one call of the MCP `sql` tool and one of its `call` tool per round. For the
-wrong-audience token:
+module_info`, `SELECT * FROM player`), one `GET /schema`, one MCP `tools/list` request, and one
+WebSocket in the first round; the second run added one call of the MCP `sql` tool and one of its
+`call` tool per round. For the wrong-audience token:
 
 | Route | Requests in run 1 | Requests in run 2 | Every answer |
 |---|---|---|---|
@@ -1183,7 +1208,8 @@ wrong-audience token:
 That is 10 refusals in run 1 and 16 in run 2, and the module's log held 10 and 16 `unrecognized
 audience` rejections (each written twice, once by the module and once by the host). The three other
 tokens were answered 200 on every `call` and `sql` request, and their WebSockets stayed open. The
-twelve `GET /schema` requests of each run were answered 200 for every token.
+twelve `GET /schema` requests and the twelve `tools/list` requests of each run were answered 200
+for every token: neither runs the connect reducer.
 
 *The admission probe.* A module of one file built against `spacetimedb` 2.11.0, in five variants
 chosen by cargo features: the connect reducer refusing an unadmitted identity, and four with a row
@@ -1192,13 +1218,14 @@ filter; the same with no `WHERE` in the outer filter; and on a public admission 
 filter. One driver per variant, on a fresh host: publish, create a joiner identity at
 `POST /v1/identity`, then the steps of the table in section 3, with a WebSocket held open across
 the admission and the removal. The step that calls a reducer, runs a one-off query and subscribes
-again on a socket whose admission was removed was run in a second pass, by the red-team review of
-the design, with the same module and a copy of the driver.
+again on a socket whose admission was removed was run in a second pass, with the same module and a
+copy of the driver.
 
 *Two smaller checks.* `spacetime publish` and `spacetime generate` refuse a `--features` argument
-and `spacetime build` takes one (the CLI at 2.11.0, tried against a path that does not exist). A
+of their own and take `--build-options`, which they pass to the build; `spacetime build` takes
+`--features` (the CLI at 2.11.0, argument parsing only, against a path that does not exist). A
 static placed in a named link section appears in a `wasm32-unknown-unknown` artefact (a crate of
-one file, rustc 1.99.0, built by the judge of fork (e)).
+one file, rustc 1.99.0).
 
 **What was not measured.** A battle, a trade or any load but walking; more than eight players; a
 session longer than an hour, so growth of the world's own tables with play and anything a later
