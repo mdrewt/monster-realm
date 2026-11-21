@@ -109,19 +109,19 @@ export function devAccounts(adapter: (model: string) => Adapter): DevAccounts {
     if (stored === undefined) throw new DevAccountError('unknown');
     return stored;
   };
-  const write = (account: StoredAccount): Promise<unknown> =>
-    Promise.resolve(
-      records.upsert(
-        account.email,
-        {
-          uid: account.sub,
-          email: account.email,
-          passwordHash: account.passwordHash,
-          entitled: account.entitled,
-        },
-        undefined as unknown as number,
-      ),
+  const write = async (account: StoredAccount): Promise<void> => {
+    await records.upsert(
+      account.email,
+      {
+        uid: account.sub,
+        email: account.email,
+        passwordHash: account.passwordHash,
+        entitled: account.entitled,
+      },
+      // The store keeps a record given no lifetime until it is destroyed.
+      undefined as unknown as number,
     );
+  };
 
   return {
     async create(email, options) {
@@ -142,7 +142,6 @@ export function devAccounts(adapter: (model: string) => Adapter): DevAccounts {
       return { account: published(account), password };
     },
     async resetPassword(email) {
-      if (normaliseEmail(email) === undefined) throw new DevAccountError('invalid-email');
       const password = generatePassword();
       const passwordHash = await hashPassword(password);
       const account = { ...(await read(email)), passwordHash };
@@ -274,7 +273,6 @@ function generatePassword(): string {
 
 /** The form an email is stored and compared in, or undefined for one this service does not accept. */
 function normaliseEmail(email: string): string | undefined {
-  if (typeof email !== 'string') return undefined;
   const normalised = email.normalize('NFKC').toLowerCase();
   if (normalised.length < 3 || normalised.length > MAX_EMAIL_LENGTH) return undefined;
   if (!EMAIL.test(normalised) || CONTROL.test(normalised)) return undefined;

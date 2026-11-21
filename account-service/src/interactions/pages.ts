@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { MAX_EMAIL_LENGTH, MAX_PASSWORD_LENGTH } from './devPassword.ts';
 
 const STYLE =
   'body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}' +
@@ -48,9 +49,9 @@ export function signInPage(options: {
     `<h1>Sign in</h1><p>Development and test accounts only.</p>${notice}` +
       `<form method="post" action="${escapeHtml(options.action)}">` +
       '<label for="email">Email</label>' +
-      '<input id="email" name="email" type="email" autocomplete="username" required maxlength="254">' +
+      `<input id="email" name="email" type="email" autocomplete="username" required maxlength="${MAX_EMAIL_LENGTH}">` +
       '<label for="password">Password</label>' +
-      '<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="128">' +
+      `<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="${MAX_PASSWORD_LENGTH}">` +
       '<button type="submit">Sign in</button></form>',
   );
 }
@@ -88,5 +89,5 @@ const ENTITIES: Readonly<Record<string, string>> = {
 };
 
 function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (character) => ENTITIES[character] as string);
+  return text.replace(/[&<>"']/g, (character) => ENTITIES[character]);
 }

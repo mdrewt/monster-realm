@@ -40,7 +40,7 @@ export async function runAdmin(
     for (const line of USAGE) io.err(line);
     return 2;
   }
-  if (Object.hasOwn(env, 'MR_ACCOUNT_PROFILE') && env.MR_ACCOUNT_PROFILE === 'production') {
+  if (env.MR_ACCOUNT_PROFILE === 'production') {
     io.err('MR_ACCOUNT_PROFILE: the admin command manages dev accounts and refuses production');
     return 1;
   }

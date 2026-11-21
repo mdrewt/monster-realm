@@ -16,13 +16,13 @@ import {
 import type { SigningKeys } from './keys.ts';
 import { createRateLimiter } from './rateLimit.ts';
 
-export const AUTHORIZATION_CODE_TTL_SECONDS = 60;
+const AUTHORIZATION_CODE_TTL_SECONDS = 60;
 /** How long after its sign-in a chain of refresh tokens ends. */
-export const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 /** How long a sign-in may take from the authorization request to the code. */
 export const SIGN_IN_TTL_SECONDS = 600;
 /** Each authorization request stores one record of about 600 bytes for that long; this bounds them. */
-export const MAX_PENDING_SIGN_INS = 20_000;
+const MAX_PENDING_SIGN_INS = 20_000;
 
 export interface AccountProvider {
   readonly provider: Provider;
@@ -176,8 +176,9 @@ export function createAccountProvider(options: {
 
     if (router !== undefined) {
       const path = req.url.split('?', 1)[0];
-      if (path !== undefined && interactionUid(path) !== undefined) {
-        void router(req, res);
+      const uid = interactionUid(path);
+      if (uid !== undefined) {
+        void router(req, res, uid);
         return;
       }
       if (

@@ -28,7 +28,7 @@ export function createRateLimiter(options: {
   if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new RangeError('limit must be a positive integer');
   }
-  if (typeof windowSeconds !== 'number' || !Number.isFinite(windowSeconds) || windowSeconds <= 0) {
+  if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) {
     throw new RangeError('windowSeconds must be a positive number');
   }
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
@@ -41,12 +41,12 @@ export function createRateLimiter(options: {
     const time = now();
     while (head < queue.length) {
       const oldest = queue[head];
-      if (oldest === undefined || time - oldest.at < windowSeconds) break;
+      if (time - oldest.at < windowSeconds) break;
       head += 1;
       const hits = hitsByKey.get(oldest.key);
       if (hits === undefined) continue;
       let dead = 0;
-      while (dead < hits.length && time - (hits[dead] as number) >= windowSeconds) dead += 1;
+      while (dead < hits.length && time - hits[dead] >= windowSeconds) dead += 1;
       if (dead === hits.length) hitsByKey.delete(oldest.key);
       else if (dead > 0) hits.splice(0, dead);
     }

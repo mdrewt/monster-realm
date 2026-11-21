@@ -51,7 +51,8 @@ export function interactionPath(uid: string): string {
 }
 
 /** The `uid` a request path names as a sign-in step, or undefined for any other path. */
-export function interactionUid(path: string): string | undefined {
+export function interactionUid(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined;
   return /^\/interaction\/([A-Za-z0-9_-]+)$/.exec(path)?.[1];
 }
 
@@ -59,20 +60,19 @@ const FORM_TYPE = 'application/x-www-form-urlencoded';
 const MAX_BODY_BYTES = 8192;
 
 /**
- * Answers `/interaction/<uid>`: the sign-in step of one authorization request. A request is tied
- * to its sign-in by the signed cookie the provider set when the request began, and a post is
- * taken only from the issuer's own page.
+ * Answers `/interaction/<uid>`, the sign-in step of one authorization request; the caller passes
+ * the `uid` the path names. A request is tied to its sign-in by the signed cookie the provider set
+ * when the request began, and a post is taken only from the issuer's own page.
  */
 export function createInteractionRouter(options: {
   readonly provider: Provider;
   readonly issuer: string;
   readonly signIn: SignInStep;
-}): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+}): (req: IncomingMessage, res: ServerResponse, uid: string) => Promise<void> {
   const { provider, signIn } = options;
   const origin = new URL(options.issuer).origin;
 
-  const answer = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const uid = interactionUid((req.url ?? '').split('?', 1)[0] ?? '');
+  const answer = async (req: IncomingMessage, res: ServerResponse, uid: string): Promise<void> => {
     if (req.method !== 'GET' && req.method !== 'POST') {
       text(res, 405, 'this address takes GET and POST', { allow: 'GET, POST' });
       return;
@@ -159,9 +159,9 @@ export function createInteractionRouter(options: {
     }
   };
 
-  return async (req, res) => {
+  return async (req, res, uid) => {
     try {
-      await answer(req, res);
+      await answer(req, res, uid);
     } catch (error) {
       console.error('account-service: the sign-in step failed:', error);
       if (res.headersSent) res.destroy();
@@ -175,7 +175,7 @@ async function liveSignIn(
   provider: Provider,
   req: IncomingMessage,
   res: ServerResponse,
-  uid: string | undefined,
+  uid: string,
 ): Promise<Awaited<ReturnType<Provider['interactionDetails']>> | undefined> {
   try {
     const interaction = await provider.interactionDetails(req, res);
