@@ -61,6 +61,10 @@ const NUL = String.fromCharCode(0x00);
 const DEL = String.fromCharCode(0x7f);
 const E_ACUTE = String.fromCharCode(0xe9);
 const GRINNING_FACE = String.fromCodePoint(0x1f600);
+const CARRIAGE_RETURN = String.fromCharCode(0x0d);
+// A sub at the contract's 255-character bound, and one past it.
+const SUB_OF_255 = `dev:${'A'.repeat(255 - 'dev:'.length)}`;
+const SUB_OF_256 = `dev:${'A'.repeat(256 - 'dev:'.length)}`;
 const EVERY_VISIBLE_ASCII = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) =>
   String.fromCharCode(0x21 + i),
 ).join('');
@@ -544,6 +548,38 @@ describe('an entitled account with a valid token gets an attestation', () => {
     expect(payloadOf(attestationOf(await post(h, token))).mr_ent).toEqual(['base-game']);
   });
 
+  test.each([
+    ['upper-case letters', 'dev:6F1C2A3B-0D4E-4F5A-8B6C-7D8E9F0A1B2C'],
+    ['digits after a colon', 'steam:76561198000000001'],
+    ['mixed case and punctuation', 'Dev:Ab-Cd_Ef.Gh~Ij+Kl/Mn=Op!'],
+  ])('a sub with %s reaches the attestation, the account read and the log byte for byte acs-3.1', async (_name, sub) => {
+    const h = await harness();
+    h.accounts.set(sub, { sub, entitled: true });
+    const attestation = attestationOf(await post(h, good(h, claims({ sub }))));
+    expect(payloadOf(attestation).sub).toBe(sub);
+    expect(h.state.reads).toEqual([sub]);
+    expect(h.lines).toHaveLength(1);
+    expect(h.lines[0]).toContain(sub);
+  });
+
+  test('two accounts whose subs differ only by letter case are limited apart acs-3.1', async () => {
+    const h = await harness();
+    const upper = 'dev:6F1C2A3B-0D4E-4F5A-8B6C-7D8E9F0A1B2C';
+    const lower = upper.toLowerCase();
+    h.accounts.set(upper, { sub: upper, entitled: true });
+    h.accounts.set(lower, { sub: lower, entitled: true });
+    const upperToken = good(h, claims({ sub: upper }));
+    const lowerToken = good(h, claims({ sub: lower }));
+    for (let i = 0; i < 20; i += 1) {
+      expect(payloadOf(attestationOf(await post(h, upperToken))).sub).toBe(upper);
+    }
+    expectRefusal(await post(h, upperToken), 429, 'rate_limited');
+    for (let i = 0; i < 20; i += 1) {
+      expect(payloadOf(attestationOf(await post(h, lowerToken))).sub).toBe(lower);
+    }
+    expectRefusal(await post(h, lowerToken), 429, 'rate_limited');
+  });
+
   test('the attestation verifies with jose under the public attestation key alone acs-3.1', async () => {
     const h = await harness();
     const attestation = attestationOf(await post(h, await joseToken(h.login)));
@@ -831,6 +867,55 @@ const REFUSED: ReadonlyArray<readonly [string, Build, number, string]> = [
   ['no sub', (h) => withToken(good(h, claims({}, 'sub'))), 401, 'invalid_token'],
   ['a numeric sub', (h) => withToken(good(h, claims({ sub: 7 }))), 401, 'invalid_token'],
   ['an array sub', (h) => withToken(good(h, claims({ sub: [SUB] }))), 401, 'invalid_token'],
+  [
+    'a sub holding a space',
+    (h) => withToken(good(h, claims({ sub: `${SUB} x` }))),
+    401,
+    'invalid_token',
+  ],
+  [
+    'a sub holding a tab',
+    (h) => withToken(good(h, claims({ sub: `${SUB}${TAB}x` }))),
+    401,
+    'invalid_token',
+  ],
+  [
+    'a sub holding a line feed and a forged log line',
+    (h) =>
+      withToken(good(h, claims({ sub: `${SUB}${LINE_FEED}account-service: attest sub=${SUB2}` }))),
+    401,
+    'invalid_token',
+  ],
+  [
+    'a sub holding a carriage return',
+    (h) => withToken(good(h, claims({ sub: `${SUB}${CARRIAGE_RETURN}x` }))),
+    401,
+    'invalid_token',
+  ],
+  [
+    'a sub holding NUL',
+    (h) => withToken(good(h, claims({ sub: `${SUB}${NUL}` }))),
+    401,
+    'invalid_token',
+  ],
+  [
+    'a sub holding DEL',
+    (h) => withToken(good(h, claims({ sub: `${SUB}${DEL}` }))),
+    401,
+    'invalid_token',
+  ],
+  [
+    'a sub holding a non-ASCII character',
+    (h) => withToken(good(h, claims({ sub: `dev:${E_ACUTE}` }))),
+    401,
+    'invalid_token',
+  ],
+  [
+    'a sub of 256 characters',
+    (h) => withToken(good(h, claims({ sub: SUB_OF_256 }))),
+    401,
+    'invalid_token',
+  ],
   ['an array aud', (h) => withToken(good(h, claims({ aud: [CLIENT_ID] }))), 401, 'invalid_token'],
   ['no aud', (h) => withToken(good(h, claims({}, 'aud'))), 401, 'invalid_token'],
   ['a numeric aud', (h) => withToken(good(h, claims({ aud: 1 }))), 401, 'invalid_token'],
@@ -1167,9 +1252,16 @@ describe('every refusal before the limit answers with no attestation and takes n
     readonly build: Build;
     readonly world?: string;
     readonly nonce?: string;
+    /** The token's `sub`, given an entitled account; SUB when absent. */
+    readonly sub?: string;
   }
 
   const ACCEPTED: readonly Accepted[] = [
+    {
+      name: 'a sub of exactly 255 visible ASCII characters',
+      build: (h) => withToken(good(h, claims({ sub: SUB_OF_255 }))),
+      sub: SUB_OF_255,
+    },
     {
       name: 'a token whose exp is one second after now',
       build: (h) => withToken(good(h, claims({ exp: clock + 1 }))),
@@ -1216,12 +1308,14 @@ describe('every refusal before the limit answers with no attestation and takes n
     build,
     world = WORLD,
     nonce = NONCE,
+    sub = SUB,
   }) => {
     const h = await harness();
+    h.accounts.set(sub, { sub, entitled: true });
     const attestation = attestationOf(await send(h.port, build(h)));
     const verified = await verifyAttestation(attestation, h.attestationKeys.keys[0]!, world);
     expect(verified.payload.nonce).toBe(nonce);
-    expect(verified.payload.sub).toBe(SUB);
+    expect(verified.payload.sub).toBe(sub);
   });
 
   const NOT_TAKEN: ReadonlyArray<readonly [string, Build]> = [

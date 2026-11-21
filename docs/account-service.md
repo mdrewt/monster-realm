@@ -70,7 +70,8 @@ verifies an account by a per-world attestation our account service signs").
   a body of at most 1024 bytes that holds nothing else, so an attestation stays under 2 KiB. What
   a world's name is: `docs/local-play.md` §3, "What the attestation names".
   - *The checks, in order; the first failure answers.* The token: signed by a login key with
-    ES256, `iss` this issuer, `exp` in the future, a `sub` and an `aud` (`401 invalid_token`).
+    ES256, `iss` this issuer, `exp` in the future, a `sub` of 1 to 255 characters of visible
+    ASCII and an `aud` (`401 invalid_token`).
     Its `mr_ent` names `base-game` (`403 not_entitled`). The body (`415`, `413` or `400
     invalid_request`). The account's limit (`429 rate_limited`, with `Retry-After`). The account
     itself, read again: an ID token outlives a cleared entitlement by up to an hour, and a binding
@@ -87,7 +88,8 @@ verifies an account by a per-world attestation our account service signs").
     and a binding outlasts the token.
   - *What is logged.* One line per attestation issued, with the account and the time, and one per
     failure of the service, with the account, the time, the step that failed and the error's
-    class name. A refusal logs nothing, so a caller cannot write lines at will. No line holds a
+    class name. The account is the token's `sub`, which only this issuer writes and which holds
+    no space or line break. A refusal logs nothing, so a caller cannot write lines at will. No line holds a
     world, a nonce, a token or an error's message, and the service keeps no record of the world
     an attestation was for.
 - **Clients.** A client is a stored record: a client id and one redirect address, written by the
@@ -121,9 +123,9 @@ verifies an account by a per-world attestation our account service signs").
 - **Attestation keys.** An attestation is signed with an Ed25519 key of its own, never a login
   key (`docs/DECISIONS.md`, "The attestation is signed with Ed25519 and checked by
   `ed25519-dalek` compiled into the module"). The two key sets cannot stand in for each other: a
-  P-256 key is refused as an attestation key and an Ed25519 key as a login key, a `kid` that both
-  sets carry is refused at start, and neither set verifies the other's tokens. The first
-  attestation key signs. Where each profile's key lives is under "Attestation keys" below.
+  P-256 key is refused as an attestation key and an Ed25519 key as a login key, an attestation
+  key file that repeats a login key's `kid` is refused at start, and neither set verifies the
+  other's tokens. The first attestation key signs. Where each profile's key lives is under "Attestation keys" below.
 - **Storage.** One SQLite file, opened with Node's built-in `node:sqlite`.
   `src/store/sqliteAdapter.ts` is the provider's storage adapter and the only module that touches
   the database. An expired record is not found. A consumed record is still found, carrying
@@ -170,17 +172,24 @@ world accepts until its public half is in a build.
   in this repository, so every machine signs with the same key and every dev build can hold its
   public half. The repository is public, so anyone can sign with this key. A build that accepts
   it accepts a binding anyone can forge: its ownership check in a `local` or `private` world
-  rehearses the flow and stops nobody. A dev build that has to hold against strangers accepts
-  only the `hosted-dev` list. No other profile signs with this key: a key file that holds it is
-  refused.
+  rehearses the flow and stops nobody. Every dev build accepts both dev lists
+  (`docs/local-play.md` §3, "The build input, and the order of calls"); a dev build that has to
+  hold against strangers needs a feature set that accepts the `hosted-dev` list alone, and there
+  is none. No other profile signs with this key: a key file that holds it is refused.
 - **`hosted-dev`.** The operator makes an Ed25519 key and keeps it in `attestation-keys.json` in
   the directory of the key file: `{ "profile": "hosted-dev", "keys": [ <private JWK>, … ] }`,
   each key `{ "kty": "OKP", "crv": "Ed25519", "kid": …, "x": …, "d": … }`. The first key signs.
-  The instance refuses to start without the file. No command writes it.
+  The instance refuses to start without the file, and the service never writes it. From
+  `account-service/`, this makes one with a new key:
+
+  ```sh
+  (umask 077 && node -e "import('./src/keys.ts').then((m) => console.log(JSON.stringify({ profile: 'hosted-dev', keys: [m.generateAttestationKey()] }, null, 2)))" > /path/to/attestation-keys.json)
+  ```
 - **`production`.** An external signer holds the key, as it holds the login key; this build has
   none. It has to be a key service that signs with Ed25519. If the production host's key service
-  cannot, the attestation moves to ES256 (the decision entry above says when), and the module's
-  verifier with it.
+  cannot, the attestation moves to ES256 and the module's verifier with it (`docs/DECISIONS.md`,
+  "The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the
+  module").
 
 ## Settings
 

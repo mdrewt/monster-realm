@@ -959,6 +959,38 @@ describe('the attestation route served by startServer', () => {
     expect(await connectOutcome(port)).toBe('refused');
   });
 
+  test('hosted-dev refused for its attestation key file creates no data directory and writes nothing beside the key file acs-3.1', async () => {
+    const dataDir = join(root, 'not-yet', 'data');
+    const keyDir = join(root, 'keys');
+    mkdirSync(keyDir, { mode: 0o700 });
+    const keyFile = join(keyDir, 'login.json');
+    writeOwnerOnly(
+      keyFile,
+      JSON.stringify({ profile: 'hosted-dev', keys: [generateSigningKey()] }),
+    );
+    const lines: string[] = [];
+    let error: unknown;
+    try {
+      await start(
+        {
+          MR_ACCOUNT_PROFILE: 'hosted-dev',
+          MR_ACCOUNT_DATA_DIR: dataDir,
+          MR_ACCOUNT_KEY_FILE: keyFile,
+          MR_ACCOUNT_PORT: '0',
+        },
+        lines,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe('MR_ACCOUNT_KEY_FILE');
+    expect(existsSync(dataDir)).toBe(false);
+    expect(existsSync(join(root, 'not-yet'))).toBe(false);
+    expect(readdirSync(keyDir)).toEqual(['login.json']);
+    expect(lines).toEqual([]);
+  });
+
   test("hosted-dev with attestation-keys.json signs with that file's key acs-3.1", async () => {
     const dataDir = join(root, 'hosted');
     mkdirSync(dataDir, { mode: 0o700 });

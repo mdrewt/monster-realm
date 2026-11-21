@@ -2619,10 +2619,10 @@ records the artefact's hash, by which the artefact is embedded or published. The
 add or remove no table, reducer, view or type. Designed, not built: `docs/local-play.md` §3,
 fork (e), with the table of every feature set, the recipe and the tests for both sides of the
 switch. Of the dev attestation keys, the `local-dev` one is fixed and can be derived from this
-repository (`account-service/src/keys.ts`), so anyone can sign with it: a build that holds it
-enforces ownership in a `local` or `private` world against nobody, and a dev build that has to
-hold against strangers is given only the `hosted-dev` keys (`docs/account-service.md`,
-"Attestation keys").
+repository (`account-service/src/keys.ts`), so anyone can sign with it: a `dev_issuers` build
+checks ownership in a `local` or `private` world and stops nobody who signs with that key. No
+feature set gives a build the `hosted-dev` attestation keys alone; a dev build that has to hold
+against strangers needs one (`docs/account-service.md`, "Attestation keys").
 
 **Why.** With enforcement as the default there is no input whose omission ships an open module:
 `spacetime publish --module-path` and `spacetime generate` build with no features unless told

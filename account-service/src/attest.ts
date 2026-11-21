@@ -13,6 +13,8 @@ export const ATTESTATION_LIMIT = 20;
 export const ATTESTATION_WINDOW_SECONDS = 3600;
 export const MAX_WORLD_LENGTH = 512;
 export const MAX_NONCE_LENGTH = 128;
+/** An account's subject is what a log line names: bounded, with no space or line break. */
+const MAX_SUBJECT_LENGTH = 255;
 export const MAX_ATTEST_BODY_BYTES = 1024;
 
 type AttestationClaims = {
@@ -82,7 +84,8 @@ const UNREAD = { connection: 'close' } as const;
 
 const BEARER = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i;
 const JSON_TYPE = 'application/json';
-// A world's name and a nonce are opaque here: visible ASCII, bounded, so the attestation is too.
+// A subject, a world's name and a nonce are opaque here: visible ASCII and bounded, so the
+// attestation and the log line are too.
 const VISIBLE_ASCII = /^[\x21-\x7e]+$/;
 
 /**
@@ -144,7 +147,7 @@ export function createAttestRoute(
         clockTolerance: 0,
       });
       const { sub, aud } = payload;
-      if (typeof sub !== 'string' || sub === '' || typeof aud !== 'string') return undefined;
+      if (!isBounded(sub, MAX_SUBJECT_LENGTH) || typeof aud !== 'string') return undefined;
       const entitlement = payload[ENTITLEMENT_CLAIM];
       return {
         sub,
@@ -230,6 +233,8 @@ export function createAttestRoute(
         exp: iat + ATTESTATION_TTL_SECONDS,
         jti: randomUUID(),
       });
+      // Logged before it is sent: an attestation that cannot be logged is not issued.
+      step = 'log';
       log(`account-service: attest sub=${sub} at=${at}`);
     } catch (error) {
       // The service failed, not the caller: this request does not count against the account. It
