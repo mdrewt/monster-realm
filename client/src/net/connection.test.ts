@@ -155,6 +155,8 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     db: DB,
     name: 'Tester',
     store: new AuthoritativeStore(200),
+    // The OIDC mode: the account builds the bootAccount cases drive are reachable only in it.
+    signIn: 'oidc',
     onReady: vi.fn(),
     onReconnect: vi.fn(),
     onHydrated: vi.fn(),

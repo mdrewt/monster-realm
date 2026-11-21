@@ -729,13 +729,13 @@ root, so opening one never closes a sibling.
   keyed by that identity; there is no account row and no PII.
 - **Signing in.** With OIDC configured on the client and a target of kind `official` or
   `test`, sign-in redirects to the issuer and reconnects with the resulting JWT. Toward a
-  `local` or `private` world `connect` is given no issuer or client id; the Sign in
-  control still shows there, and with no issuer its discovery request goes to the page's
-  own origin and fails unless that origin serves one. `on_connect` creates an `account` row only
-  when the token's issuer and audience match `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE`
-  (`server-module/src/accounts.rs`). Those constants still hold the fail-closed
-  `.invalid` placeholder, so no account can be created until a real issuer is
-  deployed and the constants are changed. `ops/auth/README.md` has the deployment
+  `local` or `private` world `connect` is given no issuer or client id and runs with
+  sign-in off: it builds no OIDC client, every connection is anonymous, no OIDC request
+  leaves the page and the Account section offers no Sign In. `on_connect` creates an
+  `account` row only when the token's issuer and audience match
+  `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` (`server-module/src/accounts.rs`). Those constants
+  still hold the fail-closed `.invalid` placeholder, so no account can be created until a
+  real issuer is deployed and the constants are changed. `ops/auth/README.md` has the deployment
   steps and the client build variables (`VITE_MR_OIDC_ISSUER`,
   `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`,
   `VITE_MR_OIDC_PROVIDER_NAME`).

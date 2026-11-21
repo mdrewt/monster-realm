@@ -28,9 +28,14 @@ import { subscriptionErrorMessage } from '../ui/statusModel';
 import { createAuthTokenGate, wasEverAuthenticated, writeAuthKind } from './authToken';
 import { MicrotaskBatcher } from './batch';
 import { claimCode } from './claimCode';
-import { type ConnectCredential, decideConnectCredential } from './credentialDecision';
+import {
+  type ConnectCredential,
+  decideConnectCredential,
+  mayReachOidc,
+  type SignInMode,
+} from './credentialDecision';
 import { type SendLogger, wrapReducerLogging } from './devLog';
-import { createOidcClient } from './oidc';
+import { createOidcClient, type OidcClient } from './oidc';
 import {
   accountRowToStore,
   battleChallengeRowToStore,
@@ -133,8 +138,11 @@ export interface ConnectionOptions {
   readonly onClaimAwaitingAccount?: () => void;
   /** The guest-claim reducer settled. */
   readonly onClaimResult?: (result: { readonly ok: boolean; readonly message: string }) => void;
-  /** The OIDC issuer / client-id / redirect for this target. Absent
-   *  in anonymous-only builds — with no issuer the flow contacts no network (AUTH-44). */
+  /** Whether this connection may sign in to an account. `'off'` builds no OIDC client: every
+   *  build is anonymous, no OIDC request is made, and startSignIn reports `'sign-in-off'`. */
+  readonly signIn: SignInMode;
+  /** The OIDC issuer / client-id / redirect for this target, read only when `signIn` is
+   *  `'oidc'`. */
   readonly authIssuer?: string;
   readonly authClientId?: string;
   readonly authRedirectUri?: string;
@@ -156,7 +164,8 @@ export interface Connection {
   continueAnonymously(): void;
   /** The session terminal state driving the registry-external overlay. */
   sessionState(): SessionState;
-  /** mint a claim code, then begin the OIDC sign-in redirect. */
+  /** mint a claim code, then begin the OIDC sign-in redirect; with sign-in off, only report
+   *  `'sign-in-off'` through onSignInFailed. */
   startSignIn(): void;
   /** Fire a fresh connect attempt for the session 'retry' affordance. */
   reconnectNow(): void;
@@ -238,16 +247,20 @@ export function connect(opts: ConnectionOptions): Connection {
   // must never reset the store, dirty the status line, or clobber identity/state
   // owned by the current build.
   let buildGen = 0;
-  // The OIDC client for this target. INJECTED host (globalThis) —
-  // storage/crypto/fetch all go through it, never an ambient reach from this shell. With no
-  // issuer (an anonymous-only build) renewOrExchange returns no session and contacts no network.
-  const oidc = createOidcClient(globalThis, {
-    issuer: opts.authIssuer ?? '',
-    clientId: opts.authClientId ?? '',
-    redirectUri: opts.authRedirectUri ?? '',
-    uri: opts.uri,
-    db: opts.db,
-  });
+  // The OIDC client for this target, built only in `'oidc'` mode. INJECTED host (globalThis) —
+  // storage/crypto/fetch all go through it, never an ambient reach from this shell. With sign-in
+  // off there is no client: the URL's return leg and any stored flow are left unread, and no
+  // OIDC request is ever made.
+  const oidc =
+    opts.signIn === 'oidc'
+      ? createOidcClient(globalThis, {
+          issuer: opts.authIssuer ?? '',
+          clientId: opts.authClientId ?? '',
+          redirectUri: opts.authRedirectUri ?? '',
+          uri: opts.uri,
+          db: opts.db,
+        })
+      : undefined;
   // The three cross-rebuild ladder facts, declared at connect() scope
   // (NOT per build/attempt): a per-attempt copy resets on every reconnect and defeats each one.
   let isReturnLegAttempt = false; // set once from the OIDC return leg below; SINGLE-USE (D12)
@@ -255,9 +268,10 @@ export function connect(opts: ConnectionOptions): Connection {
   let forcedAnon = false; // set ONLY by continueAnonymously(); sticky for the tab's page life
   // The session terminal state the registry-external overlay reads through sessionState().
   let sessionMode: SessionState = 'hidden';
-  // Consume the OIDC return leg exactly once on cold start (D12): a matched state records the
-  // authorization code and arms this attempt's gate so the first sign-in exchanges its verifier.
-  if (oidc.consumeReturnLeg()) isReturnLegAttempt = true;
+  // In `'oidc'` mode, consume the OIDC return leg exactly once on cold start (D12): a matched state
+  // records the authorization code and arms this attempt's gate so the first sign-in exchanges its
+  // verifier.
+  if (oidc?.consumeReturnLeg() === true) isReturnLegAttempt = true;
 
   /** Schedule ONE rebuild after the current backoff delay. */
   function scheduleRebuild(): void {
@@ -1078,18 +1092,23 @@ export function connect(opts: ConnectionOptions): Connection {
 
   /**
    * The ONE real I/O boundary. Decides which credential build() should act on,
-   * consulting Better Auth ONLY when the attempt gate is open — a never-authenticated or
-   * declined tab makes ZERO network calls (AUTH-43/44/49). TOTAL by contract (oidc.renewOrExchange
-   * maps every internal error to 'transient-error'); attemptBuild's try/catch is the belt.
+   * consulting Better Auth ONLY when the attempt gate is open — a never-authenticated, declined or
+   * sign-in-off tab makes ZERO network calls (AUTH-43/44/49). TOTAL by contract
+   * (oidc.renewOrExchange maps every internal error to 'transient-error'); attemptBuild's
+   * try/catch is the belt.
    */
   async function resolveCredential(): Promise<ConnectCredential> {
     if (forcedAnon) return { kind: 'anon', token: auth.tokenForNextAttempt() };
-    const attemptGateOpen =
-      wasEverAuthenticated(globalThis, opts.uri, opts.db) || isReturnLegAttempt;
+    const attemptGateOpen = mayReachOidc({
+      signIn: opts.signIn,
+      everAuthenticated: wasEverAuthenticated(globalThis, opts.uri, opts.db),
+      returnLeg: isReturnLegAttempt,
+    });
     // SINGLE-USE (D12): consumed on this read regardless of outcome, so a later ordinary reconnect
     // never re-drives the exchange with no stored verifier left to act on.
     isReturnLegAttempt = false;
-    if (!attemptGateOpen) {
+    // `oidc` is undefined exactly when the gate is shut by sign-in off; the check narrows its type.
+    if (!attemptGateOpen || oidc === undefined) {
       return { kind: 'anon', token: auth.tokenForNextAttempt() };
     }
     const outcome = await oidc.renewOrExchange();
@@ -1180,8 +1199,14 @@ export function connect(opts: ConnectionOptions): Connection {
    *  registered code would silently strand the guest's progress. beginSignIn is TOTAL (never
    *  rejects, oidc.ts C1) — its .catch is a belt only. On a 'ready' result the tab leaves the page;
    *  any other kind degrades to the claim UI's failure copy (the intended behaviour against the
-   *  `.invalid` placeholder issuer until a real issuer is deployed) and KEEPS the registered code. */
+   *  `.invalid` placeholder issuer until a real issuer is deployed) and KEEPS the registered code.
+   *  With sign-in off it reports `'sign-in-off'` first and does nothing else: no claim code, no
+   *  reducer call, no request. */
   function startSignIn(): void {
+    if (oidc === undefined) {
+      opts.onSignInFailed?.('sign-in-off');
+      return;
+    }
     const live = current === undefined ? undefined : rawConnectionOf.get(current);
     if (live === undefined || linkFrozen(state)) {
       opts.onSignInFailed?.('transient-error');
@@ -1194,16 +1219,18 @@ export function connect(opts: ConnectionOptions): Connection {
     }
     // On the RAW connection (never the logging wrapper): `code` is a bearer secret.
     const registration = live.reducers.startGuestClaim({ code });
-    registration.then(beginOidcRedirect, () => {
-      claimCode.clear(globalThis, opts.uri, opts.db);
-      opts.onSignInFailed?.('transient-error');
-    });
+    registration.then(
+      () => beginOidcRedirect(oidc),
+      () => {
+        claimCode.clear(globalThis, opts.uri, opts.db);
+        opts.onSignInFailed?.('transient-error');
+      },
+    );
   }
 
-  function beginOidcRedirect(): void {
-    // Bound to a short local so biome keeps `oidc.beginSignIn(` on one line.
-    const flow = oidc.beginSignIn();
-    flow
+  function beginOidcRedirect(client: OidcClient): void {
+    client
+      .beginSignIn()
       .then((result) => {
         if (result.kind === 'ready') {
           // `location?` guards a non-browser host; the navigation target is textually the URL

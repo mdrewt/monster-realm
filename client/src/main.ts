@@ -53,6 +53,7 @@ import {
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
+import type { SignInMode } from './net/credentialDecision';
 import { RATE_LIMIT_INITIAL, rateLimitTick } from './net/devLog';
 import { ServerClock } from './net/serverClock';
 import {
@@ -402,6 +403,10 @@ const OPERATED_BY_US = TARGET_KIND === 'official' || TARGET_KIND === 'test';
 const OIDC_ISSUER = OPERATED_BY_US
   ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
   : '';
+// Sign-in is on only where OIDC_ISSUER holds an issuer: a server we operate whose build names one.
+// Off, `connect` builds no OIDC client, so no OIDC request leaves the page whatever the URL or
+// storage holds.
+const SIGN_IN_MODE: SignInMode = OIDC_ISSUER === '' ? 'off' : 'oidc';
 const SIGN_IN_OFFER = signInOffer(
   OIDC_ISSUER,
   (import.meta.env.VITE_MR_OIDC_PROVIDER_NAME as string | undefined) ?? '',
@@ -5054,6 +5059,7 @@ async function main(): Promise<void> {
     db: DB,
     name: 'Player',
     store,
+    signIn: SIGN_IN_MODE,
     authIssuer: OIDC_ISSUER,
     authClientId: OPERATED_BY_US ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',

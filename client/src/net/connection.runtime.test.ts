@@ -17,10 +17,11 @@ import {
   type MockInstance,
   vi,
 } from 'vitest';
-import { writeAuthKind } from './authToken';
+import { createAuthTokenGate, wasEverAuthenticated, writeAuthKind } from './authToken';
 import { claimCode } from './claimCode';
 import { type ConnectionOptions, connect } from './connection';
-import type { RenewalOutcome } from './credentialDecision';
+import type { RenewalOutcome, SignInMode } from './credentialDecision';
+import { oidcFlowStorageKey } from './oidc';
 import { AuthoritativeStore } from './store';
 import { OWNER_VIEWS, type OwnerView } from './viewReconcile';
 import { APPLY_TIMEOUT_MS, LINGER_MS } from './worldScope';
@@ -84,6 +85,16 @@ const H = vi.hoisted(() => ({
    * counting changes nothing `iter()` returns; reset by the describes that read it.
    */
   iterCalls: {} as Record<string, number>,
+  /**
+   * How many OIDC clients connect() constructed (the `./oidc` mock counts each createOidcClient
+   * call); reset by the describes that read it.
+   */
+  oidcClients: 0,
+  /**
+   * When true the `./oidc` mock hands back the REAL createOidcClient's client, so its URL, storage
+   * and fetch effects are what a test observes. False by default.
+   */
+  realOidc: false,
 }));
 
 vi.mock('../module_bindings', () => {
@@ -179,17 +190,28 @@ vi.mock('../module_bindings', () => {
   };
 });
 
-vi.mock('./oidc', () => ({
-  createOidcClient: () => ({
-    consumeReturnLeg: () => false,
-    beginSignIn: () => H.beginSignIn(),
-    renewOrExchange: () => {
-      H.renewCalls += 1;
-      if (H.renew === null) throw new Error('renewOrExchange reached with no scripted outcome');
-      return H.renew();
+// The OIDC client: the module's other exports are the real ones (the tests read
+// oidcFlowStorageKey), every createOidcClient call is counted on H.oidcClients, and the client is
+// the scripted one below, or with H.realOidc the REAL one.
+vi.mock('./oidc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./oidc')>();
+  return {
+    ...actual,
+    createOidcClient: (...args: Parameters<typeof actual.createOidcClient>) => {
+      H.oidcClients += 1;
+      if (H.realOidc) return actual.createOidcClient(...args);
+      return {
+        consumeReturnLeg: () => false,
+        beginSignIn: () => H.beginSignIn(),
+        renewOrExchange: () => {
+          H.renewCalls += 1;
+          if (H.renew === null) throw new Error('renewOrExchange reached with no scripted outcome');
+          return H.renew();
+        },
+      };
     },
-  }),
-}));
+  };
+});
 
 const URI = 'ws://test.invalid';
 const DB = 'mr-test';
@@ -201,6 +223,8 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     db: DB,
     name: 'Tester',
     store: new AuthoritativeStore(200),
+    // The OIDC mode: the account builds these cases drive are reachable only in it.
+    signIn: 'oidc',
     onReady: vi.fn(),
     onReconnect: vi.fn(),
     onHydrated: vi.fn(),
@@ -234,6 +258,8 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     H.rowEvents = {};
     H.builderThrows = false;
     H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    H.oidcClients = 0;
+    H.realOidc = false;
     sessionStorage.clear();
     localStorage.clear();
   });
@@ -3154,3 +3180,432 @@ function conn0(rec: BuildRec) {
     },
   };
 }
+
+// =============================================================================================
+// Sign-in off. A `local` or `private` target hands connect() `signIn: 'off'`: no OIDC client is
+// constructed, so nothing can reach an issuer; every build carries only the anonymous reconnect
+// token; and startSignIn refuses at once with 'sign-in-off'.
+// =============================================================================================
+//
+// Every `off` case still hands connect() a NON-EMPTY issuer, client id and redirect URI: the mode,
+// never an empty issuer, is what must keep the OIDC client away, so an implementation that keys on
+// the issuer fails here. The zero-request cases run the REAL OIDC client (H.realOidc) over a fetch
+// spy, with a real return leg on the page and a real account marker in storage, so "no OIDC
+// request" is observed at the network boundary itself; the two `oidc` controls prove the same
+// setup does reach the issuer when sign-in is on.
+
+const LPW1_ISSUER = 'https://auth.example/realms/r/';
+/** The first request the real OIDC client makes for LPW1_ISSUER: the issuer, its trailing slash
+ *  dropped, plus the discovery path (oidc.ts getDiscovery). */
+const LPW1_DISCOVERY_URL = 'https://auth.example/realms/r/.well-known/openid-configuration';
+const LPW1_CODE = 'lpw1-authorization-code';
+const LPW1_STATE = '5e'.repeat(32);
+const LPW1_VERIFIER = 'lpw1-pkce-verifier-QRSTUVWXYZabcdefghijklmnopq';
+const LPW1_REFRESH = 'lpw1-refresh-token';
+const LPW1_STORED_ANON = 'lpw1-stored-anon-token';
+/** What a renewal would hand back: a sign-in-off build must never carry it. */
+const LPW1_ACCOUNT_JWT = 'lpw1-account-jwt';
+/** Where a wrong startSignIn would navigate (H.beginSignIn answers `ready` with it). */
+const LPW1_AUTHORIZE_URL = 'https://auth.example/realms/r/authorize?lpw1';
+
+type Lpw1Opts = ReturnType<typeof makeOpts>;
+
+/** connect() options in sign-in mode `signIn` (any runtime value), with a NON-EMPTY OIDC config. */
+function lpw1Opts(signIn: unknown): Lpw1Opts {
+  return {
+    ...makeOpts(),
+    signIn,
+    authIssuer: LPW1_ISSUER,
+    authClientId: 'lpw1-client',
+    authRedirectUri: 'https://game.example/',
+  } as unknown as Lpw1Opts;
+}
+
+/** The OIDC flow's per-target slots (oidc.ts: `<oidcFlowStorageKey>|<slot>` in sessionStorage). */
+function lpw1FlowKey(slot: 'state' | 'verifier' | 'code' | 'refresh'): string {
+  return `${oidcFlowStorageKey(URI, DB)}|${slot}`;
+}
+
+/** Stub fetch with a spy that answers every request with a bare 503 (never a usable document). */
+function lpw1StubFetch() {
+  const spy = vi.fn((_url: unknown, _init?: unknown) =>
+    Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) }),
+  );
+  vi.stubGlobal('fetch', spy);
+  return spy;
+}
+
+/** An OIDC return leg on the page: `?code&state` in the URL, the matching state and the PKCE
+ *  verifier in the flow's storage. Asserted in place, so a seeding mistake fails HERE. */
+function lpw1SeedReturnLeg(): void {
+  const search = `?code=${LPW1_CODE}&state=${LPW1_STATE}`;
+  window.history.replaceState(null, '', `/${search}`);
+  sessionStorage.setItem(lpw1FlowKey('state'), LPW1_STATE);
+  sessionStorage.setItem(lpw1FlowKey('verifier'), LPW1_VERIFIER);
+  expect(globalThis.location.search, 'precondition: the page URL carries a code and state').toBe(
+    search,
+  );
+  expect(sessionStorage.getItem(lpw1FlowKey('state')), 'precondition: the stored state').toBe(
+    LPW1_STATE,
+  );
+  expect(sessionStorage.getItem(lpw1FlowKey('verifier')), 'precondition: the stored verifier').toBe(
+    LPW1_VERIFIER,
+  );
+}
+
+/** An ever-signed-in target: the `account` kind marker and a stored refresh token. */
+function lpw1SeedMarker(): void {
+  writeAuthKind(globalThis, URI, DB, 'account');
+  sessionStorage.setItem(lpw1FlowKey('refresh'), LPW1_REFRESH);
+  expect(wasEverAuthenticated(globalThis, URI, DB), 'precondition: the account kind marker').toBe(
+    true,
+  );
+}
+
+/** Every entry of both storages as `key=value`, sorted. */
+function lpw1Storage(): { session: string[]; local: string[] } {
+  const entries = (s: Storage): string[] =>
+    Array.from({ length: s.length }, (_, i) => {
+      const key = s.key(i) ?? '';
+      return `${key}=${s.getItem(key) ?? ''}`;
+    }).sort();
+  return { session: entries(sessionStorage), local: entries(localStorage) };
+}
+
+/** Stub navigation: `location.assign` is a spy, so a sign-in redirect is observed, never taken. */
+function lpw1StubNavigation() {
+  const assign = vi.fn();
+  vi.stubGlobal('location', { assign, href: 'http://localhost:3000/', pathname: '/', search: '' });
+  return assign;
+}
+
+/** Every onSignInFailed call's arguments, oldest first. */
+function lpw1SignInFailures(opts: Lpw1Opts): unknown[][] {
+  return (opts.onSignInFailed as unknown as ReturnType<typeof vi.fn>).mock.calls;
+}
+
+describe('connect() with sign-in off', { sequential: true }, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    H.oidcClients = 0;
+    H.realOidc = false;
+    sessionStorage.clear();
+    localStorage.clear();
+    window.history.replaceState(null, '', '/');
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide')); // tear the connection down: no stray rebuilds
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    H.realOidc = false;
+    sessionStorage.clear();
+    localStorage.clear();
+    window.history.replaceState(null, '', '/');
+  });
+
+  // --- zero OIDC requests -------------------------------------------------------------------------
+
+  it('makes zero OIDC requests with sign-in off from the cold start through an SDK drop and its reconnect, reconnectNow and continueAnonymously, though the URL carries a code and state and storage holds the account marker, the state, the verifier and a refresh token [lpw-1.1]', async () => {
+    // WRONG IMPL KILLED: an OIDC client constructed whatever the mode (the return leg is consumed
+    // and the marker renews: the discovery request goes out on the cold start); a client keyed on
+    // the issuer being non-empty (the issuer here is set); the return leg still consumed under off
+    // (the stored state is deleted and a code recorded); a renewal still reached through the marker
+    // (the refresh token sends the discovery request); any of these on a reconnect path only.
+    lpw1SeedReturnLeg();
+    lpw1SeedMarker();
+    H.realOidc = true;
+    const fetchSpy = lpw1StubFetch();
+    const opts = lpw1Opts('off');
+    const c = connect(opts);
+    await settle();
+    expect(fetchSpy.mock.calls, 'no request on the cold start').toEqual([]);
+    expect(H.builds, 'liveness: the cold start built a connection').toHaveLength(1);
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b0.onApplied?.();
+    expect(
+      opts.onReady,
+      'liveness: the build connected and its snapshot applied',
+    ).toHaveBeenCalledWith(ID.toHexString());
+
+    b0.onDisconnect?.();
+    await nextAttempt();
+    expect(H.builds, 'liveness: the SDK drop was rebuilt').toHaveLength(2);
+    expect(fetchSpy.mock.calls, 'no request through the drop and its reconnect').toEqual([]);
+
+    c.reconnectNow();
+    await settle();
+    expect(H.builds, 'liveness: reconnectNow built').toHaveLength(3);
+    c.continueAnonymously();
+    await settle();
+    expect(H.builds, 'liveness: continueAnonymously built').toHaveLength(4);
+    expect(fetchSpy.mock.calls, 'no request through reconnectNow and continueAnonymously').toEqual(
+      [],
+    );
+
+    expect(H.oidcClients, 'no OIDC client was constructed').toBe(0);
+    expect(sessionStorage.getItem(lpw1FlowKey('state')), 'the stored state is untouched').toBe(
+      LPW1_STATE,
+    );
+    expect(
+      sessionStorage.getItem(lpw1FlowKey('verifier')),
+      'the stored verifier is untouched',
+    ).toBe(LPW1_VERIFIER);
+    expect(sessionStorage.getItem(lpw1FlowKey('refresh')), 'the refresh token is untouched').toBe(
+      LPW1_REFRESH,
+    );
+    expect(
+      sessionStorage.getItem(lpw1FlowKey('code')),
+      'no authorization code recorded',
+    ).toBeNull();
+  });
+
+  it('constructs one OIDC client and requests the issuer discovery document in oidc mode with an OIDC return leg on the page and no account marker [lpw-1.1]', async () => {
+    // The control for the case above: the same seeded return leg DOES reach the issuer when sign-in
+    // is on, so the zero-request result there is the mode's doing, not a dead seed.
+    lpw1SeedReturnLeg();
+    expect(wasEverAuthenticated(globalThis, URI, DB), 'precondition: no account marker').toBe(
+      false,
+    );
+    H.realOidc = true;
+    const fetchSpy = lpw1StubFetch();
+    connect(lpw1Opts('oidc'));
+    await settle();
+    expect(H.oidcClients, 'one OIDC client').toBe(1);
+    expect(fetchSpy.mock.calls[0]?.[0], 'the first request is the issuer discovery').toBe(
+      LPW1_DISCOVERY_URL,
+    );
+  });
+
+  it('constructs one OIDC client and requests the issuer discovery document in oidc mode with the account marker and no return leg [lpw-1.1]', async () => {
+    // The control for the marker half of the setup: a stored marker and refresh token DO renew
+    // through the issuer when sign-in is on.
+    lpw1SeedMarker();
+    expect(globalThis.location.search, 'precondition: no return leg in the URL').toBe('');
+    H.realOidc = true;
+    const fetchSpy = lpw1StubFetch();
+    connect(lpw1Opts('oidc'));
+    await settle();
+    expect(H.oidcClients, 'one OIDC client').toBe(1);
+    expect(fetchSpy.mock.calls[0]?.[0], 'the first request is the issuer discovery').toBe(
+      LPW1_DISCOVERY_URL,
+    );
+  });
+
+  const LPW1_NOT_OIDC: readonly { readonly label: string; readonly value: unknown }[] = [
+    { label: 'undefined (the option omitted)', value: undefined },
+    { label: "'OIDC' (a case variant)", value: 'OIDC' },
+  ];
+  for (const { label, value } of LPW1_NOT_OIDC) {
+    it(`treats a sign-in mode of ${label} as off: no OIDC client and no request, with the account marker and a return leg on the page [lpw-1.1]`, async () => {
+      // WRONG IMPL KILLED: `signIn === 'off' ? undefined : createOidcClient(...)` (fail-open: any
+      // value but the exact 'off' constructs the client and the marker renews through it).
+      lpw1SeedReturnLeg();
+      lpw1SeedMarker();
+      H.realOidc = true;
+      const fetchSpy = lpw1StubFetch();
+      const c = connect(lpw1Opts(value as SignInMode));
+      await settle();
+      expect(fetchSpy.mock.calls, 'no request on the cold start').toEqual([]);
+      expect(H.oidcClients, 'no OIDC client was constructed').toBe(0);
+      expect(H.builds, 'liveness: the cold start built a connection').toHaveLength(1);
+      c.reconnectNow();
+      await settle();
+      expect(H.builds, 'liveness: reconnectNow built').toHaveLength(2);
+      expect(fetchSpy.mock.calls, 'no request through reconnectNow').toEqual([]);
+      expect(
+        H.builds.map((b) => b.token),
+        'both builds are anonymous, with no stored token',
+      ).toEqual([undefined, undefined]);
+    });
+  }
+
+  // --- only the anonymous reconnect token -------------------------------------------------------
+
+  it('hands every build only the stored anonymous reconnect token with sign-in off, across an SDK drop and its reconnect, reconnectNow and continueAnonymously, though the account marker is stored and a renewal would succeed [lpw-1.2]', async () => {
+    // WRONG IMPL KILLED: the marker still renewing under off (build 0 carries the account JWT);
+    // the account token re-derived from storage on a reconnect path; the stored anon token dropped
+    // (a build with no token mints a new identity: the player loses their character).
+    lpw1SeedMarker();
+    createAuthTokenGate(URI, DB, globalThis).onConnected(LPW1_STORED_ANON);
+    expect(
+      createAuthTokenGate(URI, DB, globalThis).tokenForNextAttempt(),
+      'precondition: the anon token is stored where the reconnect gate reads it',
+    ).toBe(LPW1_STORED_ANON);
+    H.renew = () => Promise.resolve({ kind: 'ok', token: LPW1_ACCOUNT_JWT });
+    const c = connect(lpw1Opts('off'));
+    await settle();
+    expect(
+      H.builds.map((b) => b.token),
+      'build 0 carries the stored anon token',
+    ).toEqual([LPW1_STORED_ANON]);
+    const b0 = H.builds[0];
+    // The SDK echoes the supplied token back to onConnect.
+    b0.onConnect?.(conn0(b0), ID, LPW1_STORED_ANON);
+    b0.onApplied?.();
+    b0.onDisconnect?.();
+    await nextAttempt();
+    c.reconnectNow();
+    await settle();
+    c.continueAnonymously();
+    await settle();
+    expect(
+      H.builds.map((b) => b.token),
+      'every build carries the stored anon token',
+    ).toEqual([LPW1_STORED_ANON, LPW1_STORED_ANON, LPW1_STORED_ANON, LPW1_STORED_ANON]);
+    expect(H.renewCalls, 'no renewal was attempted').toBe(0);
+    expect(H.oidcClients, 'no OIDC client was constructed').toBe(0);
+    expect(stored(sessionStorage), 'the account token never reached the anon slot').not.toContain(
+      LPW1_ACCOUNT_JWT,
+    );
+  });
+
+  it('hands the first build no token and every later build the token the first connection was handed, with sign-in off and no stored anonymous token, though the account marker is stored [lpw-1.2]', async () => {
+    // WRONG IMPL KILLED: the marker renewing under off (build 0 carries the account JWT); an
+    // account-class guard that refuses to save the anon token under off (the reconnect mints a
+    // new identity: undefined where the handed-back token is due).
+    lpw1SeedMarker();
+    H.renew = () => Promise.resolve({ kind: 'ok', token: LPW1_ACCOUNT_JWT });
+    const c = connect(lpw1Opts('off'));
+    await settle();
+    expect(
+      H.builds.map((b) => b.token),
+      'build 0 carries no token',
+    ).toEqual([undefined]);
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'lpw1-host-minted-token');
+    b0.onApplied?.();
+    b0.onDisconnect?.();
+    await nextAttempt();
+    c.reconnectNow();
+    await settle();
+    expect(
+      H.builds.map((b) => b.token),
+      'every later build re-supplies the handed-back token',
+    ).toEqual([undefined, 'lpw1-host-minted-token', 'lpw1-host-minted-token']);
+    expect(H.renewCalls, 'no renewal was attempted').toBe(0);
+    expect(H.oidcClients, 'no OIDC client was constructed').toBe(0);
+  });
+
+  // --- startSignIn refuses at once ----------------------------------------------------------------
+
+  it('reports sign-in-off and does nothing else when sign-in is started with sign-in off before the first build lands [lpw-1.3]', async () => {
+    // WRONG IMPL KILLED: startSignIn falling through to the live-link check (reports
+    // 'transient-error' while unbuilt); the report deferred past the cold start.
+    const assign = lpw1StubNavigation();
+    const fetchSpy = lpw1StubFetch();
+    H.beginSignIn = vi.fn(() =>
+      Promise.resolve({ kind: 'ready', authorizationUrl: LPW1_AUTHORIZE_URL }),
+    ) as unknown as typeof H.beginSignIn;
+    const opts = lpw1Opts('off');
+    const c = connect(opts);
+    expect(c.live(), 'precondition: no connection is built yet').toBeUndefined();
+    const before = lpw1Storage();
+    c.startSignIn();
+    expect(lpw1SignInFailures(opts), 'reported at once, exactly sign-in-off').toEqual([
+      ['sign-in-off'],
+    ]);
+    await settle();
+    expect(lpw1SignInFailures(opts), 'and nothing reported afterwards').toEqual([['sign-in-off']]);
+    expect(H.builds, 'liveness: the cold start built a connection').toHaveLength(1);
+    const b0 = H.builds[0];
+    expect(b0.startGuestClaim, 'no start_guest_claim').not.toHaveBeenCalled();
+    expect(b0.completeGuestClaim, 'no complete_guest_claim').not.toHaveBeenCalled();
+    expect(b0.joinGame, 'no join_game').not.toHaveBeenCalled();
+    expect(claimCode.read(globalThis, URI, DB), 'no claim code minted').toBeUndefined();
+    expect(lpw1Storage(), 'nothing written to either storage').toEqual(before);
+    expect(H.beginSignIn, 'no OIDC sign-in begun').not.toHaveBeenCalled();
+    expect(fetchSpy, 'no request').not.toHaveBeenCalled();
+    expect(assign, 'no navigation').not.toHaveBeenCalled();
+    expect(H.oidcClients, 'no OIDC client was constructed').toBe(0);
+  });
+
+  it('reports sign-in-off once per call on a live connected link with sign-in off, and mints no claim code, calls no reducer, makes no request and does not navigate [lpw-1.3]', async () => {
+    // WRONG IMPL KILLED: a startSignIn that ignores the mode (a claim code minted into storage,
+    // then start_guest_claim, then the OIDC redirect); a code minted BEFORE the report; a report
+    // only on the first call; a report followed by the redirect anyway.
+    const assign = lpw1StubNavigation();
+    const fetchSpy = lpw1StubFetch();
+    H.beginSignIn = vi.fn(() =>
+      Promise.resolve({ kind: 'ready', authorizationUrl: LPW1_AUTHORIZE_URL }),
+    ) as unknown as typeof H.beginSignIn;
+    const opts = lpw1Opts('off');
+    const c = connect(opts);
+    await settle();
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b0.onApplied?.();
+    await settle();
+    expect(c.live(), 'precondition: a connection is live').toBeDefined();
+    expect(c.linkFrozen(), 'precondition: the link is connected').toBe(false);
+    expect(b0.joinGame, 'precondition: the anon build joined once').toHaveBeenCalledTimes(1);
+    const before = {
+      join: b0.joinGame.mock.calls.length,
+      start: b0.startGuestClaim.mock.calls.length,
+      complete: b0.completeGuestClaim.mock.calls.length,
+      storage: lpw1Storage(),
+    };
+
+    c.startSignIn();
+    c.startSignIn();
+    expect(lpw1SignInFailures(opts), 'one sign-in-off report per call, at once').toEqual([
+      ['sign-in-off'],
+      ['sign-in-off'],
+    ]);
+    await settle();
+    expect(lpw1SignInFailures(opts), 'and nothing reported afterwards').toEqual([
+      ['sign-in-off'],
+      ['sign-in-off'],
+    ]);
+    expect(b0.startGuestClaim.mock.calls.length, 'no start_guest_claim').toBe(before.start);
+    expect(b0.completeGuestClaim.mock.calls.length, 'no complete_guest_claim').toBe(
+      before.complete,
+    );
+    expect(b0.joinGame.mock.calls.length, 'no further join_game').toBe(before.join);
+    expect(claimCode.read(globalThis, URI, DB), 'no claim code minted').toBeUndefined();
+    expect(lpw1Storage(), 'nothing written to either storage').toEqual(before.storage);
+    expect(H.beginSignIn, 'no OIDC sign-in begun').not.toHaveBeenCalled();
+    expect(fetchSpy, 'no request').not.toHaveBeenCalled();
+    expect(assign, 'no navigation').not.toHaveBeenCalled();
+    expect(H.oidcClients, 'no OIDC client was constructed').toBe(0);
+  });
+
+  it('reports sign-in-off, not a transient error, when sign-in is started with sign-in off on a dropped link awaiting its rebuild [lpw-1.3]', async () => {
+    // WRONG IMPL KILLED: the off check placed after the frozen-link check (reports
+    // 'transient-error' while the link is down, so the claim UI shows retry copy for a sign-in
+    // that can never happen on this target).
+    const assign = lpw1StubNavigation();
+    const fetchSpy = lpw1StubFetch();
+    const opts = lpw1Opts('off');
+    const c = connect(opts);
+    await settle();
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b0.onApplied?.();
+    b0.onDisconnect?.();
+    expect(c.linkFrozen(), 'precondition: the link is down, its rebuild pending').toBe(true);
+    expect(H.builds, 'precondition: the rebuild has not run yet').toHaveLength(1);
+    const before = lpw1Storage();
+    const joinsBefore = b0.joinGame.mock.calls.length;
+    c.startSignIn();
+    await settle();
+    expect(lpw1SignInFailures(opts), 'exactly one sign-in-off report').toEqual([['sign-in-off']]);
+    expect(b0.startGuestClaim, 'no start_guest_claim').not.toHaveBeenCalled();
+    expect(b0.completeGuestClaim, 'no complete_guest_claim').not.toHaveBeenCalled();
+    expect(b0.joinGame.mock.calls.length, 'no further join_game').toBe(joinsBefore);
+    expect(claimCode.read(globalThis, URI, DB), 'no claim code minted').toBeUndefined();
+    expect(lpw1Storage(), 'nothing written to either storage').toEqual(before);
+    expect(H.beginSignIn, 'no OIDC sign-in begun').not.toHaveBeenCalled();
+    expect(fetchSpy, 'no request').not.toHaveBeenCalled();
+    expect(assign, 'no navigation').not.toHaveBeenCalled();
+  });
+});

@@ -137,7 +137,11 @@ globalThis.__MR_SHELL_CONFIG__={"connection":{"uri":"wss://play.example/","db":"
 `kind` says what the host's server is: `official` (ours, public), `test` (a server we run for
 development, CI or playtests), `local` (a single-player world the game started) or `private`
 (a friends server). A document without a `kind` is `test` in a development build and `private`
-in a production build.
+in a production build. The build's OIDC variables (`VITE_MR_OIDC_ISSUER`, `VITE_MR_OIDC_CLIENT_ID`,
+`VITE_MR_OIDC_REDIRECT_URI`, `VITE_MR_OIDC_PROVIDER_NAME`) and `VITE_MR_OTLP_ENDPOINT` take effect
+only for a target of kind `official` or `test`. Toward a `local` or `private` target the client
+loads no telemetry and runs with sign-in off: it offers no Sign In and makes no OIDC request,
+whatever those variables hold.
 
 A production build made with `VITE_STDB_DB` set writes `shell-config.js` into `dist/`. One made
 without it ships none: its host must serve the file beside `index.html` (or set the global
