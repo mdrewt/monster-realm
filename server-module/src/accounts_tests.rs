@@ -965,6 +965,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "guest_claim_reaper_schedule",
         "heal_location_row",
         "item_row",
+        "module_info",
         "movement_tick_schedule",
         "mr_heartbeat_schedule",
         "npc",
@@ -978,13 +979,14 @@ fn data_lifecycle_partition_matches_spec_section3() {
     ];
     assert_eq!(
         not_owned, expected_not_owned,
-        "T2 / spec §3 NOT-OWNED: exactly twenty tables hold no per-player data — spec §3's \
+        "T2 / spec §3 NOT-OWNED: exactly twenty-one tables hold no per-player data — spec §3's \
          seventeen, rb-24's `account_deletion_reaper_schedule`, rb-48's \
-         `export_bundle_reaper_schedule` (ADR-0238) and sr-7's `battle_summary_reaper_schedule`. \
-         The additions are scheduler bookkeeping rather than player data, and none is reachable \
-         by a per-owner cascade step: the rb-24 row holds the identity whose own cascade it \
-         runs, and the rb-48 and sr-7 rows are each ONE GLOBAL schedule row with no Identity \
-         column at all, so there is nothing for a cascade to key on. Every one is an EXPLICIT registry entry with a mandatory reason — \
+         `export_bundle_reaper_schedule` (ADR-0238), sr-7's `battle_summary_reaper_schedule` \
+         and lpw-3's `module_info`. The additions are bookkeeping rather than player data, and \
+         none is reachable by a per-owner cascade step: the rb-24 row holds the identity whose \
+         own cascade it runs, and the rb-48 and sr-7 schedule rows and lpw-3's protocol-number \
+         row are each ONE GLOBAL row with no Identity column at all, so there is nothing for a \
+         cascade to key on. Every one is an EXPLICIT registry entry with a mandatory reason — \
          never a silent omission — because the two failure directions are symmetric: cascading \
          over `config` deletes global game config, and quietly dropping a genuinely-owned table \
          out of the cascade leaves an unerased copy of a deleted player's data."
@@ -3015,6 +3017,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::ItemRow as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "module_info",
+            <crate::schema::ModuleInfo as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "monster",
             <crate::schema::Monster as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3240,16 +3246,16 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 64,
+        registry_len, 65,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 64 (23 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 20 NOT-OWNED) — \
+         manifest carries exactly 65 (23 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 21 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
          trade-session tables (`trade_session`, `trade_session_snapshot`, \
          `trade_session_reaper_schedule`), plus `move_intent`, plus `last_position`, plus \
          `player_handle`, plus sr-7's `battle_summary_reaper_schedule`, plus sr-4b's \
-         `leaderboard_top`. A registry that grew or shrank without a matching manifest change is \
+         `leaderboard_top`, plus lpw-3's `module_info`. A registry that grew or shrank without a matching manifest change is \
          a registry nobody reviewed against the schema it claims to cover."
     );
 
@@ -3261,7 +3267,7 @@ fn m22s6_table_row_registry_matches_manifest() {
     }
     assert_eq!(
         identity_bearing, 33,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 64 registered row types \
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 65 registered row types \
          carry an Identity column at some depth; exactly 33 is the live count (the 29 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
          exceptions R3 below names). sr-4b's `leaderboard_top` adds one (its `identity` key). \
@@ -3282,8 +3288,9 @@ fn m22s6_table_row_registry_matches_manifest() {
          classification and its empty re-key obligation are both honest. A count that drifted \
          without a corresponding R1/R2/R3 edit means either a table's columns changed shape, or \
          this registry stopped seeing them — either way a human needs to look, not have the \
-         number silently update itself. sr-7's `battle_summary_reaper_schedule` leaves it \
-         unchanged for the same reason as rb-48's schedule row."
+         number silently update itself. sr-7's `battle_summary_reaper_schedule` and lpw-3's \
+         `module_info` (one global row of two protocol numbers) leave it unchanged for the same \
+         reason as rb-48's schedule row."
     );
 }
 
@@ -3532,11 +3539,11 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
     }
 
     assert_eq!(
-        population, 20,
+        population, 21,
         "[m22s6/x3-population] {population} manifest entries are classified NotOwned; the live \
-         set is exactly 20 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
-         rb-48's export_bundle_reaper_schedule, ADR-0238, and sr-7's \
-         battle_summary_reaper_schedule)."
+         set is exactly 21 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
+         rb-48's export_bundle_reaper_schedule, ADR-0238, sr-7's \
+         battle_summary_reaper_schedule and lpw-3's module_info)."
     );
 
     let observed_len = observed_exceptions.len();
@@ -5069,10 +5076,11 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        64,
+        65,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
          schedule tables plus the three trade-session tables plus move_intent plus last_position \
-         plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top"
+         plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top plus \
+         module_info"
     );
 }
 
@@ -10045,11 +10053,11 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            64,
+            65,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
              plus last_position plus player_handle plus battle_summary_reaper_schedule plus \
-             leaderboard_top"
+             leaderboard_top plus module_info"
         );
         for table in [
             "battle_tactical",

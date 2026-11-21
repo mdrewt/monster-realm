@@ -82,7 +82,7 @@ netcode to pixels-per-tile.
 module calls it for truth; the browser runs the same compiled code through the thin
 `wasm-bindgen` shell in `client-wasm` for prediction. Constants the client needs
 (`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
-`max_trade_monsters_per_side`, `deletion_grace_ms_default`) and derived queries
+`max_trade_monsters_per_side`, `deletion_grace_ms_default`, `protocol_version`) and derived queries
 (`evolution_eligibility`, `interact_candidates_coded`, `zone_map`, `care_remaining_ms`)
 are wasm exports (`client-wasm/src/lib.rs`), not TypeScript literals.
 
@@ -1474,6 +1474,31 @@ defaults. Anything else needs `--delete-data`, which wipes every player.
 
 **Rules out.** Mid-struct column inserts, column removals, and type changes on a live
 table.
+
+## The module publishes its protocol numbers; a publish that keeps data is followed by the owner's `sync_content`
+
+**Decision.** `game-core` holds `PROTOCOL_VERSION`, which rises with every change to the server
+module's tables or reducers, and `MIN_CLIENT_PROTOCOL`, which rises only with a change an older
+client cannot talk across (a removed or re-typed reducer argument or table column) and never exceeds
+it. The module records both in row 0 of the public table `module_info`, from `init` and from the
+owner's `sync_content` whether or not the content changed; `client-wasm` exports the client's own
+number as `protocol_version()`. Every recipe and script in this repository that publishes over a
+database and keeps its data then calls `sync_content` as the publishing identity, and fails when
+that call is refused.
+
+**Why.** `init` runs only when a database is created, and nothing in the module runs when a new
+module is published over existing data, so the owner's call is what makes the row describe the
+module that is running. That has to hold after a publish that changed the schema and left the
+content alone, which the content-version check would skip. The bump rule has no test: telling a
+breaking schema change from an additive one would mean restating the schema in the test.
+
+**Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
+numbers below the content-version check, or from a reducer any caller may run. A recipe or script
+that publishes over kept data without the owner's call, or that ignores the call's exit status.
+Raising `MIN_CLIENT_PROTOCOL` for an additive change (it turns away every older client for nothing),
+or leaving it when something an older client uses is removed or re-typed. Treating the numbers as a
+server-side check: they tell a client which side to update, and every reducer still validates its
+own input.
 
 ## Observability: the module never times itself or calls out
 

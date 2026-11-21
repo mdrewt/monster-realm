@@ -1358,6 +1358,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "guards",
     "inventory",
     "marshal",
+    "module_info",
     "monster_mgmt",
     "movement",
     "npc",

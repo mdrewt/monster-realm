@@ -135,6 +135,17 @@ pub struct Config {
     pub owner_identity: Identity,
 }
 
+/// The protocol numbers of the module that last ran `init` or the owner's `sync_content` on
+/// this database: one row, `id` always 0, written only by `module_info::ensure_module_info`.
+/// PUBLIC so a client can read the numbers before it joins; it holds no player data.
+#[spacetimedb::table(accessor = module_info, public)]
+pub struct ModuleInfo {
+    #[primary_key]
+    pub id: u32,
+    pub protocol: u32,
+    pub min_client_protocol: u32,
+}
+
 /// Zone definitions seeded from the `game-core` RON registry by `sync_content`.
 #[spacetimedb::table(accessor = zone_def, public)]
 pub struct ZoneDefRow {
@@ -2211,6 +2222,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         policy: DeletionPolicy::NotOwned,
         basis: "module-owner singleton: owner_identity is a zeroed default, not a per-row \
                 key, so a cascade acting on it would delete global game config",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "module_info",
+        policy: DeletionPolicy::NotOwned,
+        basis: "module metadata: the protocol numbers of the published module, not player data",
         exportable: false,
     },
     DataLifecycleEntry {

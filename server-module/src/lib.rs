@@ -30,6 +30,7 @@ mod evolution;
 mod guards; // Bare and unconditional by contract — a target-selected wasm twin of this module is a review stop; gated by the rb77_ tests in guards_tests.rs
 mod inventory;
 mod marshal;
+mod module_info;
 mod monster_mgmt;
 mod movement;
 mod npc;
@@ -158,6 +159,7 @@ pub fn init(ctx: &ReducerContext) {
         owner_identity: ctx.sender(),
     });
     sync_content_inner(ctx).expect("content seeding failed on init");
+    crate::module_info::ensure_module_info(ctx);
     ensure_zone_schedules(ctx);
     crate::playtest::ensure_playtest_reaper(ctx);
     crate::summary_reaper::ensure_battle_summary_reaper(ctx);
@@ -196,6 +198,9 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
         return Err("sync_content: caller is not the module owner".to_string());
     }
     sync_content_inner(ctx)?;
+    // Outside `sync_content_inner`'s version gate: a publish that changes the module but not
+    // the content still has to refresh the protocol numbers.
+    crate::module_info::ensure_module_info(ctx);
     ensure_zone_schedules(ctx);
     crate::playtest::ensure_playtest_reaper(ctx);
     crate::summary_reaper::ensure_battle_summary_reaper(ctx);

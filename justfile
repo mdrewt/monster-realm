@@ -21,8 +21,9 @@ lint:
 typecheck:
     cargo check --workspace --all-targets
 
-# Rust tests, then two fail-closed node:test doors (ops observability suites, scripts/ tooling),
-# then the tester guards' own fixture batteries (.claude/hooks), each held to a fixture floor.
+# Rust tests, then three fail-closed node:test doors (ops observability suites, scripts/ tooling,
+# the justfile's own recipes), then the tester guards' own fixture batteries (.claude/hooks), each
+# held to a fixture floor.
 # `node --test` exits 0 on a zero-test file, an all-skip file, or a failure followed by
 # process.exit(0), so each door also checks the file count, parses the summary (unparsed = fatal),
 # requires fail=0 and pass >= floor. Re-derive a floor after adding or removing a test.
@@ -61,6 +62,7 @@ test:
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
     door "scripts node suites" 5 30 scripts/*.test.mjs
+    door "justfile node suite" 1 3 justfile.test.mjs
     guard() {
         local hook=$1 ok=$2 floor=$3 out n
         out="$(CLAUDE_PROJECT_DIR="$PWD" node "$hook" --selftest 2>&1)" || { echo "$out" >&2; exit 1; }
@@ -109,8 +111,13 @@ gen:
 build:
     spacetime build --module-path server-module
 
+# Publish over whatever {{db}} holds, keeping its data, then re-seed as the owner: `init` runs
+# only when a database is created, so `sync_content` is what brings the content and the protocol
+# numbers of an existing one in line with the module just published. It refuses every caller but
+# the identity that first published the database, and the recipe then exits non-zero.
 publish:
     spacetime publish --module-path server-module {{db}}
+    spacetime call {{db}} sync_content
 
 # Playwright multi-client e2e (both projects) against a running spacetime. `args` go to
 # Playwright: each of CI's e2e-shard jobs runs one `--shard=i/N`.

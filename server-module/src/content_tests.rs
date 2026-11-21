@@ -1854,10 +1854,11 @@ mod nh_sync {
     use crate::privacy::ExportBundleReaperSchedule;
     use crate::schema::{
         Account, Character, Config, EncounterRow, EvolutionPathRow, HealLocationRow, ItemRow,
-        Monster, MonsterPub, Npc, PlayerConversation, ShopItemRow, ShopRow, SkillRow, SpeciesRow,
-        TypeRelationRow, ZoneDefRow,
+        ModuleInfo, Monster, MonsterPub, Npc, PlayerConversation, ShopItemRow, ShopRow, SkillRow,
+        SpeciesRow, TypeRelationRow, ZoneDefRow,
     };
     use crate::CONTENT_VERSION;
+    use game_core::{MIN_CLIENT_PROTOCOL, PROTOCOL_VERSION};
     use spacetimedb::Identity;
 
     fn owner() -> Identity {
@@ -1882,6 +1883,9 @@ mod nh_sync {
         summary_reaper: Handle<'a, crate::summary_reaper::BattleSummaryReaperSchedule, u64>,
         /// sr-4b: `init` and `sync_content` end with the leaderboard membership rescan.
         ladder: Handle<'a, crate::schema::LeaderboardTop>,
+        /// The one-row table holding the module's protocol numbers, which `init` and
+        /// `sync_content` record after their content step.
+        module_info: Handle<'a, ModuleInfo, u32>,
     }
 
     fn world(fx: &Fixture) -> World<'_> {
@@ -2057,6 +2061,10 @@ mod nh_sync {
                 .unique()
                 .auto_inc(|r| r.id, |r, id| r.id = id),
             ladder: fx.ladder(),
+            module_info: fx
+                .table_keyed::<ModuleInfo, u32>("module_info", "id", |r| r.id)
+                .writable()
+                .unique(),
         }
     }
 
@@ -2354,6 +2362,220 @@ mod nh_sync {
             "no playtest reaper run is armed"
         );
         assert_eq!(export_wakes(&fx), vec![], "no export reaper run is armed");
+    }
+
+    /// `module_info`'s rows as `(id, protocol, min_client_protocol)`, sorted.
+    fn protocol_rows(w: &World<'_>) -> Vec<(u32, u32, u32)> {
+        let mut v: Vec<(u32, u32, u32)> = w
+            .module_info
+            .rows()
+            .iter()
+            .map(|r| (r.id, r.protocol, r.min_client_protocol))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// The one row the module's own numbers make.
+    fn the_modules_numbers() -> Vec<(u32, u32, u32)> {
+        vec![(0, PROTOCOL_VERSION, MIN_CLIENT_PROTOCOL)]
+    }
+
+    /// Row 0 holding numbers that can never equal the module's.
+    fn other_numbers() -> ModuleInfo {
+        ModuleInfo {
+            id: 0,
+            protocol: PROTOCOL_VERSION.wrapping_add(7),
+            min_client_protocol: MIN_CLIENT_PROTOCOL.wrapping_add(3),
+        }
+    }
+
+    /// Row 0 as an OLDER module left it: both numbers lower than the module's.
+    fn older_numbers() -> ModuleInfo {
+        ModuleInfo {
+            id: 0,
+            protocol: PROTOCOL_VERSION.wrapping_sub(1),
+            min_client_protocol: MIN_CLIENT_PROTOCOL.wrapping_sub(1),
+        }
+    }
+
+    /// Every stored `module_info` row's BSATN bytes.
+    fn module_info_bytes(w: &World<'_>) -> Vec<Vec<u8>> {
+        w.module_info.rows().iter().map(bytes).collect()
+    }
+
+    /// `init` on an empty database leaves exactly one `module_info` row: id 0, the
+    /// module's `PROTOCOL_VERSION` and `MIN_CLIENT_PROTOCOL`.
+    /// kills: no `ensure_module_info` in `init`; the numbers swapped or hard-coded; a
+    /// row at another id.
+    #[test]
+    fn init_on_an_empty_database_records_the_modules_protocol_numbers() {
+        let fx = fixture();
+        let w = world(&fx);
+        assert_eq!(protocol_rows(&w), vec![], "precondition: an empty database");
+        fx.run_as(owner(), crate::init);
+        assert_eq!(
+            protocol_rows(&w),
+            the_modules_numbers(),
+            "init records exactly one row holding the module's protocol numbers"
+        );
+    }
+
+    /// The owner's `sync_content` writes the module's numbers into exactly one row from
+    /// a missing row, from a row holding higher numbers and from a row holding lower
+    /// numbers (an older module's), on the reseed path (a stale `config.content_version`)
+    /// and on the skip path (a current one, left untouched before the call).
+    /// kills: the restore placed inside `sync_content_inner`'s version gate (the skip
+    /// path never restores); an insert-only restore (the other numbers stay); a
+    /// delete-and-forget; an ordered (`<=`) comparison that treats an older row as
+    /// current; no restore in `sync_content` at all.
+    #[test]
+    fn sync_content_restores_the_protocol_numbers_on_the_reseed_and_the_skip_path() {
+        for reseed in [true, false] {
+            for (state, start) in [
+                ("no row", None),
+                ("a row holding higher numbers", Some(other_numbers())),
+                ("a row holding lower numbers", Some(older_numbers())),
+            ] {
+                let path = if reseed { "reseed path" } else { "skip path" };
+                let fx = fixture();
+                let w = world(&fx);
+                fx.run_as(owner(), crate::init);
+                w.module_info.remove(0);
+                if let Some(row) = &start {
+                    w.module_info.seed(row);
+                }
+                assert_ne!(
+                    protocol_rows(&w),
+                    the_modules_numbers(),
+                    "precondition ({path}, {state}): the row does not hold the module's numbers"
+                );
+                if reseed {
+                    seed_config(&w, 0);
+                } else {
+                    assert_eq!(
+                        version(&w),
+                        CONTENT_VERSION,
+                        "precondition ({path}, {state}): the version is current"
+                    );
+                }
+                assert_eq!(
+                    fx.run_as(owner(), crate::sync_content),
+                    Ok(()),
+                    "{path}, {state}: the owner's sync_content"
+                );
+                assert_eq!(
+                    protocol_rows(&w),
+                    the_modules_numbers(),
+                    "{path}, {state}: exactly one row holding the module's numbers"
+                );
+                assert_eq!(version(&w), CONTENT_VERSION, "{path}, {state}: version");
+            }
+        }
+    }
+
+    /// With the numbers already current, the owner's `sync_content` writes no
+    /// `module_info` row on the skip path nor on the reseed path, and the row's bytes
+    /// stay as they were. The read count proves the table is registered and was
+    /// consulted, so the zero write count is not an unregistered table.
+    /// kills: an unconditional update (a byte-identical write still tells every
+    /// subscriber); a delete-then-insert restore.
+    #[test]
+    fn sync_content_writes_no_module_info_row_when_the_numbers_are_current() {
+        let fx = fixture();
+        let w = world(&fx);
+        fx.run_as(owner(), crate::init);
+        assert_eq!(
+            protocol_rows(&w),
+            the_modules_numbers(),
+            "precondition: init recorded the module's numbers"
+        );
+        let before = module_info_bytes(&w);
+        for (path, reseed) in [("skip path", false), ("reseed path", true)] {
+            if reseed {
+                seed_config(&w, 0);
+            }
+            fx.reset_writes();
+            fx.reset_reads();
+            assert_eq!(
+                fx.run_as(owner(), crate::sync_content),
+                Ok(()),
+                "{path}: the owner's sync_content"
+            );
+            assert_eq!(
+                fx.writes_to("module_info"),
+                0,
+                "{path}: no module_info write when the row already holds the module's numbers"
+            );
+            assert!(
+                fx.rows_read("module_info") >= 1,
+                "{path}: sync_content read module_info (asked {:?})",
+                fx.requested_indexes()
+            );
+            assert_eq!(
+                module_info_bytes(&w),
+                before,
+                "{path}: the row is unchanged"
+            );
+        }
+    }
+
+    /// A refused `sync_content` (a caller that is not the owner; an unregistered,
+    /// all-zero owner) leaves a row holding other numbers byte-for-byte as seeded and
+    /// makes no `module_info` write. The owner's call over the same start is the
+    /// positive control: `Ok`, one in-place update, the module's numbers restored.
+    /// kills: the restore placed before either refusal.
+    #[test]
+    fn sync_content_refused_leaves_the_protocol_numbers_untouched() {
+        let stranger = Identity::from_byte_array([78u8; 32]);
+        let zero = Identity::from_byte_array([0u8; 32]);
+        // (case, config.owner_identity, caller, refused)
+        for (case, registered, caller, refused) in [
+            ("a caller that is not the owner", owner(), stranger, true),
+            ("an all-zero registered owner", zero, zero, true),
+            ("the owner (positive control)", owner(), owner(), false),
+        ] {
+            let fx = fixture();
+            let w = world(&fx);
+            fx.run_as(owner(), crate::init);
+            w.config.remove(0);
+            w.config.seed(&Config {
+                id: 0,
+                content_version: CONTENT_VERSION,
+                owner_identity: registered,
+            });
+            w.module_info.remove(0);
+            w.module_info.seed(&other_numbers());
+            let seeded = module_info_bytes(&w);
+            assert_eq!(seeded, vec![bytes(&other_numbers())], "{case}: seeded");
+            fx.reset_writes();
+            let got = fx.run_as(caller, crate::sync_content);
+            if refused {
+                assert!(got.is_err(), "{case}: refused, got {got:?}");
+                assert_eq!(
+                    fx.writes_to("module_info"),
+                    0,
+                    "{case}: a refused call writes no module_info row"
+                );
+                assert_eq!(
+                    module_info_bytes(&w),
+                    seeded,
+                    "{case}: the row is as seeded"
+                );
+            } else {
+                assert_eq!(got, Ok(()), "{case}");
+                assert_eq!(
+                    protocol_rows(&w),
+                    the_modules_numbers(),
+                    "{case}: the module's numbers are restored"
+                );
+                assert_eq!(
+                    fx.writes_to("module_info"),
+                    1,
+                    "{case}: one in-place update"
+                );
+            }
+        }
     }
 
     /// Every playtest reaper schedule row as its one-shot fire time in ms
