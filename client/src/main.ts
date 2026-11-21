@@ -4907,9 +4907,10 @@ async function main(): Promise<void> {
       // The claim prompt this connect raised, if any, is up and stays: nothing swept it.
       claimRaised = false;
       // A private server's host owns the database: the first join says so, once per server.
-      if (hostNoticeDue(TARGET_KIND, browserStorage(), URI, DB)) {
+      const deviceStorage = browserStorage();
+      if (hostNoticeDue(TARGET_KIND, deviceStorage, URI, DB)) {
         route('privacy-notice', i18nT('chrome.status.privateHostNotice'));
-        markHostNoticeSeen(browserStorage(), URI, DB);
+        markHostNoticeSeen(deviceStorage, URI, DB);
       }
     },
     // the store now holds the applied snapshot, so the reseed latch

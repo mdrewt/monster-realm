@@ -898,6 +898,45 @@ mod wrong_password {
         assert_eq!(attempts_of(&w, who), Some((stamps.to_vec(), T0 + 4)));
     }
 
+    /// A clock that steps backwards does not let the sweep clear a lock. Four wrong passwords
+    /// at `t`; the clock steps back eleven minutes and a fifth is taken (the four ahead of
+    /// the clock still count). The row's sweep key is its LATEST stamp, `t`, not the time of
+    /// that call. Another identity's wrong password one minute before `t` runs the sweep,
+    /// which must keep `who`'s row because its stamps at `t` still count; a millisecond
+    /// earlier all five count again and the right password is refused as locked.
+    ///
+    /// kills: `last_wrong_at_ms` stored as the call's time (the sweep then deletes a row
+    /// that still holds counting stamps, and the lock is gone).
+    #[test]
+    fn a_clock_that_steps_backwards_does_not_let_the_sweep_clear_a_lock() {
+        let fx = fixture();
+        let w = password_world(&fx);
+        let who = id(0x51);
+        let other = id(0x52);
+        let t = T0;
+        w.attempt.seed(&attempt_row(who, &[t, t, t, t]));
+        let stepped_back = t - 11 * 60_000;
+        assert_eq!(door(&fx, who, WRONG, stepped_back), Ok(()));
+        assert_eq!(
+            attempts_of(&w, who),
+            Some((vec![t, t, t, t, stepped_back], t)),
+            "five counting stamps, keyed for the sweep on the latest of them"
+        );
+        let sweep_at = t - 60_000;
+        assert_eq!(door(&fx, other, WRONG, sweep_at), Ok(()));
+        assert_eq!(
+            attempts_of(&w, who),
+            Some((vec![t, t, t, t, stepped_back], t)),
+            "the sweep keeps a row whose latest stamp is inside the window"
+        );
+        assert_eq!(
+            door(&fx, who, KAT_PASSWORD, sweep_at - 1),
+            Err(REJECT_ADMIT_LOCKED.to_string()),
+            "all five stamps count, so `who` is still locked"
+        );
+        assert_eq!(admitted_at(&w, who), None);
+    }
+
     /// An already-admitted `who` given a wrong password: `Ok(())`, no attempt row, nothing
     /// written.
     ///
@@ -1227,6 +1266,52 @@ mod owner_only {
         assert_eq!(footprint(&fx, &w), before);
     }
 
+    /// A `config` row whose owner is the all-zero identity (the column default: an owner
+    /// never registered) names nobody: the all-zero caller is refused both access reducers
+    /// with no write, and on a `Password` world it is refused by the admission check unless
+    /// it holds an admission row.
+    ///
+    /// kills: the unregistered-owner clause dropped (the all-zero identity treated as the
+    /// owner it matches).
+    #[test]
+    fn an_unregistered_all_zero_owner_is_nobody() {
+        let fx = fixture();
+        let w = world(&fx);
+        let zero = Identity::from_byte_array([0u8; 32]);
+        seed_owner(&w, zero);
+        let before = footprint(&fx, &w);
+        assert_eq!(
+            set_access(
+                &fx,
+                zero,
+                WorldAccessRule::Password,
+                Some("pw"),
+                vec![zero],
+                T0
+            ),
+            Err(REJECT_NOT_WORLD_OWNER.to_string())
+        );
+        assert_eq!(
+            set_access(&fx, zero, WorldAccessRule::Open, None, Vec::new(), T0),
+            Err(REJECT_NOT_WORLD_OWNER.to_string())
+        );
+        assert_eq!(
+            door_as(&fx, zero, zero, KAT_PASSWORD, T0),
+            Err(REJECT_NOT_WORLD_OWNER.to_string())
+        );
+        assert_eq!(footprint(&fx, &w), before, "nothing is written");
+
+        w.access.seed(&password_row());
+        assert_eq!(passes(&fx, zero, T0), Err(REJECT_NOT_ADMITTED.to_string()));
+        assert!(!call(&fx, zero, T0, |ctx| is_admitted(ctx, zero)));
+        w.admission.seed(&admission_row(zero, T0 - 1));
+        assert_eq!(
+            passes(&fx, zero, T0),
+            Ok(()),
+            "an admission row admits it like anyone else"
+        );
+    }
+
     /// With no `config` row nobody owns the world: every caller — a stranger, the would-be
     /// owner, the all-zero identity, the database identity — is refused both reducers, before
     /// the door's rule check.
@@ -1317,6 +1402,49 @@ mod owner_admits {
             passes(&fx, id(0x42), T0 + 1),
             Err(REJECT_NOT_ADMITTED.to_string()),
             "the rule took effect for everyone else"
+        );
+    }
+
+    /// Each password is stored under a fresh salt: the same password set at two different
+    /// times gets two different salts and so two different hashes, and no salt is one byte
+    /// repeated.
+    ///
+    /// kills: a fixed salt (every world's hash of a password is the same, so one
+    /// precomputed table serves them all).
+    #[test]
+    fn the_same_password_set_twice_is_stored_under_two_fresh_salts() {
+        let fx = fixture();
+        let w = world(&fx);
+        seed_owner(&w, owner());
+        let password = "same every time";
+        let mut stored: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for ms in [T0, T0 + 1] {
+            assert_eq!(
+                set_access(
+                    &fx,
+                    owner(),
+                    WorldAccessRule::Password,
+                    Some(password),
+                    Vec::new(),
+                    ms
+                ),
+                Ok(())
+            );
+            let rows = w.access.rows();
+            assert_eq!(rows.len(), 1);
+            stored.push((rows[0].password_salt.clone(), rows[0].password_hash.clone()));
+        }
+        for (salt, _) in &stored {
+            assert_eq!(salt.len(), PASSWORD_SALT_BYTES);
+            assert!(
+                salt.iter().any(|b| *b != salt[0]),
+                "a salt that is one byte repeated is not random: {salt:?}"
+            );
+        }
+        assert_ne!(stored[0].0, stored[1].0, "a fresh salt per password");
+        assert_ne!(
+            stored[0].1, stored[1].1,
+            "so the same password hashes differently"
         );
     }
 

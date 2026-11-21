@@ -1907,9 +1907,9 @@ pub struct WorldAdmission {
 }
 
 /// The wrong passwords the door was given for an identity that is not admitted: the time of
-/// each, oldest first, never more than `access::ADMIT_MAX_WRONG_ATTEMPTS`. `last_wrong_at_ms`
-/// repeats the newest so the sweep of stale rows can range over an index. PRIVATE. Written only
-/// by `access.rs`; erased by the deletion cascade.
+/// each, in the order given, never more than `access::ADMIT_MAX_WRONG_ATTEMPTS`.
+/// `last_wrong_at_ms` repeats the latest of them so the sweep of stale rows can range over an
+/// index. PRIVATE. Written only by `access.rs`; erased by the deletion cascade.
 #[spacetimedb::table(accessor = world_admission_attempt)]
 pub struct WorldAdmissionAttempt {
     #[primary_key]
@@ -2120,7 +2120,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "world_admission_attempt",
         policy: DeletionPolicy::Erase,
-        basis: "names an identity and the times of the wrong passwords given for it, at most ten minutes old, deleted outright at cascade time; not exported",
+        basis: "names an identity and the times of the wrong passwords given for it, deleted outright at cascade time; a time stops counting after ten minutes and the next door call that writes removes a row none of whose times count; not exported",
         exportable: false,
     },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---

@@ -2554,15 +2554,21 @@ or tunnel service we operate to carry friends' traffic; requiring every host to 
 
 ## A world that is not open refuses an unadmitted identity at connect and in every reducer; the owner relays the door
 
-**Decision.** While a world's access rule is not `Open`, the connect reducer refuses, as its first
-statement, an identity that is neither the world's owner nor in its admission table, and every
-reducer a player can call makes the same check. When the rule leaves `Open`, the reducer that sets
-it admits every identity then connected. Admission is granted only by owner-only reducers that take
-the joiner's identity; on a shipped world the host gate relays them from a door endpoint of its
-own, and closes the sockets of an identity the owner removes. The module declares no HTTP handler
-and no row filter. Designed, not built: `docs/local-play.md` §3, "The access and attestation
-design", fork (a), with the measurements; the module's part and the gate's part are separate work
-in the harness spec `M-local-play.spec.md`.
+**Decision.** While a world's access rule is `Password`, the connect reducer refuses, as its first
+statement, an identity that is neither the world's owner nor in `world_admission`
+(`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
+not owner-only opens with `access::require_admitted`; the owner-only ones are `sync_content`,
+`set_world_access` and `admit`. A world with no `world_access` row is `Open`. When the rule leaves
+`Open`, `set_world_access` admits every identity then connected. Admission is granted only by the
+two owner-only reducers, which take the joiner's identity. The module declares no HTTP handler and
+no row filter: both sit behind the `spacetimedb` crate's `unstable` feature, which the workspace
+does not enable (`Cargo.toml`), and the deletion-gate census refuses a `procedure` attribute.
+Built: the module's half, in `server-module/src/access.rs`, proved by
+`server-module/src/access_tests.rs` and, in `server-module/src/privacy_enforcement_tests.rs`,
+`mod admission_roster`, which takes the reducer roster from the generated bindings' file names and
+executes every shipped reducer as an unadmitted caller on a `Password` world. Designed, not built:
+the gate's half (the door endpoint it relays through, the limit by source address, closing a
+removed identity's sockets), in `docs/local-play.md` §3, fork (a).
 
 **Why.** Measured at SpacetimeDB 2.11.0: every route that reads a row or calls a reducer (the
 WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and its refusal is
@@ -2582,6 +2588,31 @@ every new joiner out); an HTTP handler in the module (the host serves handlers w
 reducer); treating a refusal at connect as closing what is already open. Accepted limits: on a host
 with no gate a removed identity keeps reading what it subscribed to until it disconnects, and a
 joiner is admitted there only by the owner's own call.
+
+## The door records a wrong password and answers `Ok`; five in ten minutes lock one identity out
+
+**Decision.** `admit(who, password)` is owner-only. It is refused with an error and no write when
+the caller is not the owner, the rule is not `Password`, `who` has five wrong passwords less than
+ten minutes old (a sliding window; the right password is refused too, before any hashing), or the
+password is empty or over 128 bytes. An already admitted `who` is accepted with no write. The right
+password writes the `world_admission` row. A wrong password is recorded in `world_admission_attempt`
+(up to five times, per identity) and the call answers `Ok`; the caller learns the outcome from the
+`world_admission` row, not from the answer. The password is stored as Argon2id (19 456 KiB, 2
+passes, 1 lane, 32 bytes, the account service's parameters) under a 16-byte salt. No reducer removes
+an admission.
+
+**Why.** A reducer that returns an error is rolled back by the host, so a refusal that must be
+counted has to commit. The count is per identity because a count across identities would let anyone
+lock every new joiner out. Argon2id because the row would otherwise give up a short shared
+password; one hash took about 22 ms inside the reducer (measured on a 2.11.0 standalone host:
+`docs/local-play.md` §3), acceptable for an owner-only call. Limit: the host's commit log holds the
+arguments of every committed reducer call in the clear, the password given to `set_world_access`
+and each given to `admit`, wrong ones included. The hash protects the table row, not a copied world
+directory; a caller that must keep a typed password off the host's disk stretches it before the
+call.
+
+**Rules out.** Answering a wrong password with an error (the host rolls back the count); a counter
+kept in module memory (lost at restart); reading `Ok` from `admit` as "admitted"; a fast or unsalted hash.
 
 ## Every player must own the game on Steam, for now
 

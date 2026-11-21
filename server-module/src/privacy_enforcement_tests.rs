@@ -2339,6 +2339,15 @@ mod admission_roster {
 
     const T0: i64 = 1_700_000_000_000;
 
+    /// The indexes the admission check reads through (canonical `{table}_{col}_idx_btree`
+    /// names, the ones [`password_world`] registers): nothing else may be asked for before a
+    /// player reducer refuses an unadmitted caller.
+    const ADMISSION_CHECK_INDEXES: [&str; 3] = [
+        "world_access_id_idx_btree",
+        "config_id_idx_btree",
+        "world_admission_identity_idx_btree",
+    ];
+
     #[derive(Clone, Copy, Debug)]
     enum Kind {
         /// A player reducer: the admission check is its first statement.
@@ -2620,15 +2629,26 @@ mod admission_roster {
 
     /// Every player reducer, called by an unadmitted non-owner on a `Password` world, answers
     /// exactly the admission refusal and leaves the world as it found it (a write or a scan
-    /// before the check aborts in the host).
+    /// before the check aborts in the host). After each probe the host's index-request log
+    /// holds nothing but the entry point's own names and the admission check's three, so an
+    /// index read before the check fails naming the reducer (a read over an unregistered
+    /// index hands out no row, so only this log can see it).
     ///
     /// kills: a client-callable reducer with no admission check; one whose check is not its
-    /// first statement (it writes or scans first, or refuses with its own earlier error).
+    /// first statement (it reads, writes or scans first, or refuses with its own earlier
+    /// error).
     #[test]
     fn every_player_reducer_refuses_an_unadmitted_caller_before_anything_else() {
         let fx = fixture();
         let w = password_world(&fx);
         let before = footprint(&fx, &w);
+        // The index names the entry point itself asks for, then the admission check's own:
+        // the rule row, the config row and the admission row, each on its key.
+        assert_eq!(run_probe(&fx, |_| Ok(())), Ok(()), "the entry point runs");
+        let mut allowed: BTreeSet<String> = fx.requested_indexes().into_iter().collect();
+        for index in ADMISSION_CHECK_INDEXES {
+            allowed.insert(index.to_string());
+        }
         let mut checked = 0usize;
         // Asserted per probe, in roster order: a reducer that runs on past a missing check
         // may write and abort the host, so the first wrong answer is reported before that.
@@ -2637,8 +2657,19 @@ mod admission_roster {
                 continue;
             }
             checked += 1;
+            let got = run_probe(&fx, call);
+            let foreign: Vec<String> = fx
+                .requested_indexes()
+                .into_iter()
+                .filter(|index| !allowed.contains(index))
+                .collect();
+            assert!(
+                foreign.is_empty(),
+                "`{name}` asked this host for {foreign:?} before refusing (result {got:?}): the \
+                 admission check must come before every read"
+            );
             assert_eq!(
-                run_probe(&fx, call),
+                got,
                 Err(REJECT_NOT_ADMITTED.to_string()),
                 "`{name}` called by an unadmitted caller on a Password world must answer the \
                  admission refusal first"

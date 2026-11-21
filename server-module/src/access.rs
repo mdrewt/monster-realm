@@ -4,9 +4,10 @@
 //! table; a world with no row is `Open`. Under `Password` an identity may join once it is the
 //! owner (`config.owner_identity`) or holds a `world_admission` row. The connect reducer
 //! refuses anyone else ([`require_admitted_at_connect`]), which holds that identity off every
-//! table and every reducer, and every reducer a player can call makes the same check as its
-//! first statement ([`require_admitted`]), because the host checks a connection only when it
-//! opens.
+//! table and every reducer, and every reducer of the generated client roster that is not
+//! owner-only makes the same check as its first statement ([`require_admitted`]), because the
+//! host checks a connection only when it opens. The reducers that exist only in a dev build
+//! (`dev_reducers`, `load_test_zones`) are outside that roster and make no check.
 //!
 //! An identity that is not admitted can call nothing, so admission is granted by the two
 //! reducers here, which only the owner can call: [`set_world_access`] sets the rule and admits
@@ -117,7 +118,7 @@ pub(crate) fn password_matches(row: &WorldAccess, password: &str) -> bool {
     for (a, b) in candidate.iter().zip(row.password_hash.iter()) {
         difference |= a ^ b;
     }
-    candidate.len() == row.password_hash.len() && difference == 0
+    difference == 0
 }
 
 fn password_length_ok(password: &str) -> bool {
@@ -149,7 +150,7 @@ pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
     }
 }
 
-/// The admission check of a reducer a player can call: its first statement, so an identity the
+/// The admission check of a client-callable reducer: its first statement, so an identity the
 /// rule does not admit is refused before anything is read or written on its behalf.
 pub(crate) fn require_admitted(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     if is_admitted(ctx, ctx.sender()) {
@@ -208,7 +209,7 @@ fn admit_identity(ctx: &ReducerContext, who: Identity, now: i64) {
     }
 }
 
-/// Delete every wrong-password record whose newest stamp is [`ADMIT_ATTEMPT_WINDOW_MS`] or more
+/// Delete every wrong-password record whose latest stamp is [`ADMIT_ATTEMPT_WINDOW_MS`] or more
 /// behind `now`: none of its stamps counts any longer.
 fn sweep_stale_attempts(ctx: &ReducerContext, now: i64) {
     let cutoff = now.saturating_sub(ADMIT_ATTEMPT_WINDOW_MS);
@@ -350,10 +351,13 @@ pub fn admit(ctx: &ReducerContext, who: Identity, password: String) -> Result<()
     }
     let mut wrong_at_ms = recent_wrong_attempts(stamps, now);
     wrong_at_ms.push(now);
+    // The sweep's key is the latest stamp, not this call's time: after the clock steps back a
+    // row still holds stamps ahead of `now`, and they still count.
+    let last_wrong_at_ms = wrong_at_ms.iter().copied().max().unwrap_or(now);
     let record = WorldAdmissionAttempt {
         identity: who,
         wrong_at_ms,
-        last_wrong_at_ms: now,
+        last_wrong_at_ms,
     };
     if attempt.is_some() {
         ctx.db.world_admission_attempt().identity().update(record);

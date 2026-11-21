@@ -956,7 +956,7 @@ fn read_side(
 
 /// Open a blank trade session with `partner`, face to face.
 ///
-/// In order: the caller is joined; the caller is not deletion-gated; `partner`
+/// In order: the caller is admitted; the caller is joined; the caller is not deletion-gated; `partner`
 /// is joined; both characters stand within interact range (one refusal for
 /// another zone, too far and a missing character); the session-open rule
 /// (not oneself, no session with this player yet, fewer than
@@ -1005,7 +1005,7 @@ pub fn open_trade_session(ctx: &ReducerContext, partner: Identity) -> Result<(),
 /// Replace the caller's own side of a session. The three asset arguments are
 /// always the caller's: no argument names the other side's assets.
 ///
-/// In order: the caller is not deletion-gated; the request is within the
+/// In order: the caller is admitted; the caller is not deletion-gated; the request is within the
 /// per-side size caps; the session exists and the caller is party to it; the
 /// caller's side is not confirmed; the offer is eligible on live rows. An
 /// accepted edit rebuilds the caller's cards and review snapshots, advances
@@ -1070,7 +1070,7 @@ pub fn set_trade_offer(
 /// Confirm the caller's side at the revision they reviewed; the confirm that
 /// completes the pair executes the swap in this call.
 ///
-/// In order:
+/// In order, once the caller is admitted:
 /// 1. the session exists and the caller is party to it;
 /// 2. a deletion-gated caller may confirm only a session opened before their
 ///    deletion request;

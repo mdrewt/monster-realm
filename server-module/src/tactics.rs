@@ -2327,8 +2327,8 @@ pub fn deploy_units(
     battle_id: u64,
     picks: Vec<DeployPick>,
 ) -> Result<(), String> {
-    crate::access::require_admitted(ctx, "deploy_units")?;
     const NAME: &str = "deploy_units";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
@@ -2530,8 +2530,8 @@ pub fn submit_queue(
     unit_id: u32,
     entries: Vec<QueuedAction>,
 ) -> Result<(), String> {
-    crate::access::require_admitted(ctx, "submit_queue")?;
     const NAME: &str = "submit_queue";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
@@ -2599,8 +2599,8 @@ pub fn submit_queue(
 /// at TurnStart answers `AlreadyActing`).
 #[spacetimedb::reducer]
 pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Result<(), String> {
-    crate::access::require_admitted(ctx, "cancel_queue")?;
     const NAME: &str = "cancel_queue";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
@@ -2639,8 +2639,8 @@ pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Resul
 /// ends it); in Practice the one owner forfeits side A.
 #[spacetimedb::reducer]
 pub fn forfeit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
-    crate::access::require_admitted(ctx, "forfeit")?;
     const NAME: &str = "forfeit";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;

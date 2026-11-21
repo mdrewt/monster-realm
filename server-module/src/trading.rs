@@ -129,8 +129,8 @@ pub fn trade_offer_reaper(
 /// The one error every retired legacy trade reducer returns.
 const LEGACY_TRADE_RETIRED: &str = "this trade flow is retired; trade face to face instead";
 
-/// Retired: its only statement returns `LEGACY_TRADE_RETIRED`. It reads no row
-/// and writes none, whatever the arguments, so no offer naming another player's
+/// Retired: after the admission check it returns `LEGACY_TRADE_RETIRED`. It reads no trade row
+/// and writes no row, whatever the arguments, so no offer naming another player's
 /// assets can be created and no error depends on another player's wallet or
 /// inventory. The signature is the generated binding's shape.
 #[allow(clippy::too_many_arguments, unused_variables)]
