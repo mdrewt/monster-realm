@@ -45,7 +45,7 @@ token.
 | Profile | Issuer | Sign-in method | Signing keys | Data directory |
 |---|---|---|---|---|
 | `local-dev` | `http://localhost:4455` | `dev-password` | a key file, generated on the first start | `account-service/.data` (ignored by git) unless set |
-| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | a key file the operator provides, readable by its owner only | set by the operator |
+| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | a key file the operator provides, with no access for group or others | set by the operator |
 | `production` | `MR_ACCOUNT_ISSUER` | `steam` | an external signer | set by the operator |
 
 The `production` profile loads and checks its settings and then refuses to start: this build holds
@@ -74,7 +74,7 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   (the Steam publisher key is `MR_STEAM_PUBLISHER_KEY`);
 - a key file is missing (except on `local-dev`), not a regular file, larger than 64 KiB,
   malformed, marked for another profile, holds anything but P-256 private keys with distinct
-  `kid`s, or, on `hosted-dev`, is readable by group or others;
+  `kid`s, or, on `hosted-dev`, grants group or others any access;
 - any other name beginning `MR_ACCOUNT_`, in any letter case, is set: a misspelt setting never
   falls back to a default.
 

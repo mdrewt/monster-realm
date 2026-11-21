@@ -227,6 +227,62 @@ describe('destroy and revokeByGrantId', () => {
   });
 });
 
+describe('a second upsert moves the record under its new lookup values', () => {
+  test('revokeByGrantId follows the grantId of the latest upsert, not the first', async () => {
+    const adapter = open().adapter('DeviceCode');
+    await adapter.upsert('r1', payload({ userCode: 'UC-1' }), 600);
+    await adapter.upsert('r1', payload({ userCode: 'UC-1', grantId: 'g' }), 600);
+    await adapter.revokeByGrantId('g');
+    expect(await adapter.find('r1')).toBeUndefined();
+
+    await adapter.upsert('r2', payload({ grantId: 'old' }), 600);
+    await adapter.upsert('r2', payload({ grantId: 'new', v: 2 }), 600);
+    await adapter.revokeByGrantId('old');
+    expect(await adapter.find('r2')).toEqual({ grantId: 'new', v: 2 });
+    await adapter.revokeByGrantId('new');
+    expect(await adapter.find('r2')).toBeUndefined();
+
+    await adapter.upsert('r3', payload({ grantId: 'g3' }), 600);
+    await adapter.upsert('r3', payload({ v: 3 }), 600);
+    await adapter.revokeByGrantId('g3');
+    expect(await adapter.find('r3')).toEqual({ v: 3 });
+  });
+
+  test('findByUid finds the uid of the latest upsert and no longer the earlier one', async () => {
+    const adapter = open().adapter('Session');
+    await adapter.upsert('s1', payload({ uid: 'u-old' }), 600);
+    await adapter.upsert('s1', payload({ uid: 'u-new', v: 2 }), 600);
+    expect(await adapter.findByUid('u-new')).toEqual({ uid: 'u-new', v: 2 });
+    expect(await adapter.findByUid('u-old')).toBeUndefined();
+
+    await adapter.upsert('s2', payload({ v: 1 }), 600);
+    await adapter.upsert('s2', payload({ uid: 'u1', v: 2 }), 600);
+    expect(await adapter.findByUid('u1')).toEqual({ uid: 'u1', v: 2 });
+
+    await adapter.upsert('s3', payload({ uid: 'u2' }), 600);
+    await adapter.upsert('s3', payload({ v: 3 }), 600);
+    expect(await adapter.findByUid('u2')).toBeUndefined();
+    expect(await adapter.find('s3')).toEqual({ v: 3 });
+  });
+
+  test('findByUserCode finds the userCode of the latest upsert and no longer the earlier one', async () => {
+    const adapter = open().adapter('DeviceCode');
+    await adapter.upsert('d1', payload({ userCode: 'UC-OLD' }), 600);
+    await adapter.upsert('d1', payload({ userCode: 'UC-NEW', v: 2 }), 600);
+    expect(await adapter.findByUserCode('UC-NEW')).toEqual({ userCode: 'UC-NEW', v: 2 });
+    expect(await adapter.findByUserCode('UC-OLD')).toBeUndefined();
+
+    await adapter.upsert('d2', payload({ v: 1 }), 600);
+    await adapter.upsert('d2', payload({ userCode: 'UC-1', v: 2 }), 600);
+    expect(await adapter.findByUserCode('UC-1')).toEqual({ userCode: 'UC-1', v: 2 });
+
+    await adapter.upsert('d3', payload({ userCode: 'UC-2' }), 600);
+    await adapter.upsert('d3', payload({ v: 3 }), 600);
+    expect(await adapter.findByUserCode('UC-2')).toBeUndefined();
+    expect(await adapter.find('d3')).toEqual({ v: 3 });
+  });
+});
+
 describe('records of two models never see each other', () => {
   test('the same id in two models: find, consume and destroy touch only their own model', async () => {
     const store = open();

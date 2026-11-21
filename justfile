@@ -114,9 +114,10 @@ account-install:
         npm ci --ignore-scripts
     fi
 
-# Run the local-dev profile: issuer http://localhost:4455, listening on 127.0.0.1:4455, with its
-# database and the signing keys it generates on first start kept in account-service/.data. Any
-# other MR_ACCOUNT_* setting comes from the caller's environment.
+# Run the local-dev profile, issuer http://localhost:4455. By default it listens on
+# 127.0.0.1:4455 and keeps its database, and the signing keys it generates on first start, in
+# account-service/.data. The recipe fixes the profile; every other MR_ACCOUNT_* setting is the
+# caller's environment.
 account-dev: account-install
     #!/usr/bin/env bash
     set -euo pipefail
