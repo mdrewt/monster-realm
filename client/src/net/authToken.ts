@@ -23,6 +23,8 @@
 // A non-auth failure (an unreachable or flaky host) never advances the counter at all, so
 // an outage can never cost the player their identity.
 
+import type { TargetKind } from './shellDocument';
+
 /**
  * Credential rejections tolerated since the last successful connect before the stored token
  * is withheld. WHY 2 and not 1: one transient non-2xx from the verify endpoint is
@@ -47,11 +49,17 @@ const CREDENTIAL_REJECTED_PREFIX = 'Failed to verify token: ';
  *  being misread as a valid-but-garbage credential. */
 const KEY_PREFIX = 'mr.authToken.v1';
 
-/** An object that MAY expose `sessionStorage`. `globalThis` satisfies it structurally.
- *  Typed `unknown` rather than `Storage` on purpose: parse-don't-validate happens below,
- *  because the property access itself can throw and the value can be any shape. */
+/** Where a target's reconnect token is kept: `'tab'` is the tab's `sessionStorage`; `'device'`
+ *  is the origin's `localStorage`, which every page of the browser profile shares and which
+ *  outlives the tab. */
+export type TokenPersistence = 'tab' | 'device';
+
+/** An object that MAY expose `sessionStorage` and `localStorage`. `globalThis` satisfies it
+ *  structurally. Typed `unknown` rather than `Storage` on purpose: parse-don't-validate happens
+ *  below, because the property access itself can throw and the value can be any shape. */
 export interface TokenStorageHost {
   readonly sessionStorage?: unknown;
+  readonly localStorage?: unknown;
 }
 
 export interface AuthTokenGate {
@@ -106,12 +114,16 @@ function storageKey(uri: string, db: string): string {
 
 /** Narrow an unknown storage-ish value to the one method we are about to call. Returns
  *  undefined rather than throwing so every caller degrades silently. */
-function storageMethod(host: TokenStorageHost | undefined, name: 'getItem' | 'setItem') {
+function storageMethod(
+  host: TokenStorageHost | undefined,
+  area: keyof TokenStorageHost,
+  name: 'getItem' | 'setItem',
+) {
   try {
     // The PROPERTY ACCESS itself can throw SecurityError when cookies/site data are
     // blocked — this is exactly why the HOST is injected instead of a resolved storage
     // object: the throwing read has to sit inside this try/catch to be testable.
-    const storage = host?.sessionStorage as Record<string, unknown> | undefined | null;
+    const storage = host?.[area] as Record<string, unknown> | undefined | null;
     if (typeof storage !== 'object' || storage === null) return undefined;
     const fn = storage[name];
     return typeof fn === 'function'
@@ -123,29 +135,56 @@ function storageMethod(host: TokenStorageHost | undefined, name: 'getItem' | 'se
 }
 
 /**
+ * Where a target of `kind` keeps its reconnect token. A single-player world (`local`) and a
+ * friends server (`private`) keep it on the device, so a page closed and opened again resumes
+ * the same player; a server we operate (`official`, `test`) keeps it per tab.
+ */
+export function tokenPersistenceFor(kind: TargetKind): TokenPersistence {
+  switch (kind) {
+    case 'local':
+    case 'private':
+      return 'device';
+    case 'official':
+    case 'test':
+      return 'tab';
+    default:
+      // A kind added to TARGET_KINDS fails to compile here until it has a case above, and a
+      // run-time value outside the type stays per tab.
+      kind satisfies never;
+      return 'tab';
+  }
+}
+
+/**
  * Build the per-connection-target credential gate.
  *
- * `host` is the object that may expose `sessionStorage` — per-TAB storage, deliberately not
- * `localStorage`. When D3 was decided the server's `on_disconnect` keyed purely
- * on identity with no live-connection check, so two tabs sharing one identity would have let
- * closing either one forfeit the other's PvP battle and delete its character row; now
- * the server runs those side effects only when the identity's LAST live connection
- * ends. Per-tab storage still keeps a second tab an independent identity (identity hygiene, and
- * one token per tab bounds the open token-wedge residual) while surviving the page reload this
- * storage exists to fix.
+ * `host` is the object that may expose the two storage areas, and `persistence` picks the one
+ * this gate uses. It never reads or writes the other: a blocked area is an anonymous connect,
+ * never a fall back to the other area.
+ *
+ * `'tab'` is `sessionStorage`: the token survives a reload, and a second tab is an independent
+ * identity (identity hygiene, and one token per tab bounds the open token-wedge residual).
+ * `'device'` is `localStorage`: every page of the browser profile shares the token, and a later
+ * launch resumes it. Pages may share an identity because the server runs its disconnect side
+ * effects (the PvP forfeit, the character row's removal) only when the identity's LAST live
+ * connection ends. A device-kept token stays readable by every script in the page's origin for
+ * as long as it is stored.
  */
 export function createAuthTokenGate(
   uri: string,
   db: string,
   host: TokenStorageHost | undefined,
+  persistence: TokenPersistence,
 ): AuthTokenGate {
   const key = storageKey(uri, db);
+  // `=== 'device'` is the fail-closed side: any other value keeps the token per tab.
+  const area = persistence === 'device' ? 'localStorage' : 'sessionStorage';
   let rejectionsSinceSuccess = 0;
 
   return {
     tokenForNextAttempt(): string | undefined {
       if (rejectionsSinceSuccess >= AUTH_REJECT_SUPPRESS_THRESHOLD) return undefined;
-      const getItem = storageMethod(host, 'getItem');
+      const getItem = storageMethod(host, area, 'getItem');
       if (getItem === undefined) return undefined;
       try {
         const raw = getItem(key);
@@ -164,13 +203,13 @@ export function createAuthTokenGate(
       // credential is live. A "write only if empty" variant would strand a dead token forever
       // after the suppressed anonymous reconnect mints a new identity.
       rejectionsSinceSuccess = 0;
-      const setItem = storageMethod(host, 'setItem');
+      const setItem = storageMethod(host, area, 'setItem');
       if (setItem === undefined) return;
       try {
         setItem(key, token);
       } catch {
         // Quota/private-mode failures degrade silently — the live connection is unaffected,
-        // only the resume-on-reload guarantee is lost.
+        // only the resume (on reload, or on the next launch for a device-kept token) is lost.
       }
     },
 
@@ -192,10 +231,8 @@ export function createAuthTokenGate(
 // ---------------------------------------------------------------------------
 // The auth-KIND marker.
 //
-// APPENDED, ADDITIVE ONLY: nothing above this line changed. That is not a
-// courtesy, it is AUTH-31's proof — "the anonymous path behaves exactly as it
-// does today" is checkable by diffing everything above, and `connection.ts`
-// still calls `.withToken(auth.tokenForNextAttempt())` byte-identically.
+// Kept per tab, in `sessionStorage`, for every target: the gate's `persistence`
+// moves the anonymous token only, never this marker.
 //
 // WHY A MARKER EXISTS AT ALL. The SDK echoes the credential we supplied back to
 // `onConnect`'s third argument: `spacetimedb/dist/index.mjs:5916` sets
@@ -256,7 +293,7 @@ export function readAuthKind(
   uri: string,
   db: string,
 ): AuthKind {
-  const getItem = storageMethod(host, 'getItem');
+  const getItem = storageMethod(host, 'sessionStorage', 'getItem');
   if (getItem === undefined) return 'anon';
   try {
     return getItem(authKindStorageKey(uri, db)) === 'account' ? 'account' : 'anon';
@@ -283,7 +320,7 @@ export function writeAuthKind(
   db: string,
   kind: AuthKind,
 ): void {
-  const setItem = storageMethod(host, 'setItem');
+  const setItem = storageMethod(host, 'sessionStorage', 'setItem');
   if (setItem === undefined) return;
   try {
     setItem(authKindStorageKey(uri, db), kind);
@@ -303,8 +340,8 @@ export function writeAuthKind(
  * itself: one marker, one meaning. It must never decide which token `.withToken()` receives
  * — that is the in-memory provenance of the resolved credential.
  *
- * Fails to `false` on every absent/blocked/corrupt path, for `readAuthKind`'s exact reason
- * (authToken.ts:233-248): a lost marker means "no evidence this tab ever authenticated", so
+ * Fails to `false` on every absent/blocked/corrupt path, for `readAuthKind`'s exact reason:
+ * a lost marker means "no evidence this tab ever authenticated", so
  * the gate stays SHUT and the tab connects anonymously — today's behaviour. Failing OPEN
  * would call Better Auth on every reconnect of every private-mode tab, forever.
  */

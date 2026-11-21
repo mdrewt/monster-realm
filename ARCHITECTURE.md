@@ -504,9 +504,13 @@ character's last two position changes and whether it has turned in place since, 
 per-character jitter estimate taken from the intervals between position changes.
 
 Reconnect uses exponential backoff from 1 s to 30 s (`prediction/reconnectPolicy.ts`).
-The SpacetimeDB token for an anonymous identity is stored in `sessionStorage`
-(`net/authToken.ts`), so an identity survives a reload but not closing the tab, and a
-second tab is a separate identity. After two token rejections since the last
+The SpacetimeDB token for an anonymous identity is kept where the target's kind says
+(`tokenPersistenceFor` in `net/authToken.ts`). Toward an `official` or `test` server it is
+in per-tab `sessionStorage`, so an identity survives a reload but not closing the tab, and
+a second tab is a separate identity. Toward a `local` or `private` one it is in the
+origin's `localStorage`, so a page closed and opened again in the same browser profile
+resumes the same player, and a second page joins as the same identity. After two token
+rejections since the last
 successful connect, the client stops sending the stored token (it never deletes it) and
 connects anonymously. If that connect succeeds, `onConnected` stores the new token over
 the old one; a network failure never counts as a rejection, so an outage cannot cost

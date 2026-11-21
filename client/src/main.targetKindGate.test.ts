@@ -781,3 +781,124 @@ describe('the booted page makes no OIDC request toward a local or private server
     }
   }, 30_000);
 });
+
+// --- the target kind the booted client hands connect() --------------------------------------
+//
+// connect() keeps the anonymous reconnect token on the device (localStorage) for a local or
+// private target and per tab (sessionStorage) for an official or test one, so the booted page
+// must hand it the resolved kind. The uri never says which: a local document here names a remote
+// wss host and an official one a loopback ws address.
+
+/** An official document on a loopback address, so the kind is not derivable from the uri. */
+const LOOPBACK_OFFICIAL_DOC: ShellDocument = {
+  connection: { uri: 'ws://127.0.0.1:3000', db: 'realm-gate', kind: 'official' },
+};
+
+/** The reconnect-token entries of a storage area: the keys under the `mr.authToken.v1|` prefix. */
+function tokenKeysOf(s: Storage): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < s.length; i += 1) {
+    const key = s.key(i);
+    if (key?.startsWith('mr.authToken.v1|')) keys.push(key);
+  }
+  return keys;
+}
+
+/** The reconnect-token key for the document target (DOC_URI, DOC_DB). */
+const DOC_TOKEN_KEY = `mr.authToken.v1|${encodeURIComponent(DOC_URI)}|${encodeURIComponent(DOC_DB)}`;
+
+/**
+ * Prepare an anonymous whole-page boot: put the REAL `connect` on H for the next boot, with both
+ * storages empty, no OIDC return leg in the URL, no account marker, and fetch stubbed by a spy
+ * that answers every request with a bare 503.
+ */
+async function prepareAnonymousWholePage(): Promise<void> {
+  const { connect } = await vi.importActual<typeof import('./net/connection')>('./net/connection');
+  sessionStorage.clear();
+  localStorage.clear();
+  window.history.replaceState(null, '', '/');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url: unknown, _init?: unknown) =>
+      Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) }),
+    ),
+  );
+  H.realConnect = connect;
+}
+
+describe('the booted client hands connect() the resolved target kind', () => {
+  for (const kind of ['local', 'private'] as const) {
+    it(`hands connect() targetKind ${kind} for a ${kind} document on a remote wss uri [lpw-2.1]`, async () => {
+      const opts = await bootUnder(kind);
+      expect(opts.uri, 'precondition: a remote wss target').toBe(DOC_URI);
+      expect(opts.targetKind, `targetKind under a ${kind} document`).toBe(kind);
+    });
+  }
+
+  it('hands connect() targetKind private under a production build whose document names no kind [lpw-2.1]', async () => {
+    vi.stubEnv('DEV', false);
+    const doc: ShellDocument = {
+      connection: { uri: 'wss://gate.example:4443/', db: 'realm-gate' },
+    };
+    expect(Object.hasOwn(doc.connection, 'kind')).toBe(false);
+    const opts = await bootWith(doc, 'a production document with no kind');
+    expect(opts.targetKind, 'targetKind under a production document with no kind').toBe('private');
+  });
+
+  for (const kind of ['official', 'test'] as const) {
+    it(`hands connect() targetKind ${kind} for a ${kind} document [lpw-2.2]`, async () => {
+      const opts = await bootUnder(kind);
+      expect(opts.targetKind, `targetKind under a ${kind} document`).toBe(kind);
+    });
+  }
+
+  it('hands connect() targetKind official for an official document on a loopback ws uri [lpw-2.2]', async () => {
+    const opts = await bootWith(LOOPBACK_OFFICIAL_DOC, 'an official document on loopback');
+    expect(opts.targetKind, 'targetKind under an official document on loopback').toBe('official');
+  });
+});
+
+describe('the booted page stores the anonymous reconnect token by target kind', () => {
+  it('stores the anonymous reconnect token in localStorage, and none in sessionStorage, toward a local server [lpw-2.1]', async () => {
+    await prepareAnonymousWholePage();
+    try {
+      const label = 'a local document, anonymous';
+      await bootWith(documentFor('local'), label, FULL_BUILD_ENV);
+      const b0 = await sdkBuild(0);
+      expect(b0.token, `${label}: the first build has no stored token`).toBeUndefined();
+      // The boot is done: anything the connection schedules from here runs on a fake clock.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      b0.onConnect?.(b0.conn, { toHexString: () => H.identity }, 'lpw2-anon-token');
+      expect(tokenKeysOf(localStorage), `${label}: the token entry in localStorage`).toEqual([
+        DOC_TOKEN_KEY,
+      ]);
+      expect(localStorage.getItem(DOC_TOKEN_KEY), `${label}: the stored token`).toBe(
+        'lpw2-anon-token',
+      );
+      expect(tokenKeysOf(sessionStorage), `${label}: no token entry per tab`).toEqual([]);
+    } finally {
+      endRealConnection();
+    }
+  }, 30_000);
+
+  it('stores the anonymous reconnect token in sessionStorage, and none in localStorage, toward an official server [lpw-2.2]', async () => {
+    await prepareAnonymousWholePage();
+    try {
+      const label = 'an official document, anonymous';
+      await bootWith(documentFor('official'), label, FULL_BUILD_ENV);
+      const b0 = await sdkBuild(0);
+      expect(b0.token, `${label}: the first build has no stored token`).toBeUndefined();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      b0.onConnect?.(b0.conn, { toHexString: () => H.identity }, 'lpw2-anon-token');
+      expect(tokenKeysOf(sessionStorage), `${label}: the token entry per tab`).toEqual([
+        DOC_TOKEN_KEY,
+      ]);
+      expect(sessionStorage.getItem(DOC_TOKEN_KEY), `${label}: the stored token`).toBe(
+        'lpw2-anon-token',
+      );
+      expect(tokenKeysOf(localStorage), `${label}: no token entry in localStorage`).toEqual([]);
+    } finally {
+      endRealConnection();
+    }
+  }, 30_000);
+});
