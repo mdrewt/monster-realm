@@ -3436,9 +3436,9 @@ describe('connect() with sign-in off', { sequential: true }, () => {
     // the account token re-derived from storage on a reconnect path; the stored anon token dropped
     // (a build with no token mints a new identity: the player loses their character).
     lpw1SeedMarker();
-    createAuthTokenGate(URI, DB, globalThis).onConnected(LPW1_STORED_ANON);
+    createAuthTokenGate(URI, DB, globalThis, 'tab').onConnected(LPW1_STORED_ANON);
     expect(
-      createAuthTokenGate(URI, DB, globalThis).tokenForNextAttempt(),
+      createAuthTokenGate(URI, DB, globalThis, 'tab').tokenForNextAttempt(),
       'precondition: the anon token is stored where the reconnect gate reads it',
     ).toBe(LPW1_STORED_ANON);
     H.renew = () => Promise.resolve({ kind: 'ok', token: LPW1_ACCOUNT_JWT });
@@ -3607,5 +3607,375 @@ describe('connect() with sign-in off', { sequential: true }, () => {
     expect(H.beginSignIn, 'no OIDC sign-in begun').not.toHaveBeenCalled();
     expect(fetchSpy, 'no request').not.toHaveBeenCalled();
     expect(assign, 'no navigation').not.toHaveBeenCalled();
+  });
+});
+
+// =============================================================================================
+// The reconnect token's storage area, by target kind. A local or private target keeps the
+// anonymous reconnect token in the origin's localStorage (a reopened page resumes the player, a
+// second page shares the identity); an official or test target keeps it in per-tab sessionStorage.
+// The account-kind marker stays in sessionStorage for every kind.
+//
+// Every case drives the REAL connect() with `targetKind` set; the storages are happy-dom's real
+// sessionStorage and localStorage, reached through `globalThis`. Every case keeps sign-in in the
+// same mode (`makeOpts`'s 'oidc') unless it names another, so the target kind is the only input
+// that differs between the localStorage and the sessionStorage cases.
+// =============================================================================================
+
+type KindOpts = ReturnType<typeof makeOpts>;
+
+/** connect() options with `targetKind` set to `targetKind` (any run-time value), plus overrides. */
+function kindOpts(targetKind: unknown, overrides: Record<string, unknown> = {}): KindOpts {
+  return { ...makeOpts(), targetKind, ...overrides } as unknown as KindOpts;
+}
+
+/** The reconnect-token key for a target: `mr.authToken.v1|<encoded uri>|<encoded db>`. */
+const tokenKey = (uri: string, db: string): string =>
+  `mr.authToken.v1|${encodeURIComponent(uri)}|${encodeURIComponent(db)}`;
+
+/** The token key for (URI, DB), the target every case connects to unless it names another. */
+const TOKEN_KEY = tokenKey(URI, DB);
+
+/** A non-loopback secure uri: nothing about it says "local". */
+const REMOTE_WSS_URI = 'wss://realm.example:4443/';
+/** A loopback uri: nothing about it says "official". */
+const LOOPBACK_URI = 'ws://127.0.0.1:3000';
+
+/** Every entry of a storage area, as a key -> value record. */
+function entriesOf(s: Storage): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (let i = 0; i < s.length; i += 1) {
+    const key = s.key(i) ?? '';
+    out[key] = s.getItem(key);
+  }
+  return out;
+}
+
+/** What each build was handed by `.withToken()`, oldest first. */
+const handedTokens = (): unknown[] => H.builds.map((b) => b.token);
+
+/**
+ * Make every read of `globalThis.localStorage` throw a SecurityError (site data blocked), counting
+ * the attempts. `restore` puts the original property back; call it in a `finally`.
+ */
+function throwOnLocalStorageAccess(): { readonly attempts: { n: number }; restore: () => void } {
+  const own = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const attempts = { n: 0 };
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      attempts.n += 1;
+      throw new DOMException('The operation is insecure.', 'SecurityError');
+    },
+  });
+  return {
+    attempts,
+    restore: () => {
+      if (own !== undefined) Object.defineProperty(globalThis, 'localStorage', own);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    },
+  };
+}
+
+describe('connect(): the reconnect token storage area follows the target kind', {
+  sequential: true,
+}, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    H.oidcClients = 0;
+    H.realOidc = false;
+    sessionStorage.clear();
+    localStorage.clear();
+    window.history.replaceState(null, '', '/');
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide')); // tear the connection down: no stray rebuilds
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    H.realOidc = false;
+    sessionStorage.clear();
+    localStorage.clear();
+    window.history.replaceState(null, '', '/');
+  });
+
+  // --- local and private: localStorage --------------------------------------------------------
+
+  for (const kind of ['local', 'private'] as const) {
+    it(`keeps the anonymous reconnect token in localStorage alone toward a ${kind} target, and hands it to the rebuild after a drop [lpw-2.1]`, async () => {
+      // WRONG IMPL KILLED: the gate still built per tab (the token lands in sessionStorage and
+      // localStorage stays empty); a write to both areas (sessionStorage holds the token too); a
+      // write to localStorage with a read from sessionStorage (the rebuild gets no token).
+      // This healthy run is also the positive control for the degraded-storage cases below.
+      const opts = kindOpts(kind);
+      connect(opts);
+      await settle();
+      expect(handedTokens(), 'the first build has no stored token').toEqual([undefined]);
+      const b0 = H.builds[0];
+      b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+      b0.onApplied?.();
+      expect(b0.joinGame).toHaveBeenCalledWith({ name: 'Tester' });
+      expect(entriesOf(localStorage), 'localStorage holds exactly the token entry').toEqual({
+        [TOKEN_KEY]: 'anon-tok',
+      });
+      expect(stored(sessionStorage), 'sessionStorage does not hold the token').not.toContain(
+        'anon-tok',
+      );
+      b0.onDisconnect?.();
+      await nextAttempt();
+      expect(handedTokens(), 'the rebuild is handed the stored token').toEqual([
+        undefined,
+        'anon-tok',
+      ]);
+    });
+
+    it(`hands the first build the token another page or an earlier launch left in localStorage toward a ${kind} target [lpw-2.1]`, async () => {
+      localStorage.setItem(TOKEN_KEY, 'prior-tok');
+      // A different token in this tab's sessionStorage under the same key: never preferred.
+      sessionStorage.setItem(TOKEN_KEY, 'session-tok');
+      connect(kindOpts(kind));
+      await settle();
+      expect(handedTokens(), 'the first build carries the localStorage token').toEqual([
+        'prior-tok',
+      ]);
+    });
+  }
+
+  it('keeps the reconnect token in localStorage toward a local target on a non-loopback wss uri [lpw-2.1]', async () => {
+    // The kind decides, never the uri's shape.
+    const key = tokenKey(REMOTE_WSS_URI, DB);
+    connect(kindOpts('local', { uri: REMOTE_WSS_URI }));
+    await settle();
+    expect(handedTokens()).toEqual([undefined]);
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    expect(entriesOf(localStorage)).toEqual({ [key]: 'anon-tok' });
+    expect(stored(sessionStorage)).not.toContain('anon-tok');
+  });
+
+  // --- official, test and an omitted kind: sessionStorage -------------------------------------
+
+  for (const kind of ['official', 'test'] as const) {
+    it(`keeps the anonymous reconnect token in sessionStorage toward a ${kind} target, and leaves localStorage empty [lpw-2.2]`, async () => {
+      connect(kindOpts(kind));
+      await settle();
+      expect(handedTokens()).toEqual([undefined]);
+      const b0 = H.builds[0];
+      b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+      b0.onApplied?.();
+      expect(b0.joinGame).toHaveBeenCalledWith({ name: 'Tester' });
+      expect(sessionStorage.getItem(TOKEN_KEY), 'the per-tab token').toBe('anon-tok');
+      expect(entriesOf(localStorage), 'localStorage stays empty').toEqual({});
+      b0.onDisconnect?.();
+      await nextAttempt();
+      expect(handedTokens()).toEqual([undefined, 'anon-tok']);
+    });
+
+    it(`never hands a build the token sitting in localStorage toward a ${kind} target [lpw-2.2]`, async () => {
+      localStorage.setItem(TOKEN_KEY, 'device-tok');
+      connect(kindOpts(kind));
+      await settle();
+      expect(handedTokens(), 'the first build is anonymous').toEqual([undefined]);
+      const b0 = H.builds[0];
+      b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+      expect(entriesOf(localStorage), 'the localStorage entry is untouched').toEqual({
+        [TOKEN_KEY]: 'device-tok',
+      });
+      expect(sessionStorage.getItem(TOKEN_KEY)).toBe('anon-tok');
+    });
+  }
+
+  it('keeps the reconnect token in sessionStorage toward an official target on a loopback ws uri [lpw-2.2]', async () => {
+    const key = tokenKey(LOOPBACK_URI, DB);
+    connect(kindOpts('official', { uri: LOOPBACK_URI }));
+    await settle();
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    expect(sessionStorage.getItem(key)).toBe('anon-tok');
+    expect(entriesOf(localStorage)).toEqual({});
+  });
+
+  it('keeps the reconnect token in sessionStorage toward an official target with sign-in off [lpw-2.2]', async () => {
+    // Sign-in off is what a local target runs with; the kind still decides the storage area.
+    connect(kindOpts('official', { signIn: 'off' }));
+    await settle();
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    expect(sessionStorage.getItem(TOKEN_KEY)).toBe('anon-tok');
+    expect(entriesOf(localStorage)).toEqual({});
+  });
+
+  it('keeps the reconnect token per tab when the options name no target kind [lpw-2.2]', async () => {
+    localStorage.setItem(TOKEN_KEY, 'device-tok');
+    const opts = makeOpts();
+    expect(Object.hasOwn(opts, 'targetKind'), 'precondition: no targetKind key').toBe(false);
+    connect(opts);
+    await settle();
+    expect(handedTokens(), 'the localStorage token is not used').toEqual([undefined]);
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    expect(sessionStorage.getItem(TOKEN_KEY)).toBe('anon-tok');
+    expect(entriesOf(localStorage)).toEqual({ [TOKEN_KEY]: 'device-tok' });
+  });
+
+  // --- unusable localStorage ------------------------------------------------------------------
+  // The positive control for both cases is the healthy local run above: the same options store
+  // and re-supply the token through localStorage.
+
+  it('connects anonymously and joins toward a local target when reading localStorage throws, without using the token in sessionStorage [lpw-2.3]', async () => {
+    sessionStorage.setItem(TOKEN_KEY, 'session-tok');
+    const blocked = throwOnLocalStorageAccess();
+    try {
+      const opts = kindOpts('local');
+      expect(() => connect(opts)).not.toThrow();
+      await settle();
+      expect(handedTokens(), 'anonymous, and not the per-tab token').toEqual([undefined]);
+      const b0 = H.builds[0];
+      expect(() => b0.onConnect?.(conn0(b0), ID, 'anon-tok')).not.toThrow();
+      b0.onApplied?.();
+      expect(b0.joinGame).toHaveBeenCalledWith({ name: 'Tester' });
+      expect(opts.onReady).toHaveBeenCalledWith(ID.toHexString());
+      expect(blocked.attempts.n, 'liveness: the client tried localStorage').toBeGreaterThan(0);
+    } finally {
+      blocked.restore();
+    }
+    expect(sessionStorage.getItem(TOKEN_KEY), 'the per-tab token is not overwritten').toBe(
+      'session-tok',
+    );
+  });
+
+  it('connects anonymously and joins toward a local target when writing localStorage throws, without using the token in sessionStorage [lpw-2.3]', async () => {
+    sessionStorage.setItem(TOKEN_KEY, 'session-tok');
+    // Spied on the localStorage object itself, not on Storage.prototype (which sessionStorage
+    // shares), so only localStorage writes throw.
+    const setItem = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+    });
+    try {
+      const opts = kindOpts('local');
+      expect(() => connect(opts)).not.toThrow();
+      await settle();
+      expect(handedTokens(), 'anonymous, and not the per-tab token').toEqual([undefined]);
+      const b0 = H.builds[0];
+      expect(() => b0.onConnect?.(conn0(b0), ID, 'anon-tok')).not.toThrow();
+      b0.onApplied?.();
+      expect(b0.joinGame).toHaveBeenCalledWith({ name: 'Tester' });
+      expect(opts.onReady).toHaveBeenCalledWith(ID.toHexString());
+      expect(setItem, 'liveness: the client tried to write localStorage').toHaveBeenCalled();
+      b0.onDisconnect?.();
+      await nextAttempt();
+      expect(handedTokens(), 'the rebuild is anonymous too: no fallback').toEqual([
+        undefined,
+        undefined,
+      ]);
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(sessionStorage.getItem(TOKEN_KEY), 'the per-tab token is not overwritten').toBe(
+      'session-tok',
+    );
+    expect(entriesOf(localStorage)).toEqual({});
+  });
+
+  // --- account builds -------------------------------------------------------------------------
+
+  it('writes nothing to localStorage for an account build toward a local target, though an anonymous token is stored there [lpw-2.4]', async () => {
+    // WRONG IMPL KILLED: the echoed account JWT saved into the anonymous slot (now in
+    // localStorage, where it would outlive the tab and be replayed past its expiry); the account
+    // marker written to localStorage.
+    localStorage.setItem(TOKEN_KEY, 'anon-tok');
+    writeAuthKind(globalThis, URI, DB, 'account');
+    expect(wasEverAuthenticated(globalThis, URI, DB), 'precondition: the account marker').toBe(
+      true,
+    );
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const before = entriesOf(localStorage);
+    expect(before, 'precondition: only the anon token').toEqual({ [TOKEN_KEY]: 'anon-tok' });
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    try {
+      connect(kindOpts('local', { signIn: 'oidc' }));
+      await settle();
+      expect(H.renewCalls, 'the account session renewed').toBe(1);
+      expect(handedTokens(), 'the build carries the account JWT').toEqual(['acct-jwt']);
+      const b0 = H.builds[0];
+      b0.onConnect?.(conn0(b0), ID, 'acct-jwt');
+      b0.onApplied?.();
+      expect(b0.joinGame).toHaveBeenCalledTimes(1);
+      expect(entriesOf(localStorage), 'localStorage is exactly as before').toEqual(before);
+      expect(stored(localStorage), 'the account JWT is in no localStorage value').not.toContain(
+        'acct-jwt',
+      );
+      expect(setItem, 'no localStorage write during the account build').not.toHaveBeenCalled();
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it('does write localStorage for an anonymous build toward a local target with the same sign-in mode [lpw-2.4]', async () => {
+    // The positive half of the case above: the same target and sign-in mode, no account marker,
+    // so the build is anonymous and its token does reach localStorage.
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    try {
+      connect(kindOpts('local', { signIn: 'oidc' }));
+      await settle();
+      expect(H.renewCalls, 'no renewal without the marker').toBe(0);
+      expect(handedTokens()).toEqual([undefined]);
+      const b0 = H.builds[0];
+      b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+      expect(setItem.mock.calls).toEqual([[TOKEN_KEY, 'anon-tok']]);
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(entriesOf(localStorage)).toEqual({ [TOKEN_KEY]: 'anon-tok' });
+  });
+
+  // --- rejection suppression ------------------------------------------------------------------
+
+  it('withholds a localStorage token rejected twice since the last success toward a local target, keeps it stored, and replaces it on the next success [lpw-2.8]', async () => {
+    localStorage.setItem(TOKEN_KEY, 'stale-tok');
+    const rejected = () => new Error('Failed to verify token: Unauthorized');
+    connect(kindOpts('local'));
+    await settle();
+    expect(handedTokens(), 'build 1 carries the stored token').toEqual(['stale-tok']);
+    H.builds[0].onConnectError?.({}, rejected());
+    await nextAttempt();
+    expect(handedTokens(), 'one rejection: still supplied').toEqual(['stale-tok', 'stale-tok']);
+    H.builds[1].onConnectError?.({}, rejected());
+    await nextAttempt();
+    expect(handedTokens(), 'two rejections: withheld').toEqual([
+      'stale-tok',
+      'stale-tok',
+      undefined,
+    ]);
+    expect(localStorage.getItem(TOKEN_KEY), 'withheld, never deleted').toBe('stale-tok');
+    const b2 = H.builds[2];
+    b2.onConnect?.(conn0(b2), ID, 'fresh-tok');
+    expect(entriesOf(localStorage), 'the success overwrites the entry').toEqual({
+      [TOKEN_KEY]: 'fresh-tok',
+    });
+  });
+
+  it('never withholds a localStorage token toward a local target for failures that are not credential rejections [lpw-2.8]', async () => {
+    localStorage.setItem(TOKEN_KEY, 'stale-tok');
+    connect(kindOpts('local'));
+    await settle();
+    H.builds[0].onConnectError?.({}, new Error('network down'));
+    await nextAttempt();
+    H.builds[1].onConnectError?.({}, new Error('network down'));
+    await nextAttempt();
+    expect(handedTokens(), 'an outage never costs the identity').toEqual([
+      'stale-tok',
+      'stale-tok',
+      'stale-tok',
+    ]);
+    expect(localStorage.getItem(TOKEN_KEY)).toBe('stale-tok');
   });
 });
