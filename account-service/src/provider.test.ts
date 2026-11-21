@@ -459,6 +459,38 @@ describe('there is no client and no sign-in step', () => {
     expect(cookies).toEqual([]);
   });
 
+  test.each([
+    ['a session cookie', '_session=a'],
+    ['session, signature and interaction cookies', '_session=a; _session.sig=b; _interaction=c'],
+  ])('a request carrying %s writes nothing to the store and sets no cookie', async (_name, cookie) => {
+    const plain = { host: h.host, cookie };
+    const form = { ...plain, 'content-type': 'application/x-www-form-urlencoded' };
+    const requests: ReadonlyArray<readonly [string, string, Record<string, string>, string?]> = [
+      ['GET', '/auth?client_id=x&response_type=code&scope=openid', plain],
+      ['GET', '/auth', plain],
+      ['POST', '/session/end/confirm', form, 'xsrf=x&logout=yes'],
+      ['GET', '/session/end', plain],
+      ['GET', '/me', plain],
+      ['POST', '/token', form, 'grant_type=authorization_code&code=x&client_id=x'],
+      ['GET', '/jwks', plain],
+      ['GET', '/.well-known/openid-configuration', plain],
+    ];
+    h.counter.upserts = 0;
+    const cookies: string[] = [];
+    const upsertsAfter: string[] = [];
+    for (const [method, path, headers, body] of requests) {
+      const reply = await send(h.port, path, headers, method, body);
+      // Each request reached the provider: none was turned away at the Host check.
+      expect(reply.status, `${method} ${path}`).not.toBe(421);
+      const setCookie = reply.headers['set-cookie'];
+      if (setCookie !== undefined) cookies.push(`${method} ${path}: ${setCookie.join('; ')}`);
+      if (h.counter.upserts > 0) upsertsAfter.push(`${method} ${path}: ${h.counter.upserts}`);
+    }
+    expect(upsertsAfter).toEqual([]);
+    expect(h.counter.upserts).toBe(0);
+    expect(cookies).toEqual([]);
+  });
+
   test('the error page is plain text with no URL outside the issuer', async () => {
     const reply = await send(h.port, '/auth?client_id=x&response_type=code&scope=openid', {
       host: h.host,

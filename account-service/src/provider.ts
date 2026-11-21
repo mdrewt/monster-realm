@@ -62,6 +62,9 @@ export function createAccountProvider(options: {
     for (const name of Object.keys(req.headers)) {
       if (name === 'forwarded' || name.startsWith('x-forwarded-')) delete req.headers[name];
     }
+    // There is no sign-in step, so no cookie means anything; given one, the provider would store
+    // a session for the caller and set a cookie in reply.
+    delete req.headers.cookie;
     req.headers.host = issuer.host;
     req.headers['x-forwarded-proto'] = scheme;
     callback(req, res);

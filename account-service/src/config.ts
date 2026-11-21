@@ -47,7 +47,7 @@ const SETTINGS: ReadonlySet<string> = new Set([
   'MR_ACCOUNT_PORT',
 ]);
 const SETTING_PREFIX = 'MR_ACCOUNT_';
-// Any spelling of a Steam key setting; the publisher key is MR_STEAM_PUBLISHER_KEY.
+// A Steam key setting under any name of that shape; the publisher key is MR_STEAM_PUBLISHER_KEY.
 const STEAM_KEY_SETTING = /^MR_STEAM_.*KEY/i;
 const DEV_HOSTNAMES = [LOCAL_DEV_ISSUER, HOSTED_DEV_ISSUER].map(
   (issuer) => new URL(issuer).hostname,
@@ -103,7 +103,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
   }
 
   for (const name of set.keys()) {
-    if (STEAM_KEY_SETTING.test(name)) {
+    if (STEAM_KEY_SETTING.test(name.trim())) {
       throw new ConfigError(name, `a Steam key is a production setting; ${profile} takes none`);
     }
   }
@@ -162,7 +162,7 @@ function requiredDataDir(set: ReadonlyMap<string, string>, profile: Profile): st
 function pathSetting(set: ReadonlyMap<string, string>, name: string): string | undefined {
   const value = set.get(name);
   if (value === undefined) return undefined;
-  if (resolve(value) !== value) {
+  if (resolve(value) !== value || value.includes('\0')) {
     throw new ConfigError(name, 'must be an absolute path with no ".", ".." or doubled separator');
   }
   if (parse(value).root === value) {

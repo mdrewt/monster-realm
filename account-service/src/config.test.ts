@@ -28,6 +28,7 @@ const HOSTED: Env = { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: HOS
 
 // Arabic-Indic digits four, four, five, five.
 const ARABIC_INDIC_4455 = String.fromCharCode(0x0664, 0x0664, 0x0665, 0x0665);
+const NUL = String.fromCharCode(0);
 
 function refusalOf(env: Env): ConfigError {
   try {
@@ -269,6 +270,8 @@ describe('dev profiles refuse production settings and name them', () => {
         'MR_STEAM_PUBLISHER_KEY_FILE',
         'MR_STEAM_WEB_API_KEY',
         'mr_steam_publisher_key',
+        ' MR_STEAM_PUBLISHER_KEY',
+        'MR_STEAM_PUBLISHER_KEY ',
       ].map((name) => [profile, base, name] as const),
     ),
   )('%s refuses a Steam key setting %s, named as written', (_p, base, name) => {
@@ -413,6 +416,7 @@ describe('a set data directory or key file must be an absolute, normalised, non-
     ['a trailing separator', `${base}${sep}`],
     ['a doubled separator', `${base}${sep}${sep}b`],
     ['the filesystem root', resolve('/')],
+    ['an absolute path with a NUL character inside it', `${join(base, 'a')}${NUL}b`],
   ];
 
   test.each(badPaths)('MR_ACCOUNT_DATA_DIR refuses %s', (_kind, value) => {

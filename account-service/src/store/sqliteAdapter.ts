@@ -55,8 +55,13 @@ export function openAccountStore(
     closeSync(openSync(path, 'a', 0o600));
   }
   const db = new DatabaseSync(path);
-  db.exec('PRAGMA busy_timeout = 5000');
-  db.exec(SCHEMA);
+  try {
+    db.exec('PRAGMA busy_timeout = 5000');
+    db.exec(SCHEMA);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 
   const upsert = db.prepare(
     `INSERT INTO oidc_record (model, id, payload, expires_at, grant_id, uid, user_code)

@@ -1,3 +1,4 @@
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import {
   createHash,
   createPrivateKey,
@@ -10,6 +11,7 @@ import {
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -283,6 +285,7 @@ interface Fixtures {
   readonly rsa: JsonWebKey;
   readonly p384: JsonWebKey;
   readonly ed25519: JsonWebKey;
+  readonly secp256k1: JsonWebKey;
 }
 
 describe('every malformed key file is a key-file refusal that leaks no key material', () => {
@@ -295,15 +298,38 @@ describe('every malformed key file is a key-file refusal that leaks no key mater
       rsa: generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'jwk' }),
       p384: generateKeyPairSync('ec', { namedCurve: 'P-384' }).privateKey.export({ format: 'jwk' }),
       ed25519: generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk' }),
+      secp256k1: generateKeyPairSync('ec', { namedCurve: 'secp256k1' }).privateKey.export({
+        format: 'jwk',
+      }),
     };
   });
 
   function secrets(): string[] {
     const all = [fx.a.d, fx.a.x, fx.a.y, fx.b.d, fx.b.x, fx.b.y];
-    for (const extra of [fx.rsa.d, fx.rsa.p, fx.p384.d, fx.p384.x, fx.ed25519.d, fx.ed25519.x]) {
+    const extras = [
+      fx.rsa.d,
+      fx.rsa.p,
+      fx.p384.d,
+      fx.p384.x,
+      fx.ed25519.d,
+      fx.ed25519.x,
+      fx.secp256k1.d,
+      fx.secp256k1.x,
+      fx.secp256k1.y,
+    ];
+    for (const extra of extras) {
       if (typeof extra === 'string') all.push(extra);
     }
     return all;
+  }
+
+  function expectCleanRefusal(error: ConfigError): void {
+    expect(error.setting).toBe('MR_ACCOUNT_KEY_FILE');
+    expect(error.message).toContain('MR_ACCOUNT_KEY_FILE');
+    for (const secret of secrets()) {
+      expect(error.message).not.toContain(secret);
+      expect(String(error)).not.toContain(secret);
+    }
   }
 
   const file = (keys: unknown, profile: unknown = 'local-dev'): string =>
@@ -336,6 +362,21 @@ describe('every malformed key file is a key-file refusal that leaks no key mater
     ['a P-384 key', (f) => file([{ ...f.p384, kid: 'p384' }])],
     ['crv P-384 on P-256 members', (f) => file([{ ...f.a, crv: 'P-384' }])],
     ['an Ed25519 key', (f) => file([{ ...f.ed25519, kid: 'ed' }])],
+    ['a secp256k1 key', (f) => file([{ ...f.secp256k1, kid: 'k1' }])],
+    [
+      'secp256k1 members under crv P-256',
+      (f) =>
+        file([
+          {
+            kty: 'EC',
+            crv: 'P-256',
+            x: f.secp256k1.x,
+            y: f.secp256k1.y,
+            d: f.secp256k1.d,
+            kid: 'k1',
+          },
+        ]),
+    ],
     ['alg ES384', (f) => file([{ ...f.a, alg: 'ES384' }])],
     ['use enc', (f) => file([{ ...f.a, use: 'enc' }])],
     ['a public-only key', (f) => file([without(f.a, 'd')])],
@@ -366,5 +407,79 @@ describe('every malformed key file is a key-file refusal that leaks no key mater
       expect(String(error)).not.toContain(secret);
     }
     expect(readFileSync(path).equals(bytes)).toBe(true);
+  });
+
+  const MAX_KEY_FILE_BYTES = 65_536;
+
+  function padded(content: string, total: number): string {
+    return content + ' '.repeat(total - Buffer.byteLength(content));
+  }
+
+  test('a valid key file padded to exactly the size limit loads', () => {
+    const path = join(dir, 'keys.json');
+    writeKeyFile(path, padded(file([fx.a]), MAX_KEY_FILE_BYTES));
+    expect(statSync(path).size).toBe(MAX_KEY_FILE_BYTES);
+    expect(loadSigningKeys(fileSource('local-dev', path, false)).keys).toEqual([fx.a]);
+  });
+
+  test('a valid key file one byte over the size limit is refused and left unchanged', () => {
+    const path = join(dir, 'keys.json');
+    writeKeyFile(path, padded(file([fx.a]), MAX_KEY_FILE_BYTES + 1));
+    expect(statSync(path).size).toBe(MAX_KEY_FILE_BYTES + 1);
+    const bytes = readFileSync(path);
+    for (const generateIfMissing of [false, true]) {
+      expectCleanRefusal(
+        refusalOf(() => loadSigningKeys(fileSource('local-dev', path, generateIfMissing))),
+      );
+    }
+    expect(readFileSync(path).equals(bytes)).toBe(true);
+  });
+
+  test.each([
+    'local-dev',
+    'hosted-dev',
+  ] as const)('a directory at the key path is refused by %s and left in place', (profile) => {
+    const path = join(dir, 'keys.json');
+    mkdirSync(path, { mode: 0o700 });
+    for (const generateIfMissing of [false, true]) {
+      expectCleanRefusal(
+        refusalOf(() => loadSigningKeys(fileSource(profile, path, generateIfMissing))),
+      );
+      expect(statSync(path).isDirectory()).toBe(true);
+      expect(readdirSync(path)).toEqual([]);
+    }
+  });
+
+  // A loader that blocks reading a FIFO freezes the thread, so the runner's timeout could never
+  // fire. A delayed writer feeds such a loader a valid key file: blocking then turns into an
+  // accepted load, which fails the test, instead of a hang. A prompt refusal kills the writer.
+  function delayedWriter(source: string, fifo: string): ChildProcess {
+    return spawn('sh', ['-c', 'sleep 2; cat "$1" > "$2"', 'sh', source, fifo], {
+      stdio: 'ignore',
+    });
+  }
+
+  test.each([
+    'local-dev',
+    'hosted-dev',
+  ] as const)('a FIFO at the key path is refused promptly by %s', (profile) => {
+    if (!POSIX) return;
+    const path = join(dir, 'keys.json');
+    const source = join(dir, 'valid.json');
+    writeKeyFile(source, file([fx.a], profile));
+    execFileSync('mkfifo', [path]);
+    chmodSync(path, 0o600);
+    expect(statSync(path).isFIFO()).toBe(true);
+    for (const generateIfMissing of [false, true]) {
+      const writer = delayedWriter(source, path);
+      try {
+        expectCleanRefusal(
+          refusalOf(() => loadSigningKeys(fileSource(profile, path, generateIfMissing))),
+        );
+      } finally {
+        writer.kill('SIGKILL');
+      }
+      expect(statSync(path).isFIFO()).toBe(true);
+    }
   });
 });

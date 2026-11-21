@@ -14,10 +14,10 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 jobs:
   # The five jobs below run every recipe of the justfile `ci:` recipe between them, one recipe
-  # per step, grouped by toolchain. Each job has its own checkout and rust-cache prefix, so
-  # the two writers of client-wasm/pkg (`just eval`: nodejs target, `just wasm`: bundler
-  # target) never share a directory. Jobs that need the pkg build it themselves: a client test
-  # requires it to be newer than the checked-out sources.
+  # per step, grouped by toolchain. Each job has its own checkout, and each Rust job its own
+  # rust-cache prefix, so the two writers of client-wasm/pkg (`just eval`: nodejs target,
+  # `just wasm`: bundler target) never share a directory. Jobs that need the pkg build it
+  # themselves: a client test requires it to be newer than the checked-out sources.
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -116,6 +116,9 @@ jobs:
       - uses: ./.github/actions/tools
       - run: just account-typecheck
       - run: just account-test
+      # The packages the running service loads; the lock file fixes their versions.
+      - name: SCA (npm audit, runtime dependencies)
+        run: cd account-service && npm audit --omit=dev --audit-level=high
 
   observability:
     runs-on: ubuntu-latest

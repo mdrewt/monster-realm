@@ -102,15 +102,16 @@ client-verify-build: wasm
 # ---- account service (account-service/, its own lock file; docs/account-service.md) ----
 # `just lint` lints the package with the rest of the tree.
 
-# Install the package's dependencies when they are absent or older than its lock file. A
-# node_modules that is a symlink (a worktree sharing another checkout's copy) is left alone.
+# Install the package's dependencies when they are absent or older than its lock file, without
+# running any dependency's install script. A node_modules that is a symlink (a worktree sharing
+# another checkout's copy) is left alone.
 account-install:
     #!/usr/bin/env bash
     set -euo pipefail
     cd account-service
     if [ -L node_modules ]; then exit 0; fi
     if [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
-        npm ci
+        npm ci --ignore-scripts
     fi
 
 # Run the local-dev profile: issuer http://localhost:4455, listening on 127.0.0.1:4455, with its

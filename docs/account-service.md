@@ -15,13 +15,15 @@ token.
   protocol. `src/provider.ts` configures it: the `code` response type only, ES256 ID tokens only,
   and the library's built-in sign-in form and logout page switched off (the form accepts any name;
   the logout page stores a session for a caller who never signed in).
-- **Requests.** One handler stands in front of the provider. It answers a request only when its
-  `Host` header is the issuer's host, and gives every other request `421`; a request target that is
-  not a path gets `400`. It removes `Forwarded` and every `X-Forwarded-*` header and takes the
-  scheme from the issuer, since TLS ends at a reverse proxy. The provider builds each URL it
-  publishes from the request it is answering, so without this a forged `Host` would put another
-  origin's `jwks_uri` in the discovery document. The same handler means the provider sees the
-  socket's address as the client's, never one a request names.
+- **Requests.** One handler stands in front of the provider. A request target that is not a path
+  gets `400`. Any other request is answered only when its `Host` header is the issuer's host,
+  written as the issuer writes it (no default port), and otherwise gets `421`; a reverse proxy in
+  front must pass on the `Host` the client sent. The handler removes `Forwarded`, every
+  `X-Forwarded-*` header and `Cookie`, and takes the scheme from the issuer, since TLS ends at a
+  reverse proxy. The provider builds each URL it publishes from the request it is answering, so
+  without this a forged `Host` would put another origin's `jwks_uri` in the discovery document.
+  The provider sees the socket's address as the client's, never one a request names, and stores
+  nothing for an anonymous caller: given a cookie it would store a session for whoever sent it.
 - **Keys.** ES256 (P-256) signing keys, each with a `kid`. The first key in the file signs; the
   public half of every key is published at `/jwks`. `src/keys.ts` loads them from a JSON key file,
   `{ "profile": "<profile>", "keys": [ <private JWK>, … ] }`, marked with the profile it was made
@@ -51,7 +53,8 @@ no external signer. Each dev issuer has its own keys.
 
 ## Settings
 
-A setting that is unset or empty takes its default. A set value is taken exactly as written.
+A setting that is unset or empty takes its default, if it has one. A set value is taken exactly
+as written.
 
 | Setting | Meaning |
 |---|---|
@@ -69,9 +72,9 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   issuer's host;
 - a dev profile is given `MR_ACCOUNT_ISSUER`, or any setting whose name matches `MR_STEAM_*KEY*`
   (the Steam publisher key is `MR_STEAM_PUBLISHER_KEY`);
-- a key file is missing (except on `local-dev`), malformed, marked for another profile, holds
-  anything but P-256 private keys with distinct `kid`s, or, on `hosted-dev`, is readable by group or
-  others;
+- a key file is missing (except on `local-dev`), not a regular file, larger than 64 KiB,
+  malformed, marked for another profile, holds anything but P-256 private keys with distinct
+  `kid`s, or, on `hosted-dev`, is readable by group or others;
 - any other name beginning `MR_ACCOUNT_`, in any letter case, is set: a misspelt setting never
   falls back to a default.
 
@@ -89,11 +92,11 @@ written.
 - `just account-test` runs the package's tests and `just account-typecheck` its typecheck. Both are
   part of `just ci` and of the `account-service` job in `.github/workflows/ci.yml`. `just lint`
   lints the package with the rest of the tree.
-- Each recipe installs the package's dependencies from `account-service/package-lock.json` when they
-  are absent or older than the lock file.
-- A test that needs a module to fetch discovery must run the service on its real port, one instance
-  on a machine. Every other test drives the handler in process on a port the system chooses and
-  sends the issuer's `Host`.
+- Each recipe first installs the package's dependencies from `account-service/package-lock.json`
+  when they are absent or older than the lock file, running no dependency's install script. It
+  leaves a `node_modules` that is a symlink alone.
+- The tests listen on a port the system chooses and send the issuer's `Host`, so they never need
+  port 4455.
 
 ## Operator inputs
 
@@ -120,14 +123,17 @@ The service holds no accounts.
 
 ### Key rotation
 
-The key file is an ordered list: a key added after the first is published and does not sign; moved
-to the front it signs; taken out of the file it is published by nobody. No command edits the file.
+The key file is an ordered list, read at start: a key added after the first is published and does
+not sign; moved to the front it signs; taken out of the file it is published by nobody. Each change
+takes effect at the next start. No command edits the file.
 
 ### Backup and restore
 
-Everything to keep is the key file and `account.sqlite`.
+Everything to keep is the key file and `account.sqlite`. Copy the database with the service
+stopped, or through SQLite's own backup: a plain copy of a file being written can be torn.
 
 ### Moving to another host
 
-A host's issuer URL is part of every account's identity, so the name moves with the service; the
-key file and the database move with it.
+A module derives an account's identity from the issuer URL and the subject of its token
+(`docs/DECISIONS.md`, "Accounts, guest identity and the claim flow"), so the issuer's name moves
+with the service; the key file and the database move with it.

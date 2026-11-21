@@ -1,12 +1,13 @@
 import { createHash, createPrivateKey, generateKeyPairSync, randomUUID } from 'node:crypto';
 import {
   closeSync,
+  constants,
   fstatSync,
   linkSync,
   mkdirSync,
   openSync,
   readFileSync,
-  unlinkSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
@@ -43,6 +44,8 @@ const KEY_MEMBERS: ReadonlySet<string> = new Set([
 // A P-256 coordinate or scalar: 32 bytes as unpadded base64url.
 const P256_MEMBER = /^[A-Za-z0-9_-]{43}$/;
 const KID = /^[A-Za-z0-9_-]{1,64}$/;
+// A key is under 300 bytes of JSON; the cap keeps a wrong path from being read without end.
+const MAX_KEY_FILE_BYTES = 65_536;
 
 /** A fresh P-256 key whose `kid` is the RFC 7638 thumbprint (SHA-256, base64url) of its public half. */
 export function generateSigningKey(): SigningJwk {
@@ -96,19 +99,20 @@ function hasCode(error: unknown, code: string): boolean {
 function readKeyFile(path: string, profile: Profile): string | undefined {
   let fd: number;
   try {
-    fd = openSync(path, 'r');
+    // Non-blocking, so a path that names a pipe is refused below and never waited on.
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (error) {
     if (hasCode(error, 'ENOENT')) return undefined;
     throw refusal('the key file cannot be opened');
   }
   try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_KEY_FILE_BYTES) {
+      throw refusal(`the key file must be a regular file of at most ${MAX_KEY_FILE_BYTES} bytes`);
+    }
     // A deployed key signs tokens other machines trust: only its owner may read it. Windows
     // reports no such bits.
-    if (
-      profile !== 'local-dev' &&
-      process.platform !== 'win32' &&
-      (fstatSync(fd).mode & 0o077) !== 0
-    ) {
+    if (profile !== 'local-dev' && process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
       throw refusal('the key file must be readable by its owner only (mode 0600)');
     }
     return readFileSync(fd, 'utf8');
@@ -122,23 +126,20 @@ function readKeyFile(path: string, profile: Profile): string | undefined {
 
 /**
  * Writes a key file holding one new key. The file appears complete or not at all, and a file
- * already at the path is left as it is: the content is written beside it and linked into place.
+ * already at the path is left as it is: the content is written and flushed beside it, then linked
+ * into place. The copy beside it, which holds the private key, is removed on every path.
  */
 function createKeyFile(path: string, profile: Profile): void {
   const content = `${JSON.stringify({ profile, keys: [generateSigningKey()] }, null, 2)}\n`;
   const temp = `${path}.${randomUUID()}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(temp, content, { mode: 0o600, flag: 'wx' });
-  } catch {
-    throw refusal('the key file cannot be created');
-  }
-  try {
+    writeFileSync(temp, content, { mode: 0o600, flag: 'wx', flush: true });
     linkSync(temp, path);
   } catch (error) {
     if (!hasCode(error, 'EEXIST')) throw refusal('the key file cannot be created');
   } finally {
-    unlinkSync(temp);
+    rmSync(temp, { force: true });
   }
 }
 

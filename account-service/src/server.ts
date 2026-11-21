@@ -66,14 +66,17 @@ export async function startServer(
     close() {
       closed ??= (async () => {
         clearInterval(purge);
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) => {
-            if (error) reject(error);
-            else resolve();
+        try {
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => {
+              if (error) reject(error);
+              else resolve();
+            });
+            server.closeAllConnections();
           });
-          server.closeAllConnections();
-        });
-        store.close();
+        } finally {
+          store.close();
+        }
       })();
       return closed;
     },
@@ -100,9 +103,13 @@ if (import.meta.main) {
     const server = await startServer(process.env);
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       process.once(signal, () => {
-        void server.close().finally(() => {
-          process.exit(0);
-        });
+        server.close().then(
+          () => process.exit(0),
+          (error: unknown) => {
+            console.error('account-service: failed to close:', error);
+            process.exit(1);
+          },
+        );
       });
     }
   } catch (error) {
