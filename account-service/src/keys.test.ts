@@ -495,7 +495,7 @@ describe('every malformed key file is a key-file refusal that leaks no key mater
   });
 });
 
-// ---- acs-3: the attestation keys ----
+// ---- the attestation keys ----
 
 const ATTESTATION_MEMBERS = ['alg', 'crv', 'd', 'kid', 'kty', 'use', 'x'];
 const PUBLIC_ATTESTATION_MEMBERS = ['alg', 'crv', 'kid', 'kty', 'use', 'x'];

@@ -96,6 +96,8 @@ interface State {
   fallbacks: number;
   readonly reads: string[];
   readonly taken: Array<() => void>;
+  /** When set, `log` throws instead of recording the line. */
+  logThrows: boolean;
 }
 
 interface Harness {
@@ -142,7 +144,13 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
     [SUB2, { sub: SUB2, entitled: true }],
   ]);
   const lines: string[] = [];
-  const state: State = { failure: undefined, fallbacks: 0, reads: [], taken: [] };
+  const state: State = {
+    failure: undefined,
+    fallbacks: 0,
+    reads: [],
+    taken: [],
+    logThrows: false,
+  };
   const route = createAttestRoute({
     issuer: options.issuer ?? ISSUER,
     loginKeys,
@@ -155,6 +163,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
       return Promise.reject(failure.value);
     },
     log: (line) => {
+      if (state.logThrows) throw new Error('the log cannot be written');
       lines.push(line);
     },
     now: () => clock,
@@ -433,7 +442,7 @@ function iso(seconds: number): string {
   return new Date(seconds * 1000).toISOString();
 }
 
-// ---- acs-3.1 ----
+// ---- the attestation ----
 
 describe('an entitled account with a valid token gets an attestation', () => {
   test('the answer is 200 JSON holding exactly an attestation member, with the route headers acs-3.1', async () => {
@@ -637,7 +646,7 @@ describe('an entitled account with a valid token gets an attestation', () => {
   });
 });
 
-// ---- acs-3.2 ----
+// ---- refusals ----
 
 type Build = (h: Harness) => Call;
 
@@ -1332,15 +1341,21 @@ describe('every refusal before the limit answers with no attestation and takes n
     ],
     ['OPTIONS /attest/', () => ({ method: 'OPTIONS', path: '/attest/' })],
     ['GET /attest?x=1', () => ({ method: 'GET', path: '/attest?x=1' })],
-    ...['localhost:4456', 'localhost', '127.0.0.1:4455', 'example.com', 'evil.localhost:4455'].map(
-      (host): readonly [string, Build] => [
-        `Host ${host}`,
-        (h) => {
-          const call = withToken(good(h));
-          return { ...call, headers: { ...call.headers, host } };
-        },
-      ],
-    ),
+    ...[
+      'localhost:4456',
+      'localhost',
+      '127.0.0.1:4455',
+      'example.com',
+      'evil.localhost:4455',
+      'localhost:44550',
+      'localhost:4455.evil.example',
+    ].map((host): readonly [string, Build] => [
+      `Host ${host}`,
+      (h) => {
+        const call = withToken(good(h));
+        return { ...call, headers: { ...call.headers, host } };
+      },
+    ]),
   ];
 
   test.each(
@@ -1387,7 +1402,7 @@ describe('every refusal before the limit answers with no attestation and takes n
   });
 });
 
-// ---- acs-3.3 ----
+// ---- the limit ----
 
 describe('the limit of 20 attestations an hour per account', () => {
   test('20 pass and the 21st is 429 rate_limited, retry-after counting to the first hit turning an hour old acs-3.3', async () => {
@@ -1489,7 +1504,7 @@ describe('the limit of 20 attestations an hour per account', () => {
   });
 });
 
-// ---- acs-3.4 ----
+// ---- disjoint key sets ----
 
 describe('the attestation key set and the login key set are disjoint', () => {
   test('an attestation does not verify under the login key set acs-3.4', async () => {
@@ -1537,7 +1552,7 @@ describe('the attestation key set and the login key set are disjoint', () => {
   });
 });
 
-// ---- acs-3.5 ----
+// ---- what is logged ----
 
 const WORLD_MARK = 'dns:WORLDMARK-q7Zr2XvKp9Lm.example:3000/WORLDMARK-c41d9f0e';
 const NONCE_MARK = 'NONCEMARK-8Jt3Lw0QyVbH5n';
@@ -1655,6 +1670,31 @@ describe('what the route logs', () => {
     expect(h.lines[0]).toContain(SUB);
     expectCleanLines(h.lines, [token, ...token.split('.')]);
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  });
+
+  test('a success that cannot be logged is not issued: 500 with no attestation, the hit given back acs-3.5', async () => {
+    const unhandled = watchUnhandled();
+    const h = await harness();
+    const token = good(h);
+    h.state.logThrows = true;
+    for (let i = 0; i < 5; i += 1) {
+      expectRefusal(await post(h, token), 500, 'server_error', {});
+    }
+    h.state.logThrows = false;
+    expect(h.lines).toEqual([]);
+    await expectNoHitTaken(h);
+    expect(unhandled).toEqual([]);
+  });
+
+  test('a signing failure gives its hit back: 25 such requests are each 500, never 429 acs-3.3', async () => {
+    const unusable: AttestationJwk = { ...generateAttestationKey(), d: '' };
+    const h = await harness({ attestationKeys: { keys: [unusable] } });
+    const token = good(h);
+    for (let i = 1; i <= 25; i += 1) {
+      const reply = await post(h, token);
+      expect(reply.status, `request ${i}: ${reply.body}`).toBe(500);
+      expectRefusal(reply, 500, 'server_error', {});
+    }
   });
 });
 

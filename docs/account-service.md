@@ -310,8 +310,8 @@ takes effect at the next start. No command edits the file.
 `attestation-keys.json` is an ordered list too, and its first key signs. A world accepts only
 the keys its module was built with, so a new attestation key is published before it signs: add
 its public half to `publishedAttestationKeys()` and regenerate the list, ship modules built with
-it, then move the key to the front of the file and restart. The old key leaves the published list
-once no world should accept what it signed.
+it, then move the key to the front of the file and restart. A key leaves the published list once
+no world should accept what it signed.
 
 ### Backup and restore
 

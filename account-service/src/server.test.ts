@@ -673,7 +673,7 @@ describe('a local-dev server with a client and an account made by the admin comm
   });
 });
 
-// ---- acs-3: the attestation route, served by startServer ----
+// ---- the attestation route, served by startServer ----
 
 const CLIENT_ID = 'monster-realm';
 const REDIRECT_URI = 'http://localhost:5290/';
