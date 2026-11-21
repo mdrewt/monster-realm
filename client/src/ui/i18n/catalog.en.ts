@@ -496,6 +496,12 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // the page must be reloaded.
   // main.ts:1040
   'chrome.status.contentStale': 'content out of date — reload',
+  // @desc: Status-strip error shown when the server needs a newer game than this one. The client
+  // has left the server and stays out until the page is reloaded.
+  'chrome.status.serverNewer': 'This server runs a newer Monster Realm. Update the game to join.',
+  // @desc: Status-strip error shown when the server is older than this game, or publishes no
+  // protocol numbers. The client has left the server and stays out until the page is reloaded.
+  'chrome.status.serverOlder': 'This server runs an older Monster Realm. Its host must update it.',
   // @desc: Status-strip error shown when the browser blocked the bug-report bundle download; the
   // bundle is still printed to the developer console.
   // main.ts:2442

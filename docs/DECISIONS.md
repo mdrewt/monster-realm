@@ -1485,26 +1485,52 @@ table.
 
 **Decision.** `game-core` holds `PROTOCOL_VERSION`, which rises with every change to the server
 module's tables or reducers, and `MIN_CLIENT_PROTOCOL`, which rises only with a change an older
-client cannot talk across (a removed or re-typed reducer argument or table column) and never exceeds
-it. The module records both in row 0 of the public table `module_info`, from `init` and from the
-owner's `sync_content` whether or not the content changed; `client-wasm` exports the client's own
-number as `protocol_version()`. Every recipe and script in this repository that publishes over a
-database and keeps its data then calls `sync_content` as the publishing identity, and fails when
-that call is refused.
+client cannot talk across (a removed or re-typed reducer argument or table column, or a column
+appended to a table or view a client subscribes) and never exceeds it. The module records both in
+row 0 of the public table `module_info`, from `init` and from the owner's `sync_content` whether or
+not the content changed; `client-wasm` exports the client's own number as `protocol_version()`.
+Every recipe and script in this repository that publishes over a database and keeps its data then
+calls `sync_content` as the publishing identity, and fails when that call is refused.
 
 **Why.** `init` runs only when a database is created, and nothing in the module runs when a new
 module is published over existing data, so the owner's call is what makes the row describe the
 module that is running. That has to hold after a publish that changed the schema and left the
 content alone, which the content-version check would skip. The bump rule has no test: telling a
-breaking schema change from an additive one would mean restating the schema in the test.
+breaking schema change from an additive one would mean restating the schema in the test. An appended
+column is breaking because the 2.11.0 SDK decodes a row list back to back with the client's own row
+type: an older client throws inside the SDK on such a row and gets neither an applied nor an error
+callback (measured on `module_info` and on `zone_def`).
 
 **Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
 numbers below the content-version check, or from a reducer any caller may run. A recipe or script
 that publishes over kept data without the owner's call, or that ignores the call's exit status.
-Raising `MIN_CLIENT_PROTOCOL` for an additive change (it turns away every older client for nothing),
-or leaving it when something an older client uses is removed or re-typed. Treating the numbers as a
-server-side check: they tell a client which side to update, and every reducer still validates its
-own input.
+Raising `MIN_CLIENT_PROTOCOL` for a change no older client reads (a new table, a new reducer: it
+turns away every older client for nothing), or leaving it when something an older client uses is
+removed, re-typed or given a new column. Treating the numbers as a server-side check: they tell a
+client which side to update, and every reducer still validates its own input.
+
+## A client checks the server's protocol numbers before anything else, and a refusal lasts until reload
+
+**Decision.** Each connection subscribes `module_info` alone first and judges row 0 against its own
+`protocol_version()` (`client/src/net/protocolCheck.ts`). A protocol below the client's, no row or a
+refused query means the host must update the server; a `min_client_protocol` above the client means
+the player must update the game. A refusal ends the connection and the page builds no other one,
+and the line naming the side stays on the world hint until reload. An admitted connection is judged
+again whenever the row changes, and only toward refusal. `module_info`'s three columns never change.
+
+**Why.** The numbers help only if a client that cannot speak to the server can still read them, so
+they are read before any other table and from a row whose shape is fixed for good (the SDK cannot
+decode a row that gained or lost a column, see the entry above). The refusal is terminal so that the
+line and the game never disagree: a page that reconnected, was admitted and played under "Update the
+game to join" would be saying something false, and a line that cleared itself would be missed. A
+reload is the retry. An admitted connection is judged again because a client that reconnects between
+a publish and the owner's `sync_content` still reads the previous numbers.
+
+**Rules out.** Adding, removing or re-typing a column of `module_info` (a new fact goes in a new
+table). Subscribing anything else, or calling a reducer, before the verdict. Admitting a refused
+page later, or re-running the check on a timer. Serving a client bundle before the module it needs
+is published and synced: a client newer than the server it reaches is refused, correctly, and stays
+refused until reload. Reading the check as access control: the server turns nobody away by protocol.
 
 ## Observability: the module never times itself or calls out
 

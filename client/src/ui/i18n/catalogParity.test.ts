@@ -925,6 +925,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.partyFull',
       // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' leaves
       // main.ts with `reportError('privacy-busy', …)` (Profile is one dialog).
+      'chrome.status.serverNewer', // the protocol mismatch line, the game must update
+      'chrome.status.serverOlder', // the protocol mismatch line, the server must update
       'chrome.status.zoneEntered', // qf-15: the destination zone's name after a real zone change
       'dialogue.ended.leftZone', // qf-6: a refused advance ends the conversation, and says why
       'dialogue.ended.npcGone',

@@ -98,6 +98,11 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' retired
       // with the `privacy-busy` kind (Profile is one dialog).
       'chrome.status.contentStale': 'content out of date — reload',
+      // The two protocol mismatch lines, newer server then older server.
+      'chrome.status.serverNewer':
+        'This server runs a newer Monster Realm. Update the game to join.',
+      'chrome.status.serverOlder':
+        'This server runs an older Monster Realm. Its host must update it.',
       'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
       // ts-6b-13 (named intentional change): 'chrome.status.healUnavailable' leaves with the
       // heal-unavailable kind (healParty always carries its location).

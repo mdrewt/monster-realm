@@ -1,5 +1,6 @@
 // net/connection.ts — the live SpacetimeDB adapter (M4a; app-level reconnect M13.5b).
-// Imperative shell only: connect, subscribe (the base set, then the own character row and each
+// Imperative shell only: connect, check the server's protocol numbers (`module_info` alone,
+// protocolCheck.ts), subscribe (the base set, then the own character row and each
 // wanted zone's characters as worldScope.ts directs), mirror authoritative
 // rows into the AuthoritativeStore (converting at the boundary, coalescing a
 // transaction's row burst via MicrotaskBatcher -> ONE flushBatch), and
@@ -41,6 +42,12 @@ import {
 } from './credentialDecision';
 import { type SendLogger, wrapReducerLogging } from './devLog';
 import { createOidcClient, type OidcClient } from './oidc';
+import {
+  checkProtocol,
+  type ProtocolMismatch,
+  type ServerProtocol,
+  serverProtocolFrom,
+} from './protocolCheck';
 import {
   accountRowToStore,
   battleChallengeRowToStore,
@@ -156,11 +163,17 @@ export interface ConnectionOptions {
    *  is kept (`tokenPersistenceFor`): on the device for `local` and `private`, per tab for
    *  `official` and `test`. */
   readonly targetKind: TargetKind;
+  /** The protocol this client speaks (client-wasm's `protocol_version()`). Each connection checks
+   *  it against the server's `module_info` row before it subscribes anything else. */
+  readonly clientProtocol: number;
+  /** The server cannot be spoken to; `side` says who must update. That connection has ended and
+   *  the page builds no other one. */
+  readonly onProtocolMismatch: (side: ProtocolMismatch) => void;
 }
 
 export interface Connection {
   /** The CURRENT live DbConnection, or undefined while no connection is built (cold start,
-   *  mid-attempt, or a parked terminal state). Getter-backed. */
+   *  mid-attempt, a parked terminal state, or a server the protocol check refused). Getter-backed. */
   readonly conn: DbConnection | undefined;
   /** The current live DbConnection, or undefined — the same slot the getter reads, exposed as
    *  a method so callers `const live = conn?.live()` and guard once (G26). */
@@ -251,6 +264,8 @@ export function connect(opts: ConnectionOptions): Connection {
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
   // Teardown guard: once the page is going away, never rebuild.
   let teardown = false;
+  // Set when the protocol check refuses the server: that connection is the page's last.
+  let refused = false;
   // Ends the current build's world scope: its timer stops and its state is discarded. No handle
   // is unsubscribed, because every caller is leaving that connection behind.
   let stopScope: (() => void) | undefined;
@@ -306,7 +321,8 @@ export function connect(opts: ConnectionOptions): Connection {
    * genuine connected→disconnected edge), and schedule the rebuild. onDisconnected counts the
    * drop of an attempt that never applied as that attempt's failure (one rung) and leaves an
    * already-down link as it is, so the SDK's onerror-then-onclose double event cannot transition
-   * or climb twice (A7/A8).
+   * or climb twice (A7/A8). On a refused page it wipes and freezes only: nothing is reconnecting,
+   * so nothing says so, and the rebuild it schedules builds nothing (attemptBuild).
    */
   function handleDrop(): void {
     stopScope?.();
@@ -314,8 +330,26 @@ export function connect(opts: ConnectionOptions): Connection {
     ownerViews.markAllDirty();
     const wasConnected = state.link === 'connected';
     state = onDisconnected(state);
-    if (wasConnected) opts.onError('link', 'connection lost — reconnecting…');
+    if (wasConnected && !refused) opts.onError('link', 'connection lost — reconnecting…');
     scheduleRebuild();
+  }
+
+  /**
+   * The protocol check refused the server `c` reached: this is the page's last connection. It
+   * ends the way a drop does (scope stopped, rows wiped, link frozen) and nothing is built after
+   * it; `current` is dropped so no reducer can be sent; a session terminal is cleared, since on a
+   * refused page its actions cannot do anything. The socket is closed so the server sees this
+   * connection end, and the caller is told last. Rows the SDK still delivers from the message being
+   * dispatched land in the wiped store, as after the world scope's `drop`; its close event runs
+   * the drop path once more and wipes them.
+   */
+  function refuse(c: DbConnection, side: ProtocolMismatch): void {
+    refused = true;
+    handleDrop();
+    sessionMode = 'hidden';
+    current = undefined;
+    c.disconnect();
+    opts.onProtocolMismatch(side);
   }
 
   // SINGLETON CONSTRAINT (review H1): connect() registers these window listeners
@@ -911,156 +945,198 @@ export function connect(opts: ConnectionOptions): Connection {
         if (credential.kind === 'account') writeAuthKind(globalThis, opts.uri, opts.db, 'account');
         identity = id.toHexString();
         const reconnecting = hadSession;
+        // The base set, opened only once the protocol check below admits this client.
+        const openBaseSet = (): void => {
+          c.subscriptionBuilder()
+            .onApplied(() => {
+              if (stale()) return; // superseded build: never unfreeze/join on a dead link
+              // The snapshot is in the cache: every owner view is rebuilt on the next batch. First,
+              // so a throwing callback below cannot skip it.
+              ownerViews.markAllDirty();
+              // The link is fully usable only once the initial snapshot applies: unfreeze + reset
+              // the backoff ladder here (the ONLY attempt reset), and clear any session terminal.
+              state = onConnected(state);
+              sessionMode = 'hidden';
+              // Join gate, re-evaluated FRESH every applied snapshot. The claim-code
+              // veto is the SOLE veto and is scoped to account-kind builds; my_account presence is
+              // NEVER consulted in it (AUTH-52). Anon builds always join — the idempotent A4 re-join
+              // (server on_disconnect deletes the player + character rows when the identity's LAST
+              // live connection ends — so a reconnect must still attempt the join).
+              const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
+              const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;
+              if (shouldJoin) {
+                attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);
+              } else if (store.ownAccount(identity) !== undefined) {
+                // AUTH-53: re-issue complete_guest_claim on THIS connection's first applied snapshot,
+                // unconditionally — a pre-drop promise never settles. onClaimPending is
+                // a UX notification fired ALONGSIDE the reducer call, never a substitute for it.
+                const code = claimCode.read(globalThis, opts.uri, opts.db)!;
+                // Call on the RAW connection, NOT wrapReducerLogging(c): the dev-observability
+                // Proxy JSON-stringifies reducer args to the onSend sink, and `code` is a bearer
+                // secret (whoever holds it can steal this guest's progress). joinGame's `{name}` is
+                // sanctioned free text; a claim code categorically is not (AUTH-57 spirit; the G21
+                // scanner can't see this indirect sink — its own residual R4). Assigned first so the
+                // `.reducers.completeGuestClaim({ code })` call stays contiguous (biome breaks a short
+                // receiver's method chain otherwise) — G18 pins that exact needle.
+                const pendingClaim = c.reducers.completeGuestClaim({ code });
+                // Two-argument `then`: the reject arm sees only the reducer's rejection, so a throw
+                // inside the success handler is logged and never reported as a refused claim.
+                pendingClaim
+                  .then(
+                    () => opts.onClaimResult?.({ ok: true, message: '' }),
+                    (err) =>
+                      opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),
+                  )
+                  .catch((err) => console.error('[claim] result handler error', err));
+                opts.onClaimPending?.(code);
+              } else {
+                opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe
+              }
+              // The link is live: open the world scope. The first run usually finds no own rows
+              // yet (they arrive as row callbacks after this one); each own-row callback runs it
+              // again, and the timer runs it while nothing else does.
+              scopeConn = c;
+              stopScope = endScope;
+              scopeSummary = () => describeScope(scope);
+              scopeTimer = setInterval(runScope, SCOPE_TICK_MS);
+              opts.onScopeSettled?.(false);
+              runScope();
+              // Arm the hydration edge BEFORE notifying, so a throwing callback cannot lose it.
+              snapshotApplied = true;
+              hadSession = true;
+              if (reconnecting) opts.onReconnect(identity);
+              else opts.onReady(identity);
+            })
+            // Forward the SDK's subscription-error payload; subscriptionErrorMessage is
+            // fallback-guarded against shape surprises.
+            .onError((ctx) => opts.onError('subscribe', subscriptionErrorMessage(ctx)))
+            .subscribe([
+              // `character` is NOT in this set: it is the one table written on every step, so it
+              // is subscribed by the world scope above as the own row plus one set per wanted
+              // zone. `player` is world-wide: nothing writes it per step, and it is the directory
+              // the Players tab, names and trade / challenge targeting read.
+              'SELECT * FROM player',
+              // monster_pub is PRIVATE — subscribe
+              // the owner-scoped my_monster_pub view instead (the my_conversation /
+              // my_wallet pattern). Other players' monster rows are need-to-know
+              // and are not delivered at all (no client consumer exists).
+              'SELECT * FROM my_monster_pub',
+              'SELECT * FROM species_row',
+              // battle is PRIVATE — subscribe the
+              // participant-scoped my_battle view instead (the my_monster_pub /
+              // my_wallet pattern). Each client receives only rows where it is
+              // player_identity or opponent_identity; store.ongoingBattle's
+              // own-identity filter remains as defense-in-depth.
+              'SELECT * FROM my_battle',
+              'SELECT * FROM skill_row',
+              // inventory is PRIVATE — subscribe the owner-scoped my_inventory view instead
+              // (the my_monster_pub pattern; subscribing the private table errors the whole
+              // batch). store.ownInventory's owner filter stays as defense in depth. item_row
+              // is public content (no owner).
+              'SELECT * FROM my_inventory',
+              'SELECT * FROM item_row',
+              // evolution_path is public content (every authored edge is visible to every
+              // player — EG3/EG4). The name is EXACT: a wrong table name errors the WHOLE
+              // subscription batch and onApplied never fires.
+              'SELECT * FROM evolution_path',
+              // dialogue / quest / heal / npc tables.
+              // player_conversation is PRIVATE — subscribe the
+              // owner-scoped my_conversation view instead (subscribing the private
+              // table errors the whole batch and onApplied never fires).
+              'SELECT * FROM my_conversation',
+              // player_quest is PRIVATE — subscribe the owner-scoped my_player_quest view instead
+              // (the my_inventory pattern; subscribing the private table errors the whole batch).
+              // store.ownQuests's owner filter stays as defense in depth.
+              'SELECT * FROM my_player_quest',
+              'SELECT * FROM heal_location_row',
+              'SELECT * FROM npc',
+              'SELECT * FROM zone_def',
+              // shop catalog (public content).
+              'SELECT * FROM shop_row',
+              'SELECT * FROM shop_item_row',
+              // ux2b: player_wallet is PRIVATE — subscribe the owner-scoped my_wallet
+              // view instead, exactly as my_conversation is subscribed above.
+              // Subscribing the private table would error the whole batch and onApplied
+              // would never fire.
+              'SELECT * FROM my_wallet',
+              // battle_challenge is a PUBLIC runtime table; challenger
+              // and target subscribe. battle_action is PRIVATE (must-never-leak)
+              // and MUST NEVER be subscribed here.
+              'SELECT * FROM battle_challenge',
+              // The leaderboard (RL-13): the profile rows of the leaderboard_top members (the top
+              // 100, kept by the server) and the caller's own row, never the whole profile table,
+              // which grows with every account that ever rated.
+              'SELECT profile.* FROM profile JOIN leaderboard_top ON profile.identity = leaderboard_top.identity',
+              `SELECT * FROM profile WHERE identity = 0x${identity}`,
+              // my_account is the owner-scoped VIEW over the PRIVATE account
+              // table — the sole reconciliation authority for "am I signed in" (AUTH-51). Ingested
+              // with onInsert + onUpdate (and NO onDelete) in wireTables above. Subscribing the
+              // private `account` table itself would error the whole batch and onApplied never fires.
+              'SELECT * FROM my_account',
+              // my_export_bundle is the owner-scoped VIEW over the PRIVATE
+              // export_bundle table — the ONLY client read path for a completed data export.
+              // Subscribing `export_bundle` itself would error the whole batch.
+              'SELECT * FROM my_export_bundle',
+              // my_pending_evolution_notices is the owner-scoped VIEW over
+              // the PRIVATE pending_evolution_notice table — subscribing the table itself would
+              // error the whole batch and onApplied would never fire.
+              'SELECT * FROM my_pending_evolution_notices',
+              // The seven owner- / participant-scoped tactical VIEWS (schema.rs
+              // my_tactical_battle … my_formation). Every table behind them is PRIVATE — subscribing
+              // `battle_unit` or `player_formation` itself would error the whole batch and
+              // onApplied would never fire. Names are EXACT.
+              'SELECT * FROM my_tactical_battle',
+              'SELECT * FROM my_battle_units',
+              'SELECT * FROM my_battle_queue',
+              'SELECT * FROM my_battle_deploy',
+              'SELECT * FROM my_battle_clock',
+              'SELECT * FROM my_battle_events',
+              'SELECT * FROM my_formation',
+              // my_trade_session is the participant-scoped VIEW over the PRIVATE trade_session
+              // table: each client receives only the sessions it is in. Subscribing `trade_session`
+              // itself would error the whole batch.
+              'SELECT * FROM my_trade_session',
+            ]);
+        };
+        // The protocol check (protocolCheck.ts): `module_info` alone first. Until its verdict
+        // nothing else is subscribed and no reducer is called. An admitted build is judged again
+        // whenever the row changes, from the cache, and only toward refusal: a server whose
+        // numbers move past this client mid-session is left, and a refused page is never admitted.
+        let admitted = false;
+        // TOTAL: a read that throws would leave the client with no verdict, so it is a refusal.
+        const readServerProtocol = (): ServerProtocol => {
+          try {
+            return serverProtocolFrom(c.db.moduleInfo.iter());
+          } catch (err) {
+            console.error('[net] module_info could not be read', err);
+            return 'refused';
+          }
+        };
+        const judge = (server: ServerProtocol): void => {
+          if (stale() || refused) return;
+          const verdict = checkProtocol(server, opts.clientProtocol);
+          if (verdict !== 'ok') {
+            refuse(c, verdict);
+            return;
+          }
+          if (admitted) return;
+          admitted = true;
+          const rejudge = (): void => judge(readServerProtocol());
+          c.db.moduleInfo.onInsert(rejudge);
+          c.db.moduleInfo.onUpdate(rejudge);
+          c.db.moduleInfo.onDelete(rejudge);
+          openBaseSet();
+        };
         c.subscriptionBuilder()
-          .onApplied(() => {
-            if (stale()) return; // superseded build: never unfreeze/join on a dead link
-            // The snapshot is in the cache: every owner view is rebuilt on the next batch. First,
-            // so a throwing callback below cannot skip it.
-            ownerViews.markAllDirty();
-            // The link is fully usable only once the initial snapshot applies: unfreeze + reset
-            // the backoff ladder here (the ONLY attempt reset), and clear any session terminal.
-            state = onConnected(state);
-            sessionMode = 'hidden';
-            // Join gate, re-evaluated FRESH every applied snapshot. The claim-code
-            // veto is the SOLE veto and is scoped to account-kind builds; my_account presence is
-            // NEVER consulted in it (AUTH-52). Anon builds always join — the idempotent A4 re-join
-            // (server on_disconnect deletes the player + character rows when the identity's LAST
-            // live connection ends — so a reconnect must still attempt the join).
-            const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
-            const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;
-            if (shouldJoin) {
-              attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);
-            } else if (store.ownAccount(identity) !== undefined) {
-              // AUTH-53: re-issue complete_guest_claim on THIS connection's first applied snapshot,
-              // unconditionally — a pre-drop promise never settles. onClaimPending is
-              // a UX notification fired ALONGSIDE the reducer call, never a substitute for it.
-              const code = claimCode.read(globalThis, opts.uri, opts.db)!;
-              // Call on the RAW connection, NOT wrapReducerLogging(c): the dev-observability
-              // Proxy JSON-stringifies reducer args to the onSend sink, and `code` is a bearer
-              // secret (whoever holds it can steal this guest's progress). joinGame's `{name}` is
-              // sanctioned free text; a claim code categorically is not (AUTH-57 spirit; the G21
-              // scanner can't see this indirect sink — its own residual R4). Assigned first so the
-              // `.reducers.completeGuestClaim({ code })` call stays contiguous (biome breaks a short
-              // receiver's method chain otherwise) — G18 pins that exact needle.
-              const pendingClaim = c.reducers.completeGuestClaim({ code });
-              // Two-argument `then`: the reject arm sees only the reducer's rejection, so a throw
-              // inside the success handler is logged and never reported as a refused claim.
-              pendingClaim
-                .then(
-                  () => opts.onClaimResult?.({ ok: true, message: '' }),
-                  (err) =>
-                    opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),
-                )
-                .catch((err) => console.error('[claim] result handler error', err));
-              opts.onClaimPending?.(code);
-            } else {
-              opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe
-            }
-            // The link is live: open the world scope. The first run usually finds no own rows
-            // yet (they arrive as row callbacks after this one); each own-row callback runs it
-            // again, and the timer runs it while nothing else does.
-            scopeConn = c;
-            stopScope = endScope;
-            scopeSummary = () => describeScope(scope);
-            scopeTimer = setInterval(runScope, SCOPE_TICK_MS);
-            opts.onScopeSettled?.(false);
-            runScope();
-            // Arm the hydration edge BEFORE notifying, so a throwing callback cannot lose it.
-            snapshotApplied = true;
-            hadSession = true;
-            if (reconnecting) opts.onReconnect(identity);
-            else opts.onReady(identity);
+          .onApplied(() => judge(readServerProtocol()))
+          // A refused query is what a module that predates `module_info` answers. Once admitted,
+          // an error of this set decides nothing.
+          .onError((ctx) => {
+            if (stale() || admitted) return;
+            console.error('[net] module_info subscription refused', subscriptionErrorMessage(ctx));
+            judge('refused');
           })
-          // Forward the SDK's subscription-error payload (was discarded pre-M13.5b);
-          // subscriptionErrorMessage is fallback-guarded against shape surprises.
-          .onError((ctx) => opts.onError('subscribe', subscriptionErrorMessage(ctx)))
-          .subscribe([
-            // `character` is NOT in this set: it is the one table written on every step, so it
-            // is subscribed by the world scope above as the own row plus one set per wanted
-            // zone. `player` is world-wide: nothing writes it per step, and it is the directory
-            // the Players tab, names and trade / challenge targeting read.
-            'SELECT * FROM player',
-            // monster_pub is PRIVATE — subscribe
-            // the owner-scoped my_monster_pub view instead (the my_conversation /
-            // my_wallet pattern). Other players' monster rows are need-to-know
-            // and are not delivered at all (no client consumer exists).
-            'SELECT * FROM my_monster_pub',
-            'SELECT * FROM species_row',
-            // battle is PRIVATE — subscribe the
-            // participant-scoped my_battle view instead (the my_monster_pub /
-            // my_wallet pattern). Each client receives only rows where it is
-            // player_identity or opponent_identity; store.ongoingBattle's
-            // own-identity filter remains as defense-in-depth.
-            'SELECT * FROM my_battle',
-            'SELECT * FROM skill_row',
-            // inventory is PRIVATE — subscribe the owner-scoped my_inventory view instead
-            // (the my_monster_pub pattern; subscribing the private table errors the whole
-            // batch). store.ownInventory's owner filter stays as defense in depth. item_row
-            // is public content (no owner).
-            'SELECT * FROM my_inventory',
-            'SELECT * FROM item_row',
-            // evolution_path is public content (every authored edge is visible to every
-            // player — EG3/EG4). The name is EXACT: a wrong table name errors the WHOLE
-            // subscription batch and onApplied never fires.
-            'SELECT * FROM evolution_path',
-            // dialogue / quest / heal / npc tables.
-            // player_conversation is PRIVATE — subscribe the
-            // owner-scoped my_conversation view instead (subscribing the private
-            // table errors the whole batch and onApplied never fires).
-            'SELECT * FROM my_conversation',
-            // player_quest is PRIVATE — subscribe the owner-scoped my_player_quest view instead
-            // (the my_inventory pattern; subscribing the private table errors the whole batch).
-            // store.ownQuests's owner filter stays as defense in depth.
-            'SELECT * FROM my_player_quest',
-            'SELECT * FROM heal_location_row',
-            'SELECT * FROM npc',
-            'SELECT * FROM zone_def',
-            // shop catalog (public content).
-            'SELECT * FROM shop_row',
-            'SELECT * FROM shop_item_row',
-            // ux2b: player_wallet is PRIVATE — subscribe the owner-scoped my_wallet
-            // view instead, exactly as my_conversation is subscribed above.
-            // Subscribing the private table would error the whole batch and onApplied
-            // would never fire.
-            'SELECT * FROM my_wallet',
-            // battle_challenge is a PUBLIC runtime table; challenger
-            // and target subscribe. battle_action is PRIVATE (must-never-leak)
-            // and MUST NEVER be subscribed here.
-            'SELECT * FROM battle_challenge',
-            // The leaderboard (RL-13): the profile rows of the leaderboard_top members (the top
-            // 100, kept by the server) and the caller's own row, never the whole profile table,
-            // which grows with every account that ever rated.
-            'SELECT profile.* FROM profile JOIN leaderboard_top ON profile.identity = leaderboard_top.identity',
-            `SELECT * FROM profile WHERE identity = 0x${identity}`,
-            // my_account is the owner-scoped VIEW over the PRIVATE account
-            // table — the sole reconciliation authority for "am I signed in" (AUTH-51). Ingested
-            // with onInsert + onUpdate (and NO onDelete) in wireTables above. Subscribing the
-            // private `account` table itself would error the whole batch and onApplied never fires.
-            'SELECT * FROM my_account',
-            // my_export_bundle is the owner-scoped VIEW over the PRIVATE
-            // export_bundle table — the ONLY client read path for a completed data export.
-            // Subscribing `export_bundle` itself would error the whole batch.
-            'SELECT * FROM my_export_bundle',
-            // my_pending_evolution_notices is the owner-scoped VIEW over
-            // the PRIVATE pending_evolution_notice table — subscribing the table itself would
-            // error the whole batch and onApplied would never fire.
-            'SELECT * FROM my_pending_evolution_notices',
-            // bt-12 (BT12.1): the seven owner- / participant-scoped tactical VIEWS (schema.rs
-            // my_tactical_battle … my_formation). Every table behind them is PRIVATE — subscribing
-            // `battle_unit` or `player_formation` itself would error the whole batch and
-            // onApplied would never fire. Names are EXACT.
-            'SELECT * FROM my_tactical_battle',
-            'SELECT * FROM my_battle_units',
-            'SELECT * FROM my_battle_queue',
-            'SELECT * FROM my_battle_deploy',
-            'SELECT * FROM my_battle_clock',
-            'SELECT * FROM my_battle_events',
-            'SELECT * FROM my_formation',
-            // my_trade_session is the participant-scoped VIEW over the PRIVATE trade_session
-            // table: each client receives only the sessions it is in. Subscribing `trade_session`
-            // itself would error the whole batch.
-            'SELECT * FROM my_trade_session',
-          ]);
+          .subscribe('SELECT * FROM module_info');
       })
       .onConnectError((_ctx, err: Error) => {
         if (stale()) return; // a superseded build's late failure must not dirty the status line
@@ -1142,9 +1218,10 @@ export function connect(opts: ConnectionOptions): Connection {
    * start, reconnectNow and continueAnonymously. Starts the reconnect attempt and bumps the
    * generation before the async gap, resolves the credential inside an exception boundary (C1:
    * an ordinary Better Auth hiccup must never stop the ladder), re-checks staleness after the
-   * await, and routes each terminal kind.
+   * await, and routes each terminal kind. On a page the protocol check refused it builds nothing.
    */
   async function attemptBuild(): Promise<void> {
+    if (refused) return;
     // Started here, before the async gap, so every failure of this attempt — an arm below, or
     // the build's own onConnectError / onDisconnect — finds an attempt in flight and climbs the
     // ladder once for it.

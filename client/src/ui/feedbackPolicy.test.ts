@@ -20,6 +20,9 @@
  * ts-6b-13 (named intentional change): the `heal-unavailable` toast kind retires with the
  * location-less heal path (the healParty command always carries its locationId): 59 -> 58 rows
  * (16 hint + 31 toast + 10 modal + 1 blocking).
+ *
+ * The table has 59 rows (17 hint + 31 toast + 10 modal + 1 blocking), 23 of them action-required;
+ * `protocol-mismatch` is the one hint of rank 4.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -50,6 +53,8 @@ const EXPECTED_CHANNEL: Record<MessageKind, Channel> = {
   'connect-failure': 'hint',
   'content-stale': 'hint',
   'download-blocked': 'hint',
+  // The protocol mismatch line.
+  'protocol-mismatch': 'hint',
   'care-success': 'toast',
   'care-rejected': 'toast',
   'monsters-move-ok': 'toast',
@@ -102,7 +107,8 @@ const TABLE_KINDS = Object.keys(EXPECTED_CHANNEL) as MessageKind[];
 const kindsOf = (channel: Channel): MessageKind[] =>
   TABLE_KINDS.filter((k) => EXPECTED_CHANNEL[k] === channel);
 
-/** The table's "Player must act = yes" rows, literally (7 hint, 4 toast, 10 modal, 1 blocking).
+/** The table's "Player must act = yes" rows, literally (8 hint, 4 toast, 10 modal,
+ *  1 blocking).
  *  uif-16b (named intentional change, WF1-A10): 5 -> 4 toast, 'privacy-busy' retired. */
 const ACTION_REQUIRED: readonly MessageKind[] = [
   'capture-prompt',
@@ -112,6 +118,7 @@ const ACTION_REQUIRED: readonly MessageKind[] = [
   'challenge-request',
   'content-stale',
   'download-blocked',
+  'protocol-mismatch',
   'party-full',
   'link-down-send',
   'link-down-view',
@@ -154,9 +161,9 @@ describe('feedbackPolicy (uif-4)', () => {
     expect(actual).toEqual(EXPECTED_CHANNEL);
   });
 
-  it('UIF4.1 the four channels hold 16 hint, 31 toast, 10 modal and 1 blocking kind', () => {
+  it('UIF4.1 the four channels hold 17 hint, 31 toast, 10 modal and 1 blocking kind', () => {
     // WRONG IMPL KILLED: a table typed to compile but with a channel emptied or bloated.
-    expect(kindsOf('hint')).toHaveLength(16);
+    expect(kindsOf('hint')).toHaveLength(17);
     expect(
       rows()
         .filter(([, r]) => r.channel === 'hint')
@@ -178,9 +185,10 @@ describe('feedbackPolicy (uif-4)', () => {
     expect(Object.keys(partial)).toEqual(['y-description']);
   });
 
-  it('UIF4.1 hintRank is 3 for every action-required hint kind', () => {
+  it('UIF4.1 hintRank is 3 for every other action-required hint kind', () => {
     // WRONG IMPL KILLED: a rank table that forgets a "yes" hint row (a claim veto would lose to
     // a disabled reason on the strip).
+    // 'protocol-mismatch' is the one action-required hint of rank 4 (its own test below), so it is not in this list.
     const rank3: MessageKind[] = [
       'capture-prompt',
       'controls-refused',
@@ -276,5 +284,40 @@ describe('feedbackPolicy (uif-4)', () => {
     for (const [kind, row] of rows()) {
       if (!ACTION_REQUIRED.includes(kind)) expect(row.alsoCarriedBy, kind).toBeNull();
     }
+  });
+
+  // ---------------------------------------------------------------- the protocol mismatch hint
+  it('protocol-mismatch is a hint the player must act on, carried by the world hint line until reload [lpw-4.4]', () => {
+    // WRONG IMPL KILLED: the mismatch routed to the toast (gone when its timer ends); a row
+    // marked informational; the content-stale row's sibling "until overwritten" carrier (a later
+    // hint would be allowed to take its place).
+    expect(FEEDBACK_POLICY['protocol-mismatch']).toEqual({
+      channel: 'hint',
+      actionRequired: true,
+      alsoCarriedBy: 'the world hint line until reload',
+    });
+    expect(channelOf('protocol-mismatch')).toBe('hint');
+  });
+
+  it('hintRank of protocol-mismatch is 4 and no other kind has it; it outranks every hint kind and no other kind outranks it [lpw-4.4]', () => {
+    // WRONG IMPL KILLED: the mismatch left at rank 3 (a later download-blocked or content-stale
+    // hint paints over it, and uncovering it says it a second time); rank 4 given to another
+    // kind too; an outranks that ignores the rank.
+    expect(hintRank('protocol-mismatch')).toBe(4);
+    const others = TABLE_KINDS.filter((k) => k !== 'protocol-mismatch');
+    expect(others).toHaveLength(TABLE_KINDS.length - 1);
+    for (const kind of others) {
+      expect(hintRank(kind), kind).not.toBe(4);
+      expect(outranks(kind, 'protocol-mismatch'), `${kind} over protocol-mismatch`).toBe(false);
+    }
+    for (const kind of kindsOf('hint')) {
+      expect(outranks('protocol-mismatch', kind), `protocol-mismatch over ${kind}`).toBe(true);
+    }
+    expect(outranks('download-blocked', 'protocol-mismatch')).toBe(false);
+    expect(outranks('content-stale', 'protocol-mismatch')).toBe(false);
+    expect(outranks('world-disconnect', 'protocol-mismatch')).toBe(false);
+    expect(outranks('protocol-mismatch', 'download-blocked')).toBe(true);
+    expect(outranks('protocol-mismatch', 'content-stale')).toBe(true);
+    expect(outranks('protocol-mismatch', 'world-disconnect')).toBe(true);
   });
 });
