@@ -2431,10 +2431,10 @@ into the shell document; `dns:<host>:<port>/<db>` for a domain server the platfo
 checks validated, the shell refusing every certificate error. Any other target has no name, and the
 client asks for no attestation for it. The name is computed by the party that authenticated the
 server, never by the world and never by a page we did not serve: in the shell the main process
-computes it and calls the attestation route, and toward a `local` or `private` target the page is
-given the attestation and no login token. A world holds its own names in a private table its owner
-writes, and `bind_world_account` accepts an attestation only when its `aud` equals one of them. A
-page that a world's gate serves makes no request to the account service. Designed, not built:
+computes it and calls the attestation route, and the shell's page, toward a `local` or `private`
+target, is given the attestation and no login token. A world holds its own names in a private table
+its owner writes, and `bind_world_account` accepts an attestation only when its `aud` equals one of
+them. Designed, not built:
 `docs/local-play.md` §3, "The access and attestation design", fork (c), which names the work in the
 harness specs that builds it and the test that proves it.
 
@@ -2564,9 +2564,7 @@ it admits only a connection bound by an attestation that carried it (see "A priv
 an account by a per-world attestation our account service signs"). The account service issues the
 claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence held by the player
 themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
-removes entitlement at the next issuance (an hour at most on the official server). Test and dev
-builds of the module do not enforce it, so the e2e suite and local development still join
-anonymously; the build input is the module's cargo features (see "Ownership is enforced unless a dev feature switches it off"). Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
+removes entitlement at the next issuance (an hour at most on the official server). A build that names the dev feature `open_join` does not enforce it, so the e2e suite and local development still join anonymously (see "Ownership is enforced unless a dev feature switches it off"). Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
 players, must own the game in order to play").
 
 **Why.** The operator's ruling. The claim is checked by the module, not implied by the issuer, so

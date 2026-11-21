@@ -672,12 +672,12 @@ own software authenticated it:
 
 - *The spelling.* `<fingerprint>` is the SHA-256 of the world's own certificate key, in the form
   the invite prints. `<host>` is lower-cased, in its ASCII form, with no trailing dot; the port is
-  always written. One function produces a name, for the shell and for whatever writes a world's
-  names; it is not the function that keys the reconnect token, which never normalizes a `uri`.
+  always written. The function that produces a name is not the one that keys the reconnect token,
+  which never normalizes a `uri`.
 - *Who supplies it.* The party that authenticated the server, never the world and never a page we
   did not serve. One function computes a name from a target (its kind, `uri`, `db` and
-  fingerprint); it lives in the client, and the shell imports it as it imports the connection
-  resolver. In the desktop shell the main process calls it with the pin it enforced or the address
+  fingerprint), for the client, the shell and whatever writes a world's names; it lives in the
+  client, and the shell imports it as it imports the connection resolver. In the desktop shell the main process calls it with the pin it enforced or the address
   it dialled, and calls the attestation route; toward a `local` or `private` target the page calls
   one function that takes the nonce and returns the attestation, and is given no login token.
 - *What the world holds.* Its own names, in a private table only its owner writes, and
@@ -743,9 +743,9 @@ to the binding or the nonce, and passing that check unconditionally turns the te
 authenticated target alone, which no message from the server changes
 (`client/src/net/attestation.test.ts`). Those are the module's half and the client's half. The run
 over two real hosts and their certificates (a relay, a proxy, invites that mix one world's
-fingerprint with the other's address) needs the gate and the pin, which lpw-14 and lpw-18 build and
-no criterion of theirs asks for; until it has run, the relay is closed by design and proved in
-halves.
+fingerprint with the other's address) needs the gate and the pin, which lpw-12, lpw-14 and lpw-18
+build and no criterion of theirs asks for; until it has run, the relay is closed by design and
+proved in halves, and no `world` build is given the production attestation keys.
 
 #### (e) The build input, and the order of calls
 
@@ -805,7 +805,8 @@ What changes with it, in the slice that builds it (acs-6). Every site that build
 anonymous play names `open_join`: in `justfile` (the first line of `just test`, `ci-fast` and the
 mutation recipes included, since the module's own tests join), `scripts/smoke-republish.sh`,
 `client/e2e/global-setup.ts` and the load smoke in `.github/workflows/nightly.yml`; a site that
-publishes with `--module-path` passes it through `--build-options`. Ranked play reads the same
+publishes with `--module-path` passes it through `--build-options`, which was tried here for
+argument parsing only. Ranked play reads the same
 issuer list (`ranked_enforcement_active` in `server-module/src/pvp.rs`), and a test build lists the
 dev issuers, so that gate and its tests change in the same slice. The recipe and the reader of the
 artefact's profile are built there too.
@@ -865,9 +866,9 @@ plays nothing and can watch.
 | lpw-11 | The preload exposes one more function, which takes a nonce and returns an attestation; lpw-11.1 and lpw-11.3 allow the shell document and no channel. No typed or imported entry carries a reconnect token |
 | lpw-12, lpw-14 | The gate gains the door endpoint, which it serves itself and never forwards; a limit on door attempts by source address; the identity behind each socket, and the closing of a removed identity's sockets; and reading the world's rule back before it listens beyond loopback. The two-host relay run of fork (c) has no owner yet |
 | lpw-13 | The shell admits its own player before the rule leaves `Open`, writes the world's names at each start, and embeds the artefact `just release-module` wrote, by its hash |
-| lpw-15 | It needs the shell document's fingerprint field, which lpw-18 specifies. The bind and the nonce reducer each gain an owner-only form that takes the joiner's identity, for `Allowlist`. A page a gate serves does not sign in, where the slice has every browser sign in. Its run under the `official` build needs a line in `justfile`, which acs-6 holds |
+| lpw-15 | It builds the world's private table of names and the owner-only reducer that writes it, and a development recipe that writes one fingerprint into both the shell document and that table; it needs the shell document's fingerprint field, which lpw-18 specifies. The bind and the nonce reducer each gain an owner-only form that takes the joiner's identity, for `Allowlist`. A page a gate serves does not sign in, where the slice has every browser sign in. Its run under the `official` build needs a line in `justfile`, which acs-6 holds. It proves the relay closed in halves, where the slice has it close the relay with a hostile-host rig: that stays open until the two-host run |
 | lpw-17 | The standalone command writes the world's names: `spki:` for the world's own key, `dns:` for a domain it holds a certificate for. A host behind its own proxy states its public name and port |
-| lpw-18 | lpw-18.7's browser joiner plays only on a build that does not enforce ownership |
+| lpw-18 | The shell document's fingerprint field arrives earlier, with lpw-15. lpw-18.7's browser joiner plays only on a build that does not enforce ownership |
 | acs-3 | The `world` it is given is the name above: opaque, bounded in length, in the request body, logged by neither the route nor the proxy in front of it. Only the `world` and dev builds embed attestation keys, where the slice has every release build embed the production keys |
 | acs-6 | Two release builds, not one: `official` trusts the production issuer and `world` trusts none, where the slice has release builds trust the production issuer. The features, the recipe, the artefact's profile, the build and publish sites and the ranked gate of fork (e) are its to build, several outside the files it lists (`scripts/smoke-republish.sh`, `client/e2e/global-setup.ts`, `.github/workflows/nightly.yml`, `server-module/src/pvp.rs` and its tests). DECISIONS.md's "Dev-only reducers never ship" says the playtest recipes publish the default build, which changes with it |
 | acs-11 | acs-11.3's release module is the `official` build |
