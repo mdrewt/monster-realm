@@ -339,7 +339,9 @@ export function connect(opts: ConnectionOptions): Connection {
    * ends the way a drop does (scope stopped, rows wiped, link frozen) and nothing is built after
    * it; `current` is dropped so no reducer can be sent; a session terminal is cleared, since its
    * actions can no longer do anything. The socket is closed so the server sees this connection
-   * end, and the caller is told last.
+   * end, and the caller is told last. Rows the SDK still delivers from the message being
+   * dispatched land in the wiped store, as after the world scope's `drop`; its close event runs
+   * the drop path once more and wipes them.
    */
   function refuse(c: DbConnection, side: ProtocolMismatch): void {
     refused = true;

@@ -1480,11 +1480,11 @@ table.
 **Decision.** `game-core` holds `PROTOCOL_VERSION`, which rises with every change to the server
 module's tables or reducers, and `MIN_CLIENT_PROTOCOL`, which rises only with a change an older
 client cannot talk across (a removed or re-typed reducer argument or table column, or a column
-appended to a table or view a client subscribes) and never exceeds it. The module records both in row 0 of the public table `module_info`, from `init` and from the
-owner's `sync_content` whether or not the content changed; `client-wasm` exports the client's own
-number as `protocol_version()`. Every recipe and script in this repository that publishes over a
-database and keeps its data then calls `sync_content` as the publishing identity, and fails when
-that call is refused.
+appended to a table or view a client subscribes) and never exceeds it. The module records both in
+row 0 of the public table `module_info`, from `init` and from the owner's `sync_content` whether or
+not the content changed; `client-wasm` exports the client's own number as `protocol_version()`.
+Every recipe and script in this repository that publishes over a database and keeps its data then
+calls `sync_content` as the publishing identity, and fails when that call is refused.
 
 **Why.** `init` runs only when a database is created, and nothing in the module runs when a new
 module is published over existing data, so the owner's call is what makes the row describe the

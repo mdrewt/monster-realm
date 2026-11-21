@@ -5219,11 +5219,11 @@ async function main(): Promise<void> {
       if (where === 'link') eventRing.push(makeDisconnect());
     },
     // The connection left a server it cannot speak to and builds no other one: the world hint
-    // says which side must update, until reload. A session terminal goes first, since its
+    // says which side must update, until reload. A session terminal is hidden too, since its
     // actions can no longer do anything (`connected` is the one event that hides it).
     onProtocolMismatch: (side) => {
-      applySession({ kind: 'connected' });
       reportError('protocol-mismatch', protocolMismatchLine(side));
+      applySession({ kind: 'connected' });
     },
     // The session-lifecycle terminals drive the registry-external overlay.
     onSessionExpired: () => applySession({ kind: 'session-expired' }),
