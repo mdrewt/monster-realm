@@ -121,7 +121,7 @@ The service holds no accounts.
 ### Key rotation
 
 The key file is an ordered list: a key added after the first is published and does not sign; moved
-to the front it signs; removed it is retired. No command edits the file.
+to the front it signs; taken out of the file it is published by nobody. No command edits the file.
 
 ### Backup and restore
 
