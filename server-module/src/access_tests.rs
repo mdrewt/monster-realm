@@ -358,7 +358,7 @@ fn access_row(w: &W<'_>) -> Vec<u8> {
 }
 
 // =====================================================================================
-// lpw-9.1 — a world with no `world_access` row is `Open`.
+// A world with no `world_access` row is `Open`.
 // =====================================================================================
 
 mod open_by_default {
@@ -445,7 +445,7 @@ mod open_by_default {
 }
 
 // =====================================================================================
-// lpw-9.2 — an unadmitted connection to a `Password` world gets nothing.
+// An unadmitted connection to a `Password` world gets nothing.
 // =====================================================================================
 
 mod unadmitted {
@@ -684,7 +684,7 @@ mod unadmitted {
 }
 
 // =====================================================================================
-// lpw-9.3 — the door refuses a wrong password, and five wrong ones lock an identity out.
+// The door refuses a wrong password, and five wrong ones lock an identity out.
 // =====================================================================================
 
 mod wrong_password {
@@ -1140,7 +1140,7 @@ mod wrong_password {
 }
 
 // =====================================================================================
-// lpw-9.4 — only `config.owner_identity` may call `set_world_access` (or work the door).
+// Only `config.owner_identity` may call `set_world_access` (or work the door).
 // =====================================================================================
 
 mod owner_only {
@@ -1352,7 +1352,7 @@ mod owner_only {
 }
 
 // =====================================================================================
-// lpw-9.5 — the owner's admit list admits without a password.
+// The owner's admit list admits without a password.
 // =====================================================================================
 
 mod owner_admits {
@@ -1370,13 +1370,13 @@ mod owner_admits {
         let w = world(&fx);
         seed_owner(&w, owner());
         let x = id(0x41);
-        let password = "hunter two";
+        let typed = "hunter two";
         assert_eq!(
             set_access(
                 &fx,
                 owner(),
                 WorldAccessRule::Password,
-                Some(password),
+                Some(typed),
                 vec![x],
                 T0
             ),
@@ -1391,7 +1391,7 @@ mod owner_admits {
         assert_eq!(row.password_hash.len(), PASSWORD_HASH_BYTES);
         assert_eq!(
             row.password_hash,
-            hash_password(&row.password_salt, password),
+            hash_password(&row.password_salt, typed),
             "the stored hash is the password's hash under the stored salt"
         );
         assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
@@ -1416,7 +1416,7 @@ mod owner_admits {
         let fx = fixture();
         let w = world(&fx);
         seed_owner(&w, owner());
-        let password = "same every time";
+        let chosen = "same every time";
         let mut stored: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for ms in [T0, T0 + 1] {
             assert_eq!(
@@ -1424,7 +1424,7 @@ mod owner_admits {
                     &fx,
                     owner(),
                     WorldAccessRule::Password,
-                    Some(password),
+                    Some(chosen),
                     Vec::new(),
                     ms
                 ),

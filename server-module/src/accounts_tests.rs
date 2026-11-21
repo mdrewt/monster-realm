@@ -5284,7 +5284,7 @@ mod acct_nh {
         trade_session: Handle<'a, TradeSession, u64>,
         trade_snapshot: Handle<'a, TradeSessionSnapshot, u64>,
         trade_session_reaper: Handle<'a, TradeSessionReaperSchedule, u64>,
-        // lpw-9: the world's admission record and its wrong-password record, both on their
+        // The world's admission record and its wrong-password record, both on their
         // `identity` key (the cascade's `access::erase_admission` deletes through them).
         admission: Handle<'a, WorldAdmission>,
         admission_attempt: Handle<'a, WorldAdmissionAttempt>,
@@ -8067,7 +8067,7 @@ mod acct_nh {
         // deletion cascade does. A trade session is a live interaction like a
         // trade offer: the claim deletes the claimer's sessions instead of
         // moving any onto it. A world admission and the wrong-password record
-        // (lpw-9) are not re-keyed either: a signed-in identity is a different
+        // are not re-keyed either: a signed-in identity is a different
         // identity and passes the door itself, so a claim neither moves nor
         // erases an admission.
         const NOT_REKEYED: [&str; 18] = [
@@ -8864,7 +8864,7 @@ mod acct_nh {
             .seed(&crate::accounts::new_account_row(b, "iss".to_string(), 1));
         seed_cascade_population(&w, v, b, 1);
         seed_cascade_population(&w, b, x, 2);
-        // lpw-9: both identities hold a world admission and a wrong-password record.
+        // Both identities hold a world admission and a wrong-password record.
         for (who, k) in [(v, 1i64), (b, 2)] {
             w.admission.seed(&WorldAdmission {
                 identity: who,

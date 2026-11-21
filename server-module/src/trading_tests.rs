@@ -3030,8 +3030,9 @@ fn ts4_legacy_reducers_reject_before_any_read() {
 /// empty and every index the stub touches lands in it. A table scan aborts the
 /// process (unmodelled), which fails the test as loudly.
 ///
-/// lpw-9 (local-play design A1): every client-callable reducer, the retired
-/// ones included, makes the world admission check as its first statement. On
+/// Under the world access rule (`docs/local-play.md` §3), every client-callable
+/// reducer, the retired ones included, makes the world admission check as its
+/// first statement. On
 /// this bare host there is no `world_access` row, so that check asks for exactly
 /// one index, [`TS4_ADMISSION_INDEX`], reads the world as `Open` and goes on to
 /// the retired error. That one name is the only index a retired reducer may ask
