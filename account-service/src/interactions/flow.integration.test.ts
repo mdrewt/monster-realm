@@ -943,7 +943,7 @@ describe('what the store holds', () => {
       redirectUri: REDIRECT_URI,
       redirect_uris: ['http://evil.example/'],
       token_endpoint_auth_method: 'client_secret_basic',
-      client_secret: 'a-secret-the-client-never-sends',
+      client_secret: 'unused',
       grant_types: ['implicit'],
       response_types: ['id_token'],
     } as unknown as AdapterPayload);
