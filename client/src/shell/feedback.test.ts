@@ -578,6 +578,28 @@ describe('the booted shell drives the message sinks of shell/feedback', {
     ).toEqual([]);
     expect(liveText(), 'nor painted').not.toBe('stale-notice-sentinel');
   }, 60_000);
+
+  it('a ready edge keeps a notice queued before it, and the shell`s frames speak it once', async () => {
+    const fb = await boot();
+    const announce = vi.spyOn(fb.liveRegion, 'announce');
+    clock.t = T;
+    fb.showToast('ready-notice-sentinel');
+    expect(fb.statusNotice.queued?.text, 'precondition: a notice is queued').toBe(
+      'ready-notice-sentinel',
+    );
+
+    opts.onReady(H.identity);
+    expect(fb.statusNotice.queued?.text, 'the ready edge kept the notice queued').toBe(
+      'ready-notice-sentinel',
+    );
+
+    for (let i = 0; i < 3; i += 1) advance(600);
+    expect(
+      announce.mock.calls.filter(([m]) => m === 'ready-notice-sentinel').length,
+      'the frames spoke the notice once',
+    ).toBe(1);
+    expect(fb.statusNotice.queued, 'nothing is left queued').toBeNull();
+  }, 60_000);
 });
 
 // --- the module on its own (no boot) --------------------------------------------------------
@@ -641,9 +663,9 @@ describe('shell/feedback owner functions', { sequential: true }, () => {
       characterData: true,
     });
 
-    // An observer of this test's own, undone by ASSIGNING the previous function back: on the
-    // global `window`, addEventListener is an own accessor, so redefining the old descriptor would
-    // leave a wrapper in place.
+    // An observer of this test's own, undone by ASSIGNING the saved function back: on the global
+    // `window`, addEventListener is an own accessor, so restoring a property descriptor would
+    // leave this wrapper in place.
     const seen: Recorded[] = [];
     type Adder = { addEventListener: EventTarget['addEventListener'] };
     const undo: Array<() => void> = [];

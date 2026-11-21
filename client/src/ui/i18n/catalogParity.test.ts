@@ -802,7 +802,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ]);
   });
 
-  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 28-file resolver roster + the main.ts and shell/feedback.ts keys per binding', () => {
+  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the resolver roster + the main.ts and shell/feedback.ts keys per binding', () => {
     const census = computeCensus();
     const i18nRoster = census
       .filter((f) => f.bindings.some((b) => b.module === 'i18n'))
@@ -983,7 +983,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       feedback.calls.filter((c) => c.module === 'a11y'),
       'shell/feedback.ts resolves exactly the world region name, as a literal key',
     ).toEqual([{ module: 'a11y', orig: 't', kind: 'literal', literal: 'a11y.world.region' }]);
-    // ST11.2: the union of the literal keys the two files resolve, per binding, is the i18n list
+    // The union of the literal keys the two files resolve, per binding, is the i18n list
     // pinned above on main.ts and `a11y.world.region`, whichever of the two files resolves a key.
     const unionOfLiteralKeys = (module: 'i18n' | 'a11y'): string[] =>
       Array.from(
@@ -1125,6 +1125,18 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       j.calls.every((call) => call.kind === 'literal'),
       '(j) every planted call in the dual-import fixture is a literal',
     ).toBe(true);
+    // Each call is credited to the import it calls through: a census that tags every call of a
+    // two-import file with one module fails here.
+    expect(
+      j.calls.map((call) => [call.module, call.orig, call.literal]).sort(),
+      '(j) each planted call is credited to its own binding`s module',
+    ).toEqual(
+      [
+        ['a11y', 't', 'a11y.world.region'],
+        ['i18n', 't', 'chrome.help.title'],
+        ['i18n', 'tf', 'leaderboard.row'],
+      ].sort(),
+    );
 
     // (k) a file with NO resolver/a11y import produces zero census entries even though its raw
     // text contains `t('x')` — the census never falls back to a bare-global scan.
