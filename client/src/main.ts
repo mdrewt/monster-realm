@@ -55,6 +55,7 @@ import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
 import type { SignInMode } from './net/credentialDecision';
 import { RATE_LIMIT_INITIAL, rateLimitTick } from './net/devLog';
+import type { ProtocolMismatch } from './net/protocolCheck';
 import { ServerClock } from './net/serverClock';
 import {
   AuthoritativeStore,
@@ -89,6 +90,7 @@ import {
   fateLogger,
   PARTY_SIZE,
   PARTY_SLOT_NONE,
+  PROTOCOL_VERSION,
   QUEUE_CAP,
   STEP_MS,
   sendLogger,
@@ -2400,6 +2402,17 @@ let announcedSinceFrame = false;
 function announceNow(text: string): void {
   liveRegion.announce(text, performance.now());
   announcedSinceFrame = true;
+}
+
+/** The catalogued line for a server this client cannot speak to: it says which side must update.
+ *  A literal switch — catalog keys are never built dynamically. */
+function protocolMismatchLine(side: ProtocolMismatch): string {
+  switch (side) {
+    case 'update-game':
+      return i18nT('chrome.status.serverNewer');
+    case 'update-server':
+      return i18nT('chrome.status.serverOlder');
+  }
 }
 
 /** The catalogued line for a conversation the server ended on a refused advance (QF6.2): it says
@@ -5061,6 +5074,7 @@ async function main(): Promise<void> {
     store,
     signIn: SIGN_IN_MODE,
     targetKind: TARGET_KIND,
+    clientProtocol: PROTOCOL_VERSION,
     authIssuer: OIDC_ISSUER,
     authClientId: OPERATED_BY_US ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
@@ -5203,6 +5217,13 @@ async function main(): Promise<void> {
       // emit disconnect ONLY on the link-level edge — not for other `where`
       // values (which fire for non-link failures too).
       if (where === 'link') eventRing.push(makeDisconnect());
+    },
+    // The connection left a server it cannot speak to and builds no other one: the world hint
+    // says which side must update, until reload. A session terminal goes first, since its
+    // actions can no longer do anything (`connected` is the one event that hides it).
+    onProtocolMismatch: (side) => {
+      applySession({ kind: 'connected' });
+      reportError('protocol-mismatch', protocolMismatchLine(side));
     },
     // The session-lifecycle terminals drive the registry-external overlay.
     onSessionExpired: () => applySession({ kind: 'session-expired' }),

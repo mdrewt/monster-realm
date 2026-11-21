@@ -504,6 +504,14 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // the page must be reloaded.
   // main.ts:1040
   'chrome.status.contentStale': 'contenu obsolète — rechargez la page',
+  // @desc: Status-strip error shown when the server needs a newer game than this one. The client
+  // has left the server and stays out until the page is reloaded.
+  'chrome.status.serverNewer':
+    'Ce serveur utilise une version plus récente de Monster Realm. Mettez le jeu à jour pour le rejoindre.',
+  // @desc: Status-strip error shown when the server is older than this game, or publishes no
+  // protocol numbers. The client has left the server and stays out until the page is reloaded.
+  'chrome.status.serverOlder':
+    'Ce serveur utilise une version plus ancienne de Monster Realm. Son hôte doit le mettre à jour.',
   // @desc: Status-strip error shown when the browser blocked the bug-report bundle download; the
   // bundle is still printed to the developer console.
   // main.ts:2442

@@ -9,6 +9,7 @@ import {
   move_queue_cap,
   party_size,
   party_slot_none,
+  protocol_version,
   step_ms,
 } from '../../../client-wasm/pkg/client_wasm.js';
 import { resolveConnectionConfig } from '../net/connectionConfig';
@@ -53,6 +54,8 @@ export const PARTY_SLOT_NONE = party_slot_none();
 // The deletion grace window, read ONCE per session — it is a build constant, and
 // re-reading it per frame would cross the wasm boundary ~60x/s for a value that cannot change.
 export const DELETION_GRACE_MS_DEFAULT = deletion_grace_ms_default();
+// The protocol this build speaks. `connect` checks it against the server's `module_info` row.
+export const PROTOCOL_VERSION = protocol_version();
 
 // wasm-ready mark — the wasm import above is top-level-awaited, so the exports are
 // callable here (the metric's definition: ms from timeOrigin), captured once per session.

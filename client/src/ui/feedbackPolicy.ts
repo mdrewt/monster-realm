@@ -28,6 +28,7 @@ export type MessageKind =
   | 'world-disconnect'
   | 'connect-failure'
   | 'content-stale'
+  | 'protocol-mismatch'
   | 'download-blocked'
   // Toast
   | 'care-success'
@@ -107,6 +108,7 @@ export const FEEDBACK_POLICY = {
   'world-disconnect': row('hint'),
   'connect-failure': row('hint'),
   'content-stale': acts('hint', 'the world hint line until reload'),
+  'protocol-mismatch': acts('hint', 'the world hint line until reload'),
   'download-blocked': acts('hint', 'the world hint line until overwritten'),
   'care-success': row('toast'),
   'care-rejected': row('toast'),
@@ -164,10 +166,13 @@ export type SinkKind = {
 
 /** A frame has one hint line, so hint kinds resolve by precedence (WF1-A9): an action-required
  *  hint (3), then a persistent state (2), then a disabled reason (1), then a Y-description or any
- *  other hint (0). A kind on another channel never paints on a strip (-1). */
+ *  other hint (0). `protocol-mismatch` alone ranks above them (4): the client has left the server
+ *  for the rest of the page, so no later hint may take its line. A kind on another channel never
+ *  paints on a strip (-1). */
 export function hintRank(kind: MessageKind): number {
   const r = FEEDBACK_POLICY[kind];
   if (r.channel !== 'hint') return -1;
+  if (kind === 'protocol-mismatch') return 4;
   if (r.actionRequired) return 3;
   if (kind === 'world-disconnect' || kind === 'connect-failure') return 2;
   if (kind === 'disabled-reason-menu' || kind === 'disabled-reason-row') return 1;

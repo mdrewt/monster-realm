@@ -179,6 +179,8 @@ export type MessageId =
   | 'chrome.status.exportBlocked'
   | 'chrome.status.disconnected'
   | 'chrome.status.contentStale'
+  | 'chrome.status.serverNewer'
+  | 'chrome.status.serverOlder'
   | 'chrome.status.bugBundleBlocked'
   | 'chrome.status.partyFull'
   | 'chrome.status.zoneEntered'
