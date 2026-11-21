@@ -66,7 +66,8 @@ pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String
 /// (reject-never-burns).
 #[spacetimedb::reducer]
 pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "care")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "care")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
@@ -129,7 +130,8 @@ pub(crate) fn evaluate_train(
 /// is not a heal.
 #[spacetimedb::reducer]
 pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "train")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "train")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
@@ -282,6 +284,7 @@ const ERR_HEAL_OUT_OF_REACH: &str = "the healer is not close enough";
 /// their trades has locked, is refused. Cost consumed before heal.
 #[spacetimedb::reducer]
 pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "heal_party")?;
     let me = ctx.sender();
 
     // Step 1: player must be joined
@@ -603,7 +606,8 @@ pub fn essence_train(
     monster_id: u64,
     affinity: Affinity,
 ) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "essence_train")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "essence_train")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
@@ -639,7 +643,8 @@ pub fn consume_crystalized_essence(
     monster_id: u64,
     item_id: u32,
 ) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "consume_crystalized_essence")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "consume_crystalized_essence")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());

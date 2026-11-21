@@ -200,7 +200,8 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 /// (`take_start`), or on the spawn. Rejects a double-join within the same session.
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "join_game")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "join_game")?;
     join_with_kit(ctx, name, crate::content_cache::cached_starter_kit())
 }
@@ -345,7 +346,8 @@ fn publish_standing(ctx: &ReducerContext, mut row: Character, intent: &MoveInten
 /// no `character` row is read, and neither table is written.
 #[spacetimedb::reducer]
 pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "enqueue_move")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "enqueue_move")?;
     // Intake battle lock: reject-not-clamp movement intent while
     // the caller is in an ongoing battle, either role. `ctx.sender()` is correct
@@ -399,7 +401,8 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
 /// change). Cap-safe (length 1).
 #[spacetimedb::reducer]
 pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "set_move")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "set_move")?;
     // Intake battle lock: same reject as enqueue_move — set_move
     // also ADDS movement intent, and the client is hostile.
@@ -418,7 +421,8 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
 /// Empty the queue (key release).
 #[spacetimedb::reducer]
 pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "clear_queue")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "clear_queue")?;
     // Deliberately NOT battle-guarded: pure cancellation — it cannot cause
     // movement, and guarding it would refuse an honest key-release cancel sent

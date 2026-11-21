@@ -191,6 +191,7 @@ fn require_shop_in_reach(
 /// a price or total (classic economy exploit blocked at the reducer boundary).
 #[spacetimedb::reducer]
 pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "buy")?;
     let me = ctx.sender();
 
     // require_owner before spend_currency.
@@ -279,6 +280,7 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
 /// a price.
 #[spacetimedb::reducer]
 pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "sell")?;
     let me = ctx.sender();
 
     // require_owner before any resource modification.

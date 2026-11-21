@@ -656,6 +656,7 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
 /// identity comes from `ctx.sender()`.
 #[spacetimedb::reducer]
 pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "start_guest_claim")?;
     let me = ctx.sender();
     // AUTH-7 — an account holder cannot start a guest claim (D4′).
     if is_account_holder(ctx, me) {
@@ -692,6 +693,7 @@ pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), Strin
 /// (a reducer `Err` cannot persist a delete; the reaper owns expired cleanup).
 #[spacetimedb::reducer]
 pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "complete_guest_claim")?;
     let me = ctx.sender();
     // Guard 1 (AUTH-12) — cheap JWT pre-filter (belt; guard 2 is load-bearing).
     if !ctx.sender_auth().has_jwt() {
@@ -876,6 +878,7 @@ pub(crate) fn ensure_deletion_reapers_armed(ctx: &ReducerContext) {
 /// reaper LAST. Idempotent: the second call writes nothing and arms nothing.
 #[spacetimedb::reducer]
 pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "delete_account")?;
     let me = ctx.sender();
     // AUTH-37 — reject a caller with no JWT (symmetric with AUTH-7/12).
     if !ctx.sender_auth().has_jwt() {
@@ -911,6 +914,7 @@ pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
 /// (AUTH-38), so `PendingDeletion` is never a trap state within M21.
 #[spacetimedb::reducer]
 pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "cancel_account_deletion")?;
     let me = ctx.sender();
     if !ctx.sender_auth().has_jwt() {
         return reject("cancel_account_deletion", me, "sign in required");
@@ -1078,6 +1082,7 @@ pub fn account_deletion_reaper(
     let export_chunks = crate::privacy::purge_export_bundles(ctx, args.account_identity);
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
+    crate::access::erase_admission(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);

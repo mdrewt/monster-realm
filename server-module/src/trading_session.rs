@@ -964,6 +964,7 @@ fn read_side(
 /// account, wallet, inventory, monsters or sessions is read.
 #[spacetimedb::reducer]
 pub fn open_trade_session(ctx: &ReducerContext, partner: Identity) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "open_trade_session")?;
     let me = ctx.sender();
     if ctx.db.player().identity().find(me).is_none() {
         return reject("open_trade_session", me, ERR_NOT_JOINED);
@@ -1017,6 +1018,7 @@ pub fn set_trade_offer(
     items: Vec<TradeItem>,
     currency: u64,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "set_trade_offer")?;
     crate::guards::require_not_deleting(ctx, "set_trade_offer")?;
     let me = ctx.sender();
     if let Err(e) = check_offer_size(monster_ids.len(), items.len()) {
@@ -1089,6 +1091,7 @@ pub fn confirm_trade_session(
     session_id: u64,
     revision: u64,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "confirm_trade_session")?;
     let me = ctx.sender();
     let (session, side) = find_own_session(ctx, "confirm_trade_session", session_id)?;
     crate::guards::require_commitment_predates_deletion(
@@ -1326,6 +1329,7 @@ fn execute_swap(
 /// is never deletion-gated and reads nothing of the other side.
 #[spacetimedb::reducer]
 pub fn cancel_trade_session(ctx: &ReducerContext, session_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "cancel_trade_session")?;
     let me = ctx.sender();
     let (session, _) = find_own_session(ctx, "cancel_trade_session", session_id)?;
     delete_session(ctx, session.session_id);

@@ -145,23 +145,26 @@ pub fn propose_trade(
     counterparty_items: Vec<TradeItem>,
     counterparty_currency: u64,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "propose_trade")?;
     Err(LEGACY_TRADE_RETIRED.to_string())
 }
 
-/// Retired: its only statement returns `LEGACY_TRADE_RETIRED`; no row is read
-/// or written. An offer still in the table leaves through `cancel_trade`, the
+/// Retired: after the admission check it returns `LEGACY_TRADE_RETIRED`; no trade row is
+/// read or written. An offer still in the table leaves through `cancel_trade`, the
 /// TTL reaper, a disconnect or account deletion.
 #[allow(unused_variables)]
 #[spacetimedb::reducer]
 pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "respond_trade")?;
     Err(LEGACY_TRADE_RETIRED.to_string())
 }
 
-/// Retired: its only statement returns `LEGACY_TRADE_RETIRED`; no row is read
-/// or written and no asset moves.
+/// Retired: after the admission check it returns `LEGACY_TRADE_RETIRED`; no trade row is
+/// read or written and no asset moves.
 #[allow(unused_variables)]
 #[spacetimedb::reducer]
 pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "confirm_trade")?;
     Err(LEGACY_TRADE_RETIRED.to_string())
 }
 
@@ -171,6 +174,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
 /// Both Pending and ConfirmedByCounterparty can be cancelled.
 #[spacetimedb::reducer]
 pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "cancel_trade")?;
     let me = ctx.sender();
 
     let Some(offer) = ctx.db.trade_offer().trade_id().find(trade_id) else {

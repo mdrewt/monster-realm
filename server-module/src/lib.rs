@@ -212,19 +212,21 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-/// Lifecycle: record the live connection, then lazy-provision or touch an
-/// `account`. Anonymous play is FIRST-CLASS. Returning `Err`
-/// from this hook DISCONNECTS the client (crate doc), so no fallible statement
-/// precedes the `has_jwt()` early return: the JWT test is hoisted
-/// into a bool, the session record (`open_player_session`
-/// runs for EVERY connection including anonymous ones, and only then does the
-/// JWT-less path return `Ok`.
+/// Lifecycle: refuse an identity the world's access rule does not admit, record the live
+/// connection, then lazy-provision or touch an `account`. Returning `Err` from this hook
+/// DISCONNECTS the client (crate doc). The admission check is the first statement and the one
+/// refusal an anonymous connection can meet: under `Open`, the rule of a world with no
+/// `world_access` row, it admits everyone. Anonymous play is FIRST-CLASS: after that check no
+/// fallible statement precedes the `has_jwt()` early return. The JWT test is hoisted into a
+/// bool, the session record (`open_player_session`) runs for every admitted connection,
+/// anonymous ones included, and only then does the JWT-less path return `Ok`.
 /// The vendor's canonical example for this hook REJECTS JWT-less connections —
 /// that pattern is NOT copied here. All provisioning logic lives in
 /// `accounts.rs`; this hook only branches on presence of a
 /// JWT and delegates.
 #[spacetimedb::reducer(client_connected)]
 pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
+    access::require_admitted_at_connect(ctx)?;
     let jwt = ctx.sender_auth().has_jwt();
     open_player_session(ctx);
     if !jwt {
@@ -307,6 +309,16 @@ pub(crate) fn has_live_session(ctx: &ReducerContext, identity: Identity) -> bool
         .filter(identity)
         .next()
         .is_some()
+}
+
+/// The identity behind every live connection, one entry per connection (an identity with two
+/// sockets appears twice). Read by `access::set_world_access` when the rule leaves `Open`.
+pub(crate) fn live_session_identities(ctx: &ReducerContext) -> Vec<Identity> {
+    ctx.db
+        .player_session()
+        .iter()
+        .map(|session| session.identity)
+        .collect()
 }
 
 /// erase every `player_session` row `owner` holds — presence bookkeeping

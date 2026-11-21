@@ -36,6 +36,7 @@ import {
 // Import all reducer arg schemas
 import AcceptChallengeReducer from "./accept_challenge_reducer";
 import AckEvolutionNoticesReducer from "./ack_evolution_notices_reducer";
+import AdmitReducer from "./admit_reducer";
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
 import BuyReducer from "./buy_reducer";
 import CancelAccountDeletionReducer from "./cancel_account_deletion_reducer";
@@ -70,6 +71,7 @@ import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
 import SetProfileNameReducer from "./set_profile_name_reducer";
 import SetTradeOfferReducer from "./set_trade_offer_reducer";
+import SetWorldAccessReducer from "./set_world_access_reducer";
 import StartGuestClaimReducer from "./start_guest_claim_reducer";
 import SubmitQueueReducer from "./submit_queue_reducer";
 import SyncContentReducer from "./sync_content_reducer";
@@ -476,6 +478,7 @@ const tablesSchema = __schema({
 const reducersSchema = __reducers(
   __reducerSchema("accept_challenge", AcceptChallengeReducer),
   __reducerSchema("ack_evolution_notices", AckEvolutionNoticesReducer),
+  __reducerSchema("admit", AdmitReducer),
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
   __reducerSchema("buy", BuyReducer),
   __reducerSchema("cancel_account_deletion", CancelAccountDeletionReducer),
@@ -510,6 +513,7 @@ const reducersSchema = __reducers(
   __reducerSchema("set_party_slot", SetPartySlotReducer),
   __reducerSchema("set_profile_name", SetProfileNameReducer),
   __reducerSchema("set_trade_offer", SetTradeOfferReducer),
+  __reducerSchema("set_world_access", SetWorldAccessReducer),
   __reducerSchema("start_guest_claim", StartGuestClaimReducer),
   __reducerSchema("submit_queue", SubmitQueueReducer),
   __reducerSchema("sync_content", SyncContentReducer),

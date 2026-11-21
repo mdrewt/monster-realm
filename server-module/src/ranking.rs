@@ -143,6 +143,7 @@ pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
 /// `let Some(..) = ctx.db.player()` split-binding) mirrors `get_or_init_profile`.
 #[spacetimedb::reducer]
 pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "set_profile_name")?;
     let me = ctx.sender();
     let mut player = match ctx.db.player().identity().find(me) {
         Some(p) => p,

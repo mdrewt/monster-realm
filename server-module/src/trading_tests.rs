@@ -3030,13 +3030,22 @@ fn ts4_legacy_reducers_reject_before_any_read() {
 /// empty and every index the stub touches lands in it. A table scan aborts the
 /// process (unmodelled), which fails the test as loudly.
 ///
+/// lpw-9 (local-play design A1): every client-callable reducer, the retired
+/// ones included, makes the world admission check as its first statement. On
+/// this bare host there is no `world_access` row, so that check asks for exactly
+/// one index, [`TS4_ADMISSION_INDEX`], reads the world as `Open` and goes on to
+/// the retired error. That one name is the only index a retired reducer may ask
+/// for; any other is a read before the error. (The host asks for a name once per
+/// process, so after the first call it is already in the log.)
+///
 /// The whole [`ts4_matrix`] runs twice: on the dummy context first (no runtime
-/// entry point at all, so the log must stay EMPTY after every call), then with
-/// each case's own caller as the sender through `run_as_at` (warmed up once at
-/// the same clock, so after every call the log must equal what the entry point
-/// itself asks for). The log is checked after EACH call, so a read that only
-/// one caller, one argument shape, one trade id or one of accept / decline
-/// triggers fails at that call.
+/// entry point at all, so after every call the log may hold nothing but the
+/// admission index), then with each case's own caller as the sender through
+/// `run_as_at` (warmed up once at the same clock, so after every call the log
+/// may hold nothing but what the entry point itself asks for and the admission
+/// index). The log is checked after EACH call, so a read that only one caller,
+/// one argument shape, one trade id or one of accept / decline triggers fails
+/// at that call.
 ///
 /// kills: a stub that looks up the caller's `player` row
 /// (`player_identity_idx_btree`), reads a wallet (`player_wallet_owner_identity_idx_btree`)
@@ -3052,11 +3061,16 @@ fn ts4_legacy_reducers_request_no_index_on_a_bare_host() {
     let ctx = fx.ctx();
     for Ts4Case { label, call, .. } in ts4_matrix() {
         let got = ts4_call(&ctx, call);
-        let asked = fx.requested_indexes();
+        let other: Vec<String> = fx
+            .requested_indexes()
+            .into_iter()
+            .filter(|name| name != TS4_ADMISSION_INDEX)
+            .collect();
         assert!(
-            asked.is_empty(),
-            "dummy context, {label}: the call asked this host for the indexes {asked:?} \
-             (result {got:?}); a retired reducer returns its error before ANY read"
+            other.is_empty(),
+            "dummy context, {label}: the call asked this host for the indexes {other:?} \
+             (result {got:?}); a retired reducer returns its error before any read but the \
+             admission check's ({TS4_ADMISSION_INDEX})"
         );
         assert_eq!(got, want, "dummy context, {label}");
     }
@@ -3072,11 +3086,21 @@ fn ts4_legacy_reducers_request_no_index_on_a_bare_host() {
     } in ts4_matrix()
     {
         let got = fx.run_as_at(caller, at, move |ctx| ts4_call(ctx, call));
-        assert_eq!(
-            fx.requested_indexes(),
-            baseline,
-            "{label}: the call asked this host for an index (result {got:?})"
+        let other: Vec<String> = fx
+            .requested_indexes()
+            .into_iter()
+            .filter(|name| name != TS4_ADMISSION_INDEX && !baseline.contains(name))
+            .collect();
+        assert!(
+            other.is_empty(),
+            "{label}: the call asked this host for the indexes {other:?} (result {got:?}); \
+             only the entry point's own and the admission check's ({TS4_ADMISSION_INDEX}) \
+             are allowed"
         );
         assert_eq!(got, want, "{label}");
     }
 }
+
+/// The one index the admission check (`access::require_admitted`) asks for on a
+/// host with no `world_access` row: the rule row's primary key.
+const TS4_ADMISSION_INDEX: &str = "world_access_id_idx_btree";
