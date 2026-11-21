@@ -57,7 +57,7 @@ export function reportPaintError(err: unknown): void {
   pushError('uncaught', message);
 }
 
-// --- the message sinks (M13.5b status surface; uif-4 channels) -------------------
+// --- the message sinks: the status surface and its channels ----------------------
 // Every message a sink here shows names its `MessageKind`, and `feedbackPolicy` picks the
 // channel (UIF4.1): an outcome is a timed toast (`#toast`, above every frame), a persistent state
 // is the world hint (`#status`, the world line, or the main menu's strip while the menu is on
@@ -76,16 +76,16 @@ export let menuHint: string | null = null;
 
 /** Show `text` on its policy channel: THE one seam every shell message goes through, so no view
  *  picks a channel (UIF4B.1). A hint kind paints on `hintHost`, the open frame's own strip, when
- *  the caller has one (Controls' refused key, uif-4b), else it is a world hint. */
+ *  the caller has one (Controls' refused key), else it is a world hint. */
 export function route(kind: SinkKind, text: string, hintHost?: (text: string) => void): void {
   if (channelOf(kind) !== 'hint') showToast(text);
   else if (hintHost !== undefined) hintHost(text);
   else setWorldHint(kind, text);
 }
 
-/** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or, when there
- *  is none or it no longer paints (the frame was left: the per-sink guard), on its policy channel;
- *  plus console.error for logs and the error ring either way. */
+/** Surface a user-visible failure on `line` (the sending frame's outcome line) or, when there is
+ *  none or its frame was left (the per-sink guard: the line does not paint), on its policy
+ *  channel; plus console.error for logs and the error ring either way. */
 export function reportError(kind: SinkKind, text: string, line?: OutcomeLine): void {
   if (line?.(text, 'error') !== true) route(kind, text);
   console.error('[status]', text);
@@ -94,13 +94,13 @@ export function reportError(kind: SinkKind, text: string, line?: OutcomeLine): v
 }
 
 /** Paint a toast and queue it for the live region: spoken once by the frame pump, clear of the
- *  announcements that land beside it (qf-6, ui/statusModel.ts statusNoticeStep). */
+ *  announcements that land beside it (ui/statusModel.ts statusNoticeStep). */
 export function showToast(text: string): void {
   queueNotice(text, paintToast(text));
 }
 
 /** Queue `text` for the live region: the frame pump speaks it clear of the announcements that land
- *  beside it (qf-6, ui/statusModel.ts statusNoticeStep). */
+ *  beside it (ui/statusModel.ts statusNoticeStep). */
 export function queueNotice(text: string, nowMs: number): void {
   statusNotice = statusNoticeStep(
     statusNotice,
@@ -174,10 +174,10 @@ export function resetFeedbackSinks(): void {
   paintWorldHint();
 }
 
-// qf-6: a status NOTICE is an outcome that is not an error — a conversation the server ended for
-// a reason, a quest completed. It goes to the toast (uif-4; textContent only, never markup) and is
-// queued for the live region, spoken by the frame pump clear of the announcements that land beside
-// it (ui/statusModel.ts statusNoticeStep: why and when).
+// A status NOTICE is an outcome that is not an error — a conversation the server ended for a
+// reason, a quest completed. It goes to the toast (textContent only, never markup) and is queued
+// for the live region, spoken by the frame pump clear of the announcements that land beside it
+// (ui/statusModel.ts statusNoticeStep: why and when).
 export let statusNotice: StatusNoticeState = STATUS_NOTICE_INITIAL;
 /** An announcement made outside the frame pump since its last frame: the pump treats it as a
  *  transition, so a queued notice is held clear of it and a notice it clobbered is said again. */
@@ -196,7 +196,7 @@ export function announceNow(text: string): void {
 // clock so their unit tests stay deterministic. `main()` mounts the overlay (`shell/views.ts`).
 export const eventRing = new EventRing(() => Date.now());
 export const errorRing = new ErrorRing(() => Date.now());
-/** The newest ring sequence the error toast showed when it was last dismissed (ctl-13). */
+/** The newest ring sequence the error toast showed when it was last dismissed. */
 export let toastDismissedSeq = -1;
 
 /** Dismiss the error toast (world B or F8): what it showed is not listed again. */
@@ -221,7 +221,7 @@ export function pushError(source: ErrorSource, raw: unknown): void {
       // The movement breadcrumb is BUNDLE-bound, never OVERLAY-bound. This ring
       // IS the overlay's source (newest 8), so unfiltered the 16 capped breadcrumbs would
       // surface silent rejections (M2 §3) and evict real errors from the visible window.
-      // The toast lists the errors since its last dismissal (ctl-13): a dismissed one stays gone.
+      // The toast lists the errors since its last dismissal: a dismissed one stays gone.
       errorOverlayView.render(
         buildErrorOverlayModel(
           errorRing
@@ -281,7 +281,7 @@ export function pumpAnnouncements({
   }
   lastA11ySnapshot = nextSnapshot;
   if (countdownSaid !== null) liveRegion.announce(countdownSaid, now);
-  // qf-6: a queued status notice is spoken clear of the transitions above and of anything
+  // A queued status notice is spoken clear of the transitions above and of anything
   // announced outside the pump since the last frame (statusNoticeStep holds it a full
   // coalescing window past them, and re-queues one they clobbered).
   const notice = statusNoticeStep(
@@ -312,7 +312,7 @@ export function mountFeedback(mounts: Partial<FeedbackMounts>): void {
   if (mounts.toastChrome !== undefined) toastChrome = mounts.toastChrome;
 }
 
-/** On reconnect: a notice queued for the old link is stale. */
+/** On reconnect: a notice queued on the dropped link is stale. */
 export function resetStatusNotice(): void {
   statusNotice = STATUS_NOTICE_INITIAL;
 }

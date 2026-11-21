@@ -1849,8 +1849,8 @@ The table is a `satisfies Record<MessageKind, PolicyRow>`, so a kind with no cha
 The sinks are in `client/src/shell/feedback.ts`: a sender names a kind, and `route` shows the message
 on that kind's channel (`reportError` adds the console line and the error ring). `main.ts`'s senders
 (`sendGuarded` through `SEND_REJECT_KIND`, the battle refusal, care) all go through that module. A
-toast is announced once through `#a11y-live` (the qf-6 notice pump) and hides after `TOAST_MS` of
-the frame clock. A persistent hint follows the top frame (WF1-A9). On the main menu's strip it
+toast is announced once through `#a11y-live` (the notice pump) and hides after `TOAST_MS` of the
+frame clock. A persistent hint follows the top frame (WF1-A9). On the main menu's strip it
 outranks the menu's own line: an action-required hint comes first, then a persistent state, then a
 disabled reason, then a Y-description. Otherwise it sits on
 `#status`, which is layered above every shell and below the toast. The strip is an overlay with zero
