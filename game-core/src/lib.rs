@@ -119,8 +119,8 @@ pub use world::{
 /// as `protocol_version()`.
 pub const PROTOCOL_VERSION: u32 = 1;
 /// The oldest client protocol a server of this build still speaks to, recorded in
-/// `module_info.min_client_protocol`. It rises only when an older client can no longer talk to
-/// the server (a removed or re-typed reducer argument or table column), and it never exceeds
+/// `module_info.min_client_protocol`. It rises only with a change an older client cannot talk
+/// across (a removed or re-typed reducer argument or table column), and it never exceeds
 /// [`PROTOCOL_VERSION`].
 pub const MIN_CLIENT_PROTOCOL: u32 = 1;
 
