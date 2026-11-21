@@ -11,6 +11,11 @@ email and a password, through authorization code with PKCE, and the game client 
 a refresh token. Accounts and clients are made by an admin command; there is no sign-up and no reset
 mail. The `production` profile has no sign-in step in this build.
 
+The service also signs world attestations at `POST /attest`: a statement, good for five minutes
+and addressed to one world, that an account owns the game. A `local` or `private` world's module
+checks it with a key it holds as data and binds the account (`docs/DECISIONS.md`, "A private world
+verifies an account by a per-world attestation our account service signs").
+
 ## Design
 
 - **Provider.** [`oidc-provider`](https://github.com/panva/node-oidc-provider) 9.x carries the
@@ -55,6 +60,36 @@ mail. The `production` profile has no sign-in step in this build.
   left. The account is read again at every exchange and refresh: when it is gone or not
   entitled the request is refused and the chain revoked, so only an entitled account is ever
   issued a token. An ID token already issued stays valid until its `exp`.
+- **Attestations.** `POST /attest` (`src/attest.ts`) takes `Authorization: Bearer <ID token>` and
+  the JSON body `{ "world": "…", "nonce": "…" }`, and answers `{ "attestation": "<JWT>" }`. The
+  attestation is a compact JWT with the header `{ "alg": "Ed25519", "kid": … }` and exactly eight
+  claims: `iss` (the issuer followed by `/attest`, a name no login token carries), `sub` (the
+  account), `aud` (the world, as it was given), `nonce` (as it was given), `mr_ent:
+  ["base-game"]`, `iat`, `exp` five minutes later, and a random `jti`. `world` and `nonce` are
+  opaque to the service: 1 to 512 and 1 to 128 characters of visible ASCII (`0x21` to `0x7E`), in
+  a body of at most 1024 bytes that holds nothing else, so an attestation stays under 2 KiB. What
+  a world's name is: `docs/local-play.md` §3, "What the attestation names".
+  - *The checks, in order; the first failure answers.* The token: signed by a login key with
+    ES256, `iss` this issuer, `exp` in the future, a `sub` and an `aud` (`401 invalid_token`).
+    Its `mr_ent` names `base-game` (`403 not_entitled`). The body (`415`, `413` or `400
+    invalid_request`). The account's limit (`429 rate_limited`, with `Retry-After`). The account
+    itself, read again: an ID token outlives a cleared entitlement by up to an hour, and a binding
+    outlives both (`403 not_entitled`). An error is `{ "error": "<code>" }`; a failure of the
+    service is `500 server_error`. The token is checked before any of the body is read.
+  - *Which requests.* Exactly the path `/attest` under the issuer's `Host`; `OPTIONS` answers a
+    browser's preflight and any method but `POST` and `OPTIONS` gets `405`. Any other spelling of
+    the path, and any other `Host`, is answered as every other request is (see Requests).
+  - *Who may call.* An ID token of this issuer, whichever registered client it was issued to. The
+    route reads no cookie, and every answer can be read from any origin
+    (`Access-Control-Allow-Origin: *`), so the game client's page can call it: the token is the
+    only way in, and a page that holds one could send it from anywhere. Whoever holds an account's
+    ID token can therefore have worlds bound to that account while the token lasts, 20 an hour,
+    and a binding outlasts the token.
+  - *What is logged.* One line per attestation issued, with the account and the time, and one per
+    failure of the service, with the account, the time, the step that failed and the error's
+    class name. A refusal logs nothing, so a caller cannot write lines at will. No line holds a
+    world, a nonce, a token or an error's message, and the service keeps no record of the world
+    an attestation was for.
 - **Clients.** A client is a stored record: a client id and one redirect address, written by the
   admin command. Whatever else a record holds, the provider treats the client as public (no
   secret), with exactly that redirect address, the code and refresh grants and ES256 ID tokens. The
@@ -75,11 +110,20 @@ mail. The `production` profile has no sign-in step in this build.
   an authorization request is answered `503`, and everything else keeps answering. The lock, the
   hash ceiling and the cap live in the process, so a restart clears them. There is no limit per
   network address: a flood can hold the busy answer or the 503 for as long as it lasts, and anyone
-  who knows an account's email can keep it locked.
+  who knows an account's email can keep it locked. An account gets at most 20 attestations in any
+  hour. The count is of requests that reached it with a valid token and body: one refused because
+  the account is gone or not entitled still counts, and one the service failed does not. It lives
+  in the process too, so each instance counts alone.
 - **Keys.** ES256 (P-256) signing keys, each with a `kid`. The first key in the file signs; the
   public half of every key is published at `/jwks`. `src/keys.ts` loads them from a JSON key file,
   `{ "profile": "<profile>", "keys": [ <private JWK>, … ] }`, marked with the profile it was made
   for and refused by any other profile. A generated `kid` is the key's RFC 7638 thumbprint.
+- **Attestation keys.** An attestation is signed with an Ed25519 key of its own, never a login
+  key (`docs/DECISIONS.md`, "The attestation is signed with Ed25519 and checked by
+  `ed25519-dalek` compiled into the module"). The two key sets cannot stand in for each other: a
+  P-256 key is refused as an attestation key and an Ed25519 key as a login key, a `kid` that both
+  sets carry is refused at start, and neither set verifies the other's tokens. The first
+  attestation key signs. Where each profile's key lives is under "Attestation keys" below.
 - **Storage.** One SQLite file, opened with Node's built-in `node:sqlite`.
   `src/store/sqliteAdapter.ts` is the provider's storage adapter and the only module that touches
   the database. An expired record is not found. A consumed record is still found, carrying
@@ -96,14 +140,47 @@ mail. The `production` profile has no sign-in step in this build.
 
 `MR_ACCOUNT_PROFILE` selects one; there is no default.
 
-| Profile | Issuer | Sign-in method | Signing keys | Data directory |
-|---|---|---|---|---|
-| `local-dev` | `http://localhost:4455` | `dev-password` | a key file, generated on the first start | `account-service/.data` (ignored by git) unless set |
-| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | a key file the operator provides, with no access for group or others | set by the operator |
-| `production` | `MR_ACCOUNT_ISSUER` | `steam` | an external signer | set by the operator |
+| Profile | Issuer | Sign-in method | Signing keys | Attestation key | Data directory |
+|---|---|---|---|---|---|
+| `local-dev` | `http://localhost:4455` | `dev-password` | a key file, generated on the first start | one fixed key, the same on every machine | `account-service/.data` (ignored by git) unless set |
+| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | a key file the operator provides, with no access for group or others | `attestation-keys.json` beside the key file, provided by the operator under the same rules | set by the operator |
+| `production` | `MR_ACCOUNT_ISSUER` | `steam` | an external signer | an external signer | set by the operator |
 
 The `production` profile loads and checks its settings and then refuses to start: this build holds
 no external signer, and no `steam` sign-in step. Each dev issuer has its own keys.
+
+## Attestation keys
+
+A build of the game module holds the attestation keys it accepts as data and cannot fetch them
+(`docs/local-play.md` §3, "How a world server verifies an attestation"), so a key signs nothing a
+world accepts until its public half is in a build.
+
+- **The published list.** `account-service/attestation-public-keys.json` holds, per profile, the
+  public attestation keys a build may accept, each a JWK with its `kid` and `alg`. It is generated
+  from `publishedAttestationKeys()` in `src/keys.ts`, and a test compares the two. From
+  `account-service/`:
+
+  ```sh
+  node -e "import('./src/keys.ts').then((m) => process.stdout.write(JSON.stringify(m.publishedAttestationKeys(), null, 2) + '\n'))" > attestation-public-keys.json
+  ```
+
+  `hosted-dev` and `production` list no key. The service does not check that the key it signs
+  with is listed: an unlisted key signs attestations no build accepts.
+- **`local-dev`.** One fixed key, in `src/keys.ts`: its private bytes are the SHA-256 of a label
+  in this repository, so every machine signs with the same key and every dev build can hold its
+  public half. The repository is public, so anyone can sign with this key. A build that accepts
+  it accepts a binding anyone can forge: its ownership check in a `local` or `private` world
+  rehearses the flow and stops nobody. A dev build that has to hold against strangers accepts
+  only the `hosted-dev` list. No other profile signs with this key: a key file that holds it is
+  refused.
+- **`hosted-dev`.** The operator makes an Ed25519 key and keeps it in `attestation-keys.json` in
+  the directory of the key file: `{ "profile": "hosted-dev", "keys": [ <private JWK>, … ] }`,
+  each key `{ "kty": "OKP", "crv": "Ed25519", "kid": …, "x": …, "d": … }`. The first key signs.
+  The instance refuses to start without the file. No command writes it.
+- **`production`.** An external signer holds the key, as it holds the login key; this build has
+  none. It has to be a key service that signs with Ed25519. If the production host's key service
+  cannot, the attestation moves to ES256 (the decision entry above says when), and the module's
+  verifier with it.
 
 ## Settings
 
@@ -129,6 +206,10 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
 - a key file is missing (except on `local-dev`), not a regular file, larger than 64 KiB,
   malformed, marked for another profile, holds anything but P-256 private keys with distinct
   `kid`s, or, on `hosted-dev`, grants group or others any access;
+- on `hosted-dev`, `attestation-keys.json` is missing from the key file's directory, breaks any
+  of those rules of form, holds anything but Ed25519 private keys with distinct `kid`s whose `x`
+  is the public half of their `d`, repeats a login key's `kid`, or holds the `local-dev`
+  attestation key (the refusal names the file);
 - any other name beginning `MR_ACCOUNT_`, in any letter case, is set: a misspelt setting never
   falls back to a default.
 
@@ -155,6 +236,13 @@ written.
   A sign-in needs both: the game client's id with the exact address it returns to (the dev client
   is served at `http://localhost:5290/`), and an account. Each command prints `name=value` lines;
   `create-account` prints the account's generated `password=` once.
+- An attestation, given an ID token from a sign-in:
+
+  ```sh
+  curl -sS http://localhost:4455/attest \
+    -H "Authorization: Bearer $ID_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"world":"spki:<fingerprint>/<database>","nonce":"<the nonce that world issued>"}'
+  ```
 - `just account-test` runs the package's tests and `just account-typecheck` its typecheck. Both are
   part of `just ci` and of the `account-service` job in `.github/workflows/ci.yml`. `just lint`
   lints the package with the rest of the tree.
@@ -173,6 +261,8 @@ None is recorded.
 | The host behind `auth.monster-realm.spookyowltech.com` | the operator points the name at a host that runs the service | the host and the date |
 | The Steam app id and a publisher Web API key | the operator; the key goes only into the production deployment's secret store | the app id (never the key) |
 | The production host and issuer domain | the operator | the issuer URL every release module trusts |
+| The `hosted-dev` attestation key | the operator makes it and keeps the private half on the host | its public half, in `publishedAttestationKeys()` and the generated list |
+| The production key service | the operator, with the production host | that it signs with Ed25519, or that it cannot |
 
 ## Runbook
 
@@ -180,8 +270,9 @@ No deployment recipe exists; these are the procedures a deployed instance needs.
 
 ### Start
 
-`just account-dev` for `local-dev`. A `hosted-dev` instance needs `MR_ACCOUNT_DATA_DIR` and a key
-file marked `hosted-dev`; no command writes one.
+`just account-dev` for `local-dev`. A `hosted-dev` instance needs `MR_ACCOUNT_DATA_DIR`, a key
+file marked `hosted-dev` and `attestation-keys.json` beside it, marked the same; no command
+writes either.
 
 ### Admin accounts
 
@@ -207,9 +298,16 @@ The key file is an ordered list, read at start: a key added after the first is p
 not sign; moved to the front it signs; taken out of the file it is published by nobody. Each change
 takes effect at the next start. No command edits the file.
 
+`attestation-keys.json` is an ordered list too, and its first key signs. A world accepts only
+the keys its module was built with, so a new attestation key is published before it signs: add
+its public half to `publishedAttestationKeys()` and regenerate the list, ship modules built with
+it, then move the key to the front of the file and restart. The old key leaves the published list
+once no world should accept what it signed.
+
 ### Backup and restore
 
-Everything to keep is the key file and `account.sqlite`. Copy the database with the service
+Everything to keep is the key file, `attestation-keys.json` on `hosted-dev`, and
+`account.sqlite`. Copy the database with the service
 stopped, or through SQLite's own backup: a plain copy of a file being written can be torn. The
 database holds the accounts (emails and password hashes), the clients and the refresh-token chains
 (as digests): a restored copy keeps every player signed in.
@@ -218,4 +316,4 @@ database holds the accounts (emails and password hashes), the clients and the re
 
 A module derives an account's identity from the issuer URL and the subject of its token
 (`docs/DECISIONS.md`, "Accounts, guest identity and the claim flow"), so the issuer's name moves
-with the service; the key file and the database move with it.
+with the service; the key file, the attestation key file and the database move with it.

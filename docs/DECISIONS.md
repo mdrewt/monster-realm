@@ -2618,7 +2618,11 @@ trusts nothing: nobody can join it. One recipe makes a module to ship,
 records the artefact's hash, by which the artefact is embedded or published. The ownership features
 add or remove no table, reducer, view or type. Designed, not built: `docs/local-play.md` §3,
 fork (e), with the table of every feature set, the recipe and the tests for both sides of the
-switch.
+switch. Of the dev attestation keys, the `local-dev` one is fixed and can be derived from this
+repository (`account-service/src/keys.ts`), so anyone can sign with it: a build that holds it
+enforces ownership in a `local` or `private` world against nobody, and a dev build that has to
+hold against strangers is given only the `hosted-dev` keys (`docs/account-service.md`,
+"Attestation keys").
 
 **Why.** With enforcement as the default there is no input whose omission ships an open module:
 `spacetime publish --module-path` and `spacetime generate` build with no features unless told
@@ -2630,8 +2634,10 @@ feature, which no recipe that ships does. It is the rule dev behaviour already f
 anyone and trust the dev keys); an environment variable or a row as the switch; conditional
 compilation of the constants (a branch no build compiles is a branch nothing checks); making a
 module to ship any other way than the recipe; telling builds apart by `spacetime describe --json`,
-which reads the same for every one. Accepted cost: every site that builds or publishes for
-anonymous play names `open_join`.
+which reads the same for every one; a `local-dev` attestation key made per machine, as its login
+key is (a build's keys are constants computed from its features, and a key that differs per
+machine would need a build input the feature set does not have). Accepted cost: every site that
+builds or publishes for anonymous play names `open_join`.
 
 ## The account service is our own small OIDC issuer; Steam is the only player sign-in
 

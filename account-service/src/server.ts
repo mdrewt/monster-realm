@@ -1,9 +1,10 @@
 import { mkdirSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { type AddressInfo, isIPv6 } from 'node:net';
+import { createAttestRoute } from './attest.ts';
 import { type Config, ConfigError, loadConfig } from './config.ts';
 import { signInStepFor } from './interactions/router.ts';
-import { loadSigningKeys } from './keys.ts';
+import { loadAttestationKeys, loadSigningKeys } from './keys.ts';
 import { createAccountProvider } from './provider.ts';
 import { openAccountStore } from './store/sqliteAdapter.ts';
 
@@ -20,7 +21,7 @@ const PURGE_INTERVAL_MS = 60_000;
 /**
  * Starts the account service from an env record. A setting the service refuses rejects with its
  * `ConfigError` before anything listens; a refused configuration or key file leaves nothing
- * written.
+ * written. `log` receives the start line and every line the attestation route logs.
  */
 export async function startServer(
   env: Readonly<Record<string, string | undefined>>,
@@ -30,17 +31,34 @@ export async function startServer(
 ): Promise<RunningServer> {
   const config = loadConfig(env);
   const keys = loadSigningKeys(config);
+  const attestationKeys = loadAttestationKeys(config, keys);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   const store = openAccountStore(config.databasePath);
   let server: Server;
   try {
+    const signIn = signInStepFor(config.signIn, store.adapter);
     const { handler } = createAccountProvider({
       issuer: config.issuer,
       keys,
       adapter: store.adapter,
-      signIn: signInStepFor(config.signIn, store.adapter),
+      signIn,
     });
-    server = createServer(handler);
+    // Without a sign-in step nothing is issued, an attestation included.
+    const attest =
+      signIn === undefined
+        ? undefined
+        : createAttestRoute({
+            issuer: config.issuer,
+            loginKeys: keys,
+            attestationKeys,
+            account: (sub) => signIn.account(sub),
+            log,
+          });
+    // The attestation route takes only its own path under the issuer's host; every other request,
+    // a wrong host for that path included, is the provider handler's to answer or refuse.
+    server = createServer((req, res) => {
+      if (attest?.(req, res) !== true) handler(req, res);
+    });
     await listen(server, config.listen);
   } catch (error) {
     store.close();
