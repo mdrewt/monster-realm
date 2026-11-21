@@ -21,8 +21,11 @@ import {
   AUTH_REJECT_SUPPRESS_THRESHOLD,
   createAuthTokenGate,
   isStoredCredentialRejected,
+  type TokenPersistence,
   type TokenStorageHost,
+  tokenPersistenceFor,
 } from './authToken';
+import { TARGET_KINDS, type TargetKind } from './shellDocument';
 
 // ---------------------------------------------------------------------------
 // Fake storage host — deterministic in-memory stand-in for `Window.sessionStorage`.
@@ -123,7 +126,7 @@ describe('AUTH_REJECT_SUPPRESS_THRESHOLD', () => {
 describe('createAuthTokenGate: persistence', () => {
   it('onConnected writes the token under a key containing mr.authToken.v1 (kills a no-op onConnected)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage), 'tab');
     gate.onConnected('tok-A');
     const setCall = storage.calls.find((c) => c.op === 'setItem');
     expect(setCall).toBeDefined();
@@ -136,6 +139,7 @@ describe('createAuthTokenGate: persistence', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-A');
     expect(gate.tokenForNextAttempt()).toBe('tok-A');
@@ -146,6 +150,7 @@ describe('createAuthTokenGate: persistence', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-A');
     gate.onConnected('tok-B');
@@ -157,6 +162,7 @@ describe('createAuthTokenGate: persistence', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     expect(gate.tokenForNextAttempt()).toBeUndefined();
   });
@@ -170,8 +176,8 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
   it('two gates differing ONLY in uri do not see each other token (kills a key derived from db alone)', () => {
     const storage = new FakeSessionStorage();
     const host = hostWithStorage(storage);
-    const gateA = createAuthTokenGate('ws://127.0.0.1:3000', 'same-db', host);
-    const gateB = createAuthTokenGate('ws://127.0.0.1:3001', 'same-db', host);
+    const gateA = createAuthTokenGate('ws://127.0.0.1:3000', 'same-db', host, 'tab');
+    const gateB = createAuthTokenGate('ws://127.0.0.1:3001', 'same-db', host, 'tab');
     gateA.onConnected('tok-A');
     expect(gateB.tokenForNextAttempt()).toBeUndefined();
     expect(gateA.tokenForNextAttempt()).toBe('tok-A');
@@ -180,8 +186,8 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
   it('two gates differing ONLY in db do not see each other token (kills a key derived from uri alone)', () => {
     const storage = new FakeSessionStorage();
     const host = hostWithStorage(storage);
-    const gateA = createAuthTokenGate('same-uri', 'db-A', host);
-    const gateB = createAuthTokenGate('same-uri', 'db-B', host);
+    const gateA = createAuthTokenGate('same-uri', 'db-A', host, 'tab');
+    const gateB = createAuthTokenGate('same-uri', 'db-B', host, 'tab');
     gateA.onConnected('tok-A');
     expect(gateB.tokenForNextAttempt()).toBeUndefined();
     expect(gateA.tokenForNextAttempt()).toBe('tok-A');
@@ -192,8 +198,8 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
     // encodeURIComponent-ing each component before joining must keep them distinct.
     const storage = new FakeSessionStorage();
     const host = hostWithStorage(storage);
-    const gate1 = createAuthTokenGate('a|b', 'c', host);
-    const gate2 = createAuthTokenGate('a', 'b|c', host);
+    const gate1 = createAuthTokenGate('a|b', 'c', host, 'tab');
+    const gate2 = createAuthTokenGate('a', 'b|c', host, 'tab');
     gate1.onConnected('tok-1');
     gate2.onConnected('tok-2');
     expect(gate1.tokenForNextAttempt()).toBe('tok-1');
@@ -205,6 +211,7 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     emptyGate.onConnected('');
     expect(emptyGate.tokenForNextAttempt()).toBeUndefined();
@@ -213,14 +220,25 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     whitespaceGate.onConnected('   ');
     expect(whitespaceGate.tokenForNextAttempt()).toBeUndefined();
 
-    const nullGate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', storageReturning(null));
+    const nullGate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      storageReturning(null),
+      'tab',
+    );
     expect(nullGate.tokenForNextAttempt()).toBeUndefined();
 
-    const numberGate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', storageReturning(42));
+    const numberGate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      storageReturning(42),
+      'tab',
+    );
     expect(numberGate.tokenForNextAttempt()).toBeUndefined();
   });
 
@@ -229,6 +247,7 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('abc.def-ghi');
     expect(gate.tokenForNextAttempt()).toBe('abc.def-ghi');
@@ -341,6 +360,7 @@ describe('isStoredCredentialRejected', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     expect(() => gate.onConnectFailed(throwingGetterErr)).not.toThrow();
     expect(() => gate.onConnectFailed(throwingProxyErr)).not.toThrow();
@@ -401,6 +421,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-A');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
@@ -411,7 +432,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
 
   it('at threshold the token is withheld — but remains in storage (kills a never-suppress AND a delete-on-reject impl)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage), 'tab');
     gate.onConnected('tok-A');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
       gate.onConnectFailed(AUTH_ERR);
@@ -437,6 +458,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-A');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
@@ -457,6 +479,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-A');
     for (let i = 0; i < 3 * AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
@@ -470,6 +493,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-A');
     let authRejections = 0;
@@ -491,6 +515,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-OLD');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
@@ -506,6 +531,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-OLD');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
@@ -531,6 +557,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
+      'tab',
     );
     gate.onConnected('tok-SAME');
     gate.onConnected('tok-SAME');
@@ -544,13 +571,13 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
 
 describe('createAuthTokenGate: storage degrades silently, never throws', () => {
   it('host is undefined: tokenForNextAttempt is undefined, onConnected does not throw', () => {
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', undefined);
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', undefined, 'tab');
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
   });
 
   it('host is {} (no sessionStorage): same silent degradation', () => {
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', {});
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', {}, 'tab');
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
   });
@@ -562,7 +589,7 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
         throw new Error('SecurityError');
       },
     });
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', host);
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', host, 'tab');
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
   });
@@ -572,6 +599,7 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage({ getItem: 'nope', setItem: 'nope' }),
+      'tab',
     );
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
@@ -582,6 +610,7 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new ThrowingSetStorage()),
+      'tab',
     );
     expect(() => gate.onConnected('t')).not.toThrow();
   });
@@ -591,6 +620,7 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
       'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new ThrowingGetStorage()),
+      'tab',
     );
     expect(() => gate.tokenForNextAttempt()).not.toThrow();
     expect(gate.tokenForNextAttempt()).toBeUndefined();
@@ -609,7 +639,7 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
 describe('createAuthTokenGate: re-reads storage on every attempt (not closure-cached)', () => {
   it('external mutation of storage is observed by the very next tokenForNextAttempt() call (kills a closure-cached token updated only inside onConnected)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage), 'tab');
     gate.onConnected('tok-A');
     expect(gate.tokenForNextAttempt()).toBe('tok-A');
 
@@ -625,7 +655,7 @@ describe('createAuthTokenGate: re-reads storage on every attempt (not closure-ca
 
   it('tokenForNextAttempt() calls storage.getItem EACH time (kills a memoized read after the first call)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage), 'tab');
     gate.onConnected('tok-A');
     const getCallsBefore = storage.calls.filter((c) => c.op === 'getItem').length;
     gate.tokenForNextAttempt();
@@ -643,7 +673,7 @@ describe('createAuthTokenGate: re-reads storage on every attempt (not closure-ca
 // sessionStorage, never localStorage — ADR-0150 D3.
 // ---------------------------------------------------------------------------
 
-describe('createAuthTokenGate: reads/writes sessionStorage only, never localStorage (ADR-0150 D3)', () => {
+describe('createAuthTokenGate in tab mode: reads/writes sessionStorage only, never localStorage', () => {
   it('a host exposing ONLY localStorage (no sessionStorage at all) is never touched: tokenForNextAttempt is undefined, onConnected writes nothing, neither throws', () => {
     // WRONG IMPL KILLED: an implementation that reads/writes `host.localStorage`
     // instead of (or as a fallback for) `host.sessionStorage`. ADR-0150 D3: the token
@@ -659,7 +689,7 @@ describe('createAuthTokenGate: reads/writes sessionStorage only, never localStor
     // without reaching for `any`.
     const host = { localStorage: localFake } as unknown as TokenStorageHost;
 
-    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', host);
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', host, 'tab');
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
     expect(localFake.calls.some((c) => c.op === 'setItem')).toBe(false);
@@ -716,7 +746,7 @@ const M21B_KINDS: readonly AuthKind[] = ['anon', 'account'];
  */
 function tokenKeyFor(uri: string, db: string): string {
   const storage = new FakeSessionStorage();
-  const gate = createAuthTokenGate(uri, db, hostWithStorage(storage));
+  const gate = createAuthTokenGate(uri, db, hostWithStorage(storage), 'tab');
   gate.onConnected('probe-token');
   const setCall = storage.calls.find((c) => c.op === 'setItem');
   if (setCall === undefined) {
@@ -821,7 +851,7 @@ describe('W-M21B-KIND-DISJOINT: the kind key space and the token key space are d
     ] as const) {
       const storage = new FakeSessionStorage();
       const host = hostWithStorage(storage);
-      const gate = createAuthTokenGate(M21B_URI, M21B_DB, host);
+      const gate = createAuthTokenGate(M21B_URI, M21B_DB, host, 'tab');
       const writeToken = (): void => gate.onConnected('TOK-LIVE');
       const writeKind = (): void => writeAuthKind(host, M21B_URI, M21B_DB, 'account');
       if (first === 'token') writeToken();
@@ -1231,5 +1261,617 @@ describe('wasEverAuthenticated (AUTH-44): true iff the marker slot holds exactly
     wasEverAuthenticated(hostWithStorage(storage), M21B_URI, M21B_DB);
     expect(storage.calls.some((c) => c.op === 'setItem')).toBe(false);
     expect(storage.size).toBe(0);
+  });
+});
+
+// ===========================================================================
+// Where the reconnect token lives: per tab (`sessionStorage`) or on the device
+// (`localStorage`), chosen by the connection target's kind.
+//
+// A `'device'` gate reads and writes `host.localStorage` only; a `'tab'` gate reads and writes
+// `host.sessionStorage` only. Same key, same parse rules, same suppression rule and the same
+// silent degradation in both, and no fallback from one area to the other in either direction.
+// The account-kind marker stays per tab whatever the kind.
+//
+// Every host is still an injected fake. A host built by `hostWithAreas` counts each read of its
+// two storage properties, so "never touched" is asserted as a count of zero, not inferred.
+// ===========================================================================
+
+/** A uri and db holding `:`, `/` and `|`, so the exact percent-encoded key is load-bearing. */
+const DEVICE_URI = 'ws://127.0.0.1:3000/a|b';
+const DEVICE_DB = 'd|b';
+/** The reconnect-token key for (DEVICE_URI, DEVICE_DB), written out by hand. */
+const DEVICE_KEY = 'mr.authToken.v1|ws%3A%2F%2F127.0.0.1%3A3000%2Fa%7Cb|d%7Cb';
+
+interface AreaReads {
+  session: number;
+  local: number;
+}
+
+/** A host exposing both storage areas through getters that count every property read. */
+function hostWithAreas(
+  session: unknown,
+  local: unknown,
+): { readonly host: TokenStorageHost; readonly reads: AreaReads } {
+  const reads: AreaReads = { session: 0, local: 0 };
+  const host: TokenStorageHost = {
+    get sessionStorage() {
+      reads.session += 1;
+      return session;
+    },
+    get localStorage() {
+      reads.local += 1;
+      return local;
+    },
+  };
+  return { host, reads };
+}
+
+/** A host whose `area` property getter throws (SecurityError) and counts each attempt; the other
+ *  area is `other`. */
+function hostThrowingOn(
+  area: 'sessionStorage' | 'localStorage',
+  other: unknown,
+): { readonly host: TokenStorageHost; readonly attempts: { n: number } } {
+  const attempts = { n: 0 };
+  const host: Record<string, unknown> = {};
+  Object.defineProperty(host, area, {
+    get() {
+      attempts.n += 1;
+      throw new Error('SecurityError');
+    },
+  });
+  host[area === 'sessionStorage' ? 'localStorage' : 'sessionStorage'] = other;
+  return { host: host as TokenStorageHost, attempts };
+}
+
+/** A fake storage area already holding `value` under `key`, with the seeding call forgotten, so
+ *  `calls` records only what the code under test does. */
+function seeded(key: string, value: string): FakeSessionStorage {
+  const s = new FakeSessionStorage();
+  s.setItem(key, value);
+  s.calls.splice(0);
+  return s;
+}
+
+/** The precondition every degradation case carries: over a healthy host of the same shape, a
+ *  device gate for (DEVICE_URI, DEVICE_DB) round-trips a token through `localStorage`. */
+function expectHealthyDeviceRoundTrip(label: string): void {
+  const local = new FakeSessionStorage();
+  const gate = createAuthTokenGate(
+    DEVICE_URI,
+    DEVICE_DB,
+    { sessionStorage: new FakeSessionStorage(), localStorage: local },
+    'device',
+  );
+  gate.onConnected('tok-HEALTHY');
+  expect(gate.tokenForNextAttempt(), `${label}: precondition, the healthy round trip`).toBe(
+    'tok-HEALTHY',
+  );
+  expect(local.getItem(DEVICE_KEY), `${label}: precondition, stored in localStorage`).toBe(
+    'tok-HEALTHY',
+  );
+}
+
+describe('tokenPersistenceFor: the storage area for the reconnect token, by target kind', () => {
+  it('keeps the reconnect token on the device for a local and a private target [lpw-2.1]', () => {
+    const local: TokenPersistence = tokenPersistenceFor('local');
+    const priv: TokenPersistence = tokenPersistenceFor('private');
+    expect(local).toBe('device');
+    expect(priv).toBe('device');
+  });
+
+  it('keeps the reconnect token per tab for an official and a test target [lpw-2.2]', () => {
+    expect(tokenPersistenceFor('official')).toBe('tab');
+    expect(tokenPersistenceFor('test')).toBe('tab');
+  });
+
+  it('keeps the reconnect token per tab for every run-time value outside the four kinds, so exactly two strings answer device [lpw-2.2]', () => {
+    const outside: readonly unknown[] = [
+      undefined,
+      null,
+      '',
+      'LOCAL',
+      'Local',
+      'local ',
+      ' private',
+      'PRIVATE',
+      '__proto__',
+      'constructor',
+      'toString',
+      'device',
+      'tab',
+      0,
+      1,
+      true,
+      {},
+      { kind: 'local' },
+      ['local'],
+    ];
+    for (const value of outside) {
+      expect(
+        tokenPersistenceFor(value as unknown as TargetKind),
+        `tokenPersistenceFor(${String(JSON.stringify(value))})`,
+      ).toBe('tab');
+    }
+    expect(TARGET_KINDS.filter((k) => tokenPersistenceFor(k) === 'device')).toEqual([
+      'local',
+      'private',
+    ]);
+  });
+});
+
+describe('createAuthTokenGate in device mode: the reconnect token lives in localStorage', () => {
+  it('writes the token to localStorage under exactly mr.authToken.v1|<encoded uri>|<encoded db> and reads it back [lpw-2.1]', () => {
+    expect(DEVICE_KEY, 'the hand-written key is the documented derivation').toBe(
+      `mr.authToken.v1|${encodeURIComponent(DEVICE_URI)}|${encodeURIComponent(DEVICE_DB)}`,
+    );
+    const session = new FakeSessionStorage();
+    const local = new FakeSessionStorage();
+    const gate = createAuthTokenGate(
+      DEVICE_URI,
+      DEVICE_DB,
+      { sessionStorage: session, localStorage: local },
+      'device',
+    );
+    expect(gate.tokenForNextAttempt(), 'nothing stored yet').toBeUndefined();
+    gate.onConnected('tok-D');
+    expect(local.calls.filter((c) => c.op === 'setItem')).toEqual([
+      { op: 'setItem', key: DEVICE_KEY, value: 'tok-D' },
+    ]);
+    expect(local.size).toBe(1);
+    expect(gate.tokenForNextAttempt()).toBe('tok-D');
+    expect(session.calls, 'sessionStorage is never called').toEqual([]);
+    expect(session.size).toBe(0);
+  });
+
+  it('a fresh device gate returns the token another page or an earlier launch left in localStorage under that key [lpw-2.1]', () => {
+    // Seeded by a separate object, not by a gate: the key is the only shared contract.
+    const local = seeded(DEVICE_KEY, 'tok-PRIOR');
+    const host: TokenStorageHost = {
+      sessionStorage: new FakeSessionStorage(),
+      localStorage: local,
+    };
+    expect(createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device').tokenForNextAttempt()).toBe(
+      'tok-PRIOR',
+    );
+    // A second page's gate sees what the first page's gate stored.
+    const first = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+    first.onConnected('tok-FIRST-PAGE');
+    const second = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+    expect(second.tokenForNextAttempt()).toBe('tok-FIRST-PAGE');
+  });
+
+  it('a device gate returns a stored token VERBATIM: padded, and with dots, dashes and underscores [lpw-2.1]', () => {
+    // Mirrors the tab-mode verbatim round trip: the device read must not trim or mangle.
+    const padded = '  tok with spaces  ';
+    const jwtAlphabet = 'eyJ0.abc-def_ghi.XYZ-09_az';
+    const local = new FakeSessionStorage();
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, { localStorage: local }, 'device');
+    gate.onConnected(padded);
+    expect(gate.tokenForNextAttempt(), 'padded, via onConnected').toBe(padded);
+    gate.onConnected(jwtAlphabet);
+    expect(gate.tokenForNextAttempt(), 'JWT alphabet, via onConnected').toBe(jwtAlphabet);
+    // Stored by another page, read by a fresh gate.
+    const seededPadded = seeded(DEVICE_KEY, padded);
+    expect(
+      createAuthTokenGate(
+        DEVICE_URI,
+        DEVICE_DB,
+        { localStorage: seededPadded },
+        'device',
+      ).tokenForNextAttempt(),
+      'padded, pre-stored',
+    ).toBe(padded);
+    const seededJwt = seeded(DEVICE_KEY, jwtAlphabet);
+    expect(
+      createAuthTokenGate(
+        DEVICE_URI,
+        DEVICE_DB,
+        { localStorage: seededJwt },
+        'device',
+      ).tokenForNextAttempt(),
+      'JWT alphabet, pre-stored',
+    ).toBe(jwtAlphabet);
+  });
+
+  it('scopes the device token by uri and by db, injectively across the uri|db split [lpw-2.1]', () => {
+    const host: TokenStorageHost = { localStorage: new FakeSessionStorage() };
+    const uriA = createAuthTokenGate('ws://127.0.0.1:3000', 'same-db', host, 'device');
+    const uriB = createAuthTokenGate('ws://127.0.0.1:3001', 'same-db', host, 'device');
+    uriA.onConnected('tok-uri-A');
+    expect(uriB.tokenForNextAttempt()).toBeUndefined();
+    expect(uriA.tokenForNextAttempt()).toBe('tok-uri-A');
+
+    const dbA = createAuthTokenGate('same-uri', 'db-A', host, 'device');
+    const dbB = createAuthTokenGate('same-uri', 'db-B', host, 'device');
+    dbA.onConnected('tok-db-A');
+    expect(dbB.tokenForNextAttempt()).toBeUndefined();
+    expect(dbA.tokenForNextAttempt()).toBe('tok-db-A');
+
+    const split1 = createAuthTokenGate('a|b', 'c', host, 'device');
+    const split2 = createAuthTokenGate('a', 'b|c', host, 'device');
+    split1.onConnected('tok-1');
+    split2.onConnected('tok-2');
+    expect(split1.tokenForNextAttempt()).toBe('tok-1');
+    expect(split2.tokenForNextAttempt()).toBe('tok-2');
+  });
+
+  it('re-reads localStorage on every call: a replaced value and a swapped localStorage object are both observed [lpw-2.1]', () => {
+    const local = new FakeSessionStorage();
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, { localStorage: local }, 'device');
+    gate.onConnected('tok-A');
+    expect(gate.tokenForNextAttempt()).toBe('tok-A');
+    local.setItem(DEVICE_KEY, 'tok-EXTERNAL');
+    expect(gate.tokenForNextAttempt()).toBe('tok-EXTERNAL');
+    const readsBefore = local.calls.filter((c) => c.op === 'getItem').length;
+    gate.tokenForNextAttempt();
+    gate.tokenForNextAttempt();
+    expect(
+      local.calls.filter((c) => c.op === 'getItem').length - readsBefore,
+      'two calls issue two fresh reads',
+    ).toBe(2);
+
+    // The host's localStorage property replaced after the gate was built.
+    const firstArea = seeded(DEVICE_KEY, 'tok-FIRST');
+    const secondArea = seeded(DEVICE_KEY, 'tok-SECOND');
+    const swappable: { localStorage: unknown } = { localStorage: firstArea };
+    const swapGate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, swappable, 'device');
+    expect(swapGate.tokenForNextAttempt()).toBe('tok-FIRST');
+    swappable.localStorage = secondArea;
+    expect(swapGate.tokenForNextAttempt()).toBe('tok-SECOND');
+    swapGate.onConnected('tok-NEW');
+    expect(secondArea.getItem(DEVICE_KEY), 'the write goes to the current object').toBe('tok-NEW');
+    expect(firstArea.getItem(DEVICE_KEY), 'the replaced object is left alone').toBe('tok-FIRST');
+  });
+
+  it('a device gate never reads the sessionStorage property, and a token sitting there under the same key is neither returned nor overwritten [lpw-2.1]', () => {
+    const session = seeded(DEVICE_KEY, 'tok-SESSION');
+    const local = new FakeSessionStorage();
+    const { host, reads } = hostWithAreas(session, local);
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+    expect(gate.tokenForNextAttempt(), 'localStorage is empty: no token').toBeUndefined();
+    gate.onConnected('tok-D');
+    gate.onConnectFailed(AUTH_ERR);
+    gate.onConnectFailed(new Error('network down'));
+    expect(gate.tokenForNextAttempt()).toBe('tok-D');
+    expect(reads.local, 'liveness: the device gate read localStorage').toBeGreaterThan(0);
+    expect(reads.session, 'zero reads of the sessionStorage property').toBe(0);
+    expect(session.calls, 'zero calls on sessionStorage').toEqual([]);
+    expect(session.getItem(DEVICE_KEY), 'the per-tab token is untouched').toBe('tok-SESSION');
+  });
+
+  it('a device gate works through a host whose sessionStorage getter throws, never touching it [lpw-2.1]', () => {
+    const local = new FakeSessionStorage();
+    const { host, attempts } = hostThrowingOn('sessionStorage', local);
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+    expect(() => gate.onConnected('tok-D')).not.toThrow();
+    expect(gate.tokenForNextAttempt()).toBe('tok-D');
+    expect(local.getItem(DEVICE_KEY)).toBe('tok-D');
+    local.setItem(DEVICE_KEY, 'tok-PRIOR');
+    expect(createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device').tokenForNextAttempt()).toBe(
+      'tok-PRIOR',
+    );
+    expect(attempts.n, 'zero attempts to read the sessionStorage property').toBe(0);
+  });
+});
+
+describe('createAuthTokenGate in tab mode: the reconnect token never touches localStorage', () => {
+  it('a tab gate never reads the localStorage property, and a token sitting there under the same key is neither returned nor overwritten [lpw-2.2]', () => {
+    const session = new FakeSessionStorage();
+    const local = seeded(DEVICE_KEY, 'tok-LOCAL');
+    const { host, reads } = hostWithAreas(session, local);
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'tab');
+    expect(gate.tokenForNextAttempt(), 'sessionStorage is empty: no token').toBeUndefined();
+    gate.onConnected('tok-T');
+    expect(gate.tokenForNextAttempt()).toBe('tok-T');
+    expect(session.calls.filter((c) => c.op === 'setItem')).toEqual([
+      { op: 'setItem', key: DEVICE_KEY, value: 'tok-T' },
+    ]);
+    expect(reads.session, 'liveness: the tab gate read sessionStorage').toBeGreaterThan(0);
+    expect(reads.local, 'zero reads of the localStorage property').toBe(0);
+    expect(local.calls, 'zero calls on localStorage').toEqual([]);
+    expect(local.getItem(DEVICE_KEY), 'the device token is untouched').toBe('tok-LOCAL');
+  });
+
+  it('a tab gate works through a host whose localStorage getter throws, never touching it [lpw-2.2]', () => {
+    const session = new FakeSessionStorage();
+    const { host, attempts } = hostThrowingOn('localStorage', session);
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'tab');
+    expect(() => gate.onConnected('tok-T')).not.toThrow();
+    expect(gate.tokenForNextAttempt()).toBe('tok-T');
+    expect(session.getItem(DEVICE_KEY)).toBe('tok-T');
+    expect(attempts.n, 'zero attempts to read the localStorage property').toBe(0);
+  });
+
+  it('with sessionStorage empty, absent or throwing, a tab gate never supplies the token sitting in localStorage and writes nothing there [lpw-2.2]', () => {
+    const cases: readonly (readonly [string, (local: FakeSessionStorage) => TokenStorageHost])[] = [
+      [
+        'sessionStorage empty',
+        (local) => ({ sessionStorage: new FakeSessionStorage(), localStorage: local }),
+      ],
+      ['sessionStorage absent', (local) => ({ localStorage: local })],
+      ['sessionStorage getter throws', (local) => hostThrowingOn('sessionStorage', local).host],
+    ];
+    for (const [label, makeHost] of cases) {
+      const local = seeded(DEVICE_KEY, 'tok-LOCAL');
+      const host = makeHost(local);
+      // The seed is real: a device gate over the same host does return it.
+      expect(
+        createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device').tokenForNextAttempt(),
+        `${label}: precondition, the device gate sees the seeded token`,
+      ).toBe('tok-LOCAL');
+      local.calls.splice(0);
+      const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'tab');
+      expect(gate.tokenForNextAttempt(), label).toBeUndefined();
+      expect(() => gate.onConnected('tok-T'), label).not.toThrow();
+      expect(() => gate.onConnectFailed(AUTH_ERR), label).not.toThrow();
+      expect(local.calls, `${label}: zero calls on localStorage`).toEqual([]);
+      expect(local.getItem(DEVICE_KEY), `${label}: the device token is untouched`).toBe(
+        'tok-LOCAL',
+      );
+    }
+  });
+
+  it('a persistence value outside the type keeps the token in sessionStorage, and only exactly device reads localStorage [lpw-2.2]', () => {
+    // Positive control: exactly 'device' over the same host shape DOES return the localStorage
+    // token, so the negatives below cannot pass on a gate that never reads localStorage.
+    {
+      const session = new FakeSessionStorage();
+      const local = seeded(DEVICE_KEY, 'tok-LOCAL');
+      const { host, reads } = hostWithAreas(session, local);
+      expect(
+        createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device').tokenForNextAttempt(),
+        'control: exactly device supplies the localStorage token',
+      ).toBe('tok-LOCAL');
+      expect(reads.local, 'control: the device gate read localStorage').toBeGreaterThan(0);
+    }
+    const outside: readonly unknown[] = [
+      undefined,
+      null,
+      '',
+      'DEVICE',
+      'Device',
+      'device ',
+      ' device',
+      'local',
+      'localStorage',
+      '__proto__',
+      0,
+      1,
+      true,
+      {},
+      ['device'],
+    ];
+    for (const value of outside) {
+      const label = `persistence ${String(JSON.stringify(value))}`;
+      const session = new FakeSessionStorage();
+      const local = seeded(DEVICE_KEY, 'tok-LOCAL');
+      const { host, reads } = hostWithAreas(session, local);
+      const gate = createAuthTokenGate(
+        DEVICE_URI,
+        DEVICE_DB,
+        host,
+        value as unknown as TokenPersistence,
+      );
+      expect(gate.tokenForNextAttempt(), `${label}: the localStorage token is not supplied`).toBe(
+        undefined,
+      );
+      gate.onConnected('tok-X');
+      expect(
+        session.calls.filter((c) => c.op === 'setItem'),
+        `${label}: the token is written to sessionStorage under the key`,
+      ).toEqual([{ op: 'setItem', key: DEVICE_KEY, value: 'tok-X' }]);
+      expect(gate.tokenForNextAttempt(), `${label}: the per-tab token is supplied`).toBe('tok-X');
+      expect(reads.local, `${label}: zero reads of the localStorage property`).toBe(0);
+      expect(local.calls, `${label}: zero calls on localStorage`).toEqual([]);
+      expect(local.getItem(DEVICE_KEY), `${label}: the device token is untouched`).toBe(
+        'tok-LOCAL',
+      );
+    }
+  });
+
+  it('a tab gate whose sessionStorage write throws never falls back to localStorage [lpw-2.2]', () => {
+    // Positive control: the same host shape with a working sessionStorage stores the token there.
+    {
+      const session = new FakeSessionStorage();
+      const local = new FakeSessionStorage();
+      const { host, reads } = hostWithAreas(session, local);
+      const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'tab');
+      gate.onConnected('t');
+      expect(session.getItem(DEVICE_KEY), 'control: stored per tab').toBe('t');
+      expect(gate.tokenForNextAttempt(), 'control: supplied').toBe('t');
+      expect(reads.local, 'control: localStorage never read').toBe(0);
+    }
+    const local = new FakeSessionStorage();
+    const { host, reads } = hostWithAreas(new ThrowingSetStorage(), local);
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'tab');
+    expect(() => gate.onConnected('t')).not.toThrow();
+    expect(reads.session, 'liveness: the tab gate reached sessionStorage').toBeGreaterThan(0);
+    expect(reads.local, 'zero reads of the localStorage property').toBe(0);
+    expect(local.calls, 'zero calls on localStorage').toEqual([]);
+    expect(local.size).toBe(0);
+    expect(gate.tokenForNextAttempt(), 'nothing stored anywhere').toBeUndefined();
+  });
+});
+
+describe('createAuthTokenGate in device mode degrades silently when localStorage is unusable', () => {
+  it('a device gate whose localStorage write throws never falls back to sessionStorage [lpw-2.3]', () => {
+    // Positive control: the same host shape with a working localStorage stores the token there.
+    {
+      const session = new FakeSessionStorage();
+      const local = new FakeSessionStorage();
+      const { host, reads } = hostWithAreas(session, local);
+      const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+      gate.onConnected('t');
+      expect(local.getItem(DEVICE_KEY), 'control: stored on the device').toBe('t');
+      expect(gate.tokenForNextAttempt(), 'control: supplied').toBe('t');
+      expect(reads.session, 'control: sessionStorage never read').toBe(0);
+    }
+    const session = new FakeSessionStorage();
+    const { host, reads } = hostWithAreas(session, new ThrowingSetStorage());
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device');
+    expect(() => gate.onConnected('t')).not.toThrow();
+    expect(reads.local, 'liveness: the device gate reached localStorage').toBeGreaterThan(0);
+    expect(reads.session, 'zero reads of the sessionStorage property').toBe(0);
+    expect(session.calls, 'zero calls on sessionStorage').toEqual([]);
+    expect(session.size).toBe(0);
+    expect(gate.tokenForNextAttempt(), 'nothing stored anywhere').toBeUndefined();
+  });
+
+  it('host undefined: no token, and onConnected / onConnectFailed do not throw [lpw-2.3]', () => {
+    expectHealthyDeviceRoundTrip('host undefined');
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, undefined, 'device');
+    expect(gate.tokenForNextAttempt()).toBeUndefined();
+    expect(() => gate.onConnected('t')).not.toThrow();
+    expect(() => gate.onConnectFailed(AUTH_ERR)).not.toThrow();
+    expect(gate.tokenForNextAttempt()).toBeUndefined();
+  });
+
+  it('host {}: no token, and onConnected / onConnectFailed do not throw [lpw-2.3]', () => {
+    expectHealthyDeviceRoundTrip('host {}');
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, {}, 'device');
+    expect(gate.tokenForNextAttempt()).toBeUndefined();
+    expect(() => gate.onConnected('t')).not.toThrow();
+    expect(() => gate.onConnectFailed(AUTH_ERR)).not.toThrow();
+    expect(gate.tokenForNextAttempt()).toBeUndefined();
+  });
+
+  /** The unusable localStorage shapes. Each builds the broken host around a sessionStorage that
+   *  already holds a DIFFERENT token under the same key. */
+  const BROKEN: readonly (readonly [string, (session: FakeSessionStorage) => TokenStorageHost])[] =
+    [
+      ['localStorage absent', (session) => ({ sessionStorage: session })],
+      [
+        'localStorage getter throws (SecurityError)',
+        (session) => hostThrowingOn('localStorage', session).host,
+      ],
+      ['localStorage is null', (session) => ({ sessionStorage: session, localStorage: null })],
+      ['localStorage is a number', (session) => ({ sessionStorage: session, localStorage: 42 })],
+      [
+        'localStorage getItem / setItem are not functions',
+        (session) => ({
+          sessionStorage: session,
+          localStorage: { getItem: 'nope', setItem: 'nope' },
+        }),
+      ],
+      [
+        'localStorage setItem throws (QuotaExceededError)',
+        (session) => ({ sessionStorage: session, localStorage: new ThrowingSetStorage() }),
+      ],
+      [
+        'localStorage getItem throws',
+        (session) => ({ sessionStorage: session, localStorage: new ThrowingGetStorage() }),
+      ],
+      ...([null, 42, { token: 'x' }, '', '   '] as const).map(
+        (raw) =>
+          [
+            `localStorage holds a non-credential value ${JSON.stringify(raw)}`,
+            (session: FakeSessionStorage): TokenStorageHost => ({
+              sessionStorage: session,
+              localStorage: { getItem: () => raw, setItem: () => {} },
+            }),
+          ] as const,
+      ),
+    ];
+
+  for (const [label, makeHost] of BROKEN) {
+    it(`${label}: no token, no throw, and no fallback to the token in sessionStorage [lpw-2.3]`, () => {
+      expectHealthyDeviceRoundTrip(label);
+      const session = seeded(DEVICE_KEY, 'tok-SESSION');
+      const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, makeHost(session), 'device');
+      expect(() => gate.tokenForNextAttempt()).not.toThrow();
+      expect(gate.tokenForNextAttempt(), 'no token, and not the per-tab one').toBeUndefined();
+      expect(() => gate.onConnected('t')).not.toThrow();
+      expect(() => gate.onConnectFailed(AUTH_ERR)).not.toThrow();
+      expect(() => gate.onConnectFailed(new Error('network down'))).not.toThrow();
+      expect(gate.tokenForNextAttempt(), 'still no token after the write').toBeUndefined();
+      expect(session.getItem(DEVICE_KEY), 'the per-tab token is not overwritten').toBe(
+        'tok-SESSION',
+      );
+      expect(
+        session.calls.filter((c) => c.op === 'setItem'),
+        'nothing written to sessionStorage',
+      ).toEqual([]);
+    });
+  }
+});
+
+describe('createAuthTokenGate in device mode: the same rejection-suppression rule', () => {
+  it('supplies the stored token at 0 and THRESHOLD-1 rejections, withholds it at the threshold, and leaves it in localStorage [lpw-2.8]', () => {
+    const local = seeded(DEVICE_KEY, 'tok-STALE');
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, { localStorage: local }, 'device');
+    expect(gate.tokenForNextAttempt(), '0 rejections').toBe('tok-STALE');
+    for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
+      gate.onConnectFailed(AUTH_ERR);
+    }
+    expect(gate.tokenForNextAttempt(), 'THRESHOLD-1 rejections').toBe('tok-STALE');
+    gate.onConnectFailed(AUTH_ERR);
+    expect(gate.tokenForNextAttempt(), 'THRESHOLD rejections: withheld').toBeUndefined();
+    expect(local.getItem(DEVICE_KEY), 'withheld, never deleted').toBe('tok-STALE');
+    expect(local.size).toBe(1);
+  });
+
+  it('a non-auth failure neither counts nor resets the device counter [lpw-2.8]', () => {
+    const local = seeded(DEVICE_KEY, 'tok-STALE');
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, { localStorage: local }, 'device');
+    for (let i = 0; i < 3 * AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
+      gate.onConnectFailed(new Error('network down'));
+      expect(gate.tokenForNextAttempt(), `outage failure ${i + 1}`).toBe('tok-STALE');
+    }
+    for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
+      gate.onConnectFailed(AUTH_ERR);
+    }
+    gate.onConnectFailed(new Error('network down'));
+    expect(gate.tokenForNextAttempt(), 'the network error did not reach the threshold').toBe(
+      'tok-STALE',
+    );
+    gate.onConnectFailed(AUTH_ERR);
+    expect(
+      gate.tokenForNextAttempt(),
+      'the network error did not reset: this rejection reaches the threshold',
+    ).toBeUndefined();
+  });
+
+  it('onConnected resets the device counter and overwrites the stored token, which the next attempt supplies [lpw-2.8]', () => {
+    const local = seeded(DEVICE_KEY, 'tok-STALE');
+    const gate = createAuthTokenGate(DEVICE_URI, DEVICE_DB, { localStorage: local }, 'device');
+    for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
+      gate.onConnectFailed(AUTH_ERR);
+    }
+    expect(gate.tokenForNextAttempt()).toBeUndefined();
+    gate.onConnected('tok-FRESH');
+    expect(local.getItem(DEVICE_KEY), 'overwritten in localStorage').toBe('tok-FRESH');
+    expect(gate.tokenForNextAttempt()).toBe('tok-FRESH');
+    for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
+      gate.onConnectFailed(AUTH_ERR);
+    }
+    expect(gate.tokenForNextAttempt(), 'the counter restarted from 0').toBe('tok-FRESH');
+  });
+});
+
+describe('the account-kind marker stays per tab whatever the token persistence', () => {
+  it('writeAuthKind writes the account marker to sessionStorage only, with zero localStorage reads [lpw-2.4]', () => {
+    const session = new FakeSessionStorage();
+    const local = new FakeSessionStorage();
+    const { host, reads } = hostWithAreas(session, local);
+    writeAuthKind(host, DEVICE_URI, DEVICE_DB, 'account');
+    expect(session.getItem(authKindStorageKey(DEVICE_URI, DEVICE_DB))).toBe('account');
+    expect(reads.local, 'zero reads of the localStorage property').toBe(0);
+    expect(local.calls).toEqual([]);
+    expect(local.size).toBe(0);
+  });
+
+  it('readAuthKind and wasEverAuthenticated ignore an account marker planted in localStorage [lpw-2.4]', () => {
+    const session = new FakeSessionStorage();
+    const local = seeded(authKindStorageKey(DEVICE_URI, DEVICE_DB), 'account');
+    const { host, reads } = hostWithAreas(session, local);
+    expect(readAuthKind(host, DEVICE_URI, DEVICE_DB)).toBe('anon');
+    expect(wasEverAuthenticated(host, DEVICE_URI, DEVICE_DB)).toBe(false);
+    expect(reads.local, 'zero reads of the localStorage property').toBe(0);
+    // The positive: the same marker in sessionStorage is read.
+    session.setItem(authKindStorageKey(DEVICE_URI, DEVICE_DB), 'account');
+    expect(readAuthKind(host, DEVICE_URI, DEVICE_DB)).toBe('account');
+    expect(wasEverAuthenticated(host, DEVICE_URI, DEVICE_DB)).toBe(true);
   });
 });
