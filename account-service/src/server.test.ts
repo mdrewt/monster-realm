@@ -271,6 +271,20 @@ describe('startServer, in process', () => {
     }
   });
 
+  test('the server itself creates an absent data directory owner-only when the key file lives elsewhere', async () => {
+    const dataDir = join(root, 'data');
+    const keyDir = join(root, 'elsewhere');
+    const keyFile = join(keyDir, 'keys.json');
+    const server = await start({ ...localEnv(dataDir), MR_ACCOUNT_KEY_FILE: keyFile });
+    await publishedKeys(portOf(server.url));
+    expect(existsSync(dataDir)).toBe(true);
+    expect(existsSync(keyFile)).toBe(true);
+    expect(existsSync(join(dataDir, 'keys.json'))).toBe(false);
+    if (!POSIX) return;
+    expect(statSync(dataDir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dataDir, 'account.sqlite')).mode & 0o077).toBe(0);
+  });
+
   test('hosted-dev starts on a key file the operator provided and serves the hosted issuer', async () => {
     const dataDir = join(root, 'hosted');
     mkdirSync(dataDir, { mode: 0o700 });

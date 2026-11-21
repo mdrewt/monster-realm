@@ -307,6 +307,58 @@ describe('a request for another host never reaches the provider', () => {
   });
 });
 
+describe('a request cannot choose the client address the provider sees', () => {
+  test('X-Forwarded-For and Forwarded for= leave the provider seeing the socket address', async () => {
+    const issuer = 'https://issuer.example.test';
+    const host = new URL(issuer).host;
+    const { provider, handler } = createAccountProvider({
+      issuer,
+      keys: { keys: [generateSigningKey()] },
+      adapter: countingAdapter({ upserts: 0 }),
+    });
+    const seen: Array<{ ip: string; ips: string[] }> = [];
+    provider.use(async (ctx, next) => {
+      seen.push({ ip: ctx.ip, ips: [...ctx.ips] });
+      await next();
+    });
+    const server = createServer(handler);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          resolve();
+        });
+      });
+      const port = (server.address() as AddressInfo).port;
+
+      const control = await send(port, '/jwks', { host });
+      expect(control.status).toBe(200);
+      expect(seen).toHaveLength(1);
+      const socketIp = seen[0]!.ip;
+      expect(['127.0.0.1', '::ffff:127.0.0.1']).toContain(socketIp);
+      expect(seen[0]!.ips).toEqual([]);
+
+      const spoofed = await send(port, '/jwks', {
+        host,
+        'x-forwarded-for': '203.0.113.9',
+        forwarded: 'for=203.0.113.9',
+      });
+      expect(spoofed.status).toBe(200);
+      expect(seen).toHaveLength(2);
+      expect(seen[1]!.ip).not.toBe('203.0.113.9');
+      expect(seen[1]!.ip).toBe(socketIp);
+      expect(seen[1]!.ips).toEqual([]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+});
+
 describe('a request target that is not a path gets 400', () => {
   const h = harness('https://issuer.example.test');
 

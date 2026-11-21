@@ -11,6 +11,7 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -158,6 +159,22 @@ describe('loading a key file that does not exist yet', () => {
     expect(second.keys[0]!.y).toBe(first.keys[0]!.y);
     expect(second.keys[0]!.d).toBe(first.keys[0]!.d);
     expect(readFileSync(path).equals(bytes)).toBe(true);
+  });
+
+  const parents: ReadonlyArray<readonly [string, (root: string) => string]> = [
+    ['a parent that already existed', (root) => root],
+    ['a parent the load created', (root) => join(root, 'made', 'here')],
+  ];
+
+  test.each(
+    parents,
+  )('generating into %s leaves the key file as the only entry beside it, after each load', (_name, parentOf) => {
+    const parent = parentOf(dir);
+    const path = join(parent, 'keys.json');
+    loadSigningKeys(fileSource('local-dev', path, true));
+    expect(readdirSync(parent)).toEqual(['keys.json']);
+    loadSigningKeys(fileSource('local-dev', path, true));
+    expect(readdirSync(parent)).toEqual(['keys.json']);
   });
 
   test('without generateIfMissing an absent file is a key-file refusal and nothing is written', () => {

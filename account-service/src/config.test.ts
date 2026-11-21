@@ -278,45 +278,45 @@ describe('dev profiles refuse production settings and name them', () => {
 
 describe('a refusal never carries a secret value', () => {
   test('the Steam publisher key value is not in the refusal', () => {
-    const secret = 'INTERNAL_SECRET_publisher_key';
+    const marker = 'INTERNAL_SECRET_publisher_key';
     const error = expectRefused(
-      { ...LOCAL, MR_STEAM_PUBLISHER_KEY: secret },
+      { ...LOCAL, MR_STEAM_PUBLISHER_KEY: marker },
       'MR_STEAM_PUBLISHER_KEY',
     );
-    expectNoLeak(error, secret);
+    expectNoLeak(error, marker);
   });
 
   test('the Steam publisher key file value is not in the refusal', () => {
-    const secret = 'INTERNAL_SECRET_publisher_key_file';
+    const marker = 'INTERNAL_SECRET_publisher_key_file';
     const error = expectRefused(
-      { ...HOSTED, MR_STEAM_PUBLISHER_KEY_FILE: secret },
+      { ...HOSTED, MR_STEAM_PUBLISHER_KEY_FILE: marker },
       'MR_STEAM_PUBLISHER_KEY_FILE',
     );
-    expectNoLeak(error, secret);
+    expectNoLeak(error, marker);
   });
 
   test('the password in a userinfo issuer is not in the refusal', () => {
-    const secret = 'INTERNAL_SECRET_issuer_password';
+    const marker = 'INTERNAL_SECRET_issuer_password';
     const error = expectRefused(
-      { ...PRODUCTION, MR_ACCOUNT_ISSUER: `https://user:${secret}@accounts.example.com` },
+      { ...PRODUCTION, MR_ACCOUNT_ISSUER: `https://user:${marker}@accounts.example.com` },
       'MR_ACCOUNT_ISSUER',
     );
-    expectNoLeak(error, secret);
+    expectNoLeak(error, marker);
   });
 
   test('a refused issuer path is not in the refusal', () => {
-    const secret = 'INTERNAL_SECRET_issuer_path';
+    const marker = 'INTERNAL_SECRET_issuer_path';
     const error = expectRefused(
-      { ...PRODUCTION, MR_ACCOUNT_ISSUER: `https://accounts.example.com/${secret}` },
+      { ...PRODUCTION, MR_ACCOUNT_ISSUER: `https://accounts.example.com/${marker}` },
       'MR_ACCOUNT_ISSUER',
     );
-    expectNoLeak(error, secret);
+    expectNoLeak(error, marker);
   });
 
   test('the value of an unknown setting is not in the refusal', () => {
-    const secret = 'INTERNAL_SECRET_unknown_setting';
-    const error = expectRefused({ ...LOCAL, MR_ACCOUNT_TOKEN: secret }, 'MR_ACCOUNT_TOKEN');
-    expectNoLeak(error, secret);
+    const marker = 'INTERNAL_SECRET_unknown_setting';
+    const error = expectRefused({ ...LOCAL, MR_ACCOUNT_TOKEN: marker }, 'MR_ACCOUNT_TOKEN');
+    expectNoLeak(error, marker);
   });
 });
 
