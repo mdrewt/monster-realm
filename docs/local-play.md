@@ -692,8 +692,8 @@ with ES256 and 138.5 µs (118.2 to 190.8) with Ed25519. The first call after a p
 690.3 µs and 141.8 to 190.8 µs. The host reported 657 µs and 177 µs for the whole call, against 37
 µs for a call that checks nothing.
 
-Against token length, with tokens signed over a padding claim (every one accepted), the median of
-five calls' medians in microseconds:
+Against token length, the longer tokens signed over an added padding claim and every one accepted,
+the median of five calls' medians in microseconds:
 
 | Token length, bytes | ES256 | Ed25519 |
 |---|---|---|
