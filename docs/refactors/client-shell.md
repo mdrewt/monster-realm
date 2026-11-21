@@ -89,7 +89,7 @@ registers its first listener. A port member called before the install throws.
 
 | Lower module | Reaches up for | Today's upward references |
 |---|---|---|
-| `feedback.ts` | whether the main menu is the top frame, and a repaint of the menu | `hintOnMenu` reads `menuPlace`; `paintWorldHint` calls `renderMenu` |
+| `feedback.ts` | whether the main menu is the top frame, and a repaint of the menu | none: `hintOnMenu` asks the host `installHintHost` took (`menuOnTop`), and `paintWorldHint` calls its `repaintMenu` |
 | `battleFrame.ts` | the handlers of the three battle views, the pop of the player frames over a battle, and whether the outcome is the top frame | `buildDeployPanel`, `buildResultsPanel` and `tacticsShellDeps` call `dispatch`; `popOverBattleBeforeSwitch` calls `applyStack` and reads `contextStack`; `buildResultsPanel` reads `contextStack` |
 
 The battle port has the shape of the handler objects `main()` passes to every boot-built view.
@@ -106,7 +106,7 @@ frame loop must act on, it returns.
 
 | Pump | Owner | Its parameter object carries | It returns |
 |---|---|---|---|
-| the announcement edge and the notice step | `feedback.ts` | the top overlay (`topOverlay`), the line `pumpStillThere` returned, and the focus return on a world edge (`closeLeftFocusAdrift`, `focusAdrift`, `worldCanvasEl`) | nothing |
+| the announcement edge and the notice step (`pumpAnnouncements`) | `feedback.ts` | the frame's clock reading, the top overlay (`topOverlay`), the line `pumpStillThere` returned, and the focus return on a world edge (`closeLeftFocusAdrift`, `focusAdrift`, `worldCanvasEl`) | nothing |
 | the results auto-advance | `frames.ts` | nothing | whether to continue; `main()` then calls `dispatch` |
 | the care-readiness tick | `frames.ts` | nothing | nothing |
 | the privacy step | `account.ts` | the paint of the countdown banner, a local of `main()` | nothing |
@@ -138,7 +138,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `worldHints` | `feedback.ts` | none | none |
 | `saidHint` | `feedback.ts` | none | none |
 | `menuHint` | `feedback.ts` | none | none |
-| `statusNotice` | `feedback.ts` | none | `onReconnect`: reset; the frame loop's notice step: pump |
+| `statusNotice` | `feedback.ts` | `battleFrame` | `onReconnect`: reset; the frame loop's notice step: pump |
 | `announcedSinceFrame` | `feedback.ts` | none | the frame loop's notice step: pump |
 | `lastA11ySnapshot` | `feedback.ts` | none | the frame loop's announcement edge: pump |
 | `toastDismissedSeq` | `feedback.ts` | none | none |
@@ -271,10 +271,6 @@ function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `feedback.ts` | `installHintHost` | the hint-host port |
-| `feedback.ts` | `mountFeedback` | the `statusEl` and `toastChrome` assignments |
-| `feedback.ts` | `pumpAnnouncements` | the frame loop's announcement edge and notice step |
-| `feedback.ts` | `resetStatusNotice` | the `statusNotice` reset in `onReconnect` |
 | `session.ts` | `adoptIdentity`, `adoptConnection` | the `identity` and `conn` assignments |
 | `session.ts` | `noteHydrated`, `clearHydration`, `markReady` | the hydration flag's two writes and the `resolveReady` call |
 | `session.ts` | `armEmitReseed`, `resetEmitLatches` | the reseed arming in `onReconnect` and the two latch resets in `resetPredictionState` |
@@ -351,8 +347,7 @@ is the tester's.
 | `client/src/main.dispatch.test.ts`: `overlayProbes`, `overlayHandles` and `screenViews` are three separate records with exactly the mirrored rows | `frames.ts` | the path only; the row text is unchanged |
 | `client/src/net/connection.test.ts`: `applyClaim` joins through `conn?.join()`, and the source never calls or names `joinGame` and never indexes `reducers` by bracket | `account.ts` | the path for `applyClaim`; the three absence checks read `main.ts` and every `shell/` module together |
 | `client/src/ui/screens/mainMenuScreen.test.ts`: the source holds `menuState` and reads no level off it | `menu.ts` | the scan reads `main.ts` and every `shell/` module together, so the absence checks widen and the length floor holds |
-| `client/src/ui/i18n/catalogParity.test.ts`: the roster of files that import the resolver, and the literal keys `main.ts` resolves | every module that resolves a catalog key | the roster gains the module; the key set splits between `main.ts` and the module, with the union unchanged |
-| `client/src/ui/i18n/catalogParity.test.ts`: `main.ts` resolves the one accessibility key `a11y.world.region`, and by importing both `t` functions proves the census tells them apart | `feedback.ts`, with the announcement edge | the key is pinned on `feedback.ts`; the two-binding proof moves to a file that still imports both |
+| `client/src/ui/i18n/catalogParity.test.ts`: the roster of files that import the resolver, and the literal keys `main.ts` resolves | every module that imports the resolver | the roster gains the module; the key set splits between `main.ts` and the module, with the union unchanged |
 | `client/vite.config.ts`: `src/main.ts` is excluded from coverage by path | nothing | shell modules are measured; coverage is a report with no threshold |
 | the `client/e2e` specs that re-declare the shape of a hook they read | `devHooks.ts` | none while the shapes hold |
 | the `client/e2e` specs that abort the request for `src/main.ts` to hold the shell unbooted | nothing | none: a shell module loads only through `main.ts` |
@@ -370,7 +365,8 @@ Prose that names `main.ts` as the home of a symbol follows the symbol, in the sl
   extraction rewrites them in place to name `client/src/shell/frames.ts`; the tables stay three
   separate total records.
 - `docs/DECISIONS.md`, "Four message channels, chosen by one policy table", which names
-  `main.ts`'s sinks: the `feedback.ts` and `session.ts` extractions.
+  `main.ts` for the senders (`sendGuarded`, the battle refusal, the care, shop and rename
+  outcomes): the `session.ts` and `commands.ts` extractions.
 - `ARCHITECTURE.md`, which names `main.ts` for `switchZone`, the frame loop, `dispatch`,
   `applyStack` and `downloadBugBundle`.
 - Comments under `client/src` that name `main.ts` as the caller or home of a symbol. An
@@ -384,7 +380,6 @@ they write; bodies change only by imports, and an inline listener body gains a n
 **ownership change** leaves a writer outside the destination, so it adds an owner function, or
 it installs a port or adds a pump. The slice for a line deletes that line.
 
-4. `client/src/shell/feedback.ts` takes `route`, `reportError`, `showToast`, `paintToast`, `tickToast`, `setWorldHint`, `topHint`, `hintOnMenu`, `paintWorldHint`, `resetFeedbackSinks`, `announceNow`, `dismissErrorToast`, `pushError`, `reportPaintError`, `eventRing`, `errorRing`, `liveRegion`, `MOVE_REJECT_PREFIX` and the bindings `statusEl`, `toastChrome`, `toastState`, `worldHints`, `saidHint`, `menuHint`, `statusNotice`, `announcedSinceFrame`, `lastA11ySnapshot`, `toastDismissedSeq`, `handlingError` and `lastPaintErrorMessage`. Ownership change: the hint-host port, the two boot mounts, and the announcement pump for the parts of `main` that write `statusNotice`, `announcedSinceFrame` and `lastA11ySnapshot`.
 5. `client/src/shell/session.ts` takes `store`, `identity`, `conn`, `hydratedSinceReconnect`, `resolveReady`, `ready`, `sessionGateBlocks`, `liveReducers`, `privacyLinkLive`, `sendGuarded`, `SEND_REJECT_KIND`, `SendWhere`, `battleEmit`, `lastOwnRating` and the two batch listeners that step the emit latches. Ownership change: `main` assigns `identity`, `conn` and `hydratedSinceReconnect`, and `resetPredictionState` resets the latches.
 6. `client/src/shell/screenContext.ts` takes `screenCtx`, `motionPreference`, `boundShopId`, `boundHealLocationId`, `boundSocialTab`, `boundMonstersTab` and `boundProposeTarget`. Ownership change: `openPendingShop`, `runInteract`, `openSocial`, `openMenuTarget` and `openPropose` bind them and `main` clears them.
 7. `client/src/shell/notices.ts` takes `dismissedRequests`, `announcedRequests`, `answeredRequests`, `noticeInput`, `livePending`, `requestLine` and `releaseAnswered`. Ownership change: `dispatch`, `worldPort` and `main` mutate the three sets.

@@ -802,7 +802,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ]);
   });
 
-  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 28-file resolver roster + main.ts dual bindings', () => {
+  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the resolver roster + the main.ts and shell/feedback.ts keys per binding', () => {
     const census = computeCensus();
     const i18nRoster = census
       .filter((f) => f.bindings.some((b) => b.module === 'i18n'))
@@ -864,9 +864,13 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
 
     const main = census.find((f) => f.file === 'main.ts');
     if (main === undefined) throw new Error('main.ts missing from the census walk');
-    // main.ts imports a11yCopy's `t` BARE and resolver's `t` ALIASED to `i18nT` — proving the
-    // census resolves the two `t` bindings SEPARATELY (a scanner keyed on the literal name `t`
-    // alone would conflate them, or miss the aliased one entirely).
+    const feedback = census.find((f) => f.file === 'shell/feedback.ts');
+    if (feedback === undefined) throw new Error('shell/feedback.ts missing from the census walk');
+    // Each `t` binding is pinned on its own file: main.ts imports the resolver's `t` ALIASED to
+    // `i18nT` (with `tf`), and shell/feedback.ts imports a11yCopy's `t` BARE. A scanner keyed on
+    // the literal name `t` alone would miss the aliased binding, or read main.ts's `i18nT` calls as
+    // a11y ones. The same-file shape (both `t` functions in one file) is fixture (j) of the next
+    // test.
     const i18nLiteralKeys = new Set(
       main.calls
         .filter((c) => c.module === 'i18n' && c.kind === 'literal' && c.literal !== undefined)
@@ -963,14 +967,40 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       // ts-4.6: no `trade.feedback.*` line (no offer-based trade command settles in main.ts).
       'tradeSession.notice.closed', // ts-3: a session left my_trade_session (once per batch)
     ]);
-    const a11yLiteralKeys = new Set(
-      main.calls
-        .filter((c) => c.module === 'a11y' && c.kind === 'literal' && c.literal !== undefined)
-        .map((c) => c.literal as string),
-    );
-    expect(Array.from(a11yLiteralKeys).sort(), 'main.ts a11y-bound literal keys').toEqual([
-      'a11y.world.region',
-    ]);
+    // main.ts resolves nothing through a11yCopy: the world region's name is the announcement
+    // pump's, in shell/feedback.ts.
+    expect(
+      main.calls.filter((c) => c.module === 'a11y'),
+      'main.ts makes no a11y-bound call',
+    ).toEqual([]);
+    // shell/feedback.ts resolves exactly the world region's name, through a11yCopy, and nothing
+    // through the i18n resolver.
+    expect(
+      feedback.calls.filter((c) => c.module === 'i18n'),
+      'shell/feedback.ts makes no i18n-bound call',
+    ).toEqual([]);
+    expect(
+      feedback.calls.filter((c) => c.module === 'a11y'),
+      'shell/feedback.ts resolves exactly the world region name, as a literal key',
+    ).toEqual([{ module: 'a11y', orig: 't', kind: 'literal', literal: 'a11y.world.region' }]);
+    // The union of the literal keys the two files resolve, per binding, is the i18n list
+    // pinned above on main.ts and `a11y.world.region`, whichever of the two files resolves a key.
+    const unionOfLiteralKeys = (module: 'i18n' | 'a11y'): string[] =>
+      Array.from(
+        new Set(
+          [...main.calls, ...feedback.calls]
+            .filter((c) => c.module === module && c.kind === 'literal' && c.literal !== undefined)
+            .map((c) => c.literal as string),
+        ),
+      ).sort();
+    expect(
+      unionOfLiteralKeys('i18n'),
+      'the i18n keys main.ts and shell/feedback.ts resolve together are main.ts`s list above',
+    ).toEqual(Array.from(i18nLiteralKeys).sort());
+    expect(
+      unionOfLiteralKeys('a11y'),
+      'the a11y keys main.ts and shell/feedback.ts resolve together',
+    ).toEqual(['a11y.world.region']);
 
     // I18N-27 over the LIVE tree: every resolver-bound call's first argument is a literal.
     // WRONG IMPL KILLED (the verifier's own mutant): a roster + main.ts-only assertion lets a call
@@ -1067,7 +1097,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     );
     expect(i.calls, "(i) total(/at(/wait( must never match the localName 't'").toEqual([]);
 
-    // (j) dual-import main.ts shape: bare a11y `t` + aliased i18n `i18nT`/`tf`, multi-line list.
+    // (j) the dual-import shape: bare a11y `t` + aliased i18n `i18nT`/`tf`, multi-line list, in one
+    // file. No live file imports both `t` functions, so this fixture carries the same-file proof.
     const j = censusOfSource(
       [
         "import { t } from '../a11yCopy';",
@@ -1094,6 +1125,18 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       j.calls.every((call) => call.kind === 'literal'),
       '(j) every planted call in the dual-import fixture is a literal',
     ).toBe(true);
+    // Each call is credited to the import it calls through: a census that tags every call of a
+    // two-import file with one module fails here.
+    expect(
+      j.calls.map((call) => [call.module, call.orig, call.literal]).sort(),
+      '(j) each planted call is credited to its own binding`s module',
+    ).toEqual(
+      [
+        ['a11y', 't', 'a11y.world.region'],
+        ['i18n', 't', 'chrome.help.title'],
+        ['i18n', 'tf', 'leaderboard.row'],
+      ].sort(),
+    );
 
     // (k) a file with NO resolver/a11y import produces zero census entries even though its raw
     // text contains `t('x')` — the census never falls back to a bare-global scan.
