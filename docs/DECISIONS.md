@@ -2334,8 +2334,8 @@ the attestation is fetched behind one source interface, beside the sign-in seam
 (`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-3). Operator ruling,
 <https://github.com/mdrewt/monster-realm/issues/821>; the design and its open conditions (the
 official server's refusal, the relay between private worlds) are `docs/local-play.md` §3 and the
-harness spec `M-local-play.spec.md` (lpw-8, lpw-15); the verifier is "The attestation is signed with
-Ed25519 and checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
+harness spec `M-local-play.spec.md`; the verifier is "The attestation is signed with Ed25519 and
+checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
 
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
 itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
