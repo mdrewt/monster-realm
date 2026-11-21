@@ -1836,5 +1836,23 @@
     "unique": [],
     "indexes": [],
     "scheduled": null
+  },
+  "module_info": {
+    "pk": "id",
+    "visibility": "public",
+    "columns": {
+      "id": "u32",
+      "protocol": "u32",
+      "min_client_protocol": "u32"
+    },
+    "order": [
+      "id",
+      "protocol",
+      "min_client_protocol"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   }
 }

@@ -2502,7 +2502,11 @@ mod nh_sync {
                 "{path}: sync_content read module_info (asked {:?})",
                 fx.requested_indexes()
             );
-            assert_eq!(module_info_bytes(&w), before, "{path}: the row is unchanged");
+            assert_eq!(
+                module_info_bytes(&w),
+                before,
+                "{path}: the row is unchanged"
+            );
         }
     }
 

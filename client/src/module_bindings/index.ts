@@ -86,6 +86,7 @@ import EvolutionPathRow from "./evolution_path_table";
 import HealLocationRowRow from "./heal_location_row_table";
 import ItemRowRow from "./item_row_table";
 import LeaderboardTopRow from "./leaderboard_top_table";
+import ModuleInfoRow from "./module_info_table";
 import MyAccountRow from "./my_account_table";
 import MyBattleRow from "./my_battle_table";
 import MyBattleClockRow from "./my_battle_clock_table";
@@ -210,6 +211,17 @@ const tablesSchema = __schema({
       { name: 'leaderboard_top_identity_key', constraint: 'unique', columns: ['identity'] },
     ],
   }, LeaderboardTopRow),
+  moduleInfo: __table({
+    name: 'module_info',
+    indexes: [
+      { accessor: 'id', name: 'module_info_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'module_info_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, ModuleInfoRow),
   npc: __table({
     name: 'npc',
     indexes: [
@@ -521,6 +533,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "item_row": Omit<typeof tablesSchema.schemaType.tables["itemRow"], "accessorName"> & { readonly accessorName: "item_row" };
     /** @deprecated Use `leaderboardTop` instead. This alias will be removed in the next major version. */
     readonly "leaderboard_top": Omit<typeof tablesSchema.schemaType.tables["leaderboardTop"], "accessorName"> & { readonly accessorName: "leaderboard_top" };
+    /** @deprecated Use `moduleInfo` instead. This alias will be removed in the next major version. */
+    readonly "module_info": Omit<typeof tablesSchema.schemaType.tables["moduleInfo"], "accessorName"> & { readonly accessorName: "module_info" };
     /** @deprecated Use `shopItemRow` instead. This alias will be removed in the next major version. */
     readonly "shop_item_row": Omit<typeof tablesSchema.schemaType.tables["shopItemRow"], "accessorName"> & { readonly accessorName: "shop_item_row" };
     /** @deprecated Use `shopRow` instead. This alias will be removed in the next major version. */
@@ -592,6 +606,7 @@ const tableAccessorAliases = {
   "heal_location_row": "healLocationRow",
   "item_row": "itemRow",
   "leaderboard_top": "leaderboardTop",
+  "module_info": "moduleInfo",
   "shop_item_row": "shopItemRow",
   "shop_row": "shopRow",
   "skill_row": "skillRow",
@@ -646,6 +661,8 @@ export type DbView = __DbViewBase & {
   readonly "item_row": __DbViewBase["itemRow"];
   /** @deprecated Use `leaderboardTop` instead. This alias will be removed in the next major version. */
   readonly "leaderboard_top": __DbViewBase["leaderboardTop"];
+  /** @deprecated Use `moduleInfo` instead. This alias will be removed in the next major version. */
+  readonly "module_info": __DbViewBase["moduleInfo"];
   /** @deprecated Use `shopItemRow` instead. This alias will be removed in the next major version. */
   readonly "shop_item_row": __DbViewBase["shopItemRow"];
   /** @deprecated Use `shopRow` instead. This alias will be removed in the next major version. */
@@ -708,6 +725,8 @@ export type Tables = __TablesBase & {
   readonly "item_row": __TablesBase["itemRow"];
   /** @deprecated Use `leaderboardTop` instead. This alias will be removed in the next major version. */
   readonly "leaderboard_top": __TablesBase["leaderboardTop"];
+  /** @deprecated Use `moduleInfo` instead. This alias will be removed in the next major version. */
+  readonly "module_info": __TablesBase["moduleInfo"];
   /** @deprecated Use `shopItemRow` instead. This alias will be removed in the next major version. */
   readonly "shop_item_row": __TablesBase["shopItemRow"];
   /** @deprecated Use `shopRow` instead. This alias will be removed in the next major version. */

@@ -33,6 +33,8 @@ pub mod world;
 mod grass_encounter_tests;
 #[cfg(test)]
 mod interact_tests;
+#[cfg(test)]
+mod protocol_tests;
 
 pub use accounts::{
     is_deletion_due, DELETION_GRACE_MS_DEFAULT, EXPORT_CHUNK_ROWS, STATE_TRANSITION_OWNERS,
@@ -111,6 +113,16 @@ pub use world::{
     stepped_onto_grass, validate_zone_maps, zone_0, SlotError, TileMap, ZoneTileMaps,
     MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE, STEP_MS,
 };
+
+/// The protocol number of this build. It rises with every change to the server module's tables
+/// or reducers. The module records it in `module_info.protocol`, and `client-wasm` exports it
+/// as `protocol_version()`.
+pub const PROTOCOL_VERSION: u32 = 1;
+/// The oldest client protocol a server of this build still speaks to, recorded in
+/// `module_info.min_client_protocol`. It rises only when an older client can no longer talk to
+/// the server (a removed or re-typed reducer argument or table column), and it never exceeds
+/// [`PROTOCOL_VERSION`].
+pub const MIN_CLIENT_PROTOCOL: u32 = 1;
 
 /// a pure, deterministic state transition over an
 /// explicit seed (splitmix64-style mix). Identical `(state, input, seed)`

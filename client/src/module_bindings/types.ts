@@ -745,6 +745,13 @@ export const MissedEvent = __t.object("MissedEvent", {
 });
 export type MissedEvent = __Infer<typeof MissedEvent>;
 
+export const ModuleInfo = __t.object("ModuleInfo", {
+  id: __t.u32(),
+  protocol: __t.u32(),
+  minClientProtocol: __t.u32(),
+});
+export type ModuleInfo = __Infer<typeof ModuleInfo>;
+
 export const Monster = __t.object("Monster", {
   monsterId: __t.u64(),
   ownerIdentity: __t.identity(),

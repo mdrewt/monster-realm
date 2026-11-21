@@ -239,6 +239,14 @@ pub fn max_trade_monsters_per_side() -> u32 {
     game_core::MAX_TRADE_MONSTERS_PER_SIDE as u32
 }
 
+/// The protocol number this client build speaks, single-sourced from `game-core`. A server
+/// records the same constant of its own build in its `module_info` row.
+#[wasm_bindgen]
+#[must_use]
+pub fn protocol_version() -> u32 {
+    game_core::PROTOCOL_VERSION
+}
+
 /// The NPC talk range (Manhattan tiles, inclusive), single-sourced from
 /// `game-core` so the client's interact prompt never hard-codes it.
 #[wasm_bindgen]
