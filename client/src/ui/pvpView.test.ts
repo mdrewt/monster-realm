@@ -1635,6 +1635,23 @@ describe('PvpView empty Challenges panel (lpw-6, lpw-6.1)', () => {
     expect(reasons[0]?.textContent, `${label}: the reason`).toBe(text);
     expect(line.querySelector('.mr-empty-cue'), `${label}: no cue`).toBeNull();
     expect(line.querySelector('.mr-empty-next'), `${label}: no next step`).toBeNull();
+    // WRONG IMPL KILLED (red-team mutants): the line given aria-hidden="true", `hidden = true`,
+    // style.display = 'none' or role="button". The kit emits `class` and nothing else on the line
+    // and on each child, so any other attribute is a failure; the line is not hidden, and no
+    // ancestor up to the root hides it from assistive tech.
+    for (const node of [line, ...line.querySelectorAll<HTMLElement>('*')]) {
+      expect(node.getAttributeNames(), `${label}: only the kit's class attribute`).toEqual([
+        'class',
+      ]);
+      expect(node.hidden, `${label}: not hidden`).toBe(false);
+    }
+    for (let up: HTMLElement | null = line; up !== null; up = up.parentElement) {
+      expect(
+        up.getAttribute('aria-hidden'),
+        `${label}: no aria-hidden on the line or an ancestor`,
+      ).not.toBe('true');
+      if (up === root) break;
+    }
     for (const id of ['pvp-challenge-incoming', 'pvp-challenge-outgoing']) {
       const box = document.getElementById(id) as HTMLElement;
       expect(box.children.length, `${label}: #${id} stays empty (so it is no row)`).toBe(0);

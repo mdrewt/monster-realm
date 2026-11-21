@@ -21,7 +21,8 @@
 // ROWS ON THE KIT (uif-9, UIF9.3-UIF9.4): each request renders as one RowCard (`ui/rowCard.ts`),
 // the only child of its container, carrying the `pvp-*-label` testid e2e keys on. While the panel
 // shows, a container holding a card is a nav row (`mr-nav-item`, the padding every Social row has)
-// and the cursor adds `is-active` + aria-current; an empty container is no row. `hide()` clears it all.
+// and the cursor adds `is-active` + aria-current; an empty container is no row. `hide()` clears every
+// mark (the cards and the empty line stay in the hidden root).
 //
 // THE EMPTY LINE (lpw-6): with no request in either container, the panel says so with the kit's
 // empty state (`ui/emptyState.ts`), a direct child of the root right after the outgoing container.
@@ -154,7 +155,7 @@ export class PvpView {
    *
    * Both containers are rebuilt on every refresh: they hold one RowCard each (the buttons they
    * carried are deleted, qf-8), and the Social cursor marks the containers themselves
-   * (`paintCursor`), which outlive the rebuild.
+   * (`paintCursor`), which outlive the rebuild. The empty line is rebuilt with them.
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
     if (!forceVisible) {

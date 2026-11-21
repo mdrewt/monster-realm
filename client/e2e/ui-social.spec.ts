@@ -1340,8 +1340,10 @@ test.describe
             const root = document.getElementById('pvp-challenge-overlay');
             if (root === null) throw new Error('#pvp-challenge-overlay is missing');
             // The Social frame's shared chrome (tab bar + context sheet nav list) is hosted as the
-            // root's FIRST child by hostChrome; it is the frame's own tab stop, not a row of the
-            // Challenges panel, so it is excluded. Everything else in the root stays strict.
+            // root's FIRST child by hostChrome. `tabbable` EXCLUDES it: its nav container is the
+            // frame's own tab stop, not a row of the Challenges panel. `navItems` and `current`
+            // deliberately INCLUDE it (they count the whole root, so the chrome must carry no
+            // nav-item or aria-current here either). Everything else stays strict.
             const hosted = root.firstElementChild;
             const chromeHosted =
               hosted !== null && hosted.querySelector('.mr-tabbar, #social-tabs') !== null;
