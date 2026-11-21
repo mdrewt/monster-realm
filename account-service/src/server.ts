@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { type AddressInfo, isIPv6 } from 'node:net';
 import { type Config, ConfigError, loadConfig } from './config.ts';
+import { signInStepFor } from './interactions/router.ts';
 import { loadSigningKeys } from './keys.ts';
 import { createAccountProvider } from './provider.ts';
 import { openAccountStore } from './store/sqliteAdapter.ts';
@@ -37,6 +38,7 @@ export async function startServer(
       issuer: config.issuer,
       keys,
       adapter: store.adapter,
+      signIn: signInStepFor(config.signIn, store.adapter),
     });
     server = createServer(handler);
     await listen(server, config.listen);
