@@ -68,6 +68,7 @@ vi.mock('../../../../client-wasm/pkg/client_wasm.js', () => {
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
+    protocol_version: () => 1,
     max_trade_monsters_per_side: () => 37,
     talk_range: () => 2,
     predict_move: () => ({}),

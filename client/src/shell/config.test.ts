@@ -9,6 +9,7 @@ import {
   move_queue_cap,
   party_size,
   party_slot_none,
+  protocol_version,
   step_ms,
 } from '../../../client-wasm/pkg/client_wasm.js';
 import { resolveDevLogLevel } from '../net/devLog';
@@ -46,6 +47,8 @@ describe('shell config constants', () => {
     expect(c.PARTY_SIZE).toBe(party_size());
     expect(c.PARTY_SLOT_NONE).toBe(party_slot_none());
     expect(c.DELETION_GRACE_MS_DEFAULT).toBe(deletion_grace_ms_default());
+    // lpw-4: the protocol this client speaks, read once beside the other wasm constants.
+    expect(c.PROTOCOL_VERSION).toBe(protocol_version());
   });
 
   it('takes URI, DB and TARGET_KIND from the page`s shell document, trimmed and otherwise unchanged, whatever the build env holds', async () => {

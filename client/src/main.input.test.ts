@@ -149,6 +149,7 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
+    protocol_version: () => 1,
     // qf-3: named fixture change — the care-readiness export the Monsters frame's view model asks
     // per own monster (`-> i64` crosses as a BigInt; 0n = ready), so a case that opens the box
     // with a monster in the store does not throw on a missing export.

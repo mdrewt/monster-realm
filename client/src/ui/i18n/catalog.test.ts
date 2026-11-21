@@ -645,6 +645,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' is RETIRED
   // with the `privacy-busy` kind (catalogParity DEAD-KEY otherwise).
   'chrome.status.contentStale': 'content out of date — reload',
+  // lpw-4 (named intentional change, lpw-4.1 / lpw-4.2): +2 plain, the protocol mismatch lines
+  // (the spec's English, character for character), 546 -> 548.
+  'chrome.status.serverNewer': 'This server runs a newer Monster Realm. Update the game to join.',
+  'chrome.status.serverOlder': 'This server runs an older Monster Realm. Its host must update it.',
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
   // bt-17 (named intentional change, BT17.1): the four `battle.*` keys the tactical panels still
@@ -2421,7 +2425,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 546 keys').toHaveLength(546);
+    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 548 keys').toHaveLength(548);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3638,8 +3643,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 546 keys').toBe(546);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(546);
+    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
   });
 });
 
@@ -3768,8 +3774,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 546 keys').toBe(546);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(546);
+    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4092,9 +4099,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 546 keys').toBe(546);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(546);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(546);
+    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(548);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4785,8 +4793,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en), 'the English roster is 546 keys').toHaveLength(546);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(546);
+    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
+    expect(Object.keys(en), 'the English roster is 548 keys').toHaveLength(548);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(548);
   });
 });
 
@@ -4911,8 +4920,9 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en), 'the English roster is 546 keys').toHaveLength(546);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(546);
+    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
+    expect(Object.keys(en), 'the English roster is 548 keys').toHaveLength(548);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(548);
   });
 });
 
@@ -5058,5 +5068,47 @@ describe('the player tag and the name-with-tag join in both catalogs', () => {
     }
     expect(enFn({ name: 'Drew', tag: '#0042' })).toBe('Drew #0042');
     expect(enFn({ name: 'Drew', tag: '#0042' })).not.toBe(enFn({ name: 'Amy', tag: '#123456' }));
+  });
+});
+
+// =============================================================================
+// lpw-4: the two lines a client shows when it cannot speak to the server it reached, in both
+// catalogs. The English bytes are the spec's (lpw-4.1 / lpw-4.2); the French accents are built
+// by code point, so the expected text holds no pasted glyph.
+// =============================================================================
+
+describe('lpw-4: the protocol mismatch lines in both catalogs', () => {
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  const A_GRAVE = String.fromCharCode(0x00e0);
+  const O_CIRCUMFLEX = String.fromCharCode(0x00f4);
+  const plain = (catalog: Record<string, unknown>, key: string): unknown =>
+    Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+
+  it('reads chrome.status.serverNewer as the exact English line that tells the player to update the game [lpw-4.1]', () => {
+    // WRONG IMPL KILLED: the two ids swapped (the newer-server line would say the host must
+    // update); a parameterised entry; a reworded line.
+    expect(plain(en, 'chrome.status.serverNewer')).toBe(
+      'This server runs a newer Monster Realm. Update the game to join.',
+    );
+    expect(EXPECTED_KEYS.includes('chrome.status.serverNewer'), 'and in the roster').toBe(true);
+  });
+
+  it('reads chrome.status.serverOlder as the exact English line that tells the player the host must update [lpw-4.2]', () => {
+    expect(plain(en, 'chrome.status.serverOlder')).toBe(
+      'This server runs an older Monster Realm. Its host must update it.',
+    );
+    expect(EXPECTED_KEYS.includes('chrome.status.serverOlder'), 'and in the roster').toBe(true);
+  });
+
+  it('reads both mismatch lines from the French catalog as their exact French text, each a translation of its English line [lpw-4.5]', () => {
+    // WRONG IMPL KILLED: an id added to en only (t() throws under fr); an fr entry left as the
+    // English copy; the two French lines swapped; an accent dropped.
+    const newer = `Ce serveur utilise une version plus r${E_ACUTE}cente de Monster Realm. Mettez le jeu ${A_GRAVE} jour pour le rejoindre.`;
+    const older = `Ce serveur utilise une version plus ancienne de Monster Realm. Son h${O_CIRCUMFLEX}te doit le mettre ${A_GRAVE} jour.`;
+    expect(plain(fr, 'chrome.status.serverNewer')).toBe(newer);
+    expect(plain(fr, 'chrome.status.serverOlder')).toBe(older);
+    expect(plain(fr, 'chrome.status.serverNewer')).not.toBe(plain(en, 'chrome.status.serverNewer'));
+    expect(plain(fr, 'chrome.status.serverOlder')).not.toBe(plain(en, 'chrome.status.serverOlder'));
   });
 });

@@ -29,7 +29,7 @@ import { APPLY_TIMEOUT_MS, LINGER_MS } from './worldScope';
 type Cb = (...args: unknown[]) => void;
 /** One `subscriptionBuilder().subscribe(...)` call on the connection handed to onConnect. */
 interface SubRec {
-  /** The base set's string list, or one world-scope query string. */
+  /** The base set's string list, one world-scope query string, or the protocol gate's string. */
   query: readonly string[] | string | undefined;
   onApplied?: Cb;
   onError?: Cb;
@@ -46,7 +46,7 @@ interface BuildRec {
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
   readonly startGuestClaim: ReturnType<typeof vi.fn>;
-  /** Every subscribe call, in order: the base set first. */
+  /** Every subscribe call, in order: the base set first. The protocol gate is not among them. */
   readonly subs: SubRec[];
   readonly disconnect: ReturnType<typeof vi.fn>;
   /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
@@ -56,7 +56,37 @@ interface BuildRec {
    * undefined by default, so every build reads `H.viewRows`.
    */
   viewRows?: Record<string, unknown[]>;
+  /**
+   * lpw-4: the `module_info` subscribes (the protocol gate) on the connection handed to
+   * onConnect, recorded apart from `subs`. Unless `holdGate`, each is applied, over this build's
+   * `moduleInfo` cache, as the onConnect that opened it returns (the SDK's answer arrives after).
+   */
+  readonly gate: SubRec[];
+  /** lpw-4: leave this build's gate unanswered, for the test to apply or fail by hand. */
+  holdGate: boolean;
+  /** lpw-4: this build's `module_info` cache (default: one row that admits protocol 1). */
+  readonly moduleInfo: ModuleInfoFake;
 }
+interface ModuleInfoRow {
+  id: number;
+  protocol: number;
+  minClientProtocol: number;
+}
+/** The SDK's `db.moduleInfo` of one build: its cached rows, whether reading it throws, and the
+ *  row handlers registered on it. The same table on the built connection and on conn0. */
+interface ModuleInfoFake {
+  rows: ModuleInfoRow[];
+  iterThrows: boolean;
+  /** How many times the cache was read. */
+  reads: number;
+  readonly insert: Cb[];
+  readonly update: Cb[];
+  readonly delete: Cb[];
+  readonly table: Record<string, (...args: unknown[]) => unknown>;
+}
+
+/** The one query the protocol gate subscribes (lpw-4). */
+const MODULE_INFO_QUERY = 'SELECT * FROM module_info';
 
 const H = vi.hoisted(() => ({
   builds: [] as BuildRec[],
@@ -134,6 +164,38 @@ vi.mock('../module_bindings', () => {
   return {
     DbConnection: {
       builder: () => {
+        // lpw-4: the build's `module_info` cache, one admitting row by default; the same table
+        // whichever connection object (the built one, or the one handed to onConnect) reads it,
+        // and never counted in H.iterCalls / H.rowEvents.
+        const mi: ModuleInfoFake = {
+          rows: [{ id: 0, protocol: 1, minClientProtocol: 1 }],
+          iterThrows: false,
+          reads: 0,
+          insert: [],
+          update: [],
+          delete: [],
+          table: {},
+        };
+        Object.assign(mi.table, {
+          iter: () => {
+            mi.reads += 1;
+            if (mi.iterThrows) throw new Error('module_info cache read failed');
+            return [...mi.rows][Symbol.iterator]();
+          },
+          count: () => mi.rows.length,
+          onInsert: (cb: Cb) => {
+            mi.insert.push(cb);
+          },
+          onUpdate: (cb: Cb) => {
+            mi.update.push(cb);
+          },
+          onDelete: (cb: Cb) => {
+            mi.delete.push(cb);
+          },
+          removeOnInsert: () => undefined,
+          removeOnUpdate: () => undefined,
+          removeOnDelete: () => undefined,
+        });
         const rec: BuildRec = {
           token: 'UNSET',
           joinGame: vi.fn(() => Promise.resolve()),
@@ -141,6 +203,9 @@ vi.mock('../module_bindings', () => {
           startGuestClaim: vi.fn(() => (H.startGuestClaimImpl ?? (() => Promise.resolve()))()),
           subs: [],
           disconnect: vi.fn(),
+          gate: [],
+          holdGate: false,
+          moduleInfo: mi,
         };
         H.builds.push(rec);
         const sub = {
@@ -151,8 +216,16 @@ vi.mock('../module_bindings', () => {
           onError: () => sub,
           subscribe: () => sub,
         };
+        const isModuleInfo = (name: string): boolean =>
+          name === 'moduleInfo' || name === 'module_info';
         const conn = {
-          db: new Proxy({}, { get: (_t, name) => tableFor(String(name), rec) }),
+          db: new Proxy(
+            {},
+            {
+              get: (_t, name) =>
+                isModuleInfo(String(name)) ? mi.table : tableFor(String(name), rec),
+            },
+          ),
           reducers: {
             joinGame: rec.joinGame,
             completeGuestClaim: rec.completeGuestClaim,
@@ -167,8 +240,20 @@ vi.mock('../module_bindings', () => {
             rec.token = t;
             return b;
           },
+          // lpw-4: the protocol gate's answer arrives after onConnect returns, as the SDK's
+          // does: unless the build holds it, every `module_info` set this onConnect opened is
+          // applied over the cache once it returns. So an existing onConnect-then-applied
+          // sequence drives an admitted build.
           onConnect: (cb: Cb) => {
-            rec.onConnect = cb;
+            rec.onConnect = (...args: unknown[]) => {
+              const before = rec.gate.length;
+              cb(...args);
+              if (rec.holdGate) return;
+              for (const gate of rec.gate.slice(before)) {
+                gate.active = true;
+                gate.onApplied?.({});
+              }
+            };
             return b;
           },
           onConnectError: (cb: Cb) => {
@@ -235,6 +320,9 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     onClaimPending: vi.fn(),
     onClaimAwaitingAccount: vi.fn(),
     onClaimResult: vi.fn(),
+    // lpw-4: the protocol this client speaks; every build's default module_info row admits it.
+    clientProtocol: 1,
+    onProtocolMismatch: vi.fn(),
   } as unknown as ConnectionOptions & Record<string, ReturnType<typeof vi.fn>>;
 }
 
@@ -3136,19 +3224,19 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
   });
 });
 
-/** The connection object handed to onConnect: only subscriptionBuilder is read there. */
+/** The connection object handed to onConnect: its subscriptionBuilder, reducers, disconnect, and
+ *  the `module_info` table the protocol gate reads (lpw-4). */
 function conn0(rec: BuildRec) {
   // A fresh builder per call, as the SDK gives: every subscribe is its own handle with its own
-  // callbacks. The first is the base set (`rec.onApplied`, `rec.queries`); the rest are the world
-  // scope's. `unsubscribe` throws on a second call, as the SDK's does.
+  // callbacks. The protocol gate's `module_info` subscribe goes to `rec.gate`; of the others, the
+  // first is the base set (`rec.onApplied`, `rec.queries`) and the rest are the world scope's.
+  // Which list a subscribe joins is decided when it is issued. `unsubscribe` throws on a second
+  // call, as the SDK's does.
   const subscriptionBuilder = () => {
     const sub: SubRec = { query: undefined, active: false, unsubscribes: 0 };
-    const first = rec.subs.length === 0;
-    rec.subs.push(sub);
     const builder = {
       onApplied: (cb: Cb) => {
         sub.onApplied = cb;
-        if (first) rec.onApplied = cb;
         return builder;
       },
       onError: (cb: Cb) => {
@@ -3157,7 +3245,16 @@ function conn0(rec: BuildRec) {
       },
       subscribe: (queries: readonly string[] | string) => {
         sub.query = queries;
-        if (first) rec.queries = queries as readonly string[];
+        if (queries === MODULE_INFO_QUERY) {
+          rec.gate.push(sub);
+        } else {
+          const first = rec.subs.length === 0;
+          rec.subs.push(sub);
+          if (first) {
+            rec.onApplied = sub.onApplied;
+            rec.queries = queries as readonly string[];
+          }
+        }
         return {
           isActive: () => sub.active,
           unsubscribe: () => {
@@ -3173,6 +3270,7 @@ function conn0(rec: BuildRec) {
   return {
     subscriptionBuilder,
     disconnect: rec.disconnect,
+    db: { moduleInfo: rec.moduleInfo.table, module_info: rec.moduleInfo.table },
     reducers: {
       joinGame: rec.joinGame,
       completeGuestClaim: rec.completeGuestClaim,
@@ -3993,5 +4091,583 @@ describe('connect(): the reconnect token storage area follows the target kind', 
       'stale-tok',
     ]);
     expect(localStorage.getItem(TOKEN_KEY)).toBe('stale-tok');
+  });
+});
+
+// =============================================================================================
+// lpw-4: the protocol gate. Each build first subscribes `SELECT * FROM module_info` alone and
+// judges the cached row with id 0 against the client's protocol. Admitted, it opens the base set
+// as before and keeps judging the row as it changes, only toward refusal. Refused, it names the
+// side to update once, closes the connection, calls no reducer, and the page builds no other
+// connection. The SDK is faked (conn0 + the builder above); a build that holds its gate is
+// answered by hand: applied over chosen rows, failed, or with a cache read that throws.
+// =============================================================================================
+
+type Lpw4Opts = ReturnType<typeof makeOpts>;
+type Lpw4Handle = ReturnType<typeof connect>;
+/** A row that admits a client of protocol 1. */
+const LPW4_ADMITS_1: ModuleInfoRow = { id: 0, protocol: 1, minClientProtocol: 1 };
+
+/** connect() options for a client that speaks `clientProtocol`. */
+function lpw4Opts(clientProtocol: number): Lpw4Opts {
+  return { ...makeOpts(), clientProtocol, onScopeSettled: vi.fn() } as unknown as Lpw4Opts;
+}
+const lpw4Calls = (fn: unknown): number => (fn as Mock).mock.calls.length;
+/** Every onProtocolMismatch call's arguments, oldest first. */
+const lpw4Mismatches = (opts: ConnectionOptions): unknown[][] =>
+  (opts as unknown as Record<string, Mock>).onProtocolMismatch.mock.calls;
+/** Every onError('link', …) call: the "connection lost — reconnecting…" report. */
+const lpw4LinkErrors = (opts: ConnectionOptions): unknown[][] =>
+  (opts.onError as unknown as Mock).mock.calls.filter(([where]) => where === 'link');
+/** Every reducer call the build received. */
+const lpw4Reducers = (b: BuildRec): number =>
+  b.joinGame.mock.calls.length +
+  b.startGuestClaim.mock.calls.length +
+  b.completeGuestClaim.mock.calls.length;
+
+/** Open `b` with its gate held over `rows` (default: the build's admitting row). */
+function lpw4Open(b: BuildRec, rows?: ModuleInfoRow[]): void {
+  b.holdGate = true;
+  if (rows !== undefined) b.moduleInfo.rows = rows;
+  b.onConnect?.(conn0(b), ID, 'anon-tok');
+}
+/** The build's one gate subscribe. */
+function lpw4Gate(b: BuildRec): SubRec {
+  expect(
+    b.gate.map((sub) => sub.query),
+    'the gate: one subscribe of the bare string',
+  ).toEqual([MODULE_INFO_QUERY]);
+  return b.gate[0];
+}
+/** The server answers the gate: the set applied, over the cache as it now stands. */
+function lpw4Apply(b: BuildRec): void {
+  const gate = lpw4Gate(b);
+  gate.active = true;
+  gate.onApplied?.({});
+}
+/** The server refuses the gate, as a module older than lpw-3 does (no such table). */
+function lpw4Fail(b: BuildRec): void {
+  const gate = lpw4Gate(b);
+  gate.active = false;
+  gate.onError?.({ event: new Error('no such table: module_info') });
+}
+/** Run every `module_info` row handler of `event` the build registered, as the SDK would. */
+function lpw4FireRow(b: BuildRec, event: 'insert' | 'update' | 'delete', args: unknown[]): void {
+  const cbs = b.moduleInfo[event];
+  if (cbs.length === 0) throw new Error(`no module_info ${event} handler was registered`);
+  for (const cb of [...cbs]) cb({}, ...args);
+}
+
+interface Lpw4Snapshot {
+  subs: number;
+  reducers: number;
+  links: number;
+  ready: number;
+  reconnects: number;
+  hydrated: number;
+}
+function lpw4Snapshot(opts: ConnectionOptions, b: BuildRec): Lpw4Snapshot {
+  return {
+    subs: b.subs.length,
+    reducers: lpw4Reducers(b),
+    links: lpw4LinkErrors(opts).length,
+    ready: lpw4Calls(opts.onReady),
+    reconnects: lpw4Calls(opts.onReconnect),
+    hydrated: lpw4Calls(opts.onHydrated),
+  };
+}
+
+/** The refusal of build `b`, naming `side`: nothing subscribed or sent since `before`, the side
+ *  said once, the connection closed once, and the handle left with no live link. */
+function lpw4ExpectRefused(
+  handle: Lpw4Handle,
+  opts: ConnectionOptions,
+  b: BuildRec,
+  side: 'update-game' | 'update-server',
+  label: string,
+  before: Lpw4Snapshot,
+): void {
+  expect(lpw4Mismatches(opts), `${label}: the side to update, said once`).toEqual([[side]]);
+  expect(
+    b.gate.map((sub) => sub.query),
+    `${label}: the gate is the one module_info subscribe`,
+  ).toEqual([MODULE_INFO_QUERY]);
+  expect(b.subs.length, `${label}: nothing else subscribed`).toBe(before.subs);
+  expect(lpw4Reducers(b), `${label}: no reducer called`).toBe(before.reducers);
+  expect(b.disconnect, `${label}: the connection closed once`).toHaveBeenCalledTimes(1);
+  expect(handle.live(), `${label}: no live connection`).toBeUndefined();
+  expect(handle.conn, `${label}: no current connection`).toBeUndefined();
+  expect(handle.linkFrozen(), `${label}: the link is frozen`).toBe(true);
+  expect(handle.sessionState(), `${label}: no session overlay`).toBe('hidden');
+  expect(lpw4LinkErrors(opts).length, `${label}: no "reconnecting" report`).toBe(before.links);
+  expect(lpw4Calls(opts.onReady), `${label}: no onReady`).toBe(before.ready);
+  expect(lpw4Calls(opts.onReconnect), `${label}: no onReconnect`).toBe(before.reconnects);
+  expect(lpw4Calls(opts.onHydrated), `${label}: no hydration edge`).toBe(before.hydrated);
+  handle.join();
+  handle.startSignIn();
+  expect(lpw4Reducers(b), `${label}: join() and startSignIn() send nothing`).toBe(before.reducers);
+}
+
+/** Nothing ever builds again: not the SDK's close of the refused socket, the backoff timers,
+ *  reconnectNow, continueAnonymously nor a bfcache restore; and none of it reports a lost link. */
+async function lpw4ExpectTerminal(
+  handle: Lpw4Handle,
+  opts: ConnectionOptions,
+  b: BuildRec,
+  label: string,
+): Promise<void> {
+  const builds = H.builds.length;
+  const links = lpw4LinkErrors(opts).length;
+  b.onDisconnect?.();
+  // Four times the 30 s backoff cap: any rebuild the drop scheduled has fired.
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(H.builds.length, `${label}: the SDK disconnect rebuilt nothing`).toBe(builds);
+  handle.reconnectNow();
+  await settle();
+  expect(H.builds.length, `${label}: reconnectNow built nothing`).toBe(builds);
+  handle.continueAnonymously();
+  await settle();
+  expect(H.builds.length, `${label}: continueAnonymously built nothing`).toBe(builds);
+  window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(H.builds.length, `${label}: a bfcache restore built nothing`).toBe(builds);
+  expect(lpw4LinkErrors(opts).length, `${label}: no "reconnecting" report`).toBe(links);
+  expect(lpw4Mismatches(opts), `${label}: the side was said once`).toHaveLength(1);
+  expect(handle.live(), `${label}: still no live connection`).toBeUndefined();
+  expect(handle.linkFrozen(), `${label}: still frozen`).toBe(true);
+}
+
+/** Cold boot a client of `clientProtocol`, open build 0 with its gate held over `rows`, check that
+ *  the gate is all onConnect subscribed, then let `answer` answer it and time pass. */
+async function lpw4ColdAnswer(
+  clientProtocol: number,
+  rows: ModuleInfoRow[],
+  answer: (b: BuildRec) => void,
+) {
+  const opts = lpw4Opts(clientProtocol);
+  const handle = connect(opts);
+  await settle();
+  const b = npBuild(0);
+  lpw4Open(b, rows);
+  expect(
+    b.gate.map((sub) => sub.query),
+    'onConnect: the module_info gate, the bare string',
+  ).toEqual([MODULE_INFO_QUERY]);
+  expect(b.subs, 'onConnect: nothing else before the verdict').toEqual([]);
+  expect(lpw4Reducers(b), 'onConnect: no reducer before the verdict').toBe(0);
+  const before = lpw4Snapshot(opts, b);
+  answer(b);
+  await vi.advanceTimersByTimeAsync(5_000);
+  return { opts, handle, b, before };
+}
+
+/** Boot build 0 admitted (the default row admits protocol 1) through the base set and the world
+ *  scope's two sets: joined, the own rows in the store, the scope settled. */
+async function lpw4Admitted() {
+  const w = wsOpts();
+  const handle = connect(w.opts);
+  const initialScope = handle.worldScope();
+  await settle();
+  const b = npBuild(0);
+  b.onConnect?.(conn0(b), ID, 'anon-tok');
+  b.onApplied?.();
+  wsFire('player', 'insert', [wsPlayer()]);
+  wsApply(wsSubs(b)[0]);
+  wsFire('character', 'insert', [wsChar(WS_E, 0)]);
+  wsApply(wsSubs(b)[1]);
+  await settle();
+  expect(handle.worldScope().settled, 'precondition: the scope settled').toBe(true);
+  expect(
+    w.opts.store.ownCharacter(ID.toHexString()),
+    'precondition: the store holds the own character row',
+  ).toBeDefined();
+  expect(b.joinGame, 'precondition: joined once').toHaveBeenCalledTimes(1);
+  expect(handle.linkFrozen(), 'precondition: the link is live').toBe(false);
+  expect(lpw4Mismatches(w.opts), 'precondition: admitted').toEqual([]);
+  return { handle, w, b, initialScope };
+}
+
+/** The refusal of an admitted build: the refusal itself, the scope stopped, the store reset; a
+ *  later admitting row admits nothing again; and nothing ever builds again. */
+async function lpw4ExpectAdmittedRefusal(
+  ctx: Awaited<ReturnType<typeof lpw4Admitted>>,
+  side: 'update-game' | 'update-server',
+  label: string,
+  before: Lpw4Snapshot,
+): Promise<void> {
+  const { handle, w, b, initialScope } = ctx;
+  await settle();
+  lpw4ExpectRefused(handle, w.opts, b, side, label, before);
+  expect(w.onScopeSettled.mock.calls, `${label}: the scope reports unsettled`).toEqual([[false]]);
+  expect(handle.worldScope(), `${label}: the scope is the initial one`).toEqual(initialScope);
+  expect(w.opts.store.ownCharacter(ID.toHexString()), `${label}: the store was reset`).toBe(
+    undefined,
+  );
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(b.subs.length, `${label}: the scope drives no set`).toBe(before.subs);
+  // The row moves back to numbers that admit the client: a refused page stays refused.
+  b.moduleInfo.rows = [LPW4_ADMITS_1];
+  lpw4FireRow(b, 'insert', [LPW4_ADMITS_1]);
+  await settle();
+  lpw4ExpectRefused(handle, w.opts, b, side, `${label}, then an admitting row`, before);
+  await lpw4ExpectTerminal(handle, w.opts, b, label);
+}
+
+describe('connect(): the protocol gate before the subscription set (lpw-4)', {
+  sequential: true,
+}, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+    });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    H.oidcClients = 0;
+    H.realOidc = false;
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  // --------------------------------------------------------------------------- lpw-4.1
+  it('subscribes nothing but module_info, calls no reducer, says update-game once and closes the connection when the floor is above the client [lpw-4.1]', async () => {
+    // WRONG IMPL KILLED: the base set subscribed in the same tick as the gate; the gate query
+    // inside the base array; the verdict ignored (always admit); refusing but still joining;
+    // refusing without closing the socket; the floor compared the wrong way.
+    const { opts, handle, b, before } = await lpw4ColdAnswer(
+      2,
+      [{ id: 0, protocol: 5, minClientProtocol: 3 }],
+      lpw4Apply,
+    );
+    lpw4ExpectRefused(handle, opts, b, 'update-game', 'floor 3 above client 2', before);
+    expect(opts.onReady).not.toHaveBeenCalled();
+    expect(opts.onReconnect).not.toHaveBeenCalled();
+    expect(opts.onHydrated).not.toHaveBeenCalled();
+  });
+
+  it('builds no other connection after a refusal: not on the SDK disconnect, the backoff timers, reconnectNow, continueAnonymously or a bfcache restore, and reports no lost link [lpw-4.1]', async () => {
+    // WRONG IMPL KILLED: the SDK's close of the refused socket taken as a drop (a reconnect loop
+    // against a server the client cannot speak to, with "reconnecting…" over the mismatch
+    // line); reconnectNow / continueAnonymously / pageshow not checking the refusal.
+    const { opts, handle, b } = await lpw4ColdAnswer(
+      2,
+      [{ id: 0, protocol: 5, minClientProtocol: 3 }],
+      lpw4Apply,
+    );
+    expect(lpw4Mismatches(opts), 'precondition: refused').toEqual([['update-game']]);
+    await lpw4ExpectTerminal(handle, opts, b, 'after the refusal');
+    expect(H.builds, 'the one build').toHaveLength(1);
+  });
+
+  it('refuses an admitted connection whose module_info row changes to a floor above the client, judged from the cache, with the store reset, the scope stopped and no link report [lpw-4.1]', async () => {
+    // WRONG IMPL KILLED: no row handler (an admitted client keeps sending to a server that
+    // ruled it out); the callback's row argument judged instead of the cache (it admits here);
+    // the drop path's "reconnecting…" report and rebuild taken on the refusal.
+    const ctx = await lpw4Admitted();
+    ctx.w.onScopeSettled.mockClear();
+    const before = lpw4Snapshot(ctx.w.opts, ctx.b);
+    ctx.b.moduleInfo.rows = [{ id: 0, protocol: 9, minClientProtocol: 9 }];
+    lpw4FireRow(ctx.b, 'update', [LPW4_ADMITS_1, LPW4_ADMITS_1]);
+    await lpw4ExpectAdmittedRefusal(ctx, 'update-game', 'the row updated to floor 9', before);
+  });
+
+  it('refuses an admitted connection when a module_info row inserted into the cache puts the floor above the client [lpw-4.1]', async () => {
+    const ctx = await lpw4Admitted();
+    ctx.w.onScopeSettled.mockClear();
+    const before = lpw4Snapshot(ctx.w.opts, ctx.b);
+    ctx.b.moduleInfo.rows = [{ id: 0, protocol: 9, minClientProtocol: 9 }];
+    lpw4FireRow(ctx.b, 'insert', [LPW4_ADMITS_1]);
+    await lpw4ExpectAdmittedRefusal(ctx, 'update-game', 'a row inserted with floor 9', before);
+  });
+
+  it('refuses a reconnect build that meets a floor above the client, though the first build was admitted (the server changed under a connected client) [lpw-4.1]', async () => {
+    // WRONG IMPL KILLED: only the first build gated (a reconnect after an upgrade plays on).
+    const opts = lpw4Opts(2);
+    const handle = connect(opts);
+    await settle();
+    const b0 = npBuild(0);
+    b0.moduleInfo.rows = [{ id: 0, protocol: 2, minClientProtocol: 2 }];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b0.onApplied?.();
+    expect(b0.joinGame, 'precondition: build 0 admitted and joined').toHaveBeenCalledTimes(1);
+    b0.onDisconnect?.();
+    await nextAttempt();
+    const b1 = npBuild(1);
+    lpw4Open(b1, [{ id: 0, protocol: 5, minClientProtocol: 3 }]);
+    expect(b1.subs, 'the reconnect opens the gate alone').toEqual([]);
+    const before = lpw4Snapshot(opts, b1);
+    lpw4Apply(b1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    lpw4ExpectRefused(handle, opts, b1, 'update-game', 'the reconnect build', before);
+    expect(opts.onReconnect, 'the refused reconnect never reconnects').not.toHaveBeenCalled();
+    await lpw4ExpectTerminal(handle, opts, b1, 'the refused reconnect');
+  });
+
+  it('clears a session terminal on a refusal: a session-expired tab that continues anonymously into a mismatched server shows no session overlay [lpw-4.1]', async () => {
+    // WRONG IMPL KILLED: the refusal leaving sessionMode as it was (the expired overlay stays up
+    // over a connection that can no longer do anything).
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'no-session' });
+    const opts = lpw4Opts(2);
+    const handle = connect(opts);
+    await settle();
+    expect(handle.sessionState(), 'precondition: session expired').toBe('expired');
+    expect(H.builds, 'precondition: parked without building').toHaveLength(0);
+    handle.continueAnonymously();
+    await settle();
+    const b = npBuild(0);
+    b.moduleInfo.rows = [{ id: 0, protocol: 5, minClientProtocol: 3 }];
+    b.onConnect?.(conn0(b), ID, 'anon-tok');
+    await settle();
+    expect(lpw4Mismatches(opts)).toEqual([['update-game']]);
+    expect(handle.sessionState(), 'the refusal hides the session overlay').toBe('hidden');
+    expect(b.subs, 'nothing else subscribed').toEqual([]);
+    expect(lpw4Reducers(b)).toBe(0);
+  });
+
+  // --------------------------------------------------------------------------- lpw-4.2
+  it('subscribes nothing else, calls no reducer, says update-server once and closes the connection when the server protocol is below the client [lpw-4.2]', async () => {
+    // WRONG IMPL KILLED: the protocol comparison swapped; an older server admitted.
+    const { opts, handle, b, before } = await lpw4ColdAnswer(
+      3,
+      [{ id: 0, protocol: 2, minClientProtocol: 1 }],
+      lpw4Apply,
+    );
+    lpw4ExpectRefused(handle, opts, b, 'update-server', 'protocol 2 below client 3', before);
+  });
+
+  it('says update-server when the module_info set applies with no row in the cache [lpw-4.2]', async () => {
+    // WRONG IMPL KILLED: an empty module_info admitted (a database the owner never synced).
+    const { opts, handle, b, before } = await lpw4ColdAnswer(1, [], lpw4Apply);
+    lpw4ExpectRefused(handle, opts, b, 'update-server', 'no row', before);
+  });
+
+  it('says update-server when the cache holds only a module_info row of another id [lpw-4.2]', async () => {
+    // WRONG IMPL KILLED: the first cached row judged whatever its id.
+    const { opts, handle, b, before } = await lpw4ColdAnswer(
+      1,
+      [{ id: 3, protocol: 1, minClientProtocol: 1 }],
+      lpw4Apply,
+    );
+    lpw4ExpectRefused(handle, opts, b, 'update-server', 'only a row of id 3', before);
+  });
+
+  it('says update-server and subscribes nothing else when the server refuses the module_info subscription [lpw-4.2]', async () => {
+    // WRONG IMPL KILLED: the error callback ignored (the client stuck connecting against a module
+    // older than lpw-3), or taken as admission; reported as a subscribe error only.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { opts, handle, b, before } = await lpw4ColdAnswer(1, [LPW4_ADMITS_1], lpw4Fail);
+      lpw4ExpectRefused(handle, opts, b, 'update-server', 'the gate refused', before);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('says update-server when reading the module_info cache throws, so the client is never left without a verdict [lpw-4.2]', async () => {
+    // WRONG IMPL KILLED: the throw escaping the applied callback (no verdict, the client stuck
+    // connecting forever with nothing on screen).
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { opts, handle, b, before } = await lpw4ColdAnswer(1, [LPW4_ADMITS_1], (build) => {
+        build.moduleInfo.iterThrows = true;
+        lpw4Apply(build);
+      });
+      lpw4ExpectRefused(handle, opts, b, 'update-server', 'a throwing cache read', before);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('refuses an admitted connection whose module_info row is deleted from the cache, saying update-server [lpw-4.2]', async () => {
+    // WRONG IMPL KILLED: the deleted row (the callback's argument, which admits) judged instead
+    // of the now-empty cache; no delete handler.
+    const ctx = await lpw4Admitted();
+    ctx.w.onScopeSettled.mockClear();
+    const before = lpw4Snapshot(ctx.w.opts, ctx.b);
+    ctx.b.moduleInfo.rows = [];
+    lpw4FireRow(ctx.b, 'delete', [LPW4_ADMITS_1]);
+    await lpw4ExpectAdmittedRefusal(ctx, 'update-server', 'the row deleted', before);
+  });
+
+  // --------------------------------------------------------------------------- lpw-4.3
+  for (const { label, client, row } of [
+    { label: 'equal numbers', client: 1, row: { id: 0, protocol: 1, minClientProtocol: 1 } },
+    {
+      label: 'a newer server whose floor the client meets',
+      client: 2,
+      row: { id: 0, protocol: 4, minClientProtocol: 1 },
+    },
+  ]) {
+    it(`opens the 30-query base set only after the gate admits ${label}, then joins, fires onReady and unfreezes the link [lpw-4.3]`, async () => {
+      // WRONG IMPL KILLED: the base set opened with the gate (before any verdict); a newer
+      // server refused although the client meets its floor; equality refused; the base set
+      // changed by the gate.
+      const opts = lpw4Opts(client);
+      const handle = connect(opts);
+      await settle();
+      const b = npBuild(0);
+      lpw4Open(b, [row]);
+      expect(b.subs, 'before the verdict: no base set').toEqual([]);
+      expect(lpw4Reducers(b), 'before the verdict: no reducer').toBe(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(b.subs, 'an unanswered gate opens nothing on a timer').toEqual([]);
+      lpw4Apply(b);
+      expect(b.subs, 'admitted: the base set, one subscribe').toHaveLength(1);
+      const base = b.subs[0]?.query;
+      expect(Array.isArray(base), 'the base set is a list').toBe(true);
+      expect(base as readonly string[], 'of 30 queries').toHaveLength(30);
+      expect(
+        (base as readonly string[]).filter((q) => q.includes('module_info')),
+        'none naming module_info',
+      ).toEqual([]);
+      expect(handle.linkFrozen(), 'frozen until the base set applies').toBe(true);
+      expect(lpw4Reducers(b), 'no reducer before the base set applies').toBe(0);
+      b.onApplied?.();
+      expect(b.joinGame.mock.calls, 'joined once, with the name').toEqual([[{ name: 'Tester' }]]);
+      expect(opts.onReady).toHaveBeenCalledTimes(1);
+      expect(opts.onReady).toHaveBeenCalledWith(ID.toHexString());
+      expect(handle.linkFrozen(), 'unfrozen').toBe(false);
+      expect(handle.live(), 'live').toBeDefined();
+      expect(lpw4Mismatches(opts)).toEqual([]);
+      expect(b.disconnect).not.toHaveBeenCalled();
+    });
+  }
+
+  it('carries on when an admitted connection`s module_info row changes to other numbers that admit the client [lpw-4.3]', async () => {
+    // WRONG IMPL KILLED: a row change that re-opens the base set or re-fires onReady /
+    // onReconnect (a re-judge that admits again); any change of the row taken as a refusal.
+    const { handle, w, b } = await lpw4Admitted();
+    const before = lpw4Snapshot(w.opts, b);
+    b.moduleInfo.rows = [{ id: 0, protocol: 4, minClientProtocol: 1 }];
+    lpw4FireRow(b, 'update', [LPW4_ADMITS_1, { id: 0, protocol: 4, minClientProtocol: 1 }]);
+    b.moduleInfo.rows = [{ id: 0, protocol: 5, minClientProtocol: 0 }];
+    lpw4FireRow(b, 'insert', [{ id: 0, protocol: 5, minClientProtocol: 0 }]);
+    await settle();
+    expect(b.subs.length, 'no second base set, nothing else subscribed').toBe(before.subs);
+    expect(
+      b.subs.filter((sub) => Array.isArray(sub.query)),
+      'one base set in all',
+    ).toHaveLength(1);
+    expect(lpw4Mismatches(w.opts)).toEqual([]);
+    expect(lpw4Calls(w.opts.onReady), 'onReady once, from the admission').toBe(1);
+    expect(w.opts.onReconnect).not.toHaveBeenCalled();
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    expect(b.disconnect).not.toHaveBeenCalled();
+    expect(handle.live(), 'still live').toBeDefined();
+    expect(handle.linkFrozen(), 'not frozen').toBe(false);
+    expect(handle.worldScope().settled, 'the scope still settled').toBe(true);
+  });
+
+  it('gates a reconnect build again on its own connection and, admitted, fires onReconnect with its identity [lpw-4.3]', async () => {
+    // WRONG IMPL KILLED: the gate run once per page (a reconnect opens the base set at once).
+    const opts = lpw4Opts(1);
+    const handle = connect(opts);
+    await settle();
+    const b0 = npBuild(0);
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b0.onApplied?.();
+    b0.onDisconnect?.();
+    await nextAttempt();
+    const b1 = npBuild(1);
+    lpw4Open(b1);
+    expect(
+      b1.gate.map((sub) => sub.query),
+      'the reconnect opens its own gate',
+    ).toEqual([MODULE_INFO_QUERY]);
+    expect(b1.subs, 'and nothing else before its verdict').toEqual([]);
+    lpw4Apply(b1);
+    expect(b1.subs, 'admitted: the base set').toHaveLength(1);
+    expect(b1.subs[0]?.query as readonly string[]).toHaveLength(30);
+    expect(opts.onReconnect, 'not before the base set applies').not.toHaveBeenCalled();
+    b1.onApplied?.();
+    expect(opts.onReconnect).toHaveBeenCalledTimes(1);
+    expect(opts.onReconnect).toHaveBeenCalledWith(ID.toHexString());
+    expect(b1.joinGame).toHaveBeenCalledTimes(1);
+    expect(handle.linkFrozen()).toBe(false);
+    expect(lpw4Mismatches(opts)).toEqual([]);
+  });
+
+  it('ignores an admitting gate answer on a superseded build: it opens no base set and calls no reducer there, and the newer build is admitted [lpw-4.3]', async () => {
+    // WRONG IMPL KILLED: the gate's callbacks not stale-guarded (a dead socket opens a base set,
+    // joins, and fires onReady for a build that is no longer current).
+    const opts = lpw4Opts(1);
+    const handle = connect(opts);
+    await settle();
+    const b0 = npBuild(0);
+    lpw4Open(b0);
+    handle.reconnectNow();
+    await settle();
+    const b1 = npBuild(1);
+    lpw4Apply(b0);
+    await settle();
+    expect(b0.subs, 'the superseded build opens no base set').toEqual([]);
+    expect(lpw4Reducers(b0), 'and calls no reducer').toBe(0);
+    expect(opts.onReady).not.toHaveBeenCalled();
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    expect(b1.joinGame, 'the newer build joins').toHaveBeenCalledTimes(1);
+    expect(opts.onReady).toHaveBeenCalledTimes(1);
+    expect(handle.linkFrozen()).toBe(false);
+  });
+
+  it('ignores a mismatching or failing gate answer on a superseded build: no side is said and the newer build is admitted [lpw-4.3]', async () => {
+    // WRONG IMPL KILLED: a stale build's refusal poisoning the page (the newer build, which the
+    // server admits, would never be built or would be torn down).
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const opts = lpw4Opts(2);
+      const handle = connect(opts);
+      await settle();
+      const b0 = npBuild(0);
+      lpw4Open(b0, [{ id: 0, protocol: 5, minClientProtocol: 3 }]);
+      handle.reconnectNow();
+      await settle();
+      const b1 = npBuild(1);
+      lpw4Apply(b0);
+      lpw4Fail(b0);
+      await settle();
+      expect(lpw4Mismatches(opts), 'the superseded build says nothing').toEqual([]);
+      expect(b0.subs).toEqual([]);
+      b1.moduleInfo.rows = [{ id: 0, protocol: 2, minClientProtocol: 2 }];
+      b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+      b1.onApplied?.();
+      expect(b1.joinGame, 'the newer build joins').toHaveBeenCalledTimes(1);
+      expect(opts.onReady).toHaveBeenCalledTimes(1);
+      expect(b1.disconnect).not.toHaveBeenCalled();
+      expect(handle.live(), 'the newer build is live').toBeDefined();
+      expect(handle.linkFrozen()).toBe(false);
+      expect(lpw4Mismatches(opts)).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('ignores an error of the module_info set after admission: the connection stays live and no side is said [lpw-4.3]', async () => {
+    // WRONG IMPL KILLED: a late error of the gate set taken as a refusal of an admitted client.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { handle, w, b } = await lpw4Admitted();
+      const subs = b.subs.length;
+      lpw4Fail(b);
+      await settle();
+      expect(lpw4Mismatches(w.opts)).toEqual([]);
+      expect(b.disconnect).not.toHaveBeenCalled();
+      expect(handle.live(), 'still live').toBeDefined();
+      expect(handle.linkFrozen(), 'not frozen').toBe(false);
+      expect(b.subs.length).toBe(subs);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

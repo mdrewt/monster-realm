@@ -27,7 +27,7 @@ import { AuthoritativeStore } from './store';
 type Cb = (...args: unknown[]) => void;
 /** One `subscriptionBuilder().subscribe(...)` call on the connection handed to onConnect. */
 interface SubRec {
-  /** The base set's string list, or one world-scope query string. */
+  /** The base set's string list, one world-scope query string, or the protocol gate's string. */
   query: readonly string[] | string | undefined;
   onApplied?: Cb;
   onError?: Cb;
@@ -44,12 +44,35 @@ interface BuildRec {
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
   readonly startGuestClaim: ReturnType<typeof vi.fn>;
-  /** Every subscribe call, in order: the base set first. */
+  /** Every subscribe call, in order: the base set first. The protocol gate is not among them. */
   readonly subs: SubRec[];
   readonly disconnect: ReturnType<typeof vi.fn>;
   /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
   queries?: readonly string[];
+  /**
+   * lpw-4: the `module_info` subscribes (the protocol gate), recorded apart from `subs`. Each is
+   * applied as the onConnect that opened it returns, over this build's `moduleInfo` cache.
+   */
+  readonly gate: SubRec[];
+  /** lpw-4: this build's `module_info` cache (default: one row that admits protocol 1). */
+  readonly moduleInfo: ModuleInfoFake;
 }
+interface ModuleInfoRow {
+  id: number;
+  protocol: number;
+  minClientProtocol: number;
+}
+/** The SDK's `db.moduleInfo` of one build: its cached rows and the row handlers registered on it. */
+interface ModuleInfoFake {
+  rows: ModuleInfoRow[];
+  readonly insert: Cb[];
+  readonly update: Cb[];
+  readonly delete: Cb[];
+  readonly table: Record<string, (...args: unknown[]) => unknown>;
+}
+
+/** The one query the protocol gate subscribes (lpw-4). */
+const MODULE_INFO_QUERY = 'SELECT * FROM module_info';
 
 const H = vi.hoisted(() => ({
   builds: [] as BuildRec[],
@@ -81,6 +104,31 @@ vi.mock('../module_bindings', () => {
   return {
     DbConnection: {
       builder: () => {
+        // lpw-4: the build's `module_info` cache, one admitting row by default; the same table
+        // whichever connection object (the built one, or the one handed to onConnect) reads it.
+        const mi: ModuleInfoFake = {
+          rows: [{ id: 0, protocol: 1, minClientProtocol: 1 }],
+          insert: [],
+          update: [],
+          delete: [],
+          table: {},
+        };
+        Object.assign(mi.table, {
+          iter: () => mi.rows[Symbol.iterator](),
+          count: () => mi.rows.length,
+          onInsert: (cb: Cb) => {
+            mi.insert.push(cb);
+          },
+          onUpdate: (cb: Cb) => {
+            mi.update.push(cb);
+          },
+          onDelete: (cb: Cb) => {
+            mi.delete.push(cb);
+          },
+          removeOnInsert: () => undefined,
+          removeOnUpdate: () => undefined,
+          removeOnDelete: () => undefined,
+        });
         const rec: BuildRec = {
           token: 'UNSET',
           joinGame: vi.fn(() => Promise.resolve()),
@@ -88,6 +136,8 @@ vi.mock('../module_bindings', () => {
           startGuestClaim: vi.fn(() => Promise.resolve()),
           subs: [],
           disconnect: vi.fn(),
+          gate: [],
+          moduleInfo: mi,
         };
         H.builds.push(rec);
         const sub = {
@@ -98,8 +148,15 @@ vi.mock('../module_bindings', () => {
           onError: () => sub,
           subscribe: () => sub,
         };
+        const isModuleInfo = (name: string): boolean =>
+          name === 'moduleInfo' || name === 'module_info';
         const conn = {
-          db: new Proxy({}, { get: (_t, name) => tableFor(String(name)) }),
+          db: new Proxy(
+            {},
+            {
+              get: (_t, name) => (isModuleInfo(String(name)) ? mi.table : tableFor(String(name))),
+            },
+          ),
           reducers: {
             joinGame: rec.joinGame,
             completeGuestClaim: rec.completeGuestClaim,
@@ -114,8 +171,18 @@ vi.mock('../module_bindings', () => {
             rec.token = t;
             return b;
           },
+          // lpw-4: the protocol gate's answer arrives after onConnect returns, as the SDK's
+          // does: every `module_info` set this onConnect opened is applied, over the cache, once
+          // it returns. So a test's onConnect-then-applied sequence drives an admitted build.
           onConnect: (cb: Cb) => {
-            rec.onConnect = cb;
+            rec.onConnect = (...args: unknown[]) => {
+              const before = rec.gate.length;
+              cb(...args);
+              for (const gate of rec.gate.slice(before)) {
+                gate.active = true;
+                gate.onApplied?.({});
+              }
+            };
             return b;
           },
           onConnectError: (cb: Cb) => {
@@ -167,6 +234,9 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     onClaimPending: vi.fn(),
     onClaimAwaitingAccount: vi.fn(),
     onClaimResult: vi.fn(),
+    // lpw-4: the protocol this client speaks; every build's default module_info row admits it.
+    clientProtocol: 1,
+    onProtocolMismatch: vi.fn(),
   } as unknown as ConnectionOptions & Record<string, ReturnType<typeof vi.fn>>;
 }
 
@@ -174,19 +244,19 @@ const settle = () => vi.advanceTimersByTimeAsync(0);
 /** Let every scheduled reconnect fire (backoff is bounded well under a minute). */
 const nextAttempt = () => vi.advanceTimersByTimeAsync(60_000);
 
-/** The connection object handed to onConnect: only subscriptionBuilder + reducers are read there. */
+/** The connection object handed to onConnect: its subscriptionBuilder, reducers, and the
+ *  `module_info` table the protocol gate reads (lpw-4). */
 function conn0(rec: BuildRec) {
   // A fresh builder per call, as the SDK gives: every subscribe is its own handle with its own
-  // callbacks. The first is the base set (`rec.onApplied`, `rec.queries`); the rest are the world
-  // scope's. `unsubscribe` throws on a second call, as the SDK's does.
+  // callbacks. The protocol gate's `module_info` subscribe goes to `rec.gate`; of the others, the
+  // first is the base set (`rec.onApplied`, `rec.queries`) and the rest are the world scope's.
+  // Which list a subscribe joins is decided when it is issued. `unsubscribe` throws on a second
+  // call, as the SDK's does.
   const subscriptionBuilder = () => {
     const sub: SubRec = { query: undefined, active: false, unsubscribes: 0 };
-    const first = rec.subs.length === 0;
-    rec.subs.push(sub);
     const builder = {
       onApplied: (cb: Cb) => {
         sub.onApplied = cb;
-        if (first) rec.onApplied = cb;
         return builder;
       },
       onError: (cb: Cb) => {
@@ -195,7 +265,16 @@ function conn0(rec: BuildRec) {
       },
       subscribe: (queries: readonly string[] | string) => {
         sub.query = queries;
-        if (first) rec.queries = queries as readonly string[];
+        if (queries === MODULE_INFO_QUERY) {
+          rec.gate.push(sub);
+        } else {
+          const first = rec.subs.length === 0;
+          rec.subs.push(sub);
+          if (first) {
+            rec.onApplied = sub.onApplied;
+            rec.queries = queries as readonly string[];
+          }
+        }
         return {
           isActive: () => sub.active,
           unsubscribe: () => {
@@ -211,6 +290,7 @@ function conn0(rec: BuildRec) {
   return {
     subscriptionBuilder,
     disconnect: rec.disconnect,
+    db: { moduleInfo: rec.moduleInfo.table, module_info: rec.moduleInfo.table },
     reducers: {
       joinGame: rec.joinGame,
       completeGuestClaim: rec.completeGuestClaim,
@@ -738,11 +818,21 @@ describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it'
     vi.useRealTimers();
   });
 
-  it('ts-4.4 the subscription batch is exactly the 30 queries below, none naming trade_offer, none an unfiltered character query, and no row handler is registered on the trade_offer table', async () => {
+  it('ts-4.4 the subscription batch is exactly the 30 queries below, none naming trade_offer, none an unfiltered character query, and no row handler is registered on the trade_offer table; before it the protocol gate subscribes exactly the bare string SELECT * FROM module_info, which the batch does not repeat [lpw-4.3]', async () => {
     // WRONG IMPL KILLED: `SELECT * FROM trade_offer` kept (every public offer reaches the
     // client); it swapped for another table (the exact set); a duplicate (the sorted list);
     // the query dropped but the trade_offer onInsert / onUpdate / onDelete handlers kept.
+    // lpw-4: the gate query put inside the base array (then no gate and a 31-query batch); the
+    // gate as a one-string array; a second gate; another table or text for the gate.
     const { b } = await bootAnon(makeOpts());
+    expect(
+      b.gate.map((sub) => sub.query),
+      'the protocol gate: one subscribe of the bare string',
+    ).toEqual(['SELECT * FROM module_info']);
+    expect(
+      (b.queries ?? []).filter((q) => q.includes('module_info')),
+      'the base batch never names module_info',
+    ).toEqual([]);
     const whole = (tables: string[]): string[] => tables.map((table) => `SELECT * FROM ${table}`);
     const want = [
       ...whole([
