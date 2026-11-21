@@ -24,7 +24,7 @@
 // and the cursor adds `is-active` + aria-current; an empty container is no row. `hide()` clears every
 // mark (the cards and the empty line stay in the hidden root).
 //
-// THE EMPTY LINE (lpw-6): with no request in either container, the panel says so with the kit's
+// THE EMPTY LINE: with no request in either container, the panel says so with the kit's
 // empty state (`ui/emptyState.ts`), a direct child of the root right after the outgoing container.
 // It is no row and holds nothing focusable; a refresh that shows a request removes it.
 
