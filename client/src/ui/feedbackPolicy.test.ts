@@ -21,8 +21,8 @@
  * location-less heal path (the healParty command always carries its locationId): 59 -> 58 rows
  * (16 hint + 31 toast + 10 modal + 1 blocking).
  *
- * lpw-4 (named intentional change, lpw-4.4): the `protocol-mismatch` hint joins, the one hint of
- * rank 4: 58 -> 59 rows (17 hint + 31 toast + 10 modal + 1 blocking), 22 -> 23 action-required.
+ * The table has 59 rows (17 hint + 31 toast + 10 modal + 1 blocking), 23 of them action-required;
+ * `protocol-mismatch` is the one hint of rank 4.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -53,7 +53,7 @@ const EXPECTED_CHANNEL: Record<MessageKind, Channel> = {
   'connect-failure': 'hint',
   'content-stale': 'hint',
   'download-blocked': 'hint',
-  // lpw-4 (named intentional change, lpw-4.4): the protocol mismatch line, 16 -> 17 hint kinds.
+  // The protocol mismatch line.
   'protocol-mismatch': 'hint',
   'care-success': 'toast',
   'care-rejected': 'toast',
@@ -107,7 +107,7 @@ const TABLE_KINDS = Object.keys(EXPECTED_CHANNEL) as MessageKind[];
 const kindsOf = (channel: Channel): MessageKind[] =>
   TABLE_KINDS.filter((k) => EXPECTED_CHANNEL[k] === channel);
 
-/** The table's "Player must act = yes" rows, literally (8 hint since lpw-4, 4 toast, 10 modal,
+/** The table's "Player must act = yes" rows, literally (8 hint, 4 toast, 10 modal,
  *  1 blocking).
  *  uif-16b (named intentional change, WF1-A10): 5 -> 4 toast, 'privacy-busy' retired. */
 const ACTION_REQUIRED: readonly MessageKind[] = [
@@ -118,7 +118,6 @@ const ACTION_REQUIRED: readonly MessageKind[] = [
   'challenge-request',
   'content-stale',
   'download-blocked',
-  // lpw-4 (named intentional change, lpw-4.4): 8 action-required hint rows.
   'protocol-mismatch',
   'party-full',
   'link-down-send',
@@ -164,7 +163,6 @@ describe('feedbackPolicy (uif-4)', () => {
 
   it('UIF4.1 the four channels hold 17 hint, 31 toast, 10 modal and 1 blocking kind', () => {
     // WRONG IMPL KILLED: a table typed to compile but with a channel emptied or bloated.
-    // lpw-4 (named intentional change): 16 -> 17 hint kinds, +protocol-mismatch.
     expect(kindsOf('hint')).toHaveLength(17);
     expect(
       rows()
@@ -190,8 +188,7 @@ describe('feedbackPolicy (uif-4)', () => {
   it('UIF4.1 hintRank is 3 for every other action-required hint kind', () => {
     // WRONG IMPL KILLED: a rank table that forgets a "yes" hint row (a claim veto would lose to
     // a disabled reason on the strip).
-    // lpw-4 (named intentional change): 'protocol-mismatch' is the one action-required hint of
-    // rank 4 (its own test below), so it is not in this list.
+    // 'protocol-mismatch' is the one action-required hint of rank 4 (its own test below), so it is not in this list.
     const rank3: MessageKind[] = [
       'capture-prompt',
       'controls-refused',
@@ -289,7 +286,7 @@ describe('feedbackPolicy (uif-4)', () => {
     }
   });
 
-  // ---------------------------------------------------------------- lpw-4.4
+  // ---------------------------------------------------------------- the protocol mismatch hint
   it('protocol-mismatch is a hint the player must act on, carried by the world hint line until reload [lpw-4.4]', () => {
     // WRONG IMPL KILLED: the mismatch routed to the toast (gone when its timer ends); a row
     // marked informational; the content-stale row's sibling "until overwritten" carrier (a later

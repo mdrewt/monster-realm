@@ -93,7 +93,7 @@ export type CareRemainingStub = (lastCareAtMs: bigint, nowMs: bigint) => bigint;
  * the key is absent, exactly as in the files that predate the ctl-10a interact export.
  * qf-3: `careRemaining` (when given) becomes the `care_remaining_ms` export, so a boot test can
  * observe the arguments the Monsters sheet passes it; absent, the export answers 0n (ready).
- * lpw-4: `protocolVersion` (when given) becomes the `protocol_version` export, so a boot test can
+ * `protocolVersion` (when given) becomes the `protocol_version` export, so a boot test can
  * boot a client that speaks another protocol; absent, the export answers 1.
  */
 export function wasmPkgWalkingMock(
@@ -101,7 +101,7 @@ export function wasmPkgWalkingMock(
     interact?: InteractStub;
     /** qf-3: the care-readiness export; default always-ready. */
     careRemaining?: CareRemainingStub;
-    /** lpw-4: the protocol this client speaks; default 1. */
+    /** The protocol this client speaks; default 1. */
     protocolVersion?: () => number;
   } = {},
 ) {
@@ -142,7 +142,7 @@ export function wasmPkgWalkingMock(
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
-    // lpw-4: named fixture change: the protocol this client speaks.
+    // The protocol this client speaks.
     protocol_version: opts.protocolVersion ?? ((): number => 1),
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
@@ -179,7 +179,7 @@ export function wasmPkgStubMock(opts: { interact?: InteractStub; grace?: () => b
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
-    // lpw-4: named fixture change: the protocol this client speaks.
+    // The protocol this client speaks.
     protocol_version: () => 1,
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
@@ -216,7 +216,7 @@ export function wasmPkgIdentityMoveMock(opts: { interact?: InteractStub } = {}) 
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
-    // lpw-4: named fixture change: the protocol this client speaks.
+    // The protocol this client speaks.
     protocol_version: () => 1,
     max_trade_monsters_per_side: () => 37,
     talk_range: () => 2,

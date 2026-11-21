@@ -57,14 +57,15 @@ interface BuildRec {
    */
   viewRows?: Record<string, unknown[]>;
   /**
-   * lpw-4: the `module_info` subscribes (the protocol gate) on the connection handed to
-   * onConnect, recorded apart from `subs`. Unless `holdGate`, each is applied, over this build's
-   * `moduleInfo` cache, as the onConnect that opened it returns (the SDK's answer arrives after).
+   * The `module_info` subscribes (the protocol gate) on the connection handed to onConnect,
+   * recorded apart from `subs`. Unless `holdGate`, the harness applies each, over this build's
+   * `moduleInfo` cache, as soon as the onConnect that opened it returns (the real SDK's answer
+   * arrives a round trip later).
    */
   readonly gate: SubRec[];
-  /** lpw-4: leave this build's gate unanswered, for the test to apply or fail by hand. */
+  /** Leave this build's gate unanswered, for the test to apply or fail by hand. */
   holdGate: boolean;
-  /** lpw-4: this build's `module_info` cache (default: one row that admits protocol 1). */
+  /** This build's `module_info` cache (default: one row that admits protocol 1). */
   readonly moduleInfo: ModuleInfoFake;
 }
 interface ModuleInfoRow {
@@ -85,7 +86,7 @@ interface ModuleInfoFake {
   readonly table: Record<string, (...args: unknown[]) => unknown>;
 }
 
-/** The one query the protocol gate subscribes (lpw-4). */
+/** The one query the protocol gate subscribes. */
 const MODULE_INFO_QUERY = 'SELECT * FROM module_info';
 
 const H = vi.hoisted(() => ({
@@ -164,7 +165,7 @@ vi.mock('../module_bindings', () => {
   return {
     DbConnection: {
       builder: () => {
-        // lpw-4: the build's `module_info` cache, one admitting row by default; the same table
+        // The build's `module_info` cache, one admitting row by default; the same table
         // whichever connection object (the built one, or the one handed to onConnect) reads it,
         // and never counted in H.iterCalls / H.rowEvents.
         const mi: ModuleInfoFake = {
@@ -240,10 +241,10 @@ vi.mock('../module_bindings', () => {
             rec.token = t;
             return b;
           },
-          // lpw-4: the protocol gate's answer arrives after onConnect returns, as the SDK's
-          // does: unless the build holds it, every `module_info` set this onConnect opened is
-          // applied over the cache once it returns. So an existing onConnect-then-applied
-          // sequence drives an admitted build.
+          // Unless the build holds it, the harness applies every `module_info` set this
+          // onConnect opened, over the cache, as soon as it returns (the real SDK's answer
+          // arrives a round trip later), so an existing onConnect-then-applied sequence drives an
+          // admitted build.
           onConnect: (cb: Cb) => {
             rec.onConnect = (...args: unknown[]) => {
               const before = rec.gate.length;
@@ -320,7 +321,7 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     onClaimPending: vi.fn(),
     onClaimAwaitingAccount: vi.fn(),
     onClaimResult: vi.fn(),
-    // lpw-4: the protocol this client speaks; every build's default module_info row admits it.
+    // The protocol this client speaks; every build's default module_info row admits it.
     clientProtocol: 1,
     onProtocolMismatch: vi.fn(),
   } as unknown as ConnectionOptions & Record<string, ReturnType<typeof vi.fn>>;
@@ -3225,7 +3226,7 @@ describe('connect(): owner views reconcile only when dirty (sr-6b)', { sequentia
 });
 
 /** The connection object handed to onConnect: its subscriptionBuilder, reducers, disconnect, and
- *  the `module_info` table the protocol gate reads (lpw-4). */
+ *  the `module_info` table the protocol gate reads. */
 function conn0(rec: BuildRec) {
   // A fresh builder per call, as the SDK gives: every subscribe is its own handle with its own
   // callbacks. The protocol gate's `module_info` subscribe goes to `rec.gate`; of the others, the
@@ -4095,7 +4096,7 @@ describe('connect(): the reconnect token storage area follows the target kind', 
 });
 
 // =============================================================================================
-// lpw-4: the protocol gate. Each build first subscribes `SELECT * FROM module_info` alone and
+// The protocol gate. Each build first subscribes `SELECT * FROM module_info` alone and
 // judges the cached row with id 0 against the client's protocol. Admitted, it opens the base set
 // as before and keeps judging the row as it changes, only toward refusal. Refused, it names the
 // side to update once, closes the connection, calls no reducer, and the page builds no other
@@ -4145,7 +4146,7 @@ function lpw4Apply(b: BuildRec): void {
   gate.active = true;
   gate.onApplied?.({});
 }
-/** The server refuses the gate, as a module older than lpw-3 does (no such table). */
+/** The server refuses the gate, as a module that has no module_info table does. */
 function lpw4Fail(b: BuildRec): void {
   const gate = lpw4Gate(b);
   gate.active = false;
@@ -4208,7 +4209,7 @@ function lpw4ExpectRefused(
   expect(lpw4Reducers(b), `${label}: join() and startSignIn() send nothing`).toBe(before.reducers);
 }
 
-/** Every `window.addEventListener` call made during the current lpw-4 test (a call-through spy
+/** Every `window.addEventListener` call made during the current protocol-gate test (a call-through spy
  *  installed by the describe's beforeEach), so a test reaches its own connection's listeners. */
 let lpw4WindowListeners: MockInstance | undefined;
 
@@ -4372,7 +4373,7 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
     vi.useRealTimers();
   });
 
-  // --------------------------------------------------------------------------- lpw-4.1
+  // --------------------------------------------------------------------------- a newer server
   it('subscribes nothing but module_info, calls no reducer, says update-game once and closes the connection when the floor is above the client [lpw-4.1]', async () => {
     // WRONG IMPL KILLED: the base set subscribed in the same tick as the gate; the gate query
     // inside the base array; the verdict ignored (always admit); refusing but still joining;
@@ -4448,7 +4449,7 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
 
   it('clears a session terminal on a refusal: a session-expired tab that continues anonymously into a mismatched server shows no session overlay [lpw-4.1]', async () => {
     // WRONG IMPL KILLED: the refusal leaving sessionMode as it was (the expired overlay stays up
-    // over a connection that can no longer do anything).
+    // over a connection that cannot do anything).
     writeAuthKind(globalThis, URI, DB, 'account');
     H.renew = () => Promise.resolve({ kind: 'no-session' });
     const opts = lpw4Opts(2);
@@ -4468,7 +4469,7 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
     expect(lpw4Reducers(b)).toBe(0);
   });
 
-  // --------------------------------------------------------------------------- lpw-4.2
+  // --------------------------------------------------------------------------- an older server
   it('subscribes nothing else, calls no reducer, says update-server once and closes the connection when the server protocol is below the client [lpw-4.2]', async () => {
     // WRONG IMPL KILLED: the protocol comparison swapped; an older server admitted.
     const { opts, handle, b, before } = await lpw4ColdAnswer(
@@ -4497,7 +4498,7 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
 
   it('says update-server and subscribes nothing else when the server refuses the module_info subscription [lpw-4.2]', async () => {
     // WRONG IMPL KILLED: the error callback ignored (the client stuck connecting against a module
-    // older than lpw-3), or taken as admission; reported as a subscribe error only.
+    // that has no module_info table), or taken as admission; reported as a subscribe error only.
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       const { opts, handle, b, before } = await lpw4ColdAnswer(1, [LPW4_ADMITS_1], lpw4Fail);
@@ -4533,7 +4534,7 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
     await lpw4ExpectAdmittedRefusal(ctx, 'update-server', 'the row deleted', before);
   });
 
-  // --------------------------------------------------------------------------- lpw-4.3
+  // --------------------------------------------------------------------------- admitted
   for (const { label, client, row } of [
     { label: 'equal numbers', client: 1, row: { id: 0, protocol: 1, minClientProtocol: 1 } },
     {
@@ -4633,7 +4634,7 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
 
   it('ignores an admitting gate answer on a superseded build: it opens no base set and calls no reducer there, and the newer build is admitted [lpw-4.3]', async () => {
     // WRONG IMPL KILLED: the gate's callbacks not stale-guarded (a dead socket opens a base set,
-    // joins, and fires onReady for a build that is no longer current).
+    // joins, and fires onReady for a build that is not current).
     const opts = lpw4Opts(1);
     const handle = connect(opts);
     await settle();

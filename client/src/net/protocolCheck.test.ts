@@ -1,5 +1,5 @@
 /**
- * protocolCheck.test.ts: the client's verdict on a server's protocol numbers (lpw-4), the pure
+ * protocolCheck.test.ts: the client's verdict on a server's protocol numbers, the pure
  * core of the gate connection.ts opens before any other subscription.
  *
  * `checkProtocol(server, client)`: a server that sent no row, or refused the `module_info` query,
@@ -70,7 +70,7 @@ describe('checkProtocol: a server that is older, silent or refusing', () => {
   });
 
   it("says the host must update when the server delivered no module_info row ('missing') [lpw-4.2]", () => {
-    // WRONG IMPL KILLED: 'missing' treated as admit (a module older than lpw-3 let through).
+    // WRONG IMPL KILLED: 'missing' treated as admit (a module that has no module_info row let through).
     expect(checkProtocol('missing', 1)).toBe('update-server');
     expect(checkProtocol('missing', 0)).toBe('update-server');
   });
@@ -102,8 +102,9 @@ describe('checkProtocol: numbers that admit the client', () => {
 
   it('gives, for every u32 triple whose floor is at or below its protocol, update-game iff floor > client, update-server iff protocol < client, else ok, and never both conditions [lpw-4.3]', () => {
     const u32 = fc.integer({ min: 0, max: U32_MAX });
-    // A server row that keeps lpw-3.4's invariant, and a client drawn both freely and right at
-    // the edges of the row, so the equalities are hit on every run.
+    // A server row that keeps the module's invariant (the floor never above the protocol), and a
+    // client drawn both freely and right at the edges of the row, so the equalities are hit on
+    // every run.
     const triple = fc
       .tuple(u32, u32)
       .map(([a, b]) => ({ protocol: Math.max(a, b), minClientProtocol: Math.min(a, b) }))

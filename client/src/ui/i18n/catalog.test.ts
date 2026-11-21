@@ -645,8 +645,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' is RETIRED
   // with the `privacy-busy` kind (catalogParity DEAD-KEY otherwise).
   'chrome.status.contentStale': 'content out of date — reload',
-  // lpw-4 (named intentional change, lpw-4.1 / lpw-4.2): +2 plain, the protocol mismatch lines
-  // (the spec's English, character for character), 546 -> 548.
+  // The two protocol mismatch lines (the spec's English, character for character).
   'chrome.status.serverNewer': 'This server runs a newer Monster Realm. Update the game to join.',
   'chrome.status.serverOlder': 'This server runs an older Monster Realm. Its host must update it.',
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
@@ -2425,7 +2424,6 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
     expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 548 keys').toHaveLength(548);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
@@ -3643,7 +3641,6 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
     expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
     expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
   });
@@ -3774,7 +3771,6 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
     expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
     expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
   });
@@ -4099,7 +4095,6 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
     expect(Object.keys(en).length, 'the English catalog holds exactly 548 keys').toBe(548);
     expect(Object.keys(fr).length, 'and so does the French one').toBe(548);
     expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(548);
@@ -4793,7 +4788,6 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
     expect(Object.keys(en), 'the English roster is 548 keys').toHaveLength(548);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(548);
   });
@@ -4920,7 +4914,6 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    // lpw-4 (named intentional change): 546 -> 548, +chrome.status.serverNewer, +serverOlder.
     expect(Object.keys(en), 'the English roster is 548 keys').toHaveLength(548);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(548);
   });
@@ -5072,8 +5065,8 @@ describe('the player tag and the name-with-tag join in both catalogs', () => {
 });
 
 // =============================================================================
-// lpw-4: the two lines a client shows when it cannot speak to the server it reached, in both
-// catalogs. The English bytes are the spec's (lpw-4.1 / lpw-4.2); the French accents are built
+// The two lines a client shows when it cannot speak to the server it reached, in both
+// catalogs. The English bytes are the spec's; the French accents are built
 // by code point, so the expected text holds no pasted glyph.
 // =============================================================================
 

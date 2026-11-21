@@ -5219,8 +5219,8 @@ async function main(): Promise<void> {
       if (where === 'link') eventRing.push(makeDisconnect());
     },
     // The connection left a server it cannot speak to and builds no other one: the world hint
-    // says which side must update, until reload. A session terminal is hidden too, since its
-    // actions can no longer do anything (`connected` is the one event that hides it).
+    // says which side must update, until reload. A session terminal is hidden too: on a refused
+    // page its actions cannot do anything (`connected` is the one event that hides it).
     onProtocolMismatch: (side) => {
       reportError('protocol-mismatch', protocolMismatchLine(side));
       applySession({ kind: 'connected' });

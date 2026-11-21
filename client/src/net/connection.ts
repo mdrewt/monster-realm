@@ -337,9 +337,9 @@ export function connect(opts: ConnectionOptions): Connection {
   /**
    * The protocol check refused the server `c` reached: this is the page's last connection. It
    * ends the way a drop does (scope stopped, rows wiped, link frozen) and nothing is built after
-   * it; `current` is dropped so no reducer can be sent; a session terminal is cleared, since its
-   * actions can no longer do anything. The socket is closed so the server sees this connection
-   * end, and the caller is told last. Rows the SDK still delivers from the message being
+   * it; `current` is dropped so no reducer can be sent; a session terminal is cleared, since on a
+   * refused page its actions cannot do anything. The socket is closed so the server sees this
+   * connection end, and the caller is told last. Rows the SDK still delivers from the message being
    * dispatched land in the wiped store, as after the world scope's `drop`; its close event runs
    * the drop path once more and wipes them.
    */
@@ -1007,8 +1007,8 @@ export function connect(opts: ConnectionOptions): Connection {
               if (reconnecting) opts.onReconnect(identity);
               else opts.onReady(identity);
             })
-            // Forward the SDK's subscription-error payload (was discarded pre-M13.5b);
-            // subscriptionErrorMessage is fallback-guarded against shape surprises.
+            // Forward the SDK's subscription-error payload; subscriptionErrorMessage is
+            // fallback-guarded against shape surprises.
             .onError((ctx) => opts.onError('subscribe', subscriptionErrorMessage(ctx)))
             .subscribe([
               // `character` is NOT in this set: it is the one table written on every step, so it
@@ -1081,7 +1081,7 @@ export function connect(opts: ConnectionOptions): Connection {
               // the PRIVATE pending_evolution_notice table — subscribing the table itself would
               // error the whole batch and onApplied would never fire.
               'SELECT * FROM my_pending_evolution_notices',
-              // bt-12 (BT12.1): the seven owner- / participant-scoped tactical VIEWS (schema.rs
+              // The seven owner- / participant-scoped tactical VIEWS (schema.rs
               // my_tactical_battle … my_formation). Every table behind them is PRIVATE — subscribing
               // `battle_unit` or `player_formation` itself would error the whole batch and
               // onApplied would never fire. Names are EXACT.

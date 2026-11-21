@@ -8,7 +8,7 @@ export type ServerProtocol =
   | 'missing'
   | 'refused';
 
-/** Which side must update before this client can join. */
+/** The side that has to update for this client to join. */
 export type ProtocolMismatch = 'update-game' | 'update-server';
 
 export type ProtocolVerdict = 'ok' | ProtocolMismatch;

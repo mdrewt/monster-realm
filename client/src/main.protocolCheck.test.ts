@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /**
  * main.protocolCheck.test.ts: the booted client refuses a server it cannot speak to and names the
- * side that must update (lpw-4).
+ * side that must update.
  *
  * Every case but the session-overlay one boots the REAL main.ts over the real client/index.html
  * shell, with the REAL `connect()` (`vi.importActual`) over a faked SDK builder: each build records
@@ -408,7 +408,7 @@ function answer(b: SdkBuild, rows: ModuleInfoRow[]): void {
   b.moduleInfo.rows = rows;
   gate.onApplied?.({});
 }
-/** The server refuses the gate, as a module older than lpw-3 does. */
+/** The server refuses the gate, as a module that has no module_info table does. */
 function refuse(b: SdkBuild): void {
   gateOf(b).onError?.({ event: new Error('no such table: module_info') });
 }
@@ -457,7 +457,7 @@ afterEach(() => {
 });
 
 describe('the booted client refuses a server it cannot speak to (lpw-4)', () => {
-  // --------------------------------------------------------------------------- lpw-4.1
+  // --------------------------------------------------------------------------- a newer server
   it('shows the update-the-game line and sends nothing when the server floor is above the client, also after movement and action keys and more frames [lpw-4.1]', async () => {
     // WRONG IMPL KILLED: main.ts passing no clientProtocol (an undefined number is judged an
     // older server) or a literal; the two message ids swapped; the line routed to the toast; a
@@ -482,7 +482,7 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
   }, 30_000);
 
   it('refuses a client booted with protocol 2 against a server of protocol 4 and floor 3, with the update-the-game line [lpw-4.1]', async () => {
-    // The admitting half of this pair is the lpw-4.3 case below: the same server admits a client
+    // The admitting half of this pair is the protocol-3 case below: the same server admits a client
     // booted with protocol 3, so the verdict follows the wasm export, not a number main.ts typed.
     await boot(2);
     const b = await sdkBuild(0);
@@ -493,7 +493,7 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
     expectSilent(b, 'client 2, floor 3');
   }, 30_000);
 
-  // --------------------------------------------------------------------------- lpw-4.2
+  // --------------------------------------------------------------------------- an older server
   it('shows the host-must-update line and sends nothing when the server protocol is below the client [lpw-4.2]', async () => {
     await boot(3);
     const b = await sdkBuild(0);
@@ -524,7 +524,7 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
     expectSilent(b, 'the gate refused');
   }, 30_000);
 
-  // --------------------------------------------------------------------------- lpw-4.3
+  // --------------------------------------------------------------------------- admitted
   it('opens the base set and joins when the server numbers equal the client protocol, and shows neither mismatch line [lpw-4.3]', async () => {
     await boot(2);
     const b = await sdkBuild(0);
@@ -546,7 +546,7 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
 
   it('admits a client booted with protocol 3 against a server of protocol 4 and floor 3, and joins [lpw-4.3]', async () => {
     // WRONG IMPL KILLED: main.ts handing connect() a literal protocol (1 or 2 is refused here, as
-    // the lpw-4.1 pair above shows for 2) instead of the wasm export's number.
+    // the protocol-2 case above shows for 2) instead of the wasm export's number.
     await boot(3);
     const b = await sdkBuild(0);
     open(b);
@@ -560,7 +560,7 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
     expect(statusText()).not.toBe(OLDER_EN);
   }, 30_000);
 
-  // --------------------------------------------------------------------------- lpw-4.4
+  // ------------------------------------------------------- announced once, kept until reload
   it('announces the mismatch line through the live region exactly once across seconds of frames [lpw-4.4]', async () => {
     // WRONG IMPL KILLED: a line re-announced every frame or on every repaint (a repeat shows as
     // the line plus a trailing U+00A0); a line painted on #status but never said.
@@ -663,7 +663,7 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
     expect(H.sdkBuilds).toHaveLength(1);
   }, 30_000);
 
-  // --------------------------------------------------------------------------- lpw-4.5
+  // --------------------------------------------------------------------------- French
   it('shows the French update-the-game line under the French locale [lpw-4.5]', async () => {
     await boot(2, '?locale=fr');
     const b = await sdkBuild(0);
@@ -688,7 +688,7 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
 describe('the booted client clears a session overlay on a protocol refusal (lpw-4, recording connection)', () => {
   it('hides a session-expired overlay that was showing when the refusal arrives, and shows the mismatch line [lpw-4.4]', async () => {
     // WRONG IMPL KILLED: the refusal leaving the session overlay up (its Retry and Continue can
-    // no longer do anything on a refused page) over the line that says what to do.
+    // do nothing on a refused page) over the line that says what to do.
     await boot(1, '', false);
     const opts = H.connectOpts;
     if (opts === null) throw new Error('connect() was not called');

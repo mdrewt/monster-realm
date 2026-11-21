@@ -50,11 +50,12 @@ interface BuildRec {
   /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
   queries?: readonly string[];
   /**
-   * lpw-4: the `module_info` subscribes (the protocol gate), recorded apart from `subs`. Each is
-   * applied as the onConnect that opened it returns, over this build's `moduleInfo` cache.
+   * The `module_info` subscribes (the protocol gate), recorded apart from `subs`. The harness
+   * applies each, over this build's `moduleInfo` cache, as soon as the onConnect that opened it
+   * returns (the real SDK's answer arrives a round trip later).
    */
   readonly gate: SubRec[];
-  /** lpw-4: this build's `module_info` cache (default: one row that admits protocol 1). */
+  /** This build's `module_info` cache (default: one row that admits protocol 1). */
   readonly moduleInfo: ModuleInfoFake;
 }
 interface ModuleInfoRow {
@@ -71,7 +72,7 @@ interface ModuleInfoFake {
   readonly table: Record<string, (...args: unknown[]) => unknown>;
 }
 
-/** The one query the protocol gate subscribes (lpw-4). */
+/** The one query the protocol gate subscribes. */
 const MODULE_INFO_QUERY = 'SELECT * FROM module_info';
 
 const H = vi.hoisted(() => ({
@@ -104,7 +105,7 @@ vi.mock('../module_bindings', () => {
   return {
     DbConnection: {
       builder: () => {
-        // lpw-4: the build's `module_info` cache, one admitting row by default; the same table
+        // The build's `module_info` cache, one admitting row by default; the same table
         // whichever connection object (the built one, or the one handed to onConnect) reads it.
         const mi: ModuleInfoFake = {
           rows: [{ id: 0, protocol: 1, minClientProtocol: 1 }],
@@ -171,9 +172,9 @@ vi.mock('../module_bindings', () => {
             rec.token = t;
             return b;
           },
-          // lpw-4: the protocol gate's answer arrives after onConnect returns, as the SDK's
-          // does: every `module_info` set this onConnect opened is applied, over the cache, once
-          // it returns. So a test's onConnect-then-applied sequence drives an admitted build.
+          // The harness applies every `module_info` set this onConnect opened, over the cache, as
+          // soon as it returns (the real SDK's answer arrives a round trip later), so a test's
+          // onConnect-then-applied sequence drives an admitted build.
           onConnect: (cb: Cb) => {
             rec.onConnect = (...args: unknown[]) => {
               const before = rec.gate.length;
@@ -234,7 +235,7 @@ function makeOpts(): ConnectionOptions & Record<string, ReturnType<typeof vi.fn>
     onClaimPending: vi.fn(),
     onClaimAwaitingAccount: vi.fn(),
     onClaimResult: vi.fn(),
-    // lpw-4: the protocol this client speaks; every build's default module_info row admits it.
+    // The protocol this client speaks; every build's default module_info row admits it.
     clientProtocol: 1,
     onProtocolMismatch: vi.fn(),
   } as unknown as ConnectionOptions & Record<string, ReturnType<typeof vi.fn>>;
@@ -245,7 +246,7 @@ const settle = () => vi.advanceTimersByTimeAsync(0);
 const nextAttempt = () => vi.advanceTimersByTimeAsync(60_000);
 
 /** The connection object handed to onConnect: its subscriptionBuilder, reducers, and the
- *  `module_info` table the protocol gate reads (lpw-4). */
+ *  `module_info` table the protocol gate reads. */
 function conn0(rec: BuildRec) {
   // A fresh builder per call, as the SDK gives: every subscribe is its own handle with its own
   // callbacks. The protocol gate's `module_info` subscribe goes to `rec.gate`; of the others, the
@@ -822,7 +823,7 @@ describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it'
     // WRONG IMPL KILLED: `SELECT * FROM trade_offer` kept (every public offer reaches the
     // client); it swapped for another table (the exact set); a duplicate (the sorted list);
     // the query dropped but the trade_offer onInsert / onUpdate / onDelete handlers kept.
-    // lpw-4: the gate query put inside the base array (then no gate and a 31-query batch); the
+    // The gate query put inside the base array (then no gate and a 31-query batch); the
     // gate as a one-string array; a second gate; another table or text for the gate.
     const { b } = await bootAnon(makeOpts());
     expect(
