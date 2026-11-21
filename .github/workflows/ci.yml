@@ -13,11 +13,11 @@ env:
   # builds keep full debuginfo.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 jobs:
-  # The four jobs below run every recipe of the justfile `ci:` recipe between them, one recipe
-  # per step, grouped by toolchain. Each job has its own checkout and rust-cache prefix, so
-  # the two writers of client-wasm/pkg (`just eval`: nodejs target, `just wasm`: bundler
-  # target) never share a directory. Jobs that need the pkg build it themselves: a client test
-  # requires it to be newer than the checked-out sources.
+  # The five jobs below run every recipe of the justfile `ci:` recipe between them, one recipe
+  # per step, grouped by toolchain. Each job has its own checkout, and each Rust job its own
+  # rust-cache prefix, so the two writers of client-wasm/pkg (`just eval`: nodejs target,
+  # `just wasm`: bundler target) never share a directory. Jobs that need the pkg build it
+  # themselves: a client test requires it to be newer than the checked-out sources.
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -100,6 +100,25 @@ jobs:
       - run: just client-test
       # --no-deps: the `just wasm` step above built the pkg this recipe depends on.
       - run: just --no-deps client-verify-build
+
+  # The account service has its own lock file and needs no Rust. `just lint` in the `rust` job
+  # lints its sources with the rest of the tree; each recipe here installs the package's
+  # dependencies first.
+  account-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: actions/setup-node@v7 # v7
+        with:
+          node-version: '24.22.0'
+          cache: npm
+          cache-dependency-path: account-service/package-lock.json
+      - uses: ./.github/actions/tools
+      - run: just account-typecheck
+      - run: just account-test
+      # The packages the running service loads; the lock file fixes their versions.
+      - name: SCA (npm audit, runtime dependencies)
+        run: cd account-service && npm audit --omit=dev --audit-level=high
 
   observability:
     runs-on: ubuntu-latest

@@ -85,5 +85,10 @@ ops/auth/app/
 ops/auth/data/
 ops/auth/secrets/
 
+# ── Account service (account-service) ─────────────────
+# What the local-dev profile makes on its first start: the SQLite database and the
+# issuer's private signing keys. Never committed.
+account-service/.data/
+
 # ── CodeGraph index (local code-intelligence cache) ───
 .codegraph/

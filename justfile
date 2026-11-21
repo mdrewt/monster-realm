@@ -11,7 +11,7 @@ setup:
 
 # The merge gate. ci.yml runs these same recipes, one per step, split across parallel jobs.
 # `eval` stays ahead of `wasm`: the parity evals leave a nodejs-target pkg that `wasm` replaces.
-ci: lint typecheck test eval security wasm client-typecheck client-test client-verify-build observability-validate
+ci: lint typecheck account-typecheck account-test test eval security wasm client-typecheck client-test client-verify-build observability-validate
 
 lint:
     cargo fmt --all --check
@@ -98,6 +98,37 @@ client-test:
 client-verify-build: wasm
     cd client && VITE_STDB_DB=monster-realm-playtest npm run build
     MR_PLAYTEST_DB=monster-realm-playtest node scripts/verify-build-hooks.mjs
+
+# ---- account service (account-service/, its own lock file; docs/account-service.md) ----
+# `just lint` lints the package with the rest of the tree.
+
+# Install the package's dependencies when they are absent or older than its lock file, without
+# running any dependency's install script. A node_modules that is a symlink (a worktree sharing
+# another checkout's copy) is left alone.
+account-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd account-service
+    if [ -L node_modules ]; then exit 0; fi
+    if [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
+        npm ci --ignore-scripts
+    fi
+
+# Run the local-dev profile, issuer http://localhost:4455. By default it listens on
+# 127.0.0.1:4455 and keeps its database, and the signing keys it generates on first start, in
+# account-service/.data. The recipe fixes the profile; every other MR_ACCOUNT_* setting is the
+# caller's environment.
+account-dev: account-install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd account-service
+    MR_ACCOUNT_PROFILE=local-dev exec node src/server.ts
+
+account-typecheck: account-install
+    cd account-service && npm run typecheck
+
+account-test: account-install
+    cd account-service && npm test
 
 # Upstream config validators in the digest-pinned images; --require-docker makes a missing
 # docker a failure instead of a skip.
