@@ -8,6 +8,10 @@
     "ack_evolution_notices": [
       "count: u32()"
     ],
+    "admit": [
+      "who: identity()",
+      "password: string()"
+    ],
     "advance_dialogue": [
       "choice_idx: u32()"
     ],
@@ -125,6 +129,11 @@
       "monster_ids: array(u64())",
       "items: array(TradeItem)",
       "currency: u64()"
+    ],
+    "set_world_access": [
+      "rule: WorldAccessRule",
+      "password: option(string())",
+      "admit: array(identity())"
     ],
     "start_guest_claim": [
       "code: string()"

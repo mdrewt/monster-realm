@@ -949,5 +949,12 @@
         "Vec<MonsterCard>"
       ]
     ]
+  },
+  "WorldAccessRule": {
+    "kind": "enum",
+    "variants": [
+      "Open",
+      "Password"
+    ]
   }
 }
