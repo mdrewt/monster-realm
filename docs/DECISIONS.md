@@ -2365,28 +2365,27 @@ attestation our account service signs") is signed with an Ed25519 key, and the m
 signature with the `ed25519-dalek` crate, built with no default features, through `verify_strict`.
 The bind refuses a token longer than a fixed cap of a few kibibytes before it decodes anything,
 takes the algorithm and the key from the module's own `kid`-keyed list and never from the token's
-header, and keys replay on the claims (`nonce`, `jti`), never on the token's text. The measurement
-and the judge's scores are `docs/local-play.md` §3, "What a signature check costs inside a reducer".
+header, and keys replay on the world's spent nonce, never on the token's text. The measurement and
+the judge's scores: `docs/local-play.md` §3, "What a signature check costs inside a reducer".
 
 **Why.** An ES256 verifier (`p256`) and an Ed25519 one both build for `wasm32-unknown-unknown` with
 no clock and no source of randomness, and both cost far less than the 5 ms one check may take: 593
 µs and 108 µs, the median of 101 checks inside one reducer on a 2.11.0 host. Ed25519 costs a fifth
-as much, the margin a slow host and a flood of failing tokens use up; it adds 10 crates to the
-module against 27; `verify_strict` refuses non-canonical signatures and small-order keys, where
-ECDSA accepts two forms of every signature and depends on a signer that never repeats a nonce; and
-an Ed25519 key cannot be loaded as a P-256 login key or the reverse, so attestation and login keys
-cannot verify each other's tokens by key type as well as by key list. The cap exists because a
-check hashes the whole token: its cost grows with length (past 5 ms between 400 and 700 KiB) and a
-token that fails costs what a valid one costs.
+as much, the margin a slow host and a flood of failing tokens use up; `verify_strict` refuses
+non-canonical signatures and small-order keys, where ECDSA accepts two forms of every signature;
+and an Ed25519 key cannot be loaded as a P-256 login key or the reverse, so attestation and login
+keys cannot verify each other's tokens by key type as well as by key list. The cap exists because
+a check hashes the whole token: its cost grows with length (past 5 ms between 400 and 700 KiB) and
+a token that fails costs what a valid one costs.
 
 **Rules out.** ES256 for the attestation, though it would keep one algorithm across the account
 service. It becomes the choice if the production host's key service cannot hold an Ed25519 key,
-since signing keys live there (see "The account service is our own small OIDC issuer; Steam is the
-only player sign-in") and that host is not chosen; ES256 fits the budget too. `ed25519-dalek`'s
-plain `verify`, which accepts signatures `verify_strict` refuses. `p256`'s `precomputed-tables`
-feature: through `std` it enables `getrandom`, which does not compile for the module target, and
-through `critical-section` it is no faster. Audience-scoped account tokens from the account issuer,
-the fallback for a verifier that did not fit.
+since signing keys live there and that host is not chosen; ES256 fits the budget too.
+`ed25519-dalek`'s plain `verify`, which accepts signatures `verify_strict` refuses, and its `fast`
+feature (4 percent faster for 11 KB more). Any crate feature that brings `std`'s clock or
+`getrandom` into the module: `p256`'s `precomputed-tables` does through `std`, and the compiler
+does not always refuse it, so the built module's import list is the check. Audience-scoped account
+tokens, the fallback for a verifier that did not fit.
 
 ## Private servers carry their own encryption: a real certificate for a domain, a pinned self-signed one otherwise; plaintext only on loopback
 
@@ -2466,7 +2465,8 @@ single-use nonce. Both check ownership before issuing. ID tokens are ES256 and l
 browser refresh tokens live 30 days and rotate, and reusing a rotated one revokes its chain. A
 separate deployment with its own issuer name and keys offers email and password for development
 and QA only, with accounts made by an admin command. The same service signs world attestations
-with a separate key. Storage is one SQLite file on one instance; discovery and the key set are also
+with a separate Ed25519 key (see "The attestation is signed with Ed25519 and checked by
+`ed25519-dalek` compiled into the module", which names when ES256 replaces it). Storage is one SQLite file on one instance; discovery and the key set are also
 served from a CDN; signing keys live in the host's key service through external signing. It is built in two phases (harness spec `M-account-service.spec.md`). Phase 1, now: the same provider and token shape with an email-and-password sign-in step and a per-account entitlement flag, run as two dev and test issuers with their own keys, `http://localhost:4455` for development and tests and `https://auth.monster-realm.spookyowltech.com` (the operator's domain, `monster-realm`'s own subdomain) for testing from other machines; test and dev builds of the module trust both, release builds trust neither. Phase 2, when the operator supplies the Steam app id and publisher key about two months before early access: the two Steam sign-in steps, the ownership check, and the production deployment at a host the operator names then. The never-deployed Better Auth recipe in `ops/auth/` is replaced by the deployment recipe (acs-4).
 
 **Why.** SpacetimeDB trusts only an OIDC issuer's signed JWTs, and Steam issues none, so a service

@@ -158,7 +158,8 @@ is valid" to one server, once, and the player's identity in that world comes fro
 from the account issuer. The fallback: audience-scoped tokens from the account issuer. The
 questions below are answered at SpacetimeDB 2.11.0. Source paths are in the SpacetimeDB repository
 at tag `v2.11.0` unless they start with `server-module/`, `client/` or `evals/` (this repository);
-"measured" means observed on a 2.11.0 standalone host on 2026-11-14.
+"measured" means observed on a 2.11.0 standalone host, on 2026-11-14 unless a subsection names
+another date.
 
 ### Which token claims a module can read at connect
 
@@ -232,8 +233,8 @@ token and signs the attestation itself; that endpoint is then part of the accoun
   and checks what the attestation names (audience, nonce, expiry) itself, then records the binding.
   No network is
   needed afterwards, and the identity is the world's own. SpacetimeDB gives a module no signature
-  or token API, so the verifier is a pure-Rust one compiled into the module with the attestation
-  key as module data. A reducer cannot fetch keys; a procedure can make HTTP requests
+  or token API, so the verifier is a pure-Rust one compiled into the module with the accepted
+  attestation keys as module data. A reducer cannot fetch keys; a procedure can make HTTP requests
   (`crates/bindings/src/http.rs`), which a world that must work offline cannot depend on. Key
   rotation is therefore a module or content update.
 
@@ -250,63 +251,54 @@ the host look the issuer up and answer 401 about ten seconds later (section 5).
 `wasm32-unknown-unknown` target with no clock and no source of randomness, and one check costs well
 under 5 ms with either. Five milliseconds is the budget for one check: a bind runs once per world,
 so the cost matters as a lever for flooding the reducer, not for play. Neither condition for the
-audience-scoped fallback arose (a candidate builds, and its median is under the budget), so the
+audience-scoped fallback holds (a candidate builds, and its median is under the budget), so the
 fallback is not the route. The verifier chosen is Ed25519: `ed25519-dalek`, called through
 `verify_strict`.
 
-| Verifier | Builds for the module target | Module size change | Median of 101 checks inside one reducer | Against the 5 ms budget |
+| Verifier | Builds for the module target | Module size change (one codegen unit, over a reducer with no check) | Median of 101 checks inside one reducer | Against the 5 ms budget, on the machine of section 7 |
 |---|---|---|---|---|
 | ES256: `p256` 0.14.0, `ecdsa` feature only | yes | +70,435 bytes | 593.3 µs | 8.4 times under |
 | Ed25519: `ed25519-dalek` 3.0.0, no default features | yes | +58,156 bytes | 108.4 µs | 46 times under |
 
-Measured on a 2.11.0 standalone host on 2026-11-21, with each verifier added to this repository's
-module at commit `5ceb483e`; the method and the per-call numbers are in section 7. Each median is
-the median of ten calls' medians, every call one reducer running 101 checks; across the ten calls
-the per-call median ranged from 585.7 to 606.1 µs (ES256) and from 106.6 to 125.1 µs (Ed25519).
+Measured on 2026-11-21 on a 2.11.0 standalone host, with each verifier added to this repository's
+module at commit `5ceb483e`; section 7 has the method, the per-call numbers and the follow-up runs.
+Each median is the median of ten calls' medians, every call one reducer running 101 checks; across
+the ten calls the per-call median ranged from 585.7 to 606.1 µs (ES256) and from 106.6 to 125.1 µs
+(Ed25519). These are medians on one fast desktop processor: the slowest single ES256 check took
+3,354.8 µs, and nothing was measured on a slow machine. In the profile the module ships in (16
+codegen units) the size change is within build-to-build variation: a reducer with no check alone
+adds 110,197 bytes to the 3,204,399-byte module, the ES256 build 84,261 and the Ed25519 build
+119,454, because adding any code to the module crate changes how unrelated functions are inlined.
 
 - *Builds with no clock or randomness.* Each built module imports the 18 host functions the
   unmodified module imports and nothing else but the two timer functions the measurement itself
-  calls. The 2.11.0 host offers a reducer no clock and no entropy, and a module that imported
-  anything else would not load. No function in either build is named for `std::time` or
-  `getrandom`. Both published and ran. `ed25519-dalek`'s `fast` feature (precomputed tables) also
-  builds: 104.2 µs, +69,065 bytes. `p256`'s `precomputed-tables` feature needs `std` or
-  `critical-section`: with `std` it enables `getrandom` 0.4.3, which refuses the target at compile
-  time; with `critical-section` it builds and is no faster (603.0 µs against 585.2 µs without, in
-  one run).
+  calls, no function in either build is named for `std::time` or `getrandom`, and both published
+  and ran. The 2.11.0 host exports no clock and no entropy function for a reducer to import. A
+  reducer's time is `ctx.timestamp` and its randomness is `ctx.rng()`, a generator seeded from that
+  timestamp; a verifier needs neither. The compiler does not refuse every randomness dependency:
+  `p256`'s `precomputed-tables` feature needs `std` or `critical-section`, and with `std` it
+  enables `getrandom` 0.4.3, which refuses the target at compile time, but `spacetimedb` turns on
+  `getrandom` 0.2's `custom` feature, under which that version compiles (the unmodified module
+  already builds with it). The import list of the built module is the check.
 - *What one check is.* What a bind does to a compact JWT of 531 bytes carrying the attestation
   route's claims, signed by Node's `crypto`: split off the signature, base64url-decode it, parse the
   public key, and verify the signature over the header and payload. The token and the key are
   reducer arguments. Reading the header, choosing a key by `kid` and parsing the claims are not in
   it.
-- *Module size.* The size column compares builds with one codegen unit, against the same module
-  with a reducer that makes no signature check (2,653,638 bytes). The profile the module ships in
-  (16 codegen units) cannot show the difference: there the unmodified module is 3,204,399 bytes, a
-  reducer with no check adds 110,197, the ES256 build 84,261 and the Ed25519 build 119,454, because
-  adding any code to the module crate changes how unrelated functions are inlined.
 - *A token that fails costs what a valid one costs.* One changed payload character: 590.0 µs
   (ES256) and 108.2 µs (Ed25519). Another key of the same type: 593.4 and 109.4 µs. Every such call
   accepted none of its 101 tokens, and every valid call all 101. A signature cut to 40 bytes is
   refused in 1.2 µs (ES256) and 5.3 µs (Ed25519).
-- *One check per call.* A bind is one check in its own reducer call. Over three fresh hosts and
-  eleven calls each, the check took 621.8 µs (579.9 to 820.4) with ES256 and 138.5 µs (118.2 to
-  190.8) with Ed25519; the first call after a publish took 610.5 to 690.3 µs and 141.8 to 190.8 µs.
-  The host reported 657 µs and 177 µs for the whole call, against 37 µs for a call that checks
-  nothing.
-- *The cost grows with the token's length.* Both verifiers hash the whole token:
-
-  | Token length, bytes | ES256, µs | Ed25519, µs |
-  |---|---|---|
-  | 531 | 609.9 | 110.4 |
-  | 4,098 | 640.6 | 133.1 |
-  | 65,538 | 1,271.4 | 557.7 |
-  | 262,146 | 3,195.8 | 1,922.8 |
-  | 1,048,578 | 11,137.7 | 7,393.9 |
-
-  By straight-line interpolation ES256 passes 5 ms at about 430 KiB and Ed25519 at about 688 KiB.
-  The host's HTTP call route took a reducer argument of 1.5 MiB and refused one of 2 MiB (413). So
-  the budget holds only if the bind refuses an over-long token before it decodes anything.
-- *Hardware.* These are medians on one fast desktop processor (section 7). Nothing was measured on
-  a slow machine.
+- *One check per call.* A bind is one check in its own reducer call, which costs a little more
+  than a check in a loop: 621.8 µs (ES256) and 138.5 µs (Ed25519), and up to 690.3 and 190.8 µs for
+  the first call after a publish.
+- *The cost grows with the token's length*, because both verifiers hash the whole token. At 4 KiB a
+  check costs 640.6 µs (ES256) and 133.1 µs (Ed25519); it passes 5 ms at about 430 KiB and 688 KiB.
+  The host's HTTP call route took a reducer argument of 1.5 MiB and refused one of 2 MiB. So the
+  budget holds only if the bind refuses an over-long token before it decodes anything.
+- *Faster configurations.* `ed25519-dalek`'s `fast` feature (precomputed tables) builds and saves 4
+  percent for 10,909 bytes more (104.2 µs, +69,065 bytes). `p256`'s `precomputed-tables`, built
+  through `critical-section`, is no faster (603.0 µs against 585.2 µs without it, in one run).
 
 **The choice.** A judge scored the two candidates from one evidence dossier, 1 (poor) to 5
 (excellent) per criterion, with the weights (in brackets) fixed before scoring. Both passed the two
@@ -328,22 +320,28 @@ gates: it builds for the module target, and its median is at most 5 ms.
 - *Fit with the signer.* The account service's login keys are ES256, so ES256 would keep one
   algorithm in the service and in its key service. Ed25519 is a second key type there. In return a
   P-256 login key cannot be loaded as an attestation key or the reverse, so the rule that neither
-  key set verifies the other's tokens holds by key type as well as by key list.
+  key set verifies the other's tokens holds by key type as well as by key list. The `alg` name the
+  signer writes in the token's header (`EdDSA`, RFC 8037, or `Ed25519`, which RFC 9864 adds while
+  deprecating `EdDSA`) is the signer's choice.
 - *Verification semantics.* ECDSA accepts two forms of every signature, `(r, s)` and `(r, n − s)`,
-  and its signer must never repeat a nonce. `verify_strict` refuses a non-canonical signature and a
-  small-order key, and Ed25519 signing draws no random nonce. `ed25519-dalek`'s plain `verify` is
-  the weaker check, so the bind calls `verify_strict`.
+  and a signer that repeats a nonce reveals its key. `verify_strict` refuses a non-canonical
+  signature and a small-order key, and Ed25519 signing draws no random nonce. `ed25519-dalek`'s
+  plain `verify` is the weaker check.
 
 The judge's result does not turn on any one score: with Ed25519 at 1 for signer fit it still leads.
 It turns on one fact this record does not hold: signing keys live in the production host's key
-service, and that host is not chosen. AWS KMS and Google Cloud KMS document Ed25519 signing. If the
-host chosen cannot hold an Ed25519 key, ES256 is the verifier, and it fits the budget.
+service, and that host is not chosen. AWS KMS and Google Cloud KMS document Ed25519 signing (read
+on 2026-11-21, not tried); Azure Key Vault's support was not confirmed. If the host chosen cannot
+hold an Ed25519 key, ES256 is the verifier, and it fits the budget.
 
-**What the bind adds to the check.** The measurement is a signature check, not the bind. The bind
-also refuses a token longer than a fixed cap before decoding it, requires exactly three segments,
-decodes base64url strictly, takes the algorithm and the key from the module's own key list by `kid`
-and never from the token's header, checks `aud`, `exp` and the nonce, and keys replay on the claims
-and never on the token's text.
+**What the bind must add to the check.** The measurement is a signature check, not the bind, which
+is not built. Beyond the check, the bind must refuse a token longer than a fixed cap before
+decoding it, require exactly three segments, decode base64url strictly, call `verify_strict`, take
+the algorithm and the key from the module's own key list by `kid` and never from the token's
+header, check `aud`, `exp` (against `ctx.timestamp`) and the nonce, and key replay on a claim (the
+world's spent nonce), never on the token's text, since a lenient decoder, and ECDSA itself, let two
+texts verify as one token. Refusing on a claim before the signature is checked trusts nothing, so
+the bind may order its checks cheapest first.
 
 ### Can a token a private host receives be replayed to the official server
 
@@ -689,8 +687,30 @@ its energy counter for a call divided by 101, which was the same in every call.
 
 The slowest single check of the 1,010 per variant took 3,354.8 µs (ES256) and 546.4 µs (Ed25519).
 
+One check per reducer call, over three fresh hosts and eleven calls each: 621.8 µs (579.9 to 820.4)
+with ES256 and 138.5 µs (118.2 to 190.8) with Ed25519. The first call after a publish took 610.5 to
+690.3 µs and 141.8 to 190.8 µs. The host reported 657 µs and 177 µs for the whole call, against 37
+µs for a call that checks nothing.
+
+Against token length, with tokens signed over a padding claim (every one accepted), the median of
+five calls' medians in microseconds:
+
+| Token length, bytes | ES256 | Ed25519 |
+|---|---|---|
+| 531 | 609.9 | 110.4 |
+| 4,098 | 640.6 | 133.1 |
+| 65,538 | 1,271.4 | 557.7 |
+| 262,146 | 3,195.8 | 1,922.8 |
+| 1,048,578 | 11,137.7 | 7,393.9 |
+
+The 5 ms crossings (about 430 KiB and 688 KiB) are a straight line between the last two rows. The
+largest argument was probed with one call per size to the reducer with no check, on a host that was
+not confined: a token of 1,572,863 bytes was taken, and one of 2,097,151 bytes was refused with
+HTTP 413.
+
 **What was not measured.** A battle, a trade or any load but walking; more than eight players; a
 session longer than an hour, so growth of the world's own tables with play and anything a later
 snapshot does; real low-end hardware; either shell's memory; the Steam overlay; the command-line
 tool's network use; the official module's audience check on the host's HTTP routes; the in-module
-signature check on any other machine; the largest reducer argument a WebSocket call carries.
+signature check on any other machine; the largest reducer argument a WebSocket call carries; an
+Ed25519 key in any key service, and a JOSE library writing either `alg` name (read, not tried).
