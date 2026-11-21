@@ -1579,6 +1579,64 @@ describe('createAuthTokenGate in tab mode: the reconnect token never touches loc
       );
     }
   });
+
+  it('a persistence value outside the type keeps the token in sessionStorage, and only exactly device reads localStorage [lpw-2.2]', () => {
+    // Positive control: exactly 'device' over the same host shape DOES return the localStorage
+    // token, so the negatives below cannot pass on a gate that never reads localStorage.
+    {
+      const session = new FakeSessionStorage();
+      const local = seeded(DEVICE_KEY, 'tok-LOCAL');
+      const { host, reads } = hostWithAreas(session, local);
+      expect(
+        createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device').tokenForNextAttempt(),
+        'control: exactly device supplies the localStorage token',
+      ).toBe('tok-LOCAL');
+      expect(reads.local, 'control: the device gate read localStorage').toBeGreaterThan(0);
+    }
+    const outside: readonly unknown[] = [
+      undefined,
+      null,
+      '',
+      'DEVICE',
+      'Device',
+      'device ',
+      ' device',
+      'local',
+      'localStorage',
+      '__proto__',
+      0,
+      1,
+      true,
+      {},
+      ['device'],
+    ];
+    for (const value of outside) {
+      const label = `persistence ${String(JSON.stringify(value))}`;
+      const session = new FakeSessionStorage();
+      const local = seeded(DEVICE_KEY, 'tok-LOCAL');
+      const { host, reads } = hostWithAreas(session, local);
+      const gate = createAuthTokenGate(
+        DEVICE_URI,
+        DEVICE_DB,
+        host,
+        value as unknown as TokenPersistence,
+      );
+      expect(gate.tokenForNextAttempt(), `${label}: the localStorage token is not supplied`).toBe(
+        undefined,
+      );
+      gate.onConnected('tok-X');
+      expect(
+        session.calls.filter((c) => c.op === 'setItem'),
+        `${label}: the token is written to sessionStorage under the key`,
+      ).toEqual([{ op: 'setItem', key: DEVICE_KEY, value: 'tok-X' }]);
+      expect(gate.tokenForNextAttempt(), `${label}: the per-tab token is supplied`).toBe('tok-X');
+      expect(reads.local, `${label}: zero reads of the localStorage property`).toBe(0);
+      expect(local.calls, `${label}: zero calls on localStorage`).toEqual([]);
+      expect(local.getItem(DEVICE_KEY), `${label}: the device token is untouched`).toBe(
+        'tok-LOCAL',
+      );
+    }
+  });
 });
 
 describe('createAuthTokenGate in device mode degrades silently when localStorage is unusable', () => {
