@@ -1,11 +1,12 @@
 // shell/feedback — where a message goes: the toast, the world hint, the announcer, the error ring
 // and its overlay. Every other module sends a message through a function here and uses the two
 // rings and the live region through their own methods. Only this module assigns the bindings it
-// declares; a write from outside is an owner function: the hint host's install
-// (`installHintHost`), the mount of the two elements built at boot (`mountFeedback`), the frame
-// loop's announcement pump (`pumpAnnouncements`) and the reconnect reset (`resetStatusNotice`).
-// Module scope constructs the rings and the announcer: it registers no listener, writes nothing
-// to the document and resolves no catalog string.
+// declares: another module changes one by calling a function here. Four of those functions serve
+// the boot and the frame loop in `main.ts`: the hint host's install (`installHintHost`), the mount
+// of the two elements built at boot (`mountFeedback`), the announcement pump
+// (`pumpAnnouncements`) and the reconnect reset (`resetStatusNotice`). Module scope constructs
+// the rings and the announcer: it registers no listener, writes nothing to the document and
+// resolves no catalog string.
 
 import { t } from '../ui/a11yCopy';
 import { type A11ySnapshot, announcementsFor } from '../ui/announcements';
@@ -35,7 +36,8 @@ const hintPortMissing = (): never => {
 // The installed hint host. Until `installHintHost` runs, each member throws.
 let hintPort: HintHost = { menuOnTop: hintPortMissing, repaintMenu: hintPortMissing };
 
-/** Install the hint host: once, at module scope, before the first listener registers. */
+/** Install the hint host. `main.ts` calls this once, at its own module scope, before it registers
+ *  its first listener. */
 export function installHintHost(host: HintHost): void {
   hintPort = host;
 }
@@ -59,10 +61,10 @@ export function reportPaintError(err: unknown): void {
 
 // --- the message sinks: the status surface and its channels ----------------------
 // Every message a sink here shows names its `MessageKind`, and `feedbackPolicy` picks the
-// channel (UIF4.1): an outcome is a timed toast (`#toast`, above every frame), a persistent state
+// channel: an outcome is a timed toast (`#toast`, above every frame), a persistent state
 // is the world hint (`#status`, the world line, or the main menu's strip while the menu is on
 // top, WF1-A9). `main()` builds `statusEl` and the toast and mounts them here before it opens the
-// connection (C8: no lifecycle callback can ever report into the void). textContent ONLY:
+// connection (no lifecycle callback can ever report into the void). textContent ONLY:
 // server-supplied SenderError text must never become markup.
 export let statusEl: HTMLElement | undefined;
 export let toastChrome: ToastChrome | undefined;
@@ -75,7 +77,7 @@ export let saidHint: string | null = null;
 export let menuHint: string | null = null;
 
 /** Show `text` on its policy channel: THE one seam every shell message goes through, so no view
- *  picks a channel (UIF4B.1). A hint kind paints on `hintHost`, the open frame's own strip, when
+ *  picks a channel. A hint kind paints on `hintHost`, the open frame's own strip, when
  *  the caller has one (Controls' refused key), else it is a world hint. */
 export function route(kind: SinkKind, text: string, hintHost?: (text: string) => void): void {
   if (channelOf(kind) !== 'hint') showToast(text);
@@ -117,7 +119,7 @@ export function paintToast(text: string): number {
   return nowMs;
 }
 
-/** The frame pump's toast expiry (UIF4.2: through the injected frame clock). */
+/** The frame pump's toast expiry, through the injected frame clock. */
 export function tickToast(nowMs: number): void {
   const next = toastStep(toastState, { kind: 'tick', nowMs });
   if (next === toastState) return;
@@ -137,7 +139,7 @@ export function setWorldHint(kind: MessageKind, text: string): void {
 }
 
 /** The shown world hint: the highest WF1-A9 rank, the newer of two equals; null when none stands. */
-export function topHint(): string | null {
+function topHint(): string | null {
   let top: { readonly kind: MessageKind; readonly text: string } | null = null;
   for (const h of worldHints) if (top === null || outranks(h.kind, top.kind)) top = h;
   return top?.text ?? null;
@@ -166,7 +168,7 @@ export function paintWorldHint(): void {
   }
 }
 
-/** On reconnect: the link states and the toast are stale (A8); `content-stale` stands until reload. */
+/** On reconnect: the link states and the toast are stale; `content-stale` stands until reload. */
 export function resetFeedbackSinks(): void {
   worldHints = worldHints.filter((h) => h.kind === 'content-stale');
   toastState = NO_TOAST;

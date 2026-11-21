@@ -347,7 +347,7 @@ is the tester's.
 | `client/src/main.dispatch.test.ts`: `overlayProbes`, `overlayHandles` and `screenViews` are three separate records with exactly the mirrored rows | `frames.ts` | the path only; the row text is unchanged |
 | `client/src/net/connection.test.ts`: `applyClaim` joins through `conn?.join()`, and the source never calls or names `joinGame` and never indexes `reducers` by bracket | `account.ts` | the path for `applyClaim`; the three absence checks read `main.ts` and every `shell/` module together |
 | `client/src/ui/screens/mainMenuScreen.test.ts`: the source holds `menuState` and reads no level off it | `menu.ts` | the scan reads `main.ts` and every `shell/` module together, so the absence checks widen and the length floor holds |
-| `client/src/ui/i18n/catalogParity.test.ts`: the roster of files that import the resolver, and the literal keys `main.ts` resolves | every module that resolves a catalog key | the roster gains the module; the key set splits between `main.ts` and the module, with the union unchanged |
+| `client/src/ui/i18n/catalogParity.test.ts`: the roster of files that import the resolver, and the literal keys `main.ts` resolves | every module that imports the resolver | the roster gains the module; the key set splits between `main.ts` and the module, with the union unchanged |
 | `client/vite.config.ts`: `src/main.ts` is excluded from coverage by path | nothing | shell modules are measured; coverage is a report with no threshold |
 | the `client/e2e` specs that re-declare the shape of a hook they read | `devHooks.ts` | none while the shapes hold |
 | the `client/e2e` specs that abort the request for `src/main.ts` to hold the shell unbooted | nothing | none: a shell module loads only through `main.ts` |
@@ -365,7 +365,8 @@ Prose that names `main.ts` as the home of a symbol follows the symbol, in the sl
   extraction rewrites them in place to name `client/src/shell/frames.ts`; the tables stay three
   separate total records.
 - `docs/DECISIONS.md`, "Four message channels, chosen by one policy table", which names
-  `main.ts` for `sendGuarded`'s refusal routing: the `session.ts` extraction.
+  `main.ts` for the senders (`sendGuarded`, the battle refusal, the care, shop and rename
+  outcomes): the `session.ts` and `commands.ts` extractions.
 - `ARCHITECTURE.md`, which names `main.ts` for `switchZone`, the frame loop, `dispatch`,
   `applyStack` and `downloadBugBundle`.
 - Comments under `client/src` that name `main.ts` as the caller or home of a symbol. An

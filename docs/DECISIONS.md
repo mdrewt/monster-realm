@@ -1846,13 +1846,14 @@ assigns each kind to one of four channels. The **hint line** is a frame's feedba
 line (`#status`) when no frame hosts it. The **toast** is one timed `.mr-toast` region (`ui/toast.ts`)
 for outcomes. The **modal** is a confirm sheet for decisions. The **blocking text box** is the dialogue.
 The table is a `satisfies Record<MessageKind, PolicyRow>`, so a kind with no channel fails typecheck.
-The sinks are in `client/src/shell/feedback.ts`: a sender names a kind, and `route` shows the message
-on that kind's channel (`reportError` adds the console line and the error ring). `main.ts`'s senders
-(`sendGuarded` through `SEND_REJECT_KIND`, the battle refusal, care) all go through that module. A
-toast is announced once through `#a11y-live` (the notice pump) and hides after `TOAST_MS` of the
-frame clock. A persistent hint follows the top frame (WF1-A9). On the main menu's strip it
-outranks the menu's own line: an action-required hint comes first, then a persistent state, then a
-disabled reason, then a Y-description. Otherwise it sits on
+The sinks are in `client/src/shell/feedback.ts`: `route` shows a message on its kind's channel, and
+`reportError` adds the console line and the error ring. `main.ts`'s senders go through them:
+`sendGuarded` (a kind per send site, `SEND_REJECT_KIND`) and the care, shop and rename outcomes name
+a kind, and the battle refusal paints the toast and is announced at once. A toast is announced once
+through `#a11y-live` (the notice pump) and hides after `TOAST_MS` of the frame clock. A persistent
+hint follows the top frame (WF1-A9). On the main menu's strip it outranks the menu's own line: an
+action-required hint comes first, then a persistent state, then a disabled reason, then a
+Y-description. Otherwise it sits on
 `#status`, which is layered above every shell and below the toast. The strip is an overlay with zero
 layout height: its height and negative bottom margin cancel, it sits in a 2rem bottom reserve on
 `.mr-frame` and `.mr-shell`, and it is sticky with `bottom: -2rem`, because Chromium measures sticky

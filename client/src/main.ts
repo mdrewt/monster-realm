@@ -2590,8 +2590,8 @@ store.onBatchApplied(() => {
 let lastSentSeq = 0;
 
 // --- movement-rejection diagnostics -----------------------------
-// Rejections stay SILENT to the player (M2 §3), so an F9 bundle from a rubber-banding
-// session used to show nothing. Two sinks close that: the flag-gated console fate line
+// Rejections stay SILENT to the player (M2 §3), so without a diagnostic an F9 bundle from a
+// rubber-banding session shows nothing. Two sinks close that: the flag-gated console fate line
 // and a rate-limited errorRing breadcrumb (bundle-only, overlay-filtered). ONE prefix const
 // (`MOVE_REJECT_PREFIX`, shell/feedback.ts) feeds both the formatter and that filter, so they
 // cannot drift apart.
@@ -4759,7 +4759,7 @@ async function main(): Promise<void> {
   status.className = 'mr-status';
   gameScreen.appendChild(status);
   mountFeedback({ statusEl: status });
-  // uif-4: the toast region, beside it and out of the flow (.mr-toast), above every frame.
+  // The toast region, beside it and out of the flow (.mr-toast), above every frame.
   mountFeedback({ toastChrome: createToast(document, gameScreen) });
 
   // ONE pointer dispatcher on the game screen (ctl-15): clicks, right-clicks, long-presses and
@@ -4925,7 +4925,7 @@ async function main(): Promise<void> {
       // hydration flag is cleared UNCONDITIONALLY so the reseed waits for THIS connection's.
       battleEmit = armReseed(battleEmit);
       hydratedSinceReconnect = false;
-      // qf-6: a notice queued for the old link and the quest-acknowledgement baseline are stale;
+      // A notice queued on the dropped link and the quest-acknowledgement baseline are stale;
       // the next baseline is the first hydrated batch of this connection.
       resetStatusNotice();
       questAckBaseline = undefined;
