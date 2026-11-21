@@ -4208,6 +4208,20 @@ function lpw4ExpectRefused(
   expect(lpw4Reducers(b), `${label}: join() and startSignIn() send nothing`).toBe(before.reducers);
 }
 
+/** Every `window.addEventListener` call made during the current lpw-4 test (a call-through spy
+ *  installed by the describe's beforeEach), so a test reaches its own connection's listeners. */
+let lpw4WindowListeners: MockInstance | undefined;
+
+/** The one `pageshow` listener the current test's connect() registered on `window`. */
+function lpw4OwnPageShow(): (e: Event) => void {
+  const calls = (lpw4WindowListeners?.mock.calls ?? []) as unknown[][];
+  const handlers = calls.filter(([type]) => type === 'pageshow').map(([, handler]) => handler);
+  expect(handlers, 'this test`s connect() registered one pageshow listener').toHaveLength(1);
+  const handler = handlers[0];
+  if (typeof handler === 'function') return (e) => (handler as (e: Event) => void)(e);
+  return (e) => (handler as EventListenerObject).handleEvent(e);
+}
+
 /** Nothing ever builds again: not the SDK's close of the refused socket, the backoff timers,
  *  reconnectNow, continueAnonymously nor a bfcache restore; and none of it reports a lost link. */
 async function lpw4ExpectTerminal(
@@ -4228,7 +4242,10 @@ async function lpw4ExpectTerminal(
   handle.continueAnonymously();
   await settle();
   expect(H.builds.length, `${label}: continueAnonymously built nothing`).toBe(builds);
-  window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+  // A bfcache restore of THIS connection: its own `pageshow` listener, called directly. Never a
+  // dispatch on the shared window: every earlier test's connection still listens there (connect()'s
+  // SINGLETON CONSTRAINT) and would wake and rebuild.
+  lpw4OwnPageShow()(Object.assign(new Event('pageshow'), { persisted: true }));
   await vi.advanceTimersByTimeAsync(120_000);
   expect(H.builds.length, `${label}: a bfcache restore built nothing`).toBe(builds);
   expect(lpw4LinkErrors(opts).length, `${label}: no "reconnecting" report`).toBe(links);
@@ -4305,6 +4322,18 @@ async function lpw4ExpectAdmittedRefusal(
   );
   await vi.advanceTimersByTimeAsync(5_000);
   expect(b.subs.length, `${label}: the scope drives no set`).toBe(before.subs);
+  // More row callbacks over a cache that still rules the client out (a second update, the delete
+  // and the re-insert of one transaction): the refusal is not repeated.
+  // WRONG IMPL KILLED: a re-judge that ignores the page's refusal (the side said again, the
+  // socket closed again on every further callback).
+  lpw4FireRow(b, 'update', [LPW4_ADMITS_1, LPW4_ADMITS_1]);
+  b.moduleInfo.rows = [];
+  lpw4FireRow(b, 'delete', [LPW4_ADMITS_1]);
+  b.moduleInfo.rows = [{ id: 0, protocol: 9, minClientProtocol: 9 }];
+  lpw4FireRow(b, 'insert', [{ id: 0, protocol: 9, minClientProtocol: 9 }]);
+  lpw4FireRow(b, 'update', [LPW4_ADMITS_1, { id: 0, protocol: 9, minClientProtocol: 9 }]);
+  await settle();
+  lpw4ExpectRefused(handle, w.opts, b, side, `${label}, then more mismatching rows`, before);
   // The row moves back to numbers that admit the client: a refused page stays refused.
   b.moduleInfo.rows = [LPW4_ADMITS_1];
   lpw4FireRow(b, 'insert', [LPW4_ADMITS_1]);
@@ -4333,9 +4362,13 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
     H.realOidc = false;
     sessionStorage.clear();
     localStorage.clear();
+    // Call-through: every listener is still registered; the spy only remembers which.
+    lpw4WindowListeners = vi.spyOn(window, 'addEventListener') as unknown as MockInstance;
   });
   afterEach(() => {
     window.dispatchEvent(new Event('pagehide'));
+    lpw4WindowListeners?.mockRestore();
+    lpw4WindowListeners = undefined;
     vi.useRealTimers();
   });
 

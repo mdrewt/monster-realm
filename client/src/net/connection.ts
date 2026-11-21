@@ -305,7 +305,7 @@ export function connect(opts: ConnectionOptions): Connection {
 
   /** Schedule ONE rebuild after the current backoff delay. */
   function scheduleRebuild(): void {
-    if (teardown || refused || rebuildTimer !== undefined) return;
+    if (teardown || rebuildTimer !== undefined) return;
     const delay = reconnectDelayMs(state.attempt);
     rebuildTimer = setTimeout(() => {
       rebuildTimer = undefined;
@@ -322,7 +322,7 @@ export function connect(opts: ConnectionOptions): Connection {
    * drop of an attempt that never applied as that attempt's failure (one rung) and leaves an
    * already-down link as it is, so the SDK's onerror-then-onclose double event cannot transition
    * or climb twice (A7/A8). On a refused page it wipes and freezes only: nothing is reconnecting,
-   * so nothing says so, and scheduleRebuild schedules nothing.
+   * so nothing says so, and the rebuild it schedules builds nothing (attemptBuild).
    */
   function handleDrop(): void {
     stopScope?.();
@@ -337,21 +337,17 @@ export function connect(opts: ConnectionOptions): Connection {
   /**
    * The protocol check refused the server `c` reached: this is the page's last connection. It
    * ends the way a drop does (scope stopped, rows wiped, link frozen) and nothing is built after
-   * it; `current` is dropped so no reducer can be sent; a pending hydration edge and a session
-   * terminal are cleared, since neither can lead anywhere now. The caller is told last, and is
-   * told even when closing the socket throws.
+   * it; `current` is dropped so no reducer can be sent; a session terminal is cleared, since its
+   * actions can no longer do anything. The socket is closed so the server sees this connection
+   * end, and the caller is told last.
    */
   function refuse(c: DbConnection, side: ProtocolMismatch): void {
     refused = true;
     handleDrop();
-    snapshotApplied = false;
     sessionMode = 'hidden';
     current = undefined;
-    try {
-      c.disconnect();
-    } finally {
-      opts.onProtocolMismatch(side);
-    }
+    c.disconnect();
+    opts.onProtocolMismatch(side);
   }
 
   // SINGLETON CONSTRAINT (review H1): connect() registers these window listeners
