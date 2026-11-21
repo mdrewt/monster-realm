@@ -5060,6 +5060,7 @@ async function main(): Promise<void> {
     name: 'Player',
     store,
     signIn: SIGN_IN_MODE,
+    targetKind: TARGET_KIND,
     authIssuer: OIDC_ISSUER,
     authClientId: OPERATED_BY_US ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',

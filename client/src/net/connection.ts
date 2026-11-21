@@ -25,7 +25,12 @@ import {
 // net→view dependency (see the layering note in statusModel.ts).
 import type { SessionState } from '../ui/sessionModel';
 import { subscriptionErrorMessage } from '../ui/statusModel';
-import { createAuthTokenGate, wasEverAuthenticated, writeAuthKind } from './authToken';
+import {
+  createAuthTokenGate,
+  tokenPersistenceFor,
+  wasEverAuthenticated,
+  writeAuthKind,
+} from './authToken';
 import { MicrotaskBatcher } from './batch';
 import { claimCode } from './claimCode';
 import {
@@ -66,6 +71,7 @@ import {
   skillRowToStore,
   speciesRowToStore,
 } from './rowConvert';
+import type { TargetKind } from './shellDocument';
 import type { AuthoritativeStore } from './store';
 import { createOwnerViewReconciler, OWNER_VIEWS } from './viewReconcile';
 import { isOwnZoneChange } from './warpDetect';
@@ -146,6 +152,10 @@ export interface ConnectionOptions {
   readonly authIssuer?: string;
   readonly authClientId?: string;
   readonly authRedirectUri?: string;
+  /** What the shell document says the server is. It decides where the anonymous reconnect token
+   *  is kept (`tokenPersistenceFor`): on the device for `local` and `private`, per tab for
+   *  `official` and `test`. */
+  readonly targetKind: TargetKind;
 }
 
 export interface Connection {
@@ -224,7 +234,12 @@ export function connect(opts: ConnectionOptions): Connection {
   // so a per-build gate would reset the counter on every scheduleRebuild() attempt,
   // suppression could never engage, and a host reset would loop forever re-supplying a
   // permanently rejected token.
-  const auth = createAuthTokenGate(opts.uri, opts.db, globalThis);
+  const auth = createAuthTokenGate(
+    opts.uri,
+    opts.db,
+    globalThis,
+    tokenPersistenceFor(opts.targetKind),
+  );
   let identity = '';
   let hadSession = false; // distinguishes the first connect from a reconnect (survives rebuilds)
   // App-level reconnect policy: pure transitions live in
