@@ -1,0 +1,14 @@
+{
+  "local-dev": [
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "alg": "Ed25519",
+      "use": "sig",
+      "kid": "ZwdbDVawj1m0Ot-iNvOUMykc1_hgr1dD5wRMph3rgWE",
+      "x": "BWXfIXbop1k6-Ch0VTug3klcgULo4NNzTBCTjH2AFF4"
+    }
+  ],
+  "hosted-dev": [],
+  "production": []
+}

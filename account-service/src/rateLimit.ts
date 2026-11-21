@@ -7,6 +7,8 @@ export interface RateLimiter {
   take(key: string): boolean;
   /** Removes the most recent hit of `key`, if it has one. */
   giveBack(key: string): void;
+  /** Whole seconds until `take(key)` would record a hit: 0 when it would now, otherwise at least 1. */
+  retryAfter(key: string): number;
   /** How many keys have at least one live hit now. */
   readonly size: number;
 }
@@ -16,8 +18,8 @@ export interface RateLimiter {
  * seconds and is taken not to run backwards.
  *
  * Keys come from callers the service does not trust, so memory is bounded by the hits taken within
- * one window: every hit joins a queue in the order it was taken, and each `take` or `size` read
- * drops the dead hits from the front of that queue and forgets a key left with none.
+ * one window: every hit joins a queue in the order it was taken, and each `take`, `retryAfter` or
+ * `size` read drops the dead hits from the front of that queue and forgets a key left with none.
  */
 export function createRateLimiter(options: {
   readonly limit: number;
@@ -72,6 +74,13 @@ export function createRateLimiter(options: {
       if (hits === undefined) return;
       hits.pop();
       if (hits.length === 0) hitsByKey.delete(key);
+    },
+    retryAfter(key) {
+      dropDead();
+      const hits = hitsByKey.get(key);
+      if (hits === undefined || hits.length < limit) return 0;
+      // Room opens when the oldest live hit turns a window old.
+      return Math.max(1, Math.ceil(hits[0] + windowSeconds - now()));
     },
     get size() {
       dropDead();

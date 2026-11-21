@@ -262,3 +262,118 @@ describe('options', () => {
     expect(takes(big, 'k', 3)).toEqual([true, true, true]);
   });
 });
+
+describe('retryAfter', () => {
+  test('is 0 for a key never seen and for a key below the limit acs-3.3', () => {
+    const rl = limiter(3, 600);
+    expect(rl.retryAfter('nobody')).toBe(0);
+    expect(takes(rl, 'k', 2)).toEqual([true, true]);
+    expect(rl.retryAfter('k')).toBe(0);
+    expect(rl.take('k')).toBe(true);
+  });
+
+  test('at the limit it is the seconds until the oldest live hit is a window old, as the clock moves acs-3.3', () => {
+    const rl = limiter(3, 600);
+    expect(rl.take('k')).toBe(true); // T0
+    t = T0 + 100;
+    expect(rl.take('k')).toBe(true);
+    t = T0 + 200;
+    expect(rl.take('k')).toBe(true);
+    expect(rl.retryAfter('k')).toBe(400);
+    t = T0 + 250;
+    expect(rl.retryAfter('k')).toBe(350);
+    t = T0 + 599;
+    expect(rl.retryAfter('k')).toBe(1);
+    t = T0 + 600; // the T0 hit is dead: room again
+    expect(rl.retryAfter('k')).toBe(0);
+    expect(rl.take('k')).toBe(true);
+    // Full again; the oldest live hit is now the one at T0 + 100.
+    expect(rl.retryAfter('k')).toBe(100);
+  });
+
+  test('a fractional remainder is rounded up, and a full key is never told less than 1 acs-3.3', () => {
+    let fractional = T0 + 0.25;
+    const rl = createRateLimiter({ limit: 1, windowSeconds: 10, now: () => fractional });
+    expect(rl.take('k')).toBe(true);
+    fractional = T0 + 3.75; // 6.5 seconds left
+    expect(rl.retryAfter('k')).toBe(7);
+    fractional = T0 + 10.2; // a twentieth of a second left
+    expect(rl.retryAfter('k')).toBe(1);
+    fractional = T0 + 10.25;
+    expect(rl.retryAfter('k')).toBe(0);
+
+    const short = createRateLimiter({ limit: 1, windowSeconds: 0.5, now });
+    expect(short.take('k')).toBe(true);
+    expect(short.retryAfter('k')).toBe(1);
+  });
+
+  test('after that many seconds take lets the key through, and one second earlier it does not acs-3.3', () => {
+    const rl = limiter(5, 600);
+    for (let i = 0; i < 5; i += 1) {
+      t = T0 + i * 37;
+      expect(rl.take('k')).toBe(true);
+    }
+    t = T0 + 300;
+    const wait = rl.retryAfter('k');
+    expect(wait).toBe(300);
+    t = T0 + 300 + wait - 1;
+    expect(rl.take('k')).toBe(false);
+    t = T0 + 300 + wait;
+    expect(rl.take('k')).toBe(true);
+    expect(rl.take('k')).toBe(false);
+  });
+
+  test('records nothing: asking many times changes neither what take answers nor size acs-3.3', () => {
+    const rl = limiter(2, 600);
+    for (let i = 0; i < 50; i += 1) expect(rl.retryAfter('ghost')).toBe(0);
+    expect(rl.size).toBe(0);
+    expect(rl.take('k')).toBe(true);
+    for (let i = 0; i < 50; i += 1) expect(rl.retryAfter('k')).toBe(0);
+    expect(rl.size).toBe(1);
+    expect(rl.take('k')).toBe(true);
+    const full = rl.retryAfter('k');
+    expect(full).toBe(600);
+    for (let i = 0; i < 50; i += 1) expect(rl.retryAfter('k')).toBe(full);
+    expect(rl.take('k')).toBe(false);
+    expect(rl.size).toBe(1);
+    rl.giveBack('k');
+    expect(rl.take('k')).toBe(true);
+    expect(rl.take('k')).toBe(false);
+  });
+
+  test('after giveBack a full key is told 0 again acs-3.3', () => {
+    const rl = limiter(2, 600);
+    expect(takes(rl, 'k', 2)).toEqual([true, true]);
+    expect(rl.retryAfter('k')).toBeGreaterThanOrEqual(1);
+    rl.giveBack('k');
+    expect(rl.retryAfter('k')).toBe(0);
+    expect(rl.take('k')).toBe(true);
+    expect(rl.retryAfter('k')).toBeGreaterThanOrEqual(1);
+  });
+
+  test('keys are answered apart acs-3.3', () => {
+    const rl = limiter(2, 600);
+    expect(takes(rl, 'a', 2)).toEqual([true, true]); // T0
+    t = T0 + 50;
+    expect(takes(rl, 'b', 2)).toEqual([true, true]);
+    t = T0 + 100;
+    expect(rl.retryAfter('a')).toBe(500);
+    expect(rl.retryAfter('b')).toBe(550);
+    expect(rl.retryAfter('c')).toBe(0);
+    rl.giveBack('a');
+    expect(rl.retryAfter('a')).toBe(0);
+    expect(rl.retryAfter('b')).toBe(550);
+  });
+
+  test('hits that have aged out do not count, read before any take or size acs-3.3', () => {
+    const rl = limiter(2, 600);
+    expect(rl.take('k')).toBe(true); // T0
+    t = T0 + 1;
+    expect(rl.take('k')).toBe(true);
+    t = T0 + 600; // the T0 hit is dead, the T0 + 1 hit is live
+    expect(rl.retryAfter('k')).toBe(0);
+    t = T0 + 601;
+    expect(rl.retryAfter('k')).toBe(0);
+    expect(takes(rl, 'k', 3)).toEqual([true, true, false]);
+  });
+});

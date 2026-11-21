@@ -11,14 +11,20 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { type IncomingHttpHeaders, request } from 'node:http';
-import { connect } from 'node:net';
+import { createServer, type IncomingHttpHeaders, request } from 'node:http';
+import { type AddressInfo, connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createLocalJWKSet, type JSONWebKeySet, jwtVerify } from 'jose';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { ConfigError, HOSTED_DEV_ISSUER } from './config.ts';
-import { generateSigningKey } from './keys.ts';
+import {
+  ATTESTATION_KEY_FILE_NAME,
+  generateAttestationKey,
+  generateSigningKey,
+  publishedAttestationKeys,
+} from './keys.ts';
 import { type RunningServer, startServer } from './server.ts';
 
 const ACCOUNT_SERVICE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -293,6 +299,13 @@ describe('startServer, in process', () => {
     const keyFile = join(dataDir, 'keys.json');
     writeFileSync(keyFile, JSON.stringify({ profile: 'hosted-dev', keys: [key] }), { mode: 0o600 });
     chmodSync(keyFile, 0o600);
+    const attestationKeyFile = join(dataDir, ATTESTATION_KEY_FILE_NAME);
+    writeFileSync(
+      attestationKeyFile,
+      JSON.stringify({ profile: 'hosted-dev', keys: [generateAttestationKey()] }),
+      { mode: 0o600 },
+    );
+    chmodSync(attestationKeyFile, 0o600);
     const lines: string[] = [];
     const server = await start(
       { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: dataDir, MR_ACCOUNT_PORT: '0' },
@@ -657,5 +670,456 @@ describe('a local-dev server with a client and an account made by the admin comm
     expect(payload.aud).toBe(clientId);
     expect(payload.sub).toBe(sub);
     expect(payload.mr_ent).toEqual(['base-game']);
+  });
+});
+
+// ---- the attestation route, served by startServer ----
+
+const CLIENT_ID = 'monster-realm';
+const REDIRECT_URI = 'http://localhost:5290/';
+const LOCAL_ATTEST_ISSUER = 'http://localhost:4455/attest';
+const HOSTED_HOST_HEADER = new URL(HOSTED_DEV_ISSUER).host;
+const WORLD = 'dns:play.example.com:3000/c200a1b2c3d4';
+const NONCE = 'n-9d2c7e4a1f';
+const WORLD_MARK = 'dns:WORLDMARK-r8Ys3WuJo2Kn.example:3000/WORLDMARK-e93b1a7c';
+const NONCE_MARK = 'NONCEMARK-5Gx1Pq7ZtRmC2v';
+
+/** A cookie jar, as `flowBrowser`, for a server answering as `host`. */
+function hostBrowser(port: number, host: string) {
+  let cookies: FlowCookie[] = [];
+  const covers = (cookiePath: string, path: string): boolean =>
+    cookiePath === '/' ||
+    path === cookiePath ||
+    path.startsWith(cookiePath.endsWith('/') ? cookiePath : `${cookiePath}/`);
+  return async (
+    method: string,
+    target: string,
+    extra: Record<string, string> = {},
+    body?: string,
+  ): Promise<FlowReply> => {
+    const path = target.split('?')[0] ?? target;
+    const cookie = cookies
+      .filter((c) => covers(c.path, path))
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ');
+    const headers: Record<string, string> = { host, ...extra };
+    if (cookie !== '') headers.cookie = cookie;
+    const reply = await flowSend(port, method, target, headers, body);
+    for (const line of reply.headers['set-cookie'] ?? []) {
+      const [pair = '', ...attributes] = line.split(';').map((part) => part.trim());
+      const eq = pair.indexOf('=');
+      if (eq <= 0) continue;
+      const name = pair.slice(0, eq);
+      const value = pair.slice(eq + 1);
+      const pathAttribute = attributes.find((a) => a.toLowerCase().startsWith('path='));
+      const cookiePath = pathAttribute === undefined ? '/' : pathAttribute.slice('path='.length);
+      cookies = cookies.filter((c) => !(c.name === name && c.path === cookiePath));
+      if (value !== '') cookies.push({ name, value, path: cookiePath });
+    }
+    return reply;
+  };
+}
+
+async function admin(env: Env, argv: string[]): Promise<Map<string, string>> {
+  const { runAdmin } = await import('./admin/cli.ts');
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = await runAdmin(argv, env, {
+    out: (line) => {
+      out.push(line);
+    },
+    err: (line) => {
+      err.push(line);
+    },
+  });
+  expect(code, err.join('\n')).toBe(0);
+  return new Map(
+    out.map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+  );
+}
+
+/** A full sign-in by authorization code and PKCE; returns the ID token. */
+async function signInToIdToken(options: {
+  readonly port: number;
+  readonly host: string;
+  readonly origin: string;
+  readonly email: string;
+  readonly password: string;
+}): Promise<string> {
+  const browse = hostBrowser(options.port, options.host);
+  const verifier = randomBytes(32).toString('base64url');
+  const query = new URLSearchParams({
+    response_type: 'code',
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    scope: 'openid',
+    state: 'attest-test',
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+    code_challenge_method: 'S256',
+  });
+  const started = await browse('GET', `/auth?${query}`);
+  expect(started.status, started.body).toBe(303);
+  const interaction = new URL(String(started.headers.location), options.origin);
+  const form = await browse('GET', interaction.pathname);
+  expect(form.status, form.body).toBe(200);
+  const posted = await browse(
+    'POST',
+    interaction.pathname,
+    { origin: options.origin, 'content-type': 'application/x-www-form-urlencoded' },
+    new URLSearchParams({ email: options.email, password: options.password }).toString(),
+  );
+  expect(posted.status, posted.body).toBe(303);
+  const back = await browse('GET', new URL(String(posted.headers.location)).pathname);
+  expect(back.status, back.body).toBe(303);
+  const code = new URL(String(back.headers.location)).searchParams.get('code');
+  expect(code).toEqual(expect.any(String));
+  const exchanged = await flowSend(
+    options.port,
+    'POST',
+    '/token',
+    { host: options.host, 'content-type': 'application/x-www-form-urlencoded' },
+    new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code!,
+      code_verifier: verifier,
+      client_id: CLIENT_ID,
+      redirect_uri: REDIRECT_URI,
+    }).toString(),
+  );
+  expect(exchanged.status, exchanged.body).toBe(200);
+  const idToken = (JSON.parse(exchanged.body) as Record<string, unknown>).id_token;
+  expect(idToken).toEqual(expect.any(String));
+  return idToken as string;
+}
+
+function postAttest(
+  port: number,
+  idToken: string,
+  body: string,
+  extra: Record<string, string> = {},
+): Promise<FlowReply> {
+  return flowSend(
+    port,
+    'POST',
+    '/attest',
+    {
+      host: LOCAL_HOST_HEADER,
+      authorization: `Bearer ${idToken}`,
+      'content-type': 'application/json',
+      ...extra,
+    },
+    body,
+  );
+}
+
+function attestationIn(reply: FlowReply): string {
+  expect(reply.status, reply.body).toBe(200);
+  const json = JSON.parse(reply.body) as Record<string, unknown>;
+  expect(Object.keys(json)).toEqual(['attestation']);
+  return json.attestation as string;
+}
+
+function claimsOf(jwt: string): Record<string, unknown> {
+  return JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8')) as Record<
+    string,
+    unknown
+  >;
+}
+
+function publishedLocalSet() {
+  return createLocalJWKSet({ keys: [...publishedAttestationKeys()['local-dev']] });
+}
+
+interface SignedInLocal {
+  readonly server: RunningServer;
+  readonly port: number;
+  readonly dataDir: string;
+  readonly adminEnv: Env;
+  readonly email: string;
+  readonly sub: string;
+  readonly idToken: string;
+}
+
+/** A local-dev server, a client and an account made by the admin command, and its ID token. */
+async function signedInLocal(lines: string[] = []): Promise<SignedInLocal> {
+  const dataDir = join(root, 'data');
+  const adminEnv: Env = { MR_ACCOUNT_PROFILE: 'local-dev', MR_ACCOUNT_DATA_DIR: dataDir };
+  const email = 'attest.test@example.com';
+  await admin(adminEnv, ['set-client', CLIENT_ID, REDIRECT_URI]);
+  const made = await admin(adminEnv, ['create-account', email]);
+  const server = await start(localEnv(dataDir), lines);
+  const port = portOf(server.url);
+  const idToken = await signInToIdToken({
+    port,
+    host: LOCAL_HOST_HEADER,
+    origin: 'http://localhost:4455',
+    email,
+    password: made.get('password')!,
+  });
+  const sub = made.get('sub')!;
+  expect(claimsOf(idToken).sub).toBe(sub);
+  return { server, port, dataDir, adminEnv, email, sub, idToken };
+}
+
+async function freePort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolveListen) => {
+    probe.listen(0, '127.0.0.1', () => {
+      resolveListen();
+    });
+  });
+  const { port } = probe.address() as AddressInfo;
+  await new Promise<void>((resolveClose) => {
+    probe.close(() => {
+      resolveClose();
+    });
+  });
+  return port;
+}
+
+function writeOwnerOnly(path: string, content: string): void {
+  writeFileSync(path, content, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+describe('the attestation route served by startServer', () => {
+  test('on local-dev a real ID token gets an attestation that verifies under the published local-dev key acs-3.1', async () => {
+    const local = await signedInLocal();
+    const reply = await postAttest(
+      local.port,
+      local.idToken,
+      JSON.stringify({ world: WORLD, nonce: NONCE }),
+    );
+    const attestation = attestationIn(reply);
+    const verified = await jwtVerify(attestation, publishedLocalSet(), {
+      issuer: LOCAL_ATTEST_ISSUER,
+      audience: WORLD,
+      algorithms: ['Ed25519'],
+    });
+    expect(verified.payload.iss).toBe('http://localhost:4455/attest');
+    expect(verified.payload.sub).toBe(local.sub);
+    expect(verified.payload.aud).toBe(WORLD);
+    expect(verified.payload.nonce).toBe(NONCE);
+    expect(verified.payload.mr_ent).toEqual(['base-game']);
+    expect(verified.protectedHeader.kid).toBe(publishedAttestationKeys()['local-dev'][0]!.kid);
+  });
+
+  test('the attestation does not verify under the key set the server publishes at /jwks acs-3.1', async () => {
+    const local = await signedInLocal();
+    const attestation = attestationIn(
+      await postAttest(local.port, local.idToken, JSON.stringify({ world: WORLD, nonce: NONCE })),
+    );
+    const served = await getJson(local.port, '/jwks', LOCAL_HOST_HEADER);
+    expect(served.status).toBe(200);
+    const loginSet = createLocalJWKSet(served.json as unknown as JSONWebKeySet);
+    // The control: the ID token verifies under it.
+    await expect(jwtVerify(local.idToken, loginSet)).resolves.toBeDefined();
+    await expect(jwtVerify(attestation, loginSet)).rejects.toThrow();
+  });
+
+  test('a local-dev start on an empty data directory writes no attestation key file, before or after an attestation acs-3.1', async () => {
+    const fresh = join(root, 'fresh');
+    await start(localEnv(fresh));
+    expect(readdirSync(fresh)).not.toContain(ATTESTATION_KEY_FILE_NAME);
+    const local = await signedInLocal();
+    attestationIn(
+      await postAttest(local.port, local.idToken, JSON.stringify({ world: WORLD, nonce: NONCE })),
+    );
+    expect(readdirSync(local.dataDir)).not.toContain(ATTESTATION_KEY_FILE_NAME);
+    expect(readdirSync(fresh)).not.toContain(ATTESTATION_KEY_FILE_NAME);
+  });
+
+  test('hosted-dev without attestation-keys.json is refused naming MR_ACCOUNT_KEY_FILE, writes nothing and listens on nothing acs-3.1', async () => {
+    const dataDir = join(root, 'hosted');
+    mkdirSync(dataDir, { mode: 0o700 });
+    writeOwnerOnly(
+      join(dataDir, 'keys.json'),
+      JSON.stringify({ profile: 'hosted-dev', keys: [generateSigningKey()] }),
+    );
+    const port = await freePort();
+    const lines: string[] = [];
+    let error: unknown;
+    try {
+      await start(
+        {
+          MR_ACCOUNT_PROFILE: 'hosted-dev',
+          MR_ACCOUNT_DATA_DIR: dataDir,
+          MR_ACCOUNT_PORT: String(port),
+        },
+        lines,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe('MR_ACCOUNT_KEY_FILE');
+    expect((error as ConfigError).message).toContain(ATTESTATION_KEY_FILE_NAME);
+    expect(readdirSync(dataDir)).toEqual(['keys.json']);
+    expect(lines).toEqual([]);
+    expect(await connectOutcome(port)).toBe('refused');
+  });
+
+  test('hosted-dev refused for its attestation key file creates no data directory and writes nothing beside the key file acs-3.1', async () => {
+    const dataDir = join(root, 'not-yet', 'data');
+    const keyDir = join(root, 'keys');
+    mkdirSync(keyDir, { mode: 0o700 });
+    const keyFile = join(keyDir, 'login.json');
+    writeOwnerOnly(
+      keyFile,
+      JSON.stringify({ profile: 'hosted-dev', keys: [generateSigningKey()] }),
+    );
+    const lines: string[] = [];
+    let error: unknown;
+    try {
+      await start(
+        {
+          MR_ACCOUNT_PROFILE: 'hosted-dev',
+          MR_ACCOUNT_DATA_DIR: dataDir,
+          MR_ACCOUNT_KEY_FILE: keyFile,
+          MR_ACCOUNT_PORT: '0',
+        },
+        lines,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe('MR_ACCOUNT_KEY_FILE');
+    expect(existsSync(dataDir)).toBe(false);
+    expect(existsSync(join(root, 'not-yet'))).toBe(false);
+    expect(readdirSync(keyDir)).toEqual(['login.json']);
+    expect(lines).toEqual([]);
+  });
+
+  test("hosted-dev with attestation-keys.json signs with that file's key acs-3.1", async () => {
+    const dataDir = join(root, 'hosted');
+    mkdirSync(dataDir, { mode: 0o700 });
+    const attestationKey = generateAttestationKey();
+    writeOwnerOnly(
+      join(dataDir, 'keys.json'),
+      JSON.stringify({ profile: 'hosted-dev', keys: [generateSigningKey()] }),
+    );
+    writeOwnerOnly(
+      join(dataDir, ATTESTATION_KEY_FILE_NAME),
+      JSON.stringify({ profile: 'hosted-dev', keys: [attestationKey] }),
+    );
+    const env: Env = { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: dataDir };
+    const email = 'hosted.attest@example.com';
+    await admin(env, ['set-client', CLIENT_ID, REDIRECT_URI]);
+    const made = await admin(env, ['create-account', email]);
+    const server = await start({ ...env, MR_ACCOUNT_PORT: '0' });
+    const port = portOf(server.url);
+    const idToken = await signInToIdToken({
+      port,
+      host: HOSTED_HOST_HEADER,
+      origin: HOSTED_DEV_ISSUER,
+      email,
+      password: made.get('password')!,
+    });
+    const attestation = attestationIn(
+      await postAttest(port, idToken, JSON.stringify({ world: WORLD, nonce: NONCE }), {
+        host: HOSTED_HOST_HEADER,
+      }),
+    );
+    const fileSet = createLocalJWKSet({
+      keys: [{ kty: 'OKP', crv: 'Ed25519', x: attestationKey.x, kid: attestationKey.kid }],
+    });
+    const verified = await jwtVerify(attestation, fileSet, {
+      issuer: `${HOSTED_DEV_ISSUER}/attest`,
+      audience: WORLD,
+      algorithms: ['Ed25519'],
+    });
+    expect(verified.protectedHeader.kid).toBe(attestationKey.kid);
+    expect(verified.payload.sub).toBe(made.get('sub'));
+    await expect(jwtVerify(attestation, publishedLocalSet())).rejects.toThrow();
+  });
+
+  test("POST /attest under another Host gets the provider's 421 and no attestation", async () => {
+    const local = await signedInLocal();
+    const reply = await postAttest(
+      local.port,
+      local.idToken,
+      JSON.stringify({ world: WORLD, nonce: NONCE }),
+      { host: 'example.com' },
+    );
+    expect(reply.status).toBe(421);
+    expect(reply.body).not.toContain('attestation');
+  });
+
+  test('after the entitlement is cleared with the admin command, a still-valid ID token gets 403 not_entitled acs-3.1', async () => {
+    const local = await signedInLocal();
+    const body = JSON.stringify({ world: WORLD, nonce: NONCE });
+    attestationIn(await postAttest(local.port, local.idToken, body));
+    await admin(local.adminEnv, ['set-entitlement', local.email, 'not-entitled']);
+    const refused = await postAttest(local.port, local.idToken, body);
+    expect(refused.status).toBe(403);
+    expect(refused.body).toBe(JSON.stringify({ error: 'not_entitled' }));
+  });
+
+  test('the log keeps its one start line, gains one line with the sub per attestation, and never a world or nonce acs-3.5', async () => {
+    const lines: string[] = [];
+    const local = await signedInLocal(lines);
+    expect(lines).toHaveLength(1);
+    expect(START_LINE.exec(lines[0]!), lines[0]).not.toBeNull();
+    const marked = JSON.stringify({ world: WORLD_MARK, nonce: NONCE_MARK });
+
+    const attestation = attestationIn(await postAttest(local.port, local.idToken, marked));
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain(local.sub);
+
+    const refusals: ReadonlyArray<readonly [string, Promise<FlowReply>]> = [
+      [
+        'no token',
+        flowSend(
+          local.port,
+          'POST',
+          '/attest',
+          { host: LOCAL_HOST_HEADER, 'content-type': 'application/json' },
+          marked,
+        ),
+      ],
+      [
+        'a wrong content type',
+        postAttest(local.port, local.idToken, marked, { 'content-type': 'text/plain' }),
+      ],
+      [
+        'a third member',
+        postAttest(
+          local.port,
+          local.idToken,
+          JSON.stringify({ world: WORLD_MARK, nonce: NONCE_MARK, x: 1 }),
+        ),
+      ],
+      [
+        'a world with a space',
+        postAttest(
+          local.port,
+          local.idToken,
+          JSON.stringify({ world: `${WORLD_MARK} x`, nonce: NONCE_MARK }),
+        ),
+      ],
+      [
+        'GET',
+        flowSend(local.port, 'GET', '/attest', {
+          host: LOCAL_HOST_HEADER,
+          authorization: `Bearer ${local.idToken}`,
+        }),
+      ],
+      ['another Host', postAttest(local.port, local.idToken, marked, { host: 'example.com' })],
+    ];
+    for (const [name, pending] of refusals) {
+      const reply = await pending;
+      expect(reply.status, name).not.toBe(200);
+    }
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line).not.toContain('WORLDMARK');
+      expect(line).not.toContain('NONCEMARK');
+      expect(line).not.toContain(local.idToken);
+      expect(line).not.toContain(attestation);
+      for (const part of [...local.idToken.split('.'), ...attestation.split('.')]) {
+        expect(line).not.toContain(part);
+      }
+    }
   });
 });
