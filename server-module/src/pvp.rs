@@ -551,6 +551,7 @@ pub fn challenge_pvp(
     target: Identity,
     party_ids: Vec<u64>,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "challenge_pvp")?;
     let me = ctx.sender();
 
     // Guard 1: joined.
@@ -737,6 +738,7 @@ pub fn accept_challenge(
     challenge_id: u64,
     party_ids: Vec<u64>,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "accept_challenge")?;
     let me = ctx.sender();
 
     // Guard 1: challenge exists.
@@ -863,6 +865,7 @@ pub fn accept_challenge(
 /// Decline a pending PvP challenge. Deletes the challenge row.
 #[spacetimedb::reducer]
 pub fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "decline_challenge")?;
     let me = ctx.sender();
 
     let challenge = ctx
@@ -898,6 +901,7 @@ pub fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), 
 /// Cancel a pending PvP challenge (initiator-only).
 #[spacetimedb::reducer]
 pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "cancel_challenge")?;
     let me = ctx.sender();
 
     let challenge = ctx

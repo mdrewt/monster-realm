@@ -129,8 +129,8 @@ pub fn trade_offer_reaper(
 /// The one error every retired legacy trade reducer returns.
 const LEGACY_TRADE_RETIRED: &str = "this trade flow is retired; trade face to face instead";
 
-/// Retired: its only statement returns `LEGACY_TRADE_RETIRED`. It reads no row
-/// and writes none, whatever the arguments, so no offer naming another player's
+/// Retired: after the admission check it returns `LEGACY_TRADE_RETIRED`. It reads no trade row
+/// and writes no row, whatever the arguments, so no offer naming another player's
 /// assets can be created and no error depends on another player's wallet or
 /// inventory. The signature is the generated binding's shape.
 #[allow(clippy::too_many_arguments, unused_variables)]
@@ -145,23 +145,26 @@ pub fn propose_trade(
     counterparty_items: Vec<TradeItem>,
     counterparty_currency: u64,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "propose_trade")?;
     Err(LEGACY_TRADE_RETIRED.to_string())
 }
 
-/// Retired: its only statement returns `LEGACY_TRADE_RETIRED`; no row is read
-/// or written. An offer still in the table leaves through `cancel_trade`, the
+/// Retired: after the admission check it returns `LEGACY_TRADE_RETIRED`; no trade row is
+/// read or written. An offer still in the table leaves through `cancel_trade`, the
 /// TTL reaper, a disconnect or account deletion.
 #[allow(unused_variables)]
 #[spacetimedb::reducer]
 pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "respond_trade")?;
     Err(LEGACY_TRADE_RETIRED.to_string())
 }
 
-/// Retired: its only statement returns `LEGACY_TRADE_RETIRED`; no row is read
-/// or written and no asset moves.
+/// Retired: after the admission check it returns `LEGACY_TRADE_RETIRED`; no trade row is
+/// read or written and no asset moves.
 #[allow(unused_variables)]
 #[spacetimedb::reducer]
 pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "confirm_trade")?;
     Err(LEGACY_TRADE_RETIRED.to_string())
 }
 
@@ -171,6 +174,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
 /// Both Pending and ConfirmedByCounterparty can be cancelled.
 #[spacetimedb::reducer]
 pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "cancel_trade")?;
     let me = ctx.sender();
 
     let Some(offer) = ctx.db.trade_offer().trade_id().find(trade_id) else {

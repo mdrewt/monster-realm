@@ -459,7 +459,8 @@ refuses attestation binding when the same module source runs everywhere; (c) wha
 names, so that a hostile host cannot relay one world's attestation to another; and (e) how a build
 enforces ownership, and how a connection reaches the admission and binding calls before
 `join_game`. Question (d), plaintext `ws:` to a friends server, is decided in DECISIONS.md ("Private
-servers carry their own encryption…"). None of this is built. Work is named by its id in the
+servers carry their own encryption…"). Fork (a)'s module half is built (`server-module/src/access.rs`);
+its gate half and forks (b), (c) and (e) are not. Work is named by its id in the
 harness specs `M-local-play.spec.md` (lpw-9: the open or password rule; lpw-11 to lpw-14: the
 desktop shell, its host gate and opening a world to friends; lpw-15: binding, ownership and the
 allowlist; lpw-18: the certificate and the pin) and `M-account-service.spec.md` (acs-3: the
@@ -468,7 +469,7 @@ it proves.
 
 | Fork | Chosen | Rejected | Proved by |
 |---|---|---|---|
-| (a) An unadmitted connection | A1: the connect reducer refuses an identity the rule has not admitted, every reducer a player can call makes the same check, connections open when the rule changes are admitted, and the owner relays the door | A2: row filters on every public table. A3: every table private behind a view. A1 at connect only | lpw-9.2 and lpw-9.3 in `server-module/src/access_tests.rs` and `server-module/src/native_host_tests.rs`; the reducer census in `server-module/src/privacy_enforcement_tests.rs` |
+| (a) An unadmitted connection | A1: the connect reducer refuses an identity the rule has not admitted, every reducer a player can call makes the same check, connections open when the rule changes are admitted, and the owner relays the door | A2: row filters on every public table. A3: every table private behind a view. A1 at connect only | lpw-9.2 and lpw-9.3 in `server-module/src/access_tests.rs`; `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` |
 | (b) The official server's refusal | B1: the official build holds no attestation key, and a world build trusts no login issuer | B2: a row or flag in the database. B3: the world-name check and the route alone. B4: a database identity compiled in | lpw-15.3 in `server-module/src/world_binding_tests.rs`, run under the `official` build |
 | (c) What the attestation names | C2: the server as the player's own software authenticated it, `spki:<fingerprint>/<db>` or `dns:<host>:<port>/<db>`, bound from the desktop shell | C1: the key that verifies the client's world token. C3: the server's address or database identity. C2 with a browser flow built now | lpw-15.4 in `server-module/src/world_binding_tests.rs` and `client/src/net/attestation.test.ts` |
 | (e) The build input | E2: a build enforces ownership unless the feature `open_join` is named; `official` and `world` are the two release builds | E1: a feature that switches enforcement on. E3: an environment variable at build time. E4: a row at run time | lpw-15.7 in `server-module/src/world_binding_tests.rs`; acs-6.1 to acs-6.5 in `server-module/src/accounts_tests.rs`, `server-module/src/movement_tests.rs` and `evals/account-e2e.eval.mjs` |
@@ -517,12 +518,15 @@ enforced at 2.11.0, as the last three rows show.
   table. That holds the identity off every row and every reducer on the WebSocket, `call` and
   `sql` routes (measured on the probe) and through the MCP tools (measured for the audience
   refusal, which is the same reducer).
-- *In every reducer.* Every reducer a player can call makes the same check before anything else,
-  because a connection opened while its identity was admitted, or while the rule was `Open`, is not
-  checked again by the host. A census holds it: every reducer in
-  `evals/baselines/client-callable-reducers.json` (41 today), and any added later, makes the check
-  or is owner-only. The deletion census that `server-module/src/privacy_enforcement_tests.rs`
-  already runs cannot carry it: 14 of the 41 call neither of its gates.
+- *In every reducer.* Every reducer of the generated client roster except the owner-only three
+  (`sync_content`, `set_world_access`, `admit`) makes the same check
+  (`access::require_admitted`) before anything else, because a connection opened while its identity
+  was admitted, or while the rule was `Open`, is not checked again by the host. The test
+  `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` holds it: it takes the
+  roster from the file names of `client/src/module_bindings/*_reducer.ts` and executes each shipped
+  reducer as an unadmitted caller on a `Password` world, requiring the admission refusal from each
+  player reducer and the owner refusal from the three owner-only ones; a reducer with no probe fails
+  it. Reducers that exist only in a dev build (`dev_reducers`, `load_test_zones`) make no check.
 - *When the rule changes or an identity is removed.* When the rule leaves `Open`, the reducer that
   sets it admits every identity that has a connection open at that moment (the `player_session`
   table), so no unadmitted connection is left open, with or without a gate. A removed identity's
@@ -531,11 +535,17 @@ enforced at 2.11.0, as the last three rows show.
   removes. On a host with no gate the removed identity keeps reading what it subscribed to until
   it disconnects, and is refused when it returns.
 - *What the module never declares.* An HTTP handler, which the host serves without the connect
-  reducer and without authentication, or a row filter. The same census refuses both.
+  reducer and without authentication, or a row filter. Both sit behind the `spacetimedb` crate's
+  `unstable` feature, which the workspace does not enable (`Cargo.toml`: `spacetimedb = "2.11.0"`,
+  no features), so neither can be declared; the deletion-gate census in the same test file refuses a
+  `procedure` attribute.
 - *The door.* An unadmitted identity can call nothing, so admission is granted by reducers only
   the owner can call, each taking the joiner's identity as an argument: the owner's admit, through
-  the reducer that sets the rule, and `admit(who, password)`, which checks the salted hash and counts wrong attempts against `who`. On
-  a shipped world the host gate relays them: it serves one door endpoint of its own, which it never
+  the reducer that sets the rule, and `admit(who, password)`, which checks the Argon2id hash. A wrong
+  password is recorded and the call answers `Ok`, because a reducer that returns an error is rolled
+  back and would lose the count; the caller reads the `world_admission` row to learn the outcome.
+  The lockout is a sliding window: an identity with five wrong passwords less than ten minutes old
+  is refused, the right password included. On a shipped world the host gate relays them: it serves one door endpoint of its own, which it never
   forwards; for a joiner with no token it creates an identity on the host's internal port, makes
   the door call as the owner, and returns the token only when the module admitted the identity. The
   owner identity the gate relays as never joins the game, so the connect and disconnect that each
@@ -544,7 +554,7 @@ enforced at 2.11.0, as the last three rows show.
 - *Attempts.* An identity costs nothing to obtain, so the count of wrong attempts against one
   identity does not bound guessing. The gate does that: it limits door attempts by source address,
   which the module never sees. The module keeps no count across identities, since one would let
-  anyone lock every new joiner out.
+  anyone lock every new joiner out; its own count is per identity.
 - *The shell's own player.* On a world whose rule is not `Open` a new identity cannot connect to
   become known, so the shell admits its own player before the rule leaves `Open`: connected, it is
   admitted by the rule change; otherwise the shell creates that identity on the internal port and
@@ -580,17 +590,39 @@ that does not run the connect reducer, at 2.11.0 or at a later host version (the
 host's HTTP routes do…" is measured again at every host upgrade), or if a connection already open
 must stop reading at removal on a host with no gate, which only A3 gives.
 
-**Proved by.** lpw-9.2: the connect reducer refuses an unadmitted identity under `Password` and
-accepts the owner, an admitted identity and any identity under `Open`; every reducer in the
-client-callable roster, taken from the schema and not listed by hand, refuses an unadmitted caller
-on a connection that is already open; and the census fails for a reducer without the check, a
-handler or a filter. lpw-9.3: the owner's `admit(who, password)` refuses a wrong password with no
-write to world state, and refuses `who` after five wrong attempts in ten minutes. The tests do not
-assert that an open connection stops reading: it does not. No test of lpw-9 shows an unadmitted
-connection receiving no row either: that half of lpw-9.2 rests on the host running the connect
-reducer before every route, which is the measurement above, on a live host, repeated at every host
-upgrade. The wrong-audience control of `evals/account-e2e.eval.mjs` exercises the same refusal over
-a WebSocket on every run, for the audience check and not for admission.
+**Proved by.** `server-module/src/access_tests.rs` covers the rule default (no row is `Open`), the
+connect refusal under `Password` (an unadmitted identity is refused before its session or account is
+written; the owner and an admitted identity connect), the door (a wrong password is counted and
+answered `Ok`, five wrong passwords lock out the right one with no write, the window slides, the
+lock is per identity) and the owner guard on `set_world_access` and `admit`. `mod admission_roster`
+in `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster from the file names of
+the generated bindings and executes each shipped reducer as an unadmitted caller on a `Password`
+world: an executing test, not a parse of source. The tests do not assert that an open connection
+stops reading: it does not. No in-repo test shows an unadmitted connection receiving no row: that
+rests on the host running the connect reducer before every route, which is the measurement above,
+on a live host, repeated at every host upgrade. The wrong-audience control of
+`evals/account-e2e.eval.mjs` exercises the same refusal over a WebSocket on every run, for the
+audience check and not for admission.
+
+Measured on 2026-11-21 on a 2.11.0 standalone host (a scratch data directory) with the built module
+published; the script is not in the repository.
+
+| What was tried | Result |
+|---|---|
+| A stranger joins and reads an `Open` world | works |
+| After the owner set `Password`: seven reducers (`join_game`, `buy`, `clear_queue`, `delete_account`, `request_data_export`, `sync_content`, `admit`) called by an identity never admitted | each 403 `not admitted` |
+| The same identity runs `sql` on each of the 68 tables the schema lists | refused for every one; the owner reads all 68 |
+| The same identity opens a WebSocket | the upgrade completes, then the socket closes with no message |
+| Five wrong `admit` calls for one identity | each exits 0 and leaves one attempt record |
+| The right password for that identity | refused, `too many wrong passwords for this identity`; no admission row (the count survives across transactions) |
+| One wrong password, then the right one, for another identity | admitted; it then joins, reads and keeps its socket |
+| An identity admitted through `set_world_access` with no password | joins |
+| A door call that hashes against one that does not, over HTTP | median 23.4 ms against 1.0 ms (about 22 ms for one Argon2id hash inside the reducer, on this machine) |
+| The host's commit log (`replicas/1/clog/…stdb.log`) after these calls | holds the arguments of every committed reducer call in the clear: the password given to `set_world_access` and each password given to `admit`, wrong ones included |
+
+The last row means the salted hash protects the table row, not the world's data directory. A caller
+that must not leave a typed password on the host's disk has to stretch it before the call; the shell
+and the gate are those callers, and neither is built.
 
 #### (b) How the official server refuses attestation binding
 
@@ -862,10 +894,10 @@ plays nothing and can watch.
 
 | Slice | What the design changes |
 |---|---|
-| lpw-9 | The admission reducer is `admit(who, password)`, owner-only: an unadmitted identity is refused it as it is refused everything, where lpw-9.2 reads as if its own connection called it. lpw-9.3's count is against `who`. The reducer that sets the rule admits the identities then connected. The census gains the reducer check and the refusal of handlers and filters. The connect refusal's log line is rate-limited, as the unlisted-issuer one is |
+| lpw-9 | The admission reducer is `admit(who, password)`, owner-only: an unadmitted identity is refused it as it is refused everything, where lpw-9.2 reads as if its own connection called it. lpw-9.3's count is against `who`. The reducer that sets the rule admits the identities then connected. The executing roster test covers the reducer check, and a handler or a filter cannot be declared with the `unstable` feature off. The connect refusal's log line is rate-limited, as the unlisted-issuer one is |
 | lpw-11 | The preload exposes one more function, which takes a nonce and returns an attestation; lpw-11.1 and lpw-11.3 allow the shell document and no channel. No typed or imported entry carries a reconnect token |
-| lpw-12, lpw-14 | The gate gains the door endpoint, which it serves itself and never forwards; a limit on door attempts by source address; the identity behind each socket, and the closing of a removed identity's sockets; and reading the world's rule back before it listens beyond loopback. The two-host relay run of fork (c) has no owner yet |
-| lpw-13 | The shell admits its own player before the rule leaves `Open`, writes the world's names at each start, and embeds the artefact `just release-module` wrote, by its hash |
+| lpw-12, lpw-14 | The gate gains the door endpoint, which it serves itself and never forwards; a limit on door attempts by source address; the identity behind each socket, and the closing of a removed identity's sockets; and reading the world's rule back before it listens beyond loopback. A door call answers `Ok` for a wrong password, so the gate reads the `world_admission` row to learn the outcome, and it stretches the typed password before the call so the host's commit log holds no typed password. The two-host relay run of fork (c) has no owner yet |
+| lpw-13 | The shell admits its own player before the rule leaves `Open`; the password it gives `set_world_access` is stretched first, so the host's commit log holds no typed password; it writes the world's names at each start, and embeds the artefact `just release-module` wrote, by its hash |
 | lpw-15 | It builds the world's private table of names and the owner-only reducer that writes it, and a development recipe that writes one fingerprint into both the shell document and that table; it needs the shell document's fingerprint field, which lpw-18 specifies. The bind and the nonce reducer each gain an owner-only form that takes the joiner's identity, for `Allowlist`. A page a gate serves does not sign in, where the slice has every browser sign in. Its run under the `official` build needs a line in `justfile`, which acs-6 holds. It proves the relay closed in halves, where the slice has it close the relay with a hostile-host rig: that stays open until the two-host run |
 | lpw-17 | The standalone command writes the world's names: `spki:` for the world's own key, `dns:` for a domain it holds a certificate for. A host behind its own proxy states its public name and port |
 | lpw-18 | The shell document's fingerprint field arrives earlier, with lpw-15. lpw-18.7's browser joiner plays only on a build that does not enforce ownership |
@@ -1233,7 +1265,7 @@ session longer than an hour, so growth of the world's own tables with play and a
 snapshot does; real low-end hardware; either shell's memory; the Steam overlay; the command-line
 tool's network use; the in-module signature check on any other machine; the largest reducer
 argument a WebSocket call carries; an Ed25519 key in any key service, and a JOSE library writing
-either `alg` name (read, not tried); the access design of section 3 itself, none of which is built;
+either `alg` name (read, not tried); the access design of section 3 beyond the module half of fork (a), which is measured above (its gate half and forks (b), (c) and (e) are unmeasured);
 what a row filter costs a subscription; a host version other than 2.11.0 on any access
 measurement; and whether the ownership features leave the schema and the generated bindings
 unchanged.

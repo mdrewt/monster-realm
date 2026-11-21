@@ -362,6 +362,7 @@ fn apply_quest_trigger(
 /// short, and the quest or once-only grant stays available for a later talk.
 #[spacetimedb::reducer]
 pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "talk")?;
     let me = ctx.sender();
 
     // Step 1: player must be joined
@@ -489,6 +490,7 @@ fn open_dialogue(
 /// conversation stays on its node and the grant stays available.
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "advance_dialogue")?;
     let me = ctx.sender();
 
     // Step 1: PK-scoped lookup (F1: Player A cannot advance Player B's conversation)
@@ -595,7 +597,8 @@ fn choose_in_dialogue(
 /// during an ongoing battle, so a dialogue left open under one can be closed.
 #[spacetimedb::reducer]
 pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "dismiss_dialogue")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "dismiss_dialogue")?;
     ctx.db
         .player_conversation()

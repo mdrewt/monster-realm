@@ -61,7 +61,8 @@ pub(crate) fn update_monster_synced(ctx: &ReducerContext, m: Monster) -> Result<
 /// Ownership-checked: only the monster's owner may rename it.
 #[spacetimedb::reducer]
 pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "set_nickname")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "set_nickname")?;
     let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
@@ -86,7 +87,8 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
 /// pure game-core check (`game_core::check_party_slot`).
 #[spacetimedb::reducer]
 pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "set_party_slot")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "set_party_slot")?;
     let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {

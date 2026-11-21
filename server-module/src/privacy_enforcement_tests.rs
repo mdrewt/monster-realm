@@ -1324,6 +1324,17 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "sync_content",
         "operator-only behind the module-owner identity guard; no player caller exists",
     ),
+    (
+        "set_world_access",
+        "operator-only behind the world-owner guard (config.owner_identity, its first check); \
+         it writes the world's admission rows, and no player caller exists",
+    ),
+    (
+        "admit",
+        "operator-only behind the world-owner guard (config.owner_identity, its first check): \
+         the door the host works for a joiner; it writes the admission and wrong-password rows, \
+         and no player caller exists",
+    ),
     // (iv) the class stays EMPTY. A reducer that creates or mutates the caller's
     // assets without a gate fails this census until a deliberate roster row WITH
     // A BASIS is added -- never a silent new row.
@@ -1349,6 +1360,7 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
 
 const EXPECTED_MODULES: &[&str] = &[
     "crate",
+    "access",
     "accounts",
     "battle",
     "content",
@@ -2297,6 +2309,435 @@ fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
             encs(&got),
             encs(&want),
             "[ts2/view-participants] {label}: exactly its own sessions, full row values"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The admission roster (local-play design A1): every client-callable reducer makes the
+// admission check before anything else, except the three owner-only reducers, which answer
+// their own owner refusal. The roster is the GENERATED client bindings (their file names);
+// each probe runs the SHIPPED reducer fn as an unadmitted non-owner over a client connection
+// on a `Password` world. Only `config`, `world_access` and `world_admission` are registered,
+// so a reducer that writes before it refuses aborts the test in the host. Dev-only reducers
+// (`dev_reducers`, `load_test_zones`) are not in the generated bindings and get no probe.
+// ---------------------------------------------------------------------------
+
+mod admission_roster {
+    use crate::access::{REJECT_NOT_ADMITTED, REJECT_NOT_WORLD_OWNER};
+    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::schema::{Config, WorldAccess, WorldAccessRule, WorldAdmission};
+    use spacetimedb::sats::bsatn;
+    use spacetimedb::{Identity, ReducerContext, Serialize, Timestamp};
+    use std::collections::BTreeSet;
+
+    /// The generated TypeScript bindings: one `<reducer>_reducer.ts` per client-callable
+    /// reducer. Only the directory listing is read, never a file.
+    const BINDINGS_DIR: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../client/src/module_bindings");
+    const REDUCER_FILE_SUFFIX: &str = "_reducer.ts";
+
+    const T0: i64 = 1_700_000_000_000;
+
+    /// The indexes the admission check reads through (canonical `{table}_{col}_idx_btree`
+    /// names, the ones [`password_world`] registers): nothing else may be asked for before a
+    /// player reducer refuses an unadmitted caller.
+    const ADMISSION_CHECK_INDEXES: [&str; 3] = [
+        "world_access_id_idx_btree",
+        "config_id_idx_btree",
+        "world_admission_identity_idx_btree",
+    ];
+
+    #[derive(Clone, Copy, Debug)]
+    enum Kind {
+        /// A player reducer: the admission check is its first statement.
+        Player,
+        /// An owner-only reducer: its owner refusal comes first.
+        OwnerOnly,
+    }
+
+    type Call = fn(&ReducerContext) -> Result<(), String>;
+
+    fn probe(name: &'static str, kind: Kind, call: Call) -> (&'static str, Kind, Call) {
+        (name, kind, call)
+    }
+
+    /// A well-typed identity argument that names nobody in the world.
+    fn nobody() -> Identity {
+        Identity::from_byte_array([0x5A; 32])
+    }
+
+    /// One row per client-callable reducer, calling the SHIPPED fn with well-typed dummies.
+    fn probes() -> Vec<(&'static str, Kind, Call)> {
+        use Kind::{OwnerOnly, Player};
+        vec![
+            probe("accept_challenge", Player, |ctx| {
+                crate::pvp::accept_challenge(ctx, 0, Vec::new())
+            }),
+            probe("ack_evolution_notices", Player, |ctx| {
+                crate::evolution::ack_evolution_notices(ctx, 0)
+            }),
+            probe("admit", OwnerOnly, |ctx| {
+                crate::access::admit(ctx, nobody(), String::new())
+            }),
+            probe("advance_dialogue", Player, |ctx| {
+                crate::npc::advance_dialogue(ctx, 0)
+            }),
+            probe("buy", Player, |ctx| crate::economy::buy(ctx, 0, 0, 0)),
+            probe(
+                "cancel_account_deletion",
+                Player,
+                crate::accounts::cancel_account_deletion,
+            ),
+            probe("cancel_challenge", Player, |ctx| {
+                crate::pvp::cancel_challenge(ctx, 0)
+            }),
+            probe("cancel_queue", Player, |ctx| {
+                crate::tactics::cancel_queue(ctx, 0, 0)
+            }),
+            probe("cancel_trade", Player, |ctx| {
+                crate::trading::cancel_trade(ctx, 0)
+            }),
+            probe("cancel_trade_session", Player, |ctx| {
+                crate::trading_session::cancel_trade_session(ctx, 0)
+            }),
+            probe("care", Player, |ctx| crate::raising::care(ctx, 0)),
+            probe("challenge_pvp", Player, |ctx| {
+                crate::pvp::challenge_pvp(ctx, nobody(), Vec::new())
+            }),
+            probe("clear_queue", Player, |ctx| {
+                crate::movement::clear_queue(ctx, 0)
+            }),
+            probe("complete_guest_claim", Player, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, String::new())
+            }),
+            probe("confirm_trade", Player, |ctx| {
+                crate::trading::confirm_trade(ctx, 0)
+            }),
+            probe("confirm_trade_session", Player, |ctx| {
+                crate::trading_session::confirm_trade_session(ctx, 0, 0)
+            }),
+            probe("consume_crystalized_essence", Player, |ctx| {
+                crate::raising::consume_crystalized_essence(ctx, 0, 0)
+            }),
+            probe("decline_challenge", Player, |ctx| {
+                crate::pvp::decline_challenge(ctx, 0)
+            }),
+            probe("delete_account", Player, crate::accounts::delete_account),
+            probe("deploy_units", Player, |ctx| {
+                crate::tactics::deploy_units(ctx, 0, Vec::new())
+            }),
+            probe("dismiss_dialogue", Player, crate::npc::dismiss_dialogue),
+            probe("enqueue_move", Player, |ctx| {
+                crate::movement::enqueue_move(ctx, game_core::MoveInput::Jump, 0)
+            }),
+            probe("essence_train", Player, |ctx| {
+                crate::raising::essence_train(ctx, 0, game_core::Affinity::Fire)
+            }),
+            probe("evolve", Player, |ctx| crate::evolution::evolve(ctx, 0, 0)),
+            probe("forfeit", Player, |ctx| crate::tactics::forfeit(ctx, 0)),
+            probe("heal_party", Player, |ctx| {
+                crate::raising::heal_party(ctx, 0)
+            }),
+            probe("join_game", Player, |ctx| {
+                crate::movement::join_game(ctx, String::new())
+            }),
+            probe("open_trade_session", Player, |ctx| {
+                crate::trading_session::open_trade_session(ctx, nobody())
+            }),
+            probe("propose_trade", Player, |ctx| {
+                crate::trading::propose_trade(
+                    ctx,
+                    nobody(),
+                    Vec::new(),
+                    Vec::new(),
+                    0,
+                    Vec::new(),
+                    Vec::new(),
+                    0,
+                )
+            }),
+            probe(
+                "request_data_export",
+                Player,
+                crate::privacy::request_data_export,
+            ),
+            probe("respond_trade", Player, |ctx| {
+                crate::trading::respond_trade(ctx, 0, false)
+            }),
+            probe("sell", Player, |ctx| crate::economy::sell(ctx, 0, 0)),
+            probe("set_move", Player, |ctx| {
+                crate::movement::set_move(ctx, game_core::MoveInput::Jump, 0)
+            }),
+            probe("set_nickname", Player, |ctx| {
+                crate::monster_mgmt::set_nickname(ctx, 0, String::new())
+            }),
+            probe("set_party_slot", Player, |ctx| {
+                crate::monster_mgmt::set_party_slot(ctx, 0, 0)
+            }),
+            probe("set_profile_name", Player, |ctx| {
+                crate::ranking::set_profile_name(ctx, String::new())
+            }),
+            probe("set_trade_offer", Player, |ctx| {
+                crate::trading_session::set_trade_offer(ctx, 0, Vec::new(), Vec::new(), 0)
+            }),
+            probe("set_world_access", OwnerOnly, |ctx| {
+                crate::access::set_world_access(ctx, WorldAccessRule::Open, None, Vec::new())
+            }),
+            probe("start_guest_claim", Player, |ctx| {
+                crate::accounts::start_guest_claim(ctx, String::new())
+            }),
+            probe("submit_queue", Player, |ctx| {
+                crate::tactics::submit_queue(ctx, 0, 0, Vec::new())
+            }),
+            probe("sync_content", OwnerOnly, crate::sync_content),
+            probe("talk", Player, |ctx| crate::npc::talk(ctx, 0)),
+            probe("train", Player, |ctx| crate::raising::train(ctx, 0, 0)),
+        ]
+    }
+
+    /// The reducer names the generated bindings carry, from their file names.
+    fn generated_reducers() -> BTreeSet<String> {
+        let entries = std::fs::read_dir(BINDINGS_DIR)
+            .unwrap_or_else(|e| panic!("the generated bindings directory {BINDINGS_DIR}: {e}"));
+        entries
+            .map(|entry| {
+                entry
+                    .expect("a bindings directory entry reads")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter_map(|file| file.strip_suffix(REDUCER_FILE_SUFFIX).map(str::to_string))
+            .collect()
+    }
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    fn enc<T: Serialize>(row: &T) -> Vec<u8> {
+        bsatn::to_vec(row).expect("a row always BSATN-encodes")
+    }
+
+    fn owner() -> Identity {
+        Identity::from_byte_array([0xA1; 32])
+    }
+
+    /// An identity that is not the owner and holds no admission row.
+    fn caller() -> Identity {
+        Identity::from_byte_array([0x3C; 32])
+    }
+
+    /// An identity the host admitted (it is not the caller).
+    fn admitted() -> Identity {
+        Identity::from_byte_array([0x3D; 32])
+    }
+
+    struct World<'a> {
+        config: Handle<'a, Config, u32>,
+        access: Handle<'a, WorldAccess, u32>,
+        admission: Handle<'a, WorldAdmission>,
+    }
+
+    /// A `Password` world owned by [`owner`], with one admitted identity. Nothing is writable
+    /// or scannable: a probe that writes or scans before it refuses aborts the test.
+    fn password_world(fx: &Fixture) -> World<'_> {
+        let w = World {
+            config: fx.table_keyed::<Config, u32>("config", "id", |r| r.id),
+            access: fx.table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id),
+            admission: fx.table::<WorldAdmission>("world_admission", "identity", |r| r.identity),
+        };
+        w.config.seed(&Config {
+            id: 0,
+            content_version: 0,
+            owner_identity: owner(),
+        });
+        w.access.seed(&WorldAccess {
+            id: 0,
+            rule: WorldAccessRule::Password,
+            password_salt: vec![7; crate::access::PASSWORD_SALT_BYTES],
+            password_hash: vec![9; crate::access::PASSWORD_HASH_BYTES],
+        });
+        w.admission.seed(&WorldAdmission {
+            identity: admitted(),
+            admitted_at_ms: T0 - 1,
+        });
+        w
+    }
+
+    /// Every stored row of the three registered tables, and their write counts.
+    fn footprint(fx: &Fixture, w: &World<'_>) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> {
+        vec![
+            (
+                "config",
+                w.config.rows().iter().map(enc).collect(),
+                fx.writes_to("config"),
+            ),
+            (
+                "world_access",
+                w.access.rows().iter().map(enc).collect(),
+                fx.writes_to("world_access"),
+            ),
+            (
+                "world_admission",
+                w.admission.rows().iter().map(enc).collect(),
+                fx.writes_to("world_admission"),
+            ),
+        ]
+    }
+
+    /// Run `call` as the unadmitted non-owner over an anonymous client connection.
+    fn run_probe(fx: &Fixture, call: Call) -> Result<(), String> {
+        fx.run_as_conn_at(caller(), 0x0AD3_1700, None, at(T0), call)
+    }
+
+    /// The generated reducer roster and the probe table name the same set, in both
+    /// directions: a client-callable reducer with no probe fails naming it, and so does a
+    /// probe for a reducer the bindings do not have.
+    ///
+    /// kills: a client-callable reducer added with no admission probe; `admit` or
+    /// `set_world_access` missing from the published module (absent from the bindings).
+    #[test]
+    fn every_generated_reducer_has_exactly_one_admission_probe() {
+        let generated = generated_reducers();
+        let table = probes();
+        let mut probed: BTreeSet<String> = BTreeSet::new();
+        for (name, _, _) in &table {
+            assert!(
+                probed.insert((*name).to_string()),
+                "the probe table names `{name}` twice"
+            );
+        }
+        let unprobed: Vec<&String> = generated.difference(&probed).collect();
+        assert!(
+            unprobed.is_empty(),
+            "client-callable reducers in the generated bindings with no admission probe: \
+             {unprobed:?}"
+        );
+        let stale: Vec<&String> = probed.difference(&generated).collect();
+        assert!(
+            stale.is_empty(),
+            "admission probes for reducers the generated bindings do not have: {stale:?}"
+        );
+        assert_eq!(
+            generated.len(),
+            43,
+            "the generated roster: 41 reducers before lpw-9 plus `admit` and `set_world_access`"
+        );
+    }
+
+    /// Every player reducer, called by an unadmitted non-owner on a `Password` world, answers
+    /// exactly the admission refusal and leaves the world as it found it (a write or a scan
+    /// before the check aborts in the host). After each probe the host's index-request log
+    /// holds nothing but the entry point's own names and the admission check's three, so an
+    /// index read before the check fails naming the reducer (a read over an unregistered
+    /// index hands out no row, so only this log can see it).
+    ///
+    /// kills: a client-callable reducer with no admission check; one whose check is not its
+    /// first statement (it reads, writes or scans first, or refuses with its own earlier
+    /// error).
+    #[test]
+    fn every_player_reducer_refuses_an_unadmitted_caller_before_anything_else() {
+        let fx = fixture();
+        let w = password_world(&fx);
+        let before = footprint(&fx, &w);
+        // The index names the entry point itself asks for, then the admission check's own:
+        // the rule row, the config row and the admission row, each on its key.
+        assert_eq!(run_probe(&fx, |_| Ok(())), Ok(()), "the entry point runs");
+        let mut allowed: BTreeSet<String> = fx.requested_indexes().into_iter().collect();
+        for index in ADMISSION_CHECK_INDEXES {
+            allowed.insert(index.to_string());
+        }
+        let mut checked = 0usize;
+        // Asserted per probe, in roster order: a reducer that runs on past a missing check
+        // may write and abort the host, so the first wrong answer is reported before that.
+        for (name, kind, call) in probes() {
+            if !matches!(kind, Kind::Player) {
+                continue;
+            }
+            checked += 1;
+            let got = run_probe(&fx, call);
+            let foreign: Vec<String> = fx
+                .requested_indexes()
+                .into_iter()
+                .filter(|index| !allowed.contains(index))
+                .collect();
+            assert!(
+                foreign.is_empty(),
+                "`{name}` asked this host for {foreign:?} before refusing (result {got:?}): the \
+                 admission check must come before every read"
+            );
+            assert_eq!(
+                got,
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "`{name}` called by an unadmitted caller on a Password world must answer the \
+                 admission refusal first"
+            );
+        }
+        assert_eq!(checked, 40, "forty player reducers are probed");
+        assert_eq!(
+            footprint(&fx, &w),
+            before,
+            "the refusals write nothing to config, world_access or world_admission"
+        );
+    }
+
+    /// The owner-only set is exactly `sync_content`, `set_world_access` and `admit`; each,
+    /// called by an unadmitted non-owner on a `Password` world, answers its OWN owner refusal
+    /// (never the admission check's), with no write. `sync_content`'s refusal is read from the
+    /// same caller on the same world with no access row, where no admission check can apply.
+    ///
+    /// kills: an owner-only reducer that consults admission before ownership; the access
+    /// reducers refusing a non-owner with anything but the world-owner refusal; a reducer
+    /// quietly moved out of the admission check by being declared owner-only.
+    #[test]
+    fn only_the_owner_reducers_skip_the_admission_check_and_answer_their_owner_refusal() {
+        let owner_only: BTreeSet<&str> = probes()
+            .into_iter()
+            .filter(|(_, kind, _)| matches!(kind, Kind::OwnerOnly))
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(
+            owner_only,
+            BTreeSet::from(["admit", "set_world_access", "sync_content"]),
+            "the owner-only set is pinned exactly"
+        );
+
+        let fx = fixture();
+        let w = password_world(&fx);
+        let sync_refusal = {
+            let rows = w.access.rows();
+            assert_eq!(w.access.remove(0), 1, "fixture: the access row is removed");
+            let got = run_probe(&fx, crate::sync_content);
+            for r in &rows {
+                w.access.seed(r);
+            }
+            got.expect_err("sync_content refuses a non-owner on an open world")
+        };
+        assert_ne!(sync_refusal, REJECT_NOT_ADMITTED);
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+
+        for (name, kind, call) in probes() {
+            if !matches!(kind, Kind::OwnerOnly) {
+                continue;
+            }
+            let want = if name == "sync_content" {
+                sync_refusal.clone()
+            } else {
+                REJECT_NOT_WORLD_OWNER.to_string()
+            };
+            assert_eq!(
+                run_probe(&fx, call),
+                Err(want),
+                "`{name}` called by an unadmitted non-owner must answer its owner refusal"
+            );
+        }
+        assert_eq!(
+            footprint(&fx, &w),
+            before,
+            "the owner refusals write nothing"
         );
     }
 }

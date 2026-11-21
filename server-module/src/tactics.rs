@@ -2328,6 +2328,7 @@ pub fn deploy_units(
     picks: Vec<DeployPick>,
 ) -> Result<(), String> {
     const NAME: &str = "deploy_units";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
@@ -2530,6 +2531,7 @@ pub fn submit_queue(
     entries: Vec<QueuedAction>,
 ) -> Result<(), String> {
     const NAME: &str = "submit_queue";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
@@ -2598,6 +2600,7 @@ pub fn submit_queue(
 #[spacetimedb::reducer]
 pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Result<(), String> {
     const NAME: &str = "cancel_queue";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
@@ -2637,6 +2640,7 @@ pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Resul
 #[spacetimedb::reducer]
 pub fn forfeit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     const NAME: &str = "forfeit";
+    crate::access::require_admitted(ctx, NAME)?;
     let me = ctx.sender();
     let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;

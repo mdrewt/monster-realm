@@ -280,6 +280,7 @@ import { buildHealViewModel, buildHealViewModelForLocation } from './ui/healMode
 import { buildHelpViewModel } from './ui/helpModel';
 import { HintBarView } from './ui/hintBar';
 import { type HintBattle, type HintChip, type HintDeploy, hintBar } from './ui/hintBarModel';
+import { hostNoticeDue, markHostNoticeSeen } from './ui/hostNoticeModel';
 import { isRtl, negotiateLocale } from './ui/i18n/locale';
 import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';
 import {
@@ -4905,6 +4906,12 @@ async function main(): Promise<void> {
       applySession({ kind: 'connected' });
       // The claim prompt this connect raised, if any, is up and stays: nothing swept it.
       claimRaised = false;
+      // A private server's host owns the database: the first join says so, once per server.
+      const deviceStorage = browserStorage();
+      if (hostNoticeDue(TARGET_KIND, deviceStorage, URI, DB)) {
+        route('privacy-notice', i18nT('chrome.status.privateHostNotice'));
+        markHostNoticeSeen(deviceStorage, URI, DB);
+      }
     },
     // the store now holds the applied snapshot, so the reseed latch
     // may resolve on this flush. Set here, consumed by the battle emit listener.

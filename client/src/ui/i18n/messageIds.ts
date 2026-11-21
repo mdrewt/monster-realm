@@ -181,6 +181,7 @@ export type MessageId =
   | 'chrome.status.contentStale'
   | 'chrome.status.serverNewer'
   | 'chrome.status.serverOlder'
+  | 'chrome.status.privateHostNotice'
   | 'chrome.status.bugBundleBlocked'
   | 'chrome.status.partyFull'
   | 'chrome.status.zoneEntered'

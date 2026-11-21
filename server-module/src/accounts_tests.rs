@@ -879,6 +879,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "playtest_event",
         "trade_offer",
         "trade_session",
+        "world_admission",
+        "world_admission_attempt",
     ];
     assert_eq!(
         erase, expected_erase,
@@ -892,7 +894,9 @@ fn data_lifecycle_partition_matches_spec_section3() {
          battle_deploy, battle_clock, player_formation), `trade_session` names both \
          participants of an open trade session, `last_position` is the owner's saved \
          zone and tile and `player_handle` is the owner's minted discriminator (erased so a \
-         deleted player's tag cannot be linked back): twenty-three in all. A table moved OUT of \
+         deleted player's tag cannot be linked back), and lpw-9 adds `world_admission` and \
+         `world_admission_attempt` (the host's record of who was let in, and of the wrong \
+         passwords given for an identity): twenty-five in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
@@ -975,14 +979,16 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "skill_row",
         "species_row",
         "type_relation_row",
+        "world_access",
         "zone_def",
     ];
     assert_eq!(
         not_owned, expected_not_owned,
-        "T2 / spec §3 NOT-OWNED: exactly twenty-one tables hold no per-player data — spec §3's \
+        "T2 / spec §3 NOT-OWNED: exactly twenty-two tables hold no per-player data — spec §3's \
          seventeen, rb-24's `account_deletion_reaper_schedule`, rb-48's \
-         `export_bundle_reaper_schedule` (ADR-0238), sr-7's `battle_summary_reaper_schedule` \
-         and lpw-3's `module_info`. The additions are bookkeeping rather than player data, and \
+         `export_bundle_reaper_schedule` (ADR-0238), sr-7's `battle_summary_reaper_schedule`, \
+         lpw-3's `module_info` and lpw-9's `world_access` (the one global access-rule row). \
+         The additions are bookkeeping rather than player data, and \
          none is reachable by a per-owner cascade step: the rb-24 row holds the identity whose \
          own cascade it runs, and the rb-48 and sr-7 schedule rows and lpw-3's protocol-number \
          row are each ONE GLOBAL row with no Identity column at all, so there is nothing for a \
@@ -3147,6 +3153,18 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::TypeRelationRow as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "world_access",
+            <crate::schema::WorldAccess as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "world_admission",
+            <crate::schema::WorldAdmission as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "world_admission_attempt",
+            <crate::schema::WorldAdmissionAttempt as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "zone_def",
             <crate::schema::ZoneDefRow as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3246,16 +3264,17 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 65,
+        registry_len, 68,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 65 (23 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 21 NOT-OWNED) — \
+         manifest carries exactly 68 (25 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 22 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
          trade-session tables (`trade_session`, `trade_session_snapshot`, \
          `trade_session_reaper_schedule`), plus `move_intent`, plus `last_position`, plus \
          `player_handle`, plus sr-7's `battle_summary_reaper_schedule`, plus sr-4b's \
-         `leaderboard_top`, plus lpw-3's `module_info`. A registry that grew or shrank without a matching manifest change is \
+         `leaderboard_top`, plus lpw-3's `module_info`, plus lpw-9's three access tables \
+         (`world_access`, `world_admission`, `world_admission_attempt`). A registry that grew or shrank without a matching manifest change is \
          a registry nobody reviewed against the schema it claims to cover."
     );
 
@@ -3266,11 +3285,13 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 33,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 65 registered row types \
-         carry an Identity column at some depth; exactly 33 is the live count (the 29 \
+        identity_bearing, 35,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 68 registered row types \
+         carry an Identity column at some depth; exactly 35 is the live count (the 31 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). sr-4b's `leaderboard_top` adds one (its `identity` key). \
+         exceptions R3 below names). lpw-9's `world_admission` and `world_admission_attempt` \
+         add one each (their `identity` keys); `world_access` adds none (one global row of a \
+         rule, a salt and a hash). sr-4b's `leaderboard_top` adds one (its `identity` key). \
          `player_handle` adds one (its `owner_identity` key). \
          `last_position` adds one (its `owner_identity` key). \
          `trade_session` adds one (its `opener` and `partner` \
@@ -3360,9 +3381,10 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 29,
+        population, 31,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 29 (23 ERASE + 6 ANONYMIZE — rb-73's `player_session`, \
+         the live partition is exactly 31 (25 ERASE + 6 ANONYMIZE — lpw-9's Erase \
+         `world_admission` and `world_admission_attempt`, rb-73's `player_session`, \
          20r-d's `pending_evolution_notice`, bt-7's five Erase tactical tables plus its \
          Anonymize `battle_summary`, the Erase `trade_session`, the Erase `last_position`, \
          the Erase `player_handle` and sr-4b's Anonymize `leaderboard_top` included). A floor \
@@ -3539,11 +3561,11 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
     }
 
     assert_eq!(
-        population, 21,
+        population, 22,
         "[m22s6/x3-population] {population} manifest entries are classified NotOwned; the live \
-         set is exactly 21 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
+         set is exactly 22 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
          rb-48's export_bundle_reaper_schedule, ADR-0238, sr-7's \
-         battle_summary_reaper_schedule and lpw-3's module_info)."
+         battle_summary_reaper_schedule, lpw-3's module_info and lpw-9's world_access)."
     );
 
     let observed_len = observed_exceptions.len();
@@ -5076,11 +5098,11 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        65,
+        68,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
          schedule tables plus the three trade-session tables plus move_intent plus last_position \
          plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top plus \
-         module_info"
+         module_info plus lpw-9's world_access, world_admission and world_admission_attempt"
     );
 }
 
@@ -5120,8 +5142,8 @@ mod acct_nh {
         GuestClaim, HealCooldown, Inventory, LastPosition, Monster, MonsterPub, MoveClassRow,
         PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
         PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerSession, PlayerWallet, Profile,
-        SideRow, StanceRow, TradeOffer, TradeSession, TradeSessionSnapshot,
-        DATA_LIFECYCLE_MANIFEST,
+        SideRow, StanceRow, TradeOffer, TradeSession, TradeSessionSnapshot, WorldAdmission,
+        WorldAdmissionAttempt, DATA_LIFECYCLE_MANIFEST,
     };
     use crate::trading::TradeOfferReaperSchedule;
     use crate::trading_session::TradeSessionReaperSchedule;
@@ -5262,6 +5284,10 @@ mod acct_nh {
         trade_session: Handle<'a, TradeSession, u64>,
         trade_snapshot: Handle<'a, TradeSessionSnapshot, u64>,
         trade_session_reaper: Handle<'a, TradeSessionReaperSchedule, u64>,
+        // The world's admission record and its wrong-password record, both on their
+        // `identity` key (the cascade's `access::erase_admission` deletes through them).
+        admission: Handle<'a, WorldAdmission>,
+        admission_attempt: Handle<'a, WorldAdmissionAttempt>,
     }
 
     /// Registers every index the shipped accounts / claim / cascade / export
@@ -5622,6 +5648,16 @@ mod acct_nh {
                 )
                 .writable()
                 .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
+            admission: fx
+                .table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
+                .unique()
+                .writable(),
+            admission_attempt: fx
+                .table::<WorldAdmissionAttempt>("world_admission_attempt", "identity", |r| {
+                    r.identity
+                })
+                .unique()
+                .writable(),
         }
     }
 
@@ -8030,8 +8066,11 @@ mod acct_nh {
         // guest's side of its `battle` and `battle_summary` rows, as the
         // deletion cascade does. A trade session is a live interaction like a
         // trade offer: the claim deletes the claimer's sessions instead of
-        // moving any onto it.
-        const NOT_REKEYED: [&str; 16] = [
+        // moving any onto it. A world admission and the wrong-password record
+        // are not re-keyed either: a signed-in identity is a different
+        // identity and passes the door itself, so a claim neither moves nor
+        // erases an admission.
+        const NOT_REKEYED: [&str; 18] = [
             "player",
             "player_conversation",
             "player_session",
@@ -8048,6 +8087,8 @@ mod acct_nh {
             "battle_clock",
             "battle_summary",
             "trade_session",
+            "world_admission",
+            "world_admission_attempt",
         ];
         let mut owner_keyed: Vec<&str> = DATA_LIFECYCLE_MANIFEST
             .iter()
@@ -8823,6 +8864,38 @@ mod acct_nh {
             .seed(&crate::accounts::new_account_row(b, "iss".to_string(), 1));
         seed_cascade_population(&w, v, b, 1);
         seed_cascade_population(&w, b, x, 2);
+        // Both identities hold a world admission and a wrong-password record.
+        for (who, k) in [(v, 1i64), (b, 2)] {
+            w.admission.seed(&WorldAdmission {
+                identity: who,
+                admitted_at_ms: T0 - 100 + k,
+            });
+            w.admission_attempt.seed(&WorldAdmissionAttempt {
+                identity: who,
+                wrong_at_ms: vec![T0 - 50 + k, T0 - 40 + k],
+                last_wrong_at_ms: T0 - 40 + k,
+            });
+        }
+        let admission_of = |w: &W<'_>, who: Identity| -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+            (
+                encs(
+                    &w.admission
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+                encs(
+                    &w.admission_attempt
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            )
+        };
+        let victim_admission_before = admission_of(&w, v);
+        let bystander_admission_before = admission_of(&w, b);
         let victim_before = owned_by(&w, v);
         // bt-7: every per-battle row of a battle the subject is a side of goes
         // (the bystander's own units / staging / clock in a SHARED battle
@@ -8944,6 +9017,11 @@ mod acct_nh {
             victim_before,
             "an early tick erases nothing"
         );
+        assert_eq!(
+            admission_of(&w, v),
+            victim_admission_before,
+            "an early tick keeps the subject's world admission and attempt rows"
+        );
         let rearmed = del_reapers_of(&w, v);
         assert_eq!(rearmed.len(), 1, "an early tick re-arms exactly once");
         assert_eq!(fire_at(&rearmed[0].scheduled_at), at(grace_end));
@@ -9002,6 +9080,21 @@ mod acct_nh {
             .iter()
             .all(|r| r.challenge_id != 1001));
         assert!(del_reapers_of(&w, v).is_empty(), "the cascade arms nothing");
+        assert_eq!(
+            admission_of(&w, v),
+            (Vec::new(), Vec::new()),
+            "the cascade erases the subject's world admission and its wrong-password record"
+        );
+        assert_eq!(
+            admission_of(&w, b),
+            bystander_admission_before,
+            "the bystander's world admission and wrong-password record are untouched"
+        );
+        assert_eq!(
+            w.admission.rows().len() + w.admission_attempt.rows().len(),
+            2,
+            "only the bystander's two access rows remain"
+        );
 
         assert_eq!(
             bystander_now(&w),
@@ -10053,11 +10146,12 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            65,
+            68,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
              plus last_position plus player_handle plus battle_summary_reaper_schedule plus \
-             leaderboard_top plus module_info"
+             leaderboard_top plus module_info plus lpw-9's world_access, world_admission and \
+             world_admission_attempt"
         );
         for table in [
             "battle_tactical",

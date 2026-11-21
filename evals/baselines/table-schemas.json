@@ -1854,5 +1854,61 @@
     "unique": [],
     "indexes": [],
     "scheduled": null
+  },
+  "world_access": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u32",
+      "rule": "WorldAccessRule",
+      "password_salt": "Vec<u8>",
+      "password_hash": "Vec<u8>"
+    },
+    "order": [
+      "id",
+      "rule",
+      "password_salt",
+      "password_hash"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
+  },
+  "world_admission": {
+    "pk": "identity",
+    "visibility": "private",
+    "columns": {
+      "identity": "Identity",
+      "admitted_at_ms": "i64"
+    },
+    "order": [
+      "identity",
+      "admitted_at_ms"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
+  },
+  "world_admission_attempt": {
+    "pk": "identity",
+    "visibility": "private",
+    "columns": {
+      "identity": "Identity",
+      "wrong_at_ms": "Vec<i64>",
+      "last_wrong_at_ms": "i64"
+    },
+    "order": [
+      "identity",
+      "wrong_at_ms",
+      "last_wrong_at_ms"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "last_wrong_at_ms"
+    ],
+    "scheduled": null
   }
 }

@@ -160,6 +160,7 @@ writes:
 | `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
+| `access` | `set_world_access`, `admit` (both owner-only): the world's access rule, the admission list and the door; `require_admitted` opens every non-owner-only client reducer |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
 | `observability` | scheduled `mr_heartbeat` |
 | `playtest` | scheduled `playtest_reaper` |
@@ -186,7 +187,9 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
 - `sync_content` does the same reseed for the owner on later publishes, and brings the
   `module_info` row in line with the published module whether or not the content
   changed. It refuses other callers. `just publish` calls it after the publish.
-- `on_connect` records the connection in the private `player_session` table and, for
+- `on_connect` first refuses an identity the world's access rule does not admit
+  (`access::require_admitted_at_connect`), then records the connection in the private
+  `player_session` table and, for
   a JWT from an allowed issuer, creates or updates the caller's `account` row.
   Connections without an account are accepted.
 - `on_disconnect` deletes that connection's session row. If the identity has no
@@ -323,7 +326,7 @@ part of the schema:
 | Private, owner-readable | `monster_pub`, `inventory`, `player_quest`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_player_quest`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
 | Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
-| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, all schedule tables | none |
+| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, `world_access`, `world_admission`, `world_admission_attempt`, all schedule tables | none |
 
 A view takes only its context and filters on `ctx.sender()` through an index. That
 body is the whole security boundary.

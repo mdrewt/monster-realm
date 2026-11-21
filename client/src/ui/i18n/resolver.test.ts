@@ -103,6 +103,9 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
         'This server runs a newer Monster Realm. Update the game to join.',
       'chrome.status.serverOlder':
         'This server runs an older Monster Realm. Its host must update it.',
+      // lpw-9 (named intentional change, lpw-9.6): the once-per-server friends-server host notice.
+      'chrome.status.privateHostNotice':
+        "This server's host can read and change your data in this world.",
       'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
       // ts-6b-13 (named intentional change): 'chrome.status.healUnavailable' leaves with the
       // heal-unavailable kind (healParty always carries its location).

@@ -919,6 +919,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // wizard (no success toast: the editor is the feedback); main.ts gains `notice.request.trades`
     // (the banner line when several trade requests collapse into one) and
     // `tradeSession.notice.closed` (the one "Trade closed." toast per batch).
+    // lpw-9 (named intentional change, lpw-9.6): main.ts gains 1 literal key,
+    // `chrome.status.privateHostNotice` (one literal `i18nT` call in `onReady`, the first join of a
+    // private target whose host notice is still due).
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
@@ -929,6 +932,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.partyFull',
       // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' leaves
       // main.ts with `reportError('privacy-busy', …)` (Profile is one dialog).
+      'chrome.status.privateHostNotice', // lpw-9: a friends server's once-per-server host notice
       'chrome.status.serverNewer', // the protocol mismatch line, the game must update
       'chrome.status.serverOlder', // the protocol mismatch line, the server must update
       'chrome.status.zoneEntered', // qf-15: the destination zone's name after a real zone change

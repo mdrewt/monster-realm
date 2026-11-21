@@ -956,7 +956,7 @@ fn read_side(
 
 /// Open a blank trade session with `partner`, face to face.
 ///
-/// In order: the caller is joined; the caller is not deletion-gated; `partner`
+/// In order: the caller is admitted; the caller is joined; the caller is not deletion-gated; `partner`
 /// is joined; both characters stand within interact range (one refusal for
 /// another zone, too far and a missing character); the session-open rule
 /// (not oneself, no session with this player yet, fewer than
@@ -964,6 +964,7 @@ fn read_side(
 /// account, wallet, inventory, monsters or sessions is read.
 #[spacetimedb::reducer]
 pub fn open_trade_session(ctx: &ReducerContext, partner: Identity) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "open_trade_session")?;
     let me = ctx.sender();
     if ctx.db.player().identity().find(me).is_none() {
         return reject("open_trade_session", me, ERR_NOT_JOINED);
@@ -1004,7 +1005,7 @@ pub fn open_trade_session(ctx: &ReducerContext, partner: Identity) -> Result<(),
 /// Replace the caller's own side of a session. The three asset arguments are
 /// always the caller's: no argument names the other side's assets.
 ///
-/// In order: the caller is not deletion-gated; the request is within the
+/// In order: the caller is admitted; the caller is not deletion-gated; the request is within the
 /// per-side size caps; the session exists and the caller is party to it; the
 /// caller's side is not confirmed; the offer is eligible on live rows. An
 /// accepted edit rebuilds the caller's cards and review snapshots, advances
@@ -1017,6 +1018,7 @@ pub fn set_trade_offer(
     items: Vec<TradeItem>,
     currency: u64,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "set_trade_offer")?;
     crate::guards::require_not_deleting(ctx, "set_trade_offer")?;
     let me = ctx.sender();
     if let Err(e) = check_offer_size(monster_ids.len(), items.len()) {
@@ -1068,7 +1070,7 @@ pub fn set_trade_offer(
 /// Confirm the caller's side at the revision they reviewed; the confirm that
 /// completes the pair executes the swap in this call.
 ///
-/// In order:
+/// In order, once the caller is admitted:
 /// 1. the session exists and the caller is party to it;
 /// 2. a deletion-gated caller may confirm only a session opened before their
 ///    deletion request;
@@ -1089,6 +1091,7 @@ pub fn confirm_trade_session(
     session_id: u64,
     revision: u64,
 ) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "confirm_trade_session")?;
     let me = ctx.sender();
     let (session, side) = find_own_session(ctx, "confirm_trade_session", session_id)?;
     crate::guards::require_commitment_predates_deletion(
@@ -1326,6 +1329,7 @@ fn execute_swap(
 /// is never deletion-gated and reads nothing of the other side.
 #[spacetimedb::reducer]
 pub fn cancel_trade_session(ctx: &ReducerContext, session_id: u64) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "cancel_trade_session")?;
     let me = ctx.sender();
     let (session, _) = find_own_session(ctx, "cancel_trade_session", session_id)?;
     delete_session(ctx, session.session_id);

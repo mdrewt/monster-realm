@@ -46,7 +46,8 @@ pub(crate) const MAX_EVOLUTION_CHAIN_STEPS: u32 = 7;
 ///    unambiguous next edge on its surviving level/Trust/Quality-Time)
 #[spacetimedb::reducer]
 pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-    // Deletion gate: the FIRST statement, before every read and write.
+    crate::access::require_admitted(ctx, "evolve")?;
+    // Deletion gate: straight after the admission check, before every other read and every write.
     crate::guards::require_not_deleting(ctx, "evolve")?;
     let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
@@ -338,6 +339,7 @@ pub(crate) fn ack_prefix(entries: &mut Vec<EvolutionRevealRow>, count: u32) -> R
 /// player's banner undismissable.
 #[spacetimedb::reducer]
 pub fn ack_evolution_notices(ctx: &ReducerContext, count: u32) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "ack_evolution_notices")?;
     let Some(mut row) = ctx
         .db
         .pending_evolution_notice()

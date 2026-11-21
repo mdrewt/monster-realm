@@ -648,6 +648,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // The two protocol mismatch lines (the spec's English, character for character).
   'chrome.status.serverNewer': 'This server runs a newer Monster Realm. Update the game to join.',
   'chrome.status.serverOlder': 'This server runs an older Monster Realm. Its host must update it.',
+  // lpw-9 (named intentional change, lpw-9.6): +1 plain key (`chrome.status.privateHostNotice`),
+  // the once-per-server line a friends server shows on the first join (549 -> 550).
+  'chrome.status.privateHostNotice':
+    "This server's host can read and change your data in this world.",
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
   // bt-17 (named intentional change, BT17.1): the four `battle.*` keys the tactical panels still
@@ -2428,7 +2432,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 549 keys').toHaveLength(549);
+    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 550 keys').toHaveLength(550);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3645,9 +3650,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 549 keys').toBe(549);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 550 keys').toBe(550);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(549);
+    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(550);
   });
 });
 
@@ -3776,9 +3782,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 549 keys').toBe(549);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 550 keys').toBe(550);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(549);
+    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(550);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4101,10 +4108,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 549 keys').toBe(549);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 550 keys').toBe(550);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(549);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(549);
+    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(550);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(550);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4796,8 +4804,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    expect(Object.keys(en), 'the English roster is 549 keys').toHaveLength(549);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(549);
+    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
+    expect(Object.keys(en), 'the English roster is 550 keys').toHaveLength(550);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(550);
   });
 });
 
@@ -4923,8 +4932,9 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
     // claim.prompt.noProvider among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    expect(Object.keys(en), 'the English roster is 549 keys').toHaveLength(549);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(549);
+    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
+    expect(Object.keys(en), 'the English roster is 550 keys').toHaveLength(550);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(550);
   });
 });
 
@@ -5112,5 +5122,35 @@ describe('lpw-4: the protocol mismatch lines in both catalogs', () => {
     expect(plain(fr, 'chrome.status.serverOlder')).toBe(older);
     expect(plain(fr, 'chrome.status.serverNewer')).not.toBe(plain(en, 'chrome.status.serverNewer'));
     expect(plain(fr, 'chrome.status.serverOlder')).not.toBe(plain(en, 'chrome.status.serverOlder'));
+  });
+});
+
+// =============================================================================
+// The line a friends server shows once, on the first join: its host can read and change the
+// player's data in that world. The English bytes are the spec's; the French accents and the
+// apostrophe are built by code point, so the expected text holds no pasted glyph.
+// =============================================================================
+
+describe('the private host notice in both catalogs', () => {
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  const O_CIRCUMFLEX = String.fromCharCode(0x00f4);
+  const KEY = 'chrome.status.privateHostNotice';
+  const plain = (catalog: Record<string, unknown>, key: string): unknown =>
+    Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+
+  it('reads chrome.status.privateHostNotice as the exact English line that the host can read and change the player`s data [lpw-9.6]', () => {
+    // WRONG IMPL KILLED: the key missing from the English catalog; a parameterised entry; a
+    // reworded line (one that drops "change", or names the browser instead of the world).
+    expect(plain(en, KEY)).toBe("This server's host can read and change your data in this world.");
+    expect(EXPECTED_KEYS.includes(KEY), 'and in the roster').toBe(true);
+  });
+
+  it('reads chrome.status.privateHostNotice from the French catalog as its exact French text, a translation of the English line [lpw-9.6]', () => {
+    // WRONG IMPL KILLED: the key added to en only (t() throws under fr); the fr entry left as the
+    // English copy; a straight apostrophe in place of U+2019; an accent dropped.
+    const expected = `L${RIGHT_QUOTE}h${O_CIRCUMFLEX}te de ce serveur peut lire et modifier vos donn${E_ACUTE}es dans ce monde.`;
+    expect(plain(fr, KEY)).toBe(expected);
+    expect(plain(fr, KEY)).not.toBe(plain(en, KEY));
   });
 });

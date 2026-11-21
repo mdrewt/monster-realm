@@ -1484,6 +1484,36 @@ export const WeatherEffect = __t.enum("WeatherEffect", {
 });
 export type WeatherEffect = __Infer<typeof WeatherEffect>;
 
+export const WorldAccess = __t.object("WorldAccess", {
+  id: __t.u32(),
+  get rule() {
+    return WorldAccessRule;
+  },
+  passwordSalt: __t.byteArray(),
+  passwordHash: __t.byteArray(),
+});
+export type WorldAccess = __Infer<typeof WorldAccess>;
+
+// The tagged union or sum type for the algebraic type `WorldAccessRule`.
+export const WorldAccessRule = __t.enum("WorldAccessRule", {
+  Open: __t.unit(),
+  Password: __t.unit(),
+});
+export type WorldAccessRule = __Infer<typeof WorldAccessRule>;
+
+export const WorldAdmission = __t.object("WorldAdmission", {
+  identity: __t.identity(),
+  admittedAtMs: __t.i64(),
+});
+export type WorldAdmission = __Infer<typeof WorldAdmission>;
+
+export const WorldAdmissionAttempt = __t.object("WorldAdmissionAttempt", {
+  identity: __t.identity(),
+  wrongAtMs: __t.array(__t.i64()),
+  lastWrongAtMs: __t.i64(),
+});
+export type WorldAdmissionAttempt = __Infer<typeof WorldAdmissionAttempt>;
+
 export const ZoneDefRow = __t.object("ZoneDefRow", {
   zoneId: __t.u32(),
   name: __t.string(),

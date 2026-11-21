@@ -512,6 +512,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // protocol numbers. The client has left the server and stays out until the page is reloaded.
   'chrome.status.serverOlder':
     'Ce serveur utilise une version plus ancienne de Monster Realm. Son hôte doit le mettre à jour.',
+  // @desc: Status-strip notice shown once per server, the first time a player joins a privately
+  // hosted server: whoever runs that server can read and change the player's data there.
+  'chrome.status.privateHostNotice':
+    'L’hôte de ce serveur peut lire et modifier vos données dans ce monde.',
   // @desc: Status-strip error shown when the browser blocked the bug-report bundle download; the
   // bundle is still printed to the developer console.
   // main.ts:2442

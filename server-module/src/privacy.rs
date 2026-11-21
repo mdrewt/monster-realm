@@ -1809,6 +1809,7 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 /// account holders.
 #[spacetimedb::reducer]
 pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
+    crate::access::require_admitted(ctx, "request_data_export")?;
     let me = ctx.sender();
     let is_subject = ctx.db.account().identity().find(me).is_some()
         || ctx.db.player().identity().find(me).is_some();
