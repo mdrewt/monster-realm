@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -10,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { request } from 'node:http';
+import { type IncomingHttpHeaders, request } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -475,5 +476,186 @@ describe('just account-dev', () => {
 
     const second = await runRecipe(dataDir);
     expect(second.keys).toEqual(first.keys);
+  });
+});
+
+interface FlowReply {
+  readonly status: number;
+  readonly headers: IncomingHttpHeaders;
+  readonly body: string;
+}
+
+function flowSend(
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<FlowReply> {
+  return new Promise((resolveReply, reject) => {
+    const all = { ...headers };
+    if (body !== undefined) all['content-length'] = String(Buffer.byteLength(body));
+    const req = request(
+      { host: '127.0.0.1', port, path, method, headers: all, agent: false },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          resolveReply({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+interface FlowCookie {
+  readonly name: string;
+  readonly value: string;
+  readonly path: string;
+}
+
+/** A cookie jar that sends each cookie only to a path its `Path` covers. */
+function flowBrowser(port: number) {
+  let cookies: FlowCookie[] = [];
+  const covers = (cookiePath: string, path: string): boolean =>
+    cookiePath === '/' ||
+    path === cookiePath ||
+    path.startsWith(cookiePath.endsWith('/') ? cookiePath : `${cookiePath}/`);
+  return async (
+    method: string,
+    target: string,
+    extra: Record<string, string> = {},
+    body?: string,
+  ): Promise<FlowReply> => {
+    const path = target.split('?')[0] ?? target;
+    const cookie = cookies
+      .filter((c) => covers(c.path, path))
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ');
+    const headers: Record<string, string> = { host: LOCAL_HOST_HEADER, ...extra };
+    if (cookie !== '') headers.cookie = cookie;
+    const reply = await flowSend(port, method, target, headers, body);
+    for (const line of reply.headers['set-cookie'] ?? []) {
+      const [pair = '', ...attributes] = line.split(';').map((part) => part.trim());
+      const eq = pair.indexOf('=');
+      if (eq <= 0) continue;
+      const name = pair.slice(0, eq);
+      const value = pair.slice(eq + 1);
+      const pathAttribute = attributes.find((a) => a.toLowerCase().startsWith('path='));
+      const cookiePath = pathAttribute === undefined ? '/' : pathAttribute.slice('path='.length);
+      const expired = attributes.some(
+        (a) => a.toLowerCase().startsWith('expires=') && Date.parse(a.slice(8)) <= Date.now(),
+      );
+      cookies = cookies.filter((c) => !(c.name === name && c.path === cookiePath));
+      if (!expired && value !== '') cookies.push({ name, value, path: cookiePath });
+    }
+    return reply;
+  };
+}
+
+describe('a local-dev server with a client and an account made by the admin command', () => {
+  test('serves the sign-in form and completes a sign-in to an ID token for that account', async () => {
+    const { runAdmin } = await import('./admin/cli.ts');
+    const dataDir = join(root, 'data');
+    const adminEnv: Env = { MR_ACCOUNT_PROFILE: 'local-dev', MR_ACCOUNT_DATA_DIR: dataDir };
+    const out: string[] = [];
+    const err: string[] = [];
+    const io = {
+      out: (line: string) => {
+        out.push(line);
+      },
+      err: (line: string) => {
+        err.push(line);
+      },
+    };
+    const clientId = 'monster-realm';
+    const redirectUri = 'http://localhost:5290/';
+    expect(await runAdmin(['set-client', clientId, redirectUri], adminEnv, io)).toBe(0);
+    expect(await runAdmin(['create-account', 'Server.Test@Example.com'], adminEnv, io)).toBe(0);
+    expect(err).toEqual([]);
+    const printed = new Map(
+      out.map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+    );
+    const password = printed.get('password');
+    const sub = printed.get('sub');
+    expect(password).toEqual(expect.any(String));
+    expect(sub).toEqual(expect.any(String));
+    expect(printed.get('email')).toBe('server.test@example.com');
+
+    const server = await start(localEnv(dataDir));
+    const port = portOf(server.url);
+    const browse = flowBrowser(port);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const query = new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      scope: 'openid',
+      state: 'server-test',
+      code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+      code_challenge_method: 'S256',
+    });
+    const started = await browse('GET', `/auth?${query}`);
+    expect(started.status, started.body).toBe(303);
+    const interaction = new URL(String(started.headers.location), 'http://localhost:4455');
+    expect(interaction.pathname).toMatch(/^\/interaction\/[^/]+$/);
+
+    const form = await browse('GET', interaction.pathname);
+    expect(form.status).toBe(200);
+    expect(String(form.headers['content-type'])).toMatch(/^text\/html/);
+    expect(form.body).toContain(`action="${interaction.pathname}"`);
+    expect(form.body).toContain('name="email"');
+    expect(form.body).toContain('name="password"');
+
+    const posted = await browse(
+      'POST',
+      interaction.pathname,
+      { origin: 'http://localhost:4455', 'content-type': 'application/x-www-form-urlencoded' },
+      new URLSearchParams({ email: 'server.test@example.com', password: password! }).toString(),
+    );
+    expect(posted.status, posted.body).toBe(303);
+    const resume = new URL(String(posted.headers.location));
+    const back = await browse('GET', resume.pathname);
+    expect(back.status, back.body).toBe(303);
+    const redirect = new URL(String(back.headers.location));
+    expect(`${redirect.origin}${redirect.pathname}`).toBe(redirectUri);
+    expect(redirect.searchParams.get('state')).toBe('server-test');
+    const code = redirect.searchParams.get('code');
+    expect(code).toEqual(expect.any(String));
+
+    const exchanged = await flowSend(
+      port,
+      'POST',
+      '/token',
+      { host: LOCAL_HOST_HEADER, 'content-type': 'application/x-www-form-urlencoded' },
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: code!,
+        code_verifier: verifier,
+        client_id: clientId,
+        redirect_uri: redirectUri,
+      }).toString(),
+    );
+    expect(exchanged.status, exchanged.body).toBe(200);
+    const tokens = JSON.parse(exchanged.body) as Record<string, unknown>;
+    expect(tokens.refresh_token).toEqual(expect.any(String));
+    const payload = JSON.parse(
+      Buffer.from(String(tokens.id_token).split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(payload.iss).toBe('http://localhost:4455');
+    expect(payload.aud).toBe(clientId);
+    expect(payload.sub).toBe(sub);
+    expect(payload.mr_ent).toEqual(['base-game']);
   });
 });
