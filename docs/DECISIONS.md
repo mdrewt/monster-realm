@@ -2333,8 +2333,9 @@ account and does not keep the world an attestation was addressed to past the req
 the attestation is fetched behind one source interface, beside the sign-in seam
 (`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-3). Operator ruling,
 <https://github.com/mdrewt/monster-realm/issues/821>; the design and its open conditions (the
-verifier spike, the official server's refusal, the relay between private worlds) are
-`docs/local-play.md` §3 and the harness spec `M-local-play.spec.md` (lpw-7, lpw-8, lpw-15). Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
+official server's refusal, the relay between private worlds) are `docs/local-play.md` §3 and the
+harness spec `M-local-play.spec.md` (lpw-8, lpw-15); the verifier is "The attestation is signed with
+Ed25519 and checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
 
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
 itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
@@ -2356,6 +2357,36 @@ our service, at the cost of a device key to store safely in every build, a secon
 the bind reducer, and binds to new worlds that outlive an account's suspension until the credential
 expires. It stays the upgrade path, as a second attestation source, if either of those gains becomes
 a requirement.
+
+## The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the module
+
+**Decision.** A world attestation (see "A private world verifies an account by a per-world
+attestation our account service signs") is signed with an Ed25519 key, and the module checks the
+signature with the `ed25519-dalek` crate, built with no default features, through `verify_strict`.
+The bind refuses a token longer than a fixed cap of a few kibibytes before it decodes anything,
+takes the algorithm and the key from the module's own `kid`-keyed list and never from the token's
+header, and keys replay on the claims (`nonce`, `jti`), never on the token's text. The measurement
+and the judge's scores are `docs/local-play.md` §3, "What a signature check costs inside a reducer".
+
+**Why.** An ES256 verifier (`p256`) and an Ed25519 one both build for `wasm32-unknown-unknown` with
+no clock and no source of randomness, and both cost far less than the 5 ms one check may take: 593
+µs and 108 µs, the median of 101 checks inside one reducer on a 2.11.0 host. Ed25519 costs a fifth
+as much, the margin a slow host and a flood of failing tokens use up; it adds 10 crates to the
+module against 27; `verify_strict` refuses non-canonical signatures and small-order keys, where
+ECDSA accepts two forms of every signature and depends on a signer that never repeats a nonce; and
+an Ed25519 key cannot be loaded as a P-256 login key or the reverse, so attestation and login keys
+cannot verify each other's tokens by key type as well as by key list. The cap exists because a
+check hashes the whole token: its cost grows with length (past 5 ms between 400 and 700 KiB) and a
+token that fails costs what a valid one costs.
+
+**Rules out.** ES256 for the attestation, though it would keep one algorithm across the account
+service. It becomes the choice if the production host's key service cannot hold an Ed25519 key,
+since signing keys live there (see "The account service is our own small OIDC issuer; Steam is the
+only player sign-in") and that host is not chosen; ES256 fits the budget too. `ed25519-dalek`'s
+plain `verify`, which accepts signatures `verify_strict` refuses. `p256`'s `precomputed-tables`
+feature: through `std` it enables `getrandom`, which does not compile for the module target, and
+through `critical-section` it is no faster. Audience-scoped account tokens from the account issuer,
+the fallback for a verifier that did not fit.
 
 ## Private servers carry their own encryption: a real certificate for a domain, a pinned self-signed one otherwise; plaintext only on loopback
 
