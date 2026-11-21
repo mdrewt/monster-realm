@@ -275,13 +275,16 @@ None is recorded.
 
 ## Runbook
 
-No deployment recipe exists; these are the procedures a deployed instance needs.
+The deployment recipe is `ops/auth/` (the image from `account-service/Dockerfile` behind Caddy),
+and its commands are in [`runbooks/account-service.md`](runbooks/account-service.md). This
+section holds the rules those procedures follow.
 
 ### Start
 
-`just account-dev` for `local-dev`. A `hosted-dev` instance needs `MR_ACCOUNT_DATA_DIR`, a key
-file marked `hosted-dev` and `attestation-keys.json` beside it, marked the same; no command
-writes either.
+`just account-dev` runs `local-dev` from the checkout; `docker compose --profile <profile> up -d`
+in `ops/auth/` runs the image. A `hosted-dev` instance needs `MR_ACCOUNT_DATA_DIR`, a key file
+marked `hosted-dev` and `attestation-keys.json` beside it, marked the same; the service never
+writes either (the runbook makes both in the keys volume).
 
 ### Admin accounts
 
@@ -305,7 +308,8 @@ account: two writing the same account at the same instant can overwrite each oth
 
 The key file is an ordered list, read at start: a key added after the first is published and does
 not sign; moved to the front it signs; taken out of the file it is published by nobody. Each change
-takes effect at the next start. No command edits the file.
+takes effect at the next start. The service and the admin command never edit the file; the
+runbook's rotation steps do.
 
 `attestation-keys.json` is an ordered list too, and its first key signs. A world accepts only
 the keys its module was built with, so a new attestation key is published before it signs: add
@@ -316,8 +320,9 @@ no world should accept what it signed.
 ### Backup and restore
 
 Everything to keep is the key file, `attestation-keys.json` on `hosted-dev`, and
-`account.sqlite`. Copy the database with the service
-stopped, or through SQLite's own backup: a plain copy of a file being written can be torn. The
+`account.sqlite`. Copy the database with the service stopped, or through SQLite's own backup
+(the runbook uses `VACUUM INTO` on the running service): a plain copy of a file being written
+can be torn. The
 database holds the accounts (emails and password hashes), the clients and the refresh-token chains
 (as digests): a restored copy keeps every player signed in.
 

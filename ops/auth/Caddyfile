@@ -1,0 +1,10 @@
+# Caddy in front of the account service (docker-compose.yml here runs it).
+#
+# MR_AUTH_SITE is the profile's issuer, so the site Caddy serves is the issuer's own origin:
+# `http://localhost:4455` serves plain HTTP on port 4455 (local-dev), and an `https://` name
+# gets an ACME certificate on ports 80 and 443 (hosted-dev, production), kept in the /data
+# volume. The proxy passes the client's Host unchanged; the service answers only its issuer's
+# host, removes every Forwarded and X-Forwarded-* header, and takes the scheme from its issuer.
+{$MR_AUTH_SITE} {
+	reverse_proxy account:4455
+}
