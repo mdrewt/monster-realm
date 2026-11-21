@@ -1066,7 +1066,7 @@ export function connect(opts: ConnectionOptions): Connection {
         if (stale()) return; // a superseded build's late failure must not dirty the status line
         // Classify this failure. A credential rejection advances the gate's
         // counter and, at the threshold, makes the NEXT build connect anonymously; anything
-        // else resets it, so an unreachable host never costs the player their identity.
+        // else leaves it as it is, so an unreachable host never costs the player their identity.
         // Reporting rides the EXISTING backoff ladder below — no second retry path.
         auth.onConnectFailed(err);
         // A failed (re)build attempt: surface, climb the backoff ladder, retry.
