@@ -2188,6 +2188,35 @@ client at all). Client logic that assumes a provider, or a provider label derive
 issuer URL (the OIDC flow already refuses an issuer it cannot use). A per-world telemetry opt-in or
 per-world sign-in changes these two gates and their tests, not a side path.
 
+## A single-player or friends world keeps its anonymous reconnect token on the device; a server we operate keeps it per tab
+
+**Decision.** `tokenPersistenceFor(kind)` (`client/src/net/authToken.ts`) is an exhaustive `switch`
+over the target's kind: `local` and `private` keep the anonymous reconnect token on the device (the
+origin's `localStorage`), `official` and `test` keep it per tab (`sessionStorage`); a run-time value
+outside the type is per tab. `createAuthTokenGate` takes that choice and uses exactly one area, never
+the other: a blocked area means an anonymous connect, not a fall back. The key is derived from the
+target's `(uri, db)` in both areas, and the rule that withholds the token after two rejections since
+the last successful connect is the same in both (the token is withheld, never deleted). Only an
+anonymous build's token is saved; the account-kind marker, the guest-claim code and the OIDC flow stay
+in per-tab `sessionStorage` for every kind. `ConnectionOptions.targetKind` is required, `connect()`
+builds its one gate from it, and `main.ts` passes `TARGET_KIND`. `client/src/net/authToken.test.ts`,
+`client/src/net/connection.runtime.test.ts`, `client/src/main.targetKindGate.test.ts` and the browser
+spec `client/e2e/local-identity.spec.ts` hold it.
+
+**Why.** Sign-in is off toward `local` and `private` targets, so the token is the only thing that
+identifies the player there; kept per tab, every launch would start a new character. Two pages may
+share one identity because the server removes presence rows and saves the position only when an
+identity's last connection ends. Toward a server we operate the account is the durable identity, and
+per-tab storage keeps a guest's token from outliving the tab on a shared browser profile.
+
+**Rules out.** `localStorage` for every kind; falling back from one area to the other; saving an
+account token in either area. Accepted costs: a device-kept token is readable by every script in the
+page's origin for as long as it is stored, so whatever serves the page must keep foreign script out
+of that origin, and it stays in `localStorage` if a target's kind later changes; a production
+document that names no kind resolves to `private` (`kindOf` in `client/src/net/connectionConfig.ts`)
+and keeps its token on the device; and because the withhold rule is unchanged, a successful anonymous
+connect after two failed verifications replaces the stored token for good.
+
 ## The e2e job lists the tests that passed only on a rerun; a flake stays in `docs/e2e-flakes.md` until its fix merges
 
 **Decision.** The CI `e2e` job (`scripts/e2e-shard-union.mjs`) judges each shard by its highest
