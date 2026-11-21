@@ -457,8 +457,15 @@ and never echo a value. The Vite plugin `mr-shell-config` (`client/vite.config.t
 `VITE_STDB_URI`/`VITE_STDB_DB` as its inputs: `vite dev` serves `/shell-config.js` with kind
 `test`; `vite build` writes `dist/shell-config.js` only when `VITE_STDB_DB` is set, after
 resolving it as a production client would; `vite preview` has no hook and serves the built
-file. The connection subscribes to the public tables it renders (never the
-drain-only `trade_offer`) and the owner-scoped views in one batch, the base set of 29
+file. Each connection first subscribes `module_info` alone and judges its row 0 against the
+client's own `protocol_version()` (`net/protocolCheck.ts`, pure). A server whose protocol is
+below the client's, that holds no row or that refuses the query is its host's to update; one
+whose `min_client_protocol` is above the client needs a newer game. Either refusal ends the
+connection for the life of the page: nothing else is subscribed, no reducer is called, no
+reconnect follows, and `main.ts` names the side to update on the world hint line until
+reload. An admitted connection is judged again whenever that row changes, and only toward
+refusal. Once admitted, the connection subscribes to the public tables it renders (never the
+drain-only `trade_offer`) and the owner-scoped views in one batch, the base set of 30
 queries. `player` is in it, world-wide. `character` is not: it is the one public table
 written on every step, so the connection holds it as query sets of their own, one for
 the own row (`WHERE entity_id = …`) and one per wanted zone (`WHERE zone_id = …`).
