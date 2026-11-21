@@ -25,7 +25,10 @@ letting the client and the server pin different revisions of it.
 **Decision.** The same server module, rules crate and client are played three ways: a single-player
 world on a server the game starts on the player's machine, a private server a player hosts for
 friends, and the one official server. A way to play is a deployment — where the server runs and who
-may connect — never a build of the rules. A character belongs to one world; nothing moves between
+may connect — never a build of the rules. A deployment's module is built to trust the accounts that
+deployment takes (see "The official build holds no attestation key and a world build trusts no
+login issuer"); the rules, the schema and the client bindings are the same in every build. A
+character belongs to one world; nothing moves between
 worlds. Private worlds run the official rules until modding ships after early access, and the code is
 written so that modding can be added: content stays data behind one loader per registry, rules never
 name a specific content id, and each kind of extension has one seam.
@@ -2361,9 +2364,10 @@ then records the binding; the world needs no network afterwards. The route rate-
 account and does not keep the world an attestation was addressed to past the request. In the client
 the attestation is fetched behind one source interface, beside the sign-in seam
 (`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-3). Operator ruling,
-<https://github.com/mdrewt/monster-realm/issues/821>; the design and its open conditions (the
-official server's refusal, the relay between private worlds) are `docs/local-play.md` §3 and the
-harness spec `M-local-play.spec.md`; the verifier is "The attestation is signed with Ed25519 and
+<https://github.com/mdrewt/monster-realm/issues/821>; the official server's refusal is "The
+official build holds no attestation key and a world build trusts no login issuer", what the
+attestation names is "An attestation names the server as the player's own software authenticated
+it", and the measurements behind both are `docs/local-play.md` §3; the verifier is "The attestation is signed with Ed25519 and
 checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket and needs the attestation anyway, so one mechanism serves both.
 
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
@@ -2416,6 +2420,68 @@ feature (4 percent faster for 11 KB more). Any crate feature that brings `std`'s
 does not always refuse it, so the built module's import list is the check. Audience-scoped account
 tokens, the fallback for a verifier that did not fit.
 
+## An attestation names the server as the player's own software authenticated it
+
+**Decision.** The `aud` of a world attestation is one string. It is `spki:<fingerprint>/<db>` for a
+server the desktop shell pinned, and for the shell's own world, whose fingerprint the shell wrote
+itself; it is `dns:<host>:<port>/<db>` for a domain server the platform's certificate checks
+validated, the shell refusing every certificate error. Any other target has no name, and the client
+asks for no attestation for it. The name is computed by the party that authenticated the server,
+never by the world and never by a page we did not serve: in the shell the main process computes it,
+holds the login token and calls the attestation route, and the page receives only the attestation.
+A world holds its own names in a private table its owner writes, and `bind_world_account` accepts
+an attestation only when its `aud` equals one of them. On a build that enforces ownership a private
+world is bound from the desktop shell; a page that a world's gate serves makes no request to the
+account service. Designed, not built: `docs/local-play.md` §3, "The access and attestation design",
+fork (c); built by the harness spec's lpw-15, acs-3 and lpw-18 and proved by lpw-15.4.
+
+**Why.** A hostile host can have its player's client fetch an attestation addressed to another
+world, carrying that world's nonce, and present it there as its own. An audience and a nonce stop
+that only if the audience is something the host cannot make true of its own server. A host cannot
+present another world's certificate without its private key, whether it relays or proxies, and
+cannot get a browser-trusted certificate for a domain it does not control. A page a world's gate
+serves may be the hostile host's own code: a check it runs proves nothing, and an account's login
+token, which the official server accepts, must never reach it.
+
+**Rules out.** Naming the key that verifies the client's world token (a host that proxies the
+client to the victim world hands it a genuine token under that world's key, and keeps the token);
+naming the server's address or the database's identity (private addresses repeat on every network,
+and a database's identity is its host's to state); a name supplied by the world or by a page a gate
+served; signing in from such a page; a `dns:` name for an address literal or a name with no
+registrable domain; an invite, shell document or address entry that carries a reconnect token (one
+planted for a world would bind the planter's identity to the player's account). Accepted limit: a
+plain browser cannot bind a friend's server, so it cannot join one on a build that enforces
+ownership. A flow on the account service's own origin, returning an attestation that names the
+origin it returns to, would serve a browser at a domain server; it is not built, and the record
+lists the checks it needs.
+
+## The official build holds no attestation key and a world build trusts no login issuer
+
+**Decision.** A release build of the module is one of two. The `official` build trusts the
+production login issuer and holds no attestation key. The `world` build, which the desktop shell
+and the standalone server ship, holds the production attestation keys and trusts no login issuer.
+Both lists are constants of the build. On the `official` build `bind_world_account` and the reducer
+that issues bind nonces return one fixed error before they decode, read or write anything, and
+`entitled(ctx)` never reads a binding; on the `world` build every token is an anonymous guest's.
+The two builds have one schema and one set of client bindings. Designed, not built:
+`docs/local-play.md` §3, fork (b); built by acs-6 and lpw-15, whose lpw-15.3 test runs under the
+`official` build.
+
+**Why.** An attestation is the only account credential a private host ever sees, and the same
+module source runs on every server, so the official server must be unable to take one as a reducer
+argument. A binding is also checked once and kept: accepted there, it would let an account outlive
+a refund or a ban that a login token, reissued within the hour, would catch. The refusal is what
+the compiled module holds. No row, call or publish option reaches it, a fresh or restored database
+is closed, and a binding row that reaches an official database admits nobody. With disjoint lists
+each release build has exactly one way to be entitled.
+
+**Rules out.** A row or flag that marks a database official (its owner controls it, and a fresh
+database starts without it); relying on the world-name check and the attestation route alone; a
+database identity compiled into the module; one release build that holds both lists; an
+`entitled(ctx)` that reads a binding on the official build. Accepted limit: a `world` artefact
+published to the official database would accept bindings, so the official deploy publishes only an
+artefact whose recorded profile is `official`, and writes no world name.
+
 ## Private servers carry their own encryption: a real certificate for a domain, a pinned self-signed one otherwise; plaintext only on loopback
 
 **Decision.** The client opens plaintext `ws:` only to a loopback address: a single-player world,
@@ -2446,13 +2512,49 @@ has no other choice. A home or LAN address changes; keying the reconnect token o
 keeps returning players' characters when it does. TLS adds one round trip when a connection opens
 and microseconds per message, which is negligible for long-lived WebSockets and the 32-connection
 cap. The fingerprint is also a world identity a hostile host cannot forge without that world's
-private key; lpw-8 weighs naming it in the account attestation to close the relay between private
-worlds, as Minecraft's online mode binds its session check to the server's key.
+private key, and the account attestation names it to close the relay between private worlds, as
+Minecraft's online mode binds its session check to the server's key (see "An attestation names the
+server as the player's own software authenticated it", which also says what a plain browser at
+such a server can and cannot do once ownership is enforced).
 
 **Rules out.** Plaintext `ws:` to any non-loopback address, LAN included, with or without a
 warning; trusting a self-signed certificate without the invite's fingerprint in the shell;
 regenerating a world's certificate on restart or upgrade (every friend's pin would break); a relay
 or tunnel service we operate to carry friends' traffic; requiring every host to own a domain.
+
+## A world that is not open refuses an unadmitted identity at connect and in every reducer; the owner relays the door
+
+**Decision.** While a world's access rule is not `Open`, the connect reducer refuses, as its first
+statement, an identity that is neither the world's owner nor in its admission table, and every
+reducer a player can call makes the same check. When the rule leaves `Open`, the reducer that sets
+it admits every identity then connected. Admission is granted only by owner-only reducers that take
+the joiner's identity: the owner's admit and `admit(who, password)`. On a shipped world the host
+gate relays them from one door endpoint of its own: it creates the joiner's identity, limits
+attempts by source address, returns a token only for an admitted identity, and closes the sockets
+of an identity the owner removes. The module declares no HTTP handler and no row filter. Designed,
+not built: `docs/local-play.md` §3, "The access and attestation design", fork (a), with the
+measurements; built by the harness spec's lpw-9 (the module) and lpw-14 (the gate).
+
+**Why.** Measured at SpacetimeDB 2.11.0: every route that reads a row or calls a reducer (the
+WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and its refusal is
+complete, with nothing needed per table, view or reducer. It runs once, though: a connection
+already open keeps calling and reading after its admission is removed, and a module cannot close a
+connection. Hence the check in every reducer and the admission of open connections when the rule
+changes. An unadmitted identity can call nothing, its own admission included, so the owner has to
+relay the door. An identity costs nothing to obtain, so a count of wrong attempts against one
+bounds nothing; the gate is the one place a source address is visible.
+
+**Rules out.** A door reducer the joiner's own connection calls; row filters
+(`client_visibility_filter`): the one shape that works for subscriptions at 2.11.0 needs a public
+admission table with no filter of its own, the feature is `unstable`, and it puts the sender in
+every subscription query; moving the public tables behind per-sender views (see "World rows are
+subscribed by zone"); a count of wrong attempts across identities in the module (anyone could lock
+every new joiner out); an HTTP handler in the module (the host serves handlers without the connect
+reducer); treating a refusal at connect as closing what is already open. Accepted limits: on a host
+with no gate a removed identity keeps reading what it subscribed to until it disconnects, and a
+joiner is admitted there only by the owner's own call. This narrows "Accounts, guest identity and
+the claim flow": that the connect reducer never refuses a connection with no account holds for a
+world whose rule is `Open`, which the official server's always is.
 
 ## Every player must own the game on Steam, for now
 
@@ -2466,7 +2568,7 @@ claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence
 themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
 removes entitlement at the next issuance (an hour at most on the official server). Test and dev
 builds of the module do not enforce it, so the e2e suite and local development still join
-anonymously; the build input that switches it on is designed by the harness spec's lpw-8 (e) and built by acs-6 and lpw-15. Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
+anonymously; the build input is the module's cargo features (see "Ownership is enforced unless a dev feature switches it off"), built by acs-6 and lpw-15. Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
 players, must own the game in order to play").
 
 **Why.** The operator's ruling. The claim is checked by the module, not implied by the issuer, so
@@ -2480,6 +2582,38 @@ A sign-in method that cannot prove a Steam licence (Google, Discord, email) for 
 Family Sharing borrower as an owner (one policy function in the account service changes it). Known
 limits, accepted: a host can patch the module on its own server to switch the rule off, and a
 player refunded after binding a world keeps playing there until its host removes them.
+
+## Ownership is enforced unless a dev feature switches it off
+
+**Decision.** The build input is the cargo features of `monster-realm-module`. A build enforces
+ownership unless it names `open_join`. `official` and `world` select production trust (see "The
+official build holds no attestation key and a world build trusts no login issuer"); `dev_issuers`
+adds the dev login issuers and dev attestation keys and still enforces; `open_join` implies
+`dev_issuers`, and `dev_reducers` implies `open_join`. The constants are computed in code from the
+features and a release feature wins: no feature set yields production trust with enforcement off,
+`official` with `world` trusts nothing, and a release feature with `dev_reducers` does not compile.
+The default build enforces and trusts nothing, so nobody can join it. One recipe makes a module to
+ship, `just release-module <official|world>`: it reads the build's profile back from the artefact
+(a section built from the same constants), refuses a mismatch or a dev reducer, and records the
+artefact's SHA-256, by which the shell, the standalone server and the official deploy take it. The
+ownership features add or remove no table, reducer, view or type. Designed, not built:
+`docs/local-play.md` §3, fork (e), with the table of every feature set and the tests for both
+sides of the switch; built by acs-6 and lpw-15.
+
+**Why.** With enforcement as the default there is no input whose omission ships an open module.
+`spacetime publish --module-path` and `spacetime generate` build with no features and take none,
+and what they build admits nobody. The only way to an open module is to name a dev feature, which
+no recipe that ships does. It is the rule dev behaviour already follows (see "Dev-only reducers
+never ship"): the dev thing is the opt-in.
+
+**Rules out.** A feature that switches enforcement on (the build nobody configured would admit
+anyone and trust the dev keys); an environment variable or a row as the switch; conditional
+compilation of the constants (a branch no build compiles is a branch nothing checks); making a
+module to ship any other way than the recipe; telling builds apart by `spacetime describe --json`,
+which reads the same for every one. Accepted costs: every recipe that publishes for anonymous play
+names `open_join` (`justfile`, `scripts/smoke-republish.sh`, `client/e2e/global-setup.ts`, the
+nightly load smoke), and `spacetime publish --module-path` alone no longer yields a development
+database anyone can join.
 
 ## The account service is our own small OIDC issuer; Steam is the only player sign-in
 

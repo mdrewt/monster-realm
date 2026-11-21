@@ -6,9 +6,14 @@ shell, the sign-in design's questions, what one host costs, what it sends off th
 budgets work on local play holds. It was read and measured on 2026-11-14 against SpacetimeDB 2.11.0
 (the version this repository pins) and the module and client built from commit `0e7a089d`; the
 in-module signature check of section 3 was measured on 2026-11-21 with the module at commit
-`5ceb483e`. The decisions drawn from it are in [`DECISIONS.md`](DECISIONS.md): "The desktop shell
-is Electron", "Local-play budgets" and "The attestation is signed with Ed25519 and checked by
-`ed25519-dalek` compiled into the module".
+`5ceb483e`, and the access measurements of section 3 the same day with the module at commit
+`d6d80547`. The decisions drawn from it are in [`DECISIONS.md`](DECISIONS.md): "The desktop shell
+is Electron", "Local-play budgets", "The attestation is signed with Ed25519 and checked by
+`ed25519-dalek` compiled into the module", and the four access decisions: "A world that is not
+open refuses an unadmitted identity at connect and in every reducer; the owner relays the door",
+"The official build holds no attestation key and a world build trusts no login issuer", "An
+attestation names the server as the player's own software authenticated it" and "Ownership is
+enforced unless a dev feature switches it off".
 
 The local-play plan's milestones are named here by their plan labels: LP2 (desktop shell with the
 bundled server), LP3 (worlds), LP4 (sign in once, then offline), LP5 (open to friends), LP6
@@ -204,18 +209,15 @@ issuer's keys (below).
 
 ### Whether an account issuer can mint an attestation as a second token type
 
-**Open.** No account issuer is deployed (`ALLOWED_ISSUERS` in `server-module/src/accounts.rs` is a
-placeholder), so this is a requirement on the issuer that gets chosen, not a fact about
-SpacetimeDB. SpacetimeDB puts nothing in the way: a host verifies a token from any issuer whose
-discovery document it can fetch, and a module reads every claim. The attestation the design needs
-is a signed token with its own issuer name and signing key (neither trusted by the official
-server), an audience naming one world, a nonce the world chose, and a lifetime of minutes; what
-else it must name is the relay question below.
-
-**What would answer it.** Choosing the account issuer, then checking it for a token type with a
-separate key and issuer name: a custom token endpoint or OAuth token exchange (RFC 8693). An issuer
-that has none still fits the design behind a small attestation endpoint that takes the account's
-token and signs the attestation itself; that endpoint is then part of the account service.
+**Decided, not built.** The issuer is our own account service, and the attestation is signed by a
+route beside it, with its own issuer name and signing key, neither trusted by the official server
+(DECISIONS.md, "A private world verifies an account by a per-world attestation our account service
+signs"). No issuer is deployed (`ALLOWED_ISSUERS` in `server-module/src/accounts.rs` is a
+placeholder) and the route is not built. SpacetimeDB puts nothing in the way: a host verifies a
+token from any issuer whose discovery document it can fetch, and a module reads every claim. The
+attestation is a signed token with an audience naming one world, a nonce the world chose, and a
+lifetime of minutes; what the audience is, is fork (c) of "The access and attestation design"
+below.
 
 ### How a world server verifies an attestation
 
@@ -358,10 +360,11 @@ unrelated to the account's (`provision_or_touch_account`). Either way it does no
 account.
 
 The attestation, presented as a reducer argument, is as narrow as what it names, and the same
-module runs on every server, the official one included. So the design needs a rule that does not
-exist in code: the official server refuses attestation binding outright and takes accounts only as
-connection tokens from the account issuer. With that rule nothing a private host holds reaches an
-account on the official server.
+module source runs on every server, the official one included. The rule that keeps it off the
+official server is fork (b) of "The access and attestation design" below: the official build holds
+no attestation key, so it takes accounts only as connection tokens from the account issuer. With
+that rule nothing a private host holds reaches an account on the official server. It is designed,
+not built.
 
 Replay to another private world is a separate question, and the design has to close it before a
 private server sees a real attestation. An audience and a nonce do not close it: a hostile host can
@@ -370,10 +373,10 @@ nonce, and present it there as its own. Naming the player's identity in the atte
 close it either: every standalone host calls itself "localhost", and a hostile operator holds its
 host's signing key and can sign any subject with it, so its player can be given the identity the
 operator holds on the other world. The attestation has to name something a hostile host cannot
-forge, such as the key that verifies the client's own world token, checked by the client before it
-asks. Two parts of that direction are open: a module cannot read its own host's verifying key (a
-reducer cannot call `GET /v1/identity/public-key`), and a hostile host that proxies the other
-world hands the client a genuine token from it. That is LP6's to design and test.
+make true of its own server. Fork (c) below names it: the server as the player's own software
+authenticated it. The key that verifies the client's own world token does not serve: a module
+cannot read its own host's verifying key (a reducer cannot call `GET /v1/identity/public-key`),
+and a hostile host that proxies the other world hands the client a genuine token from it.
 
 **Audience-scoped fallback.** Refused at the WebSocket connection, by one check, and only for a
 token whose audience list holds no official audience. The private host holds a token from the
@@ -384,10 +387,10 @@ the audience is not (`provision_or_touch_account`; the wrong-audience control in
 
 - `audience_allowed` passes a token if any entry of its audience list is listed, so the issuer must
   never mint one token for both a private server and the official audience.
-- The check runs in the connect reducer. Whether a token presented on the host's HTTP routes
-  (`/v1/database/<db>/call/<reducer>`, `/v1/database/<db>/sql`) meets it was not tested. One
-  wrong-audience token sent to those two routes, with the issuer rig `account-e2e` builds, would
-  answer it.
+- The check runs in the connect reducer, and it is the only check: the host does not read `aud`.
+  It does hold on the host's HTTP routes (`/v1/database/<db>/call/<reducer>`,
+  `/v1/database/<db>/sql`): both answered a wrong-audience token with 403 (measured, next
+  subsection).
 - The token carries the account's official identity, so the host learns which official player
   joined.
 
@@ -395,28 +398,470 @@ The account token the client is built to send is this fallback's dangerous case:
 the build-wide client id, which the official server accepts. That is why the local-play plan
 offers no account token to a single-player or friends world.
 
+### What the host's HTTP routes do with a token the connect reducer refuses
+
+**Answer.** They refuse it. At 2.11.0 every route that reads a row or calls a reducer runs the
+module's connect reducer first, and a refusal there ends the request: no reducer runs and no row is
+read. One wrong-audience account token, sent to `/v1/database/<db>/call/<reducer>` and to
+`/v1/database/<db>/sql`, was answered 403 with the module's own reason on both.
+
+| Token | `POST /v1/database/<db>/call/join_game` | `POST /v1/database/<db>/sql` | MCP tools `sql` and `call` (`POST …/mcp`) | WebSocket `…/subscribe` | `GET …/schema` |
+|---|---|---|---|---|---|
+| Account token, wrong audience | 403, body `unrecognized audience` | 403, body `unrecognized audience` | a result marked as an error, text `unrecognized audience` | the upgrade completes, then the socket closes with no message | 200 |
+| Account token, right audience | 200 | 200, with rows | a result | open, identity message | 200 |
+| Token from an issuer the module does not list | 200 | 200, with rows | a result | open, identity message | 200 |
+| The host's own anonymous token | 200 | 200, with rows | a result | open, identity message | 200 |
+
+Measured on 2026-11-21 on a 2.11.0 standalone host with the issuer rig
+`evals/account-e2e.eval.mjs` builds (its stub issuer, its token minting, its two patches to the
+module's issuer and audience lists) and the module at commit `d6d80547`; section 7 has the method
+and the count of sends. The wrong-audience token named the listed issuer, was signed by its key,
+and carried the audience `mr-acct-e2e-wrong-aud`, where the module lists `mr-acct-e2e-client`.
+Afterwards the owner read one `account` row, the right-audience account's, and none for the
+wrong-audience identity.
+
+- *What does not run the connect reducer.* `GET /schema` answers anyone with the module's table
+  and reducer definitions and no row. Module-defined HTTP handlers (`/v1/database/<db>/route/…`)
+  are served outside the host's authentication on purpose; this module defines none.
+- *A refused request still names an identity.* The 403 carries the caller's identity and token in
+  its headers, and a request with no token is given a new identity even when it is refused
+  (measured on the probe module of fork (a) below). An identity costs nothing to obtain.
+- *The unlisted issuer.* The host fetched that issuer's discovery document and keys before the
+  module saw the token (section 5), and the module then treated the caller as an anonymous guest.
+  The module's issuer list is the only thing that decides whose tokens are accounts.
+
+**Rests on.** `crates/client-api/src/routes/database.rs`: `call` and `sql_direct` both end in
+`with_connection`, which calls the connect reducer and maps its refusal to 403
+(`client_connected_error_to_response`); the handler routes are merged outside the authenticated
+router (the comment at line 1798). `crates/client-api/src/routes/mcp.rs` runs the same call for its
+`sql` and `call` tools, and `crates/client-api/src/routes/subscribe.rs` runs it before a WebSocket
+connection is spawned.
+
 ### What identifies a player between launches
 
-Nothing yet. The client keeps the anonymous reconnect token in per-tab session storage
-(`client/src/net/authToken.ts`): it survives a reload, not a closed tab. An app that starts with
-empty session storage joins as a new player, and the character from the last launch is out of
-reach. Measured: three launches against one world, each with a fresh browser context, made three
-players; with the first launch's session-storage entry written back before the page's scripts ran,
-three more launches each resumed the first identity. A single-player world needs the shell to
-carry that token across launches, or the account binding above, before a second launch finds the
-first launch's character.
+The world's own anonymous token, kept on the device. Toward a `local` or `private` target the
+client keeps the reconnect token in the origin's `localStorage`, keyed on the target's `uri` and
+`db`, so a new page in the same browser profile resumes the player; toward an `official` or `test`
+target it keeps the token per tab (`tokenPersistenceFor` in `client/src/net/authToken.ts`;
+DECISIONS.md, "A single-player or friends world keeps its anonymous reconnect token on the device;
+a server we operate keeps it per tab"). Measured on 2026-11-14, with the token then kept per tab for
+every target: three launches against one world, each with a fresh browser context, made three
+players; with the first launch's stored entry written back before the page's scripts ran, three
+more launches each resumed the first identity. Two things a desktop launch still rests on are not
+built: the shell keeping one browser profile across launches, and a world's address staying the
+same from one launch to the next.
+
+### The access and attestation design
+
+Four questions the sections above leave open are decided here: (a) how a connection the host's
+access rule has not admitted is kept from every world row and reducer; (b) how the official server
+refuses attestation binding when the same module source runs everywhere; (c) what the attestation
+names, so that a hostile host cannot relay one world's attestation to another; and (e) how a build
+enforces ownership, and how a connection reaches the admission and binding calls before
+`join_game`. Question (d), plaintext `ws:` to a friends server, is decided in DECISIONS.md ("Private
+servers carry their own encryption…"). None of this is built. Work is named by its id in the
+harness specs `M-local-play.spec.md` (lpw-9: the open or password rule; lpw-11 to lpw-14: the
+desktop shell, its host gate and opening a world to friends; lpw-15: binding, ownership and the
+allowlist; lpw-18: the certificate and the pin) and `M-account-service.spec.md` (acs-3: the
+attestation route; acs-6: trusted issuers by build, and entitlement), and a test by the criterion
+it proves.
+
+| Fork | Chosen | Rejected | Proved by |
+|---|---|---|---|
+| (a) An unadmitted connection | A1: the connect reducer refuses an identity the rule has not admitted, every reducer a player can call makes the same check, connections open when the rule changes are admitted, and the owner relays the door | A2: row filters on every public table. A3: every table private behind a view. A1 at connect only | lpw-9.2 and lpw-9.3 in `server-module/src/access_tests.rs` and `server-module/src/native_host_tests.rs`; the reducer census in `server-module/src/privacy_enforcement_tests.rs` |
+| (b) The official server's refusal | B1: the official build holds no attestation key, and a world build trusts no login issuer | B2: a row or flag in the database. B3: the world-name check and the route alone. B4: a database identity compiled in | lpw-15.3 in `server-module/src/world_binding_tests.rs`, run under the `official` build |
+| (c) What the attestation names | C2: the server as the player's own software authenticated it, `spki:<fingerprint>/<db>` or `dns:<host>:<port>/<db>`, bound from the desktop shell | C1: the key that verifies the client's world token. C3: the server's address or database identity. C2 with a browser flow built now | lpw-15.4 in `server-module/src/world_binding_tests.rs` and `client/src/net/attestation.test.ts` |
+| (e) The build input | E2: a build enforces ownership unless the feature `open_join` is named; `official` and `world` are the two release builds | E1: a feature that switches enforcement on. E3: an environment variable at build time. E4: a row at run time | lpw-15.7 in `server-module/src/world_binding_tests.rs`; acs-6.1 to acs-6.5 in `server-module/src/accounts_tests.rs`, `server-module/src/movement_tests.rs` and `evals/account-e2e.eval.mjs` |
+
+Each fork was scored by a judge from one evidence dossier, 1 (poor) to 5 (excellent) per criterion,
+with the weights (in brackets) fixed before scoring. An alternative that fails its gate is scored
+and cannot be chosen. The dossier was attacked first by a red-team pass, and three of the designs
+recorded here changed with what it found (a connection already open, the handler routes, and the
+features under `--all-features`). The attacker throughout is a hostile host: it runs its own world
+and controls that world's host process, signing key, rows, gate and the page its gate serves; it
+can relay or proxy anything a player's client sends it and can connect to any other world as a
+client. It does not hold another world's TLS private key, cannot get a browser-trusted certificate
+for a domain it does not control, and does not hold the player's account sign-in. The desktop shell
+and the browser are honest; a page a hostile gate serves is not. Two things are accepted elsewhere
+and are outside every fork: a host that patches the module it runs, and a player who lends their
+own account.
+
+#### (a) Keeping an unadmitted connection off every row and reducer
+
+Measured on 2026-11-21 on a 2.11.0 standalone host, with a probe module that is not in this
+repository: a locked world, a private admission table, one public table of three rows, a private
+table behind a view that returns nothing to an unadmitted sender, a door reducer the caller runs
+for itself, and an owner-only admit and remove.
+
+| What was tried | Result |
+|---|---|
+| The connect reducer refuses an identity with no admission row; that identity then calls any reducer, the door included | 403 `not admitted` |
+| The same identity reads a public table, the view and a private table over `/sql` | 403 `not admitted` |
+| The same identity opens a WebSocket and subscribes | the upgrade completes, then the socket closes with no message |
+| A request with no token at all | 403, with a new identity and token in the response headers |
+| The owner admits the identity; it calls, reads and subscribes | all three work |
+| The owner removes the admission while the identity's WebSocket is open | on that socket a reducer call commits, a one-off query returns the rows and a new subscription delivers them; a new call, read or socket is refused |
+| The connect reducer accepts everyone, and a row filter on the public table joins the private admission table | every query of the filtered table fails for every caller but the owner: `no such table`; a query of the view still works |
+| The filter joins a public admission table that has its own filter, `identity = :sender` | over `/sql` an unadmitted caller reads no row and an admitted one all three; every subscription to the filtered table fails, admitted or not: `Subscriptions require indexes on join columns` (both join columns are indexed) |
+| The filter joins a public admission table with no filter of its own | reads and subscriptions both work, and an open subscription gains the rows when the admission row is inserted and loses them when it is deleted; any connection, admitted or not, can read the admission table |
+
+The connect reducer runs once, when a connection opens. A refusal there is complete for an
+identity that is not yet connected, and does nothing to a connection that is already open. A module
+has no call that closes a connection. Row filters (`client_visibility_filter`) sit behind the
+bindings crate's `unstable` feature, whose own source comment says they are not enforced; they are
+enforced at 2.11.0, as the last three rows show.
+
+**The design (A1).**
+
+- *At connect.* While the world's rule is not `Open`, the connect reducer refuses, as its first
+  statement, an identity that is neither the owner (`config.owner_identity`) nor in the admission
+  table. That holds the identity off every row and every reducer on the WebSocket, `call`, `sql`
+  and MCP routes.
+- *In every reducer.* Every reducer a player can call makes the same check before anything else,
+  because a connection opened while its identity was admitted, or while the rule was `Open`, is not
+  checked again by the host. A census holds it: every reducer in
+  `evals/baselines/client-callable-reducers.json` (41 today), and any added later, makes the check
+  or is owner-only. The deletion census that `server-module/src/privacy_enforcement_tests.rs`
+  already runs cannot carry it: 14 of the 41 call neither of its gates.
+- *When the rule changes or an identity is removed.* When the rule leaves `Open`, the reducer that
+  sets it admits every identity that has a connection open at that moment (the `player_session`
+  table), so no unadmitted connection is left open, with or without a gate. A removed identity's
+  reducer calls are refused at once. Its reads end when its socket closes: the host gate records
+  the identity behind each socket it forwards and closes the sockets of an identity the owner
+  removes. On a host with no gate the removed identity keeps reading what it subscribed to until
+  it disconnects, and is refused when it returns.
+- *What the module never declares.* An HTTP handler, which the host serves without the connect
+  reducer and without authentication, or a row filter. The same census refuses both.
+- *The door.* An unadmitted identity can call nothing, so admission is granted by reducers only
+  the owner can call, each taking the joiner's identity as an argument: the owner's admit, and
+  `admit(who, password)`, which checks the salted hash and counts wrong attempts against `who`. On
+  a shipped world the host gate relays them: it serves one door endpoint of its own, which it never
+  forwards; for a joiner with no token it creates an identity on the host's internal port, makes
+  the door call as the owner, and returns the token only when the module admitted the identity. The
+  owner identity the gate relays as never joins the game, so the connect and disconnect that each
+  relayed call brings touch no player's state. On a host with no gate the owner admits from the
+  command line.
+- *Attempts.* An identity costs nothing to obtain, so the count of wrong attempts against one
+  identity does not bound guessing. The gate does that: it limits door attempts by source address,
+  which the module never sees. The module keeps no count across identities, since one would let
+  anyone lock every new joiner out.
+- *The shell's own player.* On a world whose rule is not `Open` a new identity cannot connect to
+  become known, so the shell admits its own player before the rule leaves `Open`: connected, it is
+  admitted by the rule change; otherwise the shell creates that identity on the internal port and
+  admits it.
+
+A world with no access rule is `Open` (an operator default), so a database recreated without its
+rows is open until the rule is written again. The gate therefore listens beyond loopback only
+after it has read back the rule the host chose.
+
+**Rejected.** A2, row filters: the one shape that works needs a public admission table with no
+filter of its own, so who is admitted is delivered to every connection; each of the 18 public
+tables needs a filter and an indexed column to join on; the filter puts the sender in every
+subscription query, on the official server too, where the zone subscriptions rest on the host
+sharing one query among subscribers (DECISIONS.md, "World rows are subscribed by zone"); and the
+feature is `unstable`. A3, every table private behind a view: it holds rows back correctly (the
+probe's view did), and it is what "World rows are subscribed by zone" rules out for `character`, a
+view evaluated on the reducer thread for every subscriber on every write, and it replaces the
+client's whole subscription set. Under both, the door is a reducer anyone who reaches the server
+can call without limit, each wrong attempt one password hash on the one reducer thread. A1 at
+connect only: it fails for any identity connected before it was removed or before the rule
+changed.
+
+| Alternative | Gate: an unadmitted identity gets no row by any route and runs no reducer but an admission step | Complete against every route, measured (3) | Stays complete when a table, view or reducer is added (3) | Cost on the reducer thread and to subscriptions (2) | Rests on stable host behaviour (2) | Fit with lpw-9 as specified (2) | The door (2) | Removal (1) | Unweighted, of 35 | Weighted, of 75 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A1, as recorded here | pass | 4 | 5 | 5 | 4 | 3 | 4 | 3 | 28 | 62 |
+| A1, as put to the judge | pass | 4 | 4 | 5 | 4 | 3 | 4 | 3 | 27 | 59 |
+| A1 at connect only | fail | 2 | 3 | 5 | 4 | 2 | 4 | 1 | 21 | 46 |
+| A2, row filters | fail | 1 | 2 | 2 | 1 | 2 | 2 | 5 | 15 | 28 |
+| A3, views | pass | 3 | 3 | 1 | 5 | 1 | 2 | 5 | 20 | 41 |
+
+The judge added four things to A1 as put to it, and the design above has them: a census of its own
+for the reducer check, the rule change admitting open connections inside the module, the check as
+the connect reducer's first statement, and the census refusing handlers and filters. A1 loses its
+points on fit: lpw-9's criteria read as if the joiner's own connection called the door, and
+admission by password waits for the gate. The result reverses if a route that reads a row is found
+that does not run the connect reducer, at 2.11.0 or at a later host version (the table in "What the
+host's HTTP routes do…" is measured again at every host upgrade), or if a connection already open
+must stop reading at removal on a host with no gate, which only A3 gives.
+
+**Proved by.** lpw-9.2: the connect reducer refuses an unadmitted identity under `Password` and
+accepts the owner, an admitted identity and any identity under `Open`; every reducer in the
+client-callable roster, taken from the schema and not listed by hand, refuses an unadmitted caller
+on a connection that is already open; and the census fails for a reducer without the check, a
+handler or a filter. lpw-9.3: the owner's `admit(who, password)` refuses a wrong password with no
+write to world state, and refuses `who` after five wrong attempts in ten minutes. The tests do not
+assert that an open connection stops reading: it does not. That a refusal at connect delivers no
+row is the measurement above, on a live host; `evals/account-e2e.eval.mjs` repeats its WebSocket
+half on every run (the wrong-audience control).
+
+#### (b) How the official server refuses attestation binding
+
+**The design (B1).** The module's two trust lists are constants of the build (fork (e)): the login
+issuers whose tokens are accounts, and the attestation keys a bind accepts. The `official` build
+holds the production login issuer and no attestation key. The `world` build, which the shell and
+the standalone server ship, holds the production attestation keys and no login issuer. So each
+release build has one way to be entitled: a login token on the official server, a binding in a
+world.
+
+- On the `official` build `bind_world_account`, and the reducer that issues bind nonces, return
+  one fixed error of their own before they decode, read or write anything. An empty key list would
+  fail every signature anyway; the fixed error is what lets a test tell the guard from that
+  failure.
+- On the `official` build `entitled(ctx)` never reads a binding. A binding row that reached an
+  official database, by a wrong publish or a restored copy, admits nobody.
+- On the `world` build no issuer is listed, so every token is an anonymous guest's and no account
+  is provisioned from a login token (the path the unlisted-issuer row above took).
+- The builds differ in these constants and nothing else: the tables, reducers, views and client
+  bindings are the same.
+
+A binding is checked once and kept. If the official server accepted one, an account would outlive a
+refund or a ban there, where a login token is reissued, and re-checked, within the hour.
+
+**Rejected.** B2, a row or flag that marks the database official: a row its owner controls, unset
+on a fresh, restored or republished database. B3, nothing in the module, because by fork (c) no
+attestation names the official server: the refusal then rests on the official world's own name
+rows and on a rule in the account service. B4 (the judge's addition), a database identity compiled
+in: a build constant, but a recreated database has a new identity, and it writes one deployment's
+name into the module.
+
+| Alternative | What the refusal derives from | Can a host set or unset it |
+|---|---|---|
+| B1 | the build of the module: its list of attestation keys is empty | no |
+| B2 | a row or flag in the database | yes: the database's owner writes it |
+| B3 | rows, the world's own names, and a rule in the account service | yes: the database's owner writes the rows |
+| B4 | the build of the module: a database identity compiled in | no |
+
+| Alternative | Gate: derived from a build of the module or a key the official deployment alone holds, never a row or flag | Fails closed when the deployment is fresh or misconfigured (3) | Cannot be changed at run time, by the owner either (3) | One schema and one set of bindings (2) | Fits the lists acs-3 and acs-6 specify (2) | Testable as lpw-15.3 (2) | Fewest new parts (1) | Unweighted, of 30 | Weighted, of 65 |
+|---|---|---|---|---|---|---|---|---|---|
+| B1, no attestation key in the official build | pass | 4 | 5 | 5 | 3 | 5 | 2 | 24 | 55 |
+| B2, a row or flag | fail | 1 | 1 | 5 | 5 | 3 | 4 | 19 | 36 |
+| B3, the name check and the route | fail | 2 | 2 | 5 | 5 | 2 | 4 | 20 | 40 |
+| B4, a compiled-in database identity | pass | 1 | 4 | 5 | 5 | 2 | 4 | 21 | 43 |
+
+B1's one loss on failing closed is a `world` artefact published to the official database: it would
+accept bindings, so the official deploy checks the artefact it publishes (fork (e)) and writes no
+world name (fork (c)), which leaves a wrong artefact nothing to accept. The result reverses if the
+host comes to offer a module a deploy-time value signed by a key only the official deployment
+holds, or if only one release artefact may exist, in which case no alternative passes the gate.
+
+**Proved by.** lpw-15.3, under the `official` build: given this identity's outstanding nonce and an
+attestation that the dev-enforcing build accepts byte for byte, `bind_world_account` returns the
+official build's fixed error and no table changes, the nonce row included; then, with a binding row
+that carries the entitlement put in place for the caller, `join_game` returns the ownership
+refusal and writes no player row. acs-6.5 repeats the join half on the built `official` artefact,
+on a live host.
+
+#### (c) What the attestation names
+
+The relay it must stop: a hostile host H connects to a victim world V as its own identity, takes
+V's nonce for that identity, tells its player's client to bind with that nonce while claiming V's
+name as its own, and presents the attestation the client fetched to V. V sees a valid signature,
+its own name and that identity's outstanding nonce, and binds H's identity to the player's account.
+The nonce is not secret and the design does not rest on it: it ties an attestation to one identity
+and one use.
+
+**The design (C2).** The attestation's `aud` is one string, the name of the server as the player's
+own software authenticated it:
+
+| The target | Its name | What authenticated it |
+|---|---|---|
+| Pinned: the invite and the shell document carry the certificate fingerprint | `spki:<fingerprint>/<db>` | the shell completes the connection only to that key |
+| A domain server the client did not pin | `dns:<host>:<port>/<db>` | the platform's certificate checks for that name; the shell refuses every certificate error and offers no way past one |
+| The shell's own world, on loopback | `spki:<fingerprint>/<db>` | the shell started the host, confirms the process answering is that child, and wrote the fingerprint into the shell document itself |
+| Anything else, such as a `private` target over plaintext loopback | none | nothing: the client asks for no attestation |
+
+- *The spelling.* `<fingerprint>` is the SHA-256 of the world's own certificate key, in the form
+  the invite prints. `<host>` is lower-cased, in its ASCII form, with no trailing dot; the port is
+  always written. One function produces a name, for the shell and for whatever writes a world's
+  names; it is not the function that keys the reconnect token, which never normalizes a `uri`.
+- *Who supplies it.* The party that authenticated the server, never the world and never a page we
+  did not serve. In the desktop shell the main process computes the name from the pin it enforced
+  or the address it dialled, holds the login token, and calls the attestation route; the page
+  calls one function that takes the nonce and returns the attestation, and can neither supply a
+  name nor see a login token.
+- *What the world holds.* Its own names, in a private table only its owner writes, and
+  `bind_world_account` accepts an attestation only when its `aud` equals one of them, byte for
+  byte. The shell and the standalone server write `spki:` for the world's own key; a certificate
+  from a certificate authority, or one the host supplies, is named only as `dns:`, so a renewal
+  that changes its key changes no name. A `dns:` name is written only while the server holds an
+  unexpired certificate for it, and never for an address literal, a single-label name or a name
+  with no registrable domain. A server behind the host's own reverse proxy is told its public name
+  and port by the host.
+- *What the route is given.* The name as an opaque string of bounded length, in the request body.
+  The route does not log it and does not keep it.
+- *A browser.* A page served from an origin the account service has registered for sign-in may
+  sign in and bind; today that is the development origin, and no page we serve in production
+  targets a private world. A page that a world's own gate serves makes no request to the account
+  service and tells the player to bind from the desktop app: it may be the hostile host's own
+  code, and an account's login token, which the official server accepts, must never reach it.
+  Every owner has the desktop build.
+- *Stored tokens.* An invite, a shell document or the address form carries a `uri`, a `db` and a
+  fingerprint and nothing else. A reconnect token planted for a world would let a genuine
+  connection to that world bind the planter's identity to the player's account.
+
+Against the relay: the player's shell pinned H's certificate, so it names H's key, and V compares
+the name with its own and refuses. H cannot present V's certificate without V's private key,
+whether it relays or proxies; an invite that mixes V's fingerprint with H's address opens no
+connection.
+
+**Rejected.** C1, the key that verifies the client's own world token: a world token is a bearer
+token, so a host that proxies the client to the victim world hands it a genuine token under the
+victim's key, the client names that key, and the host in the middle holds the token of the
+identity that was just bound; in a browser the check runs in the page the host served. C3, the
+server's address or the database's identity: private addresses repeat on every network, and a
+database's identity is whatever its host says. C2 with a browser flow built now: a page on the
+account service's own origin that signs in the player and returns an attestation naming the origin
+it returns to. It passes the gate and is not built: it serves only a browser joining a server with
+a domain name, it puts a redirect in front of the route, and the names it needs exist already. If
+it is built it must parse the return address and redirect to the parsed form, require `https:`, no
+user-info and one fixed path, refuse an address literal, a single-label name and a name with no
+registrable domain, put the database inside the name, carry a value the page generated, forbid
+framing, refuse a cookie as a way in, and ask the player each time with the server's name shown.
+
+| Alternative | Gate: a hostile host cannot obtain, by relay or proxy, a binding on another world for an identity it controls | Unforgeable by a hostile host, proxying included (3) | Covers a pinned target, a domain target, the shell's own world and a browser page (3) | What the world must know about itself, and who writes it (2) | Stable across an address change and a certificate renewal (2) | Burden beyond what the specs already hold (2) | What the account service learns (1) | Unweighted, of 30 | Weighted, of 65 |
+|---|---|---|---|---|---|---|---|---|---|
+| C2, bound from the desktop shell | pass | 5 | 3 | 3 | 4 | 3 | 4 | 22 | 48 |
+| C2, with a browser flow built now | pass | 4 | 4 | 3 | 4 | 2 | 3 | 20 | 45 |
+| C1, the world token's key | fail | 2 | 5 | 4 | 5 | 3 | 4 | 23 | 49 |
+| C3, the address or database identity | fail | 1 | 5 | 2 | 1 | 5 | 2 | 16 | 36 |
+
+C1 scores highest and fails the gate. The result reverses if browser players of domain servers
+must be able to join an enforcing build at launch (then the browser flow is built, with the same
+names), or if a relay or proxy through the shell is shown to succeed with the rules above in
+place.
+
+**Proved by.** lpw-15.4: given this identity's outstanding nonce and an attestation, valid in
+every other way, whose `aud` is another world's name, `bind_world_account` refuses with no write
+to the binding or the nonce, and passing that check unconditionally turns the test red
+(`server-module/src/world_binding_tests.rs`); and the name the client asks for is a function of the
+authenticated target alone, which no message from the server changes
+(`client/src/net/attestation.test.ts`). The proof over two real hosts and their certificates, by
+relay, by proxy and with mixed invites, needs the gate and the shell and runs with lpw-14's
+flow.
+
+#### (e) The build input, and the order of calls
+
+**The design (E2).** The input is the set of cargo features of `monster-realm-module`. Enforcement
+is not switched on: a build enforces ownership unless it names `open_join`.
+
+| Feature | What it does |
+|---|---|
+| `official` | a release build: the production login issuer |
+| `world` | a release build: the production attestation keys |
+| `dev_issuers` | the dev login issuers and the dev attestation keys; ownership is still enforced |
+| `open_join` | switches enforcement off; implies `dev_issuers` |
+| `dev_reducers`, `load_test_zones` | as today; `dev_reducers` implies `open_join` |
+
+The constants are computed in code from the features (`cfg!()`, so every branch is compiled and
+linted in every build), and a release feature wins over a dev feature: a build is a release when
+it names `official` or `world`; it enforces when it is a release or does not name `open_join`; it
+trusts the dev issuers and keys when it names `dev_issuers` and is not a release; it trusts the
+production login issuer when it names `official` and not `world`, and holds the production
+attestation keys when it names `world` and not `official`.
+
+| Features named | Enforces ownership | Login issuers trusted | Attestation keys held | What the build is |
+|---|---|---|---|---|
+| none | yes | none | none | the default build: nobody can join it |
+| `dev_issuers` | yes | dev | dev | dev-enforcing |
+| `open_join` | no | dev | dev | test |
+| `dev_reducers` | no | dev | dev | test, with the dev reducers |
+| `load_test_zones` | no | dev | dev | load-test |
+| `official` | yes | production | none | official |
+| `world` | yes | none | production | world |
+| `official`, `world` | yes | none | none | trusts nothing |
+| `official`, `open_join` | yes | production | none | official: the dev feature has no effect |
+| `world`, `dev_issuers` | yes | none | production | world: the dev feature has no effect |
+| `official`, `world`, `dev_issuers`, `open_join` | yes | none | none | trusts nothing |
+
+No row has production trust with enforcement off, and none has production and dev trust together.
+A release feature with `dev_reducers` is a compile error, since the constants cannot remove a
+reducer; the error is skipped under clippy, whose `--all-features` run (`just lint`) names every
+feature at once. The ownership features add or remove no table, reducer, view or type.
+
+**The recipe that produces a shipped module cannot omit it.** There is nothing to omit: leaving
+every feature out gives a module that enforces ownership and admits nobody, and enforcement comes
+off only by naming a dev feature. `spacetime publish --module-path` and `spacetime generate` build
+with no features and cannot be given any, so a module published that way is the default build. One
+recipe makes a module to ship, `just release-module <official|world>`: it refuses any other
+argument; it builds the module alone, with exactly that feature, into a target directory of its
+own (the e2e and CI builds write a dev module to the shared one) and with the compiler-flag
+variables unset; it reads the build's profile back from the artefact, which carries it in a
+section of its own (`mr_build_profile`) built from the same constants, and refuses an artefact
+whose profile is not the argument; it refuses one that exports a dev reducer; and it writes the
+artefact with its SHA-256. The shell, the standalone server and the official deploy embed or
+publish that artefact by its hash. The artefact is the thing checked, because
+`spacetime describe --json` reads the same for every profile.
+
+The first consumers change with it. Every recipe that publishes for anonymous play names
+`open_join`: in `justfile`, `scripts/smoke-republish.sh`, `client/e2e/global-setup.ts` and the load
+smoke in `.github/workflows/nightly.yml`. Ranked play reads the same issuer list
+(`ranked_enforcement_active` in `server-module/src/pvp.rs`), so it changes when a build first lists
+a real issuer.
+
+**Rejected.** E1, a feature that switches enforcement on: the build cargo produces when nobody says
+anything is then the one that admits anyone and trusts the dev keys, and only a test stands
+between it and a package. E3, an environment variable at build time: an unset variable is E1's
+omission, and the input is in no manifest. E4, a row at run time: fork (b)'s B2.
+
+| Alternative | Gate: names a build input, and each side of the switch has a test | A build nobody configured fails closed (3) | Production trust without enforcement cannot be built (3) | Blast radius on existing recipes and tests (2) | Consistent with "Dev-only reducers never ship" (2) | Both sides provable in CI, on the artefact (2) | Simplicity (1) | Unweighted, of 30 | Weighted, of 65 |
+|---|---|---|---|---|---|---|---|---|---|
+| E2, as recorded here | pass | 5 | 5 | 2 | 4 | 5 | 2 | 23 | 54 |
+| E2, as put to the judge | pass | 5 | 5 | 2 | 4 | 4 | 3 | 23 | 53 |
+| E1, a feature switches it on | pass | 1 | 4 | 4 | 2 | 4 | 4 | 19 | 39 |
+| E3, an environment variable | pass | 1 | 2 | 3 | 1 | 3 | 3 | 13 | 26 |
+| E4, a row at run time | fail | 1 | 1 | 2 | 1 | 3 | 3 | 11 | 21 |
+
+The judge added three things to E2 as put to it, and the design above has them: the compile error
+for a release build with dev reducers, the profile carried in the artefact, and the precedence
+computed in code, so that a feature set from outside cargo cannot split a release feature from
+enforcement. The result reverses if the ownership features turn out to change the schema or the
+generated bindings, which is measured when they are built.
+
+**Proved by.** Both sides, for each consumer:
+
+| Side of the switch | acs-6 | lpw-15 |
+|---|---|---|
+| Enforcing | acs-6.1 to acs-6.3 in `server-module/src/accounts_tests.rs` and `server-module/src/movement_tests.rs`, run under `dev_issuers`; acs-6.5 in `evals/account-e2e.eval.mjs`, which builds through `just release-module` and, on a live host, requires an anonymous `join_game` refused, no account for a dev-issuer token, and the artefact's profile | lpw-15.7 in `server-module/src/world_binding_tests.rs`, run under `dev_issuers`: an unbound caller, and one whose binding carried no entitlement, are refused by `join_game` under `Open`, `Password` and `Allowlist`; lpw-15.3 under `official` |
+| Not enforcing | acs-6.4: the e2e suite's anonymous joins on the `dev_reducers` module (`client/e2e/global-setup.ts`), and the module's own joins in `server-module/src/movement_tests.rs` under `open_join` | the same joins by an unbound caller, accepted under `open_join`, in `server-module/src/world_binding_tests.rs` |
+
+The rule itself is one function over the build's profile, the caller's claims and its binding, with
+the profile an argument, so one test table in `server-module/src/accounts_tests.rs` covers every
+row of the table above in a single build; one more test per profile holds the constants to that
+table.
+
+**The order of calls.** `join_game` is the only reducer that asks whether the caller is entitled,
+and a player row exists only through it.
+
+- *The official server.* Connect with a login token from the production issuer, then `join_game`.
+  The bind is refused.
+- *A world whose rule is `Open`,* a single-player world included. Connect; when the build enforces
+  and the identity has no binding, ask the world for a nonce, fetch the attestation, call
+  `bind_world_account`; then `join_game`.
+- *`Password`.* The door first, through the owner's relay, then as for `Open`.
+- *`Allowlist`.* The bind is the admission, so it comes before the connection: the nonce and the
+  bind are relayed by the owner (owner-only forms of both reducers that take the joiner's
+  identity), the module admits the identity only when the bound account is on the list, and the
+  joiner then connects and calls `join_game`. An identity admitted before connects without one.
+
+An admitted connection that has not bound can read what any connection reads, on every build, as
+an unentitled connection can on the official server: the ownership rule gates `join_game`, and
+with it every reducer that acts in the world, not reading. A connection that is refused the bind
+plays nothing and can watch.
 
 ### The design later work elaborates against
 
 The own-issuer design, with the attestation verified as a reducer argument under the world's own
-anonymous token. LP4 (sign in once, then offline) and LP6 (private-server access) elaborate against
-it. The in-module verifier is measured (above): Ed25519, 108.4 µs a check against a budget of 5 ms.
-The design holds on three conditions this record leaves open: an account issuer (or an endpoint
-beside it) that can sign the attestation; the official server refusing attestation binding; and the
-relay between private worlds closed. The audience-scoped fallback (tokens from the account issuer
-addressed to one server, with the official module's audience check as the single defence and a
-private host that learns official identities) is not the route: a verifier builds and fits the
-budget.
+anonymous token, and the access design above. LP4 (sign in once, then offline) and LP6
+(private-server access) elaborate against it. The in-module verifier is measured: Ed25519,
+108.4 µs a check against a budget of 5 ms. Of the three conditions the design holds on, one is
+decided and being built, an attestation route beside our own account service (DECISIONS.md, "A
+private world verifies an account by a per-world attestation our account service signs"), and two
+are designed above and not built or tested: the official server refusing attestation binding
+(fork (b)) and the relay between private worlds closed (fork (c)). The audience-scoped fallback
+(tokens from the account issuer addressed to one server, with the official module's audience
+check as the single defence and a private host that learns official identities) is not the route:
+a verifier builds and fits the budget. Its one untested question is answered: the audience check
+holds on the host's HTTP routes.
 
 ## 4. Footprint
 
@@ -708,9 +1153,59 @@ largest argument was probed with one call per size to the reducer with no check,
 not confined: a token of 1,572,863 bytes was taken, and one of 2,097,151 bytes was refused with
 HTTP 413.
 
+**Access measurements (section 3).** Measured on 2026-11-21 on the same machine and host binary,
+each host started directly on a loopback port with a data directory and a key directory of its own,
+not confined. Every request is plain HTTP from Node 24
+(`fetch`, and its WebSocket client with the `v1.json.spacetimedb` protocol). None of the drivers or
+the probe module is in this repository.
+
+*The wrong-audience token.* The rig is `evals/account-e2e.eval.mjs` itself, loaded as a module
+with its rig functions exported: its stub issuer (two ES256 issuers on one loopback port), its
+token minting, and its patches to a copy of this repository at commit `d6d80547`, which set
+`ALLOWED_ISSUERS` to the stub's first issuer and `ALLOWED_AUDIENCE` to `mr-acct-e2e-client`. The
+patched module was built with `cargo build --release --target wasm32-unknown-unknown` and published
+over the HTTP API to a fresh host. Four tokens: the listed issuer with the listed audience; the
+listed issuer and key with the audience `mr-acct-e2e-wrong-aud`; the stub's second issuer; and a
+token the host minted at `POST /v1/identity`. Each token was sent in three rounds, in each of two
+runs on two fresh hosts: one `call` of `join_game`, two `sql` statements (`SELECT * FROM
+module_info`, `SELECT * FROM player`), one `GET /schema`, and one WebSocket in the first round; the
+second run added one call of the MCP `sql` tool and one of its `call` tool per round. For the
+wrong-audience token:
+
+| Route | Requests in run 1 | Requests in run 2 | Every answer |
+|---|---|---|---|
+| `call` | 3 | 3 | 403 |
+| `sql` | 6 | 6 | 403 |
+| MCP `sql` tool | 0 | 3 | an error result |
+| MCP `call` tool | 0 | 3 | an error result |
+| WebSocket | 1 | 1 | closed with no message |
+
+That is 10 refusals in run 1 and 16 in run 2, and the module's log held 10 and 16 `unrecognized
+audience` rejections (each written twice, once by the module and once by the host). The three other
+tokens were answered 200 on every `call` and `sql` request, and their WebSockets stayed open. The
+twelve `GET /schema` requests of each run were answered 200 for every token.
+
+*The admission probe.* A module of one file built against `spacetimedb` 2.11.0, in five variants
+chosen by cargo features: the connect reducer refusing an unadmitted identity, and four with a row
+filter (`unstable`): on the private admission table; on a public admission table with its own
+filter; the same with no `WHERE` in the outer filter; and on a public admission table with no
+filter. One driver per variant, on a fresh host: publish, create a joiner identity at
+`POST /v1/identity`, then the steps of the table in section 3, with a WebSocket held open across
+the admission and the removal. The step that calls a reducer, runs a one-off query and subscribes
+again on a socket whose admission was removed was run in a second pass, by the red-team review of
+the design, with the same module and a copy of the driver.
+
+*Two smaller checks.* `spacetime publish` and `spacetime generate` refuse a `--features` argument
+and `spacetime build` takes one (the CLI at 2.11.0, tried against a path that does not exist). A
+static placed in a named link section appears in a `wasm32-unknown-unknown` artefact (a crate of
+one file, rustc 1.99.0, built by the judge of fork (e)).
+
 **What was not measured.** A battle, a trade or any load but walking; more than eight players; a
 session longer than an hour, so growth of the world's own tables with play and anything a later
 snapshot does; real low-end hardware; either shell's memory; the Steam overlay; the command-line
-tool's network use; the official module's audience check on the host's HTTP routes; the in-module
-signature check on any other machine; the largest reducer argument a WebSocket call carries; an
-Ed25519 key in any key service, and a JOSE library writing either `alg` name (read, not tried).
+tool's network use; the in-module signature check on any other machine; the largest reducer
+argument a WebSocket call carries; an Ed25519 key in any key service, and a JOSE library writing
+either `alg` name (read, not tried); the access design of section 3 itself, none of which is built;
+what a row filter costs a subscription; a host version other than 2.11.0 on any access
+measurement; and whether the ownership features leave the schema and the generated bindings
+unchanged.
