@@ -564,8 +564,8 @@ probe's view did), and it is what "World rows are subscribed by zone" rules out 
 view evaluated on the reducer thread for every subscriber on every write, and it replaces the
 client's whole subscription set. Under both, the door is a reducer anyone who reaches the server
 can call without limit, each wrong attempt one password hash on the one reducer thread. A1 at
-connect only: it fails for any identity connected before it was removed or before the rule
-changed.
+connect only: it fails for any identity whose connection is open when its admission is taken away
+or the rule changes.
 
 | Alternative | Gate: an unadmitted identity gets no row by any route and runs no reducer but an admission step | Complete against every route, measured (3) | Stays complete when a table, view or reducer is added (3) | Cost on the reducer thread and to subscriptions (2) | Rests on stable host behaviour (2) | Fit with lpw-9 as specified (2) | The door (2) | Removal (1) | Unweighted, of 35 | Weighted, of 75 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1218,8 +1218,8 @@ filter; the same with no `WHERE` in the outer filter; and on a public admission 
 filter. One driver per variant, on a fresh host: publish, create a joiner identity at
 `POST /v1/identity`, then the steps of the table in section 3, with a WebSocket held open across
 the admission and the removal. The step that calls a reducer, runs a one-off query and subscribes
-again on a socket whose admission was removed was run in a second pass, with the same module and a
-copy of the driver.
+again on a socket after the removal of its admission ran in a second pass, with the same module
+and a copy of the driver.
 
 *Two smaller checks.* `spacetime publish` and `spacetime generate` refuse a `--features` argument
 of their own and take `--build-options`, which they pass to the build; `spacetime build` takes

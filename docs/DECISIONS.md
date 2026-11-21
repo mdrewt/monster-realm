@@ -2435,8 +2435,8 @@ computes it and calls the attestation route, and toward a `local` or `private` t
 given the attestation and no login token. A world holds its own names in a private table its owner
 writes, and `bind_world_account` accepts an attestation only when its `aud` equals one of them. A
 page that a world's gate serves makes no request to the account service. Designed, not built:
-`docs/local-play.md` §3, "The access and attestation design", fork (c); built by the harness spec's
-lpw-15, acs-3 and lpw-18.
+`docs/local-play.md` §3, "The access and attestation design", fork (c), which names the work in the
+harness specs that builds it and the test that proves it.
 
 **Why.** A hostile host can have its player's client fetch an attestation addressed to another
 world, carrying that world's nonce, and present it there as its own. An audience and a nonce stop
@@ -2465,8 +2465,8 @@ Both lists are constants of the build. On the `official` build `bind_world_accou
 that issues bind nonces and the owner-relayed form of each return one fixed error before they
 decode, read or write anything, and `entitled(ctx)` never reads a binding; on the `world` build every token is an anonymous guest's.
 The two builds have one schema and one set of client bindings. Designed, not built:
-`docs/local-play.md` §3, fork (b); built by acs-6 and lpw-15, whose lpw-15.3 test runs under the
-`official` build.
+`docs/local-play.md` §3, fork (b), with the test of the refusal, which runs under the `official`
+build.
 
 **Why.** An attestation is the only account credential a private host ever sees, and the same
 module source runs on every server, so the official server must be unable to take one as a reducer
@@ -2532,8 +2532,8 @@ it admits every identity then connected. Admission is granted only by owner-only
 the joiner's identity; on a shipped world the host gate relays them from a door endpoint of its
 own, and closes the sockets of an identity the owner removes. The module declares no HTTP handler
 and no row filter. Designed, not built: `docs/local-play.md` §3, "The access and attestation
-design", fork (a), with the measurements; built by the harness spec's lpw-9 (the module) and lpw-14
-(the gate).
+design", fork (a), with the measurements; the module's part and the gate's part are separate work
+in the harness spec `M-local-play.spec.md`.
 
 **Why.** Measured at SpacetimeDB 2.11.0: every route that reads a row or calls a reducer (the
 WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and its refusal is
@@ -2566,7 +2566,7 @@ claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence
 themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
 removes entitlement at the next issuance (an hour at most on the official server). Test and dev
 builds of the module do not enforce it, so the e2e suite and local development still join
-anonymously; the build input is the module's cargo features (see "Ownership is enforced unless a dev feature switches it off"), built by acs-6 and lpw-15. Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
+anonymously; the build input is the module's cargo features (see "Ownership is enforced unless a dev feature switches it off"). Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
 players, must own the game in order to play").
 
 **Why.** The operator's ruling. The claim is checked by the module, not implied by the issuer, so
@@ -2594,7 +2594,7 @@ trusts nothing: nobody can join it. One recipe makes a module to ship,
 records the artefact's hash, by which the artefact is embedded or published. The ownership features
 add or remove no table, reducer, view or type. Designed, not built: `docs/local-play.md` §3,
 fork (e), with the table of every feature set, the recipe and the tests for both sides of the
-switch; built by acs-6 and lpw-15.
+switch.
 
 **Why.** With enforcement as the default there is no input whose omission ships an open module:
 `spacetime publish --module-path` and `spacetime generate` build with no features unless told
