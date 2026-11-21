@@ -21,6 +21,7 @@ import {
 import type { WasmMoveInput } from '../convert/convert';
 import type { ConnectionOptions } from '../net/connection';
 import type { A11ySnapshot } from '../ui/announcements';
+import type { ErrorOverlayView } from '../ui/errorOverlayView';
 import type { OverlayId } from '../ui/overlayRegistry';
 
 const H = vi.hoisted(() => ({
@@ -373,6 +374,32 @@ describe('the booted shell drives the message sinks of shell/feedback', {
       'a repeated paint error is recorded once',
     ).toBe(1);
     expect(fb.lastPaintErrorMessage).toBe('screen paint: paint-sentinel');
+  }, 60_000);
+
+  it('an unhandled rejection on window lands in the module`s error ring exactly once, tagged unhandledrejection, and on the error overlay', async () => {
+    const fb = await boot();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const sentinel = 'rejection-sentinel';
+    expect(
+      fb.errorRing.snapshot().filter((r) => r.message === sentinel),
+      'precondition: not in the ring',
+    ).toEqual([]);
+    // happy-dom may lack PromiseRejectionEvent: the listener reads only `reason`.
+    const event = new Event('unhandledrejection');
+    Object.defineProperty(event, 'reason', { value: new Error(sentinel) });
+    window.dispatchEvent(event);
+    expect(
+      fb.errorRing
+        .snapshot()
+        .filter((r) => r.message === sentinel)
+        .map((r) => r.source),
+      'one unhandledrejection row, not zero and not two',
+    ).toEqual(['unhandledrejection']);
+    expect(overlayShown(), 'the error overlay is shown').toBe(true);
+    expect(overlayRows(), 'and lists the rejection').toContainEqual({
+      source: 'unhandledrejection',
+      text: `[unhandledrejection] ${sentinel}`,
+    });
   }, 60_000);
 
   it('reportError shows the failure on its toast and the shell`s overlay, F8 dismisses it through the module, and the overlay lists only what came after a dismissal, never a movement breadcrumb', async () => {
@@ -795,6 +822,65 @@ describe('shell/feedback owner functions', { sequential: true }, () => {
     fb.paintToast('mounted-toast');
     expect(root.textContent, 'the toast paints the mounted chrome').toBe('mounted-toast');
     expect(root.hidden).toBe(false);
+  });
+
+  it('pushError does not re-enter from an overlay render that calls it, and a render that throws is swallowed and releases the guard', async () => {
+    const fb = await fresh();
+    // Same registry as ./feedback: the views module it reads the overlay from.
+    const views = await import('./views');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    let mode: 'reenter' | 'throw' | 'quiet' = 'reenter';
+    let shown = false;
+    let renders = 0;
+    const guardDuringRender: boolean[] = [];
+    const overlay = {
+      get visible(): boolean {
+        return shown;
+      },
+      show(): void {
+        shown = true;
+      },
+      dismiss(): void {
+        shown = false;
+      },
+      render(): void {
+        renders += 1;
+        guardDuringRender.push(fb.handlingError);
+        if (mode === 'reenter') fb.pushError('reducer', 'inner-sentinel');
+        else if (mode === 'throw') throw new Error('render-boom');
+      },
+    };
+    views.mountViews({ errorOverlayView: overlay as unknown as ErrorOverlayView });
+
+    fb.pushError('uncaught', 'outer-sentinel');
+    expect(renders, 'the overlay rendered once: the inner call returned at the guard').toBe(1);
+    expect(guardDuringRender, 'the guard is held while the overlay renders').toEqual([true]);
+    expect(
+      fb.errorRing.snapshot().map((r) => r.message),
+      'the ring holds only the outer error',
+    ).toEqual(['outer-sentinel']);
+    expect(fb.handlingError, 'the guard is released afterwards').toBe(false);
+    expect(shown, 'and the overlay was shown').toBe(true);
+
+    mode = 'throw';
+    expect(
+      () => fb.pushError('uncaught', 'throwing-render'),
+      'a throwing render is swallowed',
+    ).not.toThrow();
+    expect(
+      logged.mock.calls.some((c) => c[0] === '[obs] pushError'),
+      'and logged to console.error',
+    ).toBe(true);
+    expect(fb.handlingError, 'the guard is released after the throw').toBe(false);
+
+    mode = 'quiet';
+    fb.pushError('reducer', 'later-sentinel');
+    expect(renders, 'a later error renders again').toBe(3);
+    expect(
+      fb.errorRing.snapshot().map((r) => r.message),
+      'and records normally',
+    ).toEqual(['outer-sentinel', 'throwing-render', 'later-sentinel']);
   });
 
   it('resetStatusNotice puts statusNotice back to its initial value', async () => {
