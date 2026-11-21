@@ -432,7 +432,15 @@ Only it replaces the table and the keyboard source (`applyBindings`, which saves
 releases everything held first), and the set of codes is read-only to every other module: a
 consumed press is recorded with `noteNavHeld` and its keyup with `releaseNavHeld`.
 `releaseAllInput` lets go of everything held; `main.ts` registers it on `blur` and on a hidden
-`visibilitychange`.
+`visibilitychange`. `shell/feedback.ts` owns where a message goes: the toast, the world hint, the
+one live-region announcer, the error ring with its overlay, and the session event ring. A sender
+names a `MessageKind` and calls `route` or `reportError`, and `ui/feedbackPolicy.ts` picks the
+channel. Only that module assigns its state, and `main.ts` reaches it through four owner
+functions: `installHintHost` hands in what the world hint needs from the main menu (whether it is
+the top frame, and a repaint of it), `mountFeedback` mounts the world line and the toast region
+`main()` builds, `pumpAnnouncements` is the frame loop's announcement edge and notice step, and
+`resetStatusNotice` drops a queued notice on reconnect. `main.ts` registers `pushError` on
+`window`'s `error` and `unhandledrejection`.
 
 ### Connection and store
 
