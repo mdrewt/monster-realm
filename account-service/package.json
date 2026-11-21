@@ -1,0 +1,22 @@
+{
+  "name": "monster-realm-account-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "oidc-provider": "9.15.1"
+  },
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/oidc-provider": "9.13.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12"
+  }
+}
