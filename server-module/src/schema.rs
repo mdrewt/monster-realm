@@ -1877,6 +1877,48 @@ pub struct PlayerSession {
     pub identity: Identity,
 }
 
+/// The rule a world's host set for who may join it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, spacetimedb::SpacetimeType)]
+pub enum WorldAccessRule {
+    Open,
+    Password,
+}
+
+/// The world's access rule: one row, `id` always 0, written only by the owner's
+/// `set_world_access`. A world with no row is `Open`. PRIVATE: `password_salt` and
+/// `password_hash` are the Argon2id salt and hash of the host's password, both empty unless
+/// `rule` is `Password`.
+#[spacetimedb::table(accessor = world_access)]
+pub struct WorldAccess {
+    #[primary_key]
+    pub id: u32,
+    pub rule: WorldAccessRule,
+    pub password_salt: Vec<u8>,
+    pub password_hash: Vec<u8>,
+}
+
+/// An identity the host's rule admitted, and when. PRIVATE: who may join a world is the host's
+/// to know. Written only by `access.rs`; erased by the deletion cascade.
+#[spacetimedb::table(accessor = world_admission)]
+pub struct WorldAdmission {
+    #[primary_key]
+    pub identity: Identity,
+    pub admitted_at_ms: i64,
+}
+
+/// The wrong passwords the door was given for an identity that is not admitted: the time of
+/// each, oldest first, never more than `access::ADMIT_MAX_WRONG_ATTEMPTS`. `last_wrong_at_ms`
+/// repeats the newest so the sweep of stale rows can range over an index. PRIVATE. Written only
+/// by `access.rs`; erased by the deletion cascade.
+#[spacetimedb::table(accessor = world_admission_attempt)]
+pub struct WorldAdmissionAttempt {
+    #[primary_key]
+    pub identity: Identity,
+    pub wrong_at_ms: Vec<i64>,
+    #[index(btree)]
+    pub last_wrong_at_ms: i64,
+}
+
 /// Deletion policy for one table's rows at account-cascade time.
 ///
 /// `ViaJoin` carries the OWNING PARENT table's accessor name: the row has no
@@ -2069,6 +2111,18 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         basis: "the owner minted discriminator, deleted outright at cascade time so the tag names nobody afterwards; re-keyed by the claim flow; exported as the number other players saw beside the owner name",
         exportable: true,
     },
+    DataLifecycleEntry {
+        table: "world_admission",
+        policy: DeletionPolicy::Erase,
+        basis: "names an identity the host admitted and when, deleted outright at cascade time; not exported: it records the host's decision, not anything the player made",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "world_admission_attempt",
+        policy: DeletionPolicy::Erase,
+        basis: "names an identity and the times of the wrong passwords given for it, at most ten minutes old, deleted outright at cascade time; not exported",
+        exportable: false,
+    },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---
     DataLifecycleEntry {
         table: "player",
@@ -2228,6 +2282,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "module_info",
         policy: DeletionPolicy::NotOwned,
         basis: "module metadata: the protocol numbers of the published module, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "world_access",
+        policy: DeletionPolicy::NotOwned,
+        basis: "the host's access rule and password hash: one row with no Identity column, written only by the module owner",
         exportable: false,
     },
     DataLifecycleEntry {

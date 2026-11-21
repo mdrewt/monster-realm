@@ -21,6 +21,7 @@ use crate::schema::{
 use spacetimedb::{Identity, ReducerContext, Table};
 
 // --- Domain modules ---------
+mod access;
 mod accounts;
 mod battle;
 mod content;

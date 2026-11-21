@@ -22,6 +22,11 @@ spacetimedb = { workspace = true }
 log.workspace = true
 # NFC canonicalization for player/monster names (#27c, guards::validate_name).
 unicode-normalization = { workspace = true }
+# Argon2id for the world password (access.rs). Pure Rust, builds for wasm32-unknown-unknown, and
+# hashing with a caller-supplied salt reads no clock and no randomness. `alloc` only: the PHC
+# string format and the crate's own salt generator stay out. Not a [workspace.dependencies]
+# entry: single consumer.
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 # Property testing for the evaluate_train seam (M9b-tail, raising_tests.rs).
