@@ -109,8 +109,11 @@ fail on a connection error while a local server was running) and set it with
 `spacetime server set-default local`, or use the explicit command above.
 `VITE_STDB_DB` changes the database name `just publish` targets. A first publish runs
 `init`, which seeds content and records the publishing identity as the module owner.
-After a later content change, call `spacetime call -s local monster-realm sync_content`
-as that same identity; other callers are refused.
+A publish over an existing database keeps its data and runs nothing in the module, so
+`just publish` then calls `sync_content` as that same identity: it reseeds changed
+content and updates the protocol numbers in `module_info`. Other callers are refused,
+and the recipe then fails. After the explicit `spacetime publish` above, make the call
+yourself: `spacetime call -s local monster-realm sync_content`.
 
 | Command | What it does |
 |---|---|

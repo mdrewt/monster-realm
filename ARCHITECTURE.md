@@ -127,7 +127,7 @@ Rule lookups the screens read: `evolution_eligibility`, `interact_candidates_cod
 `tactics_fresh_budget`, `tactics_is_exhausted`. The golden harness entry the parity
 tests call directly: `tactics_golden`. Constant accessors: `step_ms`, `move_queue_cap`,
 `party_size`, `party_slot_none`, `talk_range`, `max_trade_monsters_per_side`,
-`deletion_grace_ms_default` (returned as a JS `BigInt`). Values cross the boundary as
+`protocol_version`, `deletion_grace_ms_default` (returned as a JS `BigInt`). Values cross the boundary as
 serde values (`serde-wasm-bindgen`). The
 module parses zone maps once per instance and caches the active zone's tile map
 until `set_active_zone` changes it. The parity evals (`prediction-parity`,
@@ -167,8 +167,9 @@ writes:
 
 Supporting modules have no reducers: `schema` (tables, views, the data-lifecycle
 manifest), `guards` (shared validation), `marshal` (row ⇄ `game-core` conversion,
-`now_ms`), `inventory` (the single `grant_item` insert path), `content` and
-`content_cache`.
+`now_ms`), `inventory` (the single `grant_item` insert path), `content`,
+`content_cache` and `module_info` (`ensure_module_info`, the only writer of the `module_info`
+row).
 
 A reducer checks `ctx.sender()` and the request, calls `game-core`, and writes. It
 returns `Err` to refuse, which rolls back the whole transaction, and logs the refusal
@@ -178,11 +179,13 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
 ### Lifecycle
 
 - `init` (first publish only) records the publisher as `config.owner_identity`, seeds
-  content, reconciles zone schedules (a new world has no player, so no zone is
-  armed), arms the heartbeat, and arms each reaper that has something to reap (a new
-  world has nothing, so the heartbeat is the only schedule).
-- `sync_content` does the same reseed for the owner on later publishes. It refuses
-  other callers.
+  content, records the module's protocol numbers in the public `module_info` row,
+  reconciles zone schedules (a new world has no player, so no zone is armed), arms the
+  heartbeat, and arms each reaper that has something to reap (a new world has nothing,
+  so the heartbeat is the only schedule).
+- `sync_content` does the same reseed for the owner on later publishes, and brings the
+  `module_info` row in line with the published module whether or not the content
+  changed. It refuses other callers. `just publish` calls it after the publish.
 - `on_connect` records the connection in the private `player_session` table and, for
   a JWT from an allowed issuer, creates or updates the caller's `account` row.
   Connections without an account are accepted.
