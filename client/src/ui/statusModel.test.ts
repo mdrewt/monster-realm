@@ -344,7 +344,7 @@ describe('subscriptionErrorMessage: T7 — event.message extraction with fallbac
     // The spec says "non-empty string" — whitespace-only is technically non-empty.
     // This documents the boundary: only truly empty ("") triggers the fallback.
     // Kills: an impl that trims/normalizes the message before the emptiness check.
-    // UX boundary: the consumer (main.ts reportError) sets textContent; a whitespace
+    // UX boundary: the consumer (shell/feedback.ts reportError) sets textContent; a whitespace
     // message renders blank — documented boundary, contract is literal non-empty string.
     expect(subscriptionErrorMessage({ event: { message: '   ' } })).toBe('   ');
   });
@@ -734,7 +734,8 @@ describe('questCompletionAck: a completing talk acknowledges the quest and its r
 // 9. statusNoticeStep — status notices the live region's coalescer cannot swallow (qf-6)
 // ================================================================================
 
-/** The live region's coalescing window (ui/liveRegion.ts COALESCE_WINDOW_MS), as main.ts passes it. */
+/** The live region's coalescing window (ui/liveRegion.ts COALESCE_WINDOW_MS), as shell/feedback.ts
+ *  passes it. */
 const WINDOW_MS = 500;
 const queue = (text: string, nowMs: number): StatusNoticeEvent => ({ kind: 'queue', text, nowMs });
 const quiet = (nowMs: number): StatusNoticeEvent => ({
