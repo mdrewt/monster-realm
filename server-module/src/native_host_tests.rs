@@ -3,13 +3,14 @@
 //! so the SHIPPED reducer-side helpers can run against REAL rows inside an
 //! ordinary native `cargo test` binary.
 //!
-//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.11.0,
-//! `src/lib.rs:1043`, `#[doc(hidden)] pub`) yields a context whose `db` is the
-//! real `Local {}` accessor type, so `ctx.db.<table>().<index>().find(..)` in a
+//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.12.0,
+//! `vendor/spacetimedb/src/lib.rs:1145`, `#[doc(hidden)] pub`) yields a context whose `db` is
+//! the real `Local {}` accessor type, so `ctx.db.<table>().<index>().find(..)` in a
 //! production helper compiles and runs unchanged. That generated code bottoms
 //! out in the `extern "C"` host imports declared by `spacetimedb-bindings-sys`
 //! (`#[link(wasm_import_module = "spacetime_10.x")]`), which the native
-//! test target leaves UNDEFINED. This module defines every one of those ELEVEN symbols ONCE
+//! test target leaves UNDEFINED (`vendor/native-host.patch` compiles the vendored crate's
+//! `native_link_stubs` module out). This module defines every one of those ELEVEN symbols ONCE
 //! (a `#[no_mangle]` symbol is one-definition-per-binary) and implements SEVEN of them
 //! unconditionally: the two name lookups, the index point and range scans, the row
 //! iterator's advance and close, and the index-point DELETE on an index a fixture
@@ -341,8 +342,8 @@ impl<R: Serialize, K: Serialize> Handle<'_, R, K> {
 }
 
 // ---------------------------------------------------------------------------
-// The host ABI. Signatures mirror the `spacetimedb-bindings-sys` 2.11.0 raw
-// externs with the `repr(transparent)` `TableId` / `IndexId` / `RowIter`
+// The host ABI. Signatures mirror the 2.12.0 raw externs of `vendor/spacetimedb-bindings-sys`
+// with the `repr(transparent)` `TableId` / `IndexId` / `RowIter`
 // newtypes spelled as the `u32` they wrap. Every one is `unsafe`: it
 // dereferences raw pointers handed over by the bindings, which own the
 // pointed-to memory for the duration of the call (name slices, `MaybeUninit`
@@ -552,7 +553,8 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
     let removed = u32::try_from(removed).expect("native_host_tests: a delete count fits a u32");
     // SAFETY: `out` points at the bindings' `MaybeUninit<u32>` out-param, which
     // `sys::call` `assume_init`s on every `0` return — so every `0`-returning
-    // path here writes it, and writes EXACTLY a `u32` (bindings-sys `:1059`).
+    // path here writes it, and writes EXACTLY a `u32`
+    // (`vendor/spacetimedb-bindings-sys/src/lib.rs:1357`).
     unsafe { out.write(removed) };
     0
 }
@@ -565,11 +567,11 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 // THE WIRE FORMAT. Each side of a range arrives as the BSATN of a `Bound<T>`:
 // tag byte 0 `Included` followed by the BSATN of the payload, 1 `Excluded`
 // followed by the payload, 2 `Unbounded` with no payload at all
-// (`spacetimedb-sats-2.11.0/src/ser/impls.rs:124-128`). The bindings pack both
+// (`spacetimedb-sats-2.12.0/src/ser/impls.rs:124-128`). The bindings pack both
 // sides into one buffer and hand out two slices over it
-// (`spacetimedb-2.11.0/src/table.rs:1069-1078`), and `prefix_elems` is a
+// (`vendor/spacetimedb/src/table.rs:1517-1526`), and `prefix_elems` is a
 // `repr(transparent)` `ColId(pub u16)`, so the raw parameter is a `u16`
-// (`spacetimedb-primitives-2.11.0/src/ids.rs:125`). The parse is an EXPLICIT tag
+// (`spacetimedb-primitives-2.12.0/src/ids.rs:125`). The parse is an EXPLICIT tag
 // match: an empty slice, an unknown tag and trailing bytes after tag 2 are each
 // an ERROR, never a quiet `Unbounded`. A bound this host misreads is a window
 // the caller never asked for, and every count taken over it would be true about
@@ -802,11 +804,11 @@ impl Fixture {
 //   no transaction rollback is modelled: a reducer that errors after a write
 //   leaves that write in the store.
 // * A SETTABLE CALLER. `Fixture::run_as(_at)` runs a closure inside the SHIPPED
-//   `__call_reducer__` entry point (spacetimedb 2.11.0 `rt.rs:1118`), which is
+//   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1226`), which is
 //   the only code that builds a `ReducerContext` with a chosen sender (the
-//   constructor is private, `lib.rs:1058`). A trampoline reducer is registered
-//   once per process through the public `rt::register_reducer` and published
-//   into `REDUCERS` by calling `__describe_module__`. The closure's panics are
+//   constructor is private, `vendor/spacetimedb/src/lib.rs:1163`). A trampoline
+//   reducer is registered once per process through the public `rt::register_reducer`
+//   and published into `REDUCERS` by calling `__describe_module__`. The closure's panics are
 //   caught inside the trampoline and re-raised in the caller's Rust frame, so
 //   assertions (and `#[should_panic]`) behave normally. Under `run_as(_at)` the
 //   connection id is `None`, so the context is internal and never reads a JWT;
@@ -1155,9 +1157,9 @@ const DESCRIBE_SINK: u32 = 0xD5C1;
 const ERROR_SINK: u32 = 0xE551;
 
 unsafe extern "C" {
-    /// spacetimedb 2.11.0 `rt.rs:1061` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1169` (`#[unsafe(no_mangle)]`).
     fn __describe_module__(description: u32);
-    /// spacetimedb 2.11.0 `rt.rs:1118` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1226` (`#[unsafe(no_mangle)]`).
     fn __call_reducer__(
         id: usize,
         sender_0: u64,
@@ -1416,7 +1418,7 @@ unsafe extern "C" {
     fn register_table_world_name();
     #[link_name = "__preinit__20_register_describer_world_allowlist"]
     fn register_table_world_allowlist();
-    /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1458` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
         sender_0: u64,
@@ -1583,9 +1585,9 @@ pub(crate) const VIEW_MY_WORLD_BINDING: usize = 17;
 pub(crate) const VIEW_MY_BIND_NONCE: usize = 18;
 
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
-/// `RawModuleDef` (V10 on 2.11.0), captured once per process so a test can read
-/// table access, keys, indexes and the exact view roster from the artifact the
-/// host itself consumes — never from source text.
+/// `RawModuleDef` (V10 on 2.12.0, `vendor/spacetimedb/src/rt.rs:1178`), captured once per
+/// process so a test can read table access, keys, indexes and the exact view roster from the
+/// artifact the host itself consumes — never from source text.
 static DESCRIBE_OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 const VIEW_SINK: u32 = 0x71E5;
@@ -1627,7 +1629,7 @@ impl Fixture {
 
 impl Fixture {
     /// The generated module definition, decoded from the bytes the shipped
-    /// `__describe_module__` wrote (a V10 def on 2.11.0; any other version is a
+    /// `__describe_module__` wrote (a V10 def on 2.12.0; any other version is a
     /// toolchain hop this harness must be re-pointed at, so it panics by name).
     pub(crate) fn module_def(
         &self,
@@ -2156,4 +2158,736 @@ fn nh_scannable_writable_table_scans_counts_deletes_and_clears() {
         "clear reports what it removed"
     );
     assert!(scratch.rows().is_empty(), "clear empties the table");
+}
+
+// ---------------------------------------------------------------------------
+// THE VENDORED CRATES. `spacetimedb` and `spacetimedb-bindings-sys` build from the copies
+// under `vendor/` (the root `Cargo.toml` `[patch.crates-io]`): their crates.io packages,
+// patched in `#[cfg]` attributes only, so that off wasm the table backend calls the host ABI
+// above and the vendor's native stubs compile out. On wasm every patched attribute selects
+// what the original selected, so the module ships the vendor's code.
+// ---------------------------------------------------------------------------
+
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+/// The provenance of the code the module ships, which no behaviour test can see: an edit
+/// inside a vendored copy that only wasm compiles passes every native test. Undoing
+/// `vendor/native-host.patch` strictly, hunk by hunk, must give back each file whose sha256
+/// `vendor/PRISTINE.sha256` records from the crates.io package. The copies hold exactly the
+/// files the manifest lists; every changed line is a `#[cfg]` attribute that, on wasm32 under
+/// every feature assignment, selects what the original selected; the manifest, each copy's
+/// `Cargo.toml` and the workspace pin name one version; and `[patch.crates-io]` points the two
+/// crates, and nothing else, at their copies.
+#[test]
+fn nh_vendored_crates_are_the_crates_io_release_plus_the_patch() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root_manifest = std::fs::read_to_string(root.join("Cargo.toml"))
+        .unwrap_or_else(|e| panic!("native_host_tests: ../Cargo.toml cannot be read: {e}"));
+    let vendor = root.join("vendor");
+    check(&vendor, &root_manifest).unwrap_or_else(|e| panic!("native_host_tests: {e}"));
+}
+
+/// The guard's checks over `vendor/` and the root `Cargo.toml` (`root_manifest`), in order.
+/// The first that fails is the error, naming the file, the hunk or the path it is about. Its
+/// helpers come first, the checks after them.
+fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
+    const MANIFEST: &str = "vendor/PRISTINE.sha256";
+    const PATCH: &str = "vendor/native-host.patch";
+    // The crates the native host needs patched, and so the only ones vendored.
+    const CRATES: [&str; 2] = ["spacetimedb", "spacetimedb-bindings-sys"];
+    // What `vendor/` holds beside the crate directories.
+    const TOP_FILES: [&str; 3] = ["PRISTINE.sha256", "README.md", "native-host.patch"];
+
+    // `vendor/PRISTINE.sha256`, parsed. Paths are relative to `vendor/`.
+    struct Pristine {
+        // Crate name (its directory under `vendor/`) -> version.
+        crates: BTreeMap<String, String>,
+        // A file a copy holds -> its sha256 as published.
+        held: BTreeMap<String, String>,
+        // A file the package holds and its copy leaves out.
+        omitted: BTreeSet<String>,
+    }
+
+    // One `@@` hunk. A body line is its kind byte (` `, `-` or `+`) and the file's line,
+    // `\n` included.
+    struct Hunk {
+        header: String,
+        old_start: usize,
+        new_start: usize,
+        body: Vec<(u8, Vec<u8>)>,
+    }
+
+    // The hunks the patch holds for one file, in order.
+    struct FilePatch {
+        path: String,
+        hunks: Vec<Hunk>,
+    }
+
+    // A cfg predicate over the two keys a patched attribute may name.
+    enum Cfg {
+        All(Vec<Cfg>),
+        Any(Vec<Cfg>),
+        Not(Box<Cfg>),
+        TargetArch(String),
+        Feature(String),
+    }
+
+    impl Cfg {
+        // The value when compiling for wasm32 with exactly the features in `on`.
+        fn on_wasm(&self, on: &BTreeSet<&str>) -> bool {
+            match self {
+                Cfg::All(all) => all.iter().all(|cfg| cfg.on_wasm(on)),
+                Cfg::Any(any) => any.iter().any(|cfg| cfg.on_wasm(on)),
+                Cfg::Not(not) => !not.on_wasm(on),
+                Cfg::TargetArch(arch) => arch == "wasm32",
+                Cfg::Feature(feature) => on.contains(feature.as_str()),
+            }
+        }
+
+        // Adds every feature the predicate names to `out`.
+        fn features<'a>(&'a self, out: &mut BTreeSet<&'a str>) {
+            match self {
+                Cfg::All(list) | Cfg::Any(list) => {
+                    for cfg in list {
+                        cfg.features(out);
+                    }
+                }
+                Cfg::Not(not) => not.features(out),
+                Cfg::TargetArch(_) => {}
+                Cfg::Feature(feature) => {
+                    out.insert(feature.as_str());
+                }
+            }
+        }
+    }
+
+    fn is_lower_hex(byte: u8) -> bool {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    }
+
+    fn is_sha256(hex: &str) -> bool {
+        hex.len() == 64 && hex.bytes().all(is_lower_hex)
+    }
+
+    // A byte of a crate name or of a cfg string.
+    fn is_name_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+    }
+
+    fn is_version_byte(byte: u8) -> bool {
+        is_name_byte(byte) || byte == b'.' || byte == b'+'
+    }
+
+    fn is_path_part(part: &str) -> bool {
+        !part.is_empty() && part != "." && part != ".."
+    }
+
+    // A `/` path below a crate directory: relative, no empty, `.` or `..` part, no `\`.
+    fn is_vendor_path(path: &str) -> bool {
+        path.contains('/') && !path.contains('\\') && path.split('/').all(is_path_part)
+    }
+
+    // The crate directory a path is in: its first part.
+    fn crate_of(path: &str) -> &str {
+        path.split_once('/').map_or(path, |(name, _)| name)
+    }
+
+    // `<name> <version> <cksum>` (what follows `crate `) -> the name and the version.
+    fn crate_line(rest: &str) -> Option<(&str, &str)> {
+        let fields: Vec<&str> = rest.split(' ').collect();
+        let &[name, version, cksum] = fields.as_slice() else {
+            return None;
+        };
+        let name_ok = !name.is_empty() && name.bytes().all(is_name_byte);
+        let version_ok = !version.is_empty() && version.bytes().all(is_version_byte);
+        (name_ok && version_ok && is_sha256(cksum)).then_some((name, version))
+    }
+
+    // `<sha256>  <path>` -> the hash and the path.
+    fn hash_and_path(rest: &str) -> Option<(&str, &str)> {
+        let (hash, path) = rest.split_once("  ")?;
+        (is_sha256(hash) && is_vendor_path(path)).then_some((hash, path))
+    }
+
+    fn read(vendor: &Path, rel: &str) -> Result<Vec<u8>, String> {
+        let path = vendor.join(rel);
+        std::fs::read(path).map_err(|e| format!("vendor/{rel}: cannot be read: {e}"))
+    }
+
+    fn read_text(vendor: &Path, rel: &str) -> Result<String, String> {
+        let bytes = read(vendor, rel)?;
+        String::from_utf8(bytes).map_err(|_| format!("vendor/{rel}: is not UTF-8"))
+    }
+
+    // The manifest: blank and `#` lines skipped, every other line a `crate` line, a held file
+    // or an `omitted` file, no path twice, at least one crate and one held file.
+    fn parse_pristine(text: &str) -> Result<Pristine, String> {
+        let mut crates = BTreeMap::new();
+        let mut held = BTreeMap::new();
+        let mut omitted = BTreeSet::new();
+        let mut paths = BTreeSet::new();
+        for (index, line) in text.split('\n').enumerate() {
+            let at = index + 1;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("crate ") {
+                let (name, version) = crate_line(rest)
+                    .ok_or_else(|| format!("{MANIFEST}:{at}: a malformed `crate` line"))?;
+                let earlier = crates.insert(name.to_string(), version.to_string());
+                if earlier.is_some() {
+                    return Err(format!("{MANIFEST}:{at}: `{name}` declared twice"));
+                }
+                continue;
+            }
+            let is_omitted = line.starts_with("omitted ");
+            let rest = line.strip_prefix("omitted ").unwrap_or(line);
+            let (hash, path) = hash_and_path(rest)
+                .ok_or_else(|| format!("{MANIFEST}:{at}: a malformed file line"))?;
+            if !paths.insert(path) {
+                return Err(format!("{MANIFEST}:{at}: `{path}` listed twice"));
+            }
+            if is_omitted {
+                omitted.insert(path.to_string());
+            } else {
+                held.insert(path.to_string(), hash.to_string());
+            }
+        }
+        if crates.is_empty() || held.is_empty() {
+            return Err(format!("{MANIFEST}: no `crate` line or no file line"));
+        }
+        Ok(Pristine {
+            crates,
+            held,
+            omitted,
+        })
+    }
+
+    // Adds to `found` every file under `vendor/<rel>`, as a path relative to `vendor/`. An
+    // entry that is neither a regular file nor a directory (a symlink, say) fails.
+    fn walk(vendor: &Path, rel: &str, found: &mut BTreeSet<String>) -> Result<(), String> {
+        let listing = std::fs::read_dir(vendor.join(rel));
+        let listing = listing.map_err(|e| format!("vendor/{rel}: cannot be listed: {e}"))?;
+        for entry in listing {
+            let entry = entry.map_err(|e| format!("vendor/{rel}: cannot be listed: {e}"))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return Err(format!("vendor/{rel}: holds a name that is not UTF-8"));
+            };
+            let path = format!("{rel}/{name}");
+            let kind = entry.file_type();
+            let kind = kind.map_err(|e| format!("vendor/{path}: {e}"))?;
+            if kind.is_dir() {
+                walk(vendor, &path, found)?;
+            } else if kind.is_file() {
+                found.insert(path);
+            } else {
+                return Err(format!("vendor/{path}: neither file nor directory"));
+            }
+        }
+        Ok(())
+    }
+
+    // The path that a `--- a/<path>` line and the `+++ b/<path>` line after it both name.
+    fn file_header(minus: &[u8], plus: Option<&[u8]>) -> Option<String> {
+        let minus = std::str::from_utf8(minus).ok()?;
+        let plus = std::str::from_utf8(plus?).ok()?;
+        let path = minus.strip_prefix("--- a/")?.strip_suffix('\n')?;
+        let same = plus.strip_prefix("+++ b/")?.strip_suffix('\n')? == path;
+        (same && is_vendor_path(path)).then(|| path.to_string())
+    }
+
+    // `@@ -<start>,<count> +<start>,<count> @@` with nothing after it -> the four numbers.
+    fn hunk_header(line: &[u8]) -> Option<(usize, usize, usize, usize)> {
+        let line = std::str::from_utf8(line).ok()?;
+        let ranges = line.strip_prefix("@@ -")?.strip_suffix(" @@\n")?;
+        let (old, new) = ranges.split_once(" +")?;
+        let (os, oc) = old.split_once(',')?;
+        let (ns, nc) = new.split_once(',')?;
+        Some((number(os)?, number(oc)?, number(ns)?, number(nc)?))
+    }
+
+    // One to nine decimal digits and nothing else (no sign).
+    fn number(text: &str) -> Option<usize> {
+        if text.is_empty() || text.len() > 9 || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        text.parse().ok()
+    }
+
+    // The patch, parsed strictly. Per file: `--- a/<path>`, `+++ b/<path>` naming a file the
+    // manifest holds, then its hunks, ascending and apart, each body exactly as long as its
+    // header says. Any other line (`\ No newline at end of file`, `diff `, `index `, a line
+    // with no `\n`) fails, and so does a patch that changes no file.
+    fn parse_patch(bytes: &[u8], pristine: &Pristine) -> Result<Vec<FilePatch>, String> {
+        if bytes.last().is_some_and(|&b| b != b'\n') {
+            return Err(format!("{PATCH}: its last line has no newline"));
+        }
+        let lines: Vec<&[u8]> = bytes.split_inclusive(|&b| b == b'\n').collect();
+        let mut files: Vec<FilePatch> = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let at = i + 1;
+            let Some(path) = file_header(lines[i], lines.get(i + 1).copied()) else {
+                return Err(format!(
+                    "{PATCH}:{at}: expected `--- a/<path>` then `+++ b/<path>`"
+                ));
+            };
+            if !pristine.held.contains_key(&path) {
+                return Err(format!("{PATCH}: `{path}` is not in {MANIFEST}"));
+            }
+            if files.iter().any(|file| file.path == path) {
+                return Err(format!("{PATCH}: `{path}` has two file headers"));
+            }
+            i += 2;
+            let mut hunks = Vec::new();
+            let (mut old_end, mut new_end) = (0, 0);
+            while i < lines.len() && lines[i].starts_with(b"@@") {
+                let at = i + 1;
+                let header = String::from_utf8_lossy(lines[i]).trim_end().to_string();
+                let Some((os, oc, ns, nc)) = hunk_header(lines[i]) else {
+                    return Err(format!("{PATCH}:{at}: `{header}` is not a hunk header"));
+                };
+                if os < old_end || ns < new_end {
+                    return Err(format!(
+                        "{PATCH}:{at}: `{header}` does not come after the hunk before it"
+                    ));
+                }
+                i += 1;
+                let (mut old_left, mut new_left) = (oc, nc);
+                let mut body = Vec::new();
+                while old_left > 0 || new_left > 0 {
+                    let at = i + 1;
+                    let Some(line) = lines.get(i) else {
+                        return Err(format!("{PATCH}: `{header}` ends before its counts"));
+                    };
+                    match line[0] {
+                        b' ' if old_left > 0 && new_left > 0 => {
+                            old_left -= 1;
+                            new_left -= 1;
+                        }
+                        b'-' if old_left > 0 => old_left -= 1,
+                        b'+' if new_left > 0 => new_left -= 1,
+                        _ => return Err(format!("{PATCH}:{at}: not a line of `{header}`")),
+                    }
+                    body.push((line[0], line[1..].to_vec()));
+                    i += 1;
+                }
+                old_end = os + oc;
+                new_end = ns + nc;
+                hunks.push(Hunk {
+                    header,
+                    old_start: os,
+                    new_start: ns,
+                    body,
+                });
+            }
+            if hunks.is_empty() {
+                return Err(format!("{PATCH}: `{path}` has no hunk"));
+            }
+            files.push(FilePatch { path, hunks });
+        }
+        if files.is_empty() {
+            return Err(format!("{PATCH}: changes no file"));
+        }
+        Ok(files)
+    }
+
+    // One side of a hunk, `\n` included: every body line but those of kind `skip`.
+    fn side(hunk: &Hunk, skip: u8) -> Vec<&[u8]> {
+        let lines = hunk.body.iter().filter(|(kind, _)| *kind != skip);
+        lines.map(|(_, line)| line.as_slice()).collect()
+    }
+
+    // The file as published. Each hunk's new side (context and `+` lines) must be the tree's
+    // lines from its new start, exactly, and is replaced by its old side (context and `-`).
+    fn undo(file: &FilePatch, tree: &[u8]) -> Result<Vec<u8>, String> {
+        let lines: Vec<&[u8]> = tree.split_inclusive(|&b| b == b'\n').collect();
+        let mut old: Vec<u8> = Vec::with_capacity(tree.len());
+        let mut old_lines = 0;
+        let mut next = 0;
+        for hunk in &file.hunks {
+            let at = format!("vendor/{} {}", file.path, hunk.header);
+            let new_side = side(hunk, b'-');
+            let start = hunk.new_start.saturating_sub(1);
+            let end = start + new_side.len();
+            let in_tree = lines.get(start..end);
+            if hunk.new_start == 0 || start < next || in_tree != Some(new_side.as_slice()) {
+                let ns = hunk.new_start;
+                return Err(format!(
+                    "{at}: the file does not hold the hunk's new lines at line {ns}"
+                ));
+            }
+            let kept = &lines[next..start];
+            for line in kept {
+                old.extend_from_slice(line);
+            }
+            old_lines += kept.len();
+            if hunk.old_start != old_lines + 1 {
+                return Err(format!(
+                    "{at}: its old start is not the line its old side lands on"
+                ));
+            }
+            let old_side = side(hunk, b'+');
+            for line in &old_side {
+                old.extend_from_slice(line);
+            }
+            old_lines += old_side.len();
+            next = end;
+        }
+        for line in &lines[next..] {
+            old.extend_from_slice(line);
+        }
+        Ok(old)
+    }
+
+    fn is_context(line: &(u8, Vec<u8>)) -> bool {
+        line.0 == b' '
+    }
+
+    // The hunk changes at least one line, and each run of changed lines is k `-` lines then
+    // k `+` lines, the i-th `-` paired with the i-th `+`, each pair one patched `#[cfg]`.
+    fn check_shape(hunk: &Hunk) -> Result<(), String> {
+        let body = &hunk.body;
+        let mut pairs = 0;
+        for run in body.chunk_by(|a, b| is_context(a) == is_context(b)) {
+            if is_context(&run[0]) {
+                continue;
+            }
+            let k = run.iter().take_while(|line| line.0 == b'-').count();
+            let pluses = run[k..].iter().all(|line| line.0 == b'+');
+            if k == 0 || run.len() != 2 * k || !pluses {
+                return Err("a run is not k `-` then k `+` lines".to_string());
+            }
+            for (old, new) in run[..k].iter().zip(&run[k..]) {
+                check_pair(&old.1, &new.1)?;
+            }
+            pairs += k;
+        }
+        if pairs == 0 {
+            return Err("it changes no line".to_string());
+        }
+        Ok(())
+    }
+
+    // `-<ws>#[cfg(<A>)]` and `+<ws>#[cfg(<B>)] // monster-realm: was #[cfg(<A>)]`, the same
+    // `<ws>`, nothing else on either line, and `<A>`, `<B>` cfg predicates that agree on wasm32.
+    fn check_pair(old: &[u8], new: &[u8]) -> Result<(), String> {
+        let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
+            return Err("a changed line is not UTF-8".to_string());
+        };
+        let attr = old.trim_start_matches([' ', '\t']);
+        let ws = &old[..old.len() - attr.len()];
+        let original = attr
+            .strip_prefix("#[cfg(")
+            .and_then(|rest| rest.strip_suffix(")]\n"));
+        let Some(original) = original else {
+            return Err(format!("not one whole `#[cfg(...)]`: {old:?}"));
+        };
+        let notice = format!(")] // monster-realm: was #[cfg({original})]\n");
+        let patched = new
+            .strip_prefix(ws)
+            .and_then(|rest| rest.strip_prefix("#[cfg("))
+            .and_then(|rest| rest.strip_suffix(notice.as_str()));
+        let Some(patched) = patched else {
+            return Err(format!("not `#[cfg(...)]` and the notice: {new:?}"));
+        };
+        let Some(a) = parse_cfg(original) else {
+            return Err(format!("`{original}`: not a cfg predicate"));
+        };
+        let Some(b) = parse_cfg(patched) else {
+            return Err(format!("`{patched}`: not a cfg predicate"));
+        };
+        same_on_wasm(&a, &b).map_err(|e| format!("`{original}` became `{patched}`: {e}"))
+    }
+
+    fn skip_spaces(text: &str, at: &mut usize) {
+        while text.as_bytes().get(*at) == Some(&b' ') {
+            *at += 1;
+        }
+    }
+
+    // Consumes `byte` after any spaces; false if it is not there.
+    fn eat(text: &str, at: &mut usize, byte: u8) -> bool {
+        skip_spaces(text, at);
+        let found = text.as_bytes().get(*at) == Some(&byte);
+        if found {
+            *at += 1;
+        }
+        found
+    }
+
+    // Consumes the longest run of bytes `keep` accepts (all ASCII) and returns it.
+    fn take<'t>(text: &'t str, at: &mut usize, keep: fn(u8) -> bool) -> &'t str {
+        let start = *at;
+        while text.as_bytes().get(*at).is_some_and(|&b| keep(b)) {
+            *at += 1;
+        }
+        &text[start..*at]
+    }
+
+    // `all(…)` / `any(…)` over comma-separated predicates (none allowed), `not(…)` over
+    // exactly one, `target_arch = "…"` or `feature = "…"` over `[A-Za-z0-9_-]*`, spaces allowed
+    // between tokens. Anything else, an unbalanced paren or a `]` included, is `None`.
+    fn parse_predicate(text: &str, at: &mut usize, depth: usize) -> Option<Cfg> {
+        if depth > 8 {
+            return None;
+        }
+        skip_spaces(text, at);
+        let key = take(text, at, |b| b.is_ascii_lowercase() || b == b'_');
+        match key {
+            "all" | "any" | "not" => {
+                if !eat(text, at, b'(') {
+                    return None;
+                }
+                let mut list = Vec::new();
+                if !eat(text, at, b')') {
+                    loop {
+                        list.push(parse_predicate(text, at, depth + 1)?);
+                        if eat(text, at, b')') {
+                            break;
+                        }
+                        if !eat(text, at, b',') {
+                            return None;
+                        }
+                    }
+                }
+                match key {
+                    "all" => Some(Cfg::All(list)),
+                    "any" => Some(Cfg::Any(list)),
+                    _ if list.len() == 1 => list.pop().map(|one| Cfg::Not(Box::new(one))),
+                    _ => None,
+                }
+            }
+            "target_arch" | "feature" => {
+                if !eat(text, at, b'=') || !eat(text, at, b'"') {
+                    return None;
+                }
+                let value = take(text, at, is_name_byte).to_string();
+                if text.as_bytes().get(*at) != Some(&b'"') {
+                    return None;
+                }
+                *at += 1;
+                if key == "feature" {
+                    Some(Cfg::Feature(value))
+                } else {
+                    Some(Cfg::TargetArch(value))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    // The whole of `text` as one predicate, or `None`.
+    fn parse_cfg(text: &str) -> Option<Cfg> {
+        let mut at = 0;
+        let cfg = parse_predicate(text, &mut at, 0)?;
+        skip_spaces(text, &mut at);
+        (at == text.len()).then_some(cfg)
+    }
+
+    // `a` and `b` agree on wasm32 under every on/off assignment of the features either names.
+    fn same_on_wasm(a: &Cfg, b: &Cfg) -> Result<(), String> {
+        let mut names = BTreeSet::new();
+        a.features(&mut names);
+        b.features(&mut names);
+        let names: Vec<&str> = names.into_iter().collect();
+        let count = names.len();
+        if count > 12 {
+            return Err(format!("{count} features: too many to enumerate"));
+        }
+        let assignments = 1u32 << count;
+        for mask in 0..assignments {
+            let on: BTreeSet<&str> = names
+                .iter()
+                .enumerate()
+                .filter(|&(bit, _)| (mask >> bit) & 1 == 1)
+                .map(|(_, name)| *name)
+                .collect();
+            if a.on_wasm(&on) != b.on_wasm(&on) {
+                return Err(format!("on wasm32 with features {on:?}, they differ"));
+            }
+        }
+        Ok(())
+    }
+
+    // Lowercase hex of the sha256 of `bytes`.
+    fn sha256_hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let digest = Sha256::digest(bytes);
+        let mut hex = String::with_capacity(64);
+        for &byte in &digest[..] {
+            hex.push(char::from(HEX[usize::from(byte >> 4)]));
+            hex.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        hex
+    }
+
+    // The lines of a TOML table: from the line after `header` to the next table header.
+    fn table<'t>(text: &'t str, header: &'t str) -> impl Iterator<Item = &'t str> {
+        let mut lines = text.split('\n');
+        for line in lines.by_ref() {
+            if line == header {
+                break;
+            }
+        }
+        lines.take_while(|line| !line.trim_start().starts_with('['))
+    }
+
+    // The key of a `key = value` line (trimmed), or "".
+    fn toml_key(line: &str) -> &str {
+        line.split_once('=').map_or("", |(key, _)| key.trim())
+    }
+
+    // The version in a cargo-normalised manifest: the first line of its `[package]` table
+    // that sets `version`, which must be `version = "<v>"`.
+    fn package_version(manifest: &str) -> Option<&str> {
+        let line = table(manifest, "[package]").find(|line| line.starts_with("version"))?;
+        line.strip_prefix("version = \"")?.strip_suffix('"')
+    }
+
+    // The manifest parses, and every path it names is inside a crate it declares.
+    let pristine = parse_pristine(&read_text(vendor, "PRISTINE.sha256")?)?;
+    for path in pristine.held.keys().chain(&pristine.omitted) {
+        if !pristine.crates.contains_key(crate_of(path)) {
+            return Err(format!("{MANIFEST}: `{path}` is in no declared crate"));
+        }
+    }
+
+    // Each copy holds exactly the files the manifest lists for it, every one a regular file,
+    // and none it marks omitted.
+    for name in pristine.crates.keys() {
+        let dir = std::fs::symlink_metadata(vendor.join(name));
+        if !dir.is_ok_and(|dir| dir.is_dir()) {
+            return Err(format!("vendor/{name}: not a directory"));
+        }
+        let mut found = BTreeSet::new();
+        walk(vendor, name, &mut found)?;
+        let listed: BTreeSet<String> = pristine
+            .held
+            .keys()
+            .filter(|path| crate_of(path) == name.as_str())
+            .cloned()
+            .collect();
+        if found != listed {
+            let unlisted: Vec<&String> = found.difference(&listed).collect();
+            let missing: Vec<&String> = listed.difference(&found).collect();
+            return Err(format!(
+                "vendor/{name}: unlisted {unlisted:?}, missing {missing:?}"
+            ));
+        }
+    }
+    for path in &pristine.omitted {
+        if std::fs::symlink_metadata(vendor.join(path)).is_ok() {
+            return Err(format!("vendor/{path}: omitted, yet present"));
+        }
+    }
+
+    // The patch parses strictly and changes only files the manifest lists.
+    let patch = parse_patch(&read(vendor, "native-host.patch")?, &pristine)?;
+
+    // Undone hunk by hunk, strictly, each patched file is back to its published bytes, and
+    // each hunk is runs of `#[cfg]` pairs, each selecting on wasm32 what its original did.
+    let mut restored: BTreeMap<&str, Vec<u8>> = BTreeMap::new();
+    for file in &patch {
+        let tree = read(vendor, &file.path)?;
+        restored.insert(file.path.as_str(), undo(file, &tree)?);
+        for hunk in &file.hunks {
+            let at = format!("vendor/{} {}", file.path, hunk.header);
+            check_shape(hunk).map_err(|e| format!("{at}: {e}"))?;
+        }
+    }
+
+    // Every held file, with the patch undone where it applies, hashes to its manifest line.
+    for (path, want) in &pristine.held {
+        let bytes = match restored.remove(path.as_str()) {
+            Some(bytes) => bytes,
+            None => read(vendor, path)?,
+        };
+        let got = sha256_hex(&bytes);
+        if got != *want {
+            return Err(format!(
+                "vendor/{path}: sha256 {got}, but {MANIFEST} records {want}"
+            ));
+        }
+    }
+
+    // One version: each copy's `[package]` has its `crate` line's, and the workspace pins
+    // `spacetimedb` to exactly the `spacetimedb` copy's.
+    for (name, version) in &pristine.crates {
+        let rel = format!("{name}/Cargo.toml");
+        let manifest = read_text(vendor, &rel)?;
+        if package_version(&manifest) != Some(version.as_str()) {
+            return Err(format!("vendor/{rel}: the package is not {version}"));
+        }
+    }
+    let Some(version) = pristine.crates.get("spacetimedb") else {
+        return Err(format!("{MANIFEST}: declares no crate `spacetimedb`"));
+    };
+    let pin = format!("spacetimedb = \"={version}\"");
+    let pins: Vec<&str> = table(root_manifest, "[workspace.dependencies]")
+        .filter(|line| toml_key(line) == "spacetimedb")
+        .collect();
+    if pins != [pin.as_str()] {
+        return Err(format!(
+            "Cargo.toml [workspace.dependencies]: {pins:?}, not exactly [{pin:?}]"
+        ));
+    }
+
+    // What cargo builds is what this guard covers: `vendor/` holds the declared crates and the
+    // three files beside them, the crates are the two the native host patches, and the root
+    // `[patch.crates-io]` points each at its copy and names nothing else.
+    let names: Vec<&str> = pristine.crates.keys().map(String::as_str).collect();
+    if names != CRATES {
+        return Err(format!("{MANIFEST}: crates {names:?}, not {CRATES:?}"));
+    }
+    let listing = std::fs::read_dir(vendor);
+    let listing = listing.map_err(|e| format!("vendor/: cannot be listed: {e}"))?;
+    let mut top = BTreeSet::new();
+    for entry in listing {
+        let entry = entry.map_err(|e| format!("vendor/: cannot be listed: {e}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let kind = entry.file_type();
+        let kind = kind.map_err(|e| format!("vendor/{name}: {e}"))?;
+        let is_crate = names.contains(&name.as_str()) && kind.is_dir();
+        let is_file = TOP_FILES.contains(&name.as_str()) && kind.is_file();
+        if !(is_crate || is_file) {
+            return Err(format!(
+                "vendor/{name}: neither a declared crate's directory nor one of {TOP_FILES:?}"
+            ));
+        }
+        top.insert(name);
+    }
+    let missing: Vec<&str> = TOP_FILES
+        .into_iter()
+        .chain(names.iter().copied())
+        .filter(|name| !top.contains(*name))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("vendor/: {missing:?} missing"));
+    }
+    let headers: Vec<&str> = root_manifest
+        .split('\n')
+        .filter(|line| line.trim_start().starts_with('[') && line.contains("patch"))
+        .collect();
+    if headers != ["[patch.crates-io]"] {
+        return Err(format!(
+            "Cargo.toml: the patch tables are {headers:?}, not exactly [patch.crates-io]"
+        ));
+    }
+    let entry = |name: &&str| format!("{name} = {{ path = \"vendor/{name}\" }}");
+    let mut want: Vec<String> = names.iter().map(entry).collect();
+    want.sort_unstable();
+    let mut got: Vec<&str> = table(root_manifest, "[patch.crates-io]")
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    got.sort_unstable();
+    if got != want {
+        return Err(format!(
+            "Cargo.toml [patch.crates-io]: {got:?}, not exactly {want:?}"
+        ));
+    }
+    Ok(())
 }
