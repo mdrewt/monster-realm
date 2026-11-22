@@ -16,8 +16,12 @@
 //! list never holds more than [`MAX_ALLOWLIST_ACCOUNTS`]; a write that would exceed that is
 //! refused whole.
 //!
+//! A player erases their own binding with [`unbind_world_account`], the one client-callable
+//! reducer the access rule does not gate. An unbind of a binding the build counts withdraws the
+//! caller's admission row too, so it never lets in an identity whose account the owner removed.
+//!
 //! A build accepts attestations under the keys of its profile and no others
-//! (`BuildProfile::attestation_keys`). A build with no key binds nothing: its four binding
+//! (`BuildProfile::attestation_keys`). A build with no key binds nothing: its five binding
 //! reducers answer [`REJECT_BUILD_BINDS_NOTHING`] before they decode, read or write anything,
 //! and [`trusted_binding`] answers `None` without reading. A binding records the `kid` that
 //! signed it and counts only while the build holds that key.
@@ -32,7 +36,8 @@
 //!
 //! WRITE-ISOLATION: this module alone writes `world_binding`, `world_bind_nonce`, `world_name`
 //! and `world_allowlist`. It reads the owner, the rule in force and the admission through
-//! `crate::access`, and the deletion state through `crate::guards`.
+//! `crate::access`, withdraws an unbinding caller's admission through it, and reads the
+//! deletion state through `crate::guards`.
 
 use crate::accounts::{AttestationKey, BuildProfile, BUILD_PROFILE, ENTITLEMENT_BASE_GAME};
 use crate::guards::log_reject;
@@ -48,7 +53,7 @@ use serde::Deserialize;
 use spacetimedb::{Identity, ReducerContext, Table};
 use std::collections::BTreeSet;
 
-/// The refusal of a build that holds no attestation key, from each of the four binding
+/// The refusal of a build that holds no attestation key, from each of the five binding
 /// reducers, before anything is decoded, read or written.
 pub(crate) const REJECT_BUILD_BINDS_NOTHING: &str = "this server takes no world binding";
 pub(crate) const REJECT_ATTESTATION_TOO_LONG: &str = "attestation too long";
@@ -521,7 +526,7 @@ pub fn request_bind_nonce(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// [`request_bind_nonce`] for `who`, relayed by the world's owner: an identity the rule has
-/// not admitted can call nothing, so under `Allowlist` the owner asks for it and reads the
+/// not admitted cannot connect, so under `Allowlist` the owner asks for it and reads the
 /// nonce from the table.
 #[spacetimedb::reducer]
 pub fn request_bind_nonce_for(ctx: &ReducerContext, who: Identity) -> Result<(), String> {
@@ -567,11 +572,36 @@ pub fn bind_world_account_for(
     )
 }
 
-/// Erase the caller's own binding and bind nonce. SKELETON: the behaviour lands with the
-/// implementation increment.
+/// Erase the caller's own binding: its `world_binding` row, whatever key signed it, and the bind
+/// nonce row it holds, expired or not. A caller with no binding gets `Ok` with no write, its
+/// nonce kept.
+///
+/// The one client-callable reducer the access rule does not gate, so an identity the rule
+/// refuses (a delisted account's included) can still erase its link, over a connection the
+/// connect reducer let in. A bound caller whose account is pending deletion is refused by the
+/// deletion gate.
+///
+/// When the binding is one the build counts, the caller's admission row goes with it, under
+/// every rule. While such a binding exists `Allowlist` governs the identity by its account
+/// alone and leaves the row unread, so an unbind that kept the row would let in, there or after
+/// a later change to `Allowlist`, an identity whose account the owner removed. Once unbound, the
+/// identity gets back into a world that is not `Open` only by the owner: the door, the
+/// admission list of `access::set_world_access`, or a relayed bind.
 #[spacetimedb::reducer]
 pub fn unbind_world_account(ctx: &ReducerContext) -> Result<(), String> {
-    let _ = ctx;
+    require_binding_build(ctx, &BUILD_PROFILE, "unbind_world_account")?;
+    let who = ctx.sender();
+    let Some(binding) = ctx.db.world_binding().identity().find(who) else {
+        return Ok(());
+    };
+    crate::guards::require_not_deleting(ctx, "unbind_world_account")?;
+    ctx.db.world_binding().identity().delete(who);
+    if ctx.db.world_bind_nonce().identity().find(who).is_some() {
+        ctx.db.world_bind_nonce().identity().delete(who);
+    }
+    if counts_under(&BUILD_PROFILE, &binding) {
+        crate::access::withdraw_admission(ctx, who);
+    }
     Ok(())
 }
 

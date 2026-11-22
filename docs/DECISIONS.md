@@ -2435,7 +2435,8 @@ attestation and passes it to a reducer. The route signs with its own key and iss
 which the official server trusts. The attestation is a compact signed JWT with a key id (`kid`); it
 lives minutes, names one world and carries the nonce that world chose. The module verifies it with
 a verifier compiled in, against a `kid`-keyed list of accepted attestation keys that is a constant of
-the build, then records the binding; the world needs no network afterwards. The bind is built in
+the build, then records the binding; the world needs no network afterwards. A player erases their
+own binding without the host (operator, <https://github.com/mdrewt/monster-realm/issues/847>). The bind is built in
 `server-module/src/world_binding.rs`. `request_bind_nonce` gives the caller one nonce, read through
 the owner-scoped view `my_bind_nonce`: a row per identity in private `world_bind_nonce`, 16 bytes of
 `ctx.random()` XORed with the identity's first 16 bytes (two identities never share one, though
@@ -2448,7 +2449,19 @@ writes private `world_binding` `{identity, account_subject, bound_at_ms, entitle
 the identity reads through `my_world_binding`, and deletes the nonce. A row the identity holds is
 replaced: the latest attestation an identity presents wins. The deletion cascade erases `world_binding`
 and `world_bind_nonce` (`world_binding::erase_world_binding`), the data export does not include a
-binding, and a guest claim neither moves nor erases one. The owner relays both calls for another
+binding, and a guest claim neither moves nor erases one. A player erases their own binding with
+`unbind_world_account()`: it deletes the caller's `world_binding` row, whatever key signed it, and
+the caller's `world_bind_nonce` row, expired or not; a caller with no binding gets `Ok` with no
+write and keeps its nonce. It is the one reducer of the client roster the access rule does not
+gate, so a player whose account the host removed from the list can still erase the link, over a
+connection the connect reducer let in while the player was admitted. A build that binds nothing
+refuses it with the binding reducers' refusal before anything else, and a bound caller whose
+account is pending deletion is refused by the deletion gate (the cascade erases the binding).
+When the erased binding is one the build counts, the caller's `world_admission` row goes with it,
+under every rule: an unbind never lets in an identity whose account the owner removed. Once
+unbound, the identity gets back into a world that is not `Open` only through the owner (the door,
+`set_world_access`'s admission list or carry-over, or a relayed bind). Its account stays on the
+list and its wrong-password record stays. The owner relays both calls for another
 identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
 admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
 `who`. The route rate-limits binds per account and does not keep the world an attestation was
@@ -2468,7 +2481,12 @@ under a separate key, so the signer has to be ours. A per-world attestation that
 needs one signature check in the module, puts no long-lived secret on the client, makes revoking an
 account's ability to bind new worlds automatic, and passes every bind through a service where abuse
 can be rate-limited and seen. A key list with `kid` lets the attestation key rotate by shipping the
-next key before the old one retires.
+next key before the old one retires. The unbind takes the admission row because, while a binding
+the build counts exists, `Allowlist` governs the identity by its account alone and leaves the row
+unread: an unbind that kept it would let back in an identity whose account the owner removed, at
+once, or after the owner delists an identity that unbound while still listed, or after a stretch
+under `Password` and a change back to `Allowlist`. Only a withdrawal under every rule closes the
+last of the three.
 
 **Rules out.** Sending an account token to a world we do not operate (see "A target's kind gates
 telemetry and account sign-in"); a third-party provider as the attestation signer; signing
@@ -2479,7 +2497,13 @@ chosen: it would let a first bind happen on a LAN with no internet and keep who-
 our service, at the cost of a device key to store safely in every build, a second signature check in
 the bind reducer, and binds to new worlds that outlive an account's suspension until the credential
 expires. It stays the upgrade path, as a second attestation source, if either of those gains becomes
-a requirement.
+a requirement. An admission check on the unbind (a removed player could not erase the link); keeping
+the admission row through an unbind; withdrawing it only under `Allowlist` or only for a caller the
+rule refuses at the call (both leave one of the paths above open). Two defaults the operator may
+overrule: the withdrawal writes `world_admission`, beyond the spec's "and nothing else", so an unbind
+in a `Password` world costs the player the door; and a removed player who has disconnected cannot
+reach the unbind, since every route runs the connect reducer first (measured at 2.11.0, see "A world
+that is not open refuses an unadmitted identity at connect and in every reducer").
 
 ## The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the module
 
@@ -2696,10 +2720,11 @@ give every server a name (weighed for browser joiners and not chosen).
 **Decision.** While a world's access rule is `Password` or `Allowlist`, the connect reducer
 refuses, as its first statement, an identity that `access::is_admitted` does not admit
 (`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
-not owner-only opens with `access::require_admitted`; the owner-only ones are `sync_content`,
-`set_world_access`, `admit`, `set_world_names`, `set_world_allowlist` and the two relayed binding
-reducers. The four binding reducers answer their build's refusal before that check; it reads
-nothing. A world with no
+not owner-only opens with `access::require_admitted`, except `unbind_world_account`, which makes no
+admission check (see "A private world verifies an account by a per-world attestation our account
+service signs"); the owner-only ones are `sync_content`, `set_world_access`, `admit`,
+`set_world_names`, `set_world_allowlist` and the two relayed binding reducers. The five binding
+reducers answer their build's refusal before that check; it reads nothing. A world with no
 `world_access` row is `Open`. Under `Password`, `is_admitted` admits the owner and an identity in
 `world_admission`. Under `Allowlist` it admits the owner; an identity with a trusted binding exactly
 while its `account_subject` is a row of private `world_allowlist` (at most 256 subjects of 1 to 255
@@ -2710,7 +2735,8 @@ every check and nothing is stored from it.
 not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
 before the call admitted, and to none that rule refused. A new joiner's way in under `Allowlist`
 is the owner's relayed nonce request and bind. Admission rows are written only by the two owner-only
-reducers `set_world_access` and `admit`, which take the joiner's identity.
+reducers `set_world_access` and `admit`, which take the joiner's identity, and deleted by a player's
+own unbind of a binding the build counts (and by the deletion cascade).
 
 The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
 already let in. When the rule changes to `Allowlist`, `set_world_access` adds the account of every
@@ -2763,7 +2789,9 @@ removal: `Open` lists
 every trusted binding again, anyone's who bound meanwhile included, and `Password` lists whoever
 holds an admission row, which a rule change gives each connected identity, so the host reads the
 list after changing back. A listed account stays listed after its player's binding is erased, until
-the host removes it. Anyone may bind in an `Open` world, so more than 256 accounts can bind there
+the host removes it; an identity that unbound while the rule was `Open` and is still connected when
+it changes back gets an admission row from the change, as every connection `Open` admitted does.
+Anyone may bind in an `Open` world, so more than 256 accounts can bind there
 and the change to `Allowlist` is then refused; the host changes to `Password` first (which lists
 only the identities holding an admission row) or deletes binding rows as the database owner.
 
