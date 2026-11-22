@@ -1262,6 +1262,12 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_player_quest, public)]` in schema.rs (sr-3).
     #[link_name = "__preinit__20_register_describer_my_player_quest"]
     fn register_view_my_player_quest();
+    /// `#[spacetimedb::view(accessor = my_world_binding, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_world_binding"]
+    fn register_view_my_world_binding();
+    /// `#[spacetimedb::view(accessor = my_bind_nonce, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_bind_nonce"]
+    fn register_view_my_bind_nonce();
     // Every `#[spacetimedb::table]` describer (macro `table.rs:1176`
     // `__preinit__20_register_describer_<accessor>`), registered before the views
     // so `Fixture::module_def` carries the full generated table set — the
@@ -1402,6 +1408,14 @@ unsafe extern "C" {
     fn register_table_world_admission();
     #[link_name = "__preinit__20_register_describer_world_admission_attempt"]
     fn register_table_world_admission_attempt();
+    #[link_name = "__preinit__20_register_describer_world_binding"]
+    fn register_table_world_binding();
+    #[link_name = "__preinit__20_register_describer_world_bind_nonce"]
+    fn register_table_world_bind_nonce();
+    #[link_name = "__preinit__20_register_describer_world_name"]
+    fn register_table_world_name();
+    #[link_name = "__preinit__20_register_describer_world_allowlist"]
+    fn register_table_world_allowlist();
     /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1416,7 +1430,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 68] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 72] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1485,10 +1499,14 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 68] = [
     register_table_world_access,
     register_table_world_admission,
     register_table_world_admission_attempt,
+    register_table_world_binding,
+    register_table_world_bind_nonce,
+    register_table_world_name,
+    register_table_world_allowlist,
 ];
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 17] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 19] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1506,6 +1524,8 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 17] = [
     register_view_my_formation,
     register_view_my_trade_session,
     register_view_my_player_quest,
+    register_view_my_world_binding,
+    register_view_my_bind_nonce,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1555,6 +1575,12 @@ pub(crate) const VIEW_MY_FORMATION: usize = 14;
 
 /// `VIEWS` id of `my_player_quest` (its index in [`VIEW_DESCRIBERS`]; sr-3).
 pub(crate) const VIEW_MY_PLAYER_QUEST: usize = 16;
+
+/// `VIEWS` id of `my_world_binding` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_WORLD_BINDING: usize = 17;
+
+/// `VIEWS` id of `my_bind_nonce` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_BIND_NONCE: usize = 18;
 
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
 /// `RawModuleDef` (V10 on 2.11.0), captured once per process so a test can read

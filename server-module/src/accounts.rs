@@ -54,6 +54,33 @@ const HOSTED_DEV_ISSUER: &str = "https://auth.monster-realm.spookyowltech.com";
 /// trusts them.
 pub(crate) const DEV_LOGIN_ISSUERS: &[&str] = &[LOCAL_DEV_ISSUER, HOSTED_DEV_ISSUER];
 
+/// A key a build accepts world attestations under: the account service publishes each with
+/// its `kid` (`account-service/attestation-public-keys.json`). The algorithm is Ed25519 for
+/// every one; a token's own header never says which key or algorithm checks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AttestationKey {
+    pub(crate) kid: &'static str,
+    /// The 32 bytes of the Ed25519 public key (the JWK's `x`, decoded).
+    pub(crate) public_key: [u8; 32],
+}
+
+/// The production attestation keys, which a `world` build holds and no other. Empty: no
+/// production key is published, so a `world` build accepts no binding and entitles nobody.
+pub(crate) const PRODUCTION_ATTESTATION_KEYS: &[AttestationKey] = &[];
+/// The account service's `local-dev` attestation key. Its private half is derived from a
+/// label in this repository (`account-service/src/keys.ts`), so anyone can sign with it.
+const LOCAL_DEV_ATTESTATION_KEY: AttestationKey = AttestationKey {
+    kid: "ZwdbDVawj1m0Ot-iNvOUMykc1_hgr1dD5wRMph3rgWE",
+    public_key: [
+        0x05, 0x65, 0xdf, 0x21, 0x76, 0xe8, 0xa7, 0x59, 0x3a, 0xf8, 0x28, 0x74, 0x55, 0x3b, 0xa0,
+        0xde, 0x49, 0x5c, 0x81, 0x42, 0xe8, 0xe0, 0xd3, 0x73, 0x4c, 0x10, 0x93, 0x8c, 0x7d, 0x80,
+        0x14, 0x5e,
+    ],
+};
+/// The dev attestation keys: the published `local-dev` list, then the `hosted-dev` list,
+/// which publishes no key. No release build holds them.
+pub(crate) const DEV_ATTESTATION_KEYS: &[AttestationKey] = &[LOCAL_DEV_ATTESTATION_KEY];
+
 /// The cargo features a build names: the build input for ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuildFeatures {
@@ -76,33 +103,50 @@ pub(crate) struct BuildProfile {
     pub(crate) login_issuers: &'static [&'static str],
     /// The build compiles a dev reducer.
     pub(crate) dev_reducers: bool,
+    /// The keys whose world attestations bind an identity here. A build with none binds
+    /// nothing and reads no binding.
+    pub(crate) attestation_keys: &'static [AttestationKey],
 }
 
 /// The profile of a feature set (`docs/local-play.md` §3, "The build input"). A release
 /// feature wins over a dev feature: a build that names `official` or `world` enforces and
-/// trusts no dev issuer whatever else it names, and one that names both trusts nothing.
-/// Otherwise a build enforces unless it names `open_join`, and trusts the dev issuers when it
-/// names `dev_issuers`. Cargo's own implications (`load_test_zones` and `dev_reducers` name
+/// trusts no dev issuer and no dev attestation key whatever else it names, and one that names
+/// both trusts nothing. `official` holds the production login issuer and no attestation key,
+/// `world` the production attestation keys and no login issuer. Otherwise a build enforces
+/// unless it names `open_join`, and trusts the dev issuers and holds the dev attestation keys
+/// when it names `dev_issuers`. Cargo's own implications (`load_test_zones` and `dev_reducers` name
 /// `open_join`, which names `dev_issuers`) are applied here too, so a feature handed to the
 /// compiler from outside cargo yields no other profile.
 pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
     let dev_reducers = features.dev_reducers || features.load_test_zones;
     let open_join = features.open_join || dev_reducers;
     let dev_issuers = features.dev_issuers || open_join;
-    let (name, enforces_ownership, login_issuers): (&str, bool, &[&str]) =
+    type Row = (
+        &'static str,
+        bool,
+        &'static [&'static str],
+        &'static [AttestationKey],
+    );
+    let (name, enforces_ownership, login_issuers, attestation_keys): Row =
         match (features.official, features.world) {
-            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS),
-            (false, true) => ("world", true, &[]),
-            (true, true) => ("conflict", true, &[]),
-            (false, false) if open_join => ("test", false, DEV_LOGIN_ISSUERS),
-            (false, false) if dev_issuers => ("dev-enforcing", true, DEV_LOGIN_ISSUERS),
-            (false, false) => ("default", true, &[]),
+            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS, &[]),
+            (false, true) => ("world", true, &[], PRODUCTION_ATTESTATION_KEYS),
+            (true, true) => ("conflict", true, &[], &[]),
+            (false, false) if open_join => ("test", false, DEV_LOGIN_ISSUERS, DEV_ATTESTATION_KEYS),
+            (false, false) if dev_issuers => (
+                "dev-enforcing",
+                true,
+                DEV_LOGIN_ISSUERS,
+                DEV_ATTESTATION_KEYS,
+            ),
+            (false, false) => ("default", true, &[], &[]),
         };
     BuildProfile {
         name,
         enforces_ownership,
         login_issuers,
         dev_reducers,
+        attestation_keys,
     }
 }
 
@@ -926,14 +970,10 @@ fn reject(reducer: &str, sender: Identity, reason: &str) -> Result<(), String> {
 
 // --- Ownership ----------------------------------------------------------------
 
-/// Whether the caller may play under `profile`. A build that does not enforce ownership
-/// admits everyone and never reads the token. An enforcing build admits a connection whose
-/// token is from one of the profile's login issuers, is addressed to this application and
-/// names the base game. The audience of a token from any other issuer is never read.
-pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
-    if !profile.enforces_ownership {
-        return true;
-    }
+/// Whether the caller's connection token entitles it under `profile`: it is from one of the
+/// profile's login issuers, is addressed to this application and names the base game. The
+/// audience of a token from any other issuer is never read.
+fn token_entitles(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
     let Some(claims) = ctx.sender_auth().jwt() else {
         return false;
     };
@@ -942,8 +982,22 @@ pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
         && token_names_entitlement(claims.raw_payload(), ENTITLEMENT_BASE_GAME)
 }
 
-/// Refuses a caller who is not entitled under `profile` with `ERR_OWNERSHIP_REQUIRED`. Reads
-/// no table and writes nothing.
+/// Whether the caller may play under `profile`. A build that does not enforce ownership
+/// entitles everyone and reads neither the token nor a binding. An enforcing build entitles a
+/// connection whose token entitles it, and one whose identity holds a world binding the build
+/// counts that carried the base game (`world_binding::bound_entitled`). A profile with no
+/// attestation key reads no binding, so the official build has the token as its one way in
+/// and a world build the binding.
+pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
+    if !profile.enforces_ownership {
+        return true;
+    }
+    token_entitles(ctx, profile) || crate::world_binding::bound_entitled(ctx, profile, ctx.sender())
+}
+
+/// Refuses a caller who is not entitled under `profile` with `ERR_OWNERSHIP_REQUIRED`. Writes
+/// nothing; the one table it reads is `world_binding`, and only when the token does not
+/// entitle the caller and the profile holds an attestation key.
 pub(crate) fn require_entitled(
     ctx: &ReducerContext,
     profile: &BuildProfile,
@@ -1452,6 +1506,7 @@ pub fn account_deletion_reaper(
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::access::erase_admission(ctx, args.account_identity);
+    crate::world_binding::erase_world_binding(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);

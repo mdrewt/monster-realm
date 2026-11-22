@@ -1388,6 +1388,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "taming",
     "trading",
     "trading_session",
+    "world_binding",
     "dev_clock",
     "load_dev",
 ];
@@ -1419,6 +1420,8 @@ const EXPECTED_SCHEDULED: &[&str] = &[
 const EXPECTED_GATED: &[&str] = &[
     "accept_challenge",
     "advance_dialogue",
+    "bind_world_account",
+    "bind_world_account_for",
     "buy",
     "cancel_queue",
     "care",
@@ -1439,6 +1442,8 @@ const EXPECTED_GATED: &[&str] = &[
     "heal_party",
     "join_game",
     "open_trade_session",
+    "request_bind_nonce",
+    "request_bind_nonce_for",
     "request_data_export",
     "sell",
     "set_move",
@@ -1451,24 +1456,30 @@ const EXPECTED_GATED: &[&str] = &[
     "train",
 ];
 
-/// Reducers that reach no classified write at all: the guest-claim start, and the
-/// three retired legacy offer reducers, whose only statement is their fixed error.
+/// Reducers that reach no classified write at all: the guest-claim start, the
+/// three retired legacy offer reducers, whose only statement is their fixed error,
+/// and the owner's two world-list setters, which write only the `NotOwned`
+/// `world_name` and `world_allowlist` tables.
 const EXPECTED_NO_WRITES: &[&str] = &[
     "confirm_trade",
     "propose_trade",
     "respond_trade",
+    "set_world_allowlist",
+    "set_world_names",
     "start_guest_claim",
 ];
 
-/// Vacuity floor for the manifest-derived classified set (24 tables):
-/// the set itself is derived in the test from `DATA_LIFECYCLE_MANIFEST`, so this
-/// only refuses a manifest that shrank to nothing.
-const CLASSIFIED_TABLE_FLOOR: usize = 24;
+/// Vacuity floor for the manifest-derived classified set (the 48 tables the
+/// manifest classifies other than `NotOwned`, `world_binding` and
+/// `world_bind_nonce` among them): the set itself is derived in the test from
+/// `DATA_LIFECYCLE_MANIFEST`, so this only refuses a manifest that shrank.
+const CLASSIFIED_TABLE_FLOOR: usize = 48;
 
-/// Reducer floor for the real corpus: the 58 reducer attributes it carries
-/// (the five trade-session reducers included), so the per-reducer verdict pin
-/// cannot be satisfied by an engine that finds almost none of them.
-const REDUCER_FLOOR: usize = 58;
+/// Reducer floor for the real corpus: the 69 reducer attributes it carries
+/// (the five trade-session reducers and the six world-binding reducers
+/// included), so the per-reducer verdict pin cannot be satisfied by an engine
+/// that finds almost none of them.
+const REDUCER_FLOOR: usize = 69;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)
@@ -2315,7 +2326,7 @@ fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
 
 // ---------------------------------------------------------------------------
 // The admission roster (local-play design A1): every client-callable reducer makes the
-// admission check before anything else, except the three owner-only reducers, which answer
+// admission check before anything else, except the owner-only reducers, which answer
 // their own owner refusal. The roster is the GENERATED client bindings (their file names);
 // each probe runs the SHIPPED reducer fn as an unadmitted non-owner over a client connection
 // on a `Password` world. Only `config`, `world_access` and `world_admission` are registered,
@@ -2382,6 +2393,12 @@ mod admission_roster {
             }),
             probe("advance_dialogue", Player, |ctx| {
                 crate::npc::advance_dialogue(ctx, 0)
+            }),
+            probe("bind_world_account", Player, |ctx| {
+                crate::world_binding::bind_world_account(ctx, String::new())
+            }),
+            probe("bind_world_account_for", OwnerOnly, |ctx| {
+                crate::world_binding::bind_world_account_for(ctx, nobody(), String::new())
             }),
             probe("buy", Player, |ctx| crate::economy::buy(ctx, 0, 0, 0)),
             probe(
@@ -2458,6 +2475,14 @@ mod admission_roster {
                 )
             }),
             probe(
+                "request_bind_nonce",
+                Player,
+                crate::world_binding::request_bind_nonce,
+            ),
+            probe("request_bind_nonce_for", OwnerOnly, |ctx| {
+                crate::world_binding::request_bind_nonce_for(ctx, nobody())
+            }),
+            probe(
                 "request_data_export",
                 Player,
                 crate::privacy::request_data_export,
@@ -2483,6 +2508,12 @@ mod admission_roster {
             }),
             probe("set_world_access", OwnerOnly, |ctx| {
                 crate::access::set_world_access(ctx, WorldAccessRule::Open, None, Vec::new())
+            }),
+            probe("set_world_allowlist", OwnerOnly, |ctx| {
+                crate::world_binding::set_world_allowlist(ctx, Vec::new())
+            }),
+            probe("set_world_names", OwnerOnly, |ctx| {
+                crate::world_binding::set_world_names(ctx, Vec::new())
             }),
             probe("start_guest_claim", Player, |ctx| {
                 crate::accounts::start_guest_claim(ctx, String::new())
@@ -2622,8 +2653,11 @@ mod admission_roster {
         );
         assert_eq!(
             generated.len(),
-            43,
-            "the generated roster: 41 reducers before lpw-9 plus `admit` and `set_world_access`"
+            49,
+            "the generated roster: 41 reducers before lpw-9 plus `admit` and `set_world_access`, \
+             plus the six world-binding reducers (`request_bind_nonce`, \
+             `request_bind_nonce_for`, `bind_world_account`, `bind_world_account_for`, \
+             `set_world_names`, `set_world_allowlist`)"
         );
     }
 
@@ -2675,7 +2709,11 @@ mod admission_roster {
                  admission refusal first"
             );
         }
-        assert_eq!(checked, 40, "forty player reducers are probed");
+        assert_eq!(
+            checked, 42,
+            "forty-two player reducers are probed (`request_bind_nonce` and \
+             `bind_world_account` among them)"
+        );
         assert_eq!(
             footprint(&fx, &w),
             before,
@@ -2683,7 +2721,9 @@ mod admission_roster {
         );
     }
 
-    /// The owner-only set is exactly `sync_content`, `set_world_access` and `admit`; each,
+    /// The owner-only set is exactly `sync_content`, `set_world_access`, `admit` and the four
+    /// owner-only world-binding reducers (`request_bind_nonce_for`, `bind_world_account_for`,
+    /// `set_world_names`, `set_world_allowlist`); each,
     /// called by an unadmitted non-owner on a `Password` world, answers its OWN owner refusal
     /// (never the admission check's), with no write. `sync_content`'s refusal is read from the
     /// same caller on the same world with no access row, where no admission check can apply.
@@ -2700,7 +2740,15 @@ mod admission_roster {
             .collect();
         assert_eq!(
             owner_only,
-            BTreeSet::from(["admit", "set_world_access", "sync_content"]),
+            BTreeSet::from([
+                "admit",
+                "bind_world_account_for",
+                "request_bind_nonce_for",
+                "set_world_access",
+                "set_world_allowlist",
+                "set_world_names",
+                "sync_content",
+            ]),
             "the owner-only set is pinned exactly"
         );
 

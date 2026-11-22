@@ -209,11 +209,13 @@ issuer's keys (below).
 
 ### Whether an account issuer can mint an attestation as a second token type
 
-**Decided, not built.** The issuer is our own account service, and the attestation is signed by a
-route beside it, with its own issuer name and signing key, neither trusted by the official server
-(DECISIONS.md, "A private world verifies an account by a per-world attestation our account service
-signs"). No issuer is deployed (`PRODUCTION_LOGIN_ISSUERS` in `server-module/src/accounts.rs` is a
-placeholder; a test or dev build trusts the dev issuers) and the route is not built. SpacetimeDB puts nothing in the way: a host verifies a
+**Decided and built in part.** The issuer is our own account service, and the attestation is signed
+by a route beside it, with its own issuer name and signing key, neither trusted by the official
+server (DECISIONS.md, "A private world verifies an account by a per-world attestation our account
+service signs"). The route exists (`account-service/src/attest.ts`), and the module's half is built
+(`server-module/src/world_binding.rs`). No issuer is deployed (`PRODUCTION_LOGIN_ISSUERS` in
+`server-module/src/accounts.rs` is a placeholder; a test or dev build trusts the dev issuers) and no
+production attestation key is published (`PRODUCTION_ATTESTATION_KEYS` is empty). SpacetimeDB puts nothing in the way: a host verifies a
 token from any issuer whose discovery document it can fetch, and a module reads every claim. The
 attestation is a signed token with an audience naming one world, a nonce the world chose, and a
 lifetime of minutes; what the audience is, is fork (c) of "The access and attestation design"
@@ -336,14 +338,13 @@ service, and that host is not chosen. AWS KMS and Google Cloud KMS document Ed25
 on 2026-11-21, not tried); Azure Key Vault's support was not confirmed. If the host chosen cannot
 hold an Ed25519 key, ES256 is the verifier, and it fits the budget.
 
-**What the bind must add to the check.** The measurement is a signature check, not the bind, which
-is not built. Beyond the check, the bind must refuse a token longer than a fixed cap before
-decoding it, require exactly three segments, decode base64url strictly, call `verify_strict`, take
-the algorithm and the key from the module's own key list by `kid` and never from the token's
-header, check `aud`, `exp` (against `ctx.timestamp`) and the nonce, and key replay on a claim (the
-world's spent nonce), never on the token's text, since a lenient decoder, and ECDSA itself, let two
-texts verify as one token. Refusing on a claim before the signature is checked trusts nothing, so
-the bind may order its checks cheapest first.
+**What the bind adds to the check.** The measurement is a signature check, not the bind. The bind
+(`server-module/src/world_binding.rs`) refuses a token longer than 4096 bytes before decoding it,
+requires exactly three non-empty segments, decodes base64url strictly, calls `verify_strict`, takes
+the key from the build's own key list by `kid` (the header's `alg` is never read), checks `aud`,
+`exp` (against the host clock) and the nonce, and keys replay on a claim (the world's spent nonce),
+never on the token's text, since a lenient decoder, and ECDSA itself, let two texts verify as one
+token. The payload is parsed only after the signature verifies.
 
 ### Can a token a private host receives be replayed to the official server
 
@@ -363,8 +364,8 @@ The attestation, presented as a reducer argument, is as narrow as what it names,
 module source runs on every server, the official one included. The rule that keeps it off the
 official server is fork (b) of "The access and attestation design" below: the official build holds
 no attestation key, so it takes accounts only as connection tokens from the account issuer. With
-that rule nothing a private host holds reaches an account on the official server. It is designed,
-not built.
+that rule nothing a private host holds reaches an account on the official server. The module's half
+is built: the official build holds no attestation key (`server-module/src/accounts.rs`).
 
 Replay to another private world is a separate question, and the design has to close it before a
 private server sees a real attestation. An audience and a nonce do not close it: a hostile host can
@@ -460,7 +461,8 @@ names, so that a hostile host cannot relay one world's attestation to another; a
 enforces ownership, and how a connection reaches the admission and binding calls before
 `join_game`. Question (d), plaintext `ws:` to a friends server, is decided in DECISIONS.md ("Private
 servers carry their own encryption…"). Fork (a)'s module half is built (`server-module/src/access.rs`);
-its gate half and forks (b) and (c) are not. Fork (e)'s features, constants, check, artefact
+its gate half is not. The module halves of forks (b) and (c) are built (`server-module/src/world_binding.rs`);
+the client's bind flow, the shell and gate halves and the run over two real hosts are not. Fork (e)'s features, constants, check, artefact
 section and recipe are built (`server-module/Cargo.toml`, `server-module/src/accounts.rs`,
 `justfile`); its default is not, since the default feature list holds `open_join`. Work is named by its id in the
 harness specs `M-local-play.spec.md` (lpw-9: the open or password rule; lpw-11 to lpw-14: the
@@ -472,8 +474,8 @@ it proves.
 | Fork | Chosen | Rejected | Proved by |
 |---|---|---|---|
 | (a) An unadmitted connection | A1: the connect reducer refuses an identity the rule has not admitted, every reducer a player can call makes the same check, connections open when the rule changes are admitted, and the owner relays the door | A2: row filters on every public table. A3: every table private behind a view. A1 at connect only | lpw-9.2 and lpw-9.3 in `server-module/src/access_tests.rs`; `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` |
-| (b) The official server's refusal | B1: the official build holds no attestation key, and a world build trusts no login issuer | B2: a row or flag in the database. B3: the world-name check and the route alone. B4: a database identity compiled in | lpw-15.3 in `server-module/src/world_binding_tests.rs`, run under the `official` build |
-| (c) What the attestation names | C2: the server as the player's own software authenticated it, `spki:<fingerprint>/<db>` or `dns:<host>:<port>/<db>`, bound from the desktop shell | C1: the key that verifies the client's world token. C3: the server's address or database identity. C2 with a browser flow built now | lpw-15.4 in `server-module/src/world_binding_tests.rs` and `client/src/net/attestation.test.ts` |
+| (b) The official server's refusal | B1: the official build holds no attestation key, and a world build trusts no login issuer | B2: a row or flag in the database. B3: the world-name check and the route alone. B4: a database identity compiled in | lpw-15.3 in `server-module/src/world_binding_tests.rs` (`mod official_build`, run under the `official` build; `mod binding_build` on every build) |
+| (c) What the attestation names | C2: the server as the player's own software authenticated it, `spki:<fingerprint>/<db>` or `dns:<host>:<port>/<db>`, bound from the desktop shell | C1: the key that verifies the client's world token. C3: the server's address or database identity. C2 with a browser flow built now | lpw-15.4 in `server-module/src/world_binding_tests.rs` (`mod bind_refuses`, `mod relay_rig`); the client's half is not built |
 | (e) The build input | E2: a build enforces ownership unless the feature `open_join` is named; `official` and `world` are the two release builds | E1: a feature that switches enforcement on. E3: an environment variable at build time. E4: a row at run time | lpw-15.7 in `server-module/src/world_binding_tests.rs`; acs-6.1 to acs-6.5 in `server-module/src/accounts_tests.rs`, `server-module/src/movement_tests.rs` and `evals/account-e2e.eval.mjs` |
 
 Each fork was scored by a judge from one evidence dossier, 1 (poor) to 5 (excellent) per criterion,
@@ -682,8 +684,13 @@ attestation that the dev-enforcing build accepts byte for byte, `bind_world_acco
 official build's fixed error and no table changes, the nonce row included, and the owner-relayed
 forms return the same error; then, with a binding row
 that carries the entitlement put in place for the caller, `join_game` returns the ownership
-refusal and writes no player row. acs-6.5 repeats the join half on the built `official` artefact,
-on a live host.
+refusal and writes no player row (`mod official_build`, which also has the build refuse before any
+other check). `mod binding_build`, on every build, shows that a build binds nothing exactly when it
+holds no attestation key, that a binding counts only under a profile holding its key, and holds the
+key lists to the generated `account-service/attestation-public-keys.json`. No run of `just ci` includes `official_build`; it runs with `cargo nextest
+run --workspace --no-default-features --features monster-realm-module/official -E
+'package(monster-realm-module) & test(/official_build/)'`. acs-6.5 repeats the join half on the
+built `official` artefact, on a live host.
 
 #### (c) What the attestation names
 
@@ -773,13 +780,16 @@ place.
 **Proved by.** lpw-15.4: given this identity's outstanding nonce and an attestation, valid in
 every other way, whose `aud` is another world's name, `bind_world_account` refuses with no write
 to the binding or the nonce, and passing that check unconditionally turns the test red
-(`server-module/src/world_binding_tests.rs`); and the name the client asks for is a function of the
-authenticated target alone, which no message from the server changes
-(`client/src/net/attestation.test.ts`). Those are the module's half and the client's half. The run
-over two real hosts and their certificates (a relay, a proxy, invites that mix one world's
-fingerprint with the other's address) needs the gate and the pin, which lpw-12, lpw-14 and lpw-18
-build and no criterion of theirs asks for; until it has run, the relay is closed by design and
-proved in halves, and no `world` build is given the production attestation keys.
+(`mod bind_refuses`, in `server-module/src/world_binding_tests.rs`); `mod relay_rig` there runs the
+relay against two worlds' module state: the attestation fetched for the hostile host's own world is
+refused on the victim, and binds on a world that holds that name. That is the module's half. The
+client's half, that the name the client asks for is a function of the authenticated target alone,
+is not built: `client/src/net/attestation.ts`, the name function, the bind flow and the not-owned
+message for a bind do not exist. The run over two real hosts and their certificates (a relay, a
+proxy, invites that mix one world's fingerprint with the other's address) needs the gate and the
+pin, which lpw-12, lpw-14 and lpw-18 build and no criterion of theirs asks for; until it has run,
+the relay is closed by design and proved in halves, and no `world` build is given the production
+attestation keys (`PRODUCTION_ATTESTATION_KEYS` is empty).
 
 #### (e) The build input, and the order of calls
 
@@ -887,9 +897,12 @@ and a player row exists only through it.
   `bind_world_account`; then `join_game`.
 - *`Password`.* The door first, through the owner's relay, then as for `Open`.
 - *`Allowlist`.* The bind is the admission, so it comes before the connection: the nonce and the
-  bind are relayed by the owner (owner-only forms of both reducers that take the joiner's
-  identity), the module admits the identity only when the bound account is on the list, and the
-  joiner then connects and calls `join_game`. An identity admitted before connects without one.
+  bind are relayed by the owner (`request_bind_nonce_for` and `bind_world_account_for`, owner-only
+  forms that take the joiner's identity). `access::is_admitted` admits an identity with a trusted
+  binding exactly while its bound account is a row of `world_allowlist`, so delisting refuses at the
+  next check, and an identity with no trusted binding only when it holds a `world_admission` row
+  (admitted before, which connects without a bind). The joiner then connects and calls `join_game`.
+  The list is read at every check and nothing is stored from it.
 
 An admitted connection that has not bound can read what any connection reads, on every build, as
 an unentitled connection can on the official server: the ownership rule gates `join_game`, and
@@ -918,10 +931,16 @@ The own-issuer design, with the attestation verified as a reducer argument under
 anonymous token, and the access design above. LP4 (sign in once, then offline) and LP6
 (private-server access) elaborate against it. The in-module verifier is measured: Ed25519,
 108.4 µs a check against a budget of 5 ms. Of the three conditions the design holds on, one is
-decided and not built, an attestation route beside our own account service (DECISIONS.md, "A
-private world verifies an account by a per-world attestation our account service signs"), and two
-are designed above and not built or tested: the official server refusing attestation binding
-(fork (b)) and the relay between private worlds closed (fork (c)). The audience-scoped fallback
+decided, an attestation route beside our own account service (DECISIONS.md, "A private world
+verifies an account by a per-world attestation our account service signs"), which exists
+(`account-service/src/attest.ts`), and two are built in the module and proved in its tests: the
+official server refusing attestation binding (fork (b)) and the relay between private worlds
+closed (fork (c)), the latter in halves. What is not built: the client's bind flow (asking for an
+attestation, the name function `spki:`/`dns:` in `client/src/net/attestation.ts`, the not-owned
+message for a bind), the shell and gate halves, the development recipe that writes a world's names,
+and the run over two real hosts. On a `world` build no account exists, so `delete_account` and
+`request_data_export` cannot be reached by a bound player there; the host owns that data and
+deletes rows over SQL, and there is no unbind reducer. The audience-scoped fallback
 (tokens from the account issuer addressed to one server, with the official module's audience
 check as the single defence and a private host that learns official identities) is not the route:
 a verifier builds and fits the budget. Its one untested question is answered: the audience check

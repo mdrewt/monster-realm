@@ -27,6 +27,15 @@ unicode-normalization = { workspace = true }
 # string format and the crate's own salt generator stay out. Not a [workspace.dependencies]
 # entry: single consumer.
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+# The world attestation (world_binding.rs): an Ed25519 signature check, the token's base64url
+# segments and its JSON claims. Pure Rust, all three build for wasm32-unknown-unknown, and none
+# reads a clock or randomness. `ed25519-dalek` takes no default feature: `fast` buys 4 percent
+# for 11 KB and `zeroize` guards secret keys, and the module holds none. `base64` stays on the
+# 0.21 line the lock already holds. Not [workspace.dependencies] entries: single consumer.
+ed25519-dalek = { version = "3.0.0", default-features = false }
+base64 = { version = "0.21", default-features = false, features = ["alloc"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # Property testing for the evaluate_train seam (M9b-tail, raising_tests.rs).
@@ -41,6 +50,10 @@ proptest = { workspace = true }
 # variant is a hole; syn's visitor covers every node. Not a
 # [workspace.dependencies] entry: single consumer.
 syn = { version = "2", features = ["full", "visit"] }
+# SHA-256, to derive the account service's `local-dev` attestation signing key as
+# `account-service/src/keys.ts` does (world_binding_tests.rs). Already in the tree under
+# `ed25519-dalek`.
+sha2 = { version = "0.11", default-features = false }
 
 [features]
 # The ownership features (docs/local-play.md §3, "The build input"; the constants are computed

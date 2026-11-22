@@ -854,7 +854,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
     // + 20r-d's `pending_evolution_notice`
     // + the five identity-bearing tactical tables
     // + `trade_session` (an open session names both participants)
-    // + `player_handle` (the identity's minted discriminator).
+    // + `player_handle` (the identity's minted discriminator)
+    // + the host's admission records, an identity's world binding and its bind nonce.
     let expected_erase = [
         "battle_action",
         "battle_challenge",
@@ -881,6 +882,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "trade_session",
         "world_admission",
         "world_admission_attempt",
+        "world_bind_nonce",
+        "world_binding",
     ];
     assert_eq!(
         erase, expected_erase,
@@ -896,7 +899,9 @@ fn data_lifecycle_partition_matches_spec_section3() {
          zone and tile and `player_handle` is the owner's minted discriminator (erased so a \
          deleted player's tag cannot be linked back), and lpw-9 adds `world_admission` and \
          `world_admission_attempt` (the host's record of who was let in, and of the wrong \
-         passwords given for an identity): twenty-five in all. A table moved OUT of \
+         passwords given for an identity), and `world_binding` and `world_bind_nonce` \
+         (the account an identity of this world is bound to, and its outstanding bind \
+         nonce): twenty-seven in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
@@ -980,14 +985,18 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "species_row",
         "type_relation_row",
         "world_access",
+        "world_allowlist",
+        "world_name",
         "zone_def",
     ];
     assert_eq!(
         not_owned, expected_not_owned,
-        "T2 / spec §3 NOT-OWNED: exactly twenty-two tables hold no per-player data — spec §3's \
+        "T2 / spec §3 NOT-OWNED: exactly twenty-four tables hold no per-player data — spec §3's \
          seventeen, rb-24's `account_deletion_reaper_schedule`, rb-48's \
          `export_bundle_reaper_schedule` (ADR-0238), sr-7's `battle_summary_reaper_schedule`, \
-         lpw-3's `module_info` and lpw-9's `world_access` (the one global access-rule row). \
+         lpw-3's `module_info`, lpw-9's `world_access` (the one global access-rule row), and \
+         `world_name` and `world_allowlist` (the world's own names and the host's list of \
+         account subjects, each written only by the owner, with no Identity column). \
          The additions are bookkeeping rather than player data, and \
          none is reachable by a per-owner cascade step: the rb-24 row holds the identity whose \
          own cascade it runs, and the rb-48 and sr-7 schedule rows and lpw-3's protocol-number \
@@ -3165,6 +3174,22 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::WorldAdmissionAttempt as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "world_allowlist",
+            <crate::schema::WorldAllowlist as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "world_bind_nonce",
+            <crate::schema::WorldBindNonce as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "world_binding",
+            <crate::schema::WorldBinding as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "world_name",
+            <crate::schema::WorldName as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "zone_def",
             <crate::schema::ZoneDefRow as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3264,9 +3289,9 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 68,
+        registry_len, 72,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 68 (25 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 22 NOT-OWNED) — \
+         manifest carries exactly 72 (27 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 24 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
@@ -3274,7 +3299,9 @@ fn m22s6_table_row_registry_matches_manifest() {
          `trade_session_reaper_schedule`), plus `move_intent`, plus `last_position`, plus \
          `player_handle`, plus sr-7's `battle_summary_reaper_schedule`, plus sr-4b's \
          `leaderboard_top`, plus lpw-3's `module_info`, plus lpw-9's three access tables \
-         (`world_access`, `world_admission`, `world_admission_attempt`). A registry that grew or shrank without a matching manifest change is \
+         (`world_access`, `world_admission`, `world_admission_attempt`), plus the four world \
+         binding tables (`world_binding`, `world_bind_nonce`, `world_name`, \
+         `world_allowlist`). A registry that grew or shrank without a matching manifest change is \
          a registry nobody reviewed against the schema it claims to cover."
     );
 
@@ -3285,11 +3312,14 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 35,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 68 registered row types \
-         carry an Identity column at some depth; exactly 35 is the live count (the 31 \
+        identity_bearing, 37,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 72 registered row types \
+         carry an Identity column at some depth; exactly 37 is the live count (the 33 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). lpw-9's `world_admission` and `world_admission_attempt` \
+         exceptions R3 below names). `world_binding` and `world_bind_nonce` add one each \
+         (their `identity` keys); `world_name` and `world_allowlist` add none (a name and an \
+         account subject, each a string key). \
+         lpw-9's `world_admission` and `world_admission_attempt` \
          add one each (their `identity` keys); `world_access` adds none (one global row of a \
          rule, a salt and a hash). sr-4b's `leaderboard_top` adds one (its `identity` key). \
          `player_handle` adds one (its `owner_identity` key). \
@@ -3381,9 +3411,10 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 31,
+        population, 33,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 31 (25 ERASE + 6 ANONYMIZE — lpw-9's Erase \
+         the live partition is exactly 33 (27 ERASE + 6 ANONYMIZE — the Erase `world_binding` \
+         and `world_bind_nonce`, lpw-9's Erase \
          `world_admission` and `world_admission_attempt`, rb-73's `player_session`, \
          20r-d's `pending_evolution_notice`, bt-7's five Erase tactical tables plus its \
          Anonymize `battle_summary`, the Erase `trade_session`, the Erase `last_position`, \
@@ -3561,11 +3592,12 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
     }
 
     assert_eq!(
-        population, 22,
+        population, 24,
         "[m22s6/x3-population] {population} manifest entries are classified NotOwned; the live \
-         set is exactly 22 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
+         set is exactly 24 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
          rb-48's export_bundle_reaper_schedule, ADR-0238, sr-7's \
-         battle_summary_reaper_schedule, lpw-3's module_info and lpw-9's world_access)."
+         battle_summary_reaper_schedule, lpw-3's module_info, lpw-9's world_access, and \
+         world_name and world_allowlist, the world's names and the host's account list)."
     );
 
     let observed_len = observed_exceptions.len();
@@ -5098,11 +5130,13 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        68,
+        72,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
          schedule tables plus the three trade-session tables plus move_intent plus last_position \
          plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top plus \
-         module_info plus lpw-9's world_access, world_admission and world_admission_attempt"
+         module_info plus lpw-9's world_access, world_admission and world_admission_attempt \
+         plus the four world binding tables (world_binding, world_bind_nonce, world_name, \
+         world_allowlist)"
     );
 }
 
@@ -5143,7 +5177,7 @@ mod acct_nh {
         PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
         PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerSession, PlayerWallet, Profile,
         SideRow, StanceRow, TradeOffer, TradeSession, TradeSessionSnapshot, WorldAdmission,
-        WorldAdmissionAttempt, DATA_LIFECYCLE_MANIFEST,
+        WorldAdmissionAttempt, WorldBindNonce, WorldBinding, DATA_LIFECYCLE_MANIFEST,
     };
     use crate::trading::TradeOfferReaperSchedule;
     use crate::trading_session::TradeSessionReaperSchedule;
@@ -5288,6 +5322,11 @@ mod acct_nh {
         // `identity` key (the cascade's `access::erase_admission` deletes through them).
         admission: Handle<'a, WorldAdmission>,
         admission_attempt: Handle<'a, WorldAdmissionAttempt>,
+        // The identity's world binding and its bind nonce, both on their `identity` key
+        // (the cascade's `world_binding::erase_world_binding` deletes through them; the
+        // export test seeds the binding through it to prove the export leaves it out).
+        binding: Handle<'a, WorldBinding>,
+        bind_nonce: Handle<'a, WorldBindNonce>,
     }
 
     /// Registers every index the shipped accounts / claim / cascade / export
@@ -5656,6 +5695,14 @@ mod acct_nh {
                 .table::<WorldAdmissionAttempt>("world_admission_attempt", "identity", |r| {
                     r.identity
                 })
+                .unique()
+                .writable(),
+            binding: fx
+                .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+                .unique()
+                .writable(),
+            bind_nonce: fx
+                .table::<WorldBindNonce>("world_bind_nonce", "identity", |r| r.identity)
                 .unique()
                 .writable(),
         }
@@ -8069,8 +8116,10 @@ mod acct_nh {
         // moving any onto it. A world admission and the wrong-password record
         // are not re-keyed either: a signed-in identity is a different
         // identity and passes the door itself, so a claim neither moves nor
-        // erases an admission.
-        const NOT_REKEYED: [&str; 18] = [
+        // erases an admission. A world binding and a bind nonce stay with the
+        // identity that presented the attestation, for the same reason: a
+        // claim neither moves nor erases a binding or a nonce.
+        const NOT_REKEYED: [&str; 20] = [
             "player",
             "player_conversation",
             "player_session",
@@ -8089,6 +8138,8 @@ mod acct_nh {
             "trade_session",
             "world_admission",
             "world_admission_attempt",
+            "world_binding",
+            "world_bind_nonce",
         ];
         let mut owner_keyed: Vec<&str> = DATA_LIFECYCLE_MANIFEST
             .iter()
@@ -8876,6 +8927,41 @@ mod acct_nh {
                 last_wrong_at_ms: T0 - 40 + k,
             });
         }
+        // Both identities hold a world binding and an outstanding bind nonce.
+        for (who, k) in [(v, 1i64), (b, 2)] {
+            w.binding.seed(&WorldBinding {
+                identity: who,
+                account_subject: format!("dev:cascade-{k}"),
+                bound_at_ms: T0 - 30 + k,
+                entitled: true,
+                key_id: format!("kid-{k}"),
+            });
+            w.bind_nonce.seed(&WorldBindNonce {
+                identity: who,
+                nonce: format!("{k:032x}"),
+                expires_at_ms: T0 + 300_000 + k,
+            });
+        }
+        let binding_of = |w: &W<'_>, who: Identity| -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+            (
+                encs(
+                    &w.binding
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+                encs(
+                    &w.bind_nonce
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            )
+        };
+        let victim_binding_before = binding_of(&w, v);
+        let bystander_binding_before = binding_of(&w, b);
         let admission_of = |w: &W<'_>, who: Identity| -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
             (
                 encs(
@@ -9022,6 +9108,11 @@ mod acct_nh {
             victim_admission_before,
             "an early tick keeps the subject's world admission and attempt rows"
         );
+        assert_eq!(
+            binding_of(&w, v),
+            victim_binding_before,
+            "an early tick keeps the subject's world binding and bind nonce"
+        );
         let rearmed = del_reapers_of(&w, v);
         assert_eq!(rearmed.len(), 1, "an early tick re-arms exactly once");
         assert_eq!(fire_at(&rearmed[0].scheduled_at), at(grace_end));
@@ -9094,6 +9185,21 @@ mod acct_nh {
             w.admission.rows().len() + w.admission_attempt.rows().len(),
             2,
             "only the bystander's two access rows remain"
+        );
+        assert_eq!(
+            binding_of(&w, v),
+            (Vec::new(), Vec::new()),
+            "the cascade erases the subject's world binding and its bind nonce"
+        );
+        assert_eq!(
+            binding_of(&w, b),
+            bystander_binding_before,
+            "the bystander's world binding and bind nonce are untouched"
+        );
+        assert_eq!(
+            w.binding.rows().len() + w.bind_nonce.rows().len(),
+            2,
+            "only the bystander's binding and nonce remain"
         );
 
         assert_eq!(
@@ -9424,7 +9530,11 @@ mod acct_nh {
     /// row list; the trailing dedup filter in rows_trade_offer,
     /// rows_battle_challenge, rows_battle or rows_battle_summary inverted (drops
     /// the second-column row and doubles the self-row); a rows_player_formation
-    /// that returns the other owner's formation.
+    /// that returns the other owner's formation. The world binding is seeded for
+    /// the caller and for a stranger and stays out of the export: no
+    /// `world_binding` chunk, and no chunk carries either account subject or
+    /// either key id — so an exporter added for the binding, or a binding column
+    /// copied into another table's rows, fails.
     #[test]
     fn acct_export_chunks_carry_exactly_the_callers_rows_per_table() {
         let fx = fixture();
@@ -9453,6 +9563,13 @@ mod acct_nh {
                 success: false,
             });
             w.formation.seed(&formation_row(who, k));
+            w.binding.seed(&WorldBinding {
+                identity: who,
+                account_subject: format!("dev:export-subject-{k}"),
+                bound_at_ms: 1_800_000_000_000 + k as i64,
+                entitled: k == 1,
+                key_id: format!("export-kid-{k}"),
+            });
         }
         // Dual-column tables: a->b, b->a, a->a, b->c.
         for (n, x, y) in [(1u64, a, b), (2, b, a), (3, a, a), (4, b, c)] {
@@ -9544,6 +9661,51 @@ mod acct_nh {
             "the `player_handle` chunk carries the caller's discriminator and never the \
              stranger's: {handle}"
         );
+        let mut seeded: Vec<(String, String)> = w
+            .binding
+            .rows()
+            .into_iter()
+            .map(|r| (r.account_subject, r.key_id))
+            .collect();
+        seeded.sort_unstable();
+        assert_eq!(
+            seeded,
+            [
+                (
+                    "dev:export-subject-1".to_string(),
+                    "export-kid-1".to_string()
+                ),
+                (
+                    "dev:export-subject-2".to_string(),
+                    "export-kid-2".to_string()
+                ),
+            ],
+            "both bindings are seeded, so their absence from the export is not vacuous"
+        );
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|c| c.table_name == "world_binding")
+                .count(),
+            0,
+            "the export produces no `world_binding` chunk"
+        );
+        for needle in [
+            "dev:export-subject-1",
+            "dev:export-subject-2",
+            "export-kid-1",
+            "export-kid-2",
+        ] {
+            let carriers: Vec<&str> = chunks
+                .iter()
+                .filter(|c| c.payload_json.contains(needle))
+                .map(|c| c.table_name.as_str())
+                .collect();
+            assert!(
+                carriers.is_empty(),
+                "no chunk carries the world binding value `{needle}`; found in {carriers:?}"
+            );
+        }
         let mut covered: Vec<&str> = cases.iter().map(|(t, _, _)| *t).collect();
         covered.push("battle_action");
         covered.sort_unstable();
@@ -10146,12 +10308,13 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            68,
+            72,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
              plus last_position plus player_handle plus battle_summary_reaper_schedule plus \
              leaderboard_top plus module_info plus lpw-9's world_access, world_admission and \
-             world_admission_attempt"
+             world_admission_attempt plus the four world binding tables (world_binding, \
+             world_bind_nonce, world_name, world_allowlist)"
         );
         for table in [
             "battle_tactical",
@@ -10411,13 +10574,14 @@ mod acct_nh {
         }
     }
 
-    /// BT7.1 — the GENERATED view roster is exactly the seventeen views (the
-    /// eight pre-bt-7, the seven tactical ones, `my_trade_session` and
-    /// `my_player_quest`), each at the position its id names, every one public,
-    /// caller-scoped (not anonymous) and parameterless; no view is named for a
-    /// secret table; and
-    /// each tactical view and `my_trade_session` serves exactly its own
-    /// table's row (its generated return type resolved through the typespace).
+    /// BT7.1 — the GENERATED view roster is exactly the nineteen views (the
+    /// eight pre-bt-7, the seven tactical ones, `my_trade_session`,
+    /// `my_player_quest`, `my_world_binding` and `my_bind_nonce`), each at the
+    /// position its id names, every one public, caller-scoped (not anonymous)
+    /// and parameterless; no view is named for a secret table; and
+    /// each tactical view, `my_trade_session`, `my_world_binding` and
+    /// `my_bind_nonce` serves exactly its own table's row (its generated return
+    /// type resolved through the typespace).
     ///
     /// Kills: a view for `battle_secret`, `battle_wild_unit` or
     ///        `battle_summary` (BT7.2: none, ever); a view taking an argument
@@ -10431,7 +10595,7 @@ mod acct_nh {
     ///        non-public (it would pass every native-host call and be invisible
     ///        to clients).
     #[test]
-    fn generated_view_roster_is_exactly_seventeen_caller_scoped_views_bt7_1() {
+    fn generated_view_roster_is_exactly_nineteen_caller_scoped_views_bt7_1() {
         use crate::native_host_tests::{
             VIEW_MY_BATTLE, VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_EVENTS,
             VIEW_MY_BATTLE_QUEUE, VIEW_MY_BATTLE_UNITS, VIEW_MY_CONVERSATION,
@@ -10457,6 +10621,7 @@ mod acct_nh {
                 "my_battle_events",
                 "my_battle_queue",
                 "my_battle_units",
+                "my_bind_nonce",
                 "my_conversation",
                 "my_export_bundle",
                 "my_formation",
@@ -10467,8 +10632,9 @@ mod acct_nh {
                 "my_tactical_battle",
                 "my_trade_session",
                 "my_wallet",
+                "my_world_binding",
             ],
-            "[bt7/view-roster] the generated view set (seventeen views)"
+            "[bt7/view-roster] the generated view set (nineteen views)"
         );
 
         for (id, name) in [
@@ -10492,8 +10658,11 @@ mod acct_nh {
             (VIEW_MY_FORMATION, "my_formation"),
             // `my_trade_session` is registered after `my_formation`.
             (VIEW_MY_FORMATION + 1, "my_trade_session"),
-            // sr-3: `my_player_quest` is registered last.
+            // sr-3: `my_player_quest` is registered after `my_trade_session`.
             (VIEW_MY_PLAYER_QUEST, "my_player_quest"),
+            // `my_world_binding`, then `my_bind_nonce`, are registered last.
+            (VIEW_MY_PLAYER_QUEST + 1, "my_world_binding"),
+            (VIEW_MY_PLAYER_QUEST + 2, "my_bind_nonce"),
         ] {
             let v = &views[id];
             assert_eq!(
@@ -10546,6 +10715,15 @@ mod acct_nh {
             "revision",
             "created_at_ms",
         ];
+        // The `world_binding` and `world_bind_nonce` rows, in declaration order.
+        const WORLD_BINDING_COLUMNS: &[&str] = &[
+            "identity",
+            "account_subject",
+            "bound_at_ms",
+            "entitled",
+            "key_id",
+        ];
+        const WORLD_BIND_NONCE_COLUMNS: &[&str] = &["identity", "nonce", "expires_at_ms"];
         for (view, columns) in [
             ("my_tactical_battle", super::BT7_COLUMNS_BATTLE_TACTICAL),
             ("my_battle_units", super::BT7_COLUMNS_BATTLE_UNIT),
@@ -10555,6 +10733,8 @@ mod acct_nh {
             ("my_battle_deploy", super::BT7_COLUMNS_BATTLE_DEPLOY),
             ("my_formation", super::BT7_COLUMNS_PLAYER_FORMATION),
             ("my_trade_session", TRADE_SESSION_COLUMNS),
+            ("my_world_binding", WORLD_BINDING_COLUMNS),
+            ("my_bind_nonce", WORLD_BIND_NONCE_COLUMNS),
         ] {
             let Some(v) = views.iter().find(|v| &*v.source_name == view) else {
                 panic!("[bt7/view-missing] `{view}`")
@@ -12559,8 +12739,9 @@ mod acct_nh {
 /// and the per-build constants.
 mod acs6_profile {
     use crate::accounts::{
-        build_profile, BuildFeatures, BuildProfile, ALLOWED_ISSUERS, BUILD_FEATURES, BUILD_PROFILE,
-        DEV_LOGIN_ISSUERS, PRODUCTION_LOGIN_ISSUERS,
+        build_profile, AttestationKey, BuildFeatures, BuildProfile, ALLOWED_ISSUERS,
+        BUILD_FEATURES, BUILD_PROFILE, DEV_ATTESTATION_KEYS, DEV_LOGIN_ISSUERS,
+        PRODUCTION_ATTESTATION_KEYS, PRODUCTION_LOGIN_ISSUERS,
     };
 
     pub(super) const PRODUCTION: &str = "https://auth.monster-realm.invalid/";
@@ -12632,8 +12813,8 @@ mod acs6_profile {
 
     /// The oracle, built differently from the function under test: cargo's
     /// implications are edges closed to a fixed point, the build is named from
-    /// the closed set, and enforcement and the trusted issuers are read off the
-    /// name.
+    /// the closed set, and enforcement, the trusted issuers and the attestation
+    /// keys are read off the name.
     pub(super) fn expected(f: BuildFeatures) -> BuildProfile {
         const IMPLIES: [(&str, &str); 3] = [
             ("load_test_zones", "dev_reducers"),
@@ -12670,11 +12851,17 @@ mod acs6_profile {
             "test" | "dev-enforcing" => &[LOCAL_DEV, HOSTED_DEV],
             _ => &[],
         };
+        let attestation_keys: &'static [AttestationKey] = match name {
+            "world" => PRODUCTION_ATTESTATION_KEYS,
+            "test" | "dev-enforcing" => DEV_ATTESTATION_KEYS,
+            _ => &[],
+        };
         BuildProfile {
             name,
             enforces_ownership: name != "test",
             login_issuers,
             dev_reducers: has("dev_reducers"),
+            attestation_keys,
         }
     }
 
@@ -12683,13 +12870,37 @@ mod acs6_profile {
         enforces_ownership: bool,
         login_issuers: &'static [&'static str],
         dev_reducers: bool,
+        attestation_keys: &'static [AttestationKey],
     ) -> BuildProfile {
         BuildProfile {
             name,
             enforces_ownership,
             login_issuers,
             dev_reducers,
+            attestation_keys,
         }
+    }
+
+    /// The two attestation key lists, by value: no production key, and the
+    /// one `local-dev` key as the account service publishes it (its `kid`, and
+    /// its 32 public bytes as the JWK's unpadded base64url `x`).
+    ///
+    /// kills: a dev key listed as production; a second or a missing dev key;
+    /// a wrong `kid`; a byte of the public key changed.
+    #[test]
+    fn acs6_profile_the_attestation_key_lists_hold_these_values() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        let none: &[AttestationKey] = &[];
+        assert_eq!(PRODUCTION_ATTESTATION_KEYS, none);
+        assert_eq!(DEV_ATTESTATION_KEYS.len(), 1, "exactly one dev key");
+        let key = DEV_ATTESTATION_KEYS[0];
+        let published_kid = "ZwdbDVawj1m0Ot-iNvOUMykc1_hgr1dD5wRMph3rgWE";
+        assert_eq!(key.kid, published_kid);
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(key.public_key),
+            "BWXfIXbop1k6-Ch0VTug3klcgULo4NNzTBCTjH2AFF4"
+        );
     }
 
     /// The three issuers, by value: the production placeholder alone, and the
@@ -12747,52 +12958,70 @@ mod acs6_profile {
         const DEV: &[&str] = &[LOCAL_DEV, HOSTED_DEV];
         const PROD: &[&str] = &[PRODUCTION];
         const NO_ISSUER: &[&str] = &[];
+        const DEV_KEYS: &[AttestationKey] = DEV_ATTESTATION_KEYS;
+        const PROD_KEYS: &[AttestationKey] = PRODUCTION_ATTESTATION_KEYS;
+        const NO_KEY: &[AttestationKey] = &[];
         let rows: Vec<(&[&str], BuildProfile)> = vec![
-            (&[][..], profile("default", true, NO_ISSUER, false)),
+            (&[][..], profile("default", true, NO_ISSUER, false, NO_KEY)),
             (
                 &["dev_issuers"][..],
-                profile("dev-enforcing", true, DEV, false),
+                profile("dev-enforcing", true, DEV, false, DEV_KEYS),
             ),
-            (&["open_join"][..], profile("test", false, DEV, false)),
-            (&["dev_reducers"][..], profile("test", false, DEV, true)),
-            (&["load_test_zones"][..], profile("test", false, DEV, true)),
-            (&["official"][..], profile("official", true, PROD, false)),
-            (&["world"][..], profile("world", true, NO_ISSUER, false)),
+            (
+                &["open_join"][..],
+                profile("test", false, DEV, false, DEV_KEYS),
+            ),
+            (
+                &["dev_reducers"][..],
+                profile("test", false, DEV, true, DEV_KEYS),
+            ),
+            (
+                &["load_test_zones"][..],
+                profile("test", false, DEV, true, DEV_KEYS),
+            ),
+            (
+                &["official"][..],
+                profile("official", true, PROD, false, NO_KEY),
+            ),
+            (
+                &["world"][..],
+                profile("world", true, NO_ISSUER, false, PROD_KEYS),
+            ),
             (
                 &["official", "world"][..],
-                profile("conflict", true, NO_ISSUER, false),
+                profile("conflict", true, NO_ISSUER, false, NO_KEY),
             ),
             (
                 &["official", "open_join"][..],
-                profile("official", true, PROD, false),
+                profile("official", true, PROD, false, NO_KEY),
             ),
             (
                 &["official", "dev_issuers"][..],
-                profile("official", true, PROD, false),
+                profile("official", true, PROD, false, NO_KEY),
             ),
             (
                 &["world", "dev_issuers"][..],
-                profile("world", true, NO_ISSUER, false),
+                profile("world", true, NO_ISSUER, false, PROD_KEYS),
             ),
             (
                 &["world", "open_join"][..],
-                profile("world", true, NO_ISSUER, false),
+                profile("world", true, NO_ISSUER, false, PROD_KEYS),
             ),
             (
                 &["official", "world", "dev_issuers", "open_join"][..],
-                profile("conflict", true, NO_ISSUER, false),
+                profile("conflict", true, NO_ISSUER, false, NO_KEY),
             ),
             (
                 &["official", "dev_reducers"][..],
-                profile("official", true, PROD, true),
+                profile("official", true, PROD, true, NO_KEY),
             ),
             (
                 &["world", "load_test_zones"][..],
-                profile("world", true, NO_ISSUER, true),
+                profile("world", true, NO_ISSUER, true, PROD_KEYS),
             ),
             (
                 &["dev_issuers", "open_join"][..],
-                profile("test", false, DEV, false),
+                profile("test", false, DEV, false, DEV_KEYS),
             ),
         ];
         for (named, want) in rows {
@@ -12802,7 +13031,11 @@ mod acs6_profile {
 
     /// No feature set trusts the production issuer without enforcing, none
     /// trusts the production and a dev issuer together, and a release build
-    /// (`official` or `world` named) enforces and trusts no dev issuer.
+    /// (`official` or `world` named) enforces and trusts no dev issuer. No
+    /// feature set holds a production and a dev attestation key together, a
+    /// profile that trusts a production login issuer holds no attestation key,
+    /// a profile holding a production attestation key trusts no login issuer,
+    /// and a release build holds no dev attestation key.
     #[test]
     fn acs6_profile_no_feature_set_breaks_the_invariants() {
         for f in all_feature_sets() {
@@ -12815,17 +13048,41 @@ mod acs6_profile {
                 .login_issuers
                 .iter()
                 .any(|i| DEV_LOGIN_ISSUERS.contains(i));
+            let prod_key = p
+                .attestation_keys
+                .iter()
+                .any(|k| PRODUCTION_ATTESTATION_KEYS.contains(k));
+            let dev_key = p
+                .attestation_keys
+                .iter()
+                .any(|k| DEV_ATTESTATION_KEYS.contains(k));
             assert!(
                 !prod || p.enforces_ownership,
                 "{f:?}: production trust without enforcement"
             );
             assert!(!(prod && dev), "{f:?}: production and dev trust together");
+            assert!(
+                !(prod_key && dev_key),
+                "{f:?}: production and dev attestation keys together"
+            );
+            assert!(
+                !prod || p.attestation_keys.is_empty(),
+                "{f:?}: a profile that trusts a production login issuer holds an attestation key"
+            );
+            assert!(
+                !prod_key || p.login_issuers.is_empty(),
+                "{f:?}: a profile holding a production attestation key trusts a login issuer"
+            );
             if f.official || f.world {
                 assert!(
                     p.enforces_ownership,
                     "{f:?}: a release that does not enforce"
                 );
                 assert!(!dev, "{f:?}: a release that trusts a dev issuer");
+                assert!(
+                    !dev_key,
+                    "{f:?}: a release that holds a dev attestation key"
+                );
             }
         }
     }
@@ -13949,12 +14206,33 @@ mod acs6_door {
         }
     }
 
-    /// The door reads no table and writes nothing, whether it admits or
-    /// refuses: every table it could consult holds a row for the caller, all
-    /// writable, and none is touched.
+    /// The door writes nothing and reads only the caller's world binding, and
+    /// that only when the profile enforces ownership, the token does not
+    /// entitle the caller and the profile holds an attestation key. Every
+    /// table it could consult holds a row for the caller, all writable. The
+    /// binding row names no key and does not carry the base game, so it never
+    /// admits. Each `ask` runs the door twice (`entitled`, then
+    /// `require_entitled`), and a read is one point find of the caller's one
+    /// row, so a reading case reads exactly two rows.
+    ///
+    /// kills: a door that reads the binding before or regardless of the token,
+    /// under a non-enforcing profile, or under a keyless profile; a door that
+    /// writes any table; a door that consults any other table.
     #[test]
-    fn acs6_door_reads_no_table_and_writes_nothing() {
+    fn acs6_door_writes_nothing_and_reads_a_binding_only_when_a_keyed_profile_lacks_an_entitling_token(
+    ) {
+        const UNHELD_KID: &str = "no-such-kid";
         let fx = fixture();
+        fx.table::<crate::schema::WorldBinding>("world_binding", "identity", |r| r.identity)
+            .unique()
+            .writable()
+            .seed(&crate::schema::WorldBinding {
+                identity: who(),
+                account_subject: "sub-door".to_string(),
+                bound_at_ms: T0,
+                entitled: false,
+                key_id: UNHELD_KID.to_string(),
+            });
         fx.table::<crate::schema::Account>("account", "identity", |r| r.identity)
             .writable()
             .seed(&super::base_account(0x6A));
@@ -14011,18 +14289,126 @@ mod acs6_door {
             "player_handle",
             "player_session",
         ];
-        fx.reset_reads();
-        fx.reset_writes();
         let dev = dev_enforcing();
-        let entitled_jwt = payload(LOCAL_DEV, AUD, Some(CLAIM));
-        assert_eq!(ask(&fx, &dev, Some(&entitled_jwt)), admitted(), "admitted");
-        assert_eq!(ask(&fx, &dev, None), refused(), "refused");
-        assert_eq!(ask_internal(&fx, &dev), refused(), "refused, no connection");
         let open = build_profile(feats(&["open_join"]));
-        assert_eq!(ask(&fx, &open, None), admitted(), "admitted, open");
-        for t in TABLES {
-            assert_eq!(fx.rows_read(t), 0, "the door read {t}");
-            assert_eq!(fx.writes_to(t), 0, "the door wrote {t}");
+        let official = build_profile(feats(&["official"]));
+        let world = build_profile(feats(&["world"]));
+        assert!(
+            !open.enforces_ownership,
+            "fixture: open_join does not enforce"
+        );
+        for (label, p) in [("dev", &dev), ("official", &official), ("world", &world)] {
+            assert!(p.enforces_ownership, "fixture: {label} enforces");
+        }
+        assert!(
+            !dev.attestation_keys.is_empty(),
+            "fixture: dev-enforcing holds a key"
+        );
+        assert!(
+            dev.attestation_keys.iter().all(|k| k.kid != UNHELD_KID),
+            "fixture: no dev key has the binding's kid"
+        );
+        assert!(
+            official.attestation_keys.is_empty(),
+            "fixture: official holds no key"
+        );
+        assert!(
+            world.attestation_keys.is_empty(),
+            "fixture: world holds no key"
+        );
+        let entitled_jwt = payload(LOCAL_DEV, AUD, Some(CLAIM));
+        let prod_jwt = payload(PRODUCTION, AUD, Some(CLAIM));
+        // (label, profile, over the internal context, token, outcome, binding rows read)
+        let cases = vec![
+            ("admitted, not enforcing", &open, false, None, admitted(), 0),
+            (
+                "admitted, not enforcing, no connection",
+                &open,
+                true,
+                None,
+                admitted(),
+                0,
+            ),
+            (
+                "admitted, enforcing, an entitling token",
+                &dev,
+                false,
+                Some(entitled_jwt.as_str()),
+                admitted(),
+                0,
+            ),
+            (
+                "refused, enforcing, no token, a key held",
+                &dev,
+                false,
+                None,
+                refused(),
+                2,
+            ),
+            (
+                "refused, enforcing, no connection, a key held",
+                &dev,
+                true,
+                None,
+                refused(),
+                2,
+            ),
+            (
+                "admitted, enforcing, an entitling token, no key",
+                &official,
+                false,
+                Some(prod_jwt.as_str()),
+                admitted(),
+                0,
+            ),
+            (
+                "refused, enforcing, no token, no key (official)",
+                &official,
+                false,
+                None,
+                refused(),
+                0,
+            ),
+            (
+                "refused, enforcing, no token, no key (world)",
+                &world,
+                false,
+                None,
+                refused(),
+                0,
+            ),
+            (
+                "refused, enforcing, no connection, no key (world)",
+                &world,
+                true,
+                None,
+                refused(),
+                0,
+            ),
+        ];
+        for (label, p, internal, jwt, want, binding_reads) in cases {
+            fx.reset_reads();
+            fx.reset_writes();
+            let got = if internal {
+                ask_internal(&fx, p)
+            } else {
+                ask(&fx, p, jwt)
+            };
+            assert_eq!(got, want, "{label}");
+            assert_eq!(
+                fx.rows_read("world_binding"),
+                binding_reads,
+                "{label}: rows the door read from world_binding"
+            );
+            assert_eq!(
+                fx.writes_to("world_binding"),
+                0,
+                "{label}: the door wrote world_binding"
+            );
+            for t in TABLES {
+                assert_eq!(fx.rows_read(t), 0, "{label}: the door read {t}");
+                assert_eq!(fx.writes_to(t), 0, "{label}: the door wrote {t}");
+            }
         }
     }
 }

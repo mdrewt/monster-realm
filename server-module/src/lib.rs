@@ -49,6 +49,7 @@ mod tactics_settle;
 mod taming;
 mod trading;
 mod trading_session;
+mod world_binding;
 
 /// What this build does about ownership. The wasm artefact carries it as the custom section
 /// `mr_build_profile`, so a recipe can read back what it built (`just module-profile`).

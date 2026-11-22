@@ -160,7 +160,8 @@ writes:
 | `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
-| `access` | `set_world_access`, `admit` (both owner-only): the world's access rule, the admission list and the door; `require_admitted` opens every non-owner-only client reducer |
+| `access` | `set_world_access`, `admit` (both owner-only): the world's access rule (`Open`, `Password` or `Allowlist`), the admission list and the door; `require_admitted` opens every non-owner-only client reducer |
+| `world_binding` | `request_bind_nonce`, `bind_world_account` and their owner-relayed forms `request_bind_nonce_for`, `bind_world_account_for`; owner-only `set_world_names`, `set_world_allowlist`. Owns `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`, verifies the attestation (`verify_attestation`) and answers `trusted_binding`; a build with no attestation key refuses the four bind reducers |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
 | `observability` | scheduled `mr_heartbeat` |
 | `playtest` | scheduled `playtest_reaper` |
@@ -323,10 +324,10 @@ part of the schema:
 | Public content | `species_row`, `skill_row`, `item_row`, `type_relation_row`, `zone_def`, `shop_row`, `shop_item_row`, `heal_location_row`, `npc`, `evolution_path`, `config` | direct subscription |
 | Public world state | `character`, `player`, `profile`, `leaderboard_top`, `battle_challenge` | direct subscription; `character` only for the own row and per zone (see "Connection and store"); `profile` only for the `leaderboard_top` members (a join) and the own row |
 | Public, drain-only | `trade_offer` | none in the client: no query subscribes to it and the store holds no offer state |
-| Private, owner-readable | `monster_pub`, `inventory`, `player_quest`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_player_quest`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
+| Private, owner-readable | `monster_pub`, `inventory`, `player_quest`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle`, `world_binding`, `world_bind_nonce` | views `my_monster_pub`, `my_inventory`, `my_player_quest`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle`, `my_world_binding`, `my_bind_nonce` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
 | Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
-| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, `world_access`, `world_admission`, `world_admission_attempt`, all schedule tables | none |
+| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, `world_access`, `world_admission`, `world_admission_attempt`, `world_name`, `world_allowlist`, all schedule tables | none |
 
 A view takes only its context and filters on `ctx.sender()` through an index. That
 body is the whole security boundary.
