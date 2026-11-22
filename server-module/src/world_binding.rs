@@ -586,7 +586,8 @@ pub fn bind_world_account_for(
 /// alone and leaves the row unread, so an unbind that kept the row would let in, there or after
 /// a later change to `Allowlist`, an identity whose account the owner removed. Once unbound, the
 /// identity gets back into a world that is not `Open` only by the owner: the door, the
-/// admission list of `access::set_world_access`, or a relayed bind.
+/// admission list of `access::set_world_access`, a relayed bind, or a change of rule from
+/// `Open` while it is connected.
 #[spacetimedb::reducer]
 pub fn unbind_world_account(ctx: &ReducerContext) -> Result<(), String> {
     require_binding_build(ctx, &BUILD_PROFILE, "unbind_world_account")?;

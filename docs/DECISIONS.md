@@ -2459,9 +2459,9 @@ refuses it with the binding reducers' refusal before anything else, and a bound 
 account is pending deletion is refused by the deletion gate (the cascade erases the binding).
 When the erased binding is one the build counts, the caller's `world_admission` row goes with it,
 under every rule: an unbind never lets in an identity whose account the owner removed. Once
-unbound, the identity gets back into a world that is not `Open` only through the owner (the door,
-`set_world_access`'s admission list or carry-over, or a relayed bind). Its account stays on the
-list and its wrong-password record stays. The owner relays both calls for another
+unbound, the identity gets back into a world that is not `Open` only through the owner: the door,
+`set_world_access`'s admission list, a relayed bind, or a change from `Open` while it is connected
+(the carry-over). Its account stays on the list and its wrong-password record stays. The owner relays both calls for another
 identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
 admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
 `who`. The route rate-limits binds per account and does not keep the world an attestation was
@@ -2483,10 +2483,11 @@ account's ability to bind new worlds automatic, and passes every bind through a 
 can be rate-limited and seen. A key list with `kid` lets the attestation key rotate by shipping the
 next key before the old one retires. The unbind takes the admission row because, while a binding
 the build counts exists, `Allowlist` governs the identity by its account alone and leaves the row
-unread: an unbind that kept it would let back in an identity whose account the owner removed, at
-once, or after the owner delists an identity that unbound while still listed, or after a stretch
-under `Password` and a change back to `Allowlist`. Only a withdrawal under every rule closes the
-last of the three.
+unread, and every rule change keeps the row: an unbind that kept it would let back in an identity
+whose account the owner removed. The paths are an unbind after the delisting, an unbind while still
+listed followed by the delisting, and the same two with the unbind made during a stretch under
+`Password` or under `Open` (with the player offline when the rule returns to `Allowlist`). Withdrawing
+only under `Allowlist` leaves the last two open.
 
 **Rules out.** Sending an account token to a world we do not operate (see "A target's kind gates
 telemetry and account sign-in"); a third-party provider as the attestation signer; signing
@@ -2497,13 +2498,17 @@ chosen: it would let a first bind happen on a LAN with no internet and keep who-
 our service, at the cost of a device key to store safely in every build, a second signature check in
 the bind reducer, and binds to new worlds that outlive an account's suspension until the credential
 expires. It stays the upgrade path, as a second attestation source, if either of those gains becomes
-a requirement. An admission check on the unbind (a removed player could not erase the link); keeping
-the admission row through an unbind; withdrawing it only under `Allowlist` or only for a caller the
-rule refuses at the call (both leave one of the paths above open). Two defaults the operator may
-overrule: the withdrawal writes `world_admission`, beyond the spec's "and nothing else", so an unbind
-in a `Password` world costs the player the door; and a removed player who has disconnected cannot
-reach the unbind, since every route runs the connect reducer first (measured at 2.11.0, see "A world
-that is not open refuses an unadmitted identity at connect and in every reducer").
+a requirement. An admission check on the unbind (a removed player could not erase the link);
+keeping the admission row through an unbind; withdrawing it only under `Allowlist` or only for a
+caller the rule refuses at the call (each leaves one of the paths above open). Defaults the operator
+may overrule (asked on <https://github.com/mdrewt/monster-realm/issues/861>): the withdrawal writes `world_admission`, beyond the spec's "and nothing else", so an
+unbind in a `Password` world costs the player the door, and so does an unbind under `Open` by a
+player who is offline when the rule changes to `Password`; after an unbind under `Password` or
+`Allowlist`, a player other than the owner is refused by the access check before `join_game`'s
+ownership error and cannot bind again without the owner's relay; and a removed player who has
+disconnected cannot reach the unbind, since every route runs the connect reducer first (measured at
+2.11.0, see "A world that is not open refuses an unadmitted identity at connect and in every
+reducer").
 
 ## The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the module
 
@@ -2642,9 +2647,9 @@ Both lists are constants of the build: `BuildProfile::attestation_keys` is empty
 published, so a `world` build binds nothing and entitles nobody) and `DEV_ATTESTATION_KEYS`
 (the published `local-dev` key; `hosted-dev` publishes none) on `test` and `dev-enforcing`; a test
 holds the lists to the generated `account-service/attestation-public-keys.json`. On a build with no
-key the four binding reducers (`bind_world_account`, `request_bind_nonce` and the owner-relayed form
-of each) return `this server takes no world binding` as their first statement, before anything is
-decoded, read or written, and `world_binding::trusted_binding` answers `None` without reading;
+key the five binding reducers (`bind_world_account`, `request_bind_nonce`, the owner-relayed form
+of each, and `unbind_world_account`) return `this server takes no world binding` as their first
+statement, before anything is decoded, read or written, and `world_binding::trusted_binding` answers `None` without reading;
 `entitled(ctx, profile)` therefore never reads a binding there. A binding records the `kid` that
 signed it and counts only while the build holds that key: a binding made under a dev key counts for
 nothing after a republish as `world`, and retiring a key retires its bindings. On the `world` build
@@ -2766,7 +2771,8 @@ WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and 
 complete, with nothing needed per table, view or reducer. It runs once, though: a connection
 already open keeps calling and reading after its admission is removed, and a module cannot close a
 connection. Hence the check in every reducer and the admission of open connections when the rule
-changes. An unadmitted identity can call nothing, its own admission included, so the owner has to
+changes. An unadmitted identity can call nothing but its own unbind, so it cannot reach its own
+admission, and the owner has to
 relay the door. An identity costs nothing to obtain, so a count of wrong attempts against one
 bounds nothing; the gate is the one place a source address is visible. Turning the list on must not
 lock out the people playing, the host first: a host may play as a second identity bound to the

@@ -1476,11 +1476,11 @@ const EXPECTED_NO_WRITES: &[&str] = &[
 /// `DATA_LIFECYCLE_MANIFEST`, so this only refuses a manifest that shrank.
 const CLASSIFIED_TABLE_FLOOR: usize = 48;
 
-/// Reducer floor for the real corpus: the 69 reducer attributes it carries
-/// (the five trade-session reducers and the six world-binding reducers
+/// Reducer floor for the real corpus: the 70 reducer attributes it carries
+/// (the five trade-session reducers and the seven world-binding reducers
 /// included), so the per-reducer verdict pin cannot be satisfied by an engine
 /// that finds almost none of them.
-const REDUCER_FLOOR: usize = 69;
+const REDUCER_FLOOR: usize = 70;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)
@@ -2331,9 +2331,10 @@ fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
 // their own owner refusal, and `unbind_world_account`, which the rule does not gate, so a
 // player the host refuses can still erase their own binding. The roster is the GENERATED
 // client bindings (their file names); each probe runs the SHIPPED reducer fn as an unadmitted
-// non-owner over a client connection on a `Password` world. Only `config`, `world_access` and `world_admission` are registered,
-// so a reducer that writes before it refuses aborts the test in the host. Dev-only reducers
-// (`dev_reducers`, `load_test_zones`) are not in the generated bindings and get no probe.
+// non-owner over a client connection on a `Password` world. Only `config`, `world_access` and
+// `world_admission` are registered, so a reducer that writes before it refuses aborts the test
+// in the host. Dev-only reducers (`dev_reducers`, `load_test_zones`) are not in the generated
+// bindings and get no probe.
 // ---------------------------------------------------------------------------
 
 mod admission_roster {
@@ -2742,7 +2743,7 @@ mod admission_roster {
     /// reducers refusing a non-owner with anything but the world-owner refusal; a reducer
     /// quietly moved out of the admission check by being declared owner-only.
     #[test]
-    fn only_the_owner_reducers_skip_the_admission_check_and_answer_their_owner_refusal() {
+    fn only_the_owner_reducers_answer_their_owner_refusal_before_any_admission_check() {
         let owner_only: BTreeSet<&str> = probes()
             .into_iter()
             .filter(|(_, kind, _)| matches!(kind, Kind::OwnerOnly))
@@ -2828,14 +2829,8 @@ mod admission_roster {
             if !matches!(kind, Kind::Ungated) {
                 continue;
             }
-            let got = run_probe(&fx, call);
-            assert_ne!(
-                got,
-                Err(REJECT_NOT_ADMITTED.to_string()),
-                "`{name}` must not answer the admission refusal"
-            );
             assert_eq!(
-                got,
+                run_probe(&fx, call),
                 Ok(()),
                 "`{name}` called by an unadmitted caller with no binding answers Ok"
             );

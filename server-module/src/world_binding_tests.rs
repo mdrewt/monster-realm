@@ -5550,6 +5550,103 @@ mod unbind {
         assert!(joined(&jw, alice()).is_empty(), "no player row");
     }
 
+    /// An `Open` interlude opens no way past the list either. Under `Allowlist`, [`alice`] is
+    /// bound under the dev key to a listed account and holds an admission row; the owner
+    /// switches to `Open`, she unbinds (her row goes with the binding), and the owner takes the
+    /// account off the list and switches back to `Allowlist`. She holds no live session at the
+    /// switch back, so its carry-over admits nobody, and she is refused with no write: by the
+    /// admission check, at connect, by `request_bind_nonce` and by the real `join_game`.
+    ///
+    /// kills: an unbind that withdraws the admission row only under `Password` and `Allowlist`
+    /// (the row kept under `Open` would let her in after the switch back); an unbind that keeps
+    /// the row; the inert reducer.
+    #[test]
+    fn an_open_interlude_does_not_let_an_unbound_identity_past_the_list_readmit_lpw22_6() {
+        let fx = fixture();
+        let jw = join_world(&fx);
+        let (w, attempts) = switchable_unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: listed, admitted"
+        );
+
+        assert_eq!(
+            set_rule(&fx, WorldAccessRule::Open, None, Vec::new(), T0),
+            Ok(()),
+            "the owner switches to Open"
+        );
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "under Open",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert!(admitted(&w).is_empty(), "her row goes with the binding");
+
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert!(
+            sessions_of(&w, alice()).is_empty(),
+            "fixture: alice holds no live session at the switch back"
+        );
+        assert_eq!(
+            set_rule(
+                &fx,
+                WorldAccessRule::Allowlist,
+                None,
+                Vec::new(),
+                BIND_AT + 1
+            ),
+            Ok(()),
+            "the owner switches back to Allowlist"
+        );
+        assert!(admitted(&w).is_empty(), "the switch back admits nobody");
+        assert_eq!(allowed(&w), strings(&[OTHER_SUB]), "SUB is off the list");
+
+        let later = BIND_AT + 10;
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: the admission check",
+            || passes(&fx, alice(), later),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: connect",
+            || call(&fx, alice(), later, crate::on_connect),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: request_bind_nonce",
+            || ask(&fx, alice(), later),
+        );
+        fx.reset_writes();
+        let before = (everything(&fx, &w, &attempts), join_footprint(&fx, &jw));
+        assert_eq!(
+            join(&fx, alice(), None, later),
+            refused(),
+            "after the interlude: join_game"
+        );
+        assert_eq!(
+            (everything(&fx, &w, &attempts), join_footprint(&fx, &jw)),
+            before,
+            "the refused join writes nothing"
+        );
+        assert!(joined(&jw, alice()).is_empty(), "no player row");
+    }
+
     /// Under `Allowlist`, once [`alice`], delisted and holding an admission row, unbinds, she
     /// is refused until she binds again: the owner relays a fresh nonce request and a bind to
     /// an account on the list, and she is admitted, at the admission check and at connect.

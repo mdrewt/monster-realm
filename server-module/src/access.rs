@@ -24,9 +24,10 @@
 //! roster and make no check.
 //!
 //! An identity that is not admitted can call nothing but that unbind, so admission is granted
-//! by reducers only the owner can call: [`set_world_access`] sets the rule and admits identities outright,
-//! [`admit`] is the door, where the owner relays a joiner's password, and under `Allowlist`
-//! the owner relays the joiner's bind (`world_binding::bind_world_account_for`).
+//! by reducers only the owner can call: [`set_world_access`] sets the rule and admits
+//! identities outright, [`admit`] is the door, where the owner relays a joiner's password, and
+//! under `Allowlist` the owner relays the joiner's bind
+//! (`world_binding::bind_world_account_for`).
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access`, `world_admission` and
 //! `world_admission_attempt`; an unbind deletes an admission row through
@@ -390,8 +391,7 @@ pub fn set_world_access(
 }
 
 /// The door of a `Password` world: admit `who` when `password` is the host's. Owner-only, since
-/// an identity that is not admitted cannot reach this world; the owner relays the joiner's
-/// password.
+/// an identity that is not admitted cannot connect; the owner relays the joiner's password.
 ///
 /// Refused with `Err` and no write: a caller that is not the owner; a world whose rule is not
 /// `Password`; a `who` with [`ADMIT_MAX_WRONG_ATTEMPTS`] wrong passwords in the last ten minutes
