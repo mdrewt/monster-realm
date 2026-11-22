@@ -6,13 +6,16 @@ store. It defines the SpacetimeDB host ABI itself as 18 `#[no_mangle]` functions
 (`table_id_from_name`, `index_id_from_name`, the `datastore_*` scans and writes,
 `row_iter_bsatn_*`, `bytes_sink_write`, `bytes_source_*`, `identity`, `get_jwt`). It also reaches
 the runtime's own entry points (`__call_reducer__`, `__call_view__`, `__describe_module__`). On
-crate 2.11.0 this links, and all 1311 server-module tests pass. From crate 2.12.0 it does not
-link. This file covers:
+crate 2.11.0 this linked, and all 1311 server-module tests passed. Against the unmodified crates
+of 2.12.0 and later it does not link. The module is on crate 2.12.0 and builds two of the vendor's
+crates from patched copies under `vendor/`, so the test binary links and every test passes. This
+file covers:
 
-- why it breaks;
+- why the unmodified crates break it;
 - the two ways the Fixture can get a host on 2.12.0 and later, and what each costs;
 - which one is chosen;
-- the slice that builds it (lpw-39).
+- how it is built: the copies, the patch, the guard test and the hop ("The hop to 2.12.0, as
+  built").
 
 The decision and what it rules out are in `docs/DECISIONS.md` ("Server-module tests run on our
 own host ABI, over the two vendor crates patched where they refuse a native host").
@@ -23,7 +26,7 @@ throwaway worktrees and target directories under `/tmp`. No probe was committed.
 - **The 2.11.0 row** was built from the lpw-38 worktree itself.
 - **B's cost row** used vendored copies outside the workspace.
 - **Everything else measured for B** used copies at `vendor/` inside the workspace, the layout
-  lpw-39 commits. That covers the feature-set runs, `unstable`, fmt, clippy, mutants, the evals
+  the repository now holds. That covers the feature-set runs, `unstable`, fmt, clippy, mutants, the evals
   and the wasm hashes.
 
 Units:
@@ -147,9 +150,10 @@ A also costs the build:
 The Fixture, its API and every test stay as they are. What B adds is around them:
 
 - **Two vendored crates.** 44 files and 11,797 lines of Rust, from the crates.io packages. Each
-  copy omits two files: its `Cargo.lock`, which cargo ignores outside the workspace root
-  (`spacetimedb`'s lists 596 packages, `v8` and `wasmtime` among them), and the `.cargo-ok`
-  marker cargo writes when it unpacks a package.
+  copy omits its `Cargo.lock`, which cargo ignores outside the workspace root (`spacetimedb`'s
+  lists 596 packages, `v8` and `wasmtime` among them). The copies are unpacked from the `.crate`
+  files, which hold no `.cargo-ok`: that marker is written by cargo when it unpacks a package
+  into its registry cache, where the probe's copies came from.
 - **Tooling never reaches them.** They are not workspace members: `cargo metadata` lists the 5
   members. So `cargo fmt --all --check`, `cargo clippy --workspace` and `cargo mutants` never
   reach them (all run: no diff, no warning, 0 mutants under `vendor/`). Biome has nothing to read
@@ -174,8 +178,8 @@ The Fixture, its API and every test stay as they are. What B adds is around them
 - **Provenance takes a test, not a checksum.** Today `Cargo.lock` holds a checksum for each
   registry package, which `cargo` verifies. A path package has none. And a wasm-only edit inside a
   copy passes every native test: one planted in `JwtClaims::issuer()`, which `accounts.rs`
-  trusts, leaves all 1311 passing. So lpw-39 adds a test proving that each copy, with the patch
-  undone, matches the per-file hashes recorded from the crates.io release ("The guard").
+  trusts, leaves all 1311 passing. So a test proves that each copy, with the patch undone,
+  matches the per-file hashes recorded from the crates.io release ("The guard").
 - **SCA coverage.** `cargo audit` skips every lockfile package whose source is not crates.io
   (rustsec 0.33, `Database::query_vulnerabilities`; `cargo-audit` 0.22.2, the version CI
   installs, declares `rustsec = "^0.33"`). So CI's audit does not cover `spacetimedb` or
@@ -296,7 +300,7 @@ also takes 13 times the run time and brings 489 more crates.
   `test-utils` feature.
 - lpw-39.2 is a criterion on crate 2.12.0.
 
-So lpw-39 moves the CLI, the host, the crate and the npm SDK to 2.12.0 together, by
+So the hop moves the CLI, the host, the crate and the npm SDK to 2.12.0 together, by
 `docs/runbooks/spacetimedb-upgrade.md`:
 
 - The npm SDK 2.12.0 was published on 2026-10-13, so it is past the 7-day cooldown. It declares
@@ -307,7 +311,7 @@ So lpw-39 moves the CLI, the host, the crate and the npm SDK to 2.12.0 together,
 ## The patch
 
 Both crates are copied from their crates.io 2.12.0 packages into `vendor/spacetimedb` and
-`vendor/spacetimedb-bindings-sys`. Each copy omits its `Cargo.lock` and `.cargo-ok`. Then these
+`vendor/spacetimedb-bindings-sys`. Each copy omits its `Cargo.lock`. Then these
 attributes change, and nothing else does. Line numbers are those of 2.12.0, and the patch does
 not shift them.
 
@@ -331,34 +335,54 @@ crates are Apache-2.0, whose §4(b) asks that a changed file say so. A notice at
 moves no line, so the panic locations the module embeds stay the same. The four hashes above were
 built with the notices in place.
 
-The files that hold the patch from lpw-39 on:
+The files that hold the patch:
 
 - **`vendor/native-host.patch`.** The unified diff of these lines, notices included: 16 hunks and
   27 added lines. Its paths are relative to `vendor/` (`a/spacetimedb/src/table.rs`,
   `a/spacetimedb-bindings-sys/src/lib.rs`), and a hop applies it once, with
-  `patch -d vendor -p1 --fuzz=0 < vendor/native-host.patch`.
-- **`vendor/PRISTINE.sha256`.** For each crate, the crates.io index `cksum` of its `.crate` file,
-  then the sha256 of every file in the unpacked package, the two omitted ones marked.
+  `patch -d vendor -p1 --fuzz=0 --no-backup-if-mismatch < vendor/native-host.patch`, then
+  regenerates it if a hunk applied at an offset (the runbook's "Re-vendor the two patched crates").
+- **`vendor/PRISTINE.sha256`.** For each crate, a `crate <name> <version> <cksum>` line (the
+  crates.io index `cksum` of its `.crate` file), then the sha256 of every file in the unpacked
+  package, before the patch, with the omitted `Cargo.lock` marked `omitted`.
 - **`vendor/README.md`.** What the directory holds and why, which files the patch changes, the
   license notice, and how a hop re-vendors.
 
 ### The guard
 
-`native_host_tests.rs` gains one test, `nh_vendored_crates_are_the_crates_io_release_plus_the_patch`.
-It reads `CARGO_MANIFEST_DIR/../vendor` and checks two things:
+`native_host_tests.rs` holds one test, `nh_vendored_crates_are_the_crates_io_release_plus_the_patch`.
+It reads `CARGO_MANIFEST_DIR/../vendor` and the root `Cargo.toml`, and its first failing check is
+the error:
 
 - **Provenance.** It undoes each hunk of `vendor/native-host.patch` in memory, strictly: a hunk
-  whose new lines are not in the tree fails. It then requires every file's sha256 to equal its
-  line in `vendor/PRISTINE.sha256`.
-- **No extra files.** No file exists under either copy that the manifest does not list.
+  whose new lines are not in the tree, or whose line counts disagree with its header, fails. It
+  then requires every file's sha256 to equal its line in `vendor/PRISTINE.sha256`.
+- **No extra or missing files.** The files under each copy are exactly the manifest's, and no
+  `omitted` file is present; `vendor/` itself holds only the two copies, `README.md`,
+  `native-host.patch` and `PRISTINE.sha256`.
+- **The patch changes `#[cfg]` attributes only.** Each changed line pairs `-<ws>#[cfg(A)]` with
+  `+<ws>#[cfg(B)] // monster-realm: was #[cfg(A)]`, nothing else on the line; `A` and `B` parse as
+  cfg predicates over `target_arch` and `feature` only; and on wasm32, under every on/off choice of
+  the features they name, `B` selects what `A` selected. So a `+` line cannot carry code, and the
+  shipped module stays the vendor's code.
+- **What cargo builds is what it checked.** Every `crate` line names one version, equal to its
+  copy's `Cargo.toml`; the `[workspace.dependencies]` pin is exactly `spacetimedb = "=<that
+  version>"`; `[patch.crates-io]` lists exactly the two crates, each at `vendor/<name>`, and is the
+  root manifest's only line naming a `patch` key (no `[replace]`, no multi-line string, no `\`);
+  and the root `.cargo/` holds only `mutants.toml`, so no cargo config can patch or wrap the build.
+  No vendored file has an execute bit.
+
+The test trusts `vendor/PRISTINE.sha256`: an edit to a copy together with its manifest line passes
+it. The manifest is checked against crates.io itself by re-running the re-vendor steps in a scratch
+directory and comparing with `vendor/` (the runbook's "Check vendor/ against crates.io").
 
 It treats each crates.io package as an artifact that a tool generated: it recovers the package's
 bytes and compares them, by hash, with the ones recorded from the release. `standards/testing-tdd.md`
 calls that regenerate-and-diff, not a scan of hand-written text. What it protects is the provenance
 of code the module ships, which no behaviour test can see.
 
-`sha2` is already a dev-dependency of the module. `PRISTINE.sha256` is written only by the hop
-step that downloads each `.crate` and checks it against the index `cksum`. So an edit to a copy
+It uses `sha2`, already a dev-dependency of the module. `PRISTINE.sha256` is written only by the
+hop step that downloads each `.crate` and checks it against the index `cksum`. So an edit to a copy
 shows up in review as a change to the patch or to the manifest. If a hop forgets the patch, or the
 pin and the copies disagree, cargo drops the patch. The vendor's stubs then break the test link.
 
@@ -401,53 +425,88 @@ The other legs of the hop were measured too, without starting a 2.12.0 host:
   - `smoke-republish`, which parses the CLI's `sql --format json` output;
   - the nightly jobs.
 
-## lpw-39
+## The hop to 2.12.0, as built
 
-lpw-39 is the hop itself: the patch and its guard, the version moves the runbook lists, and every
-statement that names 2.11.0 as the version in use. A statement that records something measured
-on 2.11.0 keeps its version; lpw-34 re-measures those.
+The hop is the patch and its guard, the version moves the runbook lists, and every statement that
+names 2.11.0 as the version in use. A statement that records something measured on 2.11.0 keeps
+its version, for lpw-34 to re-measure: `docs/e2e-flakes.md` (the host its recipes ran on at
+`218e6020`), the 2.11.0 measurements in `docs/local-play.md`, the 2.11.0 comment in
+`scripts/smoke-republish.sh` and the runbook's standing facts.
 
-lpw-39 runs alone, and switches the CLI only inside its own shell: the 2.12.0 binaries first on
-`PATH`, `HOME` pointed at a scratch directory, and `RUSTUP_HOME` and `CARGO_HOME` exported.
-This is because a newer host stamps the data directory it starts on, after which a host of the earlier
-version refuses it (the runbook's step 6). The e2e job in CI is the live two-client e2e that the lockstep
-entry requires for an SDK bump. A red test run can leave a proptest seed under
-`server-module/proptest-regressions/`, and lpw-39 commits none.
+It ran alone, and switched the CLI only inside its own shell: the 2.12.0 binaries, from the
+release tarball whose sha256 `scripts/ci-tools.sh` pins, first on `PATH`; `HOME` and the XDG
+directories pointed at a scratch directory; `RUSTUP_HOME` and `CARGO_HOME` exported. A newer host
+stamps the data directory it starts on, after which a host of the earlier version refuses it (the
+runbook's step 6). The e2e job in CI is the live two-client e2e that the lockstep entry requires
+for an SDK bump. No proptest seed is committed.
 
-| File | What changes |
+| File | What changed |
 |---|---|
-| `Cargo.toml` | the pin becomes `spacetimedb = "=2.12.0"`, the `[patch.crates-io]` table above is added, and the pin's comment states both |
-| `Cargo.lock` | the seven `spacetimedb*` packages at 2.12.0; the two patched ones become path packages |
-| `vendor/spacetimedb/**` | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock` and `.cargo-ok` |
-| `vendor/spacetimedb-bindings-sys/**` | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock` and `.cargo-ok` |
+| `Cargo.toml` | the pin is `spacetimedb = "=2.12.0"`, the `[patch.crates-io]` table above is added, and the pin's comment states both |
+| `Cargo.lock` | the seven `spacetimedb*` packages at 2.12.0; the two patched ones are path packages; 184 packages, as before |
+| `vendor/spacetimedb/**` | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock` |
+| `vendor/spacetimedb-bindings-sys/**` | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock` |
 | `vendor/native-host.patch` | new: the patch |
 | `vendor/PRISTINE.sha256` | new: the crates.io checksums and per-file hashes |
 | `vendor/README.md` | new: what the directory holds, the change notice, how a hop re-vendors |
 | `.gitattributes` | `vendor/** -text`, so that no line-ending normalisation changes a byte the hashes cover |
-| `server-module/Cargo.toml` | the dependency comment names the version and the patched copies |
+| `server-module/Cargo.toml` | the dependency comment points at the root pin (no version of its own to drift) and names the patched copies |
 | `server-module/src/native_host_tests.rs` | the guard test; comments only otherwise: the citations into the 2.11.0 sources point at `vendor/` for the two patched crates and at the crates.io 2.12.0 packages for `spacetimedb-sats` and `spacetimedb-primitives` |
-| `evals/account-e2e.eval.mjs` | a list, beside `WORKSPACE_MEMBERS`, of the non-member directories its temp workspace needs, holding `vendor` |
+| `evals/account-e2e.eval.mjs` | `WORKSPACE_NON_MEMBER_DIRS`, beside `WORKSPACE_MEMBERS`: the non-member directories its temp workspace copies, holding `vendor` |
 | `scripts/ci-tools.sh` | `SPACETIME_VERSION=2.12.0` and its sha256 |
 | `client/package.json` | `"spacetimedb": "^2.12.0"` |
 | `client/package-lock.json` | the SDK at 2.12.0 |
 | `client/src/module_bindings/index.ts` | regenerated by `just gen` (the CLI-version stamps) |
-| `client/src/net/authToken.test.ts` | the SDK-drift needle and that test's title (under "Tests whose assertion changes") |
-| `client/src/net/authToken.ts` | the comments that quote the SDK's rejection message and cite its `dist` lines (in 2.12.0 the message is built at `dist/index.mjs:5219` and thrown at `:5247`), and the two that call the message the same for every status (`:15-18`, `:30-31`), which in 2.12.0 carries the status: they say the client still counts every rejection alike |
-| `docs/runbooks/spacetimedb-upgrade.md` | the current pin; a step that re-vendors at each hop (download each `.crate`, check its index `cksum`, unpack, drop the two files, apply `vendor/native-host.patch`, rewrite `PRISTINE.sha256`, run the guard) and reads the vendor's advisories for the two crates |
+| `client/src/net/authToken.test.ts` | the SDK-drift needle and that test's title (under "Tests whose assertion changes"); two comments now say the message carries the status and the client counts every rejection alike |
+| `client/src/net/authToken.ts` | the comments that quote the SDK's rejection message and cite its `dist` lines (built at `dist/index.mjs:5219`, thrown at `:5247`), the two that called the message the same for every status, and the `errorFromEvent` (`:6343`) and token (`:6214`, `:7059-7060`) citations |
+| `docs/runbooks/spacetimedb-upgrade.md` | the current pin; a `vendor/` row in "What moves together"; step 2 re-vendors before `cargo check`; the section "Re-vendor the two patched crates" (download and check each `.crate`, write `PRISTINE.sha256`, apply and regenerate the patch, pin, read the advisories) |
 | `docs/DECISIONS.md` | the lockstep entry's version; the test-host entry to the built state |
 | `ARCHITECTURE.md` | the server-tests row (the host runs over the patched copies) and a `vendor/` row in the directory map |
 | `AGENTS.md` | the toolchain row's version |
 | `README.md` | the toolchain table's version and pin, a `vendor/` row in the directory table, and the License section, which names the Apache-2.0 copies under `vendor/` |
 | `docs/PLAYTEST.md` | the CLI version it asks for |
 | `docs/runbooks/playtest-ops.md` | the CLI version it asks for |
-| `docs/e2e-flakes.md` | the host version the e2e starts |
 | `docs/local-play.md` | §3's quotation of the `Cargo.toml` pin (line 546) |
-| `scripts/playtest-report.mjs` | comments that call 2.11.0 the pinned CLI |
+| `scripts/playtest-report.mjs` | the comments that call 2.11.0 the pinned CLI, with the `ORDER BY` refusal and the `--format json` envelope re-checked on 2.12.0 |
 | `.claude/skills/spacetimedb-reducer/SKILL.md` | the versions it states and the docs.rs link |
 | `.claude/skills/spacetimedb-client/SKILL.md` | the versions it states |
 | `docs/refactors/native-test-host.md` | brought to the built state |
 
-After it, lpw-34 starts from 2.12.0, and each later hop re-applies the patch.
+`docs/e2e-flakes.md` is unchanged: its one version is a measurement (above).
+
+Measured at the build, 2026-11-22, on the same machine:
+
+- **Module tests.** `cargo nextest run -p monster-realm-module --run-ignored all`: 1312 passed of
+  1312, the 1311 that passed on 2.11.0 (each name still listed) and the guard. Before the copies
+  existed, the guard alone failed. The test binary links with no linker argument, and `nm` finds
+  the 18 host functions defined once each, by the Fixture, and in none of the 118 dependency
+  rlibs. Each of the guard's checks was watched failing once against a local break of the
+  committed tree.
+- **Client.** `tsc` passes, and vitest passes 6492 of 6492 on SDK 2.12.0.
+- **Bindings.** `just gen` from the 2.12.0 CLI changes only the two CLI-version stamps.
+- **Release notes, 2.11.0 to 2.12.0.** Typed database environments; opt-in automatic reconnect
+  in the TypeScript SDK (`withAutomaticReconnect()`, off by default, and the client does not call
+  it); the `test_utils` harness; rollback-safe system-table additions; HS256 JWTs rejected (the
+  `account-e2e` issuer signs ES256); duplicate interval-scheduled calls fixed.
+- **Data across the host hop (runbook step 6).** A 2.11.0 host published the module of `master`
+  and seeded a starter monster on a scratch data directory. A 2.12.0 host started on the same
+  directory, and this module published over it without `--delete-data`, with no migration
+  refused. The monster and the 20 species rows survived. `smoke-republish` passed on the 2.12.0
+  host.
+- **Playtest tooling (step 7).** `scripts/verify-release-reducers.mjs` parses the 2.12.0
+  `describe --json`: 66 reducers, no dev reducer.
+- **Metrics (step 8).** `/v1/metrics` on 2.12.0 has 8 of the 9 `spacetime_*` families the
+  recording rules and dashboard read. `spacetime_scheduled_function_delay_seconds` appears once a
+  scheduled function runs, and none had run on that database; the 2.12.0 host binary defines it.
+  The Loki and `mr-trace-relay` leg was not run.
+- **Advisories.** None for either crate at 2.12.0, from OSV or GitHub.
+- **The re-vendor steps.** The runbook's commands, run at 2.12.0 in a scratch directory,
+  reproduce `vendor/` byte for byte, which is also the runbook's check of `vendor/` against
+  crates.io.
+- **Mutation runs.** The guard passes in cargo-mutants' scratch copy of the tree (a forced
+  baseline: 1312 of 1312).
+
+After the hop, lpw-34 starts from 2.12.0, and each later hop re-applies the patch.
 
 ## Tests whose assertion changes
 

@@ -1447,9 +1447,9 @@ to stay fixed as proof that dev code did not ship (it shapes production source a
 ## SpacetimeDB versions move in lockstep
 
 **Decision.** The spacetime CLI/host and the Rust `spacetimedb` crate are pinned to
-the same version (2.11.0: root `Cargo.toml`, `SPACETIME_VERSION` in `scripts/ci-tools.sh`).
+the same version (2.12.0: root `Cargo.toml`, `SPACETIME_VERSION` in `scripts/ci-tools.sh`).
 AMENDED 2026-10-15 (deps-s3): the npm `spacetimedb` SDK now joins the lockstep
-(`^2.11.0`, locked in `client/package-lock.json`). It was previously held separate
+(`^2.12.0`, locked in `client/package-lock.json`). It was previously held separate
 (at 2.6.0) because newer SDKs change reconnect behaviour; since 2.7.0 the vendor
 ships CLI/crate/SDK from one monorepo on the same day with no documented skew
 matrix, so same-version-everywhere is the only documented-safe configuration. An
@@ -1475,11 +1475,14 @@ database without planning a `--delete-data` republish.
 and `spacetimedb`'s table backend stops calling it off wasm. So the workspace builds both crates
 from copies of their crates.io packages under `vendor/`, through `[patch.crates-io]`, changed only
 by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change notice
-(`vendor/native-host.patch`). A test proves each copy, with the patch undone, matches the hashes
-recorded from the crates.io release; every SpacetimeDB hop re-records them and re-applies the
-patch. CI's `cargo audit` skips packages not from crates.io, so these two are checked at each hop,
-in release notes and advisories, until CI audits them by name and version. Designed, not built:
-`docs/refactors/native-test-host.md`, to be built as the hop to 2.12.0.
+(`vendor/native-host.patch`). A test (`nh_vendored_crates_are_the_crates_io_release_plus_the_patch`)
+proves each copy, with the patch undone, matches the hashes recorded from the crates.io release
+(`vendor/PRISTINE.sha256`), and that every changed line is such an attribute, selecting on wasm
+what the original selected; every SpacetimeDB hop re-records them and re-applies the patch
+(`docs/runbooks/spacetimedb-upgrade.md`). CI's `cargo audit` skips packages not from crates.io, so
+these two are checked at each hop, in release notes and advisories, until CI audits them by name
+and version. Built at the hop to 2.12.0 (`vendor/README.md`); the alternatives and the
+measurements behind the choice are in `docs/refactors/native-test-host.md`.
 
 **Why.** The module's privacy and netcode rules are checked on what a transaction does as the host
 sees it: every write a subscriber is sent, an unchanged update included; each shipped view, run

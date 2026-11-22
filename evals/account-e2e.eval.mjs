@@ -93,6 +93,9 @@ const WORKSPACE_MEMBERS = [
   'evals/release-overflow-teeth',
 ];
 const WORKSPACE_ROOT_FILES = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'];
+// Directories outside the members that the root Cargo.toml names: its [patch.crates-io]
+// paths point at the vendored SpacetimeDB crates.
+const WORKSPACE_NON_MEMBER_DIRS = ['vendor'];
 const MARKER_FILE = path.join(os.tmpdir(), 'mr-acct-e2e.pid');
 
 const HEX = '0123456789abcdef';
@@ -2687,7 +2690,7 @@ async function runLivePhase() {
     stub = await startIssuerStub(issuerPort);
 
     // --- patched workspace copy (spike S4) ---
-    for (const member of WORKSPACE_MEMBERS) {
+    for (const member of [...WORKSPACE_MEMBERS, ...WORKSPACE_NON_MEMBER_DIRS]) {
       cpSync(path.join(repoRoot, member), path.join(tmp, member), {
         recursive: true,
         filter: (src) =>

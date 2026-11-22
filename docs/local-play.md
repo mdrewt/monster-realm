@@ -543,7 +543,7 @@ enforced at 2.11.0, as the last three rows show.
   it disconnects, and is refused when it returns.
 - *What the module never declares.* An HTTP handler, which the host serves without the connect
   reducer and without authentication, or a row filter. Both sit behind the `spacetimedb` crate's
-  `unstable` feature, which the workspace does not enable (`Cargo.toml`: `spacetimedb = "2.11.0"`,
+  `unstable` feature, which the workspace does not enable (`Cargo.toml`: `spacetimedb = "=2.12.0"`,
   no features), so neither can be declared; the deletion-gate census in the same test file refuses a
   `procedure` attribute.
 - *The door.* An unadmitted identity can call nothing, so admission is granted by reducers only

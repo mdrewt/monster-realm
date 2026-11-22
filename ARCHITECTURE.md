@@ -36,6 +36,7 @@ netcode deterministically without a browser.
 | `evals/` | Node checks run by `just eval` (`evals/run.mjs`), with baselines in `evals/baselines/`. |
 | `scripts/` | Commit-message and secret checks, playtest verifiers, the smoke-republish script. |
 | `ops/` | Deployment recipes: `observability/` (self-hosted monitoring stack) and `auth/` (the OIDC issuer). |
+| `vendor/` | The crates.io packages of `spacetimedb` and `spacetimedb-bindings-sys` at the pinned version, patched in `#[cfg]` attributes (`native-host.patch`) and wired by the root `[patch.crates-io]`; not workspace members. `PRISTINE.sha256` records the published files. See `vendor/README.md`. |
 
 The Cargo workspace (`Cargo.toml`) has five members: `game-core`, `client-wasm`,
 `server-module`, `sim-harness`, and `evals/release-overflow-teeth` (a fixture crate
@@ -876,7 +877,7 @@ root, so opening one never closes a sibling.
 | Layer | Where | Run by |
 |---|---|---|
 | Rule unit and property tests | `game-core/src/**` (`*_tests.rs`, inline modules), `game-core/tests/` | `just test` (cargo nextest) |
-| Server tests | `server-module/src/*_tests.rs`, including `native_host_tests.rs`, which runs reducers against an in-memory host | `just test` |
+| Server tests | `server-module/src/*_tests.rs`, including `native_host_tests.rs`, which runs reducers against an in-memory host: it defines the SpacetimeDB host ABI itself, and the patched copies under `vendor/` route the module SDK's native table calls to it (its guard test checks those copies against the crates.io release) | `just test` |
 | Netcode | `sim-harness` plus the `netcode-determinism` and `netcode-convergence` evals | `just test`, `just eval` |
 | Client unit tests | `client/src/**/*.test.ts` (vitest, happy-dom) | `just client-test` |
 | Evals | `evals/*.eval.mjs`: wasm parity, feature isolation, determinism, schema and type snapshots, append-only ids, content version, bindings drift, client-surface privacy, sprite-sheet format, and the live account flow | `just eval` |

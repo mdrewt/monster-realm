@@ -107,9 +107,10 @@ describe('AUTH_REJECT_SUPPRESS_THRESHOLD', () => {
     // exporting 1 or 50 passes all 26 other tests in this suite. This is the ONLY
     // hardcoded pin of the value.
     //
-    // WHY 2, not 1: the SDK throws the SAME "Failed to verify token: " message for a
-    // transient 500/502/503 gateway error as for a genuine 401 (see the SDK-DRIFT
-    // test below) — suppressing on a single rejection would swap the
+    // WHY 2, not 1: the SDK throws "Failed to verify token: <status> <statusText>" for a
+    // transient 500/502/503 gateway error just as for a genuine 401 (see the SDK-DRIFT
+    // test below), and the client counts every such rejection alike, whatever the status —
+    // suppressing on a single rejection would swap the
     // player's identity on a mere gateway blip, not just a real credential rejection.
     // WHY 2, not large: the suppression window is meant to resolve inside the
     // existing ADR-0085 backoff ladder's first couple of rungs (1s + 2s ≈ 3s); a
@@ -368,12 +369,12 @@ describe('isStoredCredentialRejected', () => {
 });
 
 describe('SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-rejection message string', () => {
-  it('BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${response.statusText}"', () => {
+  it('BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${status} ${statusText}"', () => {
     // it is the contract isStoredCredentialRejected above depends on, read from the installed
     // SDK itself.
     //
     // WRONG IMPL KILLED: an SDK bump that changes this message's wording (e.g. adding
-    // punctuation, changing "verify" to "validate", or dropping the statusText
+    // punctuation, changing "verify" to "validate", or dropping the status or statusText
     // interpolation) would silently disarm isStoredCredentialRejected in
     // authToken.ts, restoring the infinite-reconnect-loop failure mode with EVERY
     // OTHER classifier test still green (they feed hand-written messages). This is
@@ -399,7 +400,7 @@ describe('SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-reje
           String(err),
       );
     }
-    const needle = 'Failed to verify token: ${response.statusText}';
+    const needle = 'Failed to verify token: ${status} ${statusText}';
     expect(
       sdkSrc.includes(needle),
       'spacetimedb dist/index.mjs must contain the literal substring ' +
@@ -415,8 +416,9 @@ describe('SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-reje
 
 describe('createAuthTokenGate: consecutive-rejection suppression', () => {
   it('below threshold the token is still supplied (kills a suppress-on-first-rejection impl)', () => {
-    // The SDK throws this SAME "Failed to verify token: " message for transient 500/502/503
-    // gateway errors, not only 401 — dropping identity on ONE rejection would be wrong.
+    // The SDK throws "Failed to verify token: <status> <statusText>" for transient 500/502/503
+    // gateway errors, not only 401, and the client counts every such rejection alike —
+    // dropping identity on ONE rejection would be wrong.
     const gate = createAuthTokenGate(
       'ws://127.0.0.1:3000',
       'db',

@@ -5,8 +5,9 @@ description: Writing or modifying SpacetimeDB reducers, table definitions, schem
 
 # SpacetimeDB reducer authoring (monster-realm v2)
 
-> **Versions.** `spacetime` CLI/host 2.11.0 · Rust `spacetimedb` crate 2.11.0 (this
-> module) · npm `spacetimedb` 2.11.0 (client, in lockstep since 2026-10-15). The crate version
+> **Versions.** `spacetime` CLI/host 2.12.0 · Rust `spacetimedb` crate 2.12.0 (this
+> module; it and `spacetimedb-bindings-sys` build from the patched copies under `vendor/`,
+> see `vendor/README.md`) · npm `spacetimedb` 2.12.0 (client, in lockstep since 2026-10-15). The crate version
 > is the product version; keep it equal to the CLI (`docs/runbooks/spacetimedb-upgrade.md`).
 >
 > **Write 2.x syntax.** Old commits and examples use 1.x spellings that do not compile:
@@ -21,10 +22,10 @@ description: Writing or modifying SpacetimeDB reducers, table definitions, schem
 > overriding the SQL table name, which defaults to the accessor.
 >
 > **Docs:** `gitmcp-spacetimedb` serves the repository's master branch, which is ahead
-> of 2.11.0. Confirm anything load-bearing against https://docs.rs/spacetimedb/2.11.0 or
-> the vendored crate source. The harness research note on platform behaviour is
+> of 2.12.0. Confirm anything load-bearing against https://docs.rs/spacetimedb/2.12.0 or
+> the vendored crate source (`vendor/spacetimedb/`). The harness research note on platform behaviour is
 > `docs/research/spacetimedb.md` in the harness repository root (two levels above
-> `projects/monster-realm/`). `spacetime mcp` (CLI 2.11.0, unstable) talks to a running
+> `projects/monster-realm/`). `spacetime mcp` (CLI 2.12.0, unstable) talks to a running
 > database, not the docs.
 
 ## Reducer contract
@@ -63,7 +64,7 @@ description: Writing or modifying SpacetimeDB reducers, table definitions, schem
   `my_monster_pub`.
 - **Row-level security does not work.** `#[client_visibility_filter]` is behind the
   `unstable` feature, and the crate says "RLS filters are currently unimplemented, and
-  are not enforced" (vendored `spacetimedb-2.11.0/src/lib.rs:108`, re-verified on the 2.11.0 hop). Per-player data goes in a
+  are not enforced" (`vendor/spacetimedb/src/lib.rs:108`, crate 2.12.0). Per-player data goes in a
   **private table** read through an **owner-scoped `#[spacetimedb::view]`** whose body
   filters on `ctx.sender()` and takes no identity argument (`my_wallet`, `my_inventory`,
   `my_battle`, ... in `schema.rs`).
