@@ -438,6 +438,51 @@ export function checkReleaseProfile(parsed, { want, devIssuers, productionIssuer
 }
 
 /**
+ * A parsed profile against the one a build was made for: ok only when it
+ * parsed and `profile`, `enforcesOwnership`, `devReducers` and the whole
+ * ordered `loginIssuers` list all equal `want`'s. The reason names the first
+ * field that differs, with both values. Returns { ok, reason }.
+ */
+export function checkArtefactProfile(parsed, want) {
+  const w = want || {};
+  if (!parsed || parsed.ok !== true) {
+    return {
+      ok: false,
+      reason: 'the profile did not parse: ' + (parsed ? parsed.reason : 'nothing'),
+    };
+  }
+  for (const field of ['profile', 'enforcesOwnership', 'devReducers']) {
+    if (parsed[field] !== w[field]) {
+      return {
+        ok: false,
+        reason:
+          field +
+          ' is ' +
+          JSON.stringify(parsed[field]) +
+          ' where ' +
+          JSON.stringify(w[field]) +
+          ' was built',
+      };
+    }
+  }
+  const got = Array.isArray(parsed.loginIssuers) ? parsed.loginIssuers : null;
+  const exp = Array.isArray(w.loginIssuers) ? w.loginIssuers : null;
+  if (
+    got === null ||
+    exp === null ||
+    got.length !== exp.length ||
+    got.some((issuer, n) => issuer !== exp[n])
+  ) {
+    return {
+      ok: false,
+      reason:
+        'loginIssuers is ' + JSON.stringify(got) + ' where ' + JSON.stringify(exp) + ' was built',
+    };
+  }
+  return { ok: true, reason: 'profile ' + w.profile + ' matches the build' };
+}
+
+/**
  * The last stdout line of `just release-module <want>`:
  * `release-module: <want> <64 lowercase hex> <absolute path>`.
  * Returns { ok, reason, sha256, path }.
@@ -536,9 +581,13 @@ export function checkOwnershipRefusals(input) {
   };
 }
 
-/** The two ownership tokens the pass detail begins with, in this order. */
-export function formatAcs6Tokens(parsed, sha256, refusalsDetail) {
-  return (
+/**
+ * The ownership tokens the pass detail begins with, in this order; the third,
+ * naming the three artefacts whose own profile section was read back, only
+ * when `profilesRead` is true.
+ */
+export function formatAcs6Tokens(parsed, sha256, refusalsDetail, profilesRead = false) {
+  const head =
     'ACS6-RELEASE-VERIFIED(profile=' +
     parsed.profile +
     ' enforces_ownership=' +
@@ -551,8 +600,8 @@ export function formatAcs6Tokens(parsed, sha256, refusalsDetail) {
     String(sha256).slice(0, 12) +
     ') ACS6-ENFORCING-VERIFIED(' +
     refusalsDetail +
-    ')'
-  );
+    ')';
+  return profilesRead === true ? head + ' ACS6-PROFILES-READ(test dev-enforcing official)' : head;
 }
 
 // --- live-phase predicates (bindings-drift B/B2/B3 pattern) ----------------
@@ -2464,6 +2513,25 @@ async function hostMintedToken(dbUrl) {
 // then the official artefact `just release-module official` builds is read back,
 // hashed and published, and refuses the anonymous and the entitled stub token
 // alike. Returns the two ownership tokens the pass detail begins with.
+// Reads the profile section of the wasm a build just wrote and requires it to
+// describe that build, so the section follows the features each build was made
+// with rather than one fixed profile. Throws `[acs6/profile] <label>: …`.
+function requireArtefactProfile(repoRoot, wasmPath, label, want) {
+  const justfile = path.join(repoRoot, 'justfile');
+  const read = run('just', ['--justfile', justfile, 'module-profile', wasmPath], {
+    timeout: 60_000,
+  });
+  if (!read.ok) {
+    throw new Error(`[acs6/profile] ${label}: just module-profile failed: ${read.stderr}`);
+  }
+  const check = checkArtefactProfile(parseBuildProfile(read.stdout), want);
+  if (!check.ok) {
+    throw new Error(
+      `[acs6/profile] ${label}: ${check.reason} :: section ${JSON.stringify(read.stdout)}`,
+    );
+  }
+}
+
 async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }) {
   // a. The dev-enforcing build overwrites the wasm the first publish used.
   const enforcingBuild = run(
@@ -2486,6 +2554,14 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
       `[acs6] cargo build of the dev-enforcing module failed: ${enforcingBuild.stderr}`,
     );
   }
+  // The dev-enforcing wasm names its own profile: enforcing, no dev reducers,
+  // trusting the stub issuer the copy was patched to and the hosted dev issuer.
+  requireArtefactProfile(repoRoot, wasm, 'dev-enforcing build', {
+    profile: 'dev-enforcing',
+    enforcesOwnership: true,
+    devReducers: false,
+    loginIssuers: [stub.iss1, HOSTED_DEV_ISSUER],
+  });
   const enforcingPublish = run(
     'spacetime',
     ['publish', '-s', dbUrl, '--bin-path', wasm, '-y', ENFORCING_DB_NAME],
@@ -2580,7 +2656,9 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
     official,
   });
   if (!refusals.ok) throw new Error(refusals.reason);
-  return formatAcs6Tokens(parsed, line.sha256, refusals.detail);
+  // The test and dev-enforcing reads threw on any mismatch, so reaching here
+  // means all three artefacts carried their own profile.
+  return formatAcs6Tokens(parsed, line.sha256, refusals.detail, true);
 }
 
 async function runLivePhase() {
@@ -2655,6 +2733,15 @@ async function runLivePhase() {
       'monster_realm_module.wasm',
     );
     if (!existsSync(wasm)) throw new Error(`built wasm not found at ${wasm}`);
+    // The default-feature wasm names its own profile: the test build, not
+    // enforcing, no dev reducers, trusting the patched stub issuer and the
+    // hosted dev issuer.
+    requireArtefactProfile(repoRoot, wasm, 'test build', {
+      profile: 'test',
+      enforcesOwnership: false,
+      devReducers: false,
+      loginIssuers: [stub.iss1, HOSTED_DEV_ISSUER],
+    });
 
     stdb = spawn('spacetime', ['start', '--in-memory', '--listen-addr', '127.0.0.1:' + stdbPort], {
       stdio: ['ignore', 'pipe', 'pipe'],
