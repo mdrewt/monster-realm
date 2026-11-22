@@ -2486,37 +2486,96 @@ tokens, the fallback for a verifier that did not fit.
 **Decision.** The `aud` of a world attestation is one string: `spki:<fingerprint>/<db>` for a server
 the desktop shell pinned and for a `local` world, whose fingerprint the party that started it wrote
 into the shell document; `dns:<host>:<port>/<db>` for a domain server the platform's certificate
-checks validated, the shell refusing every certificate error. Any other target has no name, and the
-client asks for no attestation for it. The name is computed by the party that authenticated the
-server, never by the world and never by a page we did not serve: in the shell the main process
-computes it and calls the attestation route, and the shell's page, toward a `local` or `private`
-target, is given the attestation and no login token. A world holds its own names in a private table
-its owner writes, and `bind_world_account` accepts an attestation only when its `aud` equals one of
-them, byte for byte. Built: the module's half. The owner writes the names with `set_world_names` (at
-most 16 names of 1 to 512 visible ASCII characters; a world with no name accepts no binding), and
-`mod bind_refuses` and `mod relay_rig` in `server-module/src/world_binding_tests.rs` prove the
+checks validated; `ip:<address>:<port>/<db>` for a server a browser reached by a bare IP address
+under a publicly trusted certificate for that address. Any other target has no name, and the client
+asks for no attestation for it. The name comes from the party that authenticated the server, never
+from the world and never from a page we did not serve. In the shell the main process computes it
+and calls the attestation route, refusing every certificate error, and the shell's page, toward a
+`local` or `private` target, is given the attestation and no login token. For a browser joiner the
+browser authenticated the server, and the account service derives the name from the address it
+sends that browser back to (see "A browser binds a friends server by a sign-in on the account
+service's own origin; the attestation names the address the browser is sent back to"). A world
+holds its own names in a private table its owner writes, and `bind_world_account` accepts an
+attestation only when its `aud` equals one of them, byte for byte. A `dns:` or an `ip:` name is
+listed only while the server holds an unexpired, publicly trusted certificate for it; the
+certificate for an address is issued for the world's own key, so the shell's pin and `spki:` hold
+on the same listener. Built: the module's half. The owner writes the names with `set_world_names`
+(at most 16 names of 1 to 512 visible ASCII characters; a world with no name accepts no binding),
+and `mod bind_refuses` and `mod relay_rig` in `server-module/src/world_binding_tests.rs` prove the
 refusal of another world's name. Not built: the client's name function (`spki:`/`dns:`) and bind
-flow, the shell and gate halves, the development recipe that writes a world's names, and the run
-over two real hosts, so the relay is proved in halves. `docs/local-play.md` §3, "The access and
-attestation design", fork (c).
+flow, the shell and gate halves, the development recipe that writes a world's names, the
+certificate for an address and the names written under it, and the run over two real hosts, so the
+relay is proved in halves. `docs/local-play.md` §3, "The access and attestation design", fork (c),
+and "A browser binds a friends server it reached by address", fork (g).
 
 **Why.** A hostile host can have its player's client fetch an attestation addressed to another
 world, carrying that world's nonce, and present it there as its own. An audience and a nonce stop
 that only if the audience is something the host cannot make true of its own server. A host cannot
 present another world's certificate without its private key, whether it relays or proxies, and
-cannot get a browser-trusted certificate for a domain it does not control. A page a world's gate
-serves may be the hostile host's own code: a check it runs proves nothing, and an account's login
-token, which the official server accepts, must never reach it.
+cannot get a browser-trusted certificate for a domain or an address it does not control. A page a
+world's gate serves may be the hostile host's own code: a check it runs proves nothing, and an
+account's login token, which the official server accepts, must never reach it. A browser shows a
+page nothing about the certificate it accepted and cannot pin one, so all it authenticates is the
+address, through the public certificate authorities; they certify a public IP address (Let's
+Encrypt for 160 hours at a time) and never a private one.
 
 **Rules out.** Naming the key that verifies the client's world token (a host that proxies the
 client to the victim world hands it a genuine token under that world's key, and keeps the token);
-naming the server's address or the database's identity (private addresses repeat on every network,
-and a database's identity is its host's to state); a name supplied by the world or by a page a gate
-served; signing in from such a page; an invite, shell document or address entry that carries a
-reconnect token. A default the operator may overrule: on a build that enforces ownership a plain
-browser cannot bind, and so cannot join, a friend's server, and the desktop shell is the way in. A
-sign-in on the account service's own origin, returning an attestation that names the origin it
-returns to, would serve a browser at a domain server; it is not built.
+naming the database's identity (its host's to state); naming an address under a certificate no
+authority issued (private addresses repeat on every network, nothing ever removes a stale name, and
+a warning the player accepts authenticates nobody); a name the account service reads off a
+connection of its own to the server (a host forwards that connection to the victim and answers
+browsers itself); a name supplied by the world or by a page a gate served; an invite, shell
+document or address entry that carries a reconnect token; an `ip:` or `dns:` name kept after its
+certificate. Accepted limits (operator ruling, <https://github.com/mdrewt/monster-realm/issues/833>):
+an address or a domain name proves who answers there when the player binds, and nothing about
+before or after. A world that moved keeps accepting its old address's name until its certificate
+expires, 160 hours at most, and a browser that loaded an earlier server's page at the same address
+and port may still run what that page left there. A name issued for the server's key, under a DNS
+zone we would operate, closes both and was weighed and not chosen (R-lpw-19-CHANGEDHANDS).
+
+## A browser binds a friends server by a sign-in on the account service's own origin; the attestation names the address the browser is sent back to
+
+**Decision.** A page that a friends server's gate serves never signs in and never names the server.
+When the player presses the button, it posts the world's nonce, the database, its own origin and
+the digest of a value it keeps to a bind route on the account service, as a top-level navigation.
+The service runs its sign-in step on its own origin, issuing no ID token, code or refresh token and
+starting no session, then shows the server's address and asks for consent every time. On consent it
+derives the attestation's `aud` from the address the bind returns to, `dns:<host>:<port>/<db>` or
+`ip:<address>:<port>/<db>`, and redirects the browser to one fixed path at that address with a
+one-use code in the fragment; the page redeems the code, with the value it kept, for the
+attestation, and binds with it. The route takes only an `https:` origin in the URL parser's own
+spelling that equals the post's `Origin` header: a domain under a public suffix, or a globally
+reachable IP address. Nothing is sent to the server before the player presses Continue or Cancel,
+and the address, database and nonce reach no database, log or backup. A page asks for a bind when
+the world says it needs one and once a day otherwise. Operator ruling,
+<https://github.com/mdrewt/monster-realm/issues/833>: a player at a public computer joins a
+friend's server from a browser by its address, a static IP address included. Designed, not built:
+`docs/local-play.md` §3, "A browser binds a friends server it reached by address", fork (f), with
+the measurements and the judge's scores.
+
+**Why.** The account service cannot see which server a browser is talking to, and does not need to:
+the code exists only in a redirect to an address, and a browser completes that navigation only to
+a server showing a certificate it trusts for that address, so only script running in that origin
+can redeem an attestation that names it. A hostile host's page gets an attestation for its own
+address, which no other world lists. The code, not the attestation, travels in the redirect because
+a browser's history keeps the whole address after the page removes the fragment (measured in
+Chromium 149), and the ruling's case is a shared computer. The service issues no token because a
+page that holds none cannot leak one. Consent comes before any redirect so that no site learns,
+unasked, that a visitor has an account or whether it owns the game.
+
+**Rules out.** A page a gate serves signing in, with the game's client id or with a client
+registered for its own origin (it would hold a login token, and a refresh token that mints
+attestations with no player present); a world name taken from the page; returning the attestation
+in the redirect itself; a window that posts the attestation back to its opener (the sign-in page
+would have to keep an opener that can navigate it); approval on a second device (nothing delivers
+the answer through the player's browser, so the name would be the asking page's claim); a return
+path that varies or redirects (the fragment follows a redirect to wherever it leads); a redirect
+before consent; a sign-in session or any cookie that admits a later bind; accepting `Origin: null`
+(the gate's page sends a referrer policy that discloses its origin). Accepted limits: a hostile
+page chooses when to send a player to a sign-in and can send them to a look-alike; what an earlier
+holder of the same address and port left in a browser acts as the server's page there (see "An
+attestation names the server as the player's own software authenticated it").
 
 ## The official build holds no attestation key and a world build trusts no login issuer
 
@@ -2563,13 +2622,17 @@ server with a registered domain serves a certificate a browser trusts: the stand
 obtains and renews one over ACME when given the domain, or the host puts their own certificate or
 reverse proxy in front. A server reached by a bare IP address, public or on a LAN, and a shell world
 opened to friends, serves a self-signed certificate made once per world and kept with the world's
-data and its backups. The invite and the shell document carry that certificate's fingerprint
+data and its backups; a server at a public IP address may instead be given a certificate for that
+address by a certificate authority, for the same key (designed, not built: `docs/local-play.md`
+§3, "A browser binds a friends server it reached by address", fork (g)). The invite and the shell document carry that certificate's fingerprint
 (SHA-256 of its public key), and the desktop shell completes a connection only to a matching
-certificate, even one a certificate authority would accept. A plain browser joining such a server
-loads the client page from the server's gate over `https:` and accepts the certificate once; the
-shell is the recommended way to join, and on a build that enforces ownership the only one, since
-a page a world's gate serves cannot bind the world to an account (see "An attestation names the
-server as the player's own software authenticated it"). For a pinned target the client keys its stored reconnect
+certificate, even one a certificate authority would accept. A plain browser joining a server under its self-signed
+certificate loads the client page from the server's gate over `https:` and accepts the certificate
+once; there the shell is the recommended way to join, and on a build that enforces ownership the
+only one, since a browser has authenticated nothing an attestation could name. A browser binds a
+server that shows a publicly trusted certificate, for a domain or for its address (see "A browser
+binds a friends server by a sign-in on the account service's own origin; the attestation names the
+address the browser is sent back to"). For a pinned target the client keys its stored reconnect
 token on the fingerprint and the database name, not the address. Operator ruling, 2026-11-16,
 <https://github.com/mdrewt/monster-realm/issues/821> (revising the same day's "plaintext only to
 loopback and private-range addresses"); built by the harness spec `M-local-play.spec.md` lpw-18
@@ -2593,7 +2656,8 @@ Minecraft's online mode binds its session check to the server's key.
 **Rules out.** Plaintext `ws:` to any non-loopback address, LAN included, with or without a
 warning; trusting a self-signed certificate without the invite's fingerprint in the shell;
 regenerating a world's certificate on restart or upgrade (every friend's pin would break); a relay
-or tunnel service we operate to carry friends' traffic; requiring every host to own a domain.
+or tunnel service we operate to carry friends' traffic; requiring every host to own a domain; a DNS zone and certificate broker we operate to
+give every server a name (weighed for browser joiners and not chosen).
 
 ## A world that is not open refuses an unadmitted identity at connect and in every reducer; the owner relays the door
 
