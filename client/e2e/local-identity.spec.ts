@@ -199,8 +199,10 @@ async function openAtSignIn(
     await page.evaluate(() => (window as unknown as { __game: () => GameSnap }).__game().identity),
   );
   expect(identity, `${label}: the identity is 64 hex digits`).toMatch(/^[0-9a-f]{64}$/);
+  // The connection raises the screen as its first snapshot applies, so a short bound past the
+  // identity wait is ample.
   await expect(page.locator('#menu-overlay'), `${label}: the sign-in screen is up`).toBeVisible({
-    timeout: 30_000,
+    timeout: 10_000,
   });
   await expect
     .poll(() => rowKeys(page), {
@@ -290,7 +292,9 @@ test.describe
     });
 
     test('LPW2-6-CONTROL: a new page of a test target joins as a new identity, and a new page of an official target is a new identity held at the sign-in screen, each keeping its token per tab [lpw-2.6]', async () => {
-      test.setTimeout(180_000);
+      // Above the sum of the bounds inside: 90 s of waits in the test leg, 125 s in the official
+      // leg, and 15 s for each of the seven CLI reads that open a leg, end a hold or end a poll.
+      test.setTimeout(360_000);
 
       // Leg "test": a per-tab target an anonymous page joins.
       const testBefore = playerIdentities('control test: players before');

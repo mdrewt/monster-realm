@@ -22,9 +22,11 @@ import { renderShellConfigScript } from '../src/net/shellDocument';
 //                        no `join_game` reaches the server and the `player` table stays empty;
 //                        Enter opens the issuer's form, the owning account signs in, and back in
 //                        the game the screen is gone and the player has a row and a tile; the
-//                        signed-in page keeps no token in localStorage, and once it closes and its
-//                        session ends, a new page of the same profile is a third identity, at the
-//                        sign-in screen, with its token key in sessionStorage alone and no join;
+//                        signed-in page keeps no credential key (reconnect token, auth-kind marker,
+//                        sign-in flow record, claim code) in localStorage, and once it closes and
+//                        its session ends, a new page of the same profile is a third identity, at
+//                        the sign-in screen, with its token key in sessionStorage alone, no
+//                        credential key in localStorage and no join;
 //   official, not owner  the issuer answers its not-owned page and redirects nowhere; back at the
 //                        game the sign-in screen is up again and no player row exists;
 //   test, anonymous      the page's one anonymous join is refused; the screen shows the not-owned
@@ -100,6 +102,15 @@ const PROVIDER_NAME = 'Dev Account';
 const STORE_URL = 'https://store.steampowered.com/';
 /** The prefix of every reconnect-token key. */
 const TOKEN_PREFIX = 'mr.authToken.v1|';
+/** The key prefixes of the client's per-target credential stores. Each is defined by the client:
+ *  the reconnect token and the auth-kind marker in net/authToken.ts, the sign-in flow record in
+ *  net/oidc.ts, the claim code in net/claimCode.ts. */
+const CREDENTIAL_KEY_PREFIXES: readonly string[] = [
+  'mr.authToken.v1',
+  'mr.authKind.v1',
+  'mr.oidcFlow.v1',
+  'mr.claimCode.v1',
+];
 /** The issuer's data directory: the same on every run on one machine, and never removed. */
 const ISSUER_DATA_DIR = join(tmpdir(), 'mr-signin-gate-issuer');
 /** The text a page shows when the host rejects the issuer's token signature. */
@@ -489,6 +500,16 @@ function tokenKeys(page: Page): Promise<{ local: string[]; session: string[] }> 
   }, TOKEN_PREFIX);
 }
 
+/** The page's localStorage keys that start with a credential key prefix (keys only). */
+function deviceCredentialKeys(page: Page): Promise<string[]> {
+  return page.evaluate((prefixes: readonly string[]) => {
+    const s = window.localStorage;
+    return Array.from({ length: s.length }, (_, i) => s.key(i) ?? '').filter((k) =>
+      prefixes.some((p) => k.startsWith(p)),
+    );
+  }, CREDENTIAL_KEY_PREFIXES);
+}
+
 /** A dev account address for `role`, with a suffix no earlier run used. */
 function runEmail(role: 'owner' | 'stranger'): string {
   return `${role}-${randomBytes(6).toString('hex')}@signin-gate.test`;
@@ -708,7 +729,9 @@ test.describe
     });
 
     test('an official server shows the sign-in screen first, calls no join before sign-in, an owning account then plays, and a new page of the same profile is a new identity at the sign-in screen [acs-7.1]', async () => {
-      test.setTimeout(240_000);
+      // Above the sum of the bounds inside, each CLI call counted at its own 30 s bound: about
+      // 445 s before the signed-in tail, 205 s in it, and 45 s for the drain.
+      test.setTimeout(720_000);
       const r = rig();
       expect(gatePlayers(r.target, 'owner: players before'), 'owner: no player yet').toEqual([]);
       const ctx = await r.browser.newContext();
@@ -761,8 +784,8 @@ test.describe
         // The signed-in half of the per-tab rule: nothing is kept on the device, and a new page of
         // the same profile is neither the earlier anonymous identity nor the account.
         expect(
-          (await tokenKeys(page)).local,
-          'owner: the signed-in page keeps no token key in localStorage',
+          await deviceCredentialKeys(page),
+          'owner: the signed-in page keeps no credential key in localStorage',
         ).toEqual([]);
         await page.close();
         await expect
@@ -786,6 +809,10 @@ test.describe
           await tokenKeys(next),
           'owner: the new page keeps its token key in sessionStorage, none on the device',
         ).toEqual({ local: [], session: [gateTokenKey(r.target)] });
+        expect(
+          await deviceCredentialKeys(next),
+          'owner: the new page keeps no credential key in localStorage',
+        ).toEqual([]);
         await holdFor(() => {
           expect(
             gatePlayers(r.target, 'owner: players with the new page open'),
