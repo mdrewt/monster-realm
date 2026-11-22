@@ -649,7 +649,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.status.serverNewer': 'This server runs a newer Monster Realm. Update the game to join.',
   'chrome.status.serverOlder': 'This server runs an older Monster Realm. Its host must update it.',
   // lpw-9 (named intentional change, lpw-9.6): +1 plain key (`chrome.status.privateHostNotice`),
-  // the once-per-server line a friends server shows on the first join (549 -> 550).
+  // the once-per-server line a friends server shows on the first join.
   'chrome.status.privateHostNotice':
     "This server's host can read and change your data in this world.",
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
@@ -835,6 +835,16 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'claim.reject.generic.title': 'Could not complete the claim', // claimModel.ts:347
   'claim.reject.generic.body':
     'Signing in is required before this progress can be claimed. Your guest progress is safe.', // claimModel.ts:348
+  // The sign-in gate's eight plain lines: the sign-in step, the not-owned step, the Steam store
+  // link, and the line that says the gate stays shut until the player signs in.
+  'claim.gate.signIn.title': 'Sign in to play',
+  'claim.gate.signIn.body': 'This server needs an account. Sign in to start playing.',
+  'claim.gate.signIn.desc': 'Opens the sign-in page, then brings you back here.',
+  'claim.gate.notOwned.title': 'You need to own Monster Realm on Steam',
+  'claim.gate.notOwned.body': 'Get the game on Steam, then sign in with the account that owns it.',
+  'claim.gate.store.title': 'Open the Steam store',
+  'claim.gate.store.desc': 'Opens the Steam store in a new tab.',
+  'claim.gate.stays': 'You need to sign in before you can play.',
   'privacy.countdown.dark': 'Account deletion pending — time remaining unavailable', // privacyBanner.ts:31
   'privacy.countdown.due': 'Account deletion is due now', // privacyBanner.ts:32
   'privacy.notice.terminal':
@@ -2429,11 +2439,12 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
-    // claim.prompt.noProvider among them, claim.signInButton not.
+    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 550 keys').toHaveLength(550);
+    // The pinned roster is 558 keys: chrome.status.privateHostNotice and the eight claim.gate.*
+    // sign-in gate lines among them.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 558 keys').toHaveLength(558);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3648,12 +3659,12 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
-    // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 550 keys').toBe(550);
+    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 558 keys').toBe(558);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(550);
+    // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(558);
   });
 });
 
@@ -3780,12 +3791,12 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
-    // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 550 keys').toBe(550);
+    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 558 keys').toBe(558);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(550);
+    // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(558);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4106,13 +4117,13 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
-    // claim.prompt.noProvider among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 550 keys').toBe(550);
+    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 558 keys').toBe(558);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(550);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(550);
+    // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(558);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(558);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4801,12 +4812,12 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
-    // claim.prompt.noProvider among them, claim.signInButton not.
+    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
-    expect(Object.keys(en), 'the English roster is 550 keys').toHaveLength(550);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(550);
+    // Both rosters count chrome.status.privateHostNotice among their 558 keys.
+    expect(Object.keys(en), 'the English roster is 558 keys').toHaveLength(558);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(558);
   });
 });
 
@@ -4929,12 +4940,12 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 546 keys: identity.tag, identity.taggedName, claim.signInWithProvider and
-    // claim.prompt.noProvider among them, claim.signInButton not.
+    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // lpw-9 (named intentional change): 549 -> 550, +chrome.status.privateHostNotice.
-    expect(Object.keys(en), 'the English roster is 550 keys').toHaveLength(550);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(550);
+    // Both rosters count chrome.status.privateHostNotice among their 558 keys.
+    expect(Object.keys(en), 'the English roster is 558 keys').toHaveLength(558);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(558);
   });
 });
 
@@ -5152,5 +5163,69 @@ describe('the private host notice in both catalogs', () => {
     const expected = `L${RIGHT_QUOTE}h${O_CIRCUMFLEX}te de ce serveur peut lire et modifier vos donn${E_ACUTE}es dans ce monde.`;
     expect(plain(fr, KEY)).toBe(expected);
     expect(plain(fr, KEY)).not.toBe(plain(en, KEY));
+  });
+});
+
+// =============================================================================
+// The sign-in gate's eight lines, in both catalogs. The English and French bytes are the plan's
+// table; the French accents are built by code point, so the expected text holds no pasted glyph.
+// =============================================================================
+
+describe('the sign-in gate lines in both catalogs', () => {
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  const GATE_A_GRAVE = String.fromCharCode(0x00e0);
+  const GATE_E_GRAVE = String.fromCharCode(0x00e8);
+  const GATE_E_ACUTE = String.fromCharCode(0x00e9);
+  const plain = (catalog: Record<string, unknown>, key: string): unknown =>
+    Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+
+  const GATE_EN: Readonly<Record<string, string>> = {
+    'claim.gate.signIn.title': 'Sign in to play',
+    'claim.gate.signIn.body': 'This server needs an account. Sign in to start playing.',
+    'claim.gate.signIn.desc': 'Opens the sign-in page, then brings you back here.',
+    'claim.gate.notOwned.title': 'You need to own Monster Realm on Steam',
+    'claim.gate.notOwned.body':
+      'Get the game on Steam, then sign in with the account that owns it.',
+    'claim.gate.store.title': 'Open the Steam store',
+    'claim.gate.store.desc': 'Opens the Steam store in a new tab.',
+    'claim.gate.stays': 'You need to sign in before you can play.',
+  };
+  const GATE_FR: Readonly<Record<string, string>> = {
+    'claim.gate.signIn.title': 'Connectez-vous pour jouer',
+    'claim.gate.signIn.body': `Ce serveur demande un compte. Connectez-vous pour commencer ${GATE_A_GRAVE} jouer.`,
+    'claim.gate.signIn.desc': `Ouvre la page de connexion, puis vous ram${GATE_E_GRAVE}ne ici.`,
+    'claim.gate.notOwned.title': `Vous devez poss${GATE_E_ACUTE}der Monster Realm sur Steam`,
+    'claim.gate.notOwned.body': `Procurez-vous le jeu sur Steam, puis connectez-vous avec le compte qui le poss${GATE_E_GRAVE}de.`,
+    'claim.gate.store.title': 'Ouvrir la boutique Steam',
+    'claim.gate.store.desc': 'Ouvre la boutique Steam dans un nouvel onglet.',
+    'claim.gate.stays': 'Vous devez vous connecter avant de pouvoir jouer.',
+  };
+
+  it('reads each of the eight claim.gate lines from the English catalog as its exact plain text [acs-7.4]', () => {
+    // WRONG IMPL KILLED: a key missing from en (t() throws when the gate paints); a parameterised
+    // entry; a reworded line; two lines swapped.
+    expect(Object.keys(GATE_EN), 'ANTI-VACUITY: eight keys').toHaveLength(8);
+    for (const [key, text] of Object.entries(GATE_EN)) {
+      expect(plain(en, key), key).toBe(text);
+    }
+  });
+
+  it('reads each of the eight claim.gate lines from the French catalog as its exact French text [acs-7.4]', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot); an accent dropped;
+    // two French lines swapped.
+    expect(Object.keys(GATE_FR)).toEqual(Object.keys(GATE_EN));
+    for (const [key, text] of Object.entries(GATE_FR)) {
+      expect(plain(fr, key), key).toBe(text);
+    }
+  });
+
+  it('every claim.gate line differs between the French and the English catalog [acs-7.4]', () => {
+    // WRONG IMPL KILLED: an fr entry left as the English copy.
+    for (const key of Object.keys(GATE_EN)) {
+      expect(typeof plain(fr, key), `${key} is a plain string in fr`).toBe('string');
+      expect(typeof plain(en, key), `${key} is a plain string in en`).toBe('string');
+      expect(plain(fr, key), key).not.toBe(plain(en, key));
+    }
   });
 });

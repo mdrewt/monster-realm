@@ -356,6 +356,16 @@ export type MessageId =
   | 'claim.reject.transient.body'
   | 'claim.reject.generic.title'
   | 'claim.reject.generic.body'
+  // The sign-in gate (claimModel.ts `buildSignInGateView`): the screen before play on a server that
+  // admits only players who own the game.
+  | 'claim.gate.signIn.title'
+  | 'claim.gate.signIn.body'
+  | 'claim.gate.signIn.desc'
+  | 'claim.gate.notOwned.title'
+  | 'claim.gate.notOwned.body'
+  | 'claim.gate.store.title'
+  | 'claim.gate.store.desc'
+  | 'claim.gate.stays'
   // Leaderboard.* : the ranked leaderboard overlay (leaderboardView.ts).
   | 'leaderboard.empty'
   | 'leaderboard.row'

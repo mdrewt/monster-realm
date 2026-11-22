@@ -82,6 +82,8 @@ const H = vi.hoisted(() => ({
   rowCbs: {} as Record<string, Cb[]>,
   /** Per-table registered onUpdate callbacks, one entry per build; called as (ctx, old, new). */
   updCbs: {} as Record<string, Cb[]>,
+  /** What the OIDC client's beginSignIn answers; null: a transient error. */
+  begin: null as null | (() => Promise<{ kind: string; authorizationUrl?: string }>),
 }));
 
 vi.mock('../module_bindings', () => {
@@ -205,7 +207,8 @@ vi.mock('../module_bindings', () => {
 vi.mock('./oidc', () => ({
   createOidcClient: () => ({
     consumeReturnLeg: () => false,
-    beginSignIn: () => Promise.resolve({ kind: 'transient-error' }),
+    beginSignIn: () =>
+      H.begin === null ? Promise.resolve({ kind: 'transient-error' }) : H.begin(),
     renewOrExchange: () => {
       if (H.renew === null) throw new Error('renewOrExchange reached with no scripted outcome');
       return H.renew();
@@ -961,5 +964,550 @@ describe('E1-MAIN main.ts routes the claim-flow join through conn.join()', () =>
   it('E1-MAIN-04 the raw main.ts source never indexes reducers by bracket', () => {
     const raw = readFileSync(mainPath, 'utf8');
     expect(raw.split('reducers[').length - 1).toBe(0);
+  });
+});
+
+// =============================================================================================
+// The account gate: a connection that needs an account withholds an anonymous join, learns that
+// need from the server's ownership refusal, and starts a sign-in without a claim code.
+// =============================================================================================
+
+type GateOpts = ConnectionOptions & Record<string, Mock>;
+
+/** makeOpts plus the gate's two callbacks. Each lifecycle callback also appends its name to
+ *  `order`, so a case reads which one came first. */
+function gateOpts(extra: Record<string, unknown> = {}): { opts: GateOpts; order: string[] } {
+  const order: string[] = [];
+  const opts = {
+    ...makeOpts(),
+    onReady: vi.fn(() => {
+      order.push('ready');
+    }),
+    onReconnect: vi.fn(() => {
+      order.push('reconnect');
+    }),
+    onAccountRequired: vi.fn(() => {
+      order.push('account-required');
+    }),
+    onOwnershipRefused: vi.fn(() => {
+      order.push('ownership-refused');
+    }),
+    ...extra,
+  } as unknown as GateOpts;
+  return { opts, order };
+}
+
+/** The error join_game answers a caller that does not own the game with, as the SDK hands it. */
+const OWNERSHIP_REQUIRED = 'ownership required';
+
+/** connect(), then build 0 through onConnect and its applied snapshot, then settle. `prime` runs
+ *  on the build record before the snapshot applies, so a case can script joinGame. */
+async function bootGate(
+  opts: ConnectionOptions,
+  prime?: (b: BuildRec) => void,
+  token = 'anon-tok',
+): Promise<{ handle: ReturnType<typeof connect>; b: BuildRec }> {
+  const handle = connect(opts);
+  await settle();
+  const b = H.builds[0];
+  prime?.(b);
+  b.onConnect?.(conn0(b), ID, token);
+  b.onApplied?.();
+  await settle();
+  return { handle, b };
+}
+
+/** Drop build `from`, let the rebuild fire, and drive it through onConnect and its snapshot. */
+async function reconnectFrom(from: number, token = 'anon-tok'): Promise<BuildRec> {
+  H.builds[from].onDisconnect?.();
+  await nextAttempt();
+  const b = H.builds[from + 1];
+  if (b === undefined) throw new Error(`build ${from} was not rebuilt`);
+  b.onConnect?.(conn0(b), ID, token);
+  b.onApplied?.();
+  await settle();
+  return b;
+}
+
+const rejectWith = (message: string) => () => Promise.reject(new Error(message));
+
+/** Every entry of both storage areas, sorted, as [key, value] pairs. */
+function storageSnapshot(): { session: string[][]; local: string[][] } {
+  const entries = (s: Storage): string[][] => {
+    const out: string[][] = [];
+    for (let i = 0; i < s.length; i += 1) {
+      const key = s.key(i);
+      if (key !== null) out.push([key, s.getItem(key) ?? '']);
+    }
+    return out.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  };
+  return { session: entries(sessionStorage), local: entries(localStorage) };
+}
+
+/** Where the scripted beginSignIn sends the page. */
+const AUTHORIZE_URL = 'https://auth.example.invalid/authorize?gate';
+
+/** `location.assign` as a spy, so a sign-in redirect is observed and never taken. */
+function stubNavigation(): Mock {
+  const assign = vi.fn();
+  vi.stubGlobal('location', { assign, href: 'http://localhost:3000/', pathname: '/', search: '' });
+  return assign;
+}
+
+/** beginSignIn answers `ready` with AUTHORIZE_URL. */
+function redirectReady(): Mock {
+  const begin = vi.fn(() => Promise.resolve({ kind: 'ready', authorizationUrl: AUTHORIZE_URL }));
+  H.begin = begin;
+  return begin;
+}
+
+describe('connect() withholds the join of a connection that needs an account', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.rowCbs = {};
+    H.updCbs = {};
+    H.begin = null;
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    H.begin = null;
+  });
+
+  it('an anonymous build of a connection that requires an account calls no joinGame on its applied snapshot and reports onAccountRequired once, before onReady [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the join still sent; onAccountRequired after onReady (main.ts would paint
+    // onReady's screen first); onAccountRequired twice per snapshot; no onAccountRequired at all.
+    const { opts, order } = gateOpts({ accountRequired: true });
+    const { b } = await bootGate(opts);
+    expect(b.joinGame, 'no join_game before sign-in').not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['account-required', 'ready']);
+    expect(joinErrors(opts)).toEqual([]);
+  });
+
+  it('a withheld join still opens the connection: the base set is subscribed, the link is not frozen and onReady carries the identity [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the withheld join returning early from the applied snapshot (no onReady,
+    // the link left frozen, so the sign-in screen never appears and nothing can be sent).
+    const { opts } = gateOpts({ accountRequired: true });
+    const { handle, b } = await bootGate(opts);
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(1);
+    expect(opts.onReady).toHaveBeenCalledTimes(1);
+    expect(opts.onReady).toHaveBeenCalledWith(ID.toHexString());
+    expect(handle.linkFrozen(), 'the link is live').toBe(false);
+    expect(b.queries ?? [], 'the base set was subscribed').toContain('SELECT * FROM player');
+    expect(handle.identity()).toBe(ID.toHexString());
+  });
+
+  it('each later applied snapshot of a required anonymous connection reports onAccountRequired again, just before onReconnect, and no build sends joinGame [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the gate reported on the first snapshot only (a reconnect would show no
+    // sign-in screen); the reconnect joining; onAccountRequired after onReconnect.
+    const { opts, order } = gateOpts({ accountRequired: true });
+    const { b } = await bootGate(opts);
+    const b1 = await reconnectFrom(0);
+    expect(b.joinGame).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(['account-required', 'ready', 'account-required', 'reconnect']);
+  });
+
+  it('an account build of a connection that requires an account joins on its applied snapshot and never reports onAccountRequired [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the join withheld for every build while an account is required (a signed-in
+    // owner could never play); onAccountRequired fired for an account build.
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const { opts, order } = gateOpts({ accountRequired: true });
+    const { b } = await bootGate(opts, undefined, 'acct-jwt');
+    expect(b.token, 'precondition: an account build').toBe('acct-jwt');
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    expect(b.joinGame).toHaveBeenCalledWith({ name: 'Tester' });
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(order).toEqual(['ready']);
+  });
+
+  it('an account build with an unconsumed claim code keeps the claim veto while an account is required: no joinGame, no onAccountRequired, the claim flow awaits the account [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the gate's join bypassing the claim veto (the guest's progress would be
+    // stranded); onAccountRequired fired for an account build.
+    claimCode.mint(globalThis, URI, DB);
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const { opts } = gateOpts({ accountRequired: true });
+    const { b } = await bootGate(opts, undefined, 'acct-jwt');
+    expect(b.joinGame).not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(opts.onClaimAwaitingAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('with no account required an anonymous build joins on its applied snapshot and never reports onAccountRequired [acs-7.1]', async () => {
+    // Control: the anonymous join of an open server is the same as before.
+    const { opts } = gateOpts();
+    const { b } = await bootGate(opts);
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+  });
+
+  it('with accountRequired false an anonymous build joins on its applied snapshot and never reports onAccountRequired [acs-7.1]', async () => {
+    // Control: false is the same as absent.
+    const { opts } = gateOpts({ accountRequired: false });
+    const { b } = await bootGate(opts);
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+  });
+
+  it('join() on an anonymous build while an account is required calls no joinGame [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the gate applied in the applied snapshot only, so the claim flow's join()
+    // still sends an anonymous join_game the server refuses.
+    const { opts } = gateOpts({ accountRequired: true });
+    const { handle, b } = await bootGate(opts);
+    handle.join();
+    await settle();
+    expect(b.joinGame).not.toHaveBeenCalled();
+    expect(joinErrors(opts)).toEqual([]);
+  });
+
+  it('join() on an account build while an account is required sends joinGame, so the claim flow`s Join keeps working for a signed-in player [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: join() withheld for every build while an account is required; the
+    // current build's account bit never set, so join() takes every build for an anonymous one.
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const { opts } = gateOpts({ accountRequired: true });
+    const { handle, b } = await bootGate(opts, undefined, 'acct-jwt');
+    expect(b.token, 'precondition: an account build').toBe('acct-jwt');
+    expect(b.joinGame, 'precondition: the applied snapshot joined').toHaveBeenCalledTimes(1);
+    handle.join();
+    await settle();
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+    expect(b.joinGame).toHaveBeenLastCalledWith({ name: 'Tester' });
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(joinErrors(opts)).toEqual([]);
+  });
+});
+
+describe('connect() routes the ownership refusal of join_game', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.rowCbs = {};
+    H.updCbs = {};
+    H.begin = null;
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    H.begin = null;
+  });
+
+  it('joinGame refused with exactly "ownership required" reports onOwnershipRefused once and nothing through onError [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the refusal still surfaced as onError('join', …) (the raw line on the
+    // status bar); reported twice; reported through both callbacks.
+    const { opts, order } = gateOpts();
+    await bootGate(opts, (b) => {
+      b.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    });
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(joinErrors(opts)).toEqual([]);
+    expect(order, 'the refusal settles after onReady').toEqual(['ready', 'ownership-refused']);
+  });
+
+  it('the ownership match is exact: other case, a trailing dot, a prefix and the empty message go to onError("join", …), "already joined" stays silent, and none reaches onOwnershipRefused [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: a case-folded, includes(), endsWith() or startsWith() match; every join
+    // error routed to onOwnershipRefused; the empty message losing its fallback.
+    const { opts } = gateOpts();
+    const { handle, b } = await bootGate(opts);
+    for (const message of [
+      'Ownership required',
+      'ownership required.',
+      'join_game: ownership required',
+      '',
+      'already joined',
+    ]) {
+      b.joinGame.mockImplementation(rejectWith(message));
+      handle.join();
+      await settle();
+    }
+    expect(b.joinGame, 'precondition: every join was sent').toHaveBeenCalledTimes(6);
+    expect(opts.onOwnershipRefused).not.toHaveBeenCalled();
+    expect(joinErrors(opts)).toEqual([
+      ['join', 'Ownership required'],
+      ['join', 'ownership required.'],
+      ['join', 'join_game: ownership required'],
+      ['join', 'join failed'],
+    ]);
+    // A near miss teaches nothing: the next applied snapshot still joins.
+    const b1 = await reconnectFrom(0);
+    expect(b1.joinGame).toHaveBeenCalledTimes(1);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    // The exact message does reach it, on the same connection.
+    b1.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    handle.join();
+    await settle();
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(joinErrors(opts), 'and onError gained nothing').toHaveLength(4);
+  });
+
+  it('join() refused for ownership reports onOwnershipRefused, never onError [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the routing put in the applied snapshot's call alone, so join() (the claim
+    // flow's join) still surfaces the raw string.
+    const { opts } = gateOpts();
+    const { handle, b } = await bootGate(opts);
+    b.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    handle.join();
+    await settle();
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(joinErrors(opts)).toEqual([]);
+  });
+
+  it('the cancel-deletion re-join refused for ownership reports onOwnershipRefused, never onError [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: a second join path that keeps today's catch.
+    const { opts } = gateOpts();
+    const { b } = await bootGate(opts);
+    b.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    await insertAccount('PendingDeletion');
+    await insertAccount('Active');
+    expect(b.joinGame, 'precondition: the re-join was sent').toHaveBeenCalledTimes(2);
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(joinErrors(opts)).toEqual([]);
+  });
+
+  it('after an ownership refusal a reconnect of the same connection withholds its anonymous join and reports onAccountRequired just before onReconnect [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the refusal not remembered across a rebuild (every reconnect probes the
+    // server again and the sign-in screen falls back to the refusal's); the memory kept per build.
+    const { opts, order } = gateOpts();
+    await bootGate(opts, (b) => {
+      b.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    });
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    const b1 = await reconnectFrom(0);
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['ready', 'ownership-refused', 'account-required', 'reconnect']);
+  });
+
+  it('after an ownership refusal join() on the anonymous build calls no joinGame [acs-7.2]', async () => {
+    const { opts } = gateOpts();
+    const { handle, b } = await bootGate(opts, (rec) => {
+      rec.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    });
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    handle.join();
+    await settle();
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('after an ownership refusal a later account build of the same connection still joins and reports no onAccountRequired [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the learned need withholding every later join, the owner's account
+    // connection included.
+    const { opts } = gateOpts();
+    await bootGate(opts, (b) => {
+      b.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    });
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const b1 = await reconnectFrom(0, 'acct-jwt');
+    expect(b1.token, 'precondition: the rebuild is an account build').toBe('acct-jwt');
+    expect(b1.joinGame).toHaveBeenCalledTimes(1);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+  });
+
+  it('a refusal that settles after its build was superseded reports neither callback and teaches nothing: the next anonymous build still joins [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the rejection handler with no superseded-build guard (a dead socket's late
+    // answer raises the screen, or teaches the page to withhold every later join).
+    let rejectFirst: (err: Error) => void = () => {};
+    const { opts } = gateOpts();
+    await bootGate(opts, (b) => {
+      b.joinGame.mockImplementation(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      );
+    });
+    H.builds[0].onDisconnect?.();
+    await nextAttempt();
+    expect(H.builds, 'precondition: a newer build exists').toHaveLength(2);
+    rejectFirst(new Error(OWNERSHIP_REQUIRED));
+    await settle();
+    expect(opts.onOwnershipRefused).not.toHaveBeenCalled();
+    expect(joinErrors(opts)).toEqual([]);
+    const b1 = H.builds[1];
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    await settle();
+    expect(b1.joinGame).toHaveBeenCalledTimes(1);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+  });
+
+  it('after the ownership refusal of an account build`s join, a later anonymous build of the same connection withholds its join and reports onAccountRequired [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the server's rule learned only from the refusal of an anonymous build (an
+    // account that does not own the game teaches nothing, so the guest that follows probes again).
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const { opts, order } = gateOpts();
+    const { handle, b } = await bootGate(
+      opts,
+      (rec) => {
+        rec.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+      },
+      'acct-jwt',
+    );
+    expect(b.token, 'precondition: an account build').toBe('acct-jwt');
+    expect(b.joinGame, 'precondition: the account build joined').toHaveBeenCalledTimes(1);
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+
+    // The player declines the account: the next build is anonymous.
+    handle.continueAnonymously();
+    await settle();
+    const b1 = H.builds[1];
+    if (b1 === undefined) throw new Error('continueAnonymously built nothing');
+    expect(b1.token, 'precondition: an anonymous build').not.toBe('acct-jwt');
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    await settle();
+    expect(b1.joinGame, 'the anonymous build sends no join').not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(1);
+    expect(order.slice(0, 3)).toEqual(['ready', 'ownership-refused', 'account-required']);
+    expect(order).toHaveLength(4);
+    handle.join();
+    await settle();
+    expect(b1.joinGame, 'nor does join() on it').not.toHaveBeenCalled();
+    expect(joinErrors(opts)).toEqual([]);
+  });
+});
+
+describe('connect() starts a sign-in without a claim code while an account is required', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.rowCbs = {};
+    H.updCbs = {};
+    H.begin = null;
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    H.begin = null;
+  });
+
+  it('startSignIn on a live link while an account is required mints no claim code, calls no startGuestClaim and begins the OIDC redirect [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: startSignIn still minting a code and calling start_guest_claim, which the
+    // server refuses for a caller it never admitted ("not joined"), so no sign-in ever starts.
+    const assign = stubNavigation();
+    const begin = redirectReady();
+    const { opts } = gateOpts({ accountRequired: true });
+    const { handle, b } = await bootGate(opts);
+    handle.startSignIn();
+    await settle();
+    expect(b.startGuestClaim).not.toHaveBeenCalled();
+    expect(claimCode.read(globalThis, URI, DB), 'no claim code was minted').toBeUndefined();
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(assign.mock.calls).toEqual([[AUTHORIZE_URL]]);
+    expect(opts.onSignInFailed).not.toHaveBeenCalled();
+  });
+
+  it('startSignIn while an account is required begins the redirect with no live link: before the first build and after a drop [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the live-link check kept in front of the gate's sign-in (a player whose
+    // link is down could not sign in from the screen that asks them to).
+    const assign = stubNavigation();
+    const begin = redirectReady();
+    const { opts } = gateOpts({ accountRequired: true });
+    const handle = connect(opts);
+    handle.startSignIn();
+    await settle();
+    expect(begin, 'before any build').toHaveBeenCalledTimes(1);
+    expect(assign.mock.calls).toEqual([[AUTHORIZE_URL]]);
+
+    const b0 = H.builds[0];
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b0.onApplied?.();
+    await settle();
+    b0.onDisconnect?.();
+    expect(handle.linkFrozen(), 'precondition: the link is down').toBe(true);
+    handle.startSignIn();
+    await settle();
+    expect(begin, 'after a drop').toHaveBeenCalledTimes(2);
+    expect(assign).toHaveBeenCalledTimes(2);
+    expect(b0.startGuestClaim).not.toHaveBeenCalled();
+    expect(opts.onSignInFailed).not.toHaveBeenCalled();
+    expect(claimCode.read(globalThis, URI, DB)).toBeUndefined();
+  });
+
+  it('startSignIn while an account is required leaves a claim code already in storage byte for byte as it was [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: a fresh code minted over the stored one, or the stored one cleared (a guest
+    // from before the server enforced would lose the only way to move its progress).
+    stubNavigation();
+    const begin = redirectReady();
+    const stored = claimCode.mint(globalThis, URI, DB);
+    expect(stored, 'precondition: a code is stored').toMatch(/^[0-9a-f]{64}$/);
+    const { opts } = gateOpts({ accountRequired: true });
+    const { handle, b } = await bootGate(opts);
+    const before = storageSnapshot();
+    handle.startSignIn();
+    await settle();
+    expect(storageSnapshot()).toEqual(before);
+    expect(claimCode.read(globalThis, URI, DB)).toBe(stored);
+    expect(b.startGuestClaim).not.toHaveBeenCalled();
+    expect(begin).toHaveBeenCalledTimes(1);
+  });
+
+  it('after an ownership refusal startSignIn mints no claim code, calls no startGuestClaim and begins the redirect [acs-7.2]', async () => {
+    const assign = stubNavigation();
+    const begin = redirectReady();
+    const { opts } = gateOpts();
+    const { handle, b } = await bootGate(opts, (rec) => {
+      rec.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+    });
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    handle.startSignIn();
+    await settle();
+    expect(b.startGuestClaim).not.toHaveBeenCalled();
+    expect(claimCode.read(globalThis, URI, DB)).toBeUndefined();
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(assign.mock.calls).toEqual([[AUTHORIZE_URL]]);
+  });
+
+  it('with sign-in off startSignIn reports only "sign-in-off" while an account is required [acs-7.1]', async () => {
+    // Control: sign-in off still does nothing else.
+    const assign = stubNavigation();
+    const begin = redirectReady();
+    const { opts } = gateOpts({ accountRequired: true, signIn: 'off' });
+    const { handle, b } = await bootGate(opts);
+    handle.startSignIn();
+    await settle();
+    expect(opts.onSignInFailed).toHaveBeenCalledTimes(1);
+    expect(opts.onSignInFailed).toHaveBeenCalledWith('sign-in-off');
+    expect(b.startGuestClaim).not.toHaveBeenCalled();
+    expect(begin).not.toHaveBeenCalled();
+    expect(assign).not.toHaveBeenCalled();
+    expect(claimCode.read(globalThis, URI, DB)).toBeUndefined();
+  });
+
+  it('with no account required startSignIn is unchanged: it mints a code, registers it with startGuestClaim, then begins the redirect [acs-7.1]', async () => {
+    // Control: the guest claim flow's sign-in.
+    const assign = stubNavigation();
+    const begin = redirectReady();
+    const { opts } = gateOpts();
+    const { handle, b } = await bootGate(opts);
+    handle.startSignIn();
+    const code = claimCode.read(globalThis, URI, DB);
+    expect(code).toMatch(/^[0-9a-f]{64}$/);
+    expect(b.startGuestClaim.mock.calls).toEqual([[{ code }]]);
+    await settle();
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(assign.mock.calls).toEqual([[AUTHORIZE_URL]]);
   });
 });

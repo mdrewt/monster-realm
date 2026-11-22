@@ -552,6 +552,20 @@ The Profile screen's Account section offers Sign In only when `connect` received
 issuer, labelled with the build's `VITE_MR_OIDC_PROVIDER_NAME` (the issuer when the
 build names none); `signInOffer` in `ui/claimModel.ts` decides it from that one value.
 
+A server that admits only players who own the game refuses `join_game` with
+`ownership required`. `connect` sends no `join_game` from an anonymous connection once
+it knows the server needs an account: `main.ts` says so up front for an `official`
+target whose build names an issuer (`accountRequired`), and toward any other target the
+first such refusal teaches it for the rest of the page. It reports a withheld join
+(`onAccountRequired`) and a refused one (`onOwnershipRefused`, never the error line),
+and its sign-in then starts the OIDC redirect with no claim code. `main.ts` feeds both
+to the sign-in gate (`signInGateStep` and `buildSignInGateView` in `ui/claimModel.ts`),
+which the main menu frame shows in place of its entries (`openSignInGate`,
+`ui/screens/mainMenuScreen.ts`): a sign-in row, and after a refusal the not-owned title
+with a row that opens the store. Nothing closes it, Escape included; it goes down when
+the own `player` row arrives. A target with no sign-in to offer (`local`, `private`, a
+build with no issuer) gets one status line instead of the screen.
+
 ### Prediction and reconciliation
 
 `prediction/predictor.ts` runs the wasm `apply_move` locally so a keypress moves the

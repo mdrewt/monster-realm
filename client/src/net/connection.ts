@@ -169,6 +169,16 @@ export interface ConnectionOptions {
   /** The server cannot be spoken to; `side` says who must update. That connection has ended and
    *  the page builds no other one. */
   readonly onProtocolMismatch: (side: ProtocolMismatch) => void;
+  /** The server admits no player without an account (the official server). An anonymous build
+   *  then sends no joinGame. Absent or false, the connection learns the same from the first join
+   *  the server refuses for ownership, and withholds every anonymous join after it. */
+  readonly accountRequired?: boolean;
+  /** An anonymous build's join was withheld because the server needs an account. Called on each
+   *  such applied snapshot, just before `onReady` / `onReconnect`. */
+  readonly onAccountRequired?: () => void;
+  /** joinGame was refused with the server's ownership error. Reported here and never through
+   *  `onError`, whose text is shown as it is. */
+  readonly onOwnershipRefused?: () => void;
 }
 
 export interface Connection {
@@ -188,17 +198,24 @@ export interface Connection {
   /** The session terminal state driving the registry-external overlay. */
   sessionState(): SessionState;
   /** mint a claim code, then begin the OIDC sign-in redirect; with sign-in off, only report
-   *  `'sign-in-off'` through onSignInFailed. */
+   *  `'sign-in-off'` through onSignInFailed. While the server needs an account the redirect begins
+   *  with no claim code: a connection it never admitted has no progress to claim. */
   startSignIn(): void;
   /** Fire a fresh connect attempt for the session 'retry' affordance. */
   reconnectNow(): void;
-  /** joinGame on the live link, failures surfaced through onError('join', …). A no-op while
-   *  frozen or unbuilt: a call on a dead conn never settles, and the next onApplied joins (the
-   *  claim flow only asks once it has cleared the code that vetoes that join). */
+  /** joinGame on the live link, failures surfaced through onError('join', …) and an ownership
+   *  refusal through onOwnershipRefused. A no-op while frozen or unbuilt: a call on a dead conn
+   *  never settles, and the next onApplied joins (the claim flow only asks once it has cleared the
+   *  code that vetoes that join). A no-op too for an anonymous build while the server needs an
+   *  account. */
   join(): void;
   /** The `character` query sets the live connection holds (worldScope.ts). */
   worldScope(): ScopeSummary;
 }
+
+/** The one error `join_game` answers a caller the server does not admit as an owner of the game
+ *  (`ERR_OWNERSHIP_REQUIRED`, server-module/src/accounts.rs). Matched exactly. */
+const ERR_OWNERSHIP_REQUIRED = 'ownership required';
 
 /** R-rb-128-E1: re-join only on the PendingDeletion -> Active edge. An undefined `prev` (initial
  *  snapshot, post-reset) is onApplied's join. The claim-code veto is onApplied's; it scopes it to
@@ -298,6 +315,12 @@ export function connect(opts: ConnectionOptions): Connection {
   let forcedAnon = false; // set ONLY by continueAnonymously(); sticky for the tab's page life
   // The session terminal state the registry-external overlay reads through sessionState().
   let sessionMode: SessionState = 'hidden';
+  // Whether the server admits no player without an account: what the caller said, or what the
+  // first ownership refusal of this page taught. It only ever turns on. While it is on an
+  // anonymous build sends no joinGame, and a sign-in starts with no claim code.
+  let accountRequired = opts.accountRequired === true;
+  // Whether `current` connected with an account token.
+  let currentIsAccount = false;
   // In `'oidc'` mode, consume the OIDC return leg exactly once on cold start (D12): a matched state
   // records the authorization code and arms this attempt's gate so the first sign-in exchanges its
   // verifier.
@@ -804,14 +827,25 @@ export function connect(opts: ConnectionOptions): Connection {
 
   /** Issue joinGame through a WRAPPED connection — the ONE join path (onApplied, the
    *  cancel-deletion re-join, and join() for the claim flow). Extracted ONCE:
-   *  devLog builds a fresh Proxy per call, so an inline re-wrap double-logs every reducer call. */
+   *  devLog builds a fresh Proxy per call, so an inline re-wrap double-logs every reducer call.
+   *  The server's ownership refusal turns `accountRequired` on and goes to onOwnershipRefused,
+   *  whichever of the three asked. */
   function attemptJoin(
     conn: DbConnection,
     name: string,
     onError: ConnectionOptions['onError'],
   ): void {
+    const gen = buildGen;
     conn.reducers.joinGame({ name }).catch((err) => {
       const msg = (err as Error)?.message ?? '';
+      if (msg === ERR_OWNERSHIP_REQUIRED) {
+        // The server admits only a player who owns the game. A refusal that settles after a newer
+        // build was started reports nothing: that build's own join decides.
+        if (gen !== buildGen) return;
+        accountRequired = true;
+        opts.onOwnershipRefused?.();
+        return;
+      }
       // "already joined" is benign: either the server has not processed the old session's drop
       // yet, or it processed it and kept the rows because this rebuilt
       // connection was still live — either way the rows live and the new subscription
@@ -957,14 +991,18 @@ export function connect(opts: ConnectionOptions): Connection {
               // the backoff ladder here (the ONLY attempt reset), and clear any session terminal.
               state = onConnected(state);
               sessionMode = 'hidden';
-              // Join gate, re-evaluated FRESH every applied snapshot. The claim-code
-              // veto is the SOLE veto and is scoped to account-kind builds; my_account presence is
-              // NEVER consulted in it (AUTH-52). Anon builds always join — the idempotent A4 re-join
-              // (server on_disconnect deletes the player + character rows when the identity's LAST
-              // live connection ends — so a reconnect must still attempt the join).
+              // Join gate, re-evaluated FRESH every applied snapshot. An anonymous build joins
+              // unless the server needs an account (`accountRequired`): then it sends nothing and
+              // says so, and the caller offers sign-in. Otherwise it always joins: the idempotent
+              // A4 re-join (server on_disconnect deletes the player + character rows when the
+              // identity's LAST live connection ends, so a reconnect must still attempt the join).
+              // An account build has ONE veto, the claim code; my_account presence is NEVER
+              // consulted in it (AUTH-52).
               const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
-              const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;
-              if (shouldJoin) {
+              const isAccount = credential.kind === 'account';
+              if (accountRequired && !isAccount) {
+                opts.onAccountRequired?.();
+              } else if (!isAccount || !codeUnconsumed) {
                 attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);
               } else if (store.ownAccount(identity) !== undefined) {
                 // AUTH-53: re-issue complete_guest_claim on THIS connection's first applied snapshot,
@@ -1269,6 +1307,7 @@ export function connect(opts: ConnectionOptions): Connection {
       // field is a reason string) and never no connection at all, which would strand the claimant.
       // biome-ignore format: kept as one line on purpose.
       current = build(credential.kind === 'sign-in-failed' ? { kind: 'anon', token: auth.tokenForNextAttempt() } : credential);
+      currentIsAccount = credential.kind === 'account';
     } catch (err) {
       opts.onError('connect', err instanceof Error ? err.message : 'rebuild failed');
       state = onAttemptFailed(state);
@@ -1293,10 +1332,18 @@ export function connect(opts: ConnectionOptions): Connection {
    *  any other kind degrades to the claim UI's failure copy (the intended behaviour against the
    *  `.invalid` placeholder issuer until a real issuer is deployed) and KEEPS the registered code.
    *  With sign-in off it reports `'sign-in-off'` first and does nothing else: no claim code, no
-   *  reducer call, no request. */
+   *  reducer call, no request.
+   *  While the server needs an account (`accountRequired`) there is no guest to claim from: the
+   *  connection never joined, and `start_guest_claim` refuses a caller with no player row. The
+   *  redirect then begins at once, link or no link, with no code minted and a code already in
+   *  storage left as it is (it is an earlier guest's only way to move its progress). */
   function startSignIn(): void {
     if (oidc === undefined) {
       opts.onSignInFailed?.('sign-in-off');
+      return;
+    }
+    if (accountRequired) {
+      beginOidcRedirect(oidc);
       return;
     }
     const live = current === undefined ? undefined : rawConnectionOf.get(current);
@@ -1361,7 +1408,9 @@ export function connect(opts: ConnectionOptions): Connection {
     startSignIn,
     reconnectNow,
     join: () => {
-      if (current !== undefined && !linkFrozen(state)) attemptJoin(current, name, opts.onError);
+      if (current === undefined || linkFrozen(state)) return;
+      if (accountRequired && !currentIsAccount) return;
+      attemptJoin(current, name, opts.onError);
     },
     worldScope: () => scopeSummary(),
   };

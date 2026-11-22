@@ -235,10 +235,17 @@ import {
 import { type CareOutcome, performCare } from './ui/careAction';
 import {
   buildClaimViewModel,
+  buildSignInGateView,
   CLAIM_INITIAL,
   type ClaimEvent,
   type ClaimModelState,
   claimStep,
+  notOwnedLine,
+  OWNERSHIP_STORE_URL,
+  SIGN_IN_GATE_INITIAL,
+  type SignInGateEvent,
+  type SignInGateState,
+  signInGateStep,
   signInOffer,
 } from './ui/claimModel';
 import type { ClaimViewHandlers } from './ui/claimView';
@@ -346,6 +353,7 @@ import {
   mainMenuStep,
   menuViewModel,
   openMainMenu,
+  openSignInGate,
 } from './ui/screens/mainMenuScreen';
 import { captureStep } from './ui/screens/optionsScreen';
 import type { ProfileSection } from './ui/screens/profileScreen';
@@ -433,6 +441,10 @@ const SIGN_IN_OFFER = signInOffer(
   OIDC_ISSUER,
   (import.meta.env.VITE_MR_OIDC_PROVIDER_NAME as string | undefined) ?? '',
 );
+// The official server admits no player without an account, so a build that can sign in sends it no
+// join before one connects. A `test` server may be open: there the connection learns the same
+// from the first join the server refuses (net/connection.ts `accountRequired`).
+const ACCOUNT_REQUIRED = TARGET_KIND === 'official' && SIGN_IN_MODE === 'oidc';
 // Seeded with the shared no-op; re-assigned once by the init hunk iff the bootstrap resolves.
 let telemetry: ClientTelemetry = NOOP_TELEMETRY;
 // Frame accumulator — created ONCE, carried across rAF frames by the frame hunk.
@@ -1595,10 +1607,15 @@ function renderMenu(): void {
 /** Whether a request waited at the last batch: a batch that flips it repaints an open menu. */
 let menuBadged = false;
 
-/** The SINGLE entry point: the root list, on the last entry used. */
+/** The SINGLE entry point: the root list, on the last entry used; while the sign-in gate is up,
+ *  the gate instead. */
 function openMenu(): void {
+  const gate = signInGateView();
   // Over a battle the menu is read-only: what is not battle-safe is disabled (CTL6C.3).
-  menuState = openMainMenu(menuState.memory, contextStack[0].kind === 'battle');
+  menuState =
+    gate === undefined
+      ? openMainMenu(menuState.memory, contextStack[0].kind === 'battle')
+      : openSignInGate(menuState.memory, gate);
   openFrame(
     'menuView',
     frameOpenOf(() => menuView),
@@ -1697,9 +1714,77 @@ function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
     case 'close':
       menuView?.hide();
       break;
+    case 'signIn':
+      void dispatch({ kind: 'claimSignIn' });
+      break;
+    case 'store':
+      window.open(OWNERSHIP_STORE_URL, '_blank', 'noopener');
+      break;
   }
   renderMenu();
 }
+
+// --- the sign-in gate ---------------------------------------------
+// On a server that admits only players who own the game, the menu frame is the sign-in screen:
+// the rules are ui/claimModel.ts's (`signInGateStep`, `buildSignInGateView`) and the frame's gate
+// mode is ui/screens/mainMenuScreen.ts's. This block feeds the connection's two reports to the
+// model and holds the frame open while the gate has a view. A target with no sign-in to offer (a
+// single-player world, a friends server, a build with no issuer) has no view: there the gate is
+// one status line saying why the player is not in the world.
+let signInGate: SignInGateState = SIGN_IN_GATE_INITIAL;
+/** The standing line last announced, so a repaint that changes nothing says nothing. */
+let saidGateLine: string | null = null;
+
+/** The gate's view: undefined while it is down, and always for a build that offers no sign-in. */
+const signInGateView = () => buildSignInGateView(signInGate, SIGN_IN_OFFER);
+
+/** Show the gate, or repaint it with its current view. It is the only screen a player the server
+ *  has not admitted has, so every other player frame closes first. Nothing shows before the first
+ *  applied snapshot: `onReady` shows a gate raised ahead of it. `onReconnect` shows it again at
+ *  its tail, after the sweep closed the frame and the feedback reset cleared the status line. */
+function showSignInGate(): void {
+  if (signInGate.phase === 'hidden' || identity === '') return;
+  const view = signInGateView();
+  if (view === undefined) {
+    reportError('connect-failure', notOwnedLine());
+    return;
+  }
+  if (menuPlace() !== 'top') applyStack(contextStack, popToBase(contextStack));
+  openMenu();
+  if (view.line.text !== saidGateLine) {
+    saidGateLine = view.line.text;
+    announceNow(view.line.text);
+  }
+}
+
+/** Take the gate down: a menu frame open as the gate closes, and the menu is the ordinary one. */
+function lowerSignInGate(): void {
+  if (menuState.gate === undefined) return;
+  menuView?.hide();
+  menuState = openMainMenu(menuState.memory);
+  saidGateLine = null;
+  syncStack();
+}
+
+/** One gate event: step the model, then show what it says. */
+function applySignInGate(event: SignInGateEvent): void {
+  signInGate = signInGateStep(signInGate, event);
+  if (signInGate.phase === 'hidden') lowerSignInGate();
+  else showSignInGate();
+}
+
+/** Start's "close every frame" while the gate is up. On the gate it is B: the gate's stays line,
+ *  and nothing closes. Under another frame (Help) everything closes back to the gate. */
+function holdSignInGate(): void {
+  if (menuPlace() === 'top') applyMenuStep(mainMenuStep(menuState, { button: 'B', repeat: false }));
+  else showSignInGate();
+}
+
+// The gate goes down once the player has joined: the own player row is in the store.
+store.onBatchApplied(() => {
+  if (signInGate.phase === 'hidden' || identity === '') return;
+  if (store.player(identity) !== undefined) applySignInGate({ kind: 'joined' });
+});
 
 /** A click on an entry; ignored while a child covers the menu. */
 function handleMenuPointer(input: MenuPointerInput): void {
@@ -1819,7 +1904,8 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       applyStack(contextStack, popTop(contextStack));
       return DONE;
     case 'popToBase':
-      applyStack(contextStack, popToBase(contextStack));
+      if (signInGateView() === undefined) applyStack(contextStack, popToBase(contextStack));
+      else holdSignInGate();
       return DONE;
     case 'openMenu': {
       // The screens the menu opens read store state keyed by identity, which is '' before join.
@@ -2716,6 +2802,8 @@ const runAccel = (accel: MenuAccel): void => {
 // with its cursor on it. Over a battle the menu opens read-only and a disabled entry only shows its
 // reason (CTL6C.3).
 const openAccelPath = (path: AccelPath): void => {
+  // The sign-in gate holds the screen: no entry is reachable behind it.
+  if (signInGateView() !== undefined) return;
   // The menu's screens read store state keyed by identity, which is '' before join. Profile's
   // sections read none that matters there (`ownAccount('')` and `player('')` are undefined, and
   // every command is refused without a live link) and a failed first sign-in shows it before
@@ -4766,6 +4854,11 @@ async function main(): Promise<void> {
     authIssuer: OIDC_ISSUER,
     authClientId: OPERATED_BY_US ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
+    accountRequired: ACCOUNT_REQUIRED,
+    // The connection withheld its join, or the server refused one for ownership: the sign-in gate.
+    // The first arrives just before `onReady` / `onReconnect`, the second after them.
+    onAccountRequired: () => applySignInGate({ kind: 'account-required' }),
+    onOwnershipRefused: () => applySignInGate({ kind: 'ownership-refused' }),
     // Undefined unless VITE_MR_DEVLOG is set — then the connection installs the
     // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay
     // unreachable from the send path).
@@ -4791,6 +4884,8 @@ async function main(): Promise<void> {
         route('privacy-notice', i18nT('chrome.status.privateHostNotice'));
         markHostNoticeSeen(deviceStorage, URI, DB);
       }
+      // A gate raised ahead of this snapshot shows now that the identity is known.
+      showSignInGate();
     },
     // The store now holds the applied snapshot, so the reseed latch may resolve on this flush.
     onHydrated: () => {
@@ -4883,6 +4978,9 @@ async function main(): Promise<void> {
         claimRaised = false;
         renderClaim();
       }
+      // The sweep closed the menu frame and the reset above cleared the status line: a gate that
+      // is still up shows again, last.
+      showSignInGate();
     },
     // onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);
@@ -4923,7 +5021,12 @@ async function main(): Promise<void> {
     onAuthServiceUnreachable: () => applySession({ kind: 'auth-service-unreachable' }),
     // AUTH-48: a failed FIRST sign-in routes to the claim UI (never the session overlay): the
     // paint opens Profile on Account, and a Profile already open moves its cursor there.
+    // The sign-in gate records every failure and says it while it is up. Where a gate is up, or
+    // will be (a target that requires an account up front), the claim UI is not opened as well.
     onSignInFailed: (reason) => {
+      const gateUp = signInGateView() !== undefined;
+      applySignInGate({ kind: 'sign-in-failed', reason });
+      if (gateUp || ACCOUNT_REQUIRED) return;
       const wasOpen = profileView?.visible === true;
       applyClaim({ kind: 'sign-in-failed', reason });
       if (wasOpen) profileView?.focusSection('account');

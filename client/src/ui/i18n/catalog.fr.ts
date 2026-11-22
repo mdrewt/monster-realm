@@ -1154,6 +1154,30 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'claim.reject.generic.body':
     'Vous devez vous connecter avant de pouvoir récupérer cette progression. Votre progression ' +
     'd’invité est en sécurité.',
+  // @desc: Title of the sign-in screen a player sees before play on a server that needs an account.
+  // Short heading.
+  'claim.gate.signIn.title': 'Connectez-vous pour jouer',
+  // @desc: Line under the sign-in screen's rows: why the screen is up. Two short sentences.
+  'claim.gate.signIn.body': 'Ce serveur demande un compte. Connectez-vous pour commencer à jouer.',
+  // @desc: Description of the sign-in row on the sign-in screen, shown when the player asks what
+  // the row does. One sentence.
+  'claim.gate.signIn.desc': 'Ouvre la page de connexion, puis vous ramène ici.',
+  // @desc: Title of the sign-in screen after the server refused the player because the game is not
+  // owned. Also the status line on a server that shows no sign-in screen. Short heading; "Monster
+  // Realm" and "Steam" are names.
+  'claim.gate.notOwned.title': 'Vous devez posséder Monster Realm sur Steam',
+  // @desc: Line under the sign-in screen's rows after the server refused the player: what to do
+  // next. One sentence.
+  'claim.gate.notOwned.body':
+    'Procurez-vous le jeu sur Steam, puis connectez-vous avec le compte qui le possède.',
+  // @desc: Row on the sign-in screen that opens the Steam store in a new browser tab. Short phrase.
+  'claim.gate.store.title': 'Ouvrir la boutique Steam',
+  // @desc: Description of the store row on the sign-in screen, shown when the player asks what the
+  // row does. One sentence.
+  'claim.gate.store.desc': 'Ouvre la boutique Steam dans un nouvel onglet.',
+  // @desc: Line shown when the player tries to close the sign-in screen: it cannot be closed. One
+  // sentence.
+  'claim.gate.stays': 'Vous devez vous connecter avant de pouvoir jouer.',
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
   // leaderboardView.ts:60

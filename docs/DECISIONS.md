@@ -2739,6 +2739,46 @@ machine would need a build input the feature set does not have). Accepted cost: 
 builds or publishes for anonymous play names `open_join` once `open_join` leaves `default`; until
 then those sites get it from the default.
 
+## The client learns that a server needs an account from its kind or from the first refusal; the menu frame is the sign-in screen
+
+**Decision.** Nothing in the module tells a client whether it enforces ownership before `join_game`
+answers. `connect` (`client/src/net/connection.ts`) therefore has two sources. `main.ts` passes
+`accountRequired` for an `official` target whose build names an issuer: the official module always
+enforces, so an anonymous connection there sends no `join_game` at all. Toward every other target
+the first `join_game` the server refuses with `ownership required` turns the same flag on for the
+rest of the page, and no later anonymous connection of that page joins. A refusal goes to
+`onOwnershipRefused` and never to `onError`, whose text is shown as it is. While the flag is on,
+`startSignIn` begins the OIDC redirect with no claim code (the connection never joined, and
+`start_guest_claim` refuses a caller with no player row) and leaves a code already in storage
+untouched. The screen is the main menu frame in a gate mode (`openSignInGate`,
+`ui/screens/mainMenuScreen.ts`) over the gate model in `ui/claimModel.ts`: a sign-in row, and
+after a refusal the not-owned title and a row that opens the store. `main.ts` answers Start's
+"close every frame" as B on it, so Escape closes nothing, and lowers it when the own `player` row
+is in the store. A `local` or `private` target, and a build with no issuer, show one status line
+and no screen. `client/src/main.signInGate.test.ts` boots `main.ts` under each kind;
+`client/e2e/signin-gate.spec.ts` runs the flow against the `local-dev` account service and a
+dev-enforcing module.
+
+**Why.** A `test` target may be open (the browser suite and the playtests are) or enforcing (a
+dev-enforcing build), and its kind does not say which, so only the server's answer can. The
+official kind is known to enforce, and probing it would cost one refused reducer and one log line
+for every visitor. A new overlay would need an entry in every overlay registry; the menu frame
+already has the nav kit's D-pad, A, B and Y, pointer picks and focus handling, and `MenuView`
+paints whatever view model it is given. A stored claim code is a guest's only way to move progress
+made before the server enforced, so the gate's sign-in never destroys it: the account connection it
+returns as meets the claim flow's own join veto.
+
+**Rules out.** A build variable that says the server enforces (see "A target's kind gates
+telemetry and account sign-in": the build must not know its server). Treating a `test` target
+with an issuer as enforcing, as an `official` one is (the browser suite's `test` pages name an
+issuer and join anonymously; the `official` pages it opens, in
+`client/e2e/local-identity.spec.ts`, are held at the sign-in screen). Clearing the stored claim
+code when the gate's sign-in starts. Lowering the gate when a connection is merely allowed to
+try: the refusal arrives after `onReady`, so that hides the screen the refusal should raise.
+Reporting the refusal through `onError`. A `test` target still sends one anonymous `join_game`
+per page load before its screen shows; removing that needs a public value from the module,
+which is a schema change.
+
 ## The account service is our own small OIDC issuer; Steam is the only player sign-in
 
 **Decision.** One service in this repository (`account-service/`, TypeScript) built on
