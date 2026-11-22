@@ -6,3 +6,7 @@
 # test-id roster line in a historical WIP commit (same ctl-5 false-positive class as above);
 # the file was deleted before HEAD, so only the historical commit needs clearing.
 1a7eb453929681496db520fdf238c9e89efab9e4:evals/adr-backlink-integrity.eval.mjs:generic-api-key:80
+# lpw-15: generic-api-key matches a public JWK thumbprint (an RFC 7638 `kid` the account service
+# publishes) asserted beside a binding named `key` in commit f5d88f10; the head binds the expected
+# value to its own local, which the rule does not match, so only the branch commit needs clearing.
+f5d88f10c5ef59877974f890dc3a7c2bff1337a9:server-module/src/accounts_tests.rs:generic-api-key:12871

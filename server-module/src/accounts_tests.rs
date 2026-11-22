@@ -12895,7 +12895,8 @@ mod acs6_profile {
         assert_eq!(PRODUCTION_ATTESTATION_KEYS, none);
         assert_eq!(DEV_ATTESTATION_KEYS.len(), 1, "exactly one dev key");
         let key = DEV_ATTESTATION_KEYS[0];
-        assert_eq!(key.kid, "ZwdbDVawj1m0Ot-iNvOUMykc1_hgr1dD5wRMph3rgWE");
+        let published_kid = "ZwdbDVawj1m0Ot-iNvOUMykc1_hgr1dD5wRMph3rgWE";
+        assert_eq!(key.kid, published_kid);
         assert_eq!(
             URL_SAFE_NO_PAD.encode(key.public_key),
             "BWXfIXbop1k6-Ch0VTug3klcgULo4NNzTBCTjH2AFF4"
