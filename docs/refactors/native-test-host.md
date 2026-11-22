@@ -120,7 +120,8 @@ The Fixture, its API and every test stay as they are. What B adds is around them
 - **The release artefact.** On wasm every patched attribute selects what it selected before, so
   the release module built over the patched copies is byte-identical to one built over the
   unmodified copies at the same path (sha256
-  `2c2d3af5cc546a4721abd556409bfff958443c12c1dbc6103d6bf80e860e871b`, both). So the patch adds
+  `2c2d3af5cc546a4721abd556409bfff958443c12c1dbc6103d6bf80e860e871b`, both), and so are the
+  `--no-default-features --features world` and `--features dev_reducers` builds. So the patch adds
   nothing to what ships. Building the crates from a path rather than from the registry does
   change the bytes: against a crates.io build, the type, import, table, memory and global
   sections are identical, and the function, export, element, code, data and name sections
@@ -251,6 +252,7 @@ spacetimedb-bindings-sys = { path = "vendor/spacetimedb-bindings-sys" }
 | `cargo nextest run --workspace --features monster-realm-module/load_test_zones -E 'package(game-core) \| package(monster-realm-module)'` | 3298 | 0 |
 | `cargo nextest run --workspace --no-default-features --features monster-realm-module/dev_issuers -E 'package(monster-realm-module) & test(/acs6_enforcing/)'` | 18 | 0 |
 | `cargo nextest run --workspace` | 3626 | 0 |
+| `cargo nextest run -p monster-realm-module --features spacetimedb/unstable` | 1311 | 0 |
 
 No test failed on the probe, so there is no failing test to name. `cargo test --doc --workspace`
 passed, and so did `cargo clippy --workspace --all-targets --all-features -- -D warnings`. The
