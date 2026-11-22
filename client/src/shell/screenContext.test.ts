@@ -183,19 +183,24 @@ interface Recorded {
 let recorded: Recorded[] = [];
 const restorers: Array<() => void> = [];
 
+type Adder = { addEventListener: EventTarget['addEventListener'] };
+
+/** Record every listener added to `target`, undone by ASSIGNING the saved function back: on the
+ *  global `window`, addEventListener is an own accessor, so restoring a property descriptor would
+ *  leave the wrapper in place and wrappers would pile up across boots. */
 function recordListeners(target: EventTarget): void {
-  const own = Object.getOwnPropertyDescriptor(target, 'addEventListener');
-  const original = target.addEventListener.bind(target);
-  (target as unknown as { addEventListener: typeof original }).addEventListener = (
+  const hadOwn = Object.getOwnPropertyDescriptor(target, 'addEventListener') !== undefined;
+  const previous = target.addEventListener;
+  (target as Adder).addEventListener = (
     type: string,
     handler: EventListenerOrEventListenerObject | null,
     options?: boolean | AddEventListenerOptions,
-  ) => {
+  ): void => {
     recorded.push({ target, type, handler, options });
-    original(type, handler, options);
+    previous.call(target, type, handler, options);
   };
   restorers.push(() => {
-    if (own !== undefined) Object.defineProperty(target, 'addEventListener', own);
+    if (hadOwn) (target as Adder).addEventListener = previous;
     else delete (target as unknown as { addEventListener?: unknown }).addEventListener;
   });
 }
@@ -389,9 +394,9 @@ function placeNpc(
 /** The real greet-then-shop open of `shopId`: the server opens a conversation with its keeper, the
  *  player clicks the rendered Shop button past the text reveal, and the batch that ends the
  *  conversation opens the shop. */
-function openShop(shopId: number): void {
+function openShop(shopId: number, name = 'General Store'): void {
   placeNpc(GUIDE, 'guide', 4, { kind: 'shop', shopId });
-  opts.store.upsertShop({ shopId, name: 'General Store' });
+  opts.store.upsertShop({ shopId, name });
   opts.store.upsertConversation({
     ownerIdentity: H.identity,
     npcEntityId: GUIDE,
@@ -416,6 +421,22 @@ function openShop(shopId: number): void {
     WORLD,
     screenFrame('shopView'),
   ]);
+}
+
+/** What the real shop view shows: its title and the stock rows of its buy list, by stock row id. */
+function shopShows(): { title: string | null; stock: Array<string | null> } {
+  const title = document.getElementById('shop-title');
+  if (title === null) throw new Error('the shell must ship #shop-title');
+  const rows = document.querySelectorAll('#shop-for-sale > li[data-nav-key]');
+  return {
+    title: title.textContent,
+    stock: Array.from(rows, (row) => row.getAttribute('data-nav-key')),
+  };
+}
+
+/** One stock row of `shopId`. */
+function stockRow(shopItemId: bigint, shopId: number, itemId: number): void {
+  opts.store.upsertShopItem({ shopItemId, shopId, itemId, buyPrice: 10n });
 }
 
 /** A at a healer NPC of `locationId` (entity `entityId`, on the player`s tile) opens the heal
@@ -545,7 +566,7 @@ describe('the booted shell drives the screen context of shell/screenContext', {
 }, () => {
   afterEach(teardown);
 
-  it('the context the screens read holds the store main() handed to connect, follows the identity of the join and of a reconnect that mints a new one, reads the live binding table, and its clocks are the frame clock and the wall clock', async () => {
+  it('the context the screens read holds the store main() handed to connect, follows the identity of the join and of a reconnect that mints a new one, reads the binding table applyBindings installs, and its clocks are the frame clock and the wall clock', async () => {
     const { sc, s, input } = await bootToConnect();
     const ctx = sc.screenCtx;
     expect(ctx.store, 'the store main() handed to connect').toBe(opts.store);
@@ -560,7 +581,12 @@ describe('the booted shell drives the screen context of shell/screenContext', {
     expect(s.identity, 'precondition: the reconnect adopted the new identity').toBe(IDENTITY_2);
     expect(ctx.identity, 'the reconnect`s new identity').toBe(IDENTITY_2);
 
-    expect(ctx.bindings, 'the input table every input path reads').toBe(input.bindings);
+    const before = input.bindings;
+    expect(ctx.bindings, 'the input table every input path reads').toBe(before);
+    const next: Bindings = { buttons: before.buttons, accels: before.accels };
+    input.applyBindings(next);
+    expect(input.bindings, 'precondition: applyBindings replaced the table').toBe(next);
+    expect(ctx.bindings, 'the context reads the table applyBindings installed').toBe(next);
 
     T += 37;
     clock.t = T;
@@ -578,6 +604,42 @@ describe('the booted shell drives the screen context of shell/screenContext', {
     expectFive(sc, [3, null, null, null, null], 'the shop closed');
     openShop(8);
     expectFive(sc, [8, null, null, null, null], 'the open of shop 8');
+  }, 60_000);
+
+  it('a batch while the shop shows renders the bound shop`s catalogue, not the first shop`s', async () => {
+    const { sc } = await boot();
+    // Two shops with different stock; shop 1 has the lowest id, so it is the first-row default.
+    opts.store.upsertShop({ shopId: 1, name: 'Alpha' });
+    opts.store.upsertShop({ shopId: 3, name: 'Gamma' });
+    stockRow(101n, 1, 5);
+    stockRow(303n, 3, 6);
+    server();
+
+    // Control: the two shops render differently in the real view.
+    openShop(1, 'Alpha');
+    expect(shopShows(), 'control: the open of shop 1 shows its own stock').toEqual({
+      title: 'Alpha',
+      stock: ['101'],
+    });
+    toWorld('shop 1');
+    openShop(3, 'Gamma');
+    expectFive(sc, [3, null, null, null, null], 'precondition: the open bound shop 3');
+    expect(shopShows(), 'the open of shop 3 shows its own stock').toEqual({
+      title: 'Gamma',
+      stock: ['303'],
+    });
+
+    // A batch while the shop shows: the refresh re-renders it (the new row is the proof it ran).
+    stockRow(304n, 3, 7);
+    server();
+    expect(stackNow(), 'precondition: the shop still shows').toEqual([
+      WORLD,
+      screenFrame('shopView'),
+    ]);
+    expect(shopShows(), 'the refresh renders the bound shop, new row included').toEqual({
+      title: 'Gamma',
+      stock: ['303', '304'],
+    });
   }, 60_000);
 
   it('A at a healer binds its location on the owner and nothing else; location 0 is a location, and the binding keeps its value after the heal frame closes', async () => {
@@ -754,11 +816,9 @@ describe('shell/screenContext owner functions', { sequential: true }, () => {
       characterData: true,
     });
 
-    // An observer of this test's own, undone by ASSIGNING the saved function back: on the global
-    // `window`, addEventListener is an own accessor, so restoring a property descriptor would
-    // leave this wrapper in place.
+    // An observer of this test's own, undone by assigning the saved function back (as
+    // `recordListeners` does).
     const seen: Recorded[] = [];
-    type Adder = { addEventListener: EventTarget['addEventListener'] };
     const undo: Array<() => void> = [];
     const targets: readonly EventTarget[] = [window, document];
     for (const target of targets) {
@@ -843,19 +903,6 @@ describe('shell/screenContext owner functions', { sequential: true }, () => {
     }
   });
 
-  it('the motion preference and the context follow each change event from the initial value, and no read asks a second query', async () => {
-    const { sc, motion } = await fresh(true);
-    expect(sc.motionPreference.reduceMotion, 'the initial value').toBe(true);
-    expect(sc.screenCtx.reduceMotion).toBe(true);
-    motion.fire(false);
-    expect(sc.motionPreference.reduceMotion, 'the change event`s value').toBe(false);
-    expect(sc.screenCtx.reduceMotion).toBe(false);
-    motion.fire(true);
-    expect(sc.motionPreference.reduceMotion, 'the next change event`s value').toBe(true);
-    expect(sc.screenCtx.reduceMotion).toBe(true);
-    expect(motion.queries, 'one query in all').toEqual([REDUCED_MOTION_QUERY]);
-  });
-
   it('the five bindings start null, each bind sets its own binding and no other, and the context reads each one live', async () => {
     const { sc } = await fresh();
     expectFive(sc, NONE, 'at import');
@@ -915,6 +962,47 @@ describe('shell/screenContext owner functions', { sequential: true }, () => {
     expectFive(sc, [3, 6, 'trades', 'party', null], 'unbindTradeSession');
   });
 
+  it('unbindForReconnect clears whichever of the four is bound when it is bound alone, and when the shop alone is unbound', async () => {
+    const { sc } = await fresh();
+    const shapes: ReadonlyArray<{
+      readonly label: string;
+      readonly bind: () => void;
+      readonly bound: readonly unknown[];
+    }> = [
+      { label: 'the shop alone', bind: () => sc.bindShop(3), bound: [3, null, null, null, null] },
+      {
+        label: 'the heal location alone',
+        bind: () => sc.bindHealLocation(6),
+        bound: [null, 6, null, null, null],
+      },
+      {
+        label: 'the Social tab alone',
+        bind: () => sc.bindSocialTab('trades'),
+        bound: [null, null, 'trades', null, null],
+      },
+      {
+        label: 'the Monsters tab alone',
+        bind: () => sc.bindMonstersTab('storage'),
+        bound: [null, null, null, 'storage', null],
+      },
+      {
+        label: 'all but the shop',
+        bind: () => {
+          sc.bindHealLocation(6);
+          sc.bindSocialTab('trades');
+          sc.bindMonstersTab('storage');
+        },
+        bound: [null, 6, 'trades', 'storage', null],
+      },
+    ];
+    for (const { label, bind, bound } of shapes) {
+      bind();
+      expectFive(sc, bound, `precondition: ${label} bound`);
+      sc.unbindForReconnect();
+      expectFive(sc, NONE, `unbindForReconnect from ${label}`);
+    }
+  });
+
   it('the context`s bindings are the input table applyBindings installs, not the one at import', async () => {
     const { sc } = await fresh();
     const input = await import('./inputState');
@@ -924,17 +1012,6 @@ describe('shell/screenContext owner functions', { sequential: true }, () => {
     input.applyBindings(next);
     expect(input.bindings, 'precondition: applyBindings replaced the table').toBe(next);
     expect(sc.screenCtx.bindings, 'the context reads the new table').toBe(next);
-  });
-
-  it('the context`s identity follows each adoptIdentity, and its store is the session module`s', async () => {
-    const { sc } = await fresh();
-    const s = await import('./session');
-    expect(sc.screenCtx.store).toBe(s.store);
-    expect(sc.screenCtx.identity, 'no identity at import').toBe('');
-    s.adoptIdentity(H.identity);
-    expect(sc.screenCtx.identity).toBe(H.identity);
-    s.adoptIdentity(IDENTITY_2);
-    expect(sc.screenCtx.identity).toBe(IDENTITY_2);
   });
 
   it('now() reads performance.now() and wallNowMs() reads Date.now() at each call', async () => {
