@@ -1940,9 +1940,10 @@ mod allowlist {
     const BOB: &str = "dev:bob-0d4e4f5a";
     const CAROL: &str = "dev:carol-8b6c7d8e";
 
-    /// The access tables of [`world`] plus `world_binding` (read by `identity`) and
-    /// `world_allowlist` (read by `account_subject`). Neither of the two is writable: no path
-    /// under test writes them, and a write to either aborts the test.
+    /// The access tables of [`world`] plus `world_binding` (read by `identity`, and scanned by
+    /// a switch to `Allowlist`) and `world_allowlist` (read by `account_subject`, and scanned
+    /// and written by the accounts a switch to `Allowlist` lists). `world_binding` is not
+    /// writable: no path under test writes it, and a write to it aborts the test.
     struct A<'a> {
         w: W<'a>,
         binding: Handle<'a, WorldBinding>,
@@ -1954,12 +1955,15 @@ mod allowlist {
             w: world(fx),
             binding: fx
                 .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
-                .unique(),
+                .unique()
+                .scannable(),
             list: fx
                 .table_keyed::<WorldAllowlist, String>("world_allowlist", "account_subject", |r| {
                     r.account_subject.clone()
                 })
-                .unique(),
+                .unique()
+                .writable()
+                .scannable(),
         }
     }
 
@@ -2823,5 +2827,717 @@ mod allowlist {
             "the stranger under the owner's rule",
         );
         assert_admitted(&fx, &a, listed, T0 + 2, "bound and listed");
+    }
+}
+
+// =====================================================================================
+// A switch to `Allowlist` lists the account of every trusted binding the rule in force
+// admitted, keeps every account already listed, and stays within the list's bound; leaving
+// `Allowlist` keeps the list and reads it no more.
+// =====================================================================================
+
+mod allowlist_seed {
+    use super::*;
+    use crate::schema::{WorldAllowlist, WorldBinding};
+    use crate::world_binding::{
+        set_world_allowlist, MAX_ALLOWLIST_ACCOUNTS, REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
+    };
+
+    const ALPHA: &str = "dev:seed-alpha";
+    const BRAVO: &str = "dev:seed-bravo";
+    const CHARLIE: &str = "dev:seed-charlie";
+    const DELTA: &str = "dev:seed-delta";
+    const KEPT: &str = "dev:seed-kept";
+    const HOST: &str = "dev:seed-host";
+    const UNTRUSTED: &str = "dev:seed-untrusted";
+    /// A `kid` no build holds: a binding made under it counts for nothing.
+    const RETIRED_KID: &str = "kid-the-build-does-not-hold";
+
+    /// The access tables of [`world`] plus `world_binding` (read by `identity` and scanned;
+    /// not writable, so a write to it aborts the test) and `world_allowlist` (read by
+    /// `account_subject`, scanned and written).
+    struct S<'a> {
+        w: W<'a>,
+        binding: Handle<'a, WorldBinding>,
+        list: Handle<'a, WorldAllowlist, String>,
+    }
+
+    fn tables(fx: &Fixture) -> S<'_> {
+        S {
+            w: world(fx),
+            binding: fx
+                .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+                .unique()
+                .scannable(),
+            list: fx
+                .table_keyed::<WorldAllowlist, String>("world_allowlist", "account_subject", |r| {
+                    r.account_subject.clone()
+                })
+                .unique()
+                .writable()
+                .scannable(),
+        }
+    }
+
+    /// A world owned by [`owner`] whose stored rule row is `stored` (`None`: no row).
+    fn owned(fx: &Fixture, stored: Option<WorldAccess>) -> S<'_> {
+        let s = tables(fx);
+        seed_owner(&s.w, owner());
+        if let Some(row) = stored {
+            s.w.access.seed(&row);
+        }
+        s
+    }
+
+    fn allowlist_row() -> WorldAccess {
+        WorldAccess {
+            id: 0,
+            rule: WorldAccessRule::Allowlist,
+            password_salt: Vec::new(),
+            password_hash: Vec::new(),
+        }
+    }
+
+    /// The `kid` of a key the default test build holds.
+    fn trusted_kid() -> String {
+        crate::accounts::DEV_ATTESTATION_KEYS[0].kid.to_string()
+    }
+
+    fn bind_under(s: &S<'_>, who: Identity, subject: &str, key_id: &str) {
+        s.binding.seed(&WorldBinding {
+            identity: who,
+            account_subject: subject.to_string(),
+            bound_at_ms: T0 - 100,
+            entitled: true,
+            key_id: key_id.to_string(),
+        });
+    }
+
+    /// Bind `who` to `subject` under a key the build holds.
+    fn bind(s: &S<'_>, who: Identity, subject: &str) {
+        bind_under(s, who, subject, &trusted_kid());
+    }
+
+    fn enlist(s: &S<'_>, subjects: &[&str]) {
+        for subject in subjects {
+            s.list.seed(&WorldAllowlist {
+                account_subject: (*subject).to_string(),
+            });
+        }
+    }
+
+    /// The listed accounts, sorted.
+    fn listed(s: &S<'_>) -> Vec<String> {
+        let mut out: Vec<String> = s
+            .list
+            .rows()
+            .into_iter()
+            .map(|r| r.account_subject)
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// `xs` as owned strings, sorted.
+    fn accounts(xs: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> = xs.iter().map(|x| (*x).to_string()).collect();
+        out.sort();
+        out
+    }
+
+    /// Admission rows as [`admissions`] reports them.
+    fn pairs(rows: &[(Identity, i64)]) -> Vec<([u8; 32], i64)> {
+        let mut out: Vec<([u8; 32], i64)> = rows
+            .iter()
+            .map(|(who, ms)| (who.to_byte_array(), *ms))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Identity `n` of a generated crowd: bytes 0 and 1 carry `n` and every other byte is
+    /// 0x5A, so it is never all zeros, the owner or the module identity.
+    fn crowd(n: usize) -> Identity {
+        let mut bytes = [0x5A; 32];
+        let [hi, lo] = u16::try_from(n)
+            .expect("a crowd index fits a u16")
+            .to_be_bytes();
+        bytes[0] = hi;
+        bytes[1] = lo;
+        Identity::from_byte_array(bytes)
+    }
+
+    /// Account `n` of a generated crowd; zero-padded, so byte order is numeric order.
+    fn acct(n: usize) -> String {
+        format!("dev:crowd-{n:04}")
+    }
+
+    fn sorted_accts(range: impl Iterator<Item = usize>) -> Vec<String> {
+        let mut out: Vec<String> = range.map(acct).collect();
+        out.sort();
+        out
+    }
+
+    /// Every stored row of every registered table, with each table's write count.
+    fn footprint_all(fx: &Fixture, s: &S<'_>) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> {
+        let mut out = footprint(fx, &s.w);
+        out.push((
+            "world_binding",
+            encs(&s.binding.rows()),
+            fx.writes_to("world_binding"),
+        ));
+        out.push((
+            "world_allowlist",
+            encs(&s.list.rows()),
+            fx.writes_to("world_allowlist"),
+        ));
+        out
+    }
+
+    /// The owner switches the world to `Allowlist`, admitting `admit`.
+    fn to_allowlist(fx: &Fixture, admit: Vec<Identity>, ms: i64) -> Result<(), String> {
+        set_access(fx, owner(), WorldAccessRule::Allowlist, None, admit, ms)
+    }
+
+    /// The owner's `set_world_allowlist`.
+    fn set_list(fx: &Fixture, list: &[&str], ms: i64) -> Result<(), String> {
+        let named: Vec<String> = list.iter().map(|x| (*x).to_string()).collect();
+        call(fx, owner(), ms, |ctx| set_world_allowlist(ctx, named))
+    }
+
+    // --- what the switch lists -------------------------------------------------------
+
+    /// From no rule row and from a stored `Open` row, the switch to `Allowlist` lists the
+    /// account of every trusted binding (connected, admitted, or neither; the owner's too),
+    /// each once, and keeps every account listed before; a binding under a key the build does
+    /// not hold lists nothing; the rule row is `Allowlist`, and the live identity gets the
+    /// carry-over's admission row.
+    ///
+    /// kills: no seed; a seed that replaces the kept list; a seed of the live sessions only; a
+    /// seed of the admission rows only; the owner's binding left out; an untrusted binding
+    /// seeded; an account two identities share, or one already listed, inserted again.
+    #[test]
+    fn open_to_allowlist_lists_every_trusted_bindings_account_and_keeps_the_list_lpw21_1() {
+        for stored in [None, Some(open_row())] {
+            let fx = fixture();
+            let label = format!("over {:?}", stored.as_ref().map(|r| r.rule));
+            let s = owned(&fx, stored);
+            let live = id(0xB1);
+            let seen = id(0xB2);
+            let quiet = id(0xB3);
+            let twin = id(0xB4);
+            let stale = id(0xB5);
+            bind(&s, live, ALPHA);
+            bind(&s, seen, BRAVO);
+            bind(&s, quiet, CHARLIE);
+            bind(&s, twin, CHARLIE);
+            bind(&s, owner(), HOST);
+            bind_under(&s, stale, UNTRUSTED, RETIRED_KID);
+            s.w.session.seed(&session_row(live, 0x0B11));
+            s.w.admission.seed(&admission_row(seen, T0 - 20));
+            enlist(&s, &[KEPT, ALPHA]);
+            assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()), "{label}");
+            assert_eq!(
+                listed(&s),
+                accounts(&[ALPHA, BRAVO, CHARLIE, HOST, KEPT]),
+                "{label}: every trusted binding's account, once, and the kept list"
+            );
+            assert_eq!(access_row(&s.w), enc(&allowlist_row()), "{label}");
+            assert_eq!(
+                admissions(&s.w),
+                pairs(&[(live, T0), (seen, T0 - 20)]),
+                "{label}: the live identity is carried over; the held row stays"
+            );
+            assert_eq!(
+                fx.writes_to("world_binding"),
+                0,
+                "{label}: no binding is written"
+            );
+        }
+    }
+
+    /// From `Password`, the switch lists the accounts of the trusted bindings whose identity
+    /// holds an admission row, and the owner's (the owner holds none); not that of a bound
+    /// identity with no admission row, connected or not, and not that of an admitted
+    /// identity whose binding is under a key the build does not hold.
+    ///
+    /// kills: every binding seeded whatever the rule; the owner's account left out under
+    /// `Password`; a live session read as admitted; the key filter dropped.
+    #[test]
+    fn password_to_allowlist_lists_the_admitted_identities_accounts_and_the_owners_lpw21_1() {
+        let fx = fixture();
+        let s = owned(&fx, Some(password_row()));
+        let admitted = id(0xB6);
+        let live_refused = id(0xB7);
+        let quiet_refused = id(0xB8);
+        let stale = id(0xB9);
+        let unbound = id(0xBA);
+        bind(&s, admitted, ALPHA);
+        bind(&s, live_refused, BRAVO);
+        bind(&s, quiet_refused, CHARLIE);
+        bind_under(&s, stale, UNTRUSTED, RETIRED_KID);
+        bind(&s, owner(), HOST);
+        s.w.admission.seed(&admission_row(admitted, T0 - 30));
+        s.w.admission.seed(&admission_row(stale, T0 - 31));
+        s.w.admission.seed(&admission_row(unbound, T0 - 32));
+        s.w.session.seed(&session_row(live_refused, 0x0B71));
+        enlist(&s, &[KEPT]);
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        assert_eq!(listed(&s), accounts(&[ALPHA, HOST, KEPT]));
+        assert_eq!(
+            admissions(&s.w),
+            pairs(&[(admitted, T0 - 30), (stale, T0 - 31), (unbound, T0 - 32)]),
+            "the live identity the password rule refused gets no row"
+        );
+        assert_eq!(passes(&fx, admitted, T0 + 1), Ok(()));
+        assert_eq!(
+            passes(&fx, quiet_refused, T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string())
+        );
+    }
+
+    /// The owner's own trusted binding is listed by the switch from no row, from `Open` and
+    /// from `Password`, with no admission row and no session.
+    ///
+    /// kills: the owner's binding read through the admission table (it holds no row); the
+    /// owner skipped as it is skipped by the carry-over.
+    #[test]
+    fn the_owners_trusted_binding_is_seeded_from_every_rule_lpw21_1() {
+        for stored in [None, Some(open_row()), Some(password_row())] {
+            let fx = fixture();
+            let label = format!("over {:?}", stored.as_ref().map(|r| r.rule));
+            let s = owned(&fx, stored);
+            bind(&s, owner(), HOST);
+            assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()), "{label}");
+            assert_eq!(listed(&s), accounts(&[HOST]), "{label}");
+            assert!(s.w.admission.rows().is_empty(), "{label}: no admission row");
+        }
+    }
+
+    /// A binding under a key the build does not hold seeds nothing from any rule, the
+    /// owner's and an admitted identity's included, while a trusted, admitted one is listed.
+    ///
+    /// kills: `key_id` ignored by the seed; the owner's binding listed whatever key made it.
+    #[test]
+    fn a_binding_under_a_key_the_build_does_not_hold_seeds_nothing_lpw21_1() {
+        for stored in [None, Some(open_row()), Some(password_row())] {
+            let fx = fixture();
+            let label = format!("over {:?}", stored.as_ref().map(|r| r.rule));
+            let s = owned(&fx, stored);
+            let stale = id(0xBB);
+            let trusted = id(0xBC);
+            bind_under(&s, owner(), HOST, RETIRED_KID);
+            bind_under(&s, stale, UNTRUSTED, RETIRED_KID);
+            bind(&s, trusted, ALPHA);
+            s.w.admission.seed(&admission_row(stale, T0 - 7));
+            s.w.admission.seed(&admission_row(trusted, T0 - 8));
+            assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()), "{label}");
+            assert_eq!(
+                listed(&s),
+                accounts(&[ALPHA]),
+                "{label}: only the trusted binding is listed"
+            );
+        }
+    }
+
+    /// After the switch from `Open`, identities whose accounts the switch listed (with no
+    /// session at the switch) pass the admission check and connect with no admission row of
+    /// their own; an identity bound afterwards to an account that is not listed, and a
+    /// stranger, are refused.
+    ///
+    /// kills: the seeded accounts not written (the seeded identities locked out); the seed
+    /// written as admission rows instead of list rows.
+    #[test]
+    fn after_the_seeded_switch_a_seeded_identity_passes_with_no_admission_row_lpw21_1() {
+        let fx = fixture();
+        let s = owned(&fx, None);
+        let p = id(0xBD);
+        let q = id(0xBE);
+        bind(&s, p, ALPHA);
+        bind(&s, q, BRAVO);
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        assert!(s.w.admission.rows().is_empty(), "nobody was connected");
+        for who in [p, q] {
+            assert_eq!(passes(&fx, who, T0 + 1), Ok(()), "{}", who.to_hex());
+            assert!(call(&fx, who, T0 + 1, |ctx| is_admitted(ctx, who)));
+            assert_eq!(call(&fx, who, T0 + 1, crate::on_connect), Ok(()));
+        }
+        assert!(
+            s.w.admission.rows().is_empty(),
+            "admitted by the list alone"
+        );
+        let late = id(0xBF);
+        bind(&s, late, DELTA);
+        assert_eq!(
+            passes(&fx, late, T0 + 2),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "bound to an account that is not listed"
+        );
+        assert_eq!(
+            call(&fx, late, T0 + 2, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string())
+        );
+        assert_eq!(
+            passes(&fx, id(0xC0), T0 + 2),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "a stranger"
+        );
+    }
+
+    /// `Allowlist` set while `Allowlist` is in force adds nothing to the list and does not
+    /// write it, with the owner bound to an account that is not listed and a trusted binding
+    /// to another unlisted account present.
+    ///
+    /// kills: a seed on every call that sets `Allowlist`; the list rewritten by an unchanged
+    /// rule.
+    #[test]
+    fn allowlist_over_allowlist_adds_nothing_to_the_list_lpw21_1() {
+        let fx = fixture();
+        let s = owned(&fx, None);
+        bind(&s, id(0xC1), ALPHA);
+        bind(&s, owner(), HOST);
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        assert_eq!(listed(&s), accounts(&[ALPHA, HOST]), "the first switch");
+        assert_eq!(s.binding.remove(owner()), 1, "fixture: the owner rebinds");
+        bind(&s, owner(), DELTA);
+        bind(&s, id(0xC2), BRAVO);
+        fx.reset_writes();
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0 + 1), Ok(()));
+        assert_eq!(listed(&s), accounts(&[ALPHA, HOST]), "nothing is added");
+        assert_eq!(
+            fx.writes_to("world_allowlist"),
+            0,
+            "the list is not written"
+        );
+    }
+
+    /// The `admit` argument plays no part in the seed: from `Password`, a bound identity
+    /// named there with no admission row of its own gets its row and its account is not
+    /// listed (so the list refuses it), while an identity holding an admission row is listed.
+    ///
+    /// kills: the admitted set computed after the `admit` rows are written; the `admit`
+    /// argument added to the seed.
+    #[test]
+    fn the_admit_argument_seeds_nothing_lpw21_1() {
+        let fx = fixture();
+        let s = owned(&fx, Some(password_row()));
+        let named = id(0xC3);
+        let held = id(0xC4);
+        bind(&s, named, ALPHA);
+        bind(&s, held, BRAVO);
+        s.w.admission.seed(&admission_row(held, T0 - 40));
+        assert_eq!(to_allowlist(&fx, vec![named], T0), Ok(()));
+        assert_eq!(listed(&s), accounts(&[BRAVO]));
+        assert_eq!(
+            admissions(&s.w),
+            pairs(&[(named, T0), (held, T0 - 40)]),
+            "the named identity gets its admission row"
+        );
+        assert_eq!(
+            passes(&fx, named, T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "bound to an unlisted account: the list alone governs it"
+        );
+        assert_eq!(passes(&fx, held, T0 + 1), Ok(()));
+    }
+
+    // --- the bound -------------------------------------------------------------------
+
+    /// A seed of 257 distinct accounts from no row and from a stored `Open` row is refused
+    /// with the too-many error and writes nothing: not the rule row, not the carry-over for
+    /// two live sessions, not the `admit` argument's row, not a list row.
+    ///
+    /// kills: no bound; the bound checked after the rule row or an admission is written; a
+    /// seed trimmed to fit.
+    #[test]
+    fn a_seed_of_257_accounts_is_refused_with_no_write_lpw21_2() {
+        for stored in [None, Some(open_row())] {
+            let fx = fixture();
+            let label = format!("over {:?}", stored.as_ref().map(|r| r.rule));
+            let s = owned(&fx, stored);
+            for n in 0..=MAX_ALLOWLIST_ACCOUNTS {
+                bind(&s, crowd(n), &acct(n));
+            }
+            s.w.session.seed(&session_row(crowd(0), 0x0C01));
+            s.w.session.seed(&session_row(crowd(1), 0x0C02));
+            let named = id(0xC5);
+            fx.reset_writes();
+            let before = footprint_all(&fx, &s);
+            assert_eq!(
+                to_allowlist(&fx, vec![named], T0),
+                Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS.to_string()),
+                "{label}"
+            );
+            assert_eq!(
+                footprint_all(&fx, &s),
+                before,
+                "{label}: every table as it was, and no write call"
+            );
+        }
+    }
+
+    /// A seed of exactly 256 distinct accounts is accepted and lists every one.
+    ///
+    /// kills: a bound off by one (256 refused); a seed trimmed.
+    #[test]
+    fn a_seed_of_exactly_256_accounts_is_accepted_and_lists_every_one_lpw21_2() {
+        let fx = fixture();
+        let s = owned(&fx, None);
+        for n in 0..MAX_ALLOWLIST_ACCOUNTS {
+            bind(&s, crowd(n), &acct(n));
+        }
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        assert_eq!(listed(&s), sorted_accts(0..MAX_ALLOWLIST_ACCOUNTS));
+        assert_eq!(access_row(&s.w), enc(&allowlist_row()));
+    }
+
+    /// The bound counts the union of the kept list and the seed: a kept list of 200 and a
+    /// seed of 56 new accounts, 10 already listed and 6 shared by a second identity, is
+    /// accepted (256 distinct); the same with 57 new accounts is refused with no write.
+    ///
+    /// kills: the kept list plus every binding counted (overlaps or shared accounts counted
+    /// twice: the 256 case refused); the seed alone counted (the 257 case accepted); the kept
+    /// list replaced by the seed.
+    #[test]
+    fn the_bound_counts_the_kept_list_and_the_seed_once_each_lpw21_2() {
+        for (new, accepted) in [(56usize, true), (57, false)] {
+            let fx = fixture();
+            let s = owned(&fx, None);
+            for n in 0..200 {
+                s.list.seed(&WorldAllowlist {
+                    account_subject: acct(n),
+                });
+            }
+            let mut seed: Vec<String> = (200..200 + new).map(acct).collect();
+            seed.extend((0..10).map(acct));
+            seed.extend((200..206).map(acct));
+            for (n, subject) in seed.iter().enumerate() {
+                bind(&s, crowd(n), subject);
+            }
+            if accepted {
+                assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()), "{new} new");
+                assert_eq!(listed(&s), sorted_accts(0..256), "{new} new");
+            } else {
+                fx.reset_writes();
+                let before = footprint_all(&fx, &s);
+                assert_eq!(
+                    to_allowlist(&fx, Vec::new(), T0),
+                    Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS.to_string()),
+                    "{new} new"
+                );
+                assert_eq!(footprint_all(&fx, &s), before, "{new} new: no write");
+            }
+        }
+    }
+
+    /// From `Password` the bound counts only the accounts the rule admitted: of 300 trusted
+    /// bindings three identities hold an admission row; with the owner bound, the switch is
+    /// accepted and lists those three, the owner's and the kept account.
+    ///
+    /// kills: the bound counted on every binding whatever the rule (300 refused); every
+    /// binding seeded.
+    #[test]
+    fn from_password_the_bound_counts_only_the_admitted_identities_accounts_lpw21_2() {
+        let fx = fixture();
+        let s = owned(&fx, Some(password_row()));
+        for n in 0..300 {
+            bind(&s, crowd(n), &acct(n));
+        }
+        for n in [7, 150, 299] {
+            s.w.admission.seed(&admission_row(crowd(n), T0 - 5));
+        }
+        bind(&s, owner(), HOST);
+        enlist(&s, &[KEPT]);
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        let mut want: Vec<String> = [7, 150, 299].into_iter().map(acct).collect();
+        want.extend([HOST.to_string(), KEPT.to_string()]);
+        want.sort();
+        assert_eq!(listed(&s), want);
+    }
+
+    // --- leaving the rule --------------------------------------------------------------
+
+    /// A seeded `Allowlist` world switched to `Open` admits as `Open` does: a stranger with
+    /// no binding, an identity bound to an account that is not listed, and one whose account
+    /// is listed; the list stays exactly as the switch left it, unwritten; no admission check
+    /// hands out a list row, even for the identity whose bound account is a stored row.
+    ///
+    /// kills: the list cleared or rewritten on leaving `Allowlist`; `Open` that reads the
+    /// list; the list governing under `Open`.
+    #[test]
+    fn a_seeded_allowlist_switched_to_open_admits_as_open_and_reads_no_list_row_lpw21_5() {
+        let fx = fixture();
+        let s = owned(&fx, None);
+        let p = id(0xC6);
+        let q = id(0xC7);
+        bind(&s, p, ALPHA);
+        bind(&s, q, BRAVO);
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        assert_eq!(listed(&s), accounts(&[ALPHA, BRAVO]), "the seeded list");
+        let late = id(0xC8);
+        let stranger = id(0xC9);
+        bind(&s, late, DELTA);
+        assert_eq!(
+            passes(&fx, late, T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "control: refused under Allowlist"
+        );
+        fx.reset_writes();
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Open,
+                None,
+                Vec::new(),
+                T0 + 2
+            ),
+            Ok(())
+        );
+        assert_eq!(access_row(&s.w), enc(&open_row()));
+        assert_eq!(listed(&s), accounts(&[ALPHA, BRAVO]), "the list is kept");
+        assert_eq!(
+            fx.writes_to("world_allowlist"),
+            0,
+            "the list is not written"
+        );
+        for (who, case) in [
+            (stranger, "a stranger"),
+            (late, "bound to an unlisted account"),
+            (p, "bound to a listed account"),
+        ] {
+            fx.reset_reads();
+            assert_eq!(passes(&fx, who, T0 + 3), Ok(()), "{case}");
+            assert!(
+                call(&fx, who, T0 + 3, |ctx| is_admitted(ctx, who)),
+                "{case}"
+            );
+            assert_eq!(call(&fx, who, T0 + 3, crate::on_connect), Ok(()), "{case}");
+            assert_eq!(
+                fx.rows_read("world_allowlist"),
+                0,
+                "{case}: no list row is handed out"
+            );
+        }
+    }
+
+    /// A seeded `Allowlist` world switched to `Password` admits as `Password` does: the owner
+    /// and an identity holding an admission row pass, an identity whose bound account is
+    /// listed and that holds no admission row is refused, the list stays as the switch left
+    /// it, and no check hands out a list row.
+    ///
+    /// kills: the list read under `Password` (a listed identity let in); the list cleared on
+    /// leaving `Allowlist`.
+    #[test]
+    fn a_seeded_allowlist_switched_to_password_admits_as_password_and_reads_no_list_row_lpw21_5() {
+        let fx = fixture();
+        let s = owned(&fx, None);
+        let p = id(0xCA);
+        let q = id(0xCB);
+        bind(&s, p, ALPHA);
+        bind(&s, q, BRAVO);
+        bind(&s, owner(), HOST);
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        assert_eq!(
+            listed(&s),
+            accounts(&[ALPHA, BRAVO, HOST]),
+            "the seeded list"
+        );
+        s.w.admission.seed(&admission_row(p, T0 + 1));
+        let typed = "pw seven";
+        fx.reset_writes();
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Password,
+                Some(typed),
+                Vec::new(),
+                T0 + 2
+            ),
+            Ok(())
+        );
+        assert_eq!(s.w.access.rows()[0].rule, WorldAccessRule::Password);
+        assert_eq!(
+            listed(&s),
+            accounts(&[ALPHA, BRAVO, HOST]),
+            "the list is kept"
+        );
+        assert_eq!(
+            fx.writes_to("world_allowlist"),
+            0,
+            "the list is not written"
+        );
+        for (who, want, case) in [
+            (owner(), Ok(()), "the owner"),
+            (p, Ok(()), "listed, with an admission row"),
+            (
+                q,
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "listed, with no admission row",
+            ),
+        ] {
+            fx.reset_reads();
+            assert_eq!(passes(&fx, who, T0 + 3), want, "{case}");
+            assert_eq!(
+                fx.rows_read("world_allowlist"),
+                0,
+                "{case}: no list row is handed out"
+            );
+        }
+    }
+
+    /// Back to `Allowlist` from `Open` and from `Password`, the list is the kept list and the
+    /// new seed: an account the owner took off while the rule was off is listed again when
+    /// the rule in force admits its identity, an account bound while the rule was off is
+    /// listed, and under `Password` the account of a bound identity with no admission row is
+    /// not.
+    ///
+    /// kills: the second switch replacing the kept list with the seed; the second switch
+    /// seeding nothing (the list taken as already seeded); the seed read from the first
+    /// switch's list.
+    #[test]
+    fn switching_back_to_allowlist_adds_the_new_seed_to_the_kept_list_lpw21_5() {
+        for off in [WorldAccessRule::Open, WorldAccessRule::Password] {
+            let fx = fixture();
+            let s = owned(&fx, None);
+            let p = id(0xCC);
+            let q = id(0xCD);
+            bind(&s, p, ALPHA);
+            bind(&s, q, BRAVO);
+            assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()), "{off:?}");
+            assert_eq!(
+                listed(&s),
+                accounts(&[ALPHA, BRAVO]),
+                "{off:?}: the first seed"
+            );
+            let typed = (off == WorldAccessRule::Password).then_some("pw seven");
+            assert_eq!(
+                set_access(&fx, owner(), off, typed, Vec::new(), T0 + 1),
+                Ok(()),
+                "{off:?}"
+            );
+            assert_eq!(set_list(&fx, &[ALPHA], T0 + 2), Ok(()), "{off:?}");
+            assert_eq!(
+                listed(&s),
+                accounts(&[ALPHA]),
+                "{off:?}: BRAVO is taken off"
+            );
+            let r = id(0xCE);
+            let u = id(0xCF);
+            bind(&s, r, CHARLIE);
+            bind(&s, u, DELTA);
+            if off == WorldAccessRule::Password {
+                s.w.admission.seed(&admission_row(q, T0 + 3));
+                s.w.admission.seed(&admission_row(r, T0 + 3));
+            }
+            assert_eq!(to_allowlist(&fx, Vec::new(), T0 + 4), Ok(()), "{off:?}");
+            let want = if off == WorldAccessRule::Password {
+                accounts(&[ALPHA, BRAVO, CHARLIE])
+            } else {
+                accounts(&[ALPHA, BRAVO, CHARLIE, DELTA])
+            };
+            assert_eq!(listed(&s), want, "{off:?}: the kept list and the new seed");
+        }
     }
 }

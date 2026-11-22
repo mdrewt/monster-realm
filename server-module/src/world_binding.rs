@@ -289,6 +289,28 @@ pub(crate) fn bound_entitled(
     trusted_binding(ctx, profile, identity).is_some_and(|binding| binding.entitled)
 }
 
+/// The account of every binding the build counts whose identity `of` accepts, each once, in
+/// ascending byte order. A build with no key answers none without reading.
+pub(crate) fn bound_accounts(
+    ctx: &ReducerContext,
+    profile: &BuildProfile,
+    of: impl Fn(Identity) -> bool,
+) -> Vec<String> {
+    let _ = (ctx, profile, &of);
+    Vec::new()
+}
+
+/// The accounts of `wanted` that `listed` lacks, each once, in ascending byte order. Refused
+/// with [`REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS`] when `listed` and those additions together
+/// number more than [`MAX_ALLOWLIST_ACCOUNTS`].
+pub(crate) fn allowlist_additions(
+    listed: &[String],
+    wanted: &[String],
+) -> Result<Vec<String>, &'static str> {
+    let _ = (listed, wanted);
+    Ok(Vec::new())
+}
+
 /// Whether the host listed `account_subject`, byte for byte.
 pub(crate) fn on_allowlist(ctx: &ReducerContext, account_subject: &str) -> bool {
     ctx.db

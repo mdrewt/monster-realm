@@ -3404,3 +3404,902 @@ mod views {
         }
     }
 }
+
+// =====================================================================================
+// The two parts of a seed: the accounts the build counts, and what the list lacks of them.
+// =====================================================================================
+
+mod seed_parts {
+    use super::super::{allowlist_additions, bound_accounts};
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    fn profile_with(keys: &'static [AttestationKey]) -> BuildProfile {
+        BuildProfile {
+            name: "probe",
+            enforces_ownership: false,
+            login_issuers: &[],
+            dev_reducers: false,
+            attestation_keys: keys,
+        }
+    }
+
+    /// [`world`] with `world_binding` scannable too.
+    fn scannable_world(fx: &Fixture) -> W<'_> {
+        let w = world(fx);
+        let _ = fx
+            .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+            .unique()
+            .writable()
+            .scannable();
+        w
+    }
+
+    /// Five bindings in an order that is not the accounts' order: two to `dev:zeta`, one to
+    /// `dev:alpha`, one to `dev:Mid` (an upper-case letter sorts before every lower-case
+    /// one), all under the dev key, and one to `dev:beta` under [`RETIRED_KID`].
+    fn seed_five(w: &W<'_>) {
+        for (who, subject, kid) in [
+            (id(0xB1), "dev:zeta", dev_kid()),
+            (id(0xB2), "dev:alpha", dev_kid()),
+            (id(0xB3), "dev:zeta", dev_kid()),
+            (id(0xB4), "dev:Mid", dev_kid()),
+            (id(0xB5), "dev:beta", RETIRED_KID),
+        ] {
+            w.binding
+                .seed(&binding_row(who, subject, T0 - 1_000, true, kid));
+        }
+    }
+
+    /// Account `n` of a generated pool; zero-padded, so byte order is numeric order.
+    fn acct(n: usize) -> String {
+        format!("dev:pool-{n:04}")
+    }
+
+    fn accts(range: impl Iterator<Item = usize>) -> Vec<String> {
+        range.map(acct).collect()
+    }
+
+    /// `bound_accounts` answers the account of every binding under a key of the profile
+    /// whose identity `of` accepts, each once, in ascending byte order.
+    ///
+    /// kills: the predicate ignored, or applied to another identity; a repeat kept; the rows
+    /// in table order; a case-folded order; a binding under a key the profile lacks counted.
+    #[test]
+    fn bound_accounts_answers_each_accepted_account_once_in_byte_order_lpw21_1() {
+        let fx = fixture();
+        let w = scannable_world(&fx);
+        seed_five(&w);
+        let ctx = fx.ctx();
+        let dev = profile_with(DEV_ATTESTATION_KEYS);
+        assert_eq!(
+            bound_accounts(&ctx, &dev, |_| true),
+            strings(&["dev:Mid", "dev:alpha", "dev:zeta"])
+        );
+        assert_eq!(
+            bound_accounts(&ctx, &dev, |who| who != id(0xB2)),
+            strings(&["dev:Mid", "dev:zeta"])
+        );
+        assert_eq!(
+            bound_accounts(&ctx, &dev, |who| who == id(0xB3)),
+            strings(&["dev:zeta"])
+        );
+        assert_eq!(
+            bound_accounts(&ctx, &dev, |who| who == id(0xB5)),
+            Vec::<String>::new(),
+            "the binding under a key the profile lacks"
+        );
+        assert_eq!(bound_accounts(&ctx, &dev, |_| false), Vec::<String>::new());
+    }
+
+    /// The key filter is the profile's: under a profile holding only the retired key the
+    /// binding under it counts and the dev bindings do not; under one holding both every
+    /// binding counts; under a keyless profile nothing counts and no binding row is handed
+    /// out.
+    ///
+    /// kills: the build's own profile read instead of the argument; only the first key of
+    /// the profile compared; a keyless profile that scans the table.
+    #[test]
+    fn bound_accounts_counts_the_profiles_keys_and_a_keyless_profile_reads_nothing_lpw21_1() {
+        let fx = fixture();
+        let w = scannable_world(&fx);
+        seed_five(&w);
+        let ctx = fx.ctx();
+        let retired = profile_with(leak(vec![listed_key(RETIRED_KID, &other_signer(6))]));
+        assert_eq!(
+            bound_accounts(&ctx, &retired, |_| true),
+            strings(&["dev:beta"])
+        );
+        let both = profile_with(leak(vec![
+            listed_key(RETIRED_KID, &other_signer(6)),
+            DEV_ATTESTATION_KEYS[0],
+        ]));
+        assert_eq!(
+            bound_accounts(&ctx, &both, |_| true),
+            strings(&["dev:Mid", "dev:alpha", "dev:beta", "dev:zeta"])
+        );
+        let keyless = profile_with(&[]);
+        fx.reset_reads();
+        assert_eq!(
+            bound_accounts(&ctx, &keyless, |_| true),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            fx.rows_read("world_binding"),
+            0,
+            "a keyless profile reads no binding"
+        );
+    }
+
+    /// `allowlist_additions` by example: the accounts of `wanted` that `listed` lacks, each
+    /// once, ascending by byte, whatever order either list is in.
+    ///
+    /// kills: the additions answered unsorted or in `wanted`'s order; a repeat kept; an
+    /// account already listed answered again; `listed` assumed sorted.
+    #[test]
+    fn allowlist_additions_answers_what_the_list_lacks_once_in_byte_order_lpw21_2() {
+        let cases: [(&[&str], &[&str], &[&str]); 5] = [
+            (&[], &["dev:b", "dev:a", "dev:b"], &["dev:a", "dev:b"]),
+            (
+                &["dev:a"],
+                &["dev:c", "dev:a", "dev:B"],
+                &["dev:B", "dev:c"],
+            ),
+            (
+                &["dev:z", "dev:a"],
+                &["dev:a", "dev:m", "dev:z"],
+                &["dev:m"],
+            ),
+            (&["dev:a", "dev:b"], &["dev:b", "dev:a"], &[]),
+            (&["dev:a"], &[], &[]),
+        ];
+        for (listed, wanted, want) in cases {
+            assert_eq!(
+                allowlist_additions(&strings(listed), &strings(wanted)),
+                Ok(strings(want)),
+                "listed {listed:?}, wanted {wanted:?}"
+            );
+        }
+    }
+
+    /// `allowlist_additions` at the bound: refused exactly when the list and the additions
+    /// number more than 256, counting an account once however often `wanted` names it and
+    /// not at all when it is already listed.
+    ///
+    /// kills: a bound off by one either way; the bound counted on `wanted`'s length; the
+    /// bound counted on the additions alone; a full list refusing accounts it already holds.
+    #[test]
+    fn allowlist_additions_is_refused_exactly_past_256_lpw21_2() {
+        let too_many: Result<Vec<String>, &str> = Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS);
+        let kept: Vec<String> = accts((0..200).rev());
+        let mut wanted = accts(200..256);
+        wanted.extend(accts(0..10));
+        wanted.extend(accts(200..206));
+        assert_eq!(
+            allowlist_additions(&kept, &wanted),
+            Ok(accts(200..256)),
+            "200 kept and 56 new"
+        );
+        assert_eq!(
+            allowlist_additions(&kept, &accts(200..257)),
+            too_many,
+            "200 kept and 57 new"
+        );
+        let full = accts((0..MAX_ALLOWLIST_ACCOUNTS).rev());
+        assert_eq!(
+            allowlist_additions(&full, &accts(0..MAX_ALLOWLIST_ACCOUNTS)),
+            Ok(Vec::new()),
+            "a full list and accounts it holds"
+        );
+        assert_eq!(
+            allowlist_additions(&full, &[acct(MAX_ALLOWLIST_ACCOUNTS)]),
+            too_many,
+            "a full list and one new account"
+        );
+        let mut twice = accts(0..MAX_ALLOWLIST_ACCOUNTS);
+        twice.extend(accts((0..MAX_ALLOWLIST_ACCOUNTS).rev()));
+        assert_eq!(
+            allowlist_additions(&[], &twice),
+            Ok(accts(0..MAX_ALLOWLIST_ACCOUNTS)),
+            "256 accounts named twice each"
+        );
+        assert_eq!(
+            allowlist_additions(&[], &accts(0..=MAX_ALLOWLIST_ACCOUNTS)),
+            too_many,
+            "257 accounts"
+        );
+    }
+
+    proptest! {
+        /// For any listed set (in any order) and any wanted list over one pool of accounts:
+        /// the answer is the distinct accounts of `wanted` that `listed` lacks, ascending,
+        /// or the too-many refusal exactly when the list and those additions number more
+        /// than 256.
+        ///
+        /// kills: any answer other than that difference, at any size up to and past the
+        /// bound.
+        #[test]
+        fn allowlist_additions_is_the_sorted_distinct_difference_under_the_bound_lpw21_2(
+            listed in prop::collection::btree_set(0usize..400, 0..=MAX_ALLOWLIST_ACCOUNTS),
+            wanted in prop::collection::vec(0usize..400, 0..300),
+        ) {
+            let listed: Vec<String> = listed.iter().rev().map(|&n| acct(n)).collect();
+            let wanted: Vec<String> = wanted.iter().map(|&n| acct(n)).collect();
+            let additions: Vec<String> = wanted
+                .iter()
+                .filter(|account| !listed.contains(account))
+                .cloned()
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .collect();
+            let want = if listed.len() + additions.len() > MAX_ALLOWLIST_ACCOUNTS {
+                Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS)
+            } else {
+                Ok(additions)
+            };
+            prop_assert_eq!(allowlist_additions(&listed, &wanted), want);
+        }
+    }
+}
+
+// =====================================================================================
+// Under `Allowlist` the owner's bound account stays on the list: the owner's own list keeps
+// it, and the owner's bind adds it.
+// =====================================================================================
+
+mod owner_account {
+    use super::*;
+    use crate::access::REJECT_NOT_ADMITTED;
+
+    const HOST_SUB: &str = "dev:aaaaaaaa-0000-4000-8000-00000000a1a1";
+    const KEPT_SUB: &str = "dev:kept-0000-4000-8000-000000000000";
+
+    /// A world owned by [`owner`] and named [`WORLD`], under `rule` (`None`: no rule row),
+    /// listing `listed`.
+    fn world_under<'a>(fx: &'a Fixture, rule: Option<WorldAccessRule>, listed: &[&str]) -> W<'a> {
+        let w = owned_world(fx);
+        if let Some(rule) = rule {
+            w.access.seed(&rule_row(rule));
+        }
+        seed_names(&w, &[WORLD]);
+        seed_allowed(&w, listed);
+        w
+    }
+
+    /// The owner's binding row to `subject` under `kid`.
+    fn bind_owner_row(w: &W<'_>, subject: &str, kid: &str) {
+        w.binding
+            .seed(&binding_row(owner(), subject, T0 - 9_000, true, kid));
+    }
+
+    /// `n` accounts that are not the owner's.
+    fn others(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("dev:other-{i:03}")).collect()
+    }
+
+    /// The owner asks for its own nonce at `ms` and binds itself to `subject` at `ms + 1`:
+    /// through `request_bind_nonce` and `bind_world_account`, or `relayed` through the `_for`
+    /// forms naming itself.
+    fn owner_binds(
+        fx: &Fixture,
+        w: &W<'_>,
+        relayed: bool,
+        subject: &str,
+        ms: i64,
+    ) -> Result<(), String> {
+        let asked = if relayed {
+            ask_for(fx, owner(), owner(), ms)
+        } else {
+            ask(fx, owner(), ms)
+        };
+        assert_eq!(asked, Ok(()), "the owner's nonce request");
+        let (nonce, _) = nonce_of(w, owner()).expect("the owner holds a nonce");
+        let att = dev_attestation(&Claims::new(&nonce).with_sub(subject));
+        if relayed {
+            bind_for(fx, owner(), owner(), ms + 1, &att)
+        } else {
+            bind(fx, owner(), ms + 1, &att)
+        }
+    }
+
+    // --- the owner's list ------------------------------------------------------------
+
+    /// Under `Allowlist`, with the owner's trusted binding to `HOST_SUB`, the owner's
+    /// `set_world_allowlist` stores the named set and `HOST_SUB`: a list that omits it, an
+    /// empty list, and a list that names it (stored once).
+    ///
+    /// kills: the owner's account dropped by the owner's own list; the account stored twice
+    /// when named; the kept account read from another identity's binding.
+    #[test]
+    fn under_allowlist_the_owners_list_keeps_the_owners_account_lpw21_3() {
+        let fx = fixture();
+        let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[KEPT_SUB]);
+        bind_owner_row(&w, HOST_SUB, dev_kid());
+        w.binding.seed(&binding_row(
+            alice(),
+            THIRD_SUB,
+            T0 - 9_000,
+            true,
+            dev_kid(),
+        ));
+        assert_eq!(set_allow(&fx, owner(), strings(&[SUB, OTHER_SUB])), Ok(()));
+        assert_eq!(allowed(&w), sorted(strings(&[HOST_SUB, OTHER_SUB, SUB])));
+        assert_eq!(set_allow(&fx, owner(), Vec::new()), Ok(()));
+        assert_eq!(allowed(&w), strings(&[HOST_SUB]), "an empty list");
+        assert_eq!(set_allow(&fx, owner(), strings(&[SUB, HOST_SUB])), Ok(()));
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[HOST_SUB, SUB])),
+            "named: stored once"
+        );
+    }
+
+    /// Under `Allowlist` with a trusted owner binding, 256 other accounts are refused with
+    /// the too-many error and no write, the stored set intact; 255 others are stored with
+    /// the owner's as the 256th, and so are 255 others and the owner's named.
+    ///
+    /// kills: the list grown past 256 by the kept account; the list trimmed to fit; the bound
+    /// checked on the named list alone; the owner's account counted twice when named.
+    #[test]
+    fn under_allowlist_256_others_are_refused_and_255_take_the_owners_as_the_256th_lpw21_3() {
+        let fx = fixture();
+        let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[KEPT_SUB]);
+        bind_owner_row(&w, HOST_SUB, dev_kid());
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
+            "256 others",
+            || set_allow(&fx, owner(), others(256)),
+        );
+        assert_eq!(
+            allowed(&w),
+            strings(&[KEPT_SUB]),
+            "the stored set is intact"
+        );
+        let mut want = others(255);
+        want.push(HOST_SUB.to_string());
+        let want = sorted(want);
+        assert_eq!(set_allow(&fx, owner(), others(255)), Ok(()));
+        assert_eq!(allowed(&w), want, "255 others and the owner's");
+        let mut named = others(255);
+        named.push(HOST_SUB.to_string());
+        assert_eq!(set_allow(&fx, owner(), named), Ok(()));
+        assert_eq!(allowed(&w), want, "255 others and the owner's, named");
+    }
+
+    /// Outside `Allowlist` (no rule row, `Open`, `Password`), and under `Allowlist` with an
+    /// unbound owner or an owner bound under a key the build does not hold, the set is
+    /// stored exactly as named: a list without the owner's account, an empty list, 256
+    /// others. Under `Allowlist` with a trusted owner binding it is not (the control).
+    ///
+    /// kills: the owner's account kept under every rule; an untrusted owner binding kept.
+    #[test]
+    fn outside_allowlist_or_without_a_trusted_owner_binding_the_set_is_stored_as_named_lpw21_3() {
+        {
+            let fx = fixture();
+            let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[]);
+            bind_owner_row(&w, HOST_SUB, dev_kid());
+            assert_eq!(set_allow(&fx, owner(), strings(&[SUB])), Ok(()));
+            assert_eq!(
+                allowed(&w),
+                sorted(strings(&[HOST_SUB, SUB])),
+                "control: a trusted owner binding under Allowlist"
+            );
+        }
+        let cases: [(&str, Option<WorldAccessRule>, Option<&str>); 5] = [
+            ("no rule row", None, Some(dev_kid())),
+            ("Open", Some(WorldAccessRule::Open), Some(dev_kid())),
+            ("Password", Some(WorldAccessRule::Password), Some(dev_kid())),
+            (
+                "Allowlist, the owner unbound",
+                Some(WorldAccessRule::Allowlist),
+                None,
+            ),
+            (
+                "Allowlist, the owner bound under a retired key",
+                Some(WorldAccessRule::Allowlist),
+                Some(RETIRED_KID),
+            ),
+        ];
+        for (label, rule, kid) in cases {
+            let fx = fixture();
+            let w = world_under(&fx, rule, &[KEPT_SUB]);
+            if let Some(kid) = kid {
+                bind_owner_row(&w, HOST_SUB, kid);
+            }
+            assert_eq!(
+                set_allow(&fx, owner(), strings(&[SUB, OTHER_SUB])),
+                Ok(()),
+                "{label}"
+            );
+            assert_eq!(
+                allowed(&w),
+                sorted(strings(&[SUB, OTHER_SUB])),
+                "{label}: as named"
+            );
+            assert_eq!(set_allow(&fx, owner(), Vec::new()), Ok(()), "{label}");
+            assert!(allowed(&w).is_empty(), "{label}: an empty list clears it");
+            assert_eq!(set_allow(&fx, owner(), others(256)), Ok(()), "{label}");
+            assert_eq!(allowed(&w), sorted(others(256)), "{label}: 256 others");
+        }
+    }
+
+    /// The account kept is the owner's alone: under `Allowlist` the owner's list that omits
+    /// another bound identity's account takes it off, and that identity is refused.
+    ///
+    /// kills: every bound identity's account kept.
+    #[test]
+    fn the_owners_list_that_omits_another_bound_identitys_account_removes_it_lpw21_3() {
+        let fx = fixture();
+        let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[SUB, HOST_SUB]);
+        bind_owner_row(&w, HOST_SUB, dev_kid());
+        w.binding
+            .seed(&binding_row(alice(), SUB, T0 - 9_000, true, dev_kid()));
+        assert_eq!(passes(&fx, alice(), T0), Ok(()), "control: alice is listed");
+        assert_eq!(set_allow(&fx, owner(), Vec::new()), Ok(()));
+        assert_eq!(allowed(&w), strings(&[HOST_SUB]));
+        assert_eq!(
+            passes(&fx, alice(), T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string())
+        );
+    }
+
+    // --- the owner's bind ------------------------------------------------------------
+
+    /// The owner binding itself under `Allowlist`, self-serve and relayed, has its account
+    /// listed and the rows already listed stay; binding again to an account already listed
+    /// writes no list row.
+    ///
+    /// kills: the owner's bind leaving the list alone; the list replaced by the account; an
+    /// account already listed inserted again.
+    #[test]
+    fn the_owners_bind_under_allowlist_lists_its_account_lpw21_3() {
+        for relayed in [false, true] {
+            let fx = fixture();
+            let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[KEPT_SUB, SUB]);
+            assert_eq!(
+                owner_binds(&fx, &w, relayed, HOST_SUB, T0),
+                Ok(()),
+                "relayed {relayed}"
+            );
+            assert_eq!(
+                bindings(&w),
+                vec![bview(owner(), HOST_SUB, T0 + 1, true, dev_kid())],
+                "relayed {relayed}"
+            );
+            assert_eq!(
+                allowed(&w),
+                sorted(strings(&[HOST_SUB, KEPT_SUB, SUB])),
+                "relayed {relayed}: the account is added"
+            );
+            fx.reset_writes();
+            assert_eq!(
+                owner_binds(&fx, &w, relayed, HOST_SUB, T0 + 10),
+                Ok(()),
+                "relayed {relayed}: again"
+            );
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "relayed {relayed}: an account already listed is not written"
+            );
+            assert_eq!(
+                allowed(&w),
+                sorted(strings(&[HOST_SUB, KEPT_SUB, SUB])),
+                "relayed {relayed}"
+            );
+        }
+    }
+
+    /// The owner's bind under no rule row, `Open` and `Password`, self-serve and relayed,
+    /// leaves the list untouched; the same world switched to `Allowlist` lists the account
+    /// at the next bind (the control).
+    ///
+    /// kills: the owner's account listed under every rule.
+    #[test]
+    fn the_owners_bind_outside_allowlist_leaves_the_list_untouched_lpw21_3() {
+        for rule in [
+            None,
+            Some(WorldAccessRule::Open),
+            Some(WorldAccessRule::Password),
+        ] {
+            for relayed in [false, true] {
+                let fx = fixture();
+                let label = format!("{rule:?}, relayed {relayed}");
+                let w = world_under(&fx, rule, &[KEPT_SUB]);
+                fx.reset_writes();
+                assert_eq!(
+                    owner_binds(&fx, &w, relayed, HOST_SUB, T0),
+                    Ok(()),
+                    "{label}"
+                );
+                assert_eq!(
+                    bindings(&w),
+                    vec![bview(owner(), HOST_SUB, T0 + 1, true, dev_kid())],
+                    "{label}"
+                );
+                assert_eq!(fx.writes_to("world_allowlist"), 0, "{label}");
+                assert_eq!(allowed(&w), strings(&[KEPT_SUB]), "{label}");
+                let _ = w.access.remove(0);
+                w.access.seed(&rule_row(WorldAccessRule::Allowlist));
+                assert_eq!(
+                    owner_binds(&fx, &w, relayed, HOST_SUB, T0 + 10),
+                    Ok(()),
+                    "{label}: under Allowlist"
+                );
+                assert_eq!(
+                    allowed(&w),
+                    sorted(strings(&[HOST_SUB, KEPT_SUB])),
+                    "{label}: control, under Allowlist"
+                );
+            }
+        }
+    }
+
+    /// A joiner's bind under `Allowlist`, self-serve (an unbound identity holding an
+    /// admission row) and relayed by the owner, leaves the list untouched; the owner's
+    /// bind in the same world lists its account (the control).
+    ///
+    /// kills: every bind under `Allowlist` listing its account (a joiner letting itself in);
+    /// the relayed form keyed on the caller instead of `who`.
+    #[test]
+    fn a_joiners_bind_under_allowlist_leaves_the_list_untouched_lpw21_3() {
+        let fx = fixture();
+        let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[KEPT_SUB]);
+        w.admission.seed(&admission_row(alice()));
+        assert_eq!(ask(&fx, alice(), T0), Ok(()));
+        let (nonce, _) = nonce_of(&w, alice()).expect("alice holds a nonce");
+        let att = dev_attestation(&Claims::new(&nonce).with_sub(SUB));
+        fx.reset_writes();
+        assert_eq!(bind(&fx, alice(), T0 + 1, &att), Ok(()), "self-serve");
+        assert_eq!(fx.writes_to("world_allowlist"), 0, "self-serve");
+        assert_eq!(allowed(&w), strings(&[KEPT_SUB]), "self-serve");
+        assert_eq!(ask_for(&fx, owner(), bob(), T0 + 2), Ok(()));
+        let (nonce, _) = nonce_of(&w, bob()).expect("bob holds a nonce");
+        let att = dev_attestation(&Claims::new(&nonce).with_sub(OTHER_SUB));
+        fx.reset_writes();
+        assert_eq!(
+            bind_for(&fx, owner(), bob(), T0 + 3, &att),
+            Ok(()),
+            "relayed"
+        );
+        assert_eq!(fx.writes_to("world_allowlist"), 0, "relayed");
+        assert_eq!(allowed(&w), strings(&[KEPT_SUB]), "relayed");
+        assert_eq!(
+            bindings(&w),
+            sorted(vec![
+                bview(alice(), SUB, T0 + 1, true, dev_kid()),
+                bview(bob(), OTHER_SUB, T0 + 3, true, dev_kid()),
+            ])
+        );
+        assert_eq!(owner_binds(&fx, &w, false, HOST_SUB, T0 + 4), Ok(()));
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[HOST_SUB, KEPT_SUB])),
+            "control: the owner's bind"
+        );
+    }
+
+    /// The owner binding onto a list of 256 other accounts is refused with the too-many
+    /// error, self-serve and relayed, with no write: no binding, the nonce still held, the
+    /// list as it was; an attestation that fails an earlier check answers that check's
+    /// error. Once a row is taken off, the same attestation binds and the account is the
+    /// 256th; a full list that holds the account takes another bind to it.
+    ///
+    /// kills: the list grown past 256 by a bind; the binding or the nonce written before the
+    /// refusal; the bound checked before the attestation; a full list refusing the account
+    /// it already holds.
+    #[test]
+    fn the_owners_bind_onto_a_full_list_is_refused_with_no_write_lpw21_3() {
+        let fx = fixture();
+        let full = others(256);
+        let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+        let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &refs);
+        assert_eq!(ask(&fx, owner(), T0), Ok(()));
+        let (nonce, _) = nonce_of(&w, owner()).expect("the owner holds a nonce");
+        let att = dev_attestation(&Claims::new(&nonce).with_sub(HOST_SUB));
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
+            "self-serve onto 256 others",
+            || bind(&fx, owner(), T0 + 1, &att),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
+            "relayed onto 256 others",
+            || bind_for(&fx, owner(), owner(), T0 + 1, &att),
+        );
+        let wrong = dev_attestation(&Claims::new(NONCE_C).with_sub(HOST_SUB));
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_ATTESTATION_OTHER_NONCE,
+            "another nonce onto 256 others",
+            || bind(&fx, owner(), T0 + 1, &wrong),
+        );
+        assert!(bindings(&w).is_empty(), "no binding");
+        assert_eq!(
+            nonce_of(&w, owner()).map(|(held, _)| held),
+            Some(nonce),
+            "the nonce is still held"
+        );
+        assert_eq!(
+            w.allow.remove(full[0].clone()),
+            1,
+            "fixture: a row comes off"
+        );
+        assert_eq!(bind(&fx, owner(), T0 + 2, &att), Ok(()));
+        let mut want = full[1..].to_vec();
+        want.push(HOST_SUB.to_string());
+        let want = sorted(want);
+        assert_eq!(allowed(&w), want, "the owner's account is the 256th");
+        assert_eq!(
+            bindings(&w),
+            vec![bview(owner(), HOST_SUB, T0 + 2, true, dev_kid())]
+        );
+        assert_eq!(
+            owner_binds(&fx, &w, false, HOST_SUB, T0 + 10),
+            Ok(()),
+            "a full list holding the account"
+        );
+        assert_eq!(allowed(&w), want);
+    }
+
+    /// The owner rebinding to a second account under `Allowlist` leaves both listed.
+    ///
+    /// kills: the owner's former account taken off when it rebinds.
+    #[test]
+    fn the_owner_rebinding_to_a_second_account_under_allowlist_leaves_both_listed_lpw21_3() {
+        let fx = fixture();
+        let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[KEPT_SUB]);
+        assert_eq!(owner_binds(&fx, &w, false, HOST_SUB, T0), Ok(()));
+        assert_eq!(owner_binds(&fx, &w, true, THIRD_SUB, T0 + 10), Ok(()));
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[HOST_SUB, KEPT_SUB, THIRD_SUB]))
+        );
+        assert_eq!(
+            bindings(&w),
+            vec![bview(owner(), THIRD_SUB, T0 + 11, true, dev_kid())]
+        );
+    }
+}
+
+// =====================================================================================
+// The owner edits the list a switch to `Allowlist` made: a removed account's identities are
+// refused everywhere at their next call, and a returned one's are let in.
+// =====================================================================================
+
+mod list_edits {
+    use super::join_fixture::{join, join_footprint, join_world, joined};
+    use super::*;
+    use crate::access::REJECT_NOT_ADMITTED;
+    use crate::schema::WorldAdmissionAttempt;
+
+    const HOST_SUB: &str = "dev:aaaaaaaa-0000-4000-8000-00000000a1a1";
+    const X1_CONN: u128 = 0x0C1C;
+
+    /// Bound to [`SUB`], connected at the switch.
+    fn x1() -> Identity {
+        id(0xC1)
+    }
+
+    /// Bound to [`SUB`], never connected.
+    fn x2() -> Identity {
+        id(0xC2)
+    }
+
+    /// Bound to [`OTHER_SUB`].
+    fn y() -> Identity {
+        id(0xC3)
+    }
+
+    /// [`owned_world`] named [`WORLD`], with what `set_world_access` touches registered too:
+    /// `world_access` and `world_admission` writable, `world_binding` scannable, and
+    /// `world_admission_attempt` read by `identity` (not writable: no identity here holds a
+    /// wrong-password record).
+    fn switchable_world(fx: &Fixture) -> W<'_> {
+        let w = owned_world(fx);
+        let _ = fx
+            .table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id)
+            .unique()
+            .writable();
+        let _ = fx
+            .table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
+            .unique()
+            .writable();
+        let _ = fx
+            .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+            .unique()
+            .writable()
+            .scannable();
+        let _ = fx
+            .table::<WorldAdmissionAttempt>("world_admission_attempt", "identity", |r| r.identity)
+            .unique();
+        seed_names(&w, &[WORLD]);
+        w
+    }
+
+    /// The owner switches the world to `Allowlist` at `ms`.
+    fn switch(fx: &Fixture, ms: i64) -> Result<(), String> {
+        call(fx, owner(), ms, |ctx| {
+            crate::access::set_world_access(ctx, WorldAccessRule::Allowlist, None, Vec::new())
+        })
+    }
+
+    /// An `Open` world where [`x1`] (connected) and [`x2`] are bound to [`SUB`], [`y`] to
+    /// [`OTHER_SUB`] and the owner to `HOST_SUB`. The owner switches it to `Allowlist`, which
+    /// lists the three accounts and gives [`x1`] an admission row, and then sets the list to
+    /// [`OTHER_SUB`] alone, which keeps the owner's account.
+    fn delisted_world(fx: &Fixture) -> W<'_> {
+        let w = switchable_world(fx);
+        for (who, subject) in [
+            (x1(), SUB),
+            (x2(), SUB),
+            (y(), OTHER_SUB),
+            (owner(), HOST_SUB),
+        ] {
+            w.binding
+                .seed(&binding_row(who, subject, T0 - 5_000, true, dev_kid()));
+        }
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(X1_CONN),
+            identity: x1(),
+        });
+        assert_eq!(switch(fx, T0), Ok(()), "the switch");
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[HOST_SUB, OTHER_SUB, SUB])),
+            "the switch lists every bound account"
+        );
+        let admitted: Vec<([u8; 32], i64)> = w
+            .admission
+            .rows()
+            .into_iter()
+            .map(|r| (r.identity.to_byte_array(), r.admitted_at_ms))
+            .collect();
+        assert_eq!(
+            admitted,
+            vec![(x1().to_byte_array(), T0)],
+            "the carry-over admits the connected identity"
+        );
+        assert_eq!(set_allow(fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[HOST_SUB, OTHER_SUB])),
+            "SUB is off the list; the owner's account is kept"
+        );
+        w
+    }
+
+    /// [`footprint`] without the list.
+    fn footprint_but_list(fx: &Fixture, w: &W<'_>) -> Footprint {
+        footprint(fx, w)
+            .into_iter()
+            .filter(|(table, _, _)| *table != "world_allowlist")
+            .collect()
+    }
+
+    /// After the owner takes `SUB` off the list the switch made, both identities bound to
+    /// it, the connected one holding the admission row the carry-over gave it and the other
+    /// holding none, are refused with `REJECT_NOT_ADMITTED` by the admission check, at
+    /// connect, by `request_bind_nonce` and by the real `join_game`, each with no write; the
+    /// identity bound to an account still listed passes and joins.
+    ///
+    /// kills: the list read once at the switch and remembered; the carry-over's admission
+    /// row overriding the list; a refusal that writes.
+    #[test]
+    fn taking_an_account_off_the_seeded_list_refuses_every_identity_bound_to_it_lpw21_4() {
+        let fx = fixture();
+        let jw = join_world(&fx);
+        let w = delisted_world(&fx);
+        for who in [x1(), x2()] {
+            let label = format!("bound to the delisted account, {}", who.to_hex());
+            assert_refused(
+                &fx,
+                &w,
+                REJECT_NOT_ADMITTED,
+                &format!("{label}: the admission check"),
+                || passes(&fx, who, T0 + 10),
+            );
+            assert_refused(
+                &fx,
+                &w,
+                REJECT_NOT_ADMITTED,
+                &format!("{label}: connect"),
+                || call(&fx, who, T0 + 10, crate::on_connect),
+            );
+            assert_refused(
+                &fx,
+                &w,
+                REJECT_NOT_ADMITTED,
+                &format!("{label}: request_bind_nonce"),
+                || ask(&fx, who, T0 + 10),
+            );
+            fx.reset_writes();
+            let before = (footprint(&fx, &w), join_footprint(&fx, &jw));
+            assert_eq!(
+                join(&fx, who, None, T0 + 10),
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "{label}: join_game"
+            );
+            assert_eq!(
+                (footprint(&fx, &w), join_footprint(&fx, &jw)),
+                before,
+                "{label}: join_game writes nothing"
+            );
+            assert!(joined(&jw, who).is_empty(), "{label}");
+        }
+        assert_eq!(
+            passes(&fx, y(), T0 + 10),
+            Ok(()),
+            "bound to an account still listed"
+        );
+        assert_eq!(join(&fx, y(), None, T0 + 11), Ok(()));
+        assert_eq!(joined(&jw, y()), vec!["Ada".to_string()]);
+    }
+
+    /// When the owner puts `SUB` back, the owner's call writes nothing but the list, and each
+    /// identity bound to it passes at its next call: the admission check, a nonce request,
+    /// the connection, and the real `join_game`.
+    ///
+    /// kills: a delisted identity held out after its account returns (a refusal recorded);
+    /// the owner's list call writing an admission or a binding.
+    #[test]
+    fn putting_the_account_back_admits_its_identities_at_their_next_call_lpw21_4() {
+        let fx = fixture();
+        let jw = join_world(&fx);
+        let w = delisted_world(&fx);
+        fx.reset_writes();
+        let before = footprint_but_list(&fx, &w);
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB, SUB])), Ok(()));
+        assert_eq!(allowed(&w), sorted(strings(&[HOST_SUB, OTHER_SUB, SUB])));
+        assert_eq!(
+            footprint_but_list(&fx, &w),
+            before,
+            "the owner's call writes nothing but the list"
+        );
+        for who in [x1(), x2()] {
+            assert_eq!(passes(&fx, who, T0 + 20), Ok(()), "{}", who.to_hex());
+        }
+        assert_eq!(ask(&fx, x1(), T0 + 21), Ok(()), "a nonce request");
+        assert!(nonce_of(&w, x1()).is_some(), "the nonce is issued");
+        assert_eq!(call(&fx, x2(), T0 + 21, crate::on_connect), Ok(()));
+        assert_eq!(join(&fx, x2(), None, T0 + 22), Ok(()));
+        assert_eq!(joined(&jw, x2()), vec!["Ada".to_string()]);
+    }
+
+    /// The owner cannot take the owner's own account off the list: a list without it keeps
+    /// it, and a second identity bound to that account stays admitted, connects and joins.
+    ///
+    /// kills: the owner's account dropped by the owner's own list (its other identities
+    /// locked out).
+    #[test]
+    fn the_owner_cannot_take_the_owners_account_off_the_list_lpw21_4() {
+        let fx = fixture();
+        let jw = join_world(&fx);
+        let w = switchable_world(&fx);
+        let z = id(0xC4);
+        for who in [owner(), z] {
+            w.binding
+                .seed(&binding_row(who, HOST_SUB, T0 - 5_000, true, dev_kid()));
+        }
+        assert_eq!(switch(&fx, T0), Ok(()));
+        assert_eq!(allowed(&w), strings(&[HOST_SUB]), "the switch");
+        assert_eq!(set_allow(&fx, owner(), Vec::new()), Ok(()));
+        assert_eq!(
+            allowed(&w),
+            strings(&[HOST_SUB]),
+            "the owner's account stays"
+        );
+        assert_eq!(passes(&fx, z, T0 + 1), Ok(()));
+        assert_eq!(call(&fx, z, T0 + 1, crate::on_connect), Ok(()));
+        assert_eq!(join(&fx, z, None, T0 + 2), Ok(()));
+        assert_eq!(joined(&jw, z), vec!["Ada".to_string()]);
+    }
+}
