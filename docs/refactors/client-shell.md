@@ -153,8 +153,8 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `identity` | `session.ts` | every module from `screenContext` to `devHooks` in the map; `main` | `onReady`, `onReconnect`: event |
 | `conn` | `session.ts` | `movement`, `account`, `screens`, `interact`, `commands`, `devHooks`, `main` | `main()` boot: mount |
 | `hydratedSinceReconnect` | `session.ts` | `screens` | `onHydrated`, `onReconnect`: event |
-| `resolveReady` | `session.ts` | `main` | none; `onReady` calls it: event |
-| `battleEmit` | `session.ts` | `movement`, `main` | `resetPredictionState`: reset; `onReconnect` arming the reseed: event |
+| `resolveReady` | `session.ts` | none | none; `onReady` resolves `ready` through `markReady`: event |
+| `battleEmit` | `session.ts` | none | `resetPredictionState`: reset; `onReconnect` arming the reseed: event |
 | `lastOwnRating` | `session.ts` | none | `resetPredictionState`: reset |
 | `claimModelState` | `account.ts` | `main` | the claim view's dismissed handler in `main()` boot: event |
 | `sessionModelState` | `account.ts` | none | none |
@@ -271,9 +271,6 @@ function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `session.ts` | `adoptIdentity`, `adoptConnection` | the `identity` and `conn` assignments |
-| `session.ts` | `noteHydrated`, `clearHydration`, `markReady` | the hydration flag's two writes and the `resolveReady` call |
-| `session.ts` | `armEmitReseed`, `resetEmitLatches` | the reseed arming in `onReconnect` and the two latch resets in `resetPredictionState` |
 | `screenContext.ts` | `bindShop`, `bindHealLocation`, `bindSocialTab`, `bindMonstersTab`, `bindProposeTarget`, `unbindScreens` | each opener's bind and the five clears in `onReconnect` |
 | `notices.ts` | `markAnswered`, `dismissRequest`, `markAnnounced`, `clearNoticeSets` | every mutation of the three request sets |
 | `battleFrame.ts` | `installBattlePort` | the battle port |
@@ -365,8 +362,8 @@ Prose that names `main.ts` as the home of a symbol follows the symbol, in the sl
   extraction rewrites them in place to name `client/src/shell/frames.ts`; the tables stay three
   separate total records.
 - `docs/DECISIONS.md`, "Four message channels, chosen by one policy table", which names
-  `main.ts` for the senders (`sendGuarded`, the battle refusal, the care, shop and rename
-  outcomes): the `session.ts` and `commands.ts` extractions.
+  `main.ts` for the senders it still holds (the battle refusal, the care, shop and rename
+  outcomes): the `commands.ts` extraction.
 - `ARCHITECTURE.md`, which names `main.ts` for `switchZone`, the frame loop, `dispatch`,
   `applyStack` and `downloadBugBundle`.
 - Comments under `client/src` that name `main.ts` as the caller or home of a symbol. An
@@ -380,7 +377,6 @@ they write; bodies change only by imports, and an inline listener body gains a n
 **ownership change** leaves a writer outside the destination, so it adds an owner function, or
 it installs a port or adds a pump. The slice for a line deletes that line.
 
-5. `client/src/shell/session.ts` takes `store`, `identity`, `conn`, `hydratedSinceReconnect`, `resolveReady`, `ready`, `sessionGateBlocks`, `liveReducers`, `privacyLinkLive`, `sendGuarded`, `SEND_REJECT_KIND`, `SendWhere`, `battleEmit`, `lastOwnRating` and the two batch listeners that step the emit latches. Ownership change: `main` assigns `identity`, `conn` and `hydratedSinceReconnect`, and `resetPredictionState` resets the latches.
 6. `client/src/shell/screenContext.ts` takes `screenCtx`, `motionPreference`, `boundShopId`, `boundHealLocationId`, `boundSocialTab`, `boundMonstersTab` and `boundProposeTarget`. Ownership change: `openPendingShop`, `runInteract`, `openSocial`, `openMenuTarget` and `openPropose` bind them and `main` clears them.
 7. `client/src/shell/notices.ts` takes `dismissedRequests`, `announcedRequests`, `answeredRequests`, `noticeInput`, `livePending`, `requestLine` and `releaseAnswered`. Ownership change: `dispatch`, `worldPort` and `main` mutate the three sets.
 8. `client/src/shell/battleFrame.ts` takes `battleViews`, `battleFrameShown`, `hideAllBattleViews`, `activeBattleView`, `tacticalOwnsStart`, `battleHint`, `tacticsRules`, `tuningOf`, `refreshBattle`, `popOverBattleBeforeSwitch`, `ownMonsterName`, `tacticsMapFacts`, `mapFactsOf`, `mySideOf`, `buildDeployPanel`, `noteRatingBaseline`, `ratingLineFor`, `buildResultsPanel`, `refreshTacticsShell`, `tacticsVMEqual`, `buildTacticsVM`, `tacticsShellDeps`, `pumpStillThere`, `pumpClock`, `tradedIds`, `ownDeployLocked` and the bindings `deployPanel`, `resultsPanel`, `tacticsBattle`, `battleMount`, `tacticsRulesPort`, `tacticsTuning`, `tacticsShown`, `tacticsRating`, `tacticsIngested`, `lastTacticsVM`, `stillThereAnnouncedFor`, `dismissedBattleId`, `battleSynced` and `unrenderableReported`. Ownership change: the battle port, the `battleMount` mount, the lines `resetPredictionState` resets and the latch `closeFrame` writes.
