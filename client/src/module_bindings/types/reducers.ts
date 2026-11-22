@@ -55,6 +55,7 @@ import SubmitQueueReducer from "../submit_queue_reducer";
 import SyncContentReducer from "../sync_content_reducer";
 import TalkReducer from "../talk_reducer";
 import TrainReducer from "../train_reducer";
+import UnbindWorldAccountReducer from "../unbind_world_account_reducer";
 
 export type AcceptChallengeParams = __Infer<typeof AcceptChallengeReducer>;
 export type AckEvolutionNoticesParams = __Infer<typeof AckEvolutionNoticesReducer>;
@@ -105,4 +106,5 @@ export type SubmitQueueParams = __Infer<typeof SubmitQueueReducer>;
 export type SyncContentParams = __Infer<typeof SyncContentReducer>;
 export type TalkParams = __Infer<typeof TalkReducer>;
 export type TrainParams = __Infer<typeof TrainReducer>;
+export type UnbindWorldAccountParams = __Infer<typeof UnbindWorldAccountReducer>;
 

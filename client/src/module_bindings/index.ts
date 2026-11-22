@@ -83,6 +83,7 @@ import SubmitQueueReducer from "./submit_queue_reducer";
 import SyncContentReducer from "./sync_content_reducer";
 import TalkReducer from "./talk_reducer";
 import TrainReducer from "./train_reducer";
+import UnbindWorldAccountReducer from "./unbind_world_account_reducer";
 
 // Import all procedure arg schemas
 
@@ -547,6 +548,7 @@ const reducersSchema = __reducers(
   __reducerSchema("sync_content", SyncContentReducer),
   __reducerSchema("talk", TalkReducer),
   __reducerSchema("train", TrainReducer),
+  __reducerSchema("unbind_world_account", UnbindWorldAccountReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

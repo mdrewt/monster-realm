@@ -16,17 +16,22 @@
 //! ([`require_admitted_at_connect`]), which holds that identity off every table and every
 //! reducer, and every reducer of the generated client roster that is not owner-only makes the
 //! same check ([`require_admitted`]) before it reads or writes anything else, because the host
-//! checks a connection only when it opens. The binding reducers of `world_binding.rs` answer
-//! their build's refusal first, which reads nothing. The reducers that exist only in a dev
-//! build (`dev_reducers`, `load_test_zones`) are outside that roster and make no check.
+//! checks a connection only when it opens. The one exception is
+//! `world_binding::unbind_world_account`, which makes no admission check, so an identity the
+//! rule refuses can still erase its own binding over a connection already open. The binding
+//! reducers of `world_binding.rs` answer their build's refusal first, which reads nothing. The
+//! reducers that exist only in a dev build (`dev_reducers`, `load_test_zones`) are outside that
+//! roster and make no check.
 //!
-//! An identity that is not admitted can call nothing, so admission is granted by reducers
-//! only the owner can call: [`set_world_access`] sets the rule and admits identities outright,
-//! [`admit`] is the door, where the owner relays a joiner's password, and under `Allowlist`
-//! the owner relays the joiner's bind (`world_binding::bind_world_account_for`).
+//! An identity that is not admitted can call nothing but that unbind, so admission is granted
+//! by reducers only the owner can call: [`set_world_access`] sets the rule and admits
+//! identities outright, [`admit`] is the door, where the owner relays a joiner's password, and
+//! under `Allowlist` the owner relays the joiner's bind
+//! (`world_binding::bind_world_account_for`).
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access`, `world_admission` and
-//! `world_admission_attempt`. It reads `config` for the owner, reads a binding and the host's
+//! `world_admission_attempt`; an unbind deletes an admission row through
+//! [`withdraw_admission`]. It reads `config` for the owner, reads a binding and the host's
 //! list and adds to that list through `crate::world_binding`, and, when the rule changes,
 //! reads the live sessions through `crate::live_session_identities`.
 
@@ -164,7 +169,8 @@ fn holds_admission(ctx: &ReducerContext, identity: Identity) -> bool {
 /// owner and an identity with a `world_admission` row; under `Allowlist` the owner, an
 /// identity whose trusted binding names a listed account, and an identity with no trusted
 /// binding that holds a `world_admission` row. A bound identity whose account is not listed
-/// is refused even with an admission row: the list alone governs it.
+/// is refused even with an admission row: the list alone governs it, and its unbind takes the
+/// row with it (`world_binding::unbind_world_account`).
 pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
     match rule_in_force(ctx) {
         WorldAccessRule::Open => true,
@@ -259,6 +265,14 @@ fn sweep_stale_attempts(ctx: &ReducerContext, now: i64) {
         .collect();
     for identity in stale {
         ctx.db.world_admission_attempt().identity().delete(identity);
+    }
+}
+
+/// Delete `identity`'s admission row, when it holds one. Its wrong-password record stays, so a
+/// withdrawal never shortens a lockout. Called by `world_binding::unbind_world_account`.
+pub(crate) fn withdraw_admission(ctx: &ReducerContext, identity: Identity) {
+    if holds_admission(ctx, identity) {
+        ctx.db.world_admission().identity().delete(identity);
     }
 }
 
@@ -377,7 +391,7 @@ pub fn set_world_access(
 }
 
 /// The door of a `Password` world: admit `who` when `password` is the host's. Owner-only, since
-/// an identity that is not admitted can call nothing; the owner relays the joiner's password.
+/// an identity that is not admitted cannot connect; the owner relays the joiner's password.
 ///
 /// Refused with `Err` and no write: a caller that is not the owner; a world whose rule is not
 /// `Password`; a `who` with [`ADMIT_MAX_WRONG_ATTEMPTS`] wrong passwords in the last ten minutes
