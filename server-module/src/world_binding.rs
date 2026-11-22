@@ -11,9 +11,10 @@
 //! The list is the owner's to edit ([`set_world_allowlist`]). It is also added to when the rule
 //! changes to `Allowlist` (`access::set_world_access` lists the accounts of the bindings the
 //! rule in force admitted, through [`bound_accounts`] and [`add_to_allowlist`]), and while that
-//! rule is in force it always holds the account the owner's own identity is bound to: the
-//! owner's list cannot leave it out, and a bind of the owner's identity adds it. The list never
-//! holds more than [`MAX_ALLOWLIST_ACCOUNTS`]; a write that would exceed that is refused whole.
+//! rule is in force each of those writes keeps the account of the owner's own trusted binding
+//! on it: the owner's list cannot leave it out, and a bind of the owner's identity adds it. The
+//! list never holds more than [`MAX_ALLOWLIST_ACCOUNTS`]; a write that would exceed that is
+//! refused whole.
 //!
 //! A build accepts attestations under the keys of its profile and no others
 //! (`BuildProfile::attestation_keys`). A build with no key binds nothing: its four binding
@@ -267,9 +268,10 @@ fn check_entries(entries: &[String], rule: &ListRule) -> Result<(), &'static str
     Ok(())
 }
 
-/// The accounts of `wanted` that `listed` lacks, each once, in ascending byte order. Refused
-/// with [`REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS`] when `listed` and those additions together
-/// number more than [`MAX_ALLOWLIST_ACCOUNTS`].
+/// The accounts of `wanted` that `listed` lacks, compared byte for byte, each once, in
+/// ascending byte order. `listed` holds no repeats. Refused with
+/// [`REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS`] when `listed` and those additions together number
+/// more than [`MAX_ALLOWLIST_ACCOUNTS`].
 pub(crate) fn allowlist_additions(
     listed: &[String],
     wanted: &[String],
@@ -313,14 +315,14 @@ pub(crate) fn trusted_binding(
         .filter(|binding| counts_under(profile, binding))
 }
 
-/// The account of every binding the build counts whose identity `of` accepts, each once, in
+/// The account of every binding the build counts whose identity `admits` accepts, each once, in
 /// ascending byte order. A build with no key answers none without reading. The table holds a
 /// row for every identity that ever bound, so the rows are read one at a time and only the
 /// distinct accounts are kept.
 pub(crate) fn bound_accounts(
     ctx: &ReducerContext,
     profile: &BuildProfile,
-    of: impl Fn(Identity) -> bool,
+    admits: impl Fn(Identity) -> bool,
 ) -> Vec<String> {
     if binds_nothing(profile) {
         return Vec::new();
@@ -329,7 +331,7 @@ pub(crate) fn bound_accounts(
         .db
         .world_binding()
         .iter()
-        .filter(|binding| counts_under(profile, binding) && of(binding.identity))
+        .filter(|binding| counts_under(profile, binding) && admits(binding.identity))
         .map(|binding| binding.account_subject)
         .collect();
     accounts.into_iter().collect()
@@ -448,7 +450,8 @@ fn issue_bind_nonce(ctx: &ReducerContext, who: Identity) {
 /// `who`'s; and, when `who` is the world's owner and the rule in force is `Allowlist`, a list
 /// already at [`MAX_ALLOWLIST_ACCOUNTS`] that does not hold the account. Otherwise `who`'s
 /// binding becomes what the attestation says, replacing one it already holds, and its nonce is
-/// spent; the owner's account, under `Allowlist`, is added to the list when it is not there.
+/// spent; the owner's account, under `Allowlist`, is added to the list when it is not there,
+/// and an account the owner was bound to before stays listed.
 pub(crate) fn bind_identity(
     ctx: &ReducerContext,
     profile: &BuildProfile,
@@ -586,11 +589,11 @@ pub fn set_world_names(ctx: &ReducerContext, names: Vec<String>) -> Result<(), S
 
 /// Replace the accounts the `Allowlist` rule lets in. Owner-only. Refused with no write: more
 /// than [`MAX_ALLOWLIST_ACCOUNTS`], an entry that is not 1 to [`ACCOUNT_SUBJECT_MAX_BYTES`]
-/// visible ASCII characters, a repeated entry. While the rule in force is `Allowlist` the
-/// account of the owner's own trusted binding is stored whether or not the call names it, and
-/// a call that names [`MAX_ALLOWLIST_ACCOUNTS`] others is refused; under the other rules the
-/// set is stored as named. An identity bound to an account that leaves the list is refused at
-/// its next check.
+/// visible ASCII characters, a repeated entry. While the rule in force is `Allowlist` and the
+/// owner holds a trusted binding, its account is stored whether or not the call names it, and
+/// a call that names [`MAX_ALLOWLIST_ACCOUNTS`] other accounts is refused; otherwise the set
+/// is stored as named. An identity bound to an account that leaves the list is refused at its
+/// next check.
 #[spacetimedb::reducer]
 pub fn set_world_allowlist(ctx: &ReducerContext, accounts: Vec<String>) -> Result<(), String> {
     crate::access::require_world_owner(ctx, "set_world_allowlist")?;
@@ -599,8 +602,8 @@ pub fn set_world_allowlist(ctx: &ReducerContext, accounts: Vec<String>) -> Resul
     }
     let mut accounts = accounts;
     if crate::access::rule_in_force(ctx) == WorldAccessRule::Allowlist {
-        if let Some(owners) = trusted_binding(ctx, &BUILD_PROFILE, ctx.sender()) {
-            match allowlist_additions(&accounts, &[owners.account_subject]) {
+        if let Some(owner_binding) = trusted_binding(ctx, &BUILD_PROFILE, ctx.sender()) {
+            match allowlist_additions(&accounts, &[owner_binding.account_subject]) {
                 Ok(kept) => accounts.extend(kept),
                 Err(reason) => return reject("set_world_allowlist", ctx.sender(), reason),
             }

@@ -2620,21 +2620,22 @@ The list is the owner's to edit (`set_world_allowlist` replaces it) and is made 
 already let in. When the rule changes to `Allowlist`, `set_world_access` adds the account of every
 trusted binding whose identity the rule in force before the call admitted (under `Open` every one;
 under `Password` those holding a `world_admission` row, and the owner's), beside the accounts
-already listed; its `admit` argument adds none. While the rule is `Allowlist` the list holds the
-account the owner's identity is bound to: `set_world_allowlist` stores it whether or not the call
-names it, and a bind of the owner's identity adds it (bound to a second account, the owner has both
+already listed; its `admit` argument adds none. While the rule is `Allowlist`, the account of the
+owner's trusted binding stays listed: `set_world_allowlist` stores it whether or not the call names
+it, and a bind of the owner's identity adds it (bound to a second account, the owner has both
 listed). The list never passes 256 accounts: a rule change that would add past that, a
-`set_world_allowlist` naming 256 others, and an owner's bind onto a full list are each refused with
-the list's too-many error and no write. Under `Open` and `Password` the list is kept, stored as the
-owner names it, and not read; the next change to `Allowlist` adds to it.
+`set_world_allowlist` that would store the owner's account beside 256 others, and an owner's bind
+under `Allowlist` of an account a full list lacks are each refused with the list's too-many error
+and no write. Under `Open` and `Password` the list is kept, stored as the owner names it, and not
+read; the next change to `Allowlist` adds to it.
 
 The module declares no HTTP handler and no row filter: both sit behind the `spacetimedb` crate's
 `unstable` feature, which the workspace does not enable (`Cargo.toml`), and the deletion-gate
-census refuses a `procedure` attribute. Built: the module's half, in `server-module/src/access.rs`
-and (the list) `server-module/src/world_binding.rs`, proved by their two test files and, in
-`server-module/src/privacy_enforcement_tests.rs`,
-`mod admission_roster`, which takes the reducer roster from the generated bindings' file names and
-executes every shipped reducer as an unadmitted caller on a `Password` world. Designed, not built:
+census refuses a `procedure` attribute. Built: the module's half (`server-module/src/access.rs`,
+and the list in `server-module/src/world_binding.rs`); `mod admission_roster` in
+`server-module/src/privacy_enforcement_tests.rs` takes the reducer roster from the generated
+bindings' file names and executes every shipped reducer as an unadmitted caller on a `Password`
+world. Designed, not built:
 the gate's half (the door endpoint it relays through, the limit by source address, closing a
 removed identity's sockets), in `docs/local-play.md` §3, fork (a).
 
@@ -2658,9 +2659,11 @@ subscribed by zone"); a count of wrong attempts across identities in the module 
 every new joiner out); an HTTP handler in the module (the host serves handlers without the connect
 reducer); treating a refusal at connect as closing what is already open; trimming a list to fit
 its bound; adding accounts on a call that sets `Allowlist` over `Allowlist`; keeping the owner's
-account under a rule that does not read the list. Accepted limits: on a host with no gate a removed
-identity keeps reading what it subscribed to until it disconnects, and a joiner is admitted there
-only by the owner's own call. Leaving `Allowlist` and returning undoes a removal: `Open` lists
+account under a rule that does not read the list (a bind would be refused for a rule that is not in
+force, and the next change to `Allowlist` lists the account anyway). Accepted limits: on a host
+with no gate a removed identity keeps reading what it subscribed to until it disconnects, and a
+joiner is admitted there only by the owner's own call. Leaving `Allowlist` and returning undoes a
+removal: `Open` lists
 every trusted binding again, anyone's who bound meanwhile included, and `Password` lists whoever
 holds an admission row, which a rule change gives each connected identity, so the host reads the
 list after changing back. A listed account stays listed after its player's binding is erased, until

@@ -141,7 +141,7 @@ fn password_length_ok(password: &str) -> bool {
 
 // --- Context-bound predicates and guards ---------------------------------------
 
-/// The rule in force: the stored row's, or `Open` for a world with no row.
+/// [`effective_rule`] of the stored row.
 pub(crate) fn rule_in_force(ctx: &ReducerContext) -> WorldAccessRule {
     effective_rule(ctx.db.world_access().id().find(WORLD_ACCESS_ROW).as_ref())
 }
@@ -285,7 +285,7 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 ///
 /// When the rule changes to `Allowlist`, the account of every binding the build counts whose
 /// identity the rule in force before the call admitted is added to the host's list, beside
-/// the accounts already there: the players the world let in stay in, the owner's own account
+/// the accounts already there, so the identities bound to those accounts stay in, the owner's
 /// among them. The `admit` argument adds no account. A list that would then hold more than
 /// `world_binding::MAX_ALLOWLIST_ACCOUNTS` refuses the whole call with no write. Leaving
 /// `Allowlist` neither reads nor writes the list.
@@ -346,12 +346,12 @@ pub fn set_world_access(
         Vec::new()
     };
     if rule == WorldAccessRule::Allowlist && rule != was {
-        let admitted = crate::world_binding::bound_accounts(
+        let seed = crate::world_binding::bound_accounts(
             ctx,
             &crate::accounts::BUILD_PROFILE,
             |identity| is_admitted(ctx, identity),
         );
-        if let Err(reason) = crate::world_binding::add_to_allowlist(ctx, &admitted) {
+        if let Err(reason) = crate::world_binding::add_to_allowlist(ctx, &seed) {
             return reject("set_world_access", ctx.sender(), reason);
         }
     }
