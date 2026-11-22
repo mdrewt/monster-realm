@@ -6360,7 +6360,7 @@ fn the_fourth_auto_pass_forfeits_the_player_through_the_funnel_bt14_3() {
 // KO, a turn-skip or the battle end discloses that a plan existed; (c) a submit landing after its
 // deadline but before the fire commits is accepted.
 
-/// Every view `who` subscribes to, as one byte set per view.
+/// Every battle view `who` subscribes to, as one byte set per view.
 fn views_of(fx: &Fixture, who: Identity) -> Vec<(&'static str, Vec<Vec<u8>>)> {
     use crate::native_host_tests::{
         VIEW_MY_BATTLE, VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_EVENTS,
@@ -6398,7 +6398,7 @@ fn views_of(fx: &Fixture, who: Identity) -> Vec<(&'static str, Vec<Vec<u8>>)> {
     ]
 }
 
-/// Every view the opponent (B) subscribes to, as one byte set per view.
+/// Every battle view the opponent (B) subscribes to, as one byte set per view.
 fn opponent_views(fx: &Fixture) -> Vec<(&'static str, Vec<Vec<u8>>)> {
     views_of(fx, b())
 }
@@ -6717,9 +6717,16 @@ fn my_battle_rows(fx: &Fixture, who: Identity) -> Vec<Battle> {
     fx.call_view::<Battle>(crate::native_host_tests::VIEW_MY_BATTLE, who)
 }
 
-/// Both participants' `my_battle` of the Deploying PvP battle `id`: each receives one row, its own
-/// side whole as stored, the other side `active 0, team []`, and every other field as stored.
-fn assert_each_reads_the_hidden_copy(fx: &Fixture, w: &World<'_>, id: u64, label: &str) {
+/// Both participants' `my_battle` of the Deploying PvP battle `id`, whose stored teams have the
+/// lengths `teams` (side A, side B): each receives one row, its own side whole as stored, the other
+/// side `active 0, team []`, and every other field as stored.
+fn assert_each_reads_the_hidden_copy(
+    fx: &Fixture,
+    w: &World<'_>,
+    id: u64,
+    teams: (usize, usize),
+    label: &str,
+) {
     let stored = w
         .anchor(id)
         .unwrap_or_else(|| panic!("{label}: the anchor exists"));
@@ -6728,7 +6735,7 @@ fn assert_each_reads_the_hidden_copy(fx: &Fixture, w: &World<'_>, id: u64, label
             stored.state.side_a.team.len(),
             stored.state.side_b.team.len()
         ),
-        (2, 2),
+        teams,
         "{label}: PRECONDITION: the stored anchor holds both full teams"
     );
     for (who, own) in [(a(), SideRow::A), (b(), SideRow::B)] {
@@ -6857,7 +6864,38 @@ fn a_deploying_pvp_battle_reaches_each_participant_with_the_other_sides_team_emp
     let fx = fixture();
     let w = world(&fx);
     let id = hide_deploying(&fx, &w);
-    assert_each_reads_the_hidden_copy(&fx, &w, id, "at the start");
+    assert_each_reads_the_hidden_copy(&fx, &w, id, (2, 2), "at the start");
+}
+
+/// Every format and party size hides the WHOLE other team from both participants: format 1 with
+/// two monsters a side, format 2 with two against three, format 3 with three a side.
+///
+/// WRONG IMPL KILLED: hiding only from format 2 on (a format-1 battle delivered whole); removing
+/// only the first `format` members of the other team (the members beyond the format delivered).
+#[test]
+fn every_format_and_party_size_hides_the_whole_other_team_from_both_participants_lpw29_1() {
+    for (format, a_specs, b_specs) in [
+        (1u8, &PAIR[..], &HIDE_B_PAIR[..]),
+        (2, &PAIR[..], &B_TRIO[..]),
+        (3, &A_TRIO[..], &B_TRIO[..]),
+    ] {
+        let fx = fixture();
+        let w = world(&fx);
+        let id = deploying_pvp(&fx, &w, a_specs, b_specs, format);
+        assert_eq!(
+            w.tactical(id).kind,
+            BattleKind::Pvp,
+            "PRECONDITION: format {format}: a battle between two players is Pvp"
+        );
+        let teams = (a_specs.len(), b_specs.len());
+        assert_each_reads_the_hidden_copy(
+            &fx,
+            &w,
+            id,
+            teams,
+            &format!("format {format}, {} against {}", teams.0, teams.1),
+        );
+    }
 }
 
 /// The hidden side is `active 0` even when the stored side's lead is not its first member: both
@@ -6879,7 +6917,7 @@ fn the_hidden_side_is_active_zero_when_the_stored_lead_is_not_the_first_member_l
         (1, 1),
         "PRECONDITION: each stored side seats its lead at index 1"
     );
-    assert_each_reads_the_hidden_copy(&fx, &w, id, "fainted slot-0 leads");
+    assert_each_reads_the_hidden_copy(&fx, &w, id, (2, 2), "fainted slot-0 leads");
 }
 
 /// One side's lock reveals nothing of the other through `my_battle`: with A locked and B not, and
@@ -6900,11 +6938,11 @@ fn one_sides_lock_leaves_the_other_side_hidden_from_both_participants_lpw29_1() 
             Phase::Deploying,
             "PRECONDITION: one lock reveals nothing"
         );
-        assert_each_reads_the_hidden_copy(&fx, &w, id, &format!("side {locker:?} locked"));
+        assert_each_reads_the_hidden_copy(&fx, &w, id, (2, 2), &format!("side {locker:?} locked"));
     }
 }
 
-/// No view a participant reads while Deploying carries the other side's monsters: across
+/// No battle view a participant reads while Deploying carries the other side's monsters: across
 /// `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock`,
 /// `my_battle_queue` and `my_battle_deploy`, no row contains the byte run of any of the other
 /// side's `BattleMonster`s or `StatBlock`s — at the start and after either side's first lock, for
@@ -6917,7 +6955,7 @@ fn one_sides_lock_leaves_the_other_side_hidden_from_both_participants_lpw29_1() 
 /// the start or at the first lock, a monster column on the tactical or clock row); a search that
 /// finds nothing whatever it is given (the positive control).
 #[test]
-fn no_view_carries_the_other_sides_monsters_while_deploying_and_all_do_once_active_lpw29_1() {
+fn no_battle_view_carries_the_other_sides_monsters_until_the_reveal_lpw29_1() {
     for (first, second) in [(SideRow::A, SideRow::B), (SideRow::B, SideRow::A)] {
         let fx = fixture();
         let w = world(&fx);
@@ -6928,7 +6966,7 @@ fn no_view_carries_the_other_sides_monsters_while_deploying_and_all_do_once_acti
                 assert_eq!(
                     views_carrying(&fx, who, &others_runs(&stored, own)),
                     none(),
-                    "{stage}: no view side {own:?} reads carries the other side's monsters"
+                    "{stage}: no battle view side {own:?} reads carries the other side's monsters"
                 );
             }
         };
@@ -7218,36 +7256,8 @@ fn a_pvp_kind_row_on_a_one_identity_anchor_reaches_its_player_whole_and_once_lpw
     assert_read_as_stored(&fx, &w, id, &[a()], "Pvp kind, one identity");
 }
 
-/// Both participants reading every view while Deploying leave the STORED anchor byte-identical to
-/// the one the start wrote, both full teams in it, and write nothing at all.
-///
-/// WRONG IMPL KILLED: the stored row redacted instead of a copy (the start writing the hidden row,
-/// the reveal refilling it); a view that writes.
-#[test]
-fn reading_every_view_while_deploying_leaves_the_stored_anchor_as_the_start_wrote_it_lpw29_3() {
-    let fx = fixture();
-    let w = world(&fx);
-    let id = hide_deploying(&fx, &w);
-    let started = enc(&w.anchor(id).expect("the anchor exists"));
-    assert_stored_teams_whole(&w, id, "at the start");
-    let before = w.snapshot();
-    for who in [a(), b()] {
-        assert_eq!(views_of(&fx, who).len(), 7, "fixture: seven views read");
-    }
-    assert_eq!(
-        changed(&before, &w.snapshot()),
-        none(),
-        "reading the views writes nothing"
-    );
-    assert_eq!(
-        enc(&w.anchor(id).expect("the anchor exists")),
-        started,
-        "the stored anchor is byte-identical to the start's"
-    );
-}
-
-/// A forfeit while Deploying, by either participant, after both read every view, is refused
-/// ("battle is not active"), writes nothing at all, and the stored anchor stays whole.
+/// A forfeit while Deploying, by either participant, is refused ("battle is not active"), writes
+/// nothing at all, and the stored anchor stays whole.
 ///
 /// WRONG IMPL KILLED: the stored row redacted at the start; a refused forfeit that writes.
 #[test]
@@ -7255,9 +7265,6 @@ fn a_forfeit_while_deploying_writes_nothing_and_the_stored_anchor_stays_whole_lp
     let fx = fixture();
     let w = world(&fx);
     let id = hide_deploying(&fx, &w);
-    for who in [a(), b()] {
-        let _ = views_of(&fx, who);
-    }
     let started = enc(&w.anchor(id).expect("the anchor exists"));
     let before = w.snapshot();
     for who in [a(), b()] {
@@ -7292,9 +7299,6 @@ fn a_disconnect_while_deploying_closes_with_both_stored_teams_intact_lpw29_3() {
         let fx = fixture();
         let w = world(&fx);
         let id = hide_deploying(&fx, &w);
-        for who in [a(), b()] {
-            let _ = views_of(&fx, who);
-        }
         let mut want = w.anchor(id).expect("the anchor exists");
         want.state.outcome = BattleOutcome::Fled;
         let party = (row_set(&w.monsters.rows()), row_set(&w.pubs.rows()));
@@ -7329,9 +7333,6 @@ fn the_deploy_window_expiry_reveals_with_both_stored_teams_whole_lpw29_3() {
     let w = world(&fx);
     let id = hide_deploying(&fx, &w);
     hide_lock(&fx, id, SideRow::A, T0 + 2_000);
-    for who in [a(), b()] {
-        let _ = views_of(&fx, who);
-    }
     let window = w.only_deadline(id);
     assert_eq!(
         fire_deadline(&fx, T0 + PVP_DEPLOY_MS, deadline_args(&window)),

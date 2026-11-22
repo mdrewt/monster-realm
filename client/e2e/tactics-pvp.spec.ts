@@ -1218,8 +1218,7 @@ test.describe
         );
         const unitA = opener.units.find((u) => u.mine);
         if (unitA === undefined) throw new Error('T6: A has no unit');
-        const me = opener.units.find((u) => u.unitId === unitA.unitId) as Tile;
-        await openMenu(pageA, me);
+        await openMenu(pageA, unitA);
         await menuCursorTo(pageA, 'forfeit');
         await pressButton(pageA, 'A');
         await expect(

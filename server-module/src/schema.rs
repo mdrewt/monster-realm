@@ -556,7 +556,8 @@ fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
 /// both deploys lock (and `active` 0, since the stored lead index would tell
 /// which leading members have fainted). Every other battle, and a PvP battle
 /// from the reveal on, is returned as stored. A wire-only copy: the stored row
-/// keeps both sides, which every close writes back from.
+/// keeps both sides, which `tactics::mirror_hp` and a settled close's HP
+/// write-back read by position.
 fn as_seen_by_side(mut row: Battle, own: SideRow, tactical: Option<&BattleTactical>) -> Battle {
     use game_core::tactics::tuning::BattleKind;
     use game_core::tactics::types::Phase;
