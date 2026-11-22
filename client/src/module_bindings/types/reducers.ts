@@ -8,7 +8,6 @@ import { type Infer as __Infer } from "spacetimedb";
 // Import all reducer arg schemas
 import AcceptChallengeReducer from "../accept_challenge_reducer";
 import AckEvolutionNoticesReducer from "../ack_evolution_notices_reducer";
-import AdmitReducer from "../admit_reducer";
 import AdvanceDialogueReducer from "../advance_dialogue_reducer";
 import BindWorldAccountReducer from "../bind_world_account_reducer";
 import BindWorldAccountForReducer from "../bind_world_account_for_reducer";
@@ -59,7 +58,6 @@ import UnbindWorldAccountReducer from "../unbind_world_account_reducer";
 
 export type AcceptChallengeParams = __Infer<typeof AcceptChallengeReducer>;
 export type AckEvolutionNoticesParams = __Infer<typeof AckEvolutionNoticesReducer>;
-export type AdmitParams = __Infer<typeof AdmitReducer>;
 export type AdvanceDialogueParams = __Infer<typeof AdvanceDialogueReducer>;
 export type BindWorldAccountParams = __Infer<typeof BindWorldAccountReducer>;
 export type BindWorldAccountForParams = __Infer<typeof BindWorldAccountForReducer>;

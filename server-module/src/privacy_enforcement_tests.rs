@@ -1470,11 +1470,11 @@ const EXPECTED_NO_WRITES: &[&str] = &[
 /// `DATA_LIFECYCLE_MANIFEST`, so this only refuses a manifest that shrank.
 const CLASSIFIED_TABLE_FLOOR: usize = 48;
 
-/// Reducer floor for the real corpus: the 70 reducer attributes it carries
+/// Reducer floor for the real corpus: the 69 reducer attributes it carries
 /// (the five trade-session reducers and the seven world-binding reducers
 /// included), so the per-reducer verdict pin cannot be satisfied by an engine
 /// that finds almost none of them.
-const REDUCER_FLOOR: usize = 70;
+const REDUCER_FLOOR: usize = 69;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)

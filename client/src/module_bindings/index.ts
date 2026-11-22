@@ -36,7 +36,6 @@ import {
 // Import all reducer arg schemas
 import AcceptChallengeReducer from "./accept_challenge_reducer";
 import AckEvolutionNoticesReducer from "./ack_evolution_notices_reducer";
-import AdmitReducer from "./admit_reducer";
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
 import BindWorldAccountReducer from "./bind_world_account_reducer";
 import BindWorldAccountForReducer from "./bind_world_account_for_reducer";
@@ -501,7 +500,6 @@ const tablesSchema = __schema({
 const reducersSchema = __reducers(
   __reducerSchema("accept_challenge", AcceptChallengeReducer),
   __reducerSchema("ack_evolution_notices", AckEvolutionNoticesReducer),
-  __reducerSchema("admit", AdmitReducer),
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
   __reducerSchema("bind_world_account", BindWorldAccountReducer),
   __reducerSchema("bind_world_account_for", BindWorldAccountForReducer),
