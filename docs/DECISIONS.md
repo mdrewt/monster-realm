@@ -2606,19 +2606,33 @@ reducers. The four binding reducers answer their build's refusal before that che
 nothing. A world with no
 `world_access` row is `Open`. Under `Password`, `is_admitted` admits the owner and an identity in
 `world_admission`. Under `Allowlist` it admits the owner; an identity with a trusted binding exactly
-while its `account_subject` is a row of private `world_allowlist` (written by the owner's
-`set_world_allowlist`: at most 256 subjects of 1 to 255 visible ASCII), and nothing else counts for
-it, so delisting refuses at the next check; and an identity with no trusted binding only when it
-holds a `world_admission` row. The list is read at every check and nothing is stored from it.
+while its `account_subject` is a row of private `world_allowlist` (at most 256 subjects of 1 to 255
+visible ASCII), and nothing else counts for it, so delisting refuses at the next check; and an
+identity with no trusted binding only when it holds a `world_admission` row. The list is read at
+every check and nothing is stored from it.
 `Allowlist` takes no password (`set_world_access` refuses one). When the rule changes to one that is
 not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
 before the call admitted, and to none that rule refused. A new joiner's way in under `Allowlist`
 is the owner's relayed nonce request and bind. Admission rows are written only by the two owner-only
-reducers `set_world_access` and `admit`, which take the joiner's identity. The module declares no HTTP handler and
-no row filter: both sit behind the `spacetimedb` crate's `unstable` feature, which the workspace
-does not enable (`Cargo.toml`), and the deletion-gate census refuses a `procedure` attribute.
-Built: the module's half, in `server-module/src/access.rs`, proved by
-`server-module/src/access_tests.rs` and, in `server-module/src/privacy_enforcement_tests.rs`,
+reducers `set_world_access` and `admit`, which take the joiner's identity.
+
+The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
+already let in. When the rule changes to `Allowlist`, `set_world_access` adds the account of every
+trusted binding whose identity the rule in force before the call admitted (under `Open` every one;
+under `Password` those holding a `world_admission` row, and the owner's), beside the accounts
+already listed; its `admit` argument adds none. While the rule is `Allowlist` the list holds the
+account the owner's identity is bound to: `set_world_allowlist` stores it whether or not the call
+names it, and a bind of the owner's identity adds it (bound to a second account, the owner has both
+listed). The list never passes 256 accounts: a rule change that would add past that, a
+`set_world_allowlist` naming 256 others, and an owner's bind onto a full list are each refused with
+the list's too-many error and no write. Under `Open` and `Password` the list is kept, stored as the
+owner names it, and not read; the next change to `Allowlist` adds to it.
+
+The module declares no HTTP handler and no row filter: both sit behind the `spacetimedb` crate's
+`unstable` feature, which the workspace does not enable (`Cargo.toml`), and the deletion-gate
+census refuses a `procedure` attribute. Built: the module's half, in `server-module/src/access.rs`
+and (the list) `server-module/src/world_binding.rs`, proved by their two test files and, in
+`server-module/src/privacy_enforcement_tests.rs`,
 `mod admission_roster`, which takes the reducer roster from the generated bindings' file names and
 executes every shipped reducer as an unadmitted caller on a `Password` world. Designed, not built:
 the gate's half (the door endpoint it relays through, the limit by source address, closing a
@@ -2631,7 +2645,10 @@ already open keeps calling and reading after its admission is removed, and a mod
 connection. Hence the check in every reducer and the admission of open connections when the rule
 changes. An unadmitted identity can call nothing, its own admission included, so the owner has to
 relay the door. An identity costs nothing to obtain, so a count of wrong attempts against one
-bounds nothing; the gate is the one place a source address is visible.
+bounds nothing; the gate is the one place a source address is visible. Turning the list on must not
+lock out the people playing, the host first: a host may play as a second identity bound to the
+same account as the owner's, so the list keeps an account, not an identity. The bindings and
+admission rows already say who the rule let in, so the list is made from them with no new table.
 
 **Rules out.** A door reducer the joiner's own connection calls; row filters
 (`client_visibility_filter`): the one shape that works for subscriptions at 2.11.0 needs a public
@@ -2639,9 +2656,17 @@ admission table with no filter of its own, the feature is `unstable`, and it put
 every subscription query; moving the public tables behind per-sender views (see "World rows are
 subscribed by zone"); a count of wrong attempts across identities in the module (anyone could lock
 every new joiner out); an HTTP handler in the module (the host serves handlers without the connect
-reducer); treating a refusal at connect as closing what is already open. Accepted limits: on a host
-with no gate a removed identity keeps reading what it subscribed to until it disconnects, and a
-joiner is admitted there only by the owner's own call.
+reducer); treating a refusal at connect as closing what is already open; trimming a list to fit
+its bound; adding accounts on a call that sets `Allowlist` over `Allowlist`; keeping the owner's
+account under a rule that does not read the list. Accepted limits: on a host with no gate a removed
+identity keeps reading what it subscribed to until it disconnects, and a joiner is admitted there
+only by the owner's own call. Leaving `Allowlist` and returning undoes a removal: `Open` lists
+every trusted binding again, anyone's who bound meanwhile included, and `Password` lists whoever
+holds an admission row, which a rule change gives each connected identity, so the host reads the
+list after changing back. A listed account stays listed after its player's binding is erased, until
+the host removes it. Anyone may bind in an `Open` world, so more than 256 accounts can bind there
+and the change to `Allowlist` is then refused; the host changes to `Password` first (which lists
+only the identities holding an admission row) or deletes binding rows as the database owner.
 
 ## The door records a wrong password and answers `Ok`; five in ten minutes lock one identity out
 
