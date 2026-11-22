@@ -146,8 +146,8 @@ patched where they refuse a native host"). At each hop, with `VER` the new versi
    widened in `server-module/src/native_host_tests.rs` in the same change.
 
 4. **Regenerate the patch** whenever `patch` reported an offset or a hand edit was made, because
-   the guard test checks each hunk at its exact line. The files are the ones the old patch names,
-   plus any a hand edit added:
+   the guard test checks each hunk at its exact line. The files are the ones
+   `vendor/native-host.patch` names before it is rewritten, plus any a hand edit added:
 
    ```sh
    files=$(sed -n 's|^--- a/||p' vendor/native-host.patch)
