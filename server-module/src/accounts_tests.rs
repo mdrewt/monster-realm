@@ -14178,12 +14178,33 @@ mod acs6_door {
         }
     }
 
-    /// The door reads no table and writes nothing, whether it admits or
-    /// refuses: every table it could consult holds a row for the caller, all
-    /// writable, and none is touched.
+    /// The door writes nothing and reads only the caller's world binding, and
+    /// that only when the profile enforces ownership, the token does not
+    /// entitle the caller and the profile holds an attestation key. Every
+    /// table it could consult holds a row for the caller, all writable. The
+    /// binding row names no key and does not carry the base game, so it never
+    /// admits. Each `ask` runs the door twice (`entitled`, then
+    /// `require_entitled`), and a read is one point find of the caller's one
+    /// row, so a reading case reads exactly two rows.
+    ///
+    /// kills: a door that reads the binding before or regardless of the token,
+    /// under a non-enforcing profile, or under a keyless profile; a door that
+    /// writes any table; a door that consults any other table.
     #[test]
-    fn acs6_door_reads_no_table_and_writes_nothing() {
+    fn acs6_door_writes_nothing_and_reads_a_binding_only_when_a_keyed_profile_lacks_an_entitling_token(
+    ) {
+        const UNHELD_KID: &str = "no-such-kid";
         let fx = fixture();
+        fx.table::<crate::schema::WorldBinding>("world_binding", "identity", |r| r.identity)
+            .unique()
+            .writable()
+            .seed(&crate::schema::WorldBinding {
+                identity: who(),
+                account_subject: "sub-door".to_string(),
+                bound_at_ms: T0,
+                entitled: false,
+                key_id: UNHELD_KID.to_string(),
+            });
         fx.table::<crate::schema::Account>("account", "identity", |r| r.identity)
             .writable()
             .seed(&super::base_account(0x6A));
@@ -14240,18 +14261,126 @@ mod acs6_door {
             "player_handle",
             "player_session",
         ];
-        fx.reset_reads();
-        fx.reset_writes();
         let dev = dev_enforcing();
-        let entitled_jwt = payload(LOCAL_DEV, AUD, Some(CLAIM));
-        assert_eq!(ask(&fx, &dev, Some(&entitled_jwt)), admitted(), "admitted");
-        assert_eq!(ask(&fx, &dev, None), refused(), "refused");
-        assert_eq!(ask_internal(&fx, &dev), refused(), "refused, no connection");
         let open = build_profile(feats(&["open_join"]));
-        assert_eq!(ask(&fx, &open, None), admitted(), "admitted, open");
-        for t in TABLES {
-            assert_eq!(fx.rows_read(t), 0, "the door read {t}");
-            assert_eq!(fx.writes_to(t), 0, "the door wrote {t}");
+        let official = build_profile(feats(&["official"]));
+        let world = build_profile(feats(&["world"]));
+        assert!(
+            !open.enforces_ownership,
+            "fixture: open_join does not enforce"
+        );
+        for (label, p) in [("dev", &dev), ("official", &official), ("world", &world)] {
+            assert!(p.enforces_ownership, "fixture: {label} enforces");
+        }
+        assert!(
+            !dev.attestation_keys.is_empty(),
+            "fixture: dev-enforcing holds a key"
+        );
+        assert!(
+            dev.attestation_keys.iter().all(|k| k.kid != UNHELD_KID),
+            "fixture: no dev key has the binding's kid"
+        );
+        assert!(
+            official.attestation_keys.is_empty(),
+            "fixture: official holds no key"
+        );
+        assert!(
+            world.attestation_keys.is_empty(),
+            "fixture: world holds no key"
+        );
+        let entitled_jwt = payload(LOCAL_DEV, AUD, Some(CLAIM));
+        let prod_jwt = payload(PRODUCTION, AUD, Some(CLAIM));
+        // (label, profile, over the internal context, token, outcome, binding rows read)
+        let cases = vec![
+            ("admitted, not enforcing", &open, false, None, admitted(), 0),
+            (
+                "admitted, not enforcing, no connection",
+                &open,
+                true,
+                None,
+                admitted(),
+                0,
+            ),
+            (
+                "admitted, enforcing, an entitling token",
+                &dev,
+                false,
+                Some(entitled_jwt.as_str()),
+                admitted(),
+                0,
+            ),
+            (
+                "refused, enforcing, no token, a key held",
+                &dev,
+                false,
+                None,
+                refused(),
+                2,
+            ),
+            (
+                "refused, enforcing, no connection, a key held",
+                &dev,
+                true,
+                None,
+                refused(),
+                2,
+            ),
+            (
+                "admitted, enforcing, an entitling token, no key",
+                &official,
+                false,
+                Some(prod_jwt.as_str()),
+                admitted(),
+                0,
+            ),
+            (
+                "refused, enforcing, no token, no key (official)",
+                &official,
+                false,
+                None,
+                refused(),
+                0,
+            ),
+            (
+                "refused, enforcing, no token, no key (world)",
+                &world,
+                false,
+                None,
+                refused(),
+                0,
+            ),
+            (
+                "refused, enforcing, no connection, no key (world)",
+                &world,
+                true,
+                None,
+                refused(),
+                0,
+            ),
+        ];
+        for (label, p, internal, jwt, want, binding_reads) in cases {
+            fx.reset_reads();
+            fx.reset_writes();
+            let got = if internal {
+                ask_internal(&fx, p)
+            } else {
+                ask(&fx, p, jwt)
+            };
+            assert_eq!(got, want, "{label}");
+            assert_eq!(
+                fx.rows_read("world_binding"),
+                binding_reads,
+                "{label}: rows the door read from world_binding"
+            );
+            assert_eq!(
+                fx.writes_to("world_binding"),
+                0,
+                "{label}: the door wrote world_binding"
+            );
+            for t in TABLES {
+                assert_eq!(fx.rows_read(t), 0, "{label}: the door read {t}");
+                assert_eq!(fx.writes_to(t), 0, "{label}: the door wrote {t}");
+            }
         }
     }
 }

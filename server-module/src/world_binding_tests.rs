@@ -1413,7 +1413,7 @@ mod bind_refuses {
                 let att = signed(&dev_signer(), &header, &claims.json());
                 if segments(&att)
                     .iter()
-                    .all(|s| s.len() % 4 != 0 && s.contains(|c: char| c == '-' || c == '_'))
+                    .all(|s| s.len() % 4 != 0 && s.contains(['-', '_']))
                 {
                     return (att, claims);
                 }
