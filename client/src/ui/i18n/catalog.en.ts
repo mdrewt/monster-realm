@@ -1130,6 +1130,29 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // claimModel.ts:348
   'claim.reject.generic.body':
     'Signing in is required before this progress can be claimed. Your guest progress is safe.',
+  // @desc: Title of the sign-in screen a player sees before play on a server that needs an account.
+  // Short heading.
+  'claim.gate.signIn.title': 'Sign in to play',
+  // @desc: Line under the sign-in screen's rows: why the screen is up. Two short sentences.
+  'claim.gate.signIn.body': 'This server needs an account. Sign in to start playing.',
+  // @desc: Description of the sign-in row on the sign-in screen, shown when the player asks what
+  // the row does. One sentence.
+  'claim.gate.signIn.desc': 'Opens the sign-in page, then brings you back here.',
+  // @desc: Title of the sign-in screen after the server refused the player because the game is not
+  // owned. Also the status line on a server that shows no sign-in screen. Short heading; "Monster
+  // Realm" and "Steam" are names.
+  'claim.gate.notOwned.title': 'You need to own Monster Realm on Steam',
+  // @desc: Line under the sign-in screen's rows after the server refused the player: what to do
+  // next. One sentence.
+  'claim.gate.notOwned.body': 'Get the game on Steam, then sign in with the account that owns it.',
+  // @desc: Row on the sign-in screen that opens the Steam store in a new browser tab. Short phrase.
+  'claim.gate.store.title': 'Open the Steam store',
+  // @desc: Description of the store row on the sign-in screen, shown when the player asks what the
+  // row does. One sentence.
+  'claim.gate.store.desc': 'Opens the Steam store in a new tab.',
+  // @desc: Line shown when the player tries to close the sign-in screen: it cannot be closed. One
+  // sentence.
+  'claim.gate.stays': 'You need to sign in before you can play.',
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
   // leaderboardView.ts:60

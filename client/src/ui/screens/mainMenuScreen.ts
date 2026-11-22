@@ -13,6 +13,12 @@
 // Opened over a battle the menu is read-only (CTL6C.3): an entry whose screen is not battleSafe or
 // would open hidden under the battle is disabled; A on it opens nothing and shows its reason on the
 // feedback line.
+//
+// The same frame is the sign-in gate (`openSignInGate`): on a server that admits only players who
+// own the game it offers the gate's rows (`SignInGateView`, ui/claimModel.ts) instead of the
+// entries. A on a row answers `signIn` or `store`; B answers the gate's stays line and nothing
+// closes it; the gate's cursor is never written to the nav memory.
+import type { SignInGateRow, SignInGateView } from '../claimModel';
 import { SCREEN_POLICY } from '../contextStack';
 import type { FeedbackState } from '../frame';
 import { feedbackStep, NO_FEEDBACK } from '../frame';
@@ -40,12 +46,18 @@ export interface MainMenuState {
   readonly feedback: FeedbackState;
   /** Opened over a battle: the entries that are not battleSafe are disabled. */
   readonly battle: boolean;
+  /** Present: the menu is the sign-in gate and offers these rows instead of its entries. */
+  readonly gate?: SignInGateView;
 }
 
 export type MenuEffect =
   | { readonly kind: 'none' }
   | { readonly kind: 'open'; readonly target: MenuTarget }
-  | { readonly kind: 'close' };
+  | { readonly kind: 'close' }
+  /** The gate's sign-in row: start the sign-in. */
+  | { readonly kind: 'signIn' }
+  /** The gate's store row: open the store. */
+  | { readonly kind: 'store' };
 
 export type MainMenuStep = ScreenStep<MainMenuState, MenuEffect>;
 
@@ -131,7 +143,57 @@ function activate(state: MainMenuState): MainMenuStep {
   }
 }
 
+/** The gate's rows as a list. Every row is enabled. */
+const gateLayout = (gate: SignInGateView): NavLayout =>
+  list(gate.rows.map((row) => ({ key: row.key, enabled: true })));
+
+/** The menu as the sign-in gate: the cursor on its first row, nothing remembered. `memory` is
+ *  carried as it is, so the menu opened after the gate lands where it would have. */
+export function openSignInGate(memory: NavMemory, gate: SignInGateView): MainMenuState {
+  return { nav: navInit(gateLayout(gate)), memory, feedback: NO_FEEDBACK, battle: false, gate };
+}
+
+const gateRowAt = (gate: SignInGateView, nav: NavState): SignInGateRow | undefined =>
+  gate.rows.find((row) => row.key === nav.item);
+
+/** A on the gate row under the cursor. */
+function activateGate(state: MainMenuState, gate: SignInGateView): MainMenuStep {
+  const row = gateRowAt(gate, state.nav);
+  return { state, effect: row === undefined ? NONE : { kind: row.key } };
+}
+
+/** One input on the gate. It never closes the menu and never opens an entry. */
+function gateStep(state: MainMenuState, gate: SignInGateView, input: NavInput): MainMenuStep {
+  switch (input.button) {
+    case 'Up':
+    case 'Down':
+    case 'Left':
+    case 'Right': {
+      const { state: nav, outcome } = navStep(gateLayout(gate), state.nav, input);
+      if (outcome.kind !== 'moved') return { state, effect: NONE };
+      const feedback = feedbackStep(state.feedback, { kind: 'clear' });
+      return { state: { ...state, nav, feedback }, effect: NONE };
+    }
+    case 'A':
+      return input.repeat ? { state, effect: NONE } : activateGate(state, gate);
+    case 'B': {
+      if (input.repeat) return { state, effect: NONE };
+      const feedback = feedbackStep(state.feedback, { kind: 'info', text: gate.stays });
+      return { state: { ...state, feedback }, effect: NONE };
+    }
+    case 'Y': {
+      const row = gateRowAt(gate, state.nav);
+      if (input.repeat || row === undefined) return { state, effect: NONE };
+      const feedback = feedbackStep(state.feedback, { kind: 'info', text: row.description });
+      return { state: { ...state, feedback }, effect: NONE };
+    }
+    default:
+      return { state, effect: NONE };
+  }
+}
+
 export function mainMenuStep(state: MainMenuState, input: NavInput): MainMenuStep {
+  if (state.gate !== undefined) return gateStep(state, state.gate, input);
   switch (input.button) {
     case 'Up':
     case 'Down':
@@ -157,8 +219,15 @@ export function mainMenuStep(state: MainMenuState, input: NavInput): MainMenuSte
   }
 }
 
-/** A pointer pick: the cursor moves to `key`, then A. A key not in the menu does nothing. */
+/** A pointer pick: the cursor moves to `key`, then A. A key not in the menu does nothing; on the
+ *  gate, only the key of a row it shows now is in the menu. */
 export function mainMenuPick(state: MainMenuState, key: string): MainMenuStep {
+  const gate = state.gate;
+  if (gate !== undefined) {
+    if (!gate.rows.some((row) => row.key === key)) return { state, effect: NONE };
+    const nav = navFocus(gateLayout(gate), state.nav, { item: key });
+    return activateGate(nav === state.nav ? state : { ...state, nav, feedback: NO_FEEDBACK }, gate);
+  }
   if (!MENU_ENTRIES.some((row) => row.key === key)) return { state, effect: NONE };
   const nav = navFocus(layoutAt(state.battle), state.nav, { item: key });
   return activate(nav === state.nav ? state : at(nav, state.memory, NO_FEEDBACK, state.battle));
@@ -178,6 +247,19 @@ export interface MenuViewModel {
 const NO_CRUMBS: readonly string[] = [];
 
 export function menuViewModel(state: MainMenuState): MenuViewModel {
+  const gate = state.gate;
+  if (gate !== undefined) {
+    return {
+      frameId: FRAME_ID,
+      title: gate.title,
+      crumbs: NO_CRUMBS,
+      layout: gateLayout(gate),
+      nav: state.nav,
+      labels: Object.fromEntries(gate.rows.map((row) => [row.key, row.label])),
+      // The gate's standing line shows whenever no transient line (B's, a Y description) does.
+      feedback: state.feedback.kind === 'none' ? gate.line : state.feedback,
+    };
+  }
   return {
     frameId: FRAME_ID,
     title: menuTitle(),

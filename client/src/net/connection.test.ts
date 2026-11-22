@@ -1434,7 +1434,8 @@ describe('connect() starts a sign-in without a claim code while an account is re
     const { handle, b } = await bootGate(opts);
     handle.startSignIn();
     await settle();
-    expect(opts.onSignInFailed.mock.calls).toEqual([['sign-in-off']]);
+    expect(opts.onSignInFailed).toHaveBeenCalledTimes(1);
+    expect(opts.onSignInFailed).toHaveBeenCalledWith('sign-in-off');
     expect(b.startGuestClaim).not.toHaveBeenCalled();
     expect(begin).not.toHaveBeenCalled();
     expect(assign).not.toHaveBeenCalled();

@@ -1,4 +1,6 @@
-// ui/claimModel.ts — the PURE guest-claim decision core.
+// ui/claimModel.ts — the PURE guest-claim decision core, and the sign-in gate's (the screen a
+// server that admits only players who own the game puts in front of play: `signInGateStep`,
+// `buildSignInGateView`; the main menu frame shows it, ui/screens/mainMenuScreen.ts).
 //
 // AUTH-48/52/54/55/56/59. No DOM, no SDK, no storage, and NO CLOCK (AUTH-55 — enforced on the
 // event alphabet AND by a source scan of this file). The one ambient read is the i18n locale cell
@@ -428,5 +430,104 @@ export function buildClaimViewModel(state: ClaimModelState, offer: SignInOffer):
       offer.kind === 'provider'
         ? tf('claim.signInWithProvider', { provider: offer.name })
         : undefined,
+  };
+}
+
+// --- the sign-in gate --------------------------------------------------------------------------
+// A server that admits only players who own the game refuses `join_game` to everyone else. The
+// gate is what such a player sees instead of the world: a sign-in offer, and after a refusal the
+// not-owned message with the store row. net/connection.ts reports the two facts that raise it
+// (a join it withheld, a join the server refused); main.ts feeds them here and shows the view.
+
+/** Where the store row leads: the Steam store's front page. Joined from its parts, because this
+ *  file's clock scan reads each line only up to a two-slash token and so allows none in live code. */
+export const OWNERSHIP_STORE_URL = ['https:', '', 'store.steampowered.com', ''].join('/');
+
+export type SignInGatePhase = 'hidden' | 'sign-in' | 'not-owned';
+
+export interface SignInGateState {
+  readonly phase: SignInGatePhase;
+  /** Why the last sign-in attempt failed, until the player has joined. */
+  readonly failure: string | undefined;
+}
+
+export const SIGN_IN_GATE_INITIAL: SignInGateState = { phase: 'hidden', failure: undefined };
+
+export type SignInGateEvent =
+  /** The connection withheld its join: the server admits no player without an account. */
+  | { readonly kind: 'account-required' }
+  /** `join_game` answered the ownership error. */
+  | { readonly kind: 'ownership-refused' }
+  | { readonly kind: 'sign-in-failed'; readonly reason: string }
+  /** The own player row arrived. */
+  | { readonly kind: 'joined' };
+
+/** Pure reducer. Total, and always a fresh state. A refusal is never downgraded: once the
+ *  not-owned screen is up, a later withheld join (a reconnect) keeps it. A failed sign-in is
+ *  recorded in every phase, `hidden` included, so a gate raised after it can say so. */
+export function signInGateStep(state: SignInGateState, event: SignInGateEvent): SignInGateState {
+  switch (event.kind) {
+    case 'account-required':
+      return { phase: state.phase === 'hidden' ? 'sign-in' : state.phase, failure: state.failure };
+    case 'ownership-refused':
+      return { phase: 'not-owned', failure: state.failure };
+    case 'sign-in-failed':
+      return { phase: state.phase, failure: event.reason };
+    case 'joined':
+      return { phase: 'hidden', failure: undefined };
+  }
+}
+
+/** The not-owned message on its own: the status line of a target that shows no gate (a
+ *  single-player world, a friends server, a build with no sign-in to offer). */
+export const notOwnedLine = (): string => t('claim.gate.notOwned.title');
+
+export interface SignInGateRow {
+  readonly key: 'signIn' | 'store';
+  readonly label: string;
+  readonly description: string;
+}
+
+export interface SignInGateView {
+  readonly title: string;
+  /** The standing line: why the screen is up, or why the last sign-in failed. */
+  readonly line: { readonly kind: 'info' | 'error'; readonly text: string };
+  /** `signIn` first; `store` only in the not-owned phase. */
+  readonly rows: readonly SignInGateRow[];
+  /** What B answers: the screen stays until the player signs in. */
+  readonly stays: string;
+}
+
+/** Pure projection of the gate, every string resolved here. `undefined` while the gate is hidden,
+ *  and for a build that offers no sign-in: with nothing to offer there is no screen to show. */
+export function buildSignInGateView(
+  state: SignInGateState,
+  offer: SignInOffer,
+): SignInGateView | undefined {
+  if (state.phase === 'hidden' || offer.kind === 'none') return undefined;
+  const notOwned = state.phase === 'not-owned';
+  const signIn: SignInGateRow = {
+    key: 'signIn',
+    label: tf('claim.signInWithProvider', { provider: offer.name }),
+    description: t('claim.gate.signIn.desc'),
+  };
+  const store: SignInGateRow = {
+    key: 'store',
+    label: t('claim.gate.store.title'),
+    description: t('claim.gate.store.desc'),
+  };
+  let line: SignInGateView['line'];
+  if (state.failure !== undefined) {
+    line = { kind: 'error', text: signInFailedBody(state.failure) };
+  } else if (notOwned) {
+    line = { kind: 'error', text: t('claim.gate.notOwned.body') };
+  } else {
+    line = { kind: 'info', text: t('claim.gate.signIn.body') };
+  }
+  return {
+    title: notOwned ? t('claim.gate.notOwned.title') : t('claim.gate.signIn.title'),
+    line,
+    rows: notOwned ? [signIn, store] : [signIn],
+    stays: t('claim.gate.stays'),
   };
 }

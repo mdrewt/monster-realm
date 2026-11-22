@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -32,10 +33,17 @@ import { renderShellConfigScript } from '../src/net/shellDocument';
 //      suite's own module artefact is untouched;
 //   2. a publish of that artefact, with its data deleted, as `<VITE_STDB_DB>-signin-gate` on
 //      `STDB_SERVER`;
-//   3. the account service (`local-dev` profile, a fresh temporary data directory) on port 4455,
-//      the issuer the module trusts; the rig refuses to start when anything answers on that port;
-//   4. the client registration and two dev accounts (one owns the game, one does not), through the
-//      service's admin command; each generated password is held in a variable and never printed;
+//   3. the account service (`local-dev` profile) on port 4455, the issuer the module trusts; the rig
+//      refuses to start when anything answers on that port. Its data directory is fixed, one per
+//      machine (`mr-signin-gate-issuer` under the OS temporary directory), and is kept after the run:
+//      the service reuses the signing keys it finds there, and a SpacetimeDB host caches an issuer's
+//      keys for up to two hours, so a fresh key set on every run would make the host refuse every
+//      run's tokens after the first. When the host already holds another key set for the issuer,
+//      flow 1 fails saying so;
+//   4. the client registration (replaced on every run) and two dev accounts (one owns the game, one
+//      does not) whose addresses carry a random suffix per run, so they never meet an earlier run's
+//      accounts in the kept directory, through the service's admin command; each generated password
+//      is held in a variable and never printed;
 //   5. a second vite dev server on `MR_E2E_PORT + 100`, naming the gate database and the issuer.
 // `afterAll` stops both long-lived children by process group, and a process `exit` handler does the
 // same for a run that ends without it. Nothing runs at import: a process that never runs this file
@@ -87,8 +95,10 @@ const DISCOVERY_URL = `${ISSUER_ORIGIN}/.well-known/openid-configuration`;
 const CLIENT_ID = 'monster-realm';
 const PROVIDER_NAME = 'Dev Account';
 const STORE_URL = 'https://store.steampowered.com/';
-const OWNER_EMAIL = 'owner@signin-gate.test';
-const STRANGER_EMAIL = 'stranger@signin-gate.test';
+/** The issuer's data directory: the same on every run on one machine, and never removed. */
+const ISSUER_DATA_DIR = join(tmpdir(), 'mr-signin-gate-issuer');
+/** The text a page shows when the host rejects the issuer's token signature. */
+const TOKEN_UNVERIFIED = 'Failed to verify token';
 
 const GATE_TITLE = 'Sign in to play';
 const GATE_BODY = 'This server needs an account. Sign in to start playing.';
@@ -458,6 +468,45 @@ function ownTile(page: Page): Promise<GameSnap['ownAuthTile']> {
   );
 }
 
+/** A dev account address for `role`, with a suffix no earlier run used. */
+function runEmail(role: 'owner' | 'stranger'): string {
+  return `${role}-${randomBytes(6).toString('hex')}@signin-gate.test`;
+}
+
+/**
+ * Wait for the signed-in page's own tile. On a timeout where the page's status or the menu frame's
+ * line says the token was not verified, throw naming the host's cached key set instead.
+ */
+async function waitSignedInTile(page: Page): Promise<void> {
+  try {
+    await page.waitForFunction(
+      () => {
+        const w = window as unknown as { __game?: () => GameSnap };
+        return w.__game !== undefined && w.__game().ownAuthTile !== null;
+      },
+      null,
+      { timeout: 60_000 },
+    );
+  } catch (err) {
+    const status =
+      (await page
+        .locator('#status')
+        .textContent({ timeout: 2_000 })
+        .catch(() => null)) ?? '';
+    const line =
+      (await page
+        .locator('#menu-overlay .mr-frame-feedback')
+        .textContent({ timeout: 2_000 })
+        .catch(() => null)) ?? '';
+    if (status.includes(TOKEN_UNVERIFIED) || line.includes(TOKEN_UNVERIFIED)) {
+      throw new Error(
+        `owner: the SpacetimeDB host holds another key set for ${ISSUER_ORIGIN} and refused the signed-in token (status: ${redact(status)}; line: ${redact(line)}). The host caches an issuer's keys for up to two hours; restarting the host (or waiting) clears it.`,
+      );
+    }
+    throw err;
+  }
+}
+
 /** The keys of the rows the menu frame shows, in order. */
 function rowKeys(page: Page): Promise<string[]> {
   return page
@@ -528,7 +577,6 @@ test.describe
     let browser: Browser | undefined;
     let issuer: RigChild | undefined;
     let vite: RigChild | undefined;
-    let dataDir: string | undefined;
     let owner: DevAccount | undefined;
     let stranger: DevAccount | undefined;
 
@@ -585,7 +633,8 @@ test.describe
       );
 
       run('account install', 'just', ['account-install'], { cwd: REPO_ROOT, timeoutMs: 300_000 });
-      dataDir = mkdtempSync(join(tmpdir(), 'mr-signin-gate-'));
+      const dataDir = ISSUER_DATA_DIR;
+      mkdirSync(dataDir, { recursive: true });
       issuer = startChild(
         'the account service',
         process.execPath,
@@ -608,8 +657,8 @@ test.describe
       if (!registered.includes(`client=${CLIENT_ID}`)) {
         throw new Error(`set-client: the client is not registered\n${tail(registered)}`);
       }
-      owner = createAccount(OWNER_EMAIL, true, dataDir);
-      stranger = createAccount(STRANGER_EMAIL, false, dataDir);
+      owner = createAccount(runEmail('owner'), true, dataDir);
+      stranger = createAccount(runEmail('stranger'), false, dataDir);
 
       vite = startChild('the gate vite dev server', 'npm', ['run', 'dev'], CLIENT_DIR, {
         ...process.env,
@@ -635,7 +684,6 @@ test.describe
       await browser?.close();
       if (vite !== undefined) await stopChild(vite);
       if (issuer !== undefined) await stopChild(issuer);
-      if (dataDir !== undefined) rmSync(dataDir, { recursive: true, force: true });
     });
 
     test('an official server shows the sign-in screen first, calls no join before sign-in, and an owning account then plays [acs-7.1]', async () => {
@@ -667,14 +715,7 @@ test.describe
         await page.locator('button[type=submit]').click();
 
         await page.waitForURL((url) => url.origin === r.target.gateOrigin, { timeout: 30_000 });
-        await page.waitForFunction(
-          () => {
-            const w = window as unknown as { __game?: () => GameSnap };
-            return w.__game !== undefined && w.__game().ownAuthTile !== null;
-          },
-          null,
-          { timeout: 60_000 },
-        );
+        await waitSignedInTile(page);
         const account = await waitIdentity(page, 'owner: signed-in page');
         expect(account, 'owner: the signed-in page is another identity').not.toBe(anon);
         await expect(page.locator('#menu-overlay'), 'owner: the sign-in screen is gone').toBeHidden(
