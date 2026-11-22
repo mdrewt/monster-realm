@@ -1075,7 +1075,7 @@ The last two rows are what it means to know a server by its address. To a browse
 whoever answers there with a certificate it trusts, and an origin keeps what was put in it. Neither
 is particular to the bind: both give the same party the page and the stored world token, and the
 second is as true of a domain name that changes hands, for the certificate's whole life. The
-desktop shell has neither limit, because it knows a server by its key. Two rules on the old
+desktop shell has neither limit, because it knows a server by its key. Two rules on the moved
 world's side would cut the new holder's time and are not part of this design, since each has the
 server calling a service: asking a party outside its network which address its connections come
 from, which answers in minutes, and watching the certificate-transparency logs for a certificate
@@ -1143,7 +1143,7 @@ route hands the look-alike nothing.
 | The page replaces its history entry with the bare path | the address bar and the Back button hold no fragment; the profile's `History` database keeps the address with its fragment, whole |
 | The return path answers 302 to another site | that site's page reads the fragment |
 | A page opens the account service's page in a new window, then sets that window's location | without `Cross-Origin-Opener-Policy` the window goes where the opener sends it; with `same-origin` its `opener` is null, the opener's handle reports closed and the window stays |
-| A server registers a service worker and writes `localStorage`; another server then takes the same origin | the service worker answers the navigation to `/bind-return` and reads the fragment, with no request reaching the new server; with the worker gone, the new server's page reads the value the old one stored |
+| A server registers a service worker and writes `localStorage`; another server then takes the same origin | the service worker answers the navigation to `/bind-return` and reads the fragment, with no request reaching the new server; with the worker gone, the new server's page reads the value the first one stored |
 | A server serves a page cacheable for a year; another server then takes the same origin | the cached copy is served, with no request reaching the new server |
 
 **Rejected.** F1, the attestation itself in the redirect's fragment: one endpoint fewer and no
@@ -1713,4 +1713,4 @@ what a row filter costs a subscription; a host version other than 2.11.0 on any 
 measurement; whether the ownership features leave the schema and the generated bindings
 unchanged; and, of a browser's bind, anything end to end (no part of it is built), any browser but
 Chromium, an ACME order for an IP address, what Steam's sign-in pages do with an opener, and when
-a browser drops a service worker whose script no longer answers.
+a browser drops a service worker whose script has stopped answering.
