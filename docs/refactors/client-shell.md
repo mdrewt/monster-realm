@@ -61,7 +61,7 @@ All paths are under `client/src/shell/`. The table is in import order.
 | 3 | `inputState.ts` | The live input devices: the binding table, the keyboard source, the router, the held directions, the key codes whose repeats are cancelled | none |
 | 4 | `feedback.ts` | Where a message goes: the toast, the world hint, the announcer, the error ring and overlay | `views` |
 | 5 | `session.ts` | The link to the server: the store, the identity, the connection, hydration, the guarded send, the session-event latches | `config`, `feedback` |
-| 6 | `screenContext.ts` | What a screen adapter reads: `screenCtx`, the id each open bound, the motion preference | `inputState`, `session` |
+| 6 | `screenContext.ts` | What a screen adapter reads: `screenCtx`, what each open bound, the motion preference | `inputState`, `session` |
 | 7 | `notices.ts` | The trade and challenge requests waiting on this client | `views`, `session` |
 | 8 | `battleFrame.ts` | The battle frame: its three views, which one shows, the outcome latch, the tactics memos | `feedback`, `session`, `screenContext` |
 | 9 | `frames.ts` | The context stack and what sits on it: opens, syncs, the mirrored tables, the gates | `views`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame` |
@@ -231,7 +231,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `boundHealLocationId` | `screenContext.ts` | `screens` | `runInteract`: event; `onReconnect`: reset |
 | `boundSocialTab` | `screenContext.ts` | none | `openSocial`: event; `onReconnect`: reset |
 | `boundMonstersTab` | `screenContext.ts` | none | `openMenuTarget`: event; `onReconnect`: reset |
-| `boundProposeTarget` | `screenContext.ts` | none | `openPropose`: event; `onReconnect`: reset |
+| `boundTradeSessionId` | `screenContext.ts` | `screens` | `openTradeEditor`: event; `resetTradeSessionState`, on a join and on a reconnect: reset; the batch listener that drops a closed session: event |
 | `shopOpen` | `screens.ts` | `commands` | none |
 | `questAckBaseline` | `screens.ts` | none | `onReconnect`: reset |
 | `menuState` | `menu.ts` | `input`, `devHooks` | none |
@@ -271,7 +271,6 @@ function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `screenContext.ts` | `bindShop`, `bindHealLocation`, `bindSocialTab`, `bindMonstersTab`, `bindProposeTarget`, `unbindScreens` | each opener's bind and the five clears in `onReconnect` |
 | `notices.ts` | `markAnswered`, `dismissRequest`, `markAnnounced`, `clearNoticeSets` | every mutation of the three request sets |
 | `battleFrame.ts` | `installBattlePort` | the battle port |
 | `battleFrame.ts` | `mountBattleFrame` | the `battleMount` assignment at boot |
@@ -377,7 +376,6 @@ they write; bodies change only by imports, and an inline listener body gains a n
 **ownership change** leaves a writer outside the destination, so it adds an owner function, or
 it installs a port or adds a pump. The slice for a line deletes that line.
 
-6. `client/src/shell/screenContext.ts` takes `screenCtx`, `motionPreference`, `boundShopId`, `boundHealLocationId`, `boundSocialTab`, `boundMonstersTab` and `boundProposeTarget`. Ownership change: `openPendingShop`, `runInteract`, `openSocial`, `openMenuTarget` and `openPropose` bind them and `main` clears them.
 7. `client/src/shell/notices.ts` takes `dismissedRequests`, `announcedRequests`, `answeredRequests`, `noticeInput`, `livePending`, `requestLine` and `releaseAnswered`. Ownership change: `dispatch`, `worldPort` and `main` mutate the three sets.
 8. `client/src/shell/battleFrame.ts` takes `battleViews`, `battleFrameShown`, `hideAllBattleViews`, `activeBattleView`, `tacticalOwnsStart`, `battleHint`, `tacticsRules`, `tuningOf`, `refreshBattle`, `popOverBattleBeforeSwitch`, `ownMonsterName`, `tacticsMapFacts`, `mapFactsOf`, `mySideOf`, `buildDeployPanel`, `noteRatingBaseline`, `ratingLineFor`, `buildResultsPanel`, `refreshTacticsShell`, `tacticsVMEqual`, `buildTacticsVM`, `tacticsShellDeps`, `pumpStillThere`, `pumpClock`, `tradedIds`, `ownDeployLocked` and the bindings `deployPanel`, `resultsPanel`, `tacticsBattle`, `battleMount`, `tacticsRulesPort`, `tacticsTuning`, `tacticsShown`, `tacticsRating`, `tacticsIngested`, `lastTacticsVM`, `stillThereAnnouncedFor`, `dismissedBattleId`, `battleSynced` and `unrenderableReported`. Ownership change: the battle port, the `battleMount` mount, the lines `resetPredictionState` resets and the latch `closeFrame` writes.
 9. `client/src/shell/frames.ts` takes `overlayProbes`, `overlayHandles`, `screenViews`, `FrameOpen`, `frameOpens`, `frameOpenOf`, `screenHost`, `overlayVerdict`, `shownOverlays`, `contextStack`, `runStackCommands`, `outcomeShownAtMs`, `autoContinuedAtMs`, `syncStack`, `upperIds`, `shownPlayerFrames`, `panelShown`, `socialPanelView`, `hideFrame`, `topOverlay`, `menuPlace`, `reconcileStack`, `movementGate`, `worldBaseLive`, `openFrame`, `openSeated`, `topSocialFrame`, `syncedTop`, `closeLeftFocusAdrift`, `judgeCloseFocus`, `inHiddenSubtree`, `focusInsideHiddenSubtree`, `focusAdrift`, `lastCareTickAtMs` and `CARE_READINESS_TICK_MS`. Ownership change: `main` sweeps `contextStack` on reconnect and writes `autoContinuedAtMs` and `lastCareTickAtMs` in the frame loop.

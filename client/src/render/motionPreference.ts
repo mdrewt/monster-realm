@@ -3,19 +3,18 @@
 // OS bit and decides nothing — what reduced motion *means* is RenderResolver's
 // business, reached only through the injected `ResolveInput.reduceMotion` field.
 //
-// THE SOLE matchMedia CALLER. A11Y-28 pins mechanically that `matchMedia` appears in
-// non-test client/src ONLY here (the S7T-SCAN source scan in
-// motionPreference.test.ts). Do not read matchMedia — or any global — anywhere else;
-// inject this module's output instead.
+// THE SOLE matchMedia CALLER: the client asks the browser once per page.
+// `shell/screenContext.ts` constructs the one preference at import. Do not read
+// matchMedia — or any global — anywhere else; read that module's `motionPreference`, or
+// inject this module's output.
 //
-// Two functions on purpose: a purely-injected module would satisfy A11Y-28
-// VACUOUSLY (zero occurrences) and force S5 to write the matchMedia read inline in
-// main.ts — violating A11Y-28 the moment it lands. `motionPreferenceFromWindow` IS
-// the one permitted read; `createMotionPreference` is the injected seam the tests
-// (and any future host) drive.
+// Two functions on purpose: with the injected factory alone, the caller would have to
+// write the matchMedia read inline, a second place that reads the global.
+// `motionPreferenceFromWindow` IS the one permitted read; `createMotionPreference` is the
+// injected seam the tests (and any other host) drive.
 //
 // LIFECYCLE: the change listener is page-lifetime BY DESIGN. There is no dispose()
-// — main.ts has no teardown path, and speculative teardown surface is YAGNI; add one
+// — the shell has no teardown path, and speculative teardown surface is YAGNI; add one
 // only when a real teardown seam exists. (A MediaQueryList listener held for the
 // page's life is not a leak.)
 
@@ -59,7 +58,7 @@ export function createMotionPreference(mm: (query: string) => MotionQuery): Moti
 }
 
 /**
- * The ONE line in client/src that names `matchMedia` (see the header). An arrow —
+ * The one call of `matchMedia` in client/src (see the header). An arrow —
  * never a bare `host.matchMedia` extraction or `.bind` — so the receiver is
  * preserved (a real `window.matchMedia` throws on an unbound call).
  */

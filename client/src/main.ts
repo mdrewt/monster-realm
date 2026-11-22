@@ -78,7 +78,6 @@ import { reissueDir } from './prediction/heldKeys';
 import { OwedInputs } from './prediction/owedInputs';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { type RawWarpDef, TileMap } from './render/map';
-import { motionPreferenceFromWindow } from './render/motionPreference';
 import type { PostStackToggles } from './render/postStack';
 import { RenderResolver, walkableIn } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
@@ -131,6 +130,20 @@ import {
   releaseAllInput,
   releaseNavHeld,
 } from './shell/inputState';
+import {
+  bindHealLocation,
+  bindMonstersTab,
+  bindShop,
+  bindSocialTab,
+  bindTradeSession,
+  boundHealLocationId,
+  boundShopId,
+  boundTradeSessionId,
+  motionPreference,
+  screenCtx,
+  unbindForReconnect,
+  unbindTradeSession,
+} from './shell/screenContext';
 import {
   adoptConnection,
   adoptIdentity,
@@ -315,7 +328,6 @@ import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { type MenuTarget, withRequestBadge } from './ui/menuModel';
 import type { MenuPointerInput } from './ui/menuView';
-import type { MonstersTab } from './ui/monstersModel';
 import { EMPTY_NAV_MEMORY } from './ui/nav';
 import {
   buildNotices,
@@ -357,13 +369,7 @@ import {
 } from './ui/screens/mainMenuScreen';
 import { captureStep } from './ui/screens/optionsScreen';
 import type { ProfileSection } from './ui/screens/profileScreen';
-import type {
-  Command,
-  ScreenContext,
-  SocialFrameView,
-  SocialPanelId,
-  SocialTab,
-} from './ui/screens/types';
+import type { Command, SocialFrameView, SocialPanelId, SocialTab } from './ui/screens/types';
 import {
   buildSessionViewModel,
   SESSION_INITIAL,
@@ -466,10 +472,6 @@ let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
 const owed = new OwedInputs();
 // Routes own (slide clock) vs remote (interpolation buffer) renders (M8.6b).
 const resolver = new RenderResolver(STEP_MS);
-// Closes render/motionPreference.ts's S7 cross-slice contract. Constructed ONCE
-// (its change listener is page-lifetime by design); `.reduceMotion` is a live getter, so the
-// per-frame read at the resolve() call below re-reads it rather than a boot-time snapshot.
-const motionPreference = motionPreferenceFromWindow();
 // renderer is module-scope so switchZone (below) can call setMap without
 // being inside main(). Defined here; assigned once inside main() after async init.
 let renderer: WorldRenderer | undefined;
@@ -578,20 +580,6 @@ let sessionModelState: SessionModelState = SESSION_INITIAL;
 // dismiss_dialogue is in flight, and the shop the greet-then-shop button will open on the
 // first no-conversation batch — never inline. Stepped only through `stepShopOpen`.
 let shopOpen = SHOP_OPEN_INITIAL;
-// boundShopId / boundHealLocationId record which shop / heal location the
-// visible overlay is bound to, so a refresh batch never silently swaps a bound
-// view back to the first-row default. Both clear on reconnect (the store reset
-// invalidates the ids); every open rebinds them.
-let boundShopId: number | null = null;
-let boundHealLocationId: number | null = null;
-// The Social tab the last `openSocial` asked for (null: a plain open). Like the two ids above it
-// keeps its value after the frame closes and clears on reconnect.
-let boundSocialTab: SocialTab | null = null;
-// The Monsters tab the last Monsters open bound (uif-6): Party from the menu and V, Storage from B.
-// Read by the screen's `init` at the seated open; clears on reconnect (null opens Storage).
-let boundMonstersTab: MonstersTab | null = null;
-// The trade session the editor was last opened on. Every open rebinds it; it clears on reconnect.
-let boundTradeSessionId: bigint | null = null;
 /** The sessions this client has opened its editor on: an incoming one stops being a request. */
 const openedTradeSessions = new Set<bigint>();
 /** A face-to-face Trade whose `open_trade_session` was sent and whose row has not arrived yet: the
@@ -604,7 +592,7 @@ let knownSessionIds: ReadonlySet<bigint> | null = null;
 
 /** Forget every trade-session fact of the previous connection or identity. */
 function resetTradeSessionState(): void {
-  boundTradeSessionId = null;
+  unbindTradeSession();
   openedTradeSessions.clear();
   pendingTradeOpen = null;
   knownSessionIds = null;
@@ -1312,7 +1300,7 @@ function topSocialFrame(): UpperFrame | undefined {
 /** The ONE open path of the Social frame: bind the requested tab, push the frame, show its panel
  *  and seat its adapter, so a screen that picks its own tab paints it at the open. */
 function openSocial(tab: SocialTab | null): void {
-  boundSocialTab = tab;
+  bindSocialTab(tab);
   openSeated(SOCIAL_FRAME, socialOpen, () => showSocialPanel(socialPanel(tab)));
 }
 
@@ -1327,7 +1315,7 @@ function openTradeEditor(sessionId: bigint): void {
   const blocking = shownOverlays().filter((id) => !beneath.includes(id));
   if (canOpen('tradeSessionView', blocking).kind !== 'allow') return;
   held.clear(); // the opening keypress must not leave a held movement key latched
-  boundTradeSessionId = sessionId;
+  bindTradeSession(sessionId);
   openSeated(
     'tradeSessionView',
     frameOpenOf(() => tradeSessionView),
@@ -1424,7 +1412,7 @@ function runInteract(action: InteractAction): void {
       sendGuarded('talk', () => conn?.live()?.reducers.talk({ npcEntityId: action.npcEntityId }));
       break;
     case 'heal':
-      boundHealLocationId = action.locationId;
+      bindHealLocation(action.locationId);
       openFrame(
         'healView',
         frameOpenOf(() => healView),
@@ -1657,7 +1645,7 @@ function openMenuTarget(target: MenuTarget, tab?: AccelPath['tab']): void {
     case 'boxView':
       // uif-6 (UIF6.2): the tab is bound before the open and the open is seated, so the screen's
       // `init` opens on it and paints it at once: no synthesized button.
-      boundMonstersTab = tab === 'storage' ? 'storage' : 'party';
+      bindMonstersTab(tab === 'storage' ? 'storage' : 'party');
       openSeated(
         'boxView',
         frameOpenOf(() => boxView),
@@ -1798,40 +1786,6 @@ function handleMenuPointer(input: MenuPointerInput): void {
 // menu's own nav buttons and the D-pad, and the D-pad too when that adapter is nav-capable; its
 // command, and every view callback, runs through ONE exhaustive `dispatch`. Stack commands compute
 // the next stack and `applyStack` closes what it drops through each view's own hide path.
-
-/** The read-only context adapters build their view models from. The getters read live state: the
- *  bound ids and the one `motionPreference` (never a second `matchMedia` read, A11Y-28). */
-const screenCtx: ScreenContext = {
-  store,
-  get identity() {
-    return identity;
-  },
-  get bindings() {
-    return bindings;
-  },
-  now: () => performance.now(),
-  // qf-3: the wall clock, for the Monsters sheet's care readiness against the server-epoch
-  // anchor (`performance.now()` is ms since navigation and would read every care as cooling).
-  wallNowMs: () => Date.now(),
-  get shopId() {
-    return boundShopId;
-  },
-  get healLocationId() {
-    return boundHealLocationId;
-  },
-  get socialTab() {
-    return boundSocialTab;
-  },
-  get tradeSessionId() {
-    return boundTradeSessionId;
-  },
-  get monstersTab() {
-    return boundMonstersTab;
-  },
-  get reduceMotion() {
-    return motionPreference.reduceMotion;
-  },
-};
 
 /** A settled promise for the arms that have no reducer promise to hand back. */
 const DONE: Promise<void> = Promise.resolve();
@@ -3698,7 +3652,7 @@ function openPendingShop(shopId: number): void {
   // Re-sync first: a battle or outcome this batch's earlier listeners showed must block.
   syncStack();
   if (blocksPlayerOpen(contextStack)) return;
-  boundShopId = shopId;
+  bindShop(shopId);
   openFrame(
     'shopView',
     frameOpenOf(() => shopView),
@@ -3863,7 +3817,7 @@ store.onBatchApplied(() => {
       answeredRequests.delete(key);
     }
     if (boundTradeSessionId !== null && closed.includes(boundTradeSessionId)) {
-      boundTradeSessionId = null;
+      unbindTradeSession();
       // The frame goes through the stack: the view hides and the sync pops it.
       if (tradeSessionView?.visible === true) {
         tradeSessionView.hide();
@@ -4947,12 +4901,9 @@ async function main(): Promise<void> {
       // while the phase was already `unknown` (the ordinary guest state) leaves all three controls
       // disabled, with no notice, for the life of the page.
       lastPrivacyCountdown = undefined;
-      // The store was reset, so a bound shop / heal id refers to rows that may no longer exist.
-      boundShopId = null;
-      boundHealLocationId = null;
-      // The requested Social tab and what the screens remember go with the session too.
-      boundSocialTab = null;
-      boundMonstersTab = null;
+      // The store was reset, so a bound shop or heal id may name a row it does not hold. The
+      // requested tabs and what the screens remember go with the session too.
+      unbindForReconnect();
       resetTradeSessionState();
       screenHost.forget();
       dismissedRequests.clear();
