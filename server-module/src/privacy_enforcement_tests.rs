@@ -1454,6 +1454,7 @@ const EXPECTED_GATED: &[&str] = &[
     "submit_queue",
     "talk",
     "train",
+    "unbind_world_account",
 ];
 
 /// Reducers that reach no classified write at all: the guest-claim start, the
@@ -2327,9 +2328,10 @@ fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
 // ---------------------------------------------------------------------------
 // The admission roster (local-play design A1): every client-callable reducer makes the
 // admission check before anything else, except the owner-only reducers, which answer
-// their own owner refusal. The roster is the GENERATED client bindings (their file names);
-// each probe runs the SHIPPED reducer fn as an unadmitted non-owner over a client connection
-// on a `Password` world. Only `config`, `world_access` and `world_admission` are registered,
+// their own owner refusal, and `unbind_world_account`, which the rule does not gate, so a
+// player the host refuses can still erase their own binding. The roster is the GENERATED
+// client bindings (their file names); each probe runs the SHIPPED reducer fn as an unadmitted
+// non-owner over a client connection on a `Password` world. Only `config`, `world_access` and `world_admission` are registered,
 // so a reducer that writes before it refuses aborts the test in the host. Dev-only reducers
 // (`dev_reducers`, `load_test_zones`) are not in the generated bindings and get no probe.
 // ---------------------------------------------------------------------------
@@ -2365,6 +2367,9 @@ mod admission_roster {
         Player,
         /// An owner-only reducer: its owner refusal comes first.
         OwnerOnly,
+        /// The one reducer the access rule does not gate: a player erases their own world
+        /// binding whatever the rule says of them.
+        Ungated,
     }
 
     type Call = fn(&ReducerContext) -> Result<(), String>;
@@ -2380,7 +2385,7 @@ mod admission_roster {
 
     /// One row per client-callable reducer, calling the SHIPPED fn with well-typed dummies.
     fn probes() -> Vec<(&'static str, Kind, Call)> {
-        use Kind::{OwnerOnly, Player};
+        use Kind::{OwnerOnly, Player, Ungated};
         vec![
             probe("accept_challenge", Player, |ctx| {
                 crate::pvp::accept_challenge(ctx, 0, Vec::new())
@@ -2524,6 +2529,11 @@ mod admission_roster {
             probe("sync_content", OwnerOnly, crate::sync_content),
             probe("talk", Player, |ctx| crate::npc::talk(ctx, 0)),
             probe("train", Player, |ctx| crate::raising::train(ctx, 0, 0)),
+            probe(
+                "unbind_world_account",
+                Ungated,
+                crate::world_binding::unbind_world_account,
+            ),
         ]
     }
 
@@ -2653,11 +2663,11 @@ mod admission_roster {
         );
         assert_eq!(
             generated.len(),
-            49,
+            50,
             "the generated roster: 41 reducers before lpw-9 plus `admit` and `set_world_access`, \
-             plus the six world-binding reducers (`request_bind_nonce`, \
+             plus the seven world-binding reducers (`request_bind_nonce`, \
              `request_bind_nonce_for`, `bind_world_account`, `bind_world_account_for`, \
-             `set_world_names`, `set_world_allowlist`)"
+             `set_world_names`, `set_world_allowlist`, `unbind_world_account`)"
         );
     }
 
@@ -2786,6 +2796,54 @@ mod admission_roster {
             footprint(&fx, &w),
             before,
             "the owner refusals write nothing"
+        );
+    }
+
+    /// The ungated set is exactly `unbind_world_account`. Called by an unadmitted non-owner on
+    /// a `Password` world, it does not answer the admission refusal: it answers `Ok` and
+    /// writes nothing, since that caller holds no binding to erase. (`world_binding` is not
+    /// registered here, so a write to it would abort the host.)
+    ///
+    /// kills: an admission check in `unbind_world_account` (a player the host removed could
+    /// not erase their own binding); a write for a caller with no binding; another reducer
+    /// declared ungated. A control against the inert reducer.
+    #[test]
+    fn only_unbind_world_account_skips_the_admission_check_and_answers_ok_with_no_write_lpw22_3() {
+        let ungated: BTreeSet<&str> = probes()
+            .into_iter()
+            .filter(|(_, kind, _)| matches!(kind, Kind::Ungated))
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(
+            ungated,
+            BTreeSet::from(["unbind_world_account"]),
+            "the ungated set is pinned exactly"
+        );
+
+        let fx = fixture();
+        let w = password_world(&fx);
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+        for (name, kind, call) in probes() {
+            if !matches!(kind, Kind::Ungated) {
+                continue;
+            }
+            let got = run_probe(&fx, call);
+            assert_ne!(
+                got,
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "`{name}` must not answer the admission refusal"
+            );
+            assert_eq!(
+                got,
+                Ok(()),
+                "`{name}` called by an unadmitted caller with no binding answers Ok"
+            );
+        }
+        assert_eq!(
+            footprint(&fx, &w),
+            before,
+            "the ungated reducer writes nothing for a caller with no binding"
         );
     }
 }
