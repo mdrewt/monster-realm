@@ -26,3 +26,13 @@ curl -fsS http://localhost:4455/.well-known/openid-configuration
   volume (runbook section 2), and `production` refuses to start in this build.
 - `account-service/src/deployment.test.ts` (in `just account-test`) builds the image and runs this
   recipe: the refusals, the restart and the backup drill.
+
+## Point the game at it
+
+- **The client** is built with `VITE_MR_OIDC_ISSUER` (the profile's issuer, `http://localhost:4455`
+  for `local-dev`), `VITE_MR_OIDC_CLIENT_ID` (the client registered with `set-client`,
+  `monster-realm`), `VITE_MR_OIDC_REDIRECT_URI` (that client's one redirect address,
+  `http://localhost:5290/` for the dev client) and `VITE_MR_OIDC_PROVIDER_NAME` (the name on the
+  Account screen's sign-in button). They take effect only toward an `official` or `test` server.
+- **The module** creates an account only for a token whose issuer and audience match
+  `ALLOWED_ISSUERS` and `ALLOWED_AUDIENCE` in `server-module/src/accounts.rs`.
