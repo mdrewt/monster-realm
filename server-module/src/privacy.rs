@@ -44,11 +44,11 @@ use crate::schema::{
     account, battle, battle_action, battle_challenge, battle_summary, character, export_bundle,
     export_bundle__view, heal_cooldown, inventory, monster, monster_pub, player,
     player_conversation, player_dialogue_state, player_formation, player_handle, player_quest,
-    player_wallet, profile, trade_offer, Account, AccountStatus, Battle, BattleAction,
-    BattleChallenge, BattleSummary, ChallengeStatus, Character, DataLifecycleEntry, ExportBundle,
-    HealCooldown, Inventory, Monster, MonsterPub, Player, PlayerConversation,
+    player_wallet, profile, trade_offer, world_binding, Account, AccountStatus, Battle,
+    BattleAction, BattleChallenge, BattleSummary, ChallengeStatus, Character, DataLifecycleEntry,
+    ExportBundle, HealCooldown, Inventory, Monster, MonsterPub, Player, PlayerConversation,
     PlayerDialogueStateRow, PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerWallet, Profile,
-    TradeOffer, DATA_LIFECYCLE_MANIFEST,
+    TradeOffer, WorldBinding, DATA_LIFECYCLE_MANIFEST,
 };
 use game_core::tactics::events::EndHow;
 use game_core::tactics::tuning::BattleKind;
@@ -1023,6 +1023,31 @@ fn json_player_handle(row: &PlayerHandle) -> String {
     out
 }
 
+fn json_world_binding(row: &WorldBinding) -> String {
+    let WorldBinding {
+        identity,
+        account_subject,
+        bound_at_ms,
+        entitled,
+        key_id,
+    } = row;
+    let mut out = String::new();
+    let mut first = true;
+    out.push('{');
+    json_field_into(&mut out, &mut first, stringify!(identity));
+    json_identity_into(&mut out, *identity);
+    json_field_into(&mut out, &mut first, stringify!(account_subject));
+    json_str_into(&mut out, account_subject);
+    json_field_into(&mut out, &mut first, stringify!(bound_at_ms));
+    json_i64_into(&mut out, *bound_at_ms);
+    json_field_into(&mut out, &mut first, stringify!(entitled));
+    json_bool_into(&mut out, *entitled);
+    json_field_into(&mut out, &mut first, stringify!(key_id));
+    json_str_into(&mut out, key_id);
+    out.push('}');
+    out
+}
+
 fn json_profile(row: &Profile) -> String {
     let Profile {
         identity,
@@ -1489,13 +1514,13 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(battle_action), rows_battle_action),
     (stringify!(player_formation), rows_player_formation),
     (stringify!(player_handle), rows_player_handle),
+    (stringify!(world_binding), rows_world_binding),
     (stringify!(player), rows_player),
     (stringify!(profile), rows_profile),
     (stringify!(account), rows_account),
     (stringify!(battle), rows_battle),
     (stringify!(battle_summary), rows_battle_summary),
     (stringify!(character), rows_character),
-    (stringify!(world_binding), rows_world_binding),
 ];
 
 // Length-first equality rejects a strict prefix in both argument orders
@@ -1713,9 +1738,12 @@ fn rows_player_handle(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
     Ok(rows)
 }
 
-// lpw-15 skeleton: the exporter is not built.
-fn rows_world_binding(_ctx: &ReducerContext, _owner: Identity) -> Result<Vec<String>, String> {
-    Ok(Vec::new())
+fn rows_world_binding(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let mut rows = Vec::new();
+    if let Some(row) = ctx.db.world_binding().identity().find(owner) {
+        rows.push(json_world_binding(&row));
+    }
+    Ok(rows)
 }
 
 fn rows_player(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {

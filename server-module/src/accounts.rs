@@ -110,31 +110,43 @@ pub(crate) struct BuildProfile {
 
 /// The profile of a feature set (`docs/local-play.md` §3, "The build input"). A release
 /// feature wins over a dev feature: a build that names `official` or `world` enforces and
-/// trusts no dev issuer whatever else it names, and one that names both trusts nothing.
-/// Otherwise a build enforces unless it names `open_join`, and trusts the dev issuers when it
-/// names `dev_issuers`. Cargo's own implications (`load_test_zones` and `dev_reducers` name
+/// trusts no dev issuer and no dev attestation key whatever else it names, and one that names
+/// both trusts nothing. `official` holds the production login issuer and no attestation key,
+/// `world` the production attestation keys and no login issuer. Otherwise a build enforces
+/// unless it names `open_join`, and trusts the dev issuers and holds the dev attestation keys
+/// when it names `dev_issuers`. Cargo's own implications (`load_test_zones` and `dev_reducers` name
 /// `open_join`, which names `dev_issuers`) are applied here too, so a feature handed to the
 /// compiler from outside cargo yields no other profile.
 pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
     let dev_reducers = features.dev_reducers || features.load_test_zones;
     let open_join = features.open_join || dev_reducers;
     let dev_issuers = features.dev_issuers || open_join;
-    let (name, enforces_ownership, login_issuers): (&str, bool, &[&str]) =
+    type Row = (
+        &'static str,
+        bool,
+        &'static [&'static str],
+        &'static [AttestationKey],
+    );
+    let (name, enforces_ownership, login_issuers, attestation_keys): Row =
         match (features.official, features.world) {
-            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS),
-            (false, true) => ("world", true, &[]),
-            (true, true) => ("conflict", true, &[]),
-            (false, false) if open_join => ("test", false, DEV_LOGIN_ISSUERS),
-            (false, false) if dev_issuers => ("dev-enforcing", true, DEV_LOGIN_ISSUERS),
-            (false, false) => ("default", true, &[]),
+            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS, &[]),
+            (false, true) => ("world", true, &[], PRODUCTION_ATTESTATION_KEYS),
+            (true, true) => ("conflict", true, &[], &[]),
+            (false, false) if open_join => ("test", false, DEV_LOGIN_ISSUERS, DEV_ATTESTATION_KEYS),
+            (false, false) if dev_issuers => (
+                "dev-enforcing",
+                true,
+                DEV_LOGIN_ISSUERS,
+                DEV_ATTESTATION_KEYS,
+            ),
+            (false, false) => ("default", true, &[], &[]),
         };
     BuildProfile {
         name,
         enforces_ownership,
         login_issuers,
         dev_reducers,
-        // lpw-15 skeleton: no build holds a key yet.
-        attestation_keys: &[],
+        attestation_keys,
     }
 }
 
@@ -958,14 +970,10 @@ fn reject(reducer: &str, sender: Identity, reason: &str) -> Result<(), String> {
 
 // --- Ownership ----------------------------------------------------------------
 
-/// Whether the caller may play under `profile`. A build that does not enforce ownership
-/// admits everyone and never reads the token. An enforcing build admits a connection whose
-/// token is from one of the profile's login issuers, is addressed to this application and
-/// names the base game. The audience of a token from any other issuer is never read.
-pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
-    if !profile.enforces_ownership {
-        return true;
-    }
+/// Whether the caller's connection token entitles it under `profile`: it is from one of the
+/// profile's login issuers, is addressed to this application and names the base game. The
+/// audience of a token from any other issuer is never read.
+fn token_entitles(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
     let Some(claims) = ctx.sender_auth().jwt() else {
         return false;
     };
@@ -974,8 +982,22 @@ pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
         && token_names_entitlement(claims.raw_payload(), ENTITLEMENT_BASE_GAME)
 }
 
-/// Refuses a caller who is not entitled under `profile` with `ERR_OWNERSHIP_REQUIRED`. Reads
-/// no table and writes nothing.
+/// Whether the caller may play under `profile`. A build that does not enforce ownership
+/// admits everyone and reads neither the token nor a binding. An enforcing build admits a
+/// connection whose token entitles it, and one whose identity holds a world binding the build
+/// counts that carried the base game (`world_binding::bound_entitled`). A profile with no
+/// attestation key reads no binding, so the official build has the token as its one way in
+/// and a world build the binding.
+pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
+    if !profile.enforces_ownership {
+        return true;
+    }
+    token_entitles(ctx, profile) || crate::world_binding::bound_entitled(ctx, profile, ctx.sender())
+}
+
+/// Refuses a caller who is not entitled under `profile` with `ERR_OWNERSHIP_REQUIRED`. Writes
+/// nothing; the one table it reads is `world_binding`, and only when the token does not
+/// entitle the caller and the profile holds an attestation key.
 pub(crate) fn require_entitled(
     ctx: &ReducerContext,
     profile: &BuildProfile,
@@ -1484,6 +1506,7 @@ pub fn account_deletion_reaper(
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::access::erase_admission(ctx, args.account_identity);
+    crate::world_binding::erase_world_binding(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);

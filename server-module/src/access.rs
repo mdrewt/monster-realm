@@ -2,20 +2,30 @@
 //!
 //! Who may join this world. The host's rule is the one row of the private `world_access`
 //! table; a world with no row is `Open`. Under `Password` an identity may join once it is the
-//! owner (`config.owner_identity`) or holds a `world_admission` row. The connect reducer
-//! refuses anyone else ([`require_admitted_at_connect`]), which holds that identity off every
-//! table and every reducer, and every reducer of the generated client roster that is not
-//! owner-only makes the same check as its first statement ([`require_admitted`]), because the
-//! host checks a connection only when it opens. The reducers that exist only in a dev build
-//! (`dev_reducers`, `load_test_zones`) are outside that roster and make no check.
+//! owner (`config.owner_identity`) or holds a `world_admission` row. Under `Allowlist` the
+//! owner may join; an identity with a binding the build counts
+//! (`world_binding::trusted_binding`) may join exactly while its bound account is on the
+//! host's list, whatever else it holds; and an identity with no such binding may join when it
+//! holds a `world_admission` row, so one the world admitted before gets in with no attestation
+//! and a new one does not. The list is read at every check and nothing is stored from it.
 //!
-//! An identity that is not admitted can call nothing, so admission is granted by the two
-//! reducers here, which only the owner can call: [`set_world_access`] sets the rule and admits
-//! identities outright, and [`admit`] is the door, where the owner relays a joiner's password.
+//! The connect reducer refuses anyone the rule does not admit
+//! ([`require_admitted_at_connect`]), which holds that identity off every table and every
+//! reducer, and every reducer of the generated client roster that is not owner-only makes the
+//! same check ([`require_admitted`]) before it reads or writes anything else, because the host
+//! checks a connection only when it opens. The binding reducers of `world_binding.rs` answer
+//! their build's refusal first, which reads nothing. The reducers that exist only in a dev
+//! build (`dev_reducers`, `load_test_zones`) are outside that roster and make no check.
+//!
+//! An identity that is not admitted can call nothing, so admission is granted by reducers
+//! only the owner can call: [`set_world_access`] sets the rule and admits identities outright,
+//! [`admit`] is the door, where the owner relays a joiner's password, and under `Allowlist`
+//! the owner relays the joiner's bind (`world_binding::bind_world_account_for`).
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access`, `world_admission` and
-//! `world_admission_attempt`. It reads `config` for the owner and, when the rule leaves `Open`,
-//! the live sessions through `crate::live_session_identities`.
+//! `world_admission_attempt`. It reads `config` for the owner, a binding and the host's list
+//! through `crate::world_binding`, and, when the rule changes, the live sessions through
+//! `crate::live_session_identities`.
 
 use crate::guards::log_reject;
 use crate::marshal::now_ms;
@@ -27,7 +37,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use spacetimedb::{Identity, ReducerContext, Table};
 
 /// The refusal an identity gets, at connect and from every reducer a player can call, while the
-/// rule is `Password` and it is neither the owner nor admitted.
+/// rule does not admit it.
 pub(crate) const REJECT_NOT_ADMITTED: &str = "not admitted";
 pub(crate) const REJECT_NOT_WORLD_OWNER: &str = "caller is not the world owner";
 pub(crate) const REJECT_ADMIT_LOCKED: &str = "too many wrong passwords for this identity";
@@ -138,18 +148,35 @@ fn is_world_owner(ctx: &ReducerContext, identity: Identity) -> bool {
         .is_some_and(|cfg| cfg.owner_identity != Identity::ZERO && cfg.owner_identity == identity)
 }
 
+fn holds_admission(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db.world_admission().identity().find(identity).is_some()
+}
+
 /// Whether the host's rule lets `identity` in: always under `Open`; under `Password` only the
-/// owner and an identity with a `world_admission` row.
+/// owner and an identity with a `world_admission` row; under `Allowlist` the owner, an
+/// identity whose trusted binding names a listed account, and an identity with no trusted
+/// binding that holds a `world_admission` row. A bound identity whose account is not listed
+/// is refused even with an admission row: the list alone governs it.
 pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
     let access = ctx.db.world_access().id().find(WORLD_ACCESS_ROW);
     match effective_rule(access.as_ref()) {
         WorldAccessRule::Open => true,
         WorldAccessRule::Password => {
-            is_world_owner(ctx, identity)
-                || ctx.db.world_admission().identity().find(identity).is_some()
+            is_world_owner(ctx, identity) || holds_admission(ctx, identity)
         }
-        // lpw-15 skeleton: the rule is not built.
-        WorldAccessRule::Allowlist => true,
+        WorldAccessRule::Allowlist => {
+            is_world_owner(ctx, identity)
+                || match crate::world_binding::trusted_binding(
+                    ctx,
+                    &crate::accounts::BUILD_PROFILE,
+                    identity,
+                ) {
+                    Some(binding) => {
+                        crate::world_binding::on_allowlist(ctx, &binding.account_subject)
+                    }
+                    None => holds_admission(ctx, identity),
+                }
+        }
     }
 }
 
@@ -239,12 +266,13 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 
 /// Set the world's access rule and admit identities outright. Owner-only.
 ///
-/// `Open` takes no password and clears the stored one. `Password` with `Some` stores a fresh
-/// salt and the hash of the new password; `Password` with `None` keeps the stored password and
-/// is refused when there is none. When the rule leaves `Open`, every identity with a live
-/// connection is admitted, so no connection the rule never admitted stays open. Each identity in
-/// `admit` is admitted under either rule, without a password: this is how the host admits its
-/// own player. Admissions outlive a password change and a return to `Open`.
+/// `Open` and `Allowlist` take no password and clear the stored one. `Password` with `Some`
+/// stores a fresh salt and the hash of the new password; `Password` with `None` keeps the
+/// stored password and is refused when there is none. When the rule changes to one that is not
+/// `Open`, every identity with a live connection is admitted, so no connection the new rule
+/// never admitted stays open. Each identity in `admit` is admitted under every rule, without a
+/// password: this is how the host admits its own player under `Password`. Admissions outlive
+/// every rule change.
 #[spacetimedb::reducer]
 pub fn set_world_access(
     ctx: &ReducerContext,
@@ -283,9 +311,13 @@ pub fn set_world_access(
                 return reject("set_world_access", ctx.sender(), REJECT_PASSWORD_REQUIRED);
             }
         },
-        // lpw-15 skeleton: the rule is not built.
-        (WorldAccessRule::Allowlist, _) => {
-            return Err("lpw-15: not built".to_string());
+        (WorldAccessRule::Allowlist, None) => (Vec::new(), Vec::new()),
+        (WorldAccessRule::Allowlist, Some(_)) => {
+            return reject(
+                "set_world_access",
+                ctx.sender(),
+                REJECT_ALLOWLIST_TAKES_NO_PASSWORD,
+            );
         }
     };
     let row = WorldAccess {
@@ -300,7 +332,7 @@ pub fn set_world_access(
         ctx.db.world_access().insert(row);
     }
     let now = now_ms(ctx);
-    if was == WorldAccessRule::Open && rule == WorldAccessRule::Password {
+    if rule != WorldAccessRule::Open && rule != was {
         for identity in crate::live_session_identities(ctx) {
             if !is_world_owner(ctx, identity) {
                 admit_identity(ctx, identity, now);
