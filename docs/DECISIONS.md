@@ -2769,9 +2769,11 @@ made before the server enforced, so the gate's sign-in never destroys it: the ac
 returns as meets the claim flow's own join veto.
 
 **Rules out.** A build variable that says the server enforces (see "A target's kind gates
-telemetry and account sign-in": the build must not know its server). Treating every `official` or
-`test` target with an issuer as enforcing (the browser suite names an issuer and joins
-anonymously). Clearing the stored claim code when the gate's sign-in starts. Lowering the gate
+telemetry and account sign-in": the build must not know its server). Treating a `test` target
+with an issuer as enforcing, as an `official` one is (the browser suite's `test` pages name an
+issuer and join anonymously; the one `official` page it opens, in
+`client/e2e/local-identity.spec.ts`, is held at the sign-in screen). Clearing the stored claim
+code when the gate's sign-in starts. Lowering the gate
 when a connection is merely allowed to try: the refusal arrives after `onReady`, so that hides the
 screen the refusal should raise. Reporting the refusal through `onError`. A `test` target still
 sends one anonymous `join_game` per page load before its screen shows; removing that needs a
