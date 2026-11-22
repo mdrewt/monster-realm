@@ -898,11 +898,21 @@ describe('shell/session owner functions', { sequential: true }, () => {
   it('a latch step whose store read throws returns normally, logs [obs] battle or [obs] ranked with the error, and moves nothing', async () => {
     const s = await fresh();
     const fb = await import('./feedback');
-    const { BATTLE_EMIT_INITIAL } = await import('../ui/battleEmitModel');
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     s.adoptIdentity(H.identity);
     s.store.upsertBattle(wildBattle(B1, 'Ongoing'));
     s.store.upsertProfile(profileOf(H.identity, 1000));
+
+    // Both latches hold something before any read throws, so a catch that resets one is seen.
+    s.stepBattleEmit();
+    s.stepRankedEmit();
+    expect(s.battleEmit.activeBattleId, 'precondition: the battle is active').toBe(B1);
+    expect(s.lastOwnRating, 'precondition: the rating baseline').toBe(1000);
+    expect(latchEvents(fb.eventRing.snapshot()), 'precondition: one battleStart').toEqual([
+      wildStart(B1),
+    ]);
+    expect(logged, 'precondition: no step has thrown').not.toHaveBeenCalled();
+    const held = s.battleEmit;
 
     const battleBoom = new Error('battle-read-boom');
     vi.spyOn(s.store, 'latestPlayerBattle').mockImplementation(() => {
@@ -912,7 +922,7 @@ describe('shell/session owner functions', { sequential: true }, () => {
     expect(logged.mock.calls, 'logged once, with the error').toEqual([
       ['[obs] battle', battleBoom],
     ]);
-    expect(s.battleEmit).toBe(BATTLE_EMIT_INITIAL);
+    expect(s.battleEmit, 'the latch keeps the active battle').toBe(held);
 
     logged.mockClear();
     const rankedBoom = new Error('ranked-read-boom');
@@ -923,8 +933,12 @@ describe('shell/session owner functions', { sequential: true }, () => {
     expect(logged.mock.calls, 'logged once, with the error').toEqual([
       ['[obs] ranked', rankedBoom],
     ]);
-    expect(s.lastOwnRating).toBeNull();
-    expect(fb.eventRing.snapshot(), 'nothing was pushed').toEqual([]);
+    expect(s.lastOwnRating, 'the baseline is kept').toBe(1000);
+    expect(
+      latchEvents(fb.eventRing.snapshot()),
+      'nothing past the one battleStart: no second start, no match',
+    ).toEqual([wildStart(B1)]);
+    expect(fb.eventRing.snapshot().length, 'and nothing else on the ring').toBe(1);
   });
 
   it('sendGuarded with no connection, or a frozen one, never runs the call or onRejected, reports the disconnected line for its site on the given line or else the toast, and resolves', async () => {
