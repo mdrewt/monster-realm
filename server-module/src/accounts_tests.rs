@@ -13252,6 +13252,26 @@ mod acs6_claim {
             row("   ", BG, false, "only whitespace"),
             row("{", BG, false, "an open brace"),
             row("}", BG, false, "a close brace"),
+            // The opening brace is required: members closed by a brace alone are not an object.
+            row(
+                r#""mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "members with no opening brace",
+            ),
+            row(
+                r#" "mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "whitespace, then members with no opening brace",
+            ),
+            row(r#""mr_ent":["base-game"]"#, BG, false, "no braces at all"),
+            row(
+                r#""iss":"x","mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "two members with no opening brace",
+            ),
             row(r#"{"mr_ent":["base-game""#, BG, false, "the array unclosed"),
             row(
                 r#"{"mr_ent":["base-game"]"#,
@@ -13597,6 +13617,24 @@ mod acs6_claim {
             }
             let text = render(&members);
             prop_assert!(!token_names_entitlement(&text, BG), "{}", text);
+        }
+
+        /// A payload naming the claim is true, and the same text with its
+        /// first `{` (the outer object's) removed is false.
+        #[test]
+        fn acs6_claim_without_its_opening_brace_is_false(
+            others in proptest::collection::vec(other_member(), 0..5),
+            claim in claim_member(),
+            at in 0usize..6,
+        ) {
+            let mut members = others;
+            let at = at.min(members.len());
+            members.insert(at, claim);
+            let text = render(&members);
+            prop_assert!(token_names_entitlement(&text, BG), "{}", text);
+            let open = text.find('{').expect("the rendered object opens");
+            let stripped = format!("{}{}", &text[..open], &text[open + 1..]);
+            prop_assert!(!token_names_entitlement(&stripped, BG), "{}", stripped);
         }
 
         /// Arbitrary text never panics, and a true answer needs both quoted

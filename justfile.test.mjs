@@ -141,15 +141,20 @@ const RUSTFLAGS_VARS = [
   'CARGO_ENCODED_RUSTFLAGS',
 ];
 
+// The compiler-override variables: the compiler cargo invokes and the wrappers around it.
+const COMPILER_VARS = ['RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER'];
+
+// One shell line recording whether `v` reached the stand-in, and its value, into `logVar`.
+const recordVar = (v, logVar) =>
+  `if [ -n "\${${v}+x}" ]; then printf '%s\\tset\\t%s\\n' ${v} "$${v}" >> "$${logVar}"; ` +
+  `else printf '%s\\tunset\\n' ${v} >> "$${logVar}"; fi`;
+
 const CARGO_STAND_IN = [
   '#!/bin/sh',
   'for a in "$@"; do printf \'%s\\t\' "$a" >> "$MR_FAKE_CARGO_LOG"; done',
   'printf \'\\n\' >> "$MR_FAKE_CARGO_LOG"',
-  ...RUSTFLAGS_VARS.map(
-    (v) =>
-      `if [ -n "\${${v}+x}" ]; then printf '%s\\tset\\t%s\\n' ${v} "$${v}" >> "$MR_FAKE_CARGO_ENV"; ` +
-      `else printf '%s\\tunset\\n' ${v} >> "$MR_FAKE_CARGO_ENV"; fi`,
-  ),
+  ...RUSTFLAGS_VARS.map((v) => recordVar(v, 'MR_FAKE_CARGO_ENV')),
+  ...COMPILER_VARS.map((v) => recordVar(v, 'MR_FAKE_CARGO_COMPILER')),
   'if [ "$MR_FAKE_CARGO_EXIT" -ne 0 ]; then',
   "  echo 'error: could not compile `monster-realm-module`' >&2",
   '  exit "$MR_FAKE_CARGO_EXIT"',
@@ -217,6 +222,7 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 function buildArgs(profile, targetRoot) {
   return [
     'build',
+    '--locked',
     '-p',
     'monster-realm-module',
     '--release',
@@ -261,9 +267,17 @@ function runJust(
     }
     const log = join(dir, 'cargo.log');
     const envLog = join(dir, 'cargo.env');
+    const compilerLog = join(dir, 'cargo.compiler');
     const env = {};
     for (const [k, v] of Object.entries(process.env)) {
-      if (k.startsWith('JUST_') || k === 'CARGO_TARGET_DIR' || RUSTFLAGS_VARS.includes(k)) continue;
+      if (
+        k.startsWith('JUST_') ||
+        k === 'CARGO_TARGET_DIR' ||
+        RUSTFLAGS_VARS.includes(k) ||
+        COMPILER_VARS.includes(k)
+      ) {
+        continue;
+      }
       env[k] = v;
     }
     Object.assign(
@@ -272,6 +286,7 @@ function runJust(
         PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
         MR_FAKE_CARGO_LOG: log,
         MR_FAKE_CARGO_ENV: envLog,
+        MR_FAKE_CARGO_COMPILER: compilerLog,
         MR_FAKE_CARGO_EXIT: String(cargoExit),
         MR_FAKE_WASM: fixture,
       },
@@ -296,12 +311,15 @@ function runJust(
           .filter((line) => line !== '')
           .map((line) => line.split('\t').slice(0, -1))
       : [];
-    const flags = existsSync(envLog)
-      ? readFileSync(envLog, 'utf8')
-          .split('\n')
-          .filter((line) => line !== '')
-          .map((line) => line.split('\t'))
-      : [];
+    const readRecords = (file) =>
+      existsSync(file)
+        ? readFileSync(file, 'utf8')
+            .split('\n')
+            .filter((line) => line !== '')
+            .map((line) => line.split('\t'))
+        : [];
+    const flags = readRecords(envLog);
+    const compiler = readRecords(compilerLog);
     const outputsUnder = (root, profile) => {
       const copy = join(root, 'release-module', `monster-realm-${profile}.wasm`);
       const sum = `${copy}.sha256`;
@@ -320,6 +338,7 @@ function runJust(
       stderr: result.stderr,
       calls,
       flags,
+      compiler,
       targetRoot,
       outputs: {
         official: outputsUnder(targetRoot, 'official'),
@@ -378,15 +397,33 @@ const CLEARED_FLAGS = [
   ['CARGO_ENCODED_RUSTFLAGS', 'set', ''],
 ];
 
+// Path-like values a caller could export to swap the compiler cargo runs.
+const EXPORTED_COMPILER = {
+  RUSTC: '/nonexistent/rustc',
+  RUSTC_WRAPPER: '/nonexistent/wrapper',
+  RUSTC_WORKSPACE_WRAPPER: '/nonexistent/workspace-wrapper',
+};
+
+const CLEARED_COMPILER = [
+  ['RUSTC', 'unset'],
+  ['RUSTC_WRAPPER', 'unset'],
+  ['RUSTC_WORKSPACE_WRAPPER', 'unset'],
+];
+
 for (const profile of ['official', 'world']) {
   test(`release-module ${profile} runs one cargo build, the feature alone, compiler flags cleared whatever the caller exported`, () => {
     const run = runJust(['release-module', profile], {
       wasm: GOOD[profile],
-      env: () => ({ ...EXPORTED_FLAGS }),
+      env: () => ({ ...EXPORTED_FLAGS, ...EXPORTED_COMPILER }),
     });
     assert.equal(run.status, 0, run.stderr);
     assert.deepEqual(run.calls, [buildArgs(profile, 'target')], 'exactly this one cargo command');
     assert.deepEqual(run.flags, CLEARED_FLAGS, 'the compiler-flag variables cargo was handed');
+    assert.deepEqual(
+      run.compiler,
+      CLEARED_COMPILER,
+      'the compiler and wrapper variables are unset for cargo',
+    );
   });
 }
 
@@ -395,6 +432,7 @@ test('release-module official sets CARGO_ENCODED_RUSTFLAGS empty when the caller
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(run.calls, [buildArgs('official', 'target')]);
   assert.deepEqual(run.flags, CLEARED_FLAGS);
+  assert.deepEqual(run.compiler, CLEARED_COMPILER);
 });
 
 test('release-module builds into and writes under $CARGO_TARGET_DIR when it is set', () => {
