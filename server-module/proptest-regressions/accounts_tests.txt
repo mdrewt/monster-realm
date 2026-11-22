@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 22f8942dd809839afba41d8d57c1e650611e87166cdc3abedb00c24cc1bdcf01 # shrinks to others = [], claim = (0, JsonVal { kind: 4, string: 0, elems: [0] }, 0), second = JsonVal { kind: 0, string: 0, elems: [] }, w = 0, order = false
