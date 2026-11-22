@@ -2459,9 +2459,9 @@ refuses it with the binding reducers' refusal before anything else, and a bound 
 account is pending deletion is refused by the deletion gate (the cascade erases the binding).
 When the erased binding is one the build counts, the caller's `world_admission` row goes with it,
 under every rule: an unbind never lets in an identity whose account the owner removed. Once
-unbound, the identity gets back into a world that is not `Open` only through the owner: the door,
-`set_world_access`'s admission list, a relayed bind, or a change from `Open` while it is connected
-(the carry-over). Its account stays on the list and its wrong-password record stays. The owner relays both calls for another
+unbound, the identity gets back into a world that is not `Open` only through the owner:
+`set_world_access`'s admission list (the gate's password door admits through it), a relayed bind, or
+a change from `Open` while it is connected (the carry-over). Its account stays on the list. The owner relays both calls for another
 identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
 admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
 `who`. The route rate-limits binds per account and does not keep the world an attestation was
@@ -2727,7 +2727,7 @@ refuses, as its first statement, an identity that `access::is_admitted` does not
 (`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
 not owner-only opens with `access::require_admitted`, except `unbind_world_account`, which makes no
 admission check (see "A private world verifies an account by a per-world attestation our account
-service signs"); the owner-only ones are `sync_content`, `set_world_access`, `admit`,
+service signs"); the owner-only ones are `sync_content`, `set_world_access`,
 `set_world_names`, `set_world_allowlist` and the two relayed binding reducers. The five binding
 reducers answer their build's refusal before that check; it reads nothing. A world with no
 `world_access` row is `Open`. Under `Password`, `is_admitted` admits the owner and an identity in
@@ -2739,8 +2739,8 @@ every check and nothing is stored from it.
 `Allowlist` takes no password (`set_world_access` refuses one). When the rule changes to one that is
 not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
 before the call admitted, and to none that rule refused. A new joiner's way in under `Allowlist`
-is the owner's relayed nonce request and bind. Admission rows are written only by the two owner-only
-reducers `set_world_access` and `admit`, which take the joiner's identity, and deleted by a player's
+is the owner's relayed nonce request and bind. Admission rows are written only by the owner-only
+reducer `set_world_access`, which takes the joiners' identities, and deleted by a player's
 own unbind of a binding the build counts (and by the deletion cascade).
 
 The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
@@ -2763,8 +2763,9 @@ and the list in `server-module/src/world_binding.rs`); `mod admission_roster` in
 `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster from the generated
 bindings' file names and executes every shipped reducer as an unadmitted caller on a `Password`
 world. Designed, not built:
-the gate's half (the door endpoint it relays through, the limit by source address, closing a
-removed identity's sockets), in `docs/local-play.md` §3, fork (a).
+the gate's half (the door endpoint and its password check, closing a removed identity's sockets),
+in `docs/local-play.md` §3, fork (a); see "The gate checks a world's password; the module never
+receives one".
 
 **Why.** Measured at SpacetimeDB 2.11.0: every route that reads a row or calls a reducer (the
 WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and its refusal is
@@ -2773,8 +2774,7 @@ already open keeps calling and reading after its admission is removed, and a mod
 connection. Hence the check in every reducer and the admission of open connections when the rule
 changes. An unadmitted identity can call nothing but its own unbind, so it cannot reach its own
 admission, and the owner has to
-relay the door. An identity costs nothing to obtain, so a count of wrong attempts against one
-bounds nothing; the gate is the one place a source address is visible. Turning the list on must not
+relay the door: the gate, holding the owner credential, admits a joiner who gave the password. Turning the list on must not
 lock out the people playing, the host first: a host may play as a second identity bound to the
 same account as the owner's, so the list keeps an account, not an identity. The bindings and
 admission rows already say who the rule let in, so the list is made from them with no new table.
@@ -2783,8 +2783,7 @@ admission rows already say who the rule let in, so the list is made from them wi
 (`client_visibility_filter`): the one shape that works for subscriptions at 2.11.0 needs a public
 admission table with no filter of its own, the feature is `unstable`, and it puts the sender in
 every subscription query; moving the public tables behind per-sender views (see "World rows are
-subscribed by zone"); a count of wrong attempts across identities in the module (anyone could lock
-every new joiner out); an HTTP handler in the module (the host serves handlers without the connect
+subscribed by zone"); a count of wrong attempts in the module; an HTTP handler in the module (the host serves handlers without the connect
 reducer); treating a refusal at connect as closing what is already open; trimming a list to fit
 its bound; adding accounts on a call that sets `Allowlist` over `Allowlist`; keeping the owner's
 account under a rule that does not read the list (a bind would be refused for a rule that is not in
@@ -2801,30 +2800,39 @@ Anyone may bind in an `Open` world, so more than 256 accounts can bind there
 and the change to `Allowlist` is then refused; the host changes to `Password` first (which lists
 only the identities holding an admission row) or deletes binding rows as the database owner.
 
-## The door records a wrong password and answers `Ok`; five in ten minutes lock one identity out
+## The gate checks a world's password; the module never receives one
 
-**Decision.** `admit(who, password)` is owner-only. It is refused with an error and no write when
-the caller is not the owner, the rule is not `Password`, `who` has five wrong passwords less than
-ten minutes old (a sliding window; the right password is refused too, before any hashing), or the
-password is empty or over 128 bytes. An already admitted `who` is accepted with no write. The right
-password writes the `world_admission` row. A wrong password is recorded in `world_admission_attempt`
-(up to five times, per identity) and the call answers `Ok`; the caller learns the outcome from the
-`world_admission` row, not from the answer. The password is stored as Argon2id (19 456 KiB, 2
-passes, 1 lane, 32 bytes, the account service's parameters) under a 16-byte salt. No reducer removes
-an admission.
+**Decision.** No reducer the module declares takes a password, a hash of one or a value derived
+from one. `set_world_access(rule, admit)` is owner-only and stores the rule with an empty salt and
+hash under every rule, so a salt and hash an earlier module stored go at the owner's next call; the
+module never reads them, and they admit nobody meanwhile. A `Password` world admits the owner and
+the identities holding a `world_admission` row, and nothing else (see "A world that is not open
+refuses an unadmitted identity at connect and in every reducer; the owner relays the door"). The
+host gate checks the password: it keeps an Argon2id salt and hash in the world's directory with the
+owner credential's permissions, never in a backup copy's readable part or a log; it counts wrong
+passwords by source address and by identity and refuses both after five in ten minutes; on the
+right password it admits the joiner through the owner's `set_world_access`, naming the rule in
+force. A host with no gate has no password door: its owner admits identities from the command line.
+Built: the module's half (`server-module/src/access.rs`; `mod reducer_arguments` in
+`server-module/src/privacy_enforcement_tests.rs` describes every reducer the build declares and
+holds that no argument is named for a password and that the arguments carrying text are a reviewed
+roster). Designed, not built: the gate's check, in `docs/local-play.md` §3, fork (a). Operator
+ruling, 2026-11-22 (monster-realm#840).
 
-**Why.** A reducer that returns an error is rolled back by the host, so a refusal that must be
-counted has to commit. The count is per identity because a count across identities would let anyone
-lock every new joiner out. Argon2id because the row would otherwise give up a short shared
-password; one hash took about 22 ms inside the reducer (measured on a 2.11.0 standalone host:
-`docs/local-play.md` §3), acceptable for an owner-only call. Limit: the host's commit log holds the
-arguments of every committed reducer call in the clear, the password given to `set_world_access`
-and each given to `admit`, wrong ones included. The hash protects the table row, not a copied world
-directory; a caller that must keep a typed password off the host's disk stretches it before the
-call.
+**Why.** The host's commit log keeps the arguments of every committed reducer call in the clear
+(measured on a 2.11.0 standalone host: `docs/local-play.md` §3), so a password given to a reducer,
+and every wrong guess counted by a committed call, sits on the host's disk whatever the table
+stores; a password stretched before the call is still a password-equivalent there. The operator
+named a reader of logs as the attacker. The gate sees the source address, the one count that bounds
+guessing when an identity costs nothing, and it holds the owner credential that admits. The salt
+and hash columns stay, written empty, because schema changes are additive.
 
-**Rules out.** Answering a wrong password with an error (the host rolls back the count); a counter
-kept in module memory (lost at restart); reading `Ok` from `admit` as "admitted"; a fast or unsalted hash.
+**Rules out.** A reducer argument that carries a typed password, its hash or anything derived from
+it, under any name; a door reducer of any kind in the module; counting wrong passwords in the
+module; reading the stored salt or hash. Accepted limits: a commit log a module with the door wrote
+keeps the passwords given to it, and the module cannot erase it; the argument census is a tripwire
+for arguments that carry text, and a value derived from a password could ride in an argument of
+another type, where review is the defence.
 
 ## Every player must own the game on Steam, for now
 
