@@ -5024,7 +5024,11 @@ mod nh {
 
         #[test]
         fn acs6_4_a_test_build_does_not_enforce_ownership() {
-            assert!(!BUILD_PROFILE.enforces_ownership);
+            let profile = std::hint::black_box(BUILD_PROFILE);
+            assert!(
+                !profile.enforces_ownership,
+                "the test build must not enforce ownership"
+            );
             assert_eq!(BUILD_PROFILE.name, "test");
         }
 

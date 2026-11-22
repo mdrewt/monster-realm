@@ -37,8 +37,9 @@ fn ea_ra_01_ranked_account_gate_truth_table() {
     let rows: [RaRow; 8] = [
         // --- enforcement INERT: the gate is transparent in all four shapes.
         // inert means enforcement OFF (availability-biased), NOT
-        // fail-closed. No account can exist while ALLOWED_ISSUERS is the
-        // .invalid placeholder, so bricking PvP for every identity in every
+        // fail-closed. Enforcement reads accounts::PRODUCTION_LOGIN_ISSUERS,
+        // which is the .invalid placeholder (ALLOWED_ISSUERS is the build's
+        // own list; a test build holds the two dev issuers there), so bricking PvP for every identity in every
         // environment would protect nobody.
         (
             false,
@@ -119,7 +120,8 @@ fn ea_ra_01_ranked_account_gate_truth_table() {
 // ---------------------------------------------------------------------------
 // the inert-until-activation CANARY.
 //
-// `ALLOWED_ISSUERS` is the fail-closed RFC-2606 `.invalid` placeholder under
+// `accounts::PRODUCTION_LOGIN_ISSUERS`, which `ranked_enforcement_active()`
+// reads, is the fail-closed RFC-2606 `.invalid` placeholder under
 // ADR-0182 D18's hard sequencing gate, and the only path that creates an
 // `account` row sits behind it — so no identity in ANY environment can be an
 // account holder today, and enforcement must be OFF. This canary self-expires

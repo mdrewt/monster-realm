@@ -561,7 +561,7 @@ export function formatAcs6Tokens(parsed, sha256, refusalsDetail) {
  * `env` = { ci, hasCli }. Run the live flow whenever the toolchain is present,
  * in CI or locally — `ci` is deliberately NOT consulted here: a developer with
  * the toolchain installed gets the real gate, not a weaker local variant.
- * `hasCli` means BOTH the spacetime CLI and cargo are available.
+ * `hasCli` means the spacetime CLI, cargo and just are ALL available.
  */
 export function shouldRunLive(env) {
   return !!env.hasCli;
@@ -3387,7 +3387,8 @@ export default async function () {
   const ci = !!process.env.CI;
   const hasSpacetime = toolPresent('spacetime', ['--version']);
   const hasCargo = toolPresent('cargo', ['--version']);
-  const hasCli = hasSpacetime && hasCargo;
+  const hasJust = toolPresent('just', ['--version']);
+  const hasCli = hasSpacetime && hasCargo && hasJust;
 
   if (!shouldRunLive({ ci, hasCli })) {
     if (shouldFailLoudNoCli({ ci, hasCli })) {
@@ -3396,7 +3397,7 @@ export default async function () {
         pass: false,
         detail:
           'CI: the live toolchain is absent (' +
-          `spacetime=${hasSpacetime}, cargo=${hasCargo}) — the CLI install step of the eval job in ci.yml ` +
+          `spacetime=${hasSpacetime}, cargo=${hasCargo}, just=${hasJust}) — the CLI install step of the eval job in ci.yml ` +
           'appears to have regressed. G22 must never silently skip in CI: without it the entire ' +
           'guest-to-account claim flow ships unexercised.',
       };
@@ -3406,7 +3407,7 @@ export default async function () {
       pass: true,
       detail:
         'Live phase note-skipped: no live toolchain locally ' +
-        `(spacetime=${hasSpacetime}, cargo=${hasCargo}).`,
+        `(spacetime=${hasSpacetime}, cargo=${hasCargo}, just=${hasJust}).`,
     };
   }
 

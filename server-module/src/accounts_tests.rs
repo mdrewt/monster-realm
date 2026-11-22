@@ -12856,7 +12856,11 @@ mod acs6_profile {
     #[test]
     fn acs6_profile_an_open_join_build_is_the_test_build() {
         assert_eq!(BUILD_PROFILE.name, "test");
-        assert!(!BUILD_PROFILE.enforces_ownership);
+        let profile = std::hint::black_box(BUILD_PROFILE);
+        assert!(
+            !profile.enforces_ownership,
+            "an open_join build must not enforce ownership"
+        );
         assert_eq!(BUILD_PROFILE.login_issuers, &[LOCAL_DEV, HOSTED_DEV][..]);
         assert_eq!(ALLOWED_ISSUERS, &[LOCAL_DEV, HOSTED_DEV][..]);
     }
