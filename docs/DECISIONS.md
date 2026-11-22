@@ -2460,7 +2460,8 @@ account is pending deletion is refused by the deletion gate (the cascade erases 
 When the erased binding is one the build counts, the caller's `world_admission` row goes with it,
 under every rule: an unbind never lets in an identity whose account the owner removed. Once
 unbound, the identity gets back into a world that is not `Open` only through the owner:
-`set_world_access`'s admission list (the gate's password door admits through it), a relayed bind, or
+`set_world_access`'s admission list (the host gate's password door, designed and not built, admits
+through it), a relayed bind, or
 a change from `Open` while it is connected (the carry-over). Its account stays on the list. The owner relays both calls for another
 identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
 admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
@@ -2736,7 +2737,7 @@ while its `account_subject` is a row of private `world_allowlist` (at most 256 s
 visible ASCII), and nothing else counts for it, so delisting refuses at the next check; and an
 identity with no trusted binding only when it holds a `world_admission` row. The list is read at
 every check and nothing is stored from it.
-`Allowlist` takes no password (`set_world_access` refuses one). When the rule changes to one that is
+When the rule changes to one that is
 not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
 before the call admitted, and to none that rule refused. A new joiner's way in under `Allowlist`
 is the owner's relayed nonce request and bind. Admission rows are written only by the owner-only
@@ -2774,7 +2775,8 @@ already open keeps calling and reading after its admission is removed, and a mod
 connection. Hence the check in every reducer and the admission of open connections when the rule
 changes. An unadmitted identity can call nothing but its own unbind, so it cannot reach its own
 admission, and the owner has to
-relay the door: the gate, holding the owner credential, admits a joiner who gave the password. Turning the list on must not
+relay the door: the host gate (designed, not built), holding the owner credential, admits a joiner
+who gave the password. Turning the list on must not
 lock out the people playing, the host first: a host may play as a second identity bound to the
 same account as the owner's, so the list keeps an account, not an identity. The bindings and
 admission rows already say who the rule let in, so the list is made from them with no new table.
@@ -2814,9 +2816,9 @@ passwords by source address and by identity and refuses both after five in ten m
 right password it admits the joiner through the owner's `set_world_access`, naming the rule in
 force. A host with no gate has no password door: its owner admits identities from the command line.
 Built: the module's half (`server-module/src/access.rs`; `mod reducer_arguments` in
-`server-module/src/privacy_enforcement_tests.rs` describes every reducer the build declares and
-holds that no argument is named for a password and that the arguments carrying text are a reviewed
-roster). Designed, not built: the gate's check, in `docs/local-play.md` §3, fork (a). Operator
+`server-module/src/privacy_enforcement_tests.rs` describes every reducer the build declares, the
+dev builds' listed by hand, and holds that no argument is named for a password and that the
+arguments carrying text are a reviewed roster). Designed, not built: the gate's check, in `docs/local-play.md` §3, fork (a). Operator
 ruling, 2026-11-22 (monster-realm#840).
 
 **Why.** The host's commit log keeps the arguments of every committed reducer call in the clear

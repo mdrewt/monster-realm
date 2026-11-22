@@ -550,18 +550,18 @@ enforced at 2.11.0, as the last three rows show.
 - *The door.* An unadmitted identity can call nothing but its own unbind, so admission is granted
   by reducers only the owner can call, each taking the joiner's identity as an argument: the admit
   list of `set_world_access`, and under `Allowlist` the relayed bind. No reducer takes a password, a
-  hash of one or a value derived from one (lpw-20, operator ruling monster-realm#840), because the
+  hash of one or a value derived from one (operator ruling monster-realm#840), because the
   host's commit log keeps every committed call's arguments in the clear (the last row of the table
   below); `world_access` holds the `Password` rule with an empty salt and hash, and the module reads
-  neither. The host gate checks the password itself (lpw-14): it keeps the Argon2id salt and hash
+  neither. The host gate checks the password itself: it keeps the Argon2id salt and hash
   in the world's directory with the owner credential's permissions, never in a backup copy's
   readable part or a log, and serves one door endpoint of its own, which it never forwards; for a
   joiner with no token it creates an identity on the host's internal port, checks the password,
   admits the identity through the owner's `set_world_access` naming the rule in force, and returns
   the token only then. The owner identity the gate calls as never joins the game, so the connect
   and disconnect that each call brings touch no player's state. A host with no gate has no password
-  door: its owner admits identities from the command line, and until lpw-14 builds the gate that is
-  the only way into a `Password` world.
+  door: its owner admits identities from the command line, and until the gate is built that is the
+  only way into a `Password` world.
 - *Attempts.* The gate counts wrong passwords by source address and by identity, five in ten
   minutes, and refuses both after that; the module keeps no count and never sees a source address.
 - *The shell's own player.* On a world whose rule is not `Open` a new identity cannot connect to
@@ -609,8 +609,8 @@ in `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster fro
 the generated bindings and executes each shipped reducer as an unadmitted caller on a `Password`
 world: an executing test, not a parse of source. `mod reducer_arguments` in the same file describes
 every reducer the build declares (client-callable, scheduled, lifecycle and the dev builds') through
-the reducer macro's own describer, checks that list against the generated bindings and the
-scheduled tables, and holds that no argument is named for a password and that the arguments which
+the reducer macro's own describer, checks the client-callable and scheduled ones against the
+generated bindings and the scheduled tables (the dev builds' are listed by hand), and holds that no argument is named for a password and that the arguments which
 carry text are a reviewed roster. It is a tripwire, not a proof: a value derived from a password
 could ride in an argument of another type, and review is the defence there. The tests do not assert that an open connection
 stops reading: it does not. No in-repo test shows an unadmitted connection receiving no row: that
@@ -619,8 +619,9 @@ on a live host, repeated at every host upgrade. The wrong-audience control of
 `evals/account-e2e.eval.mjs` exercises the same refusal over a WebSocket on every run, for the
 audience check and not for admission.
 
-Measured on 2026-11-21 on a 2.11.0 standalone host (a scratch data directory) with the built module
-published; the script is not in the repository.
+Measured on 2026-11-21 on a 2.11.0 standalone host (a scratch data directory) with the module of
+commit `d6d80547` published, which had a door reducer, `admit(who, password)`, and took a password
+in `set_world_access`; the current module has neither. The script is not in the repository.
 
 | What was tried | Result |
 |---|---|
@@ -635,12 +636,11 @@ published; the script is not in the repository.
 | A door call that hashes against one that does not, over HTTP | median 23.4 ms against 1.0 ms (about 22 ms for one Argon2id hash inside the reducer, on this machine) |
 | The host's commit log (`replicas/1/clog/…stdb.log`) after these calls | holds the arguments of every committed reducer call in the clear: the password given to `set_world_access` and each password given to `admit`, wrong ones included |
 
-The table measured the module at commit `d6d80547`, which had a door reducer, `admit(who,
-password)`; the current module has none. Its last row means a salted hash in a table protects the
-row, not the world's data directory, and a password stretched before the call would still leave a
-password-equivalent in the log. So no reducer takes one, and the gate checks it (the door, above).
-A commit log a module with the door wrote keeps every password given to it; the module cannot erase
-that log, so a host who set a password through such a module chooses a new one for the gate.
+The table's last row means a salted hash in a table protects the row, not the world's data
+directory, and a password stretched before the call would still leave a password-equivalent in the
+log. So no reducer takes one, and the gate checks it (the door, above). A commit log a module with
+the door wrote keeps every password given to it; the module cannot erase that log, so a host who set
+a password through such a module chooses a new one for the gate.
 
 #### (b) How the official server refuses attestation binding
 
