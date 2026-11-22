@@ -820,6 +820,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'input/glyphs.ts',
       'main.ts',
+      // The server link's owner: the guarded send resolves its disconnected line.
+      'shell/session.ts',
       // bt-10 (named intentional change, BT10.6): the tactical client's ONE resolver importer; every
       // other tactics/*.ts module takes its text from it (tactics/strings.test.ts scans for that).
       'tactics/strings.ts',
@@ -866,6 +868,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     if (main === undefined) throw new Error('main.ts missing from the census walk');
     const feedback = census.find((f) => f.file === 'shell/feedback.ts');
     if (feedback === undefined) throw new Error('shell/feedback.ts missing from the census walk');
+    const session = census.find((f) => f.file === 'shell/session.ts');
+    if (session === undefined) throw new Error('shell/session.ts missing from the census walk');
     // Each `t` binding is pinned on its own file: main.ts imports the resolver's `t` ALIASED to
     // `i18nT` (with `tf`), and shell/feedback.ts imports a11yCopy's `t` BARE. A scanner keyed on
     // the literal name `t` alone would miss the aliased binding, or read main.ts's `i18nT` calls as
@@ -922,12 +926,13 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // lpw-9 (named intentional change, lpw-9.6): main.ts gains 1 literal key,
     // `chrome.status.privateHostNotice` (one literal `i18nT` call in `onReady`, the first join of a
     // private target whose host notice is still due).
+    // `chrome.status.disconnected` is not in this list: the guarded send that resolves it is
+    // shell/session.ts's, pinned on that file below.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
       'chrome.status.bugBundleBlocked',
       'chrome.status.contentStale',
-      'chrome.status.disconnected',
       'chrome.status.exportBlocked',
       'chrome.status.partyFull',
       // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' leaves
@@ -987,23 +992,82 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       feedback.calls.filter((c) => c.module === 'a11y'),
       'shell/feedback.ts resolves exactly the world region name, as a literal key',
     ).toEqual([{ module: 'a11y', orig: 't', kind: 'literal', literal: 'a11y.world.region' }]);
-    // The union of the literal keys the two files resolve, per binding, is the i18n list
-    // pinned above on main.ts and `a11y.world.region`, whichever of the two files resolves a key.
+    // shell/session.ts resolves exactly the guarded send's disconnected line, through the i18n
+    // resolver's `tf`, and nothing through a11yCopy.
+    expect(
+      session.calls.filter((c) => c.module === 'i18n'),
+      'shell/session.ts resolves exactly the disconnected line, as a literal key',
+    ).toEqual([
+      { module: 'i18n', orig: 'tf', kind: 'literal', literal: 'chrome.status.disconnected' },
+    ]);
+    expect(
+      session.calls.filter((c) => c.module === 'a11y'),
+      'shell/session.ts makes no a11y-bound call',
+    ).toEqual([]);
+    // The union of the literal keys the three files resolve, per binding, is a fixed list written
+    // out here (never computed from one of the files): main.ts's i18n list above plus the
+    // disconnected line, and `a11y.world.region`, whichever of the three files resolves a key. A
+    // key that leaves main.ts for one of the shell modules keeps the union; a key that is dropped
+    // on the way shrinks it.
     const unionOfLiteralKeys = (module: 'i18n' | 'a11y'): string[] =>
       Array.from(
         new Set(
-          [...main.calls, ...feedback.calls]
+          [...main.calls, ...feedback.calls, ...session.calls]
             .filter((c) => c.module === module && c.kind === 'literal' && c.literal !== undefined)
             .map((c) => c.literal as string),
         ),
       ).sort();
     expect(
       unionOfLiteralKeys('i18n'),
-      'the i18n keys main.ts and shell/feedback.ts resolve together are main.ts`s list above',
-    ).toEqual(Array.from(i18nLiteralKeys).sort());
+      'the i18n keys main.ts, shell/feedback.ts and shell/session.ts resolve together',
+    ).toEqual([
+      'chrome.chip.ok',
+      'chrome.rename.updated',
+      'chrome.status.bugBundleBlocked',
+      'chrome.status.contentStale',
+      'chrome.status.disconnected',
+      'chrome.status.exportBlocked',
+      'chrome.status.partyFull',
+      'chrome.status.privateHostNotice',
+      'chrome.status.serverNewer',
+      'chrome.status.serverOlder',
+      'chrome.status.zoneEntered',
+      'dialogue.ended.leftZone',
+      'dialogue.ended.npcGone',
+      'dialogue.ended.walkedAway',
+      'interact.challenge.size',
+      'interact.chip',
+      'interact.choose',
+      'interact.confirm.challenge',
+      'interact.entry',
+      'interact.healer',
+      'interact.verb.challenge',
+      'interact.verb.heal',
+      'interact.verb.shop',
+      'interact.verb.talk',
+      'interact.verb.trade',
+      'kit.sheet.close',
+      'menu.disabled.inBattle',
+      'notice.request.challenge',
+      'notice.request.trade',
+      'notice.request.trades',
+      'notice.sheet.accept',
+      'notice.sheet.decline',
+      'notice.sheet.view',
+      'privacy.export.complete',
+      'prompt.no',
+      'quest.complete.done',
+      'quest.complete.reward',
+      'raising.feedback.cared',
+      'shop.feedback.buy.count',
+      'shop.feedback.buy.item',
+      'shop.feedback.sell.count',
+      'shop.feedback.sell.item',
+      'tradeSession.notice.closed',
+    ]);
     expect(
       unionOfLiteralKeys('a11y'),
-      'the a11y keys main.ts and shell/feedback.ts resolve together',
+      'the a11y keys main.ts, shell/feedback.ts and shell/session.ts resolve together',
     ).toEqual(['a11y.world.region']);
 
     // I18N-27 over the LIVE tree: every resolver-bound call's first argument is a literal.

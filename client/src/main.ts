@@ -58,7 +58,6 @@ import { RATE_LIMIT_INITIAL, rateLimitTick } from './net/devLog';
 import type { ProtocolMismatch } from './net/protocolCheck';
 import { ServerClock } from './net/serverClock';
 import {
-  AuthoritativeStore,
   ownPerspective,
   type StoreMonsterPub,
   type StoreTacticalBattle,
@@ -133,6 +132,26 @@ import {
   releaseNavHeld,
 } from './shell/inputState';
 import {
+  adoptConnection,
+  adoptIdentity,
+  armEmitReseed,
+  clearHydration,
+  conn,
+  hydratedSinceReconnect,
+  identity,
+  liveReducers,
+  markReady,
+  noteHydrated,
+  privacyLinkLive,
+  ready,
+  resetEmitLatches,
+  sendGuarded,
+  sessionGateBlocks,
+  stepBattleEmit,
+  stepRankedEmit,
+  store,
+} from './shell/session';
+import {
   boxView,
   claimView,
   controlsSavedLine,
@@ -181,14 +200,6 @@ import {
   type TacticsTuning,
 } from './tactics/wasm';
 import { CLOSE_KEY, challengeLayout, sheetLayout, sizeOfRow } from './ui/actionSheetModel';
-import {
-  armReseed,
-  BATTLE_EMIT_INITIAL,
-  type BattleEmitState,
-  battleEmitStep,
-  rankedStep,
-  resetBattleEmit,
-} from './ui/battleEmitModel';
 import { buildBaitItems, decideBattleOverlay } from './ui/battleModel';
 import {
   battleButton,
@@ -434,8 +445,6 @@ applyTextStep(document.documentElement, textStep);
 // The hint host `shell/feedback.ts` reaches up through, installed before the first listener
 // registers: whether the main menu is the top frame, and a repaint of it.
 installHintHost({ menuOnTop: () => menuPlace() === 'top', repaintMenu: renderMenu });
-// stepMs injected so the store can do burst detection + jitter EWMA.
-const store = new AuthoritativeStore(STEP_MS);
 // The injected rule IS the client-wasm export (same compiled code as the server).
 const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
@@ -465,16 +474,6 @@ let sawFractionalOwnMotion = false;
 // watch a REMOTE sprite move between its authoritative tiles. Read via window.__game().
 let lastRendered: readonly RenderEntity[] = [];
 
-let identity = '';
-// event-emit latches (rules: ui/battleEmitModel.ts). `battleEmit` is the battleStart/battleEnd
-// latch, `lastOwnRating` baselines the ranked-delta detector. Both re-baseline on
-// reconnect/zone-switch (resetPredictionState) — the RINGS do NOT reset.
-let battleEmit: BattleEmitState = BATTLE_EMIT_INITIAL;
-let lastOwnRating: number | null = null;
-// reset on EVERY reconnect and set by onHydrated: a pending battle reseed resolves only on a
-// flush after it, so a partial hydration cannot burn it.
-let hydratedSinceReconnect = false;
-let conn: ReturnType<typeof connect> | undefined;
 // bt-12 (BT12.1-BT12.4): the deploy panel (a Deploying battle) and the results panel (a Finished one)
 // share the `battleView` frame and overlay id. Both are constructed LAZILY, on the first batch that
 // routes to them (the frame has ONE owner, so one `battle-title` root at a time), on the mount
@@ -928,15 +927,6 @@ function worldCandidates(): readonly InteractCandidate[] {
   return interactMemo.cands;
 }
 
-// True while the session terminal (expired / unreachable) owns the
-// screen. sessionView is registry-EXTERNAL, so the overlay probes cannot see it — this predicate
-// is the ONE SSOT the keydown handler AND the frame loop both consult, checked first on every
-// input path. `hidden` is the ordinary case and must NOT block.
-function sessionGateBlocks(): boolean {
-  const s = conn?.sessionState();
-  return s !== undefined && s !== 'hidden';
-}
-
 // --- claim / session model drivers ------------------------------
 function renderSession(): void {
   sessionView?.render(buildSessionViewModel(sessionModelState));
@@ -1076,12 +1066,6 @@ function downloadExportBundle(): void {
     anchor?.remove();
     if (url !== '') URL.revokeObjectURL(url);
   }
-}
-
-// A2-D8: a missing live handle is a NON-DELIVERY. sendGuarded cannot see it — `undefined?.catch()`
-// is silent — so inFlight would stick forever and every later click would be a silent no-op.
-function privacyLinkLive(): boolean {
-  return conn?.live() !== undefined && !conn.linkFrozen();
 }
 
 function applyPrivacy(event: PrivacyEvent): void {
@@ -2297,85 +2281,10 @@ let lastFrameErrorMessage: string | null = null;
 window.addEventListener('error', (e) => pushError('uncaught', e.error ?? e.message));
 window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejection', e.reason));
 
-/**
- * Non-movement reducer send guard. While the link is frozen it
- * SHORT-CIRCUITS with "disconnected — try again" and NEVER calls the reducer: a call
- * against a dead conn is silently queued on the dead instance and its promise never
- * settles (no-settle-on-drop) — the dead-button black hole. Otherwise it attaches
- * the rejection route: reduceErrorMessage passes SenderError reasons through and
- * never leaks InternalError detail. Documented exceptions (A10): enqueueMove
- * (movement — silent prediction repair in sendIntent, M2 §3), the join (conn.join() — its
- * failures surface from connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell,
- * rename — routed through performCare in main(), A6).
- * ALWAYS resolves (frozen, dead handle, reported rejection) — views holding an
- * in-flight lock `return` it so the lock lives exactly until the call settles.
- * `onRejected` threads a settled rejection out to the caller (C5: a rejected challenge
- * answer releases its answeredRequests key); the frozen and dead-handle arms never
- * call it — no reducer ran, nothing settled. `line` is the sending frame's outcome line, where
- * both failure arms report instead of the policy channel while it still paints (qf-2).
- */
-function sendGuarded(
-  where: SendWhere,
-  call: () => Promise<void> | undefined,
-  onRejected?: () => void,
-  line?: OutcomeLine,
-): Promise<void> {
-  if (conn === undefined || conn.linkFrozen()) {
-    reportError('link-down-send', tf('chrome.status.disconnected', { where }), line);
-    return Promise.resolve();
-  }
-  const p = call();
-  if (p === undefined) return Promise.resolve();
-  return p.catch((err: unknown) => {
-    reportError(SEND_REJECT_KIND[where], reduceErrorMessage(err, where), line);
-    onRejected?.();
-  });
-}
-
-/** Every `sendGuarded` site, and the message kind its rejection is (the channel table). */
-const SEND_REJECT_KIND = {
-  talk: 'world-send-rejected',
-  dismiss: 'world-send-rejected',
-  advance: 'world-send-rejected',
-  ackEvolutionNotices: 'world-send-rejected',
-  train: 'feed-rejected',
-  evolve: 'evolve-rejected',
-  nickname: 'nickname-rejected',
-  party: 'party-move-rejected',
-  heal: 'heal-rejected',
-  'pvp-challenge': 'pvp-rejected',
-  'pvp-accept': 'pvp-rejected',
-  'pvp-decline': 'pvp-rejected',
-  'pvp-cancel': 'pvp-rejected',
-  'submit-queue': 'pvp-rejected',
-  'cancel-queue': 'battle-command-rejected',
-  forfeit: 'battle-command-rejected',
-  'deploy-units': 'battle-command-rejected',
-  'trade-open': 'trade-rejected',
-  'trade-offer': 'trade-rejected',
-  'trade-confirm': 'trade-rejected',
-  'trade-cancel': 'trade-rejected',
-} as const satisfies Record<string, SinkKind>;
-type SendWhere = keyof typeof SEND_REJECT_KIND;
-
-/**
- * The live reducer handle for a performCare `call` thunk, or `undefined` when the link is
- * frozen/disconnected — a call against a dead conn is silently queued and never settles, so
- * performCare must see `undefined` and show the disconnected line instead of hanging.
- */
-function liveReducers() {
-  return conn === undefined || conn.linkFrozen() ? undefined : conn.live()?.reducers;
-}
-
 // Whether the frame loop draws characters. A new connection's scope opens unsettled with no own
 // character in the store, and the world stays undrawn until the own zone's characters have
 // arrived, so a login or reconnect never shows the player alone in an empty zone.
 let worldRevealed = true;
-
-let resolveReady: () => void = () => {};
-const ready = new Promise<void>((r) => {
-  resolveReady = r;
-});
 
 // --- M12.5c: prediction-state reset (moved to module scope for switchZone access) ----
 // Resets the predictor, slide clock, held keys, and sticky latches without touching
@@ -2412,8 +2321,7 @@ function resetPredictionState(): void {
   // re-baseline the event-emit latches (NOT the rings — those are the
   // session buffer). After a reconnect/zone-switch the old battle is GC'd and the rating
   // baseline must be re-seeded from the first fresh batch, not carried across.
-  battleEmit = resetBattleEmit(battleEmit);
-  lastOwnRating = null;
+  resetEmitLatches();
 }
 
 // --- M12.5c: idempotent zone-switch --------------------------------
@@ -3944,41 +3852,12 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- battleStart / battleEnd emit listener (ui/battleEmitModel.ts) -----------------------
-// Dedicated batch listener (UNCONDITIONAL — not visibility-gated).
-store.onBatchApplied(() => {
-  if (identity === '') return;
-  try {
-    const next = battleEmitStep(battleEmit, {
-      hydrated: hydratedSinceReconnect,
-      latest: store.latestPlayerBattle(identity),
-    });
-    battleEmit = next.state;
-    if (next.emit) eventRing.push(next.emit);
-  } catch (err) {
-    console.error('[obs] battle', err);
-  }
-});
-
-// --- rankedMatch emit listener (ui/battleEmitModel.ts) -----------------------------------
-// Dedicated batch listener (its OWN, not folded into the visibility-gated leaderboard
-// listener above).
-store.onBatchApplied(() => {
-  if (identity === '') return;
-  try {
-    const prof = store.profile(identity);
-    if (!prof) return;
-    const next = rankedStep({
-      lastRating: lastOwnRating,
-      rating: prof.rating,
-      latest: store.latestPlayerBattle(identity),
-    });
-    lastOwnRating = next.lastRating;
-    if (next.emit) eventRing.push(next.emit);
-  } catch (err) {
-    console.error('[obs] ranked', err);
-  }
-});
+// --- the session-event emit latches (shell/session.ts; rules: ui/battleEmitModel.ts) ------
+// Two dedicated batch listeners, the battleStart / battleEnd latch and then the rankedMatch
+// latch. Both are unconditional: neither is folded into the visibility-gated leaderboard
+// listener above.
+store.onBatchApplied(stepBattleEmit);
+store.onBatchApplied(stepRankedEmit);
 
 // --- post-evolve reveal banner --------------
 // The HEAD entry only: Vec order IS display order and the ack drains a PREFIX, so the head is
@@ -4748,8 +4627,8 @@ async function main(): Promise<void> {
     });
   }
 
-  // create the status surface BEFORE `conn = connect(...)` is
-  // assigned so no connection lifecycle callback can ever report into the void.
+  // create the status surface BEFORE the connection opens (`connect(...)`), so no connection
+  // lifecycle callback can ever report into the void.
   const status = document.createElement('div');
   status.id = 'status';
   // ctl-7a: inside the game screen and out of the page flow (.mr-status), so a status line can
@@ -4876,7 +4755,7 @@ async function main(): Promise<void> {
     telemetry.setZone(rawMap.zone_id);
   });
 
-  conn = connect({
+  const link = connect({
     uri: URI,
     db: DB,
     name: 'Player',
@@ -4892,7 +4771,7 @@ async function main(): Promise<void> {
     // unreachable from the send path).
     onSend: sendLogger,
     onReady: (id) => {
-      identity = id;
+      adoptIdentity(id);
       // A screen opened before the join must not be remembered into this identity's session.
       screenHost.forget();
       resetTradeSessionState();
@@ -4901,7 +4780,7 @@ async function main(): Promise<void> {
       answeredRequests.clear();
       // record the connect edge (identity-hex is the allowed field, U-3).
       eventRing.push(makeConnect(identity));
-      resolveReady();
+      markReady();
       // A successful connection clears any session terminal overlay.
       applySession({ kind: 'connected' });
       // The claim prompt this connect raised, if any, is up and stays: nothing swept it.
@@ -4913,15 +4792,14 @@ async function main(): Promise<void> {
         markHostNoticeSeen(deviceStorage, URI, DB);
       }
     },
-    // the store now holds the applied snapshot, so the reseed latch
-    // may resolve on this flush. Set here, consumed by the battle emit listener.
+    // The store now holds the applied snapshot, so the reseed latch may resolve on this flush.
     onHydrated: () => {
-      hydratedSinceReconnect = true;
+      noteHydrated();
     },
     onReconnect: (id) => {
       // a rebuild can mint a NEW identity — refresh FIRST so every
       // identity-gated listener (and the connect event below) sees this connection's identity.
-      identity = id;
+      adoptIdentity(id);
       // the cached artifact is main.ts state, not store state, so store.reset()
       // cannot reach it — and a rebuild can mint a NEW identity. Dropped here so the previous
       // identity's personal-data export is never downloadable by the next one.
@@ -4930,8 +4808,8 @@ async function main(): Promise<void> {
       // Ongoing battle is re-baselined on the first post-hydration batch instead of re-emitting
       // battleStart. A 2nd drop while a reseed is pending keeps the FIRST capture, and the
       // hydration flag is cleared UNCONDITIONALLY so the reseed waits for THIS connection's.
-      battleEmit = armReseed(battleEmit);
-      hydratedSinceReconnect = false;
+      armEmitReseed();
+      clearHydration();
       // A notice queued on the dropped link and the quest-acknowledgement baseline are stale;
       // the next baseline is the first hydrated batch of this connection.
       resetStatusNotice();
@@ -5074,6 +4952,7 @@ async function main(): Promise<void> {
       });
     },
   });
+  adoptConnection(link);
 
   // Frame loop is wrapped in try/catch so a wasm/predictor throw does not
   // kill the loop permanently. rAF re-arm is in `finally` so it always fires, even

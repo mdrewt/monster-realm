@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /**
- * main.battle-reseed.test.ts — RUNTIME gate over main.ts's pt-b1 battle-emit listener
+ * main.battle-reseed.test.ts — RUNTIME gate over the battle-emit listener main.ts registers
  * (slice 16r-f, extended by slice 17r-b; ADR-0130 reseed latch + residuals (d)/(e)).
  *
  * SOURCE OF TRUTH:
@@ -53,7 +53,7 @@
  * tSeq, which come from a real Date.now() clock.
  *
  * SECOND OBSERVATION CHANNEL (17r-b, plan §7 reviewer B1 / red-team F1): console.error.
- * main.ts's battle-emit listener wraps its body in try/catch, so a THROW inside
+ * shell/session.ts's battle-emit step wraps its body in try/catch, so a THROW inside
  * it is swallowed and surfaces ONLY as a `console.error('[obs] battle', err)`. A listener
  * that crashes on every flush can therefore leave a ring that still matches the expected
  * projection — the ORPHAN and NOBATTLE fixtures both exercise that exact shape. Every test
@@ -138,7 +138,7 @@ const H = vi.hoisted(() => ({
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgStubMock());
 
 // The connection: capture the options object, hand back a Connection-shaped stub.
-// sessionState() MUST be 'hidden' or main.ts's sessionGateBlocks() swallows the F9 keydown.
+// sessionState() MUST be 'hidden' or shell/session.ts's sessionGateBlocks() swallows F9's keydown.
 vi.mock('./net/connection', () => {
   const stub: Connection = {
     conn: undefined,
@@ -383,7 +383,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   });
 
   afterEach(() => {
-    // THE CONSOLE CONTROL. main.ts's battle-emit listener
+    // THE CONSOLE CONTROL. shell/session.ts's battle-emit step
     // catches EVERY throw out of the battle-emit listener and reports it only here, so a
     // listener crashing on every flush can still leave a ring that matches the expected
     // projection (mutant #12 does exactly that). Asserted FIRST — before teardown — so it
@@ -446,7 +446,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
    *  upsertBattle sets `#dirty = true` unconditionally, so the second call
    *  really does run a second batch. The id set — not the call count — is asserted, because
    *  the number of listeners that happen to read latestPlayerBattle in one batch is not this
-   *  gate's business (main.ts's ranked-match listener also can, when a profile row exists). */
+   *  gate's business (shell/session.ts's ranked-match step also can, when a profile row exists). */
   function flushObservingBattleId(battle: StoreBattle, expectedId: bigint): void {
     latestSpy.mockClear();
     store.upsertBattle(battle);
@@ -846,7 +846,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // WRONG IMPL KILLED — mutant #12, dropping the optional chain:
   //   `if (latest.outcome === 'Ongoing' && latest.battleId === survivedId)` throws
   //   `TypeError: Cannot read properties of undefined (reading 'outcome')` on the no-rows
-  //   flush. main.ts's battle-emit listener SWALLOWS it into console.error, the latch is left resolved-ish, and
+  //   flush. shell/session.ts's battle-emit step SWALLOWS it into console.error, the latch is left resolved-ish, and
   //   the next flush still starts B2 — so the RING IS UNCHANGED and the toEqual below passes.
   //   The console assertion is the ONLY thing that catches it. Asserted in-test (not only in
   //   the global afterEach control) so the mutation bite-proof can pin this mutant to THIS
@@ -883,13 +883,13 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // CORRECT IMPL:  battleEvents === [start B2]
   //                connect identities === [H.identity, IDENTITY_2]
   //   The latch resolves against a null survivor (no pre-drop battle), falls through, and the
-  //   listener reads latestPlayerBattle(IDENTITY_2) — which only matches because main.ts
-  //   reassigned `identity` from the callback argument.
-  // WRONG IMPL KILLED (a) — mutant #5, `identity = id;` deleted: the listener keeps querying
+  //   listener reads latestPlayerBattle(IDENTITY_2) — which only matches because onReconnect
+  //   adopted the callback argument as shell/session.ts's `identity` (`adoptIdentity(id)`).
+  // WRONG IMPL KILLED (a) — mutant #5, `adoptIdentity(id);` deleted: the listener keeps querying
   //   latestPlayerBattle(H.identity), which is NOT a participant of the new row, so it reads
   //   undefined on every flush and NOTHING is ever emitted  ->  battleEvents === [].
   //   FAILS ON THE FIRST assertion (length 0 vs 1).
-  // WRONG IMPL KILLED (b) — mutant #6, `identity = id;` moved AFTER
+  // WRONG IMPL KILLED (b) — mutant #6, `adoptIdentity(id);` moved AFTER
   //   `eventRing.push(makeConnect(identity))`: by flush time `identity` IS IDENTITY_2, so the
   //   battle assertion PASSES; the connect event recorded the stale hex instead
   //   ->  [H.identity, H.identity].  FAILS ON THE SECOND assertion. The two clauses are
@@ -933,7 +933,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   //   participant of B1), resolves the latch against survivor B1, matches nothing, and returns
   //   through the `latest?.` null guard (see RSD17B-NOBATTLE — this fixture is the second
   //   place mutant #12 throws). The B2 flush then starts B2.
-  // WRONG IMPL KILLED — mutant #5, `identity = id;` deleted: the orphan flush reads
+  // WRONG IMPL KILLED — mutant #5, `adoptIdentity(id);` deleted: the orphan flush reads
   //   latestPlayerBattle(H.identity) === B1 Ongoing, which MATCHES the captured survivor, so
   //   it re-baselines silently (activeBattleId = B1). The final flush reads B1 again (B2 is
   //   not H.identity`s row, so `latest` is still B1, unchanged and Ongoing) and emits nothing

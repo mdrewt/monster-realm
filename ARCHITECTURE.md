@@ -443,7 +443,20 @@ functions: `installHintHost` hands in what the world hint needs from the main me
 the top frame, and a repaint of it), `mountFeedback` mounts the world line and the toast region
 `main()` builds, `pumpAnnouncements` is the frame loop's announcement edge and notice step, and
 `resetStatusNotice` drops a queued notice on reconnect. `main.ts` registers `pushError` on
-`window`'s `error` and `unhandledrejection`.
+`window`'s `error` and `unhandledrejection`. `shell/session.ts` owns the link to the server: the
+one `AuthoritativeStore` (built at import), the identity of the current connection, the
+connection handle, the hydration flag, the `ready` promise the first join resolves, the guarded
+send and the two session-event latches (the battle start and end latch, and the ranked rating
+baseline). `sendGuarded` wraps a reducer send: on a frozen or missing link it reports the
+disconnected line and never calls the reducer, a rejection is reported under the message kind its
+send site names, and the promise it returns never rejects. Only that module assigns its state.
+`main.ts` opens the connection and mounts the handle (`adoptConnection`), and its `connect`
+callbacks report the lifecycle: `adoptIdentity` on a join and on a reconnect, `markReady` on the
+first join, `noteHydrated` once the store holds the applied snapshot, and `armEmitReseed` and
+`clearHydration` on a reconnect. `resetEmitLatches` re-baselines the latches with the prediction
+state, on a reconnect and on a zone switch. `main.ts` registers the two latch steps as batch
+listeners, `stepBattleEmit` and then `stepRankedEmit`; each pushes the event its step returns
+onto the session event ring.
 
 ### Connection and store
 
