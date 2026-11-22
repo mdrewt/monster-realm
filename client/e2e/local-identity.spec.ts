@@ -17,19 +17,25 @@ import { ownerSql, sqlRows } from './stdb';
 //             in the same profile resume the same identity and the same character, and a second
 //             page opened while the first is connected joins as that identity too; closing
 //             either page leaves the character in the world while the other stays connected;
-//   official  the token lives in per-tab sessionStorage: a new page joins as a new identity.
+//   test      the token lives in per-tab sessionStorage, and an anonymous page joins: a new page
+//             joins as a new identity;
+//   official  the token lives in per-tab sessionStorage: a new page is a new identity. The suite's
+//             build names an issuer (playwright.config.ts), so an anonymous page of an official
+//             target shows the sign-in screen and joins nothing. Its leg of the control waits for
+//             an identity and the sign-in screen, never for a tile (the page holds none), and holds
+//             over several reads that neither a tile nor a player row appears.
 //
 // "The same profile" is ONE BrowserContext kept open across the page close. Every later page is
 // opened with `ctx.newPage()`, never `window.open` or a popup, which would copy the opener's
-// sessionStorage and void the official control case.
+// sessionStorage and void the per-tab control case.
 //
 // The shell document is served by routing `/shell-config.js` (as shell-config.spec.ts does), so
 // the suite's own server and database are reached under the target kind each test names.
 //
-// SHARED-WORLD HYGIENE (playwright.config.ts `workers: 1`, one published db). Each test opens its
-// own context and closes it in a finally, then waits for the `player` table to hold no identity
-// that was not there before the test: other spec files assert exact populations. No fixed sleep:
-// every wait polls a predicate with a bound.
+// SHARED-WORLD HYGIENE (playwright.config.ts `workers: 1`, one published db). Each test, and each
+// leg of the control test, opens its own context and closes it in a finally, then waits for the
+// `player` table to hold no identity outside the set it read on entry: other spec files assert
+// exact populations. No fixed sleep: every wait polls a predicate with a bound.
 //
 // The JSON reporter records titles and error text, so no title or assertion message here carries
 // a token value; only storage KEYS (target uri and db) and public identities are compared.
@@ -158,6 +164,69 @@ async function expectRowHeld(identity: string, label: string): Promise<void> {
   }
 }
 
+/** The keys of the rows the menu frame shows, in order. */
+function rowKeys(page: Page): Promise<string[]> {
+  return page
+    .locator('#menu-overlay #menu-rows [data-nav-key]')
+    .evaluateAll((els) => els.map((el) => el.getAttribute('data-nav-key') ?? ''));
+}
+
+/** The page's own authoritative tile, or null. */
+function ownTile(page: Page): Promise<Tile | null> {
+  return page.evaluate(
+    () => (window as unknown as { __game: () => GameSnap }).__game().ownAuthTile,
+  );
+}
+
+/** Open a new page of `ctx` on the game and wait until it holds an identity and shows the sign-in
+ *  screen: the menu frame is up with exactly the `signIn` row. No tile is waited for, since a page
+ *  asked to sign in holds none. Return the page and its identity. */
+async function openAtSignIn(
+  ctx: BrowserContext,
+  label: string,
+): Promise<{ page: Page; identity: string }> {
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await page.waitForFunction(
+    () => {
+      const w = window as unknown as { __game?: () => GameSnap };
+      return w.__game !== undefined && w.__game().identity !== '';
+    },
+    null,
+    { timeout: 30_000 },
+  );
+  const identity = bareHex(
+    await page.evaluate(() => (window as unknown as { __game: () => GameSnap }).__game().identity),
+  );
+  expect(identity, `${label}: the identity is 64 hex digits`).toMatch(/^[0-9a-f]{64}$/);
+  await expect(page.locator('#menu-overlay'), `${label}: the sign-in screen is up`).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect
+    .poll(() => rowKeys(page), {
+      message: `${label}: the sign-in screen offers exactly the sign-in row`,
+      timeout: 10_000,
+    })
+    .toEqual(['signIn']);
+  return { page, identity };
+}
+
+/** Over ROW_HELD_MS (at least two reads), the page holds no own tile and the `player` table holds
+ *  no row for `identity`: the join is withheld, not merely late. */
+async function expectJoinWithheld(page: Page, identity: string, label: string): Promise<void> {
+  const until = Date.now() + ROW_HELD_MS;
+  let reads = 0;
+  while (reads < 2 || Date.now() < until) {
+    expect(rowsFor(identity, label), `${label}: read ${reads + 1}, no player row`).toBe(0);
+    expect(await ownTile(page), `${label}: read ${reads + 1}, no own tile`).toBeNull();
+    reads += 1;
+    // Each server read is one blocking CLI round trip; let pending I/O run between reads.
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+}
+
 test.describe
   .serial('a local target keeps the player on the device; an official one keeps it per tab', () => {
     let browser: Browser;
@@ -220,33 +289,72 @@ test.describe
         .toEqual([]);
     });
 
-    test('LPW2-6-CONTROL: a new page of an official target joins as a new identity [lpw-2.6]', async () => {
-      test.setTimeout(120_000);
-      const before = playerIdentities('control: players before');
-      const ctx = await browser.newContext();
+    test('LPW2-6-CONTROL: a new page of a test target joins as a new identity, and a new page of an official target is a new identity held at the sign-in screen, each keeping its token per tab [lpw-2.6]', async () => {
+      test.setTimeout(180_000);
+
+      // Leg "test": a per-tab target an anonymous page joins.
+      const testBefore = playerIdentities('control test: players before');
+      const testCtx = await browser.newContext();
       try {
-        await serveShellDocument(ctx, 'official');
-        const first = await openJoined(ctx, 'control: page 1');
+        await serveShellDocument(testCtx, 'test');
+        const first = await openJoined(testCtx, 'control test: page 1');
         await first.page.close();
         await expect
-          .poll(() => rowsFor(first.identity, 'control: page 1 closed'), {
-            message: 'control: the server ended page 1 session (its player row is gone)',
+          .poll(() => rowsFor(first.identity, 'control test: page 1 closed'), {
+            message: 'control test: the server ended page 1 session (its player row is gone)',
             timeout: SESSION_END_MS,
           })
           .toBe(0);
 
-        const second = await openJoined(ctx, 'control: page 2');
-        expect(second.identity, 'control: page 2 is a different identity').not.toBe(first.identity);
+        const second = await openJoined(testCtx, 'control test: page 2');
+        expect(second.identity, 'control test: page 2 is a different identity').not.toBe(
+          first.identity,
+        );
         expect(
           await tokenKeys(second.page),
-          'control: the token key lives in sessionStorage',
+          'control test: the token key lives in sessionStorage',
         ).toEqual({ local: [], session: [SUITE_TOKEN_KEY] });
       } finally {
-        await ctx.close();
+        await testCtx.close();
       }
       await expect
-        .poll(() => newPlayers(before, 'control: players after close'), {
-          message: 'control: the closed context leaves no player behind',
+        .poll(() => newPlayers(testBefore, 'control test: players after close'), {
+          message: 'control test: the closed context leaves no player behind',
+          timeout: SESSION_END_MS,
+        })
+        .toEqual([]);
+
+      // Leg "official": the suite's build names an issuer, so an anonymous page is asked to sign
+      // in and joins nothing.
+      const officialBefore = playerIdentities('control official: players before');
+      const officialCtx = await browser.newContext();
+      try {
+        await serveShellDocument(officialCtx, 'official');
+        const first = await openAtSignIn(officialCtx, 'control official: page 1');
+        expect(await ownTile(first.page), 'control official: page 1 has no own tile').toBeNull();
+        expect(
+          await tokenKeys(first.page),
+          'control official: page 1 keeps its token key in sessionStorage, none on the device',
+        ).toEqual({ local: [], session: [SUITE_TOKEN_KEY] });
+        await expectJoinWithheld(first.page, first.identity, 'control official: page 1');
+        await first.page.close();
+
+        const second = await openAtSignIn(officialCtx, 'control official: page 2');
+        expect(second.identity, 'control official: page 2 is a different identity').not.toBe(
+          first.identity,
+        );
+        expect(
+          await tokenKeys(second.page),
+          'control official: page 2 keeps its token key in sessionStorage, none on the device',
+        ).toEqual({ local: [], session: [SUITE_TOKEN_KEY] });
+        expect(await ownTile(second.page), 'control official: page 2 has no own tile').toBeNull();
+        await expectJoinWithheld(second.page, second.identity, 'control official: page 2');
+      } finally {
+        await officialCtx.close();
+      }
+      await expect
+        .poll(() => newPlayers(officialBefore, 'control official: players after close'), {
+          message: 'control official: the closed context leaves no player behind',
           timeout: SESSION_END_MS,
         })
         .toEqual([]);

@@ -21,7 +21,10 @@ import { renderShellConfigScript } from '../src/net/shellDocument';
 //   official, owner      the first screen is the sign-in screen with one row naming the provider;
 //                        no `join_game` reaches the server and the `player` table stays empty;
 //                        Enter opens the issuer's form, the owning account signs in, and back in
-//                        the game the screen is gone and the player has a row and a tile;
+//                        the game the screen is gone and the player has a row and a tile; the
+//                        signed-in page keeps no token in localStorage, and once it closes and its
+//                        session ends, a new page of the same profile is a third identity, at the
+//                        sign-in screen, with its token key in sessionStorage alone and no join;
 //   official, not owner  the issuer answers its not-owned page and redirects nowhere; back at the
 //                        game the sign-in screen is up again and no player row exists;
 //   test, anonymous      the page's one anonymous join is refused; the screen shows the not-owned
@@ -95,6 +98,8 @@ const DISCOVERY_URL = `${ISSUER_ORIGIN}/.well-known/openid-configuration`;
 const CLIENT_ID = 'monster-realm';
 const PROVIDER_NAME = 'Dev Account';
 const STORE_URL = 'https://store.steampowered.com/';
+/** The prefix of every reconnect-token key. */
+const TOKEN_PREFIX = 'mr.authToken.v1|';
 /** The issuer's data directory: the same on every run on one machine, and never removed. */
 const ISSUER_DATA_DIR = join(tmpdir(), 'mr-signin-gate-issuer');
 /** The text a page shows when the host rejects the issuer's token signature. */
@@ -468,6 +473,22 @@ function ownTile(page: Page): Promise<GameSnap['ownAuthTile']> {
   );
 }
 
+/** The reconnect-token key for the gate target. */
+function gateTokenKey(target: RigTarget): string {
+  return `${TOKEN_PREFIX}${encodeURIComponent(target.uri)}|${encodeURIComponent(target.gateDb)}`;
+}
+
+/** The reconnect-token keys in the page's localStorage and sessionStorage. */
+function tokenKeys(page: Page): Promise<{ local: string[]; session: string[] }> {
+  return page.evaluate((prefix: string) => {
+    const keys = (s: Storage): string[] =>
+      Array.from({ length: s.length }, (_, i) => s.key(i) ?? '').filter((k) =>
+        k.startsWith(prefix),
+      );
+    return { local: keys(window.localStorage), session: keys(window.sessionStorage) };
+  }, TOKEN_PREFIX);
+}
+
 /** A dev account address for `role`, with a suffix no earlier run used. */
 function runEmail(role: 'owner' | 'stranger'): string {
   return `${role}-${randomBytes(6).toString('hex')}@signin-gate.test`;
@@ -686,8 +707,8 @@ test.describe
       if (issuer !== undefined) await stopChild(issuer);
     });
 
-    test('an official server shows the sign-in screen first, calls no join before sign-in, and an owning account then plays [acs-7.1]', async () => {
-      test.setTimeout(180_000);
+    test('an official server shows the sign-in screen first, calls no join before sign-in, an owning account then plays, and a new page of the same profile is a new identity at the sign-in screen [acs-7.1]', async () => {
+      test.setTimeout(240_000);
       const r = rig();
       expect(gatePlayers(r.target, 'owner: players before'), 'owner: no player yet').toEqual([]);
       const ctx = await r.browser.newContext();
@@ -736,6 +757,45 @@ test.describe
           'owner: the anonymous identity never called join_game',
         ).toBe(0);
         await expectNoRawRefusal(page, 'owner');
+
+        // The signed-in half of the per-tab rule: nothing is kept on the device, and a new page of
+        // the same profile is neither the earlier anonymous identity nor the account.
+        expect(
+          (await tokenKeys(page)).local,
+          'owner: the signed-in page keeps no token key in localStorage',
+        ).toEqual([]);
+        await page.close();
+        await expect
+          .poll(
+            () => gatePlayers(r.target, 'owner: players after the page closed').includes(account),
+            {
+              message: 'owner: the server ended the signed-in session (its player row is gone)',
+              timeout: SESSION_END_MS,
+            },
+          )
+          .toBe(false);
+
+        const next = await ctx.newPage();
+        await next.goto(`${r.target.gateOrigin}/`);
+        const fresh = await waitIdentity(next, 'owner: new page');
+        expect(fresh, 'owner: the new page is not the earlier anonymous identity').not.toBe(anon);
+        expect(fresh, 'owner: the new page is not the account identity').not.toBe(account);
+        await expectGate(next, GATE_TITLE, GATE_BODY, ['signIn'], 'owner: new page');
+        expect(await ownTile(next), 'owner: the new page has no character').toBeNull();
+        expect(
+          await tokenKeys(next),
+          'owner: the new page keeps its token key in sessionStorage, none on the device',
+        ).toEqual({ local: [], session: [gateTokenKey(r.target)] });
+        await holdFor(() => {
+          expect(
+            gatePlayers(r.target, 'owner: players with the new page open'),
+            'owner: the new page adds no player row',
+          ).toEqual([]);
+          expect(
+            refusalsFor(r.target, fresh, 'owner: refusals for the new page'),
+            'owner: no join_game reached the server for the new page identity',
+          ).toBe(0);
+        });
       } finally {
         await closeAndDrain(ctx, r.target, 'owner');
       }
