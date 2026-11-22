@@ -5,11 +5,11 @@
 //!
 //! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.12.0,
 //! `vendor/spacetimedb/src/lib.rs:1145`, `#[doc(hidden)] pub`) yields a context whose `db` is
-//! the real `Local {}` accessor type, so `ctx.db.<table>().<index>().find(..)` in a
-//! production helper compiles and runs unchanged. That generated code bottoms
-//! out in the `extern "C"` host imports declared by `spacetimedb-bindings-sys`
-//! (`#[link(wasm_import_module = "spacetime_10.x")]`), which the native
-//! test target leaves UNDEFINED (`vendor/native-host.patch` compiles the vendored crate's
+//! the real `Local` accessor, built by `Local::__host()` (`lib.rs:1148`, `:1944-1954`), so
+//! `ctx.db.<table>().<index>().find(..)` in a production helper compiles and runs unchanged.
+//! That generated code bottoms out in the `extern "C"` host imports declared by
+//! `spacetimedb-bindings-sys` (`#[link(wasm_import_module = "spacetime_10.x")]`), which the
+//! native test target leaves UNDEFINED (`vendor/native-host.patch` compiles the vendored crate's
 //! `native_link_stubs` module out). This module defines every one of those ELEVEN symbols ONCE
 //! (a `#[no_mangle]` symbol is one-definition-per-binary) and implements SEVEN of them
 //! unconditionally: the two name lookups, the index point and range scans, the row
@@ -2176,10 +2176,11 @@ use std::path::Path;
 /// inside a vendored copy that only wasm compiles passes every native test. Undoing
 /// `vendor/native-host.patch` strictly, hunk by hunk, must give back each file whose sha256
 /// `vendor/PRISTINE.sha256` records from the crates.io package. The copies hold exactly the
-/// files the manifest lists; every changed line is a `#[cfg]` attribute that, on wasm32 under
-/// every feature assignment, selects what the original selected; the manifest, each copy's
-/// `Cargo.toml` and the workspace pin name one version; and `[patch.crates-io]` points the two
-/// crates, and nothing else, at their copies.
+/// files the manifest lists, none executable; every changed line is a `#[cfg]` attribute that,
+/// on wasm32 under every feature assignment, selects what the original selected; the manifest,
+/// each copy's `Cargo.toml` and the workspace pin name one version; `[patch.crates-io]` points
+/// the two crates, and nothing else, at their copies; and no other root-manifest table and no
+/// `.cargo/` config can patch or wrap the build behind them.
 #[test]
 fn nh_vendored_crates_are_the_crates_io_release_plus_the_patch() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -2271,7 +2272,7 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
         hex.len() == 64 && hex.bytes().all(is_lower_hex)
     }
 
-    // A byte of a crate name or of a cfg string.
+    // A byte of a crate name, of a cfg string or of a bare TOML key.
     fn is_name_byte(byte: u8) -> bool {
         byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
     }
@@ -2365,8 +2366,22 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
         })
     }
 
+    // Whether a file's mode has an execute bit; no file of a crates.io package has one.
+    #[cfg(unix)]
+    fn is_executable(meta: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        (meta.permissions().mode() & 0o111) != 0
+    }
+
+    // Off unix a file's metadata carries no execute bits to read.
+    #[cfg(not(unix))]
+    fn is_executable(_: &std::fs::Metadata) -> bool {
+        false
+    }
+
     // Adds to `found` every file under `vendor/<rel>`, as a path relative to `vendor/`. An
-    // entry that is neither a regular file nor a directory (a symlink, say) fails.
+    // entry that is neither a regular file nor a directory (a symlink, say) fails, and so does
+    // a file with an execute bit.
     fn walk(vendor: &Path, rel: &str, found: &mut BTreeSet<String>) -> Result<(), String> {
         let listing = std::fs::read_dir(vendor.join(rel));
         let listing = listing.map_err(|e| format!("vendor/{rel}: cannot be listed: {e}"))?;
@@ -2382,6 +2397,11 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
             if kind.is_dir() {
                 walk(vendor, &path, found)?;
             } else if kind.is_file() {
+                let meta = entry.metadata();
+                let meta = meta.map_err(|e| format!("vendor/{path}: {e}"))?;
+                if is_executable(&meta) {
+                    return Err(format!("vendor/{path}: has an execute bit set"));
+                }
                 found.insert(path);
             } else {
                 return Err(format!("vendor/{path}: neither file nor directory"));
@@ -2390,13 +2410,58 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
         Ok(())
     }
 
+    // The entries of `dir` (`shown` in messages): each name, then `/` for a directory, nothing
+    // for a regular file and `?` for anything else (a symlink, say).
+    fn entries(dir: &Path, shown: &str) -> Result<BTreeSet<String>, String> {
+        let listing = std::fs::read_dir(dir);
+        let listing = listing.map_err(|e| format!("{shown}: cannot be listed: {e}"))?;
+        let mut names = BTreeSet::new();
+        for entry in listing {
+            let entry = entry.map_err(|e| format!("{shown}: cannot be listed: {e}"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let kind = entry.file_type();
+            let kind = kind.map_err(|e| format!("{shown}{name}: {e}"))?;
+            let mark = match (kind.is_dir(), kind.is_file()) {
+                (true, _) => "/",
+                (_, true) => "",
+                _ => "?",
+            };
+            names.insert(format!("{name}{mark}"));
+        }
+        Ok(names)
+    }
+
+    // Whether the byte at `i`, if there is one, would continue a bare TOML key.
+    fn continues_key(bytes: &[u8], i: Option<usize>) -> bool {
+        let byte = i.and_then(|i| bytes.get(i));
+        byte.is_some_and(|&b| is_name_byte(b))
+    }
+
+    // Whether `line` holds `key` as a whole TOML key, bare or quoted, rather than inside a
+    // longer bare key (`dispatch` does not name `patch`).
+    fn names_key(line: &str, key: &str) -> bool {
+        let bytes = line.as_bytes();
+        let whole = |at: usize| {
+            let before = continues_key(bytes, at.checked_sub(1));
+            !before && !continues_key(bytes, Some(at + key.len()))
+        };
+        line.match_indices(key).any(|(at, _)| whole(at))
+    }
+
     // The path that a `--- a/<path>` line and the `+++ b/<path>` line after it both name.
     fn file_header(minus: &[u8], plus: Option<&[u8]>) -> Option<String> {
         let minus = std::str::from_utf8(minus).ok()?;
         let plus = std::str::from_utf8(plus?).ok()?;
         let path = minus.strip_prefix("--- a/")?.strip_suffix('\n')?;
         let same = plus.strip_prefix("+++ b/")?.strip_suffix('\n')? == path;
-        (same && is_vendor_path(path)).then(|| path.to_string())
+        same.then(|| path.to_string())
+    }
+
+    // Whether `lines[i]` starts a hunk (`@@`) or a file (a `--- ` line, then a `+++ ` line).
+    // A cfg-only patch holds no changed line that could be read as either.
+    fn starts_section(lines: &[&[u8]], i: usize) -> bool {
+        let next_is_plus = lines.get(i + 1).is_some_and(|n| n.starts_with(b"+++ "));
+        lines[i].starts_with(b"@@") || (lines[i].starts_with(b"--- ") && next_is_plus)
     }
 
     // `@@ -<start>,<count> +<start>,<count> @@` with nothing after it -> the four numbers.
@@ -2418,9 +2483,10 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
     }
 
     // The patch, parsed strictly. Per file: `--- a/<path>`, `+++ b/<path>` naming a file the
-    // manifest holds, then its hunks, ascending and apart, each body exactly as long as its
-    // header says. Any other line (`\ No newline at end of file`, `diff `, `index `, a line
-    // with no `\n`) fails, and so does a patch that changes no file.
+    // manifest holds, then its hunks, each body (up to the next hunk or file) exactly as long
+    // as its header says; `undo` holds the hunks to ascending and apart. Any other line
+    // (`\ No newline at end of file`, `diff `, `index `, a line with no `\n`) fails, and so
+    // does a patch that changes no file.
     fn parse_patch(bytes: &[u8], pristine: &Pristine) -> Result<Vec<FilePatch>, String> {
         if bytes.last().is_some_and(|&b| b != b'\n') {
             return Err(format!("{PATCH}: its last line has no newline"));
@@ -2443,40 +2509,29 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
             }
             i += 2;
             let mut hunks = Vec::new();
-            let (mut old_end, mut new_end) = (0, 0);
             while i < lines.len() && lines[i].starts_with(b"@@") {
                 let at = i + 1;
                 let header = String::from_utf8_lossy(lines[i]).trim_end().to_string();
                 let Some((os, oc, ns, nc)) = hunk_header(lines[i]) else {
                     return Err(format!("{PATCH}:{at}: `{header}` is not a hunk header"));
                 };
-                if os < old_end || ns < new_end {
-                    return Err(format!(
-                        "{PATCH}:{at}: `{header}` does not come after the hunk before it"
-                    ));
-                }
                 i += 1;
-                let (mut old_left, mut new_left) = (oc, nc);
                 let mut body = Vec::new();
-                while old_left > 0 || new_left > 0 {
-                    let at = i + 1;
-                    let Some(line) = lines.get(i) else {
-                        return Err(format!("{PATCH}: `{header}` ends before its counts"));
-                    };
-                    match line[0] {
-                        b' ' if old_left > 0 && new_left > 0 => {
-                            old_left -= 1;
-                            new_left -= 1;
-                        }
-                        b'-' if old_left > 0 => old_left -= 1,
-                        b'+' if new_left > 0 => new_left -= 1,
-                        _ => return Err(format!("{PATCH}:{at}: not a line of `{header}`")),
+                while i < lines.len() && !starts_section(&lines, i) {
+                    if !matches!(lines[i][0], b' ' | b'-' | b'+') {
+                        let at = i + 1;
+                        return Err(format!("{PATCH}:{at}: not a line of `{header}`"));
                     }
-                    body.push((line[0], line[1..].to_vec()));
+                    body.push((lines[i][0], lines[i][1..].to_vec()));
                     i += 1;
                 }
-                old_end = os + oc;
-                new_end = ns + nc;
+                let old_count = body.iter().filter(|(kind, _)| *kind != b'+').count();
+                let new_count = body.iter().filter(|(kind, _)| *kind != b'-').count();
+                if (old_count, new_count) != (oc, nc) {
+                    return Err(format!(
+                        "{PATCH}:{at}: the line counts of `{header}` disagree with its body"
+                    ));
+                }
                 hunks.push(Hunk {
                     header,
                     old_start: os,
@@ -2501,8 +2556,9 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
         lines.map(|(_, line)| line.as_slice()).collect()
     }
 
-    // The file as published. Each hunk's new side (context and `+` lines) must be the tree's
-    // lines from its new start, exactly, and is replaced by its old side (context and `-`).
+    // The file as published. Each hunk starts after the one before it on both sides; its new
+    // side (context and `+` lines) must be the tree's lines from its new start, exactly, and
+    // is replaced by its old side (context and `-`), which must land on its old start.
     fn undo(file: &FilePatch, tree: &[u8]) -> Result<Vec<u8>, String> {
         let lines: Vec<&[u8]> = tree.split_inclusive(|&b| b == b'\n').collect();
         let mut old: Vec<u8> = Vec::with_capacity(tree.len());
@@ -2513,8 +2569,10 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
             let new_side = side(hunk, b'-');
             let start = hunk.new_start.saturating_sub(1);
             let end = start + new_side.len();
-            let in_tree = lines.get(start..end);
-            if hunk.new_start == 0 || start < next || in_tree != Some(new_side.as_slice()) {
+            if hunk.new_start == 0 || start < next {
+                return Err(format!("{at}: starts at 0 or in the hunk before it"));
+            }
+            if lines.get(start..end) != Some(new_side.as_slice()) {
                 let ns = hunk.new_start;
                 return Err(format!(
                     "{at}: the file does not hold the hunk's new lines at line {ns}"
@@ -2814,8 +2872,12 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
         }
     }
 
-    // One version: each copy's `[package]` has its `crate` line's, and the workspace pins
-    // `spacetimedb` to exactly the `spacetimedb` copy's.
+    // One version: every `crate` line names the same one (the crates move together), each
+    // copy's `[package]` has it, and the workspace pins `spacetimedb` to exactly it.
+    let versions: BTreeSet<&str> = pristine.crates.values().map(String::as_str).collect();
+    if versions.len() != 1 {
+        return Err(format!("{MANIFEST}: versions {versions:?}, not one"));
+    }
     for (name, version) in &pristine.crates {
         let rel = format!("{name}/Cargo.toml");
         let manifest = read_text(vendor, &rel)?;
@@ -2836,45 +2898,62 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
         ));
     }
 
-    // What cargo builds is what this guard covers: `vendor/` holds the declared crates and the
-    // three files beside them, the crates are the two the native host patches, and the root
-    // `[patch.crates-io]` points each at its copy and names nothing else.
+    // What cargo builds is what this guard covers: the crates are the two the native host
+    // patches; `vendor/` holds their directories and the three files beside them; `.cargo/`
+    // holds no cargo config; and the root manifest has one patch table, `[patch.crates-io]`,
+    // which points each crate at its copy and names nothing else.
     let names: Vec<&str> = pristine.crates.keys().map(String::as_str).collect();
     if names != CRATES {
         return Err(format!("{MANIFEST}: crates {names:?}, not {CRATES:?}"));
     }
-    let listing = std::fs::read_dir(vendor);
-    let listing = listing.map_err(|e| format!("vendor/: cannot be listed: {e}"))?;
-    let mut top = BTreeSet::new();
-    for entry in listing {
-        let entry = entry.map_err(|e| format!("vendor/: cannot be listed: {e}"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let kind = entry.file_type();
-        let kind = kind.map_err(|e| format!("vendor/{name}: {e}"))?;
-        let is_crate = names.contains(&name.as_str()) && kind.is_dir();
-        let is_file = TOP_FILES.contains(&name.as_str()) && kind.is_file();
-        if !(is_crate || is_file) {
+    let expected: BTreeSet<String> = names
+        .iter()
+        .map(|name| format!("{name}/"))
+        .chain(TOP_FILES.map(String::from))
+        .collect();
+    let top = entries(vendor, "vendor/")?;
+    if top != expected {
+        return Err(format!(
+            "vendor/ holds {top:?}, not {expected:?} (`/` is a directory)"
+        ));
+    }
+    let root = vendor.parent().ok_or("vendor/ has no parent directory")?;
+    let dot_cargo = entries(&root.join(".cargo"), ".cargo/")?;
+    if dot_cargo != BTreeSet::from(["mutants.toml".to_string()]) {
+        return Err(format!(
+            ".cargo/ holds {dot_cargo:?}, not only the file mutants.toml: a cargo config there \
+             could patch or wrap the build behind the guard's back"
+        ));
+    }
+    let mut patch_tables = 0;
+    for (index, line) in root_manifest.split('\n').enumerate() {
+        let at = index + 1;
+        if line.contains("'''") || line.contains("\"\"\"") || line.contains('\\') {
             return Err(format!(
-                "vendor/{name}: neither a declared crate's directory nor one of {TOP_FILES:?}"
+                "Cargo.toml:{at}: a multi-line string or a `\\` could hide a patch table"
             ));
         }
-        top.insert(name);
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if names_key(line, "replace") {
+            return Err(format!(
+                "Cargo.toml:{at}: `{line}` names `replace`, a source override like `[patch]`"
+            ));
+        }
+        if !names_key(line, "patch") {
+            continue;
+        }
+        if line.trim() != "[patch.crates-io]" {
+            return Err(format!(
+                "Cargo.toml:{at}: `{line}` names `patch` and is not `[patch.crates-io]`"
+            ));
+        }
+        patch_tables += 1;
     }
-    let missing: Vec<&str> = TOP_FILES
-        .into_iter()
-        .chain(names.iter().copied())
-        .filter(|name| !top.contains(*name))
-        .collect();
-    if !missing.is_empty() {
-        return Err(format!("vendor/: {missing:?} missing"));
-    }
-    let headers: Vec<&str> = root_manifest
-        .split('\n')
-        .filter(|line| line.trim_start().starts_with('[') && line.contains("patch"))
-        .collect();
-    if headers != ["[patch.crates-io]"] {
+    if patch_tables != 1 {
         return Err(format!(
-            "Cargo.toml: the patch tables are {headers:?}, not exactly [patch.crates-io]"
+            "Cargo.toml: {patch_tables} `[patch.crates-io]` lines, not exactly one"
         ));
     }
     let entry = |name: &&str| format!("{name} = {{ path = \"vendor/{name}\" }}");

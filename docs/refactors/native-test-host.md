@@ -365,9 +365,16 @@ the error:
   cfg predicates over `target_arch` and `feature` only; and on wasm32, under every on/off choice of
   the features they name, `B` selects what `A` selected. So a `+` line cannot carry code, and the
   shipped module stays the vendor's code.
-- **What cargo builds is what it checked.** Each `crate` line's version equals its copy's
-  `Cargo.toml`, the `[workspace.dependencies]` pin is exactly `spacetimedb = "=<that version>"`,
-  and `[patch.crates-io]` lists exactly the two crates, each at `vendor/<name>`.
+- **What cargo builds is what it checked.** Every `crate` line names one version, equal to its
+  copy's `Cargo.toml`; the `[workspace.dependencies]` pin is exactly `spacetimedb = "=<that
+  version>"`; `[patch.crates-io]` lists exactly the two crates, each at `vendor/<name>`, and is the
+  root manifest's only line naming a `patch` key (no `[replace]`, no multi-line string, no `\`);
+  and the root `.cargo/` holds only `mutants.toml`, so no cargo config can patch or wrap the build.
+  No vendored file has an execute bit.
+
+The test trusts `vendor/PRISTINE.sha256`: an edit to a copy together with its manifest line passes
+it. The manifest is checked against crates.io itself by re-running the re-vendor steps in a scratch
+directory and comparing with `vendor/` (the runbook's "Check vendor/ against crates.io").
 
 It treats each crates.io package as an artifact that a tool generated: it recovers the package's
 bytes and compares them, by hash, with the ones recorded from the release. `standards/testing-tdd.md`
@@ -494,7 +501,10 @@ Measured at the build, 2026-11-22, on the same machine:
   The Loki and `mr-trace-relay` leg was not run.
 - **Advisories.** None for either crate at 2.12.0, from OSV or GitHub.
 - **The re-vendor steps.** The runbook's commands, run at 2.12.0 in a scratch directory,
-  reproduce `vendor/` byte for byte.
+  reproduce `vendor/` byte for byte, which is also the runbook's check of `vendor/` against
+  crates.io.
+- **Mutation runs.** The guard passes in cargo-mutants' scratch copy of the tree (a forced
+  baseline: 1312 of 1312).
 
 After the hop, lpw-34 starts from 2.12.0, and each later hop re-applies the patch.
 

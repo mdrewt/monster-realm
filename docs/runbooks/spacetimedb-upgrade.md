@@ -139,19 +139,28 @@ patched where they refuse a native host"). At each hop, with `VER` the new versi
 
    A hunk that does not apply means the vendor changed that code: redo the attribute by hand in
    the new source, with its `// monster-realm: was <the original attribute>` notice, or extend the
-   patch the same way when a new native-only branch refuses the host.
+   patch the same way when a new native-only branch refuses the host. Then delete the `.rej` file
+   `patch` left beside it (the guard refuses any file the manifest does not list). The guard
+   accepts only whole-line `#[cfg(...)]` attributes over `target_arch` and `feature`; a refusal
+   gated any other way (another cfg key, `cfg!()`, an attribute sharing its line) needs the guard
+   widened in `server-module/src/native_host_tests.rs` in the same change.
 
 4. **Regenerate the patch** whenever `patch` reported an offset or a hand edit was made, because
-   the guard test checks each hunk at its exact line:
+   the guard test checks each hunk at its exact line. The files are the ones the old patch names,
+   plus any a hand edit added:
 
    ```sh
-   (cd vendor && for f in spacetimedb-bindings-sys/src/lib.rs spacetimedb/src/lib.rs spacetimedb/src/table.rs; do
+   files=$(sed -n 's|^--- a/||p' vendor/native-host.patch)
+   (cd vendor && for f in $files; do
      diff -u --label "a/$f" --label "b/$f" "$S/a/$f" "$f"
    done) > "$S/native-host.patch"; cp "$S/native-host.patch" vendor/native-host.patch
+   git add -A vendor
    ```
 
 5. **Pin and check.** Set `spacetimedb = "=$VER"` in the root `Cargo.toml`, run
-   `cargo update -p spacetimedb --precise $VER`, then `cargo nextest run -p monster-realm-module`.
+   `cargo update -p spacetimedb --precise $VER` (it accepts the path package; the other
+   `spacetimedb-*` crates follow the copies' own `=$VER` requirements), then
+   `cargo nextest run -p monster-realm-module`.
    The guard test `nh_vendored_crates_are_the_crates_io_release_plus_the_patch` checks the
    copies, the manifest, the patch's shape and the `[patch.crates-io]` table; the vendor's native
    stubs fail the test link if the patch is missing.
@@ -161,6 +170,20 @@ patched where they refuse a native host"). At each hop, with `VER` the new versi
    (`gh api repos/clockworklabs/SpacetimeDB/security-advisories`) and OSV
    (`curl -sS https://api.osv.dev/v1/query -d '{"package":{"name":"spacetimedb","ecosystem":"crates.io"},"version":"'$VER'"}'`,
    and the same for `spacetimedb-bindings-sys`). An empty answer is `{}`.
+
+### Check vendor/ against crates.io
+
+The guard test trusts `vendor/PRISTINE.sha256`: an edit to a copy together with its manifest line
+passes it. What checks the manifest is crates.io itself. In a scratch directory that holds only
+`vendor/PRISTINE.sha256`, `vendor/native-host.patch` and `vendor/README.md`, run steps 1 to 4
+above with `VER` set to the version the manifest records (skip `git rm`/`git add`, which act on
+the real tree), then compare:
+
+```sh
+diff -r <scratch>/vendor vendor && echo "vendor/ is the crates.io release plus the patch"
+```
+
+Run it for any change under `vendor/`, at a hop or not.
 
 ## Enum variant encoding: check this one specifically
 
