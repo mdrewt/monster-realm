@@ -309,7 +309,7 @@ cache-on:
     @echo 'export SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-2G}'
     @echo 'export CARGO_INCREMENTAL=0'
 
-# ---- nightly gates (.github/workflows/nightly.yml) ----
+# ---- slow gates (.github/workflows/nightly.yml; ci.yml runs mutate-diff on a pull request) ----
 
 # criterion bench of the game-core hot paths; fails on a committed-ceiling breach
 # (game-core/benches/budgets.rs). Clean estimates so a restored cache can't feed stale data;
@@ -369,21 +369,28 @@ mutate-core shard="":
         exit 1
     fi
 
-# Local pre-push check: mutate only the code COMMITTED since `base` (game-core + server-module);
-# uncommitted edits are not seen.
-# Empty diff = nothing to mutate. Same exit triage as mutate-core (0 ok, 2 missed, 3 timeouts).
-mutate-diff base="origin/master":
+# Mutate only the code COMMITTED since `base` (uncommitted edits are not seen); `base...HEAD`
+# diffs from the merge base. `package` empty = game-core and server-module, the local pre-push
+# check; `monster-realm-module` alone is the server's zero-tolerance gate, which CI runs on every
+# pull request. An empty diff exits 0 without building. Same exit triage as mutate-core (0 ok,
+# 2 missed, 3 timeouts).
+mutate-diff base="origin/master" package="":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{package}}" in
+        "") paths=(game-core server-module); packages=(-p game-core -p monster-realm-module) ;;
+        monster-realm-module) paths=(server-module); packages=(-p monster-realm-module) ;;
+        *) echo "mutate-diff: package '{{package}}' is not empty or monster-realm-module" >&2; exit 64 ;;
+    esac
     diff_file=$(mktemp)
     trap 'rm -f "$diff_file"' EXIT
-    git diff "{{base}}...HEAD" -- game-core server-module > "$diff_file"
-    [ -s "$diff_file" ] || { echo "mutate-diff: no game-core/server-module changes vs {{base}}"; exit 0; }
+    git diff "{{base}}...HEAD" -- "${paths[@]}" > "$diff_file"
+    [ -s "$diff_file" ] || { echo "mutate-diff: no ${paths[*]} changes vs {{base}}"; exit 0; }
     ulimit -v 8000000 2>/dev/null || true
     # One rebuild per mutant: incremental, for the same reason as mutate-core.
     export CARGO_INCREMENTAL=1
     status=0
-    cargo mutants -p game-core -p monster-realm-module --test-tool nextest --in-diff "$diff_file" || status=$?
+    cargo mutants "${packages[@]}" --test-tool nextest --in-diff "$diff_file" || status=$?
     if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
         echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
         exit "$status"
@@ -395,12 +402,12 @@ mutate-diff base="origin/master":
         exit 1
     fi
 
-# Server-module mutation gate, zero tolerance like game-core: a surviving mutant is either killed by
-# a test or, if provably equivalent / log-only, excluded in .cargo/mutants.toml with the proof.
-# There is no survivor budget to creep. The crate is `monster-realm-module`.
+# The full server-module mutation sweep, a report: it lists every surviving mutant and exits 0.
+# The server's zero-tolerance gate is `mutate-diff` on a pull request's changed lines; the weekly
+# sweep files these survivors as one issue. The crate is `monster-realm-module`.
 #
-# Unsharded (`shard` empty) it runs the whole crate. The nightly runs a matrix of `k/n` shards to
-# fit the 6 h job cap (~1500 mutants); every shard is its own zero-tolerance verdict, like mutate-core.
+# Unsharded (`shard` empty) it runs the whole crate. The weekly sweep runs a matrix of `k/n` shards
+# to fit the 6 h job cap.
 mutate-server shard="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -417,24 +424,19 @@ mutate-server shard="":
     status=0
     cargo mutants -p monster-realm-module --test-tool nextest ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts (a hang is a detection, so they count as
-    # caught; they may accompany missed). Same set as mutate-core. Anything else is not a verdict.
+    # caught; they may accompany missed). Anything else (a build or baseline test failure) is not a
+    # verdict, so there is no survivor list to report: fail.
     if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
         echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
         exit "$status"
     fi
-    # Not redundant with set -e: without the file, missed="" and the `-gt` test below errors
-    # inside an if-condition, which set -e exempts — a vacuous green.
+    # Without the file the report would read as zero survivors.
     if [ ! -f mutants.out/missed.txt ]; then
-        echo "mutate-server: mutants.out/missed.txt absent — cannot verify zero-missed" >&2
+        echo "mutate-server: mutants.out/missed.txt absent — no survivor list to report" >&2
         exit 1
     fi
-    missed=$(grep -c '' mutants.out/missed.txt || true)
-    echo "mutate-server: missed=$missed (zero-tolerance${shard_args[*]:+, shard {{shard}}})"
-    if [ "$missed" -gt 0 ]; then
-        cat mutants.out/missed.txt >&2
-        echo "server-module mutation gate: $missed surviving mutant(s) — zero-tolerance" >&2
-        exit 1
-    fi
+    echo "mutate-server: $(grep -c '' mutants.out/missed.txt || true) surviving mutant(s)${shard_args[*]:+ in shard {{shard}}} — a report, not a gate"
+    cat mutants.out/missed.txt
 
 # Republish over live data with a bumped CONTENT_VERSION and assert data survives + re-seeds.
 # Needs a running SpacetimeDB; isolated DB name.

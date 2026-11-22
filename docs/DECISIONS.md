@@ -1773,32 +1773,35 @@ switch; constructing the tactical roots at boot; a renderer switch that pops the
 server conversation suspended over the battle base stays) or that demotes a visible shell when one
 batch fails to build; a fallback renderer for an anchor without its tactical row.
 
-## The nightly mutation gates run sharded and both are zero-tolerance
+## game-core is mutation-gated nightly, the server on the lines a pull request changes
 
-**Decision.** `mutation` (game-core) and `mutation-server` run as matrices of cargo-mutants
-`--shard k/n` jobs (6 and 8). Every shard is its own zero-tolerance verdict and the job is red iff
-any shard is. The server gate has no survivor cap: a server survivor is killed by a test or, if
-provably equivalent (no input distinguishes it), excluded in `.cargo/mutants.toml` with the written
-proof (function + operator + column keys, so line drift cannot re-expose a runaway mutant). Log
-lines are observable (a log sink asserts them), so a mutant that only changes a log line is killed,
-not excluded. Four guaranteed-hang `tiled_import` mutants and one runaway-allocation mutant are
-excluded there too. `mutate-core` and `mutate-server` carry an 8 GB `ulimit -v` backstop so a
-runaway allocation aborts its test instead of killing the runner. All three `mutate-*` recipes
-build incrementally (`CARGO_INCREMENTAL=1`; CI's toolchain action sets 0) under
-`[profile.mutants]` (the test profile without debuginfo), and the nightly shards are round-robin
-so slow files spread evenly; verdicts are identical. `just mutate-diff` mutates only the lines
-committed since a base.
-`just test` also runs the server tests with `--features dev_reducers`, which the default build
-compiles out.
+**Decision.** `mutation` (game-core, nightly) runs as six cargo-mutants `--shard k/n` jobs, each
+its own zero-tolerance verdict. The server's zero-tolerance gate is the pull-request job
+`mutation-diff` (`just mutate-diff origin/master monster-realm-module`): it mutates the
+server-module lines the change makes, diffed from the merge base, and a survivor fails it. The full
+server sweep, `mutation-server` (eight shards), runs weekly and files its survivors as one issue on
+the default branch; survivors fail nothing, and a shard is red only when cargo-mutants gave no
+verdict. A survivor is killed by a test or, if provably equivalent (no input distinguishes it),
+excluded in `.cargo/mutants.toml` with the written proof, keyed by function + operator + column so
+line drift cannot re-expose a runaway mutant. The bodies of the four logging functions
+(`guards::log_reject`, `guards::json_escape`, `observability::mr_log`, `mr_log_breadcrumb`) are
+excluded by name; the tests of the escaping and of the envelope stay. The `mutate-*` recipes build incrementally under `[profile.mutants]` with an 8 GB
+`ulimit -v` backstop, so a runaway allocation aborts its test instead of killing the runner.
+
+**Accepted gap.** The diff gate sees only mutants on changed source lines: a test weakened or
+deleted with no server source line changed passes it. The weekly report is read for exactly that.
 
 **Why.** The crates outgrew one serial job: nights of 2026-10-31, 11-01 and 11-04 were cancelled at
-GitHub's 6 h cap. A count cap hides regressions (kill one, add one, same number) and rewards
-raising it; the server had drifted to 72 survivors against a cap of 34, which were cleared with real
-tests.
+GitHub's 6 h cap. A count cap hides regressions (kill one, add one, same number) and rewards raising
+it. A nightly full-sweep verdict lands after the merge, on whoever is next; a diff verdict lands on
+the change that made the mutant, before it merges, and the eight-runner sweep then runs once a
+week instead of every night. What a log line must keep is what the observability stack parses, the
+envelope and its `evt` key, and tests assert those directly; mutating a logging body judged text no
+tool parses.
 
-**Rules out.** Raising a cap or dropping mutants to fit the time limit; excluding a killable
-mutant; a per-shard server budget; a committed survivor baseline file; an aggregate job that
-re-counts what each shard already judged.
+**Rules out.** Raising a cap or dropping mutants to fit the time limit; excluding a killable mutant
+outside the logging functions; a server survivor budget or a committed survivor baseline file; a
+test that asserts only log text no tool parses.
 
 ## Menu chrome draws from `--mr-*` tokens; the listbox ring stays `#cc5500`
 
