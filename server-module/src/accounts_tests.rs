@@ -12675,6 +12675,7 @@ mod acs6_profile {
             enforces_ownership: name != "test",
             login_issuers,
             dev_reducers: has("dev_reducers"),
+            attestation_keys: &[],
         }
     }
 
@@ -12689,6 +12690,7 @@ mod acs6_profile {
             enforces_ownership,
             login_issuers,
             dev_reducers,
+            attestation_keys: &[],
         }
     }
 

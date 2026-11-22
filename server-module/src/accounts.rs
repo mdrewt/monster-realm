@@ -54,6 +54,33 @@ const HOSTED_DEV_ISSUER: &str = "https://auth.monster-realm.spookyowltech.com";
 /// trusts them.
 pub(crate) const DEV_LOGIN_ISSUERS: &[&str] = &[LOCAL_DEV_ISSUER, HOSTED_DEV_ISSUER];
 
+/// A key a build accepts world attestations under: the account service publishes each with
+/// its `kid` (`account-service/attestation-public-keys.json`). The algorithm is Ed25519 for
+/// every one; a token's own header never says which key or algorithm checks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AttestationKey {
+    pub(crate) kid: &'static str,
+    /// The 32 bytes of the Ed25519 public key (the JWK's `x`, decoded).
+    pub(crate) public_key: [u8; 32],
+}
+
+/// The production attestation keys, which a `world` build holds and no other. Empty: no
+/// production key is published, so a `world` build accepts no binding and admits nobody.
+pub(crate) const PRODUCTION_ATTESTATION_KEYS: &[AttestationKey] = &[];
+/// The account service's `local-dev` attestation key. Its private half is derived from a
+/// label in this repository (`account-service/src/keys.ts`), so anyone can sign with it.
+const LOCAL_DEV_ATTESTATION_KEY: AttestationKey = AttestationKey {
+    kid: "ZwdbDVawj1m0Ot-iNvOUMykc1_hgr1dD5wRMph3rgWE",
+    public_key: [
+        0x05, 0x65, 0xdf, 0x21, 0x76, 0xe8, 0xa7, 0x59, 0x3a, 0xf8, 0x28, 0x74, 0x55, 0x3b, 0xa0,
+        0xde, 0x49, 0x5c, 0x81, 0x42, 0xe8, 0xe0, 0xd3, 0x73, 0x4c, 0x10, 0x93, 0x8c, 0x7d, 0x80,
+        0x14, 0x5e,
+    ],
+};
+/// The dev attestation keys: the published `local-dev` and `hosted-dev` lists. No release
+/// build holds them.
+pub(crate) const DEV_ATTESTATION_KEYS: &[AttestationKey] = &[LOCAL_DEV_ATTESTATION_KEY];
+
 /// The cargo features a build names: the build input for ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuildFeatures {
@@ -76,6 +103,9 @@ pub(crate) struct BuildProfile {
     pub(crate) login_issuers: &'static [&'static str],
     /// The build compiles a dev reducer.
     pub(crate) dev_reducers: bool,
+    /// The keys whose world attestations bind an identity here. A build with none binds
+    /// nothing and reads no binding.
+    pub(crate) attestation_keys: &'static [AttestationKey],
 }
 
 /// The profile of a feature set (`docs/local-play.md` §3, "The build input"). A release
@@ -103,6 +133,8 @@ pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
         enforces_ownership,
         login_issuers,
         dev_reducers,
+        // lpw-15 skeleton: no build holds a key yet.
+        attestation_keys: &[],
     }
 }
 

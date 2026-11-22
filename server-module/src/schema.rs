@@ -1882,6 +1882,7 @@ pub struct PlayerSession {
 pub enum WorldAccessRule {
     Open,
     Password,
+    Allowlist,
 }
 
 /// The world's access rule: one row, `id` always 0, written only by the owner's
@@ -1917,6 +1918,61 @@ pub struct WorldAdmissionAttempt {
     pub wrong_at_ms: Vec<i64>,
     #[index(btree)]
     pub last_wrong_at_ms: i64,
+}
+
+/// The account an identity of this world is bound to: what a verified attestation said, and the
+/// `kid` of the key that signed it. PRIVATE; the owner reads its own row through
+/// `my_world_binding`. Written only by `world_binding.rs`; erased by the deletion cascade and
+/// included in the data export.
+#[spacetimedb::table(accessor = world_binding)]
+pub struct WorldBinding {
+    #[primary_key]
+    pub identity: Identity,
+    pub account_subject: String,
+    pub bound_at_ms: i64,
+    /// The attestation's `mr_ent` named the base game.
+    pub entitled: bool,
+    pub key_id: String,
+}
+
+/// Owner-scoped read path for `world_binding`: the sender's own row.
+#[spacetimedb::view(accessor = my_world_binding, public)]
+fn my_world_binding(ctx: &spacetimedb::ViewContext) -> Option<WorldBinding> {
+    ctx.db.world_binding().identity().find(ctx.sender())
+}
+
+/// The one outstanding bind nonce of an identity: 32 lowercase hex characters the world chose,
+/// good until `expires_at_ms`. PRIVATE; the owner reads its own row through `my_bind_nonce`.
+/// Written only by `world_binding.rs`; erased by the deletion cascade.
+#[spacetimedb::table(accessor = world_bind_nonce)]
+pub struct WorldBindNonce {
+    #[primary_key]
+    pub identity: Identity,
+    pub nonce: String,
+    #[index(btree)]
+    pub expires_at_ms: i64,
+}
+
+/// Owner-scoped read path for `world_bind_nonce`: the sender's own row.
+#[spacetimedb::view(accessor = my_bind_nonce, public)]
+fn my_bind_nonce(ctx: &spacetimedb::ViewContext) -> Option<WorldBindNonce> {
+    ctx.db.world_bind_nonce().identity().find(ctx.sender())
+}
+
+/// A name of this world: what an attestation's `aud` must equal, byte for byte, to bind here.
+/// PRIVATE. Written only by the owner's `set_world_names`.
+#[spacetimedb::table(accessor = world_name)]
+pub struct WorldName {
+    #[primary_key]
+    pub name: String,
+}
+
+/// An account the host lets in under the `Allowlist` rule. PRIVATE. Written only by the
+/// owner's `set_world_allowlist`.
+#[spacetimedb::table(accessor = world_allowlist)]
+pub struct WorldAllowlist {
+    #[primary_key]
+    pub account_subject: String,
 }
 
 /// Deletion policy for one table's rows at account-cascade time.
@@ -2123,6 +2179,18 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         basis: "names an identity and the times of the wrong passwords given for it, deleted outright at cascade time; a time stops counting after ten minutes and the next door call that writes removes a row none of whose times count; not exported",
         exportable: false,
     },
+    DataLifecycleEntry {
+        table: "world_binding",
+        policy: DeletionPolicy::Erase,
+        basis: "names the account an identity is bound to in this world, deleted outright at cascade time; not re-keyed by the claim flow; exported as the binding the owner made",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "world_bind_nonce",
+        policy: DeletionPolicy::Erase,
+        basis: "an identity and the one bind nonce the world chose for it, good for five minutes, deleted outright at cascade time; not exported: it is spent or expired within minutes",
+        exportable: false,
+    },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---
     DataLifecycleEntry {
         table: "player",
@@ -2288,6 +2356,18 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "world_access",
         policy: DeletionPolicy::NotOwned,
         basis: "the host's access rule and password hash: one row with no Identity column, written only by the module owner",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "world_name",
+        policy: DeletionPolicy::NotOwned,
+        basis: "the names this world answers to in an attestation: no Identity column, written only by the module owner",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "world_allowlist",
+        policy: DeletionPolicy::NotOwned,
+        basis: "the account subjects the host lets in: the host's own list, no Identity column, written only by the module owner",
         exportable: false,
     },
     DataLifecycleEntry {

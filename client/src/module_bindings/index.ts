@@ -38,6 +38,8 @@ import AcceptChallengeReducer from "./accept_challenge_reducer";
 import AckEvolutionNoticesReducer from "./ack_evolution_notices_reducer";
 import AdmitReducer from "./admit_reducer";
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
+import BindWorldAccountReducer from "./bind_world_account_reducer";
+import BindWorldAccountForReducer from "./bind_world_account_for_reducer";
 import BuyReducer from "./buy_reducer";
 import CancelAccountDeletionReducer from "./cancel_account_deletion_reducer";
 import CancelChallengeReducer from "./cancel_challenge_reducer";
@@ -63,6 +65,8 @@ import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import OpenTradeSessionReducer from "./open_trade_session_reducer";
 import ProposeTradeReducer from "./propose_trade_reducer";
+import RequestBindNonceReducer from "./request_bind_nonce_reducer";
+import RequestBindNonceForReducer from "./request_bind_nonce_for_reducer";
 import RequestDataExportReducer from "./request_data_export_reducer";
 import RespondTradeReducer from "./respond_trade_reducer";
 import SellReducer from "./sell_reducer";
@@ -72,6 +76,8 @@ import SetPartySlotReducer from "./set_party_slot_reducer";
 import SetProfileNameReducer from "./set_profile_name_reducer";
 import SetTradeOfferReducer from "./set_trade_offer_reducer";
 import SetWorldAccessReducer from "./set_world_access_reducer";
+import SetWorldAllowlistReducer from "./set_world_allowlist_reducer";
+import SetWorldNamesReducer from "./set_world_names_reducer";
 import StartGuestClaimReducer from "./start_guest_claim_reducer";
 import SubmitQueueReducer from "./submit_queue_reducer";
 import SyncContentReducer from "./sync_content_reducer";
@@ -96,6 +102,7 @@ import MyBattleDeployRow from "./my_battle_deploy_table";
 import MyBattleEventsRow from "./my_battle_events_table";
 import MyBattleQueueRow from "./my_battle_queue_table";
 import MyBattleUnitsRow from "./my_battle_units_table";
+import MyBindNonceRow from "./my_bind_nonce_table";
 import MyConversationRow from "./my_conversation_table";
 import MyExportBundleRow from "./my_export_bundle_table";
 import MyFormationRow from "./my_formation_table";
@@ -106,6 +113,7 @@ import MyPlayerQuestRow from "./my_player_quest_table";
 import MyTacticalBattleRow from "./my_tactical_battle_table";
 import MyTradeSessionRow from "./my_trade_session_table";
 import MyWalletRow from "./my_wallet_table";
+import MyWorldBindingRow from "./my_world_binding_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
 import ProfileRow from "./profile_table";
@@ -402,6 +410,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyBattleUnitsRow),
+  myBindNonce: __table({
+    name: 'my_bind_nonce',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyBindNonceRow),
   myConversation: __table({
     name: 'my_conversation',
     indexes: [
@@ -472,6 +487,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyWalletRow),
+  myWorldBinding: __table({
+    name: 'my_world_binding',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyWorldBindingRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
@@ -480,6 +502,8 @@ const reducersSchema = __reducers(
   __reducerSchema("ack_evolution_notices", AckEvolutionNoticesReducer),
   __reducerSchema("admit", AdmitReducer),
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
+  __reducerSchema("bind_world_account", BindWorldAccountReducer),
+  __reducerSchema("bind_world_account_for", BindWorldAccountForReducer),
   __reducerSchema("buy", BuyReducer),
   __reducerSchema("cancel_account_deletion", CancelAccountDeletionReducer),
   __reducerSchema("cancel_challenge", CancelChallengeReducer),
@@ -505,6 +529,8 @@ const reducersSchema = __reducers(
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("open_trade_session", OpenTradeSessionReducer),
   __reducerSchema("propose_trade", ProposeTradeReducer),
+  __reducerSchema("request_bind_nonce", RequestBindNonceReducer),
+  __reducerSchema("request_bind_nonce_for", RequestBindNonceForReducer),
   __reducerSchema("request_data_export", RequestDataExportReducer),
   __reducerSchema("respond_trade", RespondTradeReducer),
   __reducerSchema("sell", SellReducer),
@@ -514,6 +540,8 @@ const reducersSchema = __reducers(
   __reducerSchema("set_profile_name", SetProfileNameReducer),
   __reducerSchema("set_trade_offer", SetTradeOfferReducer),
   __reducerSchema("set_world_access", SetWorldAccessReducer),
+  __reducerSchema("set_world_allowlist", SetWorldAllowlistReducer),
+  __reducerSchema("set_world_names", SetWorldNamesReducer),
   __reducerSchema("start_guest_claim", StartGuestClaimReducer),
   __reducerSchema("submit_queue", SubmitQueueReducer),
   __reducerSchema("sync_content", SyncContentReducer),
@@ -567,6 +595,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_battle_queue": Omit<typeof tablesSchema.schemaType.tables["myBattleQueue"], "accessorName"> & { readonly accessorName: "my_battle_queue" };
     /** @deprecated Use `myBattleUnits` instead. This alias will be removed in the next major version. */
     readonly "my_battle_units": Omit<typeof tablesSchema.schemaType.tables["myBattleUnits"], "accessorName"> & { readonly accessorName: "my_battle_units" };
+    /** @deprecated Use `myBindNonce` instead. This alias will be removed in the next major version. */
+    readonly "my_bind_nonce": Omit<typeof tablesSchema.schemaType.tables["myBindNonce"], "accessorName"> & { readonly accessorName: "my_bind_nonce" };
     /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
     readonly "my_conversation": Omit<typeof tablesSchema.schemaType.tables["myConversation"], "accessorName"> & { readonly accessorName: "my_conversation" };
     /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
@@ -587,6 +617,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_trade_session": Omit<typeof tablesSchema.schemaType.tables["myTradeSession"], "accessorName"> & { readonly accessorName: "my_trade_session" };
     /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
     readonly "my_wallet": Omit<typeof tablesSchema.schemaType.tables["myWallet"], "accessorName"> & { readonly accessorName: "my_wallet" };
+    /** @deprecated Use `myWorldBinding` instead. This alias will be removed in the next major version. */
+    readonly "my_world_binding": Omit<typeof tablesSchema.schemaType.tables["myWorldBinding"], "accessorName"> & { readonly accessorName: "my_world_binding" };
   };
 };
 
@@ -625,6 +657,7 @@ const tableAccessorAliases = {
   "my_battle_events": "myBattleEvents",
   "my_battle_queue": "myBattleQueue",
   "my_battle_units": "myBattleUnits",
+  "my_bind_nonce": "myBindNonce",
   "my_conversation": "myConversation",
   "my_export_bundle": "myExportBundle",
   "my_formation": "myFormation",
@@ -635,6 +668,7 @@ const tableAccessorAliases = {
   "my_tactical_battle": "myTacticalBattle",
   "my_trade_session": "myTradeSession",
   "my_wallet": "myWallet",
+  "my_world_binding": "myWorldBinding",
 } as const;
 
 function __withTableAccessorAliases<T extends object>(target: T, freeze = false): T {
@@ -695,6 +729,8 @@ export type DbView = __DbViewBase & {
   readonly "my_battle_queue": __DbViewBase["myBattleQueue"];
   /** @deprecated Use `myBattleUnits` instead. This alias will be removed in the next major version. */
   readonly "my_battle_units": __DbViewBase["myBattleUnits"];
+  /** @deprecated Use `myBindNonce` instead. This alias will be removed in the next major version. */
+  readonly "my_bind_nonce": __DbViewBase["myBindNonce"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __DbViewBase["myConversation"];
   /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
@@ -715,6 +751,8 @@ export type DbView = __DbViewBase & {
   readonly "my_trade_session": __DbViewBase["myTradeSession"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __DbViewBase["myWallet"];
+  /** @deprecated Use `myWorldBinding` instead. This alias will be removed in the next major version. */
+  readonly "my_world_binding": __DbViewBase["myWorldBinding"];
 };
 
 type __TablesBase = __QueryBuilder<typeof tablesSchema.schemaType>;
@@ -759,6 +797,8 @@ export type Tables = __TablesBase & {
   readonly "my_battle_queue": __TablesBase["myBattleQueue"];
   /** @deprecated Use `myBattleUnits` instead. This alias will be removed in the next major version. */
   readonly "my_battle_units": __TablesBase["myBattleUnits"];
+  /** @deprecated Use `myBindNonce` instead. This alias will be removed in the next major version. */
+  readonly "my_bind_nonce": __TablesBase["myBindNonce"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __TablesBase["myConversation"];
   /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
@@ -779,6 +819,8 @@ export type Tables = __TablesBase & {
   readonly "my_trade_session": __TablesBase["myTradeSession"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __TablesBase["myWallet"];
+  /** @deprecated Use `myWorldBinding` instead. This alias will be removed in the next major version. */
+  readonly "my_world_binding": __TablesBase["myWorldBinding"];
 };
 
 /** The tables available in this remote SpacetimeDB module. Each table reference doubles as a query builder. */

@@ -1498,6 +1498,7 @@ export type WorldAccess = __Infer<typeof WorldAccess>;
 export const WorldAccessRule = __t.enum("WorldAccessRule", {
   Open: __t.unit(),
   Password: __t.unit(),
+  Allowlist: __t.unit(),
 });
 export type WorldAccessRule = __Infer<typeof WorldAccessRule>;
 
@@ -1513,6 +1514,32 @@ export const WorldAdmissionAttempt = __t.object("WorldAdmissionAttempt", {
   lastWrongAtMs: __t.i64(),
 });
 export type WorldAdmissionAttempt = __Infer<typeof WorldAdmissionAttempt>;
+
+export const WorldAllowlist = __t.object("WorldAllowlist", {
+  accountSubject: __t.string(),
+});
+export type WorldAllowlist = __Infer<typeof WorldAllowlist>;
+
+export const WorldBindNonce = __t.object("WorldBindNonce", {
+  identity: __t.identity(),
+  nonce: __t.string(),
+  expiresAtMs: __t.i64(),
+});
+export type WorldBindNonce = __Infer<typeof WorldBindNonce>;
+
+export const WorldBinding = __t.object("WorldBinding", {
+  identity: __t.identity(),
+  accountSubject: __t.string(),
+  boundAtMs: __t.i64(),
+  entitled: __t.bool(),
+  keyId: __t.string(),
+});
+export type WorldBinding = __Infer<typeof WorldBinding>;
+
+export const WorldName = __t.object("WorldName", {
+  name: __t.string(),
+});
+export type WorldName = __Infer<typeof WorldName>;
 
 export const ZoneDefRow = __t.object("ZoneDefRow", {
   zoneId: __t.u32(),

@@ -1910,5 +1910,75 @@
       "last_wrong_at_ms"
     ],
     "scheduled": null
+  },
+  "world_binding": {
+    "pk": "identity",
+    "visibility": "private",
+    "columns": {
+      "identity": "Identity",
+      "account_subject": "String",
+      "bound_at_ms": "i64",
+      "entitled": "bool",
+      "key_id": "String"
+    },
+    "order": [
+      "identity",
+      "account_subject",
+      "bound_at_ms",
+      "entitled",
+      "key_id"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
+  },
+  "world_bind_nonce": {
+    "pk": "identity",
+    "visibility": "private",
+    "columns": {
+      "identity": "Identity",
+      "nonce": "String",
+      "expires_at_ms": "i64"
+    },
+    "order": [
+      "identity",
+      "nonce",
+      "expires_at_ms"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "expires_at_ms"
+    ],
+    "scheduled": null
+  },
+  "world_name": {
+    "pk": "name",
+    "visibility": "private",
+    "columns": {
+      "name": "String"
+    },
+    "order": [
+      "name"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
+  },
+  "world_allowlist": {
+    "pk": "account_subject",
+    "visibility": "private",
+    "columns": {
+      "account_subject": "String"
+    },
+    "order": [
+      "account_subject"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   }
 }

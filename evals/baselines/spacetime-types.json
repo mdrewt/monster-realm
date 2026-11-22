@@ -954,7 +954,8 @@
     "kind": "enum",
     "variants": [
       "Open",
-      "Password"
+      "Password",
+      "Allowlist"
     ]
   }
 }

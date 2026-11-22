@@ -1495,6 +1495,7 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(battle), rows_battle),
     (stringify!(battle_summary), rows_battle_summary),
     (stringify!(character), rows_character),
+    (stringify!(world_binding), rows_world_binding),
 ];
 
 // Length-first equality rejects a strict prefix in both argument orders
@@ -1710,6 +1711,11 @@ fn rows_player_handle(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
         rows.push(json_player_handle(&row));
     }
     Ok(rows)
+}
+
+// lpw-15 skeleton: the exporter is not built.
+fn rows_world_binding(_ctx: &ReducerContext, _owner: Identity) -> Result<Vec<String>, String> {
+    Ok(Vec::new())
 }
 
 fn rows_player(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {

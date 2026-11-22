@@ -35,6 +35,7 @@ pub(crate) const REJECT_NO_PASSWORD_RULE: &str = "this world has no password rul
 pub(crate) const REJECT_PASSWORD_LENGTH: &str = "a password is 1 to 128 bytes";
 pub(crate) const REJECT_OPEN_TAKES_NO_PASSWORD: &str = "an open world takes no password";
 pub(crate) const REJECT_PASSWORD_REQUIRED: &str = "a password world needs a password";
+pub(crate) const REJECT_ALLOWLIST_TAKES_NO_PASSWORD: &str = "an allowlist world takes no password";
 /// The log reason of a wrong password at the door. The call itself answers `Ok` (see [`admit`]).
 const LOG_WRONG_PASSWORD: &str = "wrong password";
 
@@ -147,6 +148,8 @@ pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
             is_world_owner(ctx, identity)
                 || ctx.db.world_admission().identity().find(identity).is_some()
         }
+        // lpw-15 skeleton: the rule is not built.
+        WorldAccessRule::Allowlist => true,
     }
 }
 
@@ -174,7 +177,7 @@ pub(crate) fn require_admitted_at_connect(ctx: &ReducerContext) -> Result<(), St
     Err(REJECT_NOT_ADMITTED.to_string())
 }
 
-fn require_world_owner(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
+pub(crate) fn require_world_owner(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     if is_world_owner(ctx, ctx.sender()) {
         return Ok(());
     }
@@ -280,6 +283,10 @@ pub fn set_world_access(
                 return reject("set_world_access", ctx.sender(), REJECT_PASSWORD_REQUIRED);
             }
         },
+        // lpw-15 skeleton: the rule is not built.
+        (WorldAccessRule::Allowlist, _) => {
+            return Err("lpw-15: not built".to_string());
+        }
     };
     let row = WorldAccess {
         id: WORLD_ACCESS_ROW,
