@@ -3267,8 +3267,8 @@ function buildDeployPanel(
       remembered: store.ownFormation(identity)?.monsterIds ?? [],
     };
     // bt-15 (BT15.1): a PvP / Practice side deploys `pvpDeployCount(format, conscious)` of its OWN
-    // list and follows its own `battle_deploy.locked`; the anchor's side B is the OPPONENT's roster
-    // there (R-bt-14-ROSTERREVEAL) and is read only as a wild pack.
+    // list and follows its own `battle_deploy.locked`; the anchor's side B is read only as a wild
+    // pack (a Deploying PvP anchor arrives with the opponent's side empty: schema.rs `my_battle`).
     const vm = deployVM(
       shellKind(row.kind) === 'pvp'
         ? { mode: 'pvp', ...base, format: row.format, locked: ownDeployLocked(row.battleId) }
@@ -4188,17 +4188,19 @@ const mrPvpHook = {
   // opponent only through the view model). Returns null when the battle is absent (not yet
   // arrived or GC'd). activeSkillIds are the ACTIVE monster's known skill ids for each
   // side, so either page can pick a legal skill for its role.
-  // An EMPTY activeSkillIds array means the side's active index was out of bounds —
-  // an abnormal server state; callers must not submit an action built from it.
+  // An EMPTY activeSkillIds array means the side has no monster at its active index: the
+  // opponent's side of a PvP battle while it is Deploying (schema.rs `my_battle` delivers it
+  // empty), else an abnormal server state; callers must not submit an action built from it.
   // bt-16: `hp` is the active monster's HP as the ANCHOR mirrors it (tactics.rs `mirror_hp`),
   // -1 without an active monster — the e2e's oracle that a mid-battle anchor update (a
-  // delete + insert pair on the view) reached this client and kept the row.
+  // delete + insert pair on the view) reached this client and kept the row. `teamSize` is the
+  // side's team length as the store holds it (0 for that hidden Deploying side).
   battleById(battleId: string): {
     battleId: string;
     outcome: string;
     turnNumber: number;
-    sideA: { active: number; activeSkillIds: number[]; hp: number };
-    sideB: { active: number; activeSkillIds: number[]; hp: number };
+    sideA: { active: number; activeSkillIds: number[]; hp: number; teamSize: number };
+    sideB: { active: number; activeSkillIds: number[]; hp: number; teamSize: number };
   } | null {
     const b = store.battle(BigInt(battleId));
     if (!b) return null;
@@ -4210,11 +4212,13 @@ const mrPvpHook = {
         active: b.sideA.active,
         activeSkillIds: [...(b.sideA.team[b.sideA.active]?.knownSkillIds ?? [])],
         hp: b.sideA.team[b.sideA.active]?.currentHp ?? -1,
+        teamSize: b.sideA.team.length,
       },
       sideB: {
         active: b.sideB.active,
         activeSkillIds: [...(b.sideB.team[b.sideB.active]?.knownSkillIds ?? [])],
         hp: b.sideB.team[b.sideB.active]?.currentHp ?? -1,
+        teamSize: b.sideB.team.length,
       },
     };
   },
