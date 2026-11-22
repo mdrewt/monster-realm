@@ -71,6 +71,21 @@ vi.mock('./observability/telemetry', async (importOriginal) =>
 
 vi.mock('./render/world', () => worldRendererMock());
 
+/** Every message handed to the page's live region, oldest first. */
+const LIVE = vi.hoisted(() => ({ said: [] as string[] }));
+
+// The live region records each message it is asked to announce, then announces it as ever.
+vi.mock('./ui/liveRegion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ui/liveRegion')>();
+  class RecordingLiveRegion extends actual.LiveRegion {
+    override announce(message: string, nowMs: number): void {
+      LIVE.said.push(message);
+      super.announce(message, nowMs);
+    }
+  }
+  return { ...actual, LiveRegion: RecordingLiveRegion };
+});
+
 // --- the build and the target -----------------------------------------------------------------
 
 const OIDC_ISSUER = 'https://auth.example/realms/monster-realm/';
@@ -536,5 +551,134 @@ describe('no sign-in screen toward a single-player world, a friends server, or a
     opts.onOwnershipRefused?.();
     expect(menuShown(), 'no menu').toBe(false);
     expect(statusText()).toBe(str(EN, 'claim.gate.notOwned.title'));
+  });
+});
+
+const helpShown = (): boolean => shownById('help-overlay');
+/** How many times `text` is handed to the live region. */
+const saidCount = (text: string): number => LIVE.said.filter((m) => m === text).length;
+
+describe('the sign-in gate beside the other frames, the status line and the live region', () => {
+  beforeEach(() => {
+    LIVE.said = [];
+  });
+
+  const NO_OFFER: ReadonlyArray<readonly [string, TargetKind, BuildEnv]> = [
+    ['a local server', 'local', SIGN_IN_BUILD],
+    ['a private server', 'private', SIGN_IN_BUILD],
+    ['an official server built without an issuer', 'official', { oidc: false }],
+  ];
+  for (const [label, kind, env] of NO_OFFER) {
+    it(`toward ${label}, a reconnect that withholds its join again leaves the catalog's not-owned line on the status line [acs-7.3]`, async () => {
+      // WRONG IMPL KILLED: the reconnect clearing the status line with nothing putting the line
+      // back (the player stands outside the world with no word of why).
+      const opts = await boot(kind, env);
+      opts.onReady(H.identity);
+      opts.onOwnershipRefused?.();
+      const line = str(EN, 'claim.gate.notOwned.title');
+      expect(statusText(), `${label}: precondition, the line is up`).toBe(line);
+      opts.onAccountRequired?.();
+      opts.onReconnect(H.identity);
+      expect(statusText(), `${label}: the line after the reconnect`).toBe(line);
+      expect(menuShown(), `${label}: no menu`).toBe(false);
+      expect(document.body.textContent ?? '').not.toContain(RAW_REFUSAL);
+    });
+  }
+
+  it('a sign-in that fails before the first snapshot opens no Profile at that moment [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the failure taking the claim overlay's path first (Profile opens and is only
+    // closed later, when the gate comes up).
+    const opts = await boot('official');
+    opts.onSignInFailed?.('sign-in-expired');
+    expect(profileShown(), 'no Profile right after the failure').toBe(false);
+    expect(menuShown(), 'and no menu before the snapshot').toBe(false);
+  });
+
+  it('a withheld join alone shows no frame before the snapshot; the snapshot then shows the sign-in screen [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: the gate opened before the identity is known (a frame over nothing);
+    // onReady not showing a gate raised ahead of it.
+    const opts = await boot('official');
+    opts.onAccountRequired?.();
+    expect(menuShown(), 'nothing before onReady').toBe(false);
+    opts.onReady(H.identity);
+    expectSignInScreen(EN, 'after onReady');
+    expect(frameLine()).toBe(str(EN, 'claim.gate.signIn.body'));
+  });
+
+  it('toward a local server the gate callbacks leave the ordinary menu open, with its title, entries and cursor [acs-7.3]', async () => {
+    // WRONG IMPL KILLED: the gate's lowering closing a menu frame that is not the gate.
+    const opts = await boot('local');
+    opts.onReady(H.identity);
+    joinWorld(opts);
+    tap('KeyM');
+    expect(menuShown(), 'precondition: M opens the menu').toBe(true);
+    expect(frameTitle()).toBe(str(EN, 'menu.title'));
+    expect(rowKeys()).toEqual(MENU_KEYS);
+    tap('ArrowDown');
+    const before = cursor();
+    expect(before, 'precondition: the cursor is on an entry').not.toBeNull();
+    opts.onAccountRequired?.();
+    opts.onOwnershipRefused?.();
+    expect(menuShown(), 'the menu stays open').toBe(true);
+    expect(frameTitle()).toBe(str(EN, 'menu.title'));
+    expect(rowKeys()).toEqual(MENU_KEYS);
+    expect(cursor(), 'the cursor stays where it stood').toBe(before);
+  });
+
+  it('toward a test server, a refusal while Help is open closes Help and leaves the not-owned screen as the only frame shown [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the gate opened on top of Help without closing it, or underneath it.
+    const opts = await boot('test');
+    opts.onReady(H.identity);
+    tap('KeyR');
+    expect(helpShown(), 'precondition: Select opens Help').toBe(true);
+    opts.onOwnershipRefused?.();
+    expectNotOwnedScreen(EN, 'refused over Help');
+    expect(helpShown(), 'Help is closed').toBe(false);
+    expect(profileShown(), 'no Profile').toBe(false);
+  });
+
+  it('on the not-owned screen with the cursor on the store row, the C accelerator and Escape each leave the cursor there and the screen as it stands [acs-7.4]', async () => {
+    // WRONG IMPL KILLED: an accelerator or Escape that closes and reopens the gate (the cursor would
+    // jump back to the first row).
+    const opts = await boot('official');
+    raiseGate(opts);
+    opts.onOwnershipRefused?.();
+    tap('ArrowDown');
+    expect(cursor(), 'precondition: the cursor is on the store row').toBe('menu-root-store');
+    tap('KeyC');
+    expect(cursor(), 'after C').toBe('menu-root-store');
+    expectNotOwnedScreen(EN, 'after C');
+    expect(frameLine(), 'after C: the standing line').toBe(str(EN, 'claim.gate.notOwned.body'));
+    expect(profileShown(), 'after C: no Profile').toBe(false);
+    tap('Escape');
+    expect(cursor(), 'after Escape').toBe('menu-root-store');
+    expectNotOwnedScreen(EN, 'after Escape');
+    expect(frameLine(), 'after Escape: the stays line').toBe(str(EN, 'claim.gate.stays'));
+    expect(H.signIns).toBe(0);
+  });
+
+  it('the standing line reaches the live region once when the screen comes up, not again on a repaint that changes nothing, and each new line once [acs-7.4]', async () => {
+    // WRONG IMPL KILLED: the line said on every repaint (a reconnect repeats it to the player); the
+    // line never said; a changed line left unsaid.
+    const opts = await boot('official');
+    const body = str(EN, 'claim.gate.signIn.body');
+    const notOwned = str(EN, 'claim.gate.notOwned.body');
+    const rejected = str(EN, 'claim.signInFailed.rejected');
+    raiseGate(opts);
+    expectSignInScreen(EN, 'up');
+    expect(saidCount(body), 'said once as the screen comes up').toBe(1);
+    opts.onAccountRequired?.();
+    opts.onReconnect(H.identity);
+    expectSignInScreen(EN, 'after the reconnect');
+    expect(saidCount(body), 'the repaint says nothing').toBe(1);
+    opts.onOwnershipRefused?.();
+    expectNotOwnedScreen(EN, 'refused');
+    expect(saidCount(notOwned), 'the refusal line, once').toBe(1);
+    opts.onOwnershipRefused?.();
+    expect(saidCount(notOwned), 'a second refusal changes nothing').toBe(1);
+    opts.onSignInFailed?.('sign-in-rejected');
+    expect(frameLine()).toBe(rejected);
+    expect(saidCount(rejected), 'the failure line, once').toBe(1);
+    expect(saidCount(body), 'the first line is not said again').toBe(1);
   });
 });

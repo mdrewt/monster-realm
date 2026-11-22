@@ -839,8 +839,8 @@ export function connect(opts: ConnectionOptions): Connection {
     conn.reducers.joinGame({ name }).catch((err) => {
       const msg = (err as Error)?.message ?? '';
       if (msg === ERR_OWNERSHIP_REQUIRED) {
-        // The server admits only a player who owns the game. A refusal that outlived its build
-        // says nothing about the build that replaced it.
+        // The server admits only a player who owns the game. A refusal that settles after a newer
+        // build was started reports nothing: that build's own join decides.
         if (gen !== buildGen) return;
         accountRequired = true;
         opts.onOwnershipRefused?.();

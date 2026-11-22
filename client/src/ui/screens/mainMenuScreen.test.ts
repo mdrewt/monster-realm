@@ -1182,4 +1182,29 @@ describe('mainMenu as the sign-in gate', () => {
     expect(itemsOf(vm.layout).map((i) => i.key)).toEqual(ROOT_KEYS);
     expect(press(menu, 'B').effect).toEqual(CLOSE);
   });
+
+  it('X, LB, RB, Start and Select answer nothing and hand back the same state, on the sign-in row and on the store row [acs-7.4]', () => {
+    // WRONG IMPL KILLED: X (or another button) activating the row under the cursor, so a stray
+    // press starts a sign-in or opens the store; a press that rebuilds the state or moves the cursor.
+    const cases: ReadonlyArray<readonly [string, MainMenuState, string]> = [
+      ['the one-row gate', openSignInGate(EMPTY_NAV_MEMORY, gateViewOf('sign-in')), 'signIn'],
+      [
+        'the sign-in row of the not-owned gate',
+        openSignInGate(EMPTY_NAV_MEMORY, gateViewOf('not-owned')),
+        'signIn',
+      ],
+      ['the store row', onStore(), 'store'],
+    ];
+    for (const [label, s, row] of cases) {
+      expect(s.nav.item, `precondition: ${label}`).toBe(row);
+      for (const button of ['X', 'LB', 'RB', 'Start', 'Select'] as const) {
+        for (const repeat of [false, true]) {
+          const step = press(s, button, repeat);
+          const at = `${label}: ${button}${repeat ? ' (repeat)' : ''}`;
+          expect(step.effect, at).toEqual(NONE);
+          expect(step.state, at).toBe(s);
+        }
+      }
+    }
+  });
 });

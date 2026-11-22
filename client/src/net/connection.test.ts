@@ -1168,6 +1168,23 @@ describe('connect() withholds the join of a connection that needs an account', (
     expect(b.joinGame).not.toHaveBeenCalled();
     expect(joinErrors(opts)).toEqual([]);
   });
+
+  it('join() on an account build while an account is required sends joinGame, so the claim flow`s Join keeps working for a signed-in player [acs-7.1]', async () => {
+    // WRONG IMPL KILLED: join() withheld for every build while an account is required; the
+    // current build's account bit never set, so join() takes every build for an anonymous one.
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const { opts } = gateOpts({ accountRequired: true });
+    const { handle, b } = await bootGate(opts, undefined, 'acct-jwt');
+    expect(b.token, 'precondition: an account build').toBe('acct-jwt');
+    expect(b.joinGame, 'precondition: the applied snapshot joined').toHaveBeenCalledTimes(1);
+    handle.join();
+    await settle();
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+    expect(b.joinGame).toHaveBeenLastCalledWith({ name: 'Tester' });
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(joinErrors(opts)).toEqual([]);
+  });
 });
 
 describe('connect() routes the ownership refusal of join_game', () => {
@@ -1328,6 +1345,43 @@ describe('connect() routes the ownership refusal of join_game', () => {
     await settle();
     expect(b1.joinGame).toHaveBeenCalledTimes(1);
     expect(opts.onAccountRequired).not.toHaveBeenCalled();
+  });
+
+  it('after the ownership refusal of an account build`s join, a later anonymous build of the same connection withholds its join and reports onAccountRequired [acs-7.2]', async () => {
+    // WRONG IMPL KILLED: the server's rule learned only from the refusal of an anonymous build (an
+    // account that does not own the game teaches nothing, so the guest that follows probes again).
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    const { opts, order } = gateOpts();
+    const { handle, b } = await bootGate(
+      opts,
+      (rec) => {
+        rec.joinGame.mockImplementation(rejectWith(OWNERSHIP_REQUIRED));
+      },
+      'acct-jwt',
+    );
+    expect(b.token, 'precondition: an account build').toBe('acct-jwt');
+    expect(b.joinGame, 'precondition: the account build joined').toHaveBeenCalledTimes(1);
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+
+    // The player declines the account: the next build is anonymous.
+    handle.continueAnonymously();
+    await settle();
+    const b1 = H.builds[1];
+    if (b1 === undefined) throw new Error('continueAnonymously built nothing');
+    expect(b1.token, 'precondition: an anonymous build').not.toBe('acct-jwt');
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    await settle();
+    expect(b1.joinGame, 'the anonymous build sends no join').not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(1);
+    expect(order.slice(0, 3)).toEqual(['ready', 'ownership-refused', 'account-required']);
+    expect(order).toHaveLength(4);
+    handle.join();
+    await settle();
+    expect(b1.joinGame, 'nor does join() on it').not.toHaveBeenCalled();
+    expect(joinErrors(opts)).toEqual([]);
   });
 });
 

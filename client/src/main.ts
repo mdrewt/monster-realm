@@ -1728,7 +1728,9 @@ function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
 // On a server that admits only players who own the game, the menu frame is the sign-in screen:
 // the rules are ui/claimModel.ts's (`signInGateStep`, `buildSignInGateView`) and the frame's gate
 // mode is ui/screens/mainMenuScreen.ts's. This block feeds the connection's two reports to the
-// model and holds the frame open while the gate has a view.
+// model and holds the frame open while the gate has a view. A target with no sign-in to offer (a
+// single-player world, a friends server, a build with no issuer) has no view: there the gate is
+// one status line saying why the player is not in the world.
 let signInGate: SignInGateState = SIGN_IN_GATE_INITIAL;
 /** The standing line last announced, so a repaint that changes nothing says nothing. */
 let saidGateLine: string | null = null;
@@ -1738,10 +1740,15 @@ const signInGateView = () => buildSignInGateView(signInGate, SIGN_IN_OFFER);
 
 /** Show the gate, or repaint it with its current view. It is the only screen a player the server
  *  has not admitted has, so every other player frame closes first. Nothing shows before the first
- *  applied snapshot: `onReady` shows a gate raised ahead of it. */
+ *  applied snapshot: `onReady` shows a gate raised ahead of it. `onReconnect` shows it again at
+ *  its tail, after the sweep closed the frame and the feedback reset cleared the status line. */
 function showSignInGate(): void {
+  if (signInGate.phase === 'hidden' || identity === '') return;
   const view = signInGateView();
-  if (view === undefined || identity === '') return;
+  if (view === undefined) {
+    reportError('connect-failure', notOwnedLine());
+    return;
+  }
   if (menuPlace() !== 'top') applyStack(contextStack, popToBase(contextStack));
   openMenu();
   if (view.line.text !== saidGateLine) {
@@ -1762,18 +1769,8 @@ function lowerSignInGate(): void {
 /** One gate event: step the model, then show what it says. */
 function applySignInGate(event: SignInGateEvent): void {
   signInGate = signInGateStep(signInGate, event);
-  if (signInGateView() === undefined) lowerSignInGate();
+  if (signInGate.phase === 'hidden') lowerSignInGate();
   else showSignInGate();
-}
-
-/** The connection withheld a join or the server refused one. A target with no sign-in to offer (a
- *  single-player world, a friends server, a build with no issuer) gets no screen: one status line
- *  says why the player is not in the world. */
-function raiseSignInGate(event: SignInGateEvent): void {
-  applySignInGate(event);
-  if (SIGN_IN_OFFER.kind === 'none') {
-    reportError('connect-failure', notOwnedLine());
-  }
 }
 
 /** Start's "close every frame" while the gate is up. On the gate it is B: the gate's stays line,
@@ -4860,8 +4857,8 @@ async function main(): Promise<void> {
     accountRequired: ACCOUNT_REQUIRED,
     // The connection withheld its join, or the server refused one for ownership: the sign-in gate.
     // The first arrives just before `onReady` / `onReconnect`, the second after them.
-    onAccountRequired: () => raiseSignInGate({ kind: 'account-required' }),
-    onOwnershipRefused: () => raiseSignInGate({ kind: 'ownership-refused' }),
+    onAccountRequired: () => applySignInGate({ kind: 'account-required' }),
+    onOwnershipRefused: () => applySignInGate({ kind: 'ownership-refused' }),
     // Undefined unless VITE_MR_DEVLOG is set — then the connection installs the
     // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay
     // unreachable from the send path).
@@ -4981,7 +4978,8 @@ async function main(): Promise<void> {
         claimRaised = false;
         renderClaim();
       }
-      // The sweep closed the menu frame too: a gate that is still up shows again, last.
+      // The sweep closed the menu frame and the reset above cleared the status line: a gate that
+      // is still up shows again, last.
       showSignInGate();
     },
     // onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
