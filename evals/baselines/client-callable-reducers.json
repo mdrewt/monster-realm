@@ -167,6 +167,7 @@
     "train": [
       "monster_id: u64()",
       "food_item_id: u32()"
-    ]
+    ],
+    "unbind_world_account": []
   }
 }

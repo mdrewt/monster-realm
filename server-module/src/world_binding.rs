@@ -567,6 +567,14 @@ pub fn bind_world_account_for(
     )
 }
 
+/// Erase the caller's own binding and bind nonce. SKELETON: the behaviour lands with the
+/// implementation increment.
+#[spacetimedb::reducer]
+pub fn unbind_world_account(ctx: &ReducerContext) -> Result<(), String> {
+    let _ = ctx;
+    Ok(())
+}
+
 /// Replace the names this world answers to in an attestation. Owner-only. Refused with no
 /// write: more than [`MAX_WORLD_NAMES`], an entry that is not 1 to [`WORLD_NAME_MAX_BYTES`]
 /// visible ASCII characters, a repeated entry. An empty list leaves the world with no name,
