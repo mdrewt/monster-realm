@@ -4,8 +4,9 @@
 //! `unadmitted` (a `Password` world refuses an unadmitted connection before anything is
 //! recorded), `wrong_password` (the door and its lockout), `owner_only` (only
 //! `config.owner_identity` sets the rule or works the door), `owner_admits` (the owner's
-//! admit list), and `password_hash` (the Argon2id parameters, against an independent
-//! implementation's known answers).
+//! admit list), `password_hash` (the Argon2id parameters, against an independent
+//! implementation's known answers), and `allowlist` (an `Allowlist` world admits a bound
+//! identity by its account and an unbound one by its admission row).
 //!
 //! The host models no rollback, so every refusal here is asserted to write nothing at all, and
 //! a counted wrong password is asserted to return `Ok` (a real host rolls back an `Err`, which
@@ -1922,5 +1923,844 @@ mod password_hash {
             !password_matches(&swapped_salt, KAT2_PASSWORD),
             "the same password under another salt does not match"
         );
+    }
+}
+
+// =====================================================================================
+// An `Allowlist` world admits a bound identity by its account on the list, and an identity
+// with no trusted binding by its admission row.
+// =====================================================================================
+
+mod allowlist {
+    use super::super::REJECT_ALLOWLIST_TAKES_NO_PASSWORD;
+    use super::*;
+    use crate::schema::{WorldAllowlist, WorldBinding};
+
+    const ALICE: &str = "dev:alice-6f1c2a3b";
+    const BOB: &str = "dev:bob-0d4e4f5a";
+    const CAROL: &str = "dev:carol-8b6c7d8e";
+
+    /// The access tables of [`world`] plus `world_binding` (read by `identity`) and
+    /// `world_allowlist` (read by `account_subject`). Neither of the two is writable: no path
+    /// under test writes them, and a write to either aborts the test.
+    struct A<'a> {
+        w: W<'a>,
+        binding: Handle<'a, WorldBinding>,
+        list: Handle<'a, WorldAllowlist, String>,
+    }
+
+    fn tables(fx: &Fixture) -> A<'_> {
+        A {
+            w: world(fx),
+            binding: fx
+                .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+                .unique(),
+            list: fx
+                .table_keyed::<WorldAllowlist, String>("world_allowlist", "account_subject", |r| {
+                    r.account_subject.clone()
+                })
+                .unique(),
+        }
+    }
+
+    fn allowlist_row() -> WorldAccess {
+        WorldAccess {
+            id: 0,
+            rule: WorldAccessRule::Allowlist,
+            password_salt: Vec::new(),
+            password_hash: Vec::new(),
+        }
+    }
+
+    /// A world owned by [`owner`] whose rule is `Allowlist`, with an empty list.
+    fn allowlist_world(fx: &Fixture) -> A<'_> {
+        let a = tables(fx);
+        seed_owner(&a.w, owner());
+        a.w.access.seed(&allowlist_row());
+        a
+    }
+
+    /// The `kid` of a key the default test build holds.
+    fn trusted_kid() -> String {
+        crate::accounts::DEV_ATTESTATION_KEYS[0].kid.to_string()
+    }
+
+    fn binding_row(who: Identity, subject: &str, key_id: &str) -> WorldBinding {
+        WorldBinding {
+            identity: who,
+            account_subject: subject.to_string(),
+            bound_at_ms: T0 - 100,
+            entitled: true,
+            key_id: key_id.to_string(),
+        }
+    }
+
+    /// Bind `who` to `subject` under a key the build holds.
+    fn bind(a: &A<'_>, who: Identity, subject: &str) {
+        a.binding.seed(&binding_row(who, subject, &trusted_kid()));
+    }
+
+    fn enlist(a: &A<'_>, subjects: &[&str]) {
+        for subject in subjects {
+            a.list.seed(&WorldAllowlist {
+                account_subject: (*subject).to_string(),
+            });
+        }
+    }
+
+    /// Every stored row of every registered table, with each table's write count.
+    fn footprint_all(fx: &Fixture, a: &A<'_>) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> {
+        let mut out = footprint(fx, &a.w);
+        out.push((
+            "world_binding",
+            encs(&a.binding.rows()),
+            fx.writes_to("world_binding"),
+        ));
+        out.push((
+            "world_allowlist",
+            encs(&a.list.rows()),
+            fx.writes_to("world_allowlist"),
+        ));
+        out
+    }
+
+    fn footprint_but_sessions(fx: &Fixture, a: &A<'_>) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> {
+        footprint_all(fx, a)
+            .into_iter()
+            .filter(|(table, _, _)| *table != "player_session")
+            .collect()
+    }
+
+    /// `who` passes both doors: the admission check of a client-callable reducer, and the
+    /// connect reducer, which records its connection and writes nothing else. Any session row
+    /// `who` holds is dropped first (its earlier connection closed).
+    #[track_caller]
+    fn assert_admitted(fx: &Fixture, a: &A<'_>, who: Identity, ms: i64, case: &str) {
+        let _ = a.w.session.remove(who);
+        let before = footprint_but_sessions(fx, a);
+        assert_eq!(passes(fx, who, ms), Ok(()), "{case}: the admission check");
+        assert!(
+            call(fx, who, ms, |ctx| is_admitted(ctx, who)),
+            "{case}: is_admitted"
+        );
+        assert_eq!(
+            call(fx, who, ms, crate::on_connect),
+            Ok(()),
+            "{case}: the connection"
+        );
+        assert_eq!(
+            sessions_of(&a.w, who),
+            vec![conn_of(who)],
+            "{case}: the connection is recorded"
+        );
+        assert_eq!(
+            footprint_but_sessions(fx, a),
+            before,
+            "{case}: admitting writes nothing but the session"
+        );
+    }
+
+    /// `who` is refused at both doors, anonymous and signed in, with `REJECT_NOT_ADMITTED`, and
+    /// no registered table changes.
+    #[track_caller]
+    fn assert_refused(fx: &Fixture, a: &A<'_>, who: Identity, ms: i64, case: &str) {
+        let before = footprint_all(fx, a);
+        assert_eq!(
+            passes(fx, who, ms),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "{case}: the admission check"
+        );
+        assert!(
+            !call(fx, who, ms, |ctx| is_admitted(ctx, who)),
+            "{case}: is_admitted"
+        );
+        assert_eq!(
+            call(fx, who, ms, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "{case}: the anonymous connection"
+        );
+        assert_eq!(
+            call_signed_in(fx, who, ms, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "{case}: the signed-in connection"
+        );
+        assert_eq!(
+            footprint_all(fx, a),
+            before,
+            "{case}: a refusal writes nothing"
+        );
+    }
+
+    fn sorted(mut rows: Vec<([u8; 32], i64)>) -> Vec<([u8; 32], i64)> {
+        rows.sort_unstable();
+        rows
+    }
+
+    // --- who the rule admits ---------------------------------------------------------
+
+    /// kills: a bound identity sent to the admission table (refused for want of a row); an
+    /// admission row written at connect; a rule that admits every bound identity.
+    #[test]
+    fn a_bound_identity_whose_account_is_listed_is_admitted_with_no_admission_row() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE, BOB]);
+        let listed = id(0x61);
+        let unlisted = id(0x62);
+        bind(&a, listed, ALICE);
+        bind(&a, unlisted, CAROL);
+        assert_admitted(&fx, &a, listed, T0, "bound to a listed account");
+        assert!(
+            a.w.admission.rows().is_empty(),
+            "the admission is not recorded"
+        );
+        assert_refused(&fx, &a, unlisted, T0, "bound to an unlisted account");
+    }
+
+    /// kills: a non-empty list read as "admit every bound identity"; another identity's
+    /// admission row read for this one; a refusal placed after the account is provisioned.
+    #[test]
+    fn a_bound_identity_whose_account_is_not_listed_is_refused_with_no_write() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE, BOB]);
+        let who = id(0x63);
+        bind(&a, who, CAROL);
+        a.w.admission.seed(&admission_row(id(0x64), T0 - 10));
+        assert_refused(&fx, &a, who, T0, "bound to an unlisted account");
+    }
+
+    /// kills: an admission row that overrides the list for a bound identity.
+    #[test]
+    fn a_bound_identity_whose_account_is_not_listed_is_refused_despite_an_admission_row() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE]);
+        let who = id(0x65);
+        bind(&a, who, CAROL);
+        a.w.admission.seed(&admission_row(who, T0 - 50));
+        assert_refused(
+            &fx,
+            &a,
+            who,
+            T0,
+            "bound to an unlisted account, with an admission row",
+        );
+        assert_eq!(a.binding.remove(who), 1, "fixture: the binding goes");
+        assert_admitted(
+            &fx,
+            &a,
+            who,
+            T0 + 1,
+            "the same identity with no binding, admitted before",
+        );
+    }
+
+    /// kills: an unbound identity refused outright (no way in for a joiner who presents no
+    /// attestation).
+    #[test]
+    fn an_unbound_identity_admitted_before_is_admitted() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE]);
+        let seen = id(0x66);
+        let new = id(0x67);
+        a.w.admission.seed(&admission_row(seen, T0 - 20));
+        assert_admitted(&fx, &a, seen, T0, "no binding, admitted before");
+        assert_eq!(admissions(&a.w), vec![(seen.to_byte_array(), T0 - 20)]);
+        assert_refused(&fx, &a, new, T0, "no binding, never admitted");
+    }
+
+    /// kills: an `Allowlist` world that admits an identity with neither a binding nor an
+    /// admission row; a refusal that records something.
+    #[test]
+    fn an_unbound_identity_never_admitted_is_refused_with_no_write() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE]);
+        bind(&a, id(0x68), ALICE);
+        a.w.admission.seed(&admission_row(id(0x69), T0 - 5));
+        assert_refused(&fx, &a, id(0x6A), T0, "no binding, no admission row");
+    }
+
+    /// The owner is admitted before the binding is read: with no binding and no admission
+    /// row, and bound to an account that is not listed.
+    ///
+    /// kills: the owner clause dropped; the owner governed by the list when it is bound.
+    #[test]
+    fn the_owner_is_admitted_with_no_binding_and_with_an_unlisted_binding() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE]);
+        assert_admitted(&fx, &a, owner(), T0, "the owner, unbound and unadmitted");
+        assert_refused(&fx, &a, id(0x6B), T0, "a stranger");
+        bind(&a, owner(), CAROL);
+        assert_admitted(
+            &fx,
+            &a,
+            owner(),
+            T0 + 1,
+            "the owner, bound to an unlisted account",
+        );
+    }
+
+    /// A binding signed by a key the build does not hold counts for nothing: its listed
+    /// account does not admit, and its identity is admitted by its admission row as an unbound
+    /// one is.
+    ///
+    /// kills: `key_id` ignored; the `kid` compared without case or as a prefix; an untrusted
+    /// binding that still blocks the admission row.
+    #[test]
+    fn a_binding_under_a_key_the_build_does_not_hold_counts_for_nothing() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE]);
+        let trusted = id(0x6C);
+        bind(&a, trusted, ALICE);
+        assert_admitted(&fx, &a, trusted, T0, "control: a trusted binding to ALICE");
+        let kid = trusted_kid();
+        let untrusted = [
+            (id(0x6D), "kid-of-no-key".to_string()),
+            (id(0x6E), kid.to_lowercase()),
+            (id(0x6F), format!("{kid}A")),
+            (id(0x70), kid[..kid.len() - 1].to_string()),
+        ];
+        for (who, key_id) in &untrusted {
+            assert_ne!(*key_id, kid, "fixture: not a key of the build");
+            a.binding.seed(&binding_row(*who, ALICE, key_id));
+            assert_refused(
+                &fx,
+                &a,
+                *who,
+                T0,
+                &format!("listed account under kid {key_id:?}, no admission row"),
+            );
+            a.w.admission.seed(&admission_row(*who, T0 - 30));
+            assert_admitted(
+                &fx,
+                &a,
+                *who,
+                T0 + 1,
+                &format!("listed account under kid {key_id:?}, admitted before"),
+            );
+        }
+    }
+
+    /// Taking an account off the list refuses its identities at their next check, the one
+    /// with an admission row too; an identity bound to an account still listed stays in.
+    ///
+    /// kills: the list cached at connect or copied into an admission row; an admission row
+    /// that outlives delisting.
+    #[test]
+    fn taking_an_account_off_the_list_refuses_its_identities_at_the_next_check() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE, BOB]);
+        let who = id(0x71);
+        let seen = id(0x72);
+        let other = id(0x73);
+        bind(&a, who, ALICE);
+        bind(&a, seen, ALICE);
+        bind(&a, other, BOB);
+        a.w.admission.seed(&admission_row(seen, T0 - 40));
+        assert_admitted(&fx, &a, who, T0, "listed");
+        assert_admitted(&fx, &a, seen, T0, "listed, admitted before");
+        assert_eq!(
+            a.list.remove(ALICE.to_string()),
+            1,
+            "fixture: ALICE leaves the list"
+        );
+        assert_refused(&fx, &a, who, T0 + 1, "delisted");
+        assert_refused(&fx, &a, seen, T0 + 1, "delisted, admitted before");
+        assert_admitted(&fx, &a, other, T0 + 1, "bound to an account still listed");
+    }
+
+    /// kills: one admitted identity per account; the account read from another identity's
+    /// binding.
+    #[test]
+    fn every_identity_bound_to_a_listed_account_is_admitted() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE]);
+        let p = id(0x74);
+        let q = id(0x75);
+        let r = id(0x76);
+        bind(&a, p, ALICE);
+        bind(&a, q, ALICE);
+        bind(&a, r, BOB);
+        assert_admitted(&fx, &a, p, T0, "the first identity bound to ALICE");
+        assert_admitted(&fx, &a, q, T0, "the second identity bound to ALICE");
+        assert_refused(&fx, &a, r, T0, "an identity bound to BOB");
+    }
+
+    /// kills: an empty list read as "no restriction"; an empty list that closes the world to
+    /// an unbound identity admitted before.
+    #[test]
+    fn an_empty_allowlist_admits_no_bound_identity() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        let p = id(0x77);
+        let q = id(0x78);
+        let seen = id(0x79);
+        bind(&a, p, ALICE);
+        bind(&a, q, BOB);
+        a.w.admission.seed(&admission_row(seen, T0 - 3));
+        assert!(a.list.rows().is_empty(), "fixture: the list is empty");
+        assert_refused(&fx, &a, p, T0, "bound to ALICE, empty list");
+        assert_refused(&fx, &a, q, T0, "bound to BOB, empty list");
+        assert_admitted(&fx, &a, seen, T0, "unbound, admitted before");
+    }
+
+    /// The bound account is compared with the list byte for byte.
+    ///
+    /// kills: a case-folded comparison; a prefix or substring match in either direction.
+    #[test]
+    fn the_account_on_the_list_must_be_the_bound_account_exactly() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        let bound = "dev:Alice-0001";
+        let who = id(0x7A);
+        bind(&a, who, bound);
+        let near = [
+            "dev:alice-0001".to_string(),
+            bound.to_uppercase(),
+            format!("{bound}2"),
+            format!("{bound}-x"),
+            bound[..bound.len() - 1].to_string(),
+            "dev:Alice".to_string(),
+        ];
+        for listed in &near {
+            assert_ne!(listed, bound, "fixture: a near miss");
+            enlist(&a, &[listed.as_str()]);
+            assert_refused(
+                &fx,
+                &a,
+                who,
+                T0,
+                &format!("listed {listed:?}, bound {bound:?}"),
+            );
+            assert_eq!(a.list.remove(listed.clone()), 1);
+        }
+        enlist(&a, &[bound]);
+        assert_admitted(&fx, &a, who, T0, "the exact account listed");
+    }
+
+    /// The list is read only under `Allowlist`: under `Open` an unbound, unadmitted identity
+    /// is admitted; under `Password` a bound identity on the list is refused for want of an
+    /// admission row; under `Allowlist` the bound one is admitted and the unbound one refused.
+    ///
+    /// kills: the list read under `Password`; the binding read under `Open`.
+    #[test]
+    fn the_list_counts_only_under_the_allowlist_rule() {
+        let fx = fixture();
+        let a = tables(&fx);
+        seed_owner(&a.w, owner());
+        enlist(&a, &[ALICE]);
+        let bound = id(0x7B);
+        let stranger = id(0x7C);
+        bind(&a, bound, ALICE);
+        assert_admitted(&fx, &a, stranger, T0, "no access row: unbound, unadmitted");
+        a.w.access.seed(&open_row());
+        assert_admitted(&fx, &a, stranger, T0, "Open: unbound, unadmitted");
+        assert_admitted(&fx, &a, bound, T0, "Open: bound and listed");
+        assert_eq!(a.w.access.remove(0), 1);
+        a.w.access.seed(&password_row());
+        assert_refused(
+            &fx,
+            &a,
+            bound,
+            T0,
+            "Password: bound and listed, no admission",
+        );
+        assert_refused(&fx, &a, stranger, T0, "Password: unbound, unadmitted");
+        assert_eq!(a.w.access.remove(0), 1);
+        a.w.access.seed(&allowlist_row());
+        assert_admitted(&fx, &a, bound, T0, "Allowlist: bound and listed");
+        assert_refused(&fx, &a, stranger, T0, "Allowlist: unbound, unadmitted");
+    }
+
+    // --- setting the rule ------------------------------------------------------------
+
+    /// `Allowlist` with any password is refused before any write, whatever rule is stored.
+    ///
+    /// kills: the password ignored (stored, or dropped silently); a write or an admission
+    /// made before the refusal.
+    #[test]
+    fn allowlist_with_a_password_is_refused_and_the_stored_row_is_unchanged() {
+        let fx = fixture();
+        let a = tables(&fx);
+        seed_owner(&a.w, owner());
+        a.w.session.seed(&session_row(id(0x7D), 0x07D0));
+        let x = id(0x7E);
+        for stored in [
+            None,
+            Some(open_row()),
+            Some(password_row()),
+            Some(allowlist_row()),
+        ] {
+            for typed in ["pw", KAT_PASSWORD, ""] {
+                let _ = a.w.access.remove(0);
+                if let Some(row) = &stored {
+                    a.w.access.seed(row);
+                }
+                fx.reset_writes();
+                let before = footprint_all(&fx, &a);
+                assert_eq!(
+                    set_access(
+                        &fx,
+                        owner(),
+                        WorldAccessRule::Allowlist,
+                        Some(typed),
+                        vec![x],
+                        T0
+                    ),
+                    Err(REJECT_ALLOWLIST_TAKES_NO_PASSWORD.to_string()),
+                    "password {typed:?} over {:?}",
+                    stored.as_ref().map(|r| r.rule)
+                );
+                assert_eq!(footprint_all(&fx, &a), before, "refused before any write");
+            }
+        }
+    }
+
+    /// `Allowlist` with no password stores the rule with an empty salt and hash, over no row
+    /// and over a stored password, which it clears; `effective_rule` reads the stored row as
+    /// `Allowlist`, and the rule is in force.
+    ///
+    /// kills: the old salt or hash kept (a later `Password` with no password would restore
+    /// it); a stored `Allowlist` row read as another rule.
+    #[test]
+    fn allowlist_with_no_password_is_stored_with_an_empty_salt_and_hash() {
+        let fx = fixture();
+        let a = tables(&fx);
+        seed_owner(&a.w, owner());
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Allowlist,
+                None,
+                Vec::new(),
+                T0
+            ),
+            Ok(())
+        );
+        assert_eq!(access_row(&a.w), enc(&allowlist_row()), "over no row");
+        let rows = a.w.access.rows();
+        assert_eq!(effective_rule(rows.first()), WorldAccessRule::Allowlist);
+        assert_refused(&fx, &a, id(0x7F), T0 + 1, "the rule is in force");
+
+        assert_eq!(a.w.access.remove(0), 1);
+        a.w.access.seed(&password_row());
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Allowlist,
+                None,
+                Vec::new(),
+                T0 + 2
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            access_row(&a.w),
+            enc(&allowlist_row()),
+            "the stored password is cleared"
+        );
+        let before = footprint_all(&fx, &a);
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Password,
+                None,
+                Vec::new(),
+                T0 + 3
+            ),
+            Err(REJECT_PASSWORD_REQUIRED.to_string()),
+            "no password is left to keep"
+        );
+        assert_eq!(footprint_all(&fx, &a), before);
+    }
+
+    /// `Open` (no row, or an `Open` row) to `Allowlist` admits every identity with a live
+    /// session at the call's time, once each, and not the owner.
+    ///
+    /// kills: the live sessions admitted only on `Open` to `Password`; an identity with two
+    /// sockets given two rows; the owner given a row.
+    #[test]
+    fn open_to_allowlist_admits_every_live_session_but_the_owner() {
+        for stored in [None, Some(open_row())] {
+            let fx = fixture();
+            let a = tables(&fx);
+            seed_owner(&a.w, owner());
+            if let Some(row) = &stored {
+                a.w.access.seed(row);
+            }
+            let p = id(0x80);
+            let q = id(0x81);
+            a.w.session.seed(&session_row(p, 0x0801));
+            a.w.session.seed(&session_row(q, 0x0811));
+            a.w.session.seed(&session_row(p, 0x0802));
+            a.w.session.seed(&session_row(owner(), 0x0821));
+            assert_eq!(
+                set_access(
+                    &fx,
+                    owner(),
+                    WorldAccessRule::Allowlist,
+                    None,
+                    Vec::new(),
+                    T0
+                ),
+                Ok(()),
+                "over {:?}",
+                stored.as_ref().map(|r| r.rule)
+            );
+            assert_eq!(
+                admissions(&a.w),
+                sorted(vec![(p.to_byte_array(), T0), (q.to_byte_array(), T0)])
+            );
+            assert_eq!(access_row(&a.w), enc(&allowlist_row()));
+            assert_eq!(passes(&fx, p, T0 + 1), Ok(()));
+            assert_eq!(passes(&fx, q, T0 + 1), Ok(()));
+            assert_eq!(
+                passes(&fx, id(0x82), T0 + 1),
+                Err(REJECT_NOT_ADMITTED.to_string())
+            );
+        }
+    }
+
+    /// `Password` to `Allowlist` keeps every admission row as it was and admits each live
+    /// session that had none.
+    ///
+    /// kills: the live sessions not admitted on this change; an existing admission
+    /// re-stamped or dropped.
+    #[test]
+    fn password_to_allowlist_keeps_admissions_and_admits_live_sessions_without_one() {
+        let fx = fixture();
+        let a = tables(&fx);
+        seed_owner(&a.w, owner());
+        a.w.access.seed(&password_row());
+        let x = id(0x83);
+        let y = id(0x84);
+        let z = id(0x85);
+        a.w.admission.seed(&admission_row(x, T0 - 30));
+        a.w.admission.seed(&admission_row(z, T0 - 40));
+        a.w.session.seed(&session_row(x, 0x0831));
+        a.w.session.seed(&session_row(y, 0x0841));
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Allowlist,
+                None,
+                Vec::new(),
+                T0
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            admissions(&a.w),
+            sorted(vec![
+                (x.to_byte_array(), T0 - 30),
+                (y.to_byte_array(), T0),
+                (z.to_byte_array(), T0 - 40),
+            ])
+        );
+        assert_eq!(access_row(&a.w), enc(&allowlist_row()));
+    }
+
+    /// `Allowlist` to `Password` needs a new password (none is stored) and, given one, stores
+    /// its hash and admits every live session but the owner.
+    ///
+    /// kills: `Password` with no password accepted over an `Allowlist` row; the live sessions
+    /// not admitted on this change.
+    #[test]
+    fn allowlist_to_password_needs_a_new_password_and_admits_live_sessions() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        let s = id(0x86);
+        let x = id(0x87);
+        a.w.session.seed(&session_row(s, 0x0861));
+        a.w.session.seed(&session_row(owner(), 0x0862));
+        let before = footprint_all(&fx, &a);
+        assert_eq!(
+            set_access(&fx, owner(), WorldAccessRule::Password, None, vec![x], T0),
+            Err(REJECT_PASSWORD_REQUIRED.to_string())
+        );
+        assert_eq!(footprint_all(&fx, &a), before, "refused before any write");
+        let typed = "pw seven";
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Password,
+                Some(typed),
+                Vec::new(),
+                T0 + 1
+            ),
+            Ok(())
+        );
+        assert_eq!(admissions(&a.w), vec![(s.to_byte_array(), T0 + 1)]);
+        let rows = a.w.access.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rule, WorldAccessRule::Password);
+        assert_eq!(rows[0].password_salt.len(), PASSWORD_SALT_BYTES);
+        assert_eq!(
+            rows[0].password_hash,
+            hash_password(&rows[0].password_salt, typed)
+        );
+    }
+
+    /// Setting `Allowlist` again, and leaving it for `Open`, admits no live session; the
+    /// admissions already held stay.
+    ///
+    /// kills: every call that stores a non-`Open` rule admitting the live sessions (setting
+    /// the same rule again would let every connection the list refused in).
+    #[test]
+    fn allowlist_again_or_to_open_admits_no_live_session() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        let s = id(0x88);
+        let x = id(0x89);
+        a.w.session.seed(&session_row(s, 0x0881));
+        a.w.admission.seed(&admission_row(x, T0 - 9));
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Allowlist,
+                None,
+                Vec::new(),
+                T0
+            ),
+            Ok(())
+        );
+        assert_eq!(admissions(&a.w), vec![(x.to_byte_array(), T0 - 9)]);
+        assert_eq!(fx.writes_to("world_admission"), 0);
+        assert_eq!(access_row(&a.w), enc(&allowlist_row()));
+        assert_eq!(passes(&fx, s, T0 + 1), Err(REJECT_NOT_ADMITTED.to_string()));
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Open,
+                None,
+                Vec::new(),
+                T0 + 2
+            ),
+            Ok(())
+        );
+        assert_eq!(admissions(&a.w), vec![(x.to_byte_array(), T0 - 9)]);
+        assert_eq!(fx.writes_to("world_admission"), 0);
+        assert_eq!(access_row(&a.w), enc(&open_row()));
+    }
+
+    /// The admit list admits under `Allowlist` as under the other rules; the row admits an
+    /// unbound identity and not one bound to an unlisted account.
+    ///
+    /// kills: the admit list dropped under `Allowlist`.
+    #[test]
+    fn the_admit_list_admits_under_allowlist() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        enlist(&a, &[ALICE]);
+        let x = id(0x8A);
+        let y = id(0x8B);
+        bind(&a, y, CAROL);
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Allowlist,
+                None,
+                vec![x, y],
+                T0
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            admissions(&a.w),
+            sorted(vec![(x.to_byte_array(), T0), (y.to_byte_array(), T0)])
+        );
+        assert_admitted(&fx, &a, x, T0 + 1, "unbound, on the admit list");
+        assert_refused(
+            &fx,
+            &a,
+            y,
+            T0 + 1,
+            "bound to an unlisted account, on the admit list",
+        );
+    }
+
+    /// The door on an `Allowlist` world is refused with no write, and admits nobody.
+    ///
+    /// kills: the door working on any rule that is not `Open` (a wrong password counted, or
+    /// an admission written).
+    #[test]
+    fn the_door_on_an_allowlist_world_is_refused_with_no_write() {
+        let fx = fixture();
+        let a = allowlist_world(&fx);
+        let who = id(0x8C);
+        let before = footprint_all(&fx, &a);
+        for typed in [KAT_PASSWORD, WRONG] {
+            assert_eq!(
+                door(&fx, who, typed, T0),
+                Err(REJECT_NO_PASSWORD_RULE.to_string())
+            );
+        }
+        assert_eq!(footprint_all(&fx, &a), before);
+        assert_refused(&fx, &a, who, T0 + 1, "the door admitted nobody");
+    }
+
+    /// kills: the owner check skipped for `Allowlist`.
+    #[test]
+    fn a_non_owner_cannot_set_the_allowlist_rule() {
+        let fx = fixture();
+        let a = tables(&fx);
+        seed_owner(&a.w, owner());
+        a.w.access.seed(&open_row());
+        enlist(&a, &[ALICE]);
+        let stranger = id(0x8D);
+        let listed = id(0x8E);
+        bind(&a, listed, ALICE);
+        a.w.admission.seed(&admission_row(listed, T0 - 1));
+        let before = footprint_all(&fx, &a);
+        for caller in [stranger, listed] {
+            assert_eq!(
+                set_access(
+                    &fx,
+                    caller,
+                    WorldAccessRule::Allowlist,
+                    None,
+                    vec![caller],
+                    T0
+                ),
+                Err(REJECT_NOT_WORLD_OWNER.to_string()),
+                "set_world_access by {}",
+                caller.to_hex()
+            );
+        }
+        assert_eq!(footprint_all(&fx, &a), before, "nothing is written");
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Allowlist,
+                None,
+                Vec::new(),
+                T0 + 1
+            ),
+            Ok(())
+        );
+        assert_refused(
+            &fx,
+            &a,
+            stranger,
+            T0 + 2,
+            "the stranger under the owner's rule",
+        );
+        assert_admitted(&fx, &a, listed, T0 + 2, "bound and listed");
     }
 }

@@ -2120,7 +2120,7 @@ fn m22s4_serializer_empty_owner() {
 // ===========================================================================
 
 /// X2: the exporter registry and the manifest's exportable set are the SAME
-/// SET, in BOTH directions, at exactly twenty tables, in manifest ORDER.
+/// SET, in BOTH directions, at exactly twenty-one tables, in manifest ORDER.
 ///
 /// Neither direction alone is enough. A forward-only check (every exporter
 /// names an exportable table) is green on a registry that exports three tables
@@ -2140,21 +2140,21 @@ fn m22s4_exporter_set_equals_manifest_both_directions() {
     let manifest_order = m22s4_manifest_exportable();
     assert_eq!(
         manifest_order.len(),
-        20,
+        21,
         "m22s4 [X2/floor]: DATA_LIFECYCLE_MANIFEST carries {} exportable entries; the spec's \
-         export scope is exactly TWENTY: fourteen erase tables (player_handle and \
-         player_formation among them) plus five anonymize tables (battle_summary among them) \
-         plus character, 14 + 5 + 1. If that number legitimately changed, the registry and \
-         this floor move together, in one reviewed diff.",
+         export scope is exactly TWENTY-ONE: fifteen erase tables (player_handle, \
+         player_formation and world_binding among them) plus five anonymize tables \
+         (battle_summary among them) plus character, 15 + 5 + 1. If that number legitimately \
+         changed, the registry and this floor move together, in one reviewed diff.",
         manifest_order.len()
     );
 
     let registry: Vec<String> = super::EXPORTERS.iter().map(|e| e.0.to_string()).collect();
     assert_eq!(
         registry.len(),
-        20,
+        21,
         "m22s4 [X2/floor]: the exporter registry carries {} entries; the manifest's exportable \
-         set is 20.",
+         set is 21.",
         registry.len()
     );
 
@@ -7921,22 +7921,22 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// — which the population clause below reports BEFORE the tick runs at all.
 ///
 /// THE ARITHMETIC, derived from the shipped constants and never transcribed:
-/// the minimum bundle is one chunk per exportable table, twenty (fourteen
+/// the minimum bundle is one chunk per exportable table, twenty-one (fifteen
 /// erase tables plus five anonymize tables plus character), so
-/// eighteen minimum-size bundles of twenty chunks are 18 x 20 = 360 rows and
+/// eighteen minimum-size bundles of twenty-one chunks are 18 x 21 = 378 rows and
 /// the 256-row read window BINDS; that window in ascending stamp order covers
-/// twelve whole bundles (12 x 20 = 240 rows) and 256 - 240 = 16 rows of the
-/// thirteenth, so it touches ceil(256 / 20) = THIRTEEN distinct stamps, three
+/// twelve whole bundles (12 x 21 = 252 rows) and 256 - 252 = 4 rows of the
+/// thirteenth, so it touches ceil(256 / 21) = THIRTEEN distinct stamps, three
 /// below the write cap of sixteen; each is deleted whole, tail beyond the
-/// window included, so 13 x 20 = 260 rows go (more than the 256 read) and the
-/// 18 - 13 = five newest bundles (5 x 20 = 100 rows) survive intact. Under the
-/// status-quo shared stamp the same tick plans ONE stamp and reaps all 360 rows
+/// window included, so 13 x 21 = 273 rows go (more than the 256 read) and the
+/// 18 - 13 = five newest bundles (5 x 21 = 105 rows) survive intact. Under the
+/// status-quo shared stamp the same tick plans ONE stamp and reaps all 378 rows
 /// in one transaction — the unbounded delete unit, and the abort-loop hazard
 /// that silently retains expired personal data past the seven-day ceiling.
 ///
-/// WHAT THIS TEST DOES NOT SHOW. With a twenty-chunk minimum bundle the
+/// WHAT THIS TEST DOES NOT SHOW. With a twenty-one-chunk minimum bundle the
 /// read window binds BEFORE the stamp cap: sixteen minimum bundles are
-/// 16 x 20 = 320 rows, more than the 256 a tick reads, so a population of
+/// 16 x 21 = 336 rows, more than the 256 a tick reads, so a population of
 /// minimum-size minted bundles can never put a seventeenth stamp in the
 /// window (it holds at most thirteen). The stamp
 /// cap binding is proven by `rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps`
@@ -7952,9 +7952,9 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 ///
 /// Kills: the status-quo body (the population clause, before the tick); a mint
 /// that reuses a live stamp under any spelling (same clause); a tick that
-/// stopped at the window's edge (reaped 256 rather than 260); the read cap
-/// dropped (read 360, due 18, planned 16 at the stamp cap, reaped
-/// 16 x 20 = 320); a `due` count that is not the
+/// stopped at the window's edge (reaped 256 rather than 273); the read cap
+/// dropped (read 378, due 18, planned 16 at the stamp cap, reaped
+/// 16 x 21 = 336); a `due` count that is not the
 /// window's distinct expired stamps; a survivor set of the right SIZE but the
 /// wrong IDENTITY, which every count clause here is blind to (the triple
 /// comparison); numbers moved to match the code rather than re-derived (the
@@ -7978,17 +7978,17 @@ fn rb111_one_tick_reaps_thirteen_whole_bundles_from_a_same_millisecond_burst() {
     // so it is re-derived from the spec rather than quietly followed.
     assert_eq!(
         (read_cap, stamp_cap, min_bundle, window),
-        (256usize, 16usize, 20usize, 16usize),
+        (256usize, 16usize, 21usize, 16usize),
         "[rb111/bound-attribution]: the shipped read cap, stamp cap, minimum bundle and probe \
          window read ({read_cap}, {stamp_cap}, {min_bundle}, {window}); this population was \
-         sized against (256, 16, 20, 16) — 18 bundles of 20 chunks is 360 rows, which makes the \
+         sized against (256, 16, 21, 16) — 18 bundles of 21 chunks is 378 rows, which makes the \
          256-row read window BIND and leaves the window touching exactly 13 distinct stamps, \
          three below the stamp cap. Re-derive every number in this test from the spec before \
          touching anything else."
     );
     // The stamps a full ascending read window touches when every bundle is
-    // `min_bundle` rows: ceil(256 / 20) = 13 (twelve whole bundles, 240 rows,
-    // and sixteen rows of a thirteenth).
+    // `min_bundle` rows: ceil(256 / 21) = 13 (twelve whole bundles, 252 rows,
+    // and four rows of a thirteenth).
     let touched = read_cap.div_ceil(min_bundle);
     assert!(
         touched < stamp_cap && touched < bundles,
@@ -8585,8 +8585,8 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
 ///     is 208 rows plus 48 of the sixty-row bundle: SEVENTEEN stamps, the same
 ///     sixteen planned, the same 208 reaped.
 ///   - B, rb-109's oversized population: twenty expired bundles of seventeen
-///     rows and six live. Seventeen rows is 20 - 17 = three rows short of the
-///     shipped minimum bundle of twenty (one chunk per exportable table). The
+///     rows and six live. Seventeen rows is 21 - 17 = four rows short of the
+///     shipped minimum bundle of twenty-one (one chunk per exportable table). The
 ///     window is fifteen whole bundles (15 x 17 = 255 rows) and one row of a
 ///     sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
 ///   - C, the rb-87 residual's own case: twenty expired bundles of FIVE rows and
@@ -8614,14 +8614,15 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
 
     assert_eq!(
         (read_cap, stamp_cap, min_bundle),
-        (256usize, 16usize, 20usize),
+        (256usize, 16usize, 21usize),
         "[rb115/tick-sizing]: the shipped read cap, stamp cap and minimum bundle read \
          ({read_cap}, {stamp_cap}, {min_bundle}); the four populations below are sized against \
-         (256, 16, 20) — thirteen- and five-row bundles are SHORT stamps against a twenty-row \
+         (256, 16, 21) — thirteen- and five-row bundles are SHORT stamps against a twenty-one-row \
          minimum, which is what lets the cap bind at all on an ascending read (sixteen bundles \
-         of twenty rows are 16 x 20 = 320, past the 256-row window, so a window of minimum-size \
-         bundles holds at most ceil(256 / 20) = thirteen stamps), and B's seventeen-row bundles \
-         are three rows short of that minimum. The four populations are hand-sized, so none of \
+         of twenty-one rows are 16 x 21 = 336, past the 256-row window, so a window of \
+         minimum-size bundles holds at most ceil(256 / 21) = thirteen stamps), and B's \
+         seventeen-row bundles are four rows short of that minimum. The four populations are \
+         hand-sized, so none of \
          their tuples moves with the \
          minimum; a value that moves makes every tuple below a different, still \
          self-consistent claim: re-derive each one from the spec before touching anything else."
@@ -8680,7 +8681,7 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
          holds exactly SIXTEEN stamps, all of them planned, each deleted whole with its tail. \
          `due` equal to `planned` here is not a coincidence: a full window over bundles of \
          seventeen rows or more holds at most sixteen stamps, so a well-formed tick over bundles \
-         this module writes (twenty rows or more) reports it, which is why the new field is a \
+         this module writes (twenty-one rows or more) reports it, which is why the new field is a \
          tripwire and not a backlog signal."
     );
     let b_expired_left = b_left.iter().filter(|stamp| **stamp <= cutoff).count();
