@@ -1922,8 +1922,7 @@ pub struct WorldAdmissionAttempt {
 
 /// The account an identity of this world is bound to: what a verified attestation said, and the
 /// `kid` of the key that signed it. PRIVATE; an identity reads its own row through
-/// `my_world_binding`. Written only by `world_binding.rs`; erased by the deletion cascade and
-/// included in the data export.
+/// `my_world_binding`. Written only by `world_binding.rs`; erased by the deletion cascade.
 #[spacetimedb::table(accessor = world_binding)]
 pub struct WorldBinding {
     #[primary_key]
@@ -2182,8 +2181,8 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "world_binding",
         policy: DeletionPolicy::Erase,
-        basis: "names the account an identity is bound to in this world, deleted outright at cascade time; not re-keyed by the claim flow; exported as the binding of the exporting identity",
-        exportable: true,
+        basis: "names the account an identity is bound to in this world, deleted outright at cascade time; not re-keyed by the claim flow; not exported",
+        exportable: false,
     },
     DataLifecycleEntry {
         table: "world_bind_nonce",

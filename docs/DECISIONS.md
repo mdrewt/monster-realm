@@ -2412,8 +2412,8 @@ row of private `world_name`, no unexpired nonce for the identity, and another no
 writes private `world_binding` `{identity, account_subject, bound_at_ms, entitled, key_id}`, which
 the identity reads through `my_world_binding`, and deletes the nonce. A row the identity holds is
 replaced: the latest attestation an identity presents wins. The deletion cascade erases `world_binding`
-and `world_bind_nonce` (`world_binding::erase_world_binding`), the data export includes the binding,
-and a guest claim neither moves nor erases one. The owner relays both calls for another
+and `world_bind_nonce` (`world_binding::erase_world_binding`), the data export does not include a
+binding, and a guest claim neither moves nor erases one. The owner relays both calls for another
 identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
 admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
 `who`. The route rate-limits binds per account and does not keep the world an attestation was

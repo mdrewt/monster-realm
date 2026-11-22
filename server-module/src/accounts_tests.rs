@@ -1090,7 +1090,7 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
 
-/// the `exportable == true` set equals EXACTLY the twenty-one tables the export
+/// the `exportable == true` set equals EXACTLY the twenty tables the export
 /// scope admits — set equality, BOTH directions.
 ///
 /// a negative-only spot check ("battle_wild is false, guest_claim is false") is
@@ -1100,9 +1100,9 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 /// Set equality in both directions is the only shape that rejects an over-broad
 /// AND an empty export scope.
 ///
-/// The twenty-one are fifteen ERASE tables (`player_handle`, `player_formation`
-/// and `world_binding` among them) + five ANONYMIZE tables (`battle_summary`
-/// among them) + `character`: 15 + 5 + 1 = 21. The `false` side includes the three the spec
+/// The twenty are fourteen ERASE tables (`player_handle` and `player_formation`
+/// among them) + five ANONYMIZE tables (`battle_summary` among them) +
+/// `character`: 14 + 5 + 1 = 20. The `false` side includes the three the spec
 /// calls out by name:
 /// `battle_wild` (the raw RNG individuality seed, a must-never-leak),
 /// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
@@ -1145,15 +1145,13 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         "playtest_event",
         "profile",
         "trade_offer",
-        "world_binding",
     ];
     assert_eq!(
         exportable, expected_exportable,
         "T4 / spec §5: the exportable set is wrong. It must be EXACTLY the twelve ERASE \
          tables + the four ANONYMIZE tables + `character` + `player_handle` (the owner's \
          own discriminator) + `battle_summary` (the caller's side of each battle summary) \
-         + `player_formation` (the caller's saved deploy order) + `world_binding` (the \
-         account the caller's identity is bound to): twenty-one. Both \
+         + `player_formation` (the caller's saved deploy order): twenty. Both \
          directions matter: an \
          all-false manifest passes every negative spot check and ships an export feature \
          that returns an empty bundle for every request (§5's walk filters on \
@@ -5039,7 +5037,7 @@ fn tactical_view_row_types_reach_no_secret_or_staging_field_bt7_3() {
 /// `battle`) and `player_formation` (the caller's saved deploy order), while the
 /// other eight are `exportable: false` — the transcripts are GC-bound and the
 /// staging rows are secrets. The export bundle's table set is EXACTLY the
-/// nineteen non-tactical exportable tables plus those two: 19 + 2 = 21.
+/// eighteen non-tactical exportable tables plus those two: 18 + 2 = 20.
 ///
 /// Kills: one of the eight other tactical tables flipped to `exportable: true`
 ///        (the export ships seeds, plans or staging rows to the subject's
@@ -5126,11 +5124,9 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
             "playtest_event",
             "profile",
             "trade_offer",
-            "world_binding",
         ],
-        "[bt7/export-set] the exportable set must be EXACTLY the nineteen non-tactical \
-         exportable tables (`world_binding` among them) plus `battle_summary` and \
-         `player_formation`: 19 + 2 = 21"
+        "[bt7/export-set] the exportable set must be EXACTLY the eighteen non-tactical \
+         exportable tables plus `battle_summary` and `player_formation`: 18 + 2 = 20"
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
@@ -5327,8 +5323,8 @@ mod acct_nh {
         admission: Handle<'a, WorldAdmission>,
         admission_attempt: Handle<'a, WorldAdmissionAttempt>,
         // The identity's world binding and its bind nonce, both on their `identity` key
-        // (the cascade's `world_binding::erase_world_binding` deletes through them, the
-        // export reads the binding through it).
+        // (the cascade's `world_binding::erase_world_binding` deletes through them; the
+        // export test seeds the binding through it to prove the export leaves it out).
         binding: Handle<'a, WorldBinding>,
         bind_nonce: Handle<'a, WorldBindNonce>,
     }
@@ -9534,8 +9530,11 @@ mod acct_nh {
     /// row list; the trailing dedup filter in rows_trade_offer,
     /// rows_battle_challenge, rows_battle or rows_battle_summary inverted (drops
     /// the second-column row and doubles the self-row); a rows_player_formation
-    /// that returns the other owner's formation; a rows_world_binding that
-    /// returns the other identity's binding or drops or reorders a column.
+    /// that returns the other owner's formation. The world binding is seeded for
+    /// the caller and for a stranger and stays out of the export: no
+    /// `world_binding` chunk, and no chunk carries either account subject or
+    /// either key id — so an exporter added for the binding, or a binding column
+    /// copied into another table's rows, fails.
     #[test]
     fn acct_export_chunks_carry_exactly_the_callers_rows_per_table() {
         let fx = fixture();
@@ -9634,7 +9633,6 @@ mod acct_nh {
             ),
             ("character", "entity_id", vec![q("1401".into())]),
             ("player_handle", "owner_identity", vec![me.clone()]),
-            ("world_binding", "identity", vec![me.clone()]),
         ];
         for (table, key, want) in &cases {
             let p = payload(table);
@@ -9663,22 +9661,51 @@ mod acct_nh {
             "the `player_handle` chunk carries the caller's discriminator and never the \
              stranger's: {handle}"
         );
-        let binding = payload("world_binding");
-        let my_binding = format!(
-            "{{\"identity\":{me},\"account_subject\":\"dev:export-subject-1\",\
-             \"bound_at_ms\":\"1800000000001\",\"entitled\":true,\
-             \"key_id\":\"export-kid-1\"}}"
+        let mut seeded: Vec<(String, String)> = w
+            .binding
+            .rows()
+            .into_iter()
+            .map(|r| (r.account_subject, r.key_id))
+            .collect();
+        seeded.sort_unstable();
+        assert_eq!(
+            seeded,
+            [
+                (
+                    "dev:export-subject-1".to_string(),
+                    "export-kid-1".to_string()
+                ),
+                (
+                    "dev:export-subject-2".to_string(),
+                    "export-kid-2".to_string()
+                ),
+            ],
+            "both bindings are seeded, so their absence from the export is not vacuous"
         );
         assert_eq!(
-            (
-                binding.matches(&my_binding).count(),
-                binding.matches("export-subject-2").count(),
-                binding.matches("export-kid-2").count()
-            ),
-            (1, 0, 0),
-            "the `world_binding` chunk carries the caller's binding, every column under its \
-             field name in declaration order, and never the stranger's: {binding}"
+            chunks
+                .iter()
+                .filter(|c| c.table_name == "world_binding")
+                .count(),
+            0,
+            "the export produces no `world_binding` chunk"
         );
+        for needle in [
+            "dev:export-subject-1",
+            "dev:export-subject-2",
+            "export-kid-1",
+            "export-kid-2",
+        ] {
+            let carriers: Vec<&str> = chunks
+                .iter()
+                .filter(|c| c.payload_json.contains(needle))
+                .map(|c| c.table_name.as_str())
+                .collect();
+            assert!(
+                carriers.is_empty(),
+                "no chunk carries the world binding value `{needle}`; found in {carriers:?}"
+            );
+        }
         let mut covered: Vec<&str> = cases.iter().map(|(t, _, _)| *t).collect();
         covered.push("battle_action");
         covered.sort_unstable();
