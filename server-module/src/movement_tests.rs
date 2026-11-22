@@ -4589,7 +4589,9 @@ mod nh {
     #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
     mod acs6_enforcing {
         use super::{a, at, b, sr11_saved, sr11_world, World, T0};
-        use crate::accounts::{DEV_LOGIN_ISSUERS, ERR_OWNERSHIP_REQUIRED, PRODUCTION_LOGIN_ISSUERS};
+        use crate::accounts::{
+            DEV_LOGIN_ISSUERS, ERR_OWNERSHIP_REQUIRED, PRODUCTION_LOGIN_ISSUERS,
+        };
         use crate::native_host_tests::{fixture, Fixture, Handle};
         use crate::schema::{
             Account, AccountStatus, Inventory, LastPosition, PlayerDialogueStateRow, PlayerHandle,
@@ -4658,17 +4660,15 @@ mod nh {
         fn rest(fx: &Fixture) -> Rest<'_> {
             Rest {
                 inventory: fx.table::<Inventory>("inventory", "acs6_rows", |r| r.owner_identity),
-                wallet: fx.table::<PlayerWallet>("player_wallet", "acs6_rows", |r| {
-                    r.owner_identity
-                }),
+                wallet: fx
+                    .table::<PlayerWallet>("player_wallet", "acs6_rows", |r| r.owner_identity),
                 dialogue: fx.table::<PlayerDialogueStateRow>(
                     "player_dialogue_state",
                     "acs6_rows",
                     |r| r.owner_identity,
                 ),
-                handle: fx.table::<PlayerHandle>("player_handle", "acs6_rows", |r| {
-                    r.owner_identity
-                }),
+                handle: fx
+                    .table::<PlayerHandle>("player_handle", "acs6_rows", |r| r.owner_identity),
                 species: fx.table_keyed::<SpeciesRow, u32>("species_row", "acs6_rows", |r| r.id),
             }
         }
@@ -4848,7 +4848,11 @@ mod nh {
         #[test]
         fn acs6_2_a_dev_token_naming_only_another_entitlement_is_refused() {
             assert_refused(
-                Some(&payload(DEV_LOGIN_ISSUERS[0], AUD, Some(r#"["soundtrack"]"#))),
+                Some(&payload(
+                    DEV_LOGIN_ISSUERS[0],
+                    AUD,
+                    Some(r#"["soundtrack"]"#),
+                )),
                 "mr_ent names soundtrack",
             );
         }
@@ -4864,7 +4868,11 @@ mod nh {
         #[test]
         fn acs6_2_a_dev_token_with_the_claim_for_another_audience_is_refused() {
             assert_refused(
-                Some(&payload(DEV_LOGIN_ISSUERS[0], r#"["other-app"]"#, Some(CLAIM))),
+                Some(&payload(
+                    DEV_LOGIN_ISSUERS[0],
+                    r#"["other-app"]"#,
+                    Some(CLAIM),
+                )),
                 "another audience",
             );
         }
@@ -4914,7 +4922,11 @@ mod nh {
                 let jwt = payload(iss, AUD, Some(CLAIM));
                 fx.reset_writes();
                 assert_eq!(join_as(&fx, a(), Some(&jwt)), Ok(()), "{iss}: joins");
-                assert_eq!(snapshot(&w, &saved, &r), open.0, "{iss}: the open join's rows");
+                assert_eq!(
+                    snapshot(&w, &saved, &r),
+                    open.0,
+                    "{iss}: the open join's rows"
+                );
                 assert_eq!(writes(&fx), open.1, "{iss}: the open join's write calls");
                 let mine: Vec<_> = w
                     .players

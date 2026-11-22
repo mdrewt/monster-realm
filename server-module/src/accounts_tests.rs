@@ -12811,14 +12811,20 @@ mod acs6_profile {
                 .login_issuers
                 .iter()
                 .any(|i| PRODUCTION_LOGIN_ISSUERS.contains(i));
-            let dev = p.login_issuers.iter().any(|i| DEV_LOGIN_ISSUERS.contains(i));
+            let dev = p
+                .login_issuers
+                .iter()
+                .any(|i| DEV_LOGIN_ISSUERS.contains(i));
             assert!(
                 !prod || p.enforces_ownership,
                 "{f:?}: production trust without enforcement"
             );
             assert!(!(prod && dev), "{f:?}: production and dev trust together");
             if f.official || f.world {
-                assert!(p.enforces_ownership, "{f:?}: a release that does not enforce");
+                assert!(
+                    p.enforces_ownership,
+                    "{f:?}: a release that does not enforce"
+                );
                 assert!(!dev, "{f:?}: a release that trusts a dev issuer");
             }
         }
@@ -12906,8 +12912,9 @@ mod acs6_claim {
         let zoe = format!("Zo{}", ch(0xEB));
         let nihon = format!("{}{}", ch(0x65E5), ch(0x672C));
         let owl = ch(0x1F989);
-        let multibyte =
-            format!(r#"{{"sub":"{zoe} {nihon} {owl}","mr_ent":["{nihon}","base-game"],"n":"{owl}"}}"#);
+        let multibyte = format!(
+            r#"{{"sub":"{zoe} {nihon} {owl}","mr_ent":["{nihon}","base-game"],"n":"{owl}"}}"#
+        );
         let deep_array = format!(
             r#"{{"a":{}1{},"mr_ent":["base-game"]}}"#,
             "[".repeat(10_000),
@@ -12922,7 +12929,12 @@ mod acs6_claim {
             row(REAL, BG, true, "the real payload, compact"),
             row(spaced, BG, true, "whitespace around every token"),
             row(r#"{"mr_ent":["base-game"]}"#, BG, true, "the claim alone"),
-            row(r#"{"mr_ent":["a","base-game"]}"#, BG, true, "second element"),
+            row(
+                r#"{"mr_ent":["a","base-game"]}"#,
+                BG,
+                true,
+                "second element",
+            ),
             row(r#"{"mr_ent":["base-game","a"]}"#, BG, true, "first element"),
             row(&multibyte, BG, true, "multi-byte UTF-8 in other values"),
             row(
@@ -13009,8 +13021,18 @@ mod acs6_claim {
                 true,
                 "whitespace around the object",
             ),
-            row(&deep_array, BG, true, "10,000 nested arrays before the claim"),
-            row(&deep_object, BG, true, "10,000 nested objects before the claim"),
+            row(
+                &deep_array,
+                BG,
+                true,
+                "10,000 nested arrays before the claim",
+            ),
+            row(
+                &deep_object,
+                BG,
+                true,
+                "10,000 nested objects before the claim",
+            ),
         ]);
     }
 
@@ -13034,13 +13056,48 @@ mod acs6_claim {
                 false,
                 "an odd run of backslashes keeps the string open",
             ),
-            row(r#"{"p":{"mr_ent":["base-game"]}}"#, BG, false, "nested object"),
-            row(r#"{"p":["mr_ent",["base-game"]]}"#, BG, false, "nested array"),
-            row(r#"{"mr_ent":[["base-game"]]}"#, BG, false, "array in the array"),
-            row(r#"{"mr_ent":[{"a":"base-game"}]}"#, BG, false, "object in the array"),
-            row(r#"{"mr_ent":[{"base-game":1}]}"#, BG, false, "a key in the array"),
-            row(r#"{"mr_ent":"base-game"}"#, BG, false, "a string, not an array"),
-            row(r#"{"mr_ent":{"base-game":1}}"#, BG, false, "an object, not an array"),
+            row(
+                r#"{"p":{"mr_ent":["base-game"]}}"#,
+                BG,
+                false,
+                "nested object",
+            ),
+            row(
+                r#"{"p":["mr_ent",["base-game"]]}"#,
+                BG,
+                false,
+                "nested array",
+            ),
+            row(
+                r#"{"mr_ent":[["base-game"]]}"#,
+                BG,
+                false,
+                "array in the array",
+            ),
+            row(
+                r#"{"mr_ent":[{"a":"base-game"}]}"#,
+                BG,
+                false,
+                "object in the array",
+            ),
+            row(
+                r#"{"mr_ent":[{"base-game":1}]}"#,
+                BG,
+                false,
+                "a key in the array",
+            ),
+            row(
+                r#"{"mr_ent":"base-game"}"#,
+                BG,
+                false,
+                "a string, not an array",
+            ),
+            row(
+                r#"{"mr_ent":{"base-game":1}}"#,
+                BG,
+                false,
+                "an object, not an array",
+            ),
             row(r#"{"mr_ent":["base-game-x"]}"#, BG, false, "suffix"),
             row(r#"{"mr_ent":["xbase-game"]}"#, BG, false, "prefix"),
             row(r#"{"mr_ent":["base-game "]}"#, BG, false, "trailing space"),
@@ -13056,13 +13113,33 @@ mod acs6_claim {
             row(&escaped_element, BG, false, "an escape in the element"),
             row(r#"{"xmr_ent":["base-game"]}"#, BG, false, "key prefix"),
             row(r#"{"mr_entx":["base-game"]}"#, BG, false, "key suffix"),
-            row(r#"{"mr_ent ":["base-game"]}"#, BG, false, "key trailing space"),
-            row(r#"{" mr_ent":["base-game"]}"#, BG, false, "key leading space"),
+            row(
+                r#"{"mr_ent ":["base-game"]}"#,
+                BG,
+                false,
+                "key trailing space",
+            ),
+            row(
+                r#"{" mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "key leading space",
+            ),
             row(r#"{"MR_ENT":["base-game"]}"#, BG, false, "key case"),
             row(r#"{"mr_en":["base-game"]}"#, BG, false, "truncated key"),
-            row(r#"{"\"mr_ent\"":["base-game"]}"#, BG, false, "quotes inside the key"),
+            row(
+                r#"{"\"mr_ent\"":["base-game"]}"#,
+                BG,
+                false,
+                "quotes inside the key",
+            ),
             row(&escaped_key, BG, false, "an escape in the key"),
-            row(r#"{"p":"mr_ent","q":["base-game"]}"#, BG, false, "mr_ent as a value"),
+            row(
+                r#"{"p":"mr_ent","q":["base-game"]}"#,
+                BG,
+                false,
+                "mr_ent as a value",
+            ),
         ]);
     }
 
@@ -13073,8 +13150,18 @@ mod acs6_claim {
         let escaped_duplicate = format!(r#"{{"mr_ent":[],"mr{bs}u005fent":["base-game"]}}"#);
         let escaped_duplicate_rev = format!(r#"{{"mr{bs}u005fent":[],"mr_ent":["base-game"]}}"#);
         check(&[
-            row(r#"{"mr_ent":[],"mr_ent":["base-game"]}"#, BG, false, "empty then claim"),
-            row(r#"{"mr_ent":["base-game"],"mr_ent":[]}"#, BG, false, "claim then empty"),
+            row(
+                r#"{"mr_ent":[],"mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "empty then claim",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],"mr_ent":[]}"#,
+                BG,
+                false,
+                "claim then empty",
+            ),
             row(
                 r#"{"mr_ent":["base-game"],"mr_ent":["base-game"]}"#,
                 BG,
@@ -13087,7 +13174,12 @@ mod acs6_claim {
                 false,
                 "a later duplicate of another type",
             ),
-            row(&escaped_duplicate, BG, false, "empty then the claim under an escaped key"),
+            row(
+                &escaped_duplicate,
+                BG,
+                false,
+                "empty then the claim under an escaped key",
+            ),
             row(
                 &escaped_duplicate_rev,
                 BG,
@@ -13119,7 +13211,12 @@ mod acs6_claim {
             row(r#"{"mr_ent":1}"#, BG, false, "a number"),
             row(r#"{"mr_ent":""}"#, BG, false, "an empty string"),
             row(r#"{"mr_ent":[]}"#, BG, false, "an empty array"),
-            row(r#"{"mr_ent":[1,null,true]}"#, BG, false, "non-string elements"),
+            row(
+                r#"{"mr_ent":[1,null,true]}"#,
+                BG,
+                false,
+                "non-string elements",
+            ),
             row(r#"{"iss":"x","aud":"y"}"#, BG, false, "no claim at all"),
             row("{}", BG, false, "an empty object"),
         ]);
@@ -13138,7 +13235,12 @@ mod acs6_claim {
         );
         let deep_open_objects = r#"{"a":"#.repeat(10_000);
         check(&[
-            row(r#"[{"mr_ent":["base-game"]}]"#, BG, false, "a top-level array"),
+            row(
+                r#"[{"mr_ent":["base-game"]}]"#,
+                BG,
+                false,
+                "a top-level array",
+            ),
             row(r#"["base-game"]"#, BG, false, "a bare array"),
             row(r#""mr_ent""#, BG, false, "a top-level string"),
             row("null", BG, false, "null"),
@@ -13147,22 +13249,77 @@ mod acs6_claim {
             row("{", BG, false, "an open brace"),
             row("}", BG, false, "a close brace"),
             row(r#"{"mr_ent":["base-game""#, BG, false, "the array unclosed"),
-            row(r#"{"mr_ent":["base-game"]"#, BG, false, "the object unclosed"),
-            row(r#"{"mr_ent":["base-game"#, BG, false, "an unterminated string"),
-            row(r#"{"mr_ent":["base-game"]}x"#, BG, false, "trailing garbage"),
-            row(r#"{"mr_ent":["base-game"]}{}"#, BG, false, "a second object"),
-            row(r#"{"mr_ent":["base-game"]},"#, BG, false, "a trailing comma"),
+            row(
+                r#"{"mr_ent":["base-game"]"#,
+                BG,
+                false,
+                "the object unclosed",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"#,
+                BG,
+                false,
+                "an unterminated string",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"]}x"#,
+                BG,
+                false,
+                "trailing garbage",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"]}{}"#,
+                BG,
+                false,
+                "a second object",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"]},"#,
+                BG,
+                false,
+                "a trailing comma",
+            ),
             row(r#"{"mr_ent" ["base-game"]}"#, BG, false, "no colon"),
             row(r#"{"a":1 "mr_ent":["base-game"]}"#, BG, false, "no comma"),
-            row(r#"{"mr_ent":["base-game",]}"#, BG, false, "a comma closing the array"),
-            row(r#"{"mr_ent":["base-game"],}"#, BG, false, "a comma closing the object"),
-            row(r#"{,"mr_ent":["base-game"]}"#, BG, false, "a comma opening the object"),
-            row(r#"{"mr_ent":["base-game" "x"]}"#, BG, false, "no comma between elements"),
+            row(
+                r#"{"mr_ent":["base-game",]}"#,
+                BG,
+                false,
+                "a comma closing the array",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],}"#,
+                BG,
+                false,
+                "a comma closing the object",
+            ),
+            row(
+                r#"{,"mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "a comma opening the object",
+            ),
+            row(
+                r#"{"mr_ent":["base-game" "x"]}"#,
+                BG,
+                false,
+                "no comma between elements",
+            ),
             row(r#"{mr_ent:["base-game"]}"#, BG, false, "an unquoted key"),
             row(r#"{'mr_ent':['base-game']}"#, BG, false, "single quotes"),
             row(r#"{"mr_ent"}"#, BG, false, "a key with no value"),
-            row(r#"{"a":nope,"mr_ent":["base-game"]}"#, BG, false, "a bare word before"),
-            row(r#"{"mr_ent":["base-game"],"a":nope}"#, BG, false, "a bare word after"),
+            row(
+                r#"{"a":nope,"mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "a bare word before",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],"a":nope}"#,
+                BG,
+                false,
+                "a bare word after",
+            ),
             row(
                 r#"{"mr_ent":["base-game"],"a":"x}"#,
                 BG,
@@ -13182,7 +13339,12 @@ mod acs6_claim {
                 "a later object closed by a bracket",
             ),
             row(&deep, BG, false, "10,000 open brackets"),
-            row(&deep_in_claim, BG, false, "10,000 open brackets as the claim"),
+            row(
+                &deep_in_claim,
+                BG,
+                false,
+                "10,000 open brackets as the claim",
+            ),
             row(&deep_closed, BG, false, "the element 10,000 arrays deep"),
             row(&deep_open_objects, BG, false, "10,000 open objects"),
         ]);
@@ -13192,21 +13354,61 @@ mod acs6_claim {
     #[test]
     fn acs6_claim_the_entitlement_asked_is_honoured() {
         check(&[
-            row(r#"{"mr_ent":["soundtrack"]}"#, BG, false, "another entitlement named"),
-            row(r#"{"mr_ent":["soundtrack"]}"#, "soundtrack", true, "the one named"),
-            row(r#"{"mr_ent":["base-game"]}"#, "soundtrack", false, "base-game named"),
+            row(
+                r#"{"mr_ent":["soundtrack"]}"#,
+                BG,
+                false,
+                "another entitlement named",
+            ),
+            row(
+                r#"{"mr_ent":["soundtrack"]}"#,
+                "soundtrack",
+                true,
+                "the one named",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"]}"#,
+                "soundtrack",
+                false,
+                "base-game named",
+            ),
             row(
                 r#"{"mr_ent":["base-game","soundtrack"]}"#,
                 "soundtrack",
                 true,
                 "second of two",
             ),
-            row(r#"{"mr_ent":["base-game"]}"#, "base", false, "a prefix asked"),
-            row(r#"{"mr_ent":["base-game"]}"#, "game", false, "a suffix asked"),
+            row(
+                r#"{"mr_ent":["base-game"]}"#,
+                "base",
+                false,
+                "a prefix asked",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"]}"#,
+                "game",
+                false,
+                "a suffix asked",
+            ),
             row(r#"{"mr_ent":["base-game"]}"#, "", false, "nothing asked"),
-            row(r#"{"mr_ent":["base-game"]}"#, "base-game ", false, "a longer string asked"),
-            row(r#"{"mr_ent":[""]}"#, "", true, "the empty entitlement named and asked"),
-            row(r#"{"mr_ent":[""]}"#, BG, false, "the empty entitlement named"),
+            row(
+                r#"{"mr_ent":["base-game"]}"#,
+                "base-game ",
+                false,
+                "a longer string asked",
+            ),
+            row(
+                r#"{"mr_ent":[""]}"#,
+                "",
+                true,
+                "the empty entitlement named and asked",
+            ),
+            row(
+                r#"{"mr_ent":[""]}"#,
+                BG,
+                false,
+                "the empty entitlement named",
+            ),
         ]);
     }
 
@@ -13489,13 +13691,25 @@ mod acs6_door {
     #[test]
     fn acs6_door_a_non_enforcing_profile_admits_everyone_without_reading_the_token() {
         let fx = fixture();
-        for named in [&["open_join"][..], &["dev_reducers"][..], &["load_test_zones"][..]] {
+        for named in [
+            &["open_join"][..],
+            &["dev_reducers"][..],
+            &["load_test_zones"][..],
+        ] {
             let p = build_profile(feats(named));
             assert!(!p.enforces_ownership, "fixture: {named:?} does not enforce");
             assert_eq!(ask(&fx, &p, None), admitted(), "{named:?}: no token");
-            assert_eq!(ask_internal(&fx, &p), admitted(), "{named:?}: no connection");
+            assert_eq!(
+                ask_internal(&fx, &p),
+                admitted(),
+                "{named:?}: no connection"
+            );
             let host = host_minted();
-            assert_eq!(ask(&fx, &p, Some(&host)), admitted(), "{named:?}: host token");
+            assert_eq!(
+                ask(&fx, &p, Some(&host)),
+                admitted(),
+                "{named:?}: host token"
+            );
             assert_eq!(
                 ask(&fx, &p, Some("not json at all")),
                 admitted(),
@@ -13529,7 +13743,10 @@ mod acs6_door {
                 "the production issuer with the claim",
                 Some(payload(PRODUCTION, AUD, Some(CLAIM))),
             ),
-            ("a dev token without mr_ent", Some(payload(LOCAL_DEV, AUD, None))),
+            (
+                "a dev token without mr_ent",
+                Some(payload(LOCAL_DEV, AUD, None)),
+            ),
             (
                 "a dev token naming another entitlement",
                 Some(payload(LOCAL_DEV, AUD, Some(r#"["soundtrack"]"#))),
@@ -13614,11 +13831,21 @@ mod acs6_door {
         let p = build_profile(feats(&["official"]));
         let fx = fixture();
         let prod = payload(PRODUCTION, AUD, Some(CLAIM));
-        assert_eq!(ask(&fx, &p, Some(&prod)), admitted(), "production, entitled");
+        assert_eq!(
+            ask(&fx, &p, Some(&prod)),
+            admitted(),
+            "production, entitled"
+        );
         for (label, jwt) in [
             ("no token", None),
-            ("local dev, entitled", Some(payload(LOCAL_DEV, AUD, Some(CLAIM)))),
-            ("hosted dev, entitled", Some(payload(HOSTED_DEV, AUD, Some(CLAIM)))),
+            (
+                "local dev, entitled",
+                Some(payload(LOCAL_DEV, AUD, Some(CLAIM))),
+            ),
+            (
+                "hosted dev, entitled",
+                Some(payload(HOSTED_DEV, AUD, Some(CLAIM))),
+            ),
             ("production, no claim", Some(payload(PRODUCTION, AUD, None))),
             (
                 "production, another audience",
@@ -13639,12 +13866,25 @@ mod acs6_door {
             let fx = fixture();
             for (label, jwt) in [
                 ("no token", None),
-                ("production, entitled", Some(payload(PRODUCTION, AUD, Some(CLAIM)))),
-                ("local dev, entitled", Some(payload(LOCAL_DEV, AUD, Some(CLAIM)))),
-                ("hosted dev, entitled", Some(payload(HOSTED_DEV, AUD, Some(CLAIM)))),
+                (
+                    "production, entitled",
+                    Some(payload(PRODUCTION, AUD, Some(CLAIM))),
+                ),
+                (
+                    "local dev, entitled",
+                    Some(payload(LOCAL_DEV, AUD, Some(CLAIM))),
+                ),
+                (
+                    "hosted dev, entitled",
+                    Some(payload(HOSTED_DEV, AUD, Some(CLAIM))),
+                ),
                 ("host-minted", Some(host_minted())),
             ] {
-                assert_eq!(ask(&fx, &p, jwt.as_deref()), refused(), "{named:?}: {label}");
+                assert_eq!(
+                    ask(&fx, &p, jwt.as_deref()),
+                    refused(),
+                    "{named:?}: {label}"
+                );
             }
             assert_eq!(ask_internal(&fx, &p), refused(), "{named:?}: no connection");
         }
