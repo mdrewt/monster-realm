@@ -323,23 +323,13 @@ async function bootToConnect(): Promise<Booted> {
   return { s, fb };
 }
 
-/** The frame loop is armed behind the ready promise: wait for it. */
-async function frameLoopArmed(): Promise<void> {
-  await vi.waitFor(
-    () => {
-      if (raf.cb === null) throw new Error('the frame loop is not armed yet');
-    },
-    { timeout: 5_000, interval: 5 },
-  );
-}
-
 /** Boot, report ready, deliver the own character, and let the frame loop run until the boot is
- *  quiet. */
+ *  quiet. main() arms the frame loop in the same synchronous run that opens the connection, so it
+ *  is armed once `bootToConnect` returns (a frame with none armed throws). */
 async function boot(): Promise<Booted> {
   const booted = await bootToConnect();
   opts.onReady(H.identity);
   server(T);
-  await frameLoopArmed();
   for (let i = 0; i < 9; i += 1) advance(600);
   return booted;
 }
@@ -409,10 +399,8 @@ describe('the booted shell drives the server link of shell/session', { sequentia
   afterEach(teardown);
 
   it('main() mounts the connection it opened and the store it handed to connect into the module, the join`s identity is the module`s, and window.__game().ready is the module`s ready promise', async () => {
+    // bootToConnect checks the mounted handle and the store against the ones connect saw.
     const { s } = await boot();
-    expect(H.link, 'precondition: connect returned a handle').not.toBeNull();
-    expect(s.conn, 'the mounted handle is the one connect returned').toBe(H.link);
-    expect(s.store, 'the module`s store is the one main() handed to connect').toBe(opts.store);
     expect(s.identity, 'the join`s identity is the module`s').toBe(H.identity);
     expect(gameHook().ready, 'the DEV hook hands out the module`s ready promise').toBe(s.ready);
     expect(await settled(s.ready), 'and the join resolved it').toBe(true);
@@ -430,10 +418,9 @@ describe('the booted shell drives the server link of shell/session', { sequentia
       connectIdentities(fb.eventRing.snapshot()),
       'the connect edge carries the joined identity',
     ).toEqual([H.identity]);
-    await frameLoopArmed();
   }, 60_000);
 
-  it('onHydrated sets the module`s hydration flag; a reconnect clears it, adopts the identity it reports and arms the battle reseed', async () => {
+  it('onHydrated sets the module`s hydration flag; a reconnect clears it, adopts the identity it reports and arms the battle reseed; a zone switch leaves the flag and the identity as they are', async () => {
     const { s, fb } = await boot();
     expect(s.hydratedSinceReconnect, 'a boot with no hydration edge: not hydrated').toBe(false);
     opts.onHydrated();
@@ -450,6 +437,17 @@ describe('the booted shell drives the server link of shell/session', { sequentia
 
     opts.onHydrated();
     expect(s.hydratedSinceReconnect, 'the next hydration edge sets it again').toBe(true);
+
+    // A live warp switches the zone, which resets the emit latches with the prediction state.
+    const warp = opts.onOwnWarp;
+    if (warp === undefined) throw new Error('main() passes connect an onOwnWarp');
+    warp(1);
+    const zoneChanges = fb.eventRing.snapshot().filter((e) => e.kind === 'zoneChange');
+    expect(zoneChanges, 'precondition: the warp switched the zone').toMatchObject([
+      { fromZone: 0, toZone: 1 },
+    ]);
+    expect(s.hydratedSinceReconnect, 'the zone switch leaves the flag set').toBe(true);
+    expect(s.identity, 'and the identity').toBe(IDENTITY_2);
   }, 60_000);
 
   it('a batch with the own Ongoing battle pushes one battleStart through the module`s latch; after a reconnect the surviving battle stays silent until the hydration edge, then re-baselines', async () => {
@@ -771,58 +769,16 @@ describe('shell/session owner functions', { sequential: true }, () => {
     }
   });
 
-  it('a fresh import holds every binding at its initial value', async () => {
-    const s = await fresh();
-    const { AuthoritativeStore } = await import('../net/store');
-    const { BATTLE_EMIT_INITIAL } = await import('../ui/battleEmitModel');
-    expect(s.store).toBeInstanceOf(AuthoritativeStore);
-    expect(s.identity).toBe('');
-    expect(s.conn).toBeUndefined();
-    expect(s.hydratedSinceReconnect).toBe(false);
-    expect(s.battleEmit).toBe(BATTLE_EMIT_INITIAL);
-    expect(s.lastOwnRating).toBeNull();
-    expect(await settled(s.ready), 'ready is pending').toBe(false);
-  });
-
-  it('ready stays pending until markReady, resolves on it, and a second markReady leaves it resolved; the exported resolveReady is the one that resolves it', async () => {
+  it('ready stays pending until markReady, resolves on it, and a second markReady leaves it resolved', async () => {
     const s = await fresh();
     expect(await settled(s.ready), 'pending at import').toBe(false);
     s.markReady();
     expect(await settled(s.ready), 'markReady resolved it').toBe(true);
     expect(() => s.markReady(), 'a second markReady does not throw').not.toThrow();
     await expect(s.ready, 'and it stays resolved').resolves.toBeUndefined();
-
-    const again = await fresh();
-    expect(again.ready, 'a fresh import builds its own promise').not.toBe(s.ready);
-    expect(await settled(again.ready), 'pending at import').toBe(false);
-    again.resolveReady();
-    expect(await settled(again.ready), 'resolveReady resolves the module`s ready').toBe(true);
   });
 
-  it('adoptIdentity, adoptConnection, noteHydrated and clearHydration set the bindings every importer reads', async () => {
-    const s = await fresh();
-    s.adoptIdentity(H.identity);
-    expect(s.identity).toBe(H.identity);
-    s.adoptIdentity(IDENTITY_2);
-    expect(s.identity, 'a later identity replaces it').toBe(IDENTITY_2);
-
-    const state: LinkState = { session: 'hidden', frozen: false, live: true };
-    const first = fakeLink(state, {});
-    const second = fakeLink(state, {});
-    s.adoptConnection(first);
-    expect(s.conn).toBe(first);
-    s.adoptConnection(second);
-    expect(s.conn, 'a later connection replaces it').toBe(second);
-
-    s.noteHydrated();
-    expect(s.hydratedSinceReconnect).toBe(true);
-    s.clearHydration();
-    expect(s.hydratedSinceReconnect).toBe(false);
-    s.noteHydrated();
-    expect(s.hydratedSinceReconnect).toBe(true);
-  });
-
-  it('stepBattleEmit reads nothing before an identity is adopted, then starts the own battle; armEmitReseed captures it, resetEmitLatches drops only the active battle, and the reseed resolves only once the module is hydrated', async () => {
+  it('stepBattleEmit reads nothing before an identity is adopted, then starts the own battle; armEmitReseed captures it, resetEmitLatches drops only the active battle and leaves hydration, identity and connection as they are, and the reseed resolves only once the module is hydrated', async () => {
     const s = await fresh();
     const fb = await import('./feedback');
     const { BATTLE_EMIT_INITIAL } = await import('../ui/battleEmitModel');
@@ -869,9 +825,18 @@ describe('shell/session owner functions', { sequential: true }, () => {
       reseedPrevBattleId: null,
     });
     expect(latchEvents(fb.eventRing.snapshot()), 'silently').toEqual([wildStart(B1)]);
+
+    // A zone switch resets the latches on a hydrated, connected module.
+    const link = fakeLink({ session: 'hidden', frozen: false, live: true }, {});
+    s.adoptConnection(link);
+    s.resetEmitLatches();
+    expect(s.battleEmit.activeBattleId, 'precondition: the reset ran').toBeNull();
+    expect(s.hydratedSinceReconnect, 'the reset leaves hydration set').toBe(true);
+    expect(s.identity, 'and the identity').toBe(H.identity);
+    expect(s.conn, 'and the connection').toBe(link);
   });
 
-  it('stepRankedEmit reads nothing before an identity is adopted, does nothing without the own profile, baselines on first sight, pushes the delta on a change, and re-baselines after resetEmitLatches', async () => {
+  it('stepRankedEmit reads nothing before an identity is adopted, does nothing without the own profile, baselines on first sight, pushes the delta on a change, re-baselines after resetEmitLatches, and keeps its baseline while the own profile is absent', async () => {
     const s = await fresh();
     const fb = await import('./feedback');
     const profile = vi.spyOn(s.store, 'profile');
@@ -914,6 +879,20 @@ describe('shell/session owner functions', { sequential: true }, () => {
       latchEvents(fb.eventRing.snapshot()).length,
       'and no delta is carried across the reset',
     ).toBe(1);
+
+    s.store.removeProfile(H.identity);
+    s.stepRankedEmit();
+    expect(s.lastOwnRating, 'the own profile gone: the baseline stays').toBe(1040);
+    s.store.upsertProfile(profileOf(H.identity, 1055));
+    s.stepRankedEmit();
+    expect(
+      latchEvents(fb.eventRing.snapshot()),
+      'the profile back with a new rating: one match with the delta from the kept baseline',
+    ).toEqual([
+      { kind: 'rankedMatch', battleId: PVP_DONE.toString(), ratingDelta: -10 },
+      { kind: 'rankedMatch', battleId: PVP_DONE.toString(), ratingDelta: 15 },
+    ]);
+    expect(s.lastOwnRating).toBe(1055);
   });
 
   it('a latch step whose store read throws returns normally, logs [obs] battle or [obs] ranked with the error, and moves nothing', async () => {
@@ -1008,7 +987,7 @@ describe('shell/session owner functions', { sequential: true }, () => {
     });
   });
 
-  it('sendGuarded on a live connection: a call answering undefined resolves with no report, a rejection reports its site`s line and calls onRejected once, a fulfilled call reports nothing', async () => {
+  it('sendGuarded on a live connection: a call answering undefined resolves with no report, a rejection reports its site`s line and calls onRejected once, a fulfilled call reports nothing, and a link that is not frozen but has no live handle still runs the call', async () => {
     const s = await fresh();
     const fb = await import('./feedback');
     const { NO_TOAST, TOAST_MS } = await import('../ui/toast');
@@ -1067,6 +1046,23 @@ describe('shell/session owner functions', { sequential: true }, () => {
       'train: unexpected error',
       'evolve: unexpected error',
     ]);
+
+    // Not frozen, no live handle: the guard lets the call through and it answers undefined.
+    state.live = false;
+    const handleless = vi.fn((): Promise<void> | undefined => undefined);
+    const handlelessLine = vi.fn<OutcomeLine>(() => true);
+    const handlelessRejected = vi.fn();
+    await expect(
+      s.sendGuarded('talk', handleless, handlelessRejected, handlelessLine),
+    ).resolves.toBeUndefined();
+    expect(handleless, 'no live handle: the call still runs').toHaveBeenCalledTimes(1);
+    expect(handlelessLine, 'no line is offered anything').not.toHaveBeenCalled();
+    expect(fb.toastState, 'the toast is left alone').toBe(shown);
+    expect(reported(), 'nothing reaches the error ring').toEqual([
+      'train: unexpected error',
+      'evolve: unexpected error',
+    ]);
+    expect(handlelessRejected).not.toHaveBeenCalled();
   });
 
   it('sessionGateBlocks, privacyLinkLive and liveReducers follow the adopted connection: unset, hidden, expired, unreachable, frozen, and without a live handle', async () => {

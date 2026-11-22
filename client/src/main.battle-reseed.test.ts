@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /**
- * main.battle-reseed.test.ts — RUNTIME gate over main.ts's pt-b1 battle-emit listener
+ * main.battle-reseed.test.ts — RUNTIME gate over the battle-emit listener main.ts registers
  * (slice 16r-f, extended by slice 17r-b; ADR-0130 reseed latch + residuals (d)/(e)).
  *
  * SOURCE OF TRUTH:
