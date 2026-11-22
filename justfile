@@ -166,8 +166,9 @@ module-profile $wasm:
 
 # Build a module to ship: `official` (the official server: the production login issuer) or `world`
 # (a world a player hosts: no login issuer). Both enforce ownership. It builds the module alone, with
-# exactly that feature and no default, into a target directory of its own (the test and e2e builds
-# share the other one) and with no compiler flags from the environment or a config file. It then
+# exactly that feature and no default, from the committed lock file, into a target directory of its
+# own (the test and e2e builds share the other one), with no compiler flags from the environment or
+# a config file and no compiler or wrapper named by the environment. It then
 # reads the profile back from the artefact and refuses one that is not the profile asked for, does
 # not enforce ownership, compiles a dev reducer or names one, or trusts anything but one `https:`
 # login issuer (`official`) or none (`world`). An accepted artefact is copied to
@@ -189,13 +190,14 @@ release-module profile:
     rm -f "$out" "$out.sha256"
     # An empty CARGO_ENCODED_RUSTFLAGS is cargo's first source of flags, so it also overrides
     # `build.rustflags` and `target.*.rustflags` in a config file.
-    env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS -u CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS CARGO_ENCODED_RUSTFLAGS= \
-        cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --no-default-features --features "$profile" --target-dir "$build_dir"
+    env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS -u CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS \
+        -u RUSTC -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER CARGO_ENCODED_RUSTFLAGS= \
+        cargo build --locked -p monster-realm-module --release --target wasm32-unknown-unknown --no-default-features --features "$profile" --target-dir "$build_dir"
     MR_PROFILE="$profile" MR_BUILT="$build_dir/wasm32-unknown-unknown/release/monster_realm_module.wasm" MR_OUT="$out" \
         MR_REDUCER_LIST={{quote(justfile_directory() / "scripts" / "verify-release-reducers.mjs")}} \
         node --input-type=module - <<'EOF'
     import { createHash } from 'node:crypto';
-    import { copyFileSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+    import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
     import { basename } from 'node:path';
     import { pathToFileURL } from 'node:url';
     const { MR_PROFILE: profile, MR_BUILT: built, MR_OUT: out, MR_REDUCER_LIST: reducerList } = process.env;
@@ -223,7 +225,8 @@ release-module profile:
     }
     const named = FORBIDDEN_REDUCERS.filter((name) => bytes.includes(name));
     if (named.length > 0) refuse(`it names the dev reducer(s) ${named.join(', ')}`);
-    copyFileSync(built, out);
+    // The bytes checked are the bytes written and hashed.
+    writeFileSync(out, bytes);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     writeFileSync(`${out}.sha256`, `${sha256}  ${basename(out)}\n`);
     console.log(`release-module: ${profile} ${sha256} ${realpathSync(out)}`);

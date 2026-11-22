@@ -32,9 +32,10 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 
 // --- Deployment config ----------
 
-/// The production login issuer, the only one an `official` build trusts. Deployment config,
-/// not a game rule. The `.invalid` reserved TLD (RFC 2606) is a FAIL-CLOSED placeholder: no real
-/// token matches it, so an `official` build provisions no `account` and admits nobody.
+/// The production login issuer. An `official` build provisions accounts from this list and
+/// no other, and no other build trusts it. Deployment config, not a game rule. The `.invalid`
+/// reserved TLD (RFC 2606) is a FAIL-CLOSED placeholder: no real token matches it, so an
+/// `official` build provisions no `account` and admits nobody.
 /// INVARIANT: the host's own anonymous issuer is NEVER placed in a login-issuer list — it is
 /// not an account provider, and that is what keeps the audience-disconnect branch outage-safe.
 ///
@@ -105,8 +106,8 @@ pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
     }
 }
 
-/// The features this build names. `cfg!` keeps every branch of `build_profile` compiled in
-/// every build.
+/// The features this build names: one item in every build, with no `#[cfg]` twin, so the
+/// profile is always computed by the same `build_profile`.
 pub(crate) const BUILD_FEATURES: BuildFeatures = BuildFeatures {
     official: cfg!(feature = "official"),
     world: cfg!(feature = "world"),
@@ -137,15 +138,15 @@ pub(crate) const CLAIM_TTL_MS: i64 = 15 * 60 * 1000;
 /// 32 bytes of `crypto.getRandomValues` rendered as lowercase hex.
 pub(crate) const CLAIM_CODE_LEN: usize = 64;
 
+/// The one refusal of a caller who is not entitled, whatever the reason: no token, an
+/// unlisted issuer, another audience or no entitlement. The VALUE is a client contract.
+pub(crate) const ERR_OWNERSHIP_REQUIRED: &str = "ownership required";
 /// Shared reject reason for AUTH-15 (malformed / never-existed) and AUTH-35
 /// (already consumed) — ONE const so the two are indistinguishable to a caller
 /// by construction (no code-existence oracle).
 pub(crate) const ERR_INVALID_CODE: &str = "invalid or already-used code";
 /// Static reject reasons on the connect path (AUTH-36 / G12 no-PII-in-logs);
 /// named so M21c's G12 can value-pin them rather than scan for identifier names.
-/// The one refusal of a caller who is not entitled, whatever the reason: no token, an
-/// unlisted issuer, another audience or no entitlement. The VALUE is a client contract.
-pub(crate) const ERR_OWNERSHIP_REQUIRED: &str = "ownership required";
 const REJECT_UNRECOGNIZED_ISSUER: &str = "unrecognized issuer";
 const REJECT_UNRECOGNIZED_AUDIENCE: &str = "unrecognized audience";
 
@@ -187,9 +188,10 @@ pub(crate) fn audience_allowed(audience: &[String], allowed: &[&str]) -> bool {
 ///
 /// Keys and elements are compared as the bytes between their quotes, so one written with an
 /// escape never matches, and a backslash in any top-level key is refused outright: a reader
-/// that decodes escapes would take the last of two spellings of one key. Anything else it
-/// cannot follow (a second `mr_ent`, text that is not one well-formed object) is `false`, as
-/// is an object with no member.
+/// that decodes escapes would take the last of two spellings of one key. A second `mr_ent`,
+/// an object with no member, and text whose strings, brackets, colons and commas do not form
+/// one object are all `false`. A number is read as any run of number bytes: the host has
+/// parsed the payload as JSON before the module sees it, and a number cannot hold the claim.
 pub(crate) fn token_names_entitlement(raw_payload: &str, entitlement: &str) -> bool {
     let b = raw_payload.as_bytes();
     let mut at = 0;
@@ -198,8 +200,7 @@ pub(crate) fn token_names_entitlement(raw_payload: &str, entitlement: &str) -> b
         return false;
     }
     at += 1;
-    // `None` until the key is met, then whether its array holds the entitlement.
-    let mut named: Option<bool> = None;
+    let mut named = false;
     loop {
         skip_json_ws(b, &mut at);
         let Some(key) = read_json_string(b, &mut at) else {
@@ -209,17 +210,12 @@ pub(crate) fn token_names_entitlement(raw_payload: &str, entitlement: &str) -> b
             return false;
         }
         if key == b"mr_ent" {
-            if named.is_some() {
+            // The answer is settled as soon as a first `mr_ent` does not name it, or a
+            // second one is met.
+            if named || !json_array_holds(b, &mut at, entitlement.as_bytes()) {
                 return false;
             }
-            named = if b.get(at) == Some(&b'[') {
-                json_array_holds(b, &mut at, entitlement.as_bytes())
-            } else {
-                skip_json_value(b, &mut at).then_some(false)
-            };
-            if named.is_none() {
-                return false;
-            }
+            named = true;
         } else if !skip_json_value(b, &mut at) {
             return false;
         }
@@ -234,7 +230,7 @@ pub(crate) fn token_names_entitlement(raw_payload: &str, entitlement: &str) -> b
         }
     }
     skip_json_ws(b, &mut at);
-    at == b.len() && named == Some(true)
+    at == b.len() && named
 }
 
 fn skip_json_ws(b: &[u8], at: &mut usize) {
@@ -357,27 +353,32 @@ fn skip_json_key(b: &[u8], at: &mut usize) -> bool {
     read_json_string(b, at).is_some() && skip_json_colon(b, at)
 }
 
-/// Reads the array that opens at `*at` and answers whether one of its elements is the string
-/// `want`. Elements of any other type are stepped over, not searched. `None` when the array
-/// is malformed or empty: an empty array holds nothing, so its caller's answer is the same.
-fn json_array_holds(b: &[u8], at: &mut usize, want: &[u8]) -> Option<bool> {
+/// Whether a well-formed array opens at `*at` and one of its elements is the string `want`,
+/// leaving `*at` after the array. Elements of any other type are stepped over, not searched.
+fn json_array_holds(b: &[u8], at: &mut usize, want: &[u8]) -> bool {
+    if b.get(*at) != Some(&b'[') {
+        return false;
+    }
     *at += 1;
     let mut found = false;
     loop {
         skip_json_ws(b, at);
         if b.get(*at) == Some(&b'"') {
-            found |= read_json_string(b, at)? == want;
+            let Some(element) = read_json_string(b, at) else {
+                return false;
+            };
+            found |= element == want;
         } else if !skip_json_value(b, at) {
-            return None;
+            return false;
         }
         skip_json_ws(b, at);
         match b.get(*at) {
             Some(b',') => *at += 1,
             Some(b']') => {
                 *at += 1;
-                return Some(found);
+                return found;
             }
-            _ => return None,
+            _ => return false,
         }
     }
 }
