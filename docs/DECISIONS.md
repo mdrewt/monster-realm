@@ -2524,7 +2524,8 @@ browsers itself); a name supplied by the world or by a page a gate served; an in
 document or address entry that carries a reconnect token; an `ip:` or `dns:` name kept after its
 certificate. Limits, a default the operator may overrule: an address or a domain name proves who
 answers there when the player binds, and nothing about before or after. A world that moved keeps
-accepting its old address's name until its certificate expires, 160 hours at most, and a browser
+accepting its old address's name until its certificate expires (160 hours at most for an address,
+the certificate's life for a domain name), and a browser
 that loaded an earlier server's page at the same address and port may still run what that page
 left there. A name issued for the server's key, under a DNS zone we would operate, closes both and
 was weighed and not chosen (R-lpw-19-CHANGEDHANDS).

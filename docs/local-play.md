@@ -1067,7 +1067,7 @@ the account's id, as every attestation does, and the consent page says so.
 | Proxy | H serves the page from its own origin and forwards the connection to V, at the application layer or as untouched TCP | Through an application proxy the browser's origin is H's, so the name is H's. Forwarded untouched, the browser is shown V's certificate for an address it did not dial; past that warning the page is V's own and the origin still H's, so the name is still H's | closed |
 | Proxy, from another port of V's address | H is another tenant of the same address | The port is part of the browser's origin and of the name, so H's port is another name | closed |
 | An address that changes hands: what was issued before | H keeps a code or an attestation from the time it held the address | A code lives a minute and an attestation five; each is spent by one use, and the attestation carries one identity's nonce | closed |
-| An address that changes hands: the past holder, in a browser that never loaded its page there | H held V's address before V and still has a certificate for it | The code goes to whoever answers at the address when the player binds; H's certificate is of no use off the network path, and expires within 160 hours for an address and with its 90 days at most for a domain name | closed |
+| An address that changes hands: the past holder, in a browser that never loaded its page there | H held V's address before V and still has a certificate for it | The code goes to whoever answers at the address when the player binds; H's certificate is of no use off the network path, and expires: within 160 hours for an address, and for a domain name with the certificate's life (90 days by Let's Encrypt's default) | closed |
 | An address that changes hands: the past holder, in a browser that did load its page at that address and port | H's page left a service worker, cached pages or a stored token in that browser. The first two run as V's origin: they start a bind for H's identity on V and redeem it, or read the world token the browser keeps for V. A planted token of an identity H already bound has the player play H's character | Nowhere, in that browser. A service worker answers the navigation before V is asked (measured), so no header V sends reaches that load. The world's port is drawn at random when the world is made, which makes the same origin unlikely; a host who names its port, 443 included, has no such margin. What H binds this way stays bound until the world's owner removes it | open, in a browser that visited the past holder at the same origin; tracked as R-lpw-19-CHANGEDHANDS |
 | An address that changes hands: the new holder | V moved and still runs, configured for its old address and holding an unexpired certificate for it. H answers at that address, obtains attestations that name it and presents them on V, which it reaches at V's new address | V lists an `ip:` or `dns:` name only while it holds an unexpired, publicly trusted certificate for it, rewrites its names at every start and renewal, and removes a name at a refused renewal or an expiry: within 160 hours for an address, unless H forwards the certificate authority's validation to V. For that time H is also the server every browser reaches at the address, and reads each browser joiner's world token outright | open: V accepts the name for at most 160 hours after it leaves an address (a domain name: its certificate's life), longer while the new holder keeps V's certificate renewed, and what is bound in that time stays bound until the owner removes it; tracked as R-lpw-19-CHANGEDHANDS |
 
@@ -1278,7 +1278,8 @@ delivered to its own page.
 
 G5 scores highest and fails the gate: it does nothing. G1 leads G4b by one point, and what
 separates them is not in the rubric: a join under G1 shows no warning. The result reverses if we
-come to operate a DNS zone and a certificate broker for another reason (G2 then wins), if the
+come to operate a DNS zone and a certificate broker for another reason, or get such a zone onto
+the public suffix list cheaply (G2 then wins), if the
 ACME code cannot obtain a `shortlived` certificate for an address in practice (only Certbot's
 support was confirmed), or if an address that changes hands proves to be a targeted attack and
 not a matter of chance, which makes the second criterion a gate that G1 fails.
@@ -1695,9 +1696,10 @@ tightened, is the one reported. An
 servers that stood in for the account service, a gate, a third site and a hostile page: a form
 posted across origins, and the same post from pages with each of four `Referrer-Policy` values; a
 303 whose `Location` carries a fragment; a return path that redirects; a window opened by a
-hostile page, with and without `Cross-Origin-Opener-Policy`; and one origin held first by a server
-that registers a service worker, serves a page cacheable for a year and writes `localStorage`,
-then by another. The history row used the full Chromium of the same version in its headless mode
+hostile page, with and without `Cross-Origin-Opener-Policy`; one origin held first by a server
+that registers a service worker and writes `localStorage`, then by another; and, in a run with no
+worker, one origin held first by a server that serves a page cacheable for a year, then by
+another. The history row used the full Chromium of the same version in its headless mode
 with a profile on disk, and read the profile's `History` database afterwards; the attestation was
 found in two more files of the profile, `segmentation_platform/ukm_db` and a disk-cache entry for
 the redirect, which the stand-in account service did not mark `no-store` as the route does. Loopback origins
