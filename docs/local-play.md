@@ -768,10 +768,10 @@ identity that was just bound; in a browser the check runs in the page the host s
 server's address or the database's identity: private addresses repeat on every network, and a
 database's identity is whatever its host says. C2 with a browser flow built now: a page on the
 account service's own origin that signs in the player and returns an attestation naming the origin
-it returns to. It passed the gate and scored below the shell alone: it puts a redirect in front of
-the route, and the names it needs exist already. The operator has since ruled that a browser must
-be able to join (<https://github.com/mdrewt/monster-realm/issues/833>), and "A browser binds a
-friends server it reached by address" is that flow's design, for a domain and for a bare address.
+it returns to. It passes the gate and scores below the shell alone: it puts a redirect in front of
+the route, and the names it needs exist already. The operator's ruling requires a browser's way
+in all the same (<https://github.com/mdrewt/monster-realm/issues/833>), and "A browser binds a
+friends server it reached by address" designs it, for a domain and for a bare address.
 
 | Alternative | Gate: a hostile host cannot obtain, by relay or proxy, a binding on another world for an identity it controls | Unforgeable by a hostile host, proxying included (3) | Covers a pinned target, a domain target, the shell's own world and a browser page (3) | What the world must know about itself, and who writes it (2) | Stable across an address change and a certificate renewal (2) | Burden beyond what the specs already hold (2) | What the account service learns (1) | Unweighted, of 30 | Weighted, of 65 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -783,8 +783,8 @@ friends server it reached by address" is that flow's design, for a domain and fo
 C1 scores highest and fails the gate. The result reverses if browser players of domain servers
 must be able to join an enforcing build at launch (then the browser flow is built, with the same
 names), or if a relay or proxy through the shell is shown to succeed with the rules above in
-place. The first condition is met by the operator's ruling on a browser joiner: the shell binds as
-this fork has it, and a browser binds as the browser design below has it.
+place. The first condition holds under the operator's ruling on a browser joiner: the shell binds as
+this fork has it, and a browser as the browser design below has it.
 
 **Proved by.** lpw-15.4: given this identity's outstanding nonce and an attestation, valid in
 every other way, whose `aud` is another world's name, `bind_world_account` refuses with no write
@@ -944,9 +944,10 @@ the desktop app. Two questions are decided here: (f) how a page a gate serves ob
 attestation, when that page may be a hostile host's own code and must never hold a login token; and
 (g) what names a server a browser reached by a bare IP address. Nothing here is built: the account
 service has no bind route, the client no bind flow, and the gate and the standalone server do not
-exist. The module needs no change: a world's names are strings its owner writes, and
+exist. A bind asks nothing new of the module: a world's names are strings its owner writes, and
 `bind_world_account` compares an attestation's `aud` with them byte for byte
-(`server-module/src/world_binding.rs`).
+(`server-module/src/world_binding.rs`). The one rule the design wants from it, refusing a second
+account for a bound identity, is the lpw-23 row of the last table.
 
 | Fork | Chosen | Rejected | Proved by |
 |---|---|---|---|
@@ -977,41 +978,46 @@ one world.
    world's nonce for that identity (`request_bind_nonce`, read through `my_bind_nonce`). Under
    `Password` the door comes first; under `Allowlist` the gate's door relays the owner's
    `request_bind_nonce_for` for the identity whose token the caller presents.
-2. *The start.* When the player presses a button, and never on its own, the page makes a random
-   verifier, keeps it in the tab's `sessionStorage` with the identity it is binding, and posts a
-   form to the account service as a top-level navigation: `POST <issuer>/bind` with `return` (the
-   page's own origin), `db`, `nonce` and `challenge` (the SHA-256 of the verifier).
+2. *The start.* When the player presses a button, the page makes a random verifier, keeps it in
+   the tab's `sessionStorage` with the identity it is binding, and posts a form to the account
+   service as a top-level navigation: `POST <issuer>/bind` with `return` (the page's own origin),
+   `db`, `nonce` and `challenge` (the SHA-256 of the verifier). Waiting for the press is the
+   honest page's rule: a hostile page can post without one, and gains a sign-in the player sees.
 3. *The checks.* The service refuses a request that fails any row of the table below, on a page of
    its own, and redirects nowhere.
 4. *The sign-in.* The service keeps the four values in a signed, `HttpOnly`, host-only,
-   `SameSite=Lax` cookie that belongs to this one bind, and runs the sign-in step it already has,
-   on its own origin: email and password on the dev profiles, Steam's OpenID in production. It
-   issues no ID token, authorization code or refresh token to anyone, and starts no session: the
-   cookie admits to nothing but this bind. Starting a bind counts against a cap of its own, so a
-   flood of binds does not stop sign-ins to the official server; like the sign-in cap it is not per
-   network address.
+   `SameSite=Lax` cookie named for this one bind, so two binds in one browser do not overwrite
+   each other, and runs its profile's sign-in step on its own origin: email and password on the
+   dev profiles, which is built, and Steam's OpenID in production, which acs-10 builds. It issues
+   no ID token, authorization code or refresh token to anyone, and starts no session: the cookie
+   admits to nothing but this bind. Starting a bind counts against a cap of its own, so a flood of
+   binds does not stop sign-ins to the official server. Like the sign-in cap it is not per network
+   address, so a flood does stop every browser bind for as long as it lasts.
 5. *The consent.* After every sign-in, for an account that owns the game and for one that does
    not, the service shows the server's address exactly as the name will carry it (the host in its
    ASCII form, the port) and the database, says that the server's host will learn the account's id
    and whether it owns the game, and offers Continue and Cancel. Nothing is sent to the server
    before one of the two is pressed.
-6. *The answer.* On Continue the service spends the bind, applies the account's attestation limit
-   (shared with `/attest`), reads the account again, and signs the eight claims `/attest` signs,
-   with `aud` derived from `return`: `dns:<host>:<port>/<db>` or `ip:<address>:<port>/<db>`, the
-   port always written and the host as the URL parser serialized it. It logs the account and the
-   time, as `/attest` does. It holds the attestation in memory under a random one-use code for at
-   most a minute and answers `303` to `<return>/bind-return#code=<code>`. `/bind-return` is one
-   fixed path, the same for every server. On Cancel the fragment is `error=access_denied` and says
-   nothing about the account. For an account that does not own the game, Continue carries what
-   `/attest` answers for it: the error `not_entitled` as built, and an attestation that says so once
-   lpw-23 has the route issue one.
+6. *The answer.* On Continue the service marks the bind spent, so a second Continue signs nothing,
+   applies the account's attestation limit (shared with `/attest`), reads the account again, and
+   signs the eight claims `/attest` signs, with `aud` derived from `return`:
+   `dns:<host>:<port>/<db>` or `ip:<address>:<port>/<db>`, the port always written and the host as
+   the URL parser serialized it. It logs the account and the time, as `/attest` does. It holds the
+   attestation in memory, with the challenge and the return address, under a random one-use code
+   for at most a minute, and answers `303` to `<return>/bind-return#code=<code>`. `/bind-return`
+   is one fixed path, the same for every server. On Cancel the fragment is `error=access_denied`
+   and says nothing about the account. For an account that does not own the game, Continue carries
+   what `/attest` answers for it: the error `not_entitled` as built, and an attestation that says
+   so once lpw-23 has the route issue one.
 7. *The redemption.* The page at `/bind-return`, where the gate serves the client page and never a
    redirect, reads the fragment, removes it from the address bar before anything else, and treats
    every field as untrusted text of bounded length. It posts the code and the verifier to
    `<issuer>/bind/redeem`. The service answers with the attestation once, only when the verifier's
    SHA-256 is the challenge the bind started with and the request's `Origin` is the bind's
-   `return`, to that origin alone and with `Cache-Control: no-store`. A second attempt on a code
-   gets nothing.
+   `return`. Its cross-origin answer names that origin alone, carries no credentials and is sent
+   with `Cache-Control: no-store`; the route reads no cookie. A redemption that fails either check
+   leaves the code unspent: the verifier cannot be guessed, and a code that anyone who saw it could
+   burn would let them stop a bind.
 8. *The bind.* The page calls `bind_world_account` with the attestation on its own connection
    (under `Allowlist` it hands it to the gate's door, which relays `bind_world_account_for` for the
    identity whose token the caller presents), then `join_game`.
@@ -1023,23 +1029,25 @@ Every page of the route sends what the sign-in pages send (`frame-ancestors 'non
 |---|---|
 | `POST` with a form body; a `GET` is refused | The server's address in a URL, and so in a proxy's log, the history or a `Referer` |
 | `return` is `https:` and is already the URL parser's own serialization of its origin | User-info, a path, a query, a fragment, upper case, a written default port and every second spelling of an address (the measurement below) |
-| The `Origin` header the browser put on the post equals `return`; `null` is refused | A page starting a bind that returns anywhere but to itself, so the address on the consent page is the address of the page the player just left |
+| The `Origin` header the browser put on the post equals `return`; `null` is refused | A page starting a bind that returns anywhere but to itself: in a browser, the address on the consent page is the address of the page the player just left |
 | A domain has no trailing dot, labels of letters, digits and inner hyphens, and at least one label below a suffix of the public suffix list's ICANN section; the list's default rule is not applied | A single-label name, a made-up suffix (`server.lan`), a special-use name (`.local`, `.internal`, `.test`, `.onion`, `home.arpa`): names that repeat on every network and that no certificate authority certifies |
 | An IP address is IPv4 outside the special-purpose blocks, or IPv6 inside `2000::/3` and outside them, and is not IPv4-mapped; the port is not 0 | A private, loopback, link-local or shared address, and a second name for an IPv4 address |
 | `db` matches `[A-Za-z0-9_-]+` and the name is at most 512 characters; `nonce` is 1 to 128 visible ASCII characters; `challenge` is 43 characters of `[A-Za-z0-9_-]` | A name the module's own bound refuses; anything but opaque, bounded text in the attestation |
 | No redirect before Continue or Cancel | The service as a redirector to addresses nobody approved, and a site learning, without the player's consent, that a visitor has an account or whether it owns the game |
-| The four values ride in the bind's cookie; the attestation waits in memory for a minute at most; none of it reaches the database, a log or a backup | A record of which server an account joined |
+| The four values ride in the bind's cookie until the consent. From the consent to the redemption, a minute at most, the attestation waits in memory with its challenge and return address; the id of a spent bind stays in memory until its cookie expires. None of it reaches the database, a log or a backup | A record of which server an account joined |
 
-The `local-dev` profile alone also takes a loopback `return` (`http://localhost:<port>`, as its
-`set-client` command does), so the flow runs on one machine; its attestation key is public and
-signs nothing a release build accepts.
+The `local-dev` profile alone also takes a loopback `return`, the three spellings the `set-client`
+command takes for a redirect address: `http://localhost:<port>` is signed as
+`dns:localhost:<port>/<db>`, and `http://127.0.0.1:<port>` and `http://[::1]:<port>` as `ip:`
+names. So the flow runs on one machine; that profile's attestation key is public and signs nothing
+a release build accepts.
 
 **What the page is left holding.**
 
 | What the flow hands the page | A login token the official server accepts | Why |
 |---|---|---|
 | The code in the redirect's fragment | no | Random; spent by its first redemption and dead after a minute; worth nothing without the verifier; no token of any issuer |
-| The attestation the redemption returns | no | Signed with the attestation key under the issuer name `<issuer>/attest`. The official build holds no attestation key and refuses every bind (fork (b)), and as a connection token it names an issuer no build lists |
+| The attestation the redemption returns, which carries the account's id and whether it owns the game | no | Signed with the attestation key under the issuer name `<issuer>/attest`. The official build holds no attestation key and refuses every bind (fork (b)), and as a connection token it names an issuer no build lists |
 | An error word (`access_denied`, `not_entitled`) | no | One of a fixed list, which says nothing the page could present anywhere |
 | The verifier and the challenge | no | The page made them itself; they are good for one redemption of one bind |
 | Nothing else | no | No ID token, authorization code or refresh token is issued in a bind, and the bind's cookie is `HttpOnly` on the account service's origin, where the page's script cannot read it |
@@ -1055,34 +1063,43 @@ the account's id, as every attestation does, and the consent page says so.
 | The attack | What the hostile host does | Where it stops | Outcome |
 |---|---|---|---|
 | Relay | H takes V's nonce for its own identity and has its page start a bind that carries it | A page can start only a bind that returns to its own origin, so the name signed is H's; V refuses it with `attestation names another world`, lpw-15.4's check | closed |
-| Relay, with the request made outside a browser | H posts to the bind route itself, with `return` and `Origin` set to V's origin and V's nonce for its identity | No player is signed in to that request. If H signs in as itself the code goes to V's origin, and what waits behind it is an attestation for H's own account, which `/attest` gives H anyway | closed |
+| Relay, with the request made outside a browser | H posts to the bind route itself, with `return` and `Origin` set to V's origin and V's nonce for its identity | No player is signed in to that request. If H signs in as itself, it reads the code out of the redirect and redeems an attestation for its own account, which `/attest` gives H anyway | closed |
 | Proxy | H serves the page from its own origin and forwards the connection to V, at the application layer or as untouched TCP | Through an application proxy the browser's origin is H's, so the name is H's. Forwarded untouched, the browser is shown V's certificate for an address it did not dial; past that warning the page is V's own and the origin still H's, so the name is still H's | closed |
 | Proxy, from another port of V's address | H is another tenant of the same address | The port is part of the browser's origin and of the name, so H's port is another name | closed |
 | An address that changes hands: what was issued before | H keeps a code or an attestation from the time it held the address | A code lives a minute and an attestation five; each is spent by one use, and the attestation carries one identity's nonce | closed |
-| An address that changes hands: the past holder, in a browser that never loaded its page there | H held V's address before V and still has a certificate for it | The code goes to whoever answers at the address when the player binds; H's certificate is of no use off the network path and expires within 160 hours | closed |
-| An address that changes hands: the past holder, in a browser that did load its page at that address and port | H's page left a service worker or cached pages in that browser. They run as V's origin: they start a bind for H's identity on V and redeem it, or read the world token the browser keeps for V | Nowhere, in that browser. A service worker answers before V is asked, so nothing V sends removes it (measured). The world's port is drawn at random when the world is made, which makes the same origin unlikely and does not prevent it | open, in a browser that visited the past holder at the same origin; tracked as R-lpw-19-CHANGEDHANDS |
-| An address that changes hands: the new holder | V moved and still runs, configured for its old address and holding an unexpired certificate for it. H answers at that address, obtains attestations that name it and presents them on V, which it reaches at V's new address | V lists an `ip:` or `dns:` name only while it holds an unexpired certificate for it, rewrites its names at every start and removes a name when a renewal is refused: within 160 hours for an address, unless H forwards the certificate authority's validation to V. For that time H is also the server every browser reaches at the address, and reads each browser joiner's world token outright | open, for at most 160 hours after V leaves an address, longer while the new holder keeps V's certificate renewed; tracked as R-lpw-19-CHANGEDHANDS |
+| An address that changes hands: the past holder, in a browser that never loaded its page there | H held V's address before V and still has a certificate for it | The code goes to whoever answers at the address when the player binds; H's certificate is of no use off the network path, and expires within 160 hours for an address and with its 90 days at most for a domain name | closed |
+| An address that changes hands: the past holder, in a browser that did load its page at that address and port | H's page left a service worker, cached pages or a stored token in that browser. The first two run as V's origin: they start a bind for H's identity on V and redeem it, or read the world token the browser keeps for V. A planted token of an identity H already bound has the player play H's character | Nowhere, in that browser. A service worker answers the navigation before V is asked (measured), so no header V sends reaches that load. The world's port is drawn at random when the world is made, which makes the same origin unlikely; a host who names its port, 443 included, has no such margin. What H binds this way stays bound until the world's owner removes it | open, in a browser that visited the past holder at the same origin; tracked as R-lpw-19-CHANGEDHANDS |
+| An address that changes hands: the new holder | V moved and still runs, configured for its old address and holding an unexpired certificate for it. H answers at that address, obtains attestations that name it and presents them on V, which it reaches at V's new address | V lists an `ip:` or `dns:` name only while it holds an unexpired, publicly trusted certificate for it, rewrites its names at every start and renewal, and removes a name at a refused renewal or an expiry: within 160 hours for an address, unless H forwards the certificate authority's validation to V. For that time H is also the server every browser reaches at the address, and reads each browser joiner's world token outright | open: V accepts the name for at most 160 hours after it leaves an address (a domain name: its certificate's life), longer while the new holder keeps V's certificate renewed, and what is bound in that time stays bound until the owner removes it; tracked as R-lpw-19-CHANGEDHANDS |
 
 The last two rows are what it means to know a server by its address. To a browser the server is
 whoever answers there with a certificate it trusts, and an origin keeps what was put in it. Neither
 is particular to the bind: both give the same party the page and the stored world token, and the
 second is as true of a domain name that changes hands, for the certificate's whole life. The
 desktop shell has neither limit, because it knows a server by its key. Two rules on the old
-world's side would cut the new holder's time to minutes and are not part of this design, since
-each has the server calling a service: asking a party outside its network which address its
-connections come from, and watching the certificate-transparency logs for a certificate for its
-address that it did not order. A name that follows the key (G2 below) closes both rows.
+world's side would cut the new holder's time and are not part of this design, since each has the
+server calling a service: asking a party outside its network which address its connections come
+from, which answers in minutes, and watching the certificate-transparency logs for a certificate
+for its address that it did not order, which answers in the hours a log search takes and not at
+all while the search cannot be reached. No design in which the joiner navigates to the server's
+address closes these two rows. The one that does, a name that follows the key (G2 below), has the
+joiner navigate to a name we issue and has us operate the service that issues it; leaving them
+open is this design's default, which the operator may overrule.
 
 Three more rules keep an honest page from binding what it should not:
 
-- *A first bind is for an identity the world issued in this tab.* A stored token whose identity
-  the world reports unbound is discarded, and a new identity taken, before the bind starts. In a
-  browser whatever held the origin before can write its storage, and a planted token would bind
-  the planter's identity to the player's account (fork (c), "Stored tokens").
+- *A first bind is for an identity the world issued in this tab.* When a stored token's identity
+  has no binding (no row in `my_world_binding`), the page sets the token aside and takes a new
+  identity before the bind starts, unless the player says the stored player is theirs: it tells
+  them this browser holds a player for this server that no account is linked to, and a new player
+  is the choice it offers first. In a browser whatever held the origin before can write its
+  storage, and a planted token would bind the planter's identity to the player's account (fork
+  (c), "Stored tokens").
 - *A later bind never changes the account.* The page presents a new attestation for a bound
-  identity only when its `sub` is the binding's account. The module replaces a binding with
-  whatever attestation an identity presents (`bind_identity`), so until it refuses another account
-  this rule is the page's alone.
+  identity only when its `sub` is the binding's account; otherwise it says the stored player
+  belongs to another account and offers a new one. The module as built replaces a binding with
+  whatever attestation an identity presents (`bind_identity`), so whoever holds an identity's
+  token can move it to an account of their own; until the module refuses that, this rule guards
+  the honest page and nothing else.
 - *The gate's door ties an identity to the caller.* Under `Allowlist` the door relays a nonce
   request or a bind only for the identity whose token the caller presents, so nobody binds
   another joiner's identity.
@@ -1094,7 +1111,8 @@ an account gets 20 attestations an hour. So a page a gate serves asks for a bind
 says it needs one (no binding, or the ownership refusal) and otherwise once the binding is more
 than a day old, the interval that ruling gives the host's own account. A player who comes back
 without an attestation joins on the stored status, as the client does when the issuer cannot be
-reached. The interval is a default the operator may change.
+reached. The ruling leaves the workflow of each kind of world to judgement; this is that judgement
+for a browser joiner, a default the operator may overrule.
 
 *What stays on a shared computer.* The history keeps the address of the return, which holds a
 spent code. The world's token stays in the origin's `localStorage`, as it does for every `private`
@@ -1110,12 +1128,12 @@ route hands the look-alike nothing.
 
 | What was tried | Result |
 |---|---|
-| A prototype of the name rule over 74 return addresses, under Node 24.22.0 | 11 are signed: `https://friends.example.com` as `dns:friends.example.com:443/world-1`, the same with `:8443`, `https://8.8.8.8:8443` as `ip:8.8.8.8:8443/world-1`, `https://[2606:4700:4700::1111]:8443` as `ip:[2606:4700:4700::1111]:8443/world-1` |
+| A prototype of the name rule over 74 return addresses, under Node 24.22.0 | 11 are signed, among them `https://friends.example.com` as `dns:friends.example.com:443/world-1`, the same with `:8443`, `https://8.8.8.8:8443` as `ip:8.8.8.8:8443/world-1`, `https://[2606:4700:4700::1111]:8443` as `ip:[2606:4700:4700::1111]:8443/world-1` |
 | The same host spelled `:443`, in upper case, with a trailing `/`, a path, a query, a fragment, `user@`, `%`-escapes or a trailing dot | each parses to an origin that is not the string sent, or keeps its dot, and is refused |
 | `8.8.8.8` spelled `0x8.0x8.0x8.0x8`, `010.010.010.010`, `134744072`, `8.8.2056`, `8.8.8.8.` or in full-width digits | all parse to `8.8.8.8` and are refused as a second spelling |
-| `[::ffff:8.8.8.8]` | parses to `[::ffff:808:808]`, refused as IPv4-mapped |
+| `[::ffff:8.8.8.8]` | parses to `[::ffff:808:808]` and is refused as a second spelling; `[::ffff:808:808]` itself is refused as IPv4-mapped |
 | `192.168.1.10`, `10.0.0.5`, `127.0.0.1`, `100.64.0.1`, `169.254.1.1`, `[::1]`, `[fe80::1]`, `[fd00::1]`, `[2002:808:808::1]`, `[64:ff9b::808:808]` | refused as not globally reachable |
-| `[::808:808]`, `[4000::1]`, `[8000::1]`, `[1::1]` | signed while the IPv6 rule was a list of blocks to refuse; refused once it was `2000::/3` less the special blocks |
+| `[::808:808]`, `[4000::1]`, `[8000::1]`, `[1::1]` | a rule written as a list of blocks to refuse signs all four; the rule `2000::/3` less the special blocks refuses them |
 | `*.example.com`, `a$b.example.com`, `_x.example.com` | the parser accepts each as a host; refused by the label rule |
 | `co.uk`, `server.lan`, `x.local`, `x.internal`, `x.onion`, `x.home.arpa`, `localhost` | refused; `x.co.uk` is signed |
 | `net.BlockList` with a rule for `::ffff:0:0/96`, asked about `8.8.8.8` | it matches, so that rule refused every IPv4 address; the mapped form is refused by its prefix instead |
@@ -1125,7 +1143,8 @@ route hands the look-alike nothing.
 | The page replaces its history entry with the bare path | the address bar and the Back button hold no fragment; the profile's `History` database keeps the address with its fragment, whole |
 | The return path answers 302 to another site | that site's page reads the fragment |
 | A page opens the account service's page in a new window, then sets that window's location | without `Cross-Origin-Opener-Policy` the window goes where the opener sends it; with `same-origin` its `opener` is null, the opener's handle reports closed and the window stays |
-| A server registers a service worker, serves `/bind-return` cacheable for a year and writes `localStorage`; another server then takes the same origin | the service worker answers the navigation to `/bind-return` and reads the fragment, and the cached copy is served, with no request reaching the new server either time; the new server's page reads the value the old one stored |
+| A server registers a service worker and writes `localStorage`; another server then takes the same origin | the service worker answers the navigation to `/bind-return` and reads the fragment, with no request reaching the new server; with the worker gone, the new server's page reads the value the old one stored |
+| A server serves a page cacheable for a year; another server then takes the same origin | the cached copy is served, with no request reaching the new server |
 
 **Rejected.** F1, the attestation itself in the redirect's fragment: one endpoint fewer and no
 request from the page by script, and the attestation, with the account's id and the server's
@@ -1153,16 +1172,19 @@ it is the remote phishing of RFC 8628 section 5.4.
 | F2, the page signs in and calls `/attest` | fail | 1 | 1 | 2 | 4 | 3 | 2 | 13 | 26 |
 | F4, approval on a second device | fail | 1 | 2 | 1 | 2 | 2 | 4 | 12 | 23 |
 
-F6 and F1 tie on the weighted total. The judge scored F1 at 52 before the history was measured
-and at 51 after, and chose F6 on the unweighted total and on the one difference between them that
-was measured; the rubric set no tie-break. The result reverses if the attestation can be kept out
-of every address the history records without a request from the page (F1 then wins on burden), or
-if Steam's pages are shown to keep an opener and a bind before every connection is required (F5's
-kept page then counts for more, though it still cannot send `Cross-Origin-Opener-Policy`).
+F6 and F1 tie on the weighted total: F1 scores 52 without the history measurement and 51 with
+it. The judge chose F6 on the unweighted total and on the one difference between them that is
+measured; the rubric sets no tie-break. The result reverses if the rule that a gate's page makes
+no request to the account service is held to forbid the page's redemption request (F1's form post
+is a navigation); if the attestation can be kept out of every address the history records without
+such a request (F1 then wins on burden); or if Steam's pages are shown to keep an opener and a
+bind before every connection is required (F5's kept page then counts for more, though it still
+cannot send `Cross-Origin-Opener-Policy`).
 
 **Proved by.** None of these tests exists; each is named for the work that builds it.
 `account-service/src/bindName.test.ts`: the name for every row of a table of return addresses,
-held in the repository once and read by the client's tests too, the 74 measured here among them.
+held in the repository once and read by the client's tests too, the 74 measured here among them
+(the one whose label is not valid Punycode included, signed as measured).
 `account-service/src/bind.test.ts`: each refusal of the table above alone; a whole bind, in which
 no response, header, cookie or redirect holds a token that verifies under a login key; the
 attestation's claims are `/attest`'s with the derived `aud`; a code redeems once, only with its
@@ -1174,8 +1196,10 @@ origin, with a fresh identity when the stored one is unbound; it presents no att
 `client/e2e/browser-bind.spec.ts`: in a real browser, against the `local-dev` account service and
 a world that lists the derived name, the round trip binds and joins; an attestation obtained for
 one origin is refused by a world that lists another (`mod bind_refuses` holds the module's half
-of that); a code delivered to a page that did not start the bind is not redeemed. The relay over
-two real hosts, with the browser cases of the table above, joins the run fork (c) still lacks.
+of that); a code delivered to a page that did not start the bind is not redeemed. No test
+above runs over TLS: a `dns:` and an `ip:` bind in a browser, under certificates from a test
+certificate authority the browser is made to trust, and the relay and proxy rows of the table
+above, belong to the run over two real hosts that fork (c) still lacks, and that run has no slice.
 
 #### (g) What names a server a browser reached by a bare IP address
 
@@ -1230,7 +1254,8 @@ off the network path; no certificate ever expires, so nothing removes a stale na
 join, at a public computer too, begins with the player accepting a certificate warning that looks
 the same when the certificate is an attacker's. G2, a name we issue for the server's key: we
 operate a DNS zone and a certificate broker, give each server `k-<hash of its key>.<zone>` and
-answer its DNS-01 challenge, as Plex and Tailscale do for their users' machines. The name follows
+answer its DNS-01 challenge, as Tailscale does for its users' machines; Plex gives its users'
+servers names and certificates under a domain of its own. The name follows
 the key, so it closes both open rows and, with the zone preloaded for HSTS, the warning as well.
 It costs a service that is always on in front of every friends server a browser can join, whose
 one compromise is every browser joiner's page; an allowance of 50 certificates a week per
@@ -1272,7 +1297,7 @@ the world's names, whatever its form.
 
 | The server | The build | What the joiner is shown |
 |---|---|---|
-| Serves the world's own self-signed certificate, at a public or a private address | enforces ownership | The browser's certificate warning, which the joiner accepts to load the page. Then, where the sign-in button would be, the page says that this server cannot check an account from a browser, and that the way in is the desktop app with the server's invite, or the host giving the server a domain name or a certificate for its address. The page makes no request to the account service. It knows from the shell document the gate serves, which carries the world's fingerprint exactly when the gate serves the world's own certificate |
+| Serves the world's own self-signed certificate, at a public or a private address | enforces ownership | The browser's certificate warning, which the joiner accepts to load the page. Then, where the sign-in button would be, the page says that this server cannot check an account from a browser, and that the way in is the desktop app with the server's invite, or the host giving the server a domain name or a certificate for its address. The page makes no request to the account service. It knows from the shell document the gate serves to a browser, which carries the world's fingerprint exactly when the certificate the gate serves is the self-signed one |
 | The same server | does not enforce ownership | The browser's certificate warning, then the game: no bind is asked for, as lpw-18.7 specifies |
 | A private address, a single-label name or a name under no public suffix, from a page that starts a bind all the same | enforces ownership | The account service's own page, before any sign-in: this address cannot be checked from a browser. It offers no way on and redirects nowhere |
 | A public address under a self-signed certificate, from a page that starts a bind all the same | enforces ownership | The sign-in and the consent, then the world's refusal, `attestation names another world`, since the world lists no `ip:` name; the page shows the first row's message |
@@ -1281,12 +1306,12 @@ the world's names, whatever its form.
 
 | Slice | What the design changes |
 |---|---|
-| lpw-15 (the client's bind flow, which lpw-24 builds) | The attestation has three sources behind its one interface: the shell's function; a sign-in with `/attest` from an origin registered as a sign-in redirect (the development page, toward a `local` target whose document carries a fingerprint); and, for a `private` target on the page's own origin, the bind route. For that third source the page computes no name and never signs in. It starts a bind only from a press; it handles `/bind-return`; it binds a fresh identity when the stored one is unbound and never another account over a binding; it shows the cannot-bind message when a `private` target's document carries a fingerprint. It asks for a bind when the world needs one and once a day otherwise, where lpw-24.1 has every connection, and a return without an attestation is lpw-24.2's case. lpw-1.1's rule counts one navigation to the bind route and one request to redeem, during a bind and at no other time. The bind address is a build value, kept for `local` and `private` targets alone and never given to `connect` (DECISIONS.md, "A target's kind gates telemetry and account sign-in") |
-| lpw-17 | Given a public IP address the command certifies it over ACME (an `ip` identifier, the `shortlived` profile, the world's own key) where lpw-17.5 has it serve the self-signed certificate, and prints the `https:` address for browser joiners beside the invite. It writes `ip:` and `dns:` names by the rule of fork (g) and removes one at a refused renewal or an expiry, while lpw-17.6 keeps it serving the last valid certificate. It draws the world's public port at random unless told one. `docs/hosting.md` says which servers a browser can bind, that port 80 or 443 must stay reachable, and that a host behind its own proxy routes `/bind-return` to the gate and never redirects it |
-| lpw-18 | lpw-18.7's browser joiner plays on an enforcing build where the gate serves a publicly trusted certificate, and "without any other origin" excepts the account service, reached by one navigation and one request during a bind. The gate serves the client page at `/bind-return`. The shell document it serves carries the fingerprint exactly when it serves the world's own certificate. Its page sends a `Referrer-Policy` that discloses its origin, and a content security policy whose `form-action` and `connect-src` name the account service and itself |
-| acs-3 | A second way to an attestation beside `POST /attest`, which is unchanged: `POST /bind`, the consent page and `POST /bind/redeem`, with the checks of fork (f). It signs the same eight claims under the same key, limit and log line, with `aud` derived and never taken from the caller. acs-3.5's rule covers the return address, the database, the nonce and the challenge, in logs and in the database. The sign-in step is reached from the bind route as well as from an authorization request, which adds the bind's cookie to the four the request handler passes on (acs-2) and a second address Steam returns to (acs-10) |
-| The world's names | One more form, `ip:<address>:<port>/<db>`, beside `spki:` and `dns:`. A `dns:` or an `ip:` name is what a browser or an unpinned shell authenticated through a certificate authority, and the account service derives it for a browser; `spki:` is the world's own key, which an address certificate also carries. A name is listed only under an unexpired, publicly trusted certificate, and the names are rewritten at every start and renewal. The name the account service derives and the name the client's function computes are held equal by one table of vectors |
-| lpw-14 | The gate's door serves a browser joiner under `Allowlist`: it gives a new identity its token and nonce before the bind, since an unadmitted identity's token connects to nothing, and relays the nonce request and the bind only for the identity whose token the caller presents |
+| lpw-15 (the client's bind flow, which lpw-24 builds) | The attestation has three sources behind its one interface: the shell's function; a sign-in with `/attest` from an origin registered as a sign-in redirect (the development page, toward a `local` target whose document carries a fingerprint); and, for a `private` target on the page's own origin, the bind route. For that third source the page computes no name and never signs in. It starts a bind only from a press; it handles `/bind-return`; it binds a fresh identity when the stored one is unbound and never another account over a binding; it shows the cannot-bind message when a `private` target's document carries a fingerprint. It asks for a bind when the world needs one and once a day otherwise, where lpw-24.1 has every connection, and a return without an attestation is lpw-24.2's case. The one name function gains the `ip:` form for the standalone server that writes it; no client asks for an attestation under it. lpw-1.1's rule counts one navigation to the bind route and one request to redeem, during a bind and at no other time. The bind address is a build value, kept for `local` and `private` targets alone and never given to `connect`; lpw-24 amends the two DECISIONS.md entries that say a `private` target makes no request to the issuer and shows no sign-in ("A target's kind gates telemetry and account sign-in: only servers we operate get either" and "The client learns that a server needs an account from its kind or from the first refusal; the menu frame is the sign-in screen") |
+| lpw-17 | Given a public IP address the command certifies it over ACME (an `ip` identifier, the `shortlived` profile, the world's own key) where lpw-17.5 has it serve the self-signed certificate, and prints the `https:` address for browser joiners beside the invite. It writes `ip:` and `dns:` names by the rule of fork (g) and removes one at a refused renewal or an expiry, while lpw-17.6 keeps it serving the last valid certificate. It draws the world's public port at random unless told one. Its guide, `docs/hosting.md`, is to say which servers a browser can bind, that port 80 or 443 must stay reachable, and that a host behind its own proxy routes `/bind-return` to the gate and never redirects it. If no ACME library it can use orders a certificate for an address, an address server stays shell-only and fork (g) is reopened |
+| lpw-18 | lpw-18.7's browser joiner plays on an enforcing build where the gate serves a publicly trusted certificate, and "without any other origin" excepts the account service, reached by one navigation and one request during a bind. The gate serves the client page at `/bind-return`. The shell document it serves to a browser carries the fingerprint exactly when the certificate it serves is the self-signed one; the shell takes its fingerprint from the invite, whatever certificate the gate serves. Its page sends a `Referrer-Policy` that discloses its origin, and a content security policy whose `form-action` and `connect-src` name the account service and itself |
+| acs-3 | A second way to an attestation beside `POST /attest`, which is unchanged and merged; a new slice of the account service builds it: `POST /bind`, the consent page and `POST /bind/redeem`, with the checks, the cap and the headers of fork (f). It signs the same eight claims under the same key and log line and one limiter shared by both routes, with `aud` derived and never taken from the caller. The public suffix list and the special-purpose address blocks are snapshots held in the repository and refreshed with a release; a suffix or a block the snapshot lacks is refused. acs-3.5's rule covers the return address, the database, the nonce and the challenge, in logs and in the database. The sign-in step is reached from the bind route as well as from an authorization request, which adds the bind's cookie to the four the request handler passes on (acs-2) and a second address Steam returns to (acs-10) |
+| The world's names | One more form, `ip:<address>:<port>/<db>`, beside `spki:` and `dns:`. A `dns:` or an `ip:` name is what a browser or an unpinned shell authenticated through a certificate authority, and the account service derives it for a browser; `spki:` is the world's own key, which an address certificate also carries. A name is listed only under an unexpired, publicly trusted certificate, rewritten at every start and renewal and removed at a refused renewal or an expiry. The name the account service derives and the name the one name function computes, for the shell and for whatever writes a world's names, are held equal by one table of vectors |
+| lpw-14 | A world the shell opens to friends serves its self-signed certificate, so on an enforcing build a browser cannot bind it; the standalone server is what certifies an address. The gate's door serves a browser joiner under `Allowlist`: it gives a new identity its token and nonce before the bind, since an unadmitted identity's token connects to nothing, and relays the nonce request and the bind only for the identity whose token the caller presents |
 | lpw-23 | `bind_world_account` for an identity that already has a binding refuses an attestation for another account; `unbind_world_account` (lpw-22) is the way to change it |
 | lpw-2 | A world's token in a browser's `localStorage` outlives the visit, at a public computer too, and a player in another browser is another identity. Both stand as specified and are named in R-lpw-19-SHAREDCOMPUTER |
 
@@ -1301,8 +1326,8 @@ verifies an account by a per-world attestation our account service signs"), whic
 (`account-service/src/attest.ts`), and two are built in the module and proved in its tests: the
 official server refusing attestation binding (fork (b)) and the relay between private worlds
 closed (fork (c)), the latter in halves. What is not built: the client's bind flow (asking for an
-attestation, the name function `spki:`/`dns:` in `client/src/net/attestation.ts`, the not-owned
-message for a bind), the shell and gate halves, the development recipe that writes a world's names,
+attestation, the name function `spki:`/`dns:`/`ip:` in `client/src/net/attestation.ts`, the
+not-owned message for a bind), the shell and gate halves, the development recipe that writes a world's names,
 the run over two real hosts, and everything of a browser's bind (the account service's bind route,
 the page's half and a certificate for a bare address). On a `world` build no account exists, so `delete_account` and
 `request_data_export` cannot be reached by a bound player there; the host owns that data and
@@ -1658,10 +1683,11 @@ scripts is in the repository.
 (the account service's runtime) over 74 return addresses and six database names, printing for each
 the URL parser's own origin and the name signed or the reason for refusal. Its public-suffix test
 was a stand-in of seven suffixes, and its address test a hand-written table of the special-purpose
-blocks; the built route takes both from the published lists. It was run three times: the first
+blocks; the built route takes both from the published lists. It was run three times, and a copy of it once by the red-team over more addresses: the first
 run's table of blocks held `::ffff:0:0/96`, which `net.BlockList` matched against every IPv4
-address; the second signed four IPv6 addresses outside `2000::/3` and four hosts with characters no
-host name holds, found by the red-team's copy of the script; the third is the one reported. An
+address; the red-team's copy signed four IPv6 addresses outside `2000::/3` and seven hosts with a
+character no host name holds (`*`, `$`, `_`, `!`, `'`, `,`, `{`); the third run, with the rule
+tightened, is the one reported. An
 `xn--` label that is not valid Punycode (`xn--a.example.com`) is still signed: Node's
 `domainToUnicode` passes it through.
 
@@ -1673,7 +1699,8 @@ hostile page, with and without `Cross-Origin-Opener-Policy`; and one origin held
 that registers a service worker, serves a page cacheable for a year and writes `localStorage`,
 then by another. The history row used the full Chromium of the same version in its headless mode
 with a profile on disk, and read the profile's `History` database afterwards; the attestation was
-found in a second file of the profile too (`segmentation_platform/ukm_db`). Loopback origins
+found in two more files of the profile, `segmentation_platform/ukm_db` and a disk-cache entry for
+the redirect, which the stand-in account service did not mark `no-store` as the route does. Loopback origins
 differ by port and share a site, and nothing was run over TLS, in Firefox or in Safari.
 
 **What was not measured.** A battle, a trade or any load but walking; more than eight players; a
