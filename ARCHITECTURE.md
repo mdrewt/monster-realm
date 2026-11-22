@@ -457,7 +457,18 @@ first join, `noteHydrated` once the store holds the applied snapshot, and `armEm
 `clearHydration` on a reconnect. `resetEmitLatches` re-baselines the latches with the prediction
 state, on a reconnect and on a zone switch. `main.ts` registers the two latch steps as batch
 listeners, `stepBattleEmit` and then `stepRankedEmit`; each pushes the event its step returns
-onto the session event ring.
+onto the session event ring. `shell/screenContext.ts` owns what a screen adapter reads: the one
+`screenCtx` that `main.ts` passes the screen host for every adapter (the store, the identity, the
+binding table, the frame clock and the wall clock, what each open bound, and the reduced-motion
+bit); the shop, the heal location, the Social tab, the Monsters tab and the trade session the
+last open of each bound; and the one motion preference, built at import through
+`render/motionPreference.ts`, the client's one `matchMedia` read. Only that module assigns the
+bound values, and `screenCtx` reads each of them, the identity and the binding table at the
+moment of the read. `main.ts` binds at each open (`bindShop`, `bindHealLocation`,
+`bindSocialTab`, `bindMonstersTab`, `bindTradeSession`), clears the first four on a reconnect
+(`unbindForReconnect`), and unbinds the trade session (`unbindTradeSession`) when that session
+closes, on a join and on a reconnect. The frame loop and the tactical shell read the motion
+preference from that module.
 
 ### Connection and store
 
