@@ -722,7 +722,7 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
   it('★ RB51T-SESSION-CLEARS BITES: a session terminal takes a LIVE banner down, and returning to `hidden` brings it back', async () => {
     // The shipped frame body opens with
     //   `if (sessionGateBlocks()) { renderPrivacyCountdown(null); return; }`
-    // and `sessionGateBlocks()` is `conn?.sessionState() !== 'hidden'` (main.ts's
+    // and `sessionGateBlocks()` is `conn?.sessionState() !== 'hidden'` (shell/session.ts's
     // module-scope predicate). Two DIFFERENT decisions live in that one statement and this is
     // the only test in the repo that can see either.
     //

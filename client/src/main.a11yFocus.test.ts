@@ -1230,10 +1230,10 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
 
   // ---------------------------------------------------------------------------------------
   // The post-evolve reveal banner's announce + focus-return sinks, driven
-  // through the REAL AuthoritativeStore instance main.ts constructed: `opts.store` (captured
-  // from the mocked `./net/connection`'s `ConnectionOptions.store` field, `connection.ts:82`)
-  // IS the exact module-scope `store` main.ts reads inside its own `store.onBatchApplied(`
-  // listener (`main.ts` — `const store = new AuthoritativeStore(STEP_MS);`, then `store,` is
+  // through the REAL AuthoritativeStore instance `shell/session.ts` constructs: `opts.store`
+  // (captured from the mocked `./net/connection`'s `ConnectionOptions.store` field) IS the
+  // module-scope `store` main.ts imports and reads inside its own `store.onBatchApplied(`
+  // listener (`shell/session.ts`: `export const store = new AuthoritativeStore(STEP_MS)`; it is
   // handed to `connect({ … })` verbatim). Calling `opts.store.reconcileEvolutionNoticesFromView(`
   // + `opts.store.flushBatch()` therefore drives main.ts's REAL listener synchronously, with no
   // need for the mocked connection to ever deliver a row itself — the seam this whole file's

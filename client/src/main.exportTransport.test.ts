@@ -20,7 +20,8 @@
  * spies or lifecycle. The harness below is its harness — the same `#app` shell built by parsing
  * the REAL `client/index.html` with `DOMParser` + `document.adoptNode` + `replaceChildren`
  * (never `innerHTML`, ADR-0135), the same listener-stacking cleanup, the same controllable rAF
- * queue, the same `connect` mock that hands back the REAL store instance `main.ts` constructed.
+ * queue, the same `connect` mock that hands back the REAL store instance `shell/session.ts`
+ * constructs.
  *
  * ★ FOUR DELIBERATE DELTAS FROM THAT HARNESS, ALL LOAD-BEARING:
  *
@@ -91,7 +92,7 @@ const H = vi.hoisted(() => {
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgStubMock());
 
 // The connection. DELTA 1 lives here: `connect` captures the options object, which carries the
-// REAL store instance main.ts constructed — the seam every test below drives the transport
+// REAL store instance shell/session.ts builds — the seam every test below drives the transport
 // through. `ownAccount` is wrapped exactly as the rb-52 harness wraps it, so an account-row
 // fixture stays available if a future case needs one.
 vi.mock('./net/connection', () => {
@@ -872,7 +873,7 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
     // merely stale.
     // WRONG IMPL KILLED (1) ★: no clear at all — the assertion below reads `false` (still
     //   enabled) and a click would hand over the old artifact.
-    // WRONG IMPL KILLED (2): the clear placed BEFORE `identity = id` in the onReconnect body,
+    // WRONG IMPL KILLED (2): the clear placed BEFORE `adoptIdentity(id)` in the onReconnect body,
     //   where a same-frame recompute would immediately restore it from the old identity's
     //   chunks. (The ordering itself is pinned in main.wiring.test.ts; this is the behaviour.)
     // THE FRAME IS LOAD-BEARING: `onReconnect` clears main.ts's countdown memo, so the NEXT
