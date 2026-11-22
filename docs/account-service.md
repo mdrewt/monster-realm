@@ -324,7 +324,8 @@ Everything to keep is the key file, `attestation-keys.json` on `hosted-dev`, and
 (the runbook uses `VACUUM INTO` on the running service): a plain copy of a file being written
 can be torn. The
 database holds the accounts (emails and password hashes), the clients and the refresh-token chains
-(as digests): a restored copy keeps every player signed in.
+(as digests): a restored copy keeps every player who signed in before the backup signed in, and
+undoes what changed after it (the runbook's "What a restore brings back").
 
 ### Moving to another host
 

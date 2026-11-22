@@ -25,10 +25,10 @@ Commands marked **destructive** stop the service or replace data. Read the whole
   `/var/lib/account-service/keys/`) and a 64 MiB `/tmp`. No port of its own is published.
 - **Caddy** (`caddy-<profile>`) is the only way in. It serves the profile's issuer origin: plain
   HTTP on port 4455 for `local-dev`, and for the other two an ACME certificate for the issuer's
-  host name, kept in its `/data` volume. It passes the client's `Host` on, and the service answers
-  only its issuer's host (`421` otherwise).
-- **One profile per host.** The account services share the network name Caddy proxies to, and the
-  two public profiles both take ports 80 and 443.
+  host name, kept in its `/data` volume. It serves no other host name, passes the client's `Host`
+  on, and proxies to its own profile's account service; the service also answers only its
+  issuer's host (`421` otherwise).
+- **One public profile per host.** `hosted-dev` and `production` both take ports 80 and 443.
 - **Refusals.** A container that lacks its profile's settings or keys exits 1 with one line,
   `account-service: refusing to start: <setting>: <problem>`, and `restart: unless-stopped`
   retries it. Read it with `docker compose --profile <profile> logs account-<profile>`. The
@@ -96,43 +96,54 @@ once: hand it over, or reset it. The command refuses the `production` profile.
 The login key file is an ordered list read at start: the first key signs, every key is published
 at `/jwks`. A module's host caches the key set (SpacetimeDB 2.11.0 refreshes it after 300 s and
 drops it after 7,200 s), so a key is published before it signs and stays published until nothing
-it signed is still in use. Each step edits the file in place and restarts the account container;
-a restart ends the sign-ins in progress (the player starts again from the game) and nothing else.
+it signed is still in use. Each step edits the file in place and restarts the account container.
+A restart ends the sign-ins in progress (the player starts again from the game) and clears the
+in-process limits: password lockouts, the sign-in cap and attestation counts.
 
 ```sh
 P=hosted-dev   # or local-dev
-rotate() {
+rotate() {     # rotate <keys.json|attestation-keys.json> publish | promote <kid> | retire <kid>
   docker compose --profile "$P" exec -T "account-$P" node -e '
     const fs = require("node:fs");
-    const file = "/var/lib/account-service/keys/keys.json";
+    const [name, step, kid] = process.argv.slice(1);
+    if (name !== "keys.json" && name !== "attestation-keys.json") throw new Error("which key file?");
+    const file = "/var/lib/account-service/keys/" + name;
     import("/app/src/keys.ts").then((k) => {
-      const keys = JSON.parse(fs.readFileSync(file, "utf8"));
-      const step = process.argv[1];
-      if (step === "publish") keys.keys.push(k.generateSigningKey());
-      else if (step === "promote") keys.keys.unshift(keys.keys.pop());
-      else if (step === "retire") keys.keys.splice(1);
-      else throw new Error("publish, promote or retire");
-      fs.writeFileSync(file + ".next", JSON.stringify(keys, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+      const set = JSON.parse(fs.readFileSync(file, "utf8"));
+      const at = set.keys.findIndex((key) => key.kid === kid);
+      if (step === "publish") {
+        const key = name === "keys.json" ? k.generateSigningKey() : k.generateAttestationKey();
+        set.keys.push(key);
+        if (name !== "keys.json") console.log("public=" + JSON.stringify(k.publicAttestationKey(key)));
+      } else if (step === "promote" && at > 0) set.keys.unshift(...set.keys.splice(at, 1));
+      else if (step === "retire" && at > 0) set.keys.splice(at, 1);
+      else throw new Error("publish, promote <kid> or retire <kid>, where the kid is listed and does not sign");
+      fs.writeFileSync(file + ".next", JSON.stringify(set, null, 2) + "\n", { mode: 0o600, flag: "wx" });
       fs.renameSync(file + ".next", file);
-      console.log("kids=" + keys.keys.map((key) => key.kid).join(","));
-    });' "$1" && docker compose --profile "$P" restart "account-$P"
+      console.log("signs=" + set.keys[0].kid + " published=" + set.keys.map((key) => key.kid).join(","));
+    });' "$@" && docker compose --profile "$P" restart "account-$P"
 }
 ```
 
-1. **Publish the next key:** `rotate publish`. The new key is last: published, not signing.
-   Wait at least two hours, so every host's cached key set holds it.
-2. **Promote it:** `rotate promote`. The new key signs; the old one is still published, so tokens
-   it signed keep verifying.
-3. **Retire the old key:** after at least one hour (the longest an ID token lives), plus the two
-   hours of caching, `rotate retire` keeps only the first key.
+1. **Publish the next key:** `rotate keys.json publish`. It prints the new `kid` last in
+   `published=`: published, not signing. Wait at least two hours, so every host's cached key set
+   holds it.
+2. **Promote it:** `rotate keys.json promote <new kid>`. Check that `signs=` names it. The old key
+   is still published, so tokens it signed keep verifying. Promoting a key that already signs is
+   refused, so a repeated step changes nothing.
+3. **Retire the old key:** after at least one hour more (the longest an ID token lives) plus the
+   two hours of caching, `rotate keys.json retire <old kid>`. The signing key cannot be retired.
 
-Back up the keys volume after each step (section 5). A left-over `keys.json.next` (a step that
-failed half-way) makes the next step refuse; remove it with `docker compose --profile "$P" exec
-"account-$P" rm /var/lib/account-service/keys/keys.json.next`.
+Back up the keys volume after each step (section 5). A step that fails leaves the file as it was.
+A left-over `keys.json.next` (a step that stopped between its write and its rename) makes the next
+step refuse; remove it with `docker compose --profile "$P" exec "account-$P" rm
+/var/lib/account-service/keys/keys.json.next`.
 
-The `hosted-dev` attestation key file (`attestation-keys.json`) rotates the same way, with
-`generateAttestationKey()`, except that the publish step is a build: the new key's public half goes
-into `publishedAttestationKeys()` and ships in modules before it moves to the front.
+On `hosted-dev`, `attestation-keys.json` rotates with the same three steps on that file, except
+that a world accepts only the attestation keys its module was built with: `rotate
+attestation-keys.json publish` prints the new key's public half, which goes into
+`publishedAttestationKeys()` and ships in modules (`docs/account-service.md`, "Attestation keys")
+before the key is promoted.
 
 ## 5. Backup and restore
 
@@ -142,28 +153,46 @@ player, so they go to a narrowly scoped secret store, not into the routine sweep
 again after every key change.
 
 **Back up, while the service runs.** SQLite's `VACUUM INTO` writes a consistent copy of a database
-in use; a plain copy of the file can be torn. `umask 077` keeps the copies private on the host.
+in use; a plain copy of the file can be torn. The copy is made in the database volume, streamed
+out, checked, and only then put in place of the previous backup. `B` is a directory outside the
+checkout, made private by `umask 077`; `set -e` stops at the first failure.
 
 ```sh
-P=local-dev   # or hosted-dev
-umask 077
-docker compose --profile "$P" exec -T "account-$P" node -e 'new (require("node:sqlite").DatabaseSync)(process.argv[1]).prepare("VACUUM INTO ?").run(process.argv[2])' /var/lib/account-service/db/account.sqlite /tmp/account.sqlite
-docker compose --profile "$P" exec -T "account-$P" cat /tmp/account.sqlite > account.sqlite
-docker compose --profile "$P" exec -T "account-$P" rm /tmp/account.sqlite
-docker compose --profile "$P" exec -T "account-$P" tar -C /var/lib/account-service/keys -cf - . > keys.tar
+P=local-dev                # or hosted-dev
+B="$HOME/mr-auth-backup"   # outside the repository
+(
+  set -eu
+  umask 077
+  mkdir -p "$B"
+  x() { docker compose --profile "$P" exec -T "account-$P" "$@"; }
+  x rm -f /var/lib/account-service/db/backup.sqlite
+  x node -e 'const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(process.argv[1], { readOnly: true }); db.exec("PRAGMA busy_timeout = 5000"); db.prepare("VACUUM INTO ?").run(process.argv[2]);' /var/lib/account-service/db/account.sqlite /var/lib/account-service/db/backup.sqlite
+  x cat /var/lib/account-service/db/backup.sqlite > "$B/account.sqlite.new"
+  x rm /var/lib/account-service/db/backup.sqlite
+  x tar -C /var/lib/account-service/keys -cf - . > "$B/keys.tar.new"
+  [ "$(head -c 15 "$B/account.sqlite.new")" = "SQLite format 3" ]
+  tar -tf "$B/keys.tar.new" | grep -q keys.json
+  mv "$B/account.sqlite.new" "$B/account.sqlite"
+  mv "$B/keys.tar.new" "$B/keys.tar"
+)
 ```
 
-Then, for example, `restic backup --tag account-service account.sqlite` hourly, and `keys.tar`
-into the secret store. A restored database keeps every player signed in: a refresh token issued
-after the backup was taken is lost with it, and its player signs in again.
+Then, for example, `restic backup --tag account-service "$B/account.sqlite"` hourly, and
+`keys.tar` into the secret store.
+
+**What a restore brings back.** The database as it was at the backup: a refresh token issued
+after it is lost and its player signs in again, and a refresh token spent after it works once
+more. Admin changes made after it (a cleared entitlement, a password reset, a new account) are
+undone: make them again after the restore.
 
 **Restore into fresh volumes (destructive).** On a new host, or after `docker compose --profile
-"$P" down -v` (which deletes the volumes):
+"$P" down -v` (which deletes the volumes). Each step refuses to write into a volume that already
+holds keys or a database.
 
 ```sh
 docker compose --profile "$P" build
-docker compose --profile "$P" run --rm -T --no-deps --entrypoint tar "account-$P" -C /var/lib/account-service/keys -xpf - < keys.tar
-docker compose --profile "$P" run --rm -T --no-deps --entrypoint sh "account-$P" -c 'umask 077 && cat > /var/lib/account-service/db/account.sqlite' < account.sqlite
+docker compose --profile "$P" run --rm -T --no-deps --entrypoint sh "account-$P" -c 'test -z "$(ls -A /var/lib/account-service/keys)" && tar -C /var/lib/account-service/keys -xpf -' < "$B/keys.tar"
+docker compose --profile "$P" run --rm -T --no-deps --entrypoint sh "account-$P" -c 'umask 077 && set -C && cat > /var/lib/account-service/db/account.sqlite' < "$B/account.sqlite"
 docker compose --profile "$P" up -d
 ```
 
@@ -172,8 +201,10 @@ derives the same `Identity` for it (the issuer URL is unchanged).
 
 ### Drill record
 
-`account-service/src/deployment.test.ts` ("a backup restored into fresh volumes") runs this drill
-on `local-dev` in `just account-test`, on a source stack and a second stack with fresh volumes:
+`account-service/src/deployment.test.ts` ("a backup restored into fresh volumes") runs this
+drill's container commands on `local-dev` in `just account-test`, on a source stack and a second
+stack with fresh volumes; the host-side steps (`umask`, the checks, the `mv`) are the runbook's
+alone:
 
 | Date | Run | Result |
 |---|---|---|
@@ -182,14 +213,19 @@ on `local-dev` in `just account-test`, on a source stack and a second stack with
 ## 6. Moving to another host
 
 The issuer's name moves with the service: a module derives identities from the issuer URL, so
-changing it orphans every account.
+changing it orphans every account. Caddy can get the new host's certificate only once the name
+points there.
 
-1. On the old host, stop traffic and take the backup: `docker compose --profile "$P" stop
-   "caddy-$P"`, then section 5's backup.
-2. **Destructive:** `docker compose --profile "$P" down` on the old host.
-3. On the new host, check out the same commit, restore (section 5), and start.
-4. Point the issuer's DNS name at the new host. Caddy obtains a new certificate there.
-5. Check discovery and `/jwks` at the issuer URL and sign in with a test account.
+1. Lower the DNS record's TTL a day ahead.
+2. On the old host (`P` and `B` as in section 5), stop traffic and take the backup:
+   `docker compose --profile "$P" stop "caddy-$P"`, then section 5's backup.
+3. **Destructive:** `docker compose --profile "$P" down` on the old host.
+4. On the new host, check out the same commit and copy `B` there. Run section 5's restore, but in
+   place of its last line start only the service: `docker compose --profile "$P" up -d
+   "account-$P"`.
+5. Point the issuer's DNS name at the new host, open ports 80 and 443, and wait for the record to
+   resolve to it. Then `docker compose --profile "$P" up -d`: Caddy obtains the certificate.
+6. Check discovery and `/jwks` at the issuer URL and sign in with a test account.
 
 Keep the old host's volumes until the new host has served sign-ins; then delete them with
 `down -v`.

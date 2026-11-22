@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { type IncomingHttpHeaders, request } from 'node:http';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { notOwnedPage } from './interactions/pages.ts';
 
@@ -77,7 +79,36 @@ function newProject(): string {
   return name;
 }
 
+// An empty env file for every `config` call, so an operator's ops/auth/.env cannot change it.
+const EMPTY_ENV_DIR = mkdtempSync(join(tmpdir(), 'mr-auth-env-'));
+const EMPTY_ENV_FILE = join(EMPTY_ENV_DIR, 'empty.env');
+writeFileSync(EMPTY_ENV_FILE, '');
+
+interface ServiceModel {
+  readonly ports?: Array<Record<string, unknown>>;
+  readonly read_only?: boolean;
+  readonly cap_drop?: string[];
+  readonly security_opt?: string[];
+  readonly privileged?: boolean;
+  readonly user?: string;
+  readonly volumes?: Array<{ readonly target?: string }>;
+}
+
+function configModel(
+  profiles: readonly string[],
+  env: Record<string, string | undefined> = {},
+): Record<string, ServiceModel> {
+  const run = expectOk(
+    compose(newProject(), profiles, ['--env-file', EMPTY_ENV_FILE, 'config', '--format', 'json'], {
+      env: { MR_AUTH_LOCAL_PORT: undefined, ...env },
+    }),
+    'config',
+  );
+  return (JSON.parse(run.out) as { services: Record<string, ServiceModel> }).services;
+}
+
 afterAll(() => {
+  rmSync(EMPTY_ENV_DIR, { recursive: true, force: true });
   for (const project of projects.splice(0)) {
     try {
       compose(project, ALL_PROFILES, ['down', '-v', '--remove-orphans', '--rmi', 'local']);
@@ -447,6 +478,52 @@ describe('the image runs locked down', () => {
     expect((await discovery(port)).status).toBe(200);
   });
 
+  test('the account process has no capabilities and cannot gain privileges acs-4.1', () => {
+    const status = expectOk(exec(project, ['cat', '/proc/1/status']), 'status').out;
+    expect(status).toContain('CapEff:\t0000000000000000');
+    expect(status).toContain('NoNewPrivs:\t1');
+  });
+
+  test('every service in every profile is locked down as the tool renders it acs-4.1', () => {
+    const services = configModel(ALL_PROFILES, {
+      MR_ACCOUNT_ISSUER: 'https://accounts.example.com',
+    });
+    for (const name of ['account-local-dev', 'account-hosted-dev', 'account-production']) {
+      const service = services[name];
+      expect(service, name).toBeDefined();
+      expect(service?.ports ?? [], `${name} ports`).toEqual([]);
+      expect(service?.read_only, `${name} read_only`).toBe(true);
+      expect(service?.cap_drop, `${name} cap_drop`).toEqual(['ALL']);
+      expect(service?.security_opt ?? [], `${name} security_opt`).toContain(
+        'no-new-privileges:true',
+      );
+      expect(service?.privileged, `${name} privileged`).not.toBe(true);
+      expect(['root', '0'], `${name} user`).not.toContain(service?.user);
+      const targets = (service?.volumes ?? []).map((v) => v.target);
+      expect(targets, `${name} volumes`).toContain('/var/lib/account-service/db');
+      if (name !== 'account-production') {
+        expect(targets, `${name} volumes`).toContain('/var/lib/account-service/keys');
+      }
+    }
+    for (const name of ['caddy-local-dev', 'caddy-hosted-dev', 'caddy-production']) {
+      const service = services[name];
+      expect(service, name).toBeDefined();
+      expect(service?.read_only, `${name} read_only`).toBe(true);
+      expect(service?.cap_drop, `${name} cap_drop`).toEqual(['ALL']);
+      expect(service?.security_opt ?? [], `${name} security_opt`).toContain(
+        'no-new-privileges:true',
+      );
+      const published = (service?.ports ?? []).map((p) => p.host_ip);
+      if (name === 'caddy-local-dev') {
+        expect(published).toEqual(['127.0.0.1']);
+      } else {
+        const targets = (service?.ports ?? []).map((p) => Number(p.target));
+        expect(targets, `${name} ports`).toEqual(expect.arrayContaining([80, 443]));
+        expect(published, `${name} binds`).not.toContain('127.0.0.1');
+      }
+    }
+  });
+
   test('a hosted-dev start on fresh volumes without a login key file refuses and names MR_ACCOUNT_KEY_FILE acs-4.1', () => {
     const run = compose(
       newProject(),
@@ -488,20 +565,12 @@ describe('the image runs locked down', () => {
 
 describe('the local-dev recipe', () => {
   test('Caddy publishes exactly 127.0.0.1:4455 to port 4455 and the account service publishes nothing acs-4.2', () => {
-    const run = expectOk(
-      compose(newProject(), LOCAL, ['config', '--format', 'json'], {
-        env: { MR_AUTH_LOCAL_PORT: undefined },
-      }),
-      'config',
-    );
-    const model = JSON.parse(run.out) as {
-      services: Record<string, { ports?: Array<Record<string, unknown>> }>;
-    };
-    const caddyPorts = model.services['caddy-local-dev']?.ports ?? [];
+    const services = configModel(LOCAL);
+    const caddyPorts = services['caddy-local-dev']?.ports ?? [];
     expect(caddyPorts).toHaveLength(1);
     expect(caddyPorts[0]).toMatchObject({ target: 4455, published: '4455', host_ip: '127.0.0.1' });
-    expect(model.services[SERVICE]).toBeDefined();
-    expect(model.services[SERVICE]?.ports ?? []).toEqual([]);
+    expect(services[SERVICE]).toBeDefined();
+    expect(services[SERVICE]?.ports ?? []).toEqual([]);
   });
 
   test('discovery is served through Caddy with the issuer and the key set address, and /jwks holds public keys only acs-4.2', async () => {
@@ -545,21 +614,36 @@ interface Backup {
   readonly keys: Buffer;
 }
 
+const BACKUP_PATH = '/var/lib/account-service/db/backup.sqlite';
+const VACUUM_SCRIPT =
+  'const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(process.argv[1], { readOnly: true }); db.exec("PRAGMA busy_timeout = 5000"); db.prepare("VACUUM INTO ?").run(process.argv[2]);';
+
 function takeBackup(project: string): Backup {
-  expectOk(
-    exec(project, [
-      'node',
-      '-e',
-      'new (require("node:sqlite").DatabaseSync)(process.argv[1]).prepare("VACUUM INTO ?").run(process.argv[2])',
-      DB_PATH,
-      '/tmp/account.sqlite',
-    ]),
-    'VACUUM INTO',
-  );
-  const db = expectOk(exec(project, ['cat', '/tmp/account.sqlite']), 'cat backup').stdout;
-  expectOk(exec(project, ['rm', '/tmp/account.sqlite']), 'rm backup');
+  expectOk(exec(project, ['rm', '-f', BACKUP_PATH]), 'rm -f backup');
+  expectOk(exec(project, ['node', '-e', VACUUM_SCRIPT, DB_PATH, BACKUP_PATH]), 'VACUUM INTO');
+  const db = expectOk(exec(project, ['cat', BACKUP_PATH]), 'cat backup').stdout;
+  expectOk(exec(project, ['rm', BACKUP_PATH]), 'rm backup');
   const keys = expectOk(exec(project, ['tar', '-C', KEYS_DIR, '-cf', '-', '.']), 'tar keys').stdout;
   return { db, keys };
+}
+
+function restoreDatabase(project: string, backup: Backup): Run {
+  return compose(
+    project,
+    LOCAL,
+    [
+      'run',
+      '--rm',
+      '-T',
+      '--no-deps',
+      '--entrypoint',
+      'sh',
+      SERVICE,
+      '-c',
+      `umask 077 && set -C && cat > ${DB_PATH}`,
+    ],
+    { input: backup.db },
+  );
 }
 
 function restore(project: string, backup: Backup): void {
@@ -574,36 +658,18 @@ function restore(project: string, backup: Backup): void {
         '--no-deps',
         '--build',
         '--entrypoint',
-        'tar',
+        'sh',
         SERVICE,
-        '-C',
-        KEYS_DIR,
-        '-xpf',
-        '-',
+        '-c',
+        `test -z "$(ls -A ${KEYS_DIR})" && tar -C ${KEYS_DIR} -xpf -`,
       ],
       { input: backup.keys },
     ),
     'restore keys',
   );
-  expectOk(
-    compose(
-      project,
-      LOCAL,
-      [
-        'run',
-        '--rm',
-        '-T',
-        '--no-deps',
-        '--entrypoint',
-        'sh',
-        SERVICE,
-        '-c',
-        `umask 077 && cat > ${DB_PATH}`,
-      ],
-      { input: backup.db },
-    ),
-    'restore database',
-  );
+  expectOk(restoreDatabase(project, backup), 'restore database');
+  // A restore never overwrites a database already in a volume.
+  expect(restoreDatabase(project, backup).status, 'second restore').not.toBe(0);
 }
 
 function verifyEs256(jwt: string, set: { readonly keys: readonly Jwk[] }): boolean {
