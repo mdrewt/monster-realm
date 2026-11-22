@@ -38,6 +38,9 @@ test:
     # The load build's game-core and module tests (the generated zones, dev_place_in_load_zone) are
     # compiled out of every other build; this line runs both packages whole with that feature.
     cargo nextest run --workspace --features monster-realm-module/load_test_zones -E 'package(game-core) | package(monster-realm-module)'
+    # The ownership check refuses nobody on a build that names `open_join`, the default included, so
+    # the reducer's own refusals run on a real dev-enforcing build: `dev_issuers` and no default.
+    cargo nextest run --workspace --no-default-features --features monster-realm-module/dev_issuers -E 'package(monster-realm-module) & test(/acs6_enforcing/)'
     cargo test --doc --workspace
     door() {
         local label=$1 want=$2 floor=$3 out pass fail
@@ -62,7 +65,7 @@ test:
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
     door "scripts node suites" 5 30 scripts/*.test.mjs
-    door "justfile node suite" 1 3 justfile.test.mjs
+    door "justfile node suite" 1 38 justfile.test.mjs
     guard() {
         local hook=$1 ok=$2 floor=$3 out n
         out="$(CLAUDE_PROJECT_DIR="$PWD" node "$hook" --selftest 2>&1)" || { echo "$out" >&2; exit 1; }
@@ -141,6 +144,90 @@ gen:
 
 build:
     spacetime build --module-path server-module
+
+# ---- modules to ship (docs/local-play.md §3, "The build input") ----
+
+# Print the build profile a module artefact carries: the text of its `mr_build_profile` custom
+# section, which the build writes from the constants it computed from its cargo features
+# (`profile=`, `enforces_ownership=`, `dev_reducers=`, then a `login_issuer=` line per trusted
+# issuer). Fails unless the artefact holds exactly one such section.
+module-profile $wasm:
+    #!/usr/bin/env node
+    const { readFileSync } = require('node:fs');
+    const artefact = new WebAssembly.Module(readFileSync(process.env.wasm));
+    const sections = WebAssembly.Module.customSections(artefact, 'mr_build_profile');
+    if (sections.length !== 1) {
+      console.error(
+        `module-profile: ${process.env.wasm} holds ${sections.length} mr_build_profile sections; a module build holds exactly one`,
+      );
+      process.exit(1);
+    }
+    process.stdout.write(Buffer.from(sections[0]));
+
+# Build a module to ship: `official` (the official server: the production login issuer) or `world`
+# (a world a player hosts: no login issuer). Both enforce ownership. It builds the module alone, with
+# exactly that feature and no default, into a target directory of its own (the test and e2e builds
+# share the other one) and with no compiler flags from the environment or a config file. It then
+# reads the profile back from the artefact and refuses one that is not the profile asked for, does
+# not enforce ownership, compiles a dev reducer or names one, or trusts anything but one `https:`
+# login issuer (`official`) or none (`world`). An accepted artefact is copied to
+# <target>/release-module/monster-realm-<profile>.wasm with its SHA-256 beside it (.sha256, the
+# `sha256sum` format), and the last line printed is `release-module: <profile> <sha256> <path>`.
+# Publish or embed that file by that hash.
+release-module profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile={{quote(profile)}}
+    case "$profile" in
+        official|world) ;;
+        *) echo "release-module: '$profile' is not a module to ship: give official or world" >&2; exit 64 ;;
+    esac
+    target="${CARGO_TARGET_DIR:-target}"
+    build_dir="$target/release-module/$profile"
+    out="$target/release-module/monster-realm-$profile.wasm"
+    # A refused or failed build leaves no artefact from an earlier run to be taken for this one.
+    rm -f "$out" "$out.sha256"
+    # An empty CARGO_ENCODED_RUSTFLAGS is cargo's first source of flags, so it also overrides
+    # `build.rustflags` and `target.*.rustflags` in a config file.
+    env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS -u CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS CARGO_ENCODED_RUSTFLAGS= \
+        cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --no-default-features --features "$profile" --target-dir "$build_dir"
+    MR_PROFILE="$profile" MR_BUILT="$build_dir/wasm32-unknown-unknown/release/monster_realm_module.wasm" MR_OUT="$out" \
+        MR_REDUCER_LIST={{quote(justfile_directory() / "scripts" / "verify-release-reducers.mjs")}} \
+        node --input-type=module - <<'EOF'
+    import { createHash } from 'node:crypto';
+    import { copyFileSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+    import { basename } from 'node:path';
+    import { pathToFileURL } from 'node:url';
+    const { MR_PROFILE: profile, MR_BUILT: built, MR_OUT: out, MR_REDUCER_LIST: reducerList } = process.env;
+    const { FORBIDDEN_REDUCERS } = await import(pathToFileURL(reducerList).href);
+    const refuse = (why) => {
+      console.error(`release-module: refusing ${built}: ${why}`);
+      process.exit(1);
+    };
+    const bytes = readFileSync(built);
+    const sections = WebAssembly.Module.customSections(new WebAssembly.Module(bytes), 'mr_build_profile');
+    if (sections.length !== 1) refuse(`it holds ${sections.length} mr_build_profile sections, not one`);
+    const lines = Buffer.from(sections[0]).toString('utf8').split('\n');
+    if (lines.pop() !== '') refuse('its profile does not end with a newline');
+    const issuerKey = 'login_issuer=';
+    const issuers = lines.filter((l) => l.startsWith(issuerKey)).map((l) => l.slice(issuerKey.length));
+    const facts = lines.filter((l) => !l.startsWith(issuerKey));
+    const want = [`profile=${profile}`, 'enforces_ownership=true', 'dev_reducers=false'];
+    if (facts.length !== want.length || facts.some((line, i) => line !== want[i])) {
+      refuse(`its profile is ${JSON.stringify(facts)}, not ${JSON.stringify(want)}`);
+    }
+    const trusted =
+      profile === 'official' ? issuers.length === 1 && issuers[0].startsWith('https:') : issuers.length === 0;
+    if (!trusted) {
+      refuse(`a ${profile} module does not trust the login issuers ${JSON.stringify(issuers)}`);
+    }
+    const named = FORBIDDEN_REDUCERS.filter((name) => bytes.includes(name));
+    if (named.length > 0) refuse(`it names the dev reducer(s) ${named.join(', ')}`);
+    copyFileSync(built, out);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    writeFileSync(`${out}.sha256`, `${sha256}  ${basename(out)}\n`);
+    console.log(`release-module: ${profile} ${sha256} ${realpathSync(out)}`);
+    EOF
 
 # Publish over whatever {{db}} holds, keeping its data, then re-seed as the owner: `init` runs
 # only when a database is created, so `sync_content` is what brings the content and the protocol
