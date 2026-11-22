@@ -6,7 +6,14 @@
 //! chose for that identity. [`bind_identity`] checks it and records the binding. On a build
 //! that enforces ownership `accounts::entitled` entitles an identity whose binding carried the
 //! entitlement, and under the `Allowlist` rule `access::is_admitted` admits one whose bound
-//! account the host listed.
+//! account is on the host's list.
+//!
+//! The list is the owner's to edit ([`set_world_allowlist`]). It is also added to when the rule
+//! changes to `Allowlist` (`access::set_world_access` lists the accounts of the bindings the
+//! rule in force admitted, through [`bound_accounts`] and [`add_to_allowlist`]), and while that
+//! rule is in force it always holds the account the owner's own identity is bound to: the
+//! owner's list cannot leave it out, and a bind of the owner's identity adds it. The list never
+//! holds more than [`MAX_ALLOWLIST_ACCOUNTS`]; a write that would exceed that is refused whole.
 //!
 //! A build accepts attestations under the keys of its profile and no others
 //! (`BuildProfile::attestation_keys`). A build with no key binds nothing: its four binding
@@ -23,21 +30,22 @@
 //! What it has to be is one identity's alone, so the identity is mixed into it.
 //!
 //! WRITE-ISOLATION: this module alone writes `world_binding`, `world_bind_nonce`, `world_name`
-//! and `world_allowlist`. It reads the owner and the admission through `crate::access`, and
-//! the deletion state through `crate::guards`.
+//! and `world_allowlist`. It reads the owner, the rule in force and the admission through
+//! `crate::access`, and the deletion state through `crate::guards`.
 
 use crate::accounts::{AttestationKey, BuildProfile, BUILD_PROFILE, ENTITLEMENT_BASE_GAME};
 use crate::guards::log_reject;
 use crate::marshal::now_ms;
 use crate::schema::{
-    world_allowlist, world_bind_nonce, world_binding, world_name, WorldAllowlist, WorldBindNonce,
-    WorldBinding, WorldName,
+    world_allowlist, world_bind_nonce, world_binding, world_name, WorldAccessRule, WorldAllowlist,
+    WorldBindNonce, WorldBinding, WorldName,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;
 use spacetimedb::{Identity, ReducerContext, Table};
+use std::collections::BTreeSet;
 
 /// The refusal of a build that holds no attestation key, from each of the four binding
 /// reducers, before anything is decoded, read or written.
@@ -54,6 +62,9 @@ pub(crate) const REJECT_WORLD_NAME: &str = "a world name is 1 to 512 visible ASC
 pub(crate) const REJECT_TOO_MANY_WORLD_NAMES: &str = "a world has at most 16 names";
 pub(crate) const REJECT_ALLOWLIST_ACCOUNT: &str =
     "an allowlist account is 1 to 255 visible ASCII characters";
+/// The refusal of every write that would leave the list with more than
+/// [`MAX_ALLOWLIST_ACCOUNTS`]: the owner's list, the accounts a change to `Allowlist` adds, and
+/// a bind of the owner's identity under that rule.
 pub(crate) const REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS: &str = "an allowlist has at most 256 accounts";
 pub(crate) const REJECT_DUPLICATE_ENTRY: &str = "the list repeats an entry";
 
@@ -256,7 +267,34 @@ fn check_entries(entries: &[String], rule: &ListRule) -> Result<(), &'static str
     Ok(())
 }
 
+/// The accounts of `wanted` that `listed` lacks, each once, in ascending byte order. Refused
+/// with [`REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS`] when `listed` and those additions together
+/// number more than [`MAX_ALLOWLIST_ACCOUNTS`].
+pub(crate) fn allowlist_additions(
+    listed: &[String],
+    wanted: &[String],
+) -> Result<Vec<String>, &'static str> {
+    let held: BTreeSet<&String> = listed.iter().collect();
+    let additions: BTreeSet<&String> = wanted
+        .iter()
+        .filter(|account| !held.contains(account))
+        .collect();
+    if listed.len() + additions.len() > MAX_ALLOWLIST_ACCOUNTS {
+        return Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS);
+    }
+    Ok(additions.into_iter().cloned().collect())
+}
+
 // --- Context-bound reads ----------------------------------------------------------------
+
+/// Whether a build of `profile` counts `binding`: one of its attestation keys has the
+/// binding's `key_id` as its `kid`.
+fn counts_under(profile: &BuildProfile, binding: &WorldBinding) -> bool {
+    profile
+        .attestation_keys
+        .iter()
+        .any(|key| key.kid == binding.key_id)
+}
 
 /// `identity`'s binding, when the build counts it: a row whose `key_id` is the `kid` of one of
 /// `profile`'s attestation keys. A build with no key answers `None` without reading.
@@ -272,12 +310,29 @@ pub(crate) fn trusted_binding(
         .world_binding()
         .identity()
         .find(identity)
-        .filter(|binding| {
-            profile
-                .attestation_keys
-                .iter()
-                .any(|key| key.kid == binding.key_id)
-        })
+        .filter(|binding| counts_under(profile, binding))
+}
+
+/// The account of every binding the build counts whose identity `of` accepts, each once, in
+/// ascending byte order. A build with no key answers none without reading. The table holds a
+/// row for every identity that ever bound, so the rows are read one at a time and only the
+/// distinct accounts are kept.
+pub(crate) fn bound_accounts(
+    ctx: &ReducerContext,
+    profile: &BuildProfile,
+    of: impl Fn(Identity) -> bool,
+) -> Vec<String> {
+    if binds_nothing(profile) {
+        return Vec::new();
+    }
+    let accounts: BTreeSet<String> = ctx
+        .db
+        .world_binding()
+        .iter()
+        .filter(|binding| counts_under(profile, binding) && of(binding.identity))
+        .map(|binding| binding.account_subject)
+        .collect();
+    accounts.into_iter().collect()
 }
 
 /// Whether `identity` holds a trusted binding whose attestation carried the base game.
@@ -287,28 +342,6 @@ pub(crate) fn bound_entitled(
     identity: Identity,
 ) -> bool {
     trusted_binding(ctx, profile, identity).is_some_and(|binding| binding.entitled)
-}
-
-/// The account of every binding the build counts whose identity `of` accepts, each once, in
-/// ascending byte order. A build with no key answers none without reading.
-pub(crate) fn bound_accounts(
-    ctx: &ReducerContext,
-    profile: &BuildProfile,
-    of: impl Fn(Identity) -> bool,
-) -> Vec<String> {
-    let _ = (ctx, profile, &of);
-    Vec::new()
-}
-
-/// The accounts of `wanted` that `listed` lacks, each once, in ascending byte order. Refused
-/// with [`REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS`] when `listed` and those additions together
-/// number more than [`MAX_ALLOWLIST_ACCOUNTS`].
-pub(crate) fn allowlist_additions(
-    listed: &[String],
-    wanted: &[String],
-) -> Result<Vec<String>, &'static str> {
-    let _ = (listed, wanted);
-    Ok(Vec::new())
 }
 
 /// Whether the host listed `account_subject`, byte for byte.
@@ -333,6 +366,27 @@ pub(crate) fn erase_world_binding(ctx: &ReducerContext, identity: Identity) {
 fn reject(reducer: &str, sender: Identity, reason: &str) -> Result<(), String> {
     log_reject(reducer, sender, reason);
     Err(reason.to_string())
+}
+
+/// Add `accounts` to the host's list, keeping every row it holds and writing only the ones it
+/// lacks. Refused, with nothing written, when the list would then hold more than
+/// [`MAX_ALLOWLIST_ACCOUNTS`].
+pub(crate) fn add_to_allowlist(
+    ctx: &ReducerContext,
+    accounts: &[String],
+) -> Result<(), &'static str> {
+    let listed: Vec<String> = ctx
+        .db
+        .world_allowlist()
+        .iter()
+        .map(|row| row.account_subject)
+        .collect();
+    for account_subject in allowlist_additions(&listed, accounts)? {
+        ctx.db
+            .world_allowlist()
+            .insert(WorldAllowlist { account_subject });
+    }
+    Ok(())
 }
 
 /// The first statement of a binding reducer: a build of `profile` that binds nothing refuses
@@ -391,8 +445,10 @@ fn issue_bind_nonce(ctx: &ReducerContext, who: Identity) {
 /// its own constant and nothing written: an attestation [`verify_attestation`] refuses; one
 /// that has expired at this call's time; one whose `aud` is not, byte for byte, a name of this
 /// world; no outstanding nonce for `who` (none, or one that has expired); a nonce that is not
-/// `who`'s. Otherwise `who`'s binding becomes what the attestation says, replacing one it
-/// already holds, and its nonce is spent.
+/// `who`'s; and, when `who` is the world's owner and the rule in force is `Allowlist`, a list
+/// already at [`MAX_ALLOWLIST_ACCOUNTS`] that does not hold the account. Otherwise `who`'s
+/// binding becomes what the attestation says, replacing one it already holds, and its nonce is
+/// spent; the owner's account, under `Allowlist`, is added to the list when it is not there.
 pub(crate) fn bind_identity(
     ctx: &ReducerContext,
     profile: &BuildProfile,
@@ -423,6 +479,13 @@ pub(crate) fn bind_identity(
     };
     if outstanding.nonce != verified.nonce {
         return refuse(REJECT_ATTESTATION_OTHER_NONCE);
+    }
+    if crate::access::is_world_owner(ctx, who)
+        && crate::access::rule_in_force(ctx) == WorldAccessRule::Allowlist
+    {
+        if let Err(reason) = add_to_allowlist(ctx, std::slice::from_ref(&verified.subject)) {
+            return refuse(reason);
+        }
     }
     let binding = WorldBinding {
         identity: who,
@@ -523,13 +586,25 @@ pub fn set_world_names(ctx: &ReducerContext, names: Vec<String>) -> Result<(), S
 
 /// Replace the accounts the `Allowlist` rule lets in. Owner-only. Refused with no write: more
 /// than [`MAX_ALLOWLIST_ACCOUNTS`], an entry that is not 1 to [`ACCOUNT_SUBJECT_MAX_BYTES`]
-/// visible ASCII characters, a repeated entry. An identity bound to an account that leaves the
-/// list is refused at its next check.
+/// visible ASCII characters, a repeated entry. While the rule in force is `Allowlist` the
+/// account of the owner's own trusted binding is stored whether or not the call names it, and
+/// a call that names [`MAX_ALLOWLIST_ACCOUNTS`] others is refused; under the other rules the
+/// set is stored as named. An identity bound to an account that leaves the list is refused at
+/// its next check.
 #[spacetimedb::reducer]
 pub fn set_world_allowlist(ctx: &ReducerContext, accounts: Vec<String>) -> Result<(), String> {
     crate::access::require_world_owner(ctx, "set_world_allowlist")?;
     if let Err(reason) = check_entries(&accounts, &ALLOWLIST_RULE) {
         return reject("set_world_allowlist", ctx.sender(), reason);
+    }
+    let mut accounts = accounts;
+    if crate::access::rule_in_force(ctx) == WorldAccessRule::Allowlist {
+        if let Some(owners) = trusted_binding(ctx, &BUILD_PROFILE, ctx.sender()) {
+            match allowlist_additions(&accounts, &[owners.account_subject]) {
+                Ok(kept) => accounts.extend(kept),
+                Err(reason) => return reject("set_world_allowlist", ctx.sender(), reason),
+            }
+        }
     }
     let stored: Vec<String> = ctx
         .db
