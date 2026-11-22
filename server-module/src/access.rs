@@ -270,8 +270,8 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 /// stores a fresh salt and the hash of the new password; `Password` with `None` keeps the
 /// stored password and is refused when there is none. When the rule changes to one that is not
 /// `Open`, every identity with a live connection that the rule in force before the call
-/// admitted gets an admission row, so a connection the old rule let in stays admitted and one
-/// it had refused (a delisted account, a removed admission) is not let back in. Each identity
+/// admitted gets an admission row, so a connection that rule let in stays admitted and one it
+/// refused (a delisted account, a removed admission) is not let back in. Each identity
 /// in `admit` gets an admission row under every rule, without a password: this is how the host
 /// admits its own player under `Password`; under `Allowlist` the row lets in only an identity
 /// with no trusted binding. Admission rows outlive every rule change.

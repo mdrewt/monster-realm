@@ -2612,7 +2612,7 @@ it, so delisting refuses at the next check; and an identity with no trusted bind
 holds a `world_admission` row. The list is read at every check and nothing is stored from it.
 `Allowlist` takes no password (`set_world_access` refuses one). When the rule changes to one that is
 not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
-before the call admitted, and to none the old rule refused. A new joiner's way in under `Allowlist`
+before the call admitted, and to none that rule refused. A new joiner's way in under `Allowlist`
 is the owner's relayed nonce request and bind. Admission rows are written only by the two owner-only
 reducers `set_world_access` and `admit`, which take the joiner's identity. The module declares no HTTP handler and
 no row filter: both sit behind the `spacetimedb` crate's `unstable` feature, which the workspace
