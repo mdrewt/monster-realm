@@ -1022,8 +1022,9 @@ but before the fire commits is accepted; the fire then finds the window closed a
 **Why.** Paying AP for a non-event reads as economy theft, the most-resented pattern in the
 reception corpus; halting means nothing executes from a board the plan did not assume. The
 clock takes the "resets the moment they submit" ruling (D583.2) literally; refusing a submit
-that executes nothing stops zero-cost resubmits refilling the clock forever. `queue.rs` is in
-no later slice's `touches:`, so later rules arrive as hooks the server implements over game-core.
+that executes nothing stops zero-cost resubmits refilling the clock forever. The executor
+knows no inventory, recruit or planner rule: each arrives through a hook the server implements
+over game-core, so the turn order and the AP accounting stay in one place.
 
 **Rules out.** Charging the first invalid entry's nominal AP (design §12 Q2's alternative); a
 cumulative per-unit-turn clock (§12 Q1's); skipping past an invalid entry (conditional
@@ -1412,14 +1413,13 @@ cannot predict there. A change that adds a dev reducer must also:
   `EXPECTED_MODULES`. That module's `mod` line carries no `cfg`, because the census refuses every
   `cfg` but `cfg(test)`, so the feature gate goes on the module's items;
 - add `exclude_re` keys for its surviving mutants to `.cargo/mutants.toml` entry 8;
-- prove the default release wasm byte-identical to its base's: one checkout path and one target
-  dir, the pinned toolchain, the base built first, and both sha256 sums in the PR. The default
-  game-core build compiles no new function for a dev or load feature. A game-core loader reaches
-  gated code through a macro on the loader's existing line, whose feature-off arm expands to the
-  loader's original expression (`load_test_zones::zones!`).
+- keep every item it adds behind its feature. The default game-core build compiles no new function
+  for a dev or load feature. A game-core loader reaches gated code through a macro on the loader's
+  existing line, whose feature-off arm expands to the loader's original expression
+  (`load_test_zones::zones!`).
 
-A dev caller reaches a private production function through a dev-gated forwarder placed after the
-file's last production item (`tactics.rs` `dev_arm_deadline`). It never widens the function itself.
+A dev caller reaches a private production function through a dev-gated forwarder
+(`tactics.rs` `dev_arm_deadline`). It never widens the function itself.
 
 **Why.** A dev reducer in a real deployment is an exploit: free items, or expiring another
 player's turn window. Checking the published module rather than the source catches a wrong
@@ -1428,20 +1428,21 @@ deadlines spends a full turn window per expiry (30 s in PvP); overriding `now` w
 windows ahead of real time, so the reducer moves one deadline and leaves every timestamp real.
 One real-time expiry per test keeps the real scheduler covered by the two-browser flow.
 
-Widening `arm_deadline` to `pub(crate)` pushes its signature past rustfmt's width. th-4 (#794)
-measured the result: the reflow moves every later line of `tactics.rs`, and with them the panic
-locations baked into the release wasm, so the default build changed. With the forwarder, th-4
-recorded identical sums for base and slice, and `arm_deadline` stays callable only from
-`tactics.rs`. sr-9b measured the game-core side: one ungated `pub fn` in a new game-core module
-changed the default sum even though nothing called it, while constants and the macro hooks left it
-unchanged.
+What keeps dev code out of a release is checked on the artefact and by the compiler: the
+published-module check, `just release-module`'s refusal of an artefact that names a dev reducer or
+whose profile compiles one, the census rows, and the compile error for a release feature named
+with a dev-reducer feature. A change that adds a dev reducer does not have to leave the default
+build's bytes unchanged. Accepted: dev code that is not a reducer and escapes its feature gate
+changes the default build without any of those checks seeing it; review of the gate is what
+catches it.
 
 **Rules out.** Runtime flags for dev reducers; trusting the source tree as proof of what was
 published; a dev reducer a player can call to act on anything but the caller's own state
 (`grant_bait` and `dev_place_in_load_zone` act on the caller's own;
 `dev_expire_tactical_window` is owner-only); a fake or overridden clock for tests; an e2e that
 takes every expiry through the dev path; a `cfg(feature)` module line; widening a
-production function's visibility for a dev caller.
+production function's visibility for a dev caller; requiring a build's bytes or its source layout
+to stay fixed as proof that dev code did not ship (it shapes production source around a hash).
 
 ## SpacetimeDB versions move in lockstep
 
