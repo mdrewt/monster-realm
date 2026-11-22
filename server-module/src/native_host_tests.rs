@@ -1576,6 +1576,12 @@ pub(crate) const VIEW_MY_FORMATION: usize = 14;
 /// `VIEWS` id of `my_player_quest` (its index in [`VIEW_DESCRIBERS`]; sr-3).
 pub(crate) const VIEW_MY_PLAYER_QUEST: usize = 16;
 
+/// `VIEWS` id of `my_world_binding` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_WORLD_BINDING: usize = 17;
+
+/// `VIEWS` id of `my_bind_nonce` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_BIND_NONCE: usize = 18;
+
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
 /// `RawModuleDef` (V10 on 2.11.0), captured once per process so a test can read
 /// table access, keys, indexes and the exact view roster from the artifact the

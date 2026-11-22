@@ -3322,3 +3322,85 @@ mod lifecycle {
         assert_eq!(nonces(&w), vec![nview(bob(), NONCE_B, NONCE_EXPIRES)]);
     }
 }
+
+// =====================================================================================
+// The owner-scoped read paths.
+// =====================================================================================
+
+mod views {
+    use super::*;
+    use crate::native_host_tests::{VIEW_MY_BIND_NONCE, VIEW_MY_WORLD_BINDING};
+
+    /// `my_world_binding` and `my_bind_nonce` each answer the sender's own row and nothing
+    /// else: a caller holding no row reads nothing.
+    ///
+    /// kills: a view answering nothing; a view answering another identity's row or every row.
+    #[test]
+    fn owner_scoped_binding_and_nonce_views_return_only_the_callers_row() {
+        let fx = fixture();
+        let w = world(&fx);
+        let carol = id(0x33);
+        w.binding
+            .seed(&binding_row(alice(), SUB, T0 - 1_000, true, dev_kid()));
+        w.binding.seed(&binding_row(
+            bob(),
+            OTHER_SUB,
+            T0 - 5_000,
+            false,
+            RETIRED_KID,
+        ));
+        w.nonce.seed(&nonce_row(alice(), NONCE_A, NONCE_EXPIRES));
+        w.nonce.seed(&nonce_row(bob(), NONCE_B, NONCE_EXPIRES + 7));
+
+        let binding_seen = |who: Identity| -> Vec<BindingView> {
+            fx.call_view::<WorldBinding>(VIEW_MY_WORLD_BINDING, who)
+                .into_iter()
+                .map(|r| {
+                    bview(
+                        r.identity,
+                        &r.account_subject,
+                        r.bound_at_ms,
+                        r.entitled,
+                        &r.key_id,
+                    )
+                })
+                .collect()
+        };
+        let nonce_seen = |who: Identity| -> Vec<NonceView> {
+            fx.call_view::<WorldBindNonce>(VIEW_MY_BIND_NONCE, who)
+                .into_iter()
+                .map(|r| nview(r.identity, &r.nonce, r.expires_at_ms))
+                .collect()
+        };
+
+        let alice_binding = binding_seen(alice());
+        assert_eq!(
+            alice_binding,
+            vec![bview(alice(), SUB, T0 - 1_000, true, dev_kid())]
+        );
+        assert_eq!(
+            binding_seen(bob()),
+            vec![bview(bob(), OTHER_SUB, T0 - 5_000, false, RETIRED_KID)]
+        );
+        assert_eq!(binding_seen(carol), Vec::<BindingView>::new());
+
+        let alice_nonce = nonce_seen(alice());
+        assert_eq!(alice_nonce, vec![nview(alice(), NONCE_A, NONCE_EXPIRES)]);
+        assert_eq!(
+            nonce_seen(bob()),
+            vec![nview(bob(), NONCE_B, NONCE_EXPIRES + 7)]
+        );
+        assert_eq!(nonce_seen(carol), Vec::<NonceView>::new());
+
+        for (_, subject, _, _, kid) in &alice_binding {
+            assert_ne!(
+                subject, OTHER_SUB,
+                "alice must never read bob's account subject"
+            );
+            assert_ne!(kid, RETIRED_KID, "alice must never read bob's key id");
+        }
+        for (_, nonce, _) in &alice_nonce {
+            assert_ne!(nonce, NONCE_B, "alice must never read bob's nonce");
+        }
+    }
+}
