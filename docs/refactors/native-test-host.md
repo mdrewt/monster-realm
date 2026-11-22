@@ -15,8 +15,8 @@ host").
 Every number here was measured on 2026-11-22 at commit `eb3cf06c`, on crate 2.12.0, in throwaway
 worktrees and target directories under `/tmp` that are not part of this repository. No probe was
 committed. "Run" is the time in nextest's `Summary` line for
-`cargo nextest run -p monster-realm-module`. "Cold build" is the wall-clock time of
-`--no-run` into an empty target directory, with the crates already downloaded. The machine has
+`cargo nextest run -p monster-realm-module`. "Cold build" is the wall-clock time of the same
+command with `--no-run`, into an empty target directory, with the crates already downloaded. The machine has
 32 cores. Line citations into the vendor's sources are to the crates.io packages of the version
 named.
 
@@ -97,7 +97,7 @@ answered differently from the hand-written host.
 A also costs the build. With `test-utils` on, `spacetimedb` depends on `spacetimedb-core`, the
 whole server: the V8 engine (`v8` 145, which downloads a 170 MB prebuilt `librusty_v8.a` from
 GitHub on every cold build), `wasmtime` and `cranelift`, `openssl-sys` built from source,
-`tokio` and `reqwest`. `Cargo.lock` grows from 184 packages to 675. A fresh resolution does not
+`tokio` and `reqwest`. `Cargo.lock` grows from 184 packages to 673. A fresh resolution does not
 compile: it picks `icu_calendar` 2.4.0, which `temporal_rs` 0.1.2 cannot build against, so the
 lock has to hold the `icu_*` crates at the vendor's 2.1.x. The feature is unified into the
 module's own cdylib when tests are built. V8's thread-local relocation (`R_X86_64_TPOFF32`)
@@ -105,7 +105,7 @@ cannot go into a `-shared` object, so the cdylib fails to link: measured with
 `cargo nextest run -p monster-realm-module --no-run`, and avoided with `--lib`. So every test
 command that builds the module's library would need `--lib` or an equivalent: the four
 `cargo nextest` lines of `just test`, `cargo test --doc --workspace` and `cargo mutants`. And
-all 491 added crates enter the scope of `cargo audit`, a blocking CI gate.
+all 489 added crates enter the scope of `cargo audit`, a blocking CI gate.
 
 ### What B changes
 
@@ -153,7 +153,7 @@ The Fixture, its API and every test stay as they are. What B adds is around them
 | Build | Cold build (s) | Run (s) | Run ratio | Target dir (GB) | Cargo.lock packages | Passed | Failed |
 |---|---|---|---|---|---|---|---|
 | 2.11.0 today | 38.5 | 2.652 | 1.00 | 1.9 | 184 | 1311 | 0 |
-| A | 86.7 | 34.930 | 13.17 | 5.5 | 675 | 1108 | 203 |
+| A | 86.7 | 34.930 | 13.17 | 5.5 | 673 | 1108 | 203 |
 | B | 40.8 | 2.744 | 1.03 | 1.9 | 184 | 1311 | 0 |
 | B1 | not measured | 4.490 | 1.69 | not measured | 184 | 542 | 769 |
 
@@ -164,7 +164,40 @@ with `--lib`, which its cdylib needs.
 
 ## The judge
 
-JUDGE-PENDING
+A `judge` subagent scored both alternatives against a rubric whose weights and tie-break were fixed
+before it scored. It verified the facts it used against the probe logs and the vendor sources, and
+re-ran parts of the measurement itself:
+
+| Criterion | Weight | A | B |
+|---|---|---|---|
+| Keeps the Fixture's API and every server-module test's assertion | 30 | 4 | 30 |
+| The host answers what the tests ask, as the real host would | 20 | 11 | 12 |
+| Release artefact and supply chain | 20 | 10 | 12 |
+| Cost of a test run | 15 | 2 | 14 |
+| Work at each SpacetimeDB hop | 15 | 8 | 10 |
+| **Total** | 100 | 35 | 78 |
+
+The tie-break would have applied within five points: fewer server-module assertions changed,
+then the smaller difference in the shipped artefact. It was not needed. The judge's reasons, in
+short:
+
+- **API and assertions.** A keeps the signatures in name only: 203 tests fail, and the walls
+  behind 436 `.writable()` and `.scannable()` calls in 28 files stop aborting anything. B keeps
+  all 1311.
+- **Fidelity.** A gains the vendor's real constraint, sequence and schema checks, which no
+  current test needed. But it runs the SDK's test-only backend branch, not the one that ships,
+  and it loses `Table::delete(row)`, JWT-less connections and every test-strength feature. B runs
+  the shipped `sys` branch and keeps those features. Its model is still partial: unique
+  constraints are opt-in, one sequence column per table, no rollback.
+- **Supply chain.** A adds 489 packages and a network-fetched V8 binary to the test build. B adds
+  no third-party package, and its wasm is the vendor's code. But it takes the two crates out of
+  `cargo audit`'s scope, and they are the module's most security-relevant crates.
+- **Cost.** A's runs take 12.7 to 13.2 times as long, it needs 2.9 times the disk, and it forces
+  `--lib` onto the test commands. B is at parity with 2.11.0.
+- **Hops.** A carries no fork, but the hidden constructor it builds on changes at 2.14.1
+  (`ReducerContext::__test` gains an `env: Environment` first parameter). B re-applies 27
+  mechanical edits; a dry run applied every hunk to 2.14.1 and 2.16.1 at shifted lines, with no
+  rejects. Neither version was built with the patch.
 
 ## The choice
 
@@ -172,7 +205,7 @@ JUDGE-PENDING
 alternative that keeps the Fixture's API and every test, which lpw-39's contract requires. Its
 test runs cost what they cost on 2.11.0, and the module it ships is the vendor's own code. A
 gives up the counters, the wall and the views that most of the module's tests rest on, at 13
-times the run time and 491 more crates.
+times the run time and 489 more crates.
 
 **It lands as lpw-34's first lockstep hop, to 2.12.0, not on 2.11.0.** Neither alternative
 exists at 2.11.0: that version defines no stubs to switch off and has no `test-utils` feature.
