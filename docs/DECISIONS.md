@@ -2399,11 +2399,26 @@ a small attestation route beside our account service (the sign-in broker) for a 
 attestation and passes it to a reducer. The route signs with its own key and issuer name, neither of
 which the official server trusts. The attestation is a compact signed JWT with a key id (`kid`); it
 lives minutes, names one world and carries the nonce that world chose. The module verifies it with
-a verifier compiled in, against a `kid`-keyed list of accepted attestation keys held as module data,
-then records the binding; the world needs no network afterwards. The route rate-limits binds per
-account and does not keep the world an attestation was addressed to past the request. In the client
-the attestation is fetched behind one source interface, beside the sign-in seam
-(`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-3). Operator ruling,
+a verifier compiled in, against a `kid`-keyed list of accepted attestation keys that is a constant of
+the build, then records the binding; the world needs no network afterwards. The bind is built in
+`server-module/src/world_binding.rs`. `request_bind_nonce` gives the caller one nonce, read through
+the owner-scoped view `my_bind_nonce`: a row per identity in private `world_bind_nonce`, 16 bytes of
+`ctx.random()` XORed with the identity's first 16 bytes (two identities never share one, though
+`ctx.random()` is a function of the call's timestamp and nothing rests on its secrecy), 32 hex
+characters, good for 5 minutes and replaced by the next request; each request deletes at most 32
+expired rows. `bind_world_account(attestation)` refuses, each with its own error and no write, what
+the verifier refuses, an `exp` reached (host clock, no leeway), an `aud` that is not byte for byte a
+row of private `world_name`, no unexpired nonce for the identity, and another nonce. Otherwise it
+writes private `world_binding` `{identity, account_subject, bound_at_ms, entitled, key_id}`, which
+the identity reads through `my_world_binding`, and deletes the nonce. A row the identity holds is
+replaced: the latest attestation an identity presents wins. The deletion cascade erases `world_binding`
+and `world_bind_nonce` (`world_binding::erase_world_binding`), the data export includes the binding,
+and a guest claim neither moves nor erases one. The owner relays both calls for another
+identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
+admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
+`who`. The route rate-limits binds per account and does not keep the world an attestation was
+addressed to past the request. The client's bind flow is not built; the design has the attestation
+fetched behind one source interface, beside the sign-in seam (`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-3). Operator ruling,
 <https://github.com/mdrewt/monster-realm/issues/821>; the official server's refusal is "The
 official build holds no attestation key and a world build trusts no login issuer", what the
 attestation names is "An attestation names the server as the player's own software authenticated
@@ -2435,11 +2450,17 @@ a requirement.
 
 **Decision.** A world attestation (see "A private world verifies an account by a per-world
 attestation our account service signs") is signed with an Ed25519 key, and the module checks the
-signature with the `ed25519-dalek` crate, built with no default features, through `verify_strict`.
-The bind refuses a token longer than a fixed cap of a few kibibytes before it decodes anything,
-takes the algorithm and the key from the module's own `kid`-keyed list and never from the token's
-header, and keys replay on the world's spent nonce, never on the token's text. The measurement and
-the judge's scores: `docs/local-play.md` §3, "What a signature check costs inside a reducer".
+signature with the `ed25519-dalek` crate (3.0.0, no default features), through `verify_strict`.
+`world_binding::verify_attestation(keys, attestation)` runs these checks in order: a token over 4096
+bytes is refused before anything is decoded; three non-empty segments of strict unpadded base64url
+(`base64` 0.21); a header that is a JSON object, of which only `kid` is read (`alg` never is); the
+key from the build's own `kid`-keyed list, never from the token; a 64-byte signature that
+`verify_strict` accepts over `<header>.<payload>`. The payload is parsed only after the signature
+verifies (`serde` derive over `serde_json`): string `sub`, `aud` and `nonce`, integer `exp`, optional
+`mr_ent` array of strings, a repeated or wrongly typed member refused, `sub` 1 to 255 visible ASCII.
+`iss`, `iat` and `jti` are not read. Replay is keyed on the world's spent nonce, never on the token's
+text. The measurement and the judge's scores: `docs/local-play.md` §3, "What a signature check costs
+inside a reducer".
 
 **Why.** An ES256 verifier (`p256`) and an Ed25519 one both build for `wasm32-unknown-unknown` with
 no clock and no source of randomness, and both cost far less than the 5 ms one check may take: 593
@@ -2471,9 +2492,13 @@ server, never by the world and never by a page we did not serve: in the shell th
 computes it and calls the attestation route, and the shell's page, toward a `local` or `private`
 target, is given the attestation and no login token. A world holds its own names in a private table
 its owner writes, and `bind_world_account` accepts an attestation only when its `aud` equals one of
-them. Designed, not built:
-`docs/local-play.md` §3, "The access and attestation design", fork (c), which names the work in the
-harness specs that builds it and the test that proves it.
+them, byte for byte. Built: the module's half. The owner writes the names with `set_world_names` (at
+most 16 names of 1 to 512 visible ASCII characters; a world with no name accepts no binding), and
+`mod bind_refuses` and `mod relay_rig` in `server-module/src/world_binding_tests.rs` prove the
+refusal of another world's name. Not built: the client's name function (`spki:`/`dns:`) and bind
+flow, the shell and gate halves, the development recipe that writes a world's names, and the run
+over two real hosts, so the relay is proved in halves. `docs/local-play.md` §3, "The access and
+attestation design", fork (c).
 
 **Why.** A hostile host can have its player's client fetch an attestation addressed to another
 world, carrying that world's nonce, and present it there as its own. An audience and a nonce stop
@@ -2498,12 +2523,22 @@ returns to, would serve a browser at a domain server; it is not built.
 **Decision.** A release build of the module is one of two. The `official` build trusts the
 production login issuer and holds no attestation key. The `world` build, which the desktop shell
 and the standalone server ship, holds the production attestation keys and trusts no login issuer.
-Both lists are constants of the build. On the `official` build `bind_world_account`, the reducer
-that issues bind nonces and the owner-relayed form of each return one fixed error before they
-decode, read or write anything, and `entitled(ctx)` never reads a binding; on the `world` build every token is an anonymous guest's.
-The two builds have one schema and one set of client bindings. Designed, not built:
-`docs/local-play.md` §3, fork (b), with the test of the refusal, which runs under the `official`
-build.
+Both lists are constants of the build: `BuildProfile::attestation_keys` is empty on `official`,
+`default` and `conflict`, `PRODUCTION_ATTESTATION_KEYS` on `world` (empty, since no production key is
+published, so a `world` build binds nothing and entitles nobody) and `DEV_ATTESTATION_KEYS`
+(the published `local-dev` key; `hosted-dev` publishes none) on `test` and `dev-enforcing`; a test
+holds the lists to the generated `account-service/attestation-public-keys.json`. On a build with no
+key the four binding reducers (`bind_world_account`, `request_bind_nonce` and the owner-relayed form
+of each) return `this server takes no world binding` as their first statement, before anything is
+decoded, read or written, and `world_binding::trusted_binding` answers `None` without reading;
+`entitled(ctx, profile)` therefore never reads a binding there. A binding records the `kid` that
+signed it and counts only while the build holds that key: a binding made under a dev key counts for
+nothing after a republish as `world`, and retiring a key retires its bindings. On the `world` build
+every token is an anonymous guest's. The two builds have one schema and one set of client bindings.
+Proved by `mod binding_build` and `mod official_build` in `server-module/src/world_binding_tests.rs`
+(the second under the `official` build, which no run of `just ci` includes: `cargo nextest run
+--workspace --no-default-features --features monster-realm-module/official -E
+'package(monster-realm-module) & test(/official_build/)'`). `docs/local-play.md` §3, fork (b).
 
 **Why.** An attestation is the only account credential a private host ever sees, and the same
 module source runs on every server, so the official server must be unable to take one as a reducer
@@ -2516,7 +2551,7 @@ each release build has exactly one way to be entitled.
 **Rules out.** A row or flag that marks a database official (its owner controls it, and a fresh
 database starts without it); relying on the world-name check and the attestation route alone; a
 database identity compiled into the module; one release build that holds both lists; an
-`entitled(ctx)` that reads a binding on the official build. Accepted limit: a `world` artefact
+`entitled(ctx, profile)` that reads a binding on the official build. Accepted limit: a `world` artefact
 published to the official database would accept bindings, so the official deploy publishes only an
 artefact whose recorded profile is `official`, and writes no world name.
 
@@ -2562,13 +2597,24 @@ or tunnel service we operate to carry friends' traffic; requiring every host to 
 
 ## A world that is not open refuses an unadmitted identity at connect and in every reducer; the owner relays the door
 
-**Decision.** While a world's access rule is `Password`, the connect reducer refuses, as its first
-statement, an identity that is neither the world's owner nor in `world_admission`
+**Decision.** While a world's access rule is `Password` or `Allowlist`, the connect reducer
+refuses, as its first statement, an identity that `access::is_admitted` does not admit
 (`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
 not owner-only opens with `access::require_admitted`; the owner-only ones are `sync_content`,
-`set_world_access` and `admit`. A world with no `world_access` row is `Open`. When the rule leaves
-`Open`, `set_world_access` admits every identity then connected. Admission is granted only by the
-two owner-only reducers, which take the joiner's identity. The module declares no HTTP handler and
+`set_world_access`, `admit`, `set_world_names`, `set_world_allowlist` and the two relayed binding
+reducers. The four binding reducers answer their build's refusal before that check; it reads
+nothing. A world with no
+`world_access` row is `Open`. Under `Password`, `is_admitted` admits the owner and an identity in
+`world_admission`. Under `Allowlist` it admits the owner; an identity with a trusted binding exactly
+while its `account_subject` is a row of private `world_allowlist` (written by the owner's
+`set_world_allowlist`: at most 256 subjects of 1 to 255 visible ASCII), and nothing else counts for
+it, so delisting refuses at the next check; and an identity with no trusted binding only when it
+holds a `world_admission` row. The list is read at every check and nothing is stored from it.
+`Allowlist` takes no password (`set_world_access` refuses one). When the rule changes to one that is
+not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
+before the call admitted, and to none the old rule refused. A new joiner's way in under `Allowlist`
+is the owner's relayed nonce request and bind. Admission rows are written only by the two owner-only
+reducers `set_world_access` and `admit`, which take the joiner's identity. The module declares no HTTP handler and
 no row filter: both sit behind the `spacetimedb` crate's `unstable` feature, which the workspace
 does not enable (`Cargo.toml`), and the deletion-gate census refuses a `procedure` attribute.
 Built: the module's half, in `server-module/src/access.rs`, proved by
@@ -2657,7 +2703,8 @@ enforces ownership unless it names `open_join`. `official` and `world` select pr
 `dev_reducers` implies `open_join`. A release feature wins over a dev feature, so no feature set
 yields production trust with enforcement off. `build_profile`, a `const fn` in
 `server-module/src/accounts.rs`, computes a `BuildProfile` from the features: its name, whether it
-enforces ownership, the login issuers it trusts and whether it compiles a dev reducer. It applies
+enforces ownership, the login issuers it trusts, the attestation keys it holds and whether it
+compiles a dev reducer. It applies
 cargo's implications itself, so a feature handed to the compiler from outside cargo yields no
 other profile. `BUILD_PROFILE` is this build's, and `ALLOWED_ISSUERS` is its login-issuer list: the
 two dev issuers (`http://localhost:4455`, `https://auth.monster-realm.spookyowltech.com`) on a
@@ -2679,8 +2726,8 @@ feature wins anyway.
 
 `join_game` calls `accounts::require_entitled` after the admission check and before the deletion
 gate. On an enforcing build the caller's connection must carry a token from one of the build's
-login issuers, addressed to `ALLOWED_AUDIENCE`, whose `mr_ent` claim names `base-game`. Anyone
-else, an anonymous connection included, gets the one fixed error `ownership required`, and nothing
+login issuers, addressed to `ALLOWED_AUDIENCE`, whose `mr_ent` claim names `base-game`, or hold a
+binding as below. Anyone else, an anonymous connection included, gets the one fixed error `ownership required`, and nothing
 is written. A build that does not enforce admits everyone and never reads the token. The claim is
 read by a small scanner over the token's raw payload, since the module has no JSON crate
 (`token_names_entitlement`): exactly one top-level `mr_ent`, an array holding the string; a
@@ -2714,13 +2761,20 @@ and by `evals/account-e2e.eval.mjs`, which on a live host publishes a dev-enforc
 (anonymous and unentitled tokens refused, an entitled one joins) and the `official` artefact `just
 release-module` built (anonymous and a dev-issuer token refused, no `account` row).
 
-Designed, not built: the attestation key lists and the world binding (`docs/local-play.md` §3,
-fork (e)), so a `world` build admits nobody. Of the designed dev attestation keys, the `local-dev`
-one is fixed and can be derived from this repository (`account-service/src/keys.ts`), so anyone
-can sign with it: a `dev_issuers` build would check ownership in a `local` or `private` world and
-stop nobody who signs with that key. The design gives no feature set the `hosted-dev` attestation
-keys alone; a dev build that has to hold against strangers needs one (`docs/account-service.md`,
-"Attestation keys").
+`accounts::entitled(ctx, profile)` entitles everyone on a build that does not enforce. An enforcing
+build entitles a connection whose login token entitles it, or whose identity holds a trusted binding
+with `entitled` true (the attestation's `mr_ent` named `base-game`; see "A private world verifies an
+account by a per-world attestation our account service signs"). `require_entitled` writes nothing,
+and reads `world_binding` only when the token does not entitle and the profile holds an attestation
+key. So on a dev-enforcing build an unbound connection, one bound without the entitlement and one
+bound under a key the build lacks are all refused by `join_game` with `ownership required`, under
+`Open`, `Password` and `Allowlist` (`mod acs6_enforcing_bound` in
+`server-module/src/world_binding_tests.rs`; `mod open_join_unbound` holds an unbound join accepted
+under `open_join`). The `local-dev` attestation key is fixed and can be derived from this repository
+(`account-service/src/keys.ts`), so anyone can sign with it: a `dev_issuers` build's ownership check
+in a `local` or `private` world stops nobody who signs with that key. No feature set gives a build
+the `hosted-dev` attestation keys alone, and `hosted-dev` publishes none; a dev build that has to
+hold against strangers needs one (`docs/account-service.md`, "Attestation keys").
 
 **Why.** The aim is that no input's omission ships an open module: `spacetime publish
 --module-path` and `spacetime generate` build with the default features unless told otherwise, and
