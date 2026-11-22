@@ -20,6 +20,12 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { stripComments } from '../../../test-util/stripComments';
 import type { VButton } from '../../input/buttons';
+import {
+  buildSignInGateView,
+  type SignInGatePhase,
+  type SignInGateView,
+  type SignInOffer,
+} from '../claimModel';
 import { CATALOG_FR } from '../i18n/catalog.fr';
 import { setLocale, t } from '../i18n/resolver';
 import type { MenuTarget } from '../menuModel';
@@ -38,6 +44,7 @@ import {
   mainMenuStep,
   menuViewModel,
   openMainMenu,
+  openSignInGate,
 } from './mainMenuScreen';
 
 // uif-15c (UIF15C.1, named intentional change): Options is replaced by two root rows, help then
@@ -933,5 +940,246 @@ describe('mainMenu over a battle (ctl-6c)', () => {
     expect(fr).toContain(t('tactics.menu.item'));
     expect(t('tactics.menu.item')).toBe('Objets');
     expect(fr).not.toMatch(/\bSac\b/);
+  });
+});
+
+// ==========================================================================================
+// The menu as the sign-in gate: the same frame, offering the gate's rows instead of its entries.
+// Every gate view below is built by the real projection (buildSignInGateView), so the screen and
+// the model are proved together.
+// ==========================================================================================
+
+const GATE_OFFER: SignInOffer = { kind: 'provider', name: 'Gate ID' };
+const SIGN_IN_EFFECT: MenuEffect = { kind: 'signIn' };
+const STORE_EFFECT: MenuEffect = { kind: 'store' };
+const ALL_BUTTONS: readonly VButton[] = [
+  'Up',
+  'Down',
+  'Left',
+  'Right',
+  'A',
+  'B',
+  'X',
+  'Y',
+  'LB',
+  'RB',
+  'Start',
+  'Select',
+];
+const DPAD: readonly VButton[] = ['Up', 'Down', 'Left', 'Right'];
+
+/** The gate's view for `phase`, through the real projection. */
+function gateViewOf(phase: SignInGatePhase, failure?: string): SignInGateView {
+  const view = buildSignInGateView({ phase, failure }, GATE_OFFER);
+  if (view === undefined) throw new Error(`the projection gave no gate view for ${phase}`);
+  return view;
+}
+
+/** A not-owned gate with the cursor moved to the store row. */
+function onStore(): MainMenuState {
+  const s = press(openSignInGate(EMPTY_NAV_MEMORY, gateViewOf('not-owned')), 'Down').state;
+  expect(s.nav.item, 'precondition: the cursor is on the store row').toBe('store');
+  return s;
+}
+
+describe('mainMenu as the sign-in gate', () => {
+  it('openSignInGate puts the cursor on the sign-in row, returns the memory it was given untouched, shows no feedback and is not a battle menu [acs-7.4]', () => {
+    // WRONG IMPL KILLED: the cursor recalled from the menu's memory (a remembered `journal`, a key
+    // the gate does not have); the gate's cursor written into the session memory; a stale feedback.
+    for (const phase of ['sign-in', 'not-owned'] as const) {
+      const view = gateViewOf(phase);
+      for (const memory of [EMPTY_NAV_MEMORY, memoryOn('journal'), memoryOn('close')]) {
+        const s = openSignInGate(memory, view);
+        expect(s.nav.item, `${phase}: the first row`).toBe('signIn');
+        expect(s.memory, `${phase}: the memory is the caller's`).toBe(memory);
+        expect(s.feedback).toEqual({ kind: 'none' });
+        expect(s.battle).toBe(false);
+        expect(s.gate).toBe(view);
+      }
+    }
+  });
+
+  it('no gate step writes the gate cursor into the memory: a menu opened after it lands on the entry remembered before [acs-7.4]', () => {
+    // WRONG IMPL KILLED: `at()` reused for gate steps, remembering `signIn` / `store` under the
+    // menu's frame id (the next ordinary menu would open on a key it does not have).
+    const remembered = memoryOn('journal');
+    let s = openSignInGate(remembered, gateViewOf('not-owned'));
+    for (const button of ['Down', 'Up', 'Down', 'Y', 'B', 'A', 'Down'] as const) {
+      s = press(s, button).state;
+      expect(s.memory, `after ${button}`).toBe(remembered);
+    }
+    s = mainMenuPick(s, 'store').state;
+    expect(s.memory, 'after a pick').toBe(remembered);
+    expect(recallNav(remembered, 'menu')?.item).toBe('journal');
+    expect(openMainMenu(s.memory).nav.item).toBe('journal');
+  });
+
+  it('the D-pad moves over the gate rows by the list rules: Down and Up wrap when fresh, clamp when repeated, Left and Right do not move, and a move clears a transient line [acs-7.4]', () => {
+    // WRONG IMPL KILLED: the D-pad walking the menu's own entries; a clamp where a fresh press
+    // wraps; a description that survives a move.
+    const start = openSignInGate(EMPTY_NAV_MEMORY, gateViewOf('not-owned'));
+    const down = press(start, 'Down');
+    expect(down.effect).toEqual(NONE);
+    expect(down.state.nav.item).toBe('store');
+    expect(press(down.state, 'Down').state.nav.item, 'a fresh Down wraps').toBe('signIn');
+    expect(press(start, 'Up').state.nav.item, 'a fresh Up wraps').toBe('store');
+    expect(press(down.state, 'Down', true).state.nav.item, 'a repeat Down clamps').toBe('store');
+    expect(press(start, 'Up', true).state.nav.item, 'a repeat Up clamps').toBe('signIn');
+    for (const button of ['Left', 'Right'] as const) {
+      const step = press(start, button);
+      expect(step.effect).toEqual(NONE);
+      expect(step.state.nav.item, button).toBe('signIn');
+    }
+    const described = press(start, 'Y').state;
+    expect(described.feedback.kind, 'precondition: a line is showing').toBe('info');
+    expect(press(described, 'Down').state.feedback, 'a move clears it').toEqual({ kind: 'none' });
+  });
+
+  it('with one row no D-pad press moves and the state comes back as it was [acs-7.4]', () => {
+    const s = openSignInGate(EMPTY_NAV_MEMORY, gateViewOf('sign-in'));
+    for (const button of DPAD) {
+      for (const repeat of [false, true]) {
+        const step = press(s, button, repeat);
+        expect(step.effect, `${button}/${repeat}`).toEqual(NONE);
+        expect(step.state, `${button}/${repeat}`).toBe(s);
+      }
+    }
+  });
+
+  it('A on the sign-in row answers signIn and leaves the state as it was; a repeat A does nothing [acs-7.4]', () => {
+    // WRONG IMPL KILLED: A on the gate falling through to the menu's activate (no effect, or the
+    // first entry's open); a held Enter starting two sign-ins.
+    for (const phase of ['sign-in', 'not-owned'] as const) {
+      const s = openSignInGate(EMPTY_NAV_MEMORY, gateViewOf(phase));
+      const a = press(s, 'A');
+      expect(a.effect, phase).toEqual(SIGN_IN_EFFECT);
+      expect(a.state).toBe(s);
+      const repeat = press(s, 'A', true);
+      expect(repeat.effect).toEqual(NONE);
+      expect(repeat.state).toBe(s);
+    }
+  });
+
+  it('A on the store row answers store and leaves the state as it was [acs-7.2]', () => {
+    // WRONG IMPL KILLED: every gate row answering signIn; the store row opening nothing.
+    const s = onStore();
+    const a = press(s, 'A');
+    expect(a.effect).toEqual(STORE_EFFECT);
+    expect(a.state).toBe(s);
+    expect(press(s, 'A', true).effect).toEqual(NONE);
+  });
+
+  it('B answers nothing and shows the stays line; a repeat B does nothing; no input on the gate ever closes the menu or opens an entry [acs-7.4]', () => {
+    // WRONG IMPL KILLED: B closing the gate (the player would walk into a world the server refuses);
+    // Start, Select or a shoulder button closing or opening something.
+    const view = gateViewOf('sign-in');
+    const s = openSignInGate(EMPTY_NAV_MEMORY, view);
+    const b = press(s, 'B');
+    expect(b.effect).toEqual(NONE);
+    expect(b.state.feedback).toEqual({ kind: 'info', text: view.stays });
+    expect(b.state.nav).toEqual(s.nav);
+    const repeat = press(s, 'B', true);
+    expect(repeat.effect).toEqual(NONE);
+    expect(repeat.state).toBe(s);
+    const states = [s, b.state, onStore(), press(onStore(), 'Y').state];
+    for (const state of states) {
+      for (const button of ALL_BUTTONS) {
+        for (const flag of [false, true]) {
+          const kind = press(state, button, flag).effect.kind;
+          expect(['close', 'open'], `${button}${flag ? ' (repeat)' : ''}`).not.toContain(kind);
+        }
+      }
+    }
+  });
+
+  it('Y shows the description of the row under the cursor; a repeat Y does nothing [acs-7.4]', () => {
+    // WRONG IMPL KILLED: Y showing a menu entry's description, or the row label, or the other row's.
+    const view = gateViewOf('not-owned');
+    const s = openSignInGate(EMPTY_NAV_MEMORY, view);
+    expect(press(s, 'Y').state.feedback).toEqual({
+      kind: 'info',
+      text: view.rows[0]?.description,
+    });
+    expect(press(onStore(), 'Y').state.feedback).toEqual({
+      kind: 'info',
+      text: view.rows[1]?.description,
+    });
+    expect(view.rows[0]?.description).not.toBe(view.rows[1]?.description);
+    expect(press(s, 'Y', true).state).toBe(s);
+  });
+
+  it('a pick of a row the gate shows moves the cursor there and activates it; a menu entry key, an unknown key and the store key on a one-row gate do nothing [acs-7.4]', () => {
+    // WRONG IMPL KILLED: a pick that accepts a main-menu key (a forged or stale `monsters` click
+    // would open the Monsters frame behind the gate); the store row picked while it is not shown.
+    const notOwned = openSignInGate(EMPTY_NAV_MEMORY, gateViewOf('not-owned'));
+    const store = mainMenuPick(notOwned, 'store');
+    expect(store.effect).toEqual(STORE_EFFECT);
+    expect(store.state.nav.item).toBe('store');
+    const signIn = mainMenuPick(store.state, 'signIn');
+    expect(signIn.effect).toEqual(SIGN_IN_EFFECT);
+    expect(signIn.state.nav.item).toBe('signIn');
+
+    const oneRow = openSignInGate(EMPTY_NAV_MEMORY, gateViewOf('sign-in'));
+    expect(mainMenuPick(oneRow, 'signIn').effect).toEqual(SIGN_IN_EFFECT);
+    for (const key of [...ROOT_KEYS, 'store', 'nope', '', 'toString', '__proto__', 'SignIn']) {
+      const step = mainMenuPick(oneRow, key);
+      expect(step.effect, `pick ${JSON.stringify(key)}`).toEqual(NONE);
+      expect(step.state.nav.item, `pick ${JSON.stringify(key)}`).toBe('signIn');
+    }
+    for (const key of ROOT_KEYS) {
+      expect(mainMenuPick(notOwned, key).effect, `pick ${key} on not-owned`).toEqual(NONE);
+    }
+  });
+
+  it('menuViewModel of the gate names the menu frame, the gate title, no crumbs, the gate rows enabled with their labels, and the standing line until a transient one shows [acs-7.4]', () => {
+    // WRONG IMPL KILLED: the menu's own title or entries painted under the gate; a disabled row; a
+    // view model that drops the standing line (the refusal's reason would never show); a
+    // transient line that never replaces it.
+    for (const phase of ['sign-in', 'not-owned'] as const) {
+      const view = gateViewOf(phase);
+      const s = openSignInGate(EMPTY_NAV_MEMORY, view);
+      const vm = menuViewModel(s);
+      expect(vm.frameId).toBe('menu');
+      expect(vm.title).toBe(view.title);
+      expect(vm.crumbs).toEqual([]);
+      expect(itemsOf(vm.layout).map((i) => [i.key, i.enabled])).toEqual(
+        view.rows.map((row) => [row.key, true]),
+      );
+      expect(vm.labels).toEqual(Object.fromEntries(view.rows.map((row) => [row.key, row.label])));
+      expect(Object.keys(vm.labels)).toEqual(view.rows.map((row) => row.key));
+      expect(vm.nav).toEqual(s.nav);
+      expect(vm.feedback, `${phase}: the standing line`).toEqual(view.line);
+      const b = press(s, 'B').state;
+      expect(menuViewModel(b).feedback, `${phase}: the transient line`).toEqual({
+        kind: 'info',
+        text: view.stays,
+      });
+    }
+    const failed = gateViewOf('sign-in', 'sign-in-expired');
+    expect(menuViewModel(openSignInGate(EMPTY_NAV_MEMORY, failed)).feedback).toEqual(failed.line);
+    expect(failed.line.kind).toBe('error');
+  });
+
+  it('a gate view built under fr paints the fr title and labels through menuViewModel [acs-7.4]', () => {
+    setLocale('fr');
+    const view = gateViewOf('not-owned');
+    const vm = menuViewModel(openSignInGate(EMPTY_NAV_MEMORY, view));
+    const fr = CATALOG_FR as unknown as Record<string, unknown>;
+    expect(vm.title).toBe(fr['claim.gate.notOwned.title']);
+    expect(vm.labels.store).toBe(fr['claim.gate.store.title']);
+    expect(typeof vm.title).toBe('string');
+  });
+
+  it('the ordinary menu opened after a gate session is the ordinary menu: no gate, its own title and entries [acs-7.4]', () => {
+    // WRONG IMPL KILLED: openMainMenu carrying a gate over (the lowered gate would stay painted).
+    let s = openSignInGate(memoryOn('bag'), gateViewOf('not-owned'));
+    s = press(press(s, 'Down').state, 'B').state;
+    const menu = openMainMenu(s.memory);
+    expect('gate' in menu).toBe(false);
+    expect(menu.nav.item).toBe('bag');
+    const vm = menuViewModel(menu);
+    expect(vm.title).toBe(t('menu.title'));
+    expect(itemsOf(vm.layout).map((i) => i.key)).toEqual(ROOT_KEYS);
+    expect(press(menu, 'B').effect).toEqual(CLOSE);
   });
 });

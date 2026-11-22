@@ -37,6 +37,7 @@ import * as fc from 'fast-check';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildClaimViewModel,
+  buildSignInGateView,
   CLAIM_EVENT_KINDS,
   CLAIM_INITIAL,
   CLAIM_REJECT_OUTCOMES,
@@ -48,8 +49,14 @@ import {
   claimRejectDeletesCode,
   claimStep,
   classifyClaimReject,
+  OWNERSHIP_STORE_URL,
+  SIGN_IN_GATE_INITIAL,
+  type SignInGateEvent,
+  type SignInGatePhase,
+  type SignInGateState,
   type SignInOffer,
   senseInvalidCode,
+  signInGateStep,
   signInOffer,
 } from './claimModel';
 import { CATALOG_EN } from './i18n/catalog.en';
@@ -1699,5 +1706,351 @@ describe('claimModel sign-in offer: the build issuer decides whether Sign In is 
     expect(
       buildClaimViewModel(stateOf({ phase: 'prompt', confirmPending: true }), NO_OFFER).body,
     ).toBe(NO_PROVIDER_BODY_EN);
+  });
+});
+
+// ===========================================================================
+// The sign-in gate: the screen a server that admits only owners puts in front of play. Its state
+// machine (signInGateStep) and its projection (buildSignInGateView), read against the catalogs.
+// ===========================================================================
+
+const GATE_PHASES: readonly SignInGatePhase[] = ['hidden', 'sign-in', 'not-owned'];
+const gateState = (phase: SignInGatePhase, failure?: string): SignInGateState => ({
+  phase,
+  failure,
+});
+const ACCOUNT_REQUIRED: SignInGateEvent = { kind: 'account-required' };
+const OWNERSHIP_REFUSED: SignInGateEvent = { kind: 'ownership-refused' };
+const JOINED: SignInGateEvent = { kind: 'joined' };
+const signInFailed = (reason: string): SignInGateEvent => ({ kind: 'sign-in-failed', reason });
+
+/** The failures a state may already carry when an event arrives. */
+const PRIOR_FAILURES: readonly (string | undefined)[] = [undefined, 'sign-in-rejected', 'toString'];
+
+/** The plan's transition table, transcribed: the phase each event leads to from each phase. */
+const NEXT_PHASE: Readonly<
+  Record<SignInGateEvent['kind'], Readonly<Record<SignInGatePhase, SignInGatePhase>>>
+> = {
+  'account-required': { hidden: 'sign-in', 'sign-in': 'sign-in', 'not-owned': 'not-owned' },
+  'ownership-refused': { hidden: 'not-owned', 'sign-in': 'not-owned', 'not-owned': 'not-owned' },
+  'sign-in-failed': { hidden: 'hidden', 'sign-in': 'sign-in', 'not-owned': 'not-owned' },
+  joined: { hidden: 'hidden', 'sign-in': 'hidden', 'not-owned': 'hidden' },
+};
+
+/** The state the table gives for `event` from `state`. */
+function expectedStep(state: SignInGateState, event: SignInGateEvent): SignInGateState {
+  const phase = NEXT_PHASE[event.kind][state.phase];
+  switch (event.kind) {
+    case 'sign-in-failed':
+      return gateState(phase, event.reason);
+    case 'joined':
+      return gateState(phase, undefined);
+    default:
+      return gateState(phase, state.failure);
+  }
+}
+
+/** Step a frozen copy of `state`, assert the input is unchanged, and return the result. */
+function stepFrozen(state: SignInGateState, event: SignInGateEvent): SignInGateState {
+  const input = Object.freeze({ ...state });
+  const next = signInGateStep(input, Object.freeze({ ...event }) as SignInGateEvent);
+  expect(input, 'the input state is never mutated').toStrictEqual(state);
+  return next;
+}
+
+/** The failure reasons main.ts reports, and the claim.signInFailed.* line each one reads. */
+const KNOWN_FAILURE_LINES: ReadonlyArray<readonly [string, string]> = [
+  ['sign-in-rejected', 'claim.signInFailed.rejected'],
+  ['sign-in-expired', 'claim.signInFailed.expired'],
+  ['sign-in-declined', 'claim.signInFailed.declined'],
+  ['auth-service-unreachable', 'claim.signInFailed.unreachable'],
+];
+const failureLineKey = (reason: string): string =>
+  KNOWN_FAILURE_LINES.find(([known]) => known === reason)?.[1] ?? 'claim.signInFailed.fallback';
+
+/** Reasons no line names: they read the fallback line. */
+const UNKNOWN_REASONS: readonly string[] = [
+  'transient-error',
+  'sign-in-off',
+  'SIGN-IN-REJECTED',
+  'sign-in-rejected ',
+  '',
+  'toString',
+  '__proto__',
+  'constructor',
+  'hasOwnProperty',
+  'valueOf',
+];
+
+const GATE_PROVIDER_OFFER: SignInOffer = { kind: 'provider', name: PROVIDER_NAME };
+
+/** The view the plan's projection rules give, every string read from `catalog`. */
+function expectedGateView(
+  catalog: Readonly<Record<string, unknown>>,
+  locale: string,
+  state: SignInGateState,
+  providerName: string,
+) {
+  const s = (key: string): string => catalogString(catalog, locale, key);
+  const signInRow = {
+    key: 'signIn',
+    label: catalogFunction(catalog, locale, 'claim.signInWithProvider')({ provider: providerName }),
+    description: s('claim.gate.signIn.desc'),
+  };
+  const storeRow = {
+    key: 'store',
+    label: s('claim.gate.store.title'),
+    description: s('claim.gate.store.desc'),
+  };
+  const notOwned = state.phase === 'not-owned';
+  const line =
+    state.failure !== undefined
+      ? { kind: 'error', text: s(failureLineKey(state.failure)) }
+      : notOwned
+        ? { kind: 'error', text: s('claim.gate.notOwned.body') }
+        : { kind: 'info', text: s('claim.gate.signIn.body') };
+  return {
+    title: notOwned ? s('claim.gate.notOwned.title') : s('claim.gate.signIn.title'),
+    line,
+    rows: notOwned ? [signInRow, storeRow] : [signInRow],
+    stays: s('claim.gate.stays'),
+  };
+}
+
+describe('the sign-in gate model: signInGateStep follows the transition table', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('exports the gate initial state as hidden with no failure, the step, the projection and the store URL [acs-7.1]', () => {
+    // WRONG IMPL KILLED: an initial state that opens the gate, or carries a failure; the store URL
+    // pointed anywhere but the Steam store.
+    expect(typeof signInGateStep).toBe('function');
+    expect(typeof buildSignInGateView).toBe('function');
+    expect(SIGN_IN_GATE_INITIAL).toStrictEqual({ phase: 'hidden', failure: undefined });
+    expect(OWNERSHIP_STORE_URL).toBe('https://store.steampowered.com/');
+  });
+
+  it('account-required raises the sign-in phase from hidden and from sign-in, leaves not-owned as it is, and keeps the failure [acs-7.1]', () => {
+    // WRONG IMPL KILLED: account-required dropping a not-owned screen back to plain sign-in (a
+    // reconnect after a refusal would hide the store link); a failure cleared by it.
+    for (const phase of GATE_PHASES) {
+      for (const failure of PRIOR_FAILURES) {
+        const from = gateState(phase, failure);
+        expect(stepFrozen(from, ACCOUNT_REQUIRED), `${phase}/${String(failure)}`).toStrictEqual(
+          expectedStep(from, ACCOUNT_REQUIRED),
+        );
+      }
+    }
+    expect(stepFrozen(gateState('hidden'), ACCOUNT_REQUIRED)).toStrictEqual(
+      gateState('sign-in', undefined),
+    );
+    expect(stepFrozen(gateState('not-owned'), ACCOUNT_REQUIRED).phase).toBe('not-owned');
+  });
+
+  it('ownership-refused leads every phase to not-owned and keeps the failure [acs-7.2]', () => {
+    // WRONG IMPL KILLED: a refusal ignored while hidden (the test-target probe raises nothing); a
+    // refusal that clears the failure line.
+    for (const phase of GATE_PHASES) {
+      for (const failure of PRIOR_FAILURES) {
+        const from = gateState(phase, failure);
+        expect(stepFrozen(from, OWNERSHIP_REFUSED), `${phase}/${String(failure)}`).toStrictEqual(
+          gateState('not-owned', failure),
+        );
+      }
+    }
+  });
+
+  it('sign-in-failed keeps the phase, hidden included, and records the reason as the failure [acs-7.1]', () => {
+    // WRONG IMPL KILLED: a failed sign-in that raises the gate on an open server; one that drops
+    // not-owned to sign-in; the reason not recorded, or recorded case-folded or trimmed.
+    for (const phase of GATE_PHASES) {
+      for (const failure of PRIOR_FAILURES) {
+        for (const reason of ['sign-in-rejected', 'transient-error', ' Odd Reason ']) {
+          const from = gateState(phase, failure);
+          expect(
+            stepFrozen(from, signInFailed(reason)),
+            `${phase}/${String(failure)}/${reason}`,
+          ).toStrictEqual(gateState(phase, reason));
+        }
+      }
+    }
+  });
+
+  it('joined leads every phase to hidden and clears the failure [acs-7.1]', () => {
+    // WRONG IMPL KILLED: a joined event that leaves the gate up; a failure that outlives the join
+    // and shows on the next gate.
+    for (const phase of GATE_PHASES) {
+      for (const failure of PRIOR_FAILURES) {
+        expect(stepFrozen(gateState(phase, failure), JOINED), `${phase}`).toStrictEqual(
+          gateState('hidden', undefined),
+        );
+      }
+    }
+  });
+
+  it('every step returns a fresh state object, and the same object only where the table changes nothing [acs-7.1]', () => {
+    // WRONG IMPL KILLED: a step that mutates its input (frozen here: a write throws); one that
+    // returns the input after changing nothing it should have changed.
+    const events: readonly SignInGateEvent[] = [
+      ACCOUNT_REQUIRED,
+      OWNERSHIP_REFUSED,
+      JOINED,
+      signInFailed('sign-in-expired'),
+    ];
+    for (const phase of GATE_PHASES) {
+      for (const failure of PRIOR_FAILURES) {
+        for (const event of events) {
+          const input = Object.freeze(gateState(phase, failure));
+          const next = signInGateStep(input, event);
+          const want = expectedStep(input, event);
+          expect(next, `${phase}/${String(failure)}/${event.kind}`).toStrictEqual(want);
+          if (next === input) {
+            expect(want, 'the same object only for an unchanged state').toStrictEqual(input);
+          }
+          expect(Object.keys(next).sort()).toEqual(['failure', 'phase']);
+        }
+      }
+    }
+  });
+
+  it('is total over any event sequence and any reason string: it never throws and every fold matches the table [acs-7.1]', () => {
+    // WRONG IMPL KILLED: a reason looked up in an object (a prototype name crashes or misreads);
+    // a step that throws on an unexpected sequence.
+    const eventArb = fc.oneof(
+      fc.constant(ACCOUNT_REQUIRED),
+      fc.constant(OWNERSHIP_REFUSED),
+      fc.constant(JOINED),
+      fc.oneof(fc.string(), fc.constantFrom(...UNKNOWN_REASONS)).map(signInFailed),
+    );
+    fc.assert(
+      fc.property(fc.array(eventArb, { maxLength: 12 }), (events) => {
+        let actual: SignInGateState = SIGN_IN_GATE_INITIAL;
+        let model: SignInGateState = gateState('hidden', undefined);
+        for (const event of events) {
+          actual = signInGateStep(actual, event);
+          model = expectedStep(model, event);
+        }
+        expect(actual).toStrictEqual(model);
+        expect(GATE_PHASES).toContain(actual.phase);
+      }),
+    );
+  });
+});
+
+describe('the sign-in gate model: buildSignInGateView projects the screen', () => {
+  beforeEach(() => {
+    setLocale('en');
+  });
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('projects no view while hidden, with or without a failure [acs-7.1]', () => {
+    // WRONG IMPL KILLED: a view for the hidden phase (main.ts would show a gate on an open server).
+    expect(buildSignInGateView(gateState('hidden'), GATE_PROVIDER_OFFER)).toBeUndefined();
+    expect(
+      buildSignInGateView(gateState('hidden', 'sign-in-rejected'), GATE_PROVIDER_OFFER),
+    ).toBeUndefined();
+  });
+
+  it('projects no view in any phase for a build that offers no sign-in [acs-7.3]', () => {
+    // WRONG IMPL KILLED: a gate whose only row starts a sign-in the build cannot do (a local,
+    // private or issuer-less build would trap the player).
+    for (const phase of GATE_PHASES) {
+      for (const failure of PRIOR_FAILURES) {
+        expect(
+          buildSignInGateView(gateState(phase, failure), NO_OFFER),
+          `${phase}/${String(failure)}`,
+        ).toBeUndefined();
+      }
+    }
+  });
+
+  it('the sign-in phase shows the sign-in title, the info line, one sign-in row labelled with the provider, and the stays line, all from the en catalog [acs-7.1]', () => {
+    // WRONG IMPL KILLED: the store row offered before any refusal; the title of the other phase;
+    // the line kind error; a row label without the provider name; a missing stays line.
+    const view = buildSignInGateView(gateState('sign-in'), GATE_PROVIDER_OFFER);
+    expect(view).toEqual(expectedGateView(EN_CATALOG, 'en', gateState('sign-in'), PROVIDER_NAME));
+    expect(view?.rows.map((row) => row.key)).toEqual(['signIn']);
+    expect(view?.line.kind).toBe('info');
+    expect(view?.rows[0]?.label).toBe(SIGN_IN_LABEL_EN);
+  });
+
+  it('the not-owned phase shows the not-owned title, its error line, the sign-in row first and the store row second [acs-7.2]', () => {
+    // WRONG IMPL KILLED: the store row first (Enter would open the store, not sign in); no store
+    // row; the sign-in row dropped (no way to try another account); the sign-in body kept.
+    const view = buildSignInGateView(gateState('not-owned'), GATE_PROVIDER_OFFER);
+    expect(view).toEqual(expectedGateView(EN_CATALOG, 'en', gateState('not-owned'), PROVIDER_NAME));
+    expect(view?.rows.map((row) => row.key)).toEqual(['signIn', 'store']);
+    expect(view?.line).toEqual({
+      kind: 'error',
+      text: catalogString(EN_CATALOG, 'en', 'claim.gate.notOwned.body'),
+    });
+    expect(view?.title).not.toBe(catalogString(EN_CATALOG, 'en', 'claim.gate.signIn.title'));
+  });
+
+  it('a recorded failure replaces the standing line with its claim.signInFailed line as an error, in both phases, unknown reasons and prototype names reading the fallback [acs-7.1]', () => {
+    // WRONG IMPL KILLED: the failure ignored by the gate; a Record[reason] lookup (a prototype
+    // name renders a function's text or throws); a failure that changes the title or the rows.
+    for (const phase of ['sign-in', 'not-owned'] as const) {
+      const plain = buildSignInGateView(gateState(phase), GATE_PROVIDER_OFFER);
+      for (const reason of [...KNOWN_FAILURE_LINES.map(([known]) => known), ...UNKNOWN_REASONS]) {
+        const view = buildSignInGateView(gateState(phase, reason), GATE_PROVIDER_OFFER);
+        expect(view?.line, `${phase}/${JSON.stringify(reason)}`).toEqual({
+          kind: 'error',
+          text: catalogString(EN_CATALOG, 'en', failureLineKey(reason)),
+        });
+        expect(view?.title).toBe(plain?.title);
+        expect(view?.rows).toEqual(plain?.rows);
+        expect(view?.stays).toBe(plain?.stays);
+      }
+    }
+    // The four known reasons read four different lines, none of them the fallback.
+    const known = KNOWN_FAILURE_LINES.map(
+      ([reason]) =>
+        buildSignInGateView(gateState('sign-in', reason), GATE_PROVIDER_OFFER)?.line.text,
+    );
+    expect(new Set(known).size).toBe(4);
+    expect(known).not.toContain(catalogString(EN_CATALOG, 'en', 'claim.signInFailed.fallback'));
+  });
+
+  it('the sign-in row label names the offer`s provider exactly, whatever the name [acs-7.1]', () => {
+    // WRONG IMPL KILLED: a fixed provider name; a trimmed or lower-cased name.
+    for (const name of ['Acme ID', 'Dev Account', ' Spaced ', 'https://auth.example.test/']) {
+      const view = buildSignInGateView(gateState('sign-in'), { kind: 'provider', name });
+      expect(view?.rows[0]?.label).toBe(
+        catalogFunction(EN_CATALOG, 'en', 'claim.signInWithProvider')({ provider: name }),
+      );
+    }
+  });
+
+  it('every gate string is resolved at projection time from the current locale: fr reads the fr catalog and differs from en [acs-7.4]', () => {
+    // WRONG IMPL KILLED: strings resolved at module load (frozen in en); a key missing from fr;
+    // an fr value left as the English copy.
+    const states = [
+      gateState('sign-in'),
+      gateState('not-owned'),
+      gateState('sign-in', 'sign-in-declined'),
+      gateState('not-owned', 'toString'),
+    ];
+    const english = states.map((state) => buildSignInGateView(state, GATE_PROVIDER_OFFER));
+    setLocale('fr');
+    for (const [i, state] of states.entries()) {
+      const french = buildSignInGateView(state, GATE_PROVIDER_OFFER);
+      expect(french, `fr ${state.phase}/${String(state.failure)}`).toEqual(
+        expectedGateView(FR_CATALOG, 'fr', state, PROVIDER_NAME),
+      );
+      const en = english[i];
+      expect(french?.title).not.toBe(en?.title);
+      expect(french?.line.text).not.toBe(en?.line.text);
+      expect(french?.stays).not.toBe(en?.stays);
+      for (const [j, row] of (french?.rows ?? []).entries()) {
+        expect(row.label, `fr row ${row.key}`).not.toBe(en?.rows[j]?.label);
+        expect(row.description, `fr row ${row.key}`).not.toBe(en?.rows[j]?.description);
+      }
+    }
+    setLocale('en');
+    expect(buildSignInGateView(gateState('sign-in'), GATE_PROVIDER_OFFER)).toEqual(english[0]);
   });
 });
