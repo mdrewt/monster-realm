@@ -231,7 +231,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `boundHealLocationId` | `screenContext.ts` | `screens` | `runInteract`: event; `onReconnect`: reset |
 | `boundSocialTab` | `screenContext.ts` | none | `openSocial`: event; `onReconnect`: reset |
 | `boundMonstersTab` | `screenContext.ts` | none | `openMenuTarget`: event; `onReconnect`: reset |
-| `boundTradeSessionId` | `screenContext.ts` | `screens` | `openTradeEditor`: event; `resetTradeSessionState`: reset; the batch listener that drops a closed session: event |
+| `boundTradeSessionId` | `screenContext.ts` | `screens` | `openTradeEditor`: event; `resetTradeSessionState`, on a join and on a reconnect: reset; the batch listener that drops a closed session: event |
 | `shopOpen` | `screens.ts` | `commands` | none |
 | `questAckBaseline` | `screens.ts` | none | `onReconnect`: reset |
 | `menuState` | `menu.ts` | `input`, `devHooks` | none |

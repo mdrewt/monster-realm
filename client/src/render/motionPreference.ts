@@ -3,10 +3,10 @@
 // OS bit and decides nothing — what reduced motion *means* is RenderResolver's
 // business, reached only through the injected `ResolveInput.reduceMotion` field.
 //
-// THE SOLE matchMedia CALLER: the client asks the browser once. `shell/screenContext.ts`
-// constructs the one preference at import, and the boot tests count one query and one
-// change listener for the whole page. Do not read matchMedia — or any global — anywhere
-// else; read that module's `motionPreference`, or inject this module's output.
+// THE SOLE matchMedia CALLER: the client asks the browser once per page.
+// `shell/screenContext.ts` constructs the one preference at import. Do not read
+// matchMedia — or any global — anywhere else; read that module's `motionPreference`, or
+// inject this module's output.
 //
 // Two functions on purpose: with the injected factory alone, the caller would have to
 // write the matchMedia read inline, a second place that reads the global.
@@ -58,7 +58,7 @@ export function createMotionPreference(mm: (query: string) => MotionQuery): Moti
 }
 
 /**
- * The ONE line in client/src that names `matchMedia` (see the header). An arrow —
+ * The one call of `matchMedia` in client/src (see the header). An arrow —
  * never a bare `host.matchMedia` extraction or `.bind` — so the receiver is
  * preserved (a real `window.matchMedia` throws on an unbound call).
  */

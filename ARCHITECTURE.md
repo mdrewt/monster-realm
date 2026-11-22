@@ -467,8 +467,8 @@ bound values, and `screenCtx` reads each of them, the identity and the binding t
 moment of the read. `main.ts` binds at each open (`bindShop`, `bindHealLocation`,
 `bindSocialTab`, `bindMonstersTab`, `bindTradeSession`), clears the first four on a reconnect
 (`unbindForReconnect`), and unbinds the trade session (`unbindTradeSession`) when that session
-closes, on a join and on a reconnect. The frame loop and the tactical shell read the motion
-preference from that module.
+closes, on a join and on a reconnect. `main.ts` reads the motion preference in the frame loop
+and hands the tactical shell a getter of it.
 
 ### Connection and store
 
