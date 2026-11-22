@@ -10,3 +10,7 @@
 *.woff2 binary
 *.pdf binary
 *.wasm binary
+
+# The vendored crates are hashed byte for byte (vendor/PRISTINE.sha256): no line-ending
+# normalisation may touch them.
+vendor/** -text

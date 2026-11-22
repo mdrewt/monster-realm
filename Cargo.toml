@@ -29,33 +29,23 @@ wasm-bindgen = "0.2"
 # the no-logic-in-wrapper eval proves no rules cross here.
 serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
-# Server module SDK. Pin it to the SAME version as the `spacetime`
-# CLI/host: the crate version IS the product version (it always has been — the
-# monorepo's [workspace.package] version equals the product version at every tag,
-# in both majors). The old comment here claimed "crate 1.12 matches CLI 2.6.0
-# (crate != product)"; that was FALSE and left the module a full major behind for
-# six months. See docs/DECISIONS.md (SpacetimeDB versions move in lockstep).
+# Server module SDK, pinned exactly to the version of the `spacetimedb` CLI/host and the npm
+# SDK: the crate version IS the product version (the vendor's monorepo gives every crate the
+# product's version at each tag). See docs/DECISIONS.md ("SpacetimeDB versions move in
+# lockstep") and docs/runbooks/spacetimedb-upgrade.md for a hop.
 #
-# 2026-08-16: bumped 1.12.0 -> 2.8.1 alongside the CLI (M-stdb-2x-module-sdk,
-# EXECUTED). The 1.x -> 2.x source port was mechanical and schema-neutral:
-#   #[table|view(name = X)] -> accessor = X   (the canonical SQL table name
-#                                              defaults to the accessor ident, so
-#                                              no table was renamed — proven by a
-#                                              77/77 identical table-name diff)
-#   ctx.sender  (field)     -> ctx.sender()   (method)
-#   ctx.identity()          -> ctx.database_identity()  (the former is deprecated)
-# When bumping again, remember the gates move too: ~21 Rust source-scanning teeth
-# tests and several evals/ scanners encode this attribute syntax literally.
+# Two of its crates, `spacetimedb` and `spacetimedb-bindings-sys`, build from the copies of
+# their crates.io packages under vendor/ (the [patch.crates-io] table below), patched in
+# `#[cfg]` attributes so that the module's native tests reach the in-memory host in
+# server-module/src/native_host_tests.rs; on wasm the patched attributes select what the
+# originals select. See vendor/README.md and docs/DECISIONS.md ("Server-module tests run on
+# our own host ABI, over the two vendor crates patched where they refuse a native host").
+# The pin is exact because cargo uses a [patch] entry only when its version matches it.
 #
-# 2026-10-15: bumped 2.8.1 -> 2.11.0 alongside the CLI (deps-s3). Clears the
-# publicly disclosed JWT-impersonation vulnerability patched in 2.10.0
-# (clockworklabs/SpacetimeDB#5866, disclosed with v2.11.0). No macro/attribute
-# syntax changes 2.8.1->2.11.0; the one ABI addition is the `env_get` extern
-# (wasm_import_module "spacetime_10.6") mirrored in native_host_tests.rs if
-# reachable. 2.12.0 (test_utils, HS256 rejection) is deferred: its npm SDK
-# twin clears the 7-day cooldown ~2026-10-20 and its crate needs rustc >= 1.97
-# (satisfied since the deps-s2 1.99.0 bump).
-spacetimedb = "2.11.0"
+# Module code uses 2.x syntax (`#[table(accessor = x)]`, `ctx.sender()`,
+# `ctx.database_identity()`); ~21 Rust source-scanning teeth tests and several evals/
+# scanners encode that attribute syntax literally, so a syntax change moves them too.
+spacetimedb = "=2.12.0"
 # Content: serde derive + RON parser (pure; safe under the determinism guard).
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
@@ -84,3 +74,10 @@ overflow-checks = true
 [profile.mutants]
 inherits = "test"
 debug = "none"
+
+# The two SpacetimeDB crates built from patched copies of their crates.io packages (see the
+# `spacetimedb` pin above and vendor/README.md). The guard test in
+# server-module/src/native_host_tests.rs checks these entries against vendor/.
+[patch.crates-io]
+spacetimedb = { path = "vendor/spacetimedb" }
+spacetimedb-bindings-sys = { path = "vendor/spacetimedb-bindings-sys" }
