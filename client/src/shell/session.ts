@@ -161,8 +161,8 @@ export let lastOwnRating: number | null = null;
 export function armEmitReseed(): void {
   battleEmit = armReseed(battleEmit);
 }
-/** Re-baseline both latches. The old battle is gone and the rating baseline is re-seeded from the
- *  first fresh batch, not carried across. */
+/** Re-baseline both latches. No battle is carried across the reset, and the rating baseline is
+ *  re-seeded from the first fresh batch. */
 export function resetEmitLatches(): void {
   battleEmit = resetBattleEmit(battleEmit);
   lastOwnRating = null;
