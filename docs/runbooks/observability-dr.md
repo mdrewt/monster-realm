@@ -1,9 +1,9 @@
 # Runbook: backups, restore, and the monitoring stack
 
-Backup, restore and operational checks for the SpacetimeDB instance, the identity
-provider (`ops/auth/`) and the monitoring stack (`ops/observability/`). The deployment
-is local, with a single operator and no high-availability requirement, so each
-procedure takes the simplest correct option.
+Backup, restore and operational checks for the SpacetimeDB instance and the monitoring
+stack (`ops/observability/`); the account service (`ops/auth/`) has its own runbook
+(section 7). The deployment is local, with a single operator and no high-availability
+requirement, so each procedure takes the simplest correct option.
 
 Commands marked **destructive** stop services or replace data. Read the whole section
 before running them.
@@ -124,29 +124,19 @@ Symptoms: the `AlloyIngestStalled` alert fires (throughput, not liveness), and
 host-side permissions. Do not grant the containers extra capabilities; they run with
 `cap_drop: [ALL]` and read-only mounts on purpose.
 
-## 7. Identity provider (Better Auth)
+## 7. Account service
 
-> **Superseded (2026-11-16).** The issuer is now `account-service/` (`docs/DECISIONS.md` "The account service is our own small OIDC issuer; Steam is the only player sign-in"); its runbook replaces this section in the harness spec `M-account-service.spec.md` acs-4. The custody rules below (the database is on the authentication path; keep signing keys out of the routine backup) still hold.
+The account service in `ops/auth/` issues the tokens game modules trust; its runbook is
+[`account-service.md`](account-service.md): start, admin accounts, key rotation, backup and
+restore (with its drill record), and moving to another host. Two rules from that runbook bear on
+this one:
 
-The issuer in `ops/auth/` (loopback port 8443, SQLite) is backed up separately from the
-game (`restic` tag `better-auth`). Losing it is worse than losing the game database:
-SpacetimeDB derives each account's `Identity` from the token's issuer and subject, so
-a lost issuer database orphans every account.
-
-- **Signing key first.** The JWKS signing key can forge a token for any player. Keep
-  it out of the routine backup and in a narrowly scoped secret store
-  (`ops/auth/README.md` keeps it at `./secrets/jwks.key`, outside the database). If a
-  backup set ever contains it, rotate the key.
-- **Online backup** (SQLite `VACUUM INTO` is consistent while the service runs):
-
-  ```sh
-  sqlite3 /var/lib/better-auth/auth.sqlite "VACUUM INTO '/var/backups/auth.sqlite'"
-  restic backup --tag better-auth /var/backups/auth.sqlite
-  ```
-
-- **Restore drill.** Restore, bring the issuer back on `127.0.0.1:8443`, sign in as a
-  known test user, and confirm SpacetimeDB derives the same `Identity` as before. A
-  changed issuer URL changes every identity, and this check is what catches it.
+- **Back it up apart from the game.** A module derives each account's `Identity` from the
+  token's issuer and subject, so a lost account database orphans every account, which is worse
+  than losing the game database.
+- **Keep its keys out of the routine backup.** The login key can sign a token for any player;
+  the keys go to a narrowly scoped secret store, and a backup set that ever holds them is a
+  reason to rotate.
 
 ## 8. Deletion and backups
 
