@@ -402,9 +402,10 @@ mutate-diff base="origin/master" package="":
         exit 1
     fi
 
-# The full server-module mutation sweep, a report: it lists every surviving mutant and exits 0.
-# The server's zero-tolerance gate is `mutate-diff` on a pull request's changed lines; the weekly
-# sweep files these survivors as one issue. The crate is `monster-realm-module`.
+# The full server-module mutation sweep, a report: it lists every surviving mutant and exits 0
+# whatever survives; it fails only when cargo-mutants gave no verdict. The server's zero-tolerance
+# gate is `mutate-diff` on a pull request's changed lines; the weekly sweep files these survivors
+# as one issue. The crate is `monster-realm-module`.
 #
 # Unsharded (`shard` empty) it runs the whole crate. The weekly sweep runs a matrix of `k/n` shards
 # to fit the 6 h job cap.

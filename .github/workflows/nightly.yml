@@ -1,6 +1,6 @@
 # Slow gates kept off the PR path (see CONTRIBUTING.md for what a red night asks of you);
 # `notify` keeps one open issue per non-success job. The weekly schedule runs only the full
-# server-module mutation sweep, which reports its survivors as one issue and fails nothing.
+# server-module mutation sweep, whose survivors fail nothing: it reports them as one issue.
 name: Nightly
 on:
   schedule:
@@ -52,8 +52,8 @@ jobs:
           retention-days: 14
 
   # The full server-module mutation sweep, weekly: a report, not a gate (the server's gate is the
-  # pull request's `mutation-diff`). Sharded for the same 6 h reason as `mutation` (~1500 mutants,
-  # ~5 h serial on 2026-10-31 and growing); a shard is red only when cargo-mutants gave no verdict.
+  # pull request's `mutation-diff`). Sharded for the same 6 h reason as `mutation` (~2100 mutants);
+  # a shard is red only when cargo-mutants gave no verdict.
   # Keep the matrix length equal to the `/n` in `shard`.
   mutation-server:
     if: github.event.schedule == '41 3 * * 0' || inputs.suite == 'server-mutation-sweep'
@@ -88,7 +88,7 @@ jobs:
   # files; a run on any other branch prints what it would file (a dry run).
   mutation-server-report:
     needs: [mutation-server]
-    if: ${{ !cancelled() && (github.event.schedule == '41 3 * * 0' || inputs.suite == 'server-mutation-sweep') }}
+    if: ${{ !cancelled() && needs.mutation-server.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -123,11 +123,16 @@ jobs:
             echo
             echo "Each survivor is a candidate, not a work item: CONTRIBUTING.md says when one is worth a test."
             echo
-            echo '```'
-            head -c 60000 survivors.txt
-            echo '```'
+            # Four backticks: a mutant name quotes source, which may hold a three-backtick run.
+            echo '````'
             if [ "$(wc -c < survivors.txt)" -gt 60000 ]; then
+              # Under GitHub's 65536-character body cap; the cut drops the partial last line.
+              head -c 60000 survivors.txt | sed '$d'
+              echo '````'
               echo "The list is cut at 60000 bytes; the run's mutants-out-server-* artifacts hold all of it."
+            else
+              cat survivors.txt
+              echo '````'
             fi
           } > body.md
           if [ "$count" -eq 0 ] && [ "$SWEEP_RESULT" = success ]; then
@@ -140,7 +145,7 @@ jobs:
             exit 0
           fi
           existing=$(gh issue list --state open --limit 500 --json number,title \
-            | jq -r --arg p "$title" '[.[] | select(.title | startswith($p))][0].number // empty')
+            | jq -r --arg p "$title (run " '[.[] | select(.title | startswith($p))][0].number // empty')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body-file body.md
           else

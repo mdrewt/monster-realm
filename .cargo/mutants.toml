@@ -1,6 +1,6 @@
-# Blessed mutant exclusions. Entries 1-17 are equivalent or never-terminating mutants: each needs
-# an equivalence/hang proof and is deleted the moment surrounding code makes it killable. Entry 18
-# excludes the logging functions' bodies by name.
+# Blessed mutant exclusions. Each of entries 1-17 carries a proof that its mutant is equivalent,
+# never terminates, or is compiled out of the build that is mutated, and is deleted the moment
+# surrounding code makes it killable. Entry 18 excludes the logging functions' bodies by name.
 #
 # 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
 #    `dy > 0` and `dy >= 0` are indistinguishable on the reachable domain.
@@ -73,8 +73,9 @@
 # 8. dev-only code (`#[cfg(feature = "dev_reducers")]`, or `load_test_zones`, which implies it):
 #    grant_bait (taming.rs, `==`->`!=`), dev_expire_tactical_window (dev_clock.rs: every
 #    operator, `!` and match-arm mutant of its body) and its arm forwarder dev_arm_deadline
-#    (tactics.rs, `-> ()`). The nightly mutates the default-feature build, which does not compile these functions, so their mutants survive
-#    vacuously (the mutated source never builds into the test binary). They are never shipped
+#    (tactics.rs, `-> ()`). Every mutation run mutates the default-feature build, which does not
+#    compile these functions, so their mutants survive vacuously (the mutated source never builds
+#    into the test binary). They are never shipped
 #    (the release module has no dev reducers) and are killed for real by tests that `just test`
 #    runs with `--features dev_reducers`: the `_th4_` tests of dev_clock_tests.rs kill every
 #    dev_expire_tactical_window mutant and the forwarder's. The load build's code is the same
@@ -146,7 +147,7 @@ exclude_re = [
     "content\\.rs:\\d+:\\d+: replace validate_enum_rosters -> Result<\\(\\), String> with Ok\\(\\(\\)\\)",
     "battle\\.rs:\\d+:\\d+: replace \\|\\| with && in battle_with_forced_terminal",
     "pvp\\.rs:\\d+:\\d+: replace ranked_enforcement_active -> bool with false",
-    # 18: tools parse a log line's envelope and `evt` key, which tests assert, so mutating the logging bodies tests text.
+    # 18, logging bodies by name: a log line is a diagnostic, not a rule; their direct tests stay.
     "^server-module/src/guards\\.rs:\\d+:\\d+: (replace (json_escape|log_reject)( -> .*)? with .*|.* in (json_escape|log_reject))$",
     "^server-module/src/observability\\.rs:\\d+:\\d+: (replace (mr_log|mr_log_breadcrumb)( -> .*)? with .*|.* in (mr_log|mr_log_breadcrumb))$",
 ]
