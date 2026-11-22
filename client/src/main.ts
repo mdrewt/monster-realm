@@ -4792,8 +4792,7 @@ async function main(): Promise<void> {
         markHostNoticeSeen(deviceStorage, URI, DB);
       }
     },
-    // the store now holds the applied snapshot, so the reseed latch
-    // may resolve on this flush. Set here, consumed by the battle emit listener.
+    // The store now holds the applied snapshot, so the reseed latch may resolve on this flush.
     onHydrated: () => {
       noteHydrated();
     },

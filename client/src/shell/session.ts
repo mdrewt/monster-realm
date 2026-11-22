@@ -36,7 +36,7 @@ export function adoptIdentity(id: string): void {
   identity = id;
 }
 
-// The connection handle, `undefined` until `main()` opens the connection.
+// The connection handle, `undefined` until `main()` mounts the one it opened.
 export let conn: ReturnType<typeof connect> | undefined;
 /** Mount the connection `main()` opened. */
 export function adoptConnection(link: ReturnType<typeof connect>): void {
