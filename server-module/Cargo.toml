@@ -13,11 +13,11 @@ crate-type = ["cdylib", "rlib"]
 # The pure rule layer (SSOT). The server runs the SAME code the client predicts
 # with; the `spacetimedb` feature enables game-core's SpacetimeType derives (M6).
 game-core = { path = "../game-core", features = ["spacetimedb"] }
-# SpacetimeDB module SDK. The version rationale lives on the workspace pin in
-# ../Cargo.toml: crate 2.12.0, in lockstep with the CLI/host and the npm SDK — the
-# crate version IS the product version. `spacetimedb` and `spacetimedb-bindings-sys`
-# build from the patched copies under ../vendor/ (vendor/README.md). Write 2.x
-# syntax; the three changed spellings are in .claude/skills/spacetimedb-reducer.
+# SpacetimeDB module SDK. The version and its rationale live on the workspace pin in
+# ../Cargo.toml (in lockstep with the CLI/host and the npm SDK — the crate version IS
+# the product version). `spacetimedb` and `spacetimedb-bindings-sys` build from the
+# patched copies under ../vendor/ (vendor/README.md). Write 2.x syntax; the three
+# changed spellings are in .claude/skills/spacetimedb-reducer.
 spacetimedb = { workspace = true }
 # Structured logging facade (captured by the SpacetimeDB host).
 log.workspace = true

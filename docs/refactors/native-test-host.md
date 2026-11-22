@@ -450,7 +450,7 @@ for an SDK bump. No proptest seed is committed.
 | `vendor/PRISTINE.sha256` | new: the crates.io checksums and per-file hashes |
 | `vendor/README.md` | new: what the directory holds, the change notice, how a hop re-vendors |
 | `.gitattributes` | `vendor/** -text`, so that no line-ending normalisation changes a byte the hashes cover |
-| `server-module/Cargo.toml` | the dependency comment names the version and the patched copies |
+| `server-module/Cargo.toml` | the dependency comment points at the root pin (no version of its own to drift) and names the patched copies |
 | `server-module/src/native_host_tests.rs` | the guard test; comments only otherwise: the citations into the 2.11.0 sources point at `vendor/` for the two patched crates and at the crates.io 2.12.0 packages for `spacetimedb-sats` and `spacetimedb-primitives` |
 | `evals/account-e2e.eval.mjs` | `WORKSPACE_NON_MEMBER_DIRS`, beside `WORKSPACE_MEMBERS`: the non-member directories its temp workspace copies, holding `vendor` |
 | `scripts/ci-tools.sh` | `SPACETIME_VERSION=2.12.0` and its sha256 |
