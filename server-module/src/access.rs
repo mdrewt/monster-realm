@@ -269,10 +269,12 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 /// `Open` and `Allowlist` take no password and clear the stored one. `Password` with `Some`
 /// stores a fresh salt and the hash of the new password; `Password` with `None` keeps the
 /// stored password and is refused when there is none. When the rule changes to one that is not
-/// `Open`, every identity with a live connection is admitted, so no connection the new rule
-/// never admitted stays open. Each identity in `admit` is admitted under every rule, without a
-/// password: this is how the host admits its own player under `Password`. Admissions outlive
-/// every rule change.
+/// `Open`, every identity with a live connection that the rule in force before the call
+/// admitted gets an admission row, so a connection the old rule let in stays admitted and one
+/// it had refused (a delisted account, a removed admission) is not let back in. Each identity
+/// in `admit` gets an admission row under every rule, without a password: this is how the host
+/// admits its own player under `Password`; under `Allowlist` the row lets in only an identity
+/// with no trusted binding. Admission rows outlive every rule change.
 #[spacetimedb::reducer]
 pub fn set_world_access(
     ctx: &ReducerContext,
@@ -320,6 +322,15 @@ pub fn set_world_access(
             );
         }
     };
+    // Read under the rule still in force: the row below replaces it.
+    let carried_over: Vec<Identity> = if rule != WorldAccessRule::Open && rule != was {
+        crate::live_session_identities(ctx)
+            .into_iter()
+            .filter(|&identity| !is_world_owner(ctx, identity) && is_admitted(ctx, identity))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let row = WorldAccess {
         id: WORLD_ACCESS_ROW,
         rule,
@@ -332,12 +343,8 @@ pub fn set_world_access(
         ctx.db.world_access().insert(row);
     }
     let now = now_ms(ctx);
-    if rule != WorldAccessRule::Open && rule != was {
-        for identity in crate::live_session_identities(ctx) {
-            if !is_world_owner(ctx, identity) {
-                admit_identity(ctx, identity, now);
-            }
-        }
+    for identity in carried_over {
+        admit_identity(ctx, identity, now);
     }
     for identity in admit {
         admit_identity(ctx, identity, now);

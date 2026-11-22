@@ -148,13 +148,17 @@ pub(crate) fn require_commitment_predates_deletion(
 /// refuse a NAMED subject whose account is mid-grace or terminal, for an opener
 /// the subject did not call — the scheduler-opened wild encounter
 /// (`tactics::start_wild_tactical`, where the caller is the module itself and the
-/// walker is derived server-side from the character's own row) and the
-/// challenge accept (`tactics::start_pvp_tactical`, gating both participants).
+/// walker is derived server-side from the character's own row), the
+/// challenge accept (`tactics::start_pvp_tactical`, gating both participants), and
+/// the world owner's relayed bind and nonce request
+/// (`world_binding::bind_world_account_for`, `world_binding::request_bind_nonce_for`,
+/// gating the identity the owner names).
 ///
 /// The identity-PARAMETERISED wrapper in this family: the blanket wrapper's
 /// structural containment (no identity parameter, so no call site can ever point
 /// the gate at a third party) is deliberately NOT claimed for this one. Every
-/// consumer carries its own six-state gate test in `tactics_tests.rs`.
+/// consumer carries its own gate test: the tactics callers a six-state one in
+/// `tactics_tests.rs`, the relayed forms one in `world_binding_tests.rs`.
 ///
 /// Delegates TRANSITIVELY like both siblings — `deletion_gate` over the ctx-bound
 /// accounts predicate `accounts::is_pending_deletion` — and never re-derives the

@@ -1165,6 +1165,112 @@ mod bind_accepts {
         assert_eq!(rows[0].2, T0 + BIND_NONCE_TTL_MS);
     }
 
+    /// The 16 bytes a nonce's 32 lowercase hex characters spell.
+    fn nonce_bytes(nonce: &str) -> [u8; BIND_NONCE_BYTES] {
+        assert!(is_lower_hex_nonce(nonce), "32 lowercase hex: {nonce}");
+        let mut out = [0u8; BIND_NONCE_BYTES];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&nonce[2 * i..2 * i + 2], 16).expect("hex");
+        }
+        out
+    }
+
+    /// `who`'s nonce XORed with the first 16 bytes of `who`: the random bytes it was made of.
+    fn unmasked(w: &W<'_>, who: Identity) -> [u8; BIND_NONCE_BYTES] {
+        let (nonce, _) = nonce_of(w, who).expect("the identity holds a nonce");
+        let mut out = nonce_bytes(&nonce);
+        for (byte, mask) in out.iter_mut().zip(who.to_byte_array()) {
+            *byte ^= mask;
+        }
+        out
+    }
+
+    /// Two identities asking at the same instant hold different nonces, through
+    /// `request_bind_nonce` and through the owner's `request_bind_nonce_for` alike.
+    ///
+    /// kills: a nonce of the call's random bytes alone (the same for every identity at one
+    /// instant); the identity mixed into one form and not the other.
+    #[test]
+    fn two_identities_asking_at_one_instant_hold_different_nonces_lpw15_1() {
+        {
+            let fx = fixture();
+            let w = owned_world(&fx);
+            assert_eq!(ask(&fx, alice(), T0), Ok(()));
+            assert_eq!(ask(&fx, bob(), T0), Ok(()));
+            let a = nonce_of(&w, alice()).expect("alice holds a nonce");
+            let b = nonce_of(&w, bob()).expect("bob holds a nonce");
+            assert_ne!(a.0, b.0, "request_bind_nonce at one instant");
+        }
+        {
+            let fx = fixture();
+            let w = owned_world(&fx);
+            assert_eq!(ask_for(&fx, owner(), alice(), T0), Ok(()));
+            assert_eq!(ask_for(&fx, owner(), bob(), T0), Ok(()));
+            let a = nonce_of(&w, alice()).expect("alice holds a nonce");
+            let b = nonce_of(&w, bob()).expect("bob holds a nonce");
+            assert_ne!(a.0, b.0, "request_bind_nonce_for at one instant");
+        }
+    }
+
+    /// One identity asking at two instants holds a different nonce the second time, and
+    /// three identities asking at three instants hold three distinct nonces.
+    ///
+    /// kills: a constant nonce (or a constant mixed with the identity); a nonce that is not
+    /// replaced when asked again.
+    #[test]
+    fn nonces_asked_at_different_instants_differ_lpw15_1() {
+        {
+            let fx = fixture();
+            let w = owned_world(&fx);
+            assert_eq!(ask(&fx, alice(), T0), Ok(()));
+            let first = nonce_of(&w, alice()).expect("alice holds a nonce").0;
+            assert_eq!(ask(&fx, alice(), T0 + 7_000), Ok(()));
+            let second = nonce_of(&w, alice()).expect("alice holds a nonce").0;
+            assert_ne!(first, second, "the same identity at two instants");
+        }
+        {
+            let fx = fixture();
+            let w = owned_world(&fx);
+            let carol = id(0x33);
+            assert_eq!(ask(&fx, alice(), T0), Ok(()));
+            assert_eq!(ask(&fx, bob(), T0 + 1), Ok(()));
+            assert_eq!(ask(&fx, carol, T0 + 2), Ok(()));
+            let mut held: Vec<String> = [alice(), bob(), carol]
+                .into_iter()
+                .map(|who| nonce_of(&w, who).expect("each holds a nonce").0)
+                .collect();
+            held.sort();
+            held.dedup();
+            assert_eq!(
+                held.len(),
+                3,
+                "three identities at three instants: {held:?}"
+            );
+        }
+    }
+
+    /// A nonce is the call instant's 16 random bytes XORed with the first 16 bytes of the
+    /// identity it is for: every call at one instant, by either form, unmasks to the same 16
+    /// bytes, whatever they are.
+    ///
+    /// kills: the identity mixed in some other way (hashed, appended, the last 16 bytes); a
+    /// relayed form that mixes in the sender rather than `who`.
+    #[test]
+    fn a_nonce_is_the_instants_random_bytes_xored_with_the_identitys_first_16_bytes_lpw15_1() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        let carol = id(0x33);
+        let dave = id(0x44);
+        assert_eq!(ask(&fx, alice(), T0), Ok(()));
+        assert_eq!(ask(&fx, bob(), T0), Ok(()));
+        assert_eq!(ask_for(&fx, owner(), carol, T0), Ok(()));
+        assert_eq!(ask_for(&fx, owner(), dave, T0), Ok(()));
+        let random = unmasked(&w, alice());
+        assert_eq!(unmasked(&w, bob()), random, "bob, asking itself");
+        assert_eq!(unmasked(&w, carol), random, "carol, asked for by the owner");
+        assert_eq!(unmasked(&w, dave), random, "dave, asked for by the owner");
+    }
+
     /// The header's `alg`, and every member but `kid`, is never read: `none`, `ES256`, no
     /// `alg` and an extra member all verify under a correct Ed25519 signature.
     ///
@@ -1678,6 +1784,82 @@ mod bind_refuses {
             verify_attestation(keys, &default_attestation()),
             Err(REJECT_ATTESTATION_SIGNATURE)
         );
+    }
+
+    /// The payload is parsed only after the signature verifies: a payload that is not JSON
+    /// under a signature that does not verify is a signature failure, and the same payload
+    /// correctly signed by the dev key is malformed.
+    ///
+    /// kills: the payload parsed before the signature is checked (unauthenticated bytes read
+    /// as claims).
+    #[test]
+    fn a_payload_that_is_not_json_is_read_only_after_the_signature_verifies_lpw15_2() {
+        let not_json = "{not json at all";
+        let header = header_json(dev_kid());
+        let input = format!("{}.{}", b64(header.as_bytes()), b64(not_json.as_bytes()));
+        let foreign = other_signer(9).sign(input.as_bytes()).to_bytes();
+        for (label, signature) in [
+            ("another key's signature", foreign),
+            ("64 bytes of 0x5a", [0x5a; 64]),
+        ] {
+            assert_eq!(
+                verify_dev(&format!("{input}.{}", b64(&signature))),
+                Err(REJECT_ATTESTATION_SIGNATURE),
+                "{label} over a payload that is not JSON"
+            );
+        }
+        assert_eq!(
+            verify_dev(&signed(&dev_signer(), &header, not_json)),
+            Err(REJECT_ATTESTATION_MALFORMED),
+            "the same payload signed by the dev key"
+        );
+    }
+
+    /// The listed key here is the Ed25519 identity point (`[1, 0, ..., 0]`, a small-order
+    /// key) and the signature is `R` = the identity point's encoding followed by `S` = 32
+    /// zero bytes: a non-strict check accepts that signature for every message under this
+    /// key, and the strict check refuses it whatever the payload.
+    ///
+    /// kills: `verify` in place of `verify_strict` (a small-order key accepted).
+    #[test]
+    fn a_small_order_key_and_its_trivial_signature_are_a_signature_failure_lpw15_2() {
+        let mut identity_point = [0u8; 32];
+        identity_point[0] = 1;
+        let kid = "small-order-kid";
+        let keys = leak(vec![AttestationKey {
+            kid,
+            public_key: identity_point,
+        }]);
+        let mut signature = [0u8; 64];
+        signature[..32].copy_from_slice(&identity_point);
+        let header = b64(header_json(kid).as_bytes());
+        for payload in [
+            Claims::new(NONCE_A).json(),
+            "{}".to_string(),
+            "{not json at all".to_string(),
+        ] {
+            let att = format!("{header}.{}.{}", b64(payload.as_bytes()), b64(&signature));
+            assert_eq!(
+                verify_attestation(keys, &att),
+                Err(REJECT_ATTESTATION_SIGNATURE),
+                "{payload}"
+            );
+        }
+    }
+
+    /// The bounds the account service and the spec agree on, by value.
+    ///
+    /// kills: a bound changed on one side only.
+    #[test]
+    fn the_attestation_nonce_name_and_allowlist_bounds_hold_their_agreed_values_lpw15_2() {
+        assert_eq!(std::hint::black_box(ATTESTATION_MAX_BYTES), 4096);
+        assert_eq!(std::hint::black_box(BIND_NONCE_TTL_MS), 300_000);
+        assert_eq!(std::hint::black_box(BIND_NONCE_BYTES), 16);
+        assert_eq!(std::hint::black_box(BIND_NONCE_SWEEP_MAX), 32);
+        assert_eq!(std::hint::black_box(WORLD_NAME_MAX_BYTES), 512);
+        assert_eq!(std::hint::black_box(MAX_WORLD_NAMES), 16);
+        assert_eq!(std::hint::black_box(ACCOUNT_SUBJECT_MAX_BYTES), 255);
+        assert_eq!(std::hint::black_box(MAX_ALLOWLIST_ACCOUNTS), 256);
     }
 
     /// Correctly signed payloads that are not the claims' shape are malformed: not an
@@ -2392,6 +2574,62 @@ mod binding_build {
         assert!(!bound_entitled(&ctx, &holding, id(0x99)));
     }
 
+    /// Under a profile holding two keys, a binding made under either key's `kid` is trusted
+    /// and, entitled, entitles; one made under a third `kid` is neither.
+    ///
+    /// kills: only the first listed key compared; only the last; the key list read as one
+    /// key.
+    #[test]
+    fn a_binding_under_any_key_of_the_profile_counts_lpw15_3() {
+        let fx = fixture();
+        let w = world(&fx);
+        let two = profile_with(
+            leak(vec![
+                listed_key("first-kid", &other_signer(4)),
+                listed_key("second-kid", &other_signer(5)),
+            ]),
+            true,
+        );
+        let carol = id(0x33);
+        let by_second = binding_row(alice(), SUB, T0, true, "second-kid");
+        let by_first = binding_row(bob(), OTHER_SUB, T0, true, "first-kid");
+        let by_third = binding_row(carol, THIRD_SUB, T0, true, "third-kid");
+        w.binding.seed(&by_second);
+        w.binding.seed(&by_first);
+        w.binding.seed(&by_third);
+        let ctx = fx.ctx();
+        for (who, row, label) in [
+            (alice(), &by_second, "the second key's kid"),
+            (bob(), &by_first, "the first key's kid"),
+        ] {
+            assert_eq!(
+                trusted_binding(&ctx, &two, who).map(|r| enc(&r)),
+                Some(enc(row)),
+                "{label}: trusted"
+            );
+            assert!(
+                bound_entitled(&ctx, &two, who),
+                "{label}: bound and entitled"
+            );
+            assert!(
+                call(&fx, who, T0, |c| crate::accounts::entitled(c, &two)),
+                "{label}: entitled on an enforcing profile"
+            );
+        }
+        assert!(
+            trusted_binding(&ctx, &two, carol).is_none(),
+            "a third kid: not trusted"
+        );
+        assert!(
+            !bound_entitled(&ctx, &two, carol),
+            "a third kid: not entitled"
+        );
+        assert!(
+            !call(&fx, carol, T0, |c| crate::accounts::entitled(c, &two)),
+            "a third kid: refused on an enforcing profile"
+        );
+    }
+
     /// `entitled` for a caller with no login token: every caller on a profile that does not
     /// enforce; on one that enforces, only a trusted, entitled binding.
     ///
@@ -2570,6 +2808,86 @@ mod official_build {
             REJECT_BUILD_BINDS_NOTHING,
             "request_bind_nonce_for",
             || ask_for(&fx, owner(), alice(), BIND_AT),
+        );
+    }
+
+    /// Every table [`world`] registers: none of them is read by a call the build refuses.
+    const REGISTERED: [&str; 9] = [
+        "config",
+        "world_access",
+        "world_admission",
+        "account",
+        "player_session",
+        "world_binding",
+        "world_bind_nonce",
+        "world_name",
+        "world_allowlist",
+    ];
+
+    /// `act` answers `REJECT_BUILD_BINDS_NOTHING`, reads no row of any registered table and
+    /// leaves every one of them as seeded, with no write call.
+    fn assert_refused_unread(
+        fx: &Fixture,
+        w: &W<'_>,
+        label: &str,
+        act: impl FnOnce() -> Result<(), String>,
+    ) {
+        fx.reset_writes();
+        let before = footprint(fx, w);
+        fx.reset_reads();
+        let answer = act();
+        let reads: Vec<(&str, u32)> = REGISTERED
+            .iter()
+            .map(|table| (*table, fx.rows_read(table)))
+            .collect();
+        assert_eq!(
+            answer,
+            Err(REJECT_BUILD_BINDS_NOTHING.to_string()),
+            "{label}"
+        );
+        assert_eq!(
+            reads,
+            REGISTERED
+                .iter()
+                .map(|table| (*table, 0u32))
+                .collect::<Vec<(&str, u32)>>(),
+            "{label}: no row read"
+        );
+        assert_eq!(
+            footprint(fx, w),
+            before,
+            "{label}: every table as seeded, and no write call"
+        );
+    }
+
+    /// On a `Password` world, an identity the rule does not admit asking for a nonce or
+    /// binding, and a non-owner calling either relayed form, are each refused by the build
+    /// before the admission or owner check reads anything.
+    ///
+    /// kills: the build guard placed after `require_admitted`, `require_world_owner` or the
+    /// deletion gate in any of the four reducers.
+    #[test]
+    fn the_build_refusal_comes_before_every_other_check_lpw15_3() {
+        let fx = fixture();
+        let w = bindable_world(&fx);
+        w.access.seed(&rule_row(WorldAccessRule::Password));
+        w.account.seed(&deleting_account(bob()));
+        let att = dev_attestation(&Claims::new(NONCE_A));
+        assert_refused_unread(&fx, &w, "request_bind_nonce, unadmitted", || {
+            ask(&fx, alice(), BIND_AT)
+        });
+        assert_refused_unread(&fx, &w, "bind_world_account, unadmitted", || {
+            bind(&fx, alice(), BIND_AT, &att)
+        });
+        assert_refused_unread(&fx, &w, "request_bind_nonce_for, not the owner", || {
+            ask_for(&fx, alice(), bob(), BIND_AT)
+        });
+        assert_refused_unread(&fx, &w, "bind_world_account_for, not the owner", || {
+            bind_for(&fx, alice(), bob(), BIND_AT, &att)
+        });
+        assert!(
+            w.admission.rows().is_empty(),
+            "fixture: alice is not admitted"
         );
     }
 

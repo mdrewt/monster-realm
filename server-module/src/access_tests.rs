@@ -2531,13 +2531,16 @@ mod allowlist {
         }
     }
 
-    /// `Password` to `Allowlist` keeps every admission row as it was and admits each live
-    /// session that had none.
+    /// `Password` to `Allowlist`: a live identity holding an admission row keeps exactly that
+    /// row, a live identity holding none (its row removed while its connection stayed open)
+    /// gets none and is refused under `Allowlist` at its next check, an admission of an
+    /// identity with no connection stays, and the live owner gets no row.
     ///
-    /// kills: the live sessions not admitted on this change; an existing admission
-    /// re-stamped or dropped.
+    /// kills: every live session admitted on a rule change (a removed identity still
+    /// connected let back in); an existing admission re-stamped or dropped; the owner given a
+    /// row.
     #[test]
-    fn password_to_allowlist_keeps_admissions_and_admits_live_sessions_without_one() {
+    fn password_to_allowlist_keeps_live_admissions_and_admits_no_live_identity_without_one() {
         let fx = fixture();
         let a = tables(&fx);
         seed_owner(&a.w, owner());
@@ -2549,6 +2552,12 @@ mod allowlist {
         a.w.admission.seed(&admission_row(z, T0 - 40));
         a.w.session.seed(&session_row(x, 0x0831));
         a.w.session.seed(&session_row(y, 0x0841));
+        a.w.session.seed(&session_row(owner(), 0x0851));
+        assert_eq!(
+            passes(&fx, y, T0 - 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "fixture: the rule in force refuses the live identity with no row"
+        );
         assert_eq!(
             set_access(
                 &fx,
@@ -2564,26 +2573,63 @@ mod allowlist {
             admissions(&a.w),
             sorted(vec![
                 (x.to_byte_array(), T0 - 30),
-                (y.to_byte_array(), T0),
                 (z.to_byte_array(), T0 - 40),
-            ])
+            ]),
+            "x keeps its row unchanged; y and the owner get none"
         );
         assert_eq!(access_row(&a.w), enc(&allowlist_row()));
+        assert_eq!(passes(&fx, x, T0 + 1), Ok(()), "x is admitted by its row");
+        assert_refused(
+            &fx,
+            &a,
+            y,
+            T0 + 1,
+            "a live identity the password rule refused",
+        );
     }
 
-    /// `Allowlist` to `Password` needs a new password (none is stored) and, given one, stores
-    /// its hash and admits every live session but the owner.
+    /// `Allowlist` to `Password` needs a new password (none is stored). Given one, it stores
+    /// its hash, and of the live identities with no admission row only the one the list
+    /// admitted (bound under a key the build holds to a listed account) gets a row; one bound
+    /// to an account that is not listed (delisted while connected) and one with no binding get
+    /// none and are refused under `Password`; a live unbound identity holding a row keeps it;
+    /// the live owner gets none.
     ///
-    /// kills: `Password` with no password accepted over an `Allowlist` row; the live sessions
-    /// not admitted on this change.
+    /// kills: `Password` with no password accepted over an `Allowlist` row; every live session
+    /// admitted on a rule change (a delisted or never-admitted identity still connected let
+    /// in); the identity the list admitted left without a row (locked out of the world it is
+    /// in); an existing admission re-stamped; the owner given a row.
     #[test]
-    fn allowlist_to_password_needs_a_new_password_and_admits_live_sessions() {
+    fn allowlist_to_password_needs_a_new_password_and_admits_only_live_identities_the_list_admitted(
+    ) {
         let fx = fixture();
         let a = allowlist_world(&fx);
-        let s = id(0x86);
+        enlist(&a, &[ALICE]);
+        let listed = id(0x86);
         let x = id(0x87);
-        a.w.session.seed(&session_row(s, 0x0861));
+        let delisted = id(0x90);
+        let seen = id(0x91);
+        let fresh = id(0x92);
+        bind(&a, listed, ALICE);
+        bind(&a, delisted, CAROL);
+        a.w.admission.seed(&admission_row(seen, T0 - 12));
+        a.w.session.seed(&session_row(listed, 0x0861));
         a.w.session.seed(&session_row(owner(), 0x0862));
+        a.w.session.seed(&session_row(delisted, 0x0901));
+        a.w.session.seed(&session_row(seen, 0x0911));
+        a.w.session.seed(&session_row(fresh, 0x0921));
+        assert_eq!(
+            passes(&fx, listed, T0 - 1),
+            Ok(()),
+            "fixture: the list admits the identity bound to a listed account"
+        );
+        for (who, case) in [(delisted, "delisted"), (fresh, "unbound, never admitted")] {
+            assert_eq!(
+                passes(&fx, who, T0 - 1),
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "fixture: the list refuses the live identity {case}"
+            );
+        }
         let before = footprint_all(&fx, &a);
         assert_eq!(
             set_access(&fx, owner(), WorldAccessRule::Password, None, vec![x], T0),
@@ -2602,7 +2648,22 @@ mod allowlist {
             ),
             Ok(())
         );
-        assert_eq!(admissions(&a.w), vec![(s.to_byte_array(), T0 + 1)]);
+        assert_eq!(
+            admissions(&a.w),
+            sorted(vec![
+                (listed.to_byte_array(), T0 + 1),
+                (seen.to_byte_array(), T0 - 12),
+            ]),
+            "only the identity the list admitted gets a row; the held row stays unchanged"
+        );
+        assert_eq!(passes(&fx, listed, T0 + 2), Ok(()), "listed: admitted");
+        assert_eq!(
+            passes(&fx, seen, T0 + 2),
+            Ok(()),
+            "seen: admitted by its row"
+        );
+        assert_refused(&fx, &a, delisted, T0 + 2, "delisted while connected");
+        assert_refused(&fx, &a, fresh, T0 + 2, "unbound, never admitted");
         let rows = a.w.access.rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].rule, WorldAccessRule::Password);

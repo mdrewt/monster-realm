@@ -4,7 +4,7 @@
 //! anonymous token and proves an account once, with a world attestation: a compact JWT the
 //! account service signs (`POST /attest`), naming this world and carrying the nonce the world
 //! chose for that identity. [`bind_identity`] checks it and records the binding. On a build
-//! that enforces ownership `accounts::entitled` admits an identity whose binding carried the
+//! that enforces ownership `accounts::entitled` entitles an identity whose binding carried the
 //! entitlement, and under the `Allowlist` rule `access::is_admitted` admits one whose bound
 //! account the host listed.
 //!
@@ -18,8 +18,9 @@
 //! which only selects one of the build's own keys; the header's `alg` is never read. `iss`,
 //! `iat` and `jti` are not read either: the key list is the trust anchor, and the nonce, which
 //! lives [`BIND_NONCE_TTL_MS`] and is spent by one bind, bounds an attestation's life and use.
-//! The nonce is drawn from `ctx.random()`, which a caller who knows the call's timestamp can
-//! predict; nothing here rests on its being secret.
+//! The nonce is drawn from `ctx.random()`, which is a function of the call's timestamp: a
+//! caller who knows the timestamp can predict it, and nothing here rests on its being secret.
+//! What it has to be is one identity's alone, so the identity is mixed into it.
 //!
 //! WRITE-ISOLATION: this module alone writes `world_binding`, `world_bind_nonce`, `world_name`
 //! and `world_allowlist`. It reads the owner and the admission through `crate::access`, and
@@ -57,8 +58,8 @@ pub(crate) const REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS: &str = "an allowlist has at
 pub(crate) const REJECT_DUPLICATE_ENTRY: &str = "the list repeats an entry";
 
 /// A signature check hashes the whole token, so its cost grows with the token's length and a
-/// token that fails costs what a valid one costs. The account service's attestations are
-/// under 600 bytes.
+/// token that fails costs what a valid one costs. An attestation at the account service's
+/// bounds for a world's name, a nonce and a subject is about 1.6 KB.
 pub(crate) const ATTESTATION_MAX_BYTES: usize = 4096;
 /// How long a bind nonce is good for: the lifetime of the attestation that carries it.
 pub(crate) const BIND_NONCE_TTL_MS: i64 = 5 * 60 * 1000;
@@ -74,12 +75,10 @@ pub(crate) const MAX_WORLD_NAMES: usize = 16;
 pub(crate) const ACCOUNT_SUBJECT_MAX_BYTES: usize = 255;
 pub(crate) const MAX_ALLOWLIST_ACCOUNTS: usize = 256;
 
-const ED25519_SIGNATURE_BYTES: usize = 64;
-
 // --- Pure core --------------------------------------------------------------------------
 
 /// What a verified attestation says.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VerifiedAttestation {
     /// The `kid` of the key whose signature verified.
     pub(crate) key_id: String,
@@ -98,7 +97,7 @@ struct AttestationHeader {
 }
 
 /// The claims that are read. A second one of any of them, or one of another type, is an error;
-/// every other member is ignored.
+/// every other member is ignored. An `mr_ent` that is absent or `null` names no entitlement.
 #[derive(Deserialize)]
 struct AttestationClaims {
     sub: String,
@@ -193,14 +192,13 @@ pub(crate) fn verify_attestation(
         .iter()
         .find(|key| key.kid == header.kid)
         .ok_or(REJECT_ATTESTATION_UNKNOWN_KEY)?;
-    let signature_bytes: [u8; ED25519_SIGNATURE_BYTES] = signature_bytes
-        .try_into()
-        .map_err(|_| REJECT_ATTESTATION_MALFORMED)?;
+    let signature =
+        Signature::from_slice(&signature_bytes).map_err(|_| REJECT_ATTESTATION_MALFORMED)?;
     let verifying_key =
         VerifyingKey::from_bytes(&key.public_key).map_err(|_| REJECT_ATTESTATION_SIGNATURE)?;
     let signed = &attestation.as_bytes()[..header_segment.len() + 1 + payload_segment.len()];
     verifying_key
-        .verify_strict(signed, &Signature::from_bytes(&signature_bytes))
+        .verify_strict(signed, &signature)
         .map_err(|_| REJECT_ATTESTATION_SIGNATURE)?;
 
     let claims: AttestationClaims = parse_object(&payload_json)?;
@@ -220,31 +218,35 @@ pub(crate) fn verify_attestation(
     })
 }
 
-/// `bytes` as lowercase hex.
-fn lowercase_hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-    }
-    hex
-}
-
-/// Whether `entries` is a list a setter may store: at most `max_entries`, each
-/// `is_visible_ascii` within `max_bytes`, none repeated.
-fn check_entries(
-    entries: &[String],
+/// What a setter's list may hold, and the refusal for each bound.
+struct ListRule {
     max_entries: usize,
     too_many: &'static str,
     max_bytes: usize,
     bad_entry: &'static str,
-) -> Result<(), &'static str> {
-    if entries.len() > max_entries {
-        return Err(too_many);
+}
+
+const WORLD_NAMES_RULE: ListRule = ListRule {
+    max_entries: MAX_WORLD_NAMES,
+    too_many: REJECT_TOO_MANY_WORLD_NAMES,
+    max_bytes: WORLD_NAME_MAX_BYTES,
+    bad_entry: REJECT_WORLD_NAME,
+};
+const ALLOWLIST_RULE: ListRule = ListRule {
+    max_entries: MAX_ALLOWLIST_ACCOUNTS,
+    too_many: REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
+    max_bytes: ACCOUNT_SUBJECT_MAX_BYTES,
+    bad_entry: REJECT_ALLOWLIST_ACCOUNT,
+};
+
+/// Whether `entries` is a list a setter may store under `rule`: at most `max_entries`, each
+/// `is_visible_ascii` within `max_bytes`, none repeated.
+fn check_entries(entries: &[String], rule: &ListRule) -> Result<(), &'static str> {
+    if entries.len() > rule.max_entries {
+        return Err(rule.too_many);
     }
-    if !entries.iter().all(|e| is_visible_ascii(e, max_bytes)) {
-        return Err(bad_entry);
+    if !entries.iter().all(|e| is_visible_ascii(e, rule.max_bytes)) {
+        return Err(rule.bad_entry);
     }
     let mut sorted: Vec<&String> = entries.iter().collect();
     sorted.sort_unstable();
@@ -299,18 +301,8 @@ pub(crate) fn on_allowlist(ctx: &ReducerContext, account_subject: &str) -> bool 
 /// Erase what this module holds about `identity`: its binding and its bind nonce. The deletion
 /// cascade's step for these two tables.
 pub(crate) fn erase_world_binding(ctx: &ReducerContext, identity: Identity) {
-    if ctx.db.world_binding().identity().find(identity).is_some() {
-        ctx.db.world_binding().identity().delete(identity);
-    }
-    if ctx
-        .db
-        .world_bind_nonce()
-        .identity()
-        .find(identity)
-        .is_some()
-    {
-        ctx.db.world_bind_nonce().identity().delete(identity);
-    }
+    ctx.db.world_binding().identity().delete(identity);
+    ctx.db.world_bind_nonce().identity().delete(identity);
 }
 
 // --- Guards and writes ------------------------------------------------------------------
@@ -334,6 +326,18 @@ fn require_binding_build(
     Ok(())
 }
 
+/// The nonce for `who` from one call's random bytes: each byte XORed with the byte of the
+/// identity at its place, as lowercase hex. Two calls at one instant draw the same bytes, and
+/// the nonce is what ties an attestation to one identity, so two identities never get the
+/// same one.
+fn nonce_for(who: Identity, random: [u8; BIND_NONCE_BYTES]) -> String {
+    random
+        .iter()
+        .zip(who.to_byte_array())
+        .map(|(random_byte, identity_byte)| format!("{:02x}", random_byte ^ identity_byte))
+        .collect()
+}
+
 /// Give `who` a fresh bind nonce, replacing the one it holds, after deleting at most
 /// [`BIND_NONCE_SWEEP_MAX`] expired rows.
 fn issue_bind_nonce(ctx: &ReducerContext, who: Identity) {
@@ -349,10 +353,9 @@ fn issue_bind_nonce(ctx: &ReducerContext, who: Identity) {
     for identity in expired {
         ctx.db.world_bind_nonce().identity().delete(identity);
     }
-    let random: [u8; BIND_NONCE_BYTES] = ctx.random();
     let row = WorldBindNonce {
         identity: who,
-        nonce: lowercase_hex(&random),
+        nonce: nonce_for(who, ctx.random()),
         expires_at_ms: now.saturating_add(BIND_NONCE_TTL_MS),
     };
     if ctx.db.world_bind_nonce().identity().find(who).is_some() {
@@ -384,13 +387,7 @@ pub(crate) fn bind_identity(
     if attestation_expired(verified.expires_at_s, now) {
         return refuse(REJECT_ATTESTATION_EXPIRED);
     }
-    if ctx
-        .db
-        .world_name()
-        .name()
-        .find(verified.audience.clone())
-        .is_none()
-    {
+    if ctx.db.world_name().name().find(verified.audience).is_none() {
         return refuse(REJECT_ATTESTATION_OTHER_WORLD);
     }
     let Some(outstanding) = ctx
@@ -489,13 +486,7 @@ pub fn bind_world_account_for(
 #[spacetimedb::reducer]
 pub fn set_world_names(ctx: &ReducerContext, names: Vec<String>) -> Result<(), String> {
     crate::access::require_world_owner(ctx, "set_world_names")?;
-    if let Err(reason) = check_entries(
-        &names,
-        MAX_WORLD_NAMES,
-        REJECT_TOO_MANY_WORLD_NAMES,
-        WORLD_NAME_MAX_BYTES,
-        REJECT_WORLD_NAME,
-    ) {
+    if let Err(reason) = check_entries(&names, &WORLD_NAMES_RULE) {
         return reject("set_world_names", ctx.sender(), reason);
     }
     let stored: Vec<String> = ctx.db.world_name().iter().map(|row| row.name).collect();
@@ -515,13 +506,7 @@ pub fn set_world_names(ctx: &ReducerContext, names: Vec<String>) -> Result<(), S
 #[spacetimedb::reducer]
 pub fn set_world_allowlist(ctx: &ReducerContext, accounts: Vec<String>) -> Result<(), String> {
     crate::access::require_world_owner(ctx, "set_world_allowlist")?;
-    if let Err(reason) = check_entries(
-        &accounts,
-        MAX_ALLOWLIST_ACCOUNTS,
-        REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
-        ACCOUNT_SUBJECT_MAX_BYTES,
-        REJECT_ALLOWLIST_ACCOUNT,
-    ) {
+    if let Err(reason) = check_entries(&accounts, &ALLOWLIST_RULE) {
         return reject("set_world_allowlist", ctx.sender(), reason);
     }
     let stored: Vec<String> = ctx

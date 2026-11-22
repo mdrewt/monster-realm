@@ -65,7 +65,7 @@ pub(crate) struct AttestationKey {
 }
 
 /// The production attestation keys, which a `world` build holds and no other. Empty: no
-/// production key is published, so a `world` build accepts no binding and admits nobody.
+/// production key is published, so a `world` build accepts no binding and entitles nobody.
 pub(crate) const PRODUCTION_ATTESTATION_KEYS: &[AttestationKey] = &[];
 /// The account service's `local-dev` attestation key. Its private half is derived from a
 /// label in this repository (`account-service/src/keys.ts`), so anyone can sign with it.
@@ -77,8 +77,8 @@ const LOCAL_DEV_ATTESTATION_KEY: AttestationKey = AttestationKey {
         0x14, 0x5e,
     ],
 };
-/// The dev attestation keys: the published `local-dev` and `hosted-dev` lists. No release
-/// build holds them.
+/// The dev attestation keys: the published `local-dev` list, then the `hosted-dev` list,
+/// which publishes no key. No release build holds them.
 pub(crate) const DEV_ATTESTATION_KEYS: &[AttestationKey] = &[LOCAL_DEV_ATTESTATION_KEY];
 
 /// The cargo features a build names: the build input for ownership.
@@ -983,7 +983,7 @@ fn token_entitles(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
 }
 
 /// Whether the caller may play under `profile`. A build that does not enforce ownership
-/// admits everyone and reads neither the token nor a binding. An enforcing build admits a
+/// entitles everyone and reads neither the token nor a binding. An enforcing build entitles a
 /// connection whose token entitles it, and one whose identity holds a world binding the build
 /// counts that carried the base game (`world_binding::bound_entitled`). A profile with no
 /// attestation key reads no binding, so the official build has the token as its one way in

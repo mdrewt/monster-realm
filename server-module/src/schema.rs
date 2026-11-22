@@ -1921,7 +1921,7 @@ pub struct WorldAdmissionAttempt {
 }
 
 /// The account an identity of this world is bound to: what a verified attestation said, and the
-/// `kid` of the key that signed it. PRIVATE; the owner reads its own row through
+/// `kid` of the key that signed it. PRIVATE; an identity reads its own row through
 /// `my_world_binding`. Written only by `world_binding.rs`; erased by the deletion cascade and
 /// included in the data export.
 #[spacetimedb::table(accessor = world_binding)]
@@ -1942,7 +1942,7 @@ fn my_world_binding(ctx: &spacetimedb::ViewContext) -> Option<WorldBinding> {
 }
 
 /// The one outstanding bind nonce of an identity: 32 lowercase hex characters the world chose,
-/// good until `expires_at_ms`. PRIVATE; the owner reads its own row through `my_bind_nonce`.
+/// good until `expires_at_ms`. PRIVATE; an identity reads its own row through `my_bind_nonce`.
 /// Written only by `world_binding.rs`; erased by the deletion cascade.
 #[spacetimedb::table(accessor = world_bind_nonce)]
 pub struct WorldBindNonce {
@@ -2182,7 +2182,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "world_binding",
         policy: DeletionPolicy::Erase,
-        basis: "names the account an identity is bound to in this world, deleted outright at cascade time; not re-keyed by the claim flow; exported as the binding the owner made",
+        basis: "names the account an identity is bound to in this world, deleted outright at cascade time; not re-keyed by the claim flow; exported as the binding of the exporting identity",
         exportable: true,
     },
     DataLifecycleEntry {
