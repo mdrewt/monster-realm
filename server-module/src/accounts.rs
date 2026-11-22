@@ -188,7 +188,8 @@ pub(crate) fn audience_allowed(audience: &[String], allowed: &[&str]) -> bool {
 /// Keys and elements are compared as the bytes between their quotes, so one written with an
 /// escape never matches, and a backslash in any top-level key is refused outright: a reader
 /// that decodes escapes would take the last of two spellings of one key. Anything else it
-/// cannot follow (a second `mr_ent`, text that is not one well-formed object) is `false`.
+/// cannot follow (a second `mr_ent`, text that is not one well-formed object) is `false`, as
+/// is an object with no member.
 pub(crate) fn token_names_entitlement(raw_payload: &str, entitlement: &str) -> bool {
     let b = raw_payload.as_bytes();
     let mut at = 0;
@@ -197,44 +198,39 @@ pub(crate) fn token_names_entitlement(raw_payload: &str, entitlement: &str) -> b
         return false;
     }
     at += 1;
-    skip_json_ws(b, &mut at);
     // `None` until the key is met, then whether its array holds the entitlement.
     let mut named: Option<bool> = None;
-    if b.get(at) == Some(&b'}') {
-        at += 1;
-    } else {
-        loop {
-            skip_json_ws(b, &mut at);
-            let Some(key) = read_json_string(b, &mut at) else {
+    loop {
+        skip_json_ws(b, &mut at);
+        let Some(key) = read_json_string(b, &mut at) else {
+            return false;
+        };
+        if key.contains(&b'\\') || !skip_json_colon(b, &mut at) {
+            return false;
+        }
+        if key == b"mr_ent" {
+            if named.is_some() {
                 return false;
+            }
+            named = if b.get(at) == Some(&b'[') {
+                json_array_holds(b, &mut at, entitlement.as_bytes())
+            } else {
+                skip_json_value(b, &mut at).then_some(false)
             };
-            if key.contains(&b'\\') || !skip_json_colon(b, &mut at) {
+            if named.is_none() {
                 return false;
             }
-            if key == b"mr_ent" {
-                if named.is_some() {
-                    return false;
-                }
-                named = if b.get(at) == Some(&b'[') {
-                    json_array_holds(b, &mut at, entitlement.as_bytes())
-                } else {
-                    skip_json_value(b, &mut at).then_some(false)
-                };
-                if named.is_none() {
-                    return false;
-                }
-            } else if !skip_json_value(b, &mut at) {
-                return false;
+        } else if !skip_json_value(b, &mut at) {
+            return false;
+        }
+        skip_json_ws(b, &mut at);
+        match b.get(at) {
+            Some(b',') => at += 1,
+            Some(b'}') => {
+                at += 1;
+                break;
             }
-            skip_json_ws(b, &mut at);
-            match b.get(at) {
-                Some(b',') => at += 1,
-                Some(b'}') => {
-                    at += 1;
-                    break;
-                }
-                _ => return false,
-            }
+            _ => return false,
         }
     }
     skip_json_ws(b, &mut at);
@@ -363,14 +359,9 @@ fn skip_json_key(b: &[u8], at: &mut usize) -> bool {
 
 /// Reads the array that opens at `*at` and answers whether one of its elements is the string
 /// `want`. Elements of any other type are stepped over, not searched. `None` when the array
-/// is malformed.
+/// is malformed or empty: an empty array holds nothing, so its caller's answer is the same.
 fn json_array_holds(b: &[u8], at: &mut usize, want: &[u8]) -> Option<bool> {
     *at += 1;
-    skip_json_ws(b, at);
-    if b.get(*at) == Some(&b']') {
-        *at += 1;
-        return Some(false);
-    }
     let mut found = false;
     loop {
         skip_json_ws(b, at);

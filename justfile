@@ -219,7 +219,7 @@ release-module profile:
     const trusted =
       profile === 'official' ? issuers.length === 1 && issuers[0].startsWith('https:') : issuers.length === 0;
     if (!trusted) {
-      refuse(`a ${profile} module does not trust the login issuers ${JSON.stringify(issuers)}`);
+      refuse(`it trusts the login issuers ${JSON.stringify(issuers)}: official trusts one https issuer, world none`);
     }
     const named = FORBIDDEN_REDUCERS.filter((name) => bytes.includes(name));
     if (named.length > 0) refuse(`it names the dev reducer(s) ${named.join(', ')}`);
