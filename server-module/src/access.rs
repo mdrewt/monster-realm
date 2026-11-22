@@ -307,12 +307,12 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 pub fn set_world_access(
     ctx: &ReducerContext,
     rule: WorldAccessRule,
-    password: Option<String>,
     admit: Vec<Identity>,
 ) -> Result<(), String> {
     require_world_owner(ctx, "set_world_access")?;
     let stored = ctx.db.world_access().id().find(WORLD_ACCESS_ROW);
     let was = effective_rule(stored.as_ref());
+    let password: Option<String> = None;
     let (password_salt, password_hash) = match (rule, password) {
         (WorldAccessRule::Open, None) => (Vec::new(), Vec::new()),
         (WorldAccessRule::Open, Some(_)) => {
