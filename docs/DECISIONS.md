@@ -1479,7 +1479,7 @@ by `#[cfg]` attributes that send native code down the branch wasm takes, each wi
 recorded from the crates.io release; every SpacetimeDB hop re-records them and re-applies the
 patch. CI's `cargo audit` skips packages not from crates.io, so these two are checked at each hop,
 in release notes and advisories, until CI audits them by name and version. Designed, not built:
-`docs/refactors/native-test-host.md`; lpw-39 builds it as the hop to 2.12.0.
+`docs/refactors/native-test-host.md`, to be built as the hop to 2.12.0.
 
 **Why.** The module's privacy and netcode rules are checked on what a transaction does as the host
 sees it: every write a subscriber is sent, an unchanged update included; each shipped view, run

@@ -94,8 +94,8 @@ answers none of these:
   private (`src/lib.rs:2299`). So `run_as_conn_at(.., None, ..)` can only hand over an internal
   context, whose `is_internal()` is true.
 - **The write wall.** The datastore enforces every constraint in the module definition and lets
-  every write through. A write or a full scan on a table the test did not opt in no longer aborts
-  the test. Several suites use that abort to kill a mutant that writes to a table it should not
+  every write through. A write or a full scan on a table the test did not opt in goes through
+  instead of aborting the test. Several suites use that abort to kill a mutant that writes to a table it should not
   touch (`native_host_tests.rs:795-797`; for example the two `rb73_exec_*` tests,
   `lifecycle_tests.rs:16-19`). Those tests keep passing and stop killing those mutants. The
   `.writable()` and `.scannable()` opt-ins are 432 calls in 28 files. No mutation run was made,
@@ -178,8 +178,8 @@ The Fixture, its API and every test stay as they are. What B adds is around them
   undone, matches the per-file hashes recorded from the crates.io release ("The guard").
 - **SCA coverage.** `cargo audit` skips every lockfile package whose source is not crates.io
   (rustsec 0.33, `Database::query_vulnerabilities`; `cargo-audit` 0.22.2, the version CI
-  installs, declares `rustsec = "^0.33"`). So CI's audit no longer covers `spacetimedb` or
-  `spacetimedb-bindings-sys` themselves. Their dependencies (`spacetimedb-lib`, `-sats`,
+  installs, declares `rustsec = "^0.33"`). So CI's audit does not cover `spacetimedb` or
+  `spacetimedb-bindings-sys` themselves once they are path packages. Their dependencies (`spacetimedb-lib`, `-sats`,
   `-primitives`, `-bindings-macro`, `-query-builder`) stay registry packages and are still
   audited. No advisory has been filed against any of these crates: on 2026-11-22 OSV returned
   none, and GitHub had none for the ecosystem or for the vendor's repository. The vendor announces
@@ -409,8 +409,8 @@ on 2.11.0 keeps its version; lpw-34 re-measures those.
 
 lpw-39 runs alone, and switches the CLI only inside its own shell: the 2.12.0 binaries first on
 `PATH`, `HOME` pointed at a scratch directory, and `RUSTUP_HOME` and `CARGO_HOME` exported.
-This is because a newer host stamps the data directory it starts on, after which the old host
-refuses it (the runbook's step 6). The e2e job in CI is the live two-client e2e that the lockstep
+This is because a newer host stamps the data directory it starts on, after which a host of the earlier
+version refuses it (the runbook's step 6). The e2e job in CI is the live two-client e2e that the lockstep
 entry requires for an SDK bump. A red test run can leave a proptest seed under
 `server-module/proptest-regressions/`, and lpw-39 commits none.
 
