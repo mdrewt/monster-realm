@@ -26,7 +26,7 @@
 //   - any credential-shaped fixture value uses the INTERNAL_SECRET_ prefix
 //     allowlisted in .gitleaks.toml.
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { webcrypto as wc } from 'node:crypto';
+import { createHash, webcrypto as wc } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -55,10 +55,20 @@ import { decodeSqlJson } from '../scripts/playtest-report.mjs';
 // already-consumed code. AUTH-35's no-oracle property IS this string being the
 // same in both cases, which is exactly what N2/N3 assert.
 export const ERR_INVALID_CODE = 'invalid or already-used code';
-// accounts.rs — the exact committed declaration. The scheme is assembled so
-// this file carries no contiguous scheme token.
-const ISSUER_DECL_PREFIX = 'pub(crate) const ALLOWED_ISSUERS: &[&str] = &["';
-export const ISSUER_NEEDLE = `${ISSUER_DECL_PREFIX}https:${'//'}auth.monster-realm.invalid/"];`;
+// accounts.rs — the exact committed declaration of the local dev issuer, the
+// first of the dev login issuers a test build and a dev-enforcing build trust.
+// The scheme is assembled so this file carries no contiguous scheme token.
+const ISSUER_DECL_PREFIX = 'const LOCAL_DEV_ISSUER: &str = "';
+export const ISSUER_NEEDLE = `${ISSUER_DECL_PREFIX}http:${'//'}localhost:4455";`;
+// accounts.rs — the hosted dev issuer and the production placeholder, which
+// the release check requires absent and present respectively.
+export const HOSTED_DEV_ISSUER = `https:${'//'}auth.monster-realm.spookyowltech.com`;
+export const PRODUCTION_LOGIN_ISSUER = `https:${'//'}auth.monster-realm.invalid/`;
+// accounts.rs — the one error `join_game` answers a caller it does not entitle.
+export const ERR_OWNERSHIP_REQUIRED_E2E = 'ownership required';
+// The databases the enforcing side is proved on, beside DB_NAME on the same host.
+const ENFORCING_DB_NAME = 'mr-acct-e2e-enforcing';
+const OFFICIAL_DB_NAME = 'mr-acct-e2e-official';
 // accounts.rs:50.
 export const AUDIENCE_NEEDLE = 'pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];';
 
@@ -242,7 +252,7 @@ export const S9_MILESTONES = [
 export function patchAllowedIssuers(src, issuerUrl) {
   if (typeof src !== 'string' || src.indexOf(ISSUER_NEEDLE) === -1) {
     throw new Error(
-      'patchAllowedIssuers: the committed ALLOWED_ISSUERS token is absent from the source — ' +
+      'patchAllowedIssuers: the committed LOCAL_DEV_ISSUER line is absent from the source — ' +
         'refusing to publish an unpatched module (a no-op patch makes every negative control ' +
         'vacuously true). Expected token: ' +
         ISSUER_NEEDLE,
@@ -251,7 +261,7 @@ export function patchAllowedIssuers(src, issuerUrl) {
   if (!issuerUrl.endsWith('/')) {
     throw new Error('patchAllowedIssuers: issuer must end with a slash (issuer_allowed is exact)');
   }
-  return src.replace(ISSUER_NEEDLE, `${ISSUER_DECL_PREFIX}${issuerUrl}"];`);
+  return src.replace(ISSUER_NEEDLE, `${ISSUER_DECL_PREFIX}${issuerUrl}";`);
 }
 
 /**
@@ -324,6 +334,224 @@ export function patchExportChunkRows(src, rows) {
     CHUNK_NEEDLE,
     'pub const EXPORT_CHUNK_ROWS: u32 = ' + rows + ';',
     'patchExportChunkRows',
+  );
+}
+
+// --- the build profile and the ownership refusals --------------------------
+
+const PROFILE_SINGLE_KEYS = ['profile', 'enforces_ownership', 'dev_reducers'];
+
+/**
+ * Parse the `mr_build_profile` section text: `key=value` lines, each ending in
+ * a newline. `profile`, `enforces_ownership` and `dev_reducers` appear exactly
+ * once (the two flags `true` or `false`); `login_issuer` any number of times,
+ * in order. An unknown key, a missing or repeated single key, a line without
+ * `=`, or text that does not end in a newline is not ok.
+ * Returns { ok, reason, profile, enforcesOwnership, devReducers, loginIssuers }.
+ */
+export function parseBuildProfile(text) {
+  const fail = (reason) => ({
+    ok: false,
+    reason: '[acs6/profile] ' + reason,
+    profile: null,
+    enforcesOwnership: null,
+    devReducers: null,
+    loginIssuers: [],
+  });
+  if (typeof text !== 'string' || text === '') return fail('the profile section is empty');
+  if (!text.endsWith('\n')) return fail('the profile section does not end with a newline');
+  const single = new Map();
+  const loginIssuers = [];
+  for (const line of text.slice(0, -1).split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq <= 0) return fail('a line that is not key=value: ' + JSON.stringify(line));
+    const key = line.slice(0, eq);
+    const value = line.slice(eq + 1);
+    if (key === 'login_issuer') {
+      if (value === '') return fail('an empty login_issuer line');
+      loginIssuers.push(value);
+      continue;
+    }
+    if (!PROFILE_SINGLE_KEYS.includes(key)) return fail('an unknown key: ' + JSON.stringify(key));
+    if (single.has(key)) return fail('a repeated key: ' + key);
+    single.set(key, value);
+  }
+  for (const key of PROFILE_SINGLE_KEYS) {
+    if (!single.has(key)) return fail('a missing key: ' + key);
+  }
+  const flag = (key) => {
+    const v = single.get(key);
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    return null;
+  };
+  const enforcesOwnership = flag('enforces_ownership');
+  const devReducers = flag('dev_reducers');
+  if (enforcesOwnership === null || devReducers === null) {
+    return fail('a flag that is neither true nor false: ' + JSON.stringify(text));
+  }
+  return {
+    ok: true,
+    reason: 'parsed',
+    profile: single.get('profile'),
+    enforcesOwnership,
+    devReducers,
+    loginIssuers,
+  };
+}
+
+/**
+ * The release check over a parsed profile: the name is `want` (`official` or
+ * `world`), it enforces ownership, it carries no dev reducers, it trusts none
+ * of `devIssuers`, and its login issuers are exactly `[productionIssuer]` for
+ * `official` and none for `world`. Returns { ok, reason }.
+ */
+export function checkReleaseProfile(parsed, { want, devIssuers, productionIssuer } = {}) {
+  const fail = (reason) => ({ ok: false, reason: '[acs6/release] ' + reason });
+  if (!parsed || parsed.ok !== true) {
+    return fail('the profile did not parse: ' + (parsed ? parsed.reason : 'nothing'));
+  }
+  if (want !== 'official' && want !== 'world') {
+    return fail('not a release profile: ' + JSON.stringify(want));
+  }
+  if (want === 'official' && (typeof productionIssuer !== 'string' || productionIssuer === '')) {
+    return fail('no production issuer to check an official build against');
+  }
+  if (parsed.profile !== want) {
+    return fail('profile=' + parsed.profile + ' where ' + want + ' was built');
+  }
+  if (parsed.enforcesOwnership !== true) return fail('the build does not enforce ownership');
+  if (parsed.devReducers !== false) return fail('the build carries the dev reducers');
+  const issuers = Array.isArray(parsed.loginIssuers) ? parsed.loginIssuers : [];
+  const dev = (Array.isArray(devIssuers) ? devIssuers : []).filter((i) => issuers.includes(i));
+  if (dev.length > 0) return fail('the build trusts a dev issuer: ' + JSON.stringify(dev));
+  const expected = want === 'official' ? [productionIssuer] : [];
+  if (issuers.length !== expected.length || issuers.some((i, n) => i !== expected[n])) {
+    return fail(
+      'login issuers ' + JSON.stringify(issuers) + ' where ' + JSON.stringify(expected) + ' belong',
+    );
+  }
+  return {
+    ok: true,
+    reason: 'profile ' + want + ' enforces, no dev reducers, login issuers ' + issuers.length,
+  };
+}
+
+/**
+ * The last stdout line of `just release-module <want>`:
+ * `release-module: <want> <64 lowercase hex> <absolute path>`.
+ * Returns { ok, reason, sha256, path }.
+ */
+export function parseReleaseLine(stdout, want) {
+  const fail = (reason) => ({
+    ok: false,
+    reason: '[acs6/release-line] ' + reason,
+    sha256: null,
+    path: null,
+  });
+  const lines = String(stdout == null ? '' : stdout)
+    .split('\n')
+    .filter((l) => l.trim() !== '');
+  if (lines.length === 0) return fail('release-module printed nothing');
+  const last = lines[lines.length - 1];
+  const head = 'release-module: ' + want + ' ';
+  if (!last.startsWith(head))
+    return fail('the last line is not the release line: ' + JSON.stringify(last));
+  const rest = last.slice(head.length);
+  const space = rest.indexOf(' ');
+  const sha256 = space === -1 ? '' : rest.slice(0, space);
+  const file = space === -1 ? '' : rest.slice(space + 1);
+  if (sha256.length !== 64 || [...sha256].some((c) => HEX.indexOf(c) === -1)) {
+    return fail('not a lowercase SHA-256: ' + JSON.stringify(sha256));
+  }
+  if (!path.isAbsolute(file)) return fail('not an absolute path: ' + JSON.stringify(file));
+  return { ok: true, reason: 'release line', sha256, path: file };
+}
+
+/**
+ * The enforcing side over the recorded HTTP calls of `join_game` (status and
+ * whole body) and the row counts read around them.
+ *   input.expectedError: the one refusal text;
+ *   input.enforcing: { anon, noClaim, otherClaim, entitled } calls and
+ *     { countsBefore, countsAfter } of { monster, player_handle };
+ *   input.official: { anon, entitled } calls and counts of
+ *     { monster, player_handle, account }.
+ * Every refusal is 530 with exactly the error as its body; nothing is written
+ * on the dev-enforcing database before the entitled call, which is 200 with an
+ * empty body and leaves exactly one starter monster and one handle; the
+ * official database refuses both and holds none of the three rows.
+ * Returns { ok, reason, detail }.
+ */
+export function checkOwnershipRefusals(input) {
+  const fail = (reason) => ({ ok: false, reason: '[acs6/refusals] ' + reason, detail: '' });
+  const err = input ? input.expectedError : undefined;
+  if (typeof err !== 'string' || err === '') return fail('no expected error text');
+  const e = (input && input.enforcing) || {};
+  const o = (input && input.official) || {};
+  const refused = (r) => !!r && r.status === 530 && r.body === err;
+  for (const [label, r] of [
+    ['dev-enforcing, anonymous', e.anon],
+    ['dev-enforcing, no mr_ent', e.noClaim],
+    ['dev-enforcing, another entitlement', e.otherClaim],
+    ['official, anonymous', o.anon],
+    ['official, an entitled dev-issuer token', o.entitled],
+  ]) {
+    if (!refused(r)) {
+      return fail(label + ': expected 530 ' + JSON.stringify(err) + ', got ' + JSON.stringify(r));
+    }
+  }
+  const counts = (got, want, label) => {
+    for (const [table, n] of Object.entries(want)) {
+      const have = got ? got[table] : undefined;
+      if (have !== n) {
+        return label + ': ' + table + ' holds ' + JSON.stringify(have) + ' rows, expected ' + n;
+      }
+    }
+    return null;
+  };
+  const before = counts(
+    e.countsBefore,
+    { monster: 0, player_handle: 0 },
+    'dev-enforcing, after the refusals',
+  );
+  if (before) return fail(before);
+  if (!e.entitled || e.entitled.status !== 200 || e.entitled.body !== '') {
+    return fail(
+      'dev-enforcing, entitled: expected 200 with an empty body, got ' + JSON.stringify(e.entitled),
+    );
+  }
+  const after = counts(
+    e.countsAfter,
+    { monster: 1, player_handle: 1 },
+    'dev-enforcing, after the entitled join',
+  );
+  if (after) return fail(after);
+  const official = counts(o.counts, { monster: 0, player_handle: 0, account: 0 }, 'official');
+  if (official) return fail(official);
+  return {
+    ok: true,
+    reason:
+      'ownership refused on both enforcing builds, the entitled join admitted on dev-enforcing',
+    detail: 'anon=refused no_claim=refused other_claim=refused entitled=joined',
+  };
+}
+
+/** The two ownership tokens the pass detail begins with, in this order. */
+export function formatAcs6Tokens(parsed, sha256, refusalsDetail) {
+  return (
+    'ACS6-RELEASE-VERIFIED(profile=' +
+    parsed.profile +
+    ' enforces_ownership=' +
+    parsed.enforcesOwnership +
+    ' dev_reducers=' +
+    parsed.devReducers +
+    ' login_issuers=' +
+    parsed.loginIssuers.length +
+    ' sha256=' +
+    String(sha256).slice(0, 12) +
+    ') ACS6-ENFORCING-VERIFIED(' +
+    refusalsDetail +
+    ')'
   );
 }
 
@@ -1660,10 +1888,12 @@ async function publicJwk(pub, kid) {
 
 // ES256: webcrypto's ECDSA signature is already raw r||s, which is the JWS wire
 // format — no DER conversion and no dependency (spike S5).
-async function mintJwt(keyPair, kid, iss, sub, aud) {
+async function mintJwt(keyPair, kid, iss, sub, aud, extraClaims = {}) {
   const now = Math.floor(Date.now() / 1000);
   const header = b64u(JSON.stringify({ alg: 'ES256', typ: 'JWT', kid }));
-  const payload = b64u(JSON.stringify({ iss, sub, aud, iat: now, exp: now + 3600 }));
+  const payload = b64u(
+    JSON.stringify({ iss, sub, aud, iat: now, exp: now + 3600, ...extraClaims }),
+  );
   const data = new TextEncoder().encode(header + '.' + payload);
   const sig = await wc.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, keyPair.privateKey, data);
   return header + '.' + payload + '.' + b64u(sig);
@@ -2195,6 +2425,164 @@ function sqlTable(dbUrl, query, rawSink) {
   return parseSqlOutput(res.stdout).rows;
 }
 
+// The row count of `table` on database `db`, read as the owner. Awaited, so the
+// issuer stub in this process keeps serving the host meanwhile.
+async function sqlCountIn(dbUrl, db, table) {
+  const query = 'SELECT COUNT(*) AS n FROM ' + table;
+  const res = await runAsync('spacetime', ['sql', '--format', 'json', '-s', dbUrl, db, query], {
+    timeout: 150_000,
+  });
+  if (!res.ok) throw new Error(`sql failed on ${db} (${query}): ${res.stderr}`);
+  return countFromRows(decodeSqlJson(res.stdout));
+}
+
+// `join_game` over the host's HTTP call route with `bearer` as the connection's
+// token. A reducer Err answers 530 with the error text as the whole body.
+async function callJoinGame(dbUrl, db, bearer) {
+  const res = await fetch(dbUrl + '/v1/database/' + db + '/call/join_game', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + bearer, 'Content-Type': 'application/json' },
+    body: JSON.stringify(['Ada']),
+  });
+  return { status: res.status, body: await res.text() };
+}
+
+// A token the host mints for a new identity of its own (no login issuer).
+async function hostMintedToken(dbUrl) {
+  const res = await fetch(dbUrl + '/v1/identity', { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /v1/identity answered ${res.status}`);
+  const reply = await res.json();
+  if (!reply || typeof reply.token !== 'string' || reply.token === '') {
+    throw new Error('POST /v1/identity returned no token: ' + JSON.stringify(reply));
+  }
+  return reply.token;
+}
+
+// The enforcing side, on the same host before the driver starts: a dev-enforcing
+// build of the patched copy refuses an anonymous caller, a stub token without the
+// claim and one naming another entitlement, and admits the entitled stub token;
+// then the official artefact `just release-module official` builds is read back,
+// hashed and published, and refuses the anonymous and the entitled stub token
+// alike. Returns the two ownership tokens the pass detail begins with.
+async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }) {
+  // a. The dev-enforcing build overwrites the wasm the first publish used.
+  const enforcingBuild = run(
+    'cargo',
+    [
+      'build',
+      '-p',
+      'monster-realm-module',
+      '--release',
+      '--target',
+      'wasm32-unknown-unknown',
+      '--no-default-features',
+      '--features',
+      'dev_issuers',
+    ],
+    { cwd: tmp, env: { ...process.env, CARGO_TARGET_DIR: targetDir }, timeout: 900_000 },
+  );
+  if (!enforcingBuild.ok) {
+    throw new Error(
+      `[acs6] cargo build of the dev-enforcing module failed: ${enforcingBuild.stderr}`,
+    );
+  }
+  const enforcingPublish = run(
+    'spacetime',
+    ['publish', '-s', dbUrl, '--bin-path', wasm, '-y', ENFORCING_DB_NAME],
+    { timeout: 300_000 },
+  );
+  if (!enforcingPublish.ok) {
+    throw new Error(
+      `[acs6] publish of the dev-enforcing module failed: ${enforcingPublish.stderr}`,
+    );
+  }
+
+  // b. The tokens.
+  const aud = [E2E_CLIENT_ID];
+  const entitled = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'acs6-entitled', aud, {
+    mr_ent: ['base-game'],
+  });
+  const noClaim = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'acs6-no-claim', aud);
+  const otherClaim = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'acs6-other-claim', aud, {
+    mr_ent: ['soundtrack'],
+  });
+  const anon = await hostMintedToken(dbUrl);
+
+  // c, d. The dev-enforcing database.
+  const enforcing = {};
+  enforcing.anon = await callJoinGame(dbUrl, ENFORCING_DB_NAME, anon);
+  enforcing.noClaim = await callJoinGame(dbUrl, ENFORCING_DB_NAME, noClaim);
+  enforcing.otherClaim = await callJoinGame(dbUrl, ENFORCING_DB_NAME, otherClaim);
+  enforcing.countsBefore = {
+    monster: await sqlCountIn(dbUrl, ENFORCING_DB_NAME, 'monster'),
+    player_handle: await sqlCountIn(dbUrl, ENFORCING_DB_NAME, 'player_handle'),
+  };
+  enforcing.entitled = await callJoinGame(dbUrl, ENFORCING_DB_NAME, entitled);
+  enforcing.countsAfter = {
+    monster: await sqlCountIn(dbUrl, ENFORCING_DB_NAME, 'monster'),
+    player_handle: await sqlCountIn(dbUrl, ENFORCING_DB_NAME, 'player_handle'),
+  };
+
+  // e. The official artefact, through the recipe that ships modules.
+  const justfile = path.join(repoRoot, 'justfile');
+  const release = run(
+    'just',
+    ['--justfile', justfile, '--working-directory', tmp, 'release-module', 'official'],
+    { env: { ...process.env, CARGO_TARGET_DIR: targetDir }, timeout: 900_000 },
+  );
+  if (!release.ok) throw new Error(`[acs6] just release-module official failed: ${release.stderr}`);
+  const line = parseReleaseLine(release.stdout, 'official');
+  if (!line.ok) throw new Error(line.reason);
+  if (!existsSync(line.path))
+    throw new Error(`[acs6] the release artefact is missing: ${line.path}`);
+  const recomputed = createHash('sha256').update(readFileSync(line.path)).digest('hex');
+  if (recomputed !== line.sha256) {
+    throw new Error(
+      `[acs6] the artefact hashes to ${recomputed}, the recipe printed ${line.sha256}`,
+    );
+  }
+  const profileRead = run('just', ['--justfile', justfile, 'module-profile', line.path], {
+    timeout: 120_000,
+  });
+  if (!profileRead.ok) throw new Error(`[acs6] just module-profile failed: ${profileRead.stderr}`);
+  const parsed = parseBuildProfile(profileRead.stdout);
+  const releaseCheck = checkReleaseProfile(parsed, {
+    want: 'official',
+    devIssuers: [stub.iss1, HOSTED_DEV_ISSUER],
+    productionIssuer: PRODUCTION_LOGIN_ISSUER,
+  });
+  if (!releaseCheck.ok) {
+    throw new Error(releaseCheck.reason + ' :: section ' + JSON.stringify(profileRead.stdout));
+  }
+
+  // f. The official database.
+  const officialPublish = run(
+    'spacetime',
+    ['publish', '-s', dbUrl, '--bin-path', line.path, '-y', OFFICIAL_DB_NAME],
+    { timeout: 300_000 },
+  );
+  if (!officialPublish.ok) {
+    throw new Error(`[acs6] publish of the official artefact failed: ${officialPublish.stderr}`);
+  }
+  const official = {};
+  official.anon = await callJoinGame(dbUrl, OFFICIAL_DB_NAME, anon);
+  official.entitled = await callJoinGame(dbUrl, OFFICIAL_DB_NAME, entitled);
+  official.counts = {
+    monster: await sqlCountIn(dbUrl, OFFICIAL_DB_NAME, 'monster'),
+    player_handle: await sqlCountIn(dbUrl, OFFICIAL_DB_NAME, 'player_handle'),
+    account: await sqlCountIn(dbUrl, OFFICIAL_DB_NAME, 'account'),
+  };
+
+  // g. The verdict.
+  const refusals = checkOwnershipRefusals({
+    expectedError: ERR_OWNERSHIP_REQUIRED_E2E,
+    enforcing,
+    official,
+  });
+  if (!refusals.ok) throw new Error(refusals.reason);
+  return formatAcs6Tokens(parsed, line.sha256, refusals.detail);
+}
+
 async function runLivePhase() {
   const repoRoot = process.cwd();
   const notes = [];
@@ -2287,6 +2675,9 @@ async function runLivePhase() {
     );
     if (!published.ok) throw new Error(`publish failed: ${published.stderr}`);
 
+    // --- the enforcing side (two more databases), before the driver starts ---
+    const acs6Tokens = await runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub });
+
     // --- driver ---
     const tsresolvePath = path.join(tmp, 'tsresolve.mjs');
     const registerPath = path.join(tmp, 'register.mjs');
@@ -2349,7 +2740,7 @@ async function runLivePhase() {
     const s9G22Raw = [];
     // bt-7, measured: with the ten tactical tables the pre-cascade snapshot is
     // ~75 back-to-back CLI calls, and under that cadence the host's auth path
-    // ("Getting validator for issuer https://auth.spacetimedb.com") once
+    // ("Getting validator for issuer" auth.spacetimedb.com) once
     // stalled for 62 s with no key fetch, then served every later call. A 60 s
     // per-call cap turned that stall into a SIGTERM/ETIMEDOUT failure four
     // runs out of four; the cap now clears it, and the error carries the spawn
@@ -2926,6 +3317,7 @@ async function runLivePhase() {
     return {
       ok: true,
       detail:
+        `${acs6Tokens} ` +
         `live flow green on issuer port ${issuerPort} / host port ${stdbPort} (tmp ${tmp}): ` +
         `${milestones.reason}; ${truth.reason}; ${s9m.reason}; ${exportAssembly.reason}; ` +
         'S9-CASCADE-VERIFIED(classified=' +

@@ -137,7 +137,7 @@ fn ea_ra_06a_ranked_enforcement_inert_until_activation_canary() {
     assert!(
         !super::ranked_enforcement_active(),
         "EA-RA-06a CANARY FIRED (ADR-0189 D6): ranked account enforcement is now ACTIVE. \
-         Either accounts::ALLOWED_ISSUERS gained a real issuer (OQ1 / 13r-c-2 landed — \
+         Either accounts::PRODUCTION_LOGIN_ISSUERS gained a real issuer (OQ1 / 13r-c-2 landed — \
          expected, and this canary is doing its job), or pvp.rs's local placeholder const \
          drifted from accounts.rs's value (a bug — drift flips enforcement ON, which is \
          why the drift cannot be silent). Before this test may be deleted, the ACTIVATION \
@@ -157,6 +157,26 @@ fn ea_ra_06a_ranked_enforcement_inert_until_activation_canary() {
          guest-earned rating can survive the flip and be imported by a later claim. Decide \
          DELIBERATELY whether to drain in-flight battles, wipe the ladder, or accept it — \
          and record the decision in ADR-0189. Do NOT silence this assertion."
+    );
+}
+
+/// The ranked gate reads the production issuer list, not the build's own: a
+/// test build lists the two dev issuers, and that list reads as configured,
+/// so a gate keyed on it would be active in every test build.
+#[test]
+fn acs6_ranked_gate_reads_the_production_list() {
+    assert!(
+        !super::ranked_enforcement_active(),
+        "the ranked gate is inert in every build until the production issuer is real"
+    );
+    assert!(
+        super::issuers_configured(crate::accounts::DEV_LOGIN_ISSUERS),
+        "fixture: the dev issuer list reads as configured, so the gate would switch on had it \
+         read a list holding the dev issuers"
+    );
+    assert!(
+        !super::issuers_configured(crate::accounts::PRODUCTION_LOGIN_ISSUERS),
+        "the production list is the fail-closed placeholder"
     );
 }
 
@@ -189,7 +209,7 @@ fn ea_ra_06b_issuers_configured_matrix() {
         "EA-RA-06b FAIL (ADR-0189 D6): the committed `.invalid` placeholder allowlist must \
          read as NOT configured — this is today's tree, and enforcement must stay inert. \
          If this row fails while the others pass, pvp.rs's RANKED_PLACEHOLDER_ISSUER has \
-         DRIFTED from accounts.rs's ALLOWED_ISSUERS value (SSOT: accounts.rs:54)."
+         DRIFTED from accounts.rs's PRODUCTION_LOGIN_ISSUERS value (SSOT: accounts.rs)."
     );
     assert!(
         !super::issuers_configured(&[]),

@@ -4579,4 +4579,484 @@ mod nh {
             "the join wrote player exactly once (the insert)"
         );
     }
+
+    // --- ownership at join ---------------------------------------------------
+
+    /// The real `join_game` on a dev-enforcing build (`dev_issuers` named,
+    /// `open_join` not): a caller without an entitled dev-issuer token is
+    /// refused with the one fixed error before anything is written, and an
+    /// entitled one joins as an open join does.
+    #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+    mod acs6_enforcing {
+        use super::{a, at, b, sr11_saved, sr11_world, World, T0};
+        use crate::accounts::{DEV_LOGIN_ISSUERS, ERR_OWNERSHIP_REQUIRED, PRODUCTION_LOGIN_ISSUERS};
+        use crate::native_host_tests::{fixture, Fixture, Handle};
+        use crate::schema::{
+            Account, AccountStatus, Inventory, LastPosition, PlayerDialogueStateRow, PlayerHandle,
+            PlayerWallet, SpeciesRow, WorldAccess, WorldAccessRule,
+        };
+        use game_core::Direction;
+        use spacetimedb::sats::bsatn::to_vec;
+        use spacetimedb::{Identity, Serialize};
+
+        const AUD: &str = r#""monster-realm""#;
+        const CLAIM: &str = r#"["base-game"]"#;
+
+        /// Every table the join world registers, and `account`, which the
+        /// deletion gate reads.
+        const TABLES: [&str; 15] = [
+            "player",
+            "character",
+            "move_intent",
+            "battle",
+            "monster",
+            "monster_pub",
+            "trade_offer",
+            "movement_tick_schedule",
+            "last_position",
+            "inventory",
+            "player_wallet",
+            "player_dialogue_state",
+            "player_handle",
+            "species_row",
+            "account",
+        ];
+
+        fn conn_of(who: Identity) -> u128 {
+            0xAC56_0000 + u128::from(who.to_byte_array()[0])
+        }
+
+        /// A JWT payload: `aud` and the `mr_ent` value are raw JSON.
+        fn payload(iss: &str, aud: &str, ent: Option<&str>) -> String {
+            let claim = ent.map(|e| format!(r#","mr_ent":{e}"#)).unwrap_or_default();
+            format!(r#"{{"iss":"{iss}","sub":"sub-join","aud":{aud}{claim},"iat":1,"exp":2}}"#)
+        }
+
+        fn host_minted() -> String {
+            r#"{"iss":"localhost","sub":"host-sub","aud":["spacetimedb"],"iat":1}"#.to_string()
+        }
+
+        /// `join_game` as `who` over a client connection carrying `jwt`
+        /// (`None`: a connection with no token).
+        fn join_as(fx: &Fixture, who: Identity, jwt: Option<&str>) -> Result<(), String> {
+            fx.run_as_conn_at(who, conn_of(who), jwt, at(T0), |ctx| {
+                crate::movement::join_game(ctx, "Ada".to_string())
+            })
+        }
+
+        /// Read-only handles on the join world's tables `World` holds no handle
+        /// for, through an index name no shipped code asks for (so the
+        /// registrations the join reads through stay as `sr11_world` set them).
+        struct Rest<'a> {
+            inventory: Handle<'a, Inventory>,
+            wallet: Handle<'a, PlayerWallet>,
+            dialogue: Handle<'a, PlayerDialogueStateRow>,
+            handle: Handle<'a, PlayerHandle>,
+            species: Handle<'a, SpeciesRow, u32>,
+        }
+
+        fn rest(fx: &Fixture) -> Rest<'_> {
+            Rest {
+                inventory: fx.table::<Inventory>("inventory", "acs6_rows", |r| r.owner_identity),
+                wallet: fx.table::<PlayerWallet>("player_wallet", "acs6_rows", |r| {
+                    r.owner_identity
+                }),
+                dialogue: fx.table::<PlayerDialogueStateRow>(
+                    "player_dialogue_state",
+                    "acs6_rows",
+                    |r| r.owner_identity,
+                ),
+                handle: fx.table::<PlayerHandle>("player_handle", "acs6_rows", |r| {
+                    r.owner_identity
+                }),
+                species: fx.table_keyed::<SpeciesRow, u32>("species_row", "acs6_rows", |r| r.id),
+            }
+        }
+
+        fn enc<R: Serialize>(rows: Vec<R>) -> Vec<Vec<u8>> {
+            let mut out: Vec<Vec<u8>> = rows
+                .iter()
+                .map(|r| to_vec(r).expect("a row always BSATN-encodes"))
+                .collect();
+            out.sort();
+            out
+        }
+
+        /// Every row of every table the join world registers, by table.
+        fn snapshot(
+            w: &World<'_>,
+            saved: &Handle<'_, LastPosition>,
+            r: &Rest<'_>,
+        ) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+            vec![
+                ("player", enc(w.players.rows())),
+                ("character", enc(w.chars.rows())),
+                ("move_intent", enc(w.intents.rows())),
+                ("battle", enc(w.battles.rows())),
+                ("monster", enc(w.monsters.rows())),
+                ("monster_pub", enc(w.pubs.rows())),
+                ("trade_offer", enc(w.offers.rows())),
+                ("movement_tick_schedule", enc(w.ticks.rows())),
+                ("last_position", enc(saved.rows())),
+                ("inventory", enc(r.inventory.rows())),
+                ("player_wallet", enc(r.wallet.rows())),
+                ("player_dialogue_state", enc(r.dialogue.rows())),
+                ("player_handle", enc(r.handle.rows())),
+                ("species_row", enc(r.species.rows())),
+            ]
+        }
+
+        fn writes(fx: &Fixture) -> Vec<(&'static str, u32)> {
+            TABLES.iter().map(|t| (*t, fx.writes_to(t))).collect()
+        }
+
+        /// `join_game` over `jwt` answers exactly the ownership error, and no
+        /// table gained, lost or changed a row or took a write call. The caller
+        /// has a saved position, which a join that went ahead would consume.
+        fn assert_refused(jwt: Option<&str>, label: &str) {
+            let fx = fixture();
+            let (w, saved) = sr11_world(&fx);
+            let r = rest(&fx);
+            saved.seed(&sr11_saved(a(), 1, 2, 4, Direction::West));
+            let before = snapshot(&w, &saved, &r);
+            assert!(
+                before.iter().any(|(_, rows)| !rows.is_empty()),
+                "fixture: the world holds rows"
+            );
+            fx.reset_writes();
+            assert_eq!(
+                join_as(&fx, a(), jwt),
+                Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                "{label}: the ownership error"
+            );
+            assert_eq!(
+                snapshot(&w, &saved, &r),
+                before,
+                "{label}: every table as it was"
+            );
+            for (t, n) in writes(&fx) {
+                assert_eq!(n, 0, "{label}: {t} took a write call");
+            }
+        }
+
+        // No entitlement at all.
+
+        #[test]
+        fn acs6_1_a_connection_with_no_token_is_refused_and_nothing_is_written() {
+            assert_refused(None, "a connection with no token");
+        }
+
+        #[test]
+        fn acs6_1_a_host_minted_token_is_refused_and_nothing_is_written() {
+            assert_refused(Some(&host_minted()), "the host-minted token");
+        }
+
+        #[test]
+        fn acs6_1_an_unlisted_issuer_naming_the_claim_is_refused() {
+            assert_refused(
+                Some(&payload("localhost", AUD, Some(CLAIM))),
+                "an unlisted issuer with the audience and the claim",
+            );
+            assert_refused(
+                Some(&payload(PRODUCTION_LOGIN_ISSUERS[0], AUD, Some(CLAIM))),
+                "the production issuer on a dev-enforcing build",
+            );
+        }
+
+        #[test]
+        fn acs6_1_a_call_with_no_connection_is_refused_and_nothing_is_written() {
+            let fx = fixture();
+            let (w, saved) = sr11_world(&fx);
+            let r = rest(&fx);
+            let before = snapshot(&w, &saved, &r);
+            fx.reset_writes();
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| crate::movement::join_game(
+                    ctx,
+                    "Ada".to_string()
+                )),
+                Err(ERR_OWNERSHIP_REQUIRED.to_string())
+            );
+            assert_eq!(snapshot(&w, &saved, &r), before);
+            for (t, n) in writes(&fx) {
+                assert_eq!(n, 0, "{t} took a write call");
+            }
+        }
+
+        /// The admission check runs first: in a password world an unadmitted
+        /// connection gets the admission error, not the ownership error.
+        #[test]
+        fn acs6_1_the_admission_check_answers_before_the_ownership_check() {
+            let fx = fixture();
+            let _w = sr11_world(&fx);
+            fx.table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id)
+                .unique()
+                .seed(&WorldAccess {
+                    id: 0,
+                    rule: WorldAccessRule::Password,
+                    password_salt: vec![1; 16],
+                    password_hash: vec![2; 32],
+                });
+            assert_eq!(
+                join_as(&fx, a(), None),
+                Err(crate::access::REJECT_NOT_ADMITTED.to_string())
+            );
+        }
+
+        /// The ownership check runs before the deletion gate: an unentitled
+        /// caller whose account is mid-deletion gets the ownership error, and
+        /// an entitled one gets the deletion error.
+        #[test]
+        fn acs6_1_the_ownership_check_answers_before_the_deletion_gate() {
+            let fx = fixture();
+            let _w = sr11_world(&fx);
+            fx.table::<Account>("account", "identity", |r| r.identity)
+                .unique()
+                .seed(&Account {
+                    identity: a(),
+                    auth_issuer: DEV_LOGIN_ISSUERS[0].to_string(),
+                    created_at_ms: 10,
+                    last_login_at_ms: 20,
+                    status: AccountStatus::PendingDeletion,
+                    deletion_requested_at_ms: Some(30),
+                    claimed_from: None,
+                    claimed_at_ms: None,
+                    terminal_at_ms: None,
+                });
+            assert_eq!(
+                join_as(&fx, a(), None),
+                Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                "unentitled and mid-deletion"
+            );
+            let entitled = payload(DEV_LOGIN_ISSUERS[0], AUD, Some(CLAIM));
+            assert_eq!(
+                join_as(&fx, a(), Some(&entitled)),
+                Err(crate::guards::REJECT_DELETION_GATED.to_string()),
+                "entitled and mid-deletion"
+            );
+        }
+
+        // A token from a trusted issuer that does not entitle.
+
+        #[test]
+        fn acs6_2_a_dev_token_without_mr_ent_is_refused() {
+            for iss in DEV_LOGIN_ISSUERS {
+                assert_refused(Some(&payload(iss, AUD, None)), iss);
+            }
+        }
+
+        #[test]
+        fn acs6_2_a_dev_token_naming_only_another_entitlement_is_refused() {
+            assert_refused(
+                Some(&payload(DEV_LOGIN_ISSUERS[0], AUD, Some(r#"["soundtrack"]"#))),
+                "mr_ent names soundtrack",
+            );
+        }
+
+        #[test]
+        fn acs6_2_a_dev_token_with_an_empty_mr_ent_is_refused() {
+            assert_refused(
+                Some(&payload(DEV_LOGIN_ISSUERS[1], AUD, Some("[]"))),
+                "mr_ent is empty",
+            );
+        }
+
+        #[test]
+        fn acs6_2_a_dev_token_with_the_claim_for_another_audience_is_refused() {
+            assert_refused(
+                Some(&payload(DEV_LOGIN_ISSUERS[0], r#"["other-app"]"#, Some(CLAIM))),
+                "another audience",
+            );
+        }
+
+        #[test]
+        fn acs6_2_a_dev_token_with_the_claim_only_as_text_is_refused() {
+            assert_refused(
+                Some(&payload(DEV_LOGIN_ISSUERS[0], AUD, Some(r#""base-game""#))),
+                "mr_ent a string",
+            );
+            let in_sub = format!(
+                r#"{{"iss":"{}","sub":"x\",\"mr_ent\":[\"base-game\"]","aud":{AUD}}}"#,
+                DEV_LOGIN_ISSUERS[0]
+            );
+            assert_refused(Some(&in_sub), "the claim's text inside sub");
+        }
+
+        // An entitled dev-issuer token joins as an open join does.
+
+        /// For each dev issuer: the entitled join answers `Ok`, writes exactly
+        /// the rows (and the write calls) that the open join's body writes for
+        /// the same caller at the same instant, and a second call answers
+        /// `already joined`.
+        #[test]
+        fn acs6_3_an_entitled_dev_token_joins_as_an_open_join_does() {
+            for iss in DEV_LOGIN_ISSUERS {
+                let open = {
+                    let fx = fixture();
+                    let (w, saved) = sr11_world(&fx);
+                    let r = rest(&fx);
+                    fx.reset_writes();
+                    assert_eq!(
+                        fx.run_as_at(a(), at(T0), |ctx| crate::movement::join_with_kit(
+                            ctx,
+                            "Ada".to_string(),
+                            crate::content_cache::cached_starter_kit()
+                        )),
+                        Ok(()),
+                        "the open join's body"
+                    );
+                    (snapshot(&w, &saved, &r), writes(&fx))
+                };
+
+                let fx = fixture();
+                let (w, saved) = sr11_world(&fx);
+                let r = rest(&fx);
+                let jwt = payload(iss, AUD, Some(CLAIM));
+                fx.reset_writes();
+                assert_eq!(join_as(&fx, a(), Some(&jwt)), Ok(()), "{iss}: joins");
+                assert_eq!(snapshot(&w, &saved, &r), open.0, "{iss}: the open join's rows");
+                assert_eq!(writes(&fx), open.1, "{iss}: the open join's write calls");
+                let mine: Vec<_> = w
+                    .players
+                    .rows()
+                    .into_iter()
+                    .filter(|p| p.identity == a())
+                    .collect();
+                assert_eq!(mine.len(), 1, "{iss}: one player row");
+                assert_eq!(mine[0].name, "Ada", "{iss}: the name given");
+                assert_eq!(
+                    w.chars
+                        .rows()
+                        .iter()
+                        .filter(|c| c.entity_id == mine[0].entity_id)
+                        .count(),
+                    1,
+                    "{iss}: its character"
+                );
+                assert_eq!(
+                    w.intents
+                        .rows()
+                        .iter()
+                        .filter(|i| i.entity_id == mine[0].entity_id)
+                        .count(),
+                    1,
+                    "{iss}: its move intent"
+                );
+                assert_eq!(
+                    r.handle
+                        .rows()
+                        .iter()
+                        .filter(|h| h.owner_identity == a())
+                        .count(),
+                    1,
+                    "{iss}: its handle"
+                );
+                assert_eq!(
+                    join_as(&fx, a(), Some(&jwt)),
+                    Err("already joined".to_string()),
+                    "{iss}: a second call"
+                );
+            }
+        }
+
+        /// Two entitled players join one after the other; neither refusal of a
+        /// third, unentitled caller touches their rows.
+        #[test]
+        fn acs6_3_entitled_players_join_beside_a_refused_one() {
+            let fx = fixture();
+            let (w, saved) = sr11_world(&fx);
+            let r = rest(&fx);
+            let ada = payload(DEV_LOGIN_ISSUERS[0], AUD, Some(CLAIM));
+            let bea = payload(
+                DEV_LOGIN_ISSUERS[1],
+                r#"["other-app","monster-realm"]"#,
+                Some(r#"["soundtrack","base-game"]"#),
+            );
+            assert_eq!(join_as(&fx, a(), Some(&ada)), Ok(()), "the first");
+            assert_eq!(join_as(&fx, b(), Some(&bea)), Ok(()), "the second");
+            let joined = snapshot(&w, &saved, &r);
+            fx.reset_writes();
+            let stranger = Identity::from_byte_array([0xC3; 32]);
+            assert_eq!(
+                join_as(&fx, stranger, None),
+                Err(ERR_OWNERSHIP_REQUIRED.to_string())
+            );
+            assert_eq!(snapshot(&w, &saved, &r), joined);
+            assert_eq!(w.players.rows().len(), 2, "both entitled players joined");
+        }
+    }
+
+    /// The real `join_game` on a test build (`open_join` named): anyone joins,
+    /// whatever token the connection carries.
+    #[cfg(feature = "open_join")]
+    mod acs6_open {
+        use super::{a, at, sr11_world, World, T0};
+        use crate::accounts::BUILD_PROFILE;
+        use crate::native_host_tests::{fixture, Fixture};
+        use spacetimedb::Identity;
+
+        fn joined(w: &World<'_>, who: Identity) -> Vec<String> {
+            w.players
+                .rows()
+                .into_iter()
+                .filter(|p| p.identity == who)
+                .map(|p| p.name)
+                .collect()
+        }
+
+        fn join_as(fx: &Fixture, who: Identity, jwt: Option<&str>) -> Result<(), String> {
+            fx.run_as_conn_at(who, 0xAC56_0400, jwt, at(T0), |ctx| {
+                crate::movement::join_game(ctx, "Ada".to_string())
+            })
+        }
+
+        #[test]
+        fn acs6_4_a_test_build_does_not_enforce_ownership() {
+            assert!(!BUILD_PROFILE.enforces_ownership);
+            assert_eq!(BUILD_PROFILE.name, "test");
+        }
+
+        #[test]
+        fn acs6_4_a_connection_with_no_token_joins() {
+            let fx = fixture();
+            let (w, _saved) = sr11_world(&fx);
+            assert_eq!(join_as(&fx, a(), None), Ok(()));
+            assert_eq!(joined(&w, a()), vec!["Ada".to_string()]);
+        }
+
+        #[test]
+        fn acs6_4_a_call_with_no_connection_joins() {
+            let fx = fixture();
+            let (w, _saved) = sr11_world(&fx);
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| crate::movement::join_game(
+                    ctx,
+                    "Ada".to_string()
+                )),
+                Ok(())
+            );
+            assert_eq!(joined(&w, a()), vec!["Ada".to_string()]);
+        }
+
+        #[test]
+        fn acs6_4_a_host_minted_token_joins() {
+            let fx = fixture();
+            let (w, _saved) = sr11_world(&fx);
+            let host = r#"{"iss":"localhost","sub":"host-sub","aud":["spacetimedb"],"iat":1}"#;
+            assert_eq!(join_as(&fx, a(), Some(host)), Ok(()));
+            assert_eq!(joined(&w, a()), vec!["Ada".to_string()]);
+        }
+
+        #[test]
+        fn acs6_4_a_dev_token_without_the_claim_joins() {
+            let fx = fixture();
+            let (w, _saved) = sr11_world(&fx);
+            let dev = format!(
+                r#"{{"iss":"{}","sub":"sub-join","aud":"monster-realm"}}"#,
+                crate::accounts::DEV_LOGIN_ISSUERS[0]
+            );
+            assert_eq!(join_as(&fx, a(), Some(&dev)), Ok(()));
+            assert_eq!(joined(&w, a()), vec!["Ada".to_string()]);
+        }
+    }
 }

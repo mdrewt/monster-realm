@@ -12546,3 +12546,1327 @@ mod acct_nh {
         assert_sessions_exactly(&w, &[&strangers], "ts2/claim-deletes");
     }
 }
+
+// ===========================================================================
+// Ownership: the build profile computed from the cargo features, the reader of
+// the `mr_ent` claim, the door `join_game` asks, and the profile section the
+// release artefact carries. Every function here takes the profile as an
+// argument, so these tests run in every build, the default one included.
+// ===========================================================================
+
+/// `build_profile` over all 64 feature sets against an oracle written here, the
+/// rows of the design table one by one, the invariants no feature set may break,
+/// and the per-build constants.
+mod acs6_profile {
+    use crate::accounts::{
+        build_profile, BuildFeatures, BuildProfile, ALLOWED_ISSUERS, BUILD_FEATURES, BUILD_PROFILE,
+        DEV_LOGIN_ISSUERS, PRODUCTION_LOGIN_ISSUERS,
+    };
+
+    pub(super) const PRODUCTION: &str = "https://auth.monster-realm.invalid/";
+    pub(super) const LOCAL_DEV: &str = "http://localhost:4455";
+    pub(super) const HOSTED_DEV: &str = "https://auth.monster-realm.spookyowltech.com";
+
+    /// The feature set that names nothing.
+    pub(super) const NONE: BuildFeatures = BuildFeatures {
+        official: false,
+        world: false,
+        dev_issuers: false,
+        open_join: false,
+        dev_reducers: false,
+        load_test_zones: false,
+    };
+
+    pub(super) const FEATURE_NAMES: [&str; 6] = [
+        "official",
+        "world",
+        "dev_issuers",
+        "open_join",
+        "dev_reducers",
+        "load_test_zones",
+    ];
+
+    fn names(f: BuildFeatures, name: &str) -> bool {
+        match name {
+            "official" => f.official,
+            "world" => f.world,
+            "dev_issuers" => f.dev_issuers,
+            "open_join" => f.open_join,
+            "dev_reducers" => f.dev_reducers,
+            "load_test_zones" => f.load_test_zones,
+            other => panic!("not a feature of the module: {other}"),
+        }
+    }
+
+    /// The feature set naming exactly `named`.
+    pub(super) fn feats(named: &[&str]) -> BuildFeatures {
+        let mut f = NONE;
+        for n in named {
+            match *n {
+                "official" => f.official = true,
+                "world" => f.world = true,
+                "dev_issuers" => f.dev_issuers = true,
+                "open_join" => f.open_join = true,
+                "dev_reducers" => f.dev_reducers = true,
+                "load_test_zones" => f.load_test_zones = true,
+                other => panic!("not a feature of the module: {other}"),
+            }
+        }
+        f
+    }
+
+    /// Every one of the 64 feature sets: bit `i` names `FEATURE_NAMES[i]`.
+    pub(super) fn all_feature_sets() -> Vec<BuildFeatures> {
+        (0u8..64)
+            .map(|bits| {
+                let named: Vec<&str> = FEATURE_NAMES
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| bits & (1u8 << i) != 0)
+                    .map(|(_, n)| *n)
+                    .collect();
+                feats(&named)
+            })
+            .collect()
+    }
+
+    /// The oracle, built differently from the function under test: cargo's
+    /// implications are edges closed to a fixed point, the build is named from
+    /// the closed set, and enforcement and the trusted issuers are read off the
+    /// name.
+    pub(super) fn expected(f: BuildFeatures) -> BuildProfile {
+        const IMPLIES: [(&str, &str); 3] = [
+            ("load_test_zones", "dev_reducers"),
+            ("dev_reducers", "open_join"),
+            ("open_join", "dev_issuers"),
+        ];
+        let mut on: Vec<&str> = FEATURE_NAMES
+            .iter()
+            .copied()
+            .filter(|n| names(f, n))
+            .collect();
+        loop {
+            let before = on.len();
+            for (from, to) in IMPLIES {
+                if on.contains(&from) && !on.contains(&to) {
+                    on.push(to);
+                }
+            }
+            if on.len() == before {
+                break;
+            }
+        }
+        let has = |n: &'static str| on.contains(&n);
+        let name = match (has("official"), has("world")) {
+            (true, false) => "official",
+            (false, true) => "world",
+            (true, true) => "conflict",
+            (false, false) if has("open_join") => "test",
+            (false, false) if has("dev_issuers") => "dev-enforcing",
+            (false, false) => "default",
+        };
+        let login_issuers: &'static [&'static str] = match name {
+            "official" => &[PRODUCTION],
+            "test" | "dev-enforcing" => &[LOCAL_DEV, HOSTED_DEV],
+            _ => &[],
+        };
+        BuildProfile {
+            name,
+            enforces_ownership: name != "test",
+            login_issuers,
+            dev_reducers: has("dev_reducers"),
+        }
+    }
+
+    fn profile(
+        name: &'static str,
+        enforces_ownership: bool,
+        login_issuers: &'static [&'static str],
+        dev_reducers: bool,
+    ) -> BuildProfile {
+        BuildProfile {
+            name,
+            enforces_ownership,
+            login_issuers,
+            dev_reducers,
+        }
+    }
+
+    /// The three issuers, by value: the production placeholder alone, and the
+    /// local then the hosted dev issuer.
+    #[test]
+    fn acs6_profile_the_issuer_lists_hold_these_values() {
+        assert_eq!(
+            PRODUCTION_LOGIN_ISSUERS,
+            &["https://auth.monster-realm.invalid/"][..]
+        );
+        assert_eq!(
+            DEV_LOGIN_ISSUERS,
+            &[
+                "http://localhost:4455",
+                "https://auth.monster-realm.spookyowltech.com"
+            ][..]
+        );
+    }
+
+    /// Every feature set yields the oracle's profile, whole.
+    ///
+    /// kills: any flipped implication, a dev feature beating a release feature,
+    /// a wrong name, the wrong issuer list on any row, `dev_reducers` not
+    /// carried through.
+    #[test]
+    fn acs6_profile_every_feature_set_matches_the_table() {
+        let sets = all_feature_sets();
+        assert_eq!(sets.len(), 64, "fixture: every feature set");
+        let mut seen: Vec<&str> = Vec::new();
+        for f in sets {
+            let want = expected(f);
+            assert_eq!(build_profile(f), want, "feature set {f:?}");
+            if !seen.contains(&want.name) {
+                seen.push(want.name);
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            vec![
+                "conflict",
+                "default",
+                "dev-enforcing",
+                "official",
+                "test",
+                "world"
+            ],
+            "fixture: the 64 sets reach every name"
+        );
+    }
+
+    /// The rows of the design table, spelled out.
+    #[test]
+    fn acs6_profile_the_design_table_rows() {
+        const DEV: &[&str] = &[LOCAL_DEV, HOSTED_DEV];
+        const PROD: &[&str] = &[PRODUCTION];
+        const NO_ISSUER: &[&str] = &[];
+        let rows: Vec<(&[&str], BuildProfile)> = vec![
+            (&[][..], profile("default", true, NO_ISSUER, false)),
+            (
+                &["dev_issuers"][..],
+                profile("dev-enforcing", true, DEV, false),
+            ),
+            (&["open_join"][..], profile("test", false, DEV, false)),
+            (&["dev_reducers"][..], profile("test", false, DEV, true)),
+            (&["load_test_zones"][..], profile("test", false, DEV, true)),
+            (&["official"][..], profile("official", true, PROD, false)),
+            (&["world"][..], profile("world", true, NO_ISSUER, false)),
+            (
+                &["official", "world"][..],
+                profile("conflict", true, NO_ISSUER, false),
+            ),
+            (
+                &["official", "open_join"][..],
+                profile("official", true, PROD, false),
+            ),
+            (
+                &["official", "dev_issuers"][..],
+                profile("official", true, PROD, false),
+            ),
+            (
+                &["world", "dev_issuers"][..],
+                profile("world", true, NO_ISSUER, false),
+            ),
+            (
+                &["world", "open_join"][..],
+                profile("world", true, NO_ISSUER, false),
+            ),
+            (
+                &["official", "world", "dev_issuers", "open_join"][..],
+                profile("conflict", true, NO_ISSUER, false),
+            ),
+            (
+                &["official", "dev_reducers"][..],
+                profile("official", true, PROD, true),
+            ),
+            (
+                &["world", "load_test_zones"][..],
+                profile("world", true, NO_ISSUER, true),
+            ),
+            (
+                &["dev_issuers", "open_join"][..],
+                profile("test", false, DEV, false),
+            ),
+        ];
+        for (named, want) in rows {
+            assert_eq!(build_profile(feats(named)), want, "features {named:?}");
+        }
+    }
+
+    /// No feature set trusts the production issuer without enforcing, none
+    /// trusts the production and a dev issuer together, and a release build
+    /// (`official` or `world` named) enforces and trusts no dev issuer.
+    #[test]
+    fn acs6_profile_no_feature_set_breaks_the_invariants() {
+        for f in all_feature_sets() {
+            let p = build_profile(f);
+            let prod = p
+                .login_issuers
+                .iter()
+                .any(|i| PRODUCTION_LOGIN_ISSUERS.contains(i));
+            let dev = p.login_issuers.iter().any(|i| DEV_LOGIN_ISSUERS.contains(i));
+            assert!(
+                !prod || p.enforces_ownership,
+                "{f:?}: production trust without enforcement"
+            );
+            assert!(!(prod && dev), "{f:?}: production and dev trust together");
+            if f.official || f.world {
+                assert!(p.enforces_ownership, "{f:?}: a release that does not enforce");
+                assert!(!dev, "{f:?}: a release that trusts a dev issuer");
+            }
+        }
+    }
+
+    /// The constants of this build are the table's row for this build's
+    /// features, and each feature field is that feature's `cfg!`.
+    #[test]
+    fn acs6_profile_this_build_is_the_row_of_its_own_features() {
+        assert_eq!(
+            BUILD_FEATURES,
+            BuildFeatures {
+                official: cfg!(feature = "official"),
+                world: cfg!(feature = "world"),
+                dev_issuers: cfg!(feature = "dev_issuers"),
+                open_join: cfg!(feature = "open_join"),
+                dev_reducers: cfg!(feature = "dev_reducers"),
+                load_test_zones: cfg!(feature = "load_test_zones"),
+            }
+        );
+        assert_eq!(BUILD_PROFILE, build_profile(BUILD_FEATURES));
+        assert_eq!(BUILD_PROFILE, expected(BUILD_FEATURES));
+        assert_eq!(ALLOWED_ISSUERS, BUILD_PROFILE.login_issuers);
+    }
+
+    /// A build naming `open_join` is the test build: it does not enforce and
+    /// trusts the two dev issuers, in order.
+    #[cfg(feature = "open_join")]
+    #[test]
+    fn acs6_profile_an_open_join_build_is_the_test_build() {
+        assert_eq!(BUILD_PROFILE.name, "test");
+        assert!(!BUILD_PROFILE.enforces_ownership);
+        assert_eq!(BUILD_PROFILE.login_issuers, &[LOCAL_DEV, HOSTED_DEV][..]);
+        assert_eq!(ALLOWED_ISSUERS, &[LOCAL_DEV, HOSTED_DEV][..]);
+    }
+
+    /// A build naming `dev_issuers` and not `open_join` enforces and trusts the
+    /// two dev issuers, in order.
+    #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+    #[test]
+    fn acs6_profile_a_dev_issuers_build_is_dev_enforcing() {
+        assert_eq!(BUILD_PROFILE.name, "dev-enforcing");
+        assert!(BUILD_PROFILE.enforces_ownership);
+        assert_eq!(BUILD_PROFILE.login_issuers, &[LOCAL_DEV, HOSTED_DEV][..]);
+        assert_eq!(ALLOWED_ISSUERS, &[LOCAL_DEV, HOSTED_DEV][..]);
+    }
+}
+
+/// `token_names_entitlement`: a table of payloads, then properties whose JSON
+/// text is rendered from a generated model (the model is the oracle).
+mod acs6_claim {
+    use crate::accounts::token_names_entitlement;
+    use proptest::prelude::*;
+
+    const BG: &str = "base-game";
+    const REAL: &str = r#"{"iss":"http://localhost:4455","sub":"dev:1f0e","aud":"monster-realm","mr_ent":["base-game"],"iat":1,"exp":2}"#;
+
+    fn ch(cp: u32) -> char {
+        char::from_u32(cp).expect("a Unicode scalar value")
+    }
+
+    /// `(payload, entitlement asked, expected, label)`.
+    type Row = (String, &'static str, bool, &'static str);
+
+    fn row(payload: &str, ask: &'static str, want: bool, label: &'static str) -> Row {
+        (payload.to_string(), ask, want, label)
+    }
+
+    fn check(rows: &[Row]) {
+        for (payload, ask, want, label) in rows {
+            assert_eq!(
+                token_names_entitlement(payload, ask),
+                *want,
+                "{label}: asked {ask:?} of {payload:?}"
+            );
+        }
+    }
+
+    /// The payloads that name the entitlement.
+    #[test]
+    fn acs6_claim_payloads_that_name_base_game() {
+        let spaced = " {\n\t\"iss\" :\t\"http://localhost:4455\" ,\r\n \"sub\"\t: \"dev:1f0e\" , \
+                      \"aud\" : \"monster-realm\" ,\n\"mr_ent\"\n:\n[\n \"base-game\" \t]\t, \
+                      \"iat\" : 1 , \"exp\":2\n}\n ";
+        let zoe = format!("Zo{}", ch(0xEB));
+        let nihon = format!("{}{}", ch(0x65E5), ch(0x672C));
+        let owl = ch(0x1F989);
+        let multibyte =
+            format!(r#"{{"sub":"{zoe} {nihon} {owl}","mr_ent":["{nihon}","base-game"],"n":"{owl}"}}"#);
+        let deep_array = format!(
+            r#"{{"a":{}1{},"mr_ent":["base-game"]}}"#,
+            "[".repeat(10_000),
+            "]".repeat(10_000)
+        );
+        let deep_object = format!(
+            r#"{{"a":{}1{},"mr_ent":["base-game"]}}"#,
+            r#"{"a":"#.repeat(10_000),
+            "}".repeat(10_000)
+        );
+        check(&[
+            row(REAL, BG, true, "the real payload, compact"),
+            row(spaced, BG, true, "whitespace around every token"),
+            row(r#"{"mr_ent":["base-game"]}"#, BG, true, "the claim alone"),
+            row(r#"{"mr_ent":["a","base-game"]}"#, BG, true, "second element"),
+            row(r#"{"mr_ent":["base-game","a"]}"#, BG, true, "first element"),
+            row(&multibyte, BG, true, "multi-byte UTF-8 in other values"),
+            row(
+                r#"{"mr_ent":["base-game"],"iss":"x","aud":"monster-realm"}"#,
+                BG,
+                true,
+                "claim first",
+            ),
+            row(
+                r#"{"iss":"x","mr_ent":["base-game"],"aud":"monster-realm"}"#,
+                BG,
+                true,
+                "claim in the middle",
+            ),
+            row(
+                r#"{"iss":"x","aud":"monster-realm","mr_ent":["base-game"]}"#,
+                BG,
+                true,
+                "claim last",
+            ),
+            row(
+                r#"{"sub":"a\\","mr_ent":["base-game"]}"#,
+                BG,
+                true,
+                "an escaped backslash ends the string before the real key",
+            ),
+            row(
+                r#"{"sub":"\\\\","mr_ent":["base-game"]}"#,
+                BG,
+                true,
+                "two escaped backslashes",
+            ),
+            row(
+                r#"{"sub":"\"mr_ent\":[]","mr_ent":["base-game"]}"#,
+                BG,
+                true,
+                "escaped key text inside a value is not a second key",
+            ),
+            row(
+                r#"{"mr_ent":[["x"],"base-game"]}"#,
+                BG,
+                true,
+                "a nested array is skipped and the next element read",
+            ),
+            row(
+                r#"{"mr_ent":[{"a":"]"},"base-game"]}"#,
+                BG,
+                true,
+                "a bracket inside a string inside a skipped object",
+            ),
+            row(
+                r#"{"mr_ent":["a\"b","base-game"]}"#,
+                BG,
+                true,
+                "an element with an escape is skipped, the next one matches",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],"p":{"mr_ent":[]}}"#,
+                BG,
+                true,
+                "a nested mr_ent is not a second top-level key",
+            ),
+            row(
+                r#"{"p":{"mr_ent":[]},"mr_ent":["base-game"]}"#,
+                BG,
+                true,
+                "a nested mr_ent before the real one",
+            ),
+            row(
+                r#"{"p":["mr_ent",{"mr_ent":1}],"mr_ent":["base-game"]}"#,
+                BG,
+                true,
+                "mr_ent as a nested string and key",
+            ),
+            row(
+                r#"{"a":null,"b":true,"c":false,"d":-1.5e3,"e":[],"f":{},"g":"}","mr_ent":["base-game"]}"#,
+                BG,
+                true,
+                "every value type before the claim",
+            ),
+            row(
+                "\n {\"mr_ent\":[\"base-game\"]}\t\n",
+                BG,
+                true,
+                "whitespace around the object",
+            ),
+            row(&deep_array, BG, true, "10,000 nested arrays before the claim"),
+            row(&deep_object, BG, true, "10,000 nested objects before the claim"),
+        ]);
+    }
+
+    /// Text that only looks like the claim: escaped, nested, of the wrong type,
+    /// or near-miss keys and elements.
+    #[test]
+    fn acs6_claim_lookalikes_do_not_name_it() {
+        let bs = '\\';
+        let escaped_key = format!(r#"{{"mr{bs}u005fent":["base-game"]}}"#);
+        let escaped_element = format!(r#"{{"mr_ent":["base{bs}u002dgame"]}}"#);
+        check(&[
+            row(
+                r#"{"iss":"x","sub":"x\",\"mr_ent\":[\"base-game\"]","aud":"monster-realm"}"#,
+                BG,
+                false,
+                "the claim's text escaped inside sub",
+            ),
+            row(
+                r#"{"sub":"a\\\",\"mr_ent\":[\"base-game\"]"}"#,
+                BG,
+                false,
+                "an odd run of backslashes keeps the string open",
+            ),
+            row(r#"{"p":{"mr_ent":["base-game"]}}"#, BG, false, "nested object"),
+            row(r#"{"p":["mr_ent",["base-game"]]}"#, BG, false, "nested array"),
+            row(r#"{"mr_ent":[["base-game"]]}"#, BG, false, "array in the array"),
+            row(r#"{"mr_ent":[{"a":"base-game"}]}"#, BG, false, "object in the array"),
+            row(r#"{"mr_ent":[{"base-game":1}]}"#, BG, false, "a key in the array"),
+            row(r#"{"mr_ent":"base-game"}"#, BG, false, "a string, not an array"),
+            row(r#"{"mr_ent":{"base-game":1}}"#, BG, false, "an object, not an array"),
+            row(r#"{"mr_ent":["base-game-x"]}"#, BG, false, "suffix"),
+            row(r#"{"mr_ent":["xbase-game"]}"#, BG, false, "prefix"),
+            row(r#"{"mr_ent":["base-game "]}"#, BG, false, "trailing space"),
+            row(r#"{"mr_ent":[" base-game"]}"#, BG, false, "leading space"),
+            row(r#"{"mr_ent":["Base-Game"]}"#, BG, false, "case"),
+            row(r#"{"mr_ent":["base-gam"]}"#, BG, false, "truncated element"),
+            row(
+                r#"{"mr_ent":["\"base-game\""]}"#,
+                BG,
+                false,
+                "quotes inside the element",
+            ),
+            row(&escaped_element, BG, false, "an escape in the element"),
+            row(r#"{"xmr_ent":["base-game"]}"#, BG, false, "key prefix"),
+            row(r#"{"mr_entx":["base-game"]}"#, BG, false, "key suffix"),
+            row(r#"{"mr_ent ":["base-game"]}"#, BG, false, "key trailing space"),
+            row(r#"{" mr_ent":["base-game"]}"#, BG, false, "key leading space"),
+            row(r#"{"MR_ENT":["base-game"]}"#, BG, false, "key case"),
+            row(r#"{"mr_en":["base-game"]}"#, BG, false, "truncated key"),
+            row(r#"{"\"mr_ent\"":["base-game"]}"#, BG, false, "quotes inside the key"),
+            row(&escaped_key, BG, false, "an escape in the key"),
+            row(r#"{"p":"mr_ent","q":["base-game"]}"#, BG, false, "mr_ent as a value"),
+        ]);
+    }
+
+    /// One top-level `mr_ent`, no backslash in any top-level key, or false.
+    #[test]
+    fn acs6_claim_duplicates_and_escaped_keys_fail_closed() {
+        let bs = '\\';
+        let escaped_duplicate = format!(r#"{{"mr_ent":[],"mr{bs}u005fent":["base-game"]}}"#);
+        let escaped_duplicate_rev = format!(r#"{{"mr{bs}u005fent":[],"mr_ent":["base-game"]}}"#);
+        check(&[
+            row(r#"{"mr_ent":[],"mr_ent":["base-game"]}"#, BG, false, "empty then claim"),
+            row(r#"{"mr_ent":["base-game"],"mr_ent":[]}"#, BG, false, "claim then empty"),
+            row(
+                r#"{"mr_ent":["base-game"],"mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "the claim twice",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],"a":1,"mr_ent":"x"}"#,
+                BG,
+                false,
+                "a later duplicate of another type",
+            ),
+            row(&escaped_duplicate, BG, false, "empty then the claim under an escaped key"),
+            row(
+                &escaped_duplicate_rev,
+                BG,
+                false,
+                "the claim after an escaped spelling of the key",
+            ),
+            row(
+                r#"{"a\\b":1,"mr_ent":["base-game"]}"#,
+                BG,
+                false,
+                "a backslash in an earlier top-level key",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],"x\"y":1}"#,
+                BG,
+                false,
+                "a backslash in a later top-level key",
+            ),
+        ]);
+    }
+
+    /// Values of `mr_ent` that hold no such string.
+    #[test]
+    fn acs6_claim_other_values_of_mr_ent() {
+        check(&[
+            row(r#"{"mr_ent":null}"#, BG, false, "null"),
+            row(r#"{"mr_ent":true}"#, BG, false, "true"),
+            row(r#"{"mr_ent":false}"#, BG, false, "false"),
+            row(r#"{"mr_ent":1}"#, BG, false, "a number"),
+            row(r#"{"mr_ent":""}"#, BG, false, "an empty string"),
+            row(r#"{"mr_ent":[]}"#, BG, false, "an empty array"),
+            row(r#"{"mr_ent":[1,null,true]}"#, BG, false, "non-string elements"),
+            row(r#"{"iss":"x","aud":"y"}"#, BG, false, "no claim at all"),
+            row("{}", BG, false, "an empty object"),
+        ]);
+    }
+
+    /// Anything that is not one well-formed JSON object is false, and nothing
+    /// panics.
+    #[test]
+    fn acs6_claim_malformed_or_truncated_input_is_false() {
+        let deep = "[".repeat(10_000);
+        let deep_in_claim = format!(r#"{{"mr_ent":{deep}"#);
+        let deep_closed = format!(
+            r#"{{"mr_ent":[{}"base-game"{}]}}"#,
+            "[".repeat(10_000),
+            "]".repeat(10_000)
+        );
+        let deep_open_objects = r#"{"a":"#.repeat(10_000);
+        check(&[
+            row(r#"[{"mr_ent":["base-game"]}]"#, BG, false, "a top-level array"),
+            row(r#"["base-game"]"#, BG, false, "a bare array"),
+            row(r#""mr_ent""#, BG, false, "a top-level string"),
+            row("null", BG, false, "null"),
+            row("", BG, false, "empty input"),
+            row("   ", BG, false, "only whitespace"),
+            row("{", BG, false, "an open brace"),
+            row("}", BG, false, "a close brace"),
+            row(r#"{"mr_ent":["base-game""#, BG, false, "the array unclosed"),
+            row(r#"{"mr_ent":["base-game"]"#, BG, false, "the object unclosed"),
+            row(r#"{"mr_ent":["base-game"#, BG, false, "an unterminated string"),
+            row(r#"{"mr_ent":["base-game"]}x"#, BG, false, "trailing garbage"),
+            row(r#"{"mr_ent":["base-game"]}{}"#, BG, false, "a second object"),
+            row(r#"{"mr_ent":["base-game"]},"#, BG, false, "a trailing comma"),
+            row(r#"{"mr_ent" ["base-game"]}"#, BG, false, "no colon"),
+            row(r#"{"a":1 "mr_ent":["base-game"]}"#, BG, false, "no comma"),
+            row(r#"{"mr_ent":["base-game",]}"#, BG, false, "a comma closing the array"),
+            row(r#"{"mr_ent":["base-game"],}"#, BG, false, "a comma closing the object"),
+            row(r#"{,"mr_ent":["base-game"]}"#, BG, false, "a comma opening the object"),
+            row(r#"{"mr_ent":["base-game" "x"]}"#, BG, false, "no comma between elements"),
+            row(r#"{mr_ent:["base-game"]}"#, BG, false, "an unquoted key"),
+            row(r#"{'mr_ent':['base-game']}"#, BG, false, "single quotes"),
+            row(r#"{"mr_ent"}"#, BG, false, "a key with no value"),
+            row(r#"{"a":nope,"mr_ent":["base-game"]}"#, BG, false, "a bare word before"),
+            row(r#"{"mr_ent":["base-game"],"a":nope}"#, BG, false, "a bare word after"),
+            row(
+                r#"{"mr_ent":["base-game"],"a":"x}"#,
+                BG,
+                false,
+                "a later string unterminated",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],"a":[1,2}"#,
+                BG,
+                false,
+                "a later array closed by a brace",
+            ),
+            row(
+                r#"{"mr_ent":["base-game"],"a":{"b":1]}"#,
+                BG,
+                false,
+                "a later object closed by a bracket",
+            ),
+            row(&deep, BG, false, "10,000 open brackets"),
+            row(&deep_in_claim, BG, false, "10,000 open brackets as the claim"),
+            row(&deep_closed, BG, false, "the element 10,000 arrays deep"),
+            row(&deep_open_objects, BG, false, "10,000 open objects"),
+        ]);
+    }
+
+    /// The second argument is the entitlement asked about, compared whole.
+    #[test]
+    fn acs6_claim_the_entitlement_asked_is_honoured() {
+        check(&[
+            row(r#"{"mr_ent":["soundtrack"]}"#, BG, false, "another entitlement named"),
+            row(r#"{"mr_ent":["soundtrack"]}"#, "soundtrack", true, "the one named"),
+            row(r#"{"mr_ent":["base-game"]}"#, "soundtrack", false, "base-game named"),
+            row(
+                r#"{"mr_ent":["base-game","soundtrack"]}"#,
+                "soundtrack",
+                true,
+                "second of two",
+            ),
+            row(r#"{"mr_ent":["base-game"]}"#, "base", false, "a prefix asked"),
+            row(r#"{"mr_ent":["base-game"]}"#, "game", false, "a suffix asked"),
+            row(r#"{"mr_ent":["base-game"]}"#, "", false, "nothing asked"),
+            row(r#"{"mr_ent":["base-game"]}"#, "base-game ", false, "a longer string asked"),
+            row(r#"{"mr_ent":[""]}"#, "", true, "the empty entitlement named and asked"),
+            row(r#"{"mr_ent":[""]}"#, BG, false, "the empty entitlement named"),
+        ]);
+    }
+
+    // --- the generated model ------------------------------------------------
+
+    /// Top-level keys; index 0 is the claim's key.
+    const KEYS: [&str; 6] = ["mr_ent", "iss", "aud", "mr_entx", "xmr_ent", "sub"];
+    /// Array elements, as JSON text; index 0 is the entitlement itself.
+    const ELEMS: [&str; 10] = [
+        r#""base-game""#,
+        r#""soundtrack""#,
+        r#""base-game ""#,
+        r#""xbase-game""#,
+        r#""""#,
+        r#""a\"b""#,
+        "7",
+        "null",
+        r#"["base-game"]"#,
+        r#"{"k":"]","base-game":["base-game"]}"#,
+    ];
+    /// String values, as JSON text; none is the claim.
+    const STRS: [&str; 5] = [
+        r#""x""#,
+        r#""mr_ent""#,
+        r#""\"mr_ent\":[\"base-game\"]""#,
+        r#""a\\""#,
+        r#""}]""#,
+    ];
+    const WS: [&str; 5] = ["", " ", "\n", "\t ", "\r\n"];
+
+    /// One value of the model: `kind` 0 string, 1 number, 2 true, 3 null,
+    /// 4 array of `elems`, 5 an object holding `mr_ent` with that array.
+    #[derive(Clone, Debug)]
+    struct JsonVal {
+        kind: usize,
+        string: usize,
+        elems: Vec<usize>,
+    }
+
+    impl JsonVal {
+        fn render(&self, ws: &str) -> String {
+            let array = || {
+                let parts: Vec<String> = self
+                    .elems
+                    .iter()
+                    .map(|e| format!("{ws}{}{ws}", ELEMS[*e]))
+                    .collect();
+                format!("[{}]", parts.join(","))
+            };
+            match self.kind {
+                0 => STRS[self.string].to_string(),
+                1 => "12".to_string(),
+                2 => "true".to_string(),
+                3 => "null".to_string(),
+                4 => array(),
+                _ => format!(r#"{{{ws}"mr_ent"{ws}:{ws}{}{ws}}}"#, array()),
+            }
+        }
+
+        fn names_the_claim(&self) -> bool {
+            self.kind == 4 && self.elems.contains(&0)
+        }
+    }
+
+    fn value() -> impl Strategy<Value = JsonVal> {
+        (
+            0usize..6,
+            0..STRS.len(),
+            proptest::collection::vec(0..ELEMS.len(), 0..4),
+        )
+            .prop_map(|(kind, string, elems)| JsonVal {
+                kind,
+                string,
+                elems,
+            })
+    }
+
+    /// Renders `{ "key": value, ... }` with `ws` around every token.
+    fn render(members: &[(usize, JsonVal, usize)]) -> String {
+        let parts: Vec<String> = members
+            .iter()
+            .map(|(k, v, w)| {
+                let ws = WS[*w];
+                format!(r#"{ws}"{}"{ws}:{ws}{}{ws}"#, KEYS[*k], v.render(ws))
+            })
+            .collect();
+        format!("{}{{{}}}{}", WS[1], parts.join(","), WS[2])
+    }
+
+    fn member() -> impl Strategy<Value = (usize, JsonVal, usize)> {
+        (0..KEYS.len(), value(), 0..WS.len())
+    }
+
+    /// A member whose key is never `mr_ent`.
+    fn other_member() -> impl Strategy<Value = (usize, JsonVal, usize)> {
+        (1..KEYS.len(), value(), 0..WS.len())
+    }
+
+    /// The claim's own member: an array holding the entitlement among others.
+    fn claim_member() -> impl Strategy<Value = (usize, JsonVal, usize)> {
+        (
+            proptest::collection::vec(0..ELEMS.len(), 0..4),
+            0usize..4,
+            0..WS.len(),
+        )
+            .prop_map(|(mut elems, at, w)| {
+                let at = at.min(elems.len());
+                elems.insert(at, 0);
+                (
+                    0,
+                    JsonVal {
+                        kind: 4,
+                        string: 0,
+                        elems,
+                    },
+                    w,
+                )
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Any model: true exactly when one top-level member has the key
+        /// `mr_ent` and its value is an array holding the entitlement.
+        #[test]
+        fn acs6_claim_agrees_with_the_model(
+            members in proptest::collection::vec(member(), 0..6),
+        ) {
+            let text = render(&members);
+            let claims: Vec<&JsonVal> = members
+                .iter()
+                .filter(|(k, _, _)| *k == 0)
+                .map(|(_, v, _)| v)
+                .collect();
+            let want = claims.len() == 1 && claims[0].names_the_claim();
+            prop_assert_eq!(token_names_entitlement(&text, BG), want, "{}", text);
+        }
+
+        /// The claim among other members, anywhere: true; and every strict
+        /// prefix that stops before the closing brace: false.
+        #[test]
+        fn acs6_claim_found_anywhere_and_no_prefix_is_enough(
+            others in proptest::collection::vec(other_member(), 0..5),
+            claim in claim_member(),
+            at in 0usize..6,
+        ) {
+            let mut members = others;
+            let at = at.min(members.len());
+            members.insert(at, claim);
+            let text = render(&members);
+            prop_assert!(token_names_entitlement(&text, BG), "{}", text);
+            prop_assert!(!token_names_entitlement(&text, "soundtrack ") , "{}", text);
+            let close = text.rfind('}').expect("the rendered object closes");
+            for cut in 0..=close {
+                prop_assert!(
+                    !token_names_entitlement(&text[..cut], BG),
+                    "a prefix of {} bytes of {}",
+                    cut,
+                    text
+                );
+            }
+        }
+
+        /// The claim plus a second top-level `mr_ent` of any value: false.
+        #[test]
+        fn acs6_claim_a_second_top_level_key_is_false(
+            others in proptest::collection::vec(other_member(), 0..4),
+            claim in claim_member(),
+            second in value(),
+            w in 0..WS.len(),
+            order in any::<bool>(),
+        ) {
+            let mut members = others;
+            let dup = (0usize, second, w);
+            if order {
+                members.push(claim);
+                members.push(dup);
+            } else {
+                members.insert(0, dup);
+                members.push(claim);
+            }
+            let text = render(&members);
+            prop_assert!(!token_names_entitlement(&text, BG), "{}", text);
+        }
+
+        /// Arbitrary text never panics, and a true answer needs both quoted
+        /// names in the text.
+        #[test]
+        fn acs6_claim_arbitrary_text_never_panics(
+            text in r#"[\[\]{}":, a-z_\\-]{0,48}"#,
+            any_text in any::<String>(),
+        ) {
+            for t in [&text, &any_text] {
+                if token_names_entitlement(t, BG) {
+                    prop_assert!(t.contains("\"mr_ent\"") && t.contains("\"base-game\""), "{}", t);
+                }
+            }
+        }
+    }
+}
+
+/// `entitled` and `require_entitled` over a real `ReducerContext` on the
+/// in-memory host, with the profile an argument.
+mod acs6_door {
+    use super::acs6_profile::{feats, HOSTED_DEV, LOCAL_DEV, PRODUCTION};
+    use crate::accounts::{
+        build_profile, entitled, require_entitled, BuildProfile, ENTITLEMENT_BASE_GAME,
+        ERR_OWNERSHIP_REQUIRED,
+    };
+    use crate::native_host_tests::{fixture, Fixture};
+    use crate::schema::{
+        Config, Player, PlayerHandle, PlayerSession, WorldAccess, WorldAccessRule, WorldAdmission,
+    };
+    use spacetimedb::{ConnectionId, Identity, Timestamp};
+
+    const T0: i64 = 1_700_000_000_000;
+    const CONN: u128 = 0xAC56_0001;
+    const AUD: &str = r#""monster-realm""#;
+    const CLAIM: &str = r#"["base-game"]"#;
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    /// Never `[0; 32]` (the dummy sender) and never the module identity.
+    fn who() -> Identity {
+        Identity::from_byte_array([0x6A; 32])
+    }
+
+    /// A JWT payload: `aud` and the `mr_ent` value are raw JSON.
+    fn payload(iss: &str, aud: &str, ent: Option<&str>) -> String {
+        let claim = ent.map(|e| format!(r#","mr_ent":{e}"#)).unwrap_or_default();
+        format!(r#"{{"iss":"{iss}","sub":"sub-door","aud":{aud}{claim},"iat":1,"exp":2}}"#)
+    }
+
+    /// The token the host mints for a connection that brought none.
+    fn host_minted() -> String {
+        r#"{"iss":"localhost","sub":"host-sub","aud":["spacetimedb"],"iat":1}"#.to_string()
+    }
+
+    fn dev_enforcing() -> BuildProfile {
+        build_profile(feats(&["dev_issuers"]))
+    }
+
+    /// `(entitled, require_entitled)` for `who()` over a client connection
+    /// carrying `jwt` (`None`: no token at all).
+    fn ask(fx: &Fixture, p: &BuildProfile, jwt: Option<&str>) -> (bool, Result<(), String>) {
+        let e = fx.run_as_conn_at(who(), CONN, jwt, at(T0), |ctx| entitled(ctx, p));
+        let r = fx.run_as_conn_at(who(), CONN, jwt, at(T0), |ctx| {
+            require_entitled(ctx, p, "join_game")
+        });
+        (e, r)
+    }
+
+    /// The same over the internal context, which has no connection.
+    fn ask_internal(fx: &Fixture, p: &BuildProfile) -> (bool, Result<(), String>) {
+        let e = fx.run_as_at(who(), at(T0), |ctx| entitled(ctx, p));
+        let r = fx.run_as_at(who(), at(T0), |ctx| require_entitled(ctx, p, "join_game"));
+        (e, r)
+    }
+
+    fn refused() -> (bool, Result<(), String>) {
+        (false, Err(ERR_OWNERSHIP_REQUIRED.to_string()))
+    }
+
+    fn admitted() -> (bool, Result<(), String>) {
+        (true, Ok(()))
+    }
+
+    #[test]
+    fn acs6_door_the_constants_hold_these_values() {
+        assert_eq!(ERR_OWNERSHIP_REQUIRED, "ownership required");
+        assert_eq!(ENTITLEMENT_BASE_GAME, "base-game");
+    }
+
+    /// A profile that does not enforce admits every caller and never reads the
+    /// token: a payload that is not JSON at all, and one whose `aud` is a
+    /// number (both panic in the SDK when read), are admitted.
+    #[test]
+    fn acs6_door_a_non_enforcing_profile_admits_everyone_without_reading_the_token() {
+        let fx = fixture();
+        for named in [&["open_join"][..], &["dev_reducers"][..], &["load_test_zones"][..]] {
+            let p = build_profile(feats(named));
+            assert!(!p.enforces_ownership, "fixture: {named:?} does not enforce");
+            assert_eq!(ask(&fx, &p, None), admitted(), "{named:?}: no token");
+            assert_eq!(ask_internal(&fx, &p), admitted(), "{named:?}: no connection");
+            let host = host_minted();
+            assert_eq!(ask(&fx, &p, Some(&host)), admitted(), "{named:?}: host token");
+            assert_eq!(
+                ask(&fx, &p, Some("not json at all")),
+                admitted(),
+                "{named:?}: an unreadable payload"
+            );
+            let numeric = payload("localhost", "7", None);
+            assert_eq!(
+                ask(&fx, &p, Some(&numeric)),
+                admitted(),
+                "{named:?}: a numeric aud"
+            );
+        }
+    }
+
+    /// Under the dev-enforcing profile every caller without a dev-issuer token
+    /// for this audience naming `base-game` is refused with the one error.
+    ///
+    /// kills: an always-true door; the issuer, audience or claim check dropped;
+    /// a prefix, suffix or case-folded issuer match; a substring claim search.
+    #[test]
+    fn acs6_door_dev_enforcing_refuses_every_unentitled_caller() {
+        let p = dev_enforcing();
+        let cases: Vec<(&str, Option<String>)> = vec![
+            ("no token", None),
+            ("the host-minted token", Some(host_minted())),
+            (
+                "an unlisted issuer with the audience and the claim",
+                Some(payload("localhost", AUD, Some(CLAIM))),
+            ),
+            (
+                "the production issuer with the claim",
+                Some(payload(PRODUCTION, AUD, Some(CLAIM))),
+            ),
+            ("a dev token without mr_ent", Some(payload(LOCAL_DEV, AUD, None))),
+            (
+                "a dev token naming another entitlement",
+                Some(payload(LOCAL_DEV, AUD, Some(r#"["soundtrack"]"#))),
+            ),
+            (
+                "a dev token with an empty mr_ent",
+                Some(payload(HOSTED_DEV, AUD, Some("[]"))),
+            ),
+            (
+                "a dev token with mr_ent a string",
+                Some(payload(LOCAL_DEV, AUD, Some(r#""base-game""#))),
+            ),
+            (
+                "a dev token with the claim nested",
+                Some(payload(LOCAL_DEV, AUD, Some(r#"[["base-game"]]"#))),
+            ),
+            (
+                "a dev token with the claim's text inside another value",
+                Some(format!(
+                    r#"{{"iss":"{LOCAL_DEV}","sub":"x\",\"mr_ent\":[\"base-game\"]","aud":{AUD}}}"#
+                )),
+            ),
+            (
+                "a dev token with the claim but another audience",
+                Some(payload(LOCAL_DEV, r#"["other-app"]"#, Some(CLAIM))),
+            ),
+            (
+                "a dev token with the claim and no audience",
+                Some(payload(HOSTED_DEV, "[]", Some(CLAIM))),
+            ),
+            (
+                "a dev issuer with a trailing slash",
+                Some(payload(&format!("{LOCAL_DEV}/"), AUD, Some(CLAIM))),
+            ),
+            (
+                "a dev issuer with a longer port",
+                Some(payload(&format!("{LOCAL_DEV}5"), AUD, Some(CLAIM))),
+            ),
+            (
+                "a dev issuer upper-cased",
+                Some(payload(&LOCAL_DEV.to_uppercase(), AUD, Some(CLAIM))),
+            ),
+            (
+                "a dev issuer's prefix",
+                Some(payload("https://auth.monster-realm", AUD, Some(CLAIM))),
+            ),
+        ];
+        for (label, jwt) in cases {
+            let fx = fixture();
+            assert_eq!(ask(&fx, &p, jwt.as_deref()), refused(), "{label}");
+        }
+        let fx = fixture();
+        assert_eq!(ask_internal(&fx, &p), refused(), "no connection");
+    }
+
+    /// Under the dev-enforcing profile a token from either dev issuer, for this
+    /// audience, naming `base-game` is admitted.
+    #[test]
+    fn acs6_door_dev_enforcing_admits_an_entitled_token_from_either_dev_issuer() {
+        let p = dev_enforcing();
+        let cases: Vec<(&str, String)> = vec![
+            ("the local dev issuer", payload(LOCAL_DEV, AUD, Some(CLAIM))),
+            (
+                "the hosted dev issuer, aud a list",
+                payload(HOSTED_DEV, r#"["other-app","monster-realm"]"#, Some(CLAIM)),
+            ),
+            (
+                "the claim among others",
+                payload(LOCAL_DEV, AUD, Some(r#"["soundtrack","base-game"]"#)),
+            ),
+        ];
+        for (label, jwt) in cases {
+            let fx = fixture();
+            assert_eq!(ask(&fx, &p, Some(&jwt)), admitted(), "{label}");
+        }
+    }
+
+    /// The official profile admits the production issuer's entitled token and
+    /// no dev issuer's.
+    #[test]
+    fn acs6_door_official_admits_only_the_production_issuer() {
+        let p = build_profile(feats(&["official"]));
+        let fx = fixture();
+        let prod = payload(PRODUCTION, AUD, Some(CLAIM));
+        assert_eq!(ask(&fx, &p, Some(&prod)), admitted(), "production, entitled");
+        for (label, jwt) in [
+            ("no token", None),
+            ("local dev, entitled", Some(payload(LOCAL_DEV, AUD, Some(CLAIM)))),
+            ("hosted dev, entitled", Some(payload(HOSTED_DEV, AUD, Some(CLAIM)))),
+            ("production, no claim", Some(payload(PRODUCTION, AUD, None))),
+            (
+                "production, another audience",
+                Some(payload(PRODUCTION, r#"["other-app"]"#, Some(CLAIM))),
+            ),
+        ] {
+            assert_eq!(ask(&fx, &p, jwt.as_deref()), refused(), "official: {label}");
+        }
+        assert_eq!(ask_internal(&fx, &p), refused(), "official: no connection");
+    }
+
+    /// The world, default and conflict profiles trust no login issuer, so
+    /// nobody is admitted.
+    #[test]
+    fn acs6_door_world_default_and_conflict_admit_nobody() {
+        for named in [&["world"][..], &[][..], &["official", "world"][..]] {
+            let p = build_profile(feats(named));
+            let fx = fixture();
+            for (label, jwt) in [
+                ("no token", None),
+                ("production, entitled", Some(payload(PRODUCTION, AUD, Some(CLAIM)))),
+                ("local dev, entitled", Some(payload(LOCAL_DEV, AUD, Some(CLAIM)))),
+                ("hosted dev, entitled", Some(payload(HOSTED_DEV, AUD, Some(CLAIM)))),
+                ("host-minted", Some(host_minted())),
+            ] {
+                assert_eq!(ask(&fx, &p, jwt.as_deref()), refused(), "{named:?}: {label}");
+            }
+            assert_eq!(ask_internal(&fx, &p), refused(), "{named:?}: no connection");
+        }
+    }
+
+    /// The issuer is judged before the audience: a token from an issuer the
+    /// profile does not list, whose `aud` is a number (the SDK panics reading
+    /// it), is refused without a panic.
+    #[test]
+    fn acs6_door_an_untrusted_issuers_audience_is_never_read() {
+        for (named, iss) in [
+            (&["dev_issuers"][..], "localhost"),
+            (&["official"][..], LOCAL_DEV),
+            (&["world"][..], PRODUCTION),
+        ] {
+            let p = build_profile(feats(named));
+            let fx = fixture();
+            let jwt = payload(iss, "7", Some(CLAIM));
+            assert_eq!(ask(&fx, &p, Some(&jwt)), refused(), "{named:?}: {iss}");
+        }
+    }
+
+    /// The door reads no table and writes nothing, whether it admits or
+    /// refuses: every table it could consult holds a row for the caller, all
+    /// writable, and none is touched.
+    #[test]
+    fn acs6_door_reads_no_table_and_writes_nothing() {
+        let fx = fixture();
+        fx.table::<crate::schema::Account>("account", "identity", |r| r.identity)
+            .writable()
+            .seed(&super::base_account(0x6A));
+        fx.table::<Player>("player", "identity", |r| r.identity)
+            .writable()
+            .seed(&Player {
+                identity: who(),
+                entity_id: 1,
+                name: "Ada".to_string(),
+                online: true,
+                last_input_seq: 0,
+                discriminator: 3,
+                lead_level: 0,
+            });
+        fx.table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
+            .writable()
+            .seed(&WorldAdmission {
+                identity: who(),
+                admitted_at_ms: T0,
+            });
+        fx.table_keyed::<Config, u32>("config", "id", |r| r.id)
+            .writable()
+            .seed(&Config {
+                id: 0,
+                content_version: 1,
+                owner_identity: who(),
+            });
+        fx.table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id)
+            .writable()
+            .seed(&WorldAccess {
+                id: 0,
+                rule: WorldAccessRule::Open,
+                password_salt: Vec::new(),
+                password_hash: Vec::new(),
+            });
+        fx.table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .seed(&PlayerHandle {
+                owner_identity: who(),
+                discriminator: 3,
+            });
+        fx.table::<PlayerSession>("player_session", "identity", |r| r.identity)
+            .writable()
+            .seed(&PlayerSession {
+                connection_id: ConnectionId::from_u128(CONN),
+                identity: who(),
+            });
+        const TABLES: [&str; 7] = [
+            "account",
+            "player",
+            "world_admission",
+            "config",
+            "world_access",
+            "player_handle",
+            "player_session",
+        ];
+        fx.reset_reads();
+        fx.reset_writes();
+        let dev = dev_enforcing();
+        let entitled_jwt = payload(LOCAL_DEV, AUD, Some(CLAIM));
+        assert_eq!(ask(&fx, &dev, Some(&entitled_jwt)), admitted(), "admitted");
+        assert_eq!(ask(&fx, &dev, None), refused(), "refused");
+        assert_eq!(ask_internal(&fx, &dev), refused(), "refused, no connection");
+        let open = build_profile(feats(&["open_join"]));
+        assert_eq!(ask(&fx, &open, None), admitted(), "admitted, open");
+        for t in TABLES {
+            assert_eq!(fx.rows_read(t), 0, "the door read {t}");
+            assert_eq!(fx.writes_to(t), 0, "the door wrote {t}");
+        }
+    }
+}
+
+/// The `mr_build_profile` section text, byte for byte, for the profiles that
+/// matter, and its length for every feature set.
+mod acs6_section {
+    use super::acs6_profile::{all_feature_sets, NONE};
+    use crate::accounts::{
+        build_profile, profile_section, profile_section_len, BuildFeatures, BuildProfile,
+    };
+
+    /// `(section length, section bytes)` of a profile built at compile time.
+    macro_rules! section_of {
+        ($profile:expr) => {{
+            const P: BuildProfile = $profile;
+            const N: usize = profile_section_len(&P);
+            (N, profile_section::<N>(&P).to_vec())
+        }};
+    }
+
+    fn assert_section(got: (usize, Vec<u8>), want: &str, label: &str) {
+        assert_eq!(
+            String::from_utf8_lossy(&got.1),
+            want,
+            "{label}: the section text"
+        );
+        assert_eq!(got.1, want.as_bytes(), "{label}: the section bytes");
+        assert_eq!(got.0, want.len(), "{label}: the section length");
+    }
+
+    #[test]
+    fn acs6_section_official() {
+        assert_section(
+            section_of!(build_profile(BuildFeatures {
+                official: true,
+                ..NONE
+            })),
+            "profile=official\nenforces_ownership=true\ndev_reducers=false\n\
+             login_issuer=https://auth.monster-realm.invalid/\n",
+            "official",
+        );
+    }
+
+    #[test]
+    fn acs6_section_world() {
+        assert_section(
+            section_of!(build_profile(BuildFeatures {
+                world: true,
+                ..NONE
+            })),
+            "profile=world\nenforces_ownership=true\ndev_reducers=false\n",
+            "world",
+        );
+    }
+
+    #[test]
+    fn acs6_section_dev_enforcing() {
+        assert_section(
+            section_of!(build_profile(BuildFeatures {
+                dev_issuers: true,
+                ..NONE
+            })),
+            "profile=dev-enforcing\nenforces_ownership=true\ndev_reducers=false\n\
+             login_issuer=http://localhost:4455\n\
+             login_issuer=https://auth.monster-realm.spookyowltech.com\n",
+            "dev-enforcing",
+        );
+    }
+
+    #[test]
+    fn acs6_section_test() {
+        assert_section(
+            section_of!(build_profile(BuildFeatures {
+                open_join: true,
+                ..NONE
+            })),
+            "profile=test\nenforces_ownership=false\ndev_reducers=false\n\
+             login_issuer=http://localhost:4455\n\
+             login_issuer=https://auth.monster-realm.spookyowltech.com\n",
+            "test",
+        );
+        assert_section(
+            section_of!(build_profile(BuildFeatures {
+                dev_reducers: true,
+                ..NONE
+            })),
+            "profile=test\nenforces_ownership=false\ndev_reducers=true\n\
+             login_issuer=http://localhost:4455\n\
+             login_issuer=https://auth.monster-realm.spookyowltech.com\n",
+            "test with the dev reducers",
+        );
+    }
+
+    #[test]
+    fn acs6_section_default_and_conflict() {
+        assert_section(
+            section_of!(build_profile(NONE)),
+            "profile=default\nenforces_ownership=true\ndev_reducers=false\n",
+            "default",
+        );
+        assert_section(
+            section_of!(build_profile(BuildFeatures {
+                official: true,
+                world: true,
+                ..NONE
+            })),
+            "profile=conflict\nenforces_ownership=true\ndev_reducers=false\n",
+            "conflict",
+        );
+    }
+
+    /// For every feature set the section length is the length of the text
+    /// rendered here from that profile's fields.
+    #[test]
+    fn acs6_section_length_for_every_feature_set() {
+        for f in all_feature_sets() {
+            let p = build_profile(f);
+            let mut text = format!(
+                "profile={}\nenforces_ownership={}\ndev_reducers={}\n",
+                p.name, p.enforces_ownership, p.dev_reducers
+            );
+            for issuer in p.login_issuers {
+                text.push_str(&format!("login_issuer={issuer}\n"));
+            }
+            assert_eq!(profile_section_len(&p), text.len(), "{f:?}");
+        }
+    }
+}
