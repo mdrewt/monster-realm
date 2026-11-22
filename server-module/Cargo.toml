@@ -43,15 +43,27 @@ proptest = { workspace = true }
 syn = { version = "2", features = ["full", "visit"] }
 
 [features]
-# Dev/test-only reducers (start_wild_battle, grant_bait), OFF in release/publish.
-# Enabled for the recruit e2e via a pre-built wasm + `spacetime
-# publish --bin-path`. NOTE: the belief that "no
-# CLI feature passthrough exists" is wrong — `spacetime build --features` DOES
-# exist (v1.11.0 through v2.8.1) but is `.hide(true)`, so it never shows in
-# `--help`, which is how it was missed. The `--bin-path` route still works and is
-# arguably more stable (the vendor has a TODO to rename the flag), so this is a
-# recorded correction, not a mandate to change. Never add to `default`.
-dev_reducers = []
+# The ownership features (docs/local-play.md §3, "The build input"; the constants are computed
+# from them in src/accounts.rs `build_profile`). A release feature wins over a dev feature.
+#
+# `open_join` is in `default`: a build that names no feature is the test build. It admits
+# anonymous players and trusts the dev issuers. A module to ship is built by
+# `just release-module <official|world>`, which names exactly one release feature and no default.
+default = ["open_join"]
+# A release build for the official server: the production login issuer, ownership enforced.
+official = []
+# A release build for a world a player hosts: no login issuer, ownership enforced.
+world = []
+# The dev login issuers; ownership is still enforced (the dev-enforcing build).
+dev_issuers = []
+# Switches the ownership check off, for tests and anonymous play. Implies `dev_issuers`.
+open_join = ["dev_issuers"]
+# Dev/test-only reducers (grant_bait, dev_expire_tactical_window), OFF in release/publish.
+# Enabled for the e2e via a pre-built wasm + `spacetime publish --bin-path`.
+# `spacetime build --features` exists (v1.11.0 through v2.8.1) but is `.hide(true)`, so it
+# never shows in `--help`; the `--bin-path` route is the one the recipes use. Implies
+# `open_join`. Never add to `default`.
+dev_reducers = ["open_join"]
 # The load-test build (`just load-host`): game-core's 100 generated zones and the dev reducer
 # `dev_place_in_load_zone`. It implies `dev_reducers`, so nothing that refuses a dev build publishes
 # it. Never add to `default`.

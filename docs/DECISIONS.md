@@ -1116,9 +1116,11 @@ identity, and `on_connect` never rejects a connection for having no account (a w
 rule is not `Open` refuses an identity it has not admitted, account or not: see "A world that is
 not open refuses an unadmitted identity at connect and in every reducer; the owner relays the
 door"). An
+anonymous connection is accepted but cannot join on a build that enforces ownership (see
+"Ownership is enforced unless a dev feature switches it off"). An
 `account` row is created only for a JWT from an allowed issuer and audience
-(`ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` in `server-module/src/accounts.rs`, still the
-fail-closed `.invalid` placeholder). A token from an unrecognised issuer falls back to
+(`ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` in `server-module/src/accounts.rs`; `ALLOWED_ISSUERS` is the
+build's own login-issuer list, computed from its cargo features). A token from an unrecognised issuer falls back to
 anonymous play; a token from an allowed issuer with the wrong audience is disconnected.
 An account holds no PII: `Identity = f(iss, sub)` keys everything. A guest moves their
 progress to an account like this. The browser mints a 256-bit claim code
@@ -1292,8 +1294,9 @@ holders. The starter kit's currency creates the wallet row at an identity's firs
 only an identity with a `player` or `account` row can request an export, so the no-wallet tier
 holds almost no caller and a join alone reaches the anonymous tier. The wallet signal stays:
 any per-identity signal an anonymous identity can earn is cheap, and sign-in is the fix. A
-configured real sign-in issuer (`ALLOWED_ISSUERS` in `server-module/src/accounts.rs`, today the
-fail-closed placeholder) is therefore a launch condition for the official server. Until then no
+configured real sign-in issuer (`PRODUCTION_LOGIN_ISSUERS` in `server-module/src/accounts.rs`,
+today the fail-closed placeholder; the gate reads that list, not the build's own
+`ALLOWED_ISSUERS`) is therefore a launch condition for the official server. Until then no
 caller has an account, so no caller reaches the account holders' ceiling, and identities that
 each earn a wallet row can keep the anonymous tier full: other players' export requests are
 refused for as long as those identities keep re-exporting, and for up to the 7-day retention
@@ -1367,7 +1370,11 @@ product function until a survivor is found for it.
 **Decision.** The dev reducers `grant_bait` and `dev_expire_tactical_window` compile only with
 the `dev_reducers` feature (`server-module/Cargo.toml`). `dev_place_in_load_zone` compiles only
 with `load_test_zones`, which implies `dev_reducers`. Neither feature is ever in `default`.
-The playtest recipes publish the default build and then check the *published* module with
+`dev_reducers` implies `open_join`, and `default` holds `open_join` and no dev-reducer feature. A
+release feature (`official` or `world`) together with a dev-reducer feature does not compile, and
+`just release-module` refuses an artefact that names a dev reducer.
+The playtest recipes publish the default build, which is the test build (see "Ownership is
+enforced unless a dev feature switches it off"), and then check the *published* module with
 `spacetime describe --json` (`scripts/verify-release-reducers.mjs`, whose
 `FORBIDDEN_REDUCERS` lists every dev reducer name, so a new dev reducer joins it in the
 change that adds it), and check that the production client bundle contains no DEV debug
@@ -2642,28 +2649,85 @@ player refunded after binding a world keeps playing there until its host removes
 
 ## Ownership is enforced unless a dev feature switches it off
 
-**Decision.** The build input is the cargo features of `monster-realm-module`. A build enforces
-ownership unless it names `open_join`. `official` and `world` select production trust (see "The
-official build holds no attestation key and a world build trusts no login issuer"); `dev_issuers`
-adds the dev login issuers and dev attestation keys and still enforces; `open_join` implies
-`dev_issuers`, and `dev_reducers` implies `open_join`. A release feature wins over a dev feature, so
-no feature set yields production trust with enforcement off, and the default build enforces and
-trusts nothing: nobody can join it. One recipe makes a module to ship,
-`just release-module <official|world>`; it checks the profile the artefact itself carries and
-records the artefact's hash, by which the artefact is embedded or published. The ownership features
-add or remove no table, reducer, view or type. Designed, not built: `docs/local-play.md` §3,
-fork (e), with the table of every feature set, the recipe and the tests for both sides of the
-switch. Of the dev attestation keys, the `local-dev` one is fixed and can be derived from this
-repository (`account-service/src/keys.ts`), so anyone can sign with it: a `dev_issuers` build
-checks ownership in a `local` or `private` world and stops nobody who signs with that key. No
-feature set gives a build the `hosted-dev` attestation keys alone; a dev build that has to hold
-against strangers needs one (`docs/account-service.md`, "Attestation keys").
+**Decision.** The build input is the cargo features of `monster-realm-module`: `official`,
+`world`, `dev_issuers`, `open_join` and `dev_reducers` (`server-module/Cargo.toml`). A build
+enforces ownership unless it names `open_join`. `official` and `world` select production trust (see
+"The official build holds no attestation key and a world build trusts no login issuer");
+`dev_issuers` adds the dev login issuers and still enforces; `open_join` implies `dev_issuers`, and
+`dev_reducers` implies `open_join`. A release feature wins over a dev feature, so no feature set
+yields production trust with enforcement off. `build_profile`, a `const fn` in
+`server-module/src/accounts.rs`, computes a `BuildProfile` from the features: its name, whether it
+enforces ownership, the login issuers it trusts and whether it compiles a dev reducer. It applies
+cargo's implications itself, so a feature handed to the compiler from outside cargo yields no
+other profile. `BUILD_PROFILE` is this build's, and `ALLOWED_ISSUERS` is its login-issuer list: the
+two dev issuers (`http://localhost:4455`, `https://auth.monster-realm.spookyowltech.com`) on a
+test or dev-enforcing build, `PRODUCTION_LOGIN_ISSUERS` (the fail-closed `.invalid` placeholder)
+on `official`, and none on `world`, on a build with both release features and on a build with no
+feature at all. A release feature together with `dev_reducers` or `load_test_zones` does not
+compile (a const assertion, skipped under clippy, whose `--all-features` run names every feature).
+The ownership features add or remove no table, reducer, view or type.
 
-**Why.** With enforcement as the default there is no input whose omission ships an open module:
-`spacetime publish --module-path` and `spacetime generate` build with no features unless told
-otherwise, and what they then build admits nobody. The only way to an open module is to name a dev
-feature, which no recipe that ships does. It is the rule dev behaviour already follows (see
-"Dev-only reducers never ship"): the dev thing is the opt-in.
+`default` in `server-module/Cargo.toml` is `["open_join"]`, so a build that names no feature is the
+test build: it admits anonymous players and trusts the two dev issuers. `spacetime publish
+--module-path`, `just publish`, the playtest recipes, `scripts/smoke-republish.sh` and the nightly
+load smoke all publish that build. A default build that enforces and trusts nothing is what this
+decision aims at. It arrives when `open_join` leaves `default`, which needs each of those publish
+sites, `client/e2e/global-setup.ts`, and the `just test`, `ci-fast` and mutation recipes to name
+`open_join`. Until then only `just release-module <official|world>` makes an enforcing module to
+ship, and it does not depend on the default: it passes `--no-default-features`, and a release
+feature wins anyway.
+
+`join_game` calls `accounts::require_entitled` after the admission check and before the deletion
+gate. On an enforcing build the caller's connection must carry a token from one of the build's
+login issuers, addressed to `ALLOWED_AUDIENCE`, whose `mr_ent` claim names `base-game`. Anyone
+else, an anonymous connection included, gets the one fixed error `ownership required`, and nothing
+is written. A build that does not enforce admits everyone and never reads the token. The claim is
+read by a small scanner over the token's raw payload, since the module has no JSON crate
+(`token_names_entitlement`): exactly one top-level `mr_ent`, an array holding the string; a
+duplicate key, an escaped key or text the scanner cannot follow fails closed.
+
+The check gates `join_game`, the only way to a `player` row. The reducers that act on a monster the
+caller owns and need no `player` row (`care`, `train`, `evolve`, `set_nickname`,
+`set_party_slot`) do not make it. The account service gives an account that is not entitled no
+token, so such a caller connects as another identity that owns nothing. It matters for a database
+carried over from a build that did not enforce. The host checks a token's expiry at connect only,
+and `join_game` does not read `exp`, so a connection that outlives its token keeps playing until it
+reconnects.
+
+The artefact carries its profile as the wasm custom section `mr_build_profile` (`profile=`,
+`enforces_ownership=`, `dev_reducers=`, then a `login_issuer=` line per issuer), which `just
+module-profile <wasm>` prints. `just release-module <official|world>` refuses any other argument.
+It builds the module alone with `--locked --no-default-features --features <profile>` into
+`<target>/release-module/<profile>`, with the rustflags emptied (an empty `CARGO_ENCODED_RUSTFLAGS`
+also overrides config-file flags) and `RUSTC`, `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` unset.
+It refuses an artefact whose section is absent or duplicated, is not the profile asked for, does
+not enforce, compiles a dev reducer, names a dev reducer anywhere in its bytes
+(`FORBIDDEN_REDUCERS` in `scripts/verify-release-reducers.mjs`), or trusts anything but one
+`https:` login issuer (`official`) or none (`world`). It writes
+`<target>/release-module/monster-realm-<profile>.wasm` and its `.sha256`, by which the artefact is
+embedded or published. The code is proved by `server-module/src/accounts_tests.rs` (`acs6_profile`
+over all 64 feature sets, `acs6_claim`, `acs6_door`, `acs6_section`); by
+`server-module/src/movement_tests.rs`, where `acs6_enforcing` runs the real reducer on a real
+dev-enforcing build through one line of `just test` (`--no-default-features --features
+monster-realm-module/dev_issuers`) and `acs6_open` runs it on a test build; by `justfile.test.mjs`;
+and by `evals/account-e2e.eval.mjs`, which on a live host publishes a dev-enforcing build
+(anonymous and unentitled tokens refused, an entitled one joins) and the `official` artefact `just
+release-module` built (anonymous and a dev-issuer token refused, no `account` row).
+
+Designed, not built: the attestation key lists and the world binding (`docs/local-play.md` §3,
+fork (e)), so a `world` build admits nobody. Of the designed dev attestation keys, the `local-dev`
+one is fixed and can be derived from this repository (`account-service/src/keys.ts`), so anyone
+can sign with it: a `dev_issuers` build would check ownership in a `local` or `private` world and
+stop nobody who signs with that key. The design gives no feature set the `hosted-dev` attestation
+keys alone; a dev build that has to hold against strangers needs one (`docs/account-service.md`,
+"Attestation keys").
+
+**Why.** The aim is that no input's omission ships an open module: `spacetime publish
+--module-path` and `spacetime generate` build with the default features unless told otherwise, and
+once `open_join` leaves `default` what they build admits nobody. Until then the default is the test
+build, and a module to ship comes only from `just release-module`, which names no default. The only
+way to an open module is to name a dev feature, which no recipe that ships does. It is the rule dev
+behaviour already follows (see "Dev-only reducers never ship"): the dev thing is the opt-in.
 
 **Rules out.** A feature that switches enforcement on (the build nobody configured would admit
 anyone and trust the dev keys); an environment variable or a row as the switch; conditional
@@ -2672,7 +2736,8 @@ module to ship any other way than the recipe; telling builds apart by `spacetime
 which reads the same for every one; a `local-dev` attestation key made per machine, as its login
 key is (a build's keys are constants computed from its features, and a key that differs per
 machine would need a build input the feature set does not have). Accepted cost: every site that
-builds or publishes for anonymous play names `open_join`.
+builds or publishes for anonymous play names `open_join` once `open_join` leaves `default`; until
+then those sites get it from the default.
 
 ## The account service is our own small OIDC issuer; Steam is the only player sign-in
 

@@ -53,7 +53,7 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 // Ranked account gate
 // ===========================================================================
 
-/// The exact fail-closed placeholder committed in `accounts::ALLOWED_ISSUERS`
+/// The exact fail-closed placeholder committed in `accounts::PRODUCTION_LOGIN_ISSUERS`
 /// (SSOT: accounts.rs). If this value ever drifts from accounts.rs,
 /// `ranked_enforcement_active()` flips true and the EA-RA-06a canary reds
 /// loudly — drift cannot be silent.
@@ -79,12 +79,13 @@ fn issuers_configured(issuers: &[&str]) -> bool {
 }
 
 /// Deployment-conditional activation: the ranked account gate is
-/// live iff this deployment can actually mint accounts. Today
-/// `ALLOWED_ISSUERS` is the fail-closed placeholder, so the gate is INERT and
-/// every existing PvP flow is unchanged. The moment a real issuer lands,
+/// live iff the production login issuer is real. It reads the production list, not the
+/// build's own: a test build trusts the dev issuers and its guests still play PvP. Today
+/// `PRODUCTION_LOGIN_ISSUERS` is the fail-closed placeholder, so the gate is INERT in every
+/// build and every existing PvP flow is unchanged. The moment a real issuer lands,
 /// enforcement activates automatically.
 fn ranked_enforcement_active() -> bool {
-    issuers_configured(crate::accounts::ALLOWED_ISSUERS)
+    issuers_configured(crate::accounts::PRODUCTION_LOGIN_ISSUERS)
 }
 
 /// The ranked-eligibility decision. PURE — no ctx, no I/O — so

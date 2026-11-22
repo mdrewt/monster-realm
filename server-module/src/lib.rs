@@ -50,6 +50,13 @@ mod taming;
 mod trading;
 mod trading_session;
 
+/// What this build does about ownership. The wasm artefact carries it as the custom section
+/// `mr_build_profile`, so a recipe can read back what it built (`just module-profile`).
+#[cfg_attr(target_arch = "wasm32", link_section = "mr_build_profile")]
+#[used]
+static MR_BUILD_PROFILE: [u8; accounts::profile_section_len(&accounts::BUILD_PROFILE)] =
+    accounts::profile_section(&accounts::BUILD_PROFILE);
+
 #[cfg(test)]
 #[path = "native_host_tests.rs"]
 mod native_host_tests;

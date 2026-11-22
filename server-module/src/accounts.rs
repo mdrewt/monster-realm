@@ -32,24 +32,105 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 
 // --- Deployment config ----------
 
-/// Which OIDC issuers may provision an `account`. Deployment config, not a game
-/// rule — provider selection changes exactly these two constants + a republish.
-/// The `.invalid` reserved TLD (RFC 2606) is a FAIL-CLOSED placeholder: until
-/// OQ1 is answered no real token matches, so no `account` is ever provisioned,
-/// while anonymous play is completely unaffected (D1″). INVARIANT: the host's
-/// own anonymous issuer is NEVER placed here — it is not an account provider,
-/// and that is what keeps the audience-disconnect branch outage-safe.
-/// `account-e2e.eval.mjs` patches this exact declaration line (its
-/// `ISSUER_NEEDLE`) to point at a local stub issuer.
+/// The production login issuer. An `official` build provisions accounts from this list and
+/// no other, and no other build trusts it. Deployment config, not a game rule. The `.invalid`
+/// reserved TLD (RFC 2606) is a FAIL-CLOSED placeholder: no real token matches it, so an
+/// `official` build provisions no `account` and admits nobody.
+/// INVARIANT: the host's own anonymous issuer is NEVER placed in a login-issuer list — it is
+/// not an account provider, and that is what keeps the audience-disconnect branch outage-safe.
 ///
-/// HARD SEQUENCING GATE: flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
-/// real deployment values, tightening `audience_allowed` to exact single-value equality, and the
-/// live restore drill are ALL gated on the real-deployment follow-up landing and are explicitly OUT of scope
-/// here. Keep the placeholder values and `audience_allowed` unchanged here until that gate
-/// clears.
-pub(crate) const ALLOWED_ISSUERS: &[&str] = &["https://auth.monster-realm.invalid/"];
+/// HARD SEQUENCING GATE: replacing this placeholder and ALLOWED_AUDIENCE with their real
+/// deployment values, tightening `audience_allowed` to exact single-value equality, and the
+/// live restore drill are ALL gated on the real-deployment follow-up landing. Keep the
+/// placeholder values and `audience_allowed` unchanged here until that gate clears.
+pub(crate) const PRODUCTION_LOGIN_ISSUERS: &[&str] = &["https://auth.monster-realm.invalid/"];
+/// The account service's `local-dev` issuer (`account-service/src/config.ts`).
+/// `account-e2e.eval.mjs` patches this exact declaration line (its `ISSUER_NEEDLE`) to point
+/// at a local stub issuer.
+const LOCAL_DEV_ISSUER: &str = "http://localhost:4455";
+/// The account service's `hosted-dev` issuer.
+const HOSTED_DEV_ISSUER: &str = "https://auth.monster-realm.spookyowltech.com";
+/// The dev login issuers. Their accounts are made by an admin command, so no release build
+/// trusts them.
+pub(crate) const DEV_LOGIN_ISSUERS: &[&str] = &[LOCAL_DEV_ISSUER, HOSTED_DEV_ISSUER];
+
+/// The cargo features a build names: the build input for ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuildFeatures {
+    pub(crate) official: bool,
+    pub(crate) world: bool,
+    pub(crate) dev_issuers: bool,
+    pub(crate) open_join: bool,
+    pub(crate) dev_reducers: bool,
+    pub(crate) load_test_zones: bool,
+}
+
+/// What a build does about ownership. `name` is one of `official`, `world`, `conflict` (both
+/// release features), `test`, `dev-enforcing` and `default` (no feature).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuildProfile {
+    pub(crate) name: &'static str,
+    /// `join_game` refuses a caller who is not entitled.
+    pub(crate) enforces_ownership: bool,
+    /// The issuers whose tokens are accounts.
+    pub(crate) login_issuers: &'static [&'static str],
+    /// The build compiles a dev reducer.
+    pub(crate) dev_reducers: bool,
+}
+
+/// The profile of a feature set (`docs/local-play.md` §3, "The build input"). A release
+/// feature wins over a dev feature: a build that names `official` or `world` enforces and
+/// trusts no dev issuer whatever else it names, and one that names both trusts nothing.
+/// Otherwise a build enforces unless it names `open_join`, and trusts the dev issuers when it
+/// names `dev_issuers`. Cargo's own implications (`load_test_zones` and `dev_reducers` name
+/// `open_join`, which names `dev_issuers`) are applied here too, so a feature handed to the
+/// compiler from outside cargo yields no other profile.
+pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
+    let dev_reducers = features.dev_reducers || features.load_test_zones;
+    let open_join = features.open_join || dev_reducers;
+    let dev_issuers = features.dev_issuers || open_join;
+    let (name, enforces_ownership, login_issuers): (&str, bool, &[&str]) =
+        match (features.official, features.world) {
+            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS),
+            (false, true) => ("world", true, &[]),
+            (true, true) => ("conflict", true, &[]),
+            (false, false) if open_join => ("test", false, DEV_LOGIN_ISSUERS),
+            (false, false) if dev_issuers => ("dev-enforcing", true, DEV_LOGIN_ISSUERS),
+            (false, false) => ("default", true, &[]),
+        };
+    BuildProfile {
+        name,
+        enforces_ownership,
+        login_issuers,
+        dev_reducers,
+    }
+}
+
+/// The features this build names: one item in every build, with no `#[cfg]` twin, so the
+/// profile is always computed by the same `build_profile`.
+pub(crate) const BUILD_FEATURES: BuildFeatures = BuildFeatures {
+    official: cfg!(feature = "official"),
+    world: cfg!(feature = "world"),
+    dev_issuers: cfg!(feature = "dev_issuers"),
+    open_join: cfg!(feature = "open_join"),
+    dev_reducers: cfg!(feature = "dev_reducers"),
+    load_test_zones: cfg!(feature = "load_test_zones"),
+};
+/// This build's profile.
+pub(crate) const BUILD_PROFILE: BuildProfile = build_profile(BUILD_FEATURES);
+// A release build ships no dev reducer: the profile can switch enforcement on, but it cannot
+// remove a reducer. Clippy's `--all-features` run names every feature at once.
+const _: () = assert!(
+    cfg!(clippy)
+        || !((BUILD_FEATURES.official || BUILD_FEATURES.world) && BUILD_PROFILE.dev_reducers),
+    "a release build (`official` or `world`) cannot name `dev_reducers` or `load_test_zones`"
+);
+/// Which OIDC issuers may provision an `account` in this build.
+pub(crate) const ALLOWED_ISSUERS: &[&str] = BUILD_PROFILE.login_issuers;
 /// Which `aud` values scope a token to THIS application (D1).
 pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];
+/// The entitlement every player needs: the claim `mr_ent` of a login token names it.
+pub(crate) const ENTITLEMENT_BASE_GAME: &str = "base-game";
 
 /// Orphan-hygiene TTL only, NOT a security parameter — entropy is client-minted
 /// and real (D3). 15 min covers a redirect + provider MFA / magic-link round trip.
@@ -57,6 +138,9 @@ pub(crate) const CLAIM_TTL_MS: i64 = 15 * 60 * 1000;
 /// 32 bytes of `crypto.getRandomValues` rendered as lowercase hex.
 pub(crate) const CLAIM_CODE_LEN: usize = 64;
 
+/// The one refusal of a caller who is not entitled, whatever the reason: no token, an
+/// unlisted issuer, another audience or no entitlement. The VALUE is a client contract.
+pub(crate) const ERR_OWNERSHIP_REQUIRED: &str = "ownership required";
 /// Shared reject reason for AUTH-15 (malformed / never-existed) and AUTH-35
 /// (already consumed) — ONE const so the two are indistinguishable to a caller
 /// by construction (no code-existence oracle).
@@ -96,6 +180,260 @@ pub(crate) fn issuer_allowed(issuer: &str, allowed: &[&str]) -> bool {
 /// (AUTH-3) — the token was minted for no audience at all.
 pub(crate) fn audience_allowed(audience: &[String], allowed: &[&str]) -> bool {
     audience.iter().any(|a| allowed.contains(&a.as_str()))
+}
+
+/// Whether a token's JSON payload names `entitlement` in its `mr_ent` claim: the payload is
+/// one JSON object, the key `mr_ent` occurs exactly once at its top level, and its value is an
+/// array one of whose elements is the string `entitlement`.
+///
+/// Keys and elements are compared as the bytes between their quotes, so one written with an
+/// escape never matches, and a backslash in any top-level key is refused outright: a reader
+/// that decodes escapes would take the last of two spellings of one key. A second `mr_ent`,
+/// an object with no member, and text whose strings, brackets, colons and commas do not form
+/// one object are all `false`. A number is read as any run of number bytes: the host has
+/// parsed the payload as JSON before the module sees it, and a number cannot hold the claim.
+pub(crate) fn token_names_entitlement(raw_payload: &str, entitlement: &str) -> bool {
+    let b = raw_payload.as_bytes();
+    let mut at = 0;
+    skip_json_ws(b, &mut at);
+    if b.get(at) != Some(&b'{') {
+        return false;
+    }
+    at += 1;
+    let mut named = false;
+    loop {
+        skip_json_ws(b, &mut at);
+        let Some(key) = read_json_string(b, &mut at) else {
+            return false;
+        };
+        if key.contains(&b'\\') || !skip_json_colon(b, &mut at) {
+            return false;
+        }
+        if key == b"mr_ent" {
+            // The answer is settled as soon as a first `mr_ent` does not name it, or a
+            // second one is met.
+            if named || !json_array_holds(b, &mut at, entitlement.as_bytes()) {
+                return false;
+            }
+            named = true;
+        } else if !skip_json_value(b, &mut at) {
+            return false;
+        }
+        skip_json_ws(b, &mut at);
+        match b.get(at) {
+            Some(b',') => at += 1,
+            Some(b'}') => {
+                at += 1;
+                break;
+            }
+            _ => return false,
+        }
+    }
+    skip_json_ws(b, &mut at);
+    at == b.len() && named
+}
+
+fn skip_json_ws(b: &[u8], at: &mut usize) {
+    while matches!(b.get(*at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        *at += 1;
+    }
+}
+
+/// The bytes between the quotes of the string that opens at `*at`, escapes left as written.
+/// `None` when no string opens there or it never closes.
+fn read_json_string<'a>(b: &'a [u8], at: &mut usize) -> Option<&'a [u8]> {
+    if b.get(*at) != Some(&b'"') {
+        return None;
+    }
+    let start = *at + 1;
+    let mut i = start;
+    loop {
+        match b.get(i)? {
+            b'"' => {
+                *at = i + 1;
+                return Some(&b[start..i]);
+            }
+            b'\\' => i += 2,
+            _ => i += 1,
+        }
+    }
+}
+
+/// Steps over the colon after a key and the whitespace on both sides of it.
+fn skip_json_colon(b: &[u8], at: &mut usize) -> bool {
+    skip_json_ws(b, at);
+    if b.get(*at) != Some(&b':') {
+        return false;
+    }
+    *at += 1;
+    skip_json_ws(b, at);
+    true
+}
+
+/// Steps over `true`, `false`, `null` or a number. A number is read as a run of the bytes a
+/// number is made of; whatever follows a scalar must be a separator its caller accepts.
+fn skip_json_scalar(b: &[u8], at: &mut usize) -> bool {
+    let rest = &b[*at..];
+    for word in [&b"true"[..], b"false", b"null"] {
+        if rest.starts_with(word) {
+            *at += word.len();
+            return true;
+        }
+    }
+    let digits = rest
+        .iter()
+        .take_while(|c| matches!(c, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'))
+        .count();
+    *at += digits;
+    matches!(rest.first(), Some(b'0'..=b'9' | b'-'))
+}
+
+/// Steps over one JSON value of any depth, without recursion. `false` when it is malformed
+/// or cut short.
+fn skip_json_value(b: &[u8], at: &mut usize) -> bool {
+    // The containers still open, innermost last: `{` or `[`.
+    let mut open: Vec<u8> = Vec::new();
+    loop {
+        // A value starts here.
+        skip_json_ws(b, at);
+        let opener = b.get(*at).copied();
+        match opener {
+            Some(b'"') => {
+                if read_json_string(b, at).is_none() {
+                    return false;
+                }
+            }
+            Some(b'{' | b'[') => {
+                let closer = if opener == Some(b'{') { b'}' } else { b']' };
+                *at += 1;
+                skip_json_ws(b, at);
+                if b.get(*at) == Some(&closer) {
+                    *at += 1;
+                } else {
+                    open.push(closer);
+                    if closer == b'}' && !skip_json_key(b, at) {
+                        return false;
+                    }
+                    continue;
+                }
+            }
+            _ => {
+                if !skip_json_scalar(b, at) {
+                    return false;
+                }
+            }
+        }
+        // A value has ended: close what it completes, or move to the next one.
+        loop {
+            let Some(&closer) = open.last() else {
+                return true;
+            };
+            skip_json_ws(b, at);
+            match b.get(*at) {
+                Some(b',') => {
+                    *at += 1;
+                    if closer == b'}' && !skip_json_key(b, at) {
+                        return false;
+                    }
+                    break;
+                }
+                Some(c) if *c == closer => {
+                    *at += 1;
+                    open.pop();
+                }
+                _ => return false,
+            }
+        }
+    }
+}
+
+/// Steps over an object member's key and its colon.
+fn skip_json_key(b: &[u8], at: &mut usize) -> bool {
+    skip_json_ws(b, at);
+    read_json_string(b, at).is_some() && skip_json_colon(b, at)
+}
+
+/// Whether a well-formed array opens at `*at` and one of its elements is the string `want`,
+/// leaving `*at` after the array. Elements of any other type are stepped over, not searched.
+fn json_array_holds(b: &[u8], at: &mut usize, want: &[u8]) -> bool {
+    if b.get(*at) != Some(&b'[') {
+        return false;
+    }
+    *at += 1;
+    let mut found = false;
+    loop {
+        skip_json_ws(b, at);
+        if b.get(*at) == Some(&b'"') {
+            let Some(element) = read_json_string(b, at) else {
+                return false;
+            };
+            found |= element == want;
+        } else if !skip_json_value(b, at) {
+            return false;
+        }
+        skip_json_ws(b, at);
+        match b.get(*at) {
+            Some(b',') => *at += 1,
+            Some(b']') => {
+                *at += 1;
+                return found;
+            }
+            _ => return false,
+        }
+    }
+}
+
+const fn bool_text(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+/// Writes `text` into `out` from `at`, as far as it fits, and answers the position after it.
+const fn put_text<const N: usize>(mut out: [u8; N], mut at: usize, text: &str) -> ([u8; N], usize) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if at < N {
+            out[at] = bytes[i];
+        }
+        at += 1;
+        i += 1;
+    }
+    (out, at)
+}
+
+/// The text a build carries about itself in its artefact's `mr_build_profile` section, one
+/// `key=value` line each: `profile`, `enforces_ownership`, `dev_reducers`, then a
+/// `login_issuer` line per trusted issuer. Answers the first `N` bytes and the whole length.
+const fn render_profile_section<const N: usize>(profile: &BuildProfile) -> ([u8; N], usize) {
+    let (out, at) = put_text([0u8; N], 0, "profile=");
+    let (out, at) = put_text(out, at, profile.name);
+    let (out, at) = put_text(out, at, "\nenforces_ownership=");
+    let (out, at) = put_text(out, at, bool_text(profile.enforces_ownership));
+    let (out, at) = put_text(out, at, "\ndev_reducers=");
+    let (out, at) = put_text(out, at, bool_text(profile.dev_reducers));
+    let (mut out, mut at) = put_text(out, at, "\n");
+    let mut i = 0;
+    while i < profile.login_issuers.len() {
+        (out, at) = put_text(out, at, "login_issuer=");
+        (out, at) = put_text(out, at, profile.login_issuers[i]);
+        (out, at) = put_text(out, at, "\n");
+        i += 1;
+    }
+    (out, at)
+}
+
+/// The byte length of a profile's `mr_build_profile` section.
+pub(crate) const fn profile_section_len(profile: &BuildProfile) -> usize {
+    render_profile_section::<0>(profile).1
+}
+
+/// A profile's `mr_build_profile` section; `N` is `profile_section_len(profile)`.
+pub(crate) const fn profile_section<const N: usize>(profile: &BuildProfile) -> [u8; N] {
+    render_profile_section::<N>(profile).0
 }
 
 /// Expiry instant for a claim minted at `created_at_ms` (saturating).
@@ -584,6 +922,37 @@ fn arm_claim_reaper(ctx: &ReducerContext, guest: Identity, expires_at_ms: i64) {
 fn reject(reducer: &str, sender: Identity, reason: &str) -> Result<(), String> {
     log_reject(reducer, sender, reason);
     Err(reason.to_string())
+}
+
+// --- Ownership ----------------------------------------------------------------
+
+/// Whether the caller may play under `profile`. A build that does not enforce ownership
+/// admits everyone and never reads the token. An enforcing build admits a connection whose
+/// token is from one of the profile's login issuers, is addressed to this application and
+/// names the base game. The audience of a token from any other issuer is never read.
+pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
+    if !profile.enforces_ownership {
+        return true;
+    }
+    let Some(claims) = ctx.sender_auth().jwt() else {
+        return false;
+    };
+    issuer_allowed(claims.issuer(), profile.login_issuers)
+        && audience_allowed(claims.audience(), ALLOWED_AUDIENCE)
+        && token_names_entitlement(claims.raw_payload(), ENTITLEMENT_BASE_GAME)
+}
+
+/// Refuses a caller who is not entitled under `profile` with `ERR_OWNERSHIP_REQUIRED`. Reads
+/// no table and writes nothing.
+pub(crate) fn require_entitled(
+    ctx: &ReducerContext,
+    profile: &BuildProfile,
+    reducer: &str,
+) -> Result<(), String> {
+    if entitled(ctx, profile) {
+        return Ok(());
+    }
+    reject(reducer, ctx.sender(), ERR_OWNERSHIP_REQUIRED)
 }
 
 // --- Provisioning (AUTH-2..5, AUTH-36 / G3, G12) ------------------------------

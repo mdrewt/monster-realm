@@ -212,8 +212,8 @@ issuer's keys (below).
 **Decided, not built.** The issuer is our own account service, and the attestation is signed by a
 route beside it, with its own issuer name and signing key, neither trusted by the official server
 (DECISIONS.md, "A private world verifies an account by a per-world attestation our account service
-signs"). No issuer is deployed (`ALLOWED_ISSUERS` in `server-module/src/accounts.rs` is a
-placeholder) and the route is not built. SpacetimeDB puts nothing in the way: a host verifies a
+signs"). No issuer is deployed (`PRODUCTION_LOGIN_ISSUERS` in `server-module/src/accounts.rs` is a
+placeholder; a test or dev build trusts the dev issuers) and the route is not built. SpacetimeDB puts nothing in the way: a host verifies a
 token from any issuer whose discovery document it can fetch, and a module reads every claim. The
 attestation is a signed token with an audience naming one world, a nonce the world chose, and a
 lifetime of minutes; what the audience is, is fork (c) of "The access and attestation design"
@@ -460,7 +460,9 @@ names, so that a hostile host cannot relay one world's attestation to another; a
 enforces ownership, and how a connection reaches the admission and binding calls before
 `join_game`. Question (d), plaintext `ws:` to a friends server, is decided in DECISIONS.md ("Private
 servers carry their own encryption…"). Fork (a)'s module half is built (`server-module/src/access.rs`);
-its gate half and forks (b), (c) and (e) are not. Work is named by its id in the
+its gate half and forks (b) and (c) are not. Fork (e)'s features, constants, check, artefact
+section and recipe are built (`server-module/Cargo.toml`, `server-module/src/accounts.rs`,
+`justfile`); its default is not, since the default feature list holds `open_join`. Work is named by its id in the
 harness specs `M-local-play.spec.md` (lpw-9: the open or password rule; lpw-11 to lpw-14: the
 desktop shell, its host gate and opening a world to friends; lpw-15: binding, ownership and the
 allowlist; lpw-18: the certificate and the pin) and `M-account-service.spec.md` (acs-3: the
@@ -818,13 +820,16 @@ A release feature with `dev_reducers` is a compile error, since the constants ca
 reducer; the error is skipped under clippy, whose `--all-features` run (`just lint`) names every
 feature at once. The ownership features add or remove no table, reducer, view or type.
 
-**The recipe that produces a shipped module cannot omit it.** There is nothing to omit: leaving
-every feature out gives a module that enforces ownership and admits nobody, and enforcement comes
-off only by naming a dev feature. `spacetime publish --module-path` and `spacetime generate` build
-with no features unless `--build-options` passes one to the build, so a module published without
-saying so is the default build. One
+**The recipe that produces a shipped module cannot omit it.** The target is that there is nothing to omit:
+leaving every feature out gives a module that enforces ownership and admits nobody, and enforcement
+comes off only by naming a dev feature. Today `default = ["open_join"]` in
+`server-module/Cargo.toml`, so a build that names no feature is the test build, which admits
+anonymous players and trusts the dev issuers. `spacetime publish --module-path` and
+`spacetime generate` build with the default features unless `--build-options` passes others to the
+build, so a module published without saying so is the default build. One
 recipe makes a module to ship, `just release-module <official|world>`: it refuses any other
-argument; it builds the module alone, with exactly that feature, into a target directory of its
+argument; it builds the module alone, with exactly that feature, `--locked` and
+`--no-default-features`, into a target directory of its
 own (the e2e and CI builds write a dev module to the shared one) and with the compiler-flag
 variables unset; it reads the build's profile back from the artefact, which carries it in a
 section of its own (`mr_build_profile`) built from the same constants, and refuses an artefact
@@ -833,15 +838,16 @@ artefact with its SHA-256. The shell, the standalone server and the official dep
 publish that artefact by its hash. The artefact is the thing checked, because
 `spacetime describe --json` reads the same for every profile.
 
-What changes with it, in the slice that builds it (acs-6). Every site that builds or publishes for
-anonymous play names `open_join`: in `justfile` (the first line of `just test`, `ci-fast` and the
-mutation recipes included, since the module's own tests join), `scripts/smoke-republish.sh`,
+What changes when `open_join` leaves `default`: every site that builds or publishes for anonymous
+play names `open_join`: in `justfile` (the first line of `just test`, `ci-fast` and the mutation
+recipes included, since the module's own tests join), `scripts/smoke-republish.sh`,
 `client/e2e/global-setup.ts` and the load smoke in `.github/workflows/nightly.yml`; a site that
 publishes with `--module-path` passes it through `--build-options`, which was tried here for
-argument parsing only. Ranked play reads the same
-issuer list (`ranked_enforcement_active` in `server-module/src/pvp.rs`), and a test build lists the
-dev issuers, so that gate and its tests change in the same slice. The recipe and the reader of the
-artefact's profile are built there too.
+argument parsing only. Until then those sites get `open_join` from the default. The recipe and the
+reader of the artefact's profile (`just module-profile`) are built. Ranked play reads the
+production list (`PRODUCTION_LOGIN_ISSUERS`, in `ranked_enforcement_active` in
+`server-module/src/pvp.rs`), not the build's own, so it is inert in every build while that list is
+the placeholder, and a test build's guests still play PvP.
 
 **Rejected.** E1, a feature that switches enforcement on: the build cargo produces when nobody says
 anything is then the one that admits anyone and trusts the dev keys, and only a test stands

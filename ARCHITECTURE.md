@@ -770,8 +770,10 @@ root, so opening one never closes a sibling.
   sign-in off: it builds no OIDC client, every connection is anonymous, no OIDC request
   leaves the page and the Account section offers no Sign In. `on_connect` creates an
   `account` row only when the token's issuer and audience match
-  `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` (`server-module/src/accounts.rs`). Those constants
-  still hold the fail-closed `.invalid` placeholder, so no account can be created until a
+  `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` (`server-module/src/accounts.rs`). The build's
+  login-issuer list comes from `BUILD_PROFILE`, computed from the cargo features;
+  `PRODUCTION_LOGIN_ISSUERS` and `DEV_LOGIN_ISSUERS` hold the values. The production list is
+  still the fail-closed `.invalid` placeholder, so no account can be created until a
   real issuer is deployed and the constants are changed. `ops/auth/README.md` has the deployment
   steps and the client build variables (`VITE_MR_OIDC_ISSUER`,
   `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`,
