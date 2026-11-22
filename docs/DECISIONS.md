@@ -1474,27 +1474,26 @@ database without planning a `--delete-data` republish.
 2.12.0 the vendor refuses a native host twice: `spacetimedb-bindings-sys` defines the ABI as stubs,
 and `spacetimedb`'s table backend stops calling it off wasm. So the workspace builds both crates
 from copies of their crates.io packages under `vendor/`, through `[patch.crates-io]`, changed only
-by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change
-notice. A test proves each copy is the crates.io release plus `vendor/native-host.patch`, and every
-SpacetimeDB hop re-applies that patch. Designed, not built: `docs/refactors/native-test-host.md`
-holds the measurements, the patch and the judge's scores; lpw-39 builds it as the hop to 2.12.0.
+by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change notice
+(`vendor/native-host.patch`). A test proves each copy, with the patch undone, matches the hashes
+recorded from the crates.io release; every SpacetimeDB hop re-records them and re-applies the
+patch. CI's `cargo audit` skips packages not from crates.io, so these two are checked at each hop,
+in release notes and advisories, until CI audits them by name and version. Designed, not built:
+`docs/refactors/native-test-host.md`; lpw-39 builds it as the hop to 2.12.0.
 
 **Why.** The module's privacy and netcode rules are checked on what a transaction does as the host
-sees it. That is every write a subscriber is sent, an unchanged update included; each shipped view,
-run through the runtime's entry point for a chosen caller; and a client connection with or without
-a JWT. The vendor's native harness (`test-utils`) answers none of these. Its datastore reports no
-write or read, the runtime's view entry point does not reach it, and a JWT-less client connection
-cannot be built. It also puts the whole server, V8 and wasmtime included, into the test build. On
-wasm the changed attributes select what they selected before, so the module we ship is the vendor's
-code.
+sees it: every write a subscriber is sent, an unchanged update included; each shipped view, run
+through the runtime's entry point for a chosen caller; and a client connection with or without a
+JWT. The vendor's native harness (`test-utils`) answers none of these. Its datastore reports no
+write or read, the view entry point does not reach it, and a JWT-less connection cannot be built.
+It also puts the whole server, V8 and wasmtime included, into the test build. On wasm the changed
+attributes select what they selected before, so the module we ship is the vendor's code.
 
 **Rules out.** `test-utils` as the Fixture's host, until its datastore reports a transaction's writes
-and runs the shipped views. A linker flag that tolerates the duplicate symbols: the stubs win, and
-769 tests fail. Switching off only the stubs, since the table backend still refuses. Testing on an
-older crate than the one that ships. Any edit to the copies beyond such attributes and their notices;
-procedures still refuse natively, so a native test of one adds more of them. A limit:
-`cargo audit` skips packages that do not come from crates.io, so CI's audit does not cover these two
-crates. Their advisories are checked at each hop until CI audits them by name and version.
+and runs the shipped views; a linker flag that tolerates the duplicate symbols (the stubs win, and
+769 tests fail); switching off only the stubs, since the table backend still refuses; testing on an
+older crate than the one that ships; any edit to the copies beyond such attributes and their notices.
+Procedures still refuse natively, so a native test of one adds more such attributes.
 
 ## Schema changes are additive
 

@@ -70,7 +70,7 @@ tests fail (B1 below). That is the same count lpw-34 measured when it forced the
 | Alternative | Where the Fixture's host comes from | Fixture API changed | Server-module tests changed | Probe on 2.12.0 |
 |---|---|---|---|---|
 | A — the vendor's `test-utils` feature | `spacetimedb = { workspace = true, features = ["test-utils"] }` as a dev-dependency. The Fixture owns a `spacetimedb::test_utils::TestContext` per test: a fresh `TestDatastore`, the vendor's real in-memory `RelationalDB`, built from `test_utils::module_def()`. Contexts come from `ReducerContext::__test(ctx.db.clone(), sender, auth, connection, timestamp, module identity, None)`, and JWTs from `AuthCtx::from_jwt_payload`. The 18 ABI functions, the `run_as` trampoline and the 91 describer externs are deleted. | 6 members keep their signature and lose their behaviour: `writes_to`, `rows_read`, `requested_indexes`, `open_iters`, `call_view`, and `run_as_conn_at` with no JWT. `writable`, `scannable`, `unique`, `auto_inc`, `reset_writes` and `reset_reads` do nothing. | 203 fail, by cause in "What A changes" | links with `--lib` only; 1108 passed, 203 failed |
-| B — the vendor crates patched where they refuse a native host | `[patch.crates-io]` points `spacetimedb` and `spacetimedb-bindings-sys` at copies of their crates.io 2.12.0 packages under `vendor/`. 27 `#[cfg]` attributes change across the two copies, 1 in `spacetimedb-bindings-sys` and 26 in `spacetimedb`, each carrying a change notice on its own line. Nothing else changes ("The patch"). The Fixture keeps its own ABI host, which the table backend calls again. | none | none | links; 1311 passed, 0 failed |
+| B — the vendor crates patched where they refuse a native host | `[patch.crates-io]` points `spacetimedb` and `spacetimedb-bindings-sys` at copies of their crates.io 2.12.0 packages under `vendor/`. 27 `#[cfg]` attributes change across the two copies, 1 in `spacetimedb-bindings-sys` and 26 in `spacetimedb`, each with a change notice at the end of its line. Nothing else changes ("The patch"). The Fixture keeps its own ABI host, which the table backend calls again. | none | none | links; 1311 passed, 0 failed |
 
 ### What A changes
 
@@ -120,7 +120,7 @@ The 203 failures of the probe, classified by each test's first panic:
 | a scratch table outside the module definition (`nh_scannable_writable_table_scans_counts_deletes_and_clears`) | 1 |
 
 The probe port keeps the signatures and implements nothing more. A fuller port could recover the
-19 view failures by making the view functions visible. No failure came from a constraint refusing a
+18 `call_view` failures by making the view functions visible. No failure came from a constraint refusing a
 seed, or from a read the vendor's datastore answered differently from the hand-written host.
 
 A also costs the build:
@@ -129,7 +129,7 @@ A also costs the build:
   whole server: the V8 engine (`v8` 145), `wasmtime` and `cranelift`, `openssl-sys` built from
   source, `tokio` and `reqwest`. `Cargo.lock` grows from 184 packages to 673.
 - **A network-fetched binary.** On a machine with no copy in `$CARGO_HOME/.rusty_v8`, a cold build
-  downloads a 170 MB prebuilt `librusty_v8.a` from GitHub. The probe machine had none, so A's
+  downloads a prebuilt `librusty_v8` archive from GitHub (170 MB unpacked). The probe machine had none, so A's
   build time includes that download.
 - **A pinned lockfile.** A fresh resolution does not compile: it picks `icu_calendar` 2.4.0, which
   `temporal_rs` 0.1.2 cannot build against. So the lock has to hold the `icu_*` crates at the
@@ -146,7 +146,7 @@ A also costs the build:
 
 The Fixture, its API and every test stay as they are. What B adds is around them:
 
-- **Two vendored crates.** 46 files and 11,797 lines of Rust, from the crates.io packages. Each
+- **Two vendored crates.** 44 files and 11,797 lines of Rust, from the crates.io packages. Each
   copy omits two files: its `Cargo.lock`, which cargo ignores outside the workspace root
   (`spacetimedb`'s lists 596 packages, `v8` and `wasmtime` among them), and the `.cargo-ok`
   marker cargo writes when it unpacks a package.
@@ -167,16 +167,15 @@ The Fixture, its API and every test stay as they are. What B adds is around them
   | `--no-default-features --features world` | `7fcdeac2fbd3061913b719369ea8b4bab520b72b77fcbff84a005d7b47648e98` |
   | `--features dev_reducers` | `f76d0c54719239ce9e54d235e738cf104237db89bfc40ee96846429907e2581e` |
 
-  Building the crates from a path rather than from the registry does change the bytes. The
-  crate's symbol hash changes, which reorders functions. Against a crates.io build, the type,
-  import, table, memory and global sections are identical, and the function, export, element,
-  code, data and name sections differ. The data strings that differ are the crates' source paths,
-  which panic locations embed.
+  Building the crates from a path rather than from the registry does change the bytes. Against a
+  crates.io build, the type, import, table, memory and global sections are identical, and the
+  function, export, element, code, data and name sections differ. The data strings that differ
+  are the crates' source paths, which panic locations embed.
 - **Provenance takes a test, not a checksum.** Today `Cargo.lock` holds a checksum for each
   registry package, which `cargo` verifies. A path package has none. And a wasm-only edit inside a
-  copy passes every native test: the red-team planted one in `JwtClaims::issuer()`, which
-  `accounts.rs` trusts, and all 1311 tests still passed. So lpw-39 adds a test that proves each
-  copy is the crates.io release plus the patch ("The guard").
+  copy passes every native test: one planted in `JwtClaims::issuer()`, which `accounts.rs`
+  trusts, leaves all 1311 passing. So lpw-39 adds a test proving that each copy, with the patch
+  undone, matches the per-file hashes recorded from the crates.io release ("The guard").
 - **SCA coverage.** `cargo audit` skips every lockfile package whose source is not crates.io
   (rustsec 0.33, `Database::query_vulnerabilities`; `cargo-audit` 0.22.2, the version CI
   installs, declares `rustsec = "^0.33"`). So CI's audit no longer covers `spacetimedb` or
@@ -186,13 +185,19 @@ The Fixture, its API and every test stay as they are. What B adds is around them
   none, and GitHub had none for the ecosystem or for the vendor's repository. The vendor announces
   fixes in release notes, which the upgrade runbook already reads at each hop.
 - **Every hop.** Each SpacetimeDB upgrade re-copies both crates at the new version and applies
-  `vendor/native-host.patch`. That patch applies to 2.14.1 and 2.16.1 at shifted lines, with no
-  fuzz. Built with it, each passes 1311 of 1311. Undoing one edit fails between 100 and 738 tests,
-  except the delete-by-range pair (`table.rs:275`/`:279`), which no test reaches. So the guard,
-  not the suite, is what notices a half-applied patch.
+  `vendor/native-host.patch`, a unified diff with three lines of context per hunk.
+  - **It carries forward.** It applies to the crates.io 2.14.1 and 2.16.1 packages with
+    `patch -d vendor -p1 --fuzz=0`, at offsets of up to 53 lines. Built with it, each version
+    passes 1311 of 1311.
+  - **Undoing a site is mostly loud.** Undoing one of the ten backend and identity sites fails
+    100 to 738 tests. An iterator site fails to compile, and the stubs edit fails to link.
+  - **One site is silent.** The delete-by-range pair (`table.rs:275`/`:279`) fails no test,
+    because no production code deletes by range. The Fixture defines no
+    `datastore_delete_by_index_scan_range_bsatn`, so the first reducer that does will fail the
+    test link until the Fixture models it.
 - **The temp workspace of `account-e2e`.** `evals/account-e2e.eval.mjs` copies the workspace
   into a temp directory by fixed lists (`WORKSPACE_MEMBERS` and `WORKSPACE_ROOT_FILES`, lines 88
-  to 95, copied from line 2690). Without `vendor/` there, the `[patch]` paths do not resolve.
+  to 95, copied at lines 2690 to 2699). Without `vendor/` there, the `[patch]` paths do not resolve.
   This was read from the code, not run: the eval starts a host, and a 2.12.0 host stamps the
   shared data directory.
 - **Limits.**
@@ -202,9 +207,10 @@ The Fixture, its API and every test stay as they are. What B adds is around them
     tests one natively extends the patch the same way (an attribute that sends native code down
     the wasm branch, with its notice). It also adds the `procedure_*` host functions to the
     Fixture.
-  - **The native cdylib links on Linux only.** The upstream stubs were what let a native cdylib
-    with undefined host functions link where the linker refuses undefined symbols, as on macOS
-    and Windows. Under B it has 19, as it did on 2.11.0. Not measured on those systems.
+  - **The native cdylib links on Linux only.** The upstream stubs define every host function
+    natively. With them, a native cdylib has no undefined host function, so it links even where
+    the linker refuses undefined symbols, as on macOS and Windows. Under B it has 19, as it did
+    on 2.11.0. Not measured on those systems.
   - **The fork ends when the vendor ships an alternative.** That is either a native host the
     generated code reaches through the ABI, or a `test-utils` datastore that reports a
     transaction's writes and runs the shipped views. Then this decision is judged again.
@@ -269,6 +275,9 @@ artefact) applies within five points, so it does not decide here. The reasons, b
   - A carries no fork, but the hidden constructor it builds on changes at 2.14.1.
   - B re-applies one patch at each hop.
 
+The hop score for B credited a missed edit failing loudly. One site, delete by range, fails no
+test, and the guard covers it. That changes no ranking: the margin is 43 points.
+
 ## The choice
 
 **B: the two vendor crates, patched where they refuse a native host.**
@@ -310,7 +319,8 @@ not shift them.
 | `spacetimedb` | `src/lib.rs` | 1231 | `#[cfg(target_arch = "wasm32")]` | `#[cfg(not(all(feature = "test-utils", not(target_arch = "wasm32"))))]` |
 | `spacetimedb` | `src/lib.rs` | 1244 | `#[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]` | `#[cfg(any())]` |
 
-`#[cfg(all())]` is always on and `#[cfg(any())]` always off. So, on every target:
+`#[cfg(all())]` is always on and `#[cfg(any())]` always off. So, on wasm and on a native build
+without `test-utils`:
 
 - each table operation takes the branch wasm takes, which calls `sys`;
 - `database_identity()` reads the `identity` host function;
@@ -323,8 +333,10 @@ built with the notices in place.
 
 The files that hold the patch from lpw-39 on:
 
-- **`vendor/native-host.patch`.** The unified diff of these lines, notices included. A hop applies
-  it with `patch -p1 --fuzz=0` from each copy's root.
+- **`vendor/native-host.patch`.** The unified diff of these lines, notices included: 16 hunks and
+  27 added lines. Its paths are relative to `vendor/` (`a/spacetimedb/src/table.rs`,
+  `a/spacetimedb-bindings-sys/src/lib.rs`), and a hop applies it once, with
+  `patch -d vendor -p1 --fuzz=0 < vendor/native-host.patch`.
 - **`vendor/PRISTINE.sha256`.** For each crate, the crates.io index `cksum` of its `.crate` file,
   then the sha256 of every file in the unpacked package, the two omitted ones marked.
 - **`vendor/README.md`.** What the directory holds and why, which files the patch changes, the
@@ -333,17 +345,22 @@ The files that hold the patch from lpw-39 on:
 ### The guard
 
 `native_host_tests.rs` gains one test, `nh_vendored_crates_are_the_crates_io_release_plus_the_patch`.
-It reads `vendor/` under `CARGO_MANIFEST_DIR` and checks four things:
+It reads `CARGO_MANIFEST_DIR/../vendor` and checks two things:
 
-- **Provenance.** It undoes each hunk of `vendor/native-host.patch` in memory and requires every
-  file's sha256 to equal its line in `vendor/PRISTINE.sha256`.
-- **No extra files.** No file exists that the manifest does not list.
-- **No half patch.** Every hunk's new line is present, the delete-by-range pair included.
-- **Lockstep.** The versions in the copies' `Cargo.toml` equal the workspace pin.
+- **Provenance.** It undoes each hunk of `vendor/native-host.patch` in memory, strictly: a hunk
+  whose new lines are not in the tree fails. It then requires every file's sha256 to equal its
+  line in `vendor/PRISTINE.sha256`.
+- **No extra files.** No file exists under either copy that the manifest does not list.
+
+It treats each crates.io package as an artifact that a tool generated: it recovers the package's
+bytes and compares them, by hash, with the ones recorded from the release. `standards/testing-tdd.md`
+calls that regenerate-and-diff, not a scan of hand-written text. What it protects is the provenance
+of code the module ships, which no behaviour test can see.
 
 `sha2` is already a dev-dependency of the module. `PRISTINE.sha256` is written only by the hop
 step that downloads each `.crate` and checks it against the index `cksum`. So an edit to a copy
-shows up in review as a change to the patch or to the manifest.
+shows up in review as a change to the patch or to the manifest. If a hop forgets the patch, or the
+pin and the copies disagree, cargo drops the patch. The vendor's stubs then break the test link.
 
 ### Measured on the probe
 
@@ -406,6 +423,7 @@ entry requires for an SDK bump. A red test run can leave a proptest seed under
 | `vendor/native-host.patch` | new: the patch |
 | `vendor/PRISTINE.sha256` | new: the crates.io checksums and per-file hashes |
 | `vendor/README.md` | new: what the directory holds, the change notice, how a hop re-vendors |
+| `.gitattributes` | `vendor/** -text`, so that no line-ending normalisation changes a byte the hashes cover |
 | `server-module/Cargo.toml` | the dependency comment names the version and the patched copies |
 | `server-module/src/native_host_tests.rs` | the guard test; comments only otherwise: the citations into the 2.11.0 sources point at `vendor/` for the two patched crates and at the crates.io 2.12.0 packages for `spacetimedb-sats` and `spacetimedb-primitives` |
 | `evals/account-e2e.eval.mjs` | a list, beside `WORKSPACE_MEMBERS`, of the non-member directories its temp workspace needs, holding `vendor` |
@@ -414,12 +432,12 @@ entry requires for an SDK bump. A red test run can leave a proptest seed under
 | `client/package-lock.json` | the SDK at 2.12.0 |
 | `client/src/module_bindings/index.ts` | regenerated by `just gen` (the CLI-version stamps) |
 | `client/src/net/authToken.test.ts` | the SDK-drift needle and that test's title (under "Tests whose assertion changes") |
-| `client/src/net/authToken.ts` | the four comments that quote the SDK's rejection message and its `dist` lines (the throw is at `dist/index.mjs:5219` in 2.12.0) |
+| `client/src/net/authToken.ts` | the comments that quote the SDK's rejection message and cite its `dist` lines (in 2.12.0 the message is built at `dist/index.mjs:5219` and thrown at `:5247`), and the two that call the message the same for every status (`:15-18`, `:30-31`), which in 2.12.0 carries the status: they say the client still counts every rejection alike |
 | `docs/runbooks/spacetimedb-upgrade.md` | the current pin; a step that re-vendors at each hop (download each `.crate`, check its index `cksum`, unpack, drop the two files, apply `vendor/native-host.patch`, rewrite `PRISTINE.sha256`, run the guard) and reads the vendor's advisories for the two crates |
 | `docs/DECISIONS.md` | the lockstep entry's version; the test-host entry to the built state |
 | `ARCHITECTURE.md` | the server-tests row (the host runs over the patched copies) and a `vendor/` row in the directory map |
 | `AGENTS.md` | the toolchain row's version |
-| `README.md` | the toolchain table's version and pin, and a `vendor/` row in the directory table |
+| `README.md` | the toolchain table's version and pin, a `vendor/` row in the directory table, and the License section, which names the Apache-2.0 copies under `vendor/` |
 | `docs/PLAYTEST.md` | the CLI version it asks for |
 | `docs/runbooks/playtest-ops.md` | the CLI version it asks for |
 | `docs/e2e-flakes.md` | the host version the e2e starts |
@@ -440,7 +458,7 @@ hop:
 
 | Test | Reason |
 |---|---|
-| `client/src/net/authToken.test.ts` :: `SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-rejection message string > BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${response.statusText}"` | SDK 2.12.0 adds the HTTP status to the message: its `dist/index.mjs` throws `Failed to verify token: ${status} ${statusText}`. So the needle becomes that string, and so does the part of the title that quotes it. `isStoredCredentialRejected` matches on the prefix `Failed to verify token: `, which is unchanged, and every other test in the file passes on 2.12.0. |
+| `client/src/net/authToken.test.ts` :: `SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-rejection message string > BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${response.statusText}"` | SDK 2.12.0 adds the HTTP status to the message: its `dist/index.mjs` builds `Failed to verify token: ${status} ${statusText}` (line 5219). So the needle becomes that string, and so does the part of the title that quotes it. `isStoredCredentialRejected` matches on the prefix `Failed to verify token: `, which is unchanged, and every other test in the file passes on 2.12.0. |
 
 `moved-tests:`
 
