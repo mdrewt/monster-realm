@@ -1,14 +1,15 @@
 # Runbook: upgrading SpacetimeDB
 
 How to move the SpacetimeDB CLI, host and module crate to a new version. The current
-pin is 2.11.0. The rule behind this runbook is in `docs/DECISIONS.md` ("SpacetimeDB
+pin is 2.12.0. The rule behind this runbook is in `docs/DECISIONS.md` ("SpacetimeDB
 versions move in lockstep").
 
 ## What moves together
 
 | Pin | Where |
 |---|---|
-| Rust `spacetimedb` crate | root `Cargo.toml` (`[workspace.dependencies]`) |
+| Rust `spacetimedb` crate | root `Cargo.toml` (`[workspace.dependencies]`, an exact `=<ver>` pin: cargo uses a `[patch]` entry only when its version matches) |
+| The two patched crates, `spacetimedb` and `spacetimedb-bindings-sys` | `vendor/`: the crates.io packages at the pinned version, `native-host.patch` and `PRISTINE.sha256`, wired by the root `[patch.crates-io]` (re-vendored by "Re-vendor the two patched crates" below) |
 | CLI/host used by CI and nightly | `scripts/ci-tools.sh`: `SPACETIME_VERSION` and `SPACETIME_SHA256` (the sha256 of that release's `spacetime-x86_64-unknown-linux-gnu.tar.gz`); both workflows install from it through `.github/actions/tools` |
 | Local CLI | `spacetime version install <ver>` then `spacetime version use <ver>`; check with `spacetime --version` |
 | Generated TypeScript bindings | `client/src/module_bindings/` (regenerated, never hand-edited) |
@@ -28,8 +29,10 @@ lockstep hop until the SDK ages.
    syntax, the `describe --json` shape, enum or type encoding, automatic migration
    rules, and log levels.
 2. **Switch the local CLI** (`spacetime version install <ver>`,
-   `spacetime version use <ver>`), then bump the crate in `Cargo.toml` and run
-   `cargo check --workspace --all-targets`. Fix any syntax changes in
+   `spacetime version use <ver>`), then bump the crate in `Cargo.toml`, re-vendor the
+   two patched crates at the same version ("Re-vendor the two patched crates" below; until
+   then cargo warns that the patch was not used and builds the registry crates, whose native
+   stubs break the test link), and run `cargo check --workspace --all-targets`. Fix any syntax changes in
    `server-module/src/` (and `.claude/skills/spacetimedb-reducer` if the idioms change).
 3. **Regenerate bindings** with `just gen` and commit them in the same change. The
    `bindings-drift` eval compares the committed bindings with a fresh
@@ -82,6 +85,82 @@ lockstep hop until the SDK ages.
 8. **Check observability.** Confirm `/v1/metrics` still has the families the recording
    rules use (`ops/observability/rules/`), and that module log lines still reach Loki
    and `mr-trace-relay` (host log levels have changed between releases before).
+
+## Re-vendor the two patched crates
+
+`spacetimedb` and `spacetimedb-bindings-sys` build from copies of their crates.io packages under
+`vendor/`, changed only in `#[cfg]` attributes so the module's native tests reach the host in
+`server-module/src/native_host_tests.rs` (`vendor/README.md`; the decision is in
+`docs/DECISIONS.md`, "Server-module tests run on our own host ABI, over the two vendor crates
+patched where they refuse a native host"). At each hop, with `VER` the new version:
+
+1. **Download each `.crate` and check it against the index.**
+
+   ```sh
+   S=$(mktemp -d); : > "$S/crates"
+   for c in spacetimedb spacetimedb-bindings-sys; do
+     curl -sSfL -o "$S/$c.crate" "https://static.crates.io/crates/$c/$c-$VER.crate"
+     ck=$(sha256sum "$S/$c.crate" | cut -d' ' -f1)
+     curl -sSf "https://index.crates.io/sp/ac/$c" | grep -F "\"vers\":\"$VER\"" | grep -qF "\"cksum\":\"$ck\"" \
+       || { echo "$c $VER: the .crate does not match the index cksum"; exit 1; }
+     tar -xzf "$S/$c.crate" -C "$S" && mv "$S/$c-$VER" "$S/$c"
+     echo "crate $c $VER $ck" >> "$S/crates"
+   done
+   ```
+
+2. **Write `vendor/PRISTINE.sha256`** from the unpacked packages, before any patch: the header
+   comment, the `crate` lines, then one `<sha256>  <crate>/<path>` line per file, with each
+   package's `Cargo.lock` marked `omitted` (the copy leaves it out).
+
+   ```sh
+   {
+     grep '^#' vendor/PRISTINE.sha256; echo; cat "$S/crates"
+     for c in spacetimedb spacetimedb-bindings-sys; do
+       echo
+       (cd "$S" && find "$c" -type f | LC_ALL=C sort | while read -r f; do
+         h=$(sha256sum "$f" | cut -d' ' -f1)
+         if [ "$f" = "$c/Cargo.lock" ]; then echo "omitted $h  $f"; else echo "$h  $f"; fi
+       done)
+     done
+   } > "$S/PRISTINE.sha256"
+   ```
+
+3. **Replace the copies and apply the patch.** Keep a pristine copy for step 4.
+
+   ```sh
+   mkdir "$S/a"
+   for c in spacetimedb spacetimedb-bindings-sys; do
+     rm "${S:?}/${c:?}/Cargo.lock"; cp -R "$S/$c" "$S/a/$c"
+     git rm -rq "vendor/${c:?}"; cp -R "$S/$c" "vendor/$c"
+   done
+   cp "$S/PRISTINE.sha256" vendor/PRISTINE.sha256
+   patch -d vendor -p1 --fuzz=0 --no-backup-if-mismatch < vendor/native-host.patch
+   ```
+
+   A hunk that does not apply means the vendor changed that code: redo the attribute by hand in
+   the new source, with its `// monster-realm: was <the original attribute>` notice, or extend the
+   patch the same way when a new native-only branch refuses the host.
+
+4. **Regenerate the patch** whenever `patch` reported an offset or a hand edit was made, because
+   the guard test checks each hunk at its exact line:
+
+   ```sh
+   (cd vendor && for f in spacetimedb-bindings-sys/src/lib.rs spacetimedb/src/lib.rs spacetimedb/src/table.rs; do
+     diff -u --label "a/$f" --label "b/$f" "$S/a/$f" "$f"
+   done) > "$S/native-host.patch"; cp "$S/native-host.patch" vendor/native-host.patch
+   ```
+
+5. **Pin and check.** Set `spacetimedb = "=$VER"` in the root `Cargo.toml`, run
+   `cargo update -p spacetimedb --precise $VER`, then `cargo nextest run -p monster-realm-module`.
+   The guard test `nh_vendored_crates_are_the_crates_io_release_plus_the_patch` checks the
+   copies, the manifest, the patch's shape and the `[patch.crates-io]` table; the vendor's native
+   stubs fail the test link if the patch is missing.
+
+6. **Read the advisories for both crates**, because CI's `cargo audit` skips path packages: the
+   release notes (step 1 of the procedure), GitHub's advisories for the vendor
+   (`gh api repos/clockworklabs/SpacetimeDB/security-advisories`) and OSV
+   (`curl -sS https://api.osv.dev/v1/query -d '{"package":{"name":"spacetimedb","ecosystem":"crates.io"},"version":"'$VER'"}'`,
+   and the same for `spacetimedb-bindings-sys`). An empty answer is `{}`.
 
 ## Enum variant encoding: check this one specifically
 
