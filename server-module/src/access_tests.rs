@@ -3184,9 +3184,14 @@ mod allowlist_seed {
         );
     }
 
-    /// `Allowlist` set while `Allowlist` is in force adds nothing to the list and does not
-    /// write it, with the owner bound to an account that is not listed and a trusted binding
-    /// to another unlisted account present.
+    /// `Allowlist` set while `Allowlist` is in force seeds nothing: after the seeding switch
+    /// from `Open`, with a joiner bound to an account that is not listed (the binding the
+    /// owner's relayed bind makes under `Allowlist`), the second call leaves the list as it
+    /// was, writes no list row and hands out no binding row.
+    ///
+    /// The list alone cannot show a seed here: under `Allowlist` the rule admits the owner,
+    /// whose bound account the list holds, and bound identities whose account the list holds,
+    /// so a seed would add nothing. The bindings left unread show that no seed ran.
     ///
     /// kills: a seed on every call that sets `Allowlist`; the list rewritten by an unchanged
     /// rule.
@@ -3198,17 +3203,99 @@ mod allowlist_seed {
         bind(&s, owner(), HOST);
         assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
         assert_eq!(listed(&s), accounts(&[ALPHA, HOST]), "the first switch");
-        assert_eq!(s.binding.remove(owner()), 1, "fixture: the owner rebinds");
-        bind(&s, owner(), DELTA);
-        bind(&s, id(0xC2), BRAVO);
+        let joiner = id(0xC2);
+        bind(&s, joiner, BRAVO);
+        assert_eq!(
+            passes(&fx, joiner, T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "fixture: the joiner's account is not listed"
+        );
         fx.reset_writes();
-        assert_eq!(to_allowlist(&fx, Vec::new(), T0 + 1), Ok(()));
+        fx.reset_reads();
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0 + 2), Ok(()));
         assert_eq!(listed(&s), accounts(&[ALPHA, HOST]), "nothing is added");
         assert_eq!(
             fx.writes_to("world_allowlist"),
             0,
             "the list is not written"
         );
+        assert_eq!(
+            fx.rows_read("world_binding"),
+            0,
+            "no binding row is handed out"
+        );
+    }
+
+    /// A trusted binding whose attestation did not carry the base game is seeded as an
+    /// entitled one is, from no row, from `Open` and from `Password` (its identity holding an
+    /// admission row), and its identity passes the admission check after the switch:
+    /// entitlement decides `join_game`, not admission.
+    ///
+    /// kills: the seed filtered on `entitled`.
+    #[test]
+    fn an_unentitled_trusted_binding_is_seeded_as_an_entitled_one_is_lpw21_1() {
+        for stored in [None, Some(open_row()), Some(password_row())] {
+            let fx = fixture();
+            let label = format!("over {:?}", stored.as_ref().map(|r| r.rule));
+            let s = owned(&fx, stored);
+            let plain = id(0xE1);
+            let entitled = id(0xE2);
+            s.binding.seed(&WorldBinding {
+                identity: plain,
+                account_subject: BRAVO.to_string(),
+                bound_at_ms: T0 - 100,
+                entitled: false,
+                key_id: trusted_kid(),
+            });
+            bind(&s, entitled, ALPHA);
+            s.w.admission.seed(&admission_row(plain, T0 - 6));
+            s.w.admission.seed(&admission_row(entitled, T0 - 6));
+            assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()), "{label}");
+            assert_eq!(
+                listed(&s),
+                accounts(&[ALPHA, BRAVO]),
+                "{label}: the unentitled binding's account is listed"
+            );
+            assert_eq!(
+                passes(&fx, plain, T0 + 1),
+                Ok(()),
+                "{label}: the unentitled identity is admitted by the list"
+            );
+        }
+    }
+
+    /// A kept account and a bound account that differ only by case, or where one is a strict
+    /// prefix of the other, are different accounts: the switch from `Open` keeps each listed
+    /// spelling, lists each bound one beside it, and the identities bound to the new
+    /// spellings pass the admission check.
+    ///
+    /// kills: the seed compared with the kept list without case, or by prefix (a bound
+    /// account taken as listed and never stored, its identity locked out).
+    #[test]
+    fn a_seed_spelled_apart_from_a_kept_account_is_listed_beside_it_lpw21_1() {
+        let fx = fixture();
+        let s = owned(&fx, None);
+        enlist(&s, &["dev:SEED-CASE", "dev:seed-prefix1"]);
+        let cased = id(0xE4);
+        let short = id(0xE5);
+        bind(&s, cased, "dev:seed-case");
+        bind(&s, short, "dev:seed-prefix");
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0), Ok(()));
+        assert_eq!(
+            listed(&s),
+            accounts(&[
+                "dev:SEED-CASE",
+                "dev:seed-case",
+                "dev:seed-prefix",
+                "dev:seed-prefix1"
+            ])
+        );
+        assert_eq!(
+            passes(&fx, cased, T0 + 1),
+            Ok(()),
+            "the other-case spelling"
+        );
+        assert_eq!(passes(&fx, short, T0 + 1), Ok(()), "the shorter spelling");
     }
 
     /// The `admit` argument plays no part in the seed: from `Password`, a bound identity
@@ -3353,6 +3440,68 @@ mod allowlist_seed {
         want.extend([HOST.to_string(), KEPT.to_string()]);
         want.sort();
         assert_eq!(listed(&s), want);
+    }
+
+    /// From `Password` the bound counts the kept list and the accounts the rule admitted,
+    /// the owner's among them. A kept list of 250, the owner's account and five admitted
+    /// identities' accounts (256) is accepted and lists them all; with a sixth admitted
+    /// identity (257) the switch is refused with the too-many error and no write call: the
+    /// `Password` row byte for byte as stored, no admission row for the live admitted
+    /// identity or for the `admit` argument, that identity's wrong-password record kept, no
+    /// list row. Twenty bound identities with no admission row count for nothing.
+    ///
+    /// kills: the seed from `Password` written with no bound; the bound checked after the
+    /// rule row, an admission or a list row is written; the owner's account left out of the
+    /// count (257 accepted); the unadmitted bindings counted (256 refused).
+    #[test]
+    fn from_password_a_seed_past_256_is_refused_with_no_write_lpw21_2() {
+        for (admitted, accepted) in [(5usize, true), (6, false)] {
+            let fx = fixture();
+            let s = owned(&fx, Some(password_row()));
+            for n in 0..250 {
+                s.list.seed(&WorldAllowlist {
+                    account_subject: acct(n),
+                });
+            }
+            bind(&s, owner(), HOST);
+            for n in 300..300 + admitted {
+                bind(&s, crowd(n), &acct(n));
+                s.w.admission.seed(&admission_row(crowd(n), T0 - 5));
+            }
+            for n in 400..420 {
+                bind(&s, crowd(n), &acct(n));
+            }
+            s.w.session.seed(&session_row(crowd(300), 0x0D01));
+            s.w.session.seed(&session_row(crowd(400), 0x0D02));
+            let named = id(0xE3);
+            s.w.attempt.seed(&attempt_row(named, &[T0 - 10]));
+            if accepted {
+                assert_eq!(
+                    to_allowlist(&fx, vec![named], T0),
+                    Ok(()),
+                    "{admitted} admitted"
+                );
+                let mut want = sorted_accts((0..250).chain(300..300 + admitted));
+                want.push(HOST.to_string());
+                want.sort();
+                assert_eq!(want.len(), MAX_ALLOWLIST_ACCOUNTS, "fixture: exactly 256");
+                assert_eq!(listed(&s), want, "{admitted} admitted");
+            } else {
+                fx.reset_writes();
+                let before = footprint_all(&fx, &s);
+                assert_eq!(
+                    to_allowlist(&fx, vec![named], T0),
+                    Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS.to_string()),
+                    "{admitted} admitted"
+                );
+                assert_eq!(
+                    footprint_all(&fx, &s),
+                    before,
+                    "{admitted} admitted: every table as it was, and no write call"
+                );
+                assert_eq!(access_row(&s.w), enc(&password_row()), "the rule row");
+            }
+        }
     }
 
     // --- leaving the rule --------------------------------------------------------------

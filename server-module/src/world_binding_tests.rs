@@ -3611,6 +3611,86 @@ mod seed_parts {
         );
     }
 
+    /// `allowlist_additions` compares accounts byte for byte: spellings that differ only by
+    /// case, and an account that is a strict prefix of another, are different accounts,
+    /// answered when the other spelling is listed and counted apart toward the bound.
+    ///
+    /// kills: a case-insensitive comparison; a prefix or substring match in either
+    /// direction; a listed spelling that hides the wanted one from the bound.
+    #[test]
+    fn allowlist_additions_compares_accounts_byte_for_byte_lpw21_2() {
+        let cases: [(&[&str], &[&str], &[&str]); 5] = [
+            (&["dev:ALICE"], &["dev:alice"], &["dev:alice"]),
+            (
+                &["dev:alice"],
+                &["dev:Alice", "dev:ALICE"],
+                &["dev:ALICE", "dev:Alice"],
+            ),
+            (&["dev:alice1"], &["dev:alice"], &["dev:alice"]),
+            (&["dev:alice"], &["dev:alice1"], &["dev:alice1"]),
+            (
+                &["dev:ALICE", "dev:alice1"],
+                &["dev:alice", "dev:ALICE"],
+                &["dev:alice"],
+            ),
+        ];
+        for (listed, wanted, want) in cases {
+            assert_eq!(
+                allowlist_additions(&strings(listed), &strings(wanted)),
+                Ok(strings(want)),
+                "listed {listed:?}, wanted {wanted:?}"
+            );
+        }
+        let too_many: Result<Vec<String>, &str> = Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS);
+        let mut listed = accts(0..254);
+        listed.push("dev:ALICE".to_string());
+        assert_eq!(
+            allowlist_additions(&listed, &strings(&["dev:alice"])),
+            Ok(strings(&["dev:alice"])),
+            "255 listed, one of them the other case"
+        );
+        assert_eq!(
+            allowlist_additions(&listed, &strings(&["dev:alice", "dev:alice1"])),
+            too_many,
+            "255 listed and two new spellings"
+        );
+        listed.push("dev:alice1".to_string());
+        assert_eq!(
+            allowlist_additions(&listed, &strings(&["dev:alice"])),
+            too_many,
+            "a full list holding the other spellings"
+        );
+    }
+
+    /// A trusted binding whose attestation did not carry the base game is answered as an
+    /// entitled one is: entitlement decides `join_game`, not admission.
+    ///
+    /// kills: the answer filtered on `entitled`.
+    #[test]
+    fn bound_accounts_answers_an_unentitled_trusted_binding_lpw21_1() {
+        let fx = fixture();
+        let w = scannable_world(&fx);
+        w.binding.seed(&binding_row(
+            id(0xB6),
+            "dev:unentitled",
+            T0 - 1_000,
+            false,
+            dev_kid(),
+        ));
+        w.binding.seed(&binding_row(
+            id(0xB7),
+            "dev:entitled",
+            T0 - 1_000,
+            true,
+            dev_kid(),
+        ));
+        let ctx = fx.ctx();
+        assert_eq!(
+            bound_accounts(&ctx, &profile_with(DEV_ATTESTATION_KEYS), |_| true),
+            strings(&["dev:entitled", "dev:unentitled"])
+        );
+    }
+
     proptest! {
         /// For any listed set (in any order) and any wanted list over one pool of accounts:
         /// the answer is the distinct accounts of `wanted` that `listed` lacks, ascending,
@@ -4067,6 +4147,82 @@ mod owner_account {
             bindings(&w),
             vec![bview(owner(), THIRD_SUB, T0 + 11, true, dev_kid())]
         );
+    }
+
+    // --- accounts are byte strings ---------------------------------------------------
+
+    /// The owner's bound account, in lower case.
+    const LOWER_SUB: &str = "dev:alice-host-0001";
+    /// [`LOWER_SUB`] in upper case: another account.
+    const UPPER_SUB: &str = "dev:ALICE-HOST-0001";
+    /// [`LOWER_SUB`] and one more character: another account.
+    const LONGER_SUB: &str = "dev:alice-host-00012";
+
+    /// Under `Allowlist`, with the owner bound to `LOWER_SUB`, the owner's list naming only
+    /// its upper-case spelling, or only an account it is a strict prefix of, stores the named
+    /// account and the owner's; 255 others and the upper-case spelling are refused as 257
+    /// accounts, with no write.
+    ///
+    /// kills: the owner's account taken as listed when another case of it, or a longer
+    /// account it begins, is named.
+    #[test]
+    fn the_owners_list_keeps_its_account_beside_another_spelling_of_it_lpw21_3() {
+        let fx = fixture();
+        let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[]);
+        bind_owner_row(&w, LOWER_SUB, dev_kid());
+        assert_eq!(set_allow(&fx, owner(), strings(&[UPPER_SUB])), Ok(()));
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[LOWER_SUB, UPPER_SUB])),
+            "the upper-case spelling named"
+        );
+        assert_eq!(set_allow(&fx, owner(), strings(&[LONGER_SUB])), Ok(()));
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[LONGER_SUB, LOWER_SUB])),
+            "a longer account named"
+        );
+        let mut named = others(255);
+        named.push(UPPER_SUB.to_string());
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
+            "255 others and the upper-case spelling",
+            || set_allow(&fx, owner(), named),
+        );
+    }
+
+    /// The owner's bind under `Allowlist` lists its account beside the other-case spelling
+    /// the list holds; onto a full list that holds only the other-case spelling it is refused
+    /// with the too-many error and no write.
+    ///
+    /// kills: the bound account taken as listed when its other-case spelling is.
+    #[test]
+    fn the_owners_bind_lists_its_account_beside_another_spelling_of_it_lpw21_3() {
+        {
+            let fx = fixture();
+            let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &[UPPER_SUB]);
+            assert_eq!(owner_binds(&fx, &w, false, LOWER_SUB, T0), Ok(()));
+            assert_eq!(allowed(&w), sorted(strings(&[LOWER_SUB, UPPER_SUB])));
+        }
+        {
+            let fx = fixture();
+            let mut full = others(255);
+            full.push(UPPER_SUB.to_string());
+            let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+            let w = world_under(&fx, Some(WorldAccessRule::Allowlist), &refs);
+            assert_eq!(ask(&fx, owner(), T0), Ok(()));
+            let (nonce, _) = nonce_of(&w, owner()).expect("the owner holds a nonce");
+            let att = dev_attestation(&Claims::new(&nonce).with_sub(LOWER_SUB));
+            assert_refused(
+                &fx,
+                &w,
+                REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
+                "a full list holding the other-case spelling",
+                || bind(&fx, owner(), T0 + 1, &att),
+            );
+        }
     }
 }
 
