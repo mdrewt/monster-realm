@@ -1470,32 +1470,31 @@ database without planning a `--delete-data` republish.
 ## Server-module tests run on our own host ABI, over the two vendor crates patched where they refuse a native host
 
 **Decision.** The module's native tests keep the in-memory host in
-`server-module/src/native_host_tests.rs`, which defines the SpacetimeDB host ABI itself. From
-crate 2.12.0 the vendor's crates refuse a native host in two places: `spacetimedb-bindings-sys`
-defines the ABI as stubs, and `spacetimedb` stops calling it off wasm. So the workspace builds
-both crates from copies of their crates.io sources under `vendor/`, through `[patch.crates-io]`.
-In each copy, `#[cfg]` attributes change so that native code takes the branch wasm takes, and
-nothing else changes. Each SpacetimeDB hop re-copies both crates and re-applies the same edits.
-Designed, not built: `docs/refactors/native-test-host.md` holds the measurements, the patch and
-the judge's scores, and lpw-39 builds it as the hop to 2.12.0.
+`server-module/src/native_host_tests.rs`, which defines the SpacetimeDB host ABI itself. From crate
+2.12.0 the vendor refuses a native host twice: `spacetimedb-bindings-sys` defines the ABI as stubs,
+and `spacetimedb`'s table backend stops calling it off wasm. So the workspace builds both crates
+from copies of their crates.io packages under `vendor/`, through `[patch.crates-io]`, changed only
+by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change
+notice. A test proves each copy is the crates.io release plus `vendor/native-host.patch`, and every
+SpacetimeDB hop re-applies that patch. Designed, not built: `docs/refactors/native-test-host.md`
+holds the measurements, the patch and the judge's scores; lpw-39 builds it as the hop to 2.12.0.
 
-**Why.** The module's privacy and netcode rules are checked on what a transaction does as the
-host sees it. That is every write a subscriber is sent, an unchanged update included; each
-shipped view, run through the runtime's own entry point for a chosen caller; and a client
-connection with or without a JWT. The vendor's native harness (`test-utils`) answers none of
-these: its datastore reports no write or read, the runtime's view entry point does not reach it,
-and a JWT-less client connection cannot be built. It also puts the whole server in the test build,
-V8 and wasmtime included, which multiplies test time 13-fold and adds 489 crates. On wasm the
-patched attributes select what they selected before, so the module we ship is the vendor's code.
-A release build over the patched copies is byte-identical to one over the unmodified copies.
+**Why.** The module's privacy and netcode rules are checked on what a transaction does as the host
+sees it. That is every write a subscriber is sent, an unchanged update included; each shipped view,
+run through the runtime's entry point for a chosen caller; and a client connection with or without
+a JWT. The vendor's native harness (`test-utils`) answers none of these. Its datastore reports no
+write or read, the runtime's view entry point does not reach it, and a JWT-less client connection
+cannot be built. It also puts the whole server, V8 and wasmtime included, into the test build. On
+wasm the changed attributes select what they selected before, so the module we ship is the vendor's
+code.
 
-**Rules out.** The `test-utils` feature as the Fixture's host, until its datastore can report a
-transaction's writes and run a shipped view. A linker flag that tolerates the duplicate symbols:
-the vendor's stubs win, and 769 tests fail. Switching off only the stubs: the SDK still answers
-`HOST_CALL_FAILURE` natively. Testing on an older crate than the one that ships, since versions
-move in lockstep. Any edit to the copies beyond those attributes. A known limit: `cargo audit`
-skips packages that do not come from crates.io, so CI's audit no longer covers these two crates.
-Their advisories are read at each hop until CI audits them by name and version.
+**Rules out.** `test-utils` as the Fixture's host, until its datastore reports a transaction's writes
+and runs the shipped views. A linker flag that tolerates the duplicate symbols: the stubs win, and
+769 tests fail. Switching off only the stubs, since the table backend still refuses. Testing on an
+older crate than the one that ships. Any edit to the copies beyond such attributes and their notices;
+procedures still refuse natively, so a native test of one adds more of them. A limit:
+`cargo audit` skips packages that do not come from crates.io, so CI's audit does not cover these two
+crates. Their advisories are checked at each hop until CI audits them by name and version.
 
 ## Schema changes are additive
 
