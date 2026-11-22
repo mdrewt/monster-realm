@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
+  type ConsoleMessage,
   chromium,
   expect,
   type Page,
@@ -51,7 +52,8 @@ import { ownerCall, sqlRows } from './stdb';
 // is a real oracle (two Flamelings would share a species name) with a positive control on A's page.
 //
 // ORDER: T1 (the pick), T2 (secrecy + AFK forfeit), T4 (the server refuses private tables to B —
-// needs B's browser alive), T5 (bt-15 B: the Forfeit confirm), T3 (disconnect: closes browser B).
+// needs B's browser alive), T5 (bt-15 B: the Forfeit confirm), T6 (each page holds the opponent's
+// side empty while Deploying, both sides once Active), T3 (disconnect: closes browser B).
 // `test.describe.serial`.
 //
 // bt-15 INCREMENT B (BT15.2, BT15.3; plan REV 3.1 §8 "the e2e ring oracle"): T2 additionally pins,
@@ -132,12 +134,20 @@ interface ChallengeFormat {
   target: string;
   format: number;
 }
+/** One side of the raw `my_battle` row as `__mrPvp.battleById` reports it: the active monster's
+ *  skills and HP (-1 without one) and the team's length. */
+interface HookSide {
+  active: number;
+  activeSkillIds: number[];
+  hp: number;
+  teamSize: number;
+}
 type Win = Window & {
   __game: () => GameSnap;
   __mrPvp: {
     challengeFormats(): ChallengeFormat[];
     declineChallenge(challengeId: string): Promise<void> | undefined;
-    battleById(battleId: string): { outcome: string } | null;
+    battleById(battleId: string): { outcome: string; sideA: HookSide; sideB: HookSide } | null;
   };
   __mrTactics: { probeSubscribe(sql: string): Promise<'applied' | 'error'> };
 };
@@ -353,6 +363,17 @@ async function countdownSeconds(p: Page): Promise<number | null> {
   const m = /(\d+)/.exec((await el.textContent()) ?? '');
   return m === null ? null : Number(m[1]);
 }
+
+/** Both sides of battle `battleId` as the page's `__mrPvp.battleById` reports them, or null while
+ *  the row is absent. */
+const hookSides = (
+  p: Page,
+  battleId: string,
+): Promise<{ sideA: HookSide; sideB: HookSide } | null> =>
+  p.evaluate((id) => {
+    const row = (window as unknown as Win).__mrPvp.battleById(id);
+    return row === null ? null : { sideA: row.sideA, sideB: row.sideB };
+  }, battleId);
 
 /** Starts a format-1 PvP battle A vs B and waits for both deploy panels; returns its id, the
  *  deploy deadline (A's own clock, epoch ms) and the snapshot each side read.
@@ -1094,6 +1115,141 @@ test.describe
         'B`s title is the victory',
       ).toHaveText('Victory!');
       await Promise.all([throughResults(pageA, 'T5 A'), throughResults(pageB, 'T5 B')]);
+    });
+
+    test('while a two-browser PvP battle is Deploying each page holds the opponent`s side empty (teamSize 0, no skills, hp -1) beside its own real side and shows the deploy panel; once both deploy by buttons both pages hold both sides whole; no paint error and no page error on either page [LPW29-4]', async () => {
+      // WRONG IMPL KILLED: the anchor delivered whole from Deploying on (B's page holds A's team
+      // with its HP and skills); the own side hidden instead of the opponent's, or the same side
+      // hidden on both pages; a client that fails on the empty team (a `[screen] paint error`, a
+      // page error, no deploy panel); a host that hides the side but never re-delivers the anchor
+      // when only the tactical row flips to Active (a page keeps the empty side after the reveal).
+      // The battle ends by A's forfeit through the confirm (T5's path), so T3 starts clean.
+      test.setTimeout(FORFEIT_TEST_MS);
+      const paintErrors: string[] = [];
+      const pageErrors: string[] = [];
+      const detach = (
+        [
+          ['A', pageA],
+          ['B', pageB],
+        ] as const
+      ).map(([who, p]) => {
+        const onConsole = (msg: ConsoleMessage): void => {
+          if (msg.type() === 'error' && msg.text().startsWith('[screen] paint error')) {
+            paintErrors.push(`${who}: ${msg.text()}`);
+          }
+        };
+        const onPageError = (err: Error): void => {
+          pageErrors.push(`${who}: ${err.message}`);
+        };
+        p.on('console', onConsole);
+        p.on('pageerror', onPageError);
+        return () => {
+          p.off('console', onConsole);
+          p.off('pageerror', onPageError);
+        };
+      });
+      try {
+        const { battleId } = await startPvp(pageA, pageB, 'T6');
+        await expect(pageA.locator(TACTICS.deploy), 'T6: A shows the deploy panel').toBeVisible();
+        await expect(pageB.locator(TACTICS.deploy), 'T6: B shows the deploy panel').toBeVisible();
+        const empty: HookSide = { active: 0, activeSkillIds: [], hp: -1, teamSize: 0 };
+        await expect
+          .poll(async () => (await hookSides(pageB, battleId))?.sideA ?? null, {
+            message: 'T6: B`s page holds A`s side empty while Deploying',
+            timeout: PHASE_MS,
+          })
+          .toEqual(empty);
+        await expect
+          .poll(async () => (await hookSides(pageA, battleId))?.sideB ?? null, {
+            message: 'T6: A`s page holds B`s side empty while Deploying',
+            timeout: PHASE_MS,
+          })
+          .toEqual(empty);
+        const onB = await hookSides(pageB, battleId);
+        const onA = await hookSides(pageA, battleId);
+        expect(onB?.sideB.teamSize ?? 0, 'T6: B`s own side has its team').toBeGreaterThanOrEqual(1);
+        expect(onB?.sideB.hp ?? -1, 'T6: and B`s own active monster`s HP').toBeGreaterThan(0);
+        expect(onA?.sideA.teamSize ?? 0, 'T6: A`s own side has its team').toBeGreaterThanOrEqual(1);
+        expect(onA?.sideA.hp ?? -1, 'T6: and A`s own active monster`s HP').toBeGreaterThan(0);
+        expect(paintErrors, 'T6: no paint error while Deploying').toEqual([]);
+        expect(pageErrors, 'T6: no page error while Deploying').toEqual([]);
+
+        await deployByButtons(pageA, 'T6 A deploys');
+        await deployByButtons(pageB, 'T6 B deploys');
+        await waitTactics(
+          pageA,
+          (t) => t.phase === 'Active' && t.battleId === battleId,
+          PHASE_MS,
+          'T6: A reaches Active',
+        );
+        await waitTactics(
+          pageB,
+          (t) => t.phase === 'Active' && t.battleId === battleId,
+          PHASE_MS,
+          'T6: B reaches Active',
+        );
+        const whole = (s: HookSide): boolean =>
+          s.teamSize >= 1 && s.hp > 0 && s.activeSkillIds.length > 0;
+        for (const [who, p] of [
+          ['A', pageA],
+          ['B', pageB],
+        ] as const) {
+          await expect
+            .poll(
+              async () => {
+                const s = await hookSides(p, battleId);
+                return s === null
+                  ? 'no battle row'
+                  : `side A whole: ${whole(s.sideA)}, side B whole: ${whole(s.sideB)}`;
+              },
+              {
+                message: `T6: ${who}'s page holds both sides whole once Active (the anchor re-delivered at the reveal)`,
+                timeout: PHASE_MS,
+              },
+            )
+            .toBe('side A whole: true, side B whole: true');
+        }
+
+        const opener = await waitTactics(
+          pageA,
+          (x) => x.phase === 'Active' && x.turnState === 'Waiting',
+          PHASE_MS,
+          'T6: a unit waits',
+        );
+        const unitA = opener.units.find((u) => u.mine);
+        if (unitA === undefined) throw new Error('T6: A has no unit');
+        const me = opener.units.find((u) => u.unitId === unitA.unitId) as Tile;
+        await openMenu(pageA, me);
+        await menuCursorTo(pageA, 'forfeit');
+        await pressButton(pageA, 'A');
+        await expect(
+          pageA.locator(`${TACTICS.menuRow('forfeitNo')}[aria-selected="true"]`),
+          'T6: the confirm opens on Keep fighting',
+        ).toHaveCount(1, { timeout: MENU_ACK_MS });
+        await pressButton(pageA, 'Up');
+        await expect(
+          pageA.locator(`${TACTICS.menuRow('forfeitYes')}[aria-selected="true"]`),
+          'T6: Up: Yes',
+        ).toHaveCount(1, { timeout: MENU_ACK_MS });
+        await pressButton(pageA, 'A');
+        await waitTactics(
+          pageA,
+          (t) => t.battleId === battleId && t.phase === 'Finished',
+          FORFEIT_FINISH_MS,
+          'T6: A sees the battle Finished',
+        );
+        await waitTactics(
+          pageB,
+          (t) => t.battleId === battleId && t.phase === 'Finished',
+          FORFEIT_FINISH_MS,
+          'T6: B sees the battle Finished',
+        );
+        await Promise.all([throughResults(pageA, 'T6 A'), throughResults(pageB, 'T6 B')]);
+        expect(paintErrors, 'T6: no paint error on either page').toEqual([]);
+        expect(pageErrors, 'T6: no page error on either page').toEqual([]);
+      } finally {
+        for (const off of detach) off();
+      }
     });
 
     test('BT15-4-DISCONNECT: closing B`s only connection mid-battle finishes it for A within 20 s with side A winning and no AutoPass strike [BT15-4]', async () => {

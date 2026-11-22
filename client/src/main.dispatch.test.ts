@@ -8172,6 +8172,131 @@ describe('bt-17: no 1v1 renderer — a row-less anchor shows nothing (BT17.1, BT
       false,
     );
   });
+
+  // A PvP battle's anchor arrives while Deploying with the OPPONENT's side empty (`active 0`,
+  // `team []`): the server keeps the other roster from both participants until the battle is
+  // Active. The raw row's empty side is side B for the challenger (`playerIdentity`) and side A
+  // for the accepter (`opponentIdentity`). Observables: the deploy panel and its formation, every
+  // `console.error` the shell reports a failure with (`[screen] paint error`, and the store's
+  // batch-listener catch), the self-mounted error overlay's rows, and the DEV hook
+  // `__mrPvp.battleById`.
+  interface HiddenDeploySide {
+    active: number;
+    activeSkillIds: number[];
+    hp: number;
+    teamSize: number;
+  }
+  const hiddenDeployBattleById = (
+    id: bigint,
+  ): { sideA: HiddenDeploySide; sideB: HiddenDeploySide } | null =>
+    (
+      window as unknown as {
+        __mrPvp: {
+          battleById: (
+            battleId: string,
+          ) => { sideA: HiddenDeploySide; sideB: HiddenDeploySide } | null;
+        };
+      }
+    ).__mrPvp.battleById(String(id));
+  const hiddenOpponentDeploy = async (role: 'challenger' | 'accepter'): Promise<void> => {
+    await bootReady();
+    server(1000);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const reported = (): unknown[] =>
+      errors.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (first) =>
+            typeof first === 'string' &&
+            (first.startsWith('[screen] paint error') ||
+              first.startsWith('AuthoritativeStore.flushBatch')),
+        );
+    const errorRows = (): number => document.querySelectorAll('.mr-error-row').length;
+    expect(
+      document.getElementById('mr-error-overlay'),
+      'precondition: the error overlay is mounted (its rows are an observable)',
+    ).not.toBeNull();
+    expect(errorRows(), 'precondition: no error row before the battle').toBe(0);
+
+    const B = 2n ** 60n + (role === 'challenger' ? 1101n : 1201n);
+    const [A1, A2] = [B + 2n, B + 4n];
+    const [C1, C2] = [B + 6n, B + 8n];
+    opts.store.upsertMonster({ ...bt12Monster(A1, 0), nickname: 'Ash' });
+    opts.store.upsertMonster({ ...bt12Monster(A2, 1), nickname: 'Birch' });
+    // The own side: its lead is the SECOND member (the first fainted), so the hook's own-side
+    // answer is read at `active`, not at index 0.
+    const own = {
+      active: 1,
+      team: [
+        { ...BATTLE_MONSTER, speciesId: 3, level: 7, currentHp: 0, knownSkillIds: [5, 6] },
+        { ...BATTLE_MONSTER, speciesId: 4, level: 8, currentHp: 21, knownSkillIds: [7, 9] },
+      ],
+    };
+    const hidden = { active: 0, team: [] };
+    opts.store.upsertBattle(
+      role === 'challenger'
+        ? {
+            ...bt12bAnchor(B, 'Ongoing', [A1, A2], H.identity, OTHER_IDENTITY),
+            opponentMonsterIds: [C1, C2],
+            sideA: own,
+            sideB: hidden,
+          }
+        : {
+            ...bt12bAnchor(B, 'Ongoing', [C1, C2], OTHER_IDENTITY, H.identity),
+            opponentMonsterIds: [A1, A2],
+            sideA: hidden,
+            sideB: own,
+          },
+    );
+    opts.store.reconcileTacticalBattlesFromView([bt17Deploying(B, 'Pvp', 2)]);
+    expect(() => {
+      server(1100);
+      for (let t = 1150; t <= 1600; t += 50) frame(t);
+      server(1650);
+    }, 'the batches and frames throw nothing').not.toThrow();
+
+    expect(bt12Shown('tactics-deploy'), `${role}: the PvP deploy panel is shown`).toBe(true);
+    expect(bt17FormationNames(), `${role}: it lists the own party`).toEqual(['Ash', 'Birch']);
+    expect(
+      bt12Root('tactics-deploy')?.querySelector('.tactics-deploy-wilds') ?? null,
+      `${role}: no roster list for the opponent`,
+    ).toBeNull();
+    expect(reported(), `${role}: no paint error and no batch-listener error is reported`).toEqual(
+      [],
+    );
+    expect(errorRows(), `${role}: no error-overlay row`).toBe(0);
+
+    const empty: HiddenDeploySide = { active: 0, activeSkillIds: [], hp: -1, teamSize: 0 };
+    const real: HiddenDeploySide = { active: 1, activeSkillIds: [7, 9], hp: 21, teamSize: 2 };
+    const sides = hiddenDeployBattleById(B);
+    expect(sides, `${role}: the DEV hook finds the battle`).not.toBeNull();
+    expect(
+      sides?.sideA,
+      `${role}: battleById side A (${role === 'challenger' ? 'own' : 'empty'})`,
+    ).toEqual(role === 'challenger' ? real : empty);
+    expect(
+      sides?.sideB,
+      `${role}: battleById side B (${role === 'challenger' ? 'empty' : 'own'})`,
+    ).toEqual(role === 'challenger' ? empty : real);
+    expect(reported(), `${role}: reading the hook reports nothing either`).toEqual([]);
+  };
+
+  it('a Deploying PvP anchor whose opponent side B arrives empty shows the challenger the PvP deploy panel with its own party and reports nothing, and battleById answers side B as active 0, no skills, hp -1, teamSize 0 beside its own real side A [LPW29-4]', async () => {
+    // WRONG IMPL KILLED: the PvP deploy branch or the DEV hook dereferencing the opponent's team
+    // (`team[active].x` on an empty team: a `[screen] paint error`, a batch-listener error, a
+    // missing panel, or a hook that throws); the hook's `?? -1` / `?? []` fallbacks dropped; the
+    // hook's own side read at index 0 instead of `active`; no `teamSize` (the e2e oracle that the
+    // team itself is empty, not only its active member).
+    await hiddenOpponentDeploy('challenger');
+  });
+
+  it('a Deploying PvP anchor whose opponent side A arrives empty shows the accepter the PvP deploy panel with its own party (re-seated by ownPerspective) and reports nothing, and battleById answers side A as active 0, no skills, hp -1, teamSize 0 beside its own real side B [LPW29-4]', async () => {
+    // WRONG IMPL KILLED: as for the challenger, on the accepter's projection (ownPerspective swaps
+    // the empty side into side B of the panel's view): a deploy build that reads the projected
+    // opponent team; a hook that reads the projected row instead of the raw one (its sides would
+    // come back swapped).
+    await hiddenOpponentDeploy('accepter');
+  });
 });
 
 // ==========================================================================================

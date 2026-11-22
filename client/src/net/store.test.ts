@@ -5259,6 +5259,63 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
   });
 });
 
+// A PvP battle's `my_battle` row arrives while Deploying with the OPPONENT's side empty
+// (`{ active: 0, team: [] }`) and is delivered again, the same battleId with the team filled, when
+// the battle turns Active. The store must report that delivery as a change.
+describe('AuthoritativeStore: an opponent team that arrives empty and is then filled', () => {
+  it('the same battleId reconciled with an empty opponent team and then a filled one, and in the reverse order, is a change: the batch signal fires once and battle(id) returns the new side [LPW29-4]', () => {
+    // WRONG IMPL KILLED: a change detector that walks an array only as far as the first array's
+    // length (an empty team compares equal to a filled one: the reveal is suppressed and the client
+    // keeps the empty side for the whole battle); one that compares a side by its `active` alone
+    // (both sides read 0 here); a reconcile that keeps the first payload of an id.
+    // Every row is rebuilt fresh per call (the converter's shape): no object is shared between two
+    // deliveries.
+    const hidden = (): StoreBattle => ({
+      ...battle(7n, 'alice', 'Ongoing', 'bob'),
+      sideB: { active: 0, team: [] },
+    });
+    const revealed = (): StoreBattle => ({
+      ...battle(7n, 'alice', 'Ongoing', 'bob'),
+      sideB: battleSide({
+        active: 0,
+        team: [
+          battleMonster({ speciesId: 9, level: 12, knownSkillIds: [4, 8] }),
+          battleMonster({ speciesId: 6, level: 11, currentHp: 7 }),
+        ],
+      }),
+    });
+    for (const [label, from, to] of [
+      ['empty, then filled (the reveal)', hidden, revealed],
+      ['filled, then empty', revealed, hidden],
+    ] as const) {
+      const s = new AuthoritativeStore();
+      s.reconcileBattlesFromView([from()]);
+      s.flushBatch();
+      const cb = vi.fn();
+      s.onBatchApplied(cb);
+
+      s.reconcileBattlesFromView([from()]);
+      s.flushBatch();
+      expect(
+        cb,
+        `${label}: control: the same row delivered again is no change`,
+      ).toHaveBeenCalledTimes(0);
+
+      s.reconcileBattlesFromView([to()]);
+      s.flushBatch();
+      expect(
+        cb,
+        `${label}: the new opponent side is a change, signalled once`,
+      ).toHaveBeenCalledTimes(1);
+      expect(s.battle(7n)?.sideB, `${label}: battle(id) returns the new opponent side`).toEqual(
+        to().sideB,
+      );
+      expect(s.battle(7n)?.sideA, `${label}: the own side as delivered`).toEqual(to().sideA);
+      expect(s.battleCount, `${label}: one battle`).toBe(1);
+    }
+  });
+});
+
 // =============================================================================
 // the `my_export_bundle` chunk map: reconcileExportChunksFromView + ownExportChunks.
 //
