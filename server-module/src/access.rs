@@ -9,6 +9,9 @@
 //! holds a `world_admission` row, so one the world admitted before gets in with no attestation
 //! and a new one does not. The list is read at every check and nothing is stored from it.
 //!
+//! A change to `Allowlist` adds to the list the accounts of the players the rule in force let
+//! in ([`set_world_access`]). Under `Open` and `Password` the list is kept and not read.
+//!
 //! The connect reducer refuses anyone the rule does not admit
 //! ([`require_admitted_at_connect`]), which holds that identity off every table and every
 //! reducer, and every reducer of the generated client roster that is not owner-only makes the
@@ -23,9 +26,9 @@
 //! the owner relays the joiner's bind (`world_binding::bind_world_account_for`).
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access`, `world_admission` and
-//! `world_admission_attempt`. It reads `config` for the owner, a binding and the host's list
-//! through `crate::world_binding`, and, when the rule changes, the live sessions through
-//! `crate::live_session_identities`.
+//! `world_admission_attempt`. It reads `config` for the owner, reads a binding and the host's
+//! list and adds to that list through `crate::world_binding`, and, when the rule changes,
+//! reads the live sessions through `crate::live_session_identities`.
 
 use crate::guards::log_reject;
 use crate::marshal::now_ms;
@@ -138,9 +141,14 @@ fn password_length_ok(password: &str) -> bool {
 
 // --- Context-bound predicates and guards ---------------------------------------
 
+/// [`effective_rule`] of the stored row.
+pub(crate) fn rule_in_force(ctx: &ReducerContext) -> WorldAccessRule {
+    effective_rule(ctx.db.world_access().id().find(WORLD_ACCESS_ROW).as_ref())
+}
+
 /// Whether `identity` is the world's owner. A world with no `config` row, or one whose owner
 /// was never registered (the all-zero default), has no owner.
-fn is_world_owner(ctx: &ReducerContext, identity: Identity) -> bool {
+pub(crate) fn is_world_owner(ctx: &ReducerContext, identity: Identity) -> bool {
     ctx.db
         .config()
         .id()
@@ -158,8 +166,7 @@ fn holds_admission(ctx: &ReducerContext, identity: Identity) -> bool {
 /// binding that holds a `world_admission` row. A bound identity whose account is not listed
 /// is refused even with an admission row: the list alone governs it.
 pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
-    let access = ctx.db.world_access().id().find(WORLD_ACCESS_ROW);
-    match effective_rule(access.as_ref()) {
+    match rule_in_force(ctx) {
         WorldAccessRule::Open => true,
         WorldAccessRule::Password => {
             is_world_owner(ctx, identity) || holds_admission(ctx, identity)
@@ -275,6 +282,13 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 /// in `admit` gets an admission row under every rule, without a password: this is how the host
 /// admits its own player under `Password`; under `Allowlist` the row lets in only an identity
 /// with no trusted binding. Admission rows outlive every rule change.
+///
+/// When the rule changes to `Allowlist`, the account of every binding the build counts whose
+/// identity the rule in force before the call admitted is added to the host's list, beside
+/// the accounts already there, so the identities bound to those accounts stay in, the owner's
+/// among them. The `admit` argument adds no account. A list that would then hold more than
+/// `world_binding::MAX_ALLOWLIST_ACCOUNTS` refuses the whole call with no write. Leaving
+/// `Allowlist` neither reads nor writes the list.
 #[spacetimedb::reducer]
 pub fn set_world_access(
     ctx: &ReducerContext,
@@ -331,6 +345,16 @@ pub fn set_world_access(
     } else {
         Vec::new()
     };
+    if rule == WorldAccessRule::Allowlist && rule != was {
+        let seed = crate::world_binding::bound_accounts(
+            ctx,
+            &crate::accounts::BUILD_PROFILE,
+            |identity| is_admitted(ctx, identity),
+        );
+        if let Err(reason) = crate::world_binding::add_to_allowlist(ctx, &seed) {
+            return reject("set_world_access", ctx.sender(), reason);
+        }
+    }
     let row = WorldAccess {
         id: WORLD_ACCESS_ROW,
         rule,
