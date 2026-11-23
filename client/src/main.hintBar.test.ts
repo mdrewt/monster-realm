@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 /**
  * main.hintBar.test.ts: the LIVE hint bar through a booted main.ts (ctl-13, CTL13.1). The bar is
- * driven every frame by the pure `hintBar(stack, bindings, notices, world)`: its chips show the
- * live keycaps of the binding table (a remap shows on the next frame), the verb of whatever is
+ * driven every frame by the pure `hintBar(stack, keycap, notices, world)`: its chips show the
+ * live keycaps of the last input source (a remap shows on the next frame), the verb of whatever is
  * faced, Y / B while a request waits and there is no target, and the Start badge.
  *
  * SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-console-controls.spec.md §ctl-13;
@@ -867,5 +867,161 @@ describe('main.ts pointer wiring over the real shell (runtime, ctl-15)', {
     expect(localStorage.getItem(STORAGE_KEY) ?? '', 'control: a live capture binds Z').toContain(
       'KeyZ',
     );
+  }, 120_000);
+});
+
+// ==========================================================================================
+// The keycaps follow the source of the last input: a fake standard pad behind navigator.getGamepads
+// ==========================================================================================
+//
+// The pad is polled once per frame: a press acts in the frame whose poll first sees it. The default
+// pad table: A 0, B 1, Select 8, Start 9. The bar and the world interaction chip read the keycap of
+// the last source, the pad glyph while that is the pad and the keyboard key while it is a key.
+
+interface FakePad {
+  index: number;
+  id: string;
+  connected: boolean;
+  mapping: string;
+  buttons: Array<{ pressed: boolean }>;
+  axes: number[];
+}
+const makeFakePad = (): FakePad => ({
+  index: 0,
+  id: 'fake standard pad',
+  connected: true,
+  mapping: 'standard',
+  buttons: Array.from({ length: 17 }, () => ({ pressed: false })),
+  axes: [0, 0, 0, 0],
+});
+
+const PAD_B = 1;
+const PAD_START = 9;
+
+describe('main.ts hint keycaps follow the last input source (runtime, gp-4)', {
+  sequential: true,
+}, () => {
+  afterEach(teardown);
+
+  let fake: FakePad = makeFakePad();
+  /** Install a fresh fake standard pad answering `navigator.getGamepads` until teardown. */
+  function usePad(): void {
+    fake = makeFakePad();
+    Object.defineProperty(navigator, 'getGamepads', {
+      value: () => [fake, null, null, null],
+      configurable: true,
+      writable: true,
+    });
+    restorers.push(() => {
+      delete (navigator as unknown as { getGamepads?: unknown }).getGamepads;
+    });
+  }
+  /** Press pad button `i` for one frame, release it for the next, then let a third frame paint. */
+  function padTap(i: number): void {
+    fake.buttons[i].pressed = true;
+    frame();
+    fake.buttons[i].pressed = false;
+    frame();
+    frame();
+  }
+  const keyOf = (button: string): string => chipOf(button).key ?? '';
+  const promptText = (): string => document.getElementById('interact-prompt')?.textContent ?? '';
+  const promptShown = (): boolean =>
+    document.getElementById('interact-prompt')?.style.display === 'block';
+
+  /** A booted world with a faced NPC and a pad, the keyboard keycaps showing. */
+  async function bootFacingNpc(): Promise<void> {
+    await bootReady();
+    batch();
+    seedFacedNpc();
+    frame();
+    usePad();
+    frame();
+    expect(buttonsNow(), 'precondition: A, Start and Select').toEqual(['A', 'Start', 'Select']);
+    expect(keyOf('A'), 'precondition: the keyboard A keycap').toBe('Enter');
+    expect(promptShown(), 'precondition: the interaction chip shows').toBe(true);
+    expect(promptText(), 'precondition: the chip names the keyboard key').toContain('[Enter]');
+  }
+
+  it('after a pad press every chip of the bar shows the pad glyph of its button on the next frame [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a bar that keeps reading the keyboard table after pad input, a Start or
+    // Select chip painted once (they are the shipped buttons) that never follows the source, and a
+    // bar that repaints only on a batch.
+    const MENU = i18nT('pad.menu');
+    const VIEW = i18nT('pad.view');
+    await bootFacingNpc();
+    padTap(PAD_B);
+    expect(buttonsNow(), 'the same chips, a pad press opened nothing').toEqual([
+      'A',
+      'Start',
+      'Select',
+    ]);
+    expect(keyOf('A'), 'A reads the pad A').toBe('A');
+    expect(keyOf('Start'), 'Start reads the pad Menu glyph').toBe(MENU);
+    expect(keyOf('Select'), 'Select reads the pad View glyph').toBe(VIEW);
+    expect(MENU, 'fixture: the Menu glyph is not the Escape keycap').not.toBe('Esc');
+    expect(VIEW, 'fixture: the View glyph is not the R keycap').not.toBe('R');
+  }, 120_000);
+
+  it('after a pad press the world interaction chip shows the pad A as its key [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: an interaction chip that keeps the keyboard key after pad input (its
+    // change-detected text is not repainted when only the source changes), and one that shows the
+    // pad glyph of another button.
+    await bootFacingNpc();
+    const before = promptText();
+    padTap(PAD_B);
+    expect(promptShown(), 'the chip still shows').toBe(true);
+    expect(promptText(), 'the chip names the pad A').toContain('[A]');
+    expect(promptText(), 'and not the keyboard key').not.toContain('[Enter]');
+    expect(promptText(), 'the chip text changed with the source').not.toBe(before);
+    expect(promptText().replace('[A]', '[Enter]'), 'only the key changed').toBe(before);
+  }, 120_000);
+
+  it('a menu opened by the pad shows its frame bar with the pad glyphs for A, B, Start and Select [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a frame bar (screen chips) that reads the keyboard table while the world
+    // bar reads the pad.
+    await bootReady();
+    batch();
+    frame();
+    usePad();
+    padTap(PAD_START);
+    expect(stackNames(), 'precondition: the pad Start opened the menu').toEqual([
+      'world',
+      'menuView',
+    ]);
+    expect(
+      chipsNow().map((c) => [c.button, c.key]),
+      'the menu bar',
+    ).toEqual([
+      ['A', 'A'],
+      ['B', 'B'],
+      ['Start', i18nT('pad.menu')],
+      ['Select', i18nT('pad.view')],
+    ]);
+  }, 120_000);
+
+  it('a key pressed after pad input shows the keyboard keycaps on the bar at the next frame [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a bar that sticks on pad glyphs once the pad was used, and a keydown that
+    // does not note its source (the bar keeps the pad glyphs while the player types).
+    await bootFacingNpc();
+    padTap(PAD_B);
+    expect(keyOf('Start'), 'precondition: pad glyph').toBe(i18nT('pad.menu'));
+    press('KeyQ');
+    frame();
+    expect(keyOf('A'), 'A reads the Enter key again').toBe('Enter');
+    expect(keyOf('Start'), 'Start reads the Esc key again').toBe(i18nT('key.escape'));
+    expect(keyOf('Select'), 'Select reads the R key again').toBe('R');
+  }, 120_000);
+
+  it('a key pressed after pad input shows the keyboard key on the world interaction chip at the next frame [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: an interaction chip whose change detection ignores the source (it keeps
+    // the pad A after the keyboard takes over).
+    await bootFacingNpc();
+    padTap(PAD_B);
+    expect(promptText(), 'precondition: the pad A').toContain('[A]');
+    press('KeyQ');
+    frame();
+    expect(promptText(), 'the chip names the Enter key again').toContain('[Enter]');
+    expect(promptText(), 'and not the pad A').not.toContain('[A]');
   }, 120_000);
 });

@@ -535,6 +535,9 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // key — a party-size row of the Challenge pick ("3 vs 3"); `n` is a whole number 1..3 and differs
   // between the two sets.
   'interact.challenge.size': [{ n: 3 }, { n: 1 }],
+  // gp-4 (named intentional change): the generic name of a pad button outside the standard table
+  // (1 ★). `n` is a bare number, a different one in each set.
+  'pad.button': [{ n: 17 }, { n: 4 }],
   // bt-15 increment B (named intentional change, BT15.2/BT15.3/BT15.5; 525 keys after it): +4
   // parameterised `tactics.*` keys — the clock ring's seconds, a player's strikes line, the rating
   // change and the first-game rating. Every field differs between the two sets: `s` / `n` / `max` /
@@ -2064,6 +2067,13 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { n: 1 },
     outputB: '1 vs 1',
   },
+  // gp-4 (named intentional change): "Button {n}", the generic name of an unlisted pad button.
+  'pad.button': {
+    inputA: { n: 17 },
+    outputA: 'Button 17',
+    inputB: { n: 4 },
+    outputB: 'Button 4',
+  },
   // bt-15 increment B (BT15.2/BT15.3, API freeze): "{s} s left"; "{name}: {n} of {max} strikes";
   // "Rating {before} → {after} ({delta})" with the caller's signed delta; "Rating {after}".
   'tactics.clock.ring': {
@@ -2230,9 +2240,22 @@ const TS6B9_A11Y_EN: Readonly<Record<string, string>> = {
 };
 const TS6B9_A11Y_IDS: readonly string[] = Object.keys(TS6B9_A11Y_EN);
 
+/** gp-4 (named intentional change): the six plain pad glyph ids (View, Menu and the four D-pad
+ *  directions), 558 -> 565 with the parameterised `pad.button` in SAMPLE_PARAMS. Their en and fr
+ *  bytes are pinned by the 'gp-4' describe below. */
+const GP4_PLAIN_IDS: readonly string[] = [
+  'pad.view',
+  'pad.menu',
+  'pad.dpadUp',
+  'pad.dpadDown',
+  'pad.dpadLeft',
+  'pad.dpadRight',
+];
+
 const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN)
   .concat(UIF14_PLAIN_IDS)
   .concat(UIF14B_PLAIN_IDS)
+  .concat(GP4_PLAIN_IDS)
   .concat(TS6B8_PLAIN_IDS)
   .concat(TS6B9_A11Y_IDS)
   .concat(Object.keys(SAMPLE_PARAMS))
@@ -2444,7 +2467,7 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The pinned roster is 558 keys: chrome.status.privateHostNotice and the eight claim.gate.*
     // sign-in gate lines among them.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 558 keys').toHaveLength(558);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 565 keys').toHaveLength(565);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3661,10 +3684,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 558 keys').toBe(558);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(558);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
   });
 });
 
@@ -3793,10 +3816,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 558 keys').toBe(558);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(558);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4119,11 +4142,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
     // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 558 keys').toBe(558);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(558);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(558);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(565);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4816,8 +4839,8 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // Both rosters count chrome.status.privateHostNotice among their 558 keys.
-    expect(Object.keys(en), 'the English roster is 558 keys').toHaveLength(558);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(558);
+    expect(Object.keys(en), 'the English roster is 565 keys').toHaveLength(565);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(565);
   });
 });
 
@@ -4944,8 +4967,8 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // Both rosters count chrome.status.privateHostNotice among their 558 keys.
-    expect(Object.keys(en), 'the English roster is 558 keys').toHaveLength(558);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(558);
+    expect(Object.keys(en), 'the English roster is 565 keys').toHaveLength(565);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(565);
   });
 });
 
@@ -5227,5 +5250,77 @@ describe('the sign-in gate lines in both catalogs', () => {
       expect(typeof plain(en, key), `${key} is a plain string in en`).toBe('string');
       expect(plain(fr, key), key).not.toBe(plain(en, key));
     }
+  });
+});
+
+// =============================================================================
+// gp-4: the pad glyph ids in BOTH catalogs. Every expected byte is typed here; the four D-pad
+// arrows are U+2191, U+2193, U+2190 and U+2192, by code point. `pad.menu` reads "Menu" in both
+// locales (the word is the same), every other id differs between them.
+// =============================================================================
+
+describe('gp-4: the pad glyph ids in both catalogs', () => {
+  const UP = String.fromCharCode(0x2191);
+  const DOWN = String.fromCharCode(0x2193);
+  const LEFT = String.fromCharCode(0x2190);
+  const RIGHT = String.fromCharCode(0x2192);
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  const PAD_EN: Readonly<Record<string, string>> = {
+    'pad.view': 'View',
+    'pad.menu': 'Menu',
+    'pad.dpadUp': `D-pad ${UP}`,
+    'pad.dpadDown': `D-pad ${DOWN}`,
+    'pad.dpadLeft': `D-pad ${LEFT}`,
+    'pad.dpadRight': `D-pad ${RIGHT}`,
+  };
+  const PAD_FR: Readonly<Record<string, string>> = {
+    'pad.view': 'Affichage',
+    'pad.menu': 'Menu',
+    'pad.dpadUp': `Croix ${UP}`,
+    'pad.dpadDown': `Croix ${DOWN}`,
+    'pad.dpadLeft': `Croix ${LEFT}`,
+    'pad.dpadRight': `Croix ${RIGHT}`,
+  };
+
+  it('the six plain pad ids are their exact English text and are in the pinned roster [gp-4.5]', () => {
+    // WRONG IMPL KILLED: an id missing from en (t() throws when a bar chip paints), a parameterised
+    // entry where a plain string is read, a D-pad arrow pointing the wrong way, and an id missing
+    // from the roster pin.
+    expect(Object.keys(PAD_EN), 'ANTI-VACUITY: six ids').toHaveLength(6);
+    for (const [key, text] of Object.entries(PAD_EN)) {
+      expect(en[key], `en ${key}`).toBe(text);
+      expect(EXPECTED_KEYS.includes(key), `${key} is in the pinned roster`).toBe(true);
+    }
+  });
+
+  it('the six plain pad ids are their exact French text, and all but Menu differ from English [gp-4.5]', () => {
+    // WRONG IMPL KILLED: an id added to en only (t() throws in a French boot), a French entry left
+    // as the English copy, and a mistranslated or mis-arrowed D-pad word.
+    for (const [key, text] of Object.entries(PAD_FR)) {
+      expect(fr[key], `fr ${key}`).toBe(text);
+      if (key === 'pad.menu') continue;
+      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(en[key]);
+    }
+    expect(fr['pad.menu'], 'Menu is the same word in both locales').toBe(en['pad.menu']);
+  });
+
+  it('pad.button is a closure in en and fr that prints the number once, for differing numbers, the fr a translation [gp-4.1]', () => {
+    // WRONG IMPL KILLED: a plain string (the number never reaches the name), a closure that
+    // ignores or repeats its param, a French entry left as the English copy, and the key missing
+    // from the roster or the sample tables.
+    const KEY = 'pad.button';
+    expect(typeof en[KEY], 'en is a closure').toBe('function');
+    expect(typeof fr[KEY], 'fr is a closure').toBe('function');
+    const enFn = en[KEY] as (p: { n: number }) => string;
+    const frFn = fr[KEY] as (p: { n: number }) => string;
+    for (const n of [4, 17, 99]) {
+      expect(enFn({ n }), `en, n = ${n}`).toBe(`Button ${n}`);
+      expect(frFn({ n }), `fr, n = ${n}`).toBe(`Bouton ${n}`);
+      expect(frFn({ n }), `n = ${n}: a translation`).not.toBe(enFn({ n }));
+    }
+    expect(enFn({ n: 4 }), 'the number changes the name').not.toBe(enFn({ n: 17 }));
+    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the key').toBe(true);
+    expect(SAMPLE_PARAMS[KEY], 'the two sample sets').toEqual([{ n: 17 }, { n: 4 }]);
   });
 });
