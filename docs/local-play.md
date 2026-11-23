@@ -476,7 +476,7 @@ it proves.
 
 | Fork | Chosen | Rejected | Proved by |
 |---|---|---|---|
-| (a) An unadmitted connection | A1: the connect reducer refuses an identity the rule has not admitted, every reducer a player can call makes the same check, connections open when the rule changes are admitted, and the owner relays the door | A2: row filters on every public table. A3: every table private behind a view. A1 at connect only | lpw-9.2 and lpw-9.3 in `server-module/src/access_tests.rs`; `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` |
+| (a) An unadmitted connection | A1: the connect reducer refuses an identity the rule has not admitted, every reducer a player can call makes the same check, connections open when the rule changes are admitted, and the owner relays the door | A2: row filters on every public table. A3: every table private behind a view. A1 at connect only | lpw-9.2 and lpw-20.1 to lpw-20.3 in `server-module/src/access_tests.rs`; `mod admission_roster` and `mod reducer_arguments` in `server-module/src/privacy_enforcement_tests.rs` |
 | (b) The official server's refusal | B1: the official build holds no attestation key, and a world build trusts no login issuer | B2: a row or flag in the database. B3: the world-name check and the route alone. B4: a database identity compiled in | lpw-15.3 in `server-module/src/world_binding_tests.rs` (`mod official_build`, run under the `official` build; `mod binding_build` on every build) |
 | (c) What the attestation names | C2: the server as the player's own software authenticated it, `spki:<fingerprint>/<db>` or `dns:<host>:<port>/<db>`, bound from the desktop shell; a browser's way in, and `ip:<address>:<port>/<db>`, are "A browser binds a friends server it reached by address" below | C1: the key that verifies the client's world token. C3: the server's address or database identity. C2 with a browser flow built now | lpw-15.4 in `server-module/src/world_binding_tests.rs` (`mod bind_refuses`, `mod relay_rig`); the client's half is not built |
 | (e) The build input | E2: a build enforces ownership unless the feature `open_join` is named; `official` and `world` are the two release builds | E1: a feature that switches enforcement on. E3: an environment variable at build time. E4: a row at run time | lpw-15.7 in `server-module/src/world_binding_tests.rs`; acs-6.1 to acs-6.5 in `server-module/src/accounts_tests.rs`, `server-module/src/movement_tests.rs` and `evals/account-e2e.eval.mjs` |
@@ -525,14 +525,15 @@ enforced at 2.11.0, as the last three rows show.
   table. That holds the identity off every row and every reducer on the WebSocket, `call` and
   `sql` routes (measured on the probe) and through the MCP tools (measured for the audience
   refusal, which is the same reducer).
-- *In every reducer.* Every reducer of the generated client roster except the owner-only three
-  (`sync_content`, `set_world_access`, `admit`) makes the same check
-  (`access::require_admitted`) before anything else, because a connection opened while its identity
+- *In every reducer.* Every reducer of the generated client roster except the owner-only ones
+  (`sync_content`, `set_world_access`, `set_world_names`, `set_world_allowlist` and the two
+  relayed binding reducers) and `unbind_world_account`, which makes no admission check, makes the
+  same check (`access::require_admitted`) before anything else, because a connection opened while its identity
   was admitted, or while the rule was `Open`, is not checked again by the host. The test
   `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` holds it: it takes the
   roster from the file names of `client/src/module_bindings/*_reducer.ts` and executes each shipped
   reducer as an unadmitted caller on a `Password` world, requiring the admission refusal from each
-  player reducer and the owner refusal from the three owner-only ones; a reducer with no probe fails
+  player reducer and the owner refusal from the owner-only ones; a reducer with no probe fails
   it. Reducers that exist only in a dev build (`dev_reducers`, `load_test_zones`) make no check.
 - *When the rule changes or an identity is removed.* When the rule leaves `Open`, the reducer that
   sets it admits every identity that has a connection open at that moment (the `player_session`
@@ -546,22 +547,23 @@ enforced at 2.11.0, as the last three rows show.
   `unstable` feature, which the workspace does not enable (`Cargo.toml`: `spacetimedb = "=2.12.0"`,
   no features), so neither can be declared; the deletion-gate census in the same test file refuses a
   `procedure` attribute.
-- *The door.* An unadmitted identity can call nothing, so admission is granted by reducers only
-  the owner can call, each taking the joiner's identity as an argument: the owner's admit, through
-  the reducer that sets the rule, and `admit(who, password)`, which checks the Argon2id hash. A wrong
-  password is recorded and the call answers `Ok`, because a reducer that returns an error is rolled
-  back and would lose the count; the caller reads the `world_admission` row to learn the outcome.
-  The lockout is a sliding window: an identity with five wrong passwords less than ten minutes old
-  is refused, the right password included. On a shipped world the host gate relays them: it serves one door endpoint of its own, which it never
-  forwards; for a joiner with no token it creates an identity on the host's internal port, makes
-  the door call as the owner, and returns the token only when the module admitted the identity. The
-  owner identity the gate relays as never joins the game, so the connect and disconnect that each
-  relayed call brings touch no player's state. On a host with no gate the owner admits from the
-  command line.
-- *Attempts.* An identity costs nothing to obtain, so the count of wrong attempts against one
-  identity does not bound guessing. The gate does that: it limits door attempts by source address,
-  which the module never sees. The module keeps no count across identities, since one would let
-  anyone lock every new joiner out; its own count is per identity.
+- *The door.* An unadmitted identity can call nothing but its own unbind, so admission is granted
+  by reducers only the owner can call, each taking the joiner's identity as an argument: the admit
+  list of `set_world_access`, and under `Allowlist` the relayed bind. No reducer takes a password, a
+  hash of one or a value derived from one (operator ruling monster-realm#840), because the
+  host's commit log keeps every committed call's arguments in the clear (the last row of the table
+  below); `world_access` holds the `Password` rule with an empty salt and hash, and the module reads
+  neither. The host gate checks the password itself: it keeps the Argon2id salt and hash
+  in the world's directory with the owner credential's permissions, never in a backup copy's
+  readable part or a log, and serves one door endpoint of its own, which it never forwards; for a
+  joiner with no token it creates an identity on the host's internal port, checks the password,
+  admits the identity through the owner's `set_world_access` naming the rule in force, and returns
+  the token only then. The owner identity the gate calls as never joins the game, so the connect
+  and disconnect that each call brings touch no player's state. A host with no gate has no password
+  door: its owner admits identities from the command line, and until the gate is built that is the
+  only way into a `Password` world.
+- *Attempts.* The gate counts wrong passwords by source address and by identity, five in ten
+  minutes, and refuses both after that; the module keeps no count and never sees a source address.
 - *The shell's own player.* On a world whose rule is not `Open` a new identity cannot connect to
   become known, so the shell admits its own player before the rule leaves `Open`: connected, it is
   admitted by the rule change; otherwise the shell creates that identity on the internal port and
@@ -599,20 +601,27 @@ must stop reading at removal on a host with no gate, which only A3 gives.
 
 **Proved by.** `server-module/src/access_tests.rs` covers the rule default (no row is `Open`), the
 connect refusal under `Password` (an unadmitted identity is refused before its session or account is
-written; the owner and an admitted identity connect), the door (a wrong password is counted and
-answered `Ok`, five wrong passwords lock out the right one with no write, the window slides, the
-lock is per identity) and the owner guard on `set_world_access` and `admit`. `mod admission_roster`
+written; the owner and an admitted identity connect), the `Password` rule stored with no salt and no
+hash, a salt and hash an earlier module stored cleared at the owner's next `set_world_access` and
+admitting nobody meanwhile, an identity admitted outright connecting, and the owner guard on
+`set_world_access`. `mod admission_roster`
 in `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster from the file names of
 the generated bindings and executes each shipped reducer as an unadmitted caller on a `Password`
-world: an executing test, not a parse of source. The tests do not assert that an open connection
+world: an executing test, not a parse of source. `mod reducer_arguments` in the same file describes
+every reducer the build declares (client-callable, scheduled, lifecycle and the dev builds') through
+the reducer macro's own describer, checks the client-callable and scheduled ones against the
+generated bindings and the scheduled tables (the dev builds' are listed by hand), and holds that no argument is named for a password and that the arguments which
+carry text are a reviewed roster. It is a tripwire, not a proof: a value derived from a password
+could ride in an argument of another type, and review is the defence there. The tests do not assert that an open connection
 stops reading: it does not. No in-repo test shows an unadmitted connection receiving no row: that
 rests on the host running the connect reducer before every route, which is the measurement above,
 on a live host, repeated at every host upgrade. The wrong-audience control of
 `evals/account-e2e.eval.mjs` exercises the same refusal over a WebSocket on every run, for the
 audience check and not for admission.
 
-Measured on 2026-11-21 on a 2.11.0 standalone host (a scratch data directory) with the built module
-published; the script is not in the repository.
+Measured on 2026-11-21 on a 2.11.0 standalone host (a scratch data directory) with the module of
+commit `d6d80547` published, which had a door reducer, `admit(who, password)`, and took a password
+in `set_world_access`; the current module has neither. The script is not in the repository.
 
 | What was tried | Result |
 |---|---|
@@ -627,9 +636,11 @@ published; the script is not in the repository.
 | A door call that hashes against one that does not, over HTTP | median 23.4 ms against 1.0 ms (about 22 ms for one Argon2id hash inside the reducer, on this machine) |
 | The host's commit log (`replicas/1/clog/…stdb.log`) after these calls | holds the arguments of every committed reducer call in the clear: the password given to `set_world_access` and each password given to `admit`, wrong ones included |
 
-The last row means the salted hash protects the table row, not the world's data directory. A caller
-that must not leave a typed password on the host's disk has to stretch it before the call; the shell
-and the gate are those callers, and neither is built.
+The table's last row means a salted hash in a table protects the row, not the world's data
+directory, and a password stretched before the call would still leave a password-equivalent in the
+log. So no reducer takes one, and the gate checks it (the door, above). A commit log a module with
+the door wrote keeps every password given to it; the module cannot erase that log, so a host who set
+a password through such a module chooses a new one for the gate.
 
 #### (b) How the official server refuses attestation binding
 
@@ -640,9 +651,9 @@ the standalone server ship, holds the production attestation keys and no login i
 release build has one way to be entitled: a login token on the official server, a binding in a
 world.
 
-- On the `official` build `bind_world_account`, the reducer that issues bind nonces, and the
-  owner-relayed form of each (see "The order of calls") return one fixed error of their own before
-  they decode, read or write anything. An empty key list would
+- On the `official` build `bind_world_account`, the reducer that issues bind nonces, the
+  owner-relayed form of each (see "The order of calls") and `unbind_world_account` return one fixed
+  error of their own before they decode, read or write anything. An empty key list would
   fail every signature anyway; the fixed error is what lets a test tell the guard from that
   failure.
 - On the `official` build `entitled(ctx)` never reads a binding. A binding row that reached an
@@ -904,7 +915,8 @@ and a player row exists only through it.
 - *A world whose rule is `Open`,* a single-player world included. Connect; when the build enforces
   and the identity has no binding, ask the world for a nonce, fetch the attestation, call
   `bind_world_account`; then `join_game`.
-- *`Password`.* The door first, through the owner's relay, then as for `Open`.
+- *`Password`.* The gate's door first: it checks the password and admits the identity through the
+  owner's `set_world_access`; then as for `Open`.
 - *`Allowlist`.* The bind is the admission, so it comes before the connection: the nonce and the
   bind are relayed by the owner (`request_bind_nonce_for` and `bind_world_account_for`, owner-only
   forms that take the joiner's identity). `access::is_admitted` admits an identity with a trusted
@@ -922,10 +934,10 @@ plays nothing and can watch.
 
 | Slice | What the design changes |
 |---|---|
-| lpw-9 | The admission reducer is `admit(who, password)`, owner-only: an unadmitted identity is refused it as it is refused everything, where lpw-9.2 reads as if its own connection called it. lpw-9.3's count is against `who`. The reducer that sets the rule admits the identities then connected. The executing roster test covers the reducer check, and a handler or a filter cannot be declared with the `unstable` feature off. The connect refusal's log line is rate-limited, as the unlisted-issuer one is |
+| lpw-9 | Admission is the owner's: an unadmitted identity is refused every reducer, where lpw-9.2 reads as if its own connection called one. The module takes no password (lpw-20): lpw-9.3's door and count are the gate's (lpw-14.6). The reducer that sets the rule admits the identities then connected. The executing roster test covers the reducer check, and a handler or a filter cannot be declared with the `unstable` feature off. The connect refusal's log line is rate-limited, as the unlisted-issuer one is |
 | lpw-11 | The preload exposes one more function, which takes a nonce and returns an attestation; lpw-11.1 and lpw-11.3 allow the shell document and no channel. No typed or imported entry carries a reconnect token |
-| lpw-12, lpw-14 | The gate gains the door endpoint, which it serves itself and never forwards; a limit on door attempts by source address; the identity behind each socket, and the closing of a removed identity's sockets; and reading the world's rule back before it listens beyond loopback. A door call answers `Ok` for a wrong password, so the gate reads the `world_admission` row to learn the outcome, and it stretches the typed password before the call so the host's commit log holds no typed password. The two-host relay run of fork (c) has no owner yet |
-| lpw-13 | The shell admits its own player before the rule leaves `Open`; the password it gives `set_world_access` is stretched first, so the host's commit log holds no typed password; it writes the world's names at each start, and embeds the artefact `just release-module` wrote, by its hash |
+| lpw-12, lpw-14 | The gate gains the door endpoint, which it serves itself and never forwards; the password check, with the Argon2id salt and hash in the world's directory and a count of wrong passwords by source address and by identity; the identity behind each socket, and the closing of a removed identity's sockets; and reading the world's rule back before it listens beyond loopback. On the right password it admits the joiner through the owner's `set_world_access`, which also writes the rule, so the call names the rule in force. The two-host relay run of fork (c) has no owner yet |
+| lpw-13 | The shell admits its own player before the rule leaves `Open`; the password the host chooses goes to the gate, never to the module; it writes the world's names at each start, and embeds the artefact `just release-module` wrote, by its hash |
 | lpw-15 | It builds the world's private table of names and the owner-only reducer that writes it, and a development recipe that writes one fingerprint into both the shell document and that table; it needs the shell document's fingerprint field, which lpw-18 specifies. The bind and the nonce reducer each gain an owner-only form that takes the joiner's identity, for `Allowlist`. A page a gate serves does not sign in, where the slice has every browser sign in. Its run under the `official` build needs a line in `justfile`, which acs-6 holds. It proves the relay closed in halves, where the slice has it close the relay with a hostile-host rig: that stays open until the two-host run |
 | lpw-17 | The standalone command writes the world's names: `spki:` for the world's own key, `dns:` for a domain it holds a certificate for. A host behind its own proxy states its public name and port. The browser design below adds a certificate and a name for a bare address |
 | lpw-18 | The shell document's fingerprint field arrives earlier, with lpw-15. lpw-18.7's browser joiner plays only on a build that does not enforce ownership, until the browser design below is built |
@@ -976,7 +988,7 @@ one world.
 
 1. *The nonce.* The page connects to its own gate under the world's anonymous token and takes the
    world's nonce for that identity (`request_bind_nonce`, read through `my_bind_nonce`). Under
-   `Password` the door comes first; under `Allowlist` the gate's door relays the owner's
+   `Password` the gate's door comes first; under `Allowlist` the gate's door relays the owner's
    `request_bind_nonce_for` for the identity whose token the caller presents.
 2. *The start.* When the player presses a button, the page makes a random verifier, keeps it in
    the tab's `sessionStorage` with the identity it is binding, and posts a form to the account
@@ -1332,7 +1344,7 @@ not-owned message for a bind), the shell and gate halves, the development recipe
 the run over two real hosts, and everything of a browser's bind (the account service's bind route,
 the page's half and a certificate for a bare address). On a `world` build no account exists, so `delete_account` and
 `request_data_export` cannot be reached by a bound player there; the host owns that data and
-deletes rows over SQL, and there is no unbind reducer. The audience-scoped fallback
+deletes rows over SQL, and a player erases their own binding with `unbind_world_account`. The audience-scoped fallback
 (tokens from the account issuer addressed to one server, with the official module's audience
 check as the single defence and a private host that learns official identities) is not the route:
 a verifier builds and fits the budget. Its one untested question is answered: the audience check

@@ -4431,7 +4431,7 @@ mod list_edits {
     /// The owner switches the world to `Allowlist` at `ms`.
     fn switch(fx: &Fixture, ms: i64) -> Result<(), String> {
         call(fx, owner(), ms, |ctx| {
-            crate::access::set_world_access(ctx, WorldAccessRule::Allowlist, None, Vec::new())
+            crate::access::set_world_access(ctx, WorldAccessRule::Allowlist, Vec::new())
         })
     }
 
@@ -4705,16 +4705,15 @@ mod unbind {
         (w, attempts)
     }
 
-    /// The owner sets the rule to `rule` at `ms`, with `password` and the admit list `admit`.
+    /// The owner sets the rule to `rule` at `ms`, with the admit list `admit`.
     fn set_rule(
         fx: &Fixture,
         rule: WorldAccessRule,
-        password: Option<&str>,
         admit: Vec<Identity>,
         ms: i64,
     ) -> Result<(), String> {
         call(fx, owner(), ms, |ctx| {
-            crate::access::set_world_access(ctx, rule, password.map(str::to_string), admit)
+            crate::access::set_world_access(ctx, rule, admit)
         })
     }
 
@@ -5360,13 +5359,7 @@ mod unbind {
         );
 
         assert_eq!(
-            set_rule(
-                &fx,
-                WorldAccessRule::Password,
-                None,
-                vec![alice()],
-                later + 1
-            ),
+            set_rule(&fx, WorldAccessRule::Password, vec![alice()], later + 1),
             Ok(()),
             "the owner admits alice again"
         );
@@ -5471,13 +5464,7 @@ mod unbind {
         );
 
         assert_eq!(
-            set_rule(
-                &fx,
-                WorldAccessRule::Password,
-                Some("door-7"),
-                Vec::new(),
-                T0
-            ),
+            set_rule(&fx, WorldAccessRule::Password, Vec::new(), T0),
             Ok(()),
             "the owner switches to Password"
         );
@@ -5500,13 +5487,7 @@ mod unbind {
 
         assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
         assert_eq!(
-            set_rule(
-                &fx,
-                WorldAccessRule::Allowlist,
-                None,
-                Vec::new(),
-                BIND_AT + 1
-            ),
+            set_rule(&fx, WorldAccessRule::Allowlist, Vec::new(), BIND_AT + 1),
             Ok(()),
             "the owner switches back to Allowlist"
         );
@@ -5575,7 +5556,7 @@ mod unbind {
         );
 
         assert_eq!(
-            set_rule(&fx, WorldAccessRule::Open, None, Vec::new(), T0),
+            set_rule(&fx, WorldAccessRule::Open, Vec::new(), T0),
             Ok(()),
             "the owner switches to Open"
         );
@@ -5597,13 +5578,7 @@ mod unbind {
             "fixture: alice holds no live session at the switch back"
         );
         assert_eq!(
-            set_rule(
-                &fx,
-                WorldAccessRule::Allowlist,
-                None,
-                Vec::new(),
-                BIND_AT + 1
-            ),
+            set_rule(&fx, WorldAccessRule::Allowlist, Vec::new(), BIND_AT + 1),
             Ok(()),
             "the owner switches back to Allowlist"
         );

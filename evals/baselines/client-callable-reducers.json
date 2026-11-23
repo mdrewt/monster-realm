@@ -8,10 +8,6 @@
     "ack_evolution_notices": [
       "count: u32()"
     ],
-    "admit": [
-      "who: identity()",
-      "password: string()"
-    ],
     "advance_dialogue": [
       "choice_idx: u32()"
     ],
@@ -143,7 +139,6 @@
     ],
     "set_world_access": [
       "rule: WorldAccessRule",
-      "password: option(string())",
       "admit: array(identity())"
     ],
     "set_world_allowlist": [
