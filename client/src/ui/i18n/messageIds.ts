@@ -119,7 +119,7 @@ export type MessageId =
   | 'controls.swapped'
   | 'controls.swappedUnbound'
   | 'controls.swappedSlots'
-  // gp-5: the Pad column (ui/controlsModel.ts, ui/controlsView.ts).
+  // The Controls Pad column (ui/controlsModel.ts, ui/controlsView.ts).
   | 'controls.slot.pad'
   | 'controls.capture.padPrompt'
   | 'controls.refused.padReserved'

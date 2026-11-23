@@ -2,7 +2,7 @@
 // through here, never raw key names, so a binding change lands in one place. Imports only
 // pure modules, so it loads under Playwright without Vite.
 //
-// ctl-12b: the helpers press what the PAGE's live tables say, not the defaults: a player can remap
+// The helpers press what the PAGE's live tables say, not the defaults: a player can remap
 // any key or pad button in Options > Controls, which saves both tables to
 // `localStorage['mr.controls']` and applies them at once. `liveBindings` and `livePadBindings` read
 // that string in the page and parse it here with the game's own total parsers; anything unreadable
