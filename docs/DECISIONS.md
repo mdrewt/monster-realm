@@ -1585,8 +1585,9 @@ caller's own arguments, so no client decodes arguments. A renamed member counts 
 no name travels: the bindings hold no other identity for it. From SDK 2.16.1 a client skips trailing
 columns its bindings lack (vendor #6091; measured on `module_info`, `docs/spacetimedb-2.16.md`), but
 not a field appended inside a named type, and a rule that told the two apart would have to model the
-SDK's decoder; counting a trailing top-level column as a break is a default the operator may
-overrule.
+SDK's decoder; counting a trailing top-level column as a break is the operator's choice (#873):
+nothing is deployed, so it costs nothing now, and it is revisited before early access, when every
+additive column would otherwise send every older client to update.
 
 **Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
 numbers below the content-version check, or from a reducer any caller may run. A recipe or script
@@ -2545,9 +2546,10 @@ the binding's tables, reducers, crates and key lists, and acs-15 removes `POST /
 attestation keys. The measurements on 2.16.1, the four
 alternatives with a judge's scores, the procedures and the slice changes are in
 `docs/refactors/account-checks.md`. The choice rests on the bundled host's `[module-http]` being on,
-which reverses an operator default (`decision-defaulted:bundled-host-module-http=disabled`,
-lpw-12). With it off, a shell world checks nobody, and the attestation, which a world verifies
-offline, scores higher. Why the ticket over the attestation: a world that asks for itself
+which the operator decided (#874), replacing lpw-12's default `disabled`. With it off, a shell world
+checks nobody, and the attestation, which a world verifies offline, scores higher. On, it adds
+nothing a host's owner could not already do: the host refuses loopback and private addresses (P2),
+and the module reaches only the account service the build names. Why the ticket over the attestation: a world that asks for itself
 re-checks a client that never asks. No key or verifier sits in any build. And a reader of a
 world's data finds pseudonyms, not account subjects.
 

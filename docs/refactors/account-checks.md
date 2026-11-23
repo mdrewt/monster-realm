@@ -506,8 +506,8 @@ differs from the request's source address. That would close the window at once a
 - **lpw-33** removes the module items the chosen design leaves dead.
 - **acs-15** (new, after lpw-33): removes `POST /attest`, the attestation key files and
   `account-service/attestation-public-keys.json`.
-- **The operator** decides `decision-defaulted:bundled-host-module-http`. The judge's result rests
-  on it becoming enabled (section 4).
+- **The operator** decided `bundled-host-module-http=enabled` (#874), on which the judge's result
+  rests (section 4).
 
 lpw-15's items that the chosen design leaves dead, for lpw-33 to remove:
 
