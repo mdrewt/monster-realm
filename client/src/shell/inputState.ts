@@ -1,18 +1,19 @@
-// shell/inputState — the live input devices: the binding table, the keyboard source built over
-// it, the pad source, the router, the held movement directions, the key codes whose OS repeats
-// are cancelled and the source of the last press, which the keycaps follow. Every other module
-// reads them through its import, which is live. Only this module assigns `bindings` and `keyboard`
-// (`applyBindings`) and `lastSource` (`noteInputSource`); only its functions change `navHeldCodes`;
-// `held`, `pad` and `inputRouter` are used through their own methods. Module scope reads the saved
-// table from storage and constructs the devices: it registers no listener, writes nothing and
-// reads no Gamepad API (the pad source reads it at each poll).
+// shell/inputState — the live input devices: the keyboard and pad binding tables, the keyboard
+// source built over the one, the pad source built over the other, the router, the held movement
+// directions, the key codes whose OS repeats are cancelled and the source of the last press, which
+// the keycaps follow. Every other module reads them through its import, which is live. Only this
+// module assigns `bindings`, `keyboard` and `padBindings` (`applyBindings`, `applyPadBindings`,
+// `resetAllBindings`) and `lastSource` (`noteInputSource`); only its functions change
+// `navHeldCodes`; `held`, `pad` and `inputRouter` are used through their own methods. Module scope
+// reads the saved tables from storage and constructs the devices: it registers no listener, writes
+// nothing and reads no Gamepad API (the pad source reads it at each poll).
 
-import { browserStorage, loadBindings, saveBindings } from '../input/bindingStore';
-import type { Bindings } from '../input/bindings';
+import { browserStorage, loadBindings, loadPadBindings, saveBindings } from '../input/bindingStore';
+import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import type { VButton } from '../input/buttons';
 import { GamepadSource } from '../input/gamepadSource';
 import { KeyboardSource } from '../input/keyboardSource';
-import { PAD_DEFAULT_BINDINGS } from '../input/padBindings';
+import { PAD_DEFAULT_BINDINGS, type PadBindings } from '../input/padBindings';
 import { type InputSource, keycapFor } from '../input/padGlyphs';
 import { InputRouter } from '../input/router';
 import { HeldDirections } from '../prediction/heldKeys';
@@ -42,8 +43,9 @@ export function installPadFaultSink(sink: (err: unknown) => void): void {
   padFault = sink;
 }
 
-// The pad's binding table, which the pad source and the keycaps both read: the defaults.
-const padBindings = PAD_DEFAULT_BINDINGS;
+// The ONE pad table the pad source and the keycaps both read: the player's saved pad table, else
+// the defaults, from the same record as `bindings`. Controls replaces it live (`applyPadBindings`).
+export let padBindings: PadBindings = loadPadBindings(browserStorage());
 
 // The pad source: every connected pad through the pad table into the same
 // `{button, down}` edges, polled once per animation frame by `main.ts`. `navigator.getGamepads` is
@@ -94,14 +96,27 @@ export const releaseAllInput = (): void => {
   held.clear();
 };
 
-// A remap applies at once (CTL12B.2): saved, then every input path reads the new table. The
-// keyboard source takes its table at construction, so it is replaced; whatever was held is
-// released first, or its keyup (unknown to the new source) would leave a button stuck. False when
-// the table could not be saved: it still applies, until the page reloads.
-export const applyBindings = (next: Bindings): boolean => {
-  const saved = saveBindings(browserStorage(), next);
+// A remap applies at once (CTL12B.2): both tables saved in one record, then every input path reads
+// the new tables. The keyboard source takes its table at construction, so it is replaced; whatever
+// was held is released first, or its keyup (unknown to the new source) would leave a button stuck.
+// The pad source is rebound, which latches every pad button held now: it acts only once released
+// and pressed again. False when the tables could not be saved: they still apply, until the page
+// reloads.
+const applyTables = (keys: Bindings, padTable: PadBindings): boolean => {
+  const saved = saveBindings(browserStorage(), keys, padTable);
   releaseAllInput();
-  bindings = next;
-  keyboard = new KeyboardSource(next);
+  bindings = keys;
+  keyboard = new KeyboardSource(keys);
+  padBindings = padTable;
+  pad.rebind(padTable);
   return saved;
 };
+
+/** Apply and save a keyboard table; the live pad table is saved beside it. */
+export const applyBindings = (next: Bindings): boolean => applyTables(next, padBindings);
+
+/** Apply and save a pad table; the live keyboard table is saved beside it. */
+export const applyPadBindings = (next: PadBindings): boolean => applyTables(bindings, next);
+
+/** Reset all: both default tables, applied and saved together. */
+export const resetAllBindings = (): boolean => applyTables(DEFAULT_BINDINGS, PAD_DEFAULT_BINDINGS);

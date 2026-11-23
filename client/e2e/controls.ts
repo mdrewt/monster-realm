@@ -2,21 +2,21 @@
 // through here, never raw key names, so a binding change lands in one place. Imports only
 // pure modules, so it loads under Playwright without Vite.
 //
-// ctl-12b: the helpers press what the PAGE's live table says, not the defaults: a player can remap
-// any key in Options > Controls, which saves the table to `localStorage['mr.controls']` and applies
-// it at once. `liveBindings` reads that string in the page and parses it here with the game's own
-// total `parseBindings`; anything unreadable gives `DEFAULT_BINDINGS`.
+// The helpers press what the PAGE's live tables say, not the defaults: a player can remap
+// any key or pad button in Options > Controls, which saves both tables to
+// `localStorage['mr.controls']` and applies them at once. `liveBindings` and `livePadBindings` read
+// that string in the page and parse it here with the game's own total parsers; anything unreadable
+// gives the defaults.
 //
 // Press source: each page presses through the keyboard (the default) or through the mocked pad
 // (`setPressSource(page, 'pad')`, with `pad.ts`'s `installFakePad` run before the page loads). In pad
 // mode `pressButton`, `pressAccel` and `closeAll` (and every helper built on them) press the pad
-// button the default pad table (`PAD_DEFAULT_BINDINGS`) binds first: the pad table has no saved
-// form, so the page's live table is the default one.
+// button the page's live pad table (`livePadBindings`) binds first.
 import { expect, type Locator, type Page } from '@playwright/test';
-import { CONTROLS_STORAGE_KEY, parseBindings } from '../src/input/bindingStore';
+import { CONTROLS_STORAGE_KEY, loadPadBindings, parseBindings } from '../src/input/bindingStore';
 import { type Bindings, DEFAULT_BINDINGS } from '../src/input/bindings';
 import type { Accel, VButton } from '../src/input/buttons';
-import { PAD_DEFAULT_BINDINGS } from '../src/input/padBindings';
+import { PAD_DEFAULT_BINDINGS, type PadBindings } from '../src/input/padBindings';
 import type { RawTileMap } from '../src/render/map';
 import type { Frame, Stack } from '../src/ui/contextStack';
 import { padPress } from './pad';
@@ -35,15 +35,27 @@ const CLOSE_ALL_SETTLE_MS = 4_000;
  */
 export async function liveBindings(page: Page): Promise<Bindings> {
   try {
-    const text = await page.evaluate(
-      (key: string) => window.localStorage.getItem(key),
-      CONTROLS_STORAGE_KEY,
-    );
+    const text = await liveRecordText(page);
     return text === null ? DEFAULT_BINDINGS : parseBindings(JSON.parse(text));
   } catch {
     return DEFAULT_BINDINGS;
   }
 }
+
+/** The page's live pad table: the same raw string, read through the game's `loadPadBindings`
+ *  over a one-value storage. ANY failure gives `PAD_DEFAULT_BINDINGS`, as `liveBindings` does. */
+export async function livePadBindings(page: Page): Promise<PadBindings> {
+  try {
+    const text = await liveRecordText(page);
+    return loadPadBindings({ getItem: () => text, setItem: () => undefined });
+  } catch {
+    return PAD_DEFAULT_BINDINGS;
+  }
+}
+
+/** The raw `localStorage['mr.controls']` string, read in the page (null when nothing is saved). */
+const liveRecordText = (page: Page): Promise<string | null> =>
+  page.evaluate((key: string) => window.localStorage.getItem(key), CONTROLS_STORAGE_KEY);
 
 /** A press helper found no key for a button or accelerator in the live table (a cleared row):
  *  it fails naming it rather than pressing `undefined`. */
@@ -61,20 +73,20 @@ export function setPressSource(page: Page, source: PressSource): void {
 
 const pressSourceOf = (page: Page): PressSource => pressSources.get(page) ?? 'keys';
 
-/** The first pad button the default pad table binds to `button`, or undefined. */
-const padIndexFor = (button: VButton): number | undefined =>
-  PAD_DEFAULT_BINDINGS.buttons[button][0];
+/** The first pad button the page's live pad table binds to `button`, or undefined. */
+const padIndexFor = async (page: Page, button: VButton): Promise<number | undefined> =>
+  (await livePadBindings(page)).buttons[button][0];
 
-/** The first pad button the default pad table binds to `accel`, or undefined (F8 and F9 have no
- *  pad binding). */
-const padAccelIndexFor = (accel: Accel): number | undefined =>
-  accel === 'F8' || accel === 'F9' ? undefined : PAD_DEFAULT_BINDINGS.accels[accel][0];
+/** The first pad button the page's live pad table binds to `accel`, or undefined (F8 and F9 have
+ *  no pad binding). */
+const padAccelIndexFor = async (page: Page, accel: Accel): Promise<number | undefined> =>
+  accel === 'F8' || accel === 'F9' ? undefined : (await livePadBindings(page)).accels[accel][0];
 
 /** Presses the first key bound to `button` in the page's live table (`liveBindings`), or in pad
- *  mode the first pad button the default pad table binds to it. */
+ *  mode the first pad button the live pad table (`livePadBindings`) binds to it. */
 export async function pressButton(page: Page, button: VButton): Promise<void> {
   if (pressSourceOf(page) === 'pad') {
-    const index = padIndexFor(button);
+    const index = await padIndexFor(page, button);
     if (index === undefined) {
       throw new UnboundKeyError(`pressButton: the button ${button} has no pad button bound`);
     }
@@ -89,10 +101,10 @@ export async function pressButton(page: Page, button: VButton): Promise<void> {
 }
 
 /** Presses the first key bound to the accelerator `accel` in the page's live table, or in pad mode
- *  the first pad button the default pad table binds to it. */
+ *  the first pad button the live pad table binds to it. */
 export async function pressAccel(page: Page, accel: Accel): Promise<void> {
   if (pressSourceOf(page) === 'pad') {
-    const index = padAccelIndexFor(accel);
+    const index = await padAccelIndexFor(page, accel);
     if (index === undefined) {
       throw new UnboundKeyError(`pressAccel: the accelerator ${accel} has no pad button bound`);
     }
@@ -146,7 +158,7 @@ export async function closeAll(page: Page, settleMs = CLOSE_ALL_SETTLE_MS): Prom
       const top = before[before.length - 1];
       const startName =
         pressSourceOf(page) === 'pad'
-          ? `pad button ${padIndexFor('Start') ?? 'unbound'}`
+          ? `pad button ${(await padIndexFor(page, 'Start')) ?? 'unbound'}`
           : (await liveBindings(page)).buttons.Start[0];
       throw new StuckStackError(
         `closeAll: stuck top frame ${frameName(top)} after ${presses} ` +

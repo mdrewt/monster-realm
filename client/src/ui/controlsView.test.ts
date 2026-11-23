@@ -25,12 +25,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from '../input/buttons';
 import { glyph, resetLearnedKeys } from '../input/glyphs';
+import { PAD_DEFAULT_BINDINGS, type PadBindings, type PadIndex } from '../input/padBindings';
+import { padGlyph } from '../input/padGlyphs';
+import type { MenuAccel } from '../input/router';
 import { t as a11yT } from './a11yCopy';
 import { confirmLayout } from './actionSheetModel';
 import {
   type ControlsRow,
   capturePrompt,
   clearAccel,
+  type PadRow,
+  type PadTarget,
+  padCapturePrompt,
   rowLabel,
   type Slot,
   type SlotTarget,
@@ -128,6 +134,8 @@ interface RigOptions {
   readonly step?: () => Step;
   /** uif-13: apply + save a step; false when the save failed (default: true). */
   readonly onTextStep?: (step: Step) => boolean;
+  /** The live pad table the Pad cells read; absent, the view is built without the handler. */
+  readonly padBindings?: () => PadBindings;
 }
 
 /** A fresh document and one view over it, every handler a spy. */
@@ -146,6 +154,8 @@ function rig(opts: RigOptions = {}) {
   // and `onTextStep(step)` (applied + saved, false when the save failed).
   const textStep = vi.fn(opts.step ?? ((): Step => 'normal'));
   const onTextStep = vi.fn(opts.onTextStep ?? ((_step: Step): boolean => true));
+  // The pad remap: `padBindings()` (the live pad table) is passed only when a case gives one, so
+  // the default rig is the view built without it.
   const view = new ControlsView({
     bindings: opts.bindings ?? (() => DEFAULT_BINDINGS),
     onClear,
@@ -155,6 +165,7 @@ function rig(opts: RigOptions = {}) {
     onOutcome,
     textStep,
     onTextStep,
+    ...(opts.padBindings === undefined ? {} : { padBindings: opts.padBindings }),
   } as Handlers);
   return { view, onClear, onReset, onCancelCapture, announce, onOutcome, textStep, onTextStep };
 }
@@ -315,16 +326,18 @@ describe('ControlsView — rows and prompt (ctl-12b, CTL12B.1)', () => {
     expect(el(ROWS_ID).getAttribute('role'), 'the rows are a grid').toBe('grid');
     const rows = rowsOf();
     expect(rows, '12 button rows + the Reset all row').toHaveLength(13);
+    // INTENTIONAL CHANGE (pad remap, plan "Intentional changes to existing tests"): each button row
+    // is Primary, Alt then Pad, and each shortcut row Primary, Alt, Pad then Clear.
     for (const [i, id] of VBUTTONS.entries()) {
       const cells = Array.from(rows[i]?.children ?? []) as HTMLElement[];
       expect(
         cells.map((c) => c.dataset.navKey),
-        `row ${i}: ${id} Primary then Alt`,
-      ).toEqual([`${id}_0`, `${id}_1`]);
+        `row ${i}: ${id} Primary, Alt then Pad`,
+      ).toEqual([`${id}_0`, `${id}_1`, `${id}_pad`]);
       expect(
         cells.map((c) => c.dataset.slot),
         `row ${i}: the slots`,
-      ).toEqual(['primary', 'alt']);
+      ).toEqual(['primary', 'alt', 'pad']);
       const row = btnRow(id);
       expect(readCell(`${id}_0`), `${id} Primary`).toBe(slotText(DEFAULT_BINDINGS, row, 0));
       expect(readCell(`${id}_1`), `${id} Alt`).toBe(slotText(DEFAULT_BINDINGS, row, 1));
@@ -363,11 +376,11 @@ describe('ControlsView — rows and prompt (ctl-12b, CTL12B.1)', () => {
       expect(
         cells.map((c) => c.dataset.navKey),
         `row ${i}: ${id}`,
-      ).toEqual([`${id}_0`, `${id}_1`, `${id}_clear`]);
+      ).toEqual([`${id}_0`, `${id}_1`, `${id}_pad`, `${id}_clear`]);
       expect(
         cells.map((c) => c.dataset.slot),
         `row ${i}: the slots`,
-      ).toEqual(['primary', 'alt', 'clear']);
+      ).toEqual(['primary', 'alt', 'pad', 'clear']);
       const row = accRow(id);
       expect(readCell(`${id}_0`)).toBe(slotText(DEFAULT_BINDINGS, row, 0));
       expect(readCell(`${id}_1`)).toBe(slotText(DEFAULT_BINDINGS, row, 1));
@@ -1966,5 +1979,203 @@ describe('ControlsView uif-13: sheet placement and the optional text-size handle
     expect(currentKeys(), 'an absent reader reads as Normal').toEqual(['normal']);
     expect(readCell('normal')).toBe('Text size: Normal (current)');
     expect(readCell('large')).toBe('Text size: Large');
+  });
+});
+
+// --- the Pad column ---------------------------------------------------------------------------------
+//
+// Each binding row ends its slots with a Pad cell reading the LIVE pad table (`handlers.padBindings`,
+// PAD_DEFAULT_BINDINGS when the handler is absent) through the pad glyphs. The F8 and F9 rows hold a
+// disabled placeholder Pad cell. The cell text is the plan's English template, typed here.
+
+const padBtnRow = (id: VButton): PadRow => ({ kind: 'button', id });
+const padAccRow = (id: MenuAccel): PadRow => ({ kind: 'accel', id });
+const padAt = (row: PadRow): PadTarget => ({ row, slot: 'pad' });
+
+/** The menu accelerators of the pad table, in its key order. */
+const MENU_ACCEL_IDS: readonly MenuAccel[] = Object.keys(
+  PAD_DEFAULT_BINDINGS.accels,
+) as MenuAccel[];
+
+/** A pad table: the defaults with some lists replaced. */
+const padWith = (
+  buttons: Partial<Record<VButton, readonly PadIndex[]>> = {},
+  accels: Partial<Record<MenuAccel, readonly PadIndex[]>> = {},
+): PadBindings => ({
+  buttons: { ...PAD_DEFAULT_BINDINGS.buttons, ...buttons },
+  accels: { ...PAD_DEFAULT_BINDINGS.accels, ...accels },
+});
+
+/** What a Pad cell reads: `${label} (pad): ${key}`. */
+const padText = (row: ControlsRow, key: string): string => `${rowLabel(row)} (pad): ${key}`;
+/** A pad index as a Pad cell names it: its glyph, or the none mark. */
+const padKey = (i: PadIndex | undefined): string => (i === undefined ? EM_DASH : padGlyph(i));
+
+describe('ControlsView — the Pad column', () => {
+  it('each Pad cell reads "<row> (pad): <pad glyph>" from the LIVE handlers.padBindings table at every paint, with data-slot="pad"; an emptied pad row reads the none mark; on Shortcuts it is the accelerator`s own index [gp-5.5]', () => {
+    // WRONG IMPL KILLED: a Pad cell read from the keyboard table (it would show W for Up), a pad
+    // table read once at construction (a swap would show the replaced glyph until a reload), the raw
+    // index instead of the glyph ("12"), a cell that does not name its row (read one cell at a
+    // time), an empty row left blank, a Shortcuts Pad cell read in the button namespace (the
+    // Controls accelerator would show the Y button's glyph), and a pad remap leaking into the
+    // keyboard cells.
+    let pad: PadBindings = PAD_DEFAULT_BINDINGS;
+    const { view } = rig({ padBindings: () => pad });
+    view.show();
+    view.paint(paintOf());
+    for (const id of VBUTTONS) {
+      expect(readCell(`${id}_pad`), `${id} Pad`).toBe(
+        padText(btnRow(id), padKey(PAD_DEFAULT_BINDINGS.buttons[id][0])),
+      );
+      expect(cell(`${id}_pad`).dataset.slot, `${id} Pad: data-slot`).toBe('pad');
+      expect(cell(`${id}_pad`).getAttribute('aria-disabled'), `${id} Pad: enabled`).toBeNull();
+    }
+    expect(readCell('A_pad'), 'the plan`s English text').toBe('Confirm (A) (pad): A');
+    expect(readCell('Up_pad'), 'a D-pad glyph').toBe(padText(btnRow('Up'), padGlyph(12)));
+    expect(readCell('Up_pad').includes('12'), 'never the raw index').toBe(false);
+    expect(el(ROWS_ID).querySelectorAll('[data-slot="pad"]'), 'one Pad cell per row').toHaveLength(
+      12,
+    );
+
+    pad = padWith({ A: [3], Y: [0], X: [] });
+    view.paint(paintOf());
+    expect(readCell('A_pad'), 'the live table: A on Y`s button').toBe(
+      padText(btnRow('A'), padGlyph(3)),
+    );
+    expect(readCell('Y_pad'), 'and Y on A`s').toBe(padText(btnRow('Y'), padGlyph(0)));
+    expect(readCell('X_pad'), 'an emptied row').toBe(padText(btnRow('X'), EM_DASH));
+    expect(readCell('A_0'), 'the keyboard cell is untouched').toBe(
+      slotText(DEFAULT_BINDINGS, btnRow('A'), 0),
+    );
+
+    view.paint(paintOf({ nav: navOn('shortcuts') }));
+    expect(readCell('I_pad'), 'the Bag on RT').toBe(padText(accRow('I'), padGlyph(7)));
+    expect(readCell('V_pad'), 'Party on LT').toBe(padText(accRow('V'), padGlyph(6)));
+    expect(readCell('B_pad'), 'the Storage accelerator has none').toBe(
+      padText(accRow('B'), EM_DASH),
+    );
+    expect(readCell('Y_pad'), 'the Controls accelerator, not the Y button').toBe(
+      padText(accRow('Y'), EM_DASH),
+    );
+    expect(el(ROWS_ID).querySelectorAll('[data-slot="pad"]'), 'one Pad cell per row').toHaveLength(
+      ACCELS.length,
+    );
+  });
+
+  it('with no padBindings handler every Pad cell reads PAD_DEFAULT_BINDINGS, on both tabs [gp-5.6]', () => {
+    // WRONG IMPL KILLED: a view that calls `handlers.padBindings()` unguarded (every shell rig that
+    // never wires it throws out of paint), and one that reads an empty table when it is absent.
+    const { view } = rig();
+    view.show();
+    view.paint(paintOf());
+    for (const id of VBUTTONS) {
+      expect(readCell(`${id}_pad`), `${id} Pad`).toBe(
+        padText(btnRow(id), padKey(PAD_DEFAULT_BINDINGS.buttons[id][0])),
+      );
+    }
+    view.paint(paintOf({ nav: navOn('shortcuts') }));
+    for (const id of MENU_ACCEL_IDS) {
+      expect(readCell(`${id}_pad`), `${id} Pad`).toBe(
+        padText(accRow(id), padKey(PAD_DEFAULT_BINDINGS.accels[id][0])),
+      );
+    }
+  });
+
+  it('the F8 and F9 rows hold a disabled placeholder Pad cell reading "<row> (pad): —" with data-slot="pad" and aria-disabled="true"; no other cell is aria-disabled [gp-5.6]', () => {
+    // WRONG IMPL KILLED: a debug row with no Pad cell (its row would be one column short and the
+    // grid's Down would cross into the next row), a placeholder that looks enabled to a screen
+    // reader, one left blank or naming no row, and an aria-disabled leaking onto a real Pad cell.
+    const { view } = rig({ padBindings: () => PAD_DEFAULT_BINDINGS });
+    view.show();
+    view.paint(paintOf({ nav: navOn('shortcuts') }));
+    for (const id of ['F8', 'F9'] as const) {
+      const placeholder = cell(`${id}_pad`);
+      expect(placeholder.getAttribute('aria-disabled'), `${id} Pad: disabled`).toBe('true');
+      expect(placeholder.dataset.slot, `${id} Pad: data-slot`).toBe('pad');
+      expect(readCell(`${id}_pad`), `${id} Pad: the none mark`).toBe(padText(accRow(id), EM_DASH));
+    }
+    const disabled = Array.from(
+      el(ROWS_ID).querySelectorAll<HTMLElement>('[aria-disabled="true"]'),
+    ).map((node) => node.dataset.navKey);
+    expect(disabled.sort(), 'only the placeholders').toEqual(['F8_pad', 'F9_pad']);
+    view.paint(paintOf());
+    expect(
+      el(ROWS_ID).querySelectorAll('[aria-disabled="true"]'),
+      'the Buttons tab has none',
+    ).toHaveLength(0);
+  });
+
+  it('painting a Pad capture shows #controls-capture with padCapturePrompt(row) ("Press a pad button for Confirm (A)…") and the Cancel chip, announces it once per capture, and `capturing` is the Pad target; a Key capture of the same row moving to its Pad cell is a new capture [gp-5.6]', () => {
+    // WRONG IMPL KILLED: the key prompt shown for a pad capture (a pad player told to press a key),
+    // a prompt never announced, one announced on every repaint, a target compared by row only (the
+    // switch from the row's Key cell to its Pad cell would announce nothing and leave the key
+    // prompt up), a `capturing` that drops the device (the shell would route the next key into a
+    // pad capture), and a prompt left up after the capture ends.
+    const { view, announce } = rig({ padBindings: () => PAD_DEFAULT_BINDINGS });
+    view.show();
+    view.paint(paintOf());
+    announce.mockClear();
+
+    const aPad = padAt(padBtnRow('A'));
+    view.paint(paintOf({ nav: navOn('buttons', 'A_pad'), capturing: aPad }));
+    expect(view.capturing, 'the Pad target').toEqual(aPad);
+    expect(readable(el(CAPTURE_ID), 'the prompt')).toBe(padCapturePrompt(btnRow('A')));
+    expect(el(CAPTURE_ID).textContent, 'the plan`s English prompt').toBe(
+      `Press a pad button for Confirm (A)${ELLIPSIS}`,
+    );
+    expect(readable(el(CANCEL_ID), 'the Cancel chip')).toBe(t('controls.cancel'));
+    expect(announce, 'announced once').toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(padCapturePrompt(btnRow('A')));
+    view.paint(paintOf({ nav: navOn('buttons', 'A_pad'), capturing: aPad }));
+    expect(announce, 'the same capture repainted announces nothing more').toHaveBeenCalledTimes(1);
+
+    view.paint(paintOf({ nav: navOn('buttons', 'A_0'), capturing: slotOf(btnRow('A'), 0) }));
+    expect(el(CAPTURE_ID).textContent, 'a Key capture shows the key prompt').toBe(
+      capturePrompt(btnRow('A')),
+    );
+    announce.mockClear();
+    view.paint(paintOf({ nav: navOn('buttons', 'A_pad'), capturing: aPad }));
+    expect(announce, 'the Pad cell of the same row is a new capture').toHaveBeenCalledWith(
+      padCapturePrompt(btnRow('A')),
+    );
+    expect(el(CAPTURE_ID).textContent).toBe(padCapturePrompt(btnRow('A')));
+
+    const bagPad = padAt(padAccRow('I'));
+    view.paint(paintOf({ nav: navOn('shortcuts', 'I_pad'), capturing: bagPad }));
+    expect(view.capturing).toEqual(bagPad);
+    expect(el(CAPTURE_ID).textContent, 'an accelerator row').toBe(padCapturePrompt(accRow('I')));
+
+    view.paint(paintOf({ nav: navOn('shortcuts', 'I_pad') }));
+    expect(view.capturing, 'the capture ended').toBeNull();
+    expect(hiddenAncestorOf(el(CAPTURE_ID)), 'the prompt is hidden').not.toBeNull();
+    expect(hiddenAncestorOf(el(CANCEL_ID)), 'and the chip').not.toBeNull();
+  });
+
+  it('Reset all`s request calls onReset once and the same paint shows the default pad glyphs the reset restored, beside the default keys [gp-5.11]', () => {
+    // WRONG IMPL KILLED: a Reset all wired to a keyboard-only reset (the Pad cells would keep the
+    // remap), a paint that renders the Pad cells before applying the request (they would show the
+    // remapped glyphs until the next step), and a pad table cached across the paint.
+    let keys: Bindings = withButtons({ A: ['KeyK', 'NumpadEnter'] });
+    let pad: PadBindings = padWith({ A: [3], Y: [0] });
+    const { view, onReset, onOutcome } = rig({
+      bindings: () => keys,
+      padBindings: () => pad,
+      onReset: () => {
+        keys = DEFAULT_BINDINGS;
+        pad = PAD_DEFAULT_BINDINGS;
+        return true;
+      },
+    });
+    view.show();
+    view.paint(paintOf());
+    expect(readCell('A_pad'), 'before: A on Y`s button').toBe(padText(btnRow('A'), padGlyph(3)));
+    view.paint(paintOf({ nav: navOn('buttons', 'reset'), request: { kind: 'reset' } }));
+    expect(onReset, 'Reset all calls onReset').toHaveBeenCalledTimes(1);
+    expect(onOutcome).toHaveBeenLastCalledWith(t('controls.reset.done'), true);
+    expect(readCell('A_pad'), 'the same paint: the default pad A').toBe(
+      padText(btnRow('A'), padGlyph(0)),
+    );
+    expect(readCell('Y_pad')).toBe(padText(btnRow('Y'), padGlyph(3)));
+    expect(readCell('A_0'), 'and the default key').toBe(slotText(DEFAULT_BINDINGS, btnRow('A'), 0));
   });
 });

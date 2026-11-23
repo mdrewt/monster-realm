@@ -303,15 +303,15 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // A, B, Start) with no key. One sentence. ui/controlsModel.ts
   'controls.refused.protected':
     'Les déplacements, Valider, Retour et Menu doivent toujours garder une touche.',
-  // @desc: Feedback line in Controls when key capture ends without a change. One or two
-  // words. ui/controlsModel.ts
+  // @desc: Feedback line in Controls when a key or pad button capture ends without a change.
+  // One or two words. ui/controlsModel.ts
   'controls.cancelled': 'Inchangé.',
-  // @desc: Feedback line in Controls when a free key has been bound. One or two words.
-  // ui/controlsModel.ts
+  // @desc: Feedback line in Controls when a free key or pad button has been bound. One or two
+  // words. ui/controlsModel.ts
   'controls.bound': 'Enregistré.',
-  // @desc: Feedback line in Controls when the pressed key was bound elsewhere and the two
-  // bindings swapped; {key}/{otherKey} are keycaps, {label}/{otherLabel} row names.
-  // ui/controlsModel.ts
+  // @desc: Feedback line in Controls when the pressed key or pad button was bound elsewhere and
+  // the two bindings swapped; {key}/{otherKey} are keycaps or pad button glyphs,
+  // {label}/{otherLabel} row names. ui/controlsModel.ts
   'controls.swapped': (p) =>
     `Échangé : ${p.key} est maintenant ${p.label}, ${p.otherKey} est maintenant ${p.otherLabel}`,
   // @desc: Feedback line in Controls when the pressed key moved from another row into an
@@ -322,6 +322,24 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback line in Controls when a row's Primary and Alt keys traded places;
   // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
   'controls.swappedSlots': (p) => `Échangé : ${p.key} et ${p.otherKey} pour ${p.label}`,
+  // @desc: A Pad cell of a Controls row: the row name and the pad button bound to it; {label}
+  // is the row name (e.g. Confirm (A)), {key} a pad button glyph or — when none. ui/controlsView.ts
+  'controls.slot.pad': (p) => `${p.label} (manette) : ${p.key}`,
+  // @desc: Line shown in Controls while a Pad cell waits for a pad button press; {label} is the
+  // row name (e.g. Confirm (A)). ui/controlsModel.ts
+  'controls.capture.padPrompt': (p) => `Appuyez sur un bouton de la manette pour : ${p.label}…`,
+  // @desc: Feedback line in Controls when the pressed pad button cannot be bound (the Home /
+  // Guide button, or one past the bindable range). One sentence. ui/controlsModel.ts
+  'controls.refused.padReserved': 'Ce bouton ne peut pas être attribué.',
+  // @desc: Feedback line in Controls when a pad change would leave a protected button (D-pad,
+  // A, B, Start) with no pad button. One sentence. ui/controlsModel.ts
+  'controls.refused.padProtected':
+    'Les déplacements, Valider, Retour et Menu doivent toujours garder un bouton de manette.',
+  // @desc: Feedback line in Controls when the pressed pad button moved from another row into an
+  // empty Pad cell, leaving that row without a pad button; {key} is a pad button glyph,
+  // {label}/{otherLabel} row names. ui/controlsModel.ts
+  'controls.swappedPadUnbound': (p) =>
+    `Échangé : ${p.key} est maintenant ${p.label}, ${p.otherLabel} n’a plus de bouton de manette`,
   // @desc: Heading of the Controls screen (key remapping). ui/controlsView.ts
   'controls.title': 'Commandes',
   // @desc: Tab of Controls listing the twelve virtual buttons. ui/controlsView.ts
@@ -344,10 +362,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'controls.cleared': (p) => `${p.label} n’a plus de touche.`,
   // @desc: Last row of each Controls tab: restore every default key. ui/controlsView.ts
   'controls.resetAll': 'Tout réinitialiser',
-  // @desc: Yes / No question asked before Controls restores every default key.
+  // @desc: Yes / No question asked before Controls restores every default key and pad button.
   // ui/controlsView.ts
   'controls.reset.question': 'Réinitialiser toutes les commandes ?',
-  // @desc: Feedback line in Controls after every default key was restored. One
+  // @desc: Feedback line in Controls after every default key and pad button was restored. One
   // sentence. ui/controlsView.ts
   'controls.reset.done': 'Toutes les commandes ont repris leur valeur par défaut.',
   // @desc: Button shown in Controls while a slot waits for a key press; it ends the
