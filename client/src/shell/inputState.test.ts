@@ -21,10 +21,11 @@ import {
 import type { WasmMoveInput } from '../convert/convert';
 import { CONTROLS_STORAGE_KEY } from '../input/bindingStore';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
-import { VBUTTONS } from '../input/buttons';
+import { VBUTTONS, type VButton } from '../input/buttons';
 import { glyph } from '../input/glyphs';
-import { PAD_DEFAULT_BINDINGS } from '../input/padBindings';
+import { PAD_DEFAULT_BINDINGS, type PadBindings, type PadIndex } from '../input/padBindings';
 import { padGlyph } from '../input/padGlyphs';
+import type { MenuAccel } from '../input/router';
 import type { ConnectionOptions } from '../net/connection';
 
 const H = vi.hoisted(() => ({
@@ -239,8 +240,13 @@ function openMenuOn(entry: string): void {
 }
 
 const CONTROLS_STACK: readonly string[] = ['world', 'menuView', 'controlsView'];
-/** The Buttons tab's cell keys in display order: each button's Primary then Alt, then Reset all. */
-const BUTTON_CELLS: readonly string[] = [...VBUTTONS.flatMap((b) => [`${b}_0`, `${b}_1`]), 'reset'];
+/** The Buttons tab's cell keys in display order: each button's Primary, Alt then Pad, then Reset
+ *  all (a three-column grid). */
+const BUTTON_CELLS: readonly string[] = [
+  ...VBUTTONS.flatMap((b) => [`${b}_0`, `${b}_1`, `${b}_pad`]),
+  'reset',
+];
+const BUTTON_COLS = 3;
 
 const controlsActive = (): string | null =>
   document.querySelector('#controls-rows [aria-selected="true"]')?.getAttribute('data-nav-key') ??
@@ -263,7 +269,7 @@ function startCaptureOnA0(): void {
   const place = (k: string | null): { row: number; col: number } => {
     const i = k === null ? -1 : BUTTON_CELLS.indexOf(k);
     if (i < 0) throw new Error(`Controls cursor: ${String(k)} is not a Buttons cell`);
-    return { row: Math.floor(i / 2), col: i % 2 };
+    return { row: Math.floor(i / BUTTON_COLS), col: i % BUTTON_COLS };
   };
   const from = place(controlsActive());
   const to = place('A_0');
@@ -291,9 +297,27 @@ const storedTable = (change: (raw: Raw) => void): string => {
   return JSON.stringify({ v: 1, ...raw });
 };
 
-/** The JSON a save of `b` writes, parsed. */
-const savedShape = (b: Bindings): unknown =>
-  JSON.parse(JSON.stringify({ v: 1, buttons: b.buttons, accels: b.accels }));
+/** The JSON a save of the keyboard table `b` and the pad table `pad` writes, parsed.
+ *  INTENTIONAL CHANGE (pad remap, plan "Intentional changes to existing tests"): every save writes
+ *  the record with both tables, so the pinned record holds `pad` too. */
+const savedShape = (b: Bindings, pad: PadBindings): unknown =>
+  JSON.parse(
+    JSON.stringify({
+      v: 1,
+      buttons: b.buttons,
+      accels: b.accels,
+      pad: { buttons: pad.buttons, accels: pad.accels },
+    }),
+  );
+
+/** The default pad table with some lists replaced. */
+const padWith = (
+  buttons: Partial<Record<VButton, readonly PadIndex[]>> = {},
+  accels: Partial<Record<MenuAccel, readonly PadIndex[]>> = {},
+): PadBindings => ({
+  buttons: { ...PAD_DEFAULT_BINDINGS.buttons, ...buttons },
+  accels: { ...PAD_DEFAULT_BINDINGS.accels, ...accels },
+});
 
 const savedRaw = (): string | null => localStorage.getItem(CONTROLS_STORAGE_KEY);
 
@@ -530,8 +554,9 @@ describe('the booted shell drives the input devices of shell/inputState', {
     expect(oldKeyboard.buttonFor('KeyK'), 'the old source kept the old table').toBeUndefined();
     const raw = savedRaw();
     expect(raw, 'the table was saved').not.toBeNull();
+    // INTENTIONAL CHANGE (pad remap): the record also holds the live (default) pad table.
     expect(JSON.parse(raw ?? 'null'), 'exactly the module`s new table').toEqual(
-      savedShape(ns.bindings),
+      savedShape(ns.bindings, PAD_DEFAULT_BINDINGS),
     );
   }, 60_000);
 
@@ -794,7 +819,10 @@ describe('shell/inputState functions', { sequential: true }, () => {
     expect(ns.keyboard.buttonFor('Enter'), 'and Enter as nothing').toBeUndefined();
     const raw = savedRaw();
     expect(raw, 'the table was saved').not.toBeNull();
-    expect(JSON.parse(raw ?? 'null'), 'exactly the applied table').toEqual(savedShape(next));
+    // INTENTIONAL CHANGE (pad remap): the record also holds the live (default) pad table.
+    expect(JSON.parse(raw ?? 'null'), 'exactly the applied table').toEqual(
+      savedShape(next, PAD_DEFAULT_BINDINGS),
+    );
     expectNothingHeld(ns, 'after applyBindings');
   });
 
@@ -836,6 +864,268 @@ describe('shell/inputState functions', { sequential: true }, () => {
     expect(ns.keyboard, 'the keyboard source was still replaced').not.toBe(oldKeyboard);
     expect(ns.keyboard.buttonFor('KeyK'), 'and answers K as A').toBe('A');
     expectNothingHeld(ns, 'after a refused save');
+  });
+
+  // --- the pad table: read at import, applied and saved with the keyboard table -----------------
+
+  /** A fake standard pad (the pad-source block's `makeFakePad`) answering `navigator.getGamepads`
+   *  until the case ends; the module's pad source reads the API at each poll. */
+  function usePadApi(): FakePad {
+    const fake = makeFakePad();
+    Object.defineProperty(navigator, 'getGamepads', {
+      value: () => [fake, null, null, null],
+      configurable: true,
+      writable: true,
+    });
+    restorers.push(() => {
+      delete (navigator as unknown as { getGamepads?: unknown }).getGamepads;
+    });
+    return fake;
+  }
+
+  /** Make `window.localStorage` a wrapper recording every write of mr.controls (the module reads
+   *  `window.localStorage` per save), refusing each one when `refuse`; undone at the case's end. */
+  function wrapStorage(refuse: boolean): { readonly writes: string[]; readonly real: Storage } {
+    const real = window.localStorage;
+    const writes: string[] = [];
+    const wrapper: Storage = {
+      get length(): number {
+        return real.length;
+      },
+      key: (i: number): string | null => real.key(i),
+      getItem: (key: string): string | null => real.getItem(key),
+      setItem: (key: string, value: string): void => {
+        if (key === CONTROLS_STORAGE_KEY) {
+          writes.push(value);
+          if (refuse) throw new Error('QuotaExceededError: storage is full');
+        }
+        real.setItem(key, value);
+      },
+      removeItem: (key: string): void => real.removeItem(key),
+      clear: (): void => real.clear(),
+    };
+    const ownStorage = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    Object.defineProperty(window, 'localStorage', { configurable: true, get: () => wrapper });
+    restorers.push(() => {
+      if (ownStorage !== undefined) Object.defineProperty(window, 'localStorage', ownStorage);
+      else delete (window as unknown as { localStorage?: unknown }).localStorage;
+    });
+    expect(window.localStorage, 'precondition: window.localStorage is the wrapper').toBe(wrapper);
+    return { writes, real };
+  }
+
+  /** The keyboard defaults with A moved to K, as a stored-table object. */
+  const keysWithK = (): Bindings =>
+    JSON.parse(
+      storedTable((raw) => {
+        raw.buttons.A = ['KeyK'];
+      }),
+    ) as Bindings;
+
+  /** A stored record: the keyboard table `change` makes, plus `pad` under the pad key. */
+  const storedWithPad = (change: (raw: Raw) => void, pad: unknown): string =>
+    JSON.stringify({ ...(JSON.parse(storedTable(change)) as object), pad });
+
+  const SWAP_A_Y = (): PadBindings => padWith({ A: [3], Y: [0] });
+
+  it('the module reads the pad table saved in mr.controls when it is imported: the pad source presses through it and the pad keycaps show it; a record with no pad key gives the pad defaults and keeps its keyboard table [gp-5.1]', async () => {
+    // WRONG IMPL KILLED: a pad table fixed at PAD_DEFAULT_BINDINGS (a saved pad remap is lost on
+    // every reload), a pad source built over another table than the one the keycaps read, a pad
+    // table read from another key, and a record without `pad` that resets the keyboard table.
+    const ns = await fresh(
+      storedWithPad(
+        (raw) => {
+          raw.buttons.A = ['KeyK'];
+        },
+        { buttons: { A: [3], Y: [0] }, accels: {} },
+      ),
+    );
+    expect(ns.padBindings, 'the saved pad table, read at import').toEqual(SWAP_A_Y());
+    expect(ns.bindings.buttons.A, 'and the keyboard table beside it').toEqual(['KeyK']);
+    const fake = usePadApi();
+    expect(ns.pad.poll(), 'precondition: nothing is pressed').toEqual(NO_POLL);
+    fake.buttons[3].pressed = true;
+    expect(ns.pad.poll(), 'button 3 presses A').toEqual({
+      edges: [{ button: 'A', down: true }],
+      accels: [],
+    });
+    fake.buttons[0].pressed = true;
+    expect(ns.pad.poll(), 'button 0 presses Y').toEqual({
+      edges: [{ button: 'Y', down: true }],
+      accels: [],
+    });
+    ns.noteInputSource('pad');
+    expect(ns.keycap('A'), 'the A keycap is button 3`s glyph').toBe(padGlyph(3));
+    expect(ns.keycap('Y'), 'the Y keycap is button 0`s glyph').toBe(padGlyph(0));
+
+    const plain = await fresh(
+      storedTable((raw) => {
+        raw.buttons.A = ['KeyK'];
+      }),
+    );
+    expect(plain.padBindings, 'no pad key: the pad defaults').toEqual(PAD_DEFAULT_BINDINGS);
+    expect(plain.bindings.buttons.A, 'and the keyboard table kept').toEqual(['KeyK']);
+  });
+
+  it('applyPadBindings saves the record with both tables (the new pad table and the live keyboard table), releases everything held, swaps in the pad table for the pad source, and answers true [gp-5.4]', async () => {
+    // WRONG IMPL KILLED: a pad remap that is applied but not saved (lost on reload), one saved with
+    // the DEFAULT keyboard table (the keyboard remap is lost on reload), one that replaces the
+    // keyboard table, a pad table swapped in for the keycaps but not for the pad source, and an
+    // apply that leaves a held direction or code behind.
+    const ns = await fresh();
+    const keys = keysWithK();
+    expect(ns.applyBindings(keys), 'precondition: a keyboard remap').toBe(true);
+    holdEverything(ns);
+    const next = SWAP_A_Y();
+    expect(ns.applyPadBindings(next), 'the save succeeded').toBe(true);
+    expect(ns.padBindings, 'the pad table is the one applied').toBe(next);
+    expect(ns.bindings, 'the keyboard table is untouched').toBe(keys);
+    expect(JSON.parse(savedRaw() ?? 'null'), 'both halves saved').toEqual(savedShape(keys, next));
+    expectNothingHeld(ns, 'after applyPadBindings');
+    const fake = usePadApi();
+    expect(ns.pad.poll(), 'precondition: nothing is pressed').toEqual(NO_POLL);
+    fake.buttons[3].pressed = true;
+    expect(ns.pad.poll(), 'the pad source presses through the new table').toEqual({
+      edges: [{ button: 'A', down: true }],
+      accels: [],
+    });
+  });
+
+  it('applyBindings saves the live pad table with the keyboard table: a pad remap applied first survives a keyboard remap in mr.controls, and a reload reads both [gp-5.4]', async () => {
+    // WRONG IMPL KILLED: a keyboard save that writes only the keyboard half (the record loses its
+    // `pad` key and the pad remap is gone on reload), one that writes the DEFAULT pad table, and a
+    // keyboard remap that resets the live pad table.
+    const ns = await fresh();
+    const pad = SWAP_A_Y();
+    expect(ns.applyPadBindings(pad), 'precondition: a pad remap').toBe(true);
+    const keys = keysWithK();
+    expect(ns.applyBindings(keys)).toBe(true);
+    expect(JSON.parse(savedRaw() ?? 'null'), 'both halves saved').toEqual(savedShape(keys, pad));
+    expect(ns.padBindings, 'the live pad table is untouched').toBe(pad);
+    const stored = savedRaw() ?? undefined;
+    const reloaded = await fresh(stored);
+    expect(reloaded.bindings, 'the reload reads the keyboard remap').toEqual(keys);
+    expect(reloaded.padBindings, 'and the pad remap').toEqual(pad);
+  });
+
+  it('applyPadBindings answers false when the storage refuses the save, and still applies the pad table to the pad source and the keycaps [gp-5.4]', async () => {
+    // WRONG IMPL KILLED: a pad remap applied only when the save succeeds (a full or denied storage
+    // makes pad remapping impossible), a save exception that escapes, and a refusal reported as a
+    // success.
+    const ns = await fresh();
+    const storage = wrapStorage(true);
+    const next = SWAP_A_Y();
+    expect(ns.applyPadBindings(next), 'the refused save answers false').toBe(false);
+    expect(storage.writes, 'the save was attempted once').toHaveLength(1);
+    expect(storage.real.getItem(CONTROLS_STORAGE_KEY), 'nothing reached storage').toBeNull();
+    expect(ns.padBindings, 'the pad table still applied').toBe(next);
+    const fake = usePadApi();
+    expect(ns.pad.poll(), 'precondition: nothing is pressed').toEqual(NO_POLL);
+    fake.buttons[3].pressed = true;
+    expect(ns.pad.poll(), 'the pad source presses through it').toEqual({
+      edges: [{ button: 'A', down: true }],
+      accels: [],
+    });
+    ns.noteInputSource('pad');
+    expect(ns.keycap('A'), 'and the keycap shows it').toBe(padGlyph(3));
+  });
+
+  it('a pad button held while applyPadBindings swaps the table emits nothing and nothing on its release; only a fresh press acts, through the new table, while another button acts through the new table at once [gp-5.9]', async () => {
+    // WRONG IMPL KILLED: a pad source that is never rebound (the replaced table keeps driving until a
+    // reload), a rebind that does not latch (the button just captured as A's would press A at once
+    // and start a second capture, or its release would end another source's hold), a latch that
+    // swallows the fresh press, and a latch that blocks every other button too.
+    const ns = await fresh();
+    const fake = usePadApi();
+    expect(ns.pad.poll(), 'precondition: nothing is pressed').toEqual(NO_POLL);
+    fake.buttons[3].pressed = true;
+    expect(ns.pad.poll(), 'precondition: button 3 is Y').toEqual({
+      edges: [{ button: 'Y', down: true }],
+      accels: [],
+    });
+    expect(ns.applyPadBindings(SWAP_A_Y()), 'the swap applies').toBe(true);
+    expect(ns.pad.poll(), 'held through the swap: nothing').toEqual(NO_POLL);
+    expect(ns.pad.poll(), 'and nothing on the next poll').toEqual(NO_POLL);
+    fake.buttons[0].pressed = true;
+    expect(ns.pad.poll(), 'button 0 is Y at once').toEqual({
+      edges: [{ button: 'Y', down: true }],
+      accels: [],
+    });
+    fake.buttons[3].pressed = false;
+    expect(ns.pad.poll(), 'the held button`s release emits nothing').toEqual(NO_POLL);
+    fake.buttons[3].pressed = true;
+    expect(ns.pad.poll(), 'pressed again: A, through the new table').toEqual({
+      edges: [{ button: 'A', down: true }],
+      accels: [],
+    });
+    fake.buttons[0].pressed = false;
+    fake.buttons[3].pressed = false;
+    expect(ns.pad.poll(), 'each release owes its own edge').toEqual({
+      edges: [
+        { button: 'Y', down: false },
+        { button: 'A', down: false },
+      ],
+      accels: [],
+    });
+  });
+
+  it('resetAllBindings restores DEFAULT_BINDINGS and PAD_DEFAULT_BINDINGS in one save of both, releases everything held, drives the keyboard and the pad through the defaults, and answers true [gp-5.11]', async () => {
+    // WRONG IMPL KILLED: a Reset all that restores the keyboard only (the pad remap survives it),
+    // one that saves the keyboard defaults beside the OLD pad table (a reload brings the pad remap
+    // back), two writes (a refused second write leaves half the reset on disk), a reset saved but
+    // not applied, and one that leaves a held button owing an edge.
+    const ns = await fresh();
+    expect(ns.applyBindings(keysWithK()), 'precondition: a keyboard remap').toBe(true);
+    expect(ns.applyPadBindings(SWAP_A_Y()), 'precondition: a pad remap').toBe(true);
+    const storage = wrapStorage(false);
+    holdEverything(ns);
+    expect(ns.resetAllBindings(), 'the save succeeded').toBe(true);
+    expect(storage.writes, 'one write').toHaveLength(1);
+    expect(JSON.parse(storage.writes[0] ?? 'null'), 'of both default tables').toEqual(
+      savedShape(DEFAULT_BINDINGS, PAD_DEFAULT_BINDINGS),
+    );
+    expect(ns.bindings, 'the keyboard defaults').toBe(DEFAULT_BINDINGS);
+    expect(ns.padBindings, 'the pad defaults').toBe(PAD_DEFAULT_BINDINGS);
+    expectNothingHeld(ns, 'after resetAllBindings');
+    expect(ns.keyboard.buttonFor('Enter'), 'Enter is A again').toBe('A');
+    expect(ns.keyboard.buttonFor('KeyK'), 'and K is nothing').toBeUndefined();
+    const fake = usePadApi();
+    expect(ns.pad.poll(), 'precondition: nothing is pressed').toEqual(NO_POLL);
+    fake.buttons[0].pressed = true;
+    expect(ns.pad.poll(), 'button 0 is A again').toEqual({
+      edges: [{ button: 'A', down: true }],
+      accels: [],
+    });
+    ns.noteInputSource('pad');
+    expect(ns.keycap('Y'), 'the Y keycap is button 3 again').toBe(padGlyph(3));
+  });
+
+  it('resetAllBindings answers false when the storage refuses the save, and still applies both default tables [gp-5.11]', async () => {
+    // WRONG IMPL KILLED: a reset applied only when the save succeeds (a full storage would trap the
+    // player in a broken table), and a refused write that throws.
+    const ns = await fresh();
+    expect(ns.applyBindings(keysWithK()), 'precondition: a keyboard remap').toBe(true);
+    expect(ns.applyPadBindings(SWAP_A_Y()), 'precondition: a pad remap').toBe(true);
+    const storage = wrapStorage(true);
+    expect(ns.resetAllBindings(), 'the refused save answers false').toBe(false);
+    expect(storage.writes, 'the save was attempted once').toHaveLength(1);
+    expect(ns.bindings, 'the keyboard defaults still applied').toBe(DEFAULT_BINDINGS);
+    expect(ns.padBindings, 'and the pad defaults').toBe(PAD_DEFAULT_BINDINGS);
+  });
+
+  it('with the pad as the last source keycap reads the LIVE pad table: after applyPadBindings the A keycap is Y`s glyph, Y`s is A`s, an emptied row reads nothing, and the keyboard keycaps are unchanged [gp-5.9]', async () => {
+    // WRONG IMPL KILLED: a keycap that reads a pad table captured at import (the hint bar would show
+    // A's old glyph after the remap until a reload), and a pad remap that leaks into the keyboard
+    // keycaps.
+    const ns = await fresh();
+    ns.noteInputSource('pad');
+    expect(ns.keycap('A'), 'precondition: the default pad A').toBe(padGlyph(0));
+    expect(ns.applyPadBindings(padWith({ A: [3], Y: [0], X: [] }))).toBe(true);
+    expect(ns.keycap('A'), 'A on button 3').toBe(padGlyph(3));
+    expect(ns.keycap('Y'), 'Y on button 0').toBe(padGlyph(0));
+    expect(ns.keycap('X'), 'an emptied pad row').toBe('');
+    ns.noteInputSource('keys');
+    expect(ns.keycap('A'), 'the keyboard keycap is unchanged').toBe('Enter');
   });
 });
 

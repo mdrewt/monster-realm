@@ -49,10 +49,13 @@ import {
   worldRendererMock,
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
-import { parseBindings } from './input/bindingStore';
+import { parseBindings, parsePadBindings } from './input/bindingStore';
 import { type Bindings, DEFAULT_BINDINGS } from './input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from './input/buttons';
 import { glyph } from './input/glyphs';
+import { PAD_DEFAULT_BINDINGS, type PadBindings, type PadIndex } from './input/padBindings';
+import { padGlyph } from './input/padGlyphs';
+import type { MenuAccel } from './input/router';
 import type { ConnectionOptions } from './net/connection';
 import {
   type ControlsRow,
@@ -681,8 +684,8 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
 // ==========================================================================================
 //
 // DOM contract (plan ctl-12b, section 2): `#controls-overlay` is the frame root; `#controls-rows`
-// the nav grid, its cells `[data-nav-key]` (`${VButton}_0` / `_1` per button row, then `reset`;
-// on Shortcuts `${Accel}_0` / `_1` / `_clear`, then `reset`), the cursor cell `aria-selected` and
+// the nav grid, its cells `[data-nav-key]` (`${VButton}_0` / `_1` / `_pad` per button row, then
+// `reset`; on Shortcuts `${Accel}_0` / `_1` / `_pad` / `_clear`, then `reset`), the cursor cell `aria-selected` and
 // named by `aria-activedescendant`; `#controls-capture` (the prompt) and `#controls-cancel-btn`
 // only while capturing; `#controls-feedback` the last outcome line; `#controls-question` and a
 // Yes / No listbox in `#controls-rows` while Reset all asks. Every expected string is built from
@@ -695,11 +698,18 @@ const ELLIPSIS = String.fromCharCode(0x2026);
 const buttonRow = (id: VButton): ControlsRow => ({ kind: 'button', id });
 const ROW_A = buttonRow('A');
 
-/** The Buttons tab's cell keys in display order: each button's Primary then Alt, then Reset all. */
-const BUTTON_CELLS: readonly string[] = [...VBUTTONS.flatMap((b) => [`${b}_0`, `${b}_1`]), 'reset'];
-/** The Shortcuts tab's cell keys: each accelerator's Primary, Alt and Clear, then Reset all. */
+/** The Buttons tab's cell keys in display order: each button's Primary, Alt then Pad, then Reset
+ *  all. INTENTIONAL CHANGE (pad remap, plan "Intentional changes to existing tests"): each row
+ *  holds its Pad cell. */
+const BUTTON_CELLS: readonly string[] = [
+  ...VBUTTONS.flatMap((b) => [`${b}_0`, `${b}_1`, `${b}_pad`]),
+  'reset',
+];
+/** The Shortcuts tab's cell keys: each accelerator's Primary, Alt, Pad and Clear, then Reset all
+ *  (the F8 and F9 Pad cells are the disabled placeholders). INTENTIONAL CHANGE (pad remap): each row
+ *  holds its Pad cell. */
 const SHORTCUT_CELLS: readonly string[] = [
-  ...ACCELS.flatMap((a) => [`${a}_0`, `${a}_1`, `${a}_clear`]),
+  ...ACCELS.flatMap((a) => [`${a}_0`, `${a}_1`, `${a}_pad`, `${a}_clear`]),
   'reset',
 ];
 const CONTROLS_STACK: readonly string[] = ['world', 'menuView', 'controlsView'];
@@ -818,13 +828,14 @@ function openControls(a = 'Enter'): void {
   expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([...CONTROLS_STACK]);
 }
 
-/** Walk the Controls cursor to `key` with the D-pad over the active tab's known grid (Buttons: two
- *  columns; Shortcuts: three), never across an edge (so wrapping never matters). Reset all sits
+/** Walk the Controls cursor to `key` with the D-pad over the active tab's known grid (Buttons: three
+ *  columns; Shortcuts: four), never across an edge (so wrapping never matters). Reset all sits
  *  alone in column 0 of the last row, so the column changes only outside that row. */
 function controlsMoveTo(key: string): void {
   const onButtons = byId('controls-tab-buttons').getAttribute('aria-selected') === 'true';
   const cells = onButtons ? BUTTON_CELLS : SHORTCUT_CELLS;
-  const cols = onButtons ? 2 : 3;
+  // INTENTIONAL CHANGE (pad remap): the grids hold the Pad column, 3 and 4 columns wide.
+  const cols = onButtons ? 3 : 4;
   const place = (k: string | null): { row: number; col: number } => {
     const i = k === null ? -1 : cells.indexOf(k);
     if (i < 0) throw new Error(`Controls cursor: ${String(k)} is not a cell of this tab`);
@@ -980,7 +991,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
 
     const grid = byId('controls-rows');
     expect(grid.getAttribute('role'), 'the slots are a grid').toBe('grid');
-    expect(cellKeys(), 'twelve button rows (Primary, Alt), then Reset all; no Clear').toEqual([
+    expect(cellKeys(), 'twelve button rows (Primary, Alt, Pad), then Reset all; no Clear').toEqual([
       ...BUTTON_CELLS,
     ]);
     expect(
@@ -1357,7 +1368,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(byId('controls-tab-shortcuts').getAttribute('aria-selected'), 'RB: Shortcuts').toBe(
       'true',
     );
-    expect(cellKeys(), 'every accelerator row has Primary, Alt and Clear').toEqual([
+    expect(cellKeys(), 'every accelerator row has Primary, Alt, Pad and Clear').toEqual([
       ...SHORTCUT_CELLS,
     ]);
     controlsMoveTo('I_clear');
@@ -2298,4 +2309,705 @@ describe('main.ts Controls on the kit and the text-size setting (runtime, uif-13
     }
     expect(modes, 'ANTI-VACUITY: every mode ran').toHaveLength(3);
   });
+});
+
+// ==========================================================================================
+// The Pad column over the booted shell and a fake pad (the pad remap)
+// ==========================================================================================
+//
+// main.input.test.ts's gamepad harness, copied: happy-dom ships no Gamepad API, so a case installs
+// its own `navigator.getGamepads` (an own property of `navigator`, removed at teardown) answering one
+// fake standard-mapping pad that is MUTATED IN PLACE between frames, as a browser may hand back one
+// snapshot object. The frame loop polls the pad first in each `frame(t)`; `tick()` runs one frame on
+// the press clock, so key presses and frames share one clock that only moves forward. The indices
+// are the default pad table's: A 0, B 1, X 2, Y 3, LB 4, LT 6 (Party), RT 7 (the Bag), View 8
+// (Select), Menu 9 (Start), LS 10, the D-pad 12 to 15, and Guide 16 (never bindable). The English
+// text of the Pad cell, the pad prompt and the two pad refusals is typed here, from the plan.
+
+interface FakePadButton {
+  pressed: boolean;
+}
+interface FakePad {
+  index: number;
+  id: string;
+  connected: boolean;
+  mapping: string;
+  buttons: FakePadButton[];
+  axes: number[];
+}
+const makeFakePad = (): FakePad => ({
+  index: 0,
+  id: 'fake standard pad',
+  connected: true,
+  mapping: 'standard',
+  buttons: Array.from({ length: 17 }, () => ({ pressed: false })),
+  axes: [0, 0, 0, 0],
+});
+let fakePad: FakePad = makeFakePad();
+
+/** The default pad table's indices (`PAD_DEFAULT_BINDINGS`), and Guide. */
+const PADI = {
+  A: 0,
+  B: 1,
+  X: 2,
+  Y: 3,
+  LB: 4,
+  LT: 6,
+  RT: 7,
+  Select: 8,
+  Start: 9,
+  LS: 10,
+  Up: 12,
+  Down: 13,
+  Guide: 16,
+} as const;
+
+/** A fresh fake pad in slot 0 of `navigator.getGamepads`, until teardown. */
+function usePad(): void {
+  fakePad = makeFakePad();
+  Object.defineProperty(navigator, 'getGamepads', {
+    value: () => [fakePad, null, null, null],
+    configurable: true,
+    writable: true,
+  });
+  restorers.push(() => {
+    delete (navigator as unknown as { getGamepads?: unknown }).getGamepads;
+  });
+}
+const padHold = (i: number): void => {
+  fakePad.buttons[i].pressed = true;
+};
+const padLift = (i: number): void => {
+  fakePad.buttons[i].pressed = false;
+};
+/** One frame on the press clock. */
+function tick(): void {
+  frame(pressAt);
+  pressAt += 50;
+}
+/** A pad tap: pressed for one frame, released for the next. */
+function padTap(i: number): void {
+  padHold(i);
+  tick();
+  padLift(i);
+  tick();
+}
+
+/** Boot, deliver the character, install the fake pad and run one frame (the pad connects). */
+async function bootWithPad(o: BootOptions = {}): Promise<void> {
+  await bootReady(o);
+  server(1000);
+  usePad();
+  tick();
+}
+
+const accelRow = (id: Accel): ControlsRow => ({ kind: 'accel', id });
+const ROW_X = buttonRow('X');
+const ROW_Y = buttonRow('Y');
+const MENU_STACK: readonly string[] = ['world', 'menuView'];
+const HELP_STACK: readonly string[] = ['world', 'menuView', 'helpView'];
+
+/** What a Pad cell reads: the plan's `${label} (pad): ${key}`. */
+const padCellText = (row: ControlsRow, key: string): string => `${rowLabel(row)} (pad): ${key}`;
+/** The plan's pad prompt: `Press a pad button for ${label}…`. */
+const padPromptText = (row: ControlsRow): string =>
+  `Press a pad button for ${rowLabel(row)}${ELLIPSIS}`;
+const PAD_REFUSED_RESERVED = 'That button cannot be bound.';
+const PAD_REFUSED_PROTECTED = 'Movement, Confirm, Back and Menu must always keep a pad button.';
+
+/** The raw `pad` value of the saved mr.controls record (undefined when the record has none). */
+const savedPadRaw = (): unknown =>
+  (JSON.parse(savedRaw() ?? 'null') as { pad?: unknown } | null)?.pad;
+/** The saved pad table as a boot reads it: `parsePadBindings` over the record's `pad` value. */
+const savedPad = (): PadBindings => {
+  if (savedRaw() === null) throw new Error('nothing is saved in mr.controls');
+  return parsePadBindings(savedPadRaw());
+};
+/** The default pad table with some rows replaced, as plain data for a `toEqual`. */
+const padTableWith = (
+  buttons: Partial<Record<VButton, readonly PadIndex[]>>,
+  accels: Partial<Record<MenuAccel, readonly PadIndex[]>> = {},
+): unknown => ({
+  buttons: { ...PAD_DEFAULT_BINDINGS.buttons, ...buttons },
+  accels: { ...PAD_DEFAULT_BINDINGS.accels, ...accels },
+});
+/** The default pad table as the saved record writes it. */
+const DEFAULT_PAD_RAW: unknown = JSON.parse(
+  JSON.stringify({ buttons: PAD_DEFAULT_BINDINGS.buttons, accels: PAD_DEFAULT_BINDINGS.accels }),
+);
+/** A stored record: the stored keyboard table `keys` with `pad` under the pad key. */
+const withPad = (keys: string, pad: unknown): string =>
+  JSON.stringify({ ...(JSON.parse(keys) as object), pad });
+
+/** Move to the Pad cell `cell` and press A there (`a`): the Pad capture of `row` starts. */
+function startPadCapture(cell: string, row: ControlsRow, a = 'Enter'): void {
+  controlsMoveTo(cell);
+  press(a);
+  expect(capturing(), `precondition: A on ${cell} started a capture`).toBe(true);
+  expect(captureText(), `precondition: the pad prompt for ${cell}`).toBe(padPromptText(row));
+}
+
+/** The cancel-path walk: pad Down held moves the cursor onto A_pad, pad A (Down still held) starts
+ *  its Pad capture, both are released while it waits, then `cancel` ends it. Afterwards the table
+ *  is unchanged and unsaved, a second of frames moves no cursor (no direction is left held), and the
+ *  next pad A starts exactly one capture, which waits. */
+function cancelPathCase(cancel: () => void): void {
+  openControls();
+  controlsMoveTo('Right_pad');
+  padHold(PADI.Down);
+  tick();
+  expect(controlsActive(), 'precondition: pad Down moved the cursor onto A_pad').toBe('A_pad');
+  padHold(PADI.A);
+  tick();
+  expect(capturing(), 'precondition: pad A started the Pad capture').toBe(true);
+  expect(captureText(), 'precondition: the pad prompt').toBe(padPromptText(ROW_A));
+  padLift(PADI.A);
+  tick();
+  padLift(PADI.Down);
+  tick();
+  expect(capturing(), 'precondition: the two releases bound nothing').toBe(true);
+
+  cancel();
+  expect(capturing(), 'the capture ended').toBe(false);
+  expect(toastNow(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
+  expect(savedRaw(), 'nothing is saved').toBeNull();
+  expect(cellText('A_pad'), 'A keeps button 0').toBe(padCellText(ROW_A, padGlyph(PADI.A)));
+  expect(stackNames(), 'the frame stays open').toEqual([...CONTROLS_STACK]);
+  expect(controlsActive(), 'the cursor is unmoved').toBe('A_pad');
+
+  for (let i = 0; i < 20; i += 1) tick();
+  expect(controlsActive(), 'a second of frames: no direction is left held').toBe('A_pad');
+  expect(stackNames()).toEqual([...CONTROLS_STACK]);
+  padTap(PADI.A);
+  expect(capturing(), 'the next pad A starts a capture').toBe(true);
+  tick();
+  expect(capturing(), 'which waits: that A was not also captured').toBe(true);
+  expect(captureText()).toBe(padPromptText(ROW_A));
+}
+
+describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('a stored mr.controls record with no pad key, or a pad value that is not an object, boots with the pad defaults driving the pad and the stored keyboard table kept; a valid pad value in the same record drives the pad instead [gp-5.1]', async () => {
+    // WRONG IMPL KILLED: a boot that reads a missing pad value as an EMPTY table (the pad presses
+    // nothing), one that throws on a non-object pad value (the page never starts), one that resets
+    // the keyboard table when the pad value is bad, and (the control) a boot that never reads the
+    // pad value at all.
+    const keysK = storedTable((raw) => {
+      raw.buttons.A = ['KeyK'];
+    });
+    const variants: ReadonlyArray<readonly [string, string]> = [
+      ['no pad key', keysK],
+      ['pad is a string', withPad(keysK, 'x')],
+      ['pad is a list', withPad(keysK, [3])],
+      ['pad is a number', withPad(keysK, 7)],
+      ['pad is null', withPad(keysK, null)],
+    ];
+    for (const [what, stored] of variants) {
+      teardown();
+      await bootWithPad({ stored });
+      openMenuOnHelp();
+      padTap(PADI.Y);
+      expect(stackNames(), `${what}: pad button 3 is Y, it picks nothing`).toEqual([...MENU_STACK]);
+      padTap(PADI.A);
+      expect(stackNames(), `${what}: pad button 0 is A, it picks Help`).toEqual([...HELP_STACK]);
+      press('Backspace');
+      expect(stackNames(), `${what}: back to the menu`).toEqual([...MENU_STACK]);
+      const enter = press('Enter');
+      expect(enter.defaultPrevented, `${what}: Enter is not A`).toBe(false);
+      const k = press('KeyK');
+      expect(k.defaultPrevented, `${what}: K is A (the stored keyboard table)`).toBe(true);
+      expect(stackNames(), `${what}: K picks Help`).toEqual([...HELP_STACK]);
+    }
+    expect(variants, 'ANTI-VACUITY: every variant ran').toHaveLength(5);
+
+    // The control: a valid pad value in the same record is the pad table.
+    teardown();
+    await bootWithPad({ stored: withPad(keysK, { buttons: { A: [3], Y: [0] }, accels: {} }) });
+    openMenuOnHelp();
+    padTap(PADI.A);
+    expect(stackNames(), 'control: button 0 is Y now, it picks nothing').toEqual([...MENU_STACK]);
+    padTap(PADI.Y);
+    expect(stackNames(), 'control: button 3 is A now, it picks Help').toEqual([...HELP_STACK]);
+  }, 60_000);
+
+  it('a pad remap through the Pad cell, then a keyboard remap through the Key cell, are both saved, and a reload over that storage plays both: pad button 3 confirms and 0 does not, K confirms and Enter does not [gp-5.4]', async () => {
+    // WRONG IMPL KILLED: a pad remap applied but never saved, a keyboard save that drops the pad
+    // half of the record (the pad remap is lost at the reload), a boot that reads the pad table from
+    // anywhere else, and a pad remap that touches the keyboard table.
+    await bootWithPad();
+    openControls();
+    startPadCapture('A_pad', ROW_A);
+    padTap(PADI.Y);
+    expect(capturing(), 'button 3 bound and ended the capture').toBe(false);
+    expect(cellText('A_pad'), 'the Pad cell shows Y`s glyph').toBe(
+      padCellText(ROW_A, padGlyph(PADI.Y)),
+    );
+    expect(cellText('Y_pad'), 'and Y`s Pad cell shows A`s').toBe(
+      padCellText(ROW_Y, padGlyph(PADI.A)),
+    );
+    expect(savedPad(), 'the pad remap is saved').toEqual(padTableWith({ A: [3], Y: [0] }));
+    expect(savedTable(), 'beside the untouched keyboard table').toEqual(tableWith({}));
+
+    startCapture('A_0');
+    press('KeyK', { key: 'k' });
+    expect(savedTable(), 'the keyboard remap is saved').toEqual(
+      tableWith({ A: ['KeyK', 'NumpadEnter'] }),
+    );
+    expect(savedPad(), 'and that save carried the pad remap').toEqual(
+      padTableWith({ A: [3], Y: [0] }),
+    );
+
+    teardown({ keepStorage: true });
+    await bootWithPad({ keepStorage: true });
+    openMenuOnHelp();
+    padTap(PADI.A);
+    expect(stackNames(), 'after the reload button 0 does not confirm').toEqual([...MENU_STACK]);
+    padTap(PADI.Y);
+    expect(stackNames(), 'button 3 confirms').toEqual([...HELP_STACK]);
+    press('Backspace');
+    expect(stackNames()).toEqual([...MENU_STACK]);
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'Enter does not confirm').toBe(false);
+    expect(stackNames()).toEqual([...MENU_STACK]);
+    press('KeyK');
+    expect(stackNames(), 'K confirms').toEqual([...HELP_STACK]);
+  }, 60_000);
+
+  it('a keyboard remap through the Key cell, then a pad remap through the Pad cell, are both saved, and a reload over that storage plays both [gp-5.4]', async () => {
+    // WRONG IMPL KILLED: a keyboard save that writes no pad half (or the record shape of a client
+    // older than the pad remap), a pad save written with the DEFAULT keyboard table (the keyboard
+    // remap is lost at the reload), and a pad capture started by a key other than the live A.
+    await bootWithPad();
+    openControls();
+    startCapture('A_0');
+    press('KeyK', { key: 'k' });
+    expect(savedTable(), 'the keyboard remap is saved').toEqual(
+      tableWith({ A: ['KeyK', 'NumpadEnter'] }),
+    );
+    expect(savedPadRaw(), 'with the live (default) pad table beside it').toEqual(DEFAULT_PAD_RAW);
+
+    startPadCapture('A_pad', ROW_A, 'KeyK');
+    padTap(PADI.Y);
+    expect(capturing(), 'button 3 bound and ended the capture').toBe(false);
+    expect(savedPad(), 'the pad remap is saved').toEqual(padTableWith({ A: [3], Y: [0] }));
+    expect(savedTable(), 'and that save carried the keyboard remap').toEqual(
+      tableWith({ A: ['KeyK', 'NumpadEnter'] }),
+    );
+
+    teardown({ keepStorage: true });
+    await bootWithPad({ keepStorage: true });
+    openMenuOnHelp();
+    padTap(PADI.A);
+    expect(stackNames(), 'after the reload button 0 does not confirm').toEqual([...MENU_STACK]);
+    padTap(PADI.Y);
+    expect(stackNames(), 'button 3 confirms').toEqual([...HELP_STACK]);
+    press('Backspace');
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'Enter does not confirm').toBe(false);
+    press('KeyK');
+    expect(stackNames(), 'K confirms').toEqual([...HELP_STACK]);
+  }, 60_000);
+
+  it('a Pad capture that receives another row`s pad button swaps the two rows and the toast names both; a swap that empties the other row says it has no pad button; one that would leave a protected button with no pad button is refused on the strip and keeps waiting [gp-5.5]', async () => {
+    // WRONG IMPL KILLED: a capture that binds without taking the button from its holder (one pad
+    // button pressing two things), an outcome line naming one row, the keyboard's "has no key" line,
+    // a protected refusal that still saves (the B button would lose its only pad button) or ends the
+    // capture, a refused B routed as B (the frame would pop), and an outcome off the shared seam (the
+    // toast, the strip for a refusal).
+    await bootWithPad();
+    openControls();
+    startPadCapture('X_pad', ROW_X);
+    padTap(PADI.Y);
+    expect(capturing(), 'button 3 swapped and ended the capture').toBe(false);
+    expect(toastNow(), 'the swap line names both rows').toBe(
+      tf('controls.swapped', {
+        key: padGlyph(PADI.Y),
+        label: rowLabel(ROW_X),
+        otherKey: padGlyph(PADI.X),
+        otherLabel: rowLabel(ROW_Y),
+      }),
+    );
+    expect(toastNow(), 'the target row').toContain(rowLabel(ROW_X));
+    expect(toastNow(), 'and the other row').toContain(rowLabel(ROW_Y));
+    expect(cellText('X_pad')).toBe(padCellText(ROW_X, padGlyph(PADI.Y)));
+    expect(cellText('Y_pad')).toBe(padCellText(ROW_Y, padGlyph(PADI.X)));
+    expect(savedPad(), 'the swap is saved').toEqual(padTableWith({ X: [3], Y: [2] }));
+
+    press('KeyE'); // RB: Shortcuts
+    expect(byId('controls-tab-shortcuts').getAttribute('aria-selected'), 'RB: Shortcuts').toBe(
+      'true',
+    );
+    const rowJ = accelRow('J');
+    startPadCapture('J_pad', rowJ);
+    padTap(PADI.Y); // X's button now
+    expect(capturing(), 'the swap ended the capture').toBe(false);
+    expect(toastNow(), 'X is left with no pad button').toBe(
+      `Swapped: ${padGlyph(PADI.Y)} is now ${rowLabel(rowJ)}, ${rowLabel(ROW_X)} has no pad button`,
+    );
+    expect(cellText('J_pad')).toBe(padCellText(rowJ, padGlyph(PADI.Y)));
+    expect(savedPad()).toEqual(padTableWith({ X: [], Y: [2] }, { J: [3] }));
+
+    const rowStorage = accelRow('B');
+    startPadCapture('B_pad', rowStorage);
+    padTap(PADI.B); // the B button's only pad button
+    expect(capturing(), 'the refusal keeps the capture waiting').toBe(true);
+    expect(controlsFeedback(), 'the protected line, on the strip').toBe(PAD_REFUSED_PROTECTED);
+    expect(stripGone(), 'the strip is shown').toBe(false);
+    expect(stackNames(), 'B was captured, not routed').toEqual([...CONTROLS_STACK]);
+    expect(savedPad(), 'nothing changed').toEqual(padTableWith({ X: [], Y: [2] }, { J: [3] }));
+    padTap(PADI.LS);
+    expect(capturing(), 'the next press binds').toBe(false);
+    expect(toastNow(), 'the bound line').toBe(i18nT('controls.bound'));
+    expect(controlsFeedback(), 'the refusal went with the capture').toBe('');
+    expect(savedPad()).toEqual(padTableWith({ X: [], Y: [2] }, { J: [3], B: [10] }));
+  }, 60_000);
+
+  it('while a Pad cell waits every key but Escape is ignored: Enter, Numpad Enter, K, the arrows, Space, Backspace, M, I, V and F9 bind nothing, route nothing and open nothing (each prevented, the capture still waiting), Tab stays the browser`s; Escape then cancels, unchanged, and its keyup closes nothing [gp-5.6]', async () => {
+    // WRONG IMPL KILLED: a Pad capture that takes a key as its binding (the key capture path with a
+    // pad target), one that lets keys route (Backspace would end the capture, M or Escape close
+    // Controls, I or V open a menu), F9 downloading a bug bundle mid-capture, a Tab taken from the
+    // browser, an ignored key left unprevented (Space scrolls the page), an Escape routed as Start,
+    // and an Escape that binds instead of cancelling.
+    await bootWithPad();
+    const downloads = recordDownloads();
+    openControls();
+    startPadCapture('X_pad', ROW_X);
+    const keys = [
+      'Enter',
+      'NumpadEnter',
+      'KeyK',
+      'ArrowDown',
+      'ArrowRight',
+      'Space',
+      'Backspace',
+      'KeyM',
+      'KeyI',
+      'KeyV',
+      'F9',
+    ];
+    for (const code of keys) {
+      const e = press(code);
+      expect(e.defaultPrevented, `${code}: prevented`).toBe(true);
+      expect(capturing(), `${code}: the capture still waits`).toBe(true);
+      expect(captureText(), `${code}: for the same Pad cell`).toBe(padPromptText(ROW_X));
+      expect(stackNames(), `${code}: nothing opened or closed`).toEqual([...CONTROLS_STACK]);
+      expect(controlsActive(), `${code}: the cursor stays`).toBe('X_pad');
+      expect(controlsFeedback(), `${code}: no hint`).toBe('');
+      expect(toastNow(), `${code}: no toast`).toBe('');
+    }
+    const tab = press('Tab', { key: 'Tab' });
+    expect(tab.defaultPrevented, 'Tab stays the browser`s').toBe(false);
+    expect(capturing(), 'and binds nothing').toBe(true);
+    expect(savedRaw(), 'no key was bound').toBeNull();
+    expect(downloads.urls, 'F9 built no bug bundle').toHaveLength(0);
+
+    const esc = press('Escape', { key: 'Escape' });
+    expect(esc.defaultPrevented, 'Escape is taken').toBe(true);
+    expect(capturing(), 'Escape cancels the Pad capture').toBe(false);
+    expect(toastNow(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
+    expect(stackNames(), 'Escape was not Start: nothing closed').toEqual([...CONTROLS_STACK]);
+    expect(savedRaw(), 'and nothing is saved').toBeNull();
+    expect(cellText('X_pad'), 'X keeps button 2').toBe(padCellText(ROW_X, padGlyph(PADI.X)));
+  }, 60_000);
+
+  it('while a Pad cell waits pad LT, RT, Start, Select and a D-pad press reach no router and no accelerator: each is captured as the cell`s button, nothing opens or closes and the cursor stays [gp-5.6]', async () => {
+    // WRONG IMPL KILLED: a Pad capture that polls and routes the pad as usual (LT opens Party, RT
+    // the Bag, Start closes everything, Select toggles help, the D-pad moves the cursor off the
+    // cell), one that captures only face buttons, and an accelerator run before the capture reads
+    // the press.
+    await bootWithPad();
+    openControls();
+    controlsMoveTo('X_pad');
+    const presses = [
+      ['LT', PADI.LT],
+      ['RT', PADI.RT],
+      ['Start', PADI.Start],
+      ['Select', PADI.Select],
+      ['D-pad Down', PADI.Down],
+    ] as const;
+    for (const [name, index] of presses) {
+      press('Enter');
+      expect(capturing(), `${name}: precondition: the Pad capture waits`).toBe(true);
+      expect(captureText()).toBe(padPromptText(ROW_X));
+      padTap(index);
+      expect(stackNames(), `${name}: nothing opened or closed`).toEqual([...CONTROLS_STACK]);
+      expect(controlsActive(), `${name}: the cursor stays`).toBe('X_pad');
+      expect(capturing(), `${name}: captured as the binding`).toBe(false);
+      expect(savedPad().buttons.X, `${name}: X is on button ${index}`).toEqual([index]);
+      expect(cellText('X_pad')).toBe(padCellText(ROW_X, padGlyph(index)));
+    }
+  }, 60_000);
+
+  it('while a Pad cell waits the Cancel chip`s own Enter and Space are left to the chip and its click cancels, unchanged; an Enter at the hint bar`s Start chip is ignored (prevented, nothing bound, the capture waiting) [gp-5.6]', async () => {
+    // WRONG IMPL KILLED: the chip's activation keys swallowed (a keyboard player could not press
+    // Cancel), an exemption for every focused native button (the Start chip's Enter would press the
+    // hint bar's Start: everything closes), a key bound into the keyboard table by a Pad capture, and
+    // a chip wired to nothing during a Pad capture.
+    await bootWithPad();
+    openControls();
+    startPadCapture('A_pad', ROW_A);
+    const startChip = byId('chip-start');
+    expect(byId('controls-overlay').contains(startChip), 'precondition: outside the dialog').toBe(
+      false,
+    );
+    const atStart = press('Enter', { key: 'Enter' }, startChip);
+    expect(atStart.defaultPrevented, 'an Enter at another button is ignored, prevented').toBe(true);
+    expect(capturing(), 'the capture still waits').toBe(true);
+    expect(stackNames(), 'the Start chip was not pressed').toEqual([...CONTROLS_STACK]);
+    expect(savedRaw(), 'and nothing is bound').toBeNull();
+
+    const chip = byId('controls-cancel-btn');
+    expect(visibleNow('controls-cancel-btn'), 'precondition: the chip shows').toBe(true);
+    chip.focus();
+    expect(document.activeElement, 'precondition: the chip has focus').toBe(chip);
+    const enter = press('Enter', { key: 'Enter' }, chip);
+    expect(enter.defaultPrevented, 'the chip`s Enter is left to the chip').toBe(false);
+    const space = press('Space', { key: ' ' }, chip);
+    expect(space.defaultPrevented, 'and its Space').toBe(false);
+    expect(savedRaw(), 'neither was bound').toBeNull();
+
+    chip.click();
+    expect(capturing(), 'the chip`s activation cancels').toBe(false);
+    expect(toastNow(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+    expect(cellText('A_pad')).toBe(padCellText(ROW_A, padGlyph(PADI.A)));
+    expect(stackNames(), 'the frame stays open').toEqual([...CONTROLS_STACK]);
+  }, 60_000);
+
+  it('ONE poll holding pad A on a Pad cell and RT opens no Bag: the capture starts and waits, neither held button is captured, and once both are released the next press binds [gp-5.6]', async () => {
+    // WRONG IMPL KILLED: a poll that keeps routing after the edge that started the capture (RT's
+    // Bag opens over Controls), and a capture that takes the very press that started it, or the RT
+    // held with it (the same frame's buttons must be released and pressed again to be captured).
+    await bootWithPad();
+    openControls();
+    controlsMoveTo('A_pad');
+    padHold(PADI.A);
+    padHold(PADI.RT);
+    tick();
+    expect(stackNames(), 'RT in the same poll opened no Bag').toEqual([...CONTROLS_STACK]);
+    expect(capturing(), 'A started the capture').toBe(true);
+    expect(captureText()).toBe(padPromptText(ROW_A));
+    tick();
+    tick();
+    expect(capturing(), 'held, neither button is captured').toBe(true);
+    expect(toastNow(), 'no outcome').toBe('');
+    padLift(PADI.A);
+    padLift(PADI.RT);
+    tick();
+    expect(capturing(), 'released, the capture still waits').toBe(true);
+    expect(stackNames()).toEqual([...CONTROLS_STACK]);
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+    padTap(PADI.LS);
+    expect(capturing(), 'a fresh press binds').toBe(false);
+    expect(savedPad(), 'A on LS, the Bag still on RT').toEqual(padTableWith({ A: [10] }));
+  }, 60_000);
+
+  it('ONE poll holding pad A on a Key cell and RT opens no Bag: the Key capture starts and waits for a key, which then binds [gp-5.7]', async () => {
+    // WRONG IMPL KILLED: the same-poll hole on a Key cell (A starts the capture, then RT's
+    // accelerator in that poll opens the Bag over Controls), and a pad press that ends a Key capture.
+    await bootWithPad();
+    openControls();
+    controlsMoveTo('A_0');
+    padHold(PADI.A);
+    padHold(PADI.RT);
+    tick();
+    expect(stackNames(), 'RT in the same poll opened no Bag').toEqual([...CONTROLS_STACK]);
+    expect(capturing(), 'A started the Key capture').toBe(true);
+    expect(captureText(), 'the key prompt').toBe(capturePrompt(ROW_A));
+    padLift(PADI.A);
+    padLift(PADI.RT);
+    tick();
+    expect(capturing(), 'released, it still waits').toBe(true);
+    press('KeyK', { key: 'k' });
+    expect(capturing(), 'K binds').toBe(false);
+    expect(savedTable()).toEqual(tableWith({ A: ['KeyK', 'NumpadEnter'] }));
+  }, 60_000);
+
+  it('while a Key cell waits every pad press is ignored: A, B, Y, Start, Select, LT, RT, a D-pad press and Guide change nothing and the capture still waits for a key; K then binds, and the saved record carries the untouched pad table [gp-5.7]', async () => {
+    // WRONG IMPL KILLED: a pad press that reaches a Key capture (B would end it, A re-start it,
+    // Start close Controls, LT or RT open a menu), one bound into the pad table while a KEY is
+    // awaited, a refusal hint for Guide on a Key capture, and a keyboard save that drops the pad
+    // half of the record.
+    await bootWithPad();
+    openControls();
+    startCapture('A_0');
+    const presses = [
+      ['A', PADI.A],
+      ['B', PADI.B],
+      ['Y', PADI.Y],
+      ['Start', PADI.Start],
+      ['Select', PADI.Select],
+      ['LT', PADI.LT],
+      ['RT', PADI.RT],
+      ['D-pad Down', PADI.Down],
+      ['Guide', PADI.Guide],
+    ] as const;
+    for (const [name, index] of presses) {
+      padTap(index);
+      expect(capturing(), `${name}: the capture still waits`).toBe(true);
+      expect(captureText(), `${name}: for a key`).toBe(capturePrompt(ROW_A));
+      expect(stackNames(), `${name}: nothing opened or closed`).toEqual([...CONTROLS_STACK]);
+      expect(controlsActive(), `${name}: the cursor stays`).toBe('A_0');
+      expect(controlsFeedback(), `${name}: no hint`).toBe('');
+      expect(toastNow(), `${name}: no toast`).toBe('');
+      expect(savedRaw(), `${name}: nothing saved`).toBeNull();
+    }
+    press('KeyK', { key: 'k' });
+    expect(capturing(), 'K binds').toBe(false);
+    expect(savedTable()).toEqual(tableWith({ A: ['KeyK', 'NumpadEnter'] }));
+    expect(savedPadRaw(), 'the record carries the untouched pad table').toEqual(DEFAULT_PAD_RAW);
+  }, 60_000);
+
+  it('a Pad capture that receives the reserved Guide button 16 keeps waiting and shows "That button cannot be bound." on the Controls strip, not as a toast; the next bindable press binds and the line goes with the capture [gp-5.8]', async () => {
+    // WRONG IMPL KILLED: a reserved press that ends the capture (with nothing bound), one that binds
+    // Guide, a refusal that is silent, worded as the keyboard's browser line, or routed to the toast
+    // or the status line, and a hint left standing after the capture ends.
+    await bootWithPad();
+    openControls();
+    startPadCapture('A_pad', ROW_A);
+    padTap(PADI.Guide);
+    expect(capturing(), 'still waiting').toBe(true);
+    expect(captureText(), 'for the same cell').toBe(padPromptText(ROW_A));
+    expect(controlsFeedback(), 'the refusal line, on the strip').toBe(PAD_REFUSED_RESERVED);
+    expect(stripGone(), 'the strip is shown').toBe(false);
+    expect(toastNow(), 'not on the toast').toBe('');
+    expect(statusNow(), 'nor on the status line').toBe('');
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+    expect(stackNames()).toEqual([...CONTROLS_STACK]);
+    padTap(PADI.Y);
+    expect(capturing(), 'button 3 binds').toBe(false);
+    expect(controlsFeedback(), 'the capture ended: the strip is empty').toBe('');
+    expect(stripGone(), 'and hidden').toBe(true);
+    expect(savedPad()).toEqual(padTableWith({ A: [3], Y: [0] }));
+  }, 60_000);
+
+  it('a pad remap applied while the captured button is still held drives the game with the new table at once: frames with it held start no capture and route nothing, the old button presses its new role at once, and the held button acts only after it is released and pressed again [gp-5.9]', async () => {
+    // WRONG IMPL KILLED: a rebind that does not latch the held button (button 0, now B, would pop
+    // Controls on the next frame), a pad source never rebound (button 1 would still be B and pop the
+    // frame, not press A), a latch that also swallows the fresh press of button 0, and a release of
+    // the held button that routes.
+    await bootWithPad();
+    openControls();
+    const rowB = buttonRow('B');
+    startPadCapture('B_pad', rowB);
+    padHold(PADI.A); // button 0, A's, onto B: held from here on
+    tick();
+    expect(capturing(), 'button 0 bound and ended the capture').toBe(false);
+    expect(savedPad(), 'B on 0, A on 1').toEqual(padTableWith({ B: [0], A: [1] }));
+    expect(cellText('B_pad')).toBe(padCellText(rowB, padGlyph(PADI.A)));
+    for (let i = 0; i < 4; i += 1) {
+      tick();
+      expect(stackNames(), `held frame ${i}: button 0 routed nothing`).toEqual([...CONTROLS_STACK]);
+      expect(capturing(), `held frame ${i}: no capture started`).toBe(false);
+    }
+    padTap(PADI.B); // button 1 is A now (button 0 still held)
+    expect(capturing(), 'button 1 presses A at once: the Pad capture starts again').toBe(true);
+    expect(captureText()).toBe(padPromptText(rowB));
+    press('Escape', { key: 'Escape' });
+    expect(capturing(), 'Escape cancels it').toBe(false);
+    padLift(PADI.A);
+    tick();
+    expect(stackNames(), 'the held button`s release routes nothing').toEqual([...CONTROLS_STACK]);
+    padTap(PADI.A);
+    expect(stackNames(), 'pressed again, button 0 is B: Controls closes to the menu').toEqual([
+      ...MENU_STACK,
+    ]);
+  }, 60_000);
+
+  it('Reset all confirmed restores both the keyboard table and PAD_DEFAULT_BINDINGS, live and in mr.controls: the Pad and Key cells show the defaults, and pad button 0 and Enter are A again [gp-5.11]', async () => {
+    // WRONG IMPL KILLED: a Reset all that restores the keyboard only (the pad remap survives, live
+    // and on reload), one that saves the keyboard defaults beside the remapped pad table, and one that
+    // saves the defaults but leaves the live pad table (button 3 would still confirm).
+    await bootWithPad();
+    openControls();
+    startPadCapture('A_pad', ROW_A);
+    padTap(PADI.Y);
+    startCapture('A_0');
+    press('KeyK', { key: 'k' });
+    expect(savedPad(), 'precondition: the pad remap').toEqual(padTableWith({ A: [3], Y: [0] }));
+    expect(savedTable(), 'precondition: the keyboard remap').toEqual(
+      tableWith({ A: ['KeyK', 'NumpadEnter'] }),
+    );
+
+    controlsMoveTo('reset');
+    press('KeyK'); // A: Reset all asks
+    expect(sheetActive(), 'the confirm opens on No').toBe('no');
+    press('ArrowUp');
+    expect(sheetActive(), 'Up: Yes').toBe('yes');
+    press('KeyK'); // A on Yes
+    expect(toastNow(), 'the reset line').toBe(i18nT('controls.reset.done'));
+    expect(JSON.parse(savedRaw() ?? 'null'), 'both default tables are saved').toEqual(
+      JSON.parse(
+        JSON.stringify({
+          v: 1,
+          buttons: DEFAULT_BINDINGS.buttons,
+          accels: DEFAULT_BINDINGS.accels,
+          pad: { buttons: PAD_DEFAULT_BINDINGS.buttons, accels: PAD_DEFAULT_BINDINGS.accels },
+        }),
+      ),
+    );
+    expect(cellText('A_pad'), 'A`s Pad cell shows button 0 again').toBe(
+      padCellText(ROW_A, padGlyph(PADI.A)),
+    );
+    expect(cellText('Y_pad'), 'and Y`s shows button 3').toBe(padCellText(ROW_Y, padGlyph(PADI.Y)));
+    expect(cellText('A_0'), 'A shows Enter again').toBe(primaryText(ROW_A, glyph('Enter')));
+
+    padTap(PADI.Y);
+    expect(shownSheets(), 'live: button 3 is Y again, it asks nothing').toHaveLength(0);
+    padTap(PADI.A);
+    expect(shownSheets(), 'live: button 0 is A again, Reset all asks').toHaveLength(1);
+    press('Backspace');
+    expect(shownSheets(), 'B closes the confirm').toHaveLength(0);
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'live: Enter is A again').toBe(true);
+    expect(shownSheets(), 'and asks').toHaveLength(1);
+  }, 60_000);
+
+  it('Escape ends a Pad capture unchanged (its keyup closes nothing); afterwards no direction held through the capture is left held and the next pad A acts exactly once [gp-5.6]', async () => {
+    // WRONG IMPL KILLED: an Escape routed as Start (everything closes) or captured as a key, a held
+    // pad direction whose release is lost during the capture (the cursor auto-repeats on its own
+    // afterwards), and a capture start that does not latch the pressing A (the next A would start
+    // a capture and be captured by it at once, cancelling it).
+    await bootWithPad();
+    cancelPathCase(() => {
+      const esc = press('Escape', { key: 'Escape' });
+      expect(esc.defaultPrevented, 'Escape is taken').toBe(true);
+    });
+  }, 60_000);
+
+  it('the Cancel chip`s click ends a Pad capture unchanged; afterwards no direction is left held and the next pad A acts exactly once [gp-5.6]', async () => {
+    // WRONG IMPL KILLED: a chip wired to nothing during a Pad capture, a cancel that pops the frame,
+    // and the held-direction and pressing-A leaks the Escape case names.
+    await bootWithPad();
+    cancelPathCase(() => {
+      byId('controls-cancel-btn').click();
+    });
+  }, 60_000);
+
+  it('a pointer right-click (the pointer`s B) ends a Pad capture unchanged; afterwards no direction is left held and the next pad A acts exactly once [gp-5.6]', async () => {
+    // WRONG IMPL KILLED: a pointer cancel that only knows Key captures (the right-click would press
+    // B, which a Pad capture never receives), and the leaks the Escape case names.
+    await bootWithPad();
+    cancelPathCase(() => {
+      const back = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+      byId('controls-rows').dispatchEvent(back);
+      expect(back.defaultPrevented, 'the right-click is the pointer`s B').toBe(true);
+    });
+  }, 60_000);
+
+  it('pressing the pad button the Pad cell already shows ends the capture unchanged (a pad-only player`s way out); afterwards no direction is left held and the next pad A acts exactly once [gp-5.5]', async () => {
+    // WRONG IMPL KILLED: a capture that binds the row's own button again (a save of an unchanged
+    // table), one that keeps waiting (a pad-only player could never leave the cell), a cancel whose
+    // press is also routed as A (it would start the next capture at once), and the leaks the
+    // Escape case names.
+    await bootWithPad();
+    cancelPathCase(() => {
+      padTap(PADI.A);
+    });
+  }, 60_000);
 });

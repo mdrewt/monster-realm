@@ -9,9 +9,11 @@
 // `localStorage['mr.controls']` and a reload. Every case below is red on the missing module.
 //
 // The contract (plan §1, the interface the specialist builds):
-//   layout   tabs Buttons | Shortcuts. Buttons: a 2-column grid, per VBUTTONS row `${id}_0`
-//            (Primary) and `${id}_1` (Alt), then a lone `reset`. Shortcuts: a 3-column grid, per
-//            ACCELS row `${id}_0`, `${id}_1`, `${id}_clear`, then a lone `reset`.
+//   layout   tabs Buttons | Shortcuts. Buttons: a 3-column grid, per VBUTTONS row `${id}_0`
+//            (Primary), `${id}_1` (Alt) and `${id}_pad` (Pad), then a lone `reset`. Shortcuts: a
+//            4-column grid, per ACCELS row `${id}_0`, `${id}_1`, `${id}_pad`, `${id}_clear`, then a
+//            lone `reset`. The F8 and F9 Pad cells are disabled placeholders (`noPad`); every other
+//            cell is enabled.
 //   browse   Start pops to the base, Select toggles help, B pops; the D-pad, LB and RB move (wrap
 //            fresh, clamp on a repeat); A activates: a slot starts its capture, a clear cell emits
 //            `{kind:'clear', accel}`, reset opens the Yes / No confirm on No. A repeat never
@@ -30,11 +32,17 @@
 import { describe, expect, it } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../../input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from '../../input/buttons';
+import { PAD_DEFAULT_BINDINGS, type PadBindings, type PadIndex } from '../../input/padBindings';
+import type { MenuAccel } from '../../input/router';
 import {
   type CapturedKey,
   type ControlsRow,
   captureKey,
+  capturePad,
   outcomeText,
+  type PadRow,
+  type PadTarget,
+  padOutcomeText,
   type Slot,
   type SlotTarget,
 } from '../controlsModel';
@@ -48,6 +56,7 @@ import {
   captureStep,
   controlsItem,
   controlsScreen,
+  padCaptureStep,
 } from './optionsScreen';
 import type { ButtonStep, ScreenContext, ScreenResult } from './types';
 
@@ -59,6 +68,15 @@ type Tab = 'buttons' | 'shortcuts' | 'display';
 const btnRow = (id: VButton): ControlsRow => ({ kind: 'button', id });
 const accRow = (id: Accel): ControlsRow => ({ kind: 'accel', id });
 const slotOf = (row: ControlsRow, slot: Slot): SlotTarget => ({ row, slot });
+const padBtnRow = (id: VButton): PadRow => ({ kind: 'button', id });
+const padAccRow = (id: MenuAccel): PadRow => ({ kind: 'accel', id });
+const padOf = (row: PadRow): PadTarget => ({ row, slot: 'pad' });
+
+/** The Pad cell of a shortcut row: the accelerator's pad slot, or the F8 / F9 placeholder. */
+const shortcutPadItem = (id: Accel): ControlsItem =>
+  id === 'F8' || id === 'F9'
+    ? { kind: 'noPad', row: accRow(id) }
+    : { kind: 'slot', target: padOf(padAccRow(id)) };
 
 type Input = VButton | NavInput;
 const rep = (button: VButton): NavInput => ({ button, repeat: true });
@@ -143,11 +161,14 @@ function paintOf(state: ControlsState): ControlsPaint {
 
 /** The expected decode of every item, built from the button / accelerator lists (never by parsing
  *  the key), in the layout's order. */
+// INTENTIONAL CHANGE (pad remap, plan "Intentional changes to existing tests"): each row gains its
+// Pad cell (`${id}_pad`) after Alt, before a shortcut row's Clear.
 const BUTTON_ITEMS: ReadonlyArray<readonly [string, ControlsItem]> = [
   ...VBUTTONS.flatMap(
     (id): Array<readonly [string, ControlsItem]> => [
       [`${id}_0`, { kind: 'slot', target: slotOf(btnRow(id), 0) }],
       [`${id}_1`, { kind: 'slot', target: slotOf(btnRow(id), 1) }],
+      [`${id}_pad`, { kind: 'slot', target: padOf(padBtnRow(id)) }],
     ],
   ),
   ['reset', { kind: 'reset' }],
@@ -157,11 +178,15 @@ const SHORTCUT_ITEMS: ReadonlyArray<readonly [string, ControlsItem]> = [
     (id): Array<readonly [string, ControlsItem]> => [
       [`${id}_0`, { kind: 'slot', target: slotOf(accRow(id), 0) }],
       [`${id}_1`, { kind: 'slot', target: slotOf(accRow(id), 1) }],
+      [`${id}_pad`, shortcutPadItem(id)],
       [`${id}_clear`, { kind: 'clear', accel: id }],
     ],
   ),
   ['reset', { kind: 'reset' }],
 ];
+
+/** The two cells of the layout that are disabled: the F8 and F9 Pad placeholders. */
+const DISABLED_KEYS: ReadonlySet<string> = new Set(['F8_pad', 'F9_pad']);
 
 const ALL_BUTTONS: readonly VButton[] = VBUTTONS;
 
@@ -190,10 +215,13 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
       'Buttons, then Shortcuts, then Display',
     ).toEqual(['buttons', 'shortcuts', 'display']);
 
+    // INTENTIONAL CHANGE (pad remap): Buttons is a three-column grid (Primary, Alt, Pad) and
+    // Shortcuts a four-column one (Primary, Alt, Pad, Clear); only the F8 and F9 Pad placeholders
+    // are disabled; 25 + 37 decoded items become 37 + 49.
     const buttons = tabLayout('buttons');
-    expect(buttons, 'Buttons: a two-column grid, Primary then Alt per button').toEqual({
+    expect(buttons, 'Buttons: a three-column grid, Primary, Alt then Pad per button').toEqual({
       kind: 'grid',
-      cols: 2,
+      cols: 3,
       items: BUTTON_ITEMS.map(([key]) => ({ key, enabled: true })),
     });
     expect(
@@ -206,10 +234,10 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
     ).toEqual([]);
 
     const shortcuts = tabLayout('shortcuts');
-    expect(shortcuts, 'Shortcuts: a three-column grid, Primary, Alt and Clear').toEqual({
+    expect(shortcuts, 'Shortcuts: a four-column grid, Primary, Alt, Pad and Clear').toEqual({
       kind: 'grid',
-      cols: 3,
-      items: SHORTCUT_ITEMS.map(([key]) => ({ key, enabled: true })),
+      cols: 4,
+      items: SHORTCUT_ITEMS.map(([key]) => ({ key, enabled: !DISABLED_KEYS.has(key) })),
     });
     expect(
       shortcuts.items.filter((i) => i.key.endsWith('_clear')),
@@ -229,7 +257,8 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
     }
     // qf-14 (named intentional change): the Shortcuts tab gains the Controls accelerator Y, one
     // more row of three cells: 25 + 34 = 59 becomes 25 + 37 = 62 items.
-    expect(decoded, 'ANTI-VACUITY: 25 + 37 items').toBe(62);
+    // INTENTIONAL CHANGE (pad remap): one Pad cell per row on both tabs: 37 + 49 = 86 items.
+    expect(decoded, 'ANTI-VACUITY: 37 + 49 items').toBe(86);
 
     // Anything else is undefined.
     const unknown: ReadonlyArray<readonly [string | null, string]> = [
@@ -250,6 +279,13 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
       ['shortcuts', 'B_2'],
       ['shortcuts', 'constructor_clear'],
       ['shortcuts', 'clear'],
+      ['buttons', 'A_Pad'],
+      ['buttons', 'F8_pad'],
+      ['buttons', '_pad'],
+      ['buttons', 'pad'],
+      ['shortcuts', 'A_pad'],
+      ['shortcuts', 'Up_pad'],
+      ['shortcuts', 'toString_pad'],
       ['nope', 'A_0'],
       ['nope', 'reset'],
       [null, 'A_0'],
@@ -294,19 +330,32 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
     // decode that reads the Y BUTTON for the accelerator (`Y_0` on Shortcuts is the Controls
     // shortcut, on Buttons the Y button), a Clear that names no accelerator or the wrong one, a Y
     // cell leaked onto the Buttons tab twice, and a cursor that cannot reach the new row.
+    // INTENTIONAL CHANGE (pad remap): each shortcut row is four cells (Primary, Alt, Pad, Clear)
+    // and each button row three (Primary, Alt, Pad), so the row slices and counts below are 4 / 3.
     const shortcuts = tabLayout('shortcuts');
     const keys = shortcuts.items.map((i) => i.key);
     const at = keys.indexOf('Y_0');
     expect(at, 'the Controls row is on the Shortcuts tab').toBeGreaterThanOrEqual(0);
-    expect(keys.slice(at, at + 3), 'Primary, Alt, Clear in a row').toEqual([
+    expect(keys.slice(at, at + 4), 'Primary, Alt, Pad, Clear in a row').toEqual([
       'Y_0',
       'Y_1',
+      'Y_pad',
       'Y_clear',
     ]);
-    expect(at % 3, 'the row starts a grid row (three columns)').toBe(0);
-    expect(keys.slice(at - 3, at), 'after the Account row (C)').toEqual(['C_0', 'C_1', 'C_clear']);
-    expect(keys.slice(at + 3, at + 6), 'before the F9 row').toEqual(['F9_0', 'F9_1', 'F9_clear']);
-    expect(keys.filter((k) => k.startsWith('Y_')).length, 'exactly one Y row').toBe(3);
+    expect(at % 4, 'the row starts a grid row (four columns)').toBe(0);
+    expect(keys.slice(at - 4, at), 'after the Account row (C)').toEqual([
+      'C_0',
+      'C_1',
+      'C_pad',
+      'C_clear',
+    ]);
+    expect(keys.slice(at + 4, at + 8), 'before the F9 row').toEqual([
+      'F9_0',
+      'F9_1',
+      'F9_pad',
+      'F9_clear',
+    ]);
+    expect(keys.filter((k) => k.startsWith('Y_')).length, 'exactly one Y row').toBe(4);
 
     expect(controlsItem('shortcuts', 'Y_0')).toEqual({
       kind: 'slot',
@@ -326,7 +375,7 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
     expect(
       tabLayout('buttons').items.filter((i) => i.key.startsWith('Y_')).length,
       'the Buttons tab keeps its one Y button row',
-    ).toBe(2);
+    ).toBe(3);
 
     // Real presses reach the row: A on Y_0 captures the accelerator's Primary slot, A on Y_clear
     // asks to clear the Controls accelerator.
@@ -372,7 +421,8 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
       }
     }
     // qf-14: 25 + 34 = 59 -> 25 + 37 = 62 cells with the Controls accelerator Y.
-    expect(walked, 'ANTI-VACUITY: every cell of both tabs').toBe(62);
+    // INTENTIONAL CHANGE (pad remap): 37 + 49 = 86 cells with one Pad cell per row.
+    expect(walked, 'ANTI-VACUITY: every cell of both tabs').toBe(86);
     // From the first cell, a fresh Up wraps straight onto it.
     expect(walk(fresh(), ['Up']).nav.item, 'Up from the first cell wraps to Reset all').toBe(
       'reset',
@@ -948,5 +998,208 @@ describe('controlsScreen — the Display tab (uif-13, UIF13.2)', () => {
       confirm: null,
       request: { kind: 'textStep', step: 'large' },
     });
+  });
+});
+
+// --- the Pad column: its cells, its capture target, and the pad capture's step -------------------
+
+/** The plan's exact English line for a reserved or unbindable pad press. */
+const PAD_REFUSED_RESERVED = 'That button cannot be bound.';
+
+describe('controlsScreen — the Pad column', () => {
+  it('every Pad cell decodes to the pad slot of its own row (on Shortcuts the accelerator, not the button of the same name), sits after Alt in its row, and the F8 and F9 Pad cells decode to their noPad placeholder, the only disabled cells of the layout [gp-5.6]', () => {
+    // WRONG IMPL KILLED: a Pad cell that decodes to a keyboard slot (A on it would start a KEY
+    // capture), a Shortcuts Pad cell read in the button namespace (`B_pad` there is the Storage
+    // accelerator), a Pad column missing from the debug rows (the rows would not line up in
+    // columns), a placeholder that is enabled (A on it would start a capture the pad table cannot
+    // hold) or decodes to a slot, and a disabled cell anywhere else.
+    for (const id of VBUTTONS) {
+      expect(controlsItem('buttons', `${id}_pad`), `buttons / ${id}_pad`).toEqual({
+        kind: 'slot',
+        target: padOf(padBtnRow(id)),
+      });
+    }
+    for (const id of ACCELS) {
+      expect(controlsItem('shortcuts', `${id}_pad`), `shortcuts / ${id}_pad`).toEqual(
+        shortcutPadItem(id),
+      );
+    }
+    expect(controlsItem('shortcuts', 'F8_pad')).toEqual({ kind: 'noPad', row: accRow('F8') });
+    expect(controlsItem('shortcuts', 'F9_pad')).toEqual({ kind: 'noPad', row: accRow('F9') });
+    expect(controlsItem('shortcuts', 'B_pad'), 'the Storage accelerator').toEqual({
+      kind: 'slot',
+      target: padOf(padAccRow('B')),
+    });
+    expect(controlsItem('buttons', 'B_pad'), 'the B button').toEqual({
+      kind: 'slot',
+      target: padOf(padBtnRow('B')),
+    });
+
+    const buttonKeys = tabLayout('buttons').items.map((i) => i.key);
+    for (const [r, id] of VBUTTONS.entries()) {
+      expect(buttonKeys.slice(r * 3, r * 3 + 3), `button row ${id}`).toEqual([
+        `${id}_0`,
+        `${id}_1`,
+        `${id}_pad`,
+      ]);
+    }
+    const disabled = [...tabLayout('buttons').items, ...tabLayout('shortcuts').items]
+      .filter((i) => !i.enabled)
+      .map((i) => i.key)
+      .sort();
+    expect(disabled, 'only the two placeholders are disabled').toEqual(['F8_pad', 'F9_pad']);
+  });
+
+  it('A on a Pad cell starts the capture of exactly that row`s pad slot on both tabs, cursor unmoved; while it waits every button but B and Start is consumed and changes nothing; a non-repeat B ends it, Start pops to the base, a repeat A starts nothing; the paint hands the view the Pad target [gp-5.6]', () => {
+    // WRONG IMPL KILLED: a Pad cell that starts a capture of the row's Primary slot (the next press
+    // would be bound as a KEY), a capture of the neighbouring row, the accelerator B read as the B
+    // button, a Pad capture that the D-pad, A, LB, RB, Select, X or Y can move, re-target or end, a
+    // B that pops the frame instead of ending the capture, a swallowed Start, a held Enter that
+    // starts a capture, and a paint that drops the device of the target.
+    const cases: ReadonlyArray<readonly [Tab, string, PadTarget]> = [
+      ['buttons', 'Up_pad', padOf(padBtnRow('Up'))],
+      ['buttons', 'A_pad', padOf(padBtnRow('A'))],
+      ['buttons', 'B_pad', padOf(padBtnRow('B'))],
+      ['buttons', 'Select_pad', padOf(padBtnRow('Select'))],
+      ['shortcuts', 'B_pad', padOf(padAccRow('B'))],
+      ['shortcuts', 'I_pad', padOf(padAccRow('I'))],
+      ['shortcuts', 'Y_pad', padOf(padAccRow('Y'))],
+    ];
+    for (const [tab, key, target] of cases) {
+      const at = walkTo(tab, key);
+      const started = press(at, 'A');
+      expect(started.result, `${tab} / ${key}: A is consumed`).toBe('consumed');
+      expect(started.state.capturing, `${tab} / ${key}: captures that pad slot`).toEqual(target);
+      expect(started.state.nav, `${tab} / ${key}: the cursor stays`).toEqual(at.nav);
+      expect(started.state.confirm).toBeNull();
+      expect(started.state.request).toBeNull();
+      expect(paintOf(started.state).capturing, `${tab} / ${key}: painted`).toEqual(target);
+
+      for (const button of ALL_BUTTONS) {
+        if (button === 'B' || button === 'Start') continue;
+        for (const input of [button, rep(button)] as const) {
+          const step = press(started.state, input);
+          const what = `${tab} / ${key} capturing: ${label(input)}`;
+          expect(step.result, `${what} is consumed`).toBe('consumed');
+          expect(step.state.capturing, `${what} keeps the capture`).toEqual(target);
+          expect(step.state.nav, `${what} moves nothing`).toEqual(at.nav);
+          expect(step.state.confirm, `${what} opens nothing`).toBeNull();
+          expect(step.state.request, `${what} requests nothing`).toBeNull();
+        }
+      }
+      expect(press(started.state, rep('B')).state.capturing, 'a repeat B keeps it').toEqual(target);
+      const ended = press(started.state, 'B');
+      expect(ended.result, `${tab} / ${key}: B ends the capture`).toBe('consumed');
+      expect(ended.state.capturing, 'nothing captures').toBeNull();
+      expect(ended.state.nav, 'the cursor is unmoved').toEqual(at.nav);
+      expect(press(started.state, 'Start').result, `${tab} / ${key}: Start`).toEqual(POP_TO_BASE);
+      expect(press(at, rep('A')).state.capturing, 'a repeat A captures nothing').toBeNull();
+    }
+  });
+
+  it('A on the F8 or F9 Pad placeholder changes nothing: consumed, no capture, no confirm, no request, the cursor stays; the cell is still reachable and left by the D-pad, and B still pops [gp-5.6]', () => {
+    // WRONG IMPL KILLED: a placeholder that starts a capture (of the pad slot of a debug key the pad
+    // table cannot hold, or of a keyboard slot), one that opens the Reset all confirm or emits a
+    // request, an A that throws on the noPad item, and a placeholder the cursor cannot leave.
+    for (const key of ['F8_pad', 'F9_pad'] as const) {
+      const at = walkTo('shortcuts', key);
+      const step = press(at, 'A');
+      expect(step.result, `${key}: A is consumed`).toBe('consumed');
+      expect(step.state.capturing, `${key}: no capture`).toBeNull();
+      expect(step.state.confirm, `${key}: no confirm`).toBeNull();
+      expect(step.state.request, `${key}: no request`).toBeNull();
+      expect(step.state.nav, `${key}: the cursor stays`).toEqual(at.nav);
+      expect(press(at, rep('A')).state.capturing).toBeNull();
+      expect(press(at, 'Left').state.nav.item, `${key}: Left leaves it`).toBe(
+        key.replace('_pad', '_1'),
+      );
+      expect(press(at, 'B').result, `${key}: B pops`).toEqual(POP);
+    }
+  });
+
+  it('padCaptureStep turns the pad source`s refused read, and a reserved index, into a refusal that keeps waiting with the pad reserved line and no table [gp-5.8]', () => {
+    // WRONG IMPL KILLED: a refused read that ends the capture (Guide would end it with nothing
+    // bound), one that carries a table (a needless save), the keyboard's reserved line ("That key
+    // belongs to the browser"), and a second text mapping that drifts from padOutcomeText's.
+    const targets: readonly PadTarget[] = [
+      padOf(padBtnRow('A')),
+      padOf(padBtnRow('X')),
+      padOf(padAccRow('J')),
+    ];
+    for (const target of targets) {
+      const step = padCaptureStep(PAD_DEFAULT_BINDINGS, target, 'refused');
+      expect(step, `${target.row.id}: the refused read`).toEqual({
+        done: false,
+        bindings: undefined,
+        text: PAD_REFUSED_RESERVED,
+      });
+      expect(step.text).toBe(padOutcomeText({ kind: 'refused', reason: 'reserved' }));
+      expect(padCaptureStep(PAD_DEFAULT_BINDINGS, target, 16), `${target.row.id}: 16`).toEqual({
+        done: false,
+        bindings: undefined,
+        text: PAD_REFUSED_RESERVED,
+      });
+    }
+  });
+
+  it('padCaptureStep decodes capturePad as captureStep does: bound and swapped are done with the new table, a cancel is done with no table, a protected refusal keeps waiting; every line is padOutcomeText`s [gp-5.5]', () => {
+    // WRONG IMPL KILLED: a swap that ends the capture without its table (the swap would be lost), a
+    // step that hands back the input table, a cancel that carries a table (a needless save), a
+    // protected refusal that ends the capture (the pad-only player loses the cell), and a line that
+    // is not the model's.
+    interface Case {
+      readonly name: string;
+      readonly pad: PadBindings;
+      readonly target: PadTarget;
+      readonly index: PadIndex;
+      readonly kind: 'bound' | 'swapped' | 'cancelled' | 'protected';
+    }
+    const d = PAD_DEFAULT_BINDINGS;
+    const cases: readonly Case[] = [
+      { name: 'X onto a free LS', pad: d, target: padOf(padBtnRow('X')), index: 10, kind: 'bound' },
+      { name: 'X takes Y`s 3', pad: d, target: padOf(padBtnRow('X')), index: 3, kind: 'swapped' },
+      { name: 'the Bag takes X', pad: d, target: padOf(padAccRow('I')), index: 2, kind: 'swapped' },
+      {
+        name: 'A on its own 0',
+        pad: d,
+        target: padOf(padBtnRow('A')),
+        index: 0,
+        kind: 'cancelled',
+      },
+      {
+        name: 'the Journal takes A',
+        pad: d,
+        target: padOf(padAccRow('J')),
+        index: 0,
+        kind: 'protected',
+      },
+    ];
+    const seen = new Set<string>();
+    for (const c of cases) {
+      const outcome = capturePad(c.pad, c.target, c.index);
+      const modelKind = outcome.kind === 'refused' ? outcome.reason : outcome.kind;
+      expect(modelKind, `fixture: ${c.name}`).toBe(c.kind);
+      seen.add(c.kind);
+      const step = padCaptureStep(c.pad, c.target, c.index);
+      expect(step.text, `${c.name}: the model's line`).toBe(padOutcomeText(outcome));
+      expect(step.text.length, `${c.name}: a non-empty line`).toBeGreaterThan(0);
+      if (outcome.kind === 'bound' || outcome.kind === 'swapped') {
+        expect(step.done, `${c.name}: done`).toBe(true);
+        expect(step.bindings, `${c.name}: the new table`).toEqual(outcome.bindings);
+        expect(step.bindings, `${c.name}: not the old table`).not.toEqual(c.pad);
+      } else if (outcome.kind === 'cancelled') {
+        expect(step.done, `${c.name}: a cancel ends the capture`).toBe(true);
+        expect(step.bindings, `${c.name}: with no table`).toBeUndefined();
+      } else {
+        expect(step.done, `${c.name}: keeps waiting`).toBe(false);
+        expect(step.bindings).toBeUndefined();
+      }
+    }
+    expect([...seen].sort(), 'ANTI-VACUITY: every outcome was met').toEqual([
+      'bound',
+      'cancelled',
+      'protected',
+      'swapped',
+    ]);
   });
 });

@@ -373,6 +373,19 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   ],
   'controls.clear': [{ label: 'Bag' }, { label: 'Save bug report' }],
   'controls.cleared': [{ label: 'Journal' }, { label: 'Dismiss error' }],
+  // The pad remap (named intentional change): the Pad cell, the Pad capture prompt and the swap
+  // line that leaves the other row with no pad button (3 ★). `label` / `otherLabel` are
+  // controlsModel row labels and `key` a padGlyph keycap, carried verbatim; every field differs
+  // between the two sets.
+  'controls.slot.pad': [
+    { label: 'Confirm (A)', key: 'A' },
+    { label: 'Inventory', key: 'RT' },
+  ],
+  'controls.capture.padPrompt': [{ label: 'Confirm (A)' }, { label: 'Bag' }],
+  'controls.swappedPadUnbound': [
+    { key: 'Y', label: 'Confirm (A)', otherLabel: 'Info (Y)' },
+    { key: 'RT', label: 'Bag', otherLabel: 'Jump (X)' },
+  ],
   // ctl-13 (named intentional change): the request banner's two key-free lines (2 ★). `name` is a
   // player-chosen display name, carried verbatim.
   'notice.request.trade': [{ name: 'Bob' }, { name: 'Dana' }],
@@ -1034,6 +1047,11 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'controls.refused.protected': 'Movement, Confirm, Back and Menu must always keep a key.',
   'controls.cancelled': 'Unchanged.',
   'controls.bound': 'Saved.',
+  // The pad remap (named intentional change): +2 plain keys, the two refusal lines of a Pad capture
+  // (the parameterised Pad cell, prompt and swap line are in SAMPLE_PARAMS) = 570 keys.
+  'controls.refused.padReserved': 'That button cannot be bound.',
+  'controls.refused.padProtected':
+    'Movement, Confirm, Back and Menu must always keep a pad button.',
   // ctl-12b (named intentional change): +11 plain keys — the Controls view's title, tab labels,
   // empty-slot mark, Reset all row, its question and outcome, the Cancel chip and the save-failed
   // line (ui/controlsView.ts), and the Options › Controls menu leaf (ui/menuModel.ts); +4
@@ -1706,6 +1724,26 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     outputA: 'Journal has no key now.',
     inputB: { label: 'Dismiss error' },
     outputB: 'Dismiss error has no key now.',
+  },
+  // The pad remap: the Pad cell names its row, the prompt asks for a pad button, and a swap that
+  // empties the other row says it has no pad button.
+  'controls.slot.pad': {
+    inputA: { label: 'Confirm (A)', key: 'A' },
+    outputA: 'Confirm (A) (pad): A',
+    inputB: { label: 'Inventory', key: 'RT' },
+    outputB: 'Inventory (pad): RT',
+  },
+  'controls.capture.padPrompt': {
+    inputA: { label: 'Confirm (A)' },
+    outputA: `Press a pad button for Confirm (A)${ELLIPSIS}`,
+    inputB: { label: 'Bag' },
+    outputB: `Press a pad button for Bag${ELLIPSIS}`,
+  },
+  'controls.swappedPadUnbound': {
+    inputA: { key: 'Y', label: 'Confirm (A)', otherLabel: 'Info (Y)' },
+    outputA: 'Swapped: Y is now Confirm (A), Info (Y) has no pad button',
+    inputB: { key: 'RT', label: 'Bag', otherLabel: 'Jump (X)' },
+    outputB: 'Swapped: RT is now Bag, Jump (X) has no pad button',
   },
   // ctl-13: the request banner's lines are KEY-FREE (they survive a remap) and name the sender once.
   'notice.request.trade': {
@@ -2462,12 +2500,15 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 570 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The pinned roster is 565 keys: chrome.status.privateHostNotice and the eight claim.gate.*
+    // The pinned roster is 570 keys: chrome.status.privateHostNotice and the eight claim.gate.*
     // sign-in gate lines among them.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 565 keys').toHaveLength(565);
+    // The pad remap (named intentional change): 565 -> 570, +controls.slot.pad,
+    // +controls.capture.padPrompt, +controls.refused.padReserved, +controls.refused.padProtected,
+    // +controls.swappedPadUnbound.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 570 keys').toHaveLength(570);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3682,12 +3723,13 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 570 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
+    // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 570 keys').toBe(570);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 565 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
+    // The French catalog holds the same 570 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(570);
   });
 });
 
@@ -3814,12 +3856,13 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 570 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
+    // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 570 keys').toBe(570);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 565 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
+    // The French catalog holds the same 570 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(570);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4143,13 +4186,14 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 570 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
+    // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 570 keys').toBe(570);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 565 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(565);
+    // The French catalog holds the same 570 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(570);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(570);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4838,12 +4882,13 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 570 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // Both rosters count chrome.status.privateHostNotice among their 565 keys.
-    expect(Object.keys(en), 'the English roster is 565 keys').toHaveLength(565);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(565);
+    // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
+    // Both rosters count chrome.status.privateHostNotice among their 570 keys.
+    expect(Object.keys(en), 'the English roster is 570 keys').toHaveLength(570);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(570);
   });
 });
 
@@ -4966,12 +5011,13 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 570 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // Both rosters count chrome.status.privateHostNotice among their 565 keys.
-    expect(Object.keys(en), 'the English roster is 565 keys').toHaveLength(565);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(565);
+    // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
+    // Both rosters count chrome.status.privateHostNotice among their 570 keys.
+    expect(Object.keys(en), 'the English roster is 570 keys').toHaveLength(570);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(570);
   });
 });
 
@@ -5325,5 +5371,120 @@ describe('gp-4: the pad glyph ids in both catalogs', () => {
     expect(enFn({ n: 4 }), 'the number changes the name').not.toBe(enFn({ n: 17 }));
     expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the key').toBe(true);
     expect(SAMPLE_PARAMS[KEY], 'the two sample sets').toEqual([{ n: 17 }, { n: 4 }]);
+  });
+});
+
+// =============================================================================
+// The pad remap: the five Pad column ids in BOTH catalogs. Every expected byte is typed here, each
+// non-ASCII one by code point (U+2026, U+2019, U+00E9, U+00C9, U+00EA); a French space before a
+// colon may be a no-break space or a plain one (the ctl-12b precedent accepts both).
+// =============================================================================
+
+describe('the pad remap: the Pad column ids in both catalogs', () => {
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  const E_CIRCUMFLEX = String.fromCharCode(0x00ea);
+  /** `before` + (U+00A0 or a plain space) + `after`. */
+  const spaced = (before: string, after: string): string[] => [
+    `${before}${NO_BREAK_SPACE}${after}`,
+    `${before} ${after}`,
+  ];
+  const PLAIN = ['controls.refused.padReserved', 'controls.refused.padProtected'] as const;
+  const PARAMS = [
+    'controls.slot.pad',
+    'controls.capture.padPrompt',
+    'controls.swappedPadUnbound',
+  ] as const;
+  type SlotFn = (p: { label: string; key: string }) => string;
+  type PromptFn = (p: { label: string }) => string;
+  type SwapFn = (p: { key: string; label: string; otherLabel: string }) => string;
+
+  it('the five ids are in the pinned roster: the two refusal lines plain strings, the Pad cell, the prompt and the swap line closures with two sample sets, in both catalogs [gp-5.5] [gp-5.6] [gp-5.8]', () => {
+    // WRONG IMPL KILLED: an id added to en only (t() throws in a French boot the first time a Pad
+    // capture refuses or a Pad cell paints), a refusal line made parameterised (t() throws), a
+    // closure made plain (the row label never reaches the cell), and an id missing from the roster.
+    for (const key of PLAIN) {
+      expect(EXPECTED_KEYS.includes(key), `${key} is in the pinned roster`).toBe(true);
+      expect(typeof en[key], `en ${key} is plain`).toBe('string');
+      expect(typeof fr[key], `fr ${key} is plain`).toBe('string');
+    }
+    for (const key of PARAMS) {
+      expect(EXPECTED_KEYS.includes(key), `${key} is in the pinned roster`).toBe(true);
+      expect(typeof en[key], `en ${key} is a closure`).toBe('function');
+      expect(typeof fr[key], `fr ${key} is a closure`).toBe('function');
+      expect(SAMPLE_PARAMS[key], `${key} has two sample sets`).toHaveLength(2);
+    }
+  });
+
+  it('the English text is the plan`s: "That button cannot be bound.", "Movement, Confirm, Back and Menu must always keep a pad button.", "<label> (pad): <key>", "Press a pad button for <label>…" and "Swapped: <key> is now <label>, <otherLabel> has no pad button" [gp-5.5] [gp-5.6] [gp-5.8]', () => {
+    // WRONG IMPL KILLED: the keyboard refusal lines reused ("That key belongs to the browser", "...
+    // keep a key"), a Pad cell that drops its row label or the "(pad)" mark (it would read like the
+    // Primary cell), three dots instead of U+2026, a swap line that says "has no key", and a closure
+    // that ignores or swaps a param.
+    expect(en['controls.refused.padReserved']).toBe('That button cannot be bound.');
+    expect(en['controls.refused.padProtected']).toBe(
+      'Movement, Confirm, Back and Menu must always keep a pad button.',
+    );
+    expect(en['controls.refused.padReserved']).not.toBe(en['controls.refused.reserved']);
+    expect(en['controls.refused.padProtected']).not.toBe(en['controls.refused.protected']);
+    const slot = en['controls.slot.pad'] as SlotFn;
+    expect(slot({ label: 'Up', key: 'LB' })).toBe('Up (pad): LB');
+    expect(slot({ label: 'Party', key: `D-pad${NO_BREAK_SPACE}x` })).toBe(
+      `Party (pad): D-pad${NO_BREAK_SPACE}x`,
+    );
+    const prompt = en['controls.capture.padPrompt'] as PromptFn;
+    expect(prompt({ label: 'Party' })).toBe(`Press a pad button for Party${ELLIPSIS}`);
+    const swap = en['controls.swappedPadUnbound'] as SwapFn;
+    expect(swap({ key: 'LS', label: 'Journal', otherLabel: 'Prev tab (LB)' })).toBe(
+      'Swapped: LS is now Journal, Prev tab (LB) has no pad button',
+    );
+  });
+
+  it('the French text is the plan`s for the two refusal lines, the Pad cell ("<label> (manette) : <key>"), the prompt ("Appuyez sur un bouton de la manette pour : <label>...") and the swap line ("... n`a plus de bouton de manette"), each a translation [gp-5.5] [gp-5.6] [gp-5.8]', () => {
+    // WRONG IMPL KILLED: an id left as the English copy, a decomposed or missing accent (U+00E9,
+    // U+00EA, U+00C9), an ASCII apostrophe where the catalog writes U+2019, three dots instead of
+    // U+2026, and a closure that drops or swaps a param.
+    expect(fr['controls.refused.padReserved']).toBe(
+      `Ce bouton ne peut pas ${E_CIRCUMFLEX}tre attribu${E_ACUTE}.`,
+    );
+    expect(fr['controls.refused.padProtected']).toBe(
+      `Les d${E_ACUTE}placements, Valider, Retour et Menu doivent toujours garder un bouton de manette.`,
+    );
+    const slot = fr['controls.slot.pad'] as SlotFn;
+    const slotOut = slot({ label: 'Up', key: 'LB' });
+    expect(spaced('Up (manette)', ': LB'), `fr slot: ${JSON.stringify(slotOut)}`).toContain(
+      slotOut,
+    );
+    const prompt = fr['controls.capture.padPrompt'] as PromptFn;
+    const promptOut = prompt({ label: 'Party' });
+    expect(
+      spaced('Appuyez sur un bouton de la manette pour', `: Party${ELLIPSIS}`),
+      `fr prompt: ${JSON.stringify(promptOut)}`,
+    ).toContain(promptOut);
+    const swap = fr['controls.swappedPadUnbound'] as SwapFn;
+    const swapOut = swap({ key: 'LS', label: 'Journal', otherLabel: 'Prev tab (LB)' });
+    expect(
+      spaced(
+        `${CAPITAL_E_ACUTE}chang${E_ACUTE}`,
+        `: LS est maintenant Journal, Prev tab (LB) n${RIGHT_QUOTE}a plus de bouton de manette`,
+      ),
+      `fr swap: ${JSON.stringify(swapOut)}`,
+    ).toContain(swapOut);
+    for (const key of PLAIN) {
+      expect(fr[key], `${key}: a translation`).not.toBe(en[key]);
+    }
+    expect(slotOut, 'the slot: a translation').not.toBe(
+      (en['controls.slot.pad'] as SlotFn)({ label: 'Up', key: 'LB' }),
+    );
+    expect(promptOut, 'the prompt: a translation').not.toBe(
+      (en['controls.capture.padPrompt'] as PromptFn)({ label: 'Party' }),
+    );
+    expect(swapOut, 'the swap line: a translation').not.toBe(
+      (en['controls.swappedPadUnbound'] as SwapFn)({
+        key: 'LS',
+        label: 'Journal',
+        otherLabel: 'Prev tab (LB)',
+      }),
+    );
   });
 });
