@@ -45,6 +45,7 @@ afterEach(async () => {
 
 interface RenameViewModel {
   displayCurrentName: string;
+  displayTag: string | null;
   trimmedDraft: string;
   canSubmit: boolean;
 }
@@ -167,6 +168,7 @@ describe('m24s5 (ADR-0261): renameView.ts routes chrome.rename.submit through t(
     // vm.displayCurrentName fixture deliberately avoids the roster word "Rename".
     const vm: RenameViewModel = {
       displayCurrentName: 'Wanderer',
+      displayTag: null,
       trimmedDraft: '',
       canSubmit: false,
     };
@@ -188,6 +190,7 @@ describe('m24s5 (ADR-0261): renameView.ts routes chrome.rename.submit through t(
       view.show();
       const vm: RenameViewModel = {
         displayCurrentName: 'Wanderer',
+        displayTag: null,
         trimmedDraft: '',
         canSubmit: false,
       };
