@@ -101,6 +101,8 @@ export const tickerWon = (): string => t('tactics.ticker.won');
 export const tickerLost = (): string => t('tactics.ticker.lost');
 export const tickerFled = (): string => t('tactics.ticker.fled');
 export const tickerBattleEnded = (): string => t('tactics.ticker.battleEnded');
+/** The Y tap's hint while a held Y would clear the selected unit's plan. */
+export const tickerHoldToClear = (): string => t('tactics.ticker.holdToClear');
 
 export const tickerExecuted = (unit: string, skill: string): string =>
   tf('tactics.ticker.executed', { unit, skill });

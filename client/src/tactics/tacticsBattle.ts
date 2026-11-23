@@ -63,6 +63,7 @@ import {
   type MenuRow,
   menuRows,
   moveBand,
+  offers,
   recruitTargets,
   type SkillAim,
   skillRows,
@@ -247,6 +248,8 @@ interface Frame {
   readonly strip: { readonly chips: readonly StripChipVM[]; readonly locked: boolean };
   readonly panel: PanelVM | null;
   readonly hint: HintBattle;
+  /** Whether a held Y clears the selected unit's plan in this frame (`clearPlanHoldable`). */
+  readonly clearHoldable: boolean;
   readonly reduced: boolean;
 }
 
@@ -358,6 +361,7 @@ export class TacticsBattle implements BattleOpsView {
   /** The last `activeUnitId` seen: the selection follows it when it CHANGES to an own unit. */
   #lastActive: number | null = null;
   #hint: HintBattle = { start: 'endTurn', undo: false };
+  #clearHoldable = false;
   #menuOpen = false;
   #rules: TacticsRules | null = null;
   /** The "Still there?" line (bt-12 B) and the whole seconds it shows; null when none shows. */
@@ -548,6 +552,13 @@ export class TacticsBattle implements BattleOpsView {
     return this.#hint;
   }
 
+  /** Whether holding Y clears a plan now: the shell shows, the selected unit is pre-queued with a
+   *  READY plan and no draft (the menu's Clear plan row), and the shell is idle or at its root
+   *  menu. Read from the committed frame, so main.ts may ask it every frame. */
+  get clearPlanHoldable(): boolean {
+    return this.#visible && this.#clearHoldable;
+  }
+
   toggleDanger(): void {
     this.#atomic(() => {
       this.#dangerOn = !this.#dangerOn;
@@ -594,6 +605,14 @@ export class TacticsBattle implements BattleOpsView {
         case 'start':
           this.#start();
           return;
+        case 'holdHint':
+          this.#holdHint();
+          return;
+        case 'clearPlan':
+          if (!this.clearPlanHoldable) return;
+          this.#clearPlan(this.selectedUnitId as number);
+          this.#paint();
+          return;
         default:
           op satisfies never;
       }
@@ -608,6 +627,7 @@ export class TacticsBattle implements BattleOpsView {
   #atomic<T>(fn: () => T): T {
     const saved = {
       mode: this.#mode,
+      clearHoldable: this.#clearHoldable,
       cursor: this.#cursor,
       selected: this.#selected,
       memory: this.#memory,
@@ -619,6 +639,7 @@ export class TacticsBattle implements BattleOpsView {
       return fn();
     } catch (err) {
       this.#mode = saved.mode;
+      this.#clearHoldable = saved.clearHoldable;
       this.#cursor = saved.cursor;
       this.#selected = saved.selected;
       this.#memory = saved.memory;
@@ -802,12 +823,8 @@ export class TacticsBattle implements BattleOpsView {
         break;
       }
       case 'clear':
-        if (row.key === 'clearYes') {
-          this.#deps.onCancelQueue(vm.battleId, p.unitId);
-          // The sent plan is gone: the next submit for this unit is a new round-trip (C18).
-          this.#inflight.delete(p.unitId);
-        }
-        this.#mode = IDLE;
+        if (row.key === 'clearYes') this.#clearPlan(p.unitId);
+        else this.#mode = IDLE;
         break;
       case 'forfeit':
         // bt-15 (BT15.3): the confirm precedes the call; not a queue entry, so no in-flight key.
@@ -852,6 +869,26 @@ export class TacticsBattle implements BattleOpsView {
         return;
     }
     this.#paint();
+  }
+
+  /** Clear `unitId`'s READY plan (the confirmed Clear plan row, or Y held): `cancel_queue`, and the
+   *  shell back to idle. The sent plan is gone, so the next submit for this unit is a new round trip. */
+  #clearPlan(unitId: number): void {
+    const vm = this.#vm;
+    if (vm === null) return;
+    this.#deps.onCancelQueue(vm.battleId, unitId);
+    this.#inflight.delete(unitId);
+    this.#mode = IDLE;
+  }
+
+  /** A Y tap while Y held would clear the plan: one "Hold Y" ticker line (not again while it is
+   *  still the newest line, so a mashed Y never floods the log), spoken at the next tick. */
+  #holdHint(): void {
+    if (!this.clearPlanHoldable) return;
+    const line = s.tickerHoldToClear();
+    if (this.#ticker.lines().at(-1) === line) return;
+    this.#ticker.push(line);
+    this.#saidEvents.push(line);
   }
 
   /** A on a Move aim: the tile in the band drafts a Move of that band's strides (reach1 → 1,
@@ -1064,6 +1101,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#inflight = new Map();
     this.#lastActive = null;
     this.#hint = { start: 'endTurn', undo: false };
+    this.#clearHoldable = false;
     this.#ticker.clear();
     this.#playback.skip();
     this.#syncPlaying();
@@ -1499,6 +1537,10 @@ export class TacticsBattle implements BattleOpsView {
             start: p.mode === 'live' ? p.end : 'submit',
             undo: p.draft.actions.length > 0,
           };
+    const clearHoldable =
+      p !== null &&
+      offers(p.ctx).cancel &&
+      (mode.kind === 'idle' || (mode.kind === 'menu' && mode.level === 'root'));
     return {
       mode,
       selected: this.#selected,
@@ -1512,6 +1554,7 @@ export class TacticsBattle implements BattleOpsView {
       strip,
       panel,
       hint,
+      clearHoldable,
       reduced: this.#deps.reduceMotion(),
     };
   }
@@ -1650,6 +1693,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#mode = frame.mode;
     this.#cursor = frame.cursor;
     this.#hint = frame.hint;
+    this.#clearHoldable = frame.clearHoldable;
     this.#root.classList.toggle('tactics--reduced', frame.reduced);
     renderBoard(this.#boardEl, frame.board, (tile) => this.#pointTo(tile));
     if (frame.ghost !== null) this.#paintGhost(frame.ghost);

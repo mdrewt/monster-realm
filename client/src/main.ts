@@ -365,6 +365,7 @@ import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
 import { buildRaisingViewModel } from './ui/raisingModel';
 import { buildRenameViewModel, type RenameViewModel } from './ui/renameModel';
+import { battleHoldButtons } from './ui/screens/battleScreen';
 import { SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './ui/screens/index';
 import {
   type MainMenuStep,
@@ -2662,7 +2663,7 @@ const jump = (): void => sendIntent('Jump');
 
 // What the router needs to know: whether the world takes input, the nav frame (a nav-capable
 // screen on top, else the main menu, on top or covered by a legacy frame) plus the clock its
-// auto-repeat runs on, and the top frame's adapter.
+// auto-repeat and hold edges run on, the top frame's hold-capable buttons, and its adapter.
 const routeCtx = (): RouteContext => {
   const worldActive = movementGate(); // the stack as the keydown's opening sync left it
   const place = menuPlace();
@@ -2676,6 +2677,7 @@ const routeCtx = (): RouteContext => {
   return {
     worldActive,
     nav,
+    hold: battleHoldButtons(contextStack, tacticsBattle?.clearPlanHoldable === true),
     // The battle's own rules first (Start opens the menu over it, A continues its outcome).
     screen: (btn) => {
       // ts-6b-7.3: while the results wait for the shell's playback, A, B and Start skip it — none of
@@ -5294,7 +5296,7 @@ async function main(): Promise<void> {
         autoContinuedAtMs = outcomeShownAtMs;
         void dispatch({ kind: 'pop' });
       }
-      // Menu auto-repeat: the router synthesizes the held D-pad's repeat edges on this clock.
+      // The router's clock: a held hold-capable button's hold, then the held D-pad's menu repeat.
       for (const effect of inputRouter.tick(routeCtx())) applyRouterEffect(effect);
       // bt-12 B: the tactical shell's playback on the frame clock; the "Still there?" countdown on
       // the server-time estimate (the deadline is a server epoch instant; a batch-driven countdown

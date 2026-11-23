@@ -1561,6 +1561,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'tactics.ticker.fled': 'The battle ended: fled',
   // @desc: Battle-log line when the battle ends with no winner recorded. Two words.
   'tactics.ticker.battleEnded': 'Battle over',
+  // @desc: Battle-log hint when Y is tapped while holding Y would clear the selected unit's READY
+  // plan. One short sentence naming the Y button.
+  'tactics.ticker.holdToClear': 'Hold Y to clear the plan',
   // @desc: Turn-bar heading with the current round; {round} is the round number counted from 1. Two
   // words.
   'tactics.turnbar.round': (p) => `Round ${p.round}`,

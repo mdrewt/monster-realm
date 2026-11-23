@@ -4,7 +4,9 @@
 // Every other button goes to the top frame's screen adapter (ctl-6b), and so does the D-pad of a
 // nav-capable screen (ctl-7c); what that adapter leaves `unhandled` is unconsumed, and the page
 // keeps the key. It also decides each accelerator (ctl-11a): `accelDecision` names the menu path
-// it opens, or refuses it, or makes it act as Start.
+// it opens, or refuses it, or makes it act as Start. A button the top frame lists as hold-capable
+// (`RouteContext.hold`) is held back at its press: a release before `HOLD_MS` is its tap, and
+// `HOLD_MS` held is one hold input.
 //
 // No DOM, SDK, module state or clock: the caller passes `now` and applies the returned effects.
 import type { WasmDirection } from '../convert/convert';
@@ -183,6 +185,11 @@ export interface RouteContext {
    *  effects), a D-pad edge no nav-capable screen takes, and X anywhere but under a nav-capable
    *  screen (bt-12: the world's jump and the main menu never ask it). */
   readonly screen?: (btn: NavInput) => ScreenResult;
+  /** The top frame's hold-capable buttons, honoured under an uncovered nav-capable screen and timed
+   *  on `nav.now`. A listed button's press asks nothing; its release before `HOLD_MS` asks the tap,
+   *  and once it has been held `HOLD_MS` the screen is asked once with a hold input instead. The
+   *  D-pad and X are never hold-capable: they keep their own rules even when listed. */
+  readonly hold?: ReadonlySet<VButton>;
 }
 
 export interface RouteResult {
@@ -196,6 +203,9 @@ const SWALLOWED: RouteResult = { consumed: true, effects: [] };
 /** Menu auto-repeat (design §6): the first repeat after this long held, then one per period. */
 export const REPEAT_DELAY_MS = 350;
 export const REPEAT_PERIOD_MS = 100;
+
+/** How long a hold-capable button stays down before it is a hold rather than a tap. */
+export const HOLD_MS = 500;
 
 /** The buttons the uncovered main menu takes besides the D-pad. */
 const NAV_BUTTONS: ReadonlySet<VButton> = new Set(['A', 'B', 'Y']);
@@ -212,6 +222,27 @@ const askScreenSwallowing = (ctx: RouteContext, input: NavInput): readonly Route
   return typeof result === 'object' ? [{ kind: 'command', command: result }] : [];
 };
 
+/** A press for the top frame's adapter: `unhandled` stays the page's, `consumed` is swallowed, a
+ *  Command is a consumed command effect. */
+const askScreen = (ctx: RouteContext, input: NavInput): RouteResult => {
+  if (ctx.screen === undefined) return NOT_CONSUMED;
+  const result = ctx.screen(input);
+  if (result === 'unhandled') return NOT_CONSUMED;
+  if (result === 'consumed') return SWALLOWED;
+  return { consumed: true, effects: [{ kind: 'command', command: result }] };
+};
+
+/** The clock a hold of `button` runs on when it is hold-capable here (listed by an uncovered
+ *  nav-capable screen), else undefined. */
+const holdClock = (ctx: RouteContext, button: VButton): number | undefined =>
+  ctx.nav !== undefined && !ctx.nav.covered && ctx.nav.screen === true && ctx.hold?.has(button)
+    ? ctx.nav.now
+    : undefined;
+
+/** The hold input of `button`, asked once; the edge that delivers it is swallowed. */
+const askHold = (ctx: RouteContext, button: VButton): readonly RouterEffect[] =>
+  askScreenSwallowing(ctx, { button, repeat: false, hold: true });
+
 export class InputRouter {
   // Down edges per D-pad button not yet matched by an up edge, across every source. A
   // direction is released only when its last holder lets go (two keys, or key + pad).
@@ -222,6 +253,9 @@ export class InputRouter {
   // D-pad buttons held since the last repeat reset, oldest press first: releasing the repeating
   // one hands the repeat back to the most recent of them still held.
   #pressOrder: VButton[] = [];
+  // Hold-capable presses not yet released, per button whatever the source: when the first press
+  // armed it, and whether its hold input has been asked.
+  readonly #holds = new Map<VButton, { readonly since: number; fired: boolean }>();
 
   route(edge: ButtonEdge, ctx: RouteContext): RouteResult {
     const { button, down } = edge;
@@ -271,38 +305,81 @@ export class InputRouter {
       }
       return SWALLOWED;
     }
+    const held = this.#holds.get(button);
+    if (held !== undefined) {
+      if (!down) {
+        // The first release ends the press: the hold if it is due and no tick has asked it yet,
+        // else the tap, unless the hold was already asked or the frame no longer lists it.
+        this.#holds.delete(button);
+        const now = holdClock(ctx, button);
+        if (held.fired || now === undefined) return SWALLOWED;
+        if (now - held.since >= HOLD_MS) return { consumed: true, effects: askHold(ctx, button) };
+        return askScreen(ctx, { button, repeat: false });
+      }
+      // Another source pressing it keeps the first press's timer. A frame that no longer lists it
+      // ends that press unasked, and this press is an ordinary one.
+      if (holdClock(ctx, button) !== undefined) return SWALLOWED;
+      this.#holds.delete(button);
+    }
     if (nav !== undefined && !nav.screen && NAV_BUTTONS.has(button)) {
       return down ? navPress(button) : SWALLOWED;
     }
-    if (!down || ctx.screen === undefined) return NOT_CONSUMED;
-    const result = ctx.screen({ button, repeat: false });
-    if (result === 'unhandled') return NOT_CONSUMED;
-    if (result === 'consumed') return SWALLOWED;
-    return { consumed: true, effects: [{ kind: 'command', command: result }] };
+    if (!down) return NOT_CONSUMED;
+    const since = holdClock(ctx, button);
+    if (since !== undefined) {
+      this.#holds.set(button, { since, fired: false });
+      return SWALLOWED;
+    }
+    return askScreen(ctx, { button, repeat: false });
   }
 
-  /** The frame-loop pump: at most one repeat edge for the armed D-pad button, once it is due,
-   *  while the nav frame is uncovered. A stalled clock yields one edge, never a burst. */
+  /** The frame-loop pump: each hold-capable press held `HOLD_MS` asks its hold input once (a
+   *  press its frame no longer lists is dropped unasked), then at most one repeat edge for the
+   *  armed D-pad button, once it is due, while the nav frame is uncovered. A stalled clock yields
+   *  one edge, never a burst. */
   tick(ctx: RouteContext): readonly RouterEffect[] {
+    const effects = this.#tickHolds(ctx);
     const repeat = this.#repeat;
-    if (repeat === undefined || ctx.nav === undefined || ctx.nav.covered) return [];
+    if (repeat === undefined || ctx.nav === undefined || ctx.nav.covered) return effects;
     const { now } = ctx.nav;
-    if (now < repeat.nextAt) return [];
+    if (now < repeat.nextAt) return effects;
     repeat.nextAt += REPEAT_PERIOD_MS;
     if (repeat.nextAt <= now) repeat.nextAt = now + REPEAT_PERIOD_MS;
     const input: NavInput = { button: repeat.button, repeat: true };
-    return ctx.nav.screen ? askScreenSwallowing(ctx, input) : [{ kind: 'nav', input }];
+    return [
+      ...effects,
+      ...(ctx.nav.screen ? askScreenSwallowing(ctx, input) : [{ kind: 'nav' as const, input }]),
+    ];
   }
 
-  /** Stop any repeat: a held key never repeats into a newly pushed or popped frame, not even
-   *  when a newer key's release would hand the repeat back to it. The holder counts stay, so its
-   *  release is still reported. */
+  #tickHolds(ctx: RouteContext): RouterEffect[] {
+    const effects: RouterEffect[] = [];
+    // The live map: an adapter asked below may reset the router, which ends this walk.
+    for (const [button, held] of this.#holds) {
+      const now = holdClock(ctx, button);
+      if (now === undefined) {
+        this.#holds.delete(button);
+        continue;
+      }
+      if (held.fired || now - held.since < HOLD_MS) continue;
+      // Marked before the ask, so an adapter that throws is never asked again for this press.
+      held.fired = true;
+      effects.push(...askHold(ctx, button));
+    }
+    return effects;
+  }
+
+  /** Stop any repeat and drop every hold-capable press unasked: a held key never repeats, taps or
+   *  holds into a newly pushed or popped frame, not even when a newer key's release would hand the
+   *  repeat back to it. The holder counts stay, so its release is still reported. */
   resetRepeat(): void {
     this.#repeat = undefined;
     this.#pressOrder = [];
+    this.#holds.clear();
   }
 
-  /** Release every held button (blur, tab hidden): one `dirUp` per held direction. */
+  /** Release every held button (blur, tab hidden): one `dirUp` per held direction; a
+   *  hold-capable press is dropped unasked. */
   releaseAll(): readonly RouterEffect[] {
     const effects: RouterEffect[] = [];
     for (const button of this.#holders.keys()) {
@@ -312,6 +389,7 @@ export class InputRouter {
     this.#holders.clear();
     this.#pressOrder = [];
     this.#repeat = undefined;
+    this.#holds.clear();
     return effects;
   }
 }

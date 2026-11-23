@@ -1590,6 +1590,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'tactics.ticker.fled': 'Le combat s’est terminé : fuite',
   // @desc: Battle-log line when the battle ends with no winner recorded. Two words.
   'tactics.ticker.battleEnded': 'Combat terminé',
+  // @desc: Battle-log hint when Y is tapped while holding Y would clear the selected unit's READY
+  // plan. One short sentence naming the Y button.
+  'tactics.ticker.holdToClear': 'Maintenez Y pour effacer le plan',
   // @desc: Turn-bar heading with the current round; {round} is the round number counted from 1. Two
   // words.
   'tactics.turnbar.round': (p) => `Manche ${p.round}`,

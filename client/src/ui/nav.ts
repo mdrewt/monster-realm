@@ -34,6 +34,9 @@ export interface NavState {
 export interface NavInput {
   readonly button: VButton;
   readonly repeat: boolean;
+  /** A hold-capable button held long enough (input/router.ts `HOLD_MS`): only a frame that lists
+   *  the button as hold-capable is ever handed one. */
+  readonly hold?: true;
 }
 export type NavOutcome =
   | { readonly kind: 'moved' }
