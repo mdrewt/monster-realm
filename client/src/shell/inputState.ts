@@ -42,11 +42,14 @@ export function installPadFaultSink(sink: (err: unknown) => void): void {
   padFault = sink;
 }
 
-// The pad source: every connected pad through the default pad table into the same
+// The pad's binding table, which the pad source and the keycaps both read: the defaults.
+const padBindings = PAD_DEFAULT_BINDINGS;
+
+// The pad source: every connected pad through the pad table into the same
 // `{button, down}` edges, polled once per animation frame by `main.ts`. `navigator.getGamepads` is
 // looked up at each poll: a browser without it reads as no pads, and one that throws reads as no
 // pads and reaches the fault sink once.
-export const pad = new GamepadSource(() => navigator.getGamepads?.() ?? [], PAD_DEFAULT_BINDINGS, {
+export const pad = new GamepadSource(() => navigator.getGamepads?.() ?? [], padBindings, {
   onError: (err) => padFault(err),
 });
 
@@ -62,7 +65,7 @@ export function noteInputSource(source: InputSource): void {
 /** The live keycap of `button`: the glyph of its first binding in the last-used source's table
  *  (the keyboard table, or the pad table the pad source reads), '' when it has none there. */
 export const keycap = (button: VButton): string =>
-  keycapFor(lastSource, bindings, PAD_DEFAULT_BINDINGS)(button);
+  keycapFor(lastSource, bindings, padBindings)(button);
 
 // Codes whose press the menu or a nav-capable screen consumed: their OS key-repeats are cancelled
 // until the keyup, so a held Enter that opened a child cannot activate the child's focused button.

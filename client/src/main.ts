@@ -3069,7 +3069,6 @@ const onKeyDown = (e: KeyboardEvent): void => {
 // itself is popped before this key routes; after, so whatever this key closed is off it at once.
 const handleKeyDown = (e: KeyboardEvent): void => {
   pointerSource?.keyPressed(); // the keyboard drives now: the mouse's hover mark goes (CTL15.4)
-  noteInputSource('keys'); // and the keycaps are the keyboard's from the next paint
   try {
     syncStack();
     onKeyDown(e);
@@ -3079,10 +3078,12 @@ const handleKeyDown = (e: KeyboardEvent): void => {
 };
 // Escape is routed in the CAPTURE phase, so a view's own stopPropagation can no longer trap it
 // (B5: Escape was dead inside a view that shields its fields). Every other key keeps the bubble phase,
-// where those views' stopPropagation still shields their fields from the accelerator keys.
+// where those views' stopPropagation still shields their fields from the accelerator keys. Every
+// key, a shielded one too (typing a name), makes the keycaps the keyboard's from the next paint.
 window.addEventListener(
   'keydown',
   (e) => {
+    noteInputSource('keys');
     if (e.code === 'Escape') handleKeyDown(e);
   },
   true,
@@ -5108,12 +5109,13 @@ async function main(): Promise<void> {
         : anchor !== undefined
           ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
           : undefined;
-    // The confirm's row and cursor are in the signature: a Yes / No move must repaint.
+    // The confirm's row and cursor are in the signature: a Yes / No move must repaint. So is the A
+    // keycap the picker's accessible name carries, which follows the last-used device.
     const promptSig =
       request !== null
         ? `request|${request.notice.key}|${request.nav.item}|${requestLine(request.notice)}`
         : sheet !== null
-          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
+          ? `sheet|${interactKeycap()}|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
           : chip !== null
             ? interactChipText(chip)
             : null;

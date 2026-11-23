@@ -27,7 +27,7 @@ import { DEFAULT_BINDINGS } from './input/bindings';
 import { VBUTTONS } from './input/buttons';
 import type { ConnectionOptions } from './net/connection';
 import type { StoreMonsterPub, StoreTradeSession } from './net/store';
-import { t as i18nT } from './ui/i18n/resolver';
+import { t as i18nT, tf } from './ui/i18n/resolver';
 
 /** ts-3: an incoming, untouched `my_trade_session` row `from` opened with the booted player (the
  *  identity is the hoisted one, `'ab'.repeat(32)`). */
@@ -896,6 +896,7 @@ const makeFakePad = (): FakePad => ({
 });
 
 const PAD_B = 1;
+const PAD_LB = 4;
 const PAD_START = 9;
 
 describe('main.ts hint keycaps follow the last input source (runtime, gp-4)', {
@@ -1023,5 +1024,70 @@ describe('main.ts hint keycaps follow the last input source (runtime, gp-4)', {
     frame();
     expect(promptText(), 'the chip names the Enter key again').toContain('[Enter]');
     expect(promptText(), 'and not the pad A').not.toContain('[A]');
+  }, 120_000);
+
+  it('a key typed into a field that stops the keydown`s propagation still makes the keycaps the keyboard`s at the next frame [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a source noted only in the bubble-phase keydown handler (a field that
+    // stops propagation, as the rename and Monsters fields do, would leave the pad glyphs up
+    // while the player types).
+    await bootFacingNpc();
+    const inputState = await import('./shell/inputState');
+    padTap(PAD_B);
+    expect(inputState.lastSource, 'precondition: the pad is the last source').toBe('pad');
+    expect(keyOf('Start'), 'precondition: pad glyph').toBe(i18nT('pad.menu'));
+    const field = document.createElement('input');
+    field.type = 'text';
+    field.addEventListener('keydown', (e) => e.stopPropagation());
+    gameScreenEl().appendChild(field);
+    field.focus();
+    expect(document.activeElement, 'precondition: the field has focus').toBe(field);
+    clock.t = next(50);
+    field.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'KeyQ', bubbles: true, cancelable: true }),
+    );
+    expect(inputState.lastSource, 'the typed key made the keyboard the last source').toBe('keys');
+    frame();
+    expect(keyOf('A'), 'A reads the Enter key').toBe('Enter');
+    expect(keyOf('Start'), 'Start reads the Esc key').toBe(i18nT('key.escape'));
+    expect(keyOf('Select'), 'Select reads the R key').toBe('R');
+  }, 120_000);
+
+  it('the multi-row world picker`s accessible name follows the source on the next frame with no cursor move [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a picker repaint signature without the A keycap (the list keeps naming
+    // the keyboard key after a pad press because nothing else about the sheet changed).
+    await bootReady();
+    batch();
+    seedFacedNpc();
+    frame();
+    usePad();
+    seedSecondNpc();
+    frame();
+    press('Enter');
+    frame();
+    const rowsEl = (): HTMLElement => {
+      const el = document.querySelector<HTMLElement>('#interact-prompt .mr-sheet-rows');
+      if (el === null) throw new Error('the picker rows are not in the interact prompt');
+      return el;
+    };
+    const options = (): HTMLElement[] => [
+      ...document.querySelectorAll<HTMLElement>('#interact-prompt [role="option"]'),
+    ];
+    const selected = (): string[] =>
+      options()
+        .filter((o) => o.getAttribute('aria-selected') === 'true')
+        .map((o) => o.id);
+    expect(options().length, 'precondition: a two-row picker and Close').toBe(3);
+    expect(selected(), 'precondition: one row is selected').toHaveLength(1);
+    expect(rowsEl().getAttribute('aria-label'), 'the label names the keyboard A').toBe(
+      tf('interact.choose', { key: 'Enter' }),
+    );
+    const before = selected();
+
+    padTap(PAD_LB);
+    expect(options().length, 'the pad press left the sheet as it was').toBe(3);
+    expect(selected(), 'and the cursor where it was').toEqual(before);
+    expect(rowsEl().getAttribute('aria-label'), 'the label names the pad A').toBe(
+      tf('interact.choose', { key: 'A' }),
+    );
   }, 120_000);
 });

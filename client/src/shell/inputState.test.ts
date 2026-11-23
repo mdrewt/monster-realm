@@ -1233,6 +1233,22 @@ describe('the booted shell records the source of the last input', { sequential: 
     expect(ns.lastSource, 'the release edge changed nothing').toBe('keys');
   });
 
+  it('a pad press ignored because focus is outside the game screen still makes the pad the last source [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: the source note placed below the focus guard (an ignored press would
+    // leave the keyboard keycaps up while the player is on the pad).
+    const ns = await boot();
+    usePad();
+    tick();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus is outside #game-screen').toBe(outside);
+    expect(byId('game-screen').contains(outside), 'precondition: outside the screen').toBe(false);
+    expect(ns.lastSource, 'precondition: the keyboard').toBe('keys');
+    padDown(D_PAD_UP);
+    expect(ns.lastSource, 'the ignored press still made the pad the last source').toBe('pad');
+  });
+
   it('a frame with no pad input and no key leaves the last source unchanged, whichever it is [gp-4.2]', async () => {
     // WRONG IMPL KILLED: a frame loop that notes a source on every poll (pad on each idle frame).
     const ns = await boot();
