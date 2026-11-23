@@ -1,8 +1,8 @@
 // ui/renameModel.ts — pure view model for the profile-rename overlay.
 //
-// No DOM, no SDK, no side-effects (the tag goes through the i18n resolver, as `formatTag` does). Never throws on any input — a throw here would
-// starve sibling store batch-listeners (store.ts one-way flow) and this VM is built
-// from a keydown handler, not a store batch.
+// No DOM, no SDK, no side-effects (the tag goes through the i18n resolver, as `formatTag` does).
+// Never throws on any input: it is built from keydown and input handlers and from a store batch
+// listener (main.ts), where a throw would starve sibling batch listeners (store.ts one-way flow).
 //
 // D2: the ONLY client-side name logic is `trim` + non-empty. This model
 // deliberately does NOT re-implement the server `validate_name` ruleset (NFC / length /

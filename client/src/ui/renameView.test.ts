@@ -1804,6 +1804,20 @@ describe('RenameView player tag beside the current name', () => {
     expect(current.querySelectorAll('#rename-tag').length, 'one tag node').toBe(1);
   });
 
+  it('renderCurrentName shows a different tag when the model gives one, with the same or a new name [lpw-40.3]', () => {
+    // WRONG IMPL KILLED: a view that keeps the first non-empty tag and ignores a later different
+    // one (the frame would show a stale number after the row changes).
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(vmOf('Aria', '#0042'));
+    view.renderCurrentName(vmOf('Aria', '#0099'));
+    expect(tagEl()?.textContent).toBe('#0099');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Aria #0099');
+    view.renderCurrentName(vmOf('Bree', '#0099'));
+    expect(bdiEl()?.textContent).toBe('Bree');
+    expect(tagEl()?.textContent).toBe('#0099');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Bree #0099');
+  });
+
   it('renderCurrentName leaves a typed draft in the field and the Save button as it was [lpw-40.3]', () => {
     // WRONG IMPL KILLED: a repaint that resets the input (a rename arriving would wipe what the
     // player is typing); one that recomputes the submit state from the model's draft.

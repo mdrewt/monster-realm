@@ -330,6 +330,19 @@ test.describe
       ) as PlayerFacts;
       expect(before.discriminator, 'a minted tag').toBeGreaterThan(0);
 
+      // B holds an unsubmitted valid draft in its open Profile frame while A renames.
+      const pageB = pages[1] as Page;
+      const idB = normalizeIdentity((await snapOf(pageB)).identity);
+      const factB = (playerFacts([idB], 'lpw-40.3 B') as Map<string, PlayerFacts>).get(
+        idB,
+      ) as PlayerFacts;
+      const draftB = `Keep${Date.now() % 100000}`;
+      await closeAll(pageB);
+      await pressAccel(pageB, 'N');
+      await expect(pageB.locator('#rename-input')).toBeFocused({ timeout: 10_000 });
+      await pageB.locator('#rename-input').fill(draftB);
+      await expect(pageB.locator('#rename-submit'), 'B: a valid draft enables Save').toBeEnabled();
+
       await closeAll(pageA);
       await pressAccel(pageA, 'N');
       await expect(pageA.locator('#profile-overlay')).toBeVisible({ timeout: 10_000 });
@@ -356,6 +369,18 @@ test.describe
       ) as PlayerFacts;
       expect(after.name, 'owner SQL: the new name').toBe(newName);
       expect(after.discriminator, 'owner SQL: the tag is unchanged').toBe(before.discriminator);
+
+      // The row reaches every subscriber in the same transaction broadcast; the wait bounds it.
+      await pageB.waitForTimeout(1_500);
+      await expect(pageB.locator('#rename-input'), 'B: the draft survives A`s row').toHaveValue(
+        draftB,
+      );
+      await expect(pageB.locator('#rename-submit'), 'B: Save stays enabled').toBeEnabled();
+      await expect(pageB.locator('#rename-current bdi'), 'B: its own name').toHaveText(factB.name);
+      await expect(pageB.locator('#rename-tag'), 'B: its own tag').toHaveText(
+        padTag(factB.discriminator),
+      );
+      await closeAll(pageB);
       await closeAll(pageA);
     });
   });
