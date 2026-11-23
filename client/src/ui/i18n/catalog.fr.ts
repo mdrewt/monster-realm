@@ -199,6 +199,27 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Keycap label of a numeric keypad digit key; {key} is the digit. Must differ from the bare
   // digit key. input/glyphs.ts
   'key.numpad': (p) => `Pavé ${p.key}`,
+  // @desc: Keycap label of the controller's View button (the small left centre button, the Select
+  // button), drawn in square brackets on hint chips. One short word. input/padGlyphs.ts
+  'pad.view': 'Affichage',
+  // @desc: Keycap label of the controller's Menu button (the small right centre button, the Start
+  // button), drawn in square brackets on hint chips. One short word. input/padGlyphs.ts
+  'pad.menu': 'Menu',
+  // @desc: Keycap label of the controller's D-pad up button, drawn in square brackets on hint chips.
+  // The D-pad's short name, then the arrow symbol. input/padGlyphs.ts
+  'pad.dpadUp': 'Croix ↑',
+  // @desc: Keycap label of the controller's D-pad down button, drawn in square brackets on hint
+  // chips. The D-pad's short name, then the arrow symbol. input/padGlyphs.ts
+  'pad.dpadDown': 'Croix ↓',
+  // @desc: Keycap label of the controller's D-pad left button, drawn in square brackets on hint
+  // chips. The D-pad's short name, then the arrow symbol. input/padGlyphs.ts
+  'pad.dpadLeft': 'Croix ←',
+  // @desc: Keycap label of the controller's D-pad right button, drawn in square brackets on hint
+  // chips. The D-pad's short name, then the arrow symbol. input/padGlyphs.ts
+  'pad.dpadRight': 'Croix →',
+  // @desc: Keycap label of a controller button with no printed label; {n} is the button's number.
+  // One short word plus the number. input/padGlyphs.ts
+  'pad.button': (p) => `Bouton ${p.n}`,
   // @desc: Name of the D-pad Up button in Controls (a row label). One short word.
   // ui/controlsModel.ts
   'controls.button.up': 'Haut',

@@ -2462,10 +2462,10 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The pinned roster is 558 keys: chrome.status.privateHostNotice and the eight claim.gate.*
+    // The pinned roster is 565 keys: chrome.status.privateHostNotice and the eight claim.gate.*
     // sign-in gate lines among them.
     expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 565 keys').toHaveLength(565);
     expect(
@@ -3682,11 +3682,11 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
+    // The French catalog holds the same 565 keys, chrome.status.privateHostNotice among them.
     expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
   });
 });
@@ -3814,11 +3814,11 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
+    // The French catalog holds the same 565 keys, chrome.status.privateHostNotice among them.
     expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
   });
 
@@ -3956,6 +3956,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
       // ts-6b-9 (named intentional change, R-weekly-review-2026-10-02-F4): 657 -> 674, + the 17
       // plain `a11y.*` values now in both catalogs.
       TS6B9_A11Y_IDS.length +
+      // gp-4 (named intentional change): + the six plain `pad.*` glyph ids (`pad.button` is in
+      // SAMPLE_PARAMS and counted twice below).
+      GP4_PLAIN_IDS.length +
       2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
     expect(fr.texts, 'every French value was read').toBe(expectedTexts);
@@ -4140,11 +4143,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     expect(Object.keys(en).length, 'the English catalog holds exactly 565 keys').toBe(565);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 558 keys, chrome.status.privateHostNotice among them.
+    // The French catalog holds the same 565 keys, chrome.status.privateHostNotice among them.
     expect(Object.keys(fr).length, 'and so does the French one').toBe(565);
     expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(565);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
@@ -4835,10 +4838,10 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // Both rosters count chrome.status.privateHostNotice among their 558 keys.
+    // Both rosters count chrome.status.privateHostNotice among their 565 keys.
     expect(Object.keys(en), 'the English roster is 565 keys').toHaveLength(565);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(565);
   });
@@ -4963,10 +4966,10 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 558 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 565 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // Both rosters count chrome.status.privateHostNotice among their 558 keys.
+    // Both rosters count chrome.status.privateHostNotice among their 565 keys.
     expect(Object.keys(en), 'the English roster is 565 keys').toHaveLength(565);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(565);
   });
