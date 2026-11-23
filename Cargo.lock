@@ -1261,7 +1261,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "spacetimedb"
-version = "2.12.0"
+version = "2.14.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1280,9 +1280,9 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-bindings-macro"
-version = "2.12.0"
+version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36ed3c8ab8577d5213ca33a4859efd11c8f1dafdebeb46a055d67c2ae0abc8f3"
+checksum = "12687a386f7994d79a66b5e483335ffa3a4d4b4793ad29dbd640e09113c6b188"
 dependencies = [
  "heck 0.4.1",
  "humantime",
@@ -1293,16 +1293,16 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-bindings-sys"
-version = "2.12.0"
+version = "2.14.1"
 dependencies = [
  "spacetimedb-primitives",
 ]
 
 [[package]]
 name = "spacetimedb-lib"
-version = "2.12.0"
+version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d7fc93c4d90e1c596405339a4af98a2dabb8593a40229d3f9c42297eb7526da"
+checksum = "27a93d373e9ef92522710e3561ff086e5f131eaff6cfefdbaedc50edd995e37f"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1315,9 +1315,9 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-primitives"
-version = "2.12.0"
+version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b67915a8048cc245d3acbd3261512c07aa53d0640d1ddaeda2d64339e9b951b"
+checksum = "30fbe531644ecd99178b4f883f5c900fd1111de7bef0c011212ba695d0034188"
 dependencies = [
  "bitflags",
  "either",
@@ -1328,18 +1328,18 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-query-builder"
-version = "2.12.0"
+version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf4ed0fa5809325aee4fd57c1ff3ada99f373b2618f32b502ecbe678f02d0dd"
+checksum = "4172f0a4933a0f2a2d9d1f36c254d68fe63deb30977a40e834b127243e4853a1"
 dependencies = [
  "spacetimedb-lib",
 ]
 
 [[package]]
 name = "spacetimedb-sats"
-version = "2.12.0"
+version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "688213ace04e9790563ede96b67f6f059624be24e33fc84321f568f754c0d732"
+checksum = "e4349a1a13001049c2f809f9518f3da7347608fc8f46e77f651bea8eb1699bd2"
 dependencies = [
  "anyhow",
  "arrayvec",

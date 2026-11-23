@@ -11,7 +11,7 @@
      use super::{ColId, IndexId, TableId};
 --- a/spacetimedb/src/lib.rs
 +++ b/spacetimedb/src/lib.rs
-@@ -1228,7 +1228,7 @@
+@@ -1251,7 +1251,7 @@
              self.module_identity
          }
  
@@ -20,7 +20,7 @@
          {
              // Hypothetically, we *could* read the module identity out of the system tables.
              // However, this would be:
-@@ -1241,7 +1241,7 @@
+@@ -1264,7 +1264,7 @@
              Identity::from_byte_array(spacetimedb_bindings_sys::identity())
          }
  
@@ -158,7 +158,7 @@
                  {
                      let _ = (table_id, index_id, row);
                      Err(sys::Errno::HOST_CALL_FAILURE)
-@@ -1864,9 +1864,9 @@
+@@ -1915,9 +1915,9 @@
  
  /// A table iterator which yields values of the `TableType` corresponding to the table.
  enum TableIterInner {
@@ -170,7 +170,7 @@
      #[allow(dead_code)]
      Host,
      #[cfg(all(feature = "test-utils", not(target_arch = "wasm32")))]
-@@ -1876,9 +1876,9 @@
+@@ -1927,9 +1927,9 @@
  impl TableIterInner {
      fn is_exhausted(&self) -> bool {
          match self {
@@ -182,7 +182,7 @@
              Self::Host => true,
              #[cfg(all(feature = "test-utils", not(target_arch = "wasm32")))]
              Self::Test(iter) => iter.as_slice().is_empty(),
-@@ -1928,7 +1928,7 @@
+@@ -1979,7 +1979,7 @@
          }
  
          match &mut self.inner {
@@ -191,7 +191,7 @@
              TableIterInner::Host(iter) => loop {
                  // Don't fetch the next chunk if there is none.
                  {
-@@ -1947,7 +1947,7 @@
+@@ -1998,7 +1998,7 @@
                      return Some(row);
                  }
              },
