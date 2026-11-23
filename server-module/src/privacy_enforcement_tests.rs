@@ -3442,3 +3442,32 @@ mod reducer_arguments {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The `spacetimedb` crate's `unstable` feature in the native test build
+// ---------------------------------------------------------------------------
+
+/// The workspace's `spacetimedb` dependency turns on the crate's `unstable` feature. The module
+/// uses nothing the feature gates; the generated-definition check refuses the HTTP handlers, HTTP
+/// routes and row filters it makes declarable.
+mod lpw34_7_unstable {
+    /// `spacetimedb::http::HandlerContext` (`vendor/spacetimedb/src/http.rs`) and
+    /// `spacetimedb::Filter` (`vendor/spacetimedb/src/lib.rs`) are defined only under the crate's
+    /// `#[cfg(feature = "unstable")]`, so this test compiles only when the native test build has
+    /// the feature on, and a passing run is the test binary linked with it.
+    ///
+    /// kills: the workspace's `spacetimedb` dependency without `features = ["unstable"]`.
+    #[test]
+    fn the_crates_unstable_api_is_compiled_into_the_native_test_build() {
+        let handler_context = std::any::type_name::<spacetimedb::http::HandlerContext>();
+        assert!(
+            handler_context.ends_with("::HandlerContext"),
+            "the type name of spacetimedb::http::HandlerContext is {handler_context}"
+        );
+        let filter = std::any::type_name::<spacetimedb::Filter>();
+        assert!(
+            filter.ends_with("::Filter"),
+            "the type name of spacetimedb::Filter is {filter}"
+        );
+    }
+}
