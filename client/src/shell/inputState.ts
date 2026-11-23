@@ -1,16 +1,19 @@
 // shell/inputState — the live input devices: the binding table, the keyboard source built over
-// it, the pad source, the router, the held movement directions and the key codes whose OS repeats
-// are cancelled. Every other module reads them through its import, which is live. Only this module
-// assigns `bindings` and `keyboard` (`applyBindings`) and only its functions change `navHeldCodes`;
+// it, the pad source, the router, the held movement directions, the key codes whose OS repeats
+// are cancelled and the source of the last press, which the keycaps follow. Every other module
+// reads them through its import, which is live. Only this module assigns `bindings` and `keyboard`
+// (`applyBindings`) and `lastSource` (`noteInputSource`); only its functions change `navHeldCodes`;
 // `held`, `pad` and `inputRouter` are used through their own methods. Module scope reads the saved
 // table from storage and constructs the devices: it registers no listener, writes nothing and
 // reads no Gamepad API (the pad source reads it at each poll).
 
 import { browserStorage, loadBindings, saveBindings } from '../input/bindingStore';
 import type { Bindings } from '../input/bindings';
+import type { VButton } from '../input/buttons';
 import { GamepadSource } from '../input/gamepadSource';
 import { KeyboardSource } from '../input/keyboardSource';
 import { PAD_DEFAULT_BINDINGS } from '../input/padBindings';
+import { type InputSource, keycapFor } from '../input/padGlyphs';
 import { InputRouter } from '../input/router';
 import { HeldDirections } from '../prediction/heldKeys';
 
@@ -39,13 +42,30 @@ export function installPadFaultSink(sink: (err: unknown) => void): void {
   padFault = sink;
 }
 
-// The pad source: every connected pad through the default pad table into the same
+// The pad's binding table, which the pad source and the keycaps both read: the defaults.
+const padBindings = PAD_DEFAULT_BINDINGS;
+
+// The pad source: every connected pad through the pad table into the same
 // `{button, down}` edges, polled once per animation frame by `main.ts`. `navigator.getGamepads` is
 // looked up at each poll: a browser without it reads as no pads, and one that throws reads as no
 // pads and reaches the fault sink once.
-export const pad = new GamepadSource(() => navigator.getGamepads?.() ?? [], PAD_DEFAULT_BINDINGS, {
+export const pad = new GamepadSource(() => navigator.getGamepads?.() ?? [], padBindings, {
   onError: (err) => padFault(err),
 });
+
+// The device of the last press: a keydown notes 'keys', a pad press 'pad'; a pointer press notes
+// nothing. Every keycap the player sees is drawn from it.
+export let lastSource: InputSource = 'keys';
+
+/** The player's last press came from `source`. */
+export function noteInputSource(source: InputSource): void {
+  lastSource = source;
+}
+
+/** The live keycap of `button`: the glyph of its first binding in the last-used source's table
+ *  (the keyboard table, or the pad table the pad source reads), '' when it has none there. */
+export const keycap = (button: VButton): string =>
+  keycapFor(lastSource, bindings, padBindings)(button);
 
 // Codes whose press the menu or a nav-capable screen consumed: their OS key-repeats are cancelled
 // until the keyup, so a held Enter that opened a child cannot activate the child's focused button.

@@ -80,6 +80,13 @@ export type MessageId =
   | 'key.pageDown'
   | 'key.slash'
   | 'key.numpad'
+  | 'pad.view'
+  | 'pad.menu'
+  | 'pad.dpadUp'
+  | 'pad.dpadDown'
+  | 'pad.dpadLeft'
+  | 'pad.dpadRight'
+  | 'pad.button'
   | 'controls.button.up'
   | 'controls.button.down'
   | 'controls.button.left'
@@ -632,6 +639,7 @@ export interface MessageParams {
   readonly 'interact.confirm.challenge': { readonly name: string };
   readonly 'interact.challenge.size': { readonly n: number };
   readonly 'key.numpad': { readonly key: string };
+  readonly 'pad.button': { readonly n: number };
   readonly 'controls.capture.prompt': { readonly label: string };
   readonly 'controls.swapped': {
     readonly key: string;

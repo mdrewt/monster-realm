@@ -143,6 +143,20 @@ const menuRow = (p: Page, key: string): Locator => p.locator(`#${navItemId('menu
 /** The Monsters frame root: the box title's grandparent (the chain the other specs resolve). */
 const boxRoot = (p: Page): Locator => p.locator('[data-testid="box-title"]').locator('xpath=../..');
 
+/** The hint bar is painted by the frame loop and can lag a press by a frame: poll for the exact
+ *  keycap of the Start chip, wait two animation frames, then read it once more, strictly. */
+async function expectStartKeycap(p: Page, want: string, why: string): Promise<void> {
+  const key = p.locator('#hint-bar [data-button="Start"] .mr-chip-key');
+  await expect(key, `${why} (polled)`).toHaveText(want);
+  await p.evaluate(
+    () =>
+      new Promise<void>((done) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => done()));
+      }),
+  );
+  expect(await key.textContent(), `${why} (strict read after two frames)`).toBe(want);
+}
+
 /** One Down press, then the sheet's cursor must be on `key` (never a blind count). */
 async function sheetDownTo(p: Page, key: string): Promise<void> {
   await pressButton(p, 'Down');
@@ -197,7 +211,7 @@ test.describe
       await browser.close();
     });
 
-    test('on the mocked pad only, Start, Down, A (Bag), RB (Food), A A A (feed the berry), B (the menu stays open), Up A (Monsters on Party), A and five Downs and A (Move to Storage), RB A and five Downs and A (Move to Party), Start (the world), and the next D-pad press walks one tile North [gp-2.8]', async () => {
+    test('on the mocked pad only, Start, Down, A (Bag), RB (Food), A A A (feed the berry), B (the menu stays open), Up A (Monsters on Party), A and five Downs and A (Move to Storage), RB A and five Downs and A (Move to Party), Start (the world), and the next D-pad press walks one tile North [gp-2.8] [gp-4.6]', async () => {
       test.setTimeout(120_000);
 
       // ---- the fake pad is the page's one pad ------------------------------------------------
@@ -256,7 +270,12 @@ test.describe
       expect(await stackNames(page), 'the setup walk opened nothing').toEqual(['world']);
 
       // ---- 1. Start: the main menu opens on Monsters -----------------------------------------
+      // No pad button has been pressed yet (the setup walk steps through the DEV hook): the bar's
+      // Start chip still shows the keyboard keycap of the default Start key.
+      await expectStartKeycap(page, t('key.escape'), 'before any pad press: the Escape keycap');
       await pressButton(page, 'Start');
+      // The first pad press is the last input, so the bar's Start chip shows the pad's Menu glyph.
+      await expectStartKeycap(page, t('pad.menu'), 'after the first pad press: the Menu glyph');
       await expect
         .poll(() => stackNames(page), { message: 'Start opens the menu' })
         .toEqual(['world', 'menuView']);

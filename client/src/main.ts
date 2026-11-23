@@ -35,7 +35,7 @@ import {
 import { browserStorage } from './input/bindingStore';
 import { accelForCode, DEFAULT_BINDINGS } from './input/bindings';
 import type { ButtonEdge, VButton } from './input/buttons';
-import { glyph, learnKey } from './input/glyphs';
+import { learnKey } from './input/glyphs';
 import { isChord } from './input/keyboardSource';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
@@ -126,7 +126,9 @@ import {
   inputRouter,
   installPadFaultSink,
   keyboard,
+  keycap,
   navHeldCodes,
+  noteInputSource,
   noteNavHeld,
   pad,
   releaseAllInput,
@@ -1375,7 +1377,7 @@ function hintChips(
 ): readonly HintChip[] {
   return hintBar(
     stack,
-    bindings,
+    keycap,
     notices,
     {
       target:
@@ -1571,9 +1573,9 @@ function interactName(c: InteractCandidate): string {
   return c.kind === 'heal' ? i18nT('interact.healer') : c.name;
 }
 
-/** The A button's keycap, from the live binding (A is protected, so it always has a key). */
+/** The A button's live keycap, from the last-used device's table. */
 function interactKeycap(): string {
-  return glyph(bindings.buttons.A[0] ?? '');
+  return keycap('A');
 }
 
 function interactChipText(chip: InteractChip): string {
@@ -3076,10 +3078,12 @@ const handleKeyDown = (e: KeyboardEvent): void => {
 };
 // Escape is routed in the CAPTURE phase, so a view's own stopPropagation can no longer trap it
 // (B5: Escape was dead inside a view that shields its fields). Every other key keeps the bubble phase,
-// where those views' stopPropagation still shields their fields from the accelerator keys.
+// where those views' stopPropagation still shields their fields from the accelerator keys. Every
+// key, a shielded one too (typing a name), makes the keycaps the keyboard's from the next paint.
 window.addEventListener(
   'keydown',
   (e) => {
+    noteInputSource('keys');
     if (e.code === 'Escape') handleKeyDown(e);
   },
   true,
@@ -3116,6 +3120,8 @@ const pollPad = (): void => {
   }
   const { edges, accels } = pad.poll();
   const pressed = accels.length > 0 || edges.some((edge) => edge.down);
+  // A press, even an ignored one, makes the keycaps the pad's; a release alone leaves them.
+  if (pressed) noteInputSource('pad');
   if (!pressed) {
     if (edges.length > 0) pressEdges(edges);
     return;
@@ -4770,7 +4776,7 @@ async function main(): Promise<void> {
   const hintBarEl = document.getElementById('hint-bar');
   if (hintBarEl !== null) mountViews({ hintBarView: new HintBarView(hintBarEl) });
   // Painted once now, so the bar is never blank before the first frame.
-  hintBarView?.render(hintBar(contextStack, bindings, []), null);
+  hintBarView?.render(hintBar(contextStack, keycap, []), null);
 
   // The on-world interact prompt — a small frame in the frame layer (.mr-frame--prompt:
   // pointer-events:none so it can NEVER shadow a click meant for the canvas or a frame beneath;
@@ -5103,12 +5109,13 @@ async function main(): Promise<void> {
         : anchor !== undefined
           ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
           : undefined;
-    // The confirm's row and cursor are in the signature: a Yes / No move must repaint.
+    // The confirm's row and cursor are in the signature: a Yes / No move must repaint. So is the A
+    // keycap the picker's accessible name carries, which follows the last-used device.
     const promptSig =
       request !== null
         ? `request|${request.notice.key}|${request.nav.item}|${requestLine(request.notice)}`
         : sheet !== null
-          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
+          ? `sheet|${interactKeycap()}|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
           : chip !== null
             ? interactChipText(chip)
             : null;

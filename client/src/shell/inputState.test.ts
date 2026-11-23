@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   clock,
   connectionRecordingMock,
+  frame,
   mountIndexHtmlShell,
   raf,
   stubRaf,
@@ -21,6 +22,9 @@ import type { WasmMoveInput } from '../convert/convert';
 import { CONTROLS_STORAGE_KEY } from '../input/bindingStore';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { VBUTTONS } from '../input/buttons';
+import { glyph } from '../input/glyphs';
+import { PAD_DEFAULT_BINDINGS } from '../input/padBindings';
+import { padGlyph } from '../input/padGlyphs';
 import type { ConnectionOptions } from '../net/connection';
 
 const H = vi.hoisted(() => ({
@@ -1045,5 +1049,271 @@ describe('shell/inputState pad source', { sequential: true }, () => {
       edges: [{ button: 'Down', down: true }],
       accels: [],
     });
+  });
+});
+
+// --- the input source and the keycap (no boot) -----------------------------------------------
+describe('shell/inputState input source', { sequential: true }, () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    vi.resetModules();
+  });
+
+  async function freshModule(): Promise<InputState> {
+    localStorage.clear();
+    vi.resetModules();
+    return import('./inputState');
+  }
+
+  it('starts on the keyboard source, so the first keycaps are keyboard keycaps [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a module that starts on the pad source (a keyboard player sees pad
+    // glyphs until the first key), and a keycap that ignores the source.
+    const ns = await freshModule();
+    expect(ns.lastSource, 'the source at import').toBe('keys');
+    expect(ns.keycap('Start'), 'Start reads the Escape key').toBe('Esc');
+    expect(ns.keycap('A'), 'A reads the Enter key').toBe('Enter');
+  });
+
+  it('noteInputSource sets lastSource to the source it is given, and the last note wins [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a note that is ignored, one that only ever sets pad (a keyboard note never
+    // switches back), and a lastSource binding that is not live for importers.
+    const ns = await freshModule();
+    ns.noteInputSource('pad');
+    expect(ns.lastSource, 'a pad note').toBe('pad');
+    ns.noteInputSource('pad');
+    expect(ns.lastSource, 'a repeated pad note').toBe('pad');
+    ns.noteInputSource('keys');
+    expect(ns.lastSource, 'a keys note').toBe('keys');
+  });
+
+  it('keycap shows the pad glyph of the button`s default pad index once the pad was the last source, for every button [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a keycap that never reads lastSource, one that reads a pad table other
+    // than the one the pad source polls, and one fixed at the source current at import.
+    const ns = await freshModule();
+    const keycap = ns.keycap;
+    expect(keycap('Start'), 'precondition: the keyboard keycap').toBe('Esc');
+    ns.noteInputSource('pad');
+    for (const button of VBUTTONS) {
+      const index = PAD_DEFAULT_BINDINGS.buttons[button][0] as number;
+      expect(keycap(button), `pad keycap of ${button}, through the earlier reference`).toBe(
+        padGlyph(index),
+      );
+    }
+    expect(keycap('Start'), 'Start reads the pad Menu').toBe('Menu');
+    expect(keycap('Select'), 'Select reads the pad View').toBe('View');
+    expect(keycap('A'), 'A reads the pad A').toBe('A');
+  });
+
+  it('keycap shows keyboard keycaps again as soon as the keyboard is the last source [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a source that sticks on pad once set, and a keycap cached at the flip.
+    const ns = await freshModule();
+    ns.noteInputSource('pad');
+    expect(ns.keycap('Start'), 'precondition: pad glyph').toBe('Menu');
+    ns.noteInputSource('keys');
+    expect(ns.keycap('Start'), 'Start is the Escape key again').toBe('Esc');
+    expect(ns.keycap('Select'), 'Select is the R key again').toBe('R');
+    for (const button of VBUTTONS) {
+      const code = ns.bindings.buttons[button][0] as string;
+      expect(ns.keycap(button), `keyboard keycap of ${button}`).toBe(glyph(code));
+    }
+  });
+
+  it('keycap reads the live keyboard table: after applyBindings the keyboard keycap is the new key and the pad keycap is unchanged [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a keyboard table captured at import (a remap lies on the bar), and a
+    // remap that leaks into the pad keycap.
+    const ns = await freshModule();
+    expect(ns.keycap('A'), 'precondition: Enter').toBe('Enter');
+    const next = JSON.parse(storedTable((raw) => (raw.buttons.A = ['KeyK']))) as Bindings;
+    expect(ns.applyBindings(next), 'the remap saved').toBe(true);
+    expect(ns.keycap('A'), 'the keyboard keycap is the remapped key').toBe(glyph('KeyK'));
+    expect(ns.keycap('A'), 'and not the old default').not.toBe('Enter');
+    ns.noteInputSource('pad');
+    expect(ns.keycap('A'), 'the pad keycap ignores the keyboard remap').toBe('A');
+  });
+});
+
+// --- the booted shell: which source the last input came from ------------------------------------
+describe('the booted shell records the source of the last input', { sequential: true }, () => {
+  afterEach(teardown);
+
+  let fake = makeFakePad();
+  /** Install a fresh fake standard pad answering `navigator.getGamepads` until teardown. */
+  function usePad(): void {
+    fake = makeFakePad();
+    Object.defineProperty(navigator, 'getGamepads', {
+      value: () => [fake, null, null, null],
+      configurable: true,
+      writable: true,
+    });
+    restorers.push(() => {
+      delete (navigator as unknown as { getGamepads?: unknown }).getGamepads;
+    });
+  }
+  /** One frame, 50 ms after the last clock reading. */
+  const tick = (): void => frame(clock.t + 50);
+  const keyDown = (code: string): void => {
+    pressAt = clock.t + 50;
+    fire('keydown', code);
+  };
+  const keyUp = (code: string): void => {
+    pressAt = clock.t + 50;
+    fire('keyup', code);
+  };
+  /** Press the pad button `i` and let the frame loop poll it. */
+  const padDown = (i: number): void => {
+    fake.buttons[i].pressed = true;
+    tick();
+  };
+  const padUp = (i: number): void => {
+    fake.buttons[i].pressed = false;
+    tick();
+  };
+  const D_PAD_UP = 12;
+  const LT = 6;
+
+  it('a pad button press polled at the world makes the pad the last source [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a frame loop that never notes the pad, and a lastSource that is flipped
+    // at module scope rather than by the poll.
+    const ns = await boot();
+    usePad();
+    tick();
+    expect(ns.lastSource, 'precondition: no input yet, the keyboard').toBe('keys');
+    padDown(D_PAD_UP);
+    expect(ns.lastSource, 'a D-pad press made the pad the last source').toBe('pad');
+  });
+
+  it('a pad accelerator press with no button edge makes the pad the last source [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a source flip that tests the edges only (LT is the Party accelerator and
+    // raises no button edge).
+    const ns = await boot();
+    usePad();
+    tick();
+    expect(ns.lastSource, 'precondition: the keyboard').toBe('keys');
+    padDown(LT);
+    expect(ns.lastSource, 'an accelerator press made the pad the last source').toBe('pad');
+  });
+
+  it('a pad press after a keydown makes the pad the last source again [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a one-way flip (pad to keys only), and a flip guarded by "never had pad
+    // input".
+    const ns = await boot();
+    usePad();
+    tick();
+    keyDown('KeyD');
+    keyUp('KeyD');
+    expect(ns.lastSource, 'precondition: a key press made it keys').toBe('keys');
+    padDown(D_PAD_UP);
+    expect(ns.lastSource, 'the pad press took it back').toBe('pad');
+  });
+
+  it('a keydown after pad input makes the keyboard the last source at once [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a keydown path that does not note the source (the bar keeps pad glyphs
+    // while the player types), and a note made on keyup instead of keydown.
+    const ns = await boot();
+    usePad();
+    tick();
+    padDown(D_PAD_UP);
+    expect(ns.lastSource, 'precondition: the pad press').toBe('pad');
+    keyDown('KeyD');
+    expect(ns.lastSource, 'the keydown, before any keyup or frame').toBe('keys');
+  });
+
+  it('a pad release edge after a keydown leaves the keyboard the last source [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a flip on any pad edge (a button let go after a key press would turn the
+    // bar back to pad glyphs with no new pad input).
+    const ns = await boot();
+    usePad();
+    tick();
+    padDown(D_PAD_UP);
+    keyDown('KeyD');
+    expect(ns.lastSource, 'precondition: keys').toBe('keys');
+    padUp(D_PAD_UP);
+    tick();
+    expect(ns.lastSource, 'the release edge changed nothing').toBe('keys');
+  });
+
+  it('a pad press ignored because focus is outside the game screen still makes the pad the last source [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: the source note placed below the focus guard (an ignored press would
+    // leave the keyboard keycaps up while the player is on the pad).
+    const ns = await boot();
+    usePad();
+    tick();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus is outside #game-screen').toBe(outside);
+    expect(byId('game-screen').contains(outside), 'precondition: outside the screen').toBe(false);
+    expect(ns.lastSource, 'precondition: the keyboard').toBe('keys');
+    padDown(D_PAD_UP);
+    expect(ns.lastSource, 'the ignored press still made the pad the last source').toBe('pad');
+  });
+
+  it('a frame with no pad input and no key leaves the last source unchanged, whichever it is [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a frame loop that notes a source on every poll (pad on each idle frame).
+    const ns = await boot();
+    usePad();
+    tick();
+    tick();
+    expect(ns.lastSource, 'idle frames at the start').toBe('keys');
+    padDown(D_PAD_UP);
+    padUp(D_PAD_UP);
+    tick();
+    tick();
+    expect(ns.lastSource, 'idle frames after a pad press and its release').toBe('pad');
+  });
+
+  it('a click on the world canvas and a click on a hint chip leave the pad as the last source [gp-4.2]', async () => {
+    // WRONG IMPL KILLED: a pointer press that notes the keyboard (or the pad) source.
+    const ns = await boot();
+    usePad();
+    tick();
+    padDown(D_PAD_UP);
+    padUp(D_PAD_UP);
+    expect(ns.lastSource, 'precondition: pad').toBe('pad');
+    const canvas = await vi.waitFor(
+      () => {
+        const c = document.querySelector('#game-screen canvas');
+        if (c === null) throw new Error('the world canvas is not mounted yet');
+        return c;
+      },
+      { timeout: 5_000, interval: 5 },
+    );
+    clock.t += 50;
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    expect(ns.lastSource, 'a canvas click').toBe('pad');
+    const chip = document.querySelector('#hint-bar [data-button="Select"]');
+    if (chip === null) throw new Error('the Select chip is not on the bar');
+    clock.t += 50;
+    chip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    expect(ns.lastSource, 'a hint chip click').toBe('pad');
+  });
+
+  it('a click on the world canvas and a click on a hint chip leave the keyboard as the last source [gp-4.3]', async () => {
+    // WRONG IMPL KILLED: a pointer press that notes the pad source.
+    const ns = await boot();
+    usePad();
+    tick();
+    padDown(D_PAD_UP);
+    keyDown('KeyD');
+    keyUp('KeyD');
+    padUp(D_PAD_UP);
+    expect(ns.lastSource, 'precondition: keys').toBe('keys');
+    const canvas = await vi.waitFor(
+      () => {
+        const c = document.querySelector('#game-screen canvas');
+        if (c === null) throw new Error('the world canvas is not mounted yet');
+        return c;
+      },
+      { timeout: 5_000, interval: 5 },
+    );
+    clock.t += 50;
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    expect(ns.lastSource, 'a canvas click').toBe('keys');
+    const chip = document.querySelector('#hint-bar [data-button="Select"]');
+    if (chip === null) throw new Error('the Select chip is not on the bar');
+    clock.t += 50;
+    chip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    expect(ns.lastSource, 'a hint chip click').toBe('keys');
   });
 });

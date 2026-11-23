@@ -1,17 +1,16 @@
 // ui/hintBarModel.ts — the live hint bar (ctl-13, CTL13.1): which button chips show for the context
 // on top, each as the button, its live keycap and its verb. Pure over its arguments (the verbs are
-// read from the catalog per call, so a locale switch shows at the next render, and the keycap from
-// the bindings handed in, so a remap does). `hintBar.ts` paints the chips.
-import type { Bindings } from '../input/bindings';
+// read from the catalog per call, so a locale switch shows at the next render, and each keycap from
+// the keycap function handed in, so a remap or a change of input device does). `hintBar.ts` paints
+// the chips.
 import type { VButton } from '../input/buttons';
-import { glyph } from '../input/glyphs';
 import type { Stack } from './contextStack';
 import { t } from './i18n/resolver';
 import type { Notice } from './noticeModel';
 
 export interface HintChip {
   readonly button: VButton;
-  /** The primary key's glyph; '' when the button is unbound. */
+  /** The glyph of the button's first binding in the last-used device's table; '' when unbound. */
   readonly keycap: string;
   readonly verb: string;
   /** Only Start's: a request waits for an answer. */
@@ -71,7 +70,7 @@ const NO_FRAME: HintFrame = { quickMove: false };
 
 export function hintBar(
   stack: Stack,
-  bindings: Bindings,
+  keycap: (button: VButton) => string,
   notices: readonly Notice[],
   world: HintWorld = NO_WORLD,
   battleOrDeploy?: HintBattle | HintDeploy,
@@ -81,10 +80,12 @@ export function hintBar(
     battleOrDeploy !== undefined && 'deploy' in battleOrDeploy ? battleOrDeploy : undefined;
   const battle =
     battleOrDeploy !== undefined && !('deploy' in battleOrDeploy) ? battleOrDeploy : undefined;
-  const chip = (button: VButton, verb: string, badge = false): HintChip => {
-    const code = bindings.buttons[button][0];
-    return { button, keycap: code === undefined ? '' : glyph(code), verb, badge };
-  };
+  const chip = (button: VButton, verb: string, badge = false): HintChip => ({
+    button,
+    keycap: keycap(button),
+    verb,
+    badge,
+  });
   const start = () => chip('Start', t('chrome.chip.menu'), world.requestWaiting);
   const select = () => chip('Select', t('chrome.chip.help'));
   const top = stack[stack.length - 1];
