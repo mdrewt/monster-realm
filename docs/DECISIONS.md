@@ -85,7 +85,8 @@ netcode to pixels-per-tile.
 module calls it for truth; the browser runs the same compiled code through the thin
 `wasm-bindgen` shell in `client-wasm` for prediction. Constants the client needs
 (`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
-`max_trade_monsters_per_side`, `deletion_grace_ms_default`, `protocol_version`) and derived queries
+`max_trade_monsters_per_side`, `deletion_grace_ms_default`, `protocol_version`,
+`min_client_protocol`) and derived queries
 (`evolution_eligibility`, `interact_candidates_coded`, `zone_map`, `care_remaining_ms`)
 are wasm exports (`client-wasm/src/lib.rs`), not TypeScript literals.
 
@@ -1560,37 +1561,44 @@ table.
 
 ## The module publishes its protocol numbers; a publish that keeps data is followed by the owner's `sync_content`
 
-**Decision.** `game-core` holds `PROTOCOL_VERSION`, which rises with every change to the server
-module's tables or reducers, and `MIN_CLIENT_PROTOCOL`, which rises only with a change an older
-client cannot talk across (a removed or re-typed reducer argument or table column, or a column
-appended to a table or view a client subscribes) and never exceeds it. The module records both in
-row 0 of the public table `module_info`, from `init` and from the owner's `sync_content` whether or
-not the content changed; `client-wasm` exports the client's own number as `protocol_version()`.
-Every recipe and script in this repository that publishes over a database and keeps its data then
-calls `sync_content` as the publishing identity, and fails when that call is refused.
+**Decision.** `game-core` holds `PROTOCOL_VERSION` and `MIN_CLIENT_PROTOCOL` (never above it), and
+`client-wasm` exports them as `protocol_version()` and `min_client_protocol()`. The module records
+both in row 0 of the public table `module_info`, from `init` and from the owner's `sync_content`
+whether or not the content changed. Every recipe and script in this repository that publishes over a
+database and keeps its data then calls `sync_content` as the publishing identity, and fails when
+that call is refused. The client test `client/src/net/wireContract.test.ts` holds the generated
+bindings against `client/src/net/wireContract.json`: one entry per protocol number, appended by the
+test's update mode and never rewritten. An entry is, server to client, every table and view with its
+columns and primary key and every named type a column reaches; client to server, every reducer with
+its arguments and every named type only an argument reaches. `PROTOCOL_VERSION` rises by one with
+any change to the entry and the change records the new one. `MIN_CLIENT_PROTOCOL` rises above every
+entry from it upward that the bindings break: server to client, any difference in a table or type
+the entry holds, an appended column included; client to server, a removed reducer, any change to a
+reducer's arguments or to an argument-only type, except a variant appended to a sum. New tables,
+views, reducers and types break nothing. Entries below `MIN_CLIENT_PROTOCOL` may be deleted.
 
 **Why.** `init` runs only when a database is created, and nothing in the module runs when a new
 module is published over existing data, so the owner's call is what makes the row describe the
-module that is running. That has to hold after a publish that changed the schema and left the
-content alone, which the content-version check would skip. The bump rule has no test: telling a
-breaking schema change from an additive one would mean restating the schema in the test. An appended
-column is breaking for a client whose SDK is older than 2.16.1: the 2.11.0 SDK decodes a row list
-back to back with the client's own row type, so such a client throws inside the SDK on such a row
-and gets neither an applied nor an error callback (measured on `module_info` and on `zone_def`).
-AMENDED 2026-11-23 (lpw-34): from SDK 2.16.1 the SDK reads rows by the boundaries the server sends
-and skips trailing columns its bindings lack (vendor #6091). Measured on 2.16.1: a client whose
-bindings predate a column appended to `module_info` received its applied callback and the row's
-known fields (`docs/spacetimedb-2.16.md`). Every client built since the SDK reached 2.16.1 carries
-that reader; the rule above stands until it is decided whether an appended column still bumps
-the protocol number.
+module that is running, including after a publish that changed the schema and left the content
+alone, which the content-version check would skip. A client misled by the numbers fails silently: it
+misreads rows or sends calls the module cannot decode. Arguments and fields travel by position
+(BSATN), so an added, removed, reordered or re-typed one breaks an older client's call, while an
+appended variant only adds a tag no older client sends; the SDK builds a reducer event from the
+caller's own arguments, so no client decodes arguments. A renamed member counts as a change although
+no name travels: the bindings hold no other identity for it. The server-to-client side stays exact.
+From SDK 2.16.1 a client skips trailing columns its bindings lack (vendor #6091; measured on
+`module_info`, `docs/spacetimedb-2.16.md`), but not a field appended inside a named type, and a
+rule that told the two apart would have to model the SDK's decoder. Letting a trailing top-level
+column keep `MIN_CLIENT_PROTOCOL` is a default the operator may overrule.
 
 **Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
 numbers below the content-version check, or from a reducer any caller may run. A recipe or script
 that publishes over kept data without the owner's call, or that ignores the call's exit status.
-Raising `MIN_CLIENT_PROTOCOL` for a change no older client reads (a new table, a new reducer: it
-turns away every older client for nothing), or leaving it when something an older client uses is
-removed, re-typed or given a new column. Treating the numbers as a server-side check: they tell a
-client which side to update, and every reducer still validates its own input.
+Raising `MIN_CLIENT_PROTOCOL` for a change that breaks no entry (it sends every older client to
+update the game for nothing). Rewriting a recorded entry to match new bindings, or deleting one at or
+above `MIN_CLIENT_PROTOCOL`: either hides a break from the check. Treating the numbers as a
+server-side check: they tell a client which side to update, and every reducer still validates its
+own input.
 
 ## A client checks the server's protocol numbers before anything else, and a refusal lasts until reload
 
@@ -1603,7 +1611,7 @@ again whenever the row changes, and only toward refusal. `module_info`'s three c
 
 **Why.** The numbers help only if a client that cannot speak to the server can still read them, so
 they are read before any other table and from a row whose shape is fixed for good (the SDK cannot
-decode a row that gained or lost a column, see the entry above). The refusal is terminal so that the
+decode a row that lost a column, see the entry above). The refusal is terminal so that the
 line and the game never disagree: a page that reconnected, was admitted and played under "Update the
 game to join" would be saying something false, and a line that cleared itself would be missed. A
 reload is the retry. An admitted connection is judged again because a client that reconnects between
