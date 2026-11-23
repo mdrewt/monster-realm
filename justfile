@@ -64,7 +64,7 @@ test:
     }
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
-    door "scripts node suites" 5 30 scripts/*.test.mjs
+    door "scripts node suites" 6 30 scripts/*.test.mjs
     door "justfile node suite" 1 48 justfile.test.mjs
     guard() {
         local hook=$1 ok=$2 floor=$3 out n

@@ -2873,7 +2873,8 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
     }
 
     // One version: every `crate` line names the same one (the crates move together), each
-    // copy's `[package]` has it, and the workspace pins `spacetimedb` to exactly it.
+    // copy's `[package]` has it, and the workspace pins `spacetimedb` to exactly it, in the one
+    // line that also turns on the crate's `unstable` feature.
     let versions: BTreeSet<&str> = pristine.crates.values().map(String::as_str).collect();
     if versions.len() != 1 {
         return Err(format!("{MANIFEST}: versions {versions:?}, not one"));
@@ -2888,7 +2889,7 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
     let Some(version) = pristine.crates.get("spacetimedb") else {
         return Err(format!("{MANIFEST}: declares no crate `spacetimedb`"));
     };
-    let pin = format!("spacetimedb = \"={version}\"");
+    let pin = format!("spacetimedb = {{ version = \"={version}\", features = [\"unstable\"] }}");
     let pins: Vec<&str> = table(root_manifest, "[workspace.dependencies]")
         .filter(|line| toml_key(line) == "spacetimedb")
         .collect();
