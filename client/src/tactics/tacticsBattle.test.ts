@@ -5142,3 +5142,416 @@ describe('ts-6b-7: the tactical shell announces through deps.announce', () => {
     expect(announceTurn(3, 'Mira')).toBe(`Round 3 ${EM_DASH_ANNOUNCE} Mira's turn`);
   });
 });
+
+// =============================================================================================
+// Hold Y: the shell answers the battle adapter's two Y ops. `clearPlanHoldable` is true exactly
+// while the shell shows, the selected unit is in pre-queue with a READY plan and no draft (its root
+// menu lists Clear plan) and the shell is idle or at that root menu. `holdHint` (a Y tap) appends
+// the "Hold Y to clear the plan" ticker line, said at the next tick; `clearPlan` (a Y hold) sends
+// cancel_queue for the selected unit with no confirm row, drops its in-flight key and closes to
+// idle. Otherwise both ops change nothing.
+// =============================================================================================
+
+/** Unit 2's READY plan. */
+const READY_2: readonly QueuedActionRule[] = [{ Move: { x: 3, y: 1, strides: 2 } }, 'EndTurn'];
+/** A foe's turn (unit 3 acts), so every own unit is in pre-queue. */
+const FOE_TURN = { activeUnitId: 3, turnIdx: 1 } as const;
+/** A foe's turn of `kind` with unit 2's READY plan. */
+const readyTurn = (kind: Kind = 'wild', o: Partial<TacticsBattleVM> = {}): TacticsBattleVM =>
+  tacVm(kind, { ...FOE_TURN, readyPlans: readyOf([[2, READY_2]]), ...o });
+
+const pressHoldHint = (k: Kit): void => press(k, { kind: 'holdHint' });
+const pressClearPlan = (k: Kit): void => press(k, { kind: 'clearPlan' });
+
+/** The English hint line, read from the catalog. */
+const holdHintLine = (): string => en('tactics.ticker.holdToClear');
+
+/** A shell rendered with `vm`, unit 2 selected (RB) holding its READY plan with no draft, idle. */
+function holdableKit(label: string, vm: TacticsBattleVM = readyTurn()): Kit {
+  const k = make();
+  k.shell.render(vm);
+  for (let i = 0; i < 3 && k.shell.selectedUnitId !== 2; i += 1) k.shell.cycleUnit(1);
+  expect(k.shell.selectedUnitId, `${label}: fixture: unit 2 selected`).toBe(2);
+  expect(
+    k.root.querySelector('.tactics-strip--locked'),
+    `${label}: fixture: its READY plan shows locked`,
+  ).not.toBeNull();
+  expect(menuOf(k.root), `${label}: fixture: idle`).toBeNull();
+  return k;
+}
+
+/** Everything but the ticker a Y op could change: the menu and its row, the selection, the cursor,
+ *  the strip, the hint and every sink. */
+function stateOf(k: Kit): unknown {
+  return {
+    menu: menuOf(k.root) === null ? null : rowIds(k.root),
+    row: selectedRowId(k.root),
+    selected: k.shell.selectedUnitId,
+    cursor: k.shell.cursor,
+    strip: stripActions(k.root),
+    locked: k.root.querySelector('.tactics-strip--locked') !== null,
+    hint: k.shell.hint(),
+    sent: [...k.sent],
+    cancels: [...k.cancels],
+    forfeits: [...k.forfeits],
+  };
+}
+
+/** Counts every Clear plan confirm row painted under `root` from now on: an added element that is
+ *  or holds one, or a row whose `data-row` turns into one. Read synchronously. */
+function watchConfirmRows(root: HTMLElement): () => number {
+  const sel = '[data-row="clearYes"], [data-row="clearNo"]';
+  let seen = 0;
+  const count = (records: readonly MutationRecord[]): void => {
+    for (const r of records) {
+      r.addedNodes.forEach((n) => {
+        if (n instanceof Element && (n.matches(sel) || n.querySelector(sel) !== null)) seen += 1;
+      });
+      if (r.type === 'attributes' && r.target instanceof Element && r.target.matches(sel)) {
+        seen += 1;
+      }
+    }
+  };
+  const observer = new MutationObserver(count);
+  observer.observe(root, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['data-row'],
+  });
+  return () => {
+    count(observer.takeRecords());
+    return seen;
+  };
+}
+
+describe('TacticsBattle: Hold Y (the holdHint and clearPlan ops)', () => {
+  it('while the shell offers Clear plan, a holdHint op appends ONE "Hold Y to clear the plan" ticker line, said at the next tick, and leaves the plan, the menu, the selection and every sink as they were, at idle and at the root menu; repeated taps keep one line until a battle line lands between them; the line is the locale`s [gp-6.6]', () => {
+    // WRONG IMPL KILLED: a tap that clears or submits the plan; no hint line, or the Clear plan
+    // row's label instead of the hint; a line pushed on every tap (a mashed Y floods the 50-line
+    // log); a dedupe against ANY earlier hint line instead of the newest (after a battle line the
+    // next tap would hint nothing); a hint never said (a screen-reader player never hears it) or
+    // said before the tick; a tap that closes the open menu or moves its cursor; a literal English
+    // line (a French boot reads English).
+    const k = holdableKit('hint at idle');
+    expect(k.shell.clearPlanHoldable, 'fixture: holdable at idle').toBe(true);
+    k.shell.tick();
+    const saidBefore = [...k.announced];
+    const state = stateOf(k);
+    const lines = tickerTexts(k.root);
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'one hint line, newest last').toEqual([...lines, holdHintLine()]);
+    expect(stateOf(k), 'the plan, the selection, the mode and the sinks as they were').toEqual(
+      state,
+    );
+    expect(k.shell.clearPlanHoldable, 'Clear plan is still holdable').toBe(true);
+    expect(k.announced, 'nothing said before the tick').toEqual(saidBefore);
+    k.shell.tick();
+    expect(k.announced, 'the hint is said at the next tick').toEqual([
+      ...saidBefore,
+      holdHintLine(),
+    ]);
+
+    pressHoldHint(k);
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'repeated taps keep the one hint line').toEqual([
+      ...lines,
+      holdHintLine(),
+    ]);
+    k.shell.ingest([roundEnded(1)]);
+    const withEvent = tickerTexts(k.root);
+    expect(withEvent, 'fixture: a battle line after the hint').toHaveLength(lines.length + 2);
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'after a battle line, a tap hints again').toEqual([
+      ...withEvent,
+      holdHintLine(),
+    ]);
+    expect([k.sent, k.cancels], 'no submit and no cancel').toEqual([[], []]);
+
+    // At the root menu (the level that lists Clear plan) a tap hints too, the menu kept on its row.
+    const m = holdableKit('hint at the root menu');
+    openMenuAt(m, c(3, 2), 'hint at the root menu');
+    menuTo(m, 'clear');
+    expect(m.shell.clearPlanHoldable, 'fixture: holdable at the root menu').toBe(true);
+    const menuState = stateOf(m);
+    const menuLines = tickerTexts(m.root);
+    pressHoldHint(m);
+    expect(tickerTexts(m.root), 'the hint line').toEqual([...menuLines, holdHintLine()]);
+    expect(stateOf(m), 'the root menu stays open on the Clear plan row').toEqual(menuState);
+
+    // The line is the locale's, resolved at the tap.
+    setLocale('fr');
+    const f = holdableKit('hint in French');
+    const frLines = tickerTexts(f.root);
+    pressHoldHint(f);
+    const frHint = (CATALOG_FR as unknown as Record<string, unknown>)['tactics.ticker.holdToClear'];
+    expect(typeof frHint, 'the French catalog holds the hint').toBe('string');
+    expect(tickerTexts(f.root), 'the French hint line').toEqual([...frLines, frHint]);
+  });
+
+  it('while the shell offers Clear plan, a clearPlan op sends cancel_queue ONCE for the selected unit, never painting the confirm row, and closes to idle — at idle, from the root menu, beside another own unit`s live turn — and a plan submitted for that unit afterwards goes out on the same turn [gp-6.7]', () => {
+    // WRONG IMPL KILLED: a hold that opens the Clear plan confirm (painted, even if chosen at once)
+    // instead of clearing; a cancel for the live or the first own unit instead of the selected one;
+    // two cancels for one hold; a hold that submits; a menu left open after the clear; a clear that
+    // keeps the unit's in-flight key (the plan re-submitted after the clear is swallowed until the
+    // next turn, so the server never gets it).
+    const k = holdableKit('clear at idle');
+    expect(k.shell.clearPlanHoldable, 'fixture: holdable at idle').toBe(true);
+    const idleRows = watchConfirmRows(k.root);
+    pressClearPlan(k);
+    expect(k.cancels, 'cancel_queue once, for unit 2').toEqual([{ battleId: 1n, unitId: 2 }]);
+    expect(k.sent, 'nothing submitted').toEqual([]);
+    expect(menuOf(k.root), 'idle after the clear').toBeNull();
+    expect(idleRows(), 'no confirm row was ever painted').toBe(0);
+
+    const m = holdableKit('clear from the root menu');
+    openMenuAt(m, c(3, 2), 'clear from the root menu');
+    expect(rowIds(m.root), 'fixture: the root menu lists Clear plan').toContain('clear');
+    expect(m.shell.clearPlanHoldable, 'fixture: holdable at the root menu').toBe(true);
+    const menuRows = watchConfirmRows(m.root);
+    pressClearPlan(m);
+    expect(m.cancels, 'cancel_queue once, for unit 2').toEqual([{ battleId: 1n, unitId: 2 }]);
+    expect(menuOf(m.root), 'the menu closes').toBeNull();
+    expect(menuRows(), 'no confirm row was ever painted').toBe(0);
+
+    // Unit 1's live turn: the selected unit 2's plan is cleared, unit 1 is sent nothing.
+    const live = holdableKit(
+      'clear beside a live turn',
+      tacVm('wild', { readyPlans: readyOf([[2, READY_2]]) }),
+    );
+    pressClearPlan(live);
+    expect(live.cancels, 'cancel_queue for the selected unit 2').toEqual([
+      { battleId: 1n, unitId: 2 },
+    ]);
+    expect(live.sent, 'the live unit 1 is sent nothing').toEqual([]);
+
+    // ANTI-VACUITY: the watcher sees the confirm the menu's Clear plan row paints.
+    const control = holdableKit('watcher control');
+    const controlRows = watchConfirmRows(control.root);
+    openMenuAt(control, c(3, 2), 'watcher control');
+    choose(control, 'clear');
+    expect(controlRows(), 'the confirm row through the menu is seen').toBeGreaterThan(0);
+
+    // A plan submitted after the clear goes out on the same turn: a first submit, its READY row, a
+    // replacing submit, then the hold before the replacing plan's row lands.
+    const r = make();
+    r.shell.render(tacVm('wild', FOE_TURN));
+    r.shell.cycleUnit(1);
+    expect(r.shell.selectedUnitId, 'fixture: unit 2').toBe(2);
+    draftMove(r, c(3, 2), c(3, 1), 'the first plan');
+    pressStart(r);
+    r.shell.render(
+      tacVm('wild', {
+        ...FOE_TURN,
+        readyPlans: readyOf([[2, [{ Move: { x: 3, y: 1, strides: 2 } }]]]),
+      }),
+    );
+    draftMove(r, c(3, 2), c(2, 1), 'the replacing plan');
+    pressStart(r);
+    expect(r.sent, 'fixture: the first and the replacing plan went out').toEqual([
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_3_1] },
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_2_1] },
+    ]);
+    expect(r.shell.clearPlanHoldable, 'fixture: a READY row and no draft').toBe(true);
+    pressClearPlan(r);
+    expect(r.cancels, 'cancel_queue for unit 2').toEqual([{ battleId: 1n, unitId: 2 }]);
+    r.shell.render(tacVm('wild', FOE_TURN));
+    draftMove(r, c(3, 2), c(3, 1), 'the re-plan');
+    pressStart(r);
+    expect(r.sent, 'the re-plan after the hold is a THIRD submit on the same turn').toEqual([
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_3_1] },
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_2_1] },
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_3_1] },
+    ]);
+  });
+
+  it('while an aim or a sub-list is open — the Move aim, the skills list, a skill aim, the bait list, the recruit aim, the Clear plan confirm, the Forfeit confirm — Clear plan is not holdable: a clearPlan op cancels nothing, a holdHint op adds no line, and the open level stays (B steps back from it as before) [gp-6.8]', () => {
+    // WRONG IMPL KILLED: holdable read from the READY plan alone (a hold inside an aim clears the
+    // plan behind it); holdable at every menu level (a hold in the skills list or at a confirm
+    // clears); a hint or a clear that closes the aim or the list; a hold at the Forfeit confirm
+    // that forfeits or clears.
+    type Open = readonly [string, Kind, (k: Kit) => void, string];
+    const opens: readonly Open[] = [
+      [
+        'the Move aim',
+        'wild',
+        (k) => {
+          openMenuAt(k, c(3, 2), 'the Move aim');
+          choose(k, 'move');
+          expect(menuOf(k.root), 'fixture: the aim replaces the menu').toBeNull();
+        },
+        'clear',
+      ],
+      [
+        'the skills list',
+        'wild',
+        (k) => {
+          openMenuAt(k, c(3, 2), 'the skills list');
+          choose(k, 'skills');
+          expect(rowIds(k.root), 'fixture: the skills list').toContain('skill:12');
+        },
+        'clear',
+      ],
+      [
+        'a skill aim',
+        'wild',
+        (k) => {
+          aimSkill(k, c(3, 2), 12, 'a skill aim');
+          expect(menuOf(k.root), 'fixture: the aim replaces the list').toBeNull();
+        },
+        'skill:12',
+      ],
+      [
+        'the bait list',
+        'wild',
+        (k) => {
+          k.fake.script.recruitTargets = [3];
+          openMenuAt(k, c(3, 2), 'the bait list');
+          choose(k, 'recruit');
+          expect(rowIds(k.root), 'fixture: the bait list').toContain('bait:none');
+        },
+        'clear',
+      ],
+      [
+        'the recruit aim',
+        'wild',
+        (k) => {
+          k.fake.script.recruitTargets = [3];
+          openMenuAt(k, c(3, 2), 'the recruit aim');
+          choose(k, 'recruit');
+          choose(k, 'bait:none');
+          expect(menuOf(k.root), 'fixture: the aim replaces the list').toBeNull();
+        },
+        'bait:none',
+      ],
+      [
+        'the Clear plan confirm',
+        'wild',
+        (k) => {
+          openMenuAt(k, c(3, 2), 'the Clear plan confirm');
+          choose(k, 'clear');
+          expect(rowIds(k.root), 'fixture: the confirm').toContain('clearYes');
+        },
+        'clear',
+      ],
+      [
+        'the Forfeit confirm',
+        'pvp',
+        (k) => {
+          openMenuAt(k, c(3, 2), 'the Forfeit confirm');
+          choose(k, 'forfeit');
+          expect(rowIds(k.root), 'fixture: the confirm').toContain('forfeitYes');
+        },
+        'forfeit',
+      ],
+    ];
+    for (const [label, kind, open, backTo] of opens) {
+      const k = holdableKit(label, readyTurn(kind));
+      expect(k.shell.clearPlanHoldable, `${label}: fixture: holdable before it opens`).toBe(true);
+      open(k);
+      const state = stateOf(k);
+      const lines = tickerTexts(k.root);
+      expect(k.shell.clearPlanHoldable, `${label}: not holdable`).toBe(false);
+      pressClearPlan(k);
+      pressHoldHint(k);
+      expect(k.cancels, `${label}: no cancel_queue`).toEqual([]);
+      expect(k.forfeits, `${label}: no forfeit`).toEqual([]);
+      expect(tickerTexts(k.root), `${label}: no hint line`).toEqual(lines);
+      expect(stateOf(k), `${label}: the open level as it was`).toEqual(state);
+      pressB(k);
+      expect(rowIds(k.root), `${label}: B steps back from the still-open level`).toContain(backTo);
+    }
+  });
+
+  it('while the shell does not offer Clear plan — a live turn (idle or its menu open), a draft over the READY plan, no READY plan, no selection, a hidden shell, after reset(), before any render — Clear plan is not holdable and a holdHint or clearPlan op adds no line, says nothing, sends nothing and changes nothing [gp-6.10]', () => {
+    // WRONG IMPL KILLED: a hint on a live turn (nothing to clear: the line misleads); a clear on a
+    // live turn or beside a draft (Undo and Clear plan are never offered together); a clear with
+    // no READY plan (a cancel_queue the server refuses); holdable read without a selection, while
+    // hidden or after a reset (a stale cached flag: a hold after a reconnect clears a plan the
+    // player cannot see).
+    const cases: ReadonlyArray<readonly [string, () => Kit]> = [
+      [
+        'a live turn, idle',
+        () => {
+          const k = make();
+          k.shell.render(tacVm('wild'));
+          expect(k.shell.selectedUnitId, 'fixture: the live unit 1').toBe(1);
+          return k;
+        },
+      ],
+      [
+        'a live turn, its menu open',
+        () => {
+          const k = make();
+          k.shell.render(tacVm('wild'));
+          openMenuAt(k, c(1, 1), 'a live turn, its menu open');
+          return k;
+        },
+      ],
+      [
+        'a draft over the READY plan',
+        () => {
+          const k = holdableKit('a draft over the READY plan');
+          draftMove(k, c(3, 2), c(2, 1), 'a draft over the READY plan');
+          expect(stripActions(k.root), 'fixture: the drafted Move').toEqual(['Move']);
+          return k;
+        },
+      ],
+      [
+        'no READY plan',
+        () => {
+          const k = make();
+          k.shell.render(tacVm('wild', FOE_TURN));
+          k.shell.cycleUnit(1);
+          expect(k.shell.selectedUnitId, 'fixture: unit 2, in pre-queue').toBe(2);
+          return k;
+        },
+      ],
+      [
+        'no selection',
+        () => {
+          const k = make();
+          const fainted = tacUnits('wild').map((u) =>
+            u.mine ? { ...u, state: 'Fainted' as const, curHp: 0 } : u,
+          );
+          k.shell.render(tacVm('wild', { ...FOE_TURN, units: fainted }));
+          expect(k.shell.selectedUnitId, 'fixture: no own unit to select').toBeNull();
+          return k;
+        },
+      ],
+      [
+        'a hidden shell',
+        () => {
+          const k = holdableKit('a hidden shell');
+          k.shell.hide();
+          return k;
+        },
+      ],
+      [
+        'after reset()',
+        () => {
+          const k = holdableKit('after reset()');
+          k.shell.reset();
+          return k;
+        },
+      ],
+      ['before any render', () => make()],
+    ];
+    for (const [label, build] of cases) {
+      const k = build();
+      k.shell.tick();
+      const said = [...k.announced];
+      const state = stateOf(k);
+      const lines = tickerTexts(k.root);
+      expect(k.shell.clearPlanHoldable, `${label}: not holdable`).toBe(false);
+      pressHoldHint(k);
+      pressClearPlan(k);
+      expect(tickerTexts(k.root), `${label}: no hint line`).toEqual(lines);
+      expect(stateOf(k), `${label}: nothing changed: no cancel, no submit, the mode kept`).toEqual(
+        state,
+      );
+      k.shell.tick();
+      expect(k.announced, `${label}: nothing said`).toEqual(said);
+    }
+  });
+});
