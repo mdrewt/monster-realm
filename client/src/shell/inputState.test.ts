@@ -21,7 +21,6 @@ import type { WasmMoveInput } from '../convert/convert';
 import { CONTROLS_STORAGE_KEY } from '../input/bindingStore';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { VBUTTONS } from '../input/buttons';
-import type { GamepadSource } from '../input/gamepadSource';
 import type { ConnectionOptions } from '../net/connection';
 
 const H = vi.hoisted(() => ({
@@ -840,8 +839,8 @@ describe('shell/inputState functions', { sequential: true }, () => {
 // The module's `pad` reads `navigator.getGamepads` at each poll. happy-dom ships no Gamepad API, so
 // each case installs its own as an own property of `navigator` (removed after the case): one fake
 // standard-mapping pad whose buttons and axes the case mutates in place between polls, as a browser
-// may hand back one snapshot object. The exports are read through a structural view, so the file
-// compiles whether or not the module exports them yet.
+// may hand back one snapshot object. A fresh import per case gives a fresh `pad`, so the source's
+// once-per-lifetime fault report starts unspent in every case.
 
 interface FakePad {
   index: number;
@@ -859,25 +858,6 @@ const makeFakePad = (): FakePad => ({
   buttons: Array.from({ length: 17 }, () => ({ pressed: false })),
   axes: [0, 0, 0, 0],
 });
-
-interface PadExports {
-  readonly pad?: GamepadSource;
-  readonly installPadFaultSink?: (sink: (err: unknown) => void) => void;
-}
-
-/** The module's live pad source; fails naming the missing export. */
-function padOf(ns: InputState): GamepadSource {
-  const pad = (ns as unknown as PadExports).pad;
-  expect(typeof pad?.poll, 'shell/inputState exports its pad source as `pad`').toBe('function');
-  return pad as GamepadSource;
-}
-
-/** The module's fault-sink installer; fails naming the missing export. */
-function faultSinkOf(ns: InputState): (sink: (err: unknown) => void) => void {
-  const install = (ns as unknown as PadExports).installPadFaultSink;
-  expect(typeof install, 'shell/inputState exports `installPadFaultSink`').toBe('function');
-  return install as (sink: (err: unknown) => void) => void;
-}
 
 const NO_POLL = { edges: [], accels: [] };
 
@@ -921,7 +901,7 @@ describe('shell/inputState pad source', { sequential: true }, () => {
     });
     const ns = await freshModule();
     expect(calls, 'the import read no pad').toBe(0);
-    const pad = padOf(ns);
+    const pad = ns.pad;
     expect(calls, 'reading the export reads no pad either').toBe(0);
     expect(pad.poll(), 'nothing is pressed').toEqual(NO_POLL);
     expect(calls, 'one poll, one read of the stub').toBe(1);
@@ -937,7 +917,7 @@ describe('shell/inputState pad source', { sequential: true }, () => {
     // WRONG IMPL KILLED: `navigator.getGamepads` captured at import (`.bind` at module scope, or a
     // const holding the function): the absent API would stick, or the first stub would.
     const ns = await freshModule();
-    const pad = padOf(ns);
+    const pad = ns.pad;
     expect(pad.poll(), 'no API: no pads').toEqual(NO_POLL);
     fakePad = makeFakePad();
     fakePad.buttons[13].pressed = true;
@@ -962,8 +942,8 @@ describe('shell/inputState pad source', { sequential: true }, () => {
     // slot as a pad.
     const ns = await freshModule();
     const sink = vi.fn();
-    faultSinkOf(ns)(sink);
-    const pad = padOf(ns);
+    ns.installPadFaultSink(sink);
+    const pad = ns.pad;
     for (let i = 0; i < 3; i += 1) {
       expect(pad.poll(), `absent API, poll ${i}`).toEqual(NO_POLL);
     }
@@ -975,23 +955,28 @@ describe('shell/inputState pad source', { sequential: true }, () => {
   });
 
   it('a throwing navigator.getGamepads reaches the fault sink current at the fault exactly once over several polls, with the thrown error [gp-2.6]', async () => {
-    // WRONG IMPL KILLED: a sink captured when the pad is built (the first sink would be called), a
+    // WRONG IMPL KILLED: a sink read once when the pad is built (the console default would take the
+    // fault, not `current`), an installer that keeps the first sink it is given (`first` would), a
     // report per poll, and a fault that escapes the poll.
     const ns = await freshModule();
-    const install = faultSinkOf(ns);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const first = vi.fn();
     const current = vi.fn();
-    install(first);
-    install(current);
+    ns.installPadFaultSink(first);
+    ns.installPadFaultSink(current);
     const boom = new Error('gp2-pad-boom');
     installPadApi(() => {
       throw boom;
     });
-    const pad = padOf(ns);
+    const pad = ns.pad;
     for (let i = 0; i < 4; i += 1) expect(pad.poll(), `poll ${i} reads no pads`).toEqual(NO_POLL);
     expect(current, 'the sink installed last took the fault once').toHaveBeenCalledTimes(1);
     expect(current.mock.calls[0]?.[0], 'with the thrown error').toBe(boom);
     expect(first, 'the replaced sink took nothing').not.toHaveBeenCalled();
+    expect(
+      logged.mock.calls.filter((args) => args.includes(boom)),
+      'nor did the console default',
+    ).toEqual([]);
   });
 
   it('with no sink installed a throwing navigator.getGamepads goes to console.error once over several polls [gp-2.6]', async () => {
@@ -1002,7 +987,7 @@ describe('shell/inputState pad source', { sequential: true }, () => {
     installPadApi(() => {
       throw boom;
     });
-    const pad = padOf(ns);
+    const pad = ns.pad;
     for (let i = 0; i < 4; i += 1) expect(pad.poll(), `poll ${i} reads no pads`).toEqual(NO_POLL);
     const carrying = logged.mock.calls.filter((args) => args.includes(boom));
     expect(carrying, 'one console.error carried the thrown error').toHaveLength(1);
@@ -1015,7 +1000,7 @@ describe('shell/inputState pad source', { sequential: true }, () => {
     fakePad = makeFakePad();
     installPadApi(() => [fakePad, null, null, null]);
     const ns = await freshModule();
-    const pad = padOf(ns);
+    const pad = ns.pad;
     fakePad.buttons[12].pressed = true;
     fakePad.axes[0] = 0.9;
     expect(pad.poll(), 'precondition: D-pad Up and the stick Right go down').toEqual({
@@ -1048,7 +1033,7 @@ describe('shell/inputState pad source', { sequential: true }, () => {
     fakePad = makeFakePad();
     installPadApi(() => [fakePad, null, null, null]);
     const ns = await freshModule();
-    const pad = padOf(ns);
+    const pad = ns.pad;
     expect(pad.poll(), 'precondition: nothing is pressed at the last poll').toEqual(NO_POLL);
     fakePad.buttons[13].pressed = true; // after that poll, before the release
     ns.releaseAllInput();

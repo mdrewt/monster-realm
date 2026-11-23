@@ -178,7 +178,7 @@ async function openSheetAtMove(p: Page, name: string): Promise<void> {
 }
 
 test.describe
-  .serial('gp-2.8 — the operator`s menu flow, pad only', () => {
+  .serial('the operator`s menu flow, pad only', () => {
     let browser: Browser;
     let ctx: BrowserContext;
     let page: Page;
@@ -197,7 +197,7 @@ test.describe
       await browser.close();
     });
 
-    test('GP2-8-PAD-MENU-FLOW: on the mocked pad only, Start, Down, A (Bag), RB (Food), A A A (feed the berry), B (the menu stays open), Up A (Monsters on Party), A and five Downs and A (Move to Storage), RB A and five Downs and A (Move to Party), Start (the world), and the next D-pad press walks one tile North [gp-2.8]', async () => {
+    test('on the mocked pad only, Start, Down, A (Bag), RB (Food), A A A (feed the berry), B (the menu stays open), Up A (Monsters on Party), A and five Downs and A (Move to Storage), RB A and five Downs and A (Move to Party), Start (the world), and the next D-pad press walks one tile North [gp-2.8]', async () => {
       test.setTimeout(120_000);
 
       // ---- the fake pad is the page's one pad ------------------------------------------------

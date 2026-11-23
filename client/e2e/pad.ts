@@ -13,7 +13,7 @@
 import type { BrowserContext, Page } from '@playwright/test';
 
 /** The standard mapping's button count: 0 to 15, and 16 (Home / Guide). */
-export const FAKE_PAD_BUTTONS = 17;
+const FAKE_PAD_BUTTONS = 17;
 
 interface FakePadButton {
   pressed: boolean;
@@ -52,6 +52,8 @@ const fakePadScript = (buttons: number): void => {
 /** Install the fake pad on every page of `target` (a context) or on `target` itself (a page),
  *  for each document loaded after the call: call it before the first `goto`. */
 export async function installFakePad(target: Page | BrowserContext): Promise<void> {
+  // The two branches are the same call: TypeScript cannot call the generic `addInitScript` on the
+  // `Page | BrowserContext` union, so each member type gets its own call site.
   if ('newPage' in target) await target.addInitScript(fakePadScript, FAKE_PAD_BUTTONS);
   else await target.addInitScript(fakePadScript, FAKE_PAD_BUTTONS);
 }

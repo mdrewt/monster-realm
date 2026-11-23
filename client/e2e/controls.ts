@@ -133,26 +133,25 @@ const frameName = (f: Frame): string => {
 /** Presses Start only while `__game().stack` is above its base; returns once it is at the base.
  *  Fails naming the stuck top frame after `CLOSE_ALL_MAX_PRESSES` presses (CTL6A.1). Never
  *  presses at a base, so it is safe both before and after Escape becomes Start (ctl-6b). Start's
- *  key is re-read from the live table before every press (ctl-12b: a remap moves it). Start is
- *  pressed through `pressButton`, so pad mode presses the pad's Start.
+ *  key is re-read from the live table before every press (ctl-12b: a remap moves it).
+ *  Start is pressed through `pressButton` (pad mode presses the pad's Start; an unbound Start
+ *  throws its `UnboundKeyError`).
  *  `settleMs` is how long one press may take to change the stack; only a test whose fake stack
  *  never changes passes a shorter one. */
 export async function closeAll(page: Page, settleMs = CLOSE_ALL_SETTLE_MS): Promise<void> {
   for (let presses = 0; ; presses++) {
     const before = await readStack(page);
     if (before.length <= 1) return;
-    const onPad = pressSourceOf(page) === 'pad';
-    const start = onPad ? undefined : (await liveBindings(page)).buttons.Start[0];
     if (presses === CLOSE_ALL_MAX_PRESSES) {
       const top = before[before.length - 1];
-      const startName = onPad ? `pad button ${padIndexFor('Start') ?? 'unbound'}` : start;
+      const startName =
+        pressSourceOf(page) === 'pad'
+          ? `pad button ${padIndexFor('Start') ?? 'unbound'}`
+          : (await liveBindings(page)).buttons.Start[0];
       throw new StuckStackError(
         `closeAll: stuck top frame ${frameName(top)} after ${presses} ` +
           `Start (${startName ?? 'unbound'}) presses (stack length ${before.length})`,
       );
-    }
-    if (!onPad && start === undefined) {
-      throw new UnboundKeyError('closeAll: Start has no key in the live table');
     }
     await pressButton(page, 'Start');
     const was = JSON.stringify(before);

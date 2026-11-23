@@ -5104,7 +5104,7 @@ const monstersTabs = (): string[] =>
     (t) => document.getElementById(`monsters-tab-${t}`)?.getAttribute('aria-selected') === 'true',
   );
 
-describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
+describe('main.ts gamepad (runtime)', { sequential: true }, () => {
   let pad: FakePad = makeFakePad();
   /** A fresh fake pad, answered by `navigator.getGamepads` in slot 0. */
   const usePad = (): void => {
@@ -5136,6 +5136,8 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     H.sessionState = 'hidden';
     raf.cb = null;
     document.body.replaceChildren();
+    // A remap (the Controls case binds K) saves `mr.controls`; the next boot must read defaults.
+    localStorage.clear();
   });
 
   // --- the D-pad and the stick at the world -----------------------------------------------------
@@ -5956,6 +5958,65 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     expect(dirs(), 'the release routed: the walk stopped').toEqual(['Face:North', 'North']);
   });
 
+  it.each([
+    {
+      holder: 'D-pad Up',
+      push: (p: FakePad): void => {
+        p.buttons[12].pressed = true;
+      },
+      letGo: (p: FakePad): void => {
+        p.buttons[12].pressed = false;
+      },
+    },
+    {
+      holder: 'stick pushed Up',
+      push: (p: FakePad): void => {
+        p.axes[1] = -0.9;
+      },
+      letGo: (p: FakePad): void => {
+        p.axes[1] = 0;
+      },
+    },
+  ])('a $holder pressed while focus is outside the game screen owes no release: let go after focus returns, it does not end a W walk [gp-2.7]', async ({
+    push,
+    letGo,
+  }) => {
+    // WRONG IMPL KILLED: a dropped press that leaves the pad source owing its release (the release
+    // then routes an up the router never counted for the pad, taking W's hold to zero, and W's
+    // continuation Step never comes).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus is outside').toBe(outside);
+    push(pad);
+    frame(1000);
+    expect(dirs(), 'outside: the press sends nothing').toEqual([]);
+
+    outside.blur();
+    document.body.focus();
+    expect([document.body, null], 'precondition: focus is back at rest').toContain(
+      document.activeElement,
+    );
+    fire('keydown', 'KeyW', 1050);
+    expect(dirs(), 'precondition: W sends its Face').toEqual(['Face:North']);
+    // Acked within HOLD_COMMIT_MS of the press: no committed hold is live, so the batch's reconcile
+    // emitter sends nothing.
+    ackAllNorth(1060, 7, 'North');
+    letGo(pad);
+    frame(1100);
+    expect(dirs(), 'the release of the ignored press sends nothing').toEqual(['Face:North']);
+    frame(1050 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'W is still held: its continuation Step comes').toEqual(['Face:North', 'North']);
+    fire('keyup', 'KeyW', 1220);
+    ackAllNorth(1225, 7, 'North');
+    frame(1300);
+    frame(1500);
+    expect(dirs(), 'the keyup ends the walk').toEqual(['Face:North', 'North']);
+  });
+
   it('with a text field focused inside the game screen a pad Up and A are still button presses [gp-2.7]', async () => {
     // WRONG IMPL KILLED: the keydown's typing and ownership branch applied to the pad (a pad
     // cannot type, so a focused field would leave it dead).
@@ -5973,7 +6034,10 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     expect(dirs(), 'the D-pad sends its Face').toEqual(['Face:North']);
     padTap(PADI.A, 1200);
     expect(talkCalls(), 'A talks').toBe(1);
-    expect(field.value, 'nothing was typed').toBe('');
+    expect(
+      document.activeElement,
+      'the visible field keeps focus: the heal moves only focus stranded in a hidden subtree',
+    ).toBe(field);
   });
 
   it('a pad press with focus stranded in a hidden subtree moves focus to the world canvas, and a pad press or accelerator clears the pointer`s hover mark [gp-2.7]', async () => {
