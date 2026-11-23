@@ -7,7 +7,7 @@
 # recipe runs it with a read-only root file system; the database and the keys live on the two
 # volumes mounted at the directories made below.
 
-FROM node:24.22.0-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
+FROM node:24.22.3-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Runtime dependencies only, exactly as locked, running no install script.
@@ -15,7 +15,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY src ./src
 RUN find src -name '*.test.ts' -delete
 
-FROM node:24.22.0-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
+FROM node:24.22.3-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
