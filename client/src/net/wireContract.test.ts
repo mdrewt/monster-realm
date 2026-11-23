@@ -534,6 +534,10 @@ function explain(findings: readonly WireFinding[], protocolVersion: number): str
         return `wireContract.json holds no entry for ${finding.protocol}, between MIN_CLIENT_PROTOCOL and PROTOCOL_VERSION`;
       case 'entry-broken':
         return `the bindings break entry ${finding.protocol} at ${finding.paths.join(', ')}`;
+      default: {
+        const unexpected: never = finding;
+        throw new Error(`unknown wire finding ${JSON.stringify(unexpected)}`);
+      }
     }
   });
   const brokenEntries = findings.flatMap((finding) =>
