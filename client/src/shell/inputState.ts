@@ -41,8 +41,8 @@ export function installPadFaultSink(sink: (err: unknown) => void): void {
 
 // The pad source: every connected pad through the default pad table into the same
 // `{button, down}` edges, polled once per animation frame by `main.ts`. `navigator.getGamepads` is
-// looked up at each poll: a browser without it (or a page outside a secure context, where Chromium
-// hides it) reads as no pads, and one that throws reads as no pads and reaches the fault sink once.
+// looked up at each poll: a browser without it reads as no pads, and one that throws reads as no
+// pads and reaches the fault sink once.
 export const pad = new GamepadSource(() => navigator.getGamepads?.() ?? [], PAD_DEFAULT_BINDINGS, {
   onError: (err) => padFault(err),
 });

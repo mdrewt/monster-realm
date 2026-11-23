@@ -5453,10 +5453,13 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     ackAllNorth(1050, Y0, 'North');
     frame(1160);
     expect(dirs(), 'precondition: the pad walks').toEqual(['Face:North', 'North']);
-    ackAllNorth(1200, Y0, 'North');
 
+    // Every ack below lands while no hold is committed (after the blur, the keyup, or within
+    // HOLD_COMMIT_MS of a press): an ack under a committed hold diverges from the predictor, and
+    // the batch's reconcile emitter re-issues the held Step, which is not this case's subject.
     window.dispatchEvent(new Event('blur'));
     expect(ns.held.active(), 'the blur emptied the held set').toBeUndefined();
+    ackAllNorth(1205, Y0, 'North');
     for (const t of [1210, 1300, 1400, 1600]) frame(t);
     expect(dirs(), 'Up is still held: no Face, no Step').toEqual(['Face:North', 'North']);
 
@@ -5473,8 +5476,8 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
       'Face:North',
       'North',
     ]);
-    ackAllNorth(1820, Y0, 'North');
     fire('keyup', 'KeyW', 1830);
+    ackAllNorth(1835, Y0, 'North');
     frame(1900);
     frame(2100);
     expect(dirs(), 'precondition: the keyup ended the W walk').toHaveLength(4);
@@ -5510,12 +5513,15 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     ackAllNorth(1050, Y0, 'North');
     frame(1160);
     expect(dirs(), 'precondition: the stick walks').toEqual(['Face:North', 'North']);
-    ackAllNorth(1200, Y0, 'North');
 
+    // Every ack below lands while no hold is committed (after the hidden tab, the keyup, or within
+    // HOLD_COMMIT_MS of a press): an ack under a committed hold diverges from the predictor, and
+    // the batch's reconcile emitter re-issues the held Step, which is not this case's subject.
     setVisibility('hidden');
     document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
     setVisibility('visible');
     expect(ns.held.active(), 'the hidden tab emptied the held set').toBeUndefined();
+    ackAllNorth(1205, Y0, 'North');
     for (const t of [1210, 1300, 1400, 1600]) frame(t);
     expect(dirs(), 'the stick is still pushed: nothing').toEqual(['Face:North', 'North']);
 
@@ -5530,8 +5536,8 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
       'Face:North',
       'North',
     ]);
-    ackAllNorth(1820, Y0, 'North');
     fire('keyup', 'KeyW', 1830);
+    ackAllNorth(1835, Y0, 'North');
     frame(1900);
     frame(2100);
     expect(dirs()).toHaveLength(4);
@@ -5675,9 +5681,12 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     ackAllNorth(1050, 7, 'North');
     frame(1160);
     expect(dirs(), 'precondition: the pad walks').toEqual(['Face:North', 'North']);
-    ackAllNorth(1200, 7, 'North');
 
+    // The ack lands under the gate, where the batch's reconcile emitter sends nothing (an ack under
+    // a live committed hold would re-issue its Step). It leaves the server owing nothing, so a held
+    // set the gated frames failed to clear would walk on the first frame after the lift.
     H.sessionState = 'expired';
+    ackAllNorth(1200, 7, 'North');
     frame(1210);
     frame(1300);
     expect(dirs(), 'gated: nothing').toEqual(['Face:North', 'North']);
@@ -5738,8 +5747,11 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     ackAllNorth(1050, 7, 'North');
     frame(1160);
     expect(dirs(), 'precondition: W walks').toEqual(['Face:North', 'North']);
-    ackAllNorth(1200, 7, 'North');
+    // The ack lands under the gate, where the batch's reconcile emitter sends nothing (an ack under
+    // a live committed hold would re-issue its Step). It leaves the server owing nothing, so a held
+    // set the gated frames failed to clear would walk on the first frame after the lift.
     H.sessionState = 'expired';
+    ackAllNorth(1200, 7, 'North');
     frame(1210);
     frame(1300);
     H.sessionState = 'hidden';
@@ -5763,8 +5775,10 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     ackAllNorth(1050, 7, 'North');
     frame(1180);
     expect(dirs(), 'and walks').toEqual(['Face:North', 'North']);
-    ackAllNorth(1190, 7, 'North');
+    // Acked after the keyup: an ack under the live committed hold would make the batch's reconcile
+    // emitter re-issue the held Step.
     fire('keyup', 'KeyW', 1195);
+    ackAllNorth(1196, 7, 'North');
     frame(1300);
     expect(dirs(), 'and stops at its keyup').toEqual(['Face:North', 'North']);
 
@@ -5927,13 +5941,16 @@ describe('main.ts gamepad (runtime, gp-2)', { sequential: true }, () => {
     ackAllNorth(1050, 7, 'North');
     frame(1160);
     expect(dirs(), 'precondition: the pad walks').toEqual(['Face:North', 'North']);
-    ackAllNorth(1200, 7, 'North');
     const outside = document.createElement('button');
     document.body.appendChild(outside);
     outside.focus();
     expect(document.activeElement, 'precondition: focus moved outside').toBe(outside);
     lift(PADI.Up);
     frame(1210);
+    // Acked after the release frame, so the server owes nothing from here: an Up still held (its
+    // release dropped) would be re-issued by this batch's reconcile emitter and continued by the
+    // frames below; a released one sends nothing.
+    ackAllNorth(1220, 7, 'North');
     frame(1400);
     frame(1600);
     expect(dirs(), 'the release routed: the walk stopped').toEqual(['Face:North', 'North']);
