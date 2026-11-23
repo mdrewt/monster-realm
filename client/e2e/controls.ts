@@ -6,12 +6,20 @@
 // any key in Options > Controls, which saves the table to `localStorage['mr.controls']` and applies
 // it at once. `liveBindings` reads that string in the page and parses it here with the game's own
 // total `parseBindings`; anything unreadable gives `DEFAULT_BINDINGS`.
+//
+// Press source: each page presses through the keyboard (the default) or through the mocked pad
+// (`setPressSource(page, 'pad')`, with `pad.ts`'s `installFakePad` run before the page loads). In pad
+// mode `pressButton`, `pressAccel` and `closeAll` (and every helper built on them) press the pad
+// button the default pad table (`PAD_DEFAULT_BINDINGS`) binds first: the pad table has no saved
+// form, so the page's live table is the default one.
 import { expect, type Locator, type Page } from '@playwright/test';
 import { CONTROLS_STORAGE_KEY, parseBindings } from '../src/input/bindingStore';
 import { type Bindings, DEFAULT_BINDINGS } from '../src/input/bindings';
 import type { Accel, VButton } from '../src/input/buttons';
+import { PAD_DEFAULT_BINDINGS } from '../src/input/padBindings';
 import type { RawTileMap } from '../src/render/map';
 import type { Frame, Stack } from '../src/ui/contextStack';
+import { padPress } from './pad';
 
 /** Start presses `closeAll` spends before it fails naming the stuck top frame (CTL6A.1). */
 export const CLOSE_ALL_MAX_PRESSES = 5;
@@ -41,8 +49,38 @@ export async function liveBindings(page: Page): Promise<Bindings> {
  *  it fails naming it rather than pressing `undefined`. */
 export class UnboundKeyError extends Error {}
 
-/** Presses the first key bound to `button` in the page's live table (`liveBindings`). */
+/** What a page's presses go through: its keyboard, or the mocked pad (`pad.ts`). */
+export type PressSource = 'keys' | 'pad';
+
+const pressSources = new WeakMap<Page, PressSource>();
+
+/** Presses on `page` go through `source` from here on (`'keys'` until this is called). */
+export function setPressSource(page: Page, source: PressSource): void {
+  pressSources.set(page, source);
+}
+
+const pressSourceOf = (page: Page): PressSource => pressSources.get(page) ?? 'keys';
+
+/** The first pad button the default pad table binds to `button`, or undefined. */
+const padIndexFor = (button: VButton): number | undefined =>
+  PAD_DEFAULT_BINDINGS.buttons[button][0];
+
+/** The first pad button the default pad table binds to `accel`, or undefined (F8 and F9 have no
+ *  pad binding). */
+const padAccelIndexFor = (accel: Accel): number | undefined =>
+  accel === 'F8' || accel === 'F9' ? undefined : PAD_DEFAULT_BINDINGS.accels[accel][0];
+
+/** Presses the first key bound to `button` in the page's live table (`liveBindings`), or in pad
+ *  mode the first pad button the default pad table binds to it. */
 export async function pressButton(page: Page, button: VButton): Promise<void> {
+  if (pressSourceOf(page) === 'pad') {
+    const index = padIndexFor(button);
+    if (index === undefined) {
+      throw new UnboundKeyError(`pressButton: the button ${button} has no pad button bound`);
+    }
+    await padPress(page, index);
+    return;
+  }
   const code = (await liveBindings(page)).buttons[button][0];
   if (code === undefined) {
     throw new UnboundKeyError(`pressButton: the button ${button} has no key in the live table`);
@@ -50,8 +88,17 @@ export async function pressButton(page: Page, button: VButton): Promise<void> {
   await page.keyboard.press(code);
 }
 
-/** Presses the first key bound to the accelerator `accel` in the page's live table. */
+/** Presses the first key bound to the accelerator `accel` in the page's live table, or in pad mode
+ *  the first pad button the default pad table binds to it. */
 export async function pressAccel(page: Page, accel: Accel): Promise<void> {
+  if (pressSourceOf(page) === 'pad') {
+    const index = padAccelIndexFor(accel);
+    if (index === undefined) {
+      throw new UnboundKeyError(`pressAccel: the accelerator ${accel} has no pad button bound`);
+    }
+    await padPress(page, index);
+    return;
+  }
   const code = (await liveBindings(page)).accels[accel][0];
   if (code === undefined) {
     throw new UnboundKeyError(`pressAccel: the accelerator ${accel} has no key in the live table`);
@@ -86,25 +133,28 @@ const frameName = (f: Frame): string => {
 /** Presses Start only while `__game().stack` is above its base; returns once it is at the base.
  *  Fails naming the stuck top frame after `CLOSE_ALL_MAX_PRESSES` presses (CTL6A.1). Never
  *  presses at a base, so it is safe both before and after Escape becomes Start (ctl-6b). Start's
- *  key is re-read from the live table before every press (ctl-12b: a remap moves it).
+ *  key is re-read from the live table before every press (ctl-12b: a remap moves it). Start is
+ *  pressed through `pressButton`, so pad mode presses the pad's Start.
  *  `settleMs` is how long one press may take to change the stack; only a test whose fake stack
  *  never changes passes a shorter one. */
 export async function closeAll(page: Page, settleMs = CLOSE_ALL_SETTLE_MS): Promise<void> {
   for (let presses = 0; ; presses++) {
     const before = await readStack(page);
     if (before.length <= 1) return;
-    const start = (await liveBindings(page)).buttons.Start[0];
+    const onPad = pressSourceOf(page) === 'pad';
+    const start = onPad ? undefined : (await liveBindings(page)).buttons.Start[0];
     if (presses === CLOSE_ALL_MAX_PRESSES) {
       const top = before[before.length - 1];
+      const startName = onPad ? `pad button ${padIndexFor('Start') ?? 'unbound'}` : start;
       throw new StuckStackError(
         `closeAll: stuck top frame ${frameName(top)} after ${presses} ` +
-          `Start (${start ?? 'unbound'}) presses (stack length ${before.length})`,
+          `Start (${startName ?? 'unbound'}) presses (stack length ${before.length})`,
       );
     }
-    if (start === undefined) {
+    if (!onPad && start === undefined) {
       throw new UnboundKeyError('closeAll: Start has no key in the live table');
     }
-    await page.keyboard.press(start);
+    await pressButton(page, 'Start');
     const was = JSON.stringify(before);
     await expect
       .poll(async () => JSON.stringify(await readStack(page)), { timeout: settleMs })
