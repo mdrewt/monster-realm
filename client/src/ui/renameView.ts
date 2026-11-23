@@ -25,7 +25,10 @@
 // The submit label and the section header are the strings this view owns. They are resolved
 // through the i18n resolver (`t('chrome.rename.submit')`, `t('menu.profile.name.title')`,
 // ui/i18n/resolver.ts) in show(), on every show(); `index.html` ships neither, so both are EMPTY
-// until the first show(). The current display name is model data, rendered raw.
+// until the first show(). The current display name and the player's tag are model data, rendered
+// raw: `#rename-current` holds the name in a <bdi> and, after one space, the tag in
+// `span#rename-tag.mr-player-tag` (the Players tab's tag class, leaderboardView.ts), both built
+// here; with no tag the span stays empty and the space is left out.
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './i18n/resolver';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
@@ -62,6 +65,8 @@ export class RenameView implements RowSection {
   readonly #overlay: HTMLElement;
   readonly #title: HTMLElement;
   readonly #current: HTMLElement;
+  readonly #name: HTMLElement;
+  readonly #tag: HTMLElement;
   readonly #input: HTMLInputElement;
   readonly #submitBtn: HTMLButtonElement;
   readonly #cbs: RenameCallbacks;
@@ -77,6 +82,11 @@ export class RenameView implements RowSection {
     const current = document.getElementById('rename-current');
     if (!current) throw new Error('rename-current missing');
     this.#current = current;
+    this.#name = document.createElement('bdi');
+    this.#tag = document.createElement('span');
+    this.#tag.id = 'rename-tag';
+    this.#tag.className = 'mr-player-tag';
+    current.replaceChildren(this.#name, this.#tag);
 
     const input = document.getElementById('rename-input');
     if (!input) throw new Error('rename-input missing');
@@ -124,7 +134,7 @@ export class RenameView implements RowSection {
   // Recompute the submit-enabled state from the live input value, via the same
   // buildRenameViewModel SSOT that render() and #submit() use.
   #refreshSubmitEnabled(): void {
-    this.#submitBtn.disabled = !buildRenameViewModel('', this.#input.value).canSubmit;
+    this.#submitBtn.disabled = !buildRenameViewModel('', 0, this.#input.value).canSubmit;
   }
 
   get visible(): boolean {
@@ -158,8 +168,22 @@ export class RenameView implements RowSection {
 
   /** Render the current-name label + submit-enabled state. textContent only (XSS). */
   render(vm: RenameViewModel): void {
-    this.#current.textContent = vm.displayCurrentName;
+    this.renderCurrentName(vm);
     this.#submitBtn.disabled = !vm.canSubmit;
+  }
+
+  /** Render the current name and the player's tag alone: the field's draft and Save's state (a
+   *  pending submit's lock included) are left as they are. A text that has not changed is not
+   *  rewritten. textContent only (XSS). */
+  renderCurrentName(vm: RenameViewModel): void {
+    if (this.#name.textContent !== vm.displayCurrentName) {
+      this.#name.textContent = vm.displayCurrentName;
+    }
+    const tag = vm.displayTag ?? '';
+    if (this.#tag.textContent === tag) return;
+    this.#tag.textContent = tag;
+    if (tag === '') this.#current.replaceChildren(this.#name, this.#tag);
+    else this.#current.replaceChildren(this.#name, ' ', this.#tag);
   }
 
   /** The section root. */
@@ -180,8 +204,8 @@ export class RenameView implements RowSection {
   // Single shared submit path (Enter + click) ⇒ one #pending lock ⇒ no double-submit.
   #submit(): void {
     if (this.#pending) return;
-    // currentName is irrelevant here — only trimmedDraft/canSubmit are consulted.
-    const vm = buildRenameViewModel('', this.#input.value);
+    // currentName and the tag are irrelevant here — only trimmedDraft/canSubmit are consulted.
+    const vm = buildRenameViewModel('', 0, this.#input.value);
     if (!vm.canSubmit) return; // empty-after-trim → no-op, do NOT call onSubmit.
     this.#pending = true;
     this.#submitBtn.disabled = true;

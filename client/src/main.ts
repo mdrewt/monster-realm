@@ -364,7 +364,7 @@ import { buildPvpChallengeViewModel, challengeSizes, consciousPartyIds } from '.
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
 import { buildRaisingViewModel } from './ui/raisingModel';
-import { buildRenameViewModel } from './ui/renameModel';
+import { buildRenameViewModel, type RenameViewModel } from './ui/renameModel';
 import { SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './ui/screens/index';
 import {
   type MainMenuStep,
@@ -1135,14 +1135,25 @@ const profileOpen = frameOpenOf(() => profileView);
  *  privacy sections repaint: the name field keeps the draft being typed. */
 function showProfile(section: ProfileSection): void {
   openFrame('profileView', profileOpen, () => {
-    if (profileView?.visible === false) {
-      renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
-    }
+    if (profileView?.visible === false) renameView?.render(ownNameModel());
     claimView?.render(buildClaimViewModel(claimModelState, SIGN_IN_OFFER));
     renderPrivacy();
     profileView?.show(section);
   });
 }
+
+/** The Name section's model from the player's own row: its name and tag (no row: no name, no
+ *  tag), with an empty draft. */
+function ownNameModel(): RenameViewModel {
+  const own = store.player(identity);
+  return buildRenameViewModel(own?.name ?? '', own?.discriminator ?? 0, '');
+}
+
+// While Profile is open, a batch repaints the Name section's current name and tag (a rename's row
+// arriving), never the draft or Save.
+store.onBatchApplied(() => {
+  if (profileView?.visible === true) renameView?.renderCurrentName(ownNameModel());
+});
 
 /** The player's open. An open on Account, or the first open of the session, puts the claim model
  *  on its prompt (as the Account entry always did) so the section offers its actions; an open on
