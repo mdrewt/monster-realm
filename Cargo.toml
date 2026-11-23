@@ -45,7 +45,7 @@ console_error_panic_hook = "0.1"
 # Module code uses 2.x syntax (`#[table(accessor = x)]`, `ctx.sender()`,
 # `ctx.database_identity()`); ~21 Rust source-scanning teeth tests and several evals/
 # scanners encode that attribute syntax literally, so a syntax change moves them too.
-spacetimedb = "=2.14.1"
+spacetimedb = "=2.16.1"
 # Content: serde derive + RON parser (pure; safe under the determinism guard).
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"

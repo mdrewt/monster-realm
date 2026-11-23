@@ -1,6 +1,6 @@
 {
   "git": {
-    "sha1": "a0bf6be10a146b03acbe3f4f9ad7fe20f114988d"
+    "sha1": "8932a5aa312e9629d5dd65a2a4c2a46500917806"
   },
   "path_in_vcs": "crates/bindings-sys"
 }
