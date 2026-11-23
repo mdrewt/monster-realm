@@ -309,14 +309,14 @@ export class InputRouter {
     if (held !== undefined) {
       if (!down) {
         // The first release ends the press: the hold if it is due and no tick has asked it yet,
-        // else the tap, unless the hold was already asked or the frame no longer lists it.
+        // else the tap, unless the hold was already asked or the frame does not list it now.
         this.#holds.delete(button);
         const now = holdClock(ctx, button);
         if (held.fired || now === undefined) return SWALLOWED;
         if (now - held.since >= HOLD_MS) return { consumed: true, effects: askHold(ctx, button) };
         return askScreen(ctx, { button, repeat: false });
       }
-      // Another source pressing it keeps the first press's timer. A frame that no longer lists it
+      // Another source pressing it keeps the first press's timer. A frame that does not list it now
       // ends that press unasked, and this press is an ordinary one.
       if (holdClock(ctx, button) !== undefined) return SWALLOWED;
       this.#holds.delete(button);
@@ -334,7 +334,7 @@ export class InputRouter {
   }
 
   /** The frame-loop pump: each hold-capable press held `HOLD_MS` asks its hold input once (a
-   *  press its frame no longer lists is dropped unasked), then at most one repeat edge for the
+   *  press its frame has stopped listing is dropped unasked), then at most one repeat edge for the
    *  armed D-pad button, once it is due, while the nav frame is uncovered. A stalled clock yields
    *  one edge, never a burst. */
   tick(ctx: RouteContext): readonly RouterEffect[] {
