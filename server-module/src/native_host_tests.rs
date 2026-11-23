@@ -5,7 +5,7 @@
 //!
 //! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.16.1,
 //! `vendor/spacetimedb/src/lib.rs:1191`, `#[doc(hidden)] pub`) yields a context whose `db` is
-//! the real `Local` accessor, built by `Local::__host()` (`lib.rs:1148`, `:1944-1954`), so
+//! the real `Local` accessor, built by `Local::__host()` (`lib.rs:1194`, `:1998-2008`), so
 //! `ctx.db.<table>().<index>().find(..)` in a production helper compiles and runs unchanged.
 //! That generated code bottoms out in the `extern "C"` host imports declared by
 //! `spacetimedb-bindings-sys` (`#[link(wasm_import_module = "spacetime_10.x")]`), which the
@@ -1114,7 +1114,7 @@ impl Fixture {
         let s = sender.to_byte_array();
         let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
         // The runtime rebuilds the id from its two words as native-endian u64s
-        // read back as a LITTLE-ENDIAN byte array (`rt.rs:1076`).
+        // read back as a LITTLE-ENDIAN byte array (`rt.rs:1340-1345`).
         let c = conn.to_le_bytes();
         let conn_word = |i: usize| u64::from_ne_bytes(c[i * 8..i * 8 + 8].try_into().unwrap());
         // SAFETY: the shipped entry point; reducer 0 is the trampoline (the only
@@ -1270,7 +1270,7 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_bind_nonce, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_bind_nonce"]
     fn register_view_my_bind_nonce();
-    // Every `#[spacetimedb::table]` describer (macro `table.rs:1176`
+    // Every `#[spacetimedb::table]` describer (macro `table.rs:1421`
     // `__preinit__20_register_describer_<accessor>`), registered before the views
     // so `Fixture::module_def` carries the full generated table set — the
     // artifact `accounts_tests.rs` compares `DATA_LIFECYCLE_MANIFEST` against.
@@ -1926,11 +1926,11 @@ unsafe extern "C" fn bytes_sink_write(
 // THE CONNECTION + JWT MODEL (debloat Phase 2, ST-accounts_tests#auth).
 //
 // `run_as_conn_at` hands `__call_reducer__` a NON-ZERO connection id, so the
-// runtime builds the context through `AuthCtx::from_connection_id` exactly as a
-// client call does (`lib.rs:1864`): the first `has_jwt()` / `jwt()` asks the
-// `get_jwt` syscall for that connection, and a valid bytes source is then read
-// through `bytes_source_remaining_length` + `bytes_source_read`
-// (`rt.rs:1312`, `rt.rs:1323`). This host serves ONE source, [`JWT_SOURCE`],
+// runtime builds the context's `AuthCtx` over `rt::get_jwt` for that connection
+// exactly as a client call does (`lib.rs:1216`): the first `has_jwt()` / `jwt()`
+// asks the `get_jwt` syscall for that connection, and a valid bytes source is
+// then read through `bytes_source_remaining_length` + `bytes_source_read`
+// (`rt.rs:1588-1599`, `read_bytes_source_into` at `rt.rs:1610`). This host serves ONE source, [`JWT_SOURCE`],
 // holding the claims payload the test chose; `None` answers the INVALID source,
 // which the runtime reads as "no JWT" (the anonymous player). Reducer ARGS stay
 // the INVALID source (`run_as` passes none), so no other source is ever read.

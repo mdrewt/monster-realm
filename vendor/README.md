@@ -8,7 +8,7 @@ the server module's tests can run natively against this repository's own host:
 | `spacetimedb/` | [`spacetimedb`](https://crates.io/crates/spacetimedb) |
 | `spacetimedb-bindings-sys/` | [`spacetimedb-bindings-sys`](https://crates.io/crates/spacetimedb-bindings-sys) |
 
-Both are at the version the root `Cargo.toml` pins exactly (`spacetimedb = "=<version>"`), which
+Both are at the version the root `Cargo.toml` pins exactly (`spacetimedb = { version = "=<version>", ... }`), which
 `PRISTINE.sha256` also records; `[patch.crates-io]` there points at these two directories. They are not workspace members, so `cargo fmt`, `cargo clippy` and `cargo mutants`
 never read them. The other `spacetimedb-*` crates (`-lib`, `-sats`, `-primitives`,
 `-bindings-macro`, `-query-builder`) still come from crates.io.

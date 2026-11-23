@@ -577,8 +577,8 @@ left a stranger 1 of its 20 rows over `/sql` and in a subscription, while the ow
   All three sit behind the `spacetimedb` crate's `unstable` feature, which the workspace enables
   (`Cargo.toml`), so this check is what keeps them out: with the feature on, the 2.16.1 module
   declares none and its definition has the same sections as with it off
-  (`docs/spacetimedb-2.16.md`). The deletion-gate census in the same test file refuses a
-  `procedure` attribute.
+  (`docs/spacetimedb-2.16.md`). The deletion-gate census in
+  `server-module/src/privacy_enforcement_tests.rs` refuses a `procedure` attribute.
 - _The door._ An unadmitted identity can call nothing but its own unbind, so admission is granted
   by reducers only the owner can call, each taking the joiner's identity as an argument: the admit
   list of `set_world_access`, and under `Allowlist` the relayed bind. No reducer takes a password, a
@@ -676,8 +676,8 @@ a password through such a module chooses a new one for the gate.
 
 Measured again on 2.16.1 (2026-11-23): after `join_game` with a name no earlier call used, that
 name sits in the host's commit log twice, once in the transaction's inputs record (69 bytes after
-the reducer's name: the caller's identity, connection id, timestamp and the argument's length come
-between) and once in the `player` row the call inserted. The log still keeps a committed call's
+the start of the reducer's name, which is followed by the caller's identity, connection id,
+timestamp and the argument's length) and once in the `player` row the call inserted. The log still keeps a committed call's
 arguments in the clear.
 
 #### (b) How the official server refuses attestation binding
@@ -1761,8 +1761,8 @@ snapshot does; real low-end hardware; either shell's memory; the Steam overlay; 
 tool's network use; the in-module signature check on any other machine; the largest reducer
 argument a WebSocket call carries; an Ed25519 key in any key service, and a JOSE library writing
 either `alg` name (read, not tried); the access design of section 3 beyond the module half of fork (a), which is measured above (its gate half and forks (b), (c) and (e) are unmeasured);
-what a row filter costs a subscription; a host version other than 2.11.0 on any access
-measurement; whether the ownership features leave the schema and the generated bindings
+what a row filter costs a subscription; a host version other than 2.11.0 on an access measurement
+that §3 does not mark as measured again on 2.16.1; whether the ownership features leave the schema and the generated bindings
 unchanged; and, of a browser's bind, anything end to end (no part of it is built), any browser but
 Chromium, an ACME order for an IP address, what Steam's sign-in pages do with an opener, and when
 a browser drops a service worker whose script has stopped answering.

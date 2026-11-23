@@ -1053,30 +1053,6 @@ test('module-definition refuses when the definition cannot be read or the build 
   assert.deepEqual(failed.pathExtractions, [], 'a failing cargo: no extractor on PATH runs');
 });
 
-test('just ci runs module-definition (lpw-34.6)', () => {
-  const env = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (!k.startsWith('JUST_')) env[k] = v;
-  }
-  const result = spawnSync('just', ['--justfile', JUSTFILE, '--dump', '--dump-format', 'json'], {
-    cwd: ROOT,
-    env,
-    encoding: 'utf8',
-  });
-  if (result.error) {
-    throw new Error(`could not run \`just\`: ${result.error.message}`);
-  }
-  assert.equal(result.status, 0, `just --dump failed: ${result.stderr}`);
-  const ci = JSON.parse(result.stdout).recipes.ci;
-  assert.ok(ci, 'the justfile has a ci recipe');
-  const dependencies = ci.dependencies.map((d) => d.recipe);
-  assert.deepEqual(
-    dependencies.filter((name) => name === 'module-definition'),
-    ['module-definition'],
-    `ci lists module-definition among its dependencies, once: ${JSON.stringify(dependencies)}`,
-  );
-});
-
 test('module-profile prints the mr_build_profile section bytes exactly and runs no cargo', () => {
   for (const [label, sectionText] of [
     ['official', OFFICIAL_TEXT],

@@ -263,6 +263,7 @@ test('findDefinitionViolations passes a clean V10 definition, empty HTTP section
         },
       ],
     },
+    { TableCachePolicies: [{ table_name: 'player', policy: { NoRequirement: [] } }] },
     { HttpHandlers: [] },
     { HttpRoutes: [] },
     { RowLevelSecurity: [] },

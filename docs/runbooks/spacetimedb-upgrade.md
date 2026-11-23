@@ -85,7 +85,7 @@ lockstep hop until the SDK ages.
    `scripts/verify-release-reducers.mjs` parses. It accepts both the older flat
    `{"reducers": [...]}` shape and the `{"sections": [...]}` shape with `source_name`,
    and fails loudly on anything else. A new shape needs a parser update. `just module-definition`
-   (in `just ci`) and `just release-module world` read a built module's definition with
+   (in `just ci`) and `just release-module` (both profiles) read a built module's definition with
    `spacetimedb-standalone extract-schema` (the binary beside the CLI on PATH), which prints
    `{"V10":{"sections":[...]}}`. The check (`findDefinitionViolations` in the same script) refuses
    any section kind it does not list. A new kind is reviewed and listed there: passed if it cannot
@@ -230,7 +230,7 @@ Rolling back past that point means restoring the pre-upgrade backup of the data 
 `spacetime version use <old>` first, or every pre-upgrade commit's `bindings-drift`
 eval fails against the new CLI on PATH.
 
-## Standing facts (each re-checked on the 2.12.0→2.16.1 hop, 2026-11-23)
+## Standing facts (re-checked on the 2.12.0→2.16.1 hop, 2026-11-23, except where one names an older version)
 
 - The host enforces a row filter (`#[client_visibility_filter]`, behind the crate's `unstable`
   feature): measured on 2.16.1, a filter on `species_row` left a stranger 1 of 20 rows over `sql`

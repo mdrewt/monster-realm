@@ -1449,12 +1449,14 @@ to stay fixed as proof that dev code did not ship (it shapes production source a
 **Decision.** The spacetime CLI/host and the Rust `spacetimedb` crate are pinned to
 the same version (2.16.1: root `Cargo.toml`, `SPACETIME_VERSION` in `scripts/ci-tools.sh`).
 AMENDED 2026-10-15 (deps-s3): the npm `spacetimedb` SDK now joins the lockstep
-(`^2.16.1`, locked in `client/package-lock.json`). `scripts/ci-tools.test.mjs` holds the four, the
-vendor copies and the generated bindings to one version. It was previously held separate
+(`^2.16.1`, locked in `client/package-lock.json`). It was previously held separate
 (at 2.6.0) because newer SDKs change reconnect behaviour; since 2.7.0 the vendor
 ships CLI/crate/SDK from one monorepo on the same day with no documented skew
 matrix, so same-version-everywhere is the only documented-safe configuration. An
 SDK bump still requires the live two-client e2e the old rule demanded.
+`scripts/ci-tools.test.mjs` holds the resolved crates (`cargo metadata`), the locked npm SDK and the
+generated bindings to one version; `bindings-drift` holds the bindings to the CLI on PATH, which CI
+installs from `SPACETIME_VERSION`.
 Module code uses 2.x syntax (`#[table(accessor = x)]`, `ctx.sender()`). Upgrades
 follow `docs/runbooks/spacetimedb-upgrade.md`. The nightly `smoke-republish` job
 republishes over live data without `--delete-data` and checks that the data survives.
@@ -1473,13 +1475,18 @@ database without planning a `--delete-data` republish.
 **Decision.** The workspace's `spacetimedb` dependency enables the crate's `unstable` feature
 (operator, 2026-11-22), and the module uses nothing it gates. At 2.16.1 the feature gates HTTP
 handlers and routes (`spacetimedb::http::{handler, router, HandlerContext}`), row filters
-(`client_visibility_filter`, `Filter`) and `volatile_nonatomic_schedule_immediate`; procedures,
-their transactions and their HTTP client are not behind it (`docs/spacetimedb-2.16.md`). What
-keeps a handler, a route or a row filter out of the module is a check of the generated module
-definition, not the feature: `findDefinitionViolations` in `scripts/verify-release-reducers.mjs`
+(`client_visibility_filter`, `Filter`), `volatile_nonatomic_schedule_immediate!` and a unique
+column's `insert_or_update`/`try_insert_or_update`; procedures, their transactions and their HTTP
+client are not behind it (`docs/spacetimedb-2.16.md`). What keeps a handler, a route or a row
+filter out of the module is a check of the generated module definition, not the feature: `findDefinitionViolations` in `scripts/verify-release-reducers.mjs`
 refuses each, at any submodule depth, and any section kind it does not know, on the default build
 (`just module-definition`, in `just ci`) and on every artefact `just release-module` makes. The
-reducer census refuses every `procedure` attribute. Measured on 2.16.1 (default build): the
+reducer census refuses every `procedure` attribute. Nothing checks the immediate-schedule call or
+`insert_or_update`, which are calls, not declarations: review keeps them out. The scheduled call is
+the one that matters to the access design. The host queues it when the call runs, so it runs even if
+the calling reducer then fails, and it runs as the database identity, so it passes every
+scheduler-only guard (`crates/core/src/host/scheduler.rs:262-267, 953-971` at tag `v2.16.1`).
+Measured on 2.16.1 (default build): the
 feature adds one export, `__call_http_handler__`, and 76,336 bytes (3,480,052 to 3,556,388); the
 imports and the definition's sections are the same with it off and on, and the native test binary
 links with it (`lpw34_7_unstable` in `server-module/src/privacy_enforcement_tests.rs`).
@@ -1492,9 +1499,10 @@ feature is invisible to the test build, hence the check on each release artefact
 
 **Rules out.** Turning the feature off to keep those APIs out (the check is the guard); a
 declaration of a handler, a route or a row filter without a slice that changes the check and
-`docs/local-play.md` §3; a host older than 2.14.0 for this module, since such a host rejects the
-`__call_http_handler__` export the 2.14.0 crate and later emit with the feature on (vendor
-release notes, 2.14.0).
+`docs/local-play.md` §3; a call of `volatile_nonatomic_schedule_immediate!` from a reducer a client
+can call; a host older than 2.14.0 for this module, since such a host rejects the
+`__call_http_handler__` export with the signature the 2.14.0 crate and later emit (it gained the
+sender and the JWT; vendor release notes, 2.14.0).
 
 ## Server-module tests run on our own host ABI, over the two vendor crates patched where they refuse a native host
 
@@ -2809,9 +2817,10 @@ the gate's half (the door endpoint and its password check, closing a removed ide
 in `docs/local-play.md` §3, fork (a); see "The gate checks a world's password; the module never
 receives one".
 
-**Why.** Measured at SpacetimeDB 2.11.0 and again at 2.16.1: every route that reads a row or calls
-a reducer (the WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and its
-refusal is complete, with nothing needed per table, view or reducer (`docs/local-play.md` §3). It runs once, though: a connection
+**Why.** Measured at SpacetimeDB 2.11.0 (the WebSocket, `call`, `sql` and the MCP tools) and again
+at 2.16.1 (the WebSocket, `call`, `sql` and the MCP `sql` tool): every route that reads a row or
+calls a reducer runs the connect reducer first, and its refusal is complete, with nothing needed
+per table, view or reducer (`docs/local-play.md` §3). It runs once, though: a connection
 already open keeps calling and reading after its admission is removed, and a module cannot close a
 connection. Hence the check in every reducer and the admission of open connections when the rule
 changes. An unadmitted identity can call nothing but its own unbind, so it cannot reach its own

@@ -132,6 +132,7 @@ const KNOWN_SECTION_KINDS = [
   'Submodules',
   'Environment',
   'Outboxes',
+  'TableCachePolicies',
 ];
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);

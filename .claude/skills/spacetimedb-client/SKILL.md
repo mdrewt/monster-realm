@@ -11,8 +11,8 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
 > **Versions.** CLI/host, Rust crate and npm `spacetimedb` all 2.16.1 (`^2.16.1`,
 > locked, in lockstep since 2026-10-15). The committed bindings are 2.16.1-generated, which means:
 > 1. **Table and view handles are camelCase** (`conn.db.myTradeSession`,
->    `conn.db.myMonsterPub`). The snake_case spellings still work (the bindings add them at
->    run time and the 2.16.1 SDK's types accept them, unmarked); write camelCase in new code.
+>    `conn.db.myMonsterPub`). The snake_case spellings still work as deprecated aliases (the
+>    bindings add them at run time, and `tsc` accepts them); write camelCase in new code.
 > 2. **`Option<T>` fields are optional keys** (`{ foo?: T | undefined }`).
 >
 > Upgrading the npm SDK is separate from the CLI and needs a live two-client session:
