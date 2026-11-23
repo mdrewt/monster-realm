@@ -182,6 +182,38 @@ describe('stickToDpad: hysteresis', () => {
   });
 });
 
+describe('stickToDpad: a larger other axis breaks the hold', () => {
+  it('a stronger cross axis above ENTER takes over from a held direction [gp-1.3]', () => {
+    expect(stickToDpad(0.4, 0.9, 'Right')).toBe('Down');
+    expect(stickToDpad(-0.6, -0.4, 'Up')).toBe('Left');
+    expect(stickToDpad(0.4, 0.9, 'Left')).toBe('Down');
+    expect(stickToDpad(0.9, 0.4, 'Down')).toBe('Right');
+  });
+
+  it('a larger cross axis below ENTER gives null, not the held direction [gp-1.3]', () => {
+    expect(stickToDpad(0.4, 0.45, 'Right')).toBeNull();
+    expect(stickToDpad(-0.4, -0.45, 'Left')).toBeNull();
+    expect(stickToDpad(0.45, 0.4, 'Down')).toBeNull();
+    expect(stickToDpad(0.45, -0.4, 'Up')).toBeNull();
+  });
+
+  it('a negative cross axis that is larger also breaks the hold [gp-1.3]', () => {
+    expect(stickToDpad(-0.6, -0.4, 'Up')).toBe('Left');
+    expect(stickToDpad(0.4, -0.9, 'Right')).toBe('Up');
+  });
+
+  it('never returns prev when the other axis exceeds the own signed axis [gp-1.3]', () => {
+    const axis = fc.double({ min: -1, max: 1, noNaN: true });
+    fc.assert(
+      fc.property(dirArb, axis, axis, (dir, own, other) => {
+        fc.pre(Math.abs(other) > own);
+        const r = reading(dir, own, other);
+        expect(stickToDpad(r.x, r.y, dir)).not.toBe(dir);
+      }),
+    );
+  });
+});
+
 describe('stickToDpad: releasing', () => {
   it('both axes under EXIT release every held direction [gp-1.4]', () => {
     const under = STICK_EXIT - 1e-9;
