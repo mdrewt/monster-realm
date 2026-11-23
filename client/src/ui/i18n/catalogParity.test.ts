@@ -819,6 +819,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // imports no resolver) is only reachable via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'input/glyphs.ts',
+      // gp-4 (named intentional change): the pad glyph of a button index resolves View, Menu, the
+      // D-pad and the generic button name (`pad.*`).
+      'input/padGlyphs.ts',
       'main.ts',
       // The server link's owner: the guarded send resolves its disconnected line.
       'shell/session.ts',

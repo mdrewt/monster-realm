@@ -12,10 +12,10 @@
 // behavior. Keeping the state machine here is what makes "the classifier was quietly changed
 // to `return true`" a caught bug rather than an invisible one.
 //
-// SUPPRESS, NEVER CLEAR. The SDK throws the SAME message
-// (`Failed to verify token: <statusText>`, dist/index.mjs:5133-5141) for a transient
-// 500/502/503 from the token-verify endpoint as for a genuine 401 — and HTTP/2 mandates an
-// empty `statusText`, collapsing every case to one string. So we never delete a stored
+// SUPPRESS, NEVER CLEAR. The SDK throws `Failed to verify token: <status> <statusText>`
+// (`WebSocketTokenError`, built at dist/index.mjs:5219, thrown at :5247) for a transient
+// 500/502/503 from the token-verify endpoint as for a genuine 401, and the client counts every
+// such rejection alike, whatever its status. So we never delete a stored
 // token: once AUTH_REJECT_SUPPRESS_THRESHOLD rejections have accrued SINCE THE LAST SUCCESS
 // we merely WITHHOLD it. If the resulting anonymous attempt succeeds, the host is up and
 // really did reject us, and `onConnected` overwrites the dead token with the new one — a
@@ -27,8 +27,8 @@ import type { TargetKind } from './shellDocument';
 
 /**
  * Credential rejections tolerated since the last successful connect before the stored token
- * is withheld. WHY 2 and not 1: one transient non-2xx from the verify endpoint is
- * indistinguishable from a real rejection (see the header), so a threshold of 1 would swap
+ * is withheld. WHY 2 and not 1: the client counts one transient non-2xx from the verify
+ * endpoint as it counts a real rejection (see the header), so a threshold of 1 would swap
  * the player's identity on a single server hiccup. WHY not higher: a genuinely dead token
  * repeats deterministically, so each extra rung only delays recovery — at 2 the host-reset
  * loop terminates after the 1 s + 2 s backoff rungs, about 3 s.
@@ -37,10 +37,11 @@ export const AUTH_REJECT_SUPPRESS_THRESHOLD = 2;
 
 /**
  * The exact prefix the SDK throws when the host refuses a supplied token
- * (`openWebSocket`, spacetimedb/dist/index.mjs:5119, throw at :5140). The trailing `': '` is load-bearing:
+ * (`WebSocketTokenError`, spacetimedb/dist/index.mjs:5219, thrown by `openWebSocket` at :5247). The
+ * trailing `': '` is load-bearing:
  * without it, an unrelated message such as `'Failed to verify tokens for the batch'` would
  * classify as a credential rejection. Pinned against SDK drift by the SDK-DRIFT tooth in
- * connection.test.ts — same exact-string-contract discipline connection.ts already applies
+ * authToken.test.ts — same exact-string-contract discipline connection.ts already applies
  * to the `'already joined'` reducer error.
  */
 const CREDENTIAL_REJECTED_PREFIX = 'Failed to verify token: ';
@@ -77,13 +78,12 @@ export interface AuthTokenGate {
 /**
  * True iff `err` is the SDK's token-verification rejection.
  *
- * TOTAL over `unknown` by construction. SDK 2.10.0+ normalizes the `ws.onerror` payload
- * with `toError(e)` before emitting (dist/index.mjs:5980-5988), so the raw-DOM-`Event`
- * hazard that originally forced this (2.6.0 dist:5829-5831) is gone — but the guard stays:
- * a throwing accessor or Proxy `get` trap on a foreign error object would still throw a
- * TypeError inside `onConnectError` and take the whole reconnect ladder down with it.
- * (Also new in 2.10.0: a MID-SESSION socket error closes the socket and surfaces via
- * `onDisconnect` with the error, not `onConnectError` — only pre-connect failures reach
+ * TOTAL over `unknown` by construction. The SDK normalizes the `ws.onerror` payload with
+ * `errorFromEvent(event, …)` before emitting (dist/index.mjs:6343), so a raw DOM `Event` does
+ * not reach it — but the guard stays: a throwing accessor or Proxy `get` trap on a foreign
+ * error object would still throw a TypeError inside `onConnectError` and take the whole
+ * reconnect ladder down with it. (A MID-SESSION socket error closes the socket and surfaces
+ * via `onDisconnect` with the error, not `onConnectError` — only pre-connect failures reach
  * the connectError path this classifier serves.)
  */
 export function isStoredCredentialRejected(err: unknown): boolean {
@@ -235,8 +235,8 @@ export function createAuthTokenGate(
 // moves the anonymous token only, never this marker.
 //
 // WHY A MARKER EXISTS AT ALL. The SDK echoes the credential we supplied back to
-// `onConnect`'s third argument: `spacetimedb/dist/index.mjs:5916` sets
-// `this.token` from `.withToken(...)` at construction, and `:6385-6387` adopts
+// `onConnect`'s third argument: `spacetimedb/dist/index.mjs:6214` sets
+// `this.token` from `.withToken(...)` at construction, and `:7059-7060` adopts
 // the host's own token ONLY `if (!this.token && …)`. So once an account (OIDC)
 // JWT is ever supplied, the UNCONDITIONAL `auth.onConnected(token)` in
 // connection.ts would persist it into the ANONYMOUS token slot — the slot

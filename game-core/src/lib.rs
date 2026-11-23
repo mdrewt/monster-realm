@@ -117,7 +117,7 @@ pub use world::{
 /// The protocol number of this build. It rises with every change to the server module's tables
 /// or reducers. The module records it in `module_info.protocol`, and `client-wasm` exports it
 /// as `protocol_version()`.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 4;
 /// The oldest client protocol a server of this build still speaks to, recorded in
 /// `module_info.min_client_protocol`. It rises only with a change an older client cannot talk
 /// across (a removed or re-typed reducer argument or table column), and it never exceeds

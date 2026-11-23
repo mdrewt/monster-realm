@@ -2,23 +2,19 @@
 //!
 //! One module per criterion: `open_by_default` (a world with no rule row is open),
 //! `unadmitted` (a `Password` world refuses an unadmitted connection before anything is
-//! recorded), `wrong_password` (the door and its lockout), `owner_only` (only
-//! `config.owner_identity` sets the rule or works the door), `owner_admits` (the owner's
-//! admit list), `password_hash` (the Argon2id parameters, against an independent
-//! implementation's known answers), and `allowlist` (an `Allowlist` world admits a bound
-//! identity by its account and an unbound one by its admission row).
+//! recorded), `owner_only` (only `config.owner_identity` sets the rule), `owner_admits` (the
+//! owner's admit list), `allowlist` (an `Allowlist` world admits a bound identity by its
+//! account and an unbound one by its admission row), `allowlist_seed` (a switch to
+//! `Allowlist` lists the accounts the rule in force admitted), `password_rule` (the owner's
+//! `Password` rule stores no salt and no hash), `legacy_password` (a salt and hash an earlier
+//! module stored admit nobody and go at the owner's next call) and `admitted_outright` (on a
+//! `Password` world the owner set, the identities the owner named get in and nobody else).
 //!
-//! The host models no rollback, so every refusal here is asserted to write nothing at all, and
-//! a counted wrong password is asserted to return `Ok` (a real host rolls back an `Err`, which
-//! would forget the count).
+//! The host models no rollback, so every refusal here is asserted to write nothing at all.
 
 use super::{
-    admit, attempts_locked, effective_rule, hash_password, is_admitted, password_matches,
-    recent_wrong_attempts, require_admitted, require_admitted_at_connect, set_world_access,
-    ADMIT_ATTEMPT_WINDOW_MS, ADMIT_MAX_WRONG_ATTEMPTS, PASSWORD_HASH_BYTES, PASSWORD_MAX_BYTES,
-    PASSWORD_SALT_BYTES, REJECT_ADMIT_LOCKED, REJECT_NOT_ADMITTED, REJECT_NOT_WORLD_OWNER,
-    REJECT_NO_PASSWORD_RULE, REJECT_OPEN_TAKES_NO_PASSWORD, REJECT_PASSWORD_LENGTH,
-    REJECT_PASSWORD_REQUIRED,
+    effective_rule, is_admitted, require_admitted, require_admitted_at_connect, set_world_access,
+    REJECT_NOT_ADMITTED, REJECT_NOT_WORLD_OWNER,
 };
 use crate::native_host_tests::{fixture, Fixture, Handle};
 use crate::schema::{
@@ -28,24 +24,14 @@ use crate::schema::{
 use spacetimedb::sats::bsatn;
 use spacetimedb::{ConnectionId, Identity, ReducerContext, Serialize, Timestamp};
 
-// --- known answers -----------------------------------------------------------
+// --- a salt and hash as an earlier module stored them -------------------------
 //
-// Argon2id v1.3, m = 19456 KiB, t = 2, p = 1, 32-byte tag, computed by an independent
-// implementation (OpenSSL through Node's `crypto.argon2Sync`).
+// A real Argon2id v1.3 hash (m = 19456 KiB, t = 2, p = 1, 32-byte tag) under a 16-byte salt,
+// computed by an independent implementation (OpenSSL through Node's `crypto.argon2Sync`): the
+// shape of the `world_access` row an earlier module wrote for a `Password` world.
 
 const KAT_SALT: &[u8; 16] = b"0123456789abcdef";
-const KAT_PASSWORD: &str = "correct horse";
 const KAT_HASH_HEX: &str = "ae4d8c8b713876044c8347c76986a9b5655944aaacfffe9bea4dff9e7b6a1899";
-const KAT2_PASSWORD: &str = "p";
-const KAT2_HASH_HEX: &str = "721231c82ccd80f45d6e9cacf6bedf24ac5fb55f2cbde872d43a2f36243b2bfa";
-
-/// A password that is not [`KAT_PASSWORD`].
-const WRONG: &str = "wrong horse";
-
-/// The second known answer's salt: the bytes 0, 1, ..., 15.
-fn kat2_salt() -> Vec<u8> {
-    (0u8..16).collect()
-}
 
 fn unhex(hex: &str) -> Vec<u8> {
     (0..hex.len())
@@ -155,13 +141,24 @@ fn seed_owner(w: &W<'_>, who: Identity) {
     });
 }
 
-/// The `Password` row whose password is [`KAT_PASSWORD`].
+/// A `Password` row holding [`KAT_SALT`] and the Argon2id hash under it, as an earlier module
+/// stored it.
 fn password_row() -> WorldAccess {
     WorldAccess {
         id: 0,
         rule: WorldAccessRule::Password,
         password_salt: KAT_SALT.to_vec(),
         password_hash: unhex(KAT_HASH_HEX),
+    }
+}
+
+/// The row the owner's `set_world_access` stores for `rule`: no salt and no hash.
+fn stored_row(rule: WorldAccessRule) -> WorldAccess {
+    WorldAccess {
+        id: 0,
+        rule,
+        password_salt: Vec::new(),
+        password_hash: Vec::new(),
     }
 }
 
@@ -174,7 +171,7 @@ fn open_row() -> WorldAccess {
     }
 }
 
-/// A world owned by [`owner`] whose rule is `Password` with [`KAT_PASSWORD`].
+/// A world owned by [`owner`] whose rule is `Password`, its row as [`password_row`].
 fn password_world(fx: &Fixture) -> W<'_> {
     let w = world(fx);
     seed_owner(&w, owner());
@@ -227,32 +224,15 @@ fn passes(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
     call(fx, who, ms, |ctx| require_admitted(ctx, "join_game"))
 }
 
-/// The owner works the door for `who`.
-fn door(fx: &Fixture, who: Identity, password: &str, ms: i64) -> Result<(), String> {
-    door_as(fx, owner(), who, password, ms)
-}
-
-fn door_as(
-    fx: &Fixture,
-    caller: Identity,
-    who: Identity,
-    password: &str,
-    ms: i64,
-) -> Result<(), String> {
-    call(fx, caller, ms, |ctx| admit(ctx, who, password.to_string()))
-}
-
+/// `caller` sets the rule to `rule` and admits `list` at `ms`.
 fn set_access(
     fx: &Fixture,
     caller: Identity,
     rule: WorldAccessRule,
-    password: Option<&str>,
     list: Vec<Identity>,
     ms: i64,
 ) -> Result<(), String> {
-    call(fx, caller, ms, |ctx| {
-        set_world_access(ctx, rule, password.map(str::to_string), list)
-    })
+    call(fx, caller, ms, |ctx| set_world_access(ctx, rule, list))
 }
 
 // --- observations ------------------------------------------------------------------
@@ -285,14 +265,6 @@ fn footprint(fx: &Fixture, w: &W<'_>) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> 
     ]
 }
 
-/// [`footprint`] without one table.
-fn footprint_except(fx: &Fixture, w: &W<'_>, skip: &str) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> {
-    footprint(fx, w)
-        .into_iter()
-        .filter(|(table, _, _)| *table != skip)
-        .collect()
-}
-
 /// The admission rows as `(identity bytes, admitted_at_ms)`, sorted.
 fn admissions(w: &W<'_>) -> Vec<([u8; 32], i64)> {
     let mut out: Vec<([u8; 32], i64)> = w
@@ -300,24 +272,6 @@ fn admissions(w: &W<'_>) -> Vec<([u8; 32], i64)> {
         .rows()
         .into_iter()
         .map(|r| (r.identity.to_byte_array(), r.admitted_at_ms))
-        .collect();
-    out.sort_unstable();
-    out
-}
-
-/// The attempt rows as `(identity bytes, wrong_at_ms, last_wrong_at_ms)`, sorted.
-fn attempts(w: &W<'_>) -> Vec<([u8; 32], Vec<i64>, i64)> {
-    let mut out: Vec<([u8; 32], Vec<i64>, i64)> = w
-        .attempt
-        .rows()
-        .into_iter()
-        .map(|r| {
-            (
-                r.identity.to_byte_array(),
-                r.wrong_at_ms,
-                r.last_wrong_at_ms,
-            )
-        })
         .collect();
     out.sort_unstable();
     out
@@ -685,513 +639,39 @@ mod unadmitted {
 }
 
 // =====================================================================================
-// The door refuses a wrong password, and five wrong ones lock an identity out.
-// =====================================================================================
-
-mod wrong_password {
-    use super::*;
-    use proptest::prelude::*;
-
-    /// One wrong password: `Ok(())` (a counted refusal must commit), no admission, one stamp,
-    /// and no write to any table but `world_admission_attempt`.
-    ///
-    /// kills: `admit` returning `Err` on a wrong password (the real host would roll the count
-    /// back); a wrong password admitted; the stamp keyed on the caller instead of `who`; a
-    /// write to the rule, config, session or admission tables.
-    #[test]
-    fn one_wrong_password_is_taken_counted_and_writes_nothing_else() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x21);
-        let before = footprint_except(&fx, &w, "world_admission_attempt");
-        assert_eq!(
-            door(&fx, who, WRONG, T0),
-            Ok(()),
-            "a wrong password is answered Ok so its count commits"
-        );
-        assert_eq!(admitted_at(&w, who), None, "a wrong password admits nobody");
-        assert_eq!(
-            attempts(&w),
-            vec![(who.to_byte_array(), vec![T0], T0)],
-            "exactly one attempt row, for `who`, holding this call's time"
-        );
-        assert_eq!(
-            footprint_except(&fx, &w, "world_admission_attempt"),
-            before,
-            "no table but world_admission_attempt is written"
-        );
-        assert_eq!(
-            passes(&fx, who, T0 + 1),
-            Err(REJECT_NOT_ADMITTED.to_string())
-        );
-    }
-
-    /// Four wrong passwords and then the right one: admitted at that call's time, and the
-    /// attempt row is gone.
-    ///
-    /// kills: a lock at four (`>= 4` or `> 3`); a right password that leaves the attempt row.
-    #[test]
-    fn four_wrong_then_the_right_password_admits_and_clears_the_attempts() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x22);
-        for i in 0..4 {
-            assert_eq!(door(&fx, who, WRONG, T0 + i), Ok(()));
-        }
-        assert_eq!(
-            attempts_of(&w, who),
-            Some((vec![T0, T0 + 1, T0 + 2, T0 + 3], T0 + 3))
-        );
-        assert_eq!(door(&fx, who, KAT_PASSWORD, T0 + 4), Ok(()));
-        assert_eq!(admitted_at(&w, who), Some(T0 + 4));
-        assert_eq!(attempts_of(&w, who), None, "admitting clears the attempts");
-        assert_eq!(passes(&fx, who, T0 + 5), Ok(()));
-        assert_eq!(call(&fx, who, T0 + 5, crate::on_connect), Ok(()));
-        assert_eq!(sessions_of(&w, who), vec![conn_of(who)]);
-    }
-
-    /// Five wrong passwords inside ten minutes, then the right one: refused as locked, with
-    /// no write at all on that call.
-    ///
-    /// kills: the lock at `> 5` (the sixth attempt is taken); a locked identity's right
-    /// password admitted; a locked call that still writes.
-    #[test]
-    fn five_wrong_then_the_right_password_is_locked_out_with_no_write() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x23);
-        let n = i64::try_from(ADMIT_MAX_WRONG_ATTEMPTS).expect("the attempt cap fits an i64");
-        for i in 0..n {
-            assert_eq!(door(&fx, who, WRONG, T0 + i * 1000), Ok(()));
-        }
-        let stamps: Vec<i64> = (0..n).map(|i| T0 + i * 1000).collect();
-        assert_eq!(attempts_of(&w, who), Some((stamps, T0 + (n - 1) * 1000)));
-        fx.reset_writes();
-        let before = footprint(&fx, &w);
-        assert_eq!(
-            door(&fx, who, KAT_PASSWORD, T0 + 10_000),
-            Err(REJECT_ADMIT_LOCKED.to_string())
-        );
-        assert_eq!(
-            footprint(&fx, &w),
-            before,
-            "a locked call writes nothing at all"
-        );
-        assert_eq!(admitted_at(&w, who), None);
-        assert_eq!(
-            passes(&fx, who, T0 + 10_001),
-            Err(REJECT_NOT_ADMITTED.to_string())
-        );
-    }
-
-    /// The lock is per identity: another identity's right password admits it while `who` is
-    /// locked, and `who` stays locked.
-    ///
-    /// kills: a lock counted per world (every identity locked by one guesser).
-    #[test]
-    fn the_lockout_is_per_identity() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x24);
-        let other = id(0x25);
-        w.attempt
-            .seed(&attempt_row(who, &[T0, T0 + 1, T0 + 2, T0 + 3, T0 + 4]));
-        assert_eq!(door(&fx, other, WRONG, T0 + 5), Ok(()));
-        assert_eq!(door(&fx, other, KAT_PASSWORD, T0 + 6), Ok(()));
-        assert_eq!(admitted_at(&w, other), Some(T0 + 6));
-        assert_eq!(
-            door(&fx, who, KAT_PASSWORD, T0 + 7),
-            Err(REJECT_ADMIT_LOCKED.to_string())
-        );
-        assert_eq!(admitted_at(&w, who), None);
-        assert_eq!(
-            attempts_of(&w, who),
-            Some((vec![T0, T0 + 1, T0 + 2, T0 + 3, T0 + 4], T0 + 4)),
-            "the locked identity's stamps are its own"
-        );
-    }
-
-    /// The boundary: the right password is refused at the oldest stamp + 599 999 ms and
-    /// admits at the oldest stamp + 600 000 ms.
-    ///
-    /// kills: a lock that expires early; `<=` in the window test (the lock outlives ten
-    /// minutes by one millisecond); a lock that never expires.
-    #[test]
-    fn the_lock_ends_exactly_ten_minutes_after_the_oldest_wrong_attempt() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x26);
-        w.attempt
-            .seed(&attempt_row(who, &[T0, T0 + 1, T0 + 2, T0 + 3, T0 + 4]));
-        assert_eq!(
-            door(&fx, who, KAT_PASSWORD, T0 + ADMIT_ATTEMPT_WINDOW_MS - 1),
-            Err(REJECT_ADMIT_LOCKED.to_string()),
-            "one millisecond before the oldest stamp ages out the identity is still locked"
-        );
-        assert_eq!(admitted_at(&w, who), None);
-        assert_eq!(
-            door(&fx, who, KAT_PASSWORD, T0 + ADMIT_ATTEMPT_WINDOW_MS),
-            Ok(())
-        );
-        assert_eq!(admitted_at(&w, who), Some(T0 + ADMIT_ATTEMPT_WINDOW_MS));
-        assert_eq!(attempts_of(&w, who), None);
-    }
-
-    /// The window slides: four wrong at t0 and a fifth at t0 + 599 000 lock; at t0 + 600 000
-    /// the first four have aged out, so one more attempt is taken and the row keeps only the
-    /// recent stamps plus the new one.
-    ///
-    /// kills: a lock that never expires; stale stamps kept in the row; a lock reset to zero
-    /// rather than slid.
-    #[test]
-    fn the_window_slides_and_aged_out_stamps_leave_the_row() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x27);
-        w.attempt.seed(&attempt_row(who, &[T0, T0, T0, T0]));
-        let fifth = T0 + 599_000;
-        assert_eq!(door(&fx, who, WRONG, fifth), Ok(()));
-        assert_eq!(
-            attempts_of(&w, who),
-            Some((vec![T0, T0, T0, T0, fifth], fifth))
-        );
-        assert_eq!(
-            door(&fx, who, KAT_PASSWORD, T0 + 599_500),
-            Err(REJECT_ADMIT_LOCKED.to_string())
-        );
-        let later = T0 + ADMIT_ATTEMPT_WINDOW_MS;
-        assert_eq!(
-            door(&fx, who, WRONG, later),
-            Ok(()),
-            "the four oldest stamps have aged out: the attempt is taken"
-        );
-        assert_eq!(
-            attempts_of(&w, who),
-            Some((vec![fifth, later], later)),
-            "the row is its recent stamps plus this one"
-        );
-        assert_eq!(door(&fx, who, KAT_PASSWORD, later + 1), Ok(()));
-        assert_eq!(admitted_at(&w, who), Some(later + 1));
-    }
-
-    /// A clock that runs backwards does not unlock: stamps ahead of the clock are recent.
-    ///
-    /// kills: `now - t` computed so a future stamp falls out of the window.
-    #[test]
-    fn a_clock_that_runs_backwards_does_not_unlock() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x28);
-        let stamps = [T0, T0 + 1, T0 + 2, T0 + 3, T0 + 4];
-        w.attempt.seed(&attempt_row(who, &stamps));
-        for earlier in [
-            T0 - 1,
-            T0 - ADMIT_ATTEMPT_WINDOW_MS,
-            T0 - 10 * ADMIT_ATTEMPT_WINDOW_MS,
-        ] {
-            assert_eq!(
-                door(&fx, who, KAT_PASSWORD, earlier),
-                Err(REJECT_ADMIT_LOCKED.to_string()),
-                "at {earlier} the five stamps ahead of the clock still lock"
-            );
-        }
-        assert_eq!(admitted_at(&w, who), None);
-        assert_eq!(attempts_of(&w, who), Some((stamps.to_vec(), T0 + 4)));
-    }
-
-    /// A clock that steps backwards does not let the sweep clear a lock. Four wrong passwords
-    /// at `t`; the clock steps back eleven minutes and a fifth is taken (the four ahead of
-    /// the clock still count). The row's sweep key is its LATEST stamp, `t`, not the time of
-    /// that call. Another identity's wrong password one minute before `t` runs the sweep,
-    /// which must keep `who`'s row because its stamps at `t` still count; a millisecond
-    /// earlier all five count again and the right password is refused as locked.
-    ///
-    /// kills: `last_wrong_at_ms` stored as the call's time (the sweep then deletes a row
-    /// that still holds counting stamps, and the lock is gone).
-    #[test]
-    fn a_clock_that_steps_backwards_does_not_let_the_sweep_clear_a_lock() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x51);
-        let other = id(0x52);
-        let t = T0;
-        w.attempt.seed(&attempt_row(who, &[t, t, t, t]));
-        let stepped_back = t - 11 * 60_000;
-        assert_eq!(door(&fx, who, WRONG, stepped_back), Ok(()));
-        assert_eq!(
-            attempts_of(&w, who),
-            Some((vec![t, t, t, t, stepped_back], t)),
-            "five counting stamps, keyed for the sweep on the latest of them"
-        );
-        let sweep_at = t - 60_000;
-        assert_eq!(door(&fx, other, WRONG, sweep_at), Ok(()));
-        assert_eq!(
-            attempts_of(&w, who),
-            Some((vec![t, t, t, t, stepped_back], t)),
-            "the sweep keeps a row whose latest stamp is inside the window"
-        );
-        assert_eq!(
-            door(&fx, who, KAT_PASSWORD, sweep_at - 1),
-            Err(REJECT_ADMIT_LOCKED.to_string()),
-            "all five stamps count, so `who` is still locked"
-        );
-        assert_eq!(admitted_at(&w, who), None);
-    }
-
-    /// An already-admitted `who` given a wrong password: `Ok(())`, no attempt row, nothing
-    /// written.
-    ///
-    /// kills: an admitted identity's wrong guess counted, or its admission dropped.
-    #[test]
-    fn an_admitted_who_with_a_wrong_password_is_ok_and_counts_nothing() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x29);
-        w.admission.seed(&admission_row(who, T0 - 9));
-        let before = footprint(&fx, &w);
-        assert_eq!(door(&fx, who, WRONG, T0), Ok(()));
-        assert_eq!(footprint(&fx, &w), before, "nothing is written");
-        assert_eq!(attempts_of(&w, who), None);
-        assert_eq!(admitted_at(&w, who), Some(T0 - 9));
-    }
-
-    /// The door on an `Open` world (no row, or an `Open` row) is refused with no write.
-    ///
-    /// kills: the rule check dropped (the door counts or admits on an open world).
-    #[test]
-    fn the_door_on_an_open_world_is_refused_with_no_write() {
-        let fx = fixture();
-        let w = world(&fx);
-        seed_owner(&w, owner());
-        let who = id(0x2A);
-        let before = footprint(&fx, &w);
-        for password in [WRONG, KAT_PASSWORD] {
-            assert_eq!(
-                door(&fx, who, password, T0),
-                Err(REJECT_NO_PASSWORD_RULE.to_string())
-            );
-        }
-        assert_eq!(footprint(&fx, &w), before);
-        w.access.seed(&open_row());
-        let before = footprint(&fx, &w);
-        assert_eq!(
-            door(&fx, who, WRONG, T0),
-            Err(REJECT_NO_PASSWORD_RULE.to_string())
-        );
-        assert_eq!(footprint(&fx, &w), before);
-    }
-
-    /// An empty password and one over `PASSWORD_MAX_BYTES` bytes (counted in BYTES) are
-    /// refused and not counted; one of exactly `PASSWORD_MAX_BYTES` bytes is a counted wrong
-    /// attempt.
-    ///
-    /// kills: the length checked in chars; an off-by-one at the maximum; an over-long
-    /// password counted as a wrong attempt.
-    #[test]
-    fn an_empty_or_oversize_password_is_refused_and_not_counted() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x2B);
-        let e_acute = char::from_u32(0xE9).expect("U+00E9 is a char");
-        let two_byte: String = std::iter::repeat_n(e_acute, PASSWORD_MAX_BYTES / 2 + 1).collect();
-        assert!(two_byte.chars().count() <= PASSWORD_MAX_BYTES);
-        assert!(two_byte.len() > PASSWORD_MAX_BYTES);
-        let before = footprint(&fx, &w);
-        for password in [String::new(), "x".repeat(PASSWORD_MAX_BYTES + 1), two_byte] {
-            assert_eq!(
-                door(&fx, who, &password, T0),
-                Err(REJECT_PASSWORD_LENGTH.to_string()),
-                "a {}-byte password",
-                password.len()
-            );
-        }
-        assert_eq!(footprint(&fx, &w), before, "not counted, nothing written");
-        assert_eq!(
-            door(&fx, who, &"x".repeat(PASSWORD_MAX_BYTES), T0 + 1),
-            Ok(())
-        );
-        assert_eq!(
-            attempts_of(&w, who),
-            Some((vec![T0 + 1], T0 + 1)),
-            "a maximum-length wrong password is a counted attempt"
-        );
-    }
-
-    /// A writing door call sweeps every OTHER identity's attempt row whose last stamp is a
-    /// full window behind, and keeps a fresh one; the right-password path sweeps too.
-    ///
-    /// kills: the sweep dropped (stale rows accumulate forever); a sweep that deletes a fresh
-    /// row; a sweep off by one at the window edge.
-    #[test]
-    fn a_writing_call_sweeps_stale_attempt_rows_and_keeps_fresh_ones() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x2C);
-        let stale = id(0x2D);
-        let fresh = id(0x2E);
-        let stale_later = id(0x2F);
-        let edge = T0 - ADMIT_ATTEMPT_WINDOW_MS;
-        w.attempt.seed(&attempt_row(stale, &[edge - 5, edge]));
-        w.attempt
-            .seed(&attempt_row(fresh, &[T0 - ADMIT_ATTEMPT_WINDOW_MS + 1]));
-        assert_eq!(door(&fx, who, WRONG, T0), Ok(()));
-        assert_eq!(attempts_of(&w, stale), None, "a full window behind: swept");
-        assert_eq!(
-            attempts_of(&w, fresh),
-            Some((
-                vec![T0 - ADMIT_ATTEMPT_WINDOW_MS + 1],
-                T0 - ADMIT_ATTEMPT_WINDOW_MS + 1
-            )),
-            "one millisecond inside the window: kept"
-        );
-        w.attempt.seed(&attempt_row(
-            stale_later,
-            &[T0 + 1 - ADMIT_ATTEMPT_WINDOW_MS],
-        ));
-        assert_eq!(door(&fx, who, KAT_PASSWORD, T0 + 1), Ok(()));
-        assert_eq!(
-            attempts_of(&w, stale_later),
-            None,
-            "the admitting call sweeps too"
-        );
-        assert_eq!(
-            attempts_of(&w, fresh),
-            None,
-            "a full window behind T0 + 1: swept"
-        );
-        assert_eq!(admitted_at(&w, who), Some(T0 + 1));
-    }
-
-    /// The door writes rows for `who` only: never for the calling owner, never for anybody
-    /// else.
-    ///
-    /// kills: an admission or attempt keyed on `ctx.sender()`.
-    #[test]
-    fn the_door_writes_no_row_for_anyone_but_who() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let who = id(0x30);
-        assert_eq!(door(&fx, who, WRONG, T0), Ok(()));
-        assert_eq!(attempts(&w), vec![(who.to_byte_array(), vec![T0], T0)]);
-        assert!(w.admission.rows().is_empty());
-        assert_eq!(door(&fx, who, KAT_PASSWORD, T0 + 1), Ok(()));
-        assert_eq!(admissions(&w), vec![(who.to_byte_array(), T0 + 1)]);
-        assert!(w.attempt.rows().is_empty());
-        assert_eq!(admitted_at(&w, owner()), None, "the owner gains no row");
-    }
-
-    /// The pure window: the stamps strictly less than a window behind `now` (a stamp ahead of
-    /// the clock is recent), order kept; the lock is five or more recent stamps.
-    ///
-    /// kills: `<=` at the edge; future stamps dropped; the order changed; an overflowing
-    /// subtraction; a lock at `> 5`.
-    #[test]
-    fn the_recent_stamps_and_the_lock_follow_the_window() {
-        let w = ADMIT_ATTEMPT_WINDOW_MS;
-        let now = T0 + w;
-        assert_eq!(
-            recent_wrong_attempts(&[T0, T0 + 1, now, now + 5], now),
-            vec![T0 + 1, now, now + 5]
-        );
-        assert_eq!(
-            recent_wrong_attempts(&[now - 1, now - 9, now - 3], now),
-            vec![now - 1, now - 9, now - 3],
-            "order is kept"
-        );
-        assert!(recent_wrong_attempts(&[], now).is_empty());
-        assert!(recent_wrong_attempts(&[i64::MIN], i64::MAX).is_empty());
-        assert_eq!(recent_wrong_attempts(&[i64::MAX], i64::MIN), vec![i64::MAX]);
-
-        let recent = |n: usize| -> Vec<i64> { (0..n).map(|i| now - i as i64).collect() };
-        assert!(!attempts_locked(&recent(ADMIT_MAX_WRONG_ATTEMPTS - 1), now));
-        assert!(attempts_locked(&recent(ADMIT_MAX_WRONG_ATTEMPTS), now));
-        assert!(attempts_locked(&recent(ADMIT_MAX_WRONG_ATTEMPTS + 1), now));
-        let mut aged = recent(ADMIT_MAX_WRONG_ATTEMPTS - 1);
-        aged.insert(0, now - w);
-        assert!(
-            !attempts_locked(&aged, now),
-            "a stamp a full window behind does not count"
-        );
-        assert!(attempts_locked(
-            &recent(ADMIT_MAX_WRONG_ATTEMPTS),
-            now - 1_000_000
-        ));
-    }
-
-    proptest! {
-        /// For any stamps near any clock: the recent stamps are exactly those less than a
-        /// window behind (order kept), and the identity is locked exactly when five or more
-        /// are recent — never more than four recent stamps lock-free.
-        #[test]
-        fn the_lock_is_exactly_five_or_more_recent_stamps(
-            now in -1_000_000_000_000i64..4_000_000_000_000i64,
-            offsets in prop::collection::vec(-1_300_000i64..1_300_000i64, 0..10),
-        ) {
-            let stamps: Vec<i64> = offsets.iter().map(|o| now + o).collect();
-            let want: Vec<i64> = stamps
-                .iter()
-                .copied()
-                .filter(|&t| now.saturating_sub(t) < ADMIT_ATTEMPT_WINDOW_MS)
-                .collect();
-            let locked = want.len() >= ADMIT_MAX_WRONG_ATTEMPTS;
-            prop_assert_eq!(recent_wrong_attempts(&stamps, now), want);
-            prop_assert_eq!(attempts_locked(&stamps, now), locked);
-        }
-    }
-}
-
-// =====================================================================================
-// Only `config.owner_identity` may call `set_world_access` (or work the door).
+// Only `config.owner_identity` may call `set_world_access`.
 // =====================================================================================
 
 mod owner_only {
     use super::*;
 
-    /// A stranger on an `Open` world cannot set the rule, admit itself, or work the door.
+    /// A stranger on an `Open` world cannot set the rule or admit itself.
     ///
-    /// kills: the owner check dropped from either access reducer.
+    /// kills: the owner check dropped from `set_world_access`.
     #[test]
-    fn a_stranger_on_an_open_world_cannot_set_the_rule_or_work_the_door() {
+    fn a_stranger_on_an_open_world_cannot_set_the_rule() {
         let fx = fixture();
         let w = world(&fx);
         seed_owner(&w, owner());
         let stranger = id(0x31);
         let before = footprint(&fx, &w);
         assert_eq!(
-            set_access(
-                &fx,
-                stranger,
-                WorldAccessRule::Password,
-                Some("mine now"),
-                vec![stranger],
-                T0
-            ),
+            set_access(&fx, stranger, WorldAccessRule::Password, vec![stranger], T0),
             Err(REJECT_NOT_WORLD_OWNER.to_string())
         );
         assert_eq!(
-            set_access(
-                &fx,
-                stranger,
-                WorldAccessRule::Open,
-                None,
-                vec![stranger],
-                T0
-            ),
-            Err(REJECT_NOT_WORLD_OWNER.to_string())
-        );
-        assert_eq!(
-            door_as(&fx, stranger, stranger, KAT_PASSWORD, T0),
+            set_access(&fx, stranger, WorldAccessRule::Open, vec![stranger], T0),
             Err(REJECT_NOT_WORLD_OWNER.to_string())
         );
         assert_eq!(footprint(&fx, &w), before, "nothing is written");
     }
 
-    /// An ADMITTED non-owner on a `Password` world is refused both access reducers, so the
+    /// An ADMITTED non-owner on a `Password` world is refused `set_world_access`, so the
     /// refusal is the owner check's, not the admission check's.
     ///
-    /// kills: `set_world_access` or `admit` gated on admission instead of ownership.
+    /// kills: `set_world_access` gated on admission instead of ownership.
     #[test]
-    fn an_admitted_non_owner_cannot_set_the_rule_or_work_the_door() {
+    fn an_admitted_non_owner_cannot_set_the_rule() {
         let fx = fixture();
         let w = password_world(&fx);
         let let_in = id(0x32);
@@ -1199,51 +679,14 @@ mod owner_only {
         assert_eq!(passes(&fx, let_in, T0), Ok(()), "fixture: it is admitted");
         let before = footprint(&fx, &w);
         assert_eq!(
-            set_access(&fx, let_in, WorldAccessRule::Open, None, Vec::new(), T0),
+            set_access(&fx, let_in, WorldAccessRule::Open, Vec::new(), T0),
             Err(REJECT_NOT_WORLD_OWNER.to_string())
         );
         assert_eq!(
-            set_access(
-                &fx,
-                let_in,
-                WorldAccessRule::Password,
-                None,
-                vec![id(0x33)],
-                T0
-            ),
-            Err(REJECT_NOT_WORLD_OWNER.to_string())
-        );
-        assert_eq!(
-            door_as(&fx, let_in, id(0x33), KAT_PASSWORD, T0),
+            set_access(&fx, let_in, WorldAccessRule::Password, vec![id(0x33)], T0),
             Err(REJECT_NOT_WORLD_OWNER.to_string())
         );
         assert_eq!(footprint(&fx, &w), before, "nothing is written");
-    }
-
-    /// A non-owner giving the right password to the door is refused, writes nothing and
-    /// admits nobody — for itself or for another.
-    ///
-    /// kills: the door open to any caller who knows the password; an attempt or admission
-    /// written before the owner check.
-    #[test]
-    fn a_non_owner_giving_the_right_password_to_the_door_is_refused() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let stranger = id(0x34);
-        let before = footprint(&fx, &w);
-        for who in [stranger, id(0x35)] {
-            for password in [KAT_PASSWORD, WRONG] {
-                assert_eq!(
-                    door_as(&fx, stranger, who, password, T0),
-                    Err(REJECT_NOT_WORLD_OWNER.to_string())
-                );
-            }
-        }
-        assert_eq!(footprint(&fx, &w), before, "nothing is written");
-        assert_eq!(
-            passes(&fx, stranger, T0),
-            Err(REJECT_NOT_ADMITTED.to_string())
-        );
     }
 
     /// The database identity is not the owner when `config` names someone else.
@@ -1257,20 +700,16 @@ mod owner_only {
         fx.set_database_identity(database);
         let before = footprint(&fx, &w);
         assert_eq!(
-            set_access(&fx, database, WorldAccessRule::Open, None, Vec::new(), T0),
-            Err(REJECT_NOT_WORLD_OWNER.to_string())
-        );
-        assert_eq!(
-            door_as(&fx, database, database, KAT_PASSWORD, T0),
+            set_access(&fx, database, WorldAccessRule::Open, Vec::new(), T0),
             Err(REJECT_NOT_WORLD_OWNER.to_string())
         );
         assert_eq!(footprint(&fx, &w), before);
     }
 
     /// A `config` row whose owner is the all-zero identity (the column default: an owner
-    /// never registered) names nobody: the all-zero caller is refused both access reducers
-    /// with no write, and on a `Password` world it is refused by the admission check unless
-    /// it holds an admission row.
+    /// never registered) names nobody: the all-zero caller is refused `set_world_access` with
+    /// no write, and on a `Password` world it is refused by the admission check unless it
+    /// holds an admission row.
     ///
     /// kills: the unregistered-owner clause dropped (the all-zero identity treated as the
     /// owner it matches).
@@ -1282,22 +721,11 @@ mod owner_only {
         seed_owner(&w, zero);
         let before = footprint(&fx, &w);
         assert_eq!(
-            set_access(
-                &fx,
-                zero,
-                WorldAccessRule::Password,
-                Some("pw"),
-                vec![zero],
-                T0
-            ),
+            set_access(&fx, zero, WorldAccessRule::Password, vec![zero], T0),
             Err(REJECT_NOT_WORLD_OWNER.to_string())
         );
         assert_eq!(
-            set_access(&fx, zero, WorldAccessRule::Open, None, Vec::new(), T0),
-            Err(REJECT_NOT_WORLD_OWNER.to_string())
-        );
-        assert_eq!(
-            door_as(&fx, zero, zero, KAT_PASSWORD, T0),
+            set_access(&fx, zero, WorldAccessRule::Open, Vec::new(), T0),
             Err(REJECT_NOT_WORLD_OWNER.to_string())
         );
         assert_eq!(footprint(&fx, &w), before, "nothing is written");
@@ -1314,11 +742,10 @@ mod owner_only {
     }
 
     /// With no `config` row nobody owns the world: every caller — a stranger, the would-be
-    /// owner, the all-zero identity, the database identity — is refused both reducers, before
-    /// the door's rule check.
+    /// owner, the all-zero identity, the database identity — is refused `set_world_access`.
     ///
     /// kills: a missing config row read as "anyone is the owner"; an owner defaulted to the
-    /// all-zero identity or the database identity; the door's rule check run first.
+    /// all-zero identity or the database identity.
     #[test]
     fn with_no_config_row_every_caller_is_refused() {
         let fx = fixture();
@@ -1329,22 +756,9 @@ mod owner_only {
         let before = footprint(&fx, &w);
         for caller in [id(0x36), owner(), zero, database] {
             assert_eq!(
-                set_access(
-                    &fx,
-                    caller,
-                    WorldAccessRule::Password,
-                    Some("pw"),
-                    vec![caller],
-                    T0
-                ),
+                set_access(&fx, caller, WorldAccessRule::Password, vec![caller], T0),
                 Err(REJECT_NOT_WORLD_OWNER.to_string()),
                 "set_world_access by {}",
-                caller.to_hex()
-            );
-            assert_eq!(
-                door_as(&fx, caller, caller, KAT_PASSWORD, T0),
-                Err(REJECT_NOT_WORLD_OWNER.to_string()),
-                "admit by {}",
                 caller.to_hex()
             );
         }
@@ -1359,96 +773,6 @@ mod owner_only {
 mod owner_admits {
     use super::*;
 
-    /// The owner sets a password and admits `x` in the same call: `x` is admitted at the
-    /// call's time with no password given for it, passes the check and connects; the stored
-    /// row is a 16-byte salt and the hash of the password under it.
-    ///
-    /// kills: the admit list ignored; an admission time not the call's; the password stored
-    /// in the clear or hashed under another salt; a salt of the wrong length.
-    #[test]
-    fn the_owner_admits_an_identity_without_its_password() {
-        let fx = fixture();
-        let w = world(&fx);
-        seed_owner(&w, owner());
-        let x = id(0x41);
-        let typed = "hunter two";
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some(typed),
-                vec![x],
-                T0
-            ),
-            Ok(())
-        );
-        let rows = w.access.rows();
-        assert_eq!(rows.len(), 1, "one access row");
-        let row = &rows[0];
-        assert_eq!(row.id, 0);
-        assert_eq!(row.rule, WorldAccessRule::Password);
-        assert_eq!(row.password_salt.len(), PASSWORD_SALT_BYTES);
-        assert_eq!(row.password_hash.len(), PASSWORD_HASH_BYTES);
-        assert_eq!(
-            row.password_hash,
-            hash_password(&row.password_salt, typed),
-            "the stored hash is the password's hash under the stored salt"
-        );
-        assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
-        assert_eq!(passes(&fx, x, T0 + 1), Ok(()));
-        assert_eq!(call(&fx, x, T0 + 1, crate::on_connect), Ok(()));
-        assert_eq!(sessions_of(&w, x), vec![conn_of(x)]);
-        assert_eq!(
-            passes(&fx, id(0x42), T0 + 1),
-            Err(REJECT_NOT_ADMITTED.to_string()),
-            "the rule took effect for everyone else"
-        );
-    }
-
-    /// Each password is stored under a fresh salt: the same password set at two different
-    /// times gets two different salts and so two different hashes, and no salt is one byte
-    /// repeated.
-    ///
-    /// kills: a fixed salt (every world's hash of a password is the same, so one
-    /// precomputed table serves them all).
-    #[test]
-    fn the_same_password_set_twice_is_stored_under_two_fresh_salts() {
-        let fx = fixture();
-        let w = world(&fx);
-        seed_owner(&w, owner());
-        let chosen = "same every time";
-        let mut stored: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        for ms in [T0, T0 + 1] {
-            assert_eq!(
-                set_access(
-                    &fx,
-                    owner(),
-                    WorldAccessRule::Password,
-                    Some(chosen),
-                    Vec::new(),
-                    ms
-                ),
-                Ok(())
-            );
-            let rows = w.access.rows();
-            assert_eq!(rows.len(), 1);
-            stored.push((rows[0].password_salt.clone(), rows[0].password_hash.clone()));
-        }
-        for (salt, _) in &stored {
-            assert_eq!(salt.len(), PASSWORD_SALT_BYTES);
-            assert!(
-                salt.iter().any(|b| *b != salt[0]),
-                "a salt that is one byte repeated is not random: {salt:?}"
-            );
-        }
-        assert_ne!(stored[0].0, stored[1].0, "a fresh salt per password");
-        assert_ne!(
-            stored[0].1, stored[1].1,
-            "so the same password hashes differently"
-        );
-    }
-
     /// An admit list under `Open` writes the admission, and it still holds after the rule
     /// becomes `Password`.
     ///
@@ -1461,20 +785,13 @@ mod owner_admits {
         seed_owner(&w, owner());
         let x = id(0x43);
         assert_eq!(
-            set_access(&fx, owner(), WorldAccessRule::Open, None, vec![x], T0),
+            set_access(&fx, owner(), WorldAccessRule::Open, vec![x], T0),
             Ok(())
         );
         assert_eq!(access_row(&w), enc(&open_row()));
         assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some("pw one"),
-                Vec::new(),
-                T0 + 5
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0 + 5),
             Ok(())
         );
         assert_eq!(
@@ -1504,14 +821,7 @@ mod owner_admits {
         w.session.seed(&session_row(a, 0x0A02));
         w.session.seed(&session_row(owner(), 0x0C01));
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some("pw two"),
-                Vec::new(),
-                T0
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0),
             Ok(())
         );
         let mut want = vec![(a.to_byte_array(), T0), (b.to_byte_array(), T0)];
@@ -1525,38 +835,6 @@ mod owner_admits {
         );
     }
 
-    /// `Password` -> `Password` admits nobody but the admit list: a connected, unadmitted
-    /// identity stays refused.
-    ///
-    /// kills: a password change admitting everyone connected.
-    #[test]
-    fn a_password_change_admits_no_connected_unadmitted_identity() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let s = id(0x47);
-        let x = id(0x48);
-        w.session.seed(&session_row(s, 0x0D01));
-        assert_eq!(
-            set_access(&fx, owner(), WorldAccessRule::Password, None, vec![x], T0),
-            Ok(())
-        );
-        assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
-        assert_eq!(passes(&fx, s, T0 + 1), Err(REJECT_NOT_ADMITTED.to_string()));
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some("pw three"),
-                Vec::new(),
-                T0 + 2
-            ),
-            Ok(())
-        );
-        assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
-        assert_eq!(passes(&fx, s, T0 + 3), Err(REJECT_NOT_ADMITTED.to_string()));
-    }
-
     /// Admitting an identity twice keeps its first admission time — through the admit list
     /// and through leaving `Open`.
     ///
@@ -1568,31 +846,17 @@ mod owner_admits {
         seed_owner(&w, owner());
         let x = id(0x49);
         assert_eq!(
-            set_access(&fx, owner(), WorldAccessRule::Open, None, vec![x], T0),
+            set_access(&fx, owner(), WorldAccessRule::Open, vec![x], T0),
             Ok(())
         );
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Open,
-                None,
-                vec![x, x],
-                T0 + 50
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Open, vec![x, x], T0 + 50),
             Ok(())
         );
         assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
         w.session.seed(&session_row(x, 0x0E01));
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some("pw four"),
-                vec![x],
-                T0 + 100
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Password, vec![x], T0 + 100),
             Ok(())
         );
         assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
@@ -1611,318 +875,12 @@ mod owner_admits {
         w.attempt.seed(&attempt_row(x, &[T0 - 3, T0 - 2]));
         w.attempt.seed(&attempt_row(y, &[T0 - 3, T0 - 1]));
         assert_eq!(
-            set_access(&fx, owner(), WorldAccessRule::Password, None, vec![x], T0),
+            set_access(&fx, owner(), WorldAccessRule::Password, vec![x], T0),
             Ok(())
         );
         assert_eq!(attempts_of(&w, x), None);
         assert_eq!(attempts_of(&w, y), Some((vec![T0 - 3, T0 - 1], T0 - 1)));
         assert_eq!(admitted_at(&w, x), Some(T0));
-    }
-
-    /// Every validation refuses before any write: `Open` with a password, an empty or
-    /// over-long password, and `Password` with no password while no hash is stored (no row,
-    /// an `Open` row, a `Password` row with no hash). A password of exactly the maximum is
-    /// taken.
-    ///
-    /// kills: `Password` + `None` accepted on a world that never had a password; a password
-    /// length checked in chars or off by one; a validation that writes before refusing.
-    #[test]
-    fn the_access_call_validates_before_any_write() {
-        let fx = fixture();
-        let w = world(&fx);
-        seed_owner(&w, owner());
-        let x = id(0x4C);
-        let e_acute = char::from_u32(0xE9).expect("U+00E9 is a char");
-        let two_byte: String = std::iter::repeat_n(e_acute, PASSWORD_MAX_BYTES / 2 + 1).collect();
-        let no_hash = WorldAccess {
-            password_salt: Vec::new(),
-            password_hash: Vec::new(),
-            ..password_row()
-        };
-        let cases: [(Option<WorldAccess>, WorldAccessRule, Option<String>, &str); 9] = [
-            (
-                Some(password_row()),
-                WorldAccessRule::Open,
-                Some("pw".to_string()),
-                REJECT_OPEN_TAKES_NO_PASSWORD,
-            ),
-            (
-                None,
-                WorldAccessRule::Open,
-                Some("pw".to_string()),
-                REJECT_OPEN_TAKES_NO_PASSWORD,
-            ),
-            (
-                None,
-                WorldAccessRule::Password,
-                Some(String::new()),
-                REJECT_PASSWORD_LENGTH,
-            ),
-            (
-                None,
-                WorldAccessRule::Password,
-                Some("x".repeat(PASSWORD_MAX_BYTES + 1)),
-                REJECT_PASSWORD_LENGTH,
-            ),
-            (
-                Some(password_row()),
-                WorldAccessRule::Password,
-                Some(two_byte),
-                REJECT_PASSWORD_LENGTH,
-            ),
-            (
-                Some(password_row()),
-                WorldAccessRule::Password,
-                Some(String::new()),
-                REJECT_PASSWORD_LENGTH,
-            ),
-            (
-                None,
-                WorldAccessRule::Password,
-                None,
-                REJECT_PASSWORD_REQUIRED,
-            ),
-            (
-                Some(open_row()),
-                WorldAccessRule::Password,
-                None,
-                REJECT_PASSWORD_REQUIRED,
-            ),
-            (
-                Some(no_hash),
-                WorldAccessRule::Password,
-                None,
-                REJECT_PASSWORD_REQUIRED,
-            ),
-        ];
-        for (stored, rule, password, want) in cases {
-            let _ = w.access.remove(0);
-            if let Some(row) = &stored {
-                w.access.seed(row);
-            }
-            fx.reset_writes();
-            let before = footprint(&fx, &w);
-            assert_eq!(
-                set_access(&fx, owner(), rule, password.as_deref(), vec![x], T0),
-                Err(want.to_string()),
-                "{rule:?} with a {:?}-byte password over {:?}",
-                password.as_ref().map(String::len),
-                stored.as_ref().map(|r| r.rule)
-            );
-            assert_eq!(footprint(&fx, &w), before, "refused before any write");
-            assert_eq!(admitted_at(&w, x), None, "the admit list is not applied");
-        }
-        let _ = w.access.remove(0);
-        let longest = "x".repeat(PASSWORD_MAX_BYTES);
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some(&longest),
-                Vec::new(),
-                T0
-            ),
-            Ok(()),
-            "a password of exactly the maximum is taken"
-        );
-    }
-
-    /// `Password` with no new password keeps the stored salt and hash byte for byte, and the
-    /// old password still admits through the door.
-    ///
-    /// kills: `Password` + `None` re-salting, re-hashing or clearing the stored hash.
-    #[test]
-    fn password_with_no_new_password_keeps_the_salt_and_hash_byte_for_byte() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                None,
-                Vec::new(),
-                T0
-            ),
-            Ok(())
-        );
-        assert_eq!(access_row(&w), enc(&password_row()));
-        let who = id(0x4D);
-        assert_eq!(door(&fx, who, KAT_PASSWORD, T0 + 1), Ok(()));
-        assert_eq!(admitted_at(&w, who), Some(T0 + 1));
-    }
-
-    /// Returning to `Open` empties the salt and hash (admissions survive), opens the world,
-    /// and `Password` + `None` is then refused as needing a password.
-    ///
-    /// kills: returning to `Open` keeping the old salt or hash (a later `Password` + `None`
-    /// would silently restore the old password); admissions dropped on the way.
-    #[test]
-    fn returning_to_open_empties_the_salt_and_hash_and_then_a_password_is_required() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let x = id(0x4E);
-        w.admission.seed(&admission_row(x, T0 - 7));
-        assert_eq!(
-            set_access(&fx, owner(), WorldAccessRule::Open, None, Vec::new(), T0),
-            Ok(())
-        );
-        assert_eq!(access_row(&w), enc(&open_row()));
-        assert_eq!(passes(&fx, id(0x4F), T0 + 1), Ok(()), "the world is open");
-        assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0 - 7)]);
-        let before = footprint(&fx, &w);
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                None,
-                Vec::new(),
-                T0 + 2
-            ),
-            Err(REJECT_PASSWORD_REQUIRED.to_string())
-        );
-        assert_eq!(footprint(&fx, &w), before);
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some("pw five"),
-                Vec::new(),
-                T0 + 3
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            admissions(&w),
-            vec![(x.to_byte_array(), T0 - 7)],
-            "the admission survives the return to Open and the new password"
-        );
-    }
-
-    /// After a password change the new password admits through the door and the old one is a
-    /// counted wrong attempt.
-    ///
-    /// kills: a password change that keeps accepting the old password, or keeps the old
-    /// salt and hash.
-    #[test]
-    fn after_a_password_change_the_new_password_admits_and_the_old_one_is_wrong() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let fresh = "battery staple";
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some(fresh),
-                Vec::new(),
-                T0
-            ),
-            Ok(())
-        );
-        let rows = w.access.rows();
-        assert_eq!(rows.len(), 1);
-        assert_ne!(
-            rows[0].password_hash,
-            unhex(KAT_HASH_HEX),
-            "the hash changed"
-        );
-        assert_eq!(rows[0].password_salt.len(), PASSWORD_SALT_BYTES);
-        let who = id(0x50);
-        assert_eq!(door(&fx, who, KAT_PASSWORD, T0 + 1), Ok(()));
-        assert_eq!(
-            admitted_at(&w, who),
-            None,
-            "the old password no longer admits"
-        );
-        assert_eq!(attempts_of(&w, who), Some((vec![T0 + 1], T0 + 1)));
-        assert_eq!(door(&fx, who, fresh, T0 + 2), Ok(()));
-        assert_eq!(admitted_at(&w, who), Some(T0 + 2));
-    }
-}
-
-// =====================================================================================
-// The hash: Argon2id at the production parameters, against independent known answers.
-// =====================================================================================
-
-mod password_hash {
-    use super::*;
-
-    /// kills: any parameter drift (memory, passes, lanes, version, variant, tag length); a
-    /// salt or password fed in another encoding.
-    #[test]
-    fn hash_password_matches_an_independent_argon2id_at_the_production_parameters() {
-        assert_eq!(hash_password(KAT_SALT, KAT_PASSWORD), unhex(KAT_HASH_HEX));
-        assert_eq!(
-            hash_password(&kat2_salt(), KAT2_PASSWORD),
-            unhex(KAT2_HASH_HEX)
-        );
-        assert_eq!(unhex(KAT_HASH_HEX).len(), PASSWORD_HASH_BYTES);
-    }
-
-    /// A malformed stored row (an empty hash, an empty salt, a 31-byte hash) matches no
-    /// password at all — the empty one and the right one included.
-    ///
-    /// kills: `password_matches` accepting anything against an empty stored hash; a prefix
-    /// comparison.
-    #[test]
-    fn password_matches_refuses_every_password_against_a_malformed_row() {
-        let mut short = unhex(KAT_HASH_HEX);
-        short.truncate(PASSWORD_HASH_BYTES - 1);
-        let malformed = [
-            WorldAccess {
-                password_hash: Vec::new(),
-                ..password_row()
-            },
-            WorldAccess {
-                password_salt: Vec::new(),
-                ..password_row()
-            },
-            WorldAccess {
-                password_hash: short,
-                ..password_row()
-            },
-        ];
-        for row in &malformed {
-            for password in [KAT_PASSWORD, "", WRONG] {
-                assert!(
-                    !password_matches(row, password),
-                    "salt {} bytes, hash {} bytes, password {password:?}",
-                    row.password_salt.len(),
-                    row.password_hash.len()
-                );
-            }
-        }
-    }
-
-    /// A row matches the password it was built from and nothing else.
-    ///
-    /// kills: `password_matches` answering a constant; a comparison that ignores the salt or
-    /// trims the password.
-    #[test]
-    fn password_matches_is_true_only_for_the_password_the_row_was_built_from() {
-        let row = password_row();
-        assert!(password_matches(&row, KAT_PASSWORD));
-        for other in ["correct horsE", "correct horse ", " correct horse", WRONG] {
-            assert!(!password_matches(&row, other), "{other:?}");
-        }
-        let second = WorldAccess {
-            password_salt: kat2_salt(),
-            password_hash: unhex(KAT2_HASH_HEX),
-            ..password_row()
-        };
-        assert!(password_matches(&second, KAT2_PASSWORD));
-        let swapped_salt = WorldAccess {
-            password_salt: KAT_SALT.to_vec(),
-            ..second
-        };
-        assert!(
-            !password_matches(&swapped_salt, KAT2_PASSWORD),
-            "the same password under another salt does not match"
-        );
     }
 }
 
@@ -1932,7 +890,6 @@ mod password_hash {
 // =====================================================================================
 
 mod allowlist {
-    use super::super::REJECT_ALLOWLIST_TAKES_NO_PASSWORD;
     use super::*;
     use crate::schema::{WorldAllowlist, WorldBinding};
 
@@ -2385,68 +1342,18 @@ mod allowlist {
 
     // --- setting the rule ------------------------------------------------------------
 
-    /// `Allowlist` with any password is refused before any write, whatever rule is stored.
+    /// `Allowlist` stores the rule with an empty salt and hash, over no row and over a stored
+    /// salt and hash, which it clears; `effective_rule` reads the stored row as `Allowlist`,
+    /// and the rule is in force.
     ///
-    /// kills: the password ignored (stored, or dropped silently); a write or an admission
-    /// made before the refusal.
+    /// kills: a stored salt or hash kept; a stored `Allowlist` row read as another rule.
     #[test]
-    fn allowlist_with_a_password_is_refused_and_the_stored_row_is_unchanged() {
-        let fx = fixture();
-        let a = tables(&fx);
-        seed_owner(&a.w, owner());
-        a.w.session.seed(&session_row(id(0x7D), 0x07D0));
-        let x = id(0x7E);
-        for stored in [
-            None,
-            Some(open_row()),
-            Some(password_row()),
-            Some(allowlist_row()),
-        ] {
-            for typed in ["pw", KAT_PASSWORD, ""] {
-                let _ = a.w.access.remove(0);
-                if let Some(row) = &stored {
-                    a.w.access.seed(row);
-                }
-                fx.reset_writes();
-                let before = footprint_all(&fx, &a);
-                assert_eq!(
-                    set_access(
-                        &fx,
-                        owner(),
-                        WorldAccessRule::Allowlist,
-                        Some(typed),
-                        vec![x],
-                        T0
-                    ),
-                    Err(REJECT_ALLOWLIST_TAKES_NO_PASSWORD.to_string()),
-                    "password {typed:?} over {:?}",
-                    stored.as_ref().map(|r| r.rule)
-                );
-                assert_eq!(footprint_all(&fx, &a), before, "refused before any write");
-            }
-        }
-    }
-
-    /// `Allowlist` with no password stores the rule with an empty salt and hash, over no row
-    /// and over a stored password, which it clears; `effective_rule` reads the stored row as
-    /// `Allowlist`, and the rule is in force.
-    ///
-    /// kills: the old salt or hash kept (a later `Password` with no password would restore
-    /// it); a stored `Allowlist` row read as another rule.
-    #[test]
-    fn allowlist_with_no_password_is_stored_with_an_empty_salt_and_hash() {
+    fn allowlist_is_stored_with_an_empty_salt_and_hash() {
         let fx = fixture();
         let a = tables(&fx);
         seed_owner(&a.w, owner());
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Allowlist,
-                None,
-                Vec::new(),
-                T0
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0),
             Ok(())
         );
         assert_eq!(access_row(&a.w), enc(&allowlist_row()), "over no row");
@@ -2457,35 +1364,14 @@ mod allowlist {
         assert_eq!(a.w.access.remove(0), 1);
         a.w.access.seed(&password_row());
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Allowlist,
-                None,
-                Vec::new(),
-                T0 + 2
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0 + 2),
             Ok(())
         );
         assert_eq!(
             access_row(&a.w),
             enc(&allowlist_row()),
-            "the stored password is cleared"
+            "the stored salt and hash are cleared"
         );
-        let before = footprint_all(&fx, &a);
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                None,
-                Vec::new(),
-                T0 + 3
-            ),
-            Err(REJECT_PASSWORD_REQUIRED.to_string()),
-            "no password is left to keep"
-        );
-        assert_eq!(footprint_all(&fx, &a), before);
     }
 
     /// `Open` (no row, or an `Open` row) to `Allowlist` admits every identity with a live
@@ -2509,14 +1395,7 @@ mod allowlist {
             a.w.session.seed(&session_row(p, 0x0802));
             a.w.session.seed(&session_row(owner(), 0x0821));
             assert_eq!(
-                set_access(
-                    &fx,
-                    owner(),
-                    WorldAccessRule::Allowlist,
-                    None,
-                    Vec::new(),
-                    T0
-                ),
+                set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0),
                 Ok(()),
                 "over {:?}",
                 stored.as_ref().map(|r| r.rule)
@@ -2563,14 +1442,7 @@ mod allowlist {
             "fixture: the rule in force refuses the live identity with no row"
         );
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Allowlist,
-                None,
-                Vec::new(),
-                T0
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0),
             Ok(())
         );
         assert_eq!(
@@ -2592,25 +1464,22 @@ mod allowlist {
         );
     }
 
-    /// `Allowlist` to `Password` needs a new password (none is stored). Given one, it stores
-    /// its hash, and of the live identities with no admission row only the one the list
-    /// admitted (bound under a key the build holds to a listed account) gets a row; one bound
-    /// to an account that is not listed (delisted while connected) and one with no binding get
-    /// none and are refused under `Password`; a live unbound identity holding a row keeps it;
-    /// the live owner gets none.
+    /// `Allowlist` to `Password`: of the live identities with no admission row only the one
+    /// the list admitted (bound under a key the build holds to a listed account) gets a row;
+    /// one bound to an account that is not listed (delisted while connected) and one with no
+    /// binding get none and are refused under `Password`; a live unbound identity holding a
+    /// row keeps it; the live owner gets none.
     ///
-    /// kills: `Password` with no password accepted over an `Allowlist` row; every live session
-    /// admitted on a rule change (a delisted or never-admitted identity still connected let
-    /// in); the identity the list admitted left without a row (locked out of the world it is
-    /// in); an existing admission re-stamped; the owner given a row.
+    /// kills: every live session admitted on a rule change (a delisted or never-admitted
+    /// identity still connected let in); the identity the list admitted left without a row
+    /// (locked out of the world it is in); an existing admission re-stamped; the owner given a
+    /// row.
     #[test]
-    fn allowlist_to_password_needs_a_new_password_and_admits_only_live_identities_the_list_admitted(
-    ) {
+    fn allowlist_to_password_admits_only_live_identities_the_list_admitted() {
         let fx = fixture();
         let a = allowlist_world(&fx);
         enlist(&a, &[ALICE]);
         let listed = id(0x86);
-        let x = id(0x87);
         let delisted = id(0x90);
         let seen = id(0x91);
         let fresh = id(0x92);
@@ -2634,22 +1503,8 @@ mod allowlist {
                 "fixture: the list refuses the live identity {case}"
             );
         }
-        let before = footprint_all(&fx, &a);
         assert_eq!(
-            set_access(&fx, owner(), WorldAccessRule::Password, None, vec![x], T0),
-            Err(REJECT_PASSWORD_REQUIRED.to_string())
-        );
-        assert_eq!(footprint_all(&fx, &a), before, "refused before any write");
-        let typed = "pw seven";
-        assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some(typed),
-                Vec::new(),
-                T0 + 1
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0 + 1),
             Ok(())
         );
         assert_eq!(
@@ -2671,11 +1526,6 @@ mod allowlist {
         let rows = a.w.access.rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].rule, WorldAccessRule::Password);
-        assert_eq!(rows[0].password_salt.len(), PASSWORD_SALT_BYTES);
-        assert_eq!(
-            rows[0].password_hash,
-            hash_password(&rows[0].password_salt, typed)
-        );
     }
 
     /// Setting `Allowlist` again, and leaving it for `Open`, admits no live session; the
@@ -2692,14 +1542,7 @@ mod allowlist {
         a.w.session.seed(&session_row(s, 0x0881));
         a.w.admission.seed(&admission_row(x, T0 - 9));
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Allowlist,
-                None,
-                Vec::new(),
-                T0
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0),
             Ok(())
         );
         assert_eq!(admissions(&a.w), vec![(x.to_byte_array(), T0 - 9)]);
@@ -2707,14 +1550,7 @@ mod allowlist {
         assert_eq!(access_row(&a.w), enc(&allowlist_row()));
         assert_eq!(passes(&fx, s, T0 + 1), Err(REJECT_NOT_ADMITTED.to_string()));
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Open,
-                None,
-                Vec::new(),
-                T0 + 2
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Open, Vec::new(), T0 + 2),
             Ok(())
         );
         assert_eq!(admissions(&a.w), vec![(x.to_byte_array(), T0 - 9)]);
@@ -2735,14 +1571,7 @@ mod allowlist {
         let y = id(0x8B);
         bind(&a, y, CAROL);
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Allowlist,
-                None,
-                vec![x, y],
-                T0
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, vec![x, y], T0),
             Ok(())
         );
         assert_eq!(
@@ -2757,26 +1586,6 @@ mod allowlist {
             T0 + 1,
             "bound to an unlisted account, on the admit list",
         );
-    }
-
-    /// The door on an `Allowlist` world is refused with no write, and admits nobody.
-    ///
-    /// kills: the door working on any rule that is not `Open` (a wrong password counted, or
-    /// an admission written).
-    #[test]
-    fn the_door_on_an_allowlist_world_is_refused_with_no_write() {
-        let fx = fixture();
-        let a = allowlist_world(&fx);
-        let who = id(0x8C);
-        let before = footprint_all(&fx, &a);
-        for typed in [KAT_PASSWORD, WRONG] {
-            assert_eq!(
-                door(&fx, who, typed, T0),
-                Err(REJECT_NO_PASSWORD_RULE.to_string())
-            );
-        }
-        assert_eq!(footprint_all(&fx, &a), before);
-        assert_refused(&fx, &a, who, T0 + 1, "the door admitted nobody");
     }
 
     /// kills: the owner check skipped for `Allowlist`.
@@ -2794,14 +1603,7 @@ mod allowlist {
         let before = footprint_all(&fx, &a);
         for caller in [stranger, listed] {
             assert_eq!(
-                set_access(
-                    &fx,
-                    caller,
-                    WorldAccessRule::Allowlist,
-                    None,
-                    vec![caller],
-                    T0
-                ),
+                set_access(&fx, caller, WorldAccessRule::Allowlist, vec![caller], T0),
                 Err(REJECT_NOT_WORLD_OWNER.to_string()),
                 "set_world_access by {}",
                 caller.to_hex()
@@ -2809,14 +1611,7 @@ mod allowlist {
         }
         assert_eq!(footprint_all(&fx, &a), before, "nothing is written");
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Allowlist,
-                None,
-                Vec::new(),
-                T0 + 1
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0 + 1),
             Ok(())
         );
         assert_refused(
@@ -2996,7 +1791,7 @@ mod allowlist_seed {
 
     /// The owner switches the world to `Allowlist`, admitting `admit`.
     fn to_allowlist(fx: &Fixture, admit: Vec<Identity>, ms: i64) -> Result<(), String> {
-        set_access(fx, owner(), WorldAccessRule::Allowlist, None, admit, ms)
+        set_access(fx, owner(), WorldAccessRule::Allowlist, admit, ms)
     }
 
     /// The owner's `set_world_allowlist`.
@@ -3533,14 +2328,7 @@ mod allowlist_seed {
         );
         fx.reset_writes();
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Open,
-                None,
-                Vec::new(),
-                T0 + 2
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Open, Vec::new(), T0 + 2),
             Ok(())
         );
         assert_eq!(access_row(&s.w), enc(&open_row()));
@@ -3593,17 +2381,9 @@ mod allowlist_seed {
             "the seeded list"
         );
         s.w.admission.seed(&admission_row(p, T0 + 1));
-        let typed = "pw seven";
         fx.reset_writes();
         assert_eq!(
-            set_access(
-                &fx,
-                owner(),
-                WorldAccessRule::Password,
-                Some(typed),
-                Vec::new(),
-                T0 + 2
-            ),
+            set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0 + 2),
             Ok(())
         );
         assert_eq!(s.w.access.rows()[0].rule, WorldAccessRule::Password);
@@ -3660,9 +2440,8 @@ mod allowlist_seed {
                 accounts(&[ALPHA, BRAVO]),
                 "{off:?}: the first seed"
             );
-            let typed = (off == WorldAccessRule::Password).then_some("pw seven");
             assert_eq!(
-                set_access(&fx, owner(), off, typed, Vec::new(), T0 + 1),
+                set_access(&fx, owner(), off, Vec::new(), T0 + 1),
                 Ok(()),
                 "{off:?}"
             );
@@ -3688,5 +2467,450 @@ mod allowlist_seed {
             };
             assert_eq!(listed(&s), want, "{off:?}: the kept list and the new seed");
         }
+    }
+}
+
+// =====================================================================================
+// The owner's `Password` rule is stored with no salt and no hash, and admits only the owner
+// and the identities holding an admission row.
+// =====================================================================================
+
+mod password_rule {
+    use super::*;
+
+    /// The rows a world holds when the owner sets it to `Password`: none, a stored `Open` row
+    /// and a stored `Allowlist` row.
+    fn prior_rows() -> [Option<WorldAccess>; 3] {
+        [
+            None,
+            Some(open_row()),
+            Some(stored_row(WorldAccessRule::Allowlist)),
+        ]
+    }
+
+    /// From no row, from an `Open` row and from an `Allowlist` row, the owner's
+    /// `set_world_access(Password, [])` is `Ok` and leaves exactly one row, equal byte for
+    /// byte to `{0, Password, [], []}`.
+    ///
+    /// kills: `Password` refused for want of a stored or a new password; a salt or a hash
+    /// written (random bytes, a hash of anything); a second row; a row under another id or
+    /// another rule.
+    #[test]
+    fn the_owners_password_rule_is_stored_with_no_salt_and_no_hash_lpw20_1() {
+        for prior in prior_rows() {
+            let fx = fixture();
+            let w = world(&fx);
+            seed_owner(&w, owner());
+            let label = format!("over {:?}", prior.as_ref().map(|r| r.rule));
+            if let Some(row) = &prior {
+                w.access.seed(row);
+            }
+            assert_eq!(
+                set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0),
+                Ok(()),
+                "{label}"
+            );
+            assert_eq!(
+                access_row(&w),
+                enc(&stored_row(WorldAccessRule::Password)),
+                "{label}: the row holds the rule alone"
+            );
+        }
+    }
+
+    /// On a world the owner set to `Password` from each of those rows, the owner and an
+    /// identity holding a `world_admission` row pass the admission check and connect, their
+    /// sessions recorded; a stranger is refused by the admission check and at connect,
+    /// anonymous and signed in, with `REJECT_NOT_ADMITTED`, and no registered table changes.
+    ///
+    /// kills: `Password` refused (the world never closes, a stranger let in under `Open` or
+    /// by the list); the owner or an admission row ignored under `Password`; a refusal placed
+    /// after the session or the account is written.
+    #[test]
+    fn a_password_world_admits_only_the_owner_and_the_admitted_lpw20_1() {
+        for prior in prior_rows() {
+            let fx = fixture();
+            let w = world(&fx);
+            seed_owner(&w, owner());
+            let label = format!("over {:?}", prior.as_ref().map(|r| r.rule));
+            if let Some(row) = &prior {
+                w.access.seed(row);
+            }
+            let let_in = id(0x93);
+            let stranger = id(0x94);
+            w.admission.seed(&admission_row(let_in, T0 - 5));
+            assert_eq!(
+                set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0),
+                Ok(()),
+                "{label}"
+            );
+            for who in [owner(), let_in] {
+                assert_eq!(
+                    passes(&fx, who, T0 + 1),
+                    Ok(()),
+                    "{label}: {} passes the admission check",
+                    who.to_hex()
+                );
+                assert_eq!(
+                    call(&fx, who, T0 + 1, crate::on_connect),
+                    Ok(()),
+                    "{label}: {} connects",
+                    who.to_hex()
+                );
+                assert_eq!(sessions_of(&w, who), vec![conn_of(who)], "{label}");
+            }
+            let before = footprint(&fx, &w);
+            assert_eq!(
+                passes(&fx, stranger, T0 + 2),
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "{label}: the stranger at the admission check"
+            );
+            assert_eq!(
+                call(&fx, stranger, T0 + 2, crate::on_connect),
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "{label}: the stranger's anonymous connection"
+            );
+            assert_eq!(
+                call_signed_in(&fx, stranger, T0 + 2, crate::on_connect),
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "{label}: the stranger's signed-in connection"
+            );
+            assert!(
+                sessions_of(&w, stranger).is_empty(),
+                "{label}: the stranger has no session"
+            );
+            assert_eq!(
+                footprint(&fx, &w),
+                before,
+                "{label}: the refusals write nothing"
+            );
+        }
+    }
+}
+
+// =====================================================================================
+// A salt and hash an earlier module stored admit nobody, and the owner's next
+// `set_world_access` clears them, whatever rule it sets.
+// =====================================================================================
+
+mod legacy_password {
+    use super::*;
+    use crate::schema::{WorldAllowlist, WorldBinding};
+
+    /// When [`admitted`] got its admission row.
+    const ADMITTED_AT: i64 = T0 - 50;
+    /// The connection [`stranger`] holds open.
+    const STRANGER_CONN: u128 = 0x0960;
+
+    /// An identity holding a `world_admission` row.
+    fn admitted() -> Identity {
+        id(0x95)
+    }
+
+    /// An identity with a live `player_session` row and no admission row.
+    fn stranger() -> Identity {
+        id(0x96)
+    }
+
+    /// A world owned by [`owner`] whose rule row is `row`, where [`admitted`] holds an
+    /// admission row and [`stranger`] is connected. Registered beside [`world`]'s tables:
+    /// `world_binding` (read by `identity` and scanned; not writable, so a write to it aborts
+    /// the test) and `world_allowlist` (read by `account_subject`, scanned and written), which
+    /// a switch to `Allowlist` reads.
+    fn world_holding<'a>(fx: &'a Fixture, row: &WorldAccess) -> W<'a> {
+        let w = world(fx);
+        let _ = fx
+            .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+            .unique()
+            .scannable();
+        let _ = fx
+            .table_keyed::<WorldAllowlist, String>("world_allowlist", "account_subject", |r| {
+                r.account_subject.clone()
+            })
+            .unique()
+            .writable()
+            .scannable();
+        seed_owner(&w, owner());
+        w.access.seed(row);
+        w.admission.seed(&admission_row(admitted(), ADMITTED_AT));
+        w.session.seed(&session_row(stranger(), STRANGER_CONN));
+        w
+    }
+
+    /// [`world_holding`] a `Password` row with [`KAT_SALT`] and its Argon2id hash.
+    fn legacy_world(fx: &Fixture) -> W<'_> {
+        world_holding(fx, &password_row())
+    }
+
+    /// Before the owner's next call, the legacy salt and hash let nobody in: the connected
+    /// stranger is refused by the admission check and at connect, anonymous and signed in,
+    /// with no write; the admitted identity and the owner pass and connect.
+    ///
+    /// kills: an admission granted by the stored salt and hash (any identity let in while
+    /// they exist); a connected stranger let in because it is connected; the owner or an
+    /// admission row ignored on a world that holds a hash.
+    #[test]
+    fn a_legacy_salt_and_hash_admit_nobody_lpw20_2() {
+        let fx = fixture();
+        let w = legacy_world(&fx);
+        let before = footprint(&fx, &w);
+        assert_eq!(
+            passes(&fx, stranger(), T0),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "the stranger at the admission check"
+        );
+        assert!(!call(&fx, stranger(), T0, |ctx| is_admitted(
+            ctx,
+            stranger()
+        )));
+        assert_eq!(
+            call(&fx, stranger(), T0, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "the stranger's anonymous connection"
+        );
+        assert_eq!(
+            call_signed_in(&fx, stranger(), T0, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "the stranger's signed-in connection"
+        );
+        assert_eq!(footprint(&fx, &w), before, "the refusals write nothing");
+        for who in [admitted(), owner()] {
+            assert_eq!(passes(&fx, who, T0 + 1), Ok(()), "{}", who.to_hex());
+            assert_eq!(
+                call(&fx, who, T0 + 1, crate::on_connect),
+                Ok(()),
+                "{} connects",
+                who.to_hex()
+            );
+        }
+        assert_eq!(
+            access_row(&w),
+            enc(&password_row()),
+            "only the owner's call writes the row"
+        );
+    }
+
+    /// The owner's next `set_world_access(Password, [])` on a legacy world is `Ok` and stores
+    /// `{0, Password, [], []}`. The unchanged rule carries nobody over: the connected
+    /// stranger holds no admission row and is still refused, and the admitted identity's row
+    /// keeps its time.
+    ///
+    /// kills: the stored salt and hash kept when the rule does not change; the connected
+    /// stranger admitted by an unchanged rule; an admission row re-stamped or dropped.
+    #[test]
+    fn the_owners_next_password_call_clears_a_legacy_salt_and_hash_lpw20_2() {
+        let fx = fixture();
+        let w = legacy_world(&fx);
+        assert_eq!(
+            set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0),
+            Ok(())
+        );
+        assert_eq!(
+            access_row(&w),
+            enc(&stored_row(WorldAccessRule::Password)),
+            "the salt and hash are gone"
+        );
+        assert_eq!(
+            admissions(&w),
+            vec![(admitted().to_byte_array(), ADMITTED_AT)],
+            "the admitted identity keeps its row and its time; the stranger gets none"
+        );
+        assert_eq!(
+            passes(&fx, stranger(), T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "the stranger at the admission check"
+        );
+        assert_eq!(
+            call(&fx, stranger(), T0 + 1, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "the stranger's connection"
+        );
+        assert_eq!(passes(&fx, admitted(), T0 + 1), Ok(()));
+    }
+
+    /// The owner's next call setting `Open`, and on a fresh legacy world `Allowlist`, is `Ok`
+    /// and stores `{0, <rule>, [], []}`; the admitted identity's row keeps its time and the
+    /// connected stranger, whom the legacy rule refused, gets none.
+    ///
+    /// kills: the salt and hash kept by a change of rule; a carry-over that admits the
+    /// stranger the rule in force refused.
+    #[test]
+    fn the_owners_next_open_or_allowlist_call_clears_a_legacy_salt_and_hash_lpw20_2() {
+        for rule in [WorldAccessRule::Open, WorldAccessRule::Allowlist] {
+            let fx = fixture();
+            let w = legacy_world(&fx);
+            assert_eq!(
+                set_access(&fx, owner(), rule, Vec::new(), T0),
+                Ok(()),
+                "{rule:?}"
+            );
+            assert_eq!(
+                access_row(&w),
+                enc(&stored_row(rule)),
+                "{rule:?}: the salt and hash are gone"
+            );
+            assert_eq!(
+                admissions(&w),
+                vec![(admitted().to_byte_array(), ADMITTED_AT)],
+                "{rule:?}: the admitted identity keeps its row and its time"
+            );
+        }
+    }
+
+    /// An `Open` row and an `Allowlist` row forged to hold the legacy salt and hash: the
+    /// owner's next call with the same rule is `Ok` and stores both empty.
+    ///
+    /// kills: the stored salt and hash carried forward whenever the rule does not change; a
+    /// clear made only for `Password`.
+    #[test]
+    fn a_salt_and_hash_on_an_open_or_allowlist_row_go_at_the_owners_next_call_lpw20_2() {
+        for rule in [WorldAccessRule::Open, WorldAccessRule::Allowlist] {
+            let fx = fixture();
+            let forged = WorldAccess {
+                rule,
+                ..password_row()
+            };
+            let w = world_holding(&fx, &forged);
+            assert_eq!(
+                set_access(&fx, owner(), rule, Vec::new(), T0),
+                Ok(()),
+                "{rule:?}"
+            );
+            assert_eq!(
+                access_row(&w),
+                enc(&stored_row(rule)),
+                "{rule:?}: the salt and hash are gone"
+            );
+        }
+    }
+}
+
+// =====================================================================================
+// On a `Password` world the owner set, an identity the owner admitted outright gets in, and
+// an identity never admitted is refused.
+// =====================================================================================
+
+mod admitted_outright {
+    use super::*;
+
+    /// The identity the owner names in the call that sets `Password`.
+    fn first() -> Identity {
+        id(0x97)
+    }
+
+    /// The identity the owner names in a later call that leaves the rule `Password`.
+    fn second() -> Identity {
+        id(0x98)
+    }
+
+    /// A world owned by [`owner`] with no rule row, which the owner sets to `Password` at
+    /// `T0`, admitting [`first`].
+    fn set_by_the_owner(fx: &Fixture) -> W<'_> {
+        let w = world(fx);
+        seed_owner(&w, owner());
+        assert_eq!(
+            set_access(fx, owner(), WorldAccessRule::Password, vec![first()], T0),
+            Ok(()),
+            "the owner sets Password and admits the first identity"
+        );
+        w
+    }
+
+    /// The identity named in the call that sets `Password` holds an admission row stamped
+    /// with that call's time, passes the admission check and connects, its session recorded.
+    /// One named in a later call that leaves the rule `Password` does the same, signed in
+    /// and provisioned, stamped with the later call's time; the first keeps its time, nobody
+    /// else holds a row, and the stored row stays `{0, Password, [], []}`.
+    ///
+    /// kills: `Password` refused for want of a password; the admit list ignored under
+    /// `Password`, at the change or with the rule unchanged; an admission stamped with
+    /// another time, or re-stamped; the owner given a row; a later call that writes a salt
+    /// or a hash.
+    #[test]
+    fn an_identity_the_owner_admits_outright_connects_and_passes_lpw20_3() {
+        let fx = fixture();
+        let w = set_by_the_owner(&fx);
+        assert_eq!(
+            admissions(&w),
+            vec![(first().to_byte_array(), T0)],
+            "admitted at the call's time"
+        );
+        assert_eq!(passes(&fx, first(), T0 + 1), Ok(()));
+        assert_eq!(call(&fx, first(), T0 + 1, crate::on_connect), Ok(()));
+        assert_eq!(
+            sessions_of(&w, first()),
+            vec![conn_of(first())],
+            "its session is recorded"
+        );
+
+        assert_eq!(
+            set_access(
+                &fx,
+                owner(),
+                WorldAccessRule::Password,
+                vec![second()],
+                T0 + 10
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            admissions(&w),
+            vec![
+                (first().to_byte_array(), T0),
+                (second().to_byte_array(), T0 + 10),
+            ],
+            "the second admitted at the later call's time; the first keeps its time"
+        );
+        assert_eq!(passes(&fx, second(), T0 + 11), Ok(()));
+        assert_eq!(
+            call_signed_in(&fx, second(), T0 + 11, crate::on_connect),
+            Ok(())
+        );
+        assert_eq!(sessions_of(&w, second()), vec![conn_of(second())]);
+        assert_eq!(
+            encs(&w.account.rows()),
+            encs(&[crate::accounts::new_account_row(
+                second(),
+                crate::accounts::ALLOWED_ISSUERS[0].to_string(),
+                T0 + 11
+            )]),
+            "the signed-in connection is provisioned"
+        );
+        assert_eq!(
+            access_row(&w),
+            enc(&stored_row(WorldAccessRule::Password)),
+            "the row stays the rule alone"
+        );
+    }
+
+    /// An identity the owner never admitted is refused at connect, anonymous and signed in,
+    /// with no session and no write, and by the admission check.
+    ///
+    /// kills: a `Password` world the owner set that lets a stranger in; a connect check placed
+    /// after the session or the account is written.
+    #[test]
+    fn an_identity_never_admitted_is_refused_at_connect_and_by_the_admission_check_lpw20_3() {
+        let fx = fixture();
+        let w = set_by_the_owner(&fx);
+        let never = id(0x99);
+        let before = footprint(&fx, &w);
+        assert_eq!(
+            call(&fx, never, T0 + 1, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "an anonymous connection"
+        );
+        assert_eq!(
+            call_signed_in(&fx, never, T0 + 1, crate::on_connect),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "a signed-in connection"
+        );
+        assert!(sessions_of(&w, never).is_empty(), "no session is recorded");
+        assert_eq!(
+            passes(&fx, never, T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "the admission check"
+        );
+        assert!(!call(&fx, never, T0 + 1, |ctx| is_admitted(ctx, never)));
+        assert_eq!(footprint(&fx, &w), before, "the refusals write nothing");
     }
 }

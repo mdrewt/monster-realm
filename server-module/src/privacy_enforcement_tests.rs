@@ -1329,12 +1329,6 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "operator-only behind the world-owner guard (config.owner_identity, its first check); \
          it writes the world's admission rows, and no player caller exists",
     ),
-    (
-        "admit",
-        "operator-only behind the world-owner guard (config.owner_identity, its first check): \
-         the door the host works for a joiner; it writes the admission and wrong-password rows, \
-         and no player caller exists",
-    ),
     // (iv) the class stays EMPTY. A reducer that creates or mutates the caller's
     // assets without a gate fails this census until a deliberate roster row WITH
     // A BASIS is added -- never a silent new row.
@@ -1454,6 +1448,7 @@ const EXPECTED_GATED: &[&str] = &[
     "submit_queue",
     "talk",
     "train",
+    "unbind_world_account",
 ];
 
 /// Reducers that reach no classified write at all: the guest-claim start, the
@@ -1476,7 +1471,7 @@ const EXPECTED_NO_WRITES: &[&str] = &[
 const CLASSIFIED_TABLE_FLOOR: usize = 48;
 
 /// Reducer floor for the real corpus: the 69 reducer attributes it carries
-/// (the five trade-session reducers and the six world-binding reducers
+/// (the five trade-session reducers and the seven world-binding reducers
 /// included), so the per-reducer verdict pin cannot be satisfied by an engine
 /// that finds almost none of them.
 const REDUCER_FLOOR: usize = 69;
@@ -2327,17 +2322,19 @@ fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
 // ---------------------------------------------------------------------------
 // The admission roster (local-play design A1): every client-callable reducer makes the
 // admission check before anything else, except the owner-only reducers, which answer
-// their own owner refusal. The roster is the GENERATED client bindings (their file names);
-// each probe runs the SHIPPED reducer fn as an unadmitted non-owner over a client connection
-// on a `Password` world. Only `config`, `world_access` and `world_admission` are registered,
-// so a reducer that writes before it refuses aborts the test in the host. Dev-only reducers
-// (`dev_reducers`, `load_test_zones`) are not in the generated bindings and get no probe.
+// their own owner refusal, and `unbind_world_account`, which the rule does not gate, so a
+// player the host refuses can still erase their own binding. The roster is the GENERATED
+// client bindings (their file names); each probe runs the SHIPPED reducer fn as an unadmitted
+// non-owner over a client connection on a `Password` world. Only `config`, `world_access` and
+// `world_admission` are registered, so a reducer that writes before it refuses aborts the test
+// in the host. Dev-only reducers (`dev_reducers`, `load_test_zones`) are not in the generated
+// bindings and get no probe.
 // ---------------------------------------------------------------------------
 
 mod admission_roster {
     use crate::access::{REJECT_NOT_ADMITTED, REJECT_NOT_WORLD_OWNER};
     use crate::native_host_tests::{fixture, Fixture, Handle};
-    use crate::schema::{Config, WorldAccess, WorldAccessRule, WorldAdmission};
+    use crate::schema::{Config, PlayerSession, WorldAccess, WorldAccessRule, WorldAdmission};
     use spacetimedb::sats::bsatn;
     use spacetimedb::{Identity, ReducerContext, Serialize, Timestamp};
     use std::collections::BTreeSet;
@@ -2365,6 +2362,9 @@ mod admission_roster {
         Player,
         /// An owner-only reducer: its owner refusal comes first.
         OwnerOnly,
+        /// The one reducer the access rule does not gate: a player erases their own world
+        /// binding whatever the rule says of them.
+        Ungated,
     }
 
     type Call = fn(&ReducerContext) -> Result<(), String>;
@@ -2380,16 +2380,13 @@ mod admission_roster {
 
     /// One row per client-callable reducer, calling the SHIPPED fn with well-typed dummies.
     fn probes() -> Vec<(&'static str, Kind, Call)> {
-        use Kind::{OwnerOnly, Player};
+        use Kind::{OwnerOnly, Player, Ungated};
         vec![
             probe("accept_challenge", Player, |ctx| {
                 crate::pvp::accept_challenge(ctx, 0, Vec::new())
             }),
             probe("ack_evolution_notices", Player, |ctx| {
                 crate::evolution::ack_evolution_notices(ctx, 0)
-            }),
-            probe("admit", OwnerOnly, |ctx| {
-                crate::access::admit(ctx, nobody(), String::new())
             }),
             probe("advance_dialogue", Player, |ctx| {
                 crate::npc::advance_dialogue(ctx, 0)
@@ -2507,7 +2504,7 @@ mod admission_roster {
                 crate::trading_session::set_trade_offer(ctx, 0, Vec::new(), Vec::new(), 0)
             }),
             probe("set_world_access", OwnerOnly, |ctx| {
-                crate::access::set_world_access(ctx, WorldAccessRule::Open, None, Vec::new())
+                crate::access::set_world_access(ctx, WorldAccessRule::Open, Vec::new())
             }),
             probe("set_world_allowlist", OwnerOnly, |ctx| {
                 crate::world_binding::set_world_allowlist(ctx, Vec::new())
@@ -2524,11 +2521,16 @@ mod admission_roster {
             probe("sync_content", OwnerOnly, crate::sync_content),
             probe("talk", Player, |ctx| crate::npc::talk(ctx, 0)),
             probe("train", Player, |ctx| crate::raising::train(ctx, 0, 0)),
+            probe(
+                "unbind_world_account",
+                Ungated,
+                crate::world_binding::unbind_world_account,
+            ),
         ]
     }
 
     /// The reducer names the generated bindings carry, from their file names.
-    fn generated_reducers() -> BTreeSet<String> {
+    pub(super) fn generated_reducers() -> BTreeSet<String> {
         let entries = std::fs::read_dir(BINDINGS_DIR)
             .unwrap_or_else(|e| panic!("the generated bindings directory {BINDINGS_DIR}: {e}"));
         entries
@@ -2571,9 +2573,10 @@ mod admission_roster {
         admission: Handle<'a, WorldAdmission>,
     }
 
-    /// A `Password` world owned by [`owner`], with one admitted identity. Nothing is writable
-    /// or scannable: a probe that writes or scans before it refuses aborts the test.
-    fn password_world(fx: &Fixture) -> World<'_> {
+    /// A world owned by [`owner`] whose one `world_access` row is `access`, with one admitted
+    /// identity. Nothing is writable or scannable: a probe that writes or scans before it
+    /// refuses aborts the test.
+    fn world_with<'a>(fx: &'a Fixture, access: &WorldAccess) -> World<'a> {
         let w = World {
             config: fx.table_keyed::<Config, u32>("config", "id", |r| r.id),
             access: fx.table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id),
@@ -2584,17 +2587,86 @@ mod admission_roster {
             content_version: 0,
             owner_identity: owner(),
         });
-        w.access.seed(&WorldAccess {
-            id: 0,
-            rule: WorldAccessRule::Password,
-            password_salt: vec![7; crate::access::PASSWORD_SALT_BYTES],
-            password_hash: vec![9; crate::access::PASSWORD_HASH_BYTES],
-        });
+        w.access.seed(access);
         w.admission.seed(&WorldAdmission {
             identity: admitted(),
             admitted_at_ms: T0 - 1,
         });
         w
+    }
+
+    /// A `Password` world whose row holds no salt and no hash.
+    fn password_world(fx: &Fixture) -> World<'_> {
+        world_with(
+            fx,
+            &WorldAccess {
+                id: 0,
+                rule: WorldAccessRule::Password,
+                password_salt: Vec::new(),
+                password_hash: Vec::new(),
+            },
+        )
+    }
+
+    /// The salt and the Argon2id hash under it that an earlier module stored for a
+    /// `Password` world (the access tests' independent known answer).
+    const LEGACY_SALT: &[u8; 16] = b"0123456789abcdef";
+    const LEGACY_HASH_HEX: &str =
+        "ae4d8c8b713876044c8347c76986a9b5655944aaacfffe9bea4dff9e7b6a1899";
+
+    fn unhex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("a known answer is hex"))
+            .collect()
+    }
+
+    /// A `Password` world whose row holds [`LEGACY_SALT`] and the hash under it, as an earlier
+    /// module stored it.
+    fn legacy_password_world(fx: &Fixture) -> World<'_> {
+        let hash = unhex(LEGACY_HASH_HEX);
+        assert_eq!(hash.len(), 32, "fixture: a full Argon2id hash");
+        world_with(
+            fx,
+            &WorldAccess {
+                id: 0,
+                rule: WorldAccessRule::Password,
+                password_salt: LEGACY_SALT.to_vec(),
+                password_hash: hash,
+            },
+        )
+    }
+
+    /// The `world_access` rows the owner's `set_world_access(Password, [])` leaves on a world
+    /// that held no row, read back from a fixture of their own (which is dropped before the
+    /// caller builds its world).
+    fn rows_the_owner_sets() -> Vec<WorldAccess> {
+        let fx = fixture();
+        let config = fx.table_keyed::<Config, u32>("config", "id", |r| r.id);
+        let access = fx
+            .table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id)
+            .unique()
+            .writable();
+        let _ = fx
+            .table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
+            .unique()
+            .writable();
+        let _ = fx
+            .table::<PlayerSession>("player_session", "identity", |r| r.identity)
+            .scannable();
+        config.seed(&Config {
+            id: 0,
+            content_version: 0,
+            owner_identity: owner(),
+        });
+        assert_eq!(
+            fx.run_as_conn_at(owner(), 0x0A11_0001, None, at(T0), |ctx| {
+                crate::access::set_world_access(ctx, WorldAccessRule::Password, Vec::new())
+            }),
+            Ok(()),
+            "the owner sets the world to Password"
+        );
+        access.rows()
     }
 
     /// Every stored row of the three registered tables, and their write counts.
@@ -2627,8 +2699,8 @@ mod admission_roster {
     /// directions: a client-callable reducer with no probe fails naming it, and so does a
     /// probe for a reducer the bindings do not have.
     ///
-    /// kills: a client-callable reducer added with no admission probe; `admit` or
-    /// `set_world_access` missing from the published module (absent from the bindings).
+    /// kills: a client-callable reducer added with no admission probe; `set_world_access`
+    /// missing from the published module (absent from the bindings).
     #[test]
     fn every_generated_reducer_has_exactly_one_admission_probe() {
         let generated = generated_reducers();
@@ -2654,31 +2726,24 @@ mod admission_roster {
         assert_eq!(
             generated.len(),
             49,
-            "the generated roster: 41 reducers before lpw-9 plus `admit` and `set_world_access`, \
-             plus the six world-binding reducers (`request_bind_nonce`, \
-             `request_bind_nonce_for`, `bind_world_account`, `bind_world_account_for`, \
-             `set_world_names`, `set_world_allowlist`)"
+            "the generated roster: 41 reducers before lpw-9 plus `set_world_access`, plus the \
+             seven world-binding reducers (`request_bind_nonce`, `request_bind_nonce_for`, \
+             `bind_world_account`, `bind_world_account_for`, `set_world_names`, \
+             `set_world_allowlist`, `unbind_world_account`)"
         );
     }
 
-    /// Every player reducer, called by an unadmitted non-owner on a `Password` world, answers
-    /// exactly the admission refusal and leaves the world as it found it (a write or a scan
-    /// before the check aborts in the host). After each probe the host's index-request log
-    /// holds nothing but the entry point's own names and the admission check's three, so an
-    /// index read before the check fails naming the reducer (a read over an unregistered
-    /// index hands out no row, so only this log can see it).
-    ///
-    /// kills: a client-callable reducer with no admission check; one whose check is not its
-    /// first statement (it reads, writes or scans first, or refuses with its own earlier
-    /// error).
-    #[test]
-    fn every_player_reducer_refuses_an_unadmitted_caller_before_anything_else() {
-        let fx = fixture();
-        let w = password_world(&fx);
-        let before = footprint(&fx, &w);
+    /// Every player reducer, called by the unadmitted non-owner on `w` (`world` names it in a
+    /// failure), answers exactly the admission refusal and leaves the world as it found it (a
+    /// write or a scan before the check aborts in the host). After each probe the host's
+    /// index-request log holds nothing but the entry point's own names and the admission
+    /// check's three, so an index read before the check fails naming the reducer (a read over
+    /// an unregistered index hands out no row, so only this log can see it).
+    fn assert_every_player_reducer_refuses_first(fx: &Fixture, w: &World<'_>, world: &str) {
+        let before = footprint(fx, w);
         // The index names the entry point itself asks for, then the admission check's own:
         // the rule row, the config row and the admission row, each on its key.
-        assert_eq!(run_probe(&fx, |_| Ok(())), Ok(()), "the entry point runs");
+        assert_eq!(run_probe(fx, |_| Ok(())), Ok(()), "the entry point runs");
         let mut allowed: BTreeSet<String> = fx.requested_indexes().into_iter().collect();
         for index in ADMISSION_CHECK_INDEXES {
             allowed.insert(index.to_string());
@@ -2691,7 +2756,7 @@ mod admission_roster {
                 continue;
             }
             checked += 1;
-            let got = run_probe(&fx, call);
+            let got = run_probe(fx, call);
             let foreign: Vec<String> = fx
                 .requested_indexes()
                 .into_iter()
@@ -2699,14 +2764,14 @@ mod admission_roster {
                 .collect();
             assert!(
                 foreign.is_empty(),
-                "`{name}` asked this host for {foreign:?} before refusing (result {got:?}): the \
-                 admission check must come before every read"
+                "`{name}` asked this host for {foreign:?} before refusing (result {got:?}) on \
+                 {world}: the admission check must come before every read"
             );
             assert_eq!(
                 got,
                 Err(REJECT_NOT_ADMITTED.to_string()),
-                "`{name}` called by an unadmitted caller on a Password world must answer the \
-                 admission refusal first"
+                "`{name}` called by an unadmitted caller on {world} must answer the admission \
+                 refusal first"
             );
         }
         assert_eq!(
@@ -2715,14 +2780,61 @@ mod admission_roster {
              `bind_world_account` among them)"
         );
         assert_eq!(
-            footprint(&fx, &w),
+            footprint(fx, w),
             before,
-            "the refusals write nothing to config, world_access or world_admission"
+            "the refusals on {world} write nothing to config, world_access or world_admission"
         );
     }
 
-    /// The owner-only set is exactly `sync_content`, `set_world_access`, `admit` and the four
-    /// owner-only world-binding reducers (`request_bind_nonce_for`, `bind_world_account_for`,
+    /// The sweep on a `Password` world whose row holds no salt and no hash.
+    ///
+    /// kills: a client-callable reducer with no admission check; one whose check is not its
+    /// first statement (it reads, writes or scans first, or refuses with its own earlier
+    /// error).
+    #[test]
+    fn every_player_reducer_refuses_an_unadmitted_caller_before_anything_else() {
+        let fx = fixture();
+        let w = password_world(&fx);
+        assert_every_player_reducer_refuses_first(&fx, &w, "a Password world");
+    }
+
+    /// The sweep on a `Password` world whose row holds a salt and hash an earlier module
+    /// stored: nothing they hold lets the caller into any player reducer.
+    ///
+    /// kills: a reducer that admits a caller because the world holds a salt and hash (any
+    /// reducer let through while they exist); a player reducer with no admission check.
+    #[test]
+    fn every_player_reducer_refuses_an_unadmitted_caller_on_a_legacy_password_world_lpw20_2() {
+        let fx = fixture();
+        let w = legacy_password_world(&fx);
+        assert_every_player_reducer_refuses_first(
+            &fx,
+            &w,
+            "a Password world holding a legacy salt and hash",
+        );
+    }
+
+    /// The sweep on a world whose `Password` row the owner's `set_world_access(Password, [])`
+    /// wrote: a caller the owner never admitted is refused by every player reducer.
+    ///
+    /// kills: `Password` refused for want of a password (no such world can exist); a player
+    /// reducer that lets a never-admitted caller through on a world the owner set.
+    #[test]
+    fn every_player_reducer_refuses_a_never_admitted_caller_on_a_world_the_owner_set_lpw20_3() {
+        let rows = rows_the_owner_sets();
+        assert_eq!(rows.len(), 1, "the owner's call leaves one rule row");
+        assert_eq!(rows[0].rule, WorldAccessRule::Password);
+        let fx = fixture();
+        let w = world_with(&fx, &rows[0]);
+        assert_every_player_reducer_refuses_first(
+            &fx,
+            &w,
+            "a Password world the owner set through set_world_access",
+        );
+    }
+
+    /// The owner-only set is exactly `sync_content`, `set_world_access` and the four owner-only
+    /// world-binding reducers (`request_bind_nonce_for`, `bind_world_account_for`,
     /// `set_world_names`, `set_world_allowlist`); each,
     /// called by an unadmitted non-owner on a `Password` world, answers its OWN owner refusal
     /// (never the admission check's), with no write. `sync_content`'s refusal is read from the
@@ -2732,7 +2844,7 @@ mod admission_roster {
     /// reducers refusing a non-owner with anything but the world-owner refusal; a reducer
     /// quietly moved out of the admission check by being declared owner-only.
     #[test]
-    fn only_the_owner_reducers_skip_the_admission_check_and_answer_their_owner_refusal() {
+    fn only_the_owner_reducers_answer_their_owner_refusal_before_any_admission_check() {
         let owner_only: BTreeSet<&str> = probes()
             .into_iter()
             .filter(|(_, kind, _)| matches!(kind, Kind::OwnerOnly))
@@ -2741,7 +2853,6 @@ mod admission_roster {
         assert_eq!(
             owner_only,
             BTreeSet::from([
-                "admit",
                 "bind_world_account_for",
                 "request_bind_nonce_for",
                 "set_world_access",
@@ -2786,6 +2897,548 @@ mod admission_roster {
             footprint(&fx, &w),
             before,
             "the owner refusals write nothing"
+        );
+    }
+
+    /// The ungated set is exactly `unbind_world_account`. Called by an unadmitted non-owner on
+    /// a `Password` world, it does not answer the admission refusal: it answers `Ok` and
+    /// writes nothing, since that caller holds no binding to erase. (`world_binding` is not
+    /// registered here, so a write to it would abort the host.)
+    ///
+    /// kills: an admission check in `unbind_world_account` (a player the host removed could
+    /// not erase their own binding); a write for a caller with no binding; another reducer
+    /// declared ungated. A control against the inert reducer.
+    #[test]
+    fn only_unbind_world_account_skips_the_admission_check_and_answers_ok_with_no_write_lpw22_3() {
+        let ungated: BTreeSet<&str> = probes()
+            .into_iter()
+            .filter(|(_, kind, _)| matches!(kind, Kind::Ungated))
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(
+            ungated,
+            BTreeSet::from(["unbind_world_account"]),
+            "the ungated set is pinned exactly"
+        );
+
+        let fx = fixture();
+        let w = password_world(&fx);
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+        for (name, kind, call) in probes() {
+            if !matches!(kind, Kind::Ungated) {
+                continue;
+            }
+            assert_eq!(
+                run_probe(&fx, call),
+                Ok(()),
+                "`{name}` called by an unadmitted caller with no binding answers Ok"
+            );
+        }
+        assert_eq!(
+            footprint(&fx, &w),
+            before,
+            "the ungated reducer writes nothing for a caller with no binding"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// No reducer takes a password, a hash of one or a value derived from one. The census visits
+// every reducer the build declares, client-callable and private (lifecycle and scheduled)
+// alike, the dev builds' too. The native host's own module definition registers no module
+// reducer (its one reducer is the `run_as` trampoline), so the census builds the definition
+// itself: each SHIPPED reducer is described exactly as its `#[spacetimedb::reducer]` describer
+// describes it (`spacetimedb::rt::register_reducer`: the argument schema from the fn's own
+// signature, the argument names the macro recorded). The list it describes is checked whole
+// against the generated artifacts: the client-callable reducers are exactly the generated
+// bindings' reducers, the scheduled ones exactly the functions the module definition's
+// scheduled tables name, and the lifecycle ones one per lifecycle event.
+// ---------------------------------------------------------------------------
+
+mod reducer_arguments {
+    use crate::native_host_tests::fixture;
+    use spacetimedb::rt::{Args, FnInfo, Reducer, ReducerFn};
+    use spacetimedb::sats::{AlgebraicType, AlgebraicTypeRef, ProductType, Typespace};
+    use spacetimedb::spacetimedb_lib::db::raw_def::v10::{RawModuleDefV10, RawModuleDefV10Builder};
+    use std::collections::BTreeSet;
+
+    /// The part of the module a described reducer belongs to; each is checked whole its own
+    /// way in [`the_module`].
+    const CLIENT: &str = "client-callable";
+    const SCHEDULED: &str = "scheduled";
+    const LIFECYCLE: &str = "lifecycle";
+    const DEV: &str = "dev-build";
+
+    /// The definition being built, and the part each described reducer belongs to.
+    #[derive(Default)]
+    struct Declared {
+        module: RawModuleDefV10Builder,
+        parts: Vec<(&'static str, &'static str)>,
+    }
+
+    /// Describe the SHIPPED reducer `I` into `declared` as `spacetimedb::rt::register_reducer`
+    /// describes it: the schema of its arguments from the fn's signature `A` and the names in
+    /// `I::ARG_NAMES`, as a lifecycle reducer when the macro made it one.
+    fn declare<'a, A: Args<'a>, I: FnInfo<Invoke = ReducerFn>>(
+        declared: &mut Declared,
+        part: &'static str,
+        _reducer: impl Reducer<'a, A>,
+    ) {
+        let params = A::schema::<I>(&mut declared.module);
+        match I::LIFECYCLE {
+            Some(lifecycle) => declared
+                .module
+                .add_lifecycle_reducer(lifecycle, I::NAME, params),
+            None => declared.module.add_reducer(I::NAME, params),
+        }
+        declared.parts.push((part, I::NAME));
+    }
+
+    /// [`declare`] the reducer at `$path`, named as the `FnInfo` type the reducer macro
+    /// generates and as the fn itself.
+    macro_rules! declare_reducer {
+        ($declared:expr, $part:expr, $path:path) => {
+            declare::<_, $path>($declared, $part, $path)
+        };
+    }
+
+    /// The names described for `part`.
+    fn names_of(declared: &Declared, part: &str) -> BTreeSet<String> {
+        declared
+            .parts
+            .iter()
+            .filter(|(p, _)| *p == part)
+            .map(|(_, name)| (*name).to_string())
+            .collect()
+    }
+
+    /// The definition of every reducer this build declares, checked whole: the client-callable
+    /// ones are exactly the generated bindings' reducers, the scheduled ones exactly the
+    /// functions the native host's module definition (every table registered) names in its
+    /// schedules, the lifecycle ones one per lifecycle event, and no dev-build reducer is in
+    /// the bindings; no reducer is described twice.
+    fn the_module() -> RawModuleDefV10 {
+        let mut declared = Declared::default();
+        let d = &mut declared;
+        declare_reducer!(d, CLIENT, crate::pvp::accept_challenge);
+        declare_reducer!(d, CLIENT, crate::evolution::ack_evolution_notices);
+        declare_reducer!(d, CLIENT, crate::npc::advance_dialogue);
+        declare_reducer!(d, CLIENT, crate::world_binding::bind_world_account);
+        declare_reducer!(d, CLIENT, crate::world_binding::bind_world_account_for);
+        declare_reducer!(d, CLIENT, crate::economy::buy);
+        declare_reducer!(d, CLIENT, crate::accounts::cancel_account_deletion);
+        declare_reducer!(d, CLIENT, crate::pvp::cancel_challenge);
+        declare_reducer!(d, CLIENT, crate::tactics::cancel_queue);
+        declare_reducer!(d, CLIENT, crate::trading::cancel_trade);
+        declare_reducer!(d, CLIENT, crate::trading_session::cancel_trade_session);
+        declare_reducer!(d, CLIENT, crate::raising::care);
+        declare_reducer!(d, CLIENT, crate::pvp::challenge_pvp);
+        declare_reducer!(d, CLIENT, crate::movement::clear_queue);
+        declare_reducer!(d, CLIENT, crate::accounts::complete_guest_claim);
+        declare_reducer!(d, CLIENT, crate::trading::confirm_trade);
+        declare_reducer!(d, CLIENT, crate::trading_session::confirm_trade_session);
+        declare_reducer!(d, CLIENT, crate::raising::consume_crystalized_essence);
+        declare_reducer!(d, CLIENT, crate::pvp::decline_challenge);
+        declare_reducer!(d, CLIENT, crate::accounts::delete_account);
+        declare_reducer!(d, CLIENT, crate::tactics::deploy_units);
+        declare_reducer!(d, CLIENT, crate::npc::dismiss_dialogue);
+        declare_reducer!(d, CLIENT, crate::movement::enqueue_move);
+        declare_reducer!(d, CLIENT, crate::raising::essence_train);
+        declare_reducer!(d, CLIENT, crate::evolution::evolve);
+        declare_reducer!(d, CLIENT, crate::tactics::forfeit);
+        declare_reducer!(d, CLIENT, crate::raising::heal_party);
+        declare_reducer!(d, CLIENT, crate::movement::join_game);
+        declare_reducer!(d, CLIENT, crate::trading_session::open_trade_session);
+        declare_reducer!(d, CLIENT, crate::trading::propose_trade);
+        declare_reducer!(d, CLIENT, crate::world_binding::request_bind_nonce);
+        declare_reducer!(d, CLIENT, crate::world_binding::request_bind_nonce_for);
+        declare_reducer!(d, CLIENT, crate::privacy::request_data_export);
+        declare_reducer!(d, CLIENT, crate::trading::respond_trade);
+        declare_reducer!(d, CLIENT, crate::economy::sell);
+        declare_reducer!(d, CLIENT, crate::movement::set_move);
+        declare_reducer!(d, CLIENT, crate::monster_mgmt::set_nickname);
+        declare_reducer!(d, CLIENT, crate::monster_mgmt::set_party_slot);
+        declare_reducer!(d, CLIENT, crate::ranking::set_profile_name);
+        declare_reducer!(d, CLIENT, crate::trading_session::set_trade_offer);
+        declare_reducer!(d, CLIENT, crate::access::set_world_access);
+        declare_reducer!(d, CLIENT, crate::world_binding::set_world_allowlist);
+        declare_reducer!(d, CLIENT, crate::world_binding::set_world_names);
+        declare_reducer!(d, CLIENT, crate::accounts::start_guest_claim);
+        declare_reducer!(d, CLIENT, crate::tactics::submit_queue);
+        declare_reducer!(d, CLIENT, crate::sync_content);
+        declare_reducer!(d, CLIENT, crate::npc::talk);
+        declare_reducer!(d, CLIENT, crate::raising::train);
+        declare_reducer!(d, CLIENT, crate::world_binding::unbind_world_account);
+
+        declare_reducer!(d, SCHEDULED, crate::accounts::guest_claim_reaper);
+        declare_reducer!(d, SCHEDULED, crate::accounts::account_deletion_reaper);
+        declare_reducer!(d, SCHEDULED, crate::movement::movement_tick);
+        declare_reducer!(d, SCHEDULED, crate::observability::mr_heartbeat);
+        declare_reducer!(d, SCHEDULED, crate::playtest::playtest_reaper);
+        declare_reducer!(d, SCHEDULED, crate::privacy::export_bundle_reaper);
+        declare_reducer!(d, SCHEDULED, crate::pvp::pvp_deadline_reaper);
+        declare_reducer!(d, SCHEDULED, crate::pvp::battle_challenge_reaper);
+        declare_reducer!(d, SCHEDULED, crate::summary_reaper::battle_summary_reaper);
+        declare_reducer!(d, SCHEDULED, crate::tactics::tactical_deadline_fire);
+        declare_reducer!(d, SCHEDULED, crate::tactics::tactical_advance);
+        declare_reducer!(d, SCHEDULED, crate::tactics::battle_gc);
+        declare_reducer!(d, SCHEDULED, crate::trading::trade_offer_reaper);
+        declare_reducer!(d, SCHEDULED, crate::trading_session::trade_session_reaper);
+
+        declare_reducer!(d, LIFECYCLE, crate::init);
+        declare_reducer!(d, LIFECYCLE, crate::on_connect);
+        declare_reducer!(d, LIFECYCLE, crate::on_disconnect);
+
+        #[cfg(feature = "dev_reducers")]
+        declare_reducer!(d, DEV, crate::taming::grant_bait);
+        #[cfg(feature = "dev_reducers")]
+        declare_reducer!(d, DEV, crate::dev_clock::dev_expire_tactical_window);
+        #[cfg(feature = "load_test_zones")]
+        declare_reducer!(d, DEV, crate::load_dev::dev_place_in_load_zone);
+
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for (_, name) in &declared.parts {
+            assert!(seen.insert(*name), "`{name}` is described twice");
+        }
+
+        let generated = super::admission_roster::generated_reducers();
+        assert_eq!(
+            names_of(&declared, CLIENT),
+            generated,
+            "the client-callable reducers the census describes (left) against the generated \
+             bindings' reducers (right)"
+        );
+        let dev = names_of(&declared, DEV);
+        assert!(
+            dev.is_disjoint(&generated),
+            "a dev-build reducer is in the generated bindings: {dev:?}"
+        );
+
+        let fx = fixture();
+        let native = fx.module_def();
+        let scheduled: BTreeSet<String> = native
+            .schedules()
+            .map(|section| {
+                section
+                    .iter()
+                    .map(|s| s.function_name.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            names_of(&declared, SCHEDULED),
+            scheduled,
+            "the scheduled reducers the census describes (left) against the functions the \
+             module's scheduled tables name (right)"
+        );
+
+        let def = declared.module.finish();
+        let lifecycle: Vec<(String, String)> =
+            def.lifecycle_reducers().map_or_else(Vec::new, |section| {
+                section
+                    .iter()
+                    .map(|l| {
+                        (
+                            format!("{:?}", l.lifecycle_spec),
+                            l.function_name.to_string(),
+                        )
+                    })
+                    .collect()
+            });
+        let events: BTreeSet<&str> = lifecycle.iter().map(|(event, _)| event.as_str()).collect();
+        assert_eq!(
+            events,
+            BTreeSet::from(["Init", "OnConnect", "OnDisconnect"]),
+            "one described lifecycle reducer per lifecycle event: {lifecycle:?}"
+        );
+        assert_eq!(
+            lifecycle.len(),
+            3,
+            "no lifecycle event has two reducers: {lifecycle:?}"
+        );
+        def
+    }
+
+    /// The `_`-separated name segments (compared without case) of an argument that would
+    /// carry a password, its hash or a value derived from one.
+    const PASSWORD_SEGMENTS: [&str; 14] = [
+        "password",
+        "passwd",
+        "passphrase",
+        "pass",
+        "pwd",
+        "pw",
+        "salt",
+        "hash",
+        "digest",
+        "secret",
+        "phrase",
+        "pin",
+        "credential",
+        "kdf",
+    ];
+
+    /// The words that mark such an argument wherever they stand in its name.
+    const PASSWORD_WORDS: [&str; 5] = ["password", "passwd", "passphrase", "secret", "credential"];
+
+    /// Every `reducer.argument` whose type holds text (a `String`, or an array of `u8`) at any
+    /// depth, with what it carries and why that is no password and nothing derived from one.
+    /// Every other argument the module declares carries numbers, flags, enums or identities.
+    const TEXT_ARGUMENTS: [(&str, &str); 9] = [
+        (
+            "bind_world_account.attestation",
+            "a token the account service signed for this world and the caller's bind nonce; it \
+             names an account, and the module checks it against the build's keys",
+        ),
+        (
+            "bind_world_account_for.attestation",
+            "the same signed token, for a joiner, relayed by the owner",
+        ),
+        (
+            "complete_guest_claim.code",
+            "the 64-hex one-time code a guest's client minted at random for start_guest_claim, \
+             presented again from the signed-in account; no person chooses or types it",
+        ),
+        (
+            "join_game.name",
+            "the display name a player shows the world",
+        ),
+        (
+            "set_nickname.nickname",
+            "the nickname a player gives one of their monsters, shown to other players",
+        ),
+        (
+            "set_profile_name.name",
+            "the name a player shows on the ladder",
+        ),
+        (
+            "set_world_allowlist.accounts",
+            "the account subjects the owner lets in under Allowlist: who may join, not how",
+        ),
+        (
+            "set_world_names.names",
+            "the names this world answers to, which an attestation must name",
+        ),
+        (
+            "start_guest_claim.code",
+            "the 64-hex one-time code a guest's client mints at random so a signed-in account \
+             can claim the guest's game data later; no person chooses or types it",
+        ),
+    ];
+
+    /// Every reducer of `def`, by name, with its arguments.
+    fn functions(def: &RawModuleDefV10) -> Vec<(String, &ProductType)> {
+        def.reducers()
+            .unwrap_or_else(|| panic!("the census definition carries no Reducers section"))
+            .iter()
+            .map(|r| (r.source_name.to_string(), &r.params))
+            .collect()
+    }
+
+    /// `ty` with one `Ref` followed through the typespace.
+    fn resolve<'a>(ts: &'a Typespace, ty: &'a AlgebraicType) -> &'a AlgebraicType {
+        match ty {
+            AlgebraicType::Ref(r) => &ts[*r],
+            other => other,
+        }
+    }
+
+    /// Whether `ty` holds a `String` or an array of `u8` anywhere inside it: through every
+    /// product field, sum variant (an option's included) and array element, and through every
+    /// `Ref`, each followed once.
+    fn holds_text(ts: &Typespace, ty: &AlgebraicType, seen: &mut Vec<AlgebraicTypeRef>) -> bool {
+        match ty {
+            AlgebraicType::String => true,
+            AlgebraicType::Array(array) => {
+                matches!(*array.elem_ty, AlgebraicType::U8) || holds_text(ts, &array.elem_ty, seen)
+            }
+            AlgebraicType::Product(product) => product
+                .elements
+                .iter()
+                .any(|element| holds_text(ts, &element.algebraic_type, seen)),
+            AlgebraicType::Sum(sum) => sum
+                .variants
+                .iter()
+                .any(|variant| holds_text(ts, &variant.algebraic_type, seen)),
+            AlgebraicType::Ref(r) => {
+                if seen.contains(r) {
+                    return false;
+                }
+                seen.push(*r);
+                holds_text(ts, &ts[*r], seen)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether an argument named `name` is named for a password, its hash or a value derived
+    /// from one: a `_`-separated segment of the name (without case) is one of
+    /// [`PASSWORD_SEGMENTS`], or the name holds one of [`PASSWORD_WORDS`].
+    fn named_for_a_password(name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        lower
+            .split('_')
+            .any(|segment| PASSWORD_SEGMENTS.contains(&segment))
+            || PASSWORD_WORDS.iter().any(|word| lower.contains(*word))
+    }
+
+    /// No reducer named `admit` is declared: the generated bindings carry none, and the census
+    /// describes none.
+    ///
+    /// kills: the door reducer `admit(who, password)` kept in the module.
+    #[test]
+    fn no_reducer_named_admit_is_declared_lpw20_1() {
+        let generated = super::admission_roster::generated_reducers();
+        assert!(
+            !generated.contains("admit"),
+            "the generated bindings carry `admit`, the door that takes a joiner's password"
+        );
+        let def = the_module();
+        let names: BTreeSet<String> = functions(&def).into_iter().map(|(name, _)| name).collect();
+        assert!(
+            names.contains("set_world_access"),
+            "fixture: the census reaches the access reducer"
+        );
+        assert!(!names.contains("admit"), "the census describes `admit`");
+    }
+
+    /// `set_world_access` takes exactly `rule` (a `Ref` to the `WorldAccessRule` sum, whose
+    /// variants `Open`, `Password` and `Allowlist` carry nothing) and then `admit` (an array
+    /// of `Identity`).
+    ///
+    /// kills: a `password` argument on `set_world_access`, optional or not, in any position; a
+    /// rule variant that carries a value; the admit list re-typed.
+    #[test]
+    fn set_world_access_takes_the_rule_and_the_admit_list_only_lpw20_1() {
+        let def = the_module();
+        let ts = def
+            .typespace()
+            .unwrap_or_else(|| panic!("the census definition carries no typespace"));
+        let Some((_, params)) = functions(&def)
+            .into_iter()
+            .find(|(name, _)| name == "set_world_access")
+        else {
+            panic!("`set_world_access` is not declared")
+        };
+        let names: Vec<&str> = params
+            .elements
+            .iter()
+            .map(|e| e.name.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            names,
+            ["rule", "admit"],
+            "set_world_access's arguments, in order"
+        );
+
+        let AlgebraicType::Ref(rule_ref) = &params.elements[0].algebraic_type else {
+            panic!(
+                "`rule` is not a typespace Ref: {:?}",
+                params.elements[0].algebraic_type
+            )
+        };
+        let declared = def
+            .types()
+            .and_then(|types| types.iter().find(|t| t.ty == *rule_ref))
+            .map(|t| t.source_name.source_name.to_string());
+        assert_eq!(
+            declared.as_deref(),
+            Some("WorldAccessRule"),
+            "`rule` is the WorldAccessRule type"
+        );
+        let AlgebraicType::Sum(sum) = &ts[*rule_ref] else {
+            panic!("WorldAccessRule is not a sum: {:?}", ts[*rule_ref])
+        };
+        let variants: Vec<&str> = sum
+            .variants
+            .iter()
+            .map(|v| v.name.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(variants, ["Open", "Password", "Allowlist"]);
+        assert!(
+            sum.variants.iter().all(|v| v.algebraic_type.is_unit()),
+            "no rule variant carries a value"
+        );
+
+        let AlgebraicType::Array(admit) = resolve(ts, &params.elements[1].algebraic_type) else {
+            panic!(
+                "`admit` is not an array: {:?}",
+                params.elements[1].algebraic_type
+            )
+        };
+        assert!(
+            resolve(ts, &admit.elem_ty).is_identity(),
+            "`admit` is an array of Identity: {:?}",
+            admit.elem_ty
+        );
+    }
+
+    /// No argument of any declared reducer is named for a password, a salt, a hash or another
+    /// value derived from one.
+    ///
+    /// kills: `admit(who, password)` kept; a `password`, `salt`, `hash`, `pw` or `kdf`
+    /// argument on any reducer, client-callable or private.
+    #[test]
+    fn no_reducer_argument_is_named_for_a_password_lpw20_1() {
+        let def = the_module();
+        let mut named: Vec<String> = Vec::new();
+        for (function, params) in functions(&def) {
+            for element in params.elements.iter() {
+                let name = element.name.as_deref().unwrap_or("");
+                if named_for_a_password(name) {
+                    named.push(format!("{function}.{name}"));
+                }
+            }
+        }
+        assert!(
+            named.is_empty(),
+            "arguments named for a password or a value derived from one: {named:?}"
+        );
+    }
+
+    /// The set of `reducer.argument` whose type, read through the typespace at any depth,
+    /// holds a `String` or an array of `u8` is exactly [`TEXT_ARGUMENTS`], each row with a
+    /// basis.
+    ///
+    /// kills: `admit.password` or `set_world_access.password` kept; a new text argument on any
+    /// reducer, client-callable or private, under any name, that nobody reviewed for carrying
+    /// a password or a value derived from one; a text argument hidden in a struct, an enum, an
+    /// array or an option.
+    #[test]
+    fn the_text_arguments_are_exactly_the_reviewed_roster_lpw20_1() {
+        for (argument, basis) in TEXT_ARGUMENTS {
+            assert!(
+                !basis.trim().is_empty(),
+                "the roster row `{argument}` has no basis"
+            );
+        }
+        let want: BTreeSet<&str> = TEXT_ARGUMENTS
+            .iter()
+            .map(|(argument, _)| *argument)
+            .collect();
+        assert_eq!(
+            want.len(),
+            TEXT_ARGUMENTS.len(),
+            "a roster row is listed twice"
+        );
+        let def = the_module();
+        let ts = def
+            .typespace()
+            .unwrap_or_else(|| panic!("the census definition carries no typespace"));
+        let mut found: BTreeSet<String> = BTreeSet::new();
+        for (function, params) in functions(&def) {
+            for element in params.elements.iter() {
+                if holds_text(ts, &element.algebraic_type, &mut Vec::new()) {
+                    let name = element.name.as_deref().unwrap_or("");
+                    found.insert(format!("{function}.{name}"));
+                }
+            }
+        }
+        let got: BTreeSet<&str> = found.iter().map(String::as_str).collect();
+        assert_eq!(
+            got, want,
+            "the arguments that carry text (left) against the reviewed roster (right)"
         );
     }
 }

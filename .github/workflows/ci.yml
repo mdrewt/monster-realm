@@ -129,6 +129,36 @@ jobs:
       - uses: ./.github/actions/tools
       - run: just observability-validate
 
+  # The server's zero-tolerance mutation gate: every mutant on a server-module line this pull
+  # request changes must be killed (`base...HEAD`: the base is the merge base with master).
+  # game-core's gate is the nightly `mutation` sweep. A test weakened or deleted with no server
+  # source line changed is not seen here; the weekly `mutation-server` report is read for that.
+  mutation-diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      # fetch-depth 0 so origin/master and the merge base resolve.
+      - uses: actions/checkout@v6 # v6
+        with: { fetch-depth: 0 }
+      - uses: dtolnay/rust-toolchain@stable # stable
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-mutation-diff }
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-mutants@27.1.0 }
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-nextest@0.9.148 }
+      - uses: ./.github/actions/tools
+      - run: just mutate-diff origin/master monster-realm-module
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-diff
+          path: mutants.out/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Two-window Playwright e2e against a real, version-pinned SpacetimeDB. The suite is split
   # with Playwright's `--shard`, one shard per runner: every spec file runs in exactly one
   # shard, and each shard has its own SpacetimeDB, so a file still shares its world only with

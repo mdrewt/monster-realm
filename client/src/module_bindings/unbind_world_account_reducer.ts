@@ -10,7 +10,4 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  who: __t.identity(),
-  password: __t.string(),
-};
+export default {};

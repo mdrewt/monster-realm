@@ -1,0 +1,202 @@
+--- a/spacetimedb-bindings-sys/src/lib.rs
++++ b/spacetimedb-bindings-sys/src/lib.rs
+@@ -987,7 +987,7 @@
+     }
+ }
+ 
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+ mod native_link_stubs {
+     use super::raw::{BytesSink, BytesSource, RowIter};
+     use super::{ColId, IndexId, TableId};
+--- a/spacetimedb/src/lib.rs
++++ b/spacetimedb/src/lib.rs
+@@ -1228,7 +1228,7 @@
+             self.module_identity
+         }
+ 
+-        #[cfg(target_arch = "wasm32")]
++        #[cfg(not(all(feature = "test-utils", not(target_arch = "wasm32"))))] // monster-realm: was #[cfg(target_arch = "wasm32")]
+         {
+             // Hypothetically, we *could* read the module identity out of the system tables.
+             // However, this would be:
+@@ -1241,7 +1241,7 @@
+             Identity::from_byte_array(spacetimedb_bindings_sys::identity())
+         }
+ 
+-        #[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]
++        #[cfg(any())] // monster-realm: was #[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]
+         {
+             panic!("ReducerContext::identity() is only available in wasm or native test-utils contexts")
+         }
+--- a/spacetimedb/src/table.rs
++++ b/spacetimedb/src/table.rs
+@@ -58,11 +58,11 @@
+     pub fn table_id(&self, table_name: &str) -> Result<TableId, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::table_id_from_name(table_name)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = table_name;
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -105,11 +105,11 @@
+     fn insert_bsatn(&self, table_id: TableId, row: &mut [u8]) -> Result<Vec<u8>, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_insert_bsatn(table_id, row).map(<[u8]>::to_vec)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = (table_id, row);
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -133,11 +133,11 @@
+     fn table_scan_bsatn(&self, table_id: TableId) -> Result<TableIterInner, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_table_scan_bsatn(table_id).map(TableIterInner::Host)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = table_id;
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -159,11 +159,11 @@
+     pub fn table_row_count(&self, table_id: TableId) -> Result<u64, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_table_row_count(table_id)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = table_id;
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -181,11 +181,11 @@
+     fn index_scan_point_bsatn(&self, index_id: IndexId, point: &[u8]) -> Result<TableIterInner, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_index_scan_point_bsatn(index_id, point).map(TableIterInner::Host)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = (index_id, point);
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -214,12 +214,12 @@
+     ) -> Result<TableIterInner, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_index_scan_range_bsatn(index_id, prefix, prefix_elems, rstart, rend)
+                         .map(TableIterInner::Host)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = (index_id, prefix, prefix_elems, rstart, rend);
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -241,11 +241,11 @@
+     fn delete_by_index_scan_point_bsatn(&self, index_id: IndexId, point: &[u8]) -> Result<u32, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_delete_by_index_scan_point_bsatn(index_id, point)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = (index_id, point);
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -272,11 +272,11 @@
+     ) -> Result<u32, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_delete_by_index_scan_range_bsatn(index_id, prefix, prefix_elems, rstart, rend)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = (index_id, prefix, prefix_elems, rstart, rend);
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -296,11 +296,11 @@
+     fn update_bsatn(&self, table_id: TableId, index_id: IndexId, row: &mut [u8]) -> Result<Vec<u8>, sys::Errno> {
+         match self {
+             Self::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     sys::datastore_update_bsatn(table_id, index_id, row).map(<[u8]>::to_vec)
+                 }
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = (table_id, index_id, row);
+                     Err(sys::Errno::HOST_CALL_FAILURE)
+@@ -1864,9 +1864,9 @@
+ 
+ /// A table iterator which yields values of the `TableType` corresponding to the table.
+ enum TableIterInner {
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+     Host(sys::RowIter),
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+     #[allow(dead_code)]
+     Host,
+     #[cfg(all(feature = "test-utils", not(target_arch = "wasm32")))]
+@@ -1876,9 +1876,9 @@
+ impl TableIterInner {
+     fn is_exhausted(&self) -> bool {
+         match self {
+-            #[cfg(target_arch = "wasm32")]
++            #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+             Self::Host(iter) => iter.is_exhausted(),
+-            #[cfg(not(target_arch = "wasm32"))]
++            #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+             Self::Host => true,
+             #[cfg(all(feature = "test-utils", not(target_arch = "wasm32")))]
+             Self::Test(iter) => iter.as_slice().is_empty(),
+@@ -1928,7 +1928,7 @@
+         }
+ 
+         match &mut self.inner {
+-            #[cfg(target_arch = "wasm32")]
++            #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+             TableIterInner::Host(iter) => loop {
+                 // Don't fetch the next chunk if there is none.
+                 {
+@@ -1947,7 +1947,7 @@
+                     return Some(row);
+                 }
+             },
+-            #[cfg(not(target_arch = "wasm32"))]
++            #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+             TableIterInner::Host => None,
+             #[cfg(all(feature = "test-utils", not(target_arch = "wasm32")))]
+             TableIterInner::Test(iter) => {

@@ -1,6 +1,6 @@
-# Blessed equivalent-mutant exclusions (each entry states why the mutant is equivalent).
-# Every entry needs an equivalence/hang proof and is deleted the moment surrounding code makes
-# it killable.
+# Blessed mutant exclusions. Each of entries 1-17 carries a proof that its mutant is equivalent,
+# never terminates, or is compiled out of the build that is mutated, and is deleted the moment
+# surrounding code makes it killable. Entry 18 excludes the logging functions' bodies by name.
 #
 # 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
 #    `dy > 0` and `dy >= 0` are indistinguishable on the reachable domain.
@@ -64,19 +64,18 @@
 #    keep running). Keyed by column (:25) + function.
 #
 #
-# Server-module exclusions (entries 8-17; numbers 10, 14 and 16 are unused - log lines ARE
-# observable through a log sink, so a log-line mutant is killed by tests, never excluded).
-# The server gate is zero-tolerance, like game-core: each
-# of these was first attacked with a test (an exhaustive truth table / boundary table / the full
-# suite) and survives it, because the mutated code cannot change anything observable. All are
-# keyed by file + function + operator + column, never by a bare line. Each is deleted the moment
-# the code around it makes the mutant observable.
+# Server-module exclusions (entries 8-18; numbers 10, 14 and 16 are unused). Each of entries 8-17
+# was first attacked with a test (an exhaustive truth table / boundary table / the full suite) and
+# survives it, because the mutated code cannot change anything observable. They are keyed by file +
+# function + operator + column, never by a bare line, and each is deleted the moment the code around
+# it makes the mutant observable.
 #
 # 8. dev-only code (`#[cfg(feature = "dev_reducers")]`, or `load_test_zones`, which implies it):
 #    grant_bait (taming.rs, `==`->`!=`), dev_expire_tactical_window (dev_clock.rs: every
 #    operator, `!` and match-arm mutant of its body) and its arm forwarder dev_arm_deadline
-#    (tactics.rs, `-> ()`). The nightly mutates the default-feature build, which does not compile these functions, so their mutants survive
-#    vacuously (the mutated source never builds into the test binary). They are never shipped
+#    (tactics.rs, `-> ()`). Every mutation run mutates the default-feature build, which does not
+#    compile these functions, so their mutants survive vacuously (the mutated source never builds
+#    into the test binary). They are never shipped
 #    (the release module has no dev reducers) and are killed for real by tests that `just test`
 #    runs with `--features dev_reducers`: the `_th4_` tests of dev_clock_tests.rs kill every
 #    dev_expire_tactical_window mutant and the forwarder's. The load build's code is the same
@@ -116,6 +115,9 @@
 #     predicate has its full matrix (ea_ra_06b) and the `-> true` mutant is caught by canary
 #     ea_ra_06a. EXPIRY: when ALLOWED_ISSUERS gains a real issuer the canary fires - remove this
 #     entry in that same change.
+#
+# 18. Every mutant in the bodies of guards::json_escape, guards::log_reject, observability::mr_log
+#     and observability::mr_log_breadcrumb, keyed by file + function name only.
 
 # Build profile: `test` without debuginfo (root Cargo.toml, [profile.mutants]).
 profile = "mutants"
@@ -145,4 +147,7 @@ exclude_re = [
     "content\\.rs:\\d+:\\d+: replace validate_enum_rosters -> Result<\\(\\), String> with Ok\\(\\(\\)\\)",
     "battle\\.rs:\\d+:\\d+: replace \\|\\| with && in battle_with_forced_terminal",
     "pvp\\.rs:\\d+:\\d+: replace ranked_enforcement_active -> bool with false",
+    # 18, logging bodies by name: a log line is a diagnostic, not a rule; their direct tests stay.
+    "^server-module/src/guards\\.rs:\\d+:\\d+: (replace (json_escape|log_reject)( -> .*)? with .*|.* in (json_escape|log_reject))$",
+    "^server-module/src/observability\\.rs:\\d+:\\d+: (replace (mr_log|mr_log_breadcrumb)( -> .*)? with .*|.* in (mr_log|mr_log_breadcrumb))$",
 ]

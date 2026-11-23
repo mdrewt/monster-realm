@@ -8,8 +8,8 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
 > The client owns no game state; it is a view: `server → store → render` and
 > `input → predictor → net`. Mechanics: `ARCHITECTURE.md` ("Client").
 
-> **Versions.** CLI/host, Rust crate and npm `spacetimedb` all 2.11.0 (`^2.11.0`,
-> locked, in lockstep since 2026-10-15). The committed bindings are 2.11.0-generated, which means:
+> **Versions.** CLI/host, Rust crate and npm `spacetimedb` all 2.12.0 (`^2.12.0`,
+> locked, in lockstep since 2026-10-15). The committed bindings are 2.12.0-generated, which means:
 > 1. **Table and view handles are camelCase** (`conn.db.myTradeSession`,
 >    `conn.db.myMonsterPub`). The snake_case spellings still work as `@deprecated`
 >    aliases; write camelCase in new code.

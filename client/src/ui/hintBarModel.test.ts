@@ -6,10 +6,12 @@
 // RED REASON: client/src/ui/hintBarModel.ts does not exist yet (module-not-found).
 //
 // CONTRACT:
-//   hintBar(stack, bindings, notices, world?) -> readonly HintChip[]
+//   hintBar(stack, keycap, notices, world?) -> readonly HintChip[]
 //     HintChip = { button, keycap, verb, badge }; world defaults to
 //     { target: null, sheetOpen: false, requestWaiting: false }.
-//     keycap = glyph(bindings.buttons[button][0]), '' for an unbound button; read per call.
+//     `keycap` is `(button) => string`, built by `keycapFor(source, keys, pad)`: the glyph of the
+//     first bound key (source 'keys') or pad index (source 'pad'), '' for an unbound button; it is
+//     called once per chip, per call.
 //     Chips, in this order, by the TOP of the stack:
 //       world base, no sheet : A(target verb) iff target !== null; Y(chrome.chip.view) iff
 //                              requestWaiting && target === null; B(chrome.chip.dismiss) iff
@@ -30,6 +32,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import type { VButton } from '../input/buttons';
 import { glyph } from '../input/glyphs';
+import { PAD_DEFAULT_BINDINGS, type PadBindings } from '../input/padBindings';
+import { keycapFor, padGlyph } from '../input/padGlyphs';
 import type { Stack } from './contextStack';
 import {
   type HintBattle,
@@ -46,6 +50,11 @@ afterEach(() => {
 });
 
 const BACKSPACE_GLYPH = String.fromCharCode(0x232b);
+
+/** The keyboard keycap function of `table`, over the default pad table. */
+const keysOf = (table: Bindings) => keycapFor('keys', table, PAD_DEFAULT_BINDINGS);
+/** The keyboard keycap function of the default table. */
+const KEYS = keysOf(DEFAULT_BINDINGS);
 
 const WORLD: Stack = [{ kind: 'world' }];
 const BATTLE: Stack = [{ kind: 'battle', battleId: '9' }];
@@ -101,30 +110,28 @@ describe('hintBar: the world base (ctl-13, CTL13.1)', () => {
     const KEYCAPS = { A: 'Enter', B: BACKSPACE_GLYPH, Y: 'F', Start: 'Esc', Select: 'R' } as const;
 
     // Nothing at all: Start and Select only.
-    expect(rows(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES))).toEqual([
+    expect(rows(hintBar(WORLD, KEYS, NO_NOTICES))).toEqual([
       ['Start', KEYCAPS.Start, verb('chrome.chip.menu'), false],
       ['Select', KEYCAPS.Select, verb('chrome.chip.help'), false],
     ]);
     expect(
-      hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES, world()),
+      hintBar(WORLD, KEYS, NO_NOTICES, world()),
       'the fourth argument defaults to nothing waiting',
-    ).toEqual(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES));
+    ).toEqual(hintBar(WORLD, KEYS, NO_NOTICES));
 
     // A faced target: A names the target's verb.
-    expect(rows(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES, world({ target: 'Talk' })))).toEqual([
+    expect(rows(hintBar(WORLD, KEYS, NO_NOTICES, world({ target: 'Talk' })))).toEqual([
       ['A', KEYCAPS.A, 'Talk', false],
       ['Start', KEYCAPS.Start, verb('chrome.chip.menu'), false],
       ['Select', KEYCAPS.Select, verb('chrome.chip.help'), false],
     ]);
     expect(
-      hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES, world({ target: 'Heal' }))[0]?.verb,
+      hintBar(WORLD, KEYS, NO_NOTICES, world({ target: 'Heal' }))[0]?.verb,
       'the verb is the target`s, not a fixed word',
     ).toBe('Heal');
 
     // A request waits, no target: Y (view), B (dismiss), and the Start badge.
-    expect(
-      rows(hintBar(WORLD, DEFAULT_BINDINGS, [REQUEST_NOTICE], world({ requestWaiting: true }))),
-    ).toEqual([
+    expect(rows(hintBar(WORLD, KEYS, [REQUEST_NOTICE], world({ requestWaiting: true })))).toEqual([
       ['Y', KEYCAPS.Y, verb('chrome.chip.view'), false],
       ['B', KEYCAPS.B, verb('chrome.chip.dismiss'), false],
       ['Start', KEYCAPS.Start, verb('chrome.chip.menu'), true],
@@ -132,16 +139,14 @@ describe('hintBar: the world base (ctl-13, CTL13.1)', () => {
     ]);
 
     // The banner was dismissed (no notice) but the request still waits: Y and the badge stay, B goes.
-    expect(
-      rows(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES, world({ requestWaiting: true }))),
-    ).toEqual([
+    expect(rows(hintBar(WORLD, KEYS, NO_NOTICES, world({ requestWaiting: true })))).toEqual([
       ['Y', KEYCAPS.Y, verb('chrome.chip.view'), false],
       ['Start', KEYCAPS.Start, verb('chrome.chip.menu'), true],
       ['Select', KEYCAPS.Select, verb('chrome.chip.help'), false],
     ]);
 
     // Only an error notice (the toast): B dismisses it, nothing waits: no Y, no badge.
-    expect(rows(hintBar(WORLD, DEFAULT_BINDINGS, [ERROR_NOTICE], world()))).toEqual([
+    expect(rows(hintBar(WORLD, KEYS, [ERROR_NOTICE], world()))).toEqual([
       ['B', KEYCAPS.B, verb('chrome.chip.dismiss'), false],
       ['Start', KEYCAPS.Start, verb('chrome.chip.menu'), false],
       ['Select', KEYCAPS.Select, verb('chrome.chip.help'), false],
@@ -152,7 +157,7 @@ describe('hintBar: the world base (ctl-13, CTL13.1)', () => {
       rows(
         hintBar(
           WORLD,
-          DEFAULT_BINDINGS,
+          KEYS,
           [ERROR_NOTICE, REQUEST_NOTICE],
           world({ target: 'Talk', requestWaiting: true }),
         ),
@@ -173,7 +178,7 @@ describe('hintBar: the world base (ctl-13, CTL13.1)', () => {
       world({ sheetOpen: true, requestWaiting: true }),
     ]) {
       expect(
-        rows(hintBar(WORLD, DEFAULT_BINDINGS, [REQUEST_NOTICE], extra)),
+        rows(hintBar(WORLD, KEYS, [REQUEST_NOTICE], extra)),
         `sheet open (${JSON.stringify(extra)})`,
       ).toEqual([
         ['A', KEYCAPS.A, verb('chrome.chip.ok'), false],
@@ -194,7 +199,7 @@ describe('hintBar: Help on the Introduction (uif-14b, UIF14B.1)', () => {
     // WRONG IMPL KILLED: a Help bar with no A chip (the Report a problem row would be reachable but
     // unlabelled); A labelled with a hard-coded word instead of the catalog verb; an unbound keycap.
     for (const base of [PROMPT, [{ kind: 'battle', battleId: '9' }, PROMPT[1]] as Stack]) {
-      const chips = hintBar(base, DEFAULT_BINDINGS, NO_NOTICES);
+      const chips = hintBar(base, KEYS, NO_NOTICES);
       expect(chips.map((c) => c.button)).toEqual(['A', 'B', 'Start', 'Select']);
       const a = chips[0] as HintChip;
       expect(a.verb).toBe(verb('chrome.chip.ok'));
@@ -210,22 +215,17 @@ describe('hintBar: the Monsters frame quick Move (ts-6b-5.4)', () => {
     // Start; a literal verb instead of the Move catalog entry.
     const BOX_VIEW: Stack = [{ kind: 'world' }, { kind: 'screen', id: 'boxView' }];
     const buttons = (chips: readonly HintChip[]): string[] => chips.map((c) => c.button);
-    const on = hintBar(BOX_VIEW, DEFAULT_BINDINGS, NO_NOTICES, undefined, undefined, {
+    const on = hintBar(BOX_VIEW, KEYS, NO_NOTICES, undefined, undefined, {
       quickMove: true,
     });
     expect(buttons(on)).toEqual(['A', 'B', 'X', 'Start', 'Select']);
     expect(on.find((c) => c.button === 'X')?.verb).toBe(t('box.sheet.move'));
-    const off = hintBar(BOX_VIEW, DEFAULT_BINDINGS, NO_NOTICES, undefined, undefined, {
+    const off = hintBar(BOX_VIEW, KEYS, NO_NOTICES, undefined, undefined, {
       quickMove: false,
     });
     expect(buttons(off)).toEqual(['A', 'B', 'Start', 'Select']);
-    expect(buttons(hintBar(BOX_VIEW, DEFAULT_BINDINGS, NO_NOTICES))).toEqual([
-      'A',
-      'B',
-      'Start',
-      'Select',
-    ]);
-    const menu = hintBar(OVER_WORLD_SCREEN, DEFAULT_BINDINGS, NO_NOTICES, undefined, undefined, {
+    expect(buttons(hintBar(BOX_VIEW, KEYS, NO_NOTICES))).toEqual(['A', 'B', 'Start', 'Select']);
+    const menu = hintBar(OVER_WORLD_SCREEN, KEYS, NO_NOTICES, undefined, undefined, {
       quickMove: true,
     });
     expect(buttons(menu), 'another screen shows no X').toEqual(['A', 'B', 'Start', 'Select']);
@@ -244,13 +244,13 @@ describe('hintBar: every other top of stack (ctl-13, CTL13.1)', () => {
     const back = verb('chrome.chip.back');
     const KEY = { A: 'Enter', B: BACKSPACE_GLYPH, Start: 'Esc', Select: 'R' } as const;
 
-    expect(rows(hintBar(BATTLE, DEFAULT_BINDINGS, NO_NOTICES))).toEqual([
+    expect(rows(hintBar(BATTLE, KEYS, NO_NOTICES))).toEqual([
       ['A', KEY.A, ok, false],
       ['Start', KEY.Start, verb('chrome.chip.menu'), false],
       ['Select', KEY.Select, verb('chrome.chip.help'), false],
     ]);
     expect(
-      rows(hintBar(BATTLE, DEFAULT_BINDINGS, [REQUEST_NOTICE], world({ requestWaiting: true }))),
+      rows(hintBar(BATTLE, KEYS, [REQUEST_NOTICE], world({ requestWaiting: true }))),
       'a request waiting at the battle base badges Start',
     ).toEqual([
       ['A', KEY.A, ok, false],
@@ -258,9 +258,9 @@ describe('hintBar: every other top of stack (ctl-13, CTL13.1)', () => {
       ['Select', KEY.Select, verb('chrome.chip.help'), false],
     ]);
     expect(
-      hintBar(BATTLE, DEFAULT_BINDINGS, NO_NOTICES, world({ target: 'Talk', sheetOpen: true })),
+      hintBar(BATTLE, KEYS, NO_NOTICES, world({ target: 'Talk', sheetOpen: true })),
       'the world`s target and sheet mean nothing at a battle',
-    ).toEqual(hintBar(BATTLE, DEFAULT_BINDINGS, NO_NOTICES));
+    ).toEqual(hintBar(BATTLE, KEYS, NO_NOTICES));
 
     const frameBar = [
       ['A', KEY.A, ok, false],
@@ -273,27 +273,27 @@ describe('hintBar: every other top of stack (ctl-13, CTL13.1)', () => {
       ['a screen over a battle', OVER_BATTLE_SCREEN],
       ['a prompt over the world', PROMPT],
     ] as const) {
-      expect(rows(hintBar(stack, DEFAULT_BINDINGS, NO_NOTICES)), label).toEqual(frameBar);
+      expect(rows(hintBar(stack, KEYS, NO_NOTICES)), label).toEqual(frameBar);
       expect(
-        hintBar(stack, DEFAULT_BINDINGS, [ERROR_NOTICE], world({ target: 'Talk' })),
+        hintBar(stack, KEYS, [ERROR_NOTICE], world({ target: 'Talk' })),
         `${label}: the world's target and notices do not reach a frame bar`,
-      ).toEqual(hintBar(stack, DEFAULT_BINDINGS, NO_NOTICES));
+      ).toEqual(hintBar(stack, KEYS, NO_NOTICES));
     }
 
-    expect(rows(hintBar(TYPING, DEFAULT_BINDINGS, NO_NOTICES))).toEqual([
+    expect(rows(hintBar(TYPING, KEYS, NO_NOTICES))).toEqual([
       ['A', KEY.A, ok, false],
       ['Start', KEY.Start, verb('chrome.chip.done'), false],
     ]);
 
     // The verbs are read per call: a French boot reads French.
-    const enMenu = hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES)[1]?.verb;
+    const enMenu = hintBar(WORLD, KEYS, NO_NOTICES)[1]?.verb;
     setLocale('fr');
-    const frHelp = hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES)[1]?.verb;
+    const frHelp = hintBar(WORLD, KEYS, NO_NOTICES)[1]?.verb;
     expect(frHelp, 'fr: the Select chip reads the French catalog verb').toBe('Aide');
     expect(frHelp).not.toBe(enMenu);
-    expect(hintBar(TYPING, DEFAULT_BINDINGS, NO_NOTICES)[1]?.verb).toBe(verb('chrome.chip.done'));
+    expect(hintBar(TYPING, KEYS, NO_NOTICES)[1]?.verb).toBe(verb('chrome.chip.done'));
     setLocale('en');
-    expect(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES)[1]?.verb, 'back to en').toBe('Help');
+    expect(hintBar(WORLD, KEYS, NO_NOTICES)[1]?.verb, 'back to en').toBe('Help');
   });
 });
 
@@ -310,7 +310,7 @@ describe('hintBar: the tactical battle base (bt-11, BT11.6)', () => {
       return code === undefined ? '' : glyph(code);
     };
     const bar = (battle: HintBattle, table: Bindings = DEFAULT_BINDINGS) =>
-      rows(hintBar(BATTLE, table, NO_NOTICES, undefined, battle));
+      rows(hintBar(BATTLE, keysOf(table), NO_NOTICES, undefined, battle));
     const want = (bVerb: string, startVerb: string, table: Bindings = DEFAULT_BINDINGS) => [
       ['A', cap('A', table), verb('chrome.chip.ok'), false],
       ['B', cap('B', table), verb(bVerb), false],
@@ -346,22 +346,19 @@ describe('hintBar: the tactical battle base (bt-11, BT11.6)', () => {
     expect(cap('X', remapped), 'fixture: the remap changes the X keycap').not.toBe(cap('X'));
 
     // No hint: the legacy battle bar, unchanged.
-    expect(
-      rows(hintBar(BATTLE, DEFAULT_BINDINGS, NO_NOTICES)),
-      'no hint: the legacy three',
-    ).toEqual([
+    expect(rows(hintBar(BATTLE, KEYS, NO_NOTICES)), 'no hint: the legacy three').toEqual([
       ['A', cap('A'), verb('chrome.chip.ok'), false],
       ['Start', cap('Start'), verb('chrome.chip.menu'), false],
       ['Select', cap('Select'), verb('chrome.chip.help'), false],
     ]);
     // A frame above the battle keeps its frame bar whatever the hint says.
     expect(
-      hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES, undefined, {
+      hintBar(OVER_BATTLE_SCREEN, KEYS, NO_NOTICES, undefined, {
         start: 'submit',
         undo: true,
       }),
       'a menu over the battle: the frame bar',
-    ).toEqual(hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES));
+    ).toEqual(hintBar(OVER_BATTLE_SCREEN, KEYS, NO_NOTICES));
 
     // ANTI-VACUITY: B's two verbs and Start's three are five different words.
     const words = [
@@ -406,7 +403,7 @@ describe('hintBar: the deploy panel at the battle base (bt-12 B, BT12.2, R-bt-12
       w: HintWorld = world(),
       table: Bindings = DEFAULT_BINDINGS,
       stack: Stack = BATTLE,
-    ) => rows(hintBar(stack, table, NO_NOTICES, w, hint));
+    ) => rows(hintBar(stack, keysOf(table), NO_NOTICES, w, hint));
     const CONFIRM: HintDeploy = { deploy: 'confirm' };
     const EDIT: HintDeploy = { deploy: 'edit' };
 
@@ -459,14 +456,14 @@ describe('hintBar: the deploy panel at the battle base (bt-12 B, BT12.2, R-bt-12
     // A frame above the battle keeps its frame bar whatever the deploy hint says.
     for (const hint of [CONFIRM, EDIT]) {
       expect(
-        hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES, undefined, hint),
+        hintBar(OVER_BATTLE_SCREEN, KEYS, NO_NOTICES, undefined, hint),
         `a menu over the battle (${hint.deploy}): the frame bar`,
-      ).toEqual(hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES));
+      ).toEqual(hintBar(OVER_BATTLE_SCREEN, KEYS, NO_NOTICES));
     }
     // The tactical bar is unchanged by the widened parameter.
     const tactical: HintBattle = { start: 'endTurn', undo: false };
     expect(
-      rows(hintBar(BATTLE, DEFAULT_BINDINGS, NO_NOTICES, undefined, tactical)).map((r) => r[0]),
+      rows(hintBar(BATTLE, KEYS, NO_NOTICES, undefined, tactical)).map((r) => r[0]),
       'the tactical bar keeps its seven buttons',
     ).toEqual(['A', 'B', 'X', 'LB', 'RB', 'Start', 'Select']);
 
@@ -503,7 +500,7 @@ describe('hintBar: the world sheet bar (uif-12, UIF12.3, R-ctl-13-SHEETCHIPS)', 
     // import. Keycaps are read through glyph() under the ACTIVE locale (fr names differ).
     const cap = (button: VButton): string => glyph(DEFAULT_BINDINGS.buttons[button][0] as string);
     const bar = (w: Partial<HintWorld>) =>
-      rows(hintBar(WORLD, DEFAULT_BINDINGS, [REQUEST_NOTICE], world({ sheetOpen: true, ...w })));
+      rows(hintBar(WORLD, KEYS, [REQUEST_NOTICE], world({ sheetOpen: true, ...w })));
     const want = (a: string, b: string, start: string, select: string) => [
       ['A', cap('A'), a, false],
       ['B', cap('B'), b, false],
@@ -526,9 +523,9 @@ describe('hintBar: the world sheet bar (uif-12, UIF12.3, R-ctl-13-SHEETCHIPS)', 
 
     // The picker flag means nothing without an open sheet.
     expect(
-      rows(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES, world({ picker: true }))),
+      rows(hintBar(WORLD, KEYS, NO_NOTICES, world({ picker: true }))),
       'no sheet: the plain world bar',
-    ).toEqual(rows(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES)));
+    ).toEqual(rows(hintBar(WORLD, KEYS, NO_NOTICES)));
 
     // The ids carry the words (the catalog pins the text).
     expect(verb('interact.chip.choose')).toBe('Choose');
@@ -562,17 +559,15 @@ describe('hintBar: the help frame bar (uif-14, UIF14.7)', () => {
     ];
     setLocale('en');
     expect(cap('A'), 'fixture: the default A keycap').toBe('Enter');
-    expect(rows(hintBar(HELP_FRAME, DEFAULT_BINDINGS, NO_NOTICES)), 'en help frame').toEqual(
+    expect(rows(hintBar(HELP_FRAME, KEYS, NO_NOTICES)), 'en help frame').toEqual(
       expected('OK', 'Back', 'Close', 'Help'),
     );
     expect(
-      rows(
-        hintBar(HELP_FRAME, DEFAULT_BINDINGS, [REQUEST_NOTICE], world({ requestWaiting: true })),
-      ),
+      rows(hintBar(HELP_FRAME, KEYS, [REQUEST_NOTICE], world({ requestWaiting: true }))),
       'a waiting request does not badge Start inside a frame',
     ).toEqual(expected('OK', 'Back', 'Close', 'Help'));
     setLocale('fr');
-    expect(rows(hintBar(HELP_FRAME, DEFAULT_BINDINGS, NO_NOTICES)), 'fr help frame').toEqual([
+    expect(rows(hintBar(HELP_FRAME, KEYS, NO_NOTICES)), 'fr help frame').toEqual([
       ['A', cap('A'), verb('chrome.chip.ok'), false],
       ['B', cap('B'), verb('chrome.chip.back'), false],
       ['Start', cap('Start'), 'Fermer', false],
@@ -601,7 +596,9 @@ describe('hintBar: keycaps (ctl-13, CTL13.1)', () => {
       },
     };
     const caps = (stack: Stack, b: Bindings, w: HintWorld): Record<string, string> =>
-      Object.fromEntries(hintBar(stack, b, [REQUEST_NOTICE], w).map((c) => [c.button, c.keycap]));
+      Object.fromEntries(
+        hintBar(stack, keysOf(b), [REQUEST_NOTICE], w).map((c) => [c.button, c.keycap]),
+      );
 
     const sheet = world({ sheetOpen: true });
     expect(caps(WORLD, DEFAULT_BINDINGS, sheet)).toEqual({
@@ -636,7 +633,7 @@ describe('hintBar: keycaps (ctl-13, CTL13.1)', () => {
       for (const table of [DEFAULT_BINDINGS, remapped]) {
         for (const chip of hintBar(
           stack,
-          table,
+          keysOf(table),
           [REQUEST_NOTICE],
           world({ requestWaiting: true }),
         )) {
@@ -653,7 +650,12 @@ describe('hintBar: keycaps (ctl-13, CTL13.1)', () => {
       ...DEFAULT_BINDINGS,
       buttons: { ...DEFAULT_BINDINGS.buttons, Select: [], Y: [] },
     };
-    const bare = hintBar(WORLD, noSelect, [REQUEST_NOTICE], world({ requestWaiting: true }));
+    const bare = hintBar(
+      WORLD,
+      keysOf(noSelect),
+      [REQUEST_NOTICE],
+      world({ requestWaiting: true }),
+    );
     expect(
       bare.map((c) => [c.button, c.keycap]),
       'Select and Y keep their chips with an empty keycap',
@@ -663,5 +665,147 @@ describe('hintBar: keycaps (ctl-13, CTL13.1)', () => {
       ['Start', 'Esc'],
       ['Select', ''],
     ]);
+  });
+});
+
+describe('hintBar: pad keycaps (gp-4)', () => {
+  const PAD = keycapFor('pad', DEFAULT_BINDINGS, PAD_DEFAULT_BINDINGS);
+  const BOX_VIEW: Stack = [{ kind: 'world' }, { kind: 'screen', id: 'boxView' }];
+
+  /** The default pad table's glyph of each virtual button, spelled out. */
+  const PAD_CAPS: Readonly<Record<string, string>> = {
+    A: 'A',
+    B: 'B',
+    X: 'X',
+    Y: 'Y',
+    LB: 'LB',
+    RB: 'RB',
+    Start: 'Menu',
+    Select: 'View',
+  };
+
+  /** Every bar shape the model draws, each with the chips it must show. */
+  const bars = (): ReadonlyArray<{
+    label: string;
+    chips: readonly HintChip[];
+    buttons: string[];
+  }> => [
+    {
+      label: 'the bare world',
+      chips: hintBar(WORLD, PAD, NO_NOTICES),
+      buttons: ['Start', 'Select'],
+    },
+    {
+      label: 'the world with a faced target',
+      chips: hintBar(WORLD, PAD, NO_NOTICES, world({ target: 'Talk' })),
+      buttons: ['A', 'Start', 'Select'],
+    },
+    {
+      label: 'the world with a waiting request and a notice',
+      chips: hintBar(WORLD, PAD, [REQUEST_NOTICE], world({ requestWaiting: true })),
+      buttons: ['Y', 'B', 'Start', 'Select'],
+    },
+    {
+      label: 'a world sheet',
+      chips: hintBar(WORLD, PAD, NO_NOTICES, world({ sheetOpen: true })),
+      buttons: ['A', 'B', 'Start', 'Select'],
+    },
+    {
+      label: 'the legacy battle',
+      chips: hintBar(BATTLE, PAD, NO_NOTICES),
+      buttons: ['A', 'Start', 'Select'],
+    },
+    {
+      label: 'the tactical battle',
+      chips: hintBar(BATTLE, PAD, NO_NOTICES, undefined, { start: 'endTurn', undo: true }),
+      buttons: ['A', 'B', 'X', 'LB', 'RB', 'Start', 'Select'],
+    },
+    {
+      label: 'the deploy editor',
+      chips: hintBar(BATTLE, PAD, NO_NOTICES, undefined, { deploy: 'edit' }),
+      buttons: ['A', 'B', 'LB', 'RB', 'Start', 'Select'],
+    },
+    {
+      label: 'a screen over the world',
+      chips: hintBar(OVER_WORLD_SCREEN, PAD, NO_NOTICES),
+      buttons: ['A', 'B', 'Start', 'Select'],
+    },
+    {
+      label: 'the Monsters list with quick Move',
+      chips: hintBar(BOX_VIEW, PAD, NO_NOTICES, undefined, undefined, { quickMove: true }),
+      buttons: ['A', 'B', 'X', 'Start', 'Select'],
+    },
+    {
+      label: 'a text entry',
+      chips: hintBar(TYPING, PAD, NO_NOTICES),
+      buttons: ['A', 'Start'],
+    },
+  ];
+
+  it('with the pad keycap function every chip of every bar shows the pad glyph of its button`s bound index [gp-4.2]', () => {
+    // WRONG IMPL KILLED: a chip that reads the keyboard table (not the function it is handed), a
+    // chip kind (Start, Select, a battle X or LB) that bypasses the function, and a glyph taken
+    // from another button's index.
+    for (const { label, chips, buttons } of bars()) {
+      expect(
+        chips.map((c) => c.button),
+        `${label}: the chips`,
+      ).toEqual(buttons);
+      for (const chip of chips) {
+        const index = PAD_DEFAULT_BINDINGS.buttons[chip.button][0] as number;
+        expect(chip.keycap, `${label}: ${chip.button} keycap`).toBe(padGlyph(index));
+        expect(chip.keycap, `${label}: ${chip.button} keycap, spelled out`).toBe(
+          PAD_CAPS[chip.button],
+        );
+      }
+    }
+    expect(
+      hintBar(WORLD, PAD, NO_NOTICES).map((c) => c.keycap),
+      'the world bar reads Menu and View, not Esc and R',
+    ).toEqual(['Menu', 'View']);
+  });
+
+  it('calls the keycap function with the chip`s own button, once per chip, each time the bar is built [gp-4.2]', () => {
+    // WRONG IMPL KILLED: a keycap cached across calls (a source switch would show a frame late or
+    // never) and a chip that asks for another button's keycap.
+    const asked: string[] = [];
+    const spy = (button: VButton): string => {
+      asked.push(button);
+      return `<${button}>`;
+    };
+    const first = hintBar(WORLD, spy, NO_NOTICES, world({ target: 'Talk' }));
+    expect(asked, 'one call per chip, in bar order').toEqual(['A', 'Start', 'Select']);
+    expect(
+      first.map((c) => c.keycap),
+      'each chip shows what the function answered for its own button',
+    ).toEqual(['<A>', '<Start>', '<Select>']);
+    asked.length = 0;
+    hintBar(WORLD, spy, NO_NOTICES, world({ target: 'Talk' }));
+    expect(asked, 'a second build asks again').toEqual(['A', 'Start', 'Select']);
+  });
+
+  it('shows a chip with an empty keycap for a button with no pad index, and keeps the chip and its verb [gp-4.4]', () => {
+    // WRONG IMPL KILLED: a chip dropped when its pad index is unbound, a keycap that falls back to
+    // the keyboard glyph (a pad player reads "Enter"), and "undefined" shown as the key.
+    const noA: PadBindings = {
+      ...PAD_DEFAULT_BINDINGS,
+      buttons: { ...PAD_DEFAULT_BINDINGS.buttons, A: [], Select: [] },
+    };
+    const cap = keycapFor('pad', DEFAULT_BINDINGS, noA);
+    const world1 = hintBar(WORLD, cap, NO_NOTICES, world({ target: 'Talk' }));
+    expect(
+      world1.map((c) => [c.button, c.keycap, c.verb]),
+      'A and Select stay on the bar with an empty keycap; Start keeps its glyph',
+    ).toEqual([
+      ['A', '', 'Talk'],
+      ['Start', 'Menu', verb('chrome.chip.menu')],
+      ['Select', '', verb('chrome.chip.help')],
+    ]);
+    const screen = hintBar(OVER_WORLD_SCREEN, cap, NO_NOTICES);
+    expect(screen.find((c) => c.button === 'A')?.keycap, 'A over a screen').toBe('');
+    expect(screen.find((c) => c.button === 'A')?.verb, 'A keeps its verb').toBe(
+      verb('chrome.chip.ok'),
+    );
+    expect(screen.find((c) => c.button === 'B')?.keycap, 'B keeps its glyph').toBe('B');
   });
 });

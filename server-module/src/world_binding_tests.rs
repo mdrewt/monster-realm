@@ -1,6 +1,6 @@
-//! World binding, executed against the in-memory host: the attestation verifier, the nonce and
-//! bind reducers, the name and allowlist setters, what a binding means for ownership and for an
-//! `Allowlist` world, and the deletion step.
+//! World binding, executed against the in-memory host: the attestation verifier, the nonce,
+//! bind and unbind reducers, the name and allowlist setters, what a binding means for ownership
+//! and for an `Allowlist` world, and the deletion step.
 //!
 //! Attestations are made here exactly as the account service makes them: a compact JWT whose
 //! signature is Ed25519 over `<header segment>.<payload segment>`, signed with the `local-dev`
@@ -683,6 +683,11 @@ fn passes(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
     call(fx, who, ms, |ctx| {
         crate::access::require_admitted(ctx, "probe")
     })
+}
+
+/// `who` erases its own binding (`unbind_world_account`).
+fn unbind(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
+    call(fx, who, ms, super::unbind_world_account)
 }
 
 // =====================================================================================
@@ -2909,6 +2914,61 @@ mod official_build {
         assert!(joined(&jw, alice()).is_empty(), "no player row");
         assert_eq!((footprint(&fx, &w), join_footprint(&fx, &jw)), before);
     }
+
+    /// A bound caller's unbind is refused with no write: its binding, its nonce and its
+    /// admission row all stay.
+    ///
+    /// kills: the inert reducer (`Ok`); an unbind that erases on a build that binds nothing.
+    #[test]
+    fn the_official_build_refuses_the_unbind_with_no_write_lpw22_4() {
+        let fx = fixture();
+        let w = bindable_world(&fx);
+        w.binding
+            .seed(&binding_row(alice(), SUB, T0 - 5_000, true, dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_BUILD_BINDS_NOTHING,
+            "unbind_world_account",
+            || unbind(&fx, alice(), BIND_AT),
+        );
+        assert!(
+            bindings(&w).contains(&bview(alice(), SUB, T0 - 5_000, true, dev_kid())),
+            "the binding stays"
+        );
+        assert_eq!(
+            nonce_of(&w, alice()),
+            Some((NONCE_A.to_string(), NONCE_EXPIRES)),
+            "the nonce row stays"
+        );
+        assert_eq!(w.admission.rows().len(), 1, "the admission row stays");
+    }
+
+    /// The build's refusal is the unbind's first step and reads nothing: on an `Allowlist`
+    /// world, for a bound caller pending deletion that holds an admission row, and for a
+    /// caller with no binding at all.
+    ///
+    /// kills: the build guard placed after the binding lookup (a caller with no binding
+    /// answered `Ok`, a bound one read), after the deletion gate, or after the no-readmit
+    /// rule.
+    #[test]
+    fn the_official_build_refuses_the_unbind_before_any_other_step_lpw22_4() {
+        let fx = fixture();
+        let w = bindable_world(&fx);
+        w.access.seed(&rule_row(WorldAccessRule::Allowlist));
+        seed_allowed(&w, &[SUB]);
+        w.binding
+            .seed(&binding_row(alice(), SUB, T0 - 5_000, true, dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        w.account.seed(&deleting_account(alice()));
+        assert_refused_unread(&fx, &w, "a bound caller pending deletion", || {
+            unbind(&fx, alice(), BIND_AT)
+        });
+        assert_refused_unread(&fx, &w, "a caller with no binding", || {
+            unbind(&fx, id(0x44), BIND_AT)
+        });
+    }
 }
 
 // =====================================================================================
@@ -3275,6 +3335,93 @@ mod acs6_enforcing_bound {
         );
         assert_eq!(join(&fx, alice(), None, T0 + 3), Ok(()), "bound: joins");
         assert_eq!(joined(&jw, alice()), vec!["Ada".to_string()]);
+    }
+}
+
+// =====================================================================================
+// The dev-enforcing build: an identity that unbinds is refused the join until it binds again.
+// =====================================================================================
+
+#[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+mod acs6_enforcing_unbind {
+    use super::join_fixture::{join, join_footprint, join_world, joined};
+    use super::*;
+    use crate::accounts::ERR_OWNERSHIP_REQUIRED;
+
+    /// `caller`, bound under the dev key with the entitlement to `subject`, holding no
+    /// admission row and admitted by `rule` (as everyone under `Open`, as the owner otherwise;
+    /// under `Allowlist` its account is listed too), unbinds and has not joined. `join_game`
+    /// then answers the ownership refusal and writes nothing; the caller asks for a nonce,
+    /// binds a dev attestation that carries it, and joins.
+    fn assert_refused_until_bound_again(rule: WorldAccessRule, caller: Identity, subject: &str) {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        seed_names(&w, &[WORLD]);
+        let jw = join_world(&fx);
+        w.access.seed(&rule_row(rule));
+        w.binding
+            .seed(&binding_row(caller, subject, T0 - 5_000, true, dev_kid()));
+        if rule == WorldAccessRule::Allowlist {
+            seed_allowed(&w, &[subject]);
+        }
+        assert_eq!(
+            passes(&fx, caller, T0),
+            Ok(()),
+            "fixture: {rule:?} admits the caller"
+        );
+        assert_eq!(unbind(&fx, caller, T0), Ok(()), "{rule:?}: the unbind");
+        assert!(bindings(&w).is_empty(), "{rule:?}: the caller is unbound");
+
+        fx.reset_writes();
+        let before = (footprint(&fx, &w), join_footprint(&fx, &jw));
+        assert_eq!(
+            join(&fx, caller, None, T0 + 1),
+            Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+            "{rule:?}: unbound, the join is refused"
+        );
+        assert_eq!(
+            (footprint(&fx, &w), join_footprint(&fx, &jw)),
+            before,
+            "{rule:?}: the refused join writes nothing"
+        );
+        assert!(joined(&jw, caller).is_empty(), "{rule:?}: no player row");
+
+        assert_eq!(ask(&fx, caller, T0 + 2), Ok(()), "{rule:?}: a nonce");
+        let (nonce, _) = nonce_of(&w, caller).expect("the caller holds a nonce");
+        let att = dev_attestation(&Claims::new(&nonce).with_sub(subject));
+        assert_eq!(
+            bind(&fx, caller, T0 + 3, &att),
+            Ok(()),
+            "{rule:?}: bound again"
+        );
+        assert_eq!(
+            join(&fx, caller, None, T0 + 4),
+            Ok(()),
+            "{rule:?}: bound again, the join goes ahead"
+        );
+        assert_eq!(joined(&jw, caller), vec!["Ada".to_string()], "{rule:?}");
+    }
+
+    /// kills: the inert reducer (the binding stays and the join goes ahead).
+    #[test]
+    fn under_open_an_unbound_caller_is_refused_the_join_until_it_binds_again_lpw22_6() {
+        assert_refused_until_bound_again(WorldAccessRule::Open, alice(), SUB);
+    }
+
+    /// Under `Password` and `Allowlist` the bound caller the ownership refusal reaches after an
+    /// unbind is the owner, always admitted: any other identity whose binding the build counts
+    /// loses its admission row with the binding and is refused admission first.
+    ///
+    /// kills: the inert reducer.
+    #[test]
+    fn under_password_the_unbound_owner_is_refused_the_join_until_it_binds_again_lpw22_6() {
+        assert_refused_until_bound_again(WorldAccessRule::Password, owner(), THIRD_SUB);
+    }
+
+    /// kills: the inert reducer.
+    #[test]
+    fn under_allowlist_the_unbound_owner_is_refused_the_join_until_it_binds_again_lpw22_6() {
+        assert_refused_until_bound_again(WorldAccessRule::Allowlist, owner(), THIRD_SUB);
     }
 }
 
@@ -4284,7 +4431,7 @@ mod list_edits {
     /// The owner switches the world to `Allowlist` at `ms`.
     fn switch(fx: &Fixture, ms: i64) -> Result<(), String> {
         call(fx, owner(), ms, |ctx| {
-            crate::access::set_world_access(ctx, WorldAccessRule::Allowlist, None, Vec::new())
+            crate::access::set_world_access(ctx, WorldAccessRule::Allowlist, Vec::new())
         })
     }
 
@@ -4457,5 +4604,1064 @@ mod list_edits {
         assert_eq!(call(&fx, z, T0 + 1, crate::on_connect), Ok(()));
         assert_eq!(join(&fx, z, None, T0 + 2), Ok(()));
         assert_eq!(joined(&jw, z), vec!["Ada".to_string()]);
+    }
+}
+
+// =====================================================================================
+// A player erases their own binding whatever the rule says of them. A binding the build counts
+// takes the caller's admission row with it under every rule, so an unbind lets nobody in.
+// =====================================================================================
+
+mod unbind {
+    use super::join_fixture::{join, join_footprint, join_world, joined};
+    use super::*;
+    use crate::access::REJECT_NOT_ADMITTED;
+    use crate::native_host_tests::VIEW_MY_WORLD_BINDING;
+    use crate::schema::WorldAdmissionAttempt;
+
+    const RULES: [WorldAccessRule; 3] = [
+        WorldAccessRule::Open,
+        WorldAccessRule::Password,
+        WorldAccessRule::Allowlist,
+    ];
+
+    /// What an unbind writes for a caller holding a binding and a nonce.
+    const BINDING_AND_NONCE: [&str; 2] = ["world_binding", "world_bind_nonce"];
+    /// What an unbind writes, under every rule, for a binding the build counts when the caller
+    /// also holds an admission row.
+    const BINDING_NONCE_AND_ADMISSION: [&str; 3] =
+        ["world_binding", "world_bind_nonce", "world_admission"];
+
+    /// An identity holding nothing: no binding, no nonce, no admission row.
+    fn carol() -> Identity {
+        id(0x33)
+    }
+
+    /// An identity whose one row is a wrong-password record.
+    fn stranger() -> Identity {
+        id(0x44)
+    }
+
+    /// [`alice`]'s entitled binding to [`SUB`] under `kid`.
+    fn alice_bound(kid: &str) -> WorldBinding {
+        binding_row(alice(), SUB, T0 - 1_000, true, kid)
+    }
+
+    /// The bystander's binding, as [`valid_world`] seeds it.
+    fn bob_binding() -> BindingView {
+        bview(bob(), OTHER_SUB, T0 - 5_000, true, dev_kid())
+    }
+
+    /// The bystander's nonce, as [`valid_world`] seeds it.
+    fn bob_nonce() -> NonceView {
+        nview(bob(), NONCE_B, NONCE_EXPIRES)
+    }
+
+    fn attempt_row(who: Identity) -> WorldAdmissionAttempt {
+        WorldAdmissionAttempt {
+            identity: who,
+            wrong_at_ms: vec![T0 - 3_000, T0 - 2_000],
+            last_wrong_at_ms: T0 - 2_000,
+        }
+    }
+
+    /// [`valid_world`] with `rule` stored: named [`WORLD`], [`alice`] holding [`NONCE_A`] and no
+    /// binding, the bystander [`bob`] holding a nonce and a dev-key binding to [`OTHER_SUB`].
+    /// `world_admission` is writable here (the no-readmit rule deletes a row of it), and the
+    /// wrong-password records are registered on their key, read-only.
+    fn unbind_world(
+        fx: &Fixture,
+        rule: WorldAccessRule,
+    ) -> (W<'_>, Handle<'_, WorldAdmissionAttempt>) {
+        let w = valid_world(fx);
+        let _ = fx
+            .table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
+            .unique()
+            .writable();
+        let attempts = fx
+            .table::<WorldAdmissionAttempt>("world_admission_attempt", "identity", |r| r.identity)
+            .unique();
+        w.access.seed(&rule_row(rule));
+        (w, attempts)
+    }
+
+    /// [`unbind_world`] with what the owner's `set_world_access` writes or scans registered
+    /// too: `world_access` writable, and `world_binding` scannable (a switch to `Allowlist`
+    /// reads every binding for its seed).
+    fn switchable_unbind_world(
+        fx: &Fixture,
+        rule: WorldAccessRule,
+    ) -> (W<'_>, Handle<'_, WorldAdmissionAttempt>) {
+        let (w, attempts) = unbind_world(fx, rule);
+        let _ = fx
+            .table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id)
+            .unique()
+            .writable();
+        let _ = fx
+            .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+            .unique()
+            .writable()
+            .scannable();
+        (w, attempts)
+    }
+
+    /// The owner sets the rule to `rule` at `ms`, with the admit list `admit`.
+    fn set_rule(
+        fx: &Fixture,
+        rule: WorldAccessRule,
+        admit: Vec<Identity>,
+        ms: i64,
+    ) -> Result<(), String> {
+        call(fx, owner(), ms, |ctx| {
+            crate::access::set_world_access(ctx, rule, admit)
+        })
+    }
+
+    /// [`footprint`] and the wrong-password records, with their write count.
+    fn everything(
+        fx: &Fixture,
+        w: &W<'_>,
+        attempts: &Handle<'_, WorldAdmissionAttempt>,
+    ) -> Footprint {
+        let mut all = footprint(fx, w);
+        all.push((
+            "world_admission_attempt",
+            encs(&attempts.rows()),
+            fx.writes_to("world_admission_attempt"),
+        ));
+        all
+    }
+
+    /// `fp` without the entries of the tables in `changed`.
+    fn but(fp: &Footprint, changed: &[&str]) -> Footprint {
+        fp.iter()
+            .filter(|(table, _, _)| !changed.contains(table))
+            .cloned()
+            .collect()
+    }
+
+    /// `who` unbinds and is answered `Ok`; every table outside `changed` then holds what it
+    /// held before, with no write call.
+    fn assert_unbinds(
+        fx: &Fixture,
+        w: &W<'_>,
+        attempts: &Handle<'_, WorldAdmissionAttempt>,
+        who: Identity,
+        changed: &[&str],
+        label: &str,
+    ) {
+        fx.reset_writes();
+        let before = everything(fx, w, attempts);
+        assert_eq!(unbind(fx, who, BIND_AT), Ok(()), "{label}: the unbind");
+        assert_eq!(
+            but(&everything(fx, w, attempts), changed),
+            but(&before, changed),
+            "{label}: every other table as it was, with no write call"
+        );
+    }
+
+    /// The identities holding an admission row, sorted.
+    fn admitted(w: &W<'_>) -> Vec<[u8; 32]> {
+        sorted(
+            w.admission
+                .rows()
+                .into_iter()
+                .map(|r| r.identity.to_byte_array())
+                .collect(),
+        )
+    }
+
+    fn refused() -> Result<(), String> {
+        Err(REJECT_NOT_ADMITTED.to_string())
+    }
+
+    // --- The caller's binding and nonce go, and nothing else -----------------------------
+
+    /// Under `Open`, a caller holding no admission row unbinds: its binding and nonce go. The
+    /// list the rule keeps while it is off, the bystander's binding, nonce and admission row,
+    /// and every other table stay, with no write call (none on `world_admission` either).
+    ///
+    /// kills: the inert reducer (binding and nonce kept); another identity's rows deleted; the
+    /// list written; a write to `world_admission` for a caller that holds no row of it.
+    #[test]
+    fn under_open_a_bound_caller_unbinds_and_nothing_else_is_written_lpw22_1() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Open);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(bob()));
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        assert_unbinds(&fx, &w, &attempts, alice(), &BINDING_AND_NONCE, "Open");
+        assert_eq!(
+            bindings(&w),
+            vec![bob_binding()],
+            "only the bystander is bound"
+        );
+        assert_eq!(
+            nonces(&w),
+            vec![bob_nonce()],
+            "only the bystander holds a nonce"
+        );
+    }
+
+    /// Under `Password`, the world's owner, admitted as the owner and holding no admission row,
+    /// unbinds: its binding and nonce go, and every other table stays (alice's admission row
+    /// and a stranger's wrong-password record among them), with no write call.
+    ///
+    /// kills: the inert reducer; another identity's admission row withdrawn; the
+    /// wrong-password records written; a write to `world_admission` for a caller that holds no
+    /// row of it.
+    #[test]
+    fn under_password_the_bound_owner_unbinds_and_nothing_else_is_written_lpw22_1() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Password);
+        w.binding.seed(&binding_row(
+            owner(),
+            THIRD_SUB,
+            T0 - 2_000,
+            true,
+            dev_kid(),
+        ));
+        w.nonce.seed(&nonce_row(owner(), NONCE_C, NONCE_EXPIRES));
+        w.admission.seed(&admission_row(alice()));
+        attempts.seed(&attempt_row(stranger()));
+        assert_eq!(
+            passes(&fx, owner(), T0),
+            Ok(()),
+            "fixture: the owner is admitted"
+        );
+        assert_unbinds(&fx, &w, &attempts, owner(), &BINDING_AND_NONCE, "the owner");
+        assert_eq!(
+            bindings(&w),
+            vec![bob_binding()],
+            "the owner's binding is gone"
+        );
+        assert_eq!(
+            nonces(&w),
+            sorted(vec![nview(alice(), NONCE_A, NONCE_EXPIRES), bob_nonce()]),
+            "the owner's nonce is gone; the others stay"
+        );
+    }
+
+    /// Under `Allowlist`, a caller let in by its listed account, holding no admission row,
+    /// unbinds: its binding and nonce go and nothing else is written, not even a delete call
+    /// on `world_admission`, which holds no row of the caller. The list and a bystander's
+    /// admission row stay.
+    ///
+    /// kills: the inert reducer; the account taken off the list; another identity's admission
+    /// row withdrawn; a write to `world_admission` for a caller that holds no row of it.
+    #[test]
+    fn under_allowlist_a_listed_caller_unbinds_and_nothing_else_is_written_lpw22_1() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(carol()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: the listed account admits alice"
+        );
+        assert_unbinds(&fx, &w, &attempts, alice(), &BINDING_AND_NONCE, "Allowlist");
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[SUB, OTHER_SUB])),
+            "the account stays listed"
+        );
+    }
+
+    /// A binding under a key the build does not hold is erased too, under `Open` and under
+    /// `Password`, where a row admits the caller; the row stays.
+    ///
+    /// kills: an unbind that erases only a binding the build counts (`trusted_binding`).
+    #[test]
+    fn a_binding_under_a_key_the_build_does_not_hold_is_erased_too_lpw22_1() {
+        for rule in [WorldAccessRule::Open, WorldAccessRule::Password] {
+            let fx = fixture();
+            let (w, attempts) = unbind_world(&fx, rule);
+            w.binding.seed(&alice_bound(RETIRED_KID));
+            w.admission.seed(&admission_row(alice()));
+            let label = format!("{rule:?}, a binding under a retired key");
+            assert_unbinds(&fx, &w, &attempts, alice(), &BINDING_AND_NONCE, &label);
+            assert_eq!(bindings(&w), vec![bob_binding()], "{label}");
+            assert_eq!(nonces(&w), vec![bob_nonce()], "{label}");
+        }
+    }
+
+    /// A bound caller holding no nonce: only `world_binding` is written. The nonce table, and
+    /// the bystander's nonce in it, are not written at all.
+    ///
+    /// kills: the inert reducer; a nonce delete issued for a caller that holds none.
+    #[test]
+    fn a_bound_caller_with_no_nonce_writes_only_the_binding_table_lpw22_1() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Open);
+        assert_eq!(w.nonce.remove(alice()), 1, "fixture: alice holds no nonce");
+        w.binding.seed(&alice_bound(dev_kid()));
+        assert_unbinds(&fx, &w, &attempts, alice(), &["world_binding"], "no nonce");
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+    }
+
+    /// The caller's nonce goes with its binding whether or not it has expired; another
+    /// identity's expired nonce stays.
+    ///
+    /// kills: an unbind that deletes only an outstanding (unexpired) nonce; an unbind that
+    /// sweeps other identities' expired nonces.
+    #[test]
+    fn an_expired_nonce_goes_with_the_binding_and_nobody_elses_does_lpw22_1() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Open);
+        assert_eq!(
+            w.nonce.remove(alice()),
+            1,
+            "fixture: alice's live nonce removed"
+        );
+        w.nonce.seed(&nonce_row(alice(), NONCE_A, T0 - 1));
+        w.nonce.seed(&nonce_row(id(0x55), NONCE_C, T0 - 1));
+        w.binding.seed(&alice_bound(dev_kid()));
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_AND_NONCE,
+            "an expired nonce",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(
+            nonces(&w),
+            sorted(vec![bob_nonce(), nview(id(0x55), NONCE_C, T0 - 1)]),
+            "alice's expired nonce is gone; the other expired nonce stays"
+        );
+    }
+
+    /// A bound caller whose account is pending deletion is refused by the deletion gate with
+    /// no write: its binding and nonce stay.
+    ///
+    /// kills: the inert reducer (`Ok`); an unbind with no deletion gate before its first write.
+    #[test]
+    fn a_bound_caller_pending_deletion_is_refused_by_the_deletion_gate() {
+        let fx = fixture();
+        let (w, _attempts) = unbind_world(&fx, WorldAccessRule::Open);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.account.seed(&deleting_account(alice()));
+        assert_refused(
+            &fx,
+            &w,
+            crate::guards::REJECT_DELETION_GATED,
+            "a bound caller pending deletion",
+            || unbind(&fx, alice(), BIND_AT),
+        );
+        assert!(
+            bindings(&w).contains(&bview(alice(), SUB, T0 - 1_000, true, dev_kid())),
+            "the binding stays"
+        );
+        assert_eq!(
+            nonce_of(&w, alice()),
+            Some((NONCE_A.to_string(), NONCE_EXPIRES)),
+            "the nonce stays"
+        );
+    }
+
+    // --- No binding: success with no write -----------------------------------------------
+
+    /// A caller with no binding is answered `Ok` and nothing is written, under every rule
+    /// (under `Password` and `Allowlist` the rule refuses both callers here), whether it holds
+    /// a nonce ([`alice`], whose nonce stays) or nothing at all (carol).
+    ///
+    /// kills (a control against the inert reducer): the nonce of a caller with no binding
+    /// deleted; a delete call on a table that holds no row of the caller; a caller with no
+    /// binding refused.
+    #[test]
+    fn a_caller_with_no_binding_succeeds_with_no_write_lpw22_2() {
+        for rule in RULES {
+            for who in [alice(), carol()] {
+                let fx = fixture();
+                let (w, attempts) = unbind_world(&fx, rule);
+                let label = format!("{rule:?}, {}", who.to_hex());
+                fx.reset_writes();
+                let before = everything(&fx, &w, &attempts);
+                assert_eq!(unbind(&fx, who, BIND_AT), Ok(()), "{label}");
+                assert_eq!(
+                    everything(&fx, &w, &attempts),
+                    before,
+                    "{label}: every table as it was, with no write call"
+                );
+            }
+        }
+    }
+
+    /// A caller with no binding whose account is pending deletion is answered `Ok` with no
+    /// write: there is nothing to erase, and its nonce stays.
+    ///
+    /// kills (a control against the inert reducer): the deletion gate placed before the
+    /// binding lookup.
+    #[test]
+    fn a_caller_with_no_binding_pending_deletion_succeeds_with_no_write_lpw22_2() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Open);
+        w.account.seed(&deleting_account(alice()));
+        fx.reset_writes();
+        let before = everything(&fx, &w, &attempts);
+        assert_eq!(unbind(&fx, alice(), BIND_AT), Ok(()));
+        assert_eq!(
+            everything(&fx, &w, &attempts),
+            before,
+            "every table as it was, with no write call"
+        );
+    }
+
+    // --- A caller the rule refuses still unbinds -----------------------------------------
+
+    /// Under `Password`, a bound caller with no admission row and a wrong-password record is
+    /// refused by the rule, and unbinds: its binding and nonce go; its wrong-password record
+    /// and every other table stay, with no write call.
+    ///
+    /// kills: the inert reducer; an admission check in the unbind; the wrong-password record
+    /// erased.
+    #[test]
+    fn under_password_a_caller_the_rule_refuses_still_unbinds_lpw22_3() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Password);
+        w.binding.seed(&alice_bound(dev_kid()));
+        attempts.seed(&attempt_row(alice()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            refused(),
+            "fixture: the rule refuses alice"
+        );
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_AND_NONCE,
+            "unadmitted",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+    }
+
+    /// Under `Allowlist`, the owner takes the caller's account off the list; the rule refuses
+    /// the caller, which holds no admission row, and it unbinds: its binding and nonce go and
+    /// nothing else is written.
+    ///
+    /// kills: the inert reducer; an admission check in the unbind.
+    #[test]
+    fn under_allowlist_a_delisted_caller_with_no_admission_row_still_unbinds_lpw22_3() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            refused(),
+            "fixture: delisted, the rule refuses alice"
+        );
+        assert_unbinds(&fx, &w, &attempts, alice(), &BINDING_AND_NONCE, "delisted");
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert_eq!(
+            allowed(&w),
+            strings(&[OTHER_SUB]),
+            "the list as the owner set it"
+        );
+    }
+
+    /// The same for a delisted caller holding an admission row: refused by the rule, it
+    /// unbinds, and its binding, nonce and admission row go.
+    ///
+    /// kills: the inert reducer; an admission check in the unbind; the admission row kept.
+    #[test]
+    fn under_allowlist_a_delisted_caller_holding_an_admission_row_still_unbinds_lpw22_3() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            refused(),
+            "fixture: delisted, the rule refuses alice despite the row"
+        );
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "delisted, holding a row",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert!(
+            admitted(&w).is_empty(),
+            "the admission row goes with the binding"
+        );
+    }
+
+    // --- The owner-scoped view ------------------------------------------------------------
+
+    /// Two bound identities each read only their own binding through `my_world_binding`, and
+    /// a third reads none; once [`alice`] unbinds she reads none, and [`bob`] still reads his
+    /// own.
+    ///
+    /// kills: the inert reducer (alice still reads her row); an unbind that erases the
+    /// bystander's binding.
+    #[test]
+    fn each_identity_reads_only_its_own_binding_and_none_once_it_unbinds_lpw22_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.binding.seed(&binding_row(
+            bob(),
+            OTHER_SUB,
+            T0 - 5_000,
+            false,
+            RETIRED_KID,
+        ));
+        let seen = |who: Identity| -> Vec<BindingView> {
+            fx.call_view::<WorldBinding>(VIEW_MY_WORLD_BINDING, who)
+                .into_iter()
+                .map(|r| {
+                    bview(
+                        r.identity,
+                        &r.account_subject,
+                        r.bound_at_ms,
+                        r.entitled,
+                        &r.key_id,
+                    )
+                })
+                .collect()
+        };
+        let alice_row = bview(alice(), SUB, T0 - 1_000, true, dev_kid());
+        let bob_row = bview(bob(), OTHER_SUB, T0 - 5_000, false, RETIRED_KID);
+        assert_eq!(seen(alice()), vec![alice_row], "alice reads her own");
+        assert_eq!(seen(bob()), vec![bob_row.clone()], "bob reads his own");
+        assert_eq!(seen(carol()), Vec::<BindingView>::new(), "carol reads none");
+
+        assert_eq!(unbind(&fx, alice(), BIND_AT), Ok(()));
+        assert_eq!(
+            seen(alice()),
+            Vec::<BindingView>::new(),
+            "unbound, alice reads none"
+        );
+        assert_eq!(seen(bob()), vec![bob_row], "bob still reads his own");
+        assert_eq!(seen(carol()), Vec::<BindingView>::new(), "carol reads none");
+    }
+
+    // --- The no-readmit rule ---------------------------------------------------------------
+
+    /// Under `Allowlist`, [`alice`] is bound under the dev key to a listed account and holds an
+    /// admission row; the owner takes the account off the list, and she unbinds. Her binding,
+    /// nonce and admission row go, while carol's admission row, a stranger's wrong-password
+    /// record and every other table stay, with no write call. She is then refused with no
+    /// write by the admission check, at connect, by `request_bind_nonce` and by the real
+    /// `join_game`.
+    ///
+    /// kills: an unbind that keeps the admission row (it would let the unbound identity back
+    /// in); the inert reducer; the wrong-password records written with the admission.
+    #[test]
+    fn a_delisted_caller_that_unbinds_is_not_let_back_in_by_its_admission_readmit_lpw22_6() {
+        let fx = fixture();
+        let jw = join_world(&fx);
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        w.admission.seed(&admission_row(carol()));
+        attempts.seed(&attempt_row(stranger()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: listed, admitted"
+        );
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert_eq!(passes(&fx, alice(), T0), refused(), "fixture: delisted");
+
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "delisted",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()], "alice's binding is gone");
+        assert_eq!(nonces(&w), vec![bob_nonce()], "alice's nonce is gone");
+        assert_eq!(
+            admitted(&w),
+            vec![carol().to_byte_array()],
+            "alice's admission row is gone; carol's stays"
+        );
+
+        let later = BIND_AT + 10;
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "unbound: the admission check",
+            || passes(&fx, alice(), later),
+        );
+        assert_refused(&fx, &w, REJECT_NOT_ADMITTED, "unbound: connect", || {
+            call(&fx, alice(), later, crate::on_connect)
+        });
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "unbound: request_bind_nonce",
+            || ask(&fx, alice(), later),
+        );
+        fx.reset_writes();
+        let before = (everything(&fx, &w, &attempts), join_footprint(&fx, &jw));
+        assert_eq!(
+            join(&fx, alice(), None, later),
+            refused(),
+            "unbound: join_game"
+        );
+        assert_eq!(
+            (everything(&fx, &w, &attempts), join_footprint(&fx, &jw)),
+            before,
+            "the refused join writes nothing"
+        );
+        assert!(joined(&jw, alice()).is_empty(), "no player row");
+    }
+
+    /// Under `Allowlist`, [`alice`] unbinds while her account is still listed: her admission
+    /// row goes with the binding, so she is refused at once, and still after the owner takes
+    /// the account off the list. The account itself stays listed until then.
+    ///
+    /// kills: an unbind that keeps the admission row (the identity would escape the list for
+    /// good); the inert reducer.
+    #[test]
+    fn unbinding_while_listed_is_refused_at_once_and_after_delisting_readmit_lpw22_6() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: listed, admitted"
+        );
+
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "listed",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert!(
+            admitted(&w).is_empty(),
+            "the admission row goes with the binding"
+        );
+        assert_eq!(
+            allowed(&w),
+            sorted(strings(&[SUB, OTHER_SUB])),
+            "the account stays listed"
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "unbound while listed: the admission check",
+            || passes(&fx, alice(), BIND_AT + 1),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "unbound while listed: connect",
+            || call(&fx, alice(), BIND_AT + 1, crate::on_connect),
+        );
+
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after delisting: the admission check",
+            || passes(&fx, alice(), BIND_AT + 2),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after delisting: connect",
+            || call(&fx, alice(), BIND_AT + 2, crate::on_connect),
+        );
+    }
+
+    /// Under `Password`, a caller the host admitted by a row unbinds a binding the build
+    /// counts: its binding, nonce and admission row go, and a stranger's wrong-password record
+    /// and every other table stay, with no write call. It is then refused with no write, at the
+    /// admission check, at connect and by `request_bind_nonce`, until the owner admits it again
+    /// through `set_world_access`'s admit list.
+    ///
+    /// kills: an unbind that keeps the admission row under `Password` (the identity would keep
+    /// its way in without its binding); an unbind that withdraws it only under `Allowlist`; the
+    /// inert reducer; the wrong-password records written.
+    #[test]
+    fn under_password_an_unbound_caller_stays_out_until_the_owner_admits_it_readmit_lpw22_6() {
+        let fx = fixture();
+        let (w, attempts) = switchable_unbind_world(&fx, WorldAccessRule::Password);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        attempts.seed(&attempt_row(stranger()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: the row admits alice"
+        );
+
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "Password",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert!(
+            admitted(&w).is_empty(),
+            "the admission row goes with the binding"
+        );
+
+        let later = BIND_AT + 10;
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "unbound: the admission check",
+            || passes(&fx, alice(), later),
+        );
+        assert_refused(&fx, &w, REJECT_NOT_ADMITTED, "unbound: connect", || {
+            call(&fx, alice(), later, crate::on_connect)
+        });
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "unbound: request_bind_nonce",
+            || ask(&fx, alice(), later),
+        );
+
+        assert_eq!(
+            set_rule(&fx, WorldAccessRule::Password, vec![alice()], later + 1),
+            Ok(()),
+            "the owner admits alice again"
+        );
+        assert_eq!(
+            passes(&fx, alice(), later + 2),
+            Ok(()),
+            "admitted again by the owner's admit list"
+        );
+    }
+
+    /// Under `Open`, a caller holding a stale admission row unbinds a binding the build counts:
+    /// the row goes with the binding and nonce, a bystander's row stays, and the caller is
+    /// still admitted, as everyone is under `Open`.
+    ///
+    /// kills: an unbind that withdraws the admission row only under `Allowlist` or `Password`;
+    /// another identity's row withdrawn; the inert reducer.
+    #[test]
+    fn under_open_a_counted_binding_takes_a_stale_admission_row_with_it_readmit_lpw22_6() {
+        let fx = fixture();
+        let (w, attempts) = unbind_world(&fx, WorldAccessRule::Open);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        w.admission.seed(&admission_row(bob()));
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "Open, a stale row",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert_eq!(
+            admitted(&w),
+            vec![bob().to_byte_array()],
+            "alice's row goes; bob's stays"
+        );
+        assert_eq!(
+            passes(&fx, alice(), BIND_AT + 1),
+            Ok(()),
+            "Open admits everyone"
+        );
+    }
+
+    /// Control: a caller whose binding is under a key the build does not hold, admitted by its
+    /// row (under `Open` by the rule itself), unbinds under every rule and keeps the row: it
+    /// stays admitted.
+    ///
+    /// kills: the admission row withdrawn for a binding the build does not count; the inert
+    /// reducer (the binding stays).
+    #[test]
+    fn an_uncounted_binding_leaves_the_admission_row_under_every_rule_readmit_lpw22_6() {
+        for rule in RULES {
+            let fx = fixture();
+            let (w, attempts) = unbind_world(&fx, rule);
+            seed_allowed(&w, &[OTHER_SUB]);
+            w.binding.seed(&alice_bound(RETIRED_KID));
+            w.admission.seed(&admission_row(alice()));
+            let label = format!("{rule:?}, an uncounted binding");
+            assert_eq!(
+                passes(&fx, alice(), T0),
+                Ok(()),
+                "fixture: {label}, alice is admitted"
+            );
+            assert_unbinds(&fx, &w, &attempts, alice(), &BINDING_AND_NONCE, &label);
+            assert_eq!(bindings(&w), vec![bob_binding()], "{label}");
+            assert_eq!(
+                admitted(&w),
+                vec![alice().to_byte_array()],
+                "{label}: the row stays"
+            );
+            assert_eq!(
+                passes(&fx, alice(), BIND_AT + 1),
+                Ok(()),
+                "{label}: still admitted"
+            );
+        }
+    }
+
+    /// A `Password` interlude opens no way past the list. Under `Allowlist`, [`alice`] is bound
+    /// under the dev key to a listed account and holds an admission row; the owner switches to
+    /// `Password`, she unbinds (her row goes with the binding), and the owner takes the account
+    /// off the list and switches back to `Allowlist`. She is refused with no write: by the
+    /// admission check, at connect, by `request_bind_nonce` and by the real `join_game`.
+    ///
+    /// kills: an unbind that withdraws the admission row only while the rule is `Allowlist`
+    /// (the row would let her in after the switch back); an unbind that keeps the row; the
+    /// inert reducer.
+    #[test]
+    fn a_password_interlude_does_not_let_an_unbound_identity_past_the_list_readmit_lpw22_6() {
+        let fx = fixture();
+        let jw = join_world(&fx);
+        let (w, attempts) = switchable_unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: listed, admitted"
+        );
+
+        assert_eq!(
+            set_rule(&fx, WorldAccessRule::Password, Vec::new(), T0),
+            Ok(()),
+            "the owner switches to Password"
+        );
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "under Password, her row admits her"
+        );
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "under Password",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert!(admitted(&w).is_empty(), "her row goes with the binding");
+
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert_eq!(
+            set_rule(&fx, WorldAccessRule::Allowlist, Vec::new(), BIND_AT + 1),
+            Ok(()),
+            "the owner switches back to Allowlist"
+        );
+        assert!(admitted(&w).is_empty(), "the switch back admits nobody");
+        assert_eq!(allowed(&w), strings(&[OTHER_SUB]), "SUB is off the list");
+
+        let later = BIND_AT + 10;
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: the admission check",
+            || passes(&fx, alice(), later),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: connect",
+            || call(&fx, alice(), later, crate::on_connect),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: request_bind_nonce",
+            || ask(&fx, alice(), later),
+        );
+        fx.reset_writes();
+        let before = (everything(&fx, &w, &attempts), join_footprint(&fx, &jw));
+        assert_eq!(
+            join(&fx, alice(), None, later),
+            refused(),
+            "after the interlude: join_game"
+        );
+        assert_eq!(
+            (everything(&fx, &w, &attempts), join_footprint(&fx, &jw)),
+            before,
+            "the refused join writes nothing"
+        );
+        assert!(joined(&jw, alice()).is_empty(), "no player row");
+    }
+
+    /// An `Open` interlude opens no way past the list either. Under `Allowlist`, [`alice`] is
+    /// bound under the dev key to a listed account and holds an admission row; the owner
+    /// switches to `Open`, she unbinds (her row goes with the binding), and the owner takes the
+    /// account off the list and switches back to `Allowlist`. She holds no live session at the
+    /// switch back, so its carry-over admits nobody, and she is refused with no write: by the
+    /// admission check, at connect, by `request_bind_nonce` and by the real `join_game`.
+    ///
+    /// kills: an unbind that withdraws the admission row only under `Password` and `Allowlist`
+    /// (the row kept under `Open` would let her in after the switch back); an unbind that keeps
+    /// the row; the inert reducer.
+    #[test]
+    fn an_open_interlude_does_not_let_an_unbound_identity_past_the_list_readmit_lpw22_6() {
+        let fx = fixture();
+        let jw = join_world(&fx);
+        let (w, attempts) = switchable_unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: listed, admitted"
+        );
+
+        assert_eq!(
+            set_rule(&fx, WorldAccessRule::Open, Vec::new(), T0),
+            Ok(()),
+            "the owner switches to Open"
+        );
+        assert_unbinds(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "under Open",
+        );
+        assert_eq!(bindings(&w), vec![bob_binding()]);
+        assert_eq!(nonces(&w), vec![bob_nonce()]);
+        assert!(admitted(&w).is_empty(), "her row goes with the binding");
+
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert!(
+            sessions_of(&w, alice()).is_empty(),
+            "fixture: alice holds no live session at the switch back"
+        );
+        assert_eq!(
+            set_rule(&fx, WorldAccessRule::Allowlist, Vec::new(), BIND_AT + 1),
+            Ok(()),
+            "the owner switches back to Allowlist"
+        );
+        assert!(admitted(&w).is_empty(), "the switch back admits nobody");
+        assert_eq!(allowed(&w), strings(&[OTHER_SUB]), "SUB is off the list");
+
+        let later = BIND_AT + 10;
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: the admission check",
+            || passes(&fx, alice(), later),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: connect",
+            || call(&fx, alice(), later, crate::on_connect),
+        );
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_NOT_ADMITTED,
+            "after the interlude: request_bind_nonce",
+            || ask(&fx, alice(), later),
+        );
+        fx.reset_writes();
+        let before = (everything(&fx, &w, &attempts), join_footprint(&fx, &jw));
+        assert_eq!(
+            join(&fx, alice(), None, later),
+            refused(),
+            "after the interlude: join_game"
+        );
+        assert_eq!(
+            (everything(&fx, &w, &attempts), join_footprint(&fx, &jw)),
+            before,
+            "the refused join writes nothing"
+        );
+        assert!(joined(&jw, alice()).is_empty(), "no player row");
+    }
+
+    /// Under `Allowlist`, once [`alice`], delisted and holding an admission row, unbinds, she
+    /// is refused until she binds again: the owner relays a fresh nonce request and a bind to
+    /// an account on the list, and she is admitted, at the admission check and at connect.
+    ///
+    /// kills: an unbind that keeps the admission row (she would be let in before she binds
+    /// again); the inert reducer; a refusal recorded at the unbind that outlives a fresh bind.
+    #[test]
+    fn a_fresh_relayed_bind_to_a_listed_account_admits_the_identity_again_readmit_lpw22_6() {
+        let fx = fixture();
+        let (w, _attempts) = unbind_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_eq!(set_allow(&fx, owner(), strings(&[OTHER_SUB])), Ok(()));
+        assert_eq!(unbind(&fx, alice(), BIND_AT), Ok(()), "the unbind");
+        assert!(admitted(&w).is_empty(), "the admission row is gone");
+        assert_eq!(
+            passes(&fx, alice(), BIND_AT + 1),
+            refused(),
+            "unbound: refused until she binds again"
+        );
+
+        assert_eq!(ask_for(&fx, owner(), alice(), T0 + 2_000), Ok(()));
+        let (nonce, _) = nonce_of(&w, alice()).expect("alice holds a fresh nonce");
+        let att = dev_attestation(&Claims::new(&nonce).with_sub(OTHER_SUB));
+        assert_eq!(
+            bind_for(&fx, owner(), alice(), T0 + 3_000, &att),
+            Ok(()),
+            "the relayed bind"
+        );
+        assert!(
+            bindings(&w).contains(&bview(alice(), OTHER_SUB, T0 + 3_000, true, dev_kid())),
+            "alice is bound to the listed account"
+        );
+        assert_eq!(
+            passes(&fx, alice(), T0 + 4_000),
+            Ok(()),
+            "bound to a listed account: admitted"
+        );
+        assert_eq!(call(&fx, alice(), T0 + 4_000, crate::on_connect), Ok(()));
+        assert_eq!(sessions_of(&w, alice()), vec![conn_of(alice())]);
     }
 }

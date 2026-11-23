@@ -327,7 +327,7 @@ participants watched through `my_battle_events`, `my_tactical_battle` and `my_ba
 plan still waiting moves none of them, so exporting a summary mid-battle reveals no READY plan.
 `battle_unit.owner` is `Option<Identity>` (a wild unit has none, and a
 future two-ally side is just more rows), which no index can key, so unit rows are reached
-through the battle they belong to. Accepted reveals, stated as such: the legacy `my_battle` anchor (`schema.rs`) returns the whole `Battle` row, so from Deploying on both participants see the opponent's roster (species, level, stats, known skills in `state.side_b.team`, filled at `tactics.rs` `start_pvp_tactical`); slots and positions stay secret until the copy, and the anchor shape is the cutover's to retire. `QueueVoided{unit}` after a KO, turn-skip or battle end shows that a plan existed (see "Queued actions halt-and-return").
+through the battle they belong to. The `battle` anchor holds both rosters from the PvP start (`tactics.rs` `start_pvp_tactical`), because the settlement writes HP back from those teams, matched to the monster-id lists by position (`battle::write_back_party_hp`, `pvp::write_back_party_hp_pvp_side_b`); so the read path, not the row, hides them. While a PvP battle between two players is Deploying, `my_battle` (`schema.rs`) gives each participant the anchor with the other side's team empty (and its active index 0): a roster seen before both deploys lock would let a player pick its own deploy against it. From the reveal on, and for every wild or Practice battle, the anchor is returned as stored. Still revealed, stated as such: a PvP battle closed while it is still Deploying is Finished and returned as stored, so both rosters then reach both participants; the emptied side keeps its monster-id list; `player.lead_level` is public; and `QueueVoided{unit}` after a KO, turn-skip or battle end shows that a plan existed (see "Queued actions halt-and-return").
 
 **Rules out.** A ready or queued flag on `battle_unit`; a view over `battle_secret`,
 `battle_wild_unit` or `battle_summary`; a view taking an identity argument; an exporter for any
@@ -335,7 +335,7 @@ other tactical table; exporting the other side's identity or per-side columns of
 row; a summary column whose value moves while a plan waits, unless the export redacts it; an owner-keyed-only cascade step for `battle_unit` (it
 would miss wild units and could never be indexed); a cascade that finds tactical rows
 only through the `battle` anchor (the reaper's first step can delete an ongoing wild
-anchor before the sweep runs); `u8` codes for game-core enums in a row. Also ruled out: a lock flag on `battle_tactical` or a lock mirror on `battle_unit`; writing one side's units at its own lock (`materialize` runs only once both are locked, `tactics.rs` `stage_pvp`); routing a tactical anchor through `battle::write_back_battle_results` (its side-A XP and currency grant, `battle.rs`, are the M16a asymmetry that design §7 removes); a second `apply_pvp_rating` caller.
+anchor before the sweep runs); `u8` codes for game-core enums in a row. Also ruled out: emptying the stored anchor's teams while Deploying (the settlement reads them by position, so the reveal would have to rebuild them from the monster rows); a lock flag on `battle_tactical` or a lock mirror on `battle_unit`; writing one side's units at its own lock (`materialize` runs only once both are locked, `tactics.rs` `stage_pvp`); routing a tactical anchor through `battle::write_back_battle_results` (its side-A XP and currency grant, `battle.rs`, are the M16a asymmetry that design §7 removes); a second `apply_pvp_rating` caller.
 
 ## Movement intent is private; the tick publishes it
 
@@ -1447,9 +1447,9 @@ to stay fixed as proof that dev code did not ship (it shapes production source a
 ## SpacetimeDB versions move in lockstep
 
 **Decision.** The spacetime CLI/host and the Rust `spacetimedb` crate are pinned to
-the same version (2.11.0: root `Cargo.toml`, `SPACETIME_VERSION` in `scripts/ci-tools.sh`).
+the same version (2.12.0: root `Cargo.toml`, `SPACETIME_VERSION` in `scripts/ci-tools.sh`).
 AMENDED 2026-10-15 (deps-s3): the npm `spacetimedb` SDK now joins the lockstep
-(`^2.11.0`, locked in `client/package-lock.json`). It was previously held separate
+(`^2.12.0`, locked in `client/package-lock.json`). It was previously held separate
 (at 2.6.0) because newer SDKs change reconnect behaviour; since 2.7.0 the vendor
 ships CLI/crate/SDK from one monorepo on the same day with no documented skew
 matrix, so same-version-everywhere is the only documented-safe configuration. An
@@ -1466,6 +1466,37 @@ publishing over real data, so it has to be tested there.
 **Rules out.** Bumping the crate without the CLI (or the reverse); inserting a column
 anywhere but the end; removing a column or reordering enum variants on a live
 database without planning a `--delete-data` republish.
+
+## Server-module tests run on our own host ABI, over the two vendor crates patched where they refuse a native host
+
+**Decision.** The module's native tests keep the in-memory host in
+`server-module/src/native_host_tests.rs`, which defines the SpacetimeDB host ABI itself. From crate
+2.12.0 the vendor refuses a native host twice: `spacetimedb-bindings-sys` defines the ABI as stubs,
+and `spacetimedb`'s table backend stops calling it off wasm. So the workspace builds both crates
+from copies of their crates.io packages under `vendor/`, through `[patch.crates-io]`, changed only
+by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change notice
+(`vendor/native-host.patch`). A test (`nh_vendored_crates_are_the_crates_io_release_plus_the_patch`)
+proves each copy, with the patch undone, matches the hashes recorded from the crates.io release
+(`vendor/PRISTINE.sha256`), and that every changed line is such an attribute, selecting on wasm
+what the original selected; every SpacetimeDB hop re-records them and re-applies the patch
+(`docs/runbooks/spacetimedb-upgrade.md`). CI's `cargo audit` skips packages not from crates.io, so
+these two are checked at each hop, in release notes and advisories, until CI audits them by name
+and version. Built at the hop to 2.12.0 (`vendor/README.md`); the alternatives and the
+measurements behind the choice are in `docs/refactors/native-test-host.md`.
+
+**Why.** The module's privacy and netcode rules are checked on what a transaction does as the host
+sees it: every write a subscriber is sent, an unchanged update included; each shipped view, run
+through the runtime's entry point for a chosen caller; and a client connection with or without a
+JWT. The vendor's native harness (`test-utils`) answers none of these. Its datastore reports no
+write or read, the view entry point does not reach it, and a JWT-less connection cannot be built.
+It also puts the whole server, V8 and wasmtime included, into the test build. On wasm the changed
+attributes select what they selected before, so the module we ship is the vendor's code.
+
+**Rules out.** `test-utils` as the Fixture's host, until its datastore reports a transaction's writes
+and runs the shipped views; a linker flag that tolerates the duplicate symbols (the stubs win, and
+769 tests fail); switching off only the stubs, since the table backend still refuses; testing on an
+older crate than the one that ships; any edit to the copies beyond such attributes and their notices.
+Procedures still refuse natively, so a native test of one adds more such attributes.
 
 ## Schema changes are additive
 
@@ -1651,7 +1682,9 @@ registers a listener on `store`, `window` or `document`, installs the DEV hooks,
 at import or constructs a boot-built view; its registrations keep the order the plan lists, and
 the locale block stays in it. A shell module imports only the shell modules below it. A lower
 module reaches upward through a typed port `main.ts` installs (the host of the world hint;
-what the battle views need from `dispatch` and the stack), which throws until installed, or
+what the battle views need from `dispatch` and the stack; the Gamepad API's fault sink), which
+throws until installed, or logs to the console until installed when its caller swallows a throw
+(the pad's fault sink: a failing reporter must not stop the poll that releases held buttons), or
 through the parameter object of a frame-loop pump.
 
 **Why.** Every `client/src/main.*.test.ts` suite resets the module registry and imports
@@ -1773,32 +1806,35 @@ switch; constructing the tactical roots at boot; a renderer switch that pops the
 server conversation suspended over the battle base stays) or that demotes a visible shell when one
 batch fails to build; a fallback renderer for an anchor without its tactical row.
 
-## The nightly mutation gates run sharded and both are zero-tolerance
+## game-core is mutation-gated nightly, the server on the lines a pull request changes
 
-**Decision.** `mutation` (game-core) and `mutation-server` run as matrices of cargo-mutants
-`--shard k/n` jobs (6 and 8). Every shard is its own zero-tolerance verdict and the job is red iff
-any shard is. The server gate has no survivor cap: a server survivor is killed by a test or, if
-provably equivalent (no input distinguishes it), excluded in `.cargo/mutants.toml` with the written
-proof (function + operator + column keys, so line drift cannot re-expose a runaway mutant). Log
-lines are observable (a log sink asserts them), so a mutant that only changes a log line is killed,
-not excluded. Four guaranteed-hang `tiled_import` mutants and one runaway-allocation mutant are
-excluded there too. `mutate-core` and `mutate-server` carry an 8 GB `ulimit -v` backstop so a
-runaway allocation aborts its test instead of killing the runner. All three `mutate-*` recipes
-build incrementally (`CARGO_INCREMENTAL=1`; CI's toolchain action sets 0) under
-`[profile.mutants]` (the test profile without debuginfo), and the nightly shards are round-robin
-so slow files spread evenly; verdicts are identical. `just mutate-diff` mutates only the lines
-committed since a base.
-`just test` also runs the server tests with `--features dev_reducers`, which the default build
-compiles out.
+**Decision.** `mutation` (game-core, nightly) runs as six cargo-mutants `--shard k/n` jobs, each
+its own zero-tolerance verdict. The server's zero-tolerance gate is the pull-request job
+`mutation-diff` (`just mutate-diff origin/master monster-realm-module`): it mutates the
+server-module lines the change adds or edits, diffed from the merge base, and a survivor fails
+it. The full server sweep, `mutation-server` (eight shards), runs weekly and files its survivors
+as one issue on the default branch; survivors fail nothing, and a shard is red only when
+cargo-mutants gave no verdict. A survivor is killed by a test or, if provably equivalent (no
+input distinguishes it), excluded in `.cargo/mutants.toml` with the written proof. The bodies of
+the four logging functions (`guards::log_reject`, `guards::json_escape`, `observability::mr_log`,
+`mr_log_breadcrumb`) are excluded by name; their direct tests stay.
 
-**Why.** The crates outgrew one serial job: nights of 2026-10-31, 11-01 and 11-04 were cancelled at
-GitHub's 6 h cap. A count cap hides regressions (kill one, add one, same number) and rewards
-raising it; the server had drifted to 72 survivors against a cap of 34, which were cleared with real
-tests.
+**Accepted gaps.** The diff gate selects mutants only on lines a change adds or edits, so a test
+weakened or deleted with no server source line changed passes it, and so does a change that only
+deletes source lines; the weekly report is read for both. The escaping, the reject line and the
+reserved-key guard in the logging bodies are held by their direct tests alone: no mutation run
+checks that those tests still catch a break in them.
 
-**Rules out.** Raising a cap or dropping mutants to fit the time limit; excluding a killable
-mutant; a per-shard server budget; a committed survivor baseline file; an aggregate job that
-re-counts what each shard already judged.
+**Why.** The crates outgrew one serial job: nights of 2026-10-31, 11-01 and 11-04 were cancelled
+at GitHub's 6 h cap. A count cap hides regressions (kill one, add one, same number) and rewards
+raising it. A nightly full-sweep verdict lands after the merge, on whoever is next; a diff verdict
+lands on the change that made the mutant, before it merges, and the eight-runner sweep then runs
+once a week instead of every night. A log line is a diagnostic, not a rule: losing or garbling
+one degrades what an operator sees, never a player's state, so the mutation gates judge rules.
+
+**Rules out.** Dropping mutants to fit the time limit; excluding a killable mutant outside the
+logging functions; a survivor count, budget or threshold on the server, or a committed survivor
+baseline file; a test that asserts only log text no tool parses.
 
 ## Menu chrome draws from `--mr-*` tokens; the listbox ring stays `#cc5500`
 
@@ -2401,7 +2437,8 @@ attestation and passes it to a reducer. The route signs with its own key and iss
 which the official server trusts. The attestation is a compact signed JWT with a key id (`kid`); it
 lives minutes, names one world and carries the nonce that world chose. The module verifies it with
 a verifier compiled in, against a `kid`-keyed list of accepted attestation keys that is a constant of
-the build, then records the binding; the world needs no network afterwards. The bind is built in
+the build, then records the binding; the world needs no network afterwards. A player erases their
+own binding without the host (operator, <https://github.com/mdrewt/monster-realm/issues/847>). The bind is built in
 `server-module/src/world_binding.rs`. `request_bind_nonce` gives the caller one nonce, read through
 the owner-scoped view `my_bind_nonce`: a row per identity in private `world_bind_nonce`, 16 bytes of
 `ctx.random()` XORed with the identity's first 16 bytes (two identities never share one, though
@@ -2414,7 +2451,20 @@ writes private `world_binding` `{identity, account_subject, bound_at_ms, entitle
 the identity reads through `my_world_binding`, and deletes the nonce. A row the identity holds is
 replaced: the latest attestation an identity presents wins. The deletion cascade erases `world_binding`
 and `world_bind_nonce` (`world_binding::erase_world_binding`), the data export does not include a
-binding, and a guest claim neither moves nor erases one. The owner relays both calls for another
+binding, and a guest claim neither moves nor erases one. A player erases their own binding with
+`unbind_world_account()`: it deletes the caller's `world_binding` row, whatever key signed it, and
+the caller's `world_bind_nonce` row, expired or not; a caller with no binding gets `Ok` with no
+write and keeps its nonce. It is the one reducer of the client roster the access rule does not
+gate, so a player whose account the host removed from the list can still erase the link, over a
+connection the connect reducer let in while the player was admitted. A build that binds nothing
+refuses it with the binding reducers' refusal before anything else, and a bound caller whose
+account is pending deletion is refused by the deletion gate (the cascade erases the binding).
+When the erased binding is one the build counts, the caller's `world_admission` row goes with it,
+under every rule: an unbind never lets in an identity whose account the owner removed. Once
+unbound, the identity gets back into a world that is not `Open` only through the owner:
+`set_world_access`'s admission list (the host gate's password door, designed and not built, admits
+through it), a relayed bind, or
+a change from `Open` while it is connected (the carry-over). Its account stays on the list. The owner relays both calls for another
 identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
 admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
 `who`. The route rate-limits binds per account and does not keep the world an attestation was
@@ -2434,7 +2484,13 @@ under a separate key, so the signer has to be ours. A per-world attestation that
 needs one signature check in the module, puts no long-lived secret on the client, makes revoking an
 account's ability to bind new worlds automatic, and passes every bind through a service where abuse
 can be rate-limited and seen. A key list with `kid` lets the attestation key rotate by shipping the
-next key before the old one retires.
+next key before the old one retires. The unbind takes the admission row because, while a binding
+the build counts exists, `Allowlist` governs the identity by its account alone and leaves the row
+unread, and every rule change keeps the row: an unbind that kept it would let back in an identity
+whose account the owner removed. The paths are an unbind after the delisting, an unbind while still
+listed followed by the delisting, and the same two with the unbind made during a stretch under
+`Password` or under `Open` (with the player offline when the rule returns to `Allowlist`). Withdrawing
+only under `Allowlist` leaves the last two open.
 
 **Rules out.** Sending an account token to a world we do not operate (see "A target's kind gates
 telemetry and account sign-in"); a third-party provider as the attestation signer; signing
@@ -2445,7 +2501,17 @@ chosen: it would let a first bind happen on a LAN with no internet and keep who-
 our service, at the cost of a device key to store safely in every build, a second signature check in
 the bind reducer, and binds to new worlds that outlive an account's suspension until the credential
 expires. It stays the upgrade path, as a second attestation source, if either of those gains becomes
-a requirement.
+a requirement. An admission check on the unbind (a removed player could not erase the link);
+keeping the admission row through an unbind; withdrawing it only under `Allowlist` or only for a
+caller the rule refuses at the call (each leaves one of the paths above open). Defaults the operator
+may overrule (asked on <https://github.com/mdrewt/monster-realm/issues/861>): the withdrawal writes `world_admission`, beyond the spec's "and nothing else", so an
+unbind in a `Password` world costs the player the door, and so does an unbind under `Open` by a
+player who is offline when the rule changes to `Password`; after an unbind under `Password` or
+`Allowlist`, a player other than the owner is refused by the access check before `join_game`'s
+ownership error and cannot bind again without the owner's relay; and a removed player who has
+disconnected cannot reach the unbind, since every route runs the connect reducer first (measured at
+2.11.0, see "A world that is not open refuses an unadmitted identity at connect and in every
+reducer").
 
 ## The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the module
 
@@ -2584,9 +2650,9 @@ Both lists are constants of the build: `BuildProfile::attestation_keys` is empty
 published, so a `world` build binds nothing and entitles nobody) and `DEV_ATTESTATION_KEYS`
 (the published `local-dev` key; `hosted-dev` publishes none) on `test` and `dev-enforcing`; a test
 holds the lists to the generated `account-service/attestation-public-keys.json`. On a build with no
-key the four binding reducers (`bind_world_account`, `request_bind_nonce` and the owner-relayed form
-of each) return `this server takes no world binding` as their first statement, before anything is
-decoded, read or written, and `world_binding::trusted_binding` answers `None` without reading;
+key the five binding reducers (`bind_world_account`, `request_bind_nonce`, the owner-relayed form
+of each, and `unbind_world_account`) return `this server takes no world binding` as their first
+statement, before anything is decoded, read or written, and `world_binding::trusted_binding` answers `None` without reading;
 `entitled(ctx, profile)` therefore never reads a binding there. A binding records the `kid` that
 signed it and counts only while the build holds that key: a binding made under a dev key counts for
 nothing after a republish as `world`, and retiring a key retires its bindings. On the `world` build
@@ -2662,21 +2728,23 @@ give every server a name (weighed for browser joiners and not chosen).
 **Decision.** While a world's access rule is `Password` or `Allowlist`, the connect reducer
 refuses, as its first statement, an identity that `access::is_admitted` does not admit
 (`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
-not owner-only opens with `access::require_admitted`; the owner-only ones are `sync_content`,
-`set_world_access`, `admit`, `set_world_names`, `set_world_allowlist` and the two relayed binding
-reducers. The four binding reducers answer their build's refusal before that check; it reads
-nothing. A world with no
+not owner-only opens with `access::require_admitted`, except `unbind_world_account`, which makes no
+admission check (see "A private world verifies an account by a per-world attestation our account
+service signs"); the owner-only ones are `sync_content`, `set_world_access`,
+`set_world_names`, `set_world_allowlist` and the two relayed binding reducers. The five binding
+reducers answer their build's refusal before that check; it reads nothing. A world with no
 `world_access` row is `Open`. Under `Password`, `is_admitted` admits the owner and an identity in
 `world_admission`. Under `Allowlist` it admits the owner; an identity with a trusted binding exactly
 while its `account_subject` is a row of private `world_allowlist` (at most 256 subjects of 1 to 255
 visible ASCII), and nothing else counts for it, so delisting refuses at the next check; and an
 identity with no trusted binding only when it holds a `world_admission` row. The list is read at
 every check and nothing is stored from it.
-`Allowlist` takes no password (`set_world_access` refuses one). When the rule changes to one that is
+When the rule changes to one that is
 not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
 before the call admitted, and to none that rule refused. A new joiner's way in under `Allowlist`
-is the owner's relayed nonce request and bind. Admission rows are written only by the two owner-only
-reducers `set_world_access` and `admit`, which take the joiner's identity.
+is the owner's relayed nonce request and bind. Admission rows are written only by the owner-only
+reducer `set_world_access`, which takes the joiners' identities, and deleted by a player's
+own unbind of a binding the build counts (and by the deletion cascade).
 
 The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
 already let in. When the rule changes to `Allowlist`, `set_world_access` adds the account of every
@@ -2698,17 +2766,19 @@ and the list in `server-module/src/world_binding.rs`); `mod admission_roster` in
 `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster from the generated
 bindings' file names and executes every shipped reducer as an unadmitted caller on a `Password`
 world. Designed, not built:
-the gate's half (the door endpoint it relays through, the limit by source address, closing a
-removed identity's sockets), in `docs/local-play.md` §3, fork (a).
+the gate's half (the door endpoint and its password check, closing a removed identity's sockets),
+in `docs/local-play.md` §3, fork (a); see "The gate checks a world's password; the module never
+receives one".
 
 **Why.** Measured at SpacetimeDB 2.11.0: every route that reads a row or calls a reducer (the
 WebSocket, `call`, `sql` and the MCP tools) runs the connect reducer first, and its refusal is
 complete, with nothing needed per table, view or reducer. It runs once, though: a connection
 already open keeps calling and reading after its admission is removed, and a module cannot close a
 connection. Hence the check in every reducer and the admission of open connections when the rule
-changes. An unadmitted identity can call nothing, its own admission included, so the owner has to
-relay the door. An identity costs nothing to obtain, so a count of wrong attempts against one
-bounds nothing; the gate is the one place a source address is visible. Turning the list on must not
+changes. An unadmitted identity can call nothing but its own unbind, so it cannot reach its own
+admission, and the owner has to
+relay the door: the host gate (designed, not built), holding the owner credential, admits a joiner
+who gave the password. Turning the list on must not
 lock out the people playing, the host first: a host may play as a second identity bound to the
 same account as the owner's, so the list keeps an account, not an identity. The bindings and
 admission rows already say who the rule let in, so the list is made from them with no new table.
@@ -2717,8 +2787,7 @@ admission rows already say who the rule let in, so the list is made from them wi
 (`client_visibility_filter`): the one shape that works for subscriptions at 2.11.0 needs a public
 admission table with no filter of its own, the feature is `unstable`, and it puts the sender in
 every subscription query; moving the public tables behind per-sender views (see "World rows are
-subscribed by zone"); a count of wrong attempts across identities in the module (anyone could lock
-every new joiner out); an HTTP handler in the module (the host serves handlers without the connect
+subscribed by zone"); a count of wrong attempts in the module; an HTTP handler in the module (the host serves handlers without the connect
 reducer); treating a refusal at connect as closing what is already open; trimming a list to fit
 its bound; adding accounts on a call that sets `Allowlist` over `Allowlist`; keeping the owner's
 account under a rule that does not read the list (a bind would be refused for a rule that is not in
@@ -2729,34 +2798,45 @@ removal: `Open` lists
 every trusted binding again, anyone's who bound meanwhile included, and `Password` lists whoever
 holds an admission row, which a rule change gives each connected identity, so the host reads the
 list after changing back. A listed account stays listed after its player's binding is erased, until
-the host removes it. Anyone may bind in an `Open` world, so more than 256 accounts can bind there
+the host removes it; an identity that unbound while the rule was `Open` and is still connected when
+it changes back gets an admission row from the change, as every connection `Open` admitted does.
+Anyone may bind in an `Open` world, so more than 256 accounts can bind there
 and the change to `Allowlist` is then refused; the host changes to `Password` first (which lists
 only the identities holding an admission row) or deletes binding rows as the database owner.
 
-## The door records a wrong password and answers `Ok`; five in ten minutes lock one identity out
+## The gate checks a world's password; the module never receives one
 
-**Decision.** `admit(who, password)` is owner-only. It is refused with an error and no write when
-the caller is not the owner, the rule is not `Password`, `who` has five wrong passwords less than
-ten minutes old (a sliding window; the right password is refused too, before any hashing), or the
-password is empty or over 128 bytes. An already admitted `who` is accepted with no write. The right
-password writes the `world_admission` row. A wrong password is recorded in `world_admission_attempt`
-(up to five times, per identity) and the call answers `Ok`; the caller learns the outcome from the
-`world_admission` row, not from the answer. The password is stored as Argon2id (19 456 KiB, 2
-passes, 1 lane, 32 bytes, the account service's parameters) under a 16-byte salt. No reducer removes
-an admission.
+**Decision.** No reducer the module declares takes a password, a hash of one or a value derived
+from one. `set_world_access(rule, admit)` is owner-only and stores the rule with an empty salt and
+hash under every rule, so a salt and hash an earlier module stored go at the owner's next call; the
+module never reads them, and they admit nobody meanwhile. A `Password` world admits the owner and
+the identities holding a `world_admission` row, and nothing else (see "A world that is not open
+refuses an unadmitted identity at connect and in every reducer; the owner relays the door"). The
+host gate checks the password: it keeps an Argon2id salt and hash in the world's directory with the
+owner credential's permissions, never in a backup copy's readable part or a log; it counts wrong
+passwords by source address and by identity and refuses both after five in ten minutes; on the
+right password it admits the joiner through the owner's `set_world_access`, naming the rule in
+force. A host with no gate has no password door: its owner admits identities from the command line.
+Built: the module's half (`server-module/src/access.rs`; `mod reducer_arguments` in
+`server-module/src/privacy_enforcement_tests.rs` describes every reducer the build declares, the
+dev builds' listed by hand, and holds that no argument is named for a password and that the
+arguments carrying text are a reviewed roster). Designed, not built: the gate's check, in `docs/local-play.md` §3, fork (a). Operator
+ruling, 2026-11-22 (monster-realm#840).
 
-**Why.** A reducer that returns an error is rolled back by the host, so a refusal that must be
-counted has to commit. The count is per identity because a count across identities would let anyone
-lock every new joiner out. Argon2id because the row would otherwise give up a short shared
-password; one hash took about 22 ms inside the reducer (measured on a 2.11.0 standalone host:
-`docs/local-play.md` §3), acceptable for an owner-only call. Limit: the host's commit log holds the
-arguments of every committed reducer call in the clear, the password given to `set_world_access`
-and each given to `admit`, wrong ones included. The hash protects the table row, not a copied world
-directory; a caller that must keep a typed password off the host's disk stretches it before the
-call.
+**Why.** The host's commit log keeps the arguments of every committed reducer call in the clear
+(measured on a 2.11.0 standalone host: `docs/local-play.md` §3), so a password given to a reducer,
+and every wrong guess counted by a committed call, sits on the host's disk whatever the table
+stores; a password stretched before the call is still a password-equivalent there. The operator
+named a reader of logs as the attacker. The gate sees the source address, the one count that bounds
+guessing when an identity costs nothing, and it holds the owner credential that admits. The salt
+and hash columns stay, written empty, because schema changes are additive.
 
-**Rules out.** Answering a wrong password with an error (the host rolls back the count); a counter
-kept in module memory (lost at restart); reading `Ok` from `admit` as "admitted"; a fast or unsalted hash.
+**Rules out.** A reducer argument that carries a typed password, its hash or anything derived from
+it, under any name; a door reducer of any kind in the module; counting wrong passwords in the
+module; reading the stored salt or hash. Accepted limits: a commit log a module with the door wrote
+keeps the passwords given to it, and the module cannot erase it; the argument census is a tripwire
+for arguments that carry text, and a value derived from a password could ride in an argument of
+another type, where review is the defence.
 
 ## Every player must own the game on Steam, for now
 

@@ -52,7 +52,7 @@ are implemented but inactive until an identity provider is deployed (see
 | Tool | Version | Where it is pinned |
 |---|---|---|
 | Rust | 1.99.0, with `wasm32-unknown-unknown`, clippy and rustfmt | `rust-toolchain.toml` (rustup installs it automatically) |
-| SpacetimeDB CLI | 2.11.0 | root `Cargo.toml` (`spacetimedb = "2.11.0"`), the npm SDK (`^2.11.0`, lockstep) and `scripts/ci-tools.sh` (CI). Install the CLI with the vendor installer (`curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com && sh /tmp/spacetime-install.sh --yes`), then `spacetime version install 2.11.0` and `spacetime version use 2.11.0` |
+| SpacetimeDB CLI | 2.12.0 | root `Cargo.toml` (`spacetimedb = "=2.12.0"`), the npm SDK (`^2.12.0`, lockstep) and `scripts/ci-tools.sh` (CI). Install the CLI with the vendor installer (`curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com && sh /tmp/spacetime-install.sh --yes`), then `spacetime version install 2.12.0` and `spacetime version use 2.12.0` |
 | Node.js | 24.22.0 (`engines` allows `>=24.13.1 <25`) | `client/package.json` `engines`; both workflows use 24.22.0 |
 | wasm-pack | 0.15.0 | `scripts/ci-tools.sh` (CI); locally, for example `cargo install wasm-pack --version 0.15.0` |
 | just | any recent (CI: 1.58.0) | `scripts/ci-tools.sh` (CI); runs every recipe in `justfile` |
@@ -201,6 +201,7 @@ With `CI` set, each shard also writes its JSON report to `client/test-results/sh
 | `scripts/` | Commit, secret, playtest and republish tooling |
 | `ops/` | Monitoring stack and identity-provider deployment recipes |
 | `docs/` | Decisions, the playtest guide, runbooks |
+| `vendor/` | Two SpacetimeDB crates (`spacetimedb`, `spacetimedb-bindings-sys`) copied from crates.io and patched so the module's tests run natively (`vendor/README.md`) |
 
 Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the system fits together and
 [`docs/DECISIONS.md`](docs/DECISIONS.md) for why it is built that way. Contribution
@@ -209,4 +210,6 @@ rules are in [`CONTRIBUTING.md`](CONTRIBUTING.md); agents also read
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE). The two crates under `vendor/` are the SpacetimeDB vendor's,
+licensed under the Apache License 2.0 (each copy keeps its `LICENSE`); the lines this repository
+changes in them carry a change notice (`vendor/README.md`).

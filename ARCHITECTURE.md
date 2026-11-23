@@ -36,6 +36,7 @@ netcode deterministically without a browser.
 | `evals/` | Node checks run by `just eval` (`evals/run.mjs`), with baselines in `evals/baselines/`. |
 | `scripts/` | Commit-message and secret checks, playtest verifiers, the smoke-republish script. |
 | `ops/` | Deployment recipes: `observability/` (self-hosted monitoring stack) and `auth/` (the OIDC issuer). |
+| `vendor/` | The crates.io packages of `spacetimedb` and `spacetimedb-bindings-sys` at the pinned version, patched in `#[cfg]` attributes (`native-host.patch`) and wired by the root `[patch.crates-io]`; not workspace members. `PRISTINE.sha256` records the published files. See `vendor/README.md`. |
 
 The Cargo workspace (`Cargo.toml`) has five members: `game-core`, `client-wasm`,
 `server-module`, `sim-harness`, and `evals/release-overflow-teeth` (a fixture crate
@@ -160,8 +161,8 @@ writes:
 | `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
-| `access` | `set_world_access`, `admit` (both owner-only): the world's access rule (`Open`, `Password` or `Allowlist`), the admission list and the door; `require_admitted` opens every non-owner-only client reducer |
-| `world_binding` | `request_bind_nonce`, `bind_world_account` and their owner-relayed forms `request_bind_nonce_for`, `bind_world_account_for`; owner-only `set_world_names`, `set_world_allowlist`. Owns `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`, verifies the attestation (`verify_attestation`) and answers `trusted_binding`; a build with no attestation key refuses the four bind reducers |
+| `access` | `set_world_access`, `admit` (both owner-only): the world's access rule (`Open`, `Password` or `Allowlist`), the admission list and the door; `require_admitted` opens every non-owner-only client reducer but `unbind_world_account` |
+| `world_binding` | `request_bind_nonce`, `bind_world_account` and their owner-relayed forms `request_bind_nonce_for`, `bind_world_account_for`; `unbind_world_account`, the one client reducer outside the owner-only set with no admission check, which erases the caller's binding and nonce and withdraws its admission row when the build counted the binding; owner-only `set_world_names`, `set_world_allowlist`. Owns `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`, verifies the attestation (`verify_attestation`) and answers `trusted_binding`; a build with no attestation key refuses the five binding reducers |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
 | `observability` | scheduled `mr_heartbeat` |
 | `playtest` | scheduled `playtest_reaper` |
@@ -876,7 +877,7 @@ root, so opening one never closes a sibling.
 | Layer | Where | Run by |
 |---|---|---|
 | Rule unit and property tests | `game-core/src/**` (`*_tests.rs`, inline modules), `game-core/tests/` | `just test` (cargo nextest) |
-| Server tests | `server-module/src/*_tests.rs`, including `native_host_tests.rs`, which runs reducers against an in-memory host | `just test` |
+| Server tests | `server-module/src/*_tests.rs`, including `native_host_tests.rs`, which runs reducers against an in-memory host: it defines the SpacetimeDB host ABI itself, and the patched copies under `vendor/` route the module SDK's native table calls to it (its guard test checks those copies against the crates.io release) | `just test` |
 | Netcode | `sim-harness` plus the `netcode-determinism` and `netcode-convergence` evals | `just test`, `just eval` |
 | Client unit tests | `client/src/**/*.test.ts` (vitest, happy-dom) | `just client-test` |
 | Evals | `evals/*.eval.mjs`: wasm parity, feature isolation, determinism, schema and type snapshots, append-only ids, content version, bindings drift, client-surface privacy, sprite-sheet format, and the live account flow | `just eval` |

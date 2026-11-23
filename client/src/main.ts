@@ -35,7 +35,7 @@ import {
 import { browserStorage } from './input/bindingStore';
 import { accelForCode, DEFAULT_BINDINGS } from './input/bindings';
 import type { ButtonEdge, VButton } from './input/buttons';
-import { glyph, learnKey } from './input/glyphs';
+import { learnKey } from './input/glyphs';
 import { isChord } from './input/keyboardSource';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
@@ -124,9 +124,13 @@ import {
   bindings,
   held,
   inputRouter,
+  installPadFaultSink,
   keyboard,
+  keycap,
   navHeldCodes,
+  noteInputSource,
   noteNavHeld,
+  pad,
   releaseAllInput,
   releaseNavHeld,
 } from './shell/inputState';
@@ -463,6 +467,12 @@ applyTextStep(document.documentElement, textStep);
 // The hint host `shell/feedback.ts` reaches up through, installed before the first listener
 // registers: whether the main menu is the top frame, and a repaint of it.
 installHintHost({ menuOnTop: () => menuPlace() === 'top', repaintMenu: renderMenu });
+// A fault of the Gamepad API (the pad source reports its first one only) goes to the error ring,
+// tagged so the F9 bundle tells it from a frame or handler throw.
+installPadFaultSink((err) => {
+  console.error('[pad] Gamepad API error', err);
+  pushError('uncaught', `gamepad: ${normalizeError('uncaught', err).message}`);
+});
 // The injected rule IS the client-wasm export (same compiled code as the server).
 const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
@@ -1367,7 +1377,7 @@ function hintChips(
 ): readonly HintChip[] {
   return hintBar(
     stack,
-    bindings,
+    keycap,
     notices,
     {
       target:
@@ -1563,9 +1573,9 @@ function interactName(c: InteractCandidate): string {
   return c.kind === 'heal' ? i18nT('interact.healer') : c.name;
 }
 
-/** The A button's keycap, from the live binding (A is protected, so it always has a key). */
+/** The A button's live keycap, from the last-used device's table. */
 function interactKeycap(): string {
-  return glyph(bindings.buttons.A[0] ?? '');
+  return keycap('A');
 }
 
 function interactChipText(chip: InteractChip): string {
@@ -2826,17 +2836,37 @@ let pointerSource: PointerSource | null = null;
 // because the pointer source's seek reads the row cursor from the DOM right after each press.
 let paintWorldPrompt: (() => void) | null = null;
 
-// One pointer press: the button's down and up edges through the router, the stack synced on both
-// sides as a keydown does. Like every input path it is dead while the session terminal shows.
-const pointerPress = (button: VButton): void => {
-  if (sessionGateBlocks()) return;
+// The press path of the sources that only press (the pointer, the pad): their edges through the
+// router in order, the stack synced on both sides as a keydown does. Like a key press it is dead
+// while the session terminal shows (false then). An edge whose routing throws does not stop the
+// later ones (a release among them would otherwise leave its direction held); the first error is
+// rethrown once every edge has routed.
+const pressEdges = (edges: readonly ButtonEdge[]): boolean => {
+  if (sessionGateBlocks()) return false;
   syncStack();
   try {
-    routeEdge({ button, down: true });
-    routeEdge({ button, down: false });
+    let failure: { readonly err: unknown } | undefined;
+    for (const edge of edges) {
+      try {
+        routeEdge(edge);
+      } catch (err) {
+        failure ??= { err };
+      }
+    }
+    if (failure !== undefined) throw failure.err;
   } finally {
     syncStack();
   }
+  return true;
+};
+
+// One pointer press: the button's down and up edges.
+const pointerPress = (button: VButton): void => {
+  const routed = pressEdges([
+    { button, down: true },
+    { button, down: false },
+  ]);
+  if (!routed) return;
   // After the press, not in the finally: a paint error must never mask the router's own.
   paintWorldPrompt?.();
 };
@@ -3048,10 +3078,12 @@ const handleKeyDown = (e: KeyboardEvent): void => {
 };
 // Escape is routed in the CAPTURE phase, so a view's own stopPropagation can no longer trap it
 // (B5: Escape was dead inside a view that shields its fields). Every other key keeps the bubble phase,
-// where those views' stopPropagation still shields their fields from the accelerator keys.
+// where those views' stopPropagation still shields their fields from the accelerator keys. Every
+// key, a shielded one too (typing a name), makes the keycaps the keyboard's from the next paint.
 window.addEventListener(
   'keydown',
   (e) => {
+    noteInputSource('keys');
     if (e.code === 'Escape') handleKeyDown(e);
   },
   true,
@@ -3072,6 +3104,44 @@ window.addEventListener('blur', releaseAllInput);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') releaseAllInput();
 });
+
+// The pad, read once per animation frame. While the session terminal shows, everything held is let
+// go (`releaseAllInput` reads the pad first), so a button held through the terminal acts only once
+// released and pressed again. A pad press is ignored, as a key press is, while focus is outside the
+// game screen, and also while Controls waits for a key: everything held is let go then too, so the
+// ignored press owes no release that could end another source's hold. A release alone still routes,
+// as a keyup does. Inside the game screen a pad press is a button press even with a text field
+// focused (a pad cannot type). A press clears the pointer's hover mark and heals stale focus first,
+// as a key press does; the edges route before the accelerators.
+const pollPad = (): void => {
+  if (sessionGateBlocks()) {
+    releaseAllInput();
+    return;
+  }
+  const { edges, accels } = pad.poll();
+  const pressed = accels.length > 0 || edges.some((edge) => edge.down);
+  // A press, even an ignored one, makes the keycaps the pad's; a release alone leaves them.
+  if (pressed) noteInputSource('pad');
+  if (!pressed) {
+    if (edges.length > 0) pressEdges(edges);
+    return;
+  }
+  if (outsideGameScreen(document.activeElement, gameScreenEl()) || controlsCapture() !== null) {
+    releaseAllInput();
+    return;
+  }
+  pointerSource?.keyPressed();
+  if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
+  if (edges.length > 0) pressEdges(edges);
+  if (accels.length === 0) return;
+  // The edges' press path, else the frame, has just synced the stack; the sync after is a
+  // keydown's, so whatever an accelerator closed is off the stack at once.
+  try {
+    for (const accel of accels) runAccel(accel);
+  } finally {
+    syncStack();
+  }
+};
 
 // --- box/party view: refresh on batch when visible ---------------
 function refreshBox(): void {
@@ -3267,8 +3337,8 @@ function buildDeployPanel(
       remembered: store.ownFormation(identity)?.monsterIds ?? [],
     };
     // bt-15 (BT15.1): a PvP / Practice side deploys `pvpDeployCount(format, conscious)` of its OWN
-    // list and follows its own `battle_deploy.locked`; the anchor's side B is the OPPONENT's roster
-    // there (R-bt-14-ROSTERREVEAL) and is read only as a wild pack.
+    // list and follows its own `battle_deploy.locked`; the anchor's side B is read only as a wild
+    // pack (a Deploying PvP anchor arrives with the opponent's side empty: schema.rs `my_battle`).
     const vm = deployVM(
       shellKind(row.kind) === 'pvp'
         ? { mode: 'pvp', ...base, format: row.format, locked: ownDeployLocked(row.battleId) }
@@ -4188,17 +4258,19 @@ const mrPvpHook = {
   // opponent only through the view model). Returns null when the battle is absent (not yet
   // arrived or GC'd). activeSkillIds are the ACTIVE monster's known skill ids for each
   // side, so either page can pick a legal skill for its role.
-  // An EMPTY activeSkillIds array means the side's active index was out of bounds —
-  // an abnormal server state; callers must not submit an action built from it.
+  // An EMPTY activeSkillIds array means the side has no monster at its active index: the
+  // opponent's side of a PvP battle while it is Deploying (schema.rs `my_battle` delivers it
+  // empty), else an abnormal server state; callers must not submit an action built from it.
   // bt-16: `hp` is the active monster's HP as the ANCHOR mirrors it (tactics.rs `mirror_hp`),
   // -1 without an active monster — the e2e's oracle that a mid-battle anchor update (a
-  // delete + insert pair on the view) reached this client and kept the row.
+  // delete + insert pair on the view) reached this client and kept the row. `teamSize` is the
+  // side's team length as the store holds it (0 for that hidden Deploying side).
   battleById(battleId: string): {
     battleId: string;
     outcome: string;
     turnNumber: number;
-    sideA: { active: number; activeSkillIds: number[]; hp: number };
-    sideB: { active: number; activeSkillIds: number[]; hp: number };
+    sideA: { active: number; activeSkillIds: number[]; hp: number; teamSize: number };
+    sideB: { active: number; activeSkillIds: number[]; hp: number; teamSize: number };
   } | null {
     const b = store.battle(BigInt(battleId));
     if (!b) return null;
@@ -4210,11 +4282,13 @@ const mrPvpHook = {
         active: b.sideA.active,
         activeSkillIds: [...(b.sideA.team[b.sideA.active]?.knownSkillIds ?? [])],
         hp: b.sideA.team[b.sideA.active]?.currentHp ?? -1,
+        teamSize: b.sideA.team.length,
       },
       sideB: {
         active: b.sideB.active,
         activeSkillIds: [...(b.sideB.team[b.sideB.active]?.knownSkillIds ?? [])],
         hp: b.sideB.team[b.sideB.active]?.currentHp ?? -1,
+        teamSize: b.sideB.team.length,
       },
     };
   },
@@ -4702,7 +4776,7 @@ async function main(): Promise<void> {
   const hintBarEl = document.getElementById('hint-bar');
   if (hintBarEl !== null) mountViews({ hintBarView: new HintBarView(hintBarEl) });
   // Painted once now, so the bar is never blank before the first frame.
-  hintBarView?.render(hintBar(contextStack, bindings, []), null);
+  hintBarView?.render(hintBar(contextStack, keycap, []), null);
 
   // The on-world interact prompt — a small frame in the frame layer (.mr-frame--prompt:
   // pointer-events:none so it can NEVER shadow a click meant for the canvas or a frame beneath;
@@ -5035,12 +5109,13 @@ async function main(): Promise<void> {
         : anchor !== undefined
           ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
           : undefined;
-    // The confirm's row and cursor are in the signature: a Yes / No move must repaint.
+    // The confirm's row and cursor are in the signature: a Yes / No move must repaint. So is the A
+    // keycap the picker's accessible name carries, which follows the last-used device.
     const promptSig =
       request !== null
         ? `request|${request.notice.key}|${request.nav.item}|${requestLine(request.notice)}`
         : sheet !== null
-          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
+          ? `sheet|${interactKeycap()}|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
           : chip !== null
             ? interactChipText(chip)
             : null;
@@ -5133,6 +5208,9 @@ async function main(): Promise<void> {
   const frame = (): void => {
     try {
       syncStack(); // a server overlay shown, or a player view closed, outside a keydown or batch
+      // The pad, on the stack as synced just now: ahead of the session gate's early return (while
+      // the gate blocks, it lets go of everything held) and of the menu auto-repeat below.
+      pollPad();
       // A toast expires on the frame clock even while the session terminal owns the screen.
       tickToast(performance.now());
       // the session terminal also outranks the render/dispatch loop —

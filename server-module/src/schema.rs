@@ -56,8 +56,8 @@ pub struct Character {
 /// written by `join_game`; 0 means no tag (a row that pre-dates the column, or
 /// one the deletion cascade tombstoned). `lead_level` is the public column for
 /// the level of the owner's lead party monster, where 0 reads as no party:
-/// `join_game` writes 0, the deletion cascade zeroes it, and nothing else
-/// writes it.
+/// `join_game` writes 0, `battle::refresh_lead_level` keeps it on the lead's
+/// level after each write that can move it, and the deletion cascade zeroes it.
 #[spacetimedb::table(accessor = player, public)]
 pub struct Player {
     #[primary_key]
@@ -489,8 +489,9 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
 /// client.
 /// Participants read ONLY their own rows through the `my_battle` view below.
 /// Hidden fields (IVs/EVs) are NOT in `BattleState` — only derived stats appear
-/// there — so the view leaks nothing hidden to the two
-/// players who are already in the fight.
+/// there. The stored row holds both rosters from the PvP start (settlement and
+/// HP write-back read them), so the view, not the row, keeps a Deploying PvP
+/// opponent's roster from the other participant.
 ///
 /// `opponent_identity` gains a btree index to support O(log n)
 /// lookup in `forfeit_on_disconnect` for the case where the disconnecting player is
@@ -515,28 +516,69 @@ pub struct Battle {
 /// Participant-scoped read path for `battle`: each client's
 /// subscription sees ONLY rows where it holds `player_identity` OR
 /// `opponent_identity` — a chain of two point index scans over the btree
-/// indexes above, never a table scan. Like `my_monster_pub`, THIS BODY is the
-/// entire security boundary and is pinned exactly
-/// signature included (an extra param is a
-/// caller-chosen-owner leak). The trailing filter is DEDUP BY CONSTRUCTION,
-/// not an invariant: it excludes the rows the first scan already emitted, so a
-/// practice battle (`player_identity == opponent_identity`, battle.rs) arrives
-/// exactly once. Rewriting it as `b.player_identity != b.opponent_identity`
-/// would delete every practice battle from its own player's view.
+/// indexes above, never a table scan — each row as `as_seen_by_side` hands it
+/// to the side the caller holds. Like `my_monster_pub`, THIS BODY and
+/// `as_seen_by_side` are the entire security boundary, signature included (an
+/// extra param is a caller-chosen-owner leak). The trailing filter is DEDUP BY
+/// CONSTRUCTION, not an invariant: it excludes the rows the first scan already
+/// emitted, so a practice battle (`player_identity == opponent_identity`,
+/// battle.rs) arrives exactly once, as side A. Rewriting it as
+/// `b.player_identity != b.opponent_identity` would delete every practice
+/// battle from its own player's view. The per-row `battle_tactical` point read
+/// is part of the view's read set, so the reveal's phase write re-delivers the
+/// row whole.
 #[spacetimedb::view(accessor = my_battle, public)]
 fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    let sender = ctx.sender();
     ctx.db
         .battle()
         .player_identity()
-        .filter(ctx.sender())
+        .filter(sender)
+        .map(|b| (b, SideRow::A))
         .chain(
             ctx.db
                 .battle()
                 .opponent_identity()
-                .filter(ctx.sender())
-                .filter(|b| b.player_identity != ctx.sender()),
+                .filter(sender)
+                .filter(move |b| b.player_identity != sender)
+                .map(|b| (b, SideRow::B)),
         )
+        .map(|(b, own)| {
+            let tactical = ctx.db.battle_tactical().battle_id().find(b.battle_id);
+            as_seen_by_side(b, own, tactical.as_ref())
+        })
         .collect()
+}
+
+/// The anchor `row` as the participant holding side `own` receives it. A PvP
+/// battle between two players that is still Deploying reaches each of them
+/// with the OTHER side emptied — no species, level, stats or skills before
+/// both deploys lock (and `active` 0, since the stored lead index would tell
+/// which leading members have fainted). Every other battle, and a PvP battle
+/// from the reveal on, is returned as stored. A wire-only copy: the stored row
+/// keeps both sides, which `tactics::mirror_hp` and a settled close's HP
+/// write-back read by position.
+fn as_seen_by_side(mut row: Battle, own: SideRow, tactical: Option<&BattleTactical>) -> Battle {
+    use game_core::tactics::tuning::BattleKind;
+    use game_core::tactics::types::Phase;
+    let deploying_pvp = match tactical.map(|t| (t.kind, t.phase)) {
+        Some((BattleKind::Pvp, Phase::Deploying)) => true,
+        Some((BattleKind::Pvp, Phase::Active | Phase::Finished))
+        | Some((BattleKind::Wild, Phase::Deploying | Phase::Active | Phase::Finished))
+        | Some((BattleKind::Practice, Phase::Deploying | Phase::Active | Phase::Finished))
+        | None => false,
+    };
+    if deploying_pvp && row.player_identity != row.opponent_identity {
+        let empty = game_core::BattleSide {
+            active: 0,
+            team: Vec::new(),
+        };
+        match own {
+            SideRow::A => row.state.side_b = empty,
+            SideRow::B => row.state.side_a = empty,
+        }
+    }
+    row
 }
 
 /// PRIVATE wild-individuality side-table. Keyed 1:1 by

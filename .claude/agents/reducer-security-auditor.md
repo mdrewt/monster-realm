@@ -24,10 +24,14 @@ You are **read-only**. You never edit code. You produce a findings report.
    reducers and trace what state they read/write rather than grepping blindly.
 2. For any SpacetimeDB module-API question — the exact spelling of randomness/time accessors
    (`ctx.random()`, `ctx.timestamp`), the module-identity check (`ctx.database_identity()`),
-   table and view macro options, public vs private table syntax — confirm against GitMCP
-   (`gitmcp-spacetimedb`). Do not trust tokens from memory: the module uses crate 2.8.1
-   (2.x syntax: `#[spacetimedb::table(accessor = x)]`, `ctx.sender()`), and 1.x examples
-   are wrong here.
+   table and view macro options, public vs private table syntax — confirm against the pinned
+   crates' own source: the version is `spacetimedb` in the workspace `Cargo.toml`; the context
+   API is under `~/.cargo/registry/src/*/spacetimedb-<version>/` and the table, view and
+   reducer macros under `spacetimedb-bindings-macro-<version>/` beside it. If that version is
+   not on disk, run `cargo fetch` in the workspace or read docs.rs at that version. GitMCP
+   (`gitmcp-spacetimedb`) serves upstream's default branch, which can be newer than the pin.
+   Do not trust tokens from memory: the module uses 2.x syntax
+   (`#[spacetimedb::table(accessor = x)]`, `ctx.sender()`), and 1.x examples are wrong here.
 3. Walk every reducer against the checklist below. Cite `file:line` for each finding.
 
 ## The checklist (non-negotiable)

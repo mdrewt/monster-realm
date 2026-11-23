@@ -18,6 +18,5 @@ export default {
   get rule() {
     return WorldAccessRule;
   },
-  password: __t.option(__t.string()),
   admit: __t.array(__t.identity()),
 };
