@@ -107,6 +107,7 @@ import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
+import { buildRenameViewModel } from './renameModel';
 import { RenameView } from './renameView';
 import { type RowOp, type RowSection, walkSection } from './screens/profileScreen';
 
@@ -174,6 +175,7 @@ function walk(section: RowSection, op: RowOp): void {
 // Mirrors buildRenameViewModel's return type.
 interface RenameViewModel {
   displayCurrentName: string;
+  displayTag: string | null;
   trimmedDraft: string;
   canSubmit: boolean;
 }
@@ -358,7 +360,12 @@ describe('RenameView render(): disabled/enabled state and textContent', () => {
   it('BITES: render({canSubmit:false}) sets #rename-submit.disabled=true — kills always-enabled impl', () => {
     // WRONG IMPL KILLED: an impl that never sets the disabled attribute.
     const view = new RenameView({ onSubmit: async () => {} });
-    const vm: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: '', canSubmit: false };
+    const vm: RenameViewModel = {
+      displayCurrentName: 'X',
+      displayTag: null,
+      trimmedDraft: '',
+      canSubmit: false,
+    };
     view.render(vm);
     const btn = document.getElementById('rename-submit') as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
@@ -367,7 +374,12 @@ describe('RenameView render(): disabled/enabled state and textContent', () => {
   it('BITES: render({canSubmit:true}) sets #rename-submit.disabled=false — kills always-disabled impl', () => {
     // WRONG IMPL KILLED: an impl that always leaves disabled=true.
     const view = new RenameView({ onSubmit: async () => {} });
-    const vm: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: 'Valid', canSubmit: true };
+    const vm: RenameViewModel = {
+      displayCurrentName: 'X',
+      displayTag: null,
+      trimmedDraft: 'Valid',
+      canSubmit: true,
+    };
     view.render(vm);
     const btn = document.getElementById('rename-submit') as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
@@ -378,6 +390,7 @@ describe('RenameView render(): disabled/enabled state and textContent', () => {
     const view = new RenameView({ onSubmit: async () => {} });
     const vm: RenameViewModel = {
       displayCurrentName: 'Aria',
+      displayTag: null,
       trimmedDraft: 'New',
       canSubmit: true,
     };
@@ -391,6 +404,7 @@ describe('RenameView render(): disabled/enabled state and textContent', () => {
     const view = new RenameView({ onSubmit: async () => {} });
     const vm: RenameViewModel = {
       displayCurrentName: '(unnamed)',
+      displayTag: null,
       trimmedDraft: '',
       canSubmit: false,
     };
@@ -950,10 +964,16 @@ describe('RenameView review-hardening: live submit-enable, hide() lock reset, bu
 describe('RenameView ctl-8h: the section rows and the submit key shield', () => {
   const ENABLED: RenameViewModel = {
     displayCurrentName: 'X',
+    displayTag: null,
     trimmedDraft: 'Bob',
     canSubmit: true,
   };
-  const DISABLED: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: '', canSubmit: false };
+  const DISABLED: RenameViewModel = {
+    displayCurrentName: 'X',
+    displayTag: null,
+    trimmedDraft: '',
+    canSubmit: false,
+  };
   const move = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
   const activate = (): RowOp => ({ kind: 'activate' });
   const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
@@ -1408,7 +1428,12 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
     const input = document.getElementById('rename-input') as HTMLInputElement;
     const submit = document.getElementById('rename-submit') as HTMLButtonElement;
     const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
-    view.render({ displayCurrentName: 'X', trimmedDraft: 'Bob', canSubmit: true });
+    view.render({
+      displayCurrentName: 'X',
+      displayTag: null,
+      trimmedDraft: 'Bob',
+      canSubmit: true,
+    });
     input.value = 'Bob';
     input.focus();
     walk(view, { kind: 'move', delta: -1 });
@@ -1491,10 +1516,16 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
 describe('RenameView uif-16a: the shared section interface', () => {
   const ENABLED16: RenameViewModel = {
     displayCurrentName: 'X',
+    displayTag: null,
     trimmedDraft: 'Bob',
     canSubmit: true,
   };
-  const EMPTY16: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: '', canSubmit: false };
+  const EMPTY16: RenameViewModel = {
+    displayCurrentName: 'X',
+    displayTag: null,
+    trimmedDraft: '',
+    canSubmit: false,
+  };
   const move16 = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
   const activate16 = (): RowOp => ({ kind: 'activate' });
   const focusedId16 = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
@@ -1668,5 +1699,171 @@ describe('RenameView uif-16a: the shared section interface', () => {
     // still be wired and clamp at the section's edge).
     const view = new RenameView({ onSubmit: async () => {} });
     expect('applyRowOp' in view, 'no section-level applyRowOp').toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The player tag beside the current name: `#rename-current` holds a `<bdi>` with the name, a
+// separating space and `span#rename-tag.mr-player-tag` with the tag. The tag text is the model's
+// `displayTag`, written by textContent only.
+// ---------------------------------------------------------------------------
+
+describe('RenameView player tag beside the current name', () => {
+  const vmOf = (name: string, tag: string | null, canSubmit = false): RenameViewModel => ({
+    displayCurrentName: name,
+    displayTag: tag,
+    trimmedDraft: canSubmit ? 'Valid' : '',
+    canSubmit,
+  });
+  const tagEl = (): HTMLElement | null => document.getElementById('rename-tag');
+  const bdiEl = (): HTMLElement | null =>
+    document.getElementById('rename-current')?.querySelector('bdi') ?? null;
+
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+  afterEach(() => {
+    teardown();
+  });
+
+  it('render shows the tag after the name inside #rename-current, in the Players-tab tag class [lpw-40.1]', () => {
+    // WRONG IMPL KILLED: a view that ignores displayTag; a tag written before the name or outside
+    // #rename-current; a tag in a node without the Players tab's `mr-player-tag` class; a tag
+    // joined into one text node with no separate element; no separating space.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(vmOf('Aria', '#0042'));
+    const current = document.getElementById('rename-current') as HTMLElement;
+    const tag = tagEl();
+    const bdi = bdiEl();
+    expect(tag, 'the tag element exists').not.toBeNull();
+    expect(bdi, 'the name sits in a bdi').not.toBeNull();
+    if (tag === null || bdi === null) return;
+    expect(tag.textContent).toBe('#0042');
+    expect(tag.tagName).toBe('SPAN');
+    expect(tag.classList.contains('mr-player-tag')).toBe(true);
+    expect(current.contains(tag), 'the tag is inside #rename-current').toBe(true);
+    expect(bdi.textContent).toBe('Aria');
+    expect(
+      bdi.compareDocumentPosition(tag) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the tag follows the name',
+    ).toBeTruthy();
+    expect(current.textContent).toBe('Aria #0042');
+  });
+
+  it('render of the real model for discriminator 42 shows Aria with #0042 [lpw-40.1]', () => {
+    // WRONG IMPL KILLED: a model and view that disagree on the field name (the tag never reaches
+    // the DOM); a model that gives the name and tag as one string painted twice.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(buildRenameViewModel('Aria', 42, ''));
+    expect(bdiEl()?.textContent).toBe('Aria');
+    expect(tagEl()?.textContent).toBe('#0042');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Aria #0042');
+  });
+
+  it('render with no tag shows the name alone: an empty tag element, no separator, no placeholder [lpw-40.2]', () => {
+    // WRONG IMPL KILLED: a trailing space after the name; a '#' or '#0000' or '-' placeholder; a
+    // literal 'null' or 'undefined' written for a missing tag; a tag element that is absent.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(vmOf('Aria', null));
+    expect(tagEl(), 'the tag element is still there').not.toBeNull();
+    expect(tagEl()?.textContent).toBe('');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Aria');
+    expect(bdiEl()?.textContent).toBe('Aria');
+  });
+
+  it('render of the real model for discriminator 0 shows the name alone [lpw-40.2]', () => {
+    // WRONG IMPL KILLED: a model that tags 0 ('#0000'); a view that writes the tag element
+    // regardless of the model's null.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(buildRenameViewModel('Aria', 0, ''));
+    expect(tagEl()?.textContent).toBe('');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Aria');
+  });
+
+  it('a tagged render followed by an untagged render leaves no stale tag or space [lpw-40.2]', () => {
+    // WRONG IMPL KILLED: a view that only writes the tag when there is one (the tag of the first render stays
+    // on the next player); a separator left behind from the tagged render.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(vmOf('Aria', '#0042'));
+    view.render(vmOf('Bree', null));
+    expect(tagEl()?.textContent).toBe('');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Bree');
+  });
+
+  it('renderCurrentName swaps the name and keeps the tag [lpw-40.3]', () => {
+    // WRONG IMPL KILLED: a repaint that rebuilds #rename-current from the name alone (the tag is
+    // dropped); one that leaves the old name; one that appends a second name node or tag.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(vmOf('Aria', '#0042'));
+    view.renderCurrentName(vmOf('Bree', '#0042'));
+    expect(bdiEl()?.textContent).toBe('Bree');
+    expect(tagEl()?.textContent).toBe('#0042');
+    const current = document.getElementById('rename-current') as HTMLElement;
+    expect(current.textContent).toBe('Bree #0042');
+    expect(current.querySelectorAll('bdi').length, 'one name node').toBe(1);
+    expect(current.querySelectorAll('#rename-tag').length, 'one tag node').toBe(1);
+  });
+
+  it('renderCurrentName shows a different tag when the model gives one, with the same or a new name [lpw-40.3]', () => {
+    // WRONG IMPL KILLED: a view that keeps the first non-empty tag and ignores a later different
+    // one (the frame would show a stale number after the row changes).
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.render(vmOf('Aria', '#0042'));
+    view.renderCurrentName(vmOf('Aria', '#0099'));
+    expect(tagEl()?.textContent).toBe('#0099');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Aria #0099');
+    view.renderCurrentName(vmOf('Bree', '#0099'));
+    expect(bdiEl()?.textContent).toBe('Bree');
+    expect(tagEl()?.textContent).toBe('#0099');
+    expect(document.getElementById('rename-current')?.textContent).toBe('Bree #0099');
+  });
+
+  it('renderCurrentName leaves a typed draft in the field and the Save button as it was [lpw-40.3]', () => {
+    // WRONG IMPL KILLED: a repaint that resets the input (a rename arriving would wipe what the
+    // player is typing); one that recomputes the submit state from the model's draft.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+    view.render(vmOf('Aria', '#0042', true));
+    input.value = 'TypedDraft';
+    expect(btn.disabled, 'precondition: Save is enabled').toBe(false);
+    view.renderCurrentName(vmOf('Bree', '#0042', false));
+    expect(input.value).toBe('TypedDraft');
+    expect(btn.disabled, 'Save is not recomputed from the model').toBe(false);
+    view.render(vmOf('Bree', '#0042', false));
+    expect(btn.disabled, 'ANTI-VACUITY: render does set it').toBe(true);
+    view.renderCurrentName(vmOf('Cleo', '#0042', true));
+    expect(btn.disabled, 'a disabled Save stays disabled').toBe(true);
+  });
+
+  it('renderCurrentName leaves Save disabled while a submit is in flight [lpw-40.3]', () => {
+    // WRONG IMPL KILLED: a repaint that sets disabled from vm.canSubmit (re-enabling Save under
+    // the pending lock, so a second click could fire another rename).
+    const onSubmit = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const view = new RenameView({ onSubmit });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+    input.value = 'ValidName';
+    btn.click();
+    expect(onSubmit, 'precondition: the submit went out').toHaveBeenCalledTimes(1);
+    expect(btn.disabled, 'precondition: Save is locked').toBe(true);
+    view.renderCurrentName(vmOf('ValidName', '#0042', true));
+    expect(btn.disabled).toBe(true);
+    expect(bdiEl()?.textContent).toBe('ValidName');
+  });
+
+  it('a name and a tag that look like markup are written as text, creating no element [lpw-40.3]', () => {
+    // WRONG IMPL KILLED: an innerHTML build of the name or the tag (an <img> appears and its
+    // onerror runs on a hostile player name).
+    const view = new RenameView({ onSubmit: async () => {} });
+    const hostile = '<img src=x onerror=1>';
+    view.renderCurrentName(vmOf(hostile, '<b>#1</b>'));
+    const current = document.getElementById('rename-current') as HTMLElement;
+    expect(bdiEl()?.textContent).toBe(hostile);
+    expect(tagEl()?.textContent).toBe('<b>#1</b>');
+    expect(current.querySelectorAll('img').length, 'no img element').toBe(0);
+    expect(current.querySelectorAll('b').length, 'no b element').toBe(0);
   });
 });

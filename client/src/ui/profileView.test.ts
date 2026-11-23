@@ -215,6 +215,7 @@ function paintName(b: Built, draft: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
   b.rename.render({
     displayCurrentName: 'Wanderer',
+    displayTag: null,
     trimmedDraft: draft.trim(),
     canSubmit: draft.trim() !== '',
   });

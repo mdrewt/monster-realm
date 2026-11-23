@@ -233,4 +233,154 @@ test.describe
 
       await closeAll(third);
     });
+
+    test('two same-named identities each open Profile: the Name section shows the name with the tag the third`s Players tab lists for that identity, the owner-SQL minted tag, in the muted colour [lpw-40.4]', async () => {
+      // WRONG IMPL KILLED: a Profile that shows the name alone (no tag element text); a tag read
+      // from another field (entity id, lead level) or another player's row; a tag in the name's
+      // colour; a tag that differs from the one the Players tab lists for the same identity.
+      test.setTimeout(120_000);
+      const [pageA, pageB, third] = pages as [Page, Page, Page];
+      const ids = (await Promise.all(pages.map(snapOf))).map((s) => normalizeIdentity(s.identity));
+      expect(new Set(ids).size, 'three browsers, three identities').toBe(3);
+      const [idA, idB] = ids as [string, string, string];
+      const facts = playerFacts(ids, 'lpw-40.4 player rows');
+      const factA = facts.get(idA) as PlayerFacts;
+      const factB = facts.get(idB) as PlayerFacts;
+      expect(factA.name, 'the default name, shared').toBe(factB.name);
+      expect(factA.discriminator, 'a minted tag').toBeGreaterThan(0);
+      expect(factB.discriminator, 'a minted tag').toBeGreaterThan(0);
+      expect(factA.discriminator, 'two different tags').not.toBe(factB.discriminator);
+
+      // The third's Players tab: the tag text and colour listed for each identity.
+      await closeAll(third);
+      await pressAccel(third, 'U');
+      await expect(third.locator('#social-tabs')).toHaveCount(1, { timeout: 5_000 });
+      await pressButton(third, 'LB');
+      await expect(third.locator('#social-tab-players')).toHaveAttribute('aria-selected', 'true', {
+        timeout: 5_000,
+      });
+      const rows = third.locator('#leaderboard-players > [data-nav-key]');
+      await expect(rows, 'exactly the two other players').toHaveCount(2, { timeout: 20_000 });
+      const listed = (
+        await rows.evaluateAll((els) =>
+          els.map((el) => {
+            const tag = el.querySelector('.mr-player-tag');
+            return {
+              key: (el as HTMLElement).dataset.navKey ?? '',
+              active: el.classList.contains('is-active'),
+              text: tag === null ? '' : (tag.textContent ?? ''),
+              colour: tag === null ? '' : getComputedStyle(tag).color,
+            };
+          }),
+        )
+      ).map((r) => ({ ...r, key: normalizeIdentity(r.key) }));
+      const plainRow = listed.find((r) => !r.active);
+      expect(plainRow, 'one plain Players row').toBeDefined();
+      const plainColour = (plainRow as (typeof listed)[number]).colour;
+      expect(plainColour, 'the Players-tab plain-row tag colour').toBe(MUTED);
+      await closeAll(third);
+
+      for (const [page, id, fact] of [
+        [pageA, idA, factA],
+        [pageB, idB, factB],
+      ] as const) {
+        const players = listed.find((r) => r.key === id);
+        expect(players, `${id}: listed by the third`).toBeDefined();
+        const playersTag = (players as (typeof listed)[number]).text;
+        expect(playersTag, `${id}: the Players tab lists the minted tag`).toBe(
+          padTag(fact.discriminator),
+        );
+
+        await closeAll(page);
+        await pressAccel(page, 'N');
+        await expect(page.locator('#profile-overlay')).toBeVisible({ timeout: 10_000 });
+        await expect(page.locator('#rename-current bdi'), `${id}: the name`).toHaveText(fact.name, {
+          timeout: 10_000,
+        });
+        await expect(page.locator('#rename-tag'), `${id}: the minted tag`).toHaveText(
+          padTag(fact.discriminator),
+          { timeout: 10_000 },
+        );
+        await expect(
+          page.locator('#rename-tag'),
+          `${id}: the tag the Players tab lists`,
+        ).toHaveText(playersTag);
+        const colours = await page.evaluate(() => {
+          const tag = document.querySelector('#rename-tag');
+          const name = document.querySelector('#rename-current bdi');
+          return {
+            tag: tag === null ? '' : getComputedStyle(tag).color,
+            name: name === null ? '' : getComputedStyle(name).color,
+          };
+        });
+        expect(colours.tag, `${id}: the tag is the Players-tab muted colour`).toBe(plainColour);
+        expect(colours.tag, `${id}: the tag is not the name's colour`).not.toBe(colours.name);
+        await closeAll(page);
+      }
+    });
+
+    test('a rename repaints the open Profile frame with the new name and the same tag, and the owner-SQL name and tag agree [lpw-40.3]', async () => {
+      // WRONG IMPL KILLED: a Profile that paints the name once on open (the first name stays until a
+      // close and reopen); a repaint that drops the tag; a tag recomputed to another number.
+      test.setTimeout(120_000);
+      const pageA = pages[0] as Page;
+      const idA = normalizeIdentity((await snapOf(pageA)).identity);
+      const before = (playerFacts([idA], 'lpw-40.3 before') as Map<string, PlayerFacts>).get(
+        idA,
+      ) as PlayerFacts;
+      expect(before.discriminator, 'a minted tag').toBeGreaterThan(0);
+
+      // B holds an unsubmitted valid draft in its open Profile frame while A renames.
+      const pageB = pages[1] as Page;
+      const idB = normalizeIdentity((await snapOf(pageB)).identity);
+      const factB = (playerFacts([idB], 'lpw-40.3 B') as Map<string, PlayerFacts>).get(
+        idB,
+      ) as PlayerFacts;
+      const draftB = `Keep${Date.now() % 100000}`;
+      await closeAll(pageB);
+      await pressAccel(pageB, 'N');
+      await expect(pageB.locator('#rename-input')).toBeFocused({ timeout: 10_000 });
+      await pageB.locator('#rename-input').fill(draftB);
+      await expect(pageB.locator('#rename-submit'), 'B: a valid draft enables Save').toBeEnabled();
+
+      await closeAll(pageA);
+      await pressAccel(pageA, 'N');
+      await expect(pageA.locator('#profile-overlay')).toBeVisible({ timeout: 10_000 });
+      await expect(pageA.locator('#rename-tag')).toHaveText(padTag(before.discriminator), {
+        timeout: 10_000,
+      });
+
+      const newName = `Tag${Date.now() % 100000}`;
+      const input = pageA.locator('#rename-input');
+      await input.fill(newName);
+      await input.press('Enter');
+
+      // The frame stays open: the arriving row repaints the name with the same tag.
+      await expect(pageA.locator('#profile-overlay'), 'the frame is still open').toBeVisible();
+      await expect(pageA.locator('#rename-current bdi'), 'the new name').toHaveText(newName, {
+        timeout: 15_000,
+      });
+      await expect(pageA.locator('#rename-tag'), 'the same tag').toHaveText(
+        padTag(before.discriminator),
+      );
+
+      const after = (playerFacts([idA], 'lpw-40.3 after') as Map<string, PlayerFacts>).get(
+        idA,
+      ) as PlayerFacts;
+      expect(after.name, 'owner SQL: the new name').toBe(newName);
+      expect(after.discriminator, 'owner SQL: the tag is unchanged').toBe(before.discriminator);
+
+      // The row reaches every subscriber in the same transaction broadcast; the wait bounds it.
+      await pageB.waitForTimeout(1_500);
+      await expect(pageB.locator('#rename-input'), 'B: the draft survives A`s row').toHaveValue(
+        draftB,
+      );
+      await expect(pageB.locator('#rename-submit'), 'B: Save stays enabled').toBeEnabled();
+      await expect(pageB.locator('#rename-current bdi'), 'B: its own name').toHaveText(factB.name);
+      await expect(pageB.locator('#rename-tag'), 'B: its own tag').toHaveText(
+        padTag(factB.discriminator),
+      );
+      await closeAll(pageB);
+      await closeAll(pageA);
+    });
   });
