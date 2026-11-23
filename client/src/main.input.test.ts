@@ -5037,3 +5037,1110 @@ describe('main.ts feedback channels at the booted shell (runtime, uif-4)', {
     expect(strip.textContent).toBe(UIF4_LINK_TEXT);
   });
 });
+
+// ==========================================================================================
+// The pad in live play: a fake standard pad behind navigator.getGamepads, read by the frame loop
+// ==========================================================================================
+//
+// Same harness, one fresh main.ts per case. happy-dom ships no Gamepad API, so a case that wants a
+// pad installs its own `navigator.getGamepads` (an own property of `navigator`, removed after the
+// case) answering one fake standard-mapping pad, MUTATED IN PLACE between `frame(t)` calls as a
+// browser may hand back one snapshot object. A pad press acts in the frame whose poll first sees it
+// (`frame(t)` runs one rAF callback at clock t). Indices are the default pad table: A 0, B 1, LT 6
+// (the V accelerator: Monsters on Party), RT 7 (the I accelerator: the Bag), Start 9, the D-pad
+// 12 to 15; the left stick is axes 0 and 1, a negative y is Up, and it enters a direction at 0.5.
+//
+// Walk arithmetic: as in the keyboard cases above, a North walk from a row facing North moves a tile
+// per send, so `ackAllNorth` acks every send with the tile the predictor holds; a held direction
+// takes one continuation Step per frame once it is hold-committed and the server owes nothing.
+
+interface FakePadButton {
+  pressed: boolean;
+}
+interface FakePad {
+  index: number;
+  id: string;
+  connected: boolean;
+  mapping: string;
+  buttons: FakePadButton[];
+  axes: number[];
+}
+const makeFakePad = (): FakePad => ({
+  index: 0,
+  id: 'fake standard pad',
+  connected: true,
+  mapping: 'standard',
+  buttons: Array.from({ length: 17 }, () => ({ pressed: false })),
+  axes: [0, 0, 0, 0],
+});
+/** The default pad table's indices (`PAD_DEFAULT_BINDINGS`). */
+const PADI = { A: 0, B: 1, LT: 6, RT: 7, Start: 9, Up: 12, Down: 13 } as const;
+
+/** Install `get` as `navigator.getGamepads` until the case ends. */
+function setPadApi(get: () => unknown): void {
+  Object.defineProperty(navigator, 'getGamepads', {
+    value: get,
+    configurable: true,
+    writable: true,
+  });
+}
+function clearPadApi(): void {
+  delete (navigator as unknown as { getGamepads?: unknown }).getGamepads;
+}
+
+const PAD_WORLD = [{ kind: 'world' }];
+const PAD_MENU = [{ kind: 'world' }, { kind: 'screen', id: 'menuView' }];
+const PAD_BOX = [...PAD_MENU, { kind: 'screen', id: 'boxView' }];
+const PAD_BAG = [...PAD_MENU, { kind: 'screen', id: 'raisingView' }];
+const PAD_QUEST = [...PAD_MENU, { kind: 'screen', id: 'questLogView' }];
+const PAD_CONTROLS = [...PAD_MENU, { kind: 'screen', id: 'controlsView' }];
+
+const gameScreen = (): HTMLElement => rootOf('game-screen');
+const worldCanvas = (): Element | null =>
+  document.getElementById('app')?.querySelector('canvas') ?? null;
+const hoverMarked = (): boolean => gameScreen().classList.contains('mr-pointer-hover');
+const monstersTabs = (): string[] =>
+  ['party', 'storage'].filter(
+    (t) => document.getElementById(`monsters-tab-${t}`)?.getAttribute('aria-selected') === 'true',
+  );
+
+describe('main.ts gamepad (runtime)', { sequential: true }, () => {
+  let pad: FakePad = makeFakePad();
+  /** A fresh fake pad, answered by `navigator.getGamepads` in slot 0. */
+  const usePad = (): void => {
+    pad = makeFakePad();
+    setPadApi(() => [pad, null, null, null]);
+  };
+  const hold = (i: number): void => {
+    pad.buttons[i].pressed = true;
+  };
+  const lift = (i: number): void => {
+    pad.buttons[i].pressed = false;
+  };
+  /** Press `i` for the frame at `t`, then release it for the frame at `t + 5`. */
+  const padTap = (i: number, t: number): void => {
+    hold(i);
+    frame(t);
+    lift(i);
+    frame(t + 5);
+  };
+
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    clearPadApi();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    raf.cb = null;
+    document.body.replaceChildren();
+    // A remap (the Controls case binds K) saves `mr.controls`; the next boot must read defaults.
+    localStorage.clear();
+  });
+
+  // --- the D-pad and the stick at the world -----------------------------------------------------
+
+  it.each([
+    {
+      holder: 'D-pad Up (button 12)',
+      push: (p: FakePad): void => {
+        p.buttons[12].pressed = true;
+      },
+      letGo: (p: FakePad): void => {
+        p.buttons[12].pressed = false;
+      },
+    },
+    {
+      holder: 'left stick pushed Up past the enter threshold',
+      push: (p: FakePad): void => {
+        p.axes[1] = -0.9;
+      },
+      letGo: (p: FakePad): void => {
+        p.axes[1] = 0;
+      },
+    },
+  ])('the $holder at the bare world sends exactly what W sends: one Face, then one Step per acknowledged frame once hold-committed, and nothing after its release [gp-2.1]', async ({
+    push,
+    letGo,
+  }) => {
+    // WRONG IMPL KILLED: a frame loop that never reads the pad, a pad press that bypasses the
+    // router (no held direction, so no continuation), a press sent as a Step, and a release that
+    // never reaches the router (the walk would never stop).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    expect(stack(), 'precondition: the bare world').toEqual(PAD_WORLD);
+    push(pad);
+    frame(1000);
+    expect(
+      H.sends.map((s) => s.input),
+      'the press is one Face of North',
+    ).toEqual([{ tag: 'Face', value: { tag: 'North' } }]);
+    ackAllNorth(1050, 6, 'North');
+    frame(1160);
+    expect(dirs(), 'held and committed: the continuation Step').toEqual(['Face:North', 'North']);
+    ackAllNorth(1200, 6, 'North');
+    frame(1210);
+    expect(dirs(), 'and one more while it stays held').toEqual(['Face:North', 'North', 'North']);
+    ackAllNorth(1250, 6, 'North');
+    letGo(pad);
+    frame(1260);
+    frame(1400);
+    frame(1600);
+    expect(dirs(), 'released: no further Step').toEqual(['Face:North', 'North', 'North']);
+  });
+
+  it('D-pad Up and the stick pushed Up are one walk: releasing the D-pad keeps it walking, releasing the stick last ends it [gp-2.1]', async () => {
+    // WRONG IMPL KILLED: holders not merged (the first release ends the walk), and a second holder
+    // of a held direction that sends a second Face.
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    hold(PADI.Up);
+    frame(1000);
+    expect(dirs(), 'precondition: the D-pad press sent its Face').toEqual(['Face:North']);
+    pad.axes[1] = -0.9;
+    frame(1005);
+    expect(dirs(), 'the stick of the held direction sends nothing').toEqual(['Face:North']);
+    lift(PADI.Up);
+    frame(1020);
+    expect(dirs(), 'releasing the D-pad sends nothing').toEqual(['Face:North']);
+    ackAllNorth(1050, 6, 'North');
+    frame(1160);
+    expect(dirs(), 'the stick still holds North: the walk continues').toEqual([
+      'Face:North',
+      'North',
+    ]);
+    ackAllNorth(1200, 6, 'North');
+    frame(1210);
+    expect(dirs()).toEqual(['Face:North', 'North', 'North']);
+    ackAllNorth(1250, 6, 'North');
+    pad.axes[1] = 0;
+    frame(1260);
+    frame(1400);
+    frame(1600);
+    expect(dirs(), 'the last holder let go: the walk ended').toEqual([
+      'Face:North',
+      'North',
+      'North',
+    ]);
+  });
+
+  it('W held, then D-pad Up held, then W released: the pad keeps the walk going and its release ends it [gp-2.1]', async () => {
+    // WRONG IMPL KILLED: a pad routed through a router of its own (the keyup would end the walk),
+    // and a pad press of a direction a key holds that sends a second Face.
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    fire('keydown', 'KeyW', 1000);
+    expect(dirs(), 'precondition: W sent its Face').toEqual(['Face:North']);
+    hold(PADI.Up);
+    frame(1005);
+    expect(dirs(), 'the pad press of the held direction sends nothing').toEqual(['Face:North']);
+    fire('keyup', 'KeyW', 1020);
+    ackAllNorth(1050, 6, 'North');
+    frame(1160);
+    expect(dirs(), 'the pad still holds North: the walk continues').toEqual([
+      'Face:North',
+      'North',
+    ]);
+    ackAllNorth(1200, 6, 'North');
+    frame(1210);
+    expect(dirs()).toEqual(['Face:North', 'North', 'North']);
+    ackAllNorth(1250, 6, 'North');
+    lift(PADI.Up);
+    frame(1260);
+    frame(1400);
+    frame(1600);
+    expect(dirs(), 'the pad was the last holder: the walk ended').toEqual([
+      'Face:North',
+      'North',
+      'North',
+    ]);
+  });
+
+  it('D-pad Up held, then W held, then the pad released: W keeps the walk going and its keyup ends it [gp-2.1]', async () => {
+    // WRONG IMPL KILLED: the pad release ending a direction a key still holds.
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    hold(PADI.Up);
+    frame(1000);
+    expect(dirs(), 'precondition: the pad sent its Face').toEqual(['Face:North']);
+    fire('keydown', 'KeyW', 1005);
+    expect(dirs(), 'W of the held direction sends nothing').toEqual(['Face:North']);
+    lift(PADI.Up);
+    frame(1020);
+    ackAllNorth(1050, 6, 'North');
+    frame(1160);
+    expect(dirs(), 'W still holds North: the walk continues').toEqual(['Face:North', 'North']);
+    ackAllNorth(1200, 6, 'North');
+    frame(1210);
+    expect(dirs()).toEqual(['Face:North', 'North', 'North']);
+    ackAllNorth(1250, 6, 'North');
+    fire('keyup', 'KeyW', 1260);
+    frame(1400);
+    frame(1600);
+    expect(dirs(), 'W was the last holder: the walk ended').toEqual([
+      'Face:North',
+      'North',
+      'North',
+    ]);
+  });
+
+  it('a pad press of the direction the character already faces sends one Face of it, which steps one tile; a tap sends nothing more [gp-2.1]', async () => {
+    // WRONG IMPL KILLED: a pad path that sends Step for the faced direction (the client never
+    // chooses between turn and step), and a tap that continues.
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    hold(PADI.Up);
+    frame(1010);
+    expect(H.sends, 'one press, one enqueueMove').toHaveLength(1);
+    expect(H.sends[0].input, 'a Face of North').toEqual({ tag: 'Face', value: { tag: 'North' } });
+    expect(H.sends[0].seq).toBe(1n);
+    frame(1020);
+    expect(predictedTile(), 'the Face of the faced direction steps to (2, 5)').toEqual({
+      x: 2,
+      y: 5,
+    });
+    lift(PADI.Up);
+    frame(1030);
+    frame(1300);
+    frame(1500);
+    expect(dirs(), 'a tap: its Face alone').toEqual(['Face:North']);
+  });
+
+  // --- menu and nav-screen auto-repeat ----------------------------------------------------------
+
+  it('with the main menu on top a pad Down held moves the cursor at once, again at +350 and then every 100 ms, and stops at its release [gp-2.2]', async () => {
+    // WRONG IMPL KILLED: pad edges that never reach the router (no move), a repeat the pad drives
+    // itself on every poll (it would move on every frame), and a release that never reaches the
+    // router (the cursor would run on).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    tapKey('Escape', 1010);
+    expect(stack(), 'precondition: Start opened the main menu').toEqual(PAD_MENU);
+    expect(menuCursor(), 'precondition: on Monsters').toBe('monsters');
+    hold(PADI.Down);
+    frame(1100);
+    expect(menuCursor(), 'the press moves the cursor at once').toBe('bag');
+    frame(1200);
+    frame(1449);
+    expect(menuCursor(), 'nothing repeats before +350').toBe('bag');
+    frame(1450);
+    expect(menuCursor(), 'the first repeat at +350').toBe('journal');
+    frame(1549);
+    expect(menuCursor()).toBe('journal');
+    frame(1550);
+    expect(menuCursor(), 'the next at +450').toBe('social');
+    frame(1650);
+    expect(menuCursor(), 'and +550').toBe('profile');
+    lift(PADI.Down);
+    frame(1700);
+    frame(1750);
+    frame(2000);
+    expect(menuCursor(), 'the release stops the repeat').toBe('profile');
+    expect(stack(), 'the cursor moves opened nothing').toEqual(PAD_MENU);
+    expect(H.sends, 'nothing walked').toHaveLength(0);
+  });
+
+  it('with a nav-capable quest log on top a pad Down held reaches its adapter as a fresh Down, repeats into it at +350 and +450, and stops at its release [gp-2.2]', async () => {
+    // WRONG IMPL KILLED: a pad D-pad that skips a nav-capable screen (it would walk or move the
+    // covered menu), and a release that never reaches the router.
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const seen: NavInput[] = [];
+    swapAdapter('questLogView', recordingAdapter(seen, true));
+    tapKey('KeyJ', 1010);
+    expect(stack(), 'precondition: J opened the quest log over the menu').toEqual(PAD_QUEST);
+    expect(seen, 'precondition: opening asked the adapter nothing').toEqual([]);
+    hold(PADI.Down);
+    frame(1100);
+    expect(seen, 'the press reaches the quest log as a fresh Down').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+    frame(1449);
+    expect(seen, 'nothing before +350').toHaveLength(1);
+    frame(1450);
+    expect(seen, 'the first repeat at +350').toEqual([
+      { button: 'Down', repeat: false },
+      { button: 'Down', repeat: true },
+    ]);
+    frame(1549);
+    expect(seen).toHaveLength(2);
+    frame(1550);
+    expect(seen, 'the next at +450').toHaveLength(3);
+    expect(seen.at(-1)).toEqual({ button: 'Down', repeat: true });
+    lift(PADI.Down);
+    frame(1600);
+    frame(1700);
+    frame(2000);
+    expect(seen, 'the release stops the repeat').toHaveLength(3);
+    expect(menuCursor(), 'the covered menu never moved').toBe('journal');
+    expect(H.sends, 'nothing walked').toHaveLength(0);
+  });
+
+  it('a held pad Down on a nav screen stops repeating when one poll releases it and presses A, even though routing that A throws; the throw still surfaces [gp-2.2]', async () => {
+    // WRONG IMPL KILLED: one try around the whole poll (the throwing A drops the poll's later Down
+    // release, so the repeat runs on with nothing held), and a press path that swallows the error.
+    // Within one poll the edges come index-ascending, so A (0) routes before the Down (13) release.
+    await bootReady();
+    usePad();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { errorRing } = await import('./shell/feedback');
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const seen: NavInput[] = [];
+    const recording = recordingAdapter(seen, true) as {
+      onButton: (vm: unknown, state: unknown, btn: NavInput) => unknown;
+    };
+    swapAdapter('questLogView', {
+      ...recording,
+      onButton: (vm: unknown, state: unknown, btn: NavInput) => {
+        const step = recording.onButton(vm, state, btn);
+        if (btn.button === 'A') throw new Error('gp2-adapter-boom');
+        return step;
+      },
+    });
+    tapKey('KeyJ', 1010);
+    expect(stack(), 'precondition: J opened the quest log over the menu').toEqual(PAD_QUEST);
+    hold(PADI.Down);
+    frame(1100);
+    frame(1450);
+    expect(seen, 'control: the held Down repeats at +350').toEqual([
+      { button: 'Down', repeat: false },
+      { button: 'Down', repeat: true },
+    ]);
+    hold(PADI.A);
+    lift(PADI.Down);
+    frame(1500);
+    expect(seen.at(-1), 'precondition: the A reached the throwing adapter').toEqual({
+      button: 'A',
+      repeat: false,
+    });
+    const asked = seen.length;
+    frame(1550);
+    frame(1650);
+    frame(1900);
+    expect(
+      seen.slice(asked),
+      'the Down released in the throwing poll was routed: it never repeats again',
+    ).toEqual([]);
+    expect(
+      errorRing.snapshot().filter((r) => r.message.includes('gp2-adapter-boom')),
+      'the routing error surfaced once',
+    ).toHaveLength(1);
+    lift(PADI.A);
+    frame(2000);
+  });
+
+  // --- blur and a hidden tab --------------------------------------------------------------------
+
+  it('a window blur while D-pad Up walks stops the walk and empties the held set; Up still held sends nothing, its later release ends no other holder, and a re-press sends one Face and walks [gp-2.3]', async () => {
+    // WRONG IMPL KILLED: a blur that leaves the pad source holding Up (its release then routes an up
+    // the cleared router does not count for it, ending the W walk below), and a latch that also eats
+    // the re-press.
+    await bootReady();
+    usePad();
+    const ns = await import('./shell/inputState');
+    const Y0 = 7;
+    server(1000, { x: 2, y: Y0, ack: 0, facing: 'North' });
+    hold(PADI.Up);
+    frame(1000);
+    expect(dirs(), 'precondition: the press sent its Face').toEqual(['Face:North']);
+    ackAllNorth(1050, Y0, 'North');
+    frame(1160);
+    expect(dirs(), 'precondition: the pad walks').toEqual(['Face:North', 'North']);
+
+    // Every ack below lands while no hold is committed (after the blur, the keyup, or within
+    // HOLD_COMMIT_MS of a press): an ack under a committed hold diverges from the predictor, and
+    // the batch's reconcile emitter re-issues the held Step, which is not this case's subject.
+    window.dispatchEvent(new Event('blur'));
+    expect(ns.held.active(), 'the blur emptied the held set').toBeUndefined();
+    ackAllNorth(1205, Y0, 'North');
+    for (const t of [1210, 1300, 1400, 1600]) frame(t);
+    expect(dirs(), 'Up is still held: no Face, no Step').toEqual(['Face:North', 'North']);
+
+    // A fresh W walk; the pad's Up released under it must not end it.
+    fire('keydown', 'KeyW', 1650);
+    expect(dirs(), 'precondition: W sent its Face').toEqual(['Face:North', 'North', 'Face:North']);
+    ackAllNorth(1660, Y0, 'North');
+    lift(PADI.Up);
+    frame(1700);
+    frame(1650 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'W walks on: the latched pad owed no release').toEqual([
+      'Face:North',
+      'North',
+      'Face:North',
+      'North',
+    ]);
+    fire('keyup', 'KeyW', 1830);
+    ackAllNorth(1835, Y0, 'North');
+    frame(1900);
+    frame(2100);
+    expect(dirs(), 'precondition: the keyup ended the W walk').toHaveLength(4);
+
+    hold(PADI.Up);
+    frame(2200);
+    expect(dirs(), 'the re-press sends exactly one new Face').toEqual([
+      'Face:North',
+      'North',
+      'Face:North',
+      'North',
+      'Face:North',
+    ]);
+    ackAllNorth(2210, Y0, 'North');
+    frame(2200 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'and the walk resumes').toHaveLength(6);
+    expect(dirs().at(-1)).toBe('North');
+    lift(PADI.Up);
+    frame(2500);
+  });
+
+  it('a visibilitychange to hidden while the stick walks Up stops the walk; the stick still pushed sends nothing, its return to centre ends no other holder, and a fresh push sends one Face [gp-2.3]', async () => {
+    // WRONG IMPL KILLED: a hidden tab that leaves the pad's stick owing its release (its return to
+    // centre would end the W walk below), and a stick that stays latched after centre.
+    await bootReady();
+    usePad();
+    const ns = await import('./shell/inputState');
+    const Y0 = 7;
+    server(1000, { x: 2, y: Y0, ack: 0, facing: 'North' });
+    pad.axes[1] = -0.9;
+    frame(1000);
+    expect(dirs(), 'precondition: the stick sent its Face').toEqual(['Face:North']);
+    ackAllNorth(1050, Y0, 'North');
+    frame(1160);
+    expect(dirs(), 'precondition: the stick walks').toEqual(['Face:North', 'North']);
+
+    // Every ack below lands while no hold is committed (after the hidden tab, the keyup, or within
+    // HOLD_COMMIT_MS of a press): an ack under a committed hold diverges from the predictor, and
+    // the batch's reconcile emitter re-issues the held Step, which is not this case's subject.
+    setVisibility('hidden');
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    setVisibility('visible');
+    expect(ns.held.active(), 'the hidden tab emptied the held set').toBeUndefined();
+    ackAllNorth(1205, Y0, 'North');
+    for (const t of [1210, 1300, 1400, 1600]) frame(t);
+    expect(dirs(), 'the stick is still pushed: nothing').toEqual(['Face:North', 'North']);
+
+    fire('keydown', 'KeyW', 1650);
+    ackAllNorth(1660, Y0, 'North');
+    pad.axes[1] = 0;
+    frame(1700);
+    frame(1650 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'W walks on: the latched stick owed no release').toEqual([
+      'Face:North',
+      'North',
+      'Face:North',
+      'North',
+    ]);
+    fire('keyup', 'KeyW', 1830);
+    ackAllNorth(1835, Y0, 'North');
+    frame(1900);
+    frame(2100);
+    expect(dirs()).toHaveLength(4);
+
+    pad.axes[1] = -0.9;
+    frame(2200);
+    expect(dirs(), 'a fresh push sends exactly one new Face').toHaveLength(5);
+    expect(dirs().at(-1)).toBe('Face:North');
+  });
+
+  it('a D-pad Up pressed after the last frame`s poll and before a blur, with no frame between, is latched: no Face on any later frame until it is released and pressed again [gp-2.3]', async () => {
+    // WRONG IMPL KILLED: a blur release that latches only what the last poll saw (the next poll
+    // reads the press as fresh and walks after the window lost focus).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    frame(1000);
+    expect(dirs(), 'precondition: nothing pressed, nothing sent').toEqual([]);
+    hold(PADI.Up); // after the frame-1000 poll
+    window.dispatchEvent(new Event('blur'));
+    for (const t of [1100, 1300, 1500]) frame(t);
+    expect(dirs(), 'the press made before the blur sends nothing').toEqual([]);
+    lift(PADI.Up);
+    frame(1600);
+    expect(dirs(), 'nor does its release').toEqual([]);
+    hold(PADI.Up);
+    frame(1700);
+    expect(dirs(), 'a fresh press sends one Face').toEqual(['Face:North']);
+  });
+
+  // --- accelerators -----------------------------------------------------------------------------
+
+  it('LT at the world opens Monsters on its Party tab with the main menu beneath, exactly as the V key does [gp-2.4]', async () => {
+    // WRONG IMPL KILLED: pad accelerators dropped, LT routed as a button, and an accelerator that
+    // opens its frame without the menu path (no menu beneath, or another tab).
+    await bootReady();
+    usePad();
+    seedWorld(1000);
+    const view = (): unknown => ({
+      stack: stack(),
+      tabs: monstersTabs(),
+      cursor: menuCursor(),
+      box: boxShown(),
+    });
+    tapKey('KeyV', 1010);
+    const byKey = view();
+    expect(byKey, 'precondition: V opens Monsters on Party over the menu').toEqual({
+      stack: PAD_BOX,
+      tabs: ['party'],
+      cursor: 'monsters',
+      box: true,
+    });
+    tapKey('Escape', 1020);
+    expect(stack(), 'precondition: Start closed both').toEqual(PAD_WORLD);
+    padTap(PADI.LT, 1100);
+    expect(view(), 'LT reaches the same frames, tab and menu cursor as V').toEqual(byKey);
+    expect(H.sends, 'and walks nothing').toHaveLength(0);
+  });
+
+  it('LT on the Monsters screen it opened acts as Start, as V does there: back to the bare world [gp-2.4]', async () => {
+    // WRONG IMPL KILLED: a pad accelerator that re-opens its path over its own screen (the stack
+    // would stay) instead of the router's accelerator decision.
+    await bootReady();
+    usePad();
+    seedWorld(1000);
+    tapKey('KeyV', 1010);
+    expect(stack(), 'precondition: V opened Monsters').toEqual(PAD_BOX);
+    tapKey('KeyV', 1020);
+    const byKey = stack();
+    expect(byKey, 'precondition: V on its own screen is Start').toEqual(PAD_WORLD);
+    padTap(PADI.LT, 1100);
+    expect(stack(), 'precondition: LT opened Monsters').toEqual(PAD_BOX);
+    padTap(PADI.LT, 1200);
+    expect(stack(), 'LT on its own screen is Start, as V is').toEqual(byKey);
+    expect(boxShown(), 'Monsters closed').toBe(false);
+  });
+
+  it('RT at the world opens the Bag over the main menu, exactly as the I key does [gp-2.4]', async () => {
+    // WRONG IMPL KILLED: only the first accelerator wired, and RT routed as a button.
+    await bootReady();
+    usePad();
+    seedWorld(1000);
+    const view = (): unknown => ({
+      stack: stack(),
+      bag: shownByTestId('raising-title'),
+      cursor: menuCursor(),
+    });
+    tapKey('KeyI', 1010);
+    const byKey = view();
+    expect(byKey, 'precondition: I opens the Bag over the menu').toMatchObject({
+      stack: PAD_BAG,
+      bag: true,
+    });
+    tapKey('Escape', 1020);
+    expect(stack(), 'precondition: Start closed both').toEqual(PAD_WORLD);
+    padTap(PADI.RT, 1100);
+    expect(view(), 'RT reaches the same frames as I').toEqual(byKey);
+  });
+
+  // --- the session gate -------------------------------------------------------------------------
+
+  it('while the session gate blocks, a pad D-pad, A, Start, LT and RT press act on nothing; once it lifts a fresh pad press acts [gp-2.5]', async () => {
+    // WRONG IMPL KILLED: a pad path that skips the session gate (the D-pad would walk, A talk, Start
+    // and the accelerators open frames under the terminal).
+    await bootReady();
+    usePad();
+    useRule(everyNpc);
+    seedWorld(1000);
+    frame(1005);
+    H.sessionState = 'expired';
+    padTap(PADI.Up, 1100);
+    expect(dirs(), 'gated: the D-pad sends nothing').toEqual([]);
+    padTap(PADI.A, 1200);
+    expect(talkCalls(), 'gated: A talks to nobody').toBe(0);
+    padTap(PADI.Start, 1300);
+    expect(stack(), 'gated: Start opens nothing').toEqual(PAD_WORLD);
+    padTap(PADI.LT, 1400);
+    expect(stack(), 'gated: LT opens nothing').toEqual(PAD_WORLD);
+    padTap(PADI.RT, 1500);
+    expect(stack(), 'gated: RT opens nothing').toEqual(PAD_WORLD);
+    expect(H.calls, 'no reducer was called').toEqual([]);
+
+    H.sessionState = 'hidden';
+    frame(1600);
+    padTap(PADI.Up, 1700);
+    expect(dirs(), 'control: once lifted a fresh D-pad press sends its Face').toEqual([
+      'Face:North',
+    ]);
+    padTap(PADI.LT, 1800);
+    expect(stack(), 'control: and LT opens Monsters').toEqual(PAD_BOX);
+  });
+
+  it('a D-pad Up held from before the session gate and still held when it lifts sends no Face or Step on any later frame until it is released and pressed again [gp-2.5]', async () => {
+    // WRONG IMPL KILLED: a gated frame that skips the pad and leaves the held set alone (the walk
+    // resumes the moment the gate lifts).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    hold(PADI.Up);
+    frame(1000);
+    ackAllNorth(1050, 7, 'North');
+    frame(1160);
+    expect(dirs(), 'precondition: the pad walks').toEqual(['Face:North', 'North']);
+
+    // The ack lands under the gate, where the batch's reconcile emitter sends nothing (an ack under
+    // a live committed hold would re-issue its Step). It leaves the server owing nothing, so a held
+    // set the gated frames failed to clear would walk on the first frame after the lift.
+    H.sessionState = 'expired';
+    ackAllNorth(1200, 7, 'North');
+    frame(1210);
+    frame(1300);
+    expect(dirs(), 'gated: nothing').toEqual(['Face:North', 'North']);
+    H.sessionState = 'hidden';
+    for (const t of [1400, 1600, 1800]) frame(t);
+    expect(dirs(), 'lifted, Up still held: nothing on any frame').toEqual(['Face:North', 'North']);
+    lift(PADI.Up);
+    frame(1900);
+    expect(dirs(), 'its release sends nothing').toEqual(['Face:North', 'North']);
+    hold(PADI.Up);
+    frame(2000);
+    expect(dirs(), 'pressed again: one Face').toEqual(['Face:North', 'North', 'Face:North']);
+  });
+
+  it('a D-pad Up first pressed during the second gated frame and held through the lift sends nothing, and its later release ends no W walk [gp-2.5]', async () => {
+    // WRONG IMPL KILLED: a frame that skips the poll while gated (the first poll after the lift
+    // reads the press as fresh and walks), and a release run once at the gate's onset instead of
+    // on every gated frame (the press seen by a later gated frame owes a release, which ends the W
+    // walk below).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    H.sessionState = 'expired';
+    frame(1000);
+    hold(PADI.Up);
+    frame(1100); // the second gated frame: its poll sees the press
+    frame(1200);
+    H.sessionState = 'hidden';
+    for (const t of [1300, 1500, 1700]) frame(t);
+    expect(dirs(), 'lifted, Up held since the gate: nothing').toEqual([]);
+
+    fire('keydown', 'KeyW', 1750);
+    expect(dirs(), 'precondition: W sends its Face').toEqual(['Face:North']);
+    ackAllNorth(1760, 7, 'North');
+    lift(PADI.Up);
+    frame(1800);
+    frame(1750 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'W walks on: the pad released under it owed nothing').toEqual([
+      'Face:North',
+      'North',
+    ]);
+    fire('keyup', 'KeyW', 1930);
+    hold(PADI.Up);
+    frame(2000);
+    expect(dirs(), 'a fresh pad press sends one Face').toEqual([
+      'Face:North',
+      'North',
+      'Face:North',
+    ]);
+  });
+
+  it('a W key held from before the session gate and still held when it lifts does not walk again until it is released and pressed again [gp-2.5]', async () => {
+    // WRONG IMPL KILLED: a gated frame that leaves the held set alone (the held key resumes its walk
+    // the moment the gate lifts). No pad is installed: the release belongs to every gated frame.
+    await bootReady();
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    fire('keydown', 'KeyW', 1000);
+    ackAllNorth(1050, 7, 'North');
+    frame(1160);
+    expect(dirs(), 'precondition: W walks').toEqual(['Face:North', 'North']);
+    // The ack lands under the gate, where the batch's reconcile emitter sends nothing (an ack under
+    // a live committed hold would re-issue its Step). It leaves the server owing nothing, so a held
+    // set the gated frames failed to clear would walk on the first frame after the lift.
+    H.sessionState = 'expired';
+    ackAllNorth(1200, 7, 'North');
+    frame(1210);
+    frame(1300);
+    H.sessionState = 'hidden';
+    for (const t of [1400, 1600, 1800]) frame(t);
+    expect(dirs(), 'lifted, W still held: no Step').toEqual(['Face:North', 'North']);
+    fire('keyup', 'KeyW', 1900);
+    fire('keydown', 'KeyW', 1910);
+    expect(dirs(), 'pressed again: one Face').toEqual(['Face:North', 'North', 'Face:North']);
+  });
+
+  // --- an absent, empty or throwing Gamepad API -------------------------------------------------
+
+  /** With whatever API the case installed: frames run and re-arm, W walks, the Start chip click
+   *  opens the menu; then a working pad installed in its place is read by the next poll. */
+  function playsOnKeysAndPointer(): void {
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    frame(1000);
+    frame(1010);
+    fire('keydown', 'KeyW', 1020);
+    expect(dirs(), 'W sends its Face').toEqual(['Face:North']);
+    ackAllNorth(1050, 7, 'North');
+    frame(1180);
+    expect(dirs(), 'and walks').toEqual(['Face:North', 'North']);
+    // Acked after the keyup: an ack under the live committed hold would make the batch's reconcile
+    // emitter re-issue the held Step.
+    fire('keyup', 'KeyW', 1195);
+    ackAllNorth(1196, 7, 'North');
+    frame(1300);
+    expect(dirs(), 'and stops at its keyup').toEqual(['Face:North', 'North']);
+
+    const startChip = document.querySelector('#hint-bar [data-button="Start"]');
+    if (startChip === null) throw new Error('the Start chip is not in the shell');
+    clock.t = 1400;
+    startChip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(stack(), 'a pointer press acts: the Start chip opened the menu').toEqual(PAD_MENU);
+    tapKey('Escape', 1500);
+    expect(stack(), 'precondition: Start closed it').toEqual(PAD_WORLD);
+    frame(1550);
+
+    usePad();
+    hold(PADI.Up);
+    frame(1600);
+    expect(dirs(), 'a pad that appears later is read: its press sends a Face').toEqual([
+      'Face:North',
+      'North',
+      'Face:North',
+    ]);
+    lift(PADI.Up);
+    frame(1610);
+  }
+
+  it('with navigator.getGamepads absent the frames run, the keyboard walks and a pointer press acts; a pad installed later is read [gp-2.6]', async () => {
+    // WRONG IMPL KILLED: a frame that throws on the missing API, and `navigator.getGamepads`
+    // captured once (the absent API would stick).
+    await bootReady();
+    expect('getGamepads' in navigator, 'precondition: no Gamepad API').toBe(false);
+    playsOnKeysAndPointer();
+  });
+
+  it.each([
+    { answer: 'an empty list', pads: (): unknown[] => [] },
+    { answer: 'four empty slots', pads: (): unknown[] => [null, null, null, null] },
+  ])('with navigator.getGamepads answering $answer the frames run, the keyboard walks and a pointer press acts; a pad answered later is read [gp-2.6]', async ({
+    pads,
+  }) => {
+    // WRONG IMPL KILLED: a null slot read as a pad (a TypeError every frame), and an API read once.
+    await bootReady();
+    setPadApi(pads);
+    playsOnKeysAndPointer();
+  });
+
+  it('with navigator.getGamepads throwing on every call the keyboard walks a Step per frame over five frames, and the error ring holds exactly one gamepad record [gp-2.6]', async () => {
+    // WRONG IMPL KILLED: a pad that never reads the API (no record), a fault reported once per frame
+    // (five records), one reported through the frame's own catch (a `frame: ` record) or never
+    // installed in the ring (console only), and a throw that stops the frame before the
+    // continuation (the keyboard walk would stall).
+    await bootReady();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { errorRing } = await import('./shell/feedback');
+    let reads = 0;
+    setPadApi(() => {
+      reads += 1;
+      throw new Error('gp2-pad-boom');
+    });
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    fire('keydown', 'KeyW', 1000);
+    ackAllNorth(1050, 7, 'North');
+    frame(1160);
+    for (let i = 1; i <= 4; i += 1) {
+      ackAllNorth(1150 + i * 50, 7, 'North');
+      frame(1160 + i * 50);
+    }
+    expect(dirs(), 'the keyboard took one Step on each of the five frames').toEqual([
+      'Face:North',
+      'North',
+      'North',
+      'North',
+      'North',
+      'North',
+    ]);
+    expect(reads, 'every frame read the pad').toBeGreaterThanOrEqual(5);
+    const faults = errorRing.snapshot().filter((r) => r.message.includes('gp2-pad-boom'));
+    expect(
+      faults.map((r) => r.source),
+      'exactly one record carries the fault',
+    ).toEqual(['uncaught']);
+    expect(faults[0]?.message.startsWith('gamepad: '), 'tagged as the gamepad`s').toBe(true);
+    fire('keyup', 'KeyW', 1500);
+  });
+
+  it('a throwing navigator.getGamepads, then a working pad whose press acts, then a throwing one again leaves exactly one gamepad record [gp-2.6]', async () => {
+    // WRONG IMPL KILLED: a fault latch reset by a successful read (a second record).
+    await bootReady();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { errorRing } = await import('./shell/feedback');
+    const records = (): number =>
+      errorRing.snapshot().filter((r) => r.message.includes('gp2-pad-boom')).length;
+    const boom = (): never => {
+      throw new Error('gp2-pad-boom');
+    };
+    setPadApi(boom);
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    for (const t of [1000, 1010, 1020]) frame(t);
+    expect(records(), 'the first fault is recorded once').toBe(1);
+    usePad();
+    hold(PADI.Up);
+    frame(1100);
+    expect(dirs(), 'recovered: a pad press acts').toEqual(['Face:North']);
+    lift(PADI.Up);
+    frame(1110);
+    setPadApi(boom);
+    for (const t of [1200, 1210, 1220]) frame(t);
+    expect(records(), 'the second run of faults adds no record').toBe(1);
+  });
+
+  // --- focus --------------------------------------------------------------------------------------
+
+  it('with focus on a button outside the game screen a pad Up, A, Start, LT and RT act on nothing; with focus on <body> they act [gp-2.7]', async () => {
+    // WRONG IMPL KILLED: pad presses without the keydown's focus guard (downs or accelerators that
+    // act while focus is outside), and <body> read as outside (the pad would be dead at rest).
+    await bootReady();
+    usePad();
+    useRule(everyNpc);
+    seedWorld(1000);
+    frame(1005);
+    const outside = document.createElement('button');
+    outside.textContent = 'outside';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: the button has focus').toBe(outside);
+    expect(gameScreen().contains(outside), 'precondition: it is outside the game screen').toBe(
+      false,
+    );
+    padTap(PADI.Up, 1100);
+    expect(dirs(), 'outside: the D-pad sends nothing').toEqual([]);
+    padTap(PADI.A, 1200);
+    expect(talkCalls(), 'outside: A talks to nobody').toBe(0);
+    padTap(PADI.Start, 1300);
+    expect(stack(), 'outside: Start opens nothing').toEqual(PAD_WORLD);
+    padTap(PADI.LT, 1400);
+    expect(stack(), 'outside: LT opens nothing').toEqual(PAD_WORLD);
+    padTap(PADI.RT, 1500);
+    expect(stack(), 'outside: RT opens nothing').toEqual(PAD_WORLD);
+    expect(H.calls, 'no reducer was called').toEqual([]);
+
+    outside.blur();
+    document.body.focus();
+    expect([document.body, null], 'precondition: focus is at rest').toContain(
+      document.activeElement,
+    );
+    padTap(PADI.Up, 1600);
+    expect(dirs(), 'on <body>: the D-pad sends its Face').toEqual(['Face:North']);
+    padTap(PADI.A, 1700);
+    expect(talkCalls(), 'on <body>: A talks').toBe(1);
+    padTap(PADI.LT, 1800);
+    expect(stack(), 'on <body>: LT opens Monsters').toEqual(PAD_BOX);
+  });
+
+  it('a pad walk started inside the game screen stops when the pad releases with focus moved outside [gp-2.7]', async () => {
+    // WRONG IMPL KILLED: release edges dropped with the presses while focus is outside (the walk
+    // would never stop).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    hold(PADI.Up);
+    frame(1000);
+    ackAllNorth(1050, 7, 'North');
+    frame(1160);
+    expect(dirs(), 'precondition: the pad walks').toEqual(['Face:North', 'North']);
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus moved outside').toBe(outside);
+    lift(PADI.Up);
+    frame(1210);
+    // Acked after the release frame, so the server owes nothing from here: an Up still held (its
+    // release dropped) would be re-issued by this batch's reconcile emitter and continued by the
+    // frames below; a released one sends nothing.
+    ackAllNorth(1220, 7, 'North');
+    frame(1400);
+    frame(1600);
+    expect(dirs(), 'the release routed: the walk stopped').toEqual(['Face:North', 'North']);
+  });
+
+  it.each([
+    {
+      holder: 'D-pad Up',
+      push: (p: FakePad): void => {
+        p.buttons[12].pressed = true;
+      },
+      letGo: (p: FakePad): void => {
+        p.buttons[12].pressed = false;
+      },
+    },
+    {
+      holder: 'stick pushed Up',
+      push: (p: FakePad): void => {
+        p.axes[1] = -0.9;
+      },
+      letGo: (p: FakePad): void => {
+        p.axes[1] = 0;
+      },
+    },
+  ])('a $holder pressed while focus is outside the game screen owes no release: let go after focus returns, it does not end a W walk [gp-2.7]', async ({
+    push,
+    letGo,
+  }) => {
+    // WRONG IMPL KILLED: a dropped press that leaves the pad source owing its release (the release
+    // then routes an up the router never counted for the pad, taking W's hold to zero, and W's
+    // continuation Step never comes).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus is outside').toBe(outside);
+    push(pad);
+    frame(1000);
+    expect(dirs(), 'outside: the press sends nothing').toEqual([]);
+
+    outside.blur();
+    document.body.focus();
+    expect([document.body, null], 'precondition: focus is back at rest').toContain(
+      document.activeElement,
+    );
+    fire('keydown', 'KeyW', 1050);
+    expect(dirs(), 'precondition: W sends its Face').toEqual(['Face:North']);
+    // Acked within HOLD_COMMIT_MS of the press: no committed hold is live, so the batch's reconcile
+    // emitter sends nothing.
+    ackAllNorth(1060, 7, 'North');
+    letGo(pad);
+    frame(1100);
+    expect(dirs(), 'the release of the ignored press sends nothing').toEqual(['Face:North']);
+    frame(1050 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'W is still held: its continuation Step comes').toEqual(['Face:North', 'North']);
+    fire('keyup', 'KeyW', 1220);
+    ackAllNorth(1225, 7, 'North');
+    frame(1300);
+    frame(1500);
+    expect(dirs(), 'the keyup ends the walk').toEqual(['Face:North', 'North']);
+  });
+
+  it('with a text field focused inside the game screen a pad Up and A are still button presses [gp-2.7]', async () => {
+    // WRONG IMPL KILLED: the keydown's typing and ownership branch applied to the pad (a pad
+    // cannot type, so a focused field would leave it dead).
+    await bootReady();
+    usePad();
+    useRule(everyNpc);
+    seedWorld(1000);
+    frame(1005);
+    const field = document.createElement('input');
+    field.type = 'text';
+    gameScreen().appendChild(field);
+    field.focus();
+    expect(document.activeElement, 'precondition: the field has focus').toBe(field);
+    padTap(PADI.Up, 1100);
+    expect(dirs(), 'the D-pad sends its Face').toEqual(['Face:North']);
+    padTap(PADI.A, 1200);
+    expect(talkCalls(), 'A talks').toBe(1);
+    expect(
+      document.activeElement,
+      'the visible field keeps focus: the heal moves only focus stranded in a hidden subtree',
+    ).toBe(field);
+  });
+
+  it('a pad press with focus stranded in a hidden subtree moves focus to the world canvas, and a pad press or accelerator clears the pointer`s hover mark [gp-2.7]', async () => {
+    // WRONG IMPL KILLED: a pad path without the keydown's focus heal (focus stays on a node the
+    // player cannot see), and one that leaves the hover mark up (the pointer's highlight and the pad
+    // cursor would disagree), for a D-pad press and for an accelerator.
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const hidden = document.createElement('div');
+    hidden.style.display = 'none';
+    const stale = document.createElement('button');
+    hidden.appendChild(stale);
+    gameScreen().appendChild(hidden);
+    stale.focus();
+    expect(document.activeElement, 'precondition: focus is stranded in the hidden subtree').toBe(
+      stale,
+    );
+    const canvas = worldCanvas();
+    expect(canvas, 'precondition: the renderer stub mounted a canvas').not.toBeNull();
+    gameScreen().classList.add('mr-pointer-hover');
+    frame(1010);
+    frame(1020);
+    expect(document.activeElement, 'control: frames without a press heal nothing').toBe(stale);
+    expect(hoverMarked(), 'control: frames without a press keep the hover mark').toBe(true);
+
+    hold(PADI.Up);
+    frame(1100);
+    expect(document.activeElement, 'the pad press healed focus to the world canvas').toBe(canvas);
+    expect(hoverMarked(), 'and cleared the hover mark').toBe(false);
+    expect(dirs(), 'and routed').toEqual(['Face:North']);
+    lift(PADI.Up);
+    frame(1110);
+
+    gameScreen().classList.add('mr-pointer-hover');
+    frame(1120);
+    expect(hoverMarked(), 'control: the mark is back').toBe(true);
+    hold(PADI.LT);
+    frame(1200);
+    expect(hoverMarked(), 'an accelerator press clears it too').toBe(false);
+    expect(stack(), 'and LT opened Monsters').toEqual(PAD_BOX);
+  });
+
+  it('while Options > Controls waits for a key a pad B, Start and LT change nothing (the capture waits, the stack stays, no toast or hint); once a key ends the capture a pad B backs out [gp-2.7]', async () => {
+    // WRONG IMPL KILLED: pad presses routed while a slot capture waits (B would end the capture,
+    // Start or LT close Controls).
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const capturing = (): boolean => {
+      const el = document.getElementById('controls-capture');
+      if (el === null) return false;
+      for (let n: Element | null = el; n instanceof HTMLElement; n = n.parentElement) {
+        if (n.style.display === 'none' || n.hidden) return false;
+      }
+      return true;
+    };
+    const controlsCursor = (): string | null =>
+      document
+        .querySelector('#controls-rows [aria-selected="true"]')
+        ?.getAttribute('data-nav-key') ?? null;
+    const controlsHint = (): string =>
+      document.getElementById('controls-feedback')?.textContent ?? '';
+    let kt = 1100;
+    const key = (code: string): void => {
+      tapKey(code, kt);
+      kt += 10;
+    };
+    key('Escape');
+    expect(stack(), 'precondition: Start opened the menu').toEqual(PAD_MENU);
+    for (let i = 0; i < 8 && menuCursor() !== 'controls'; i += 1) key('ArrowDown');
+    expect(menuCursor(), 'precondition: the cursor is on Controls').toBe('controls');
+    key('Enter');
+    expect(stack(), 'precondition: Controls opened above the menu').toEqual(PAD_CONTROLS);
+    if (controlsCursor() === 'reset') key('ArrowUp');
+    expect(controlsCursor() ?? '', 'precondition: the Controls cursor is on a slot').toMatch(
+      /_[01]$/,
+    );
+    key('Enter');
+    expect(capturing(), 'precondition: A on the slot started a capture').toBe(true);
+    const toastBefore = uif4Toast();
+    const hintBefore = controlsHint();
+
+    let t = 2000;
+    for (const [label, i] of [
+      ['B', PADI.B],
+      ['Start', PADI.Start],
+      ['LT', PADI.LT],
+    ] as const) {
+      padTap(i, t);
+      t += 100;
+      expect(capturing(), `${label}: the capture still waits`).toBe(true);
+      expect(stack(), `${label}: the stack is unchanged`).toEqual(PAD_CONTROLS);
+      expect(uif4Toast(), `${label}: no toast`).toBe(toastBefore);
+      expect(controlsHint(), `${label}: no hint`).toBe(hintBefore);
+    }
+
+    kt = t;
+    key('KeyK');
+    expect(capturing(), 'precondition: K ended the capture').toBe(false);
+    padTap(PADI.B, kt + 100);
+    expect(stack(), 'control: with no capture waiting a pad B backs out of Controls').toEqual(
+      PAD_MENU,
+    );
+  });
+});

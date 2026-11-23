@@ -1,13 +1,16 @@
 // shell/inputState — the live input devices: the binding table, the keyboard source built over
-// it, the router, the held movement directions and the key codes whose OS repeats are cancelled.
-// Every other module reads them through its import, which is live. Only this module assigns
-// `bindings` and `keyboard` (`applyBindings`) and only its functions change `navHeldCodes`;
-// `held` and `inputRouter` are used through their own methods. Module scope reads the saved
-// table from storage and constructs the devices: it registers no listener and writes nothing.
+// it, the pad source, the router, the held movement directions and the key codes whose OS repeats
+// are cancelled. Every other module reads them through its import, which is live. Only this module
+// assigns `bindings` and `keyboard` (`applyBindings`) and only its functions change `navHeldCodes`;
+// `held`, `pad` and `inputRouter` are used through their own methods. Module scope reads the saved
+// table from storage and constructs the devices: it registers no listener, writes nothing and
+// reads no Gamepad API (the pad source reads it at each poll).
 
 import { browserStorage, loadBindings, saveBindings } from '../input/bindingStore';
 import type { Bindings } from '../input/bindings';
+import { GamepadSource } from '../input/gamepadSource';
 import { KeyboardSource } from '../input/keyboardSource';
+import { PAD_DEFAULT_BINDINGS } from '../input/padBindings';
 import { InputRouter } from '../input/router';
 import { HeldDirections } from '../prediction/heldKeys';
 
@@ -27,6 +30,23 @@ export const held = new HeldDirections();
 export let keyboard = new KeyboardSource(bindings);
 export const inputRouter = new InputRouter();
 
+// Where a fault of the Gamepad API goes: the console until `main.ts` installs the error ring's
+// reporter (`installPadFaultSink`, at its module scope). This module imports no shell module.
+let padFault: (err: unknown) => void = (err) => console.error('[pad]', err);
+
+/** The Gamepad API's first fault (the pad source reports no other) goes to `sink`. */
+export function installPadFaultSink(sink: (err: unknown) => void): void {
+  padFault = sink;
+}
+
+// The pad source: every connected pad through the default pad table into the same
+// `{button, down}` edges, polled once per animation frame by `main.ts`. `navigator.getGamepads` is
+// looked up at each poll: a browser without it reads as no pads, and one that throws reads as no
+// pads and reaches the fault sink once.
+export const pad = new GamepadSource(() => navigator.getGamepads?.() ?? [], PAD_DEFAULT_BINDINGS, {
+  onError: (err) => padFault(err),
+});
+
 // Codes whose press the menu or a nav-capable screen consumed: their OS key-repeats are cancelled
 // until the keyup, so a held Enter that opened a child cannot activate the child's focused button.
 const navHeld = new Set<string>();
@@ -42,9 +62,13 @@ export function releaseNavHeld(code: string): void {
   navHeld.delete(code);
 }
 
-// Drop every held button so nothing stays "held" while the page cannot see the keyup.
+// Drop every held button so nothing stays "held" while the page cannot see the keyup. The pad is
+// read once first, so a button pressed since the last frame's poll is latched too: every pad button
+// and stick direction held now acts again only once released and pressed again.
 export const releaseAllInput = (): void => {
   keyboard.releaseAll();
+  pad.poll();
+  pad.releaseAll();
   inputRouter.releaseAll();
   navHeld.clear();
   held.clear();

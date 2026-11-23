@@ -1682,7 +1682,9 @@ registers a listener on `store`, `window` or `document`, installs the DEV hooks,
 at import or constructs a boot-built view; its registrations keep the order the plan lists, and
 the locale block stays in it. A shell module imports only the shell modules below it. A lower
 module reaches upward through a typed port `main.ts` installs (the host of the world hint;
-what the battle views need from `dispatch` and the stack), which throws until installed, or
+what the battle views need from `dispatch` and the stack; the Gamepad API's fault sink), which
+throws until installed, or logs to the console until installed when its caller swallows a throw
+(the pad's fault sink: a failing reporter must not stop the poll that releases held buttons), or
 through the parameter object of a frame-loop pump.
 
 **Why.** Every `client/src/main.*.test.ts` suite resets the module registry and imports

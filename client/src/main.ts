@@ -124,9 +124,11 @@ import {
   bindings,
   held,
   inputRouter,
+  installPadFaultSink,
   keyboard,
   navHeldCodes,
   noteNavHeld,
+  pad,
   releaseAllInput,
   releaseNavHeld,
 } from './shell/inputState';
@@ -463,6 +465,12 @@ applyTextStep(document.documentElement, textStep);
 // The hint host `shell/feedback.ts` reaches up through, installed before the first listener
 // registers: whether the main menu is the top frame, and a repaint of it.
 installHintHost({ menuOnTop: () => menuPlace() === 'top', repaintMenu: renderMenu });
+// A fault of the Gamepad API (the pad source reports its first one only) goes to the error ring,
+// tagged so the F9 bundle tells it from a frame or handler throw.
+installPadFaultSink((err) => {
+  console.error('[pad] Gamepad API error', err);
+  pushError('uncaught', `gamepad: ${normalizeError('uncaught', err).message}`);
+});
 // The injected rule IS the client-wasm export (same compiled code as the server).
 const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
@@ -2826,17 +2834,37 @@ let pointerSource: PointerSource | null = null;
 // because the pointer source's seek reads the row cursor from the DOM right after each press.
 let paintWorldPrompt: (() => void) | null = null;
 
-// One pointer press: the button's down and up edges through the router, the stack synced on both
-// sides as a keydown does. Like every input path it is dead while the session terminal shows.
-const pointerPress = (button: VButton): void => {
-  if (sessionGateBlocks()) return;
+// The press path of the sources that only press (the pointer, the pad): their edges through the
+// router in order, the stack synced on both sides as a keydown does. Like a key press it is dead
+// while the session terminal shows (false then). An edge whose routing throws does not stop the
+// later ones (a release among them would otherwise leave its direction held); the first error is
+// rethrown once every edge has routed.
+const pressEdges = (edges: readonly ButtonEdge[]): boolean => {
+  if (sessionGateBlocks()) return false;
   syncStack();
   try {
-    routeEdge({ button, down: true });
-    routeEdge({ button, down: false });
+    let failure: { readonly err: unknown } | undefined;
+    for (const edge of edges) {
+      try {
+        routeEdge(edge);
+      } catch (err) {
+        failure ??= { err };
+      }
+    }
+    if (failure !== undefined) throw failure.err;
   } finally {
     syncStack();
   }
+  return true;
+};
+
+// One pointer press: the button's down and up edges.
+const pointerPress = (button: VButton): void => {
+  const routed = pressEdges([
+    { button, down: true },
+    { button, down: false },
+  ]);
+  if (!routed) return;
   // After the press, not in the finally: a paint error must never mask the router's own.
   paintWorldPrompt?.();
 };
@@ -3072,6 +3100,42 @@ window.addEventListener('blur', releaseAllInput);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') releaseAllInput();
 });
+
+// The pad, read once per animation frame. While the session terminal shows, everything held is let
+// go (`releaseAllInput` reads the pad first), so a button held through the terminal acts only once
+// released and pressed again. A pad press is ignored, as a key press is, while focus is outside the
+// game screen, and also while Controls waits for a key: everything held is let go then too, so the
+// ignored press owes no release that could end another source's hold. A release alone still routes,
+// as a keyup does. Inside the game screen a pad press is a button press even with a text field
+// focused (a pad cannot type). A press clears the pointer's hover mark and heals stale focus first,
+// as a key press does; the edges route before the accelerators.
+const pollPad = (): void => {
+  if (sessionGateBlocks()) {
+    releaseAllInput();
+    return;
+  }
+  const { edges, accels } = pad.poll();
+  const pressed = accels.length > 0 || edges.some((edge) => edge.down);
+  if (!pressed) {
+    if (edges.length > 0) pressEdges(edges);
+    return;
+  }
+  if (outsideGameScreen(document.activeElement, gameScreenEl()) || controlsCapture() !== null) {
+    releaseAllInput();
+    return;
+  }
+  pointerSource?.keyPressed();
+  if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
+  if (edges.length > 0) pressEdges(edges);
+  if (accels.length === 0) return;
+  // The edges' press path, else the frame, has just synced the stack; the sync after is a
+  // keydown's, so whatever an accelerator closed is off the stack at once.
+  try {
+    for (const accel of accels) runAccel(accel);
+  } finally {
+    syncStack();
+  }
+};
 
 // --- box/party view: refresh on batch when visible ---------------
 function refreshBox(): void {
@@ -5137,6 +5201,9 @@ async function main(): Promise<void> {
   const frame = (): void => {
     try {
       syncStack(); // a server overlay shown, or a player view closed, outside a keydown or batch
+      // The pad, on the stack as synced just now: ahead of the session gate's early return (while
+      // the gate blocks, it lets go of everything held) and of the menu auto-repeat below.
+      pollPad();
       // A toast expires on the frame clock even while the session terminal owns the screen.
       tickToast(performance.now());
       // the session terminal also outranks the render/dispatch loop —
