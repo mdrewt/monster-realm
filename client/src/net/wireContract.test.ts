@@ -393,6 +393,11 @@ const BREAKING: readonly Case[] = [
     paths: [ENQUEUE_MOVE],
   },
   {
+    edit: 'a renamed argument',
+    change: enqueueMoveTaking(() => ({ input: moveInputObject(), seq: t.u32() })),
+    paths: [ENQUEUE_MOVE],
+  },
+  {
     edit: 'a variant removed from an argument-only enum',
     change: emoteTaking(() => t.enum('Emote', { Wave: t.unit() })),
     paths: [EMOTE],
@@ -420,6 +425,11 @@ const BREAKING: readonly Case[] = [
   {
     edit: 'a retyped field in an argument-only object',
     change: moveInputAs(() => t.object('MoveInput', { dx: t.i16(), dy: t.i32() })),
+    paths: [MOVE_INPUT],
+  },
+  {
+    edit: 'a renamed field in an argument-only object',
+    change: moveInputAs(() => t.object('MoveInput', { dx: t.i32(), dz: t.i32() })),
     paths: [MOVE_INPUT],
   },
   {
@@ -751,6 +761,13 @@ describe('an entry read from the generated bindings', () => {
     );
     expect(() => readWireEntry(bindingsOf(baseWorld(), declared))).toThrow();
   });
+
+  it('refuses bindings that hold an event table [lpw-25.1]', () => {
+    const withChatEvent = settingTable('chatEvent', () =>
+      table({ name: 'chat_event', event: true }, { id: t.u64(), text: t.string() }),
+    );
+    expect(() => entryOf(withChatEvent(baseWorld()))).toThrow();
+  });
 });
 
 describe('the entry for PROTOCOL_VERSION', () => {
@@ -931,9 +948,15 @@ describe('recording and storing entries', () => {
 
 describe('the committed wire contract', () => {
   const contractUrl = new URL('./wireContract.json', import.meta.url);
-  const live = { findings: [] as readonly WireFinding[], recorded: false, protocolVersion: 0 };
+  const live = {
+    findings: [] as readonly WireFinding[],
+    recorded: false,
+    protocolVersion: 0,
+    text: null as string | null,
+  };
 
-  // The one place the committed file is read, and written in update mode.
+  // The one place the committed file is read, and written in update mode. `live.text` is the
+  // committed text as read, before any write.
   beforeAll(() => {
     const protocolVersion = clientWasm.protocol_version();
     const minClientProtocol = clientWasm.min_client_protocol();
@@ -942,9 +965,8 @@ describe('the committed wire contract', () => {
       reducers: liveReducers,
       procedures: liveProcedures,
     } as unknown as BindingsExports);
-    let file: WireContractFile = existsSync(contractUrl)
-      ? parseWireContract(readFileSync(contractUrl, 'utf8'))
-      : {};
+    live.text = existsSync(contractUrl) ? readFileSync(contractUrl, 'utf8') : null;
+    let file: WireContractFile = live.text === null ? {} : parseWireContract(live.text);
     if (process.env.WIRE_CONTRACT_UPDATE === '1') {
       const next = withCurrentEntry(file, current, protocolVersion);
       if (next.added) {
@@ -960,7 +982,10 @@ describe('the committed wire contract', () => {
   const recordedMessage = () =>
     `the entry for PROTOCOL_VERSION ${live.protocolVersion} was written to client/src/net/wireContract.json: run the test again without WIRE_CONTRACT_UPDATE`;
 
+  const ranMessage = 'the live check never read PROTOCOL_VERSION from the wasm pkg';
+
   it('the committed entry for PROTOCOL_VERSION matches the generated bindings [lpw-25.1]', () => {
+    expect(live.protocolVersion, ranMessage).toBeGreaterThan(0);
     expect(live.recorded, recordedMessage()).toBe(false);
     const findings = live.findings.filter(
       (finding) =>
@@ -972,10 +997,29 @@ describe('the committed wire contract', () => {
   });
 
   it('the generated bindings keep every entry from MIN_CLIENT_PROTOCOL to PROTOCOL_VERSION [lpw-25.2]', () => {
+    expect(live.protocolVersion, ranMessage).toBeGreaterThan(0);
     expect(live.recorded, recordedMessage()).toBe(false);
+    // Every finding the test above does not take, a kind added to the check included, fails here.
     const findings = live.findings.filter(
-      (finding) => finding.kind === 'entry-broken' || finding.kind === 'entry-missing',
+      (finding) =>
+        finding.kind !== 'no-current-entry' &&
+        finding.kind !== 'current-entry-differs' &&
+        finding.kind !== 'entry-above-protocol',
     );
     expect(findings, explain(findings, live.protocolVersion)).toEqual([]);
+  });
+
+  it('the committed file is written exactly as the update mode writes it [lpw-25.1]', () => {
+    expect(live.protocolVersion, ranMessage).toBeGreaterThan(0);
+    expect(live.recorded, recordedMessage()).toBe(false);
+    expect(
+      live.text,
+      'client/src/net/wireContract.json is missing: record it with WIRE_CONTRACT_UPDATE=1',
+    ).not.toBeNull();
+    const text = live.text ?? '';
+    expect(
+      serializeWireContract(parseWireContract(text)),
+      'wireContract.json differs from the text update mode writes (a duplicate key or a hand edit)',
+    ).toBe(text);
   });
 });
