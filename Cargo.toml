@@ -42,10 +42,14 @@ console_error_panic_hook = "0.1"
 # our own host ABI, over the two vendor crates patched where they refuse a native host").
 # The pin is exact because cargo uses a [patch] entry only when its version matches it.
 #
+# The crate's `unstable` feature is on, and the module uses nothing it gates. What it adds
+# to the built module, and what checks the generated definition instead: docs/DECISIONS.md
+# ("The crate's `unstable` feature is on; the generated definition is checked instead").
+#
 # Module code uses 2.x syntax (`#[table(accessor = x)]`, `ctx.sender()`,
 # `ctx.database_identity()`); ~21 Rust source-scanning teeth tests and several evals/
 # scanners encode that attribute syntax literally, so a syntax change moves them too.
-spacetimedb = "=2.12.0"
+spacetimedb = { version = "=2.16.1", features = ["unstable"] }
 # Content: serde derive + RON parser (pure; safe under the determinism guard).
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"

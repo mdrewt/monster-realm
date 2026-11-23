@@ -5,10 +5,13 @@ description: Writing or modifying SpacetimeDB reducers, table definitions, schem
 
 # SpacetimeDB reducer authoring (monster-realm v2)
 
-> **Versions.** `spacetime` CLI/host 2.12.0 · Rust `spacetimedb` crate 2.12.0 (this
+> **Versions.** `spacetime` CLI/host 2.16.1 · Rust `spacetimedb` crate 2.16.1 (this
 > module; it and `spacetimedb-bindings-sys` build from the patched copies under `vendor/`,
-> see `vendor/README.md`) · npm `spacetimedb` 2.12.0 (client, in lockstep since 2026-10-15). The crate version
+> see `vendor/README.md`) · npm `spacetimedb` 2.16.1 (client, in lockstep since 2026-10-15). The crate version
 > is the product version; keep it equal to the CLI (`docs/runbooks/spacetimedb-upgrade.md`).
+> The crate's `unstable` feature is on and the module uses nothing it gates: `just
+> module-definition` and `just release-module` refuse a module that declares an HTTP handler,
+> an HTTP route or a row filter (`docs/spacetimedb-2.16.md` lists what the feature gates).
 >
 > **Write 2.x syntax.** Old commits and examples use 1.x spellings that do not compile:
 >
@@ -22,10 +25,10 @@ description: Writing or modifying SpacetimeDB reducers, table definitions, schem
 > overriding the SQL table name, which defaults to the accessor.
 >
 > **Docs:** `gitmcp-spacetimedb` serves the repository's master branch, which is ahead
-> of 2.12.0. Confirm anything load-bearing against https://docs.rs/spacetimedb/2.12.0 or
+> of 2.16.1. Confirm anything load-bearing against https://docs.rs/spacetimedb/2.16.1 or
 > the vendored crate source (`vendor/spacetimedb/`). The harness research note on platform behaviour is
 > `docs/research/spacetimedb.md` in the harness repository root (two levels above
-> `projects/monster-realm/`). `spacetime mcp` (CLI 2.12.0, unstable) talks to a running
+> `projects/monster-realm/`). `spacetime mcp` (CLI 2.16.1, unstable) talks to a running
 > database, not the docs.
 
 ## Reducer contract
@@ -62,12 +65,14 @@ description: Writing or modifying SpacetimeDB reducers, table definitions, schem
 - **Individuality:** the domain types are `IVs`, `EVs`, `Nature`. Hidden genes live in
   the private `monster` table; the owner reads the `monster_pub` projection through
   `my_monster_pub`.
-- **Row-level security does not work.** `#[client_visibility_filter]` is behind the
-  `unstable` feature, and the crate says "RLS filters are currently unimplemented, and
-  are not enforced" (`vendor/spacetimedb/src/lib.rs:108`, crate 2.12.0). Per-player data goes in a
-  **private table** read through an **owner-scoped `#[spacetimedb::view]`** whose body
-  filters on `ctx.sender()` and takes no identity argument (`my_wallet`, `my_inventory`,
-  `my_battle`, ... in `schema.rs`).
+- **No row filters.** `#[client_visibility_filter]` is behind the `unstable` feature, and the
+  generated-definition check refuses a module that declares one. The host does enforce a filter
+  (measured on 2.16.1: a filter on `species_row` left a stranger 1 of 20 rows over `sql` and in a
+  subscription, `docs/spacetimedb-2.16.md`), although the crate's own comment says "RLS filters
+  are currently unimplemented, and are not enforced" (`vendor/spacetimedb/src/lib.rs:108`, crate
+  2.16.1). Per-player data goes in a **private table** read through an **owner-scoped
+  `#[spacetimedb::view]`** whose body filters on `ctx.sender()` and takes no identity argument
+  (`my_wallet`, `my_inventory`, `my_battle`, ... in `schema.rs`).
 - **Integer tiles:** `apply_move` is total (an illegal move is a no-op bump).
 
 ## Schema and type changes

@@ -10,13 +10,14 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { FORBIDDEN_REDUCERS } from './scripts/verify-release-reducers.mjs';
@@ -131,7 +132,10 @@ test('a failed publish is not followed by a sync_content call', () => {
 // `just release-module <official|world>` and `just module-profile <wasm>`, run for real with a
 // recording stand-in for `cargo` first on PATH. The stand-in writes the wasm fixture the test chose
 // where cargo would put the artefact, and records its arguments and the four compiler-flag
-// variables it was handed.
+// variables it receives. Beside it on PATH, a `spacetime` stand-in answers `--version` with a
+// `spacetime Path:` line naming a CLI file in a directory off PATH, where a recording stand-in for
+// `spacetimedb-standalone` prints the module definition the test chose; a second recording
+// `spacetimedb-standalone` on PATH prints the same definition.
 // ---------------------------------------------------------------------------
 
 const RUSTFLAGS_VARS = [
@@ -173,6 +177,80 @@ const CARGO_STAND_IN = [
   'exit 97',
   '',
 ].join('\n');
+
+// `spacetime --version` as the CLI prints it, its first line naming the CLI's own file
+// (`$MR_FAKE_SPACETIME_CLI`, which need not exist). `MR_FAKE_SPACETIME_VERSION=no-path` drops that
+// line; any value but `ok` or `no-path` fails the command. Every other subcommand exits 97.
+const SPACETIME_VERSION_STAND_IN = [
+  '#!/bin/sh',
+  'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then',
+  '  case "$MR_FAKE_SPACETIME_VERSION" in',
+  '    ok) printf \'spacetime Path: %s\\n\' "$MR_FAKE_SPACETIME_CLI" ;;',
+  '    no-path) ;;',
+  "    *) echo 'error: the spacetime CLI could not start' >&2; exit 1 ;;",
+  '  esac',
+  "  echo 'Commit: 1a2b3c4'",
+  "  echo 'spacetimedb tool version 2.12.0; spacetimedb-lib version 2.12.0;'",
+  '  exit 0',
+  'fi',
+  'exit 97',
+  '',
+].join('\n');
+
+// The definition extractor beside the CLI's file: records its arguments (one invocation per line,
+// tab-separated), each release output that exists when it runs, and a copy of the file it is
+// handed; then prints `$MR_FAKE_DEF` and exits `$MR_FAKE_DEF_EXIT`.
+const EXTRACTOR_STAND_IN = [
+  '#!/bin/sh',
+  'for a in "$@"; do printf \'%s\\t\' "$a" >> "$MR_FAKE_DEF_LOG"; done',
+  'printf \'\\n\' >> "$MR_FAKE_DEF_LOG"',
+  'for f in "$MR_FAKE_RELEASE_DIR"/monster-realm-*; do',
+  '  if [ -e "$f" ]; then printf \'%s\\n\' "$f" >> "$MR_FAKE_DEF_OUTPUTS"; fi',
+  'done',
+  'if [ "$#" -eq 2 ] && [ -f "$2" ]; then cp "$2" "$MR_FAKE_DEF_READ"; fi',
+  'printf \'%s\' "$MR_FAKE_DEF"',
+  'exit "$MR_FAKE_DEF_EXIT"',
+  '',
+].join('\n');
+
+// An extractor of the same name first on PATH: it records that it ran and answers as the one
+// beside the CLI's file does.
+const PATH_EXTRACTOR_STAND_IN = [
+  '#!/bin/sh',
+  'for a in "$@"; do printf \'%s\\t\' "$a" >> "$MR_FAKE_PATH_DEF_LOG"; done',
+  'printf \'\\n\' >> "$MR_FAKE_PATH_DEF_LOG"',
+  'printf \'%s\' "$MR_FAKE_DEF"',
+  'exit "$MR_FAKE_DEF_EXIT"',
+  '',
+].join('\n');
+
+// --- module definitions as `spacetimedb-standalone extract-schema <wasm>` prints them: one JSON
+// object, each section an object whose one key is its kind.
+
+const reducerDef = (name) => ({
+  source_name: name,
+  params: { elements: [] },
+  visibility: { ClientCallable: [] },
+  ok_return_type: { Product: { elements: [] } },
+  err_return_type: { String: [] },
+});
+
+const DEF_SECTIONS = [
+  { Typespace: { types: [{ Product: { elements: [] } }] } },
+  { Types: [] },
+  { Tables: [] },
+  { Reducers: [reducerDef('join_game'), reducerDef('sync_content')] },
+  { Views: [] },
+  { Schedules: [] },
+  { LifeCycleReducers: [] },
+  { ExplicitNames: { entries: [] } },
+];
+
+const definitionOf = (...sections) => JSON.stringify({ V10: { sections } });
+
+// A clean definition carrying empty HTTP sections, which the check passes: a build may carry
+// them empty, and the 2.16.1 build carries none, with the crate's `unstable` feature on or off.
+const CLEAN_DEF = definitionOf(...DEF_SECTIONS, { HttpHandlers: [] }, { HttpRoutes: [] });
 
 // --- wasm fixtures: the 8-byte header, then custom sections (id 0, LEB128 size, LEB128 name
 // length, name, payload).
@@ -236,21 +314,46 @@ function buildArgs(profile, targetRoot) {
   ];
 }
 
-// Run `just <args>` from a fresh temp dir with the cargo stand-in first on PATH. `wasm` is what
-// the stand-in builds; `env(dir)` adds variables; `preseed` writes a good artefact where the build
-// would land before the recipe runs. Returns everything the assertions need, read before the
-// temp dir is removed.
+// Every file under `root`, as a path relative to it.
+const listFiles = (root, rel = '') =>
+  readdirSync(join(root, rel), { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? listFiles(root, join(rel, entry.name)) : [join(rel, entry.name)],
+  );
+
+// Run `just <args>` from a fresh temp dir with the cargo and spacetime stand-ins first on PATH.
+// `wasm` is what the cargo stand-in builds; `env(dir)` adds variables; `preseed` writes a good
+// artefact where a release build would land before the recipe runs, and `leftover` the bytes of
+// one where a default build lands. `def` and `defExit` are what the definition extractor prints
+// and exits with; `spacetimeVersion` is `ok`, `no-path` or `fail`. Returns everything the
+// assertions need, read before the temp dir is removed.
 function runJust(
   args,
-  { wasm = null, cargoExit = 0, env: extra = () => ({}), preseed = null } = {},
+  {
+    wasm = null,
+    cargoExit = 0,
+    env: extra = () => ({}),
+    preseed = null,
+    leftover = null,
+    def = CLEAN_DEF,
+    defExit = 0,
+    spacetimeVersion = 'ok',
+  } = {},
 ) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'acs6-just-')));
   try {
+    const install = (path, text) => {
+      writeFileSync(path, text);
+      chmodSync(path, 0o755);
+    };
     const bin = join(dir, 'bin');
     mkdirSync(bin);
-    const fake = join(bin, 'cargo');
-    writeFileSync(fake, CARGO_STAND_IN);
-    chmodSync(fake, 0o755);
+    install(join(bin, 'cargo'), CARGO_STAND_IN);
+    install(join(bin, 'spacetime'), SPACETIME_VERSION_STAND_IN);
+    install(join(bin, 'spacetimedb-standalone'), PATH_EXTRACTOR_STAND_IN);
+    // The CLI's own directory, off PATH.
+    const cliDir = join(dir, 'spacetime-cli');
+    mkdirSync(cliDir);
+    install(join(cliDir, 'spacetimedb-standalone'), EXTRACTOR_STAND_IN);
     const fixture = join(dir, 'fixture.wasm');
     if (wasm) writeFileSync(fixture, wasm);
     if (preseed) {
@@ -265,9 +368,20 @@ function runJust(
       mkdirSync(built, { recursive: true });
       writeFileSync(join(built, 'monster_realm_module.wasm'), preseed.wasm);
     }
+    if (leftover) {
+      const built = join(dir, 'target', 'wasm32-unknown-unknown', 'release');
+      mkdirSync(built, { recursive: true });
+      writeFileSync(join(built, 'monster_realm_module.wasm'), leftover);
+    }
     const log = join(dir, 'cargo.log');
     const envLog = join(dir, 'cargo.env');
     const compilerLog = join(dir, 'cargo.compiler');
+    const defLog = join(dir, 'extractor.log');
+    const pathDefLog = join(dir, 'extractor-on-path.log');
+    const defOutputs = join(dir, 'extractor.outputs');
+    const defRead = join(dir, 'extractor.read');
+    const extraEnv = extra(dir);
+    const targetRoot = extraEnv.CARGO_TARGET_DIR ?? join(dir, 'target');
     const env = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (
@@ -289,8 +403,17 @@ function runJust(
         MR_FAKE_CARGO_COMPILER: compilerLog,
         MR_FAKE_CARGO_EXIT: String(cargoExit),
         MR_FAKE_WASM: fixture,
+        MR_FAKE_SPACETIME_VERSION: spacetimeVersion,
+        MR_FAKE_SPACETIME_CLI: join(cliDir, 'spacetimedb-cli'),
+        MR_FAKE_DEF: def,
+        MR_FAKE_DEF_EXIT: String(defExit),
+        MR_FAKE_DEF_LOG: defLog,
+        MR_FAKE_PATH_DEF_LOG: pathDefLog,
+        MR_FAKE_DEF_OUTPUTS: defOutputs,
+        MR_FAKE_DEF_READ: defRead,
+        MR_FAKE_RELEASE_DIR: join(targetRoot, 'release-module'),
       },
-      extra(dir),
+      extraEnv,
     );
     const argv = typeof args === 'function' ? args({ dir, fixture }) : args;
     const result = spawnSync(
@@ -305,12 +428,14 @@ function runJust(
       throw new Error(`could not run \`just\`: ${result.error.message}`);
     }
     assert.notEqual(result.status, null, `just was killed by ${result.signal}`);
-    const calls = existsSync(log)
-      ? readFileSync(log, 'utf8')
-          .split('\n')
-          .filter((line) => line !== '')
-          .map((line) => line.split('\t').slice(0, -1))
-      : [];
+    const readCalls = (file) =>
+      existsSync(file)
+        ? readFileSync(file, 'utf8')
+            .split('\n')
+            .filter((line) => line !== '')
+            .map((line) => line.split('\t').slice(0, -1))
+        : [];
+    const calls = readCalls(log);
     const readRecords = (file) =>
       existsSync(file)
         ? readFileSync(file, 'utf8')
@@ -329,8 +454,6 @@ function runJust(
         sum: existsSync(sum) ? readFileSync(sum, 'utf8') : null,
       };
     };
-    const extraEnv = extra(dir);
-    const targetRoot = extraEnv.CARGO_TARGET_DIR ?? join(dir, 'target');
     return {
       dir,
       status: result.status,
@@ -344,6 +467,15 @@ function runJust(
         official: outputsUnder(targetRoot, 'official'),
         world: outputsUnder(targetRoot, 'world'),
       },
+      extractions: readCalls(defLog),
+      pathExtractions: readCalls(pathDefLog),
+      outputsAtExtraction: existsSync(defOutputs)
+        ? readFileSync(defOutputs, 'utf8')
+            .split('\n')
+            .filter((line) => line !== '')
+        : [],
+      extractedBytes: existsSync(defRead) ? readFileSync(defRead) : null,
+      files: listFiles(dir).sort(),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -555,6 +687,370 @@ test('release-module fails when cargo fails, even over a good artefact a previou
   assert.equal(run.calls.length, 1, 'the build ran');
   assert.notEqual(run.status, 0, 'a failing cargo fails the recipe');
   assertNoOutputs(run, 'official', 'a failing cargo');
+});
+
+// --- the release artefact's module definition, read through the extractor beside the CLI's file.
+
+const PROFILE_TEXT = { official: OFFICIAL_TEXT, world: WORLD_TEXT };
+
+// The artefact the recipe built, as it names it: cargo's target directory, then cargo's path in it.
+const builtOf = (run) =>
+  `${run.calls[0].at(-1)}/wasm32-unknown-unknown/release/monster_realm_module.wasm`;
+
+// Refused over the definition: the build ran, the recipe exits non-zero and writes neither output,
+// a stderr line begins `release-module: refusing <built>: `, and stderr names each line of `named`.
+function assertRefusedOverDefinition(run, profile, label, named = []) {
+  assert.equal(run.calls.length, 1, `${label}: the build ran: ${JSON.stringify(run.calls)}`);
+  assert.notEqual(run.status, 0, `${label}: refused`);
+  assertNoOutputs(run, profile, label);
+  const prefix = `release-module: refusing ${builtOf(run)}: `;
+  assert.ok(
+    run.stderr.split('\n').some((line) => line.startsWith(prefix)),
+    `${label}: a stderr line begins ${JSON.stringify(prefix)}: ${run.stderr}`,
+  );
+  for (const line of named) {
+    assert.ok(
+      run.stderr.includes(line),
+      `${label}: stderr names ${JSON.stringify(line)}: ${run.stderr}`,
+    );
+  }
+}
+
+const SECTIONS_WITHOUT_REDUCERS = DEF_SECTIONS.filter((s) => !Object.hasOwn(s, 'Reducers'));
+
+// Definitions that declare what the access design refuses, each with the lines that name it.
+const DECLARING_DEFINITIONS = [
+  [
+    'an HTTP handler',
+    definitionOf(
+      ...DEF_SECTIONS,
+      { HttpHandlers: [{ source_name: 'on_webhook' }] },
+      { HttpRoutes: [] },
+    ),
+    ['HTTP handler `on_webhook`'],
+  ],
+  [
+    'an HTTP route',
+    definitionOf(
+      ...DEF_SECTIONS,
+      { HttpHandlers: [] },
+      {
+        HttpRoutes: [
+          { handler_function: 'on_webhook', method: { Any: [] }, path: '/hooks/payment' },
+        ],
+      },
+    ),
+    ['HTTP route `/hooks/payment` to handler `on_webhook`'],
+  ],
+  [
+    'a row filter',
+    definitionOf(...DEF_SECTIONS, {
+      RowLevelSecurity: [{ sql: 'SELECT * FROM player WHERE identity = :sender' }],
+    }),
+    ['row filter `SELECT * FROM player WHERE identity = :sender`'],
+  ],
+  [
+    'an HTTP handler inside a submodule',
+    definitionOf(...DEF_SECTIONS, {
+      Submodules: [
+        {
+          namespace: 'payments',
+          module: { sections: [{ HttpHandlers: [{ source_name: 'on_callback' }] }] },
+        },
+      ],
+    }),
+    ['submodule `payments`: HTTP handler `on_callback`'],
+  ],
+  [
+    'a row filter and an HTTP handler',
+    definitionOf(
+      ...DEF_SECTIONS,
+      { RowLevelSecurity: [{ sql: 'SELECT * FROM config' }] },
+      { HttpHandlers: [{ source_name: 'on_ping' }] },
+    ),
+    ['row filter `SELECT * FROM config`', 'HTTP handler `on_ping`'],
+  ],
+];
+
+// The `runJust` options under which the definition cannot be read.
+const UNREADABLE_DEFINITIONS = [
+  ['the extractor exits 1 over a clean definition', { defExit: 1 }],
+  ['the extractor exits 2 printing nothing', { def: '', defExit: 2 }],
+  ['the extractor prints nothing', { def: '' }],
+  ['the extractor prints no JSON', { def: 'error: the module did not load' }],
+  [
+    'a V10 definition with no Reducers section',
+    { def: definitionOf(...SECTIONS_WITHOUT_REDUCERS) },
+  ],
+  [
+    'a V10 definition with an empty Reducers section',
+    { def: definitionOf(...SECTIONS_WITHOUT_REDUCERS, { Reducers: [] }) },
+  ],
+  ['a V9 definition', { def: JSON.stringify({ V9: { sections: DEF_SECTIONS } }) }],
+  ['spacetime --version prints no Path line', { spacetimeVersion: 'no-path' }],
+  ['spacetime --version fails', { spacetimeVersion: 'fail' }],
+];
+
+for (const profile of ['official', 'world']) {
+  test(`release-module ${profile} refuses an artefact whose definition declares an HTTP handler, route or row filter (lpw-34.6)`, () => {
+    for (const [label, def, named] of DECLARING_DEFINITIONS) {
+      const run = runJust(['release-module', profile], { wasm: GOOD[profile], def });
+      assertRefusedOverDefinition(run, profile, label, named);
+    }
+  });
+
+  test(`release-module ${profile} refuses when the definition cannot be read (lpw-34.6)`, () => {
+    for (const [label, options] of UNREADABLE_DEFINITIONS) {
+      const run = runJust(['release-module', profile], { wasm: GOOD[profile], ...options });
+      assertRefusedOverDefinition(run, profile, label);
+      assert.deepEqual(run.pathExtractions, [], `${label}: no extractor found on PATH runs`);
+    }
+  });
+
+  test(`release-module ${profile} reads the definition of exactly the built artefact, once (lpw-34.6)`, () => {
+    const run = runJust(['release-module', profile], { wasm: GOOD[profile] });
+    assertAccepted(run, profile, GOOD[profile]);
+    assert.equal(
+      run.stdout,
+      `release-module: ${profile} ${sha256(GOOD[profile])} ${run.outputs[profile].copyPath}\n`,
+      'stdout is the one release line, the definition not echoed',
+    );
+    assert.equal(run.extractions.length, 1, `one extraction: ${JSON.stringify(run.extractions)}`);
+    const [call] = run.extractions;
+    assert.equal(call.length, 2, `extract-schema and one path: ${JSON.stringify(call)}`);
+    assert.equal(call[0], 'extract-schema');
+    assert.equal(
+      resolve(run.dir, call[1]),
+      resolve(run.dir, builtOf(run)),
+      'the extractor reads the artefact cargo built',
+    );
+    assert.ok(
+      run.extractedBytes?.equals(GOOD[profile]),
+      'the file handed to the extractor holds the built bytes',
+    );
+    assert.deepEqual(
+      run.outputsAtExtraction,
+      [],
+      'no release output exists when the definition is read',
+    );
+    assert.deepEqual(
+      run.pathExtractions,
+      [],
+      'the extractor beside the CLI file runs, never one found on PATH',
+    );
+
+    // Under $CARGO_TARGET_DIR the artefact read is the one built there.
+    const shared = runJust(['release-module', profile], {
+      wasm: GOOD[profile],
+      env: (dir) => ({ CARGO_TARGET_DIR: join(dir, 'shared-target') }),
+    });
+    assertAccepted(shared, profile, GOOD[profile]);
+    assert.deepEqual(
+      shared.extractions.map((c) => c.map((a, i) => (i === 1 ? resolve(shared.dir, a) : a))),
+      [
+        [
+          'extract-schema',
+          join(
+            shared.targetRoot,
+            'release-module',
+            profile,
+            'wasm32-unknown-unknown',
+            'release',
+            'monster_realm_module.wasm',
+          ),
+        ],
+      ],
+      'under $CARGO_TARGET_DIR: one extraction, of the artefact built there',
+    );
+    assert.deepEqual(shared.pathExtractions, [], 'under $CARGO_TARGET_DIR: none from PATH');
+
+    // An artefact the profile and dev-reducer checks refuse is refused before its definition is
+    // read: the first of those checks and the last.
+    for (const [label, artefact] of [
+      ['an artefact with no mr_build_profile section', wasmOf()],
+      [
+        `an artefact whose bytes contain ${FORBIDDEN_REDUCERS[0]}`,
+        wasmOf(
+          profileSection(PROFILE_TEXT[profile]),
+          customSection('reducers', FORBIDDEN_REDUCERS[0]),
+        ),
+      ],
+    ]) {
+      const bad = runJust(['release-module', profile], { wasm: artefact });
+      assert.equal(bad.calls.length, 1, `${label}: the build ran`);
+      assert.notEqual(bad.status, 0, `${label}: refused`);
+      assertNoOutputs(bad, profile, label);
+      assert.deepEqual(bad.extractions, [], `${label}: the definition is never read`);
+      assert.deepEqual(bad.pathExtractions, [], `${label}: no extractor on PATH runs`);
+    }
+  });
+}
+
+// --- `just module-definition`: the default build's module definition, read the same way.
+
+// The module alone with its default features, as `spacetime build` builds it, from the committed
+// lock file, into `targetRoot`.
+const defaultBuildArgs = (targetRoot) => [
+  'build',
+  '--locked',
+  '-p',
+  'monster-realm-module',
+  '--release',
+  '--target',
+  'wasm32-unknown-unknown',
+  '--target-dir',
+  targetRoot,
+];
+
+// A default build's artefact: its profile is no release profile.
+const DEFAULT_BUILD = wasmOf(
+  profileSection('profile=test\nenforces_ownership=false\ndev_reducers=false\n'),
+);
+
+// The default build's artefact under the run's target root.
+const defaultBuilt = (run) =>
+  join(run.targetRoot, 'wasm32-unknown-unknown', 'release', 'monster_realm_module.wasm');
+
+// The files the harness itself leaves in a run's directory: the fixture and the stand-ins' records,
+// and the stand-ins under these two directories.
+const HARNESS_FILES = new Set([
+  'fixture.wasm',
+  'cargo.log',
+  'cargo.env',
+  'cargo.compiler',
+  'extractor.log',
+  'extractor-on-path.log',
+  'extractor.outputs',
+  'extractor.read',
+]);
+const HARNESS_DIRS = ['bin/', 'spacetime-cli/'];
+
+// Every other file the run left: cargo's artefact, and whatever the recipe wrote.
+const leftByRun = (run) =>
+  run.files.filter((f) => !HARNESS_FILES.has(f) && !HARNESS_DIRS.some((d) => f.startsWith(d)));
+
+const DEFINITION_LINE = 'module-definition: ';
+const DEFINITION_REFUSAL = 'module-definition: refusing ';
+const DEFINITION_CLEAN = ' declares no HTTP handler, HTTP route or row filter';
+
+// Accepted: exit 0; one extraction, by the extractor beside the CLI's file, of exactly the built
+// artefact; the last stdout line names that artefact as clean; no file beside cargo's artefact.
+function assertDefinitionClean(run, label, artefact) {
+  assert.equal(run.status, 0, `${label}: module-definition failed: ${run.stderr}`);
+  const built = defaultBuilt(run);
+  assert.equal(
+    run.extractions.length,
+    1,
+    `${label}: one extraction: ${JSON.stringify(run.extractions)}`,
+  );
+  const [call] = run.extractions;
+  assert.equal(call.length, 2, `${label}: extract-schema and one path: ${JSON.stringify(call)}`);
+  assert.equal(call[0], 'extract-schema', label);
+  assert.equal(
+    resolve(run.dir, call[1]),
+    built,
+    `${label}: the extractor reads the artefact cargo built`,
+  );
+  assert.ok(
+    run.extractedBytes?.equals(artefact),
+    `${label}: the file handed to the extractor holds the built bytes`,
+  );
+  assert.deepEqual(run.pathExtractions, [], `${label}: never an extractor found on PATH`);
+  const line = lastLine(run.stdout);
+  assert.ok(
+    line.startsWith(DEFINITION_LINE) && line.endsWith(DEFINITION_CLEAN),
+    `${label}: the last stdout line: ${JSON.stringify(line)}`,
+  );
+  assert.equal(
+    resolve(run.dir, line.slice(DEFINITION_LINE.length, -DEFINITION_CLEAN.length)),
+    built,
+    `${label}: the last stdout line names the built artefact`,
+  );
+  assert.deepEqual(
+    leftByRun(run),
+    [relative(run.dir, built)],
+    `${label}: no file written beside cargo's artefact`,
+  );
+}
+
+// Refused: the build ran, the recipe exits non-zero and writes no file beside cargo's artefact,
+// and a stderr line begins `module-definition: refusing <built>: ` and names each of `named`.
+function assertDefinitionRefused(run, label, named = []) {
+  assert.equal(run.calls.length, 1, `${label}: the build ran: ${JSON.stringify(run.calls)}`);
+  assert.notEqual(run.status, 0, `${label}: refused`);
+  const built = defaultBuilt(run);
+  const refusals = run.stderr.split('\n').filter((l) => {
+    if (!l.startsWith(DEFINITION_REFUSAL)) return false;
+    const rest = l.slice(DEFINITION_REFUSAL.length);
+    const end = rest.indexOf(': ');
+    return end > 0 && resolve(run.dir, rest.slice(0, end)) === built;
+  });
+  assert.ok(
+    refusals.length > 0,
+    `${label}: a stderr line begins ${JSON.stringify(`${DEFINITION_REFUSAL}<built>: `)}: ${run.stderr}`,
+  );
+  for (const line of named) {
+    assert.ok(
+      refusals.some((r) => r.includes(line)),
+      `${label}: the refusal names ${JSON.stringify(line)}: ${run.stderr}`,
+    );
+  }
+  assert.deepEqual(
+    leftByRun(run),
+    [relative(run.dir, built)],
+    `${label}: no file written beside cargo's artefact`,
+  );
+}
+
+test('module-definition builds the module with its default features and reads the definition of exactly that build, once (lpw-34.6)', () => {
+  const run = runJust(['module-definition'], { wasm: DEFAULT_BUILD });
+  assert.deepEqual(run.calls, [defaultBuildArgs('target')], 'exactly this one cargo command');
+  assertDefinitionClean(run, 'the default target directory', DEFAULT_BUILD);
+
+  // A definition with no HTTP section at all reads as clean too.
+  const plain = runJust(['module-definition'], {
+    wasm: DEFAULT_BUILD,
+    def: definitionOf(...DEF_SECTIONS),
+  });
+  assert.deepEqual(plain.calls, [defaultBuildArgs('target')], 'no HTTP section: the one build');
+  assertDefinitionClean(plain, 'no HTTP section', DEFAULT_BUILD);
+
+  const shared = runJust(['module-definition'], {
+    wasm: DEFAULT_BUILD,
+    env: (dir) => ({ CARGO_TARGET_DIR: join(dir, 'shared-target') }),
+  });
+  assert.deepEqual(
+    shared.calls,
+    [defaultBuildArgs(shared.targetRoot)],
+    'under $CARGO_TARGET_DIR: exactly this one cargo command',
+  );
+  assertDefinitionClean(shared, 'under $CARGO_TARGET_DIR', DEFAULT_BUILD);
+});
+
+test('module-definition refuses a default build whose definition declares an HTTP handler, route or row filter (lpw-34.6)', () => {
+  for (const [label, def, named] of DECLARING_DEFINITIONS) {
+    const run = runJust(['module-definition'], { wasm: DEFAULT_BUILD, def });
+    assertDefinitionRefused(run, label, named);
+  }
+});
+
+test('module-definition refuses when the definition cannot be read or the build fails (lpw-34.6)', () => {
+  for (const [label, options] of UNREADABLE_DEFINITIONS) {
+    const run = runJust(['module-definition'], { wasm: DEFAULT_BUILD, ...options });
+    assertDefinitionRefused(run, label);
+    assert.deepEqual(run.pathExtractions, [], `${label}: no extractor found on PATH runs`);
+  }
+
+  // A failing cargo, over the artefact an earlier default build left: no definition is read.
+  const failed = runJust(['module-definition'], {
+    wasm: DEFAULT_BUILD,
+    cargoExit: 101,
+    leftover: DEFAULT_BUILD,
+  });
+  assert.equal(failed.calls.length, 1, 'a failing cargo: the build ran');
+  assert.notEqual(failed.status, 0, 'a failing cargo fails the recipe');
+  assert.deepEqual(failed.extractions, [], 'a failing cargo: no definition is read');
+  assert.deepEqual(failed.pathExtractions, [], 'a failing cargo: no extractor on PATH runs');
 });
 
 test('module-profile prints the mr_build_profile section bytes exactly and runs no cargo', () => {

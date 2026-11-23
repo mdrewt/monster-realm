@@ -11,7 +11,7 @@ setup:
 
 # The merge gate. ci.yml runs these same recipes, one per step, split across parallel jobs.
 # `eval` stays ahead of `wasm`: the parity evals leave a nodejs-target pkg that `wasm` replaces.
-ci: lint typecheck account-typecheck account-test test eval security wasm client-typecheck client-test client-verify-build observability-validate
+ci: lint typecheck account-typecheck account-test test module-definition eval security wasm client-typecheck client-test client-verify-build observability-validate
 
 lint:
     cargo fmt --all --check
@@ -64,8 +64,8 @@ test:
     }
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
-    door "scripts node suites" 5 30 scripts/*.test.mjs
-    door "justfile node suite" 1 38 justfile.test.mjs
+    door "scripts node suites" 6 30 scripts/*.test.mjs
+    door "justfile node suite" 1 47 justfile.test.mjs
     guard() {
         local hook=$1 ok=$2 floor=$3 out n
         out="$(CLAUDE_PROJECT_DIR="$PWD" node "$hook" --selftest 2>&1)" || { echo "$out" >&2; exit 1; }
@@ -171,7 +171,11 @@ module-profile $wasm:
 # a config file and no compiler or wrapper named by the environment. It then
 # reads the profile back from the artefact and refuses one that is not the profile asked for, does
 # not enforce ownership, compiles a dev reducer or names one, or trusts anything but one `https:`
-# login issuer (`official`) or none (`world`). An accepted artefact is copied to
+# login issuer (`official`) or none (`world`). Last, it reads the definition the host reads from the
+# artefact, with `spacetimedb-standalone extract-schema` from the directory of the `spacetime` CLI on
+# PATH (the path `spacetime --version` prints), and refuses one that declares an HTTP handler, an
+# HTTP route or a row filter (scripts/verify-release-reducers.mjs), or that it cannot read. An
+# accepted artefact is copied to
 # <target>/release-module/monster-realm-<profile>.wasm with its SHA-256 beside it (.sha256, the
 # `sha256sum` format), and the last line printed is `release-module: <profile> <sha256> <path>`.
 # Publish or embed that file by that hash.
@@ -196,12 +200,13 @@ release-module profile:
     MR_PROFILE="$profile" MR_BUILT="$build_dir/wasm32-unknown-unknown/release/monster_realm_module.wasm" MR_OUT="$out" \
         MR_REDUCER_LIST={{quote(justfile_directory() / "scripts" / "verify-release-reducers.mjs")}} \
         node --input-type=module - <<'EOF'
+    import { execFileSync } from 'node:child_process';
     import { createHash } from 'node:crypto';
     import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
-    import { basename } from 'node:path';
+    import { basename, dirname, join } from 'node:path';
     import { pathToFileURL } from 'node:url';
     const { MR_PROFILE: profile, MR_BUILT: built, MR_OUT: out, MR_REDUCER_LIST: reducerList } = process.env;
-    const { FORBIDDEN_REDUCERS } = await import(pathToFileURL(reducerList).href);
+    const { FORBIDDEN_REDUCERS, findDefinitionViolations } = await import(pathToFileURL(reducerList).href);
     const refuse = (why) => {
       console.error(`release-module: refusing ${built}: ${why}`);
       process.exit(1);
@@ -225,11 +230,80 @@ release-module profile:
     }
     const named = FORBIDDEN_REDUCERS.filter((name) => bytes.includes(name));
     if (named.length > 0) refuse(`it names the dev reducer(s) ${named.join(', ')}`);
+    const run = (file, args, what) => {
+      try {
+        return execFileSync(file, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        return refuse(`${what} failed, so its definition cannot be read: ${e.message}`);
+      }
+    };
+    const pathKey = 'spacetime Path: ';
+    const cliPath = run('spacetime', ['--version'], '`spacetime --version`')
+      .split('\n')
+      .find((l) => l.startsWith(pathKey));
+    if (!cliPath) refuse('`spacetime --version` prints no path, so its definition cannot be read');
+    const extractor = join(dirname(cliPath.slice(pathKey.length).trim()), 'spacetimedb-standalone');
+    const definition = run(extractor, ['extract-schema', built], `\`${extractor} extract-schema\``);
+    let violations;
+    try {
+      violations = findDefinitionViolations(definition);
+    } catch (e) {
+      refuse(`its definition cannot be read: ${e.message}`);
+    }
+    if (violations.length > 0) refuse(`its definition declares ${violations.join('; ')}`);
     // The bytes checked are the bytes written and hashed.
     writeFileSync(out, bytes);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     writeFileSync(`${out}.sha256`, `${sha256}  ${basename(out)}\n`);
     console.log(`release-module: ${profile} ${sha256} ${realpathSync(out)}`);
+    EOF
+
+# Build the module with its default features, as `just build`, `just gen` and `just playtest-up` do,
+# and refuse it when the definition the host reads from it declares an HTTP handler, an HTTP route
+# or a row filter, or when that definition cannot be read. The definition is read as
+# `just release-module` reads it, with `spacetimedb-standalone extract-schema` from the directory of
+# the `spacetime` CLI on PATH, and checked by scripts/verify-release-reducers.mjs. A native test
+# cannot do this: the test binary keeps no describer that no test calls, so a handler or a filter
+# never reaches the fixture's definition.
+module-definition:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="${CARGO_TARGET_DIR:-target}"
+    cargo build --locked -p monster-realm-module --release --target wasm32-unknown-unknown --target-dir "$target"
+    MR_BUILT="$target/wasm32-unknown-unknown/release/monster_realm_module.wasm" \
+        MR_DEFINITION_CHECK={{quote(justfile_directory() / "scripts" / "verify-release-reducers.mjs")}} \
+        node --input-type=module - <<'EOF'
+    import { execFileSync } from 'node:child_process';
+    import { dirname, join } from 'node:path';
+    import { pathToFileURL } from 'node:url';
+    const { MR_BUILT: built, MR_DEFINITION_CHECK: check } = process.env;
+    const { findDefinitionViolations } = await import(pathToFileURL(check).href);
+    const refuse = (why) => {
+      console.error(`module-definition: refusing ${built}: ${why}`);
+      process.exit(1);
+    };
+    const run = (file, args, what) => {
+      try {
+        return execFileSync(file, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        return refuse(`${what} failed, so its definition cannot be read: ${e.message}`);
+      }
+    };
+    const pathKey = 'spacetime Path: ';
+    const cliPath = run('spacetime', ['--version'], '`spacetime --version`')
+      .split('\n')
+      .find((l) => l.startsWith(pathKey));
+    if (!cliPath) refuse('`spacetime --version` prints no path, so its definition cannot be read');
+    const extractor = join(dirname(cliPath.slice(pathKey.length).trim()), 'spacetimedb-standalone');
+    const definition = run(extractor, ['extract-schema', built], `\`${extractor} extract-schema\``);
+    let violations;
+    try {
+      violations = findDefinitionViolations(definition);
+    } catch (e) {
+      refuse(`its definition cannot be read: ${e.message}`);
+    }
+    if (violations.length > 0) refuse(`its definition declares ${violations.join('; ')}`);
+    console.log(`module-definition: ${built} declares no HTTP handler, HTTP route or row filter`);
     EOF
 
 # Publish over whatever {{db}} holds, keeping its data, then re-seed as the owner: `init` runs

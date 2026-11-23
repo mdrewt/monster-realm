@@ -1,14 +1,14 @@
 # Runbook: upgrading SpacetimeDB
 
 How to move the SpacetimeDB CLI, host and module crate to a new version. The current
-pin is 2.12.0. The rule behind this runbook is in `docs/DECISIONS.md` ("SpacetimeDB
+pin is 2.16.1. The rule behind this runbook is in `docs/DECISIONS.md` ("SpacetimeDB
 versions move in lockstep").
 
 ## What moves together
 
 | Pin | Where |
 |---|---|
-| Rust `spacetimedb` crate | root `Cargo.toml` (`[workspace.dependencies]`, an exact `=<ver>` pin: cargo uses a `[patch]` entry only when its version matches) |
+| Rust `spacetimedb` crate | root `Cargo.toml` (`[workspace.dependencies]`, `spacetimedb = { version = "=<ver>", features = ["unstable"] }`: the pin is exact because cargo uses a `[patch]` entry only when its version matches) |
 | The two patched crates, `spacetimedb` and `spacetimedb-bindings-sys` | `vendor/`: the crates.io packages at the pinned version, `native-host.patch` and `PRISTINE.sha256`, wired by the root `[patch.crates-io]` (re-vendored by "Re-vendor the two patched crates" below) |
 | CLI/host used by CI and nightly | `scripts/ci-tools.sh`: `SPACETIME_VERSION` and `SPACETIME_SHA256` (the sha256 of that release's `spacetime-x86_64-unknown-linux-gnu.tar.gz`); both workflows install from it through `.github/actions/tools` |
 | Local CLI | `spacetime version install <ver>` then `spacetime version use <ver>`; check with `spacetime --version` |
@@ -53,7 +53,10 @@ lockstep hop until the SDK ages.
    "new over old" publish can silently exercise the OLD host. Back up
    `~/.local/share/spacetime/data` before the slice (the first `just ci` after the
    CLI flip stamps the SHARED dir too: `account-e2e` starts a host with no
-   `--data-dir`). Then:
+   `--data-dir`). The stamp was seen again on the 2.12.0→2.16.1 hop (2026-11-23). A shell that
+   sets `HOME` and `XDG_DATA_HOME`/`XDG_CONFIG_HOME` to a scratch directory and puts the new
+   release's `spacetimedb-cli` (renamed `spacetime`) and `spacetimedb-standalone` first on PATH
+   runs `just ci` and every step below without touching the shared dir. Then:
 
    ```sh
    git worktree add ../mr-old <commit-before-the-upgrade>   # the old module source
@@ -81,7 +84,12 @@ lockstep hop until the SDK ages.
    `MR_PLAYTEST_DB` exercises `spacetime describe --json`, which
    `scripts/verify-release-reducers.mjs` parses. It accepts both the older flat
    `{"reducers": [...]}` shape and the `{"sections": [...]}` shape with `source_name`,
-   and fails loudly on anything else. A new shape needs a parser update.
+   and fails loudly on anything else. A new shape needs a parser update. `just module-definition`
+   (in `just ci`) and `just release-module` (both profiles) read a built module's definition with
+   `spacetimedb-standalone extract-schema` (the binary beside the CLI on PATH), which prints
+   `{"V10":{"sections":[...]}}`. The check (`findDefinitionViolations` in the same script) refuses
+   any section kind it does not list. A new kind is reviewed and listed there: passed if it cannot
+   serve or filter rows, checked like `HttpHandlers` if it can.
 8. **Check observability.** Confirm `/v1/metrics` still has the families the recording
    rules use (`ops/observability/rules/`), and that module log lines still reach Loki
    and `mr-trace-relay` (host log levels have changed between releases before).
@@ -157,7 +165,7 @@ patched where they refuse a native host"). At each hop, with `VER` the new versi
    git add -A vendor
    ```
 
-5. **Pin and check.** Set `spacetimedb = "=$VER"` in the root `Cargo.toml`, run
+5. **Pin and check.** Set the `spacetimedb` entry's `version = "=$VER"` in the root `Cargo.toml`, run
    `cargo update -p spacetimedb --precise $VER` (it accepts the path package; the other
    `spacetimedb-*` crates follow the copies' own `=$VER` requirements), then
    `cargo nextest run -p monster-realm-module`.
@@ -222,13 +230,17 @@ Rolling back past that point means restoring the pre-upgrade backup of the data 
 `spacetime version use <old>` first, or every pre-upgrade commit's `bindings-drift`
 eval fails against the new CLI on PATH.
 
-## Standing facts (as of 2.11.0; each re-verified on the 2.8.1→2.11.0 hop)
+## Standing facts (re-checked on the 2.12.0→2.16.1 hop, 2026-11-23, except where one names an older version)
 
-- Row-level security filters (`#[client_visibility_filter]`) are not enforced.
-  Privacy uses private tables with owner-scoped views (see `docs/DECISIONS.md`).
+- The host enforces a row filter (`#[client_visibility_filter]`, behind the crate's `unstable`
+  feature): measured on 2.16.1, a filter on `species_row` left a stranger 1 of 20 rows over `sql`
+  and in a subscription (`docs/spacetimedb-2.16.md`). The module declares none, and
+  `just module-definition` refuses one. Privacy uses private tables with owner-scoped views (see
+  `docs/DECISIONS.md`).
 - None of the module's views declares a primary key, so the SDK never fires row updates
-  for them. The client rebuilds each owner view whose rows changed from the SDK cache
-  before the batch flushes (`client/src/net/viewReconcile.ts`).
-- `spacetime publish` has no visible feature flag in `--help`. The e2e job builds the
+  for them (measured on 2.11.0). The client rebuilds each owner view whose rows changed from the
+  SDK cache before the batch flushes (`client/src/net/viewReconcile.ts`); the e2e suite, which
+  depends on that rebuild, passes on 2.16.1.
+- `spacetime publish` has no visible feature flag in `--help` (2.16.1). The e2e job builds the
   `dev_reducers` wasm with `cargo build ... --features dev_reducers` and publishes it
   with `--bin-path` (`client/e2e/global-setup.ts`).

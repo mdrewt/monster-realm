@@ -123,7 +123,7 @@ fi
 # The module's numbers are what the live row holds after a publish and the owner's sync: they are
 # recorded from the database, never read out of a source file.
 
-# One read of module_info. On spacetime 2.11.0 `--format json` prints one JSON line carrying
+# One read of module_info. On spacetime 2.16.1 `--format json` prints one JSON line carrying
 # `"rows":[[P,M]]` for exactly one row (two rows read `"rows":[[..],[..]]`, none `"rows":[]`).
 protocol_json() {
   spacetime sql -s "$SERVER" --format json "$DB" "SELECT protocol, min_client_protocol FROM module_info"

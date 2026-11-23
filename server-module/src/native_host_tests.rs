@@ -3,9 +3,9 @@
 //! so the SHIPPED reducer-side helpers can run against REAL rows inside an
 //! ordinary native `cargo test` binary.
 //!
-//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.12.0,
-//! `vendor/spacetimedb/src/lib.rs:1145`, `#[doc(hidden)] pub`) yields a context whose `db` is
-//! the real `Local` accessor, built by `Local::__host()` (`lib.rs:1148`, `:1944-1954`), so
+//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.16.1,
+//! `vendor/spacetimedb/src/lib.rs:1191`, `#[doc(hidden)] pub`) yields a context whose `db` is
+//! the real `Local` accessor, built by `Local::__host()` (`lib.rs:1194`, `:1998-2008`), so
 //! `ctx.db.<table>().<index>().find(..)` in a production helper compiles and runs unchanged.
 //! That generated code bottoms out in the `extern "C"` host imports declared by
 //! `spacetimedb-bindings-sys` (`#[link(wasm_import_module = "spacetime_10.x")]`), which the
@@ -342,7 +342,7 @@ impl<R: Serialize, K: Serialize> Handle<'_, R, K> {
 }
 
 // ---------------------------------------------------------------------------
-// The host ABI. Signatures mirror the 2.12.0 raw externs of `vendor/spacetimedb-bindings-sys`
+// The host ABI. Signatures mirror the 2.16.1 raw externs of `vendor/spacetimedb-bindings-sys`
 // with the `repr(transparent)` `TableId` / `IndexId` / `RowIter`
 // newtypes spelled as the `u32` they wrap. Every one is `unsafe`: it
 // dereferences raw pointers handed over by the bindings, which own the
@@ -567,11 +567,11 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 // THE WIRE FORMAT. Each side of a range arrives as the BSATN of a `Bound<T>`:
 // tag byte 0 `Included` followed by the BSATN of the payload, 1 `Excluded`
 // followed by the payload, 2 `Unbounded` with no payload at all
-// (`spacetimedb-sats-2.12.0/src/ser/impls.rs:124-128`). The bindings pack both
+// (`spacetimedb-sats-2.16.1/src/ser/impls.rs:124-128`). The bindings pack both
 // sides into one buffer and hand out two slices over it
-// (`vendor/spacetimedb/src/table.rs:1517-1526`), and `prefix_elems` is a
+// (`vendor/spacetimedb/src/table.rs:1570-1579`), and `prefix_elems` is a
 // `repr(transparent)` `ColId(pub u16)`, so the raw parameter is a `u16`
-// (`spacetimedb-primitives-2.12.0/src/ids.rs:125`). The parse is an EXPLICIT tag
+// (`spacetimedb-primitives-2.16.1/src/ids.rs:125`). The parse is an EXPLICIT tag
 // match: an empty slice, an unknown tag and trailing bytes after tag 2 are each
 // an ERROR, never a quiet `Unbounded`. A bound this host misreads is a window
 // the caller never asked for, and every count taken over it would be true about
@@ -804,9 +804,9 @@ impl Fixture {
 //   no transaction rollback is modelled: a reducer that errors after a write
 //   leaves that write in the store.
 // * A SETTABLE CALLER. `Fixture::run_as(_at)` runs a closure inside the SHIPPED
-//   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1226`), which is
+//   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1299`), which is
 //   the only code that builds a `ReducerContext` with a chosen sender (the
-//   constructor is private, `vendor/spacetimedb/src/lib.rs:1163`). A trampoline
+//   constructor is private, `vendor/spacetimedb/src/lib.rs:1209`). A trampoline
 //   reducer is registered once per process through the public `rt::register_reducer`
 //   and published into `REDUCERS` by calling `__describe_module__`. The closure's panics are
 //   caught inside the trampoline and re-raised in the caller's Rust frame, so
@@ -1114,7 +1114,7 @@ impl Fixture {
         let s = sender.to_byte_array();
         let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
         // The runtime rebuilds the id from its two words as native-endian u64s
-        // read back as a LITTLE-ENDIAN byte array (`rt.rs:1076`).
+        // read back as a LITTLE-ENDIAN byte array (`rt.rs:1340-1345`).
         let c = conn.to_le_bytes();
         let conn_word = |i: usize| u64::from_ne_bytes(c[i * 8..i * 8 + 8].try_into().unwrap());
         // SAFETY: the shipped entry point; reducer 0 is the trampoline (the only
@@ -1157,9 +1157,9 @@ const DESCRIBE_SINK: u32 = 0xD5C1;
 const ERROR_SINK: u32 = 0xE551;
 
 unsafe extern "C" {
-    /// `vendor/spacetimedb/src/rt.rs:1169` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1246` (`#[unsafe(no_mangle)]`).
     fn __describe_module__(description: u32);
-    /// `vendor/spacetimedb/src/rt.rs:1226` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1299` (`#[unsafe(no_mangle)]`).
     fn __call_reducer__(
         id: usize,
         sender_0: u64,
@@ -1270,7 +1270,7 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_bind_nonce, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_bind_nonce"]
     fn register_view_my_bind_nonce();
-    // Every `#[spacetimedb::table]` describer (macro `table.rs:1176`
+    // Every `#[spacetimedb::table]` describer (macro `table.rs:1421`
     // `__preinit__20_register_describer_<accessor>`), registered before the views
     // so `Fixture::module_def` carries the full generated table set — the
     // artifact `accounts_tests.rs` compares `DATA_LIFECYCLE_MANIFEST` against.
@@ -1418,7 +1418,7 @@ unsafe extern "C" {
     fn register_table_world_name();
     #[link_name = "__preinit__20_register_describer_world_allowlist"]
     fn register_table_world_allowlist();
-    /// `vendor/spacetimedb/src/rt.rs:1458` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1543` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
         sender_0: u64,
@@ -1585,7 +1585,7 @@ pub(crate) const VIEW_MY_WORLD_BINDING: usize = 17;
 pub(crate) const VIEW_MY_BIND_NONCE: usize = 18;
 
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
-/// `RawModuleDef` (V10 on 2.12.0, `vendor/spacetimedb/src/rt.rs:1178`), captured once per
+/// `RawModuleDef` (V10 on 2.16.1, `vendor/spacetimedb/src/rt.rs:1251`), captured once per
 /// process so a test can read table access, keys, indexes and the exact view roster from the
 /// artifact the host itself consumes — never from source text.
 static DESCRIBE_OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1629,7 +1629,7 @@ impl Fixture {
 
 impl Fixture {
     /// The generated module definition, decoded from the bytes the shipped
-    /// `__describe_module__` wrote (a V10 def on 2.12.0; any other version is a
+    /// `__describe_module__` wrote (a V10 def on 2.16.1; any other version is a
     /// toolchain hop this harness must be re-pointed at, so it panics by name).
     pub(crate) fn module_def(
         &self,
@@ -1926,11 +1926,11 @@ unsafe extern "C" fn bytes_sink_write(
 // THE CONNECTION + JWT MODEL (debloat Phase 2, ST-accounts_tests#auth).
 //
 // `run_as_conn_at` hands `__call_reducer__` a NON-ZERO connection id, so the
-// runtime builds the context through `AuthCtx::from_connection_id` exactly as a
-// client call does (`lib.rs:1864`): the first `has_jwt()` / `jwt()` asks the
-// `get_jwt` syscall for that connection, and a valid bytes source is then read
-// through `bytes_source_remaining_length` + `bytes_source_read`
-// (`rt.rs:1312`, `rt.rs:1323`). This host serves ONE source, [`JWT_SOURCE`],
+// runtime builds the context's `AuthCtx` over `rt::get_jwt` for that connection
+// exactly as a client call does (`lib.rs:1216`): the first `has_jwt()` / `jwt()`
+// asks the `get_jwt` syscall for that connection, and a valid bytes source is
+// then read through `bytes_source_remaining_length` + `bytes_source_read`
+// (`rt.rs:1588-1599`, `read_bytes_source_into` at `rt.rs:1610`). This host serves ONE source, [`JWT_SOURCE`],
 // holding the claims payload the test chose; `None` answers the INVALID source,
 // which the runtime reads as "no JWT" (the anonymous player). Reducer ARGS stay
 // the INVALID source (`run_as` passes none), so no other source is ever read.
@@ -2873,7 +2873,8 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
     }
 
     // One version: every `crate` line names the same one (the crates move together), each
-    // copy's `[package]` has it, and the workspace pins `spacetimedb` to exactly it.
+    // copy's `[package]` has it, and the workspace pins `spacetimedb` to exactly it, in the one
+    // line that also turns on the crate's `unstable` feature.
     let versions: BTreeSet<&str> = pristine.crates.values().map(String::as_str).collect();
     if versions.len() != 1 {
         return Err(format!("{MANIFEST}: versions {versions:?}, not one"));
@@ -2888,7 +2889,7 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
     let Some(version) = pristine.crates.get("spacetimedb") else {
         return Err(format!("{MANIFEST}: declares no crate `spacetimedb`"));
     };
-    let pin = format!("spacetimedb = \"={version}\"");
+    let pin = format!("spacetimedb = {{ version = \"={version}\", features = [\"unstable\"] }}");
     let pins: Vec<&str> = table(root_manifest, "[workspace.dependencies]")
         .filter(|line| toml_key(line) == "spacetimedb")
         .collect();

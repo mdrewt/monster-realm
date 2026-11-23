@@ -9,7 +9,7 @@ In the game, the hint bar at the bottom names what each button does right now. S
 
 ## 1. Launch it
 
-You need the toolchain from the README (Rust, the `spacetime` CLI 2.12.0, Node 24.22.3,
+You need the toolchain from the README (Rust, the `spacetime` CLI 2.16.1, Node 24.22.3,
 wasm-pack, `just`, and GNU `timeout`) and a local SpacetimeDB:
 
 ```sh
