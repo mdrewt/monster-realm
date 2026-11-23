@@ -167,7 +167,9 @@ from the account issuer. The fallback: audience-scoped tokens from the account i
 questions below are answered at SpacetimeDB 2.11.0. Source paths are in the SpacetimeDB repository
 at tag `v2.11.0` unless they start with `server-module/`, `client/` or `evals/` (this repository);
 "measured" means observed on a 2.11.0 standalone host, on 2026-11-14 unless a subsection names
-another date.
+another date. Three answers were measured again on a 2.16.1 host on 2026-11-23, each where it
+stands: the routes' refusal ("What the host's HTTP routes do…"), the commit log (fork (a)) and row
+filters (fork (a)).
 
 ### Which token claims a module can read at connect
 
@@ -441,6 +443,25 @@ router (the comment at line 1798). `crates/client-api/src/routes/mcp.rs` runs th
 `sql` and `call` tools, and `crates/client-api/src/routes/subscribe.rs` runs it before a WebSocket
 connection is spawned.
 
+**Measured again on 2.16.1** (2026-11-23, a scratch data directory, this repository's module with
+the crate's `unstable` feature on, the world's rule set to `Password` by the owner, and a stranger
+identity from `POST /v1/identity` that was never admitted):
+
+| Route                                                  | The stranger                                                       | The owner          | The stranger once the owner sets `Open` |
+| ------------------------------------------------------ | ------------------------------------------------------------------ | ------------------ | --------------------------------------- |
+| `POST …/call/<reducer>`, eight reducers                | 403 `not admitted` from each                                       | each runs          | each runs to its own checks             |
+| `POST …/sql`, each of the 72 tables                    | 403 `not admitted` for every one                                   | all 72 read        | the 18 public tables read               |
+| WebSocket `…/subscribe`                                | the upgrade completes, then the socket closes (1006) with no message | open, messages     | open, messages                          |
+| MCP `tools/call` `sql` (`POST …/mcp`)                  | a result marked as an error, text `not admitted`                   | a result with rows | a result with rows                      |
+| `GET …/schema`                                         | 200                                                                | 200                | 200                                     |
+| `GET …/route/anything`                                 | 404 `Database has not registered a handler for this route`         | 404                | 404                                     |
+
+So at 2.16.1 every route that reads a row or calls a reducer still runs the connect reducer first,
+and its refusal still ends the request. The token rows of the table above were not repeated: the
+refusal they exercise is the same connect reducer, and `evals/account-e2e.eval.mjs` sends the
+wrong-audience token over a WebSocket on every `just ci`, which passed on 2.16.1. The probe script
+is not in the repository.
+
 ### What identifies a player between launches
 
 The world's own anonymous token, kept on the device. Toward a `local` or `private` target the
@@ -516,7 +537,9 @@ The connect reducer runs once, when a connection opens. A refusal there is compl
 identity that is not yet connected, and does nothing to a connection that is already open. A module
 has no call that closes a connection. Row filters (`client_visibility_filter`) sit behind the
 bindings crate's `unstable` feature, whose own source comment says they are not enforced; they are
-enforced at 2.11.0, as the last three rows show.
+enforced at 2.11.0, as the last three rows show, and at 2.16.1: a filter on `species_row` (`id = 1`)
+left a stranger 1 of its 20 rows over `/sql` and in a subscription, while the owner read all 20
+(measured 2026-11-23; `docs/spacetimedb-2.16.md`).
 
 **The design (A1).**
 
@@ -551,10 +574,11 @@ enforced at 2.11.0, as the last three rows show.
   declaration behind a release feature is not in the default build. A native test cannot make the
   check: the test binary keeps no describer that no test calls, so a handler or a filter never
   reaches the fixture's definition (measured on 2.12.0 with a planted handler, route and filter).
-  All three sit behind the
-  `spacetimedb` crate's `unstable` feature, which the workspace does not enable (`Cargo.toml`:
-  `spacetimedb = "=2.12.0"`, no features). The deletion-gate census in the same test file refuses
-  a `procedure` attribute.
+  All three sit behind the `spacetimedb` crate's `unstable` feature, which the workspace enables
+  (`Cargo.toml`), so this check is what keeps them out: with the feature on, the 2.16.1 module
+  declares none and its definition has the same sections as with it off
+  (`docs/spacetimedb-2.16.md`). The deletion-gate census in the same test file refuses a
+  `procedure` attribute.
 - _The door._ An unadmitted identity can call nothing but its own unbind, so admission is granted
   by reducers only the owner can call, each taking the joiner's identity as an argument: the admit
   list of `set_world_access`, and under `Allowlist` the relayed bind. No reducer takes a password, a
@@ -649,6 +673,12 @@ directory, and a password stretched before the call would still leave a password
 log. So no reducer takes one, and the gate checks it (the door, above). A commit log a module with
 the door wrote keeps every password given to it; the module cannot erase that log, so a host who set
 a password through such a module chooses a new one for the gate.
+
+Measured again on 2.16.1 (2026-11-23): after `join_game` with a name no earlier call used, that
+name sits in the host's commit log twice, once in the transaction's inputs record (69 bytes after
+the reducer's name: the caller's identity, connection id, timestamp and the argument's length come
+between) and once in the `player` row the call inserted. The log still keeps a committed call's
+arguments in the clear.
 
 #### (b) How the official server refuses attestation binding
 

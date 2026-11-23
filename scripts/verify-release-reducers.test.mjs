@@ -177,8 +177,8 @@ test('findDefinitionViolations passes a clean V10 definition, empty HTTP section
     findDefinitionViolations(`${JSON.stringify({ V10: { sections: CLEAN } }, null, 2)}\n`),
     [],
   );
-  // The empty HTTP sections a build with the crate's `unstable` feature adds, and the other
-  // kinds this check names, empty.
+  // Empty HTTP sections, which a build may carry (the 2.16.1 build carries none, with the
+  // crate's `unstable` feature on or off), and the other kinds this check names, empty.
   assert.deepEqual(
     findDefinitionViolations(withClean({ HttpHandlers: [] }, { HttpRoutes: [] })),
     [],

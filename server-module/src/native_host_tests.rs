@@ -3,8 +3,8 @@
 //! so the SHIPPED reducer-side helpers can run against REAL rows inside an
 //! ordinary native `cargo test` binary.
 //!
-//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.12.0,
-//! `vendor/spacetimedb/src/lib.rs:1145`, `#[doc(hidden)] pub`) yields a context whose `db` is
+//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.16.1,
+//! `vendor/spacetimedb/src/lib.rs:1191`, `#[doc(hidden)] pub`) yields a context whose `db` is
 //! the real `Local` accessor, built by `Local::__host()` (`lib.rs:1148`, `:1944-1954`), so
 //! `ctx.db.<table>().<index>().find(..)` in a production helper compiles and runs unchanged.
 //! That generated code bottoms out in the `extern "C"` host imports declared by
@@ -342,7 +342,7 @@ impl<R: Serialize, K: Serialize> Handle<'_, R, K> {
 }
 
 // ---------------------------------------------------------------------------
-// The host ABI. Signatures mirror the 2.12.0 raw externs of `vendor/spacetimedb-bindings-sys`
+// The host ABI. Signatures mirror the 2.16.1 raw externs of `vendor/spacetimedb-bindings-sys`
 // with the `repr(transparent)` `TableId` / `IndexId` / `RowIter`
 // newtypes spelled as the `u32` they wrap. Every one is `unsafe`: it
 // dereferences raw pointers handed over by the bindings, which own the
@@ -567,11 +567,11 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 // THE WIRE FORMAT. Each side of a range arrives as the BSATN of a `Bound<T>`:
 // tag byte 0 `Included` followed by the BSATN of the payload, 1 `Excluded`
 // followed by the payload, 2 `Unbounded` with no payload at all
-// (`spacetimedb-sats-2.12.0/src/ser/impls.rs:124-128`). The bindings pack both
+// (`spacetimedb-sats-2.16.1/src/ser/impls.rs:124-128`). The bindings pack both
 // sides into one buffer and hand out two slices over it
-// (`vendor/spacetimedb/src/table.rs:1517-1526`), and `prefix_elems` is a
+// (`vendor/spacetimedb/src/table.rs:1570-1579`), and `prefix_elems` is a
 // `repr(transparent)` `ColId(pub u16)`, so the raw parameter is a `u16`
-// (`spacetimedb-primitives-2.12.0/src/ids.rs:125`). The parse is an EXPLICIT tag
+// (`spacetimedb-primitives-2.16.1/src/ids.rs:125`). The parse is an EXPLICIT tag
 // match: an empty slice, an unknown tag and trailing bytes after tag 2 are each
 // an ERROR, never a quiet `Unbounded`. A bound this host misreads is a window
 // the caller never asked for, and every count taken over it would be true about
@@ -804,9 +804,9 @@ impl Fixture {
 //   no transaction rollback is modelled: a reducer that errors after a write
 //   leaves that write in the store.
 // * A SETTABLE CALLER. `Fixture::run_as(_at)` runs a closure inside the SHIPPED
-//   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1226`), which is
+//   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1299`), which is
 //   the only code that builds a `ReducerContext` with a chosen sender (the
-//   constructor is private, `vendor/spacetimedb/src/lib.rs:1163`). A trampoline
+//   constructor is private, `vendor/spacetimedb/src/lib.rs:1209`). A trampoline
 //   reducer is registered once per process through the public `rt::register_reducer`
 //   and published into `REDUCERS` by calling `__describe_module__`. The closure's panics are
 //   caught inside the trampoline and re-raised in the caller's Rust frame, so
@@ -1157,9 +1157,9 @@ const DESCRIBE_SINK: u32 = 0xD5C1;
 const ERROR_SINK: u32 = 0xE551;
 
 unsafe extern "C" {
-    /// `vendor/spacetimedb/src/rt.rs:1169` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1246` (`#[unsafe(no_mangle)]`).
     fn __describe_module__(description: u32);
-    /// `vendor/spacetimedb/src/rt.rs:1226` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1299` (`#[unsafe(no_mangle)]`).
     fn __call_reducer__(
         id: usize,
         sender_0: u64,
@@ -1418,7 +1418,7 @@ unsafe extern "C" {
     fn register_table_world_name();
     #[link_name = "__preinit__20_register_describer_world_allowlist"]
     fn register_table_world_allowlist();
-    /// `vendor/spacetimedb/src/rt.rs:1458` (`#[unsafe(no_mangle)]`).
+    /// `vendor/spacetimedb/src/rt.rs:1543` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
         sender_0: u64,
@@ -1585,7 +1585,7 @@ pub(crate) const VIEW_MY_WORLD_BINDING: usize = 17;
 pub(crate) const VIEW_MY_BIND_NONCE: usize = 18;
 
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
-/// `RawModuleDef` (V10 on 2.12.0, `vendor/spacetimedb/src/rt.rs:1178`), captured once per
+/// `RawModuleDef` (V10 on 2.16.1, `vendor/spacetimedb/src/rt.rs:1251`), captured once per
 /// process so a test can read table access, keys, indexes and the exact view roster from the
 /// artifact the host itself consumes — never from source text.
 static DESCRIBE_OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1629,7 +1629,7 @@ impl Fixture {
 
 impl Fixture {
     /// The generated module definition, decoded from the bytes the shipped
-    /// `__describe_module__` wrote (a V10 def on 2.12.0; any other version is a
+    /// `__describe_module__` wrote (a V10 def on 2.16.1; any other version is a
     /// toolchain hop this harness must be re-pointed at, so it panics by name).
     pub(crate) fn module_def(
         &self,

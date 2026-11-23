@@ -21,7 +21,8 @@ defines every host function itself on a non-wasm target (`mod native_link_stubs`
 host. `server-module/src/native_host_tests.rs` defines the host functions over an in-memory row
 store, so its test binary needs the host calls to reach it. The decision is in `docs/DECISIONS.md`
 ("Server-module tests run on our own host ABI, over the two vendor crates patched where they refuse
-a native host"); the measurements behind it are in `docs/refactors/native-test-host.md`.
+a native host"); the measurements behind it are in `docs/spacetimedb-2.16.md` ("The vendor's
+unit-test harness").
 
 ## What the patch changes
 

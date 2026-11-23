@@ -248,8 +248,8 @@ const DEF_SECTIONS = [
 
 const definitionOf = (...sections) => JSON.stringify({ V10: { sections } });
 
-// A clean definition, with the empty HTTP sections a build with the crate's `unstable` feature
-// adds.
+// A clean definition carrying empty HTTP sections, which the check passes: a build may carry
+// them empty, and the 2.16.1 build carries none, with the crate's `unstable` feature on or off.
 const CLEAN_DEF = definitionOf(...DEF_SECTIONS, { HttpHandlers: [] }, { HttpRoutes: [] });
 
 // --- wasm fixtures: the 8-byte header, then custom sections (id 0, LEB128 size, LEB128 name
