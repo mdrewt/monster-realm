@@ -1726,3 +1726,53 @@ describe('deploy panel: PvP mode (bt-15, BT15.1 / BT15.5)', () => {
     ]);
   });
 });
+
+// --- the battle adapter's Y ops reach the deploy panel too (it is the other BattleOpsView) ------
+
+const HOLD_HINT: BattleOp = { kind: 'holdHint' };
+const CLEAR_PLAN: BattleOp = { kind: 'clearPlan' };
+
+describe('deploy panel: the Hold Y ops', () => {
+  it('ignores the hold-hint and the clear-plan ops on the confirm screen and in the editor, on every row: nothing is sent, and the mode, the cursor, the candidate, the slots and the painted text stay', () => {
+    // WRONG IMPL KILLED: an op read as A (a Y tap on Deploy would deploy, on Edit formation open
+    // the editor, on the editor's Confirm send the assignment); an op read as B (a Y in the editor
+    // would discard the edits); an op read as X (the editor would open from the confirm screen); an
+    // op read as Start (the editor's assignment sent); an op that repaints a changed cursor.
+    const m = mount(VM3);
+    const root = m.root();
+    /** What a stray op could change, read back. */
+    const seen = (): unknown => ({
+      mode: m.panel.mode,
+      cursor: cursorKey(root),
+      rows: rowKeys(root),
+      formation: formationNames(root),
+      editor: editorNames(root),
+      candidate: candidateName(root),
+      texts: textsOf(root),
+      hint: m.panel.hint(),
+    });
+    // The confirm screen, on Deploy and on Edit formation.
+    for (const row of ['deploy', 'edit']) {
+      if (cursorKey(root) !== row) ops(m.panel, DOWN);
+      expect(cursorKey(root), `fixture: the cursor on ${row}`).toBe(row);
+      const before = seen();
+      ops(m.panel, HOLD_HINT, CLEAR_PLAN);
+      expect(m.sends, `confirm screen, ${row}: nothing sent`).toEqual([]);
+      expect(seen(), `confirm screen, ${row}: nothing changed`).toEqual(before);
+    }
+    // The editor, on a slot, on Confirm and on Back.
+    ops(m.panel, X, RB);
+    expect(m.panel.mode, 'fixture: the editor').toBe('edit');
+    for (const row of ['slot-0', 'confirm', 'back']) {
+      for (let i = 0; i < 5 && cursorKey(root) !== row; i += 1) ops(m.panel, DOWN);
+      expect(cursorKey(root), `fixture: the cursor on ${row}`).toBe(row);
+      const before = seen();
+      ops(m.panel, HOLD_HINT, CLEAR_PLAN);
+      expect(m.sends, `editor, ${row}: nothing sent`).toEqual([]);
+      expect(seen(), `editor, ${row}: nothing changed`).toEqual(before);
+    }
+    // ANTI-VACUITY: the cursor sat on a row that acts: A on the editor's Back leaves it.
+    ops(m.panel, A);
+    expect(m.panel.mode, 'A on Back leaves the editor').toBe('confirm');
+  });
+});

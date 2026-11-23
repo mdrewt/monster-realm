@@ -503,6 +503,7 @@ export type MessageId =
   | 'tactics.ticker.lost'
   | 'tactics.ticker.fled'
   | 'tactics.ticker.battleEnded'
+  | 'tactics.ticker.holdToClear'
   | 'tactics.turnbar.round'
   | 'tactics.turnbar.surgeIn'
   | 'tactics.turnbar.retreatAt'

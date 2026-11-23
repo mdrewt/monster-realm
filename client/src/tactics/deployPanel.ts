@@ -313,6 +313,8 @@ export class DeployPanel implements BattleOpsView {
         case 'start':
         case 'cycle':
         case 'back':
+        case 'holdHint':
+        case 'clearPlan':
           return;
         default:
           op satisfies never;
@@ -333,6 +335,8 @@ export class DeployPanel implements BattleOpsView {
         this.#leaveEdit();
         return;
       case 'danger':
+      case 'holdHint':
+      case 'clearPlan':
         return;
       default:
         op satisfies never;

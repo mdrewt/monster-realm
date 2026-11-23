@@ -419,6 +419,9 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
   // view; main.ts's battleButton still opens the menu first at a legacy battle) as consumed; only Y
   // stays the page's. `baseButton(battle)` itself (BATTLE_TABLE) is unchanged. Was: X, LB and RB
   // unhandled, Start swallowed with no op.
+  // Named intentional change (the Hold Y gesture): the battle adapter answers Y too (a fresh Y is
+  // the Clear plan hint token, painted into the lent view), so the host consumes it at a bare
+  // battle base. Were: Y unhandled (the page's).
   const BATTLE_HOST_TABLE: Record<VButton, ScreenResult> = {
     ...BATTLE_TABLE,
     Up: 'consumed',
@@ -427,6 +430,7 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
     Right: 'consumed',
     A: 'consumed',
     X: 'consumed',
+    Y: 'consumed',
     LB: 'consumed',
     RB: 'consumed',
     Start: 'consumed',
@@ -448,12 +452,12 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
     }
   });
 
-  it('CTL6B-2-BATTLE-START-INERT: at a battle base Start opens nothing at the base rule (the host hands it, X, LB and RB to the battle adapter as consumed ops), while Select still toggles help, B is swallowed and Y stays the page`s', () => {
+  it('CTL6B-2-BATTLE-START-INERT: at a battle base Start opens nothing at the base rule (the host hands it, X, Y, LB and RB to the battle adapter as consumed ops), while Select still toggles help and B is swallowed', () => {
     // WRONG IMPL KILLED (B17): a Start at a battle base that opens the menu (ctl-6c's job), pops,
     // or falls through to the ladder (which would hide the battle); a battle base that treats B as
     // the page's; a Select that is lost; and a battle base that consults an adapter. bt-11 (BT11.6):
     // a host that leaves X / LB / RB to the page at a bare battle (the danger toggle and unit cycling
-    // would be pointer-only), or that swallows Y.
+    // would be pointer-only), or that leaves Y to the page (its tap is the Clear plan hint).
     for (const button of VBUTTONS) {
       expect(baseButton(battle('7'), nav(button)), `baseButton ${button}`).toEqual(
         BATTLE_TABLE[button],
@@ -3685,7 +3689,7 @@ function opsView(): { readonly applied: BattleOp[]; applyBattleOp(op: BattleOp):
 }
 
 describe('the battle base over the host (ctl-8i)', () => {
-  it('CTL8I-1-HOST-BATTLE-NAV: a bare battle base takes the D-pad and the host steps the battle adapter there (the table is never consulted), painting cursor ops — and bt-11`s Start, X, LB and RB tokens — into the lent battle view and answering the base table for Select, B, the held buttons and the Y the page keeps; the outcome frame (world base + battleView screen) and a frame above the battle keep their own adapters and paint no op', () => {
+  it('CTL8I-1-HOST-BATTLE-NAV: a bare battle base takes the D-pad and the host steps the battle adapter there (the table is never consulted), painting cursor ops — and bt-11`s Start, X, LB and RB tokens — into the lent battle view and answering the base table for Select, B and the held buttons, a fresh Y painted as the hold-hint token; the outcome frame (world base + battleView screen) and a frame above the battle keep their own adapters and paint no op', () => {
     // WRONG IMPL KILLED: a host that reads the battle's nav mark from the table's battleView entry
     // (the outcome screen's legacy adapter has none, so the bare battle would stay D-pad-less); one
     // that keeps `baseButton` at the battle (the arrows reach no view); one that steps the battle
@@ -3695,8 +3699,12 @@ describe('the battle base over the host (ctl-8i)', () => {
     // after a later button; a repeat A that presses; and a view lent under another frame id.
     // bt-11 (named intentional change, BT11.6 / plan REV 4 §R4.9): Start, X, LB and RB at the bare
     // battle base now reach the view as `start` / `danger` / `cycle` tokens (a host that drops them
-    // keeps the tactical controller map pointer-only); a held one paints nothing; Y stays the
-    // page's. Were: Start swallowed with no token, X / LB / RB unhandled.
+    // keeps the tactical controller map pointer-only); a held one paints nothing. Were: Start
+    // swallowed with no token, X / LB / RB unhandled.
+    // Named intentional change (the Hold Y gesture): a fresh Y at the bare base is consumed and
+    // painted as the `holdHint` token (a host that drops it leaves the Clear plan hint
+    // unreachable). Were: Y unhandled (the page's), painting nothing, so every op count after it
+    // is one higher.
     const view = opsView();
     const lent = (id: FrameId): unknown => (id === 'battleView' ? view : undefined);
     const bare = stackOf(battle('7'));
@@ -3718,14 +3726,16 @@ describe('the battle base over the host (ctl-8i)', () => {
     expect(view.applied, 'three ops so far').toHaveLength(3);
     expect(new Set(view.applied).size, 'three different token objects').toBe(3);
 
-    // Nothing below paints an op: the held A, Select and the Y the page keeps.
+    // The held A and Select paint no op; a fresh Y paints the hold-hint token.
     expect(host.button(bare, nav('A', true), CTX), 'a repeat A is swallowed').toBe('consumed');
     expect(host.button(bare, nav('Select'), CTX), 'Select toggles help').toEqual(TOGGLE_HELP);
-    expect(host.button(bare, nav('Y'), CTX), 'Y stays the page`s').toBe('unhandled');
+    expect(view.applied, 'the held A and Select painted nothing').toHaveLength(3);
+    expect(host.button(bare, nav('Y'), CTX), 'Y is consumed').toBe('consumed');
+    expect(view.applied.at(-1), 'and painted as the hold hint').toEqual({ kind: 'holdHint' });
     expect(
       view.applied,
-      'only the three real presses were painted: no old op is re-applied after a later button',
-    ).toHaveLength(3);
+      'four ops: the three real presses and the Y; no old op is re-applied after a later button',
+    ).toHaveLength(4);
     // bt-11 (BT11.6): Start, X, LB and RB are the tactical controller map's, painted as tokens.
     expect(host.button(bare, nav('Start'), CTX), 'Start is consumed').toBe('consumed');
     expect(view.applied.at(-1), 'and painted as a start op').toEqual({ kind: 'start' });
@@ -3741,19 +3751,19 @@ describe('the battle base over the host (ctl-8i)', () => {
       kind: 'cycle',
       dir: 1,
     });
-    expect(view.applied, 'seven ops: Down, Right, A, Start, X, LB, RB').toHaveLength(7);
-    expect(new Set(view.applied).size, 'seven different token objects').toBe(7);
+    expect(view.applied, 'eight ops: Down, Right, A, Y, Start, X, LB, RB').toHaveLength(8);
+    expect(new Set(view.applied).size, 'eight different token objects').toBe(8);
     for (const button of ['Start', 'X', 'LB', 'RB'] as const) {
       expect(host.button(bare, nav(button, true), CTX), `a held ${button} is swallowed`).toBe(
         'consumed',
       );
     }
-    expect(view.applied, 'a held Start / X / LB / RB paints nothing').toHaveLength(7);
+    expect(view.applied, 'a held Start / X / LB / RB paints nothing').toHaveLength(8);
     // B is consumed and is the view's Back (a sub-list to its command); a held B does nothing.
     expect(host.button(bare, nav('B'), CTX), 'B is consumed, never the page`s').toBe('consumed');
     expect(view.applied.at(-1), 'and painted as a back op').toEqual({ kind: 'back' });
     expect(host.button(bare, nav('B', true), CTX), 'a held B is swallowed').toBe('consumed');
-    expect(view.applied, 'eight ops: Down, Right, A, Start, X, LB, RB, B').toHaveLength(8);
+    expect(view.applied, 'nine ops: Down, Right, A, Y, Start, X, LB, RB, B').toHaveLength(9);
 
     // --- the outcome frame: the world base with the battleView SCREEN frame keeps the table ---
     const outcomeView = opsView();
@@ -3783,7 +3793,7 @@ describe('the battle base over the host (ctl-8i)', () => {
     expect(above.button(overBattle, nav('Down'), CTX)).toBe('consumed');
     expect((rec.calls[0] as Call).id, 'the frame above answered').toBe('boxView');
     expect(rec.calls, 'and only it').toHaveLength(1);
-    expect(view.applied, 'the battle cursor did not move under a frame above it').toHaveLength(8);
+    expect(view.applied, 'the battle cursor did not move under a frame above it').toHaveLength(9);
     // The shipped table: a nav screen above the battle keeps the D-pad, a legacy one does not, and
     // a text entry over a battle is the field's.
     expect(shipped.takesNav(stackOf(battle('7'), screen('questLogView')))).toBe(true);
@@ -3825,10 +3835,10 @@ describe('the battle base over the host (ctl-8i)', () => {
     expect(view.applied, 'the menu`s D-pad moved nothing in the battle').toHaveLength(1);
 
     // The menu closes: the bare base steps the battle adapter again, into the SAME view.
-    // bt-11 (named intentional change, BT11.6): LB is a cycle token now, so the page's button here
-    // is Y. Was: LB.
+    // Named intentional change (the Hold Y gesture): a fresh Y paints the hold-hint token, so the
+    // step that paints no op here is a held Y (consumed with no token). Were: a fresh Y, unhandled.
     expect(host.takesNav(bare), 'the bare battle takes the D-pad again').toBe(true);
-    expect(host.button(bare, nav('Y'), CTX), 'a button the page keeps').toBe('unhandled');
+    expect(host.button(bare, nav('Y', true), CTX), 'a held Y: consumed, no token').toBe('consumed');
     expect(
       view.applied,
       'the first button after the menu paints no op (the Down made before it is not repeated)',

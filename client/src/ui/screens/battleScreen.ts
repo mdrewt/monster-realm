@@ -9,8 +9,13 @@
 // new object each press, the profileScreen precedent) and every step's state holds the new token or
 // null, so a later paint never re-applies an old one. At a deploy CONFIRM screen Start never gets
 // here in play: main.ts's `battleButton` opens the main menu first; the tactical shell (bt-11) and
-// the deploy EDITOR leave Start to this adapter (End Turn / Guard / Submit).
+// the deploy EDITOR leave Start to this adapter (End Turn / Guard / Submit). Y is the Clear plan
+// gesture: a tap hints, a hold clears. `battleHoldButtons` is the stack-level rule that lists Y as
+// hold-capable for the router, so its tap reaches this adapter at the release.
+import type { VButton } from '../../input/buttons';
 import type { CursorDir } from '../battleModel';
+import { isBareBattle } from '../battlePolicy';
+import type { Stack } from '../contextStack';
 import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 
 /** One press on the battle's lists. */
@@ -22,7 +27,10 @@ export type BattleOp =
   // live, Submit for a pre-queue).
   | { readonly kind: 'danger' }
   | { readonly kind: 'cycle'; readonly dir: -1 | 1 }
-  | { readonly kind: 'start' };
+  | { readonly kind: 'start' }
+  // Y: a tap asks for the "Hold Y" hint, a hold clears the selected unit's READY plan.
+  | { readonly kind: 'holdHint' }
+  | { readonly kind: 'clearPlan' };
 
 /** What the battle view implements. */
 export interface BattleOpsView {
@@ -31,6 +39,17 @@ export interface BattleOpsView {
 
 export interface BattleScreenState {
   readonly op: BattleOp | null;
+}
+
+const CLEAR_PLAN_HOLD: ReadonlySet<VButton> = new Set<VButton>(['Y']);
+
+/** The router's hold-capable buttons for `stack`: Y while the bare battle base is the top frame and
+ *  its tactical shell can clear a plan with a hold (`clearPlanHoldable`); none otherwise. */
+export function battleHoldButtons(
+  stack: Stack,
+  clearPlanHoldable: boolean,
+): ReadonlySet<VButton> | undefined {
+  return clearPlanHoldable && isBareBattle(stack) ? CLEAR_PLAN_HOLD : undefined;
 }
 
 export const battleScreen: ScreenAdapter<null, BattleScreenState, BattleOpsView> = {
@@ -69,8 +88,13 @@ export const battleScreen: ScreenAdapter<null, BattleScreenState, BattleOpsView>
         return done('consumed', btn.repeat ? null : { kind: 'start' });
       case 'Select':
         return done(btn.repeat ? 'consumed' : { kind: 'toggleHelp' });
-      // Y stays the page's (the design's Hold-Y gesture is the confirmed Clear plan row).
+      // Y: a press asks for the hint (the router hands it over at the release while it lists Y as
+      // hold-capable), and a hold clears; the view acts on either only while it can clear a plan.
+      case 'Y':
+        if (btn.hold === true) return done('consumed', { kind: 'clearPlan' });
+        return done('consumed', btn.repeat ? null : { kind: 'holdHint' });
       default:
+        btn.button satisfies never;
         return done('unhandled');
     }
   },

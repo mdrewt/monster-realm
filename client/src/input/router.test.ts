@@ -26,6 +26,7 @@ import {
   ACCEL_PATHS,
   type AccelDecision,
   accelDecision,
+  HOLD_MS,
   InputRouter,
   type MenuAccel,
   outsideGameScreen,
@@ -2429,5 +2430,645 @@ describe('ownership outside #game-screen (ctl-11b, CTL11B.1)', () => {
     }
     expect(ownership(fakeEl('BUTTON'), { code: 'Space' }, null), 'button / Space').toBe('target');
     expect(ownership(fakeEl('INPUT'), { code: 'KeyB' }, null), 'input / KeyB').toBe('target');
+  });
+});
+
+// ==========================================================================================
+// Hold edges: the top frame lists its hold-capable buttons in `RouteContext.hold`. A listed
+// button's press is held back from the screen. A release before HOLD_MS is its tap
+// `{button, repeat: false}`, asked at the release; HOLD_MS held is ONE hold input
+// `{button, repeat: false, hold: true}`, asked by `tick` (or at the release when no tick saw the
+// time pass), and the release after it is swallowed. A frame change or a reset before HOLD_MS
+// delivers nothing. Only an uncovered nav-capable SCREEN frame holds; the D-pad and X keep their
+// own rules. Every press is at a NON-ZERO `now`, so a timer anchored at 0 cannot pass.
+// ==========================================================================================
+
+/** The battle base's list: Y alone. */
+const Y_LISTED: ReadonlySet<VButton> = new Set<VButton>(['Y']);
+
+/** `ctx` with `hold` as its list (unchanged when `hold` is undefined). */
+const withHold = (ctx: RouteContext, hold: ReadonlySet<VButton> | undefined): RouteContext =>
+  hold === undefined ? ctx : { ...ctx, hold };
+
+/** An uncovered nav-capable screen frame that lists Y. */
+const holdCtx = (now: number, screen: RouteContext['screen']): RouteContext =>
+  withHold(screenNavCtx(now, screen), Y_LISTED);
+
+/** The frames in which a listed button cannot hold, each built WITHOUT a list, and how many times
+ *  a Y press there asks the screen today. */
+const CANNOT_HOLD: ReadonlyArray<
+  readonly [string, (now: number, screen: RouteContext['screen']) => RouteContext, number]
+> = [
+  [
+    'a covered frame',
+    (now, screen) => ({ worldActive: false, nav: { covered: true, now, screen: true }, screen }),
+    1,
+  ],
+  ['a frame with no nav', (_now, screen) => ({ worldActive: false, screen }), 1],
+  [
+    'the main menu',
+    (now, screen) => ({ worldActive: false, nav: { covered: false, now }, screen }),
+    0,
+  ],
+  ['the world', (_now, screen) => ({ worldActive: true, screen }), 1],
+];
+
+/** A fresh press input, and the hold input, of `button`. */
+const pressInput = (button: VButton): NavInput => ({ button, repeat: false });
+const holdInput = (button: VButton): NavInput => ({ button, repeat: false, hold: true });
+
+const OPEN_MENU_CMD: ScreenResult = { kind: 'openMenu' };
+const NOT_CONSUMED_EDGE = { consumed: false, effects: [] } as const;
+
+type Step = readonly ['down' | 'up' | 'tick', number];
+
+/** Runs `script` on a router under `ctxOf`, returning each step's result in order. */
+function drive(
+  r: InputRouter,
+  button: VButton,
+  script: readonly Step[],
+  ctxOf: (now: number) => RouteContext,
+): unknown[] {
+  return script.map(([step, now]) =>
+    step === 'tick' ? r.tick(ctxOf(now)) : r.route(edge(button, step === 'down'), ctxOf(now)),
+  );
+}
+
+describe('InputRouter: hold edges (RouteContext.hold)', () => {
+  it('a listed Y held HOLD_MS under the same frame asks the screen ONCE with the hold input, at exactly HOLD_MS after its press (not 1 ms before, not at the press); later ticks and the release deliver nothing; a new press arms again; a Command answer is one command effect, ahead of a D-pad repeat due on the same tick [gp-6.1]', () => {
+    // WRONG IMPL KILLED: a listed press that still asks the screen at the press (a tap and a hold
+    // would both act); a hold due one ms early or late (`>` for `>=`, an off-by-one); a timer
+    // anchored at 0 instead of the press; a hold asked on every tick while held (Clear plan sent
+    // each frame); a hold input without the `hold` flag (the adapter would read a tap: a hint
+    // instead of the clear); a tap asked at the release after a hold (a hint after the clear); a
+    // router whose second press never arms; a Command dropped; the repeat effect put first.
+    expect(HOLD_MS, 'the hold threshold').toBe(500);
+    const { seen, screen } = askingScreen(() => 'consumed');
+    const r = new InputRouter();
+    const t0 = 1000;
+    expect(r.route(edge('Y', true), holdCtx(t0, screen)), 'the press is held back').toEqual(
+      SWALLOWED_EDGE,
+    );
+    expect(seen, 'the screen is not asked at the press').toEqual([]);
+    for (const t of [t0, t0 + 1, t0 + 250, t0 + HOLD_MS - 1]) {
+      expect(r.tick(holdCtx(t, screen)), `nothing at t0 + ${t - t0}`).toEqual([]);
+    }
+    expect(seen, 'nothing asked before HOLD_MS').toEqual([]);
+    expect(r.tick(holdCtx(t0 + HOLD_MS, screen)), 'a consumed hold answer is no effect').toEqual(
+      [],
+    );
+    expect(seen, 'asked once at HOLD_MS, with the hold input').toEqual([holdInput('Y')]);
+    for (let t = t0 + HOLD_MS; t <= t0 + 4000; t += 37) {
+      expect(r.tick(holdCtx(t, screen)), `still held at t0 + ${t - t0}`).toEqual([]);
+    }
+    expect(seen, 'never asked again while it stays held').toHaveLength(1);
+    expect(r.route(edge('Y', false), holdCtx(t0 + 4100, screen)), 'the release').toEqual(
+      SWALLOWED_EDGE,
+    );
+    expect(seen, 'the release asks nothing: no tap after a hold').toHaveLength(1);
+    for (const t of [t0 + 4200, t0 + 9000]) {
+      expect(r.tick(holdCtx(t, screen)), `after the release, t0 + ${t - t0}`).toEqual([]);
+    }
+    expect(seen, 'nothing after the release').toHaveLength(1);
+
+    // A new press arms again, timed from its own press.
+    const t1 = 20_000;
+    expect(r.route(edge('Y', true), holdCtx(t1, screen)), 'the second press').toEqual(
+      SWALLOWED_EDGE,
+    );
+    expect(r.tick(holdCtx(t1 + HOLD_MS - 1, screen))).toEqual([]);
+    expect(seen, 'nothing before the second press`s own HOLD_MS').toHaveLength(1);
+    r.tick(holdCtx(t1 + HOLD_MS, screen));
+    expect(seen, 'the second press is one more hold').toEqual([holdInput('Y'), holdInput('Y')]);
+
+    // A Command answer to the hold is ONE command effect in tick's result; unhandled is none.
+    const cmd = askingScreen(() => OPEN_MENU_CMD);
+    const c = new InputRouter();
+    c.route(edge('Y', true), holdCtx(3000, cmd.screen));
+    expect(c.tick(holdCtx(3000 + HOLD_MS, cmd.screen)), 'the hold`s Command').toEqual([
+      commandEffect(OPEN_MENU_CMD),
+    ]);
+    expect(c.tick(holdCtx(3000 + HOLD_MS + 16, cmd.screen)), 'once').toEqual([]);
+    expect(c.route(edge('Y', false), holdCtx(3700, cmd.screen))).toEqual(SWALLOWED_EDGE);
+    expect(cmd.seen, 'one ask in all').toEqual([holdInput('Y')]);
+    const unhandled = askingScreen(() => 'unhandled');
+    const u = new InputRouter();
+    u.route(edge('Y', true), holdCtx(3000, unhandled.screen));
+    expect(u.tick(holdCtx(3000 + HOLD_MS, unhandled.screen)), 'an unhandled hold').toEqual([]);
+    expect(unhandled.seen).toEqual([holdInput('Y')]);
+
+    // The hold's effect comes first, the D-pad repeat due on the same tick after it.
+    const HOLD_CMD: ScreenResult = { kind: 'advanceDialogue', choiceIdx: 7 };
+    const REPEAT_CMD: ScreenResult = { kind: 'advanceDialogue', choiceIdx: 3 };
+    const both = askingScreen((btn) => {
+      if (btn.hold === true) return HOLD_CMD;
+      return btn.repeat ? REPEAT_CMD : 'consumed';
+    });
+    const o = new InputRouter();
+    o.route(edge('Y', true), holdCtx(1000, both.screen));
+    // Down's first repeat is due REPEAT_DELAY_MS (350) after its press: at 1500, with the hold.
+    o.route(edge('Down', true), holdCtx(1150, both.screen));
+    expect(o.tick(holdCtx(1500, both.screen)), 'the hold, then the repeat').toEqual([
+      commandEffect(HOLD_CMD),
+      commandEffect(REPEAT_CMD),
+    ]);
+    expect(both.seen, 'the Down press, the hold, the repeat').toEqual([
+      pressInput('Down'),
+      holdInput('Y'),
+      { button: 'Down', repeat: true },
+    ]);
+  });
+
+  it('a listed Y released HOLD_MS or more after its press with no tick past HOLD_MS asks the hold input once at the release and swallows it, never a tap: its Command is one command effect there, consumed and unhandled none; later ticks ask nothing [gp-6.1]', () => {
+    // WRONG IMPL KILLED: a release that reads "no tick fired the hold" as a tap (a pad release
+    // polled before the frame's tick, or a stalled frame, would hint instead of clearing); a
+    // release that asks both the hold and the tap; a release-time hold whose Command is dropped,
+    // or whose release is left unconsumed; a later tick that fires the hold a second time.
+    const cases: ReadonlyArray<readonly [string, ScreenResult, readonly RouterEffect[]]> = [
+      ['a Command', OPEN_MENU_CMD, [commandEffect(OPEN_MENU_CMD)]],
+      ['consumed', 'consumed', []],
+      ['unhandled', 'unhandled', []],
+    ];
+    for (const [name, answer, effects] of cases) {
+      for (const heldFor of [HOLD_MS, HOLD_MS + 1, 2000]) {
+        const label = `${name} / released ${heldFor} ms after the press`;
+        const { seen, screen } = askingScreen(() => answer);
+        const r = new InputRouter();
+        r.route(edge('Y', true), holdCtx(1000, screen));
+        // The last tick before the release saw 1 ms short of HOLD_MS.
+        expect(r.tick(holdCtx(1000 + HOLD_MS - 1, screen)), `${label}: the tick`).toEqual([]);
+        expect(r.route(edge('Y', false), holdCtx(1000 + heldFor, screen)), label).toEqual({
+          consumed: true,
+          effects,
+        });
+        expect(seen, `${label}: one hold, no tap`).toEqual([holdInput('Y')]);
+        expect(r.tick(holdCtx(1000 + heldFor + 16, screen)), `${label}: after`).toEqual([]);
+        expect(seen, `${label}: nothing after the release`).toHaveLength(1);
+      }
+    }
+  });
+
+  it('a screen that calls resetRepeat while asked for the hold leaves no hold and no D-pad repeat behind, and one that throws on the hold is never asked again for that press: one ask, nothing on later ticks, a release that asks nothing [gp-6.1]', () => {
+    // WRONG IMPL KILLED: a hold marked fired only after the ask returns (a throwing adapter is
+    // asked again on every frame); the hold entry written back after a re-entrant resetRepeat (the
+    // reset a sheet toggle makes is undone: the release is then swallowed by a stale entry); the
+    // D-pad repeat read before the holds pass (a repeat the reset dropped still fires into the new
+    // frame); a reset that forgets the D-pad holder count (the arrow's release is lost).
+    const r = new InputRouter();
+    const seen: NavInput[] = [];
+    const resetting = (btn: NavInput): ScreenResult => {
+      seen.push(btn);
+      if (btn.hold === true) r.resetRepeat();
+      return 'consumed';
+    };
+    r.route(edge('Y', true), holdCtx(1000, resetting));
+    // A held arrow whose first repeat is due at 1500, with the hold.
+    r.route(edge('Down', true), holdCtx(1150, resetting));
+    expect(
+      r.tick(holdCtx(1500, resetting)),
+      'the hold; the reset it made drops the repeat',
+    ).toEqual([]);
+    expect(seen, 'the Down press, then the hold; no repeat').toEqual([
+      pressInput('Down'),
+      holdInput('Y'),
+    ]);
+    for (const t of [1516, 1600, 2000, 5000]) {
+      expect(r.tick(holdCtx(t, resetting)), `t=${t}`).toEqual([]);
+    }
+    expect(seen, 'no second hold and no repeat later').toHaveLength(2);
+    expect(
+      r.route(edge('Y', false), holdCtx(5100, resetting)),
+      'the Y release after the reset is an ordinary release',
+    ).toEqual({ consumed: false, effects: [] });
+    expect(seen, 'and asks nothing').toHaveLength(2);
+    expect(
+      r.route(edge('Down', false), holdCtx(5200, resetting)).effects,
+      'the held arrow`s release is still reported',
+    ).toEqual([dirUp('South')]);
+
+    const boom = new InputRouter();
+    let asks = 0;
+    const throwing = (btn: NavInput): ScreenResult => {
+      asks += 1;
+      if (btn.hold === true) throw new Error('the adapter failed');
+      return 'consumed';
+    };
+    boom.route(edge('Y', true), holdCtx(1000, throwing));
+    try {
+      boom.tick(holdCtx(1000 + HOLD_MS, throwing));
+    } catch {
+      // The throw may reach the frame loop; what is pinned is what the next frames do.
+    }
+    expect(asks, 'the hold was asked').toBe(1);
+    for (const t of [1000 + HOLD_MS + 16, 2000, 6000]) {
+      expect(boom.tick(holdCtx(t, throwing)), `t=${t}`).toEqual([]);
+    }
+    expect(asks, 'a throwing hold is never asked again').toBe(1);
+    expect(
+      boom.route(edge('Y', false), holdCtx(6100, throwing)).effects,
+      'its release delivers nothing',
+    ).toEqual([]);
+    expect(asks, 'and asks nothing').toBe(1);
+  });
+
+  it('a listed Y released before HOLD_MS is ONE tap at the release: the screen asked once with the plain press input, its answer mapped as a press is (a Command a command effect, consumed swallowed, unhandled left unconsumed), 1 ms short of HOLD_MS too, and never a hold [gp-6.2]', () => {
+    // WRONG IMPL KILLED: a tap asked at the press (a hold would then also tap); a tap flagged
+    // `hold` (the adapter would clear the plan on a quick press); a tap at HOLD_MS - 1 read as a
+    // hold (`>` vs `>=` on the wrong side); an unhandled tap consumed (the page would lose the
+    // key) or a consumed one left to the page; a Command dropped or rewritten; a tap followed by a
+    // hold on a later tick (the press was not ended by its release).
+    let rows = 0;
+    for (const a of SCREEN_ANSWERS) {
+      for (const heldFor of [0, 1, 120, HOLD_MS - 1]) {
+        const label = `${a.name} / held ${heldFor} ms`;
+        const { seen, screen } = askingScreen(() => a.answer);
+        const r = new InputRouter();
+        expect(r.route(edge('Y', true), holdCtx(1000, screen)), `${label}: the press`).toEqual(
+          SWALLOWED_EDGE,
+        );
+        if (heldFor > 1) {
+          expect(r.tick(holdCtx(1000 + Math.floor(heldFor / 2), screen))).toEqual([]);
+        }
+        expect(seen, `${label}: nothing before the release`).toEqual([]);
+        expect(r.route(edge('Y', false), holdCtx(1000 + heldFor, screen)), label).toEqual(
+          a.expected,
+        );
+        expect(seen, `${label}: one tap, the plain press input`).toEqual([pressInput('Y')]);
+        expect(seen[0]?.hold, `${label}: the tap is not a hold`).toBeUndefined();
+        for (const t of [1000 + HOLD_MS, 1000 + 3 * HOLD_MS]) {
+          expect(r.tick(holdCtx(t, screen)), `${label}: t=${t}`).toEqual([]);
+        }
+        expect(seen, `${label}: no hold after the tap`).toHaveLength(1);
+        rows += 1;
+      }
+    }
+    expect(rows, 'ANTI-VACUITY: every answer x press length').toBe(SCREEN_ANSWERS.length * 4);
+  });
+
+  it('over random press lengths, gaps and tick cadences, every press of a listed Y delivers exactly one of a tap and a hold, never both and never two: the hold exactly when it was held HOLD_MS (asked by a tick that saw HOLD_MS, else at the release), the tap only at the release [gp-6.2]', () => {
+    // WRONG IMPL KILLED: a press that both taps and holds; a hold that re-fires on later ticks or
+    // presses; a tap decided by tick count instead of time (a coarse cadence would tap after
+    // HOLD_MS); a hold lost when no tick lands past HOLD_MS before the release; a timer carried
+    // over from the previous press.
+    const pressArb = fc.record({
+      gap: fc.integer({ min: 1, max: 1500 }),
+      heldFor: fc.integer({ min: 0, max: 1200 }),
+      // A tick every 4 ms (a fast display) up to a 700 ms stall.
+      cadence: fc.integer({ min: 4, max: 700 }),
+    });
+    fc.assert(
+      fc.property(fc.array(pressArb, { minLength: 1, maxLength: 8 }), (presses) => {
+        const { seen, screen } = askingScreen(() => 'consumed');
+        const r = new InputRouter();
+        let t = 1000;
+        for (const p of presses) {
+          t += p.gap;
+          const before = seen.length;
+          expect(r.route(edge('Y', true), holdCtx(t, screen))).toEqual(SWALLOWED_EDGE);
+          const releaseAt = t + p.heldFor;
+          let tickedPastHold = false;
+          for (let at = t + p.cadence; at < releaseAt; at += p.cadence) {
+            r.tick(holdCtx(at, screen));
+            if (at - t >= HOLD_MS) tickedPastHold = true;
+          }
+          const beforeRelease = seen.slice(before);
+          r.route(edge('Y', false), holdCtx(releaseAt, screen));
+          const asked = seen.slice(before);
+          expect(asked, 'exactly one input per press').toHaveLength(1);
+          if (p.heldFor >= HOLD_MS) {
+            expect(asked[0], 'held HOLD_MS: the hold').toEqual(holdInput('Y'));
+            expect(beforeRelease, 'asked by a tick exactly when one saw HOLD_MS').toHaveLength(
+              tickedPastHold ? 1 : 0,
+            );
+          } else {
+            expect(asked[0], 'shorter: the tap').toEqual(pressInput('Y'));
+            expect(beforeRelease, 'the tap waits for the release').toEqual([]);
+          }
+          r.tick(holdCtx(releaseAt + HOLD_MS, screen));
+          expect(seen.length - before, 'nothing after the release').toBe(1);
+          t = releaseAt + HOLD_MS;
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('a button the context does not list is asked at the press exactly as with no list, its release unconsumed, and no hold input however long it is held: Y unlisted or with A listed, B, A and Start beside a listed Y; a listed Y in a frame that cannot hold (covered, no nav, the main menu, the world) answers exactly as with no list; a listed D-pad button or X keeps its own rules [gp-6.3]', () => {
+    // WRONG IMPL KILLED: a router that holds back every Y once any list is present (a frame listing
+    // only A would delay Y); B held back like a listed button (the shipped press-time skip of a
+    // playing beat would wait for the release); a listed Y armed under a covered frame, with no
+    // nav, at the world or under the main menu (the main menu's Y would stop being its nav press;
+    // a legacy frame's Y would wait); a listed D-pad button or X armed as a hold (an arrow would
+    // stop moving at the press and repeating, X would stop acting at the press).
+    const UNLISTED: ReadonlyArray<readonly [string, VButton, ReadonlySet<VButton> | undefined]> = [
+      ['Y with no list', 'Y', undefined],
+      ['Y with A listed', 'Y', new Set<VButton>(['A'])],
+      ['B beside a listed Y', 'B', Y_LISTED],
+      ['A beside a listed Y', 'A', Y_LISTED],
+      ['Start beside a listed Y', 'Start', Y_LISTED],
+    ];
+    let rows = 0;
+    for (const [label, button, hold] of UNLISTED) {
+      for (const a of SCREEN_ANSWERS) {
+        const name = `${label} / ${a.name}`;
+        const { seen, screen } = askingScreen(() => a.answer);
+        const ctxAt = (now: number): RouteContext => withHold(screenNavCtx(now, screen), hold);
+        const r = new InputRouter();
+        expect(r.route(edge(button, true), ctxAt(1000)), `${name}: the press`).toEqual(a.expected);
+        expect(seen, `${name}: asked at the press, fresh`).toEqual([pressInput(button)]);
+        for (const t of [1000 + HOLD_MS, 1000 + 5 * HOLD_MS]) {
+          expect(r.tick(ctxAt(t)), `${name}: t=${t}`).toEqual([]);
+        }
+        expect(r.route(edge(button, false), ctxAt(1000 + 5 * HOLD_MS + 10)), name).toEqual({
+          consumed: false,
+          effects: [],
+        });
+        expect(seen, `${name}: one ask, never a hold`).toHaveLength(1);
+        rows += 1;
+      }
+    }
+    expect(rows, 'ANTI-VACUITY: every unlisted case x answer').toBe(
+      UNLISTED.length * SCREEN_ANSWERS.length,
+    );
+
+    // A listed Y where the frame cannot hold: step for step what the same frame does unlisted.
+    const SCRIPT: readonly Step[] = [
+      ['down', 1000],
+      ['tick', 1000 + HOLD_MS],
+      ['tick', 1000 + 3 * HOLD_MS],
+      ['up', 1000 + 3 * HOLD_MS + 5],
+    ];
+    for (const [label, base, asksAtPress] of CANNOT_HOLD) {
+      for (const a of SCREEN_ANSWERS) {
+        const name = `${label} / ${a.name}`;
+        const listed = askingScreen(() => a.answer);
+        const plain = askingScreen(() => a.answer);
+        const got = drive(new InputRouter(), 'Y', SCRIPT, (now) =>
+          withHold(base(now, listed.screen), Y_LISTED),
+        );
+        const want = drive(new InputRouter(), 'Y', SCRIPT, (now) => base(now, plain.screen));
+        expect(got, `${name}: every step as with no list`).toEqual(want);
+        expect(listed.seen, `${name}: asked as with no list`).toEqual(plain.seen);
+        expect(plain.seen, `${name}: fixture: today's asks`).toHaveLength(asksAtPress);
+        expect(
+          listed.seen.some((btn) => btn.hold === true),
+          `${name}: never a hold`,
+        ).toBe(false);
+      }
+    }
+
+    // A listed D-pad button or X: its press asks at once and an arrow repeats, as with no list.
+    const PRESS_CMD: ScreenResult = { kind: 'advanceDialogue', choiceIdx: 1 };
+    const REPEAT_CMD: ScreenResult = { kind: 'advanceDialogue', choiceIdx: 2 };
+    const DPAD_SCRIPT: readonly Step[] = [
+      ['down', 1000],
+      ['tick', 1350],
+      ['tick', 1000 + HOLD_MS],
+      ['tick', 1550],
+      ['up', 1600],
+    ];
+    for (const button of ['Down', 'X'] as const) {
+      const answer = (btn: NavInput): ScreenResult => (btn.repeat ? REPEAT_CMD : PRESS_CMD);
+      const listed = askingScreen(answer);
+      const plain = askingScreen(answer);
+      const both = new Set<VButton>([button, 'Y']);
+      const got = drive(new InputRouter(), button, DPAD_SCRIPT, (now) =>
+        withHold(screenNavCtx(now, listed.screen), both),
+      );
+      const want = drive(new InputRouter(), button, DPAD_SCRIPT, (now) =>
+        screenNavCtx(now, plain.screen),
+      );
+      expect(got, `${button} listed: every step as with no list`).toEqual(want);
+      expect(listed.seen, `${button} listed: asked as with no list`).toEqual(plain.seen);
+      expect(listed.seen[0], `${button}: asked at the press`).toEqual(pressInput(button));
+      expect(
+        listed.seen.some((btn) => btn.hold === true),
+        `${button}: never a hold`,
+      ).toBe(false);
+    }
+  });
+
+  it('a frame change or a reset before HOLD_MS disarms a listed press with nothing delivered, then or later: resetRepeat, releaseAll, and a tick whose context omits the list, lists another button, is covered, has no nav, is the main menu or the world; later ticks under the listing frame and the release ask nothing [gp-6.4]', () => {
+    // WRONG IMPL KILLED: a reset or releaseAll that leaves the hold armed (a Y held across a pushed
+    // frame fires its hold into the battle once the frame is popped); a tick that merely skips an
+    // entry its frame does not list instead of dropping it (the hold fires once the base is back
+    // on top); a disarmed press that still taps at its release; a releaseAll that reports Y as a
+    // released direction.
+    type Disarm = readonly [string, (r: InputRouter, screen: RouteContext['screen']) => void];
+    const disarms: Disarm[] = [
+      [
+        'resetRepeat',
+        (r) => {
+          r.resetRepeat();
+        },
+      ],
+      [
+        'releaseAll',
+        (r) => {
+          expect(r.releaseAll(), 'releaseAll: no direction was held').toEqual([]);
+        },
+      ],
+      [
+        'a tick with no list',
+        (r, screen) => {
+          expect(r.tick(screenNavCtx(1200, screen))).toEqual([]);
+        },
+      ],
+      [
+        'a tick listing another button',
+        (r, screen) => {
+          expect(r.tick(withHold(screenNavCtx(1200, screen), new Set<VButton>(['A'])))).toEqual([]);
+        },
+      ],
+    ];
+    for (const [label, base] of CANNOT_HOLD) {
+      disarms.push([
+        `a tick under ${label}`,
+        (r, screen) => {
+          expect(r.tick(withHold(base(1200, screen), Y_LISTED))).toEqual([]);
+        },
+      ]);
+    }
+    for (const [label, disarm] of disarms) {
+      const { seen, screen } = askingScreen(() => OPEN_MENU_CMD);
+      const r = new InputRouter();
+      r.route(edge('Y', true), holdCtx(1000, screen));
+      disarm(r, screen);
+      for (const t of [1000 + HOLD_MS, 1000 + 2 * HOLD_MS, 9000]) {
+        expect(
+          r.tick(holdCtx(t, screen)),
+          `${label}: back under the listing frame, t=${t}`,
+        ).toEqual([]);
+      }
+      expect(r.route(edge('Y', false), holdCtx(9100, screen)), `${label}: the release`).toEqual({
+        consumed: false,
+        effects: [],
+      });
+      expect(seen, `${label}: neither a hold nor a tap`).toEqual([]);
+    }
+    expect(disarms, 'ANTI-VACUITY: two resets and six frame changes').toHaveLength(8);
+
+    // releaseAll still reports the held directions, and only those.
+    const held = askingScreen(() => 'consumed');
+    const r = new InputRouter();
+    r.route(edge('Y', true), holdCtx(1000, held.screen));
+    r.route(edge('Down', true), holdCtx(1010, held.screen));
+    expect(r.releaseAll(), 'one dirUp for the held arrow, nothing for Y').toEqual([dirUp('South')]);
+    r.tick(holdCtx(1000 + HOLD_MS, held.screen));
+    expect(held.seen, 'only the Down press was ever asked').toEqual([pressInput('Down')]);
+  });
+
+  it('a release under a context that does not list Y (the frame changed with no tick between) ends the press with neither a tap nor a hold, before HOLD_MS or past it, and is swallowed; later ticks ask nothing [gp-6.4]', () => {
+    // WRONG IMPL KILLED: a release that taps whatever the frame now is (the hint would land in the
+    // menu just opened); a release past HOLD_MS that asks the hold of a frame that does not offer
+    // it (a plan cleared from under the main menu); a release that leaves the entry for a later
+    // tick to fire.
+    const changed: Array<
+      readonly [string, (now: number, s: RouteContext['screen']) => RouteContext]
+    > = [
+      ['no list', (now, s) => screenNavCtx(now, s)],
+      ['A listed', (now, s) => withHold(screenNavCtx(now, s), new Set<VButton>(['A']))],
+    ];
+    for (const [label, base] of CANNOT_HOLD) {
+      changed.push([label, (now, s) => withHold(base(now, s), Y_LISTED)]);
+    }
+    for (const [label, ctxOf] of changed) {
+      for (const heldFor of [200, HOLD_MS + 50]) {
+        const name = `${label} / released ${heldFor} ms after the press`;
+        const { seen, screen } = askingScreen(() => OPEN_MENU_CMD);
+        const r = new InputRouter();
+        r.route(edge('Y', true), holdCtx(1000, screen));
+        expect(r.route(edge('Y', false), ctxOf(1000 + heldFor, screen)), name).toEqual(
+          SWALLOWED_EDGE,
+        );
+        expect(seen, `${name}: nothing asked`).toEqual([]);
+        for (const t of [1000 + heldFor + 16, 9000]) {
+          expect(r.tick(holdCtx(t, screen)), `${name}: t=${t}`).toEqual([]);
+        }
+        expect(seen, `${name}: nothing later`).toEqual([]);
+      }
+    }
+    expect(changed, 'ANTI-VACUITY: six changed frames').toHaveLength(6);
+  });
+
+  it('a press left armed or fired by a frame that changed with no tick between never swallows a press in the next frame: Y down under the main menu is its nav press, at the world or under a frame that lists nothing it is asked at once; back under the listing frame a new press arms from its own time [gp-6.4]', () => {
+    // WRONG IMPL KILLED: an entry that swallows every later Y until its release arrives (a lost
+    // keyup, or a release seen under another frame, would leave Y dead in the main menu and at
+    // the world); a stale entry kept and reused (the next press on the battle base fires at once
+    // from the first press's timer).
+    const next: ReadonlyArray<
+      readonly [
+        string,
+        (now: number, s: RouteContext['screen']) => RouteContext,
+        { readonly consumed: boolean; readonly effects: readonly RouterEffect[] },
+        boolean,
+      ]
+    > = [
+      [
+        'the main menu',
+        (now, s) => ({ worldActive: false, nav: { covered: false, now }, screen: s }),
+        { consumed: true, effects: [navEffect('Y', false)] },
+        false,
+      ],
+      ['the world', (_now, s) => ({ worldActive: true, screen: s }), NOT_CONSUMED_EDGE, true],
+      ['a frame that lists nothing', (now, s) => screenNavCtx(now, s), NOT_CONSUMED_EDGE, true],
+    ];
+    for (const fired of [false, true]) {
+      for (const [label, ctxOf, expected, asksFresh] of next) {
+        const name = `${label} after a press left ${fired ? 'fired' : 'armed'}`;
+        const { seen, screen } = askingScreen(() => 'unhandled');
+        const r = new InputRouter();
+        r.route(edge('Y', true), holdCtx(1000, screen));
+        if (fired) {
+          r.tick(holdCtx(1000 + HOLD_MS, screen));
+          expect(seen, `${name}: fixture: the hold fired`).toEqual([holdInput('Y')]);
+        }
+        const asked = seen.length;
+        expect(r.route(edge('Y', true), ctxOf(3000, screen)), `${name}: the next press`).toEqual(
+          expected,
+        );
+        expect(seen.slice(asked), `${name}: asked as today`).toEqual(
+          asksFresh ? [pressInput('Y')] : [],
+        );
+        r.route(edge('Y', false), ctxOf(3050, screen));
+        const mark = seen.length;
+        expect(r.route(edge('Y', true), holdCtx(4000, screen)), `${name}: a new press`).toEqual(
+          SWALLOWED_EDGE,
+        );
+        expect(
+          r.tick(holdCtx(4000 + HOLD_MS - 1, screen)),
+          `${name}: not the first press's timer`,
+        ).toEqual([]);
+        expect(seen.slice(mark), `${name}: nothing before its own HOLD_MS`).toEqual([]);
+        r.tick(holdCtx(4000 + HOLD_MS, screen));
+        expect(seen.slice(mark), `${name}: one hold from its own press`).toEqual([holdInput('Y')]);
+      }
+    }
+  });
+
+  it('two sources pressing a listed Y while it is armed keep the FIRST press`s timer and ask nothing at the second press, and the first release ends the press: a tap when short, the hold when HOLD_MS after the first press; the second release and a press while the hold has fired deliver nothing [gp-6.5]', () => {
+    // WRONG IMPL KILLED: a second press that restarts the timer (a key + pad chord would push the
+    // hold out); a second press that asks the screen (a second tap); per-source entries (two holds
+    // for one chord); a press that stays armed past its first release (the second source's
+    // release would hold or tap again); a press while fired that re-arms (a second clear).
+    // Short: the first release taps, though the second source still holds.
+    {
+      const { seen, screen } = askingScreen(() => 'consumed');
+      const r = new InputRouter();
+      r.route(edge('Y', true), holdCtx(1000, screen));
+      expect(r.route(edge('Y', true), holdCtx(1100, screen)), 'source 2: swallowed').toEqual(
+        SWALLOWED_EDGE,
+      );
+      expect(seen, 'nothing asked at either press').toEqual([]);
+      expect(r.route(edge('Y', false), holdCtx(1200, screen)), 'the first release').toEqual(
+        SWALLOWED_EDGE,
+      );
+      expect(seen, 'the first release is the tap').toEqual([pressInput('Y')]);
+      for (const t of [1000 + HOLD_MS, 1100 + HOLD_MS, 5000]) {
+        expect(r.tick(holdCtx(t, screen)), `t=${t}: the press is over`).toEqual([]);
+      }
+      expect(
+        r.route(edge('Y', false), holdCtx(5100, screen)),
+        'the second release: an ordinary release',
+      ).toEqual({ consumed: false, effects: [] });
+      expect(seen, 'one tap in all, no hold').toEqual([pressInput('Y')]);
+    }
+    // Held: the hold is due HOLD_MS after the FIRST press.
+    {
+      const { seen, screen } = askingScreen(() => 'consumed');
+      const r = new InputRouter();
+      r.route(edge('Y', true), holdCtx(1000, screen));
+      expect(r.route(edge('Y', true), holdCtx(1300, screen))).toEqual(SWALLOWED_EDGE);
+      expect(r.tick(holdCtx(1000 + HOLD_MS - 1, screen))).toEqual([]);
+      expect(seen).toEqual([]);
+      r.tick(holdCtx(1000 + HOLD_MS, screen));
+      expect(seen, 'the hold, HOLD_MS after the first press').toEqual([holdInput('Y')]);
+      r.tick(holdCtx(1300 + HOLD_MS, screen));
+      expect(seen, 'not again at the second press`s HOLD_MS').toHaveLength(1);
+      expect(r.route(edge('Y', true), holdCtx(1900, screen)), 'a press while fired').toEqual(
+        SWALLOWED_EDGE,
+      );
+      r.tick(holdCtx(1900 + HOLD_MS, screen));
+      expect(seen, 'a press while fired arms nothing').toHaveLength(1);
+      expect(r.route(edge('Y', false), holdCtx(2600, screen)), 'the first release').toEqual(
+        SWALLOWED_EDGE,
+      );
+      expect(
+        r.route(edge('Y', false), holdCtx(2700, screen)),
+        'the second release: an ordinary release',
+      ).toEqual({ consumed: false, effects: [] });
+      expect(seen, 'one hold in all, no tap').toEqual([holdInput('Y')]);
+    }
+    // Released at the first press's HOLD_MS, no tick between: the first timer makes it the hold.
+    {
+      const { seen, screen } = askingScreen(() => 'consumed');
+      const r = new InputRouter();
+      r.route(edge('Y', true), holdCtx(1000, screen));
+      r.route(edge('Y', true), holdCtx(1400, screen));
+      expect(r.route(edge('Y', false), holdCtx(1000 + HOLD_MS, screen))).toEqual(SWALLOWED_EDGE);
+      expect(seen, 'the hold (a restarted timer would make it a 100 ms tap)').toEqual([
+        holdInput('Y'),
+      ]);
+    }
   });
 });

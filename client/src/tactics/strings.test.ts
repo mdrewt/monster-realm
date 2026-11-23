@@ -46,6 +46,11 @@
 // English and French (no file text read). RED REASON: the 13 keys are absent from both catalogs and
 // the functions from strings.ts.
 //
+// The Hold Y hint line (named intentional change): the roster grows 147 → 148 (+1 plain,
+// `tactics.ticker.holdToClear`, the ticker line a Y tap shows while Hold Y can clear a READY plan).
+// The exact-roster test pins the 148 and the French and resolver tests follow the grown roster; the
+// last describe CALLS `tickerHoldToClear()` under English and French.
+//
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -271,11 +276,12 @@ const BT15B_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'tactics.results.ratingNew': ['after'],
 };
 
-/** Every `tactics.*` key after bt-15 increment B: 93 plain, 54 parameterised = 147 (NAMED
- *  INTENTIONAL CHANGE, bt-15 increment B, BT15.2/BT15.3/BT15.5: 84 + 50 = 134, +9 plain, +4
- *  parameterised; bt-12 increment B's 84 + 50 = 134 before that: increment A's 83 + 49 = 132,
- *  +`tactics.deploy.wilds` and +`tactics.clock.stillThere`; bt-11 increment C's 69 + 45 = 114 before
- *  that). */
+/** The Hold Y gesture: the ticker line a Y tap shows while Hold Y can clear the selected unit's
+ *  READY plan — 1 plain key. */
+const HOLD_Y_PLAIN_KEYS: readonly string[] = ['tactics.ticker.holdToClear'];
+
+/** Every `tactics.*` key: 94 plain, 54 parameterised = 148 (named intentional change, the Hold Y
+ *  hint line: +1 plain. Were: 93 + 54 = 147). */
 const PLAIN_KEYS: readonly string[] = [
   ...BT10_PLAIN_KEYS,
   ...BT11_PLAIN_KEYS,
@@ -283,6 +289,7 @@ const PLAIN_KEYS: readonly string[] = [
   ...BT12_PLAIN_KEYS,
   ...BT12B_PLAIN_KEYS,
   ...BT15B_PLAIN_KEYS,
+  ...HOLD_Y_PLAIN_KEYS,
 ];
 const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT10_PARAM_FIELDS,
@@ -410,7 +417,7 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     ).toEqual([]);
   });
 
-  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 147 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys, (bt-12 increment B) the wild-pack label and the Still-there countdown, and (bt-15 increment B, named intentional change: 134 → 147) the clock / forfeit / results 9 plain and 4 parameterised keys — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
+  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 148 tactics.* keys (named intentional change: 147 → 148, + the Hold Y hint line) — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys, (bt-12 increment B) the wild-pack label and the Still-there countdown, and (bt-15 increment B, named intentional change: 134 → 147) the clock / forfeit / results 9 plain and 4 parameterised keys — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
     // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam; round 4: REV 6 R6.7): a menu label, reason,
     // dock or queue key missing from one locale (a French boot throws on opening the command menu);
     // a badge word, a forecast line or a Projected line missing from one locale (a French boot
@@ -434,9 +441,12 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     expect(Object.keys(BT15B_PARAM_FIELDS), 'fixture: 4 bt-15 B parameterised keys').toHaveLength(
       4,
     );
-    expect(PLAIN_KEYS, 'fixture: 93 plain keys in all').toHaveLength(93);
+    // Named intentional change (the Hold Y hint line): 93 → 94 plain
+    // (+tactics.ticker.holdToClear), 147 → 148.
+    expect(HOLD_Y_PLAIN_KEYS, 'fixture: 1 Hold Y plain key').toHaveLength(1);
+    expect(PLAIN_KEYS, 'fixture: 94 plain keys in all').toHaveLength(94);
     expect(PARAM_KEYS, 'fixture: 54 parameterised keys in all').toHaveLength(54);
-    expect(new Set(ROSTER).size, 'fixture: 147 keys, none listed twice').toBe(147);
+    expect(new Set(ROSTER).size, 'fixture: 148 keys, none listed twice').toBe(148);
     expect(
       BT11_ROSTER.filter((k) => BT10_ROSTER.includes(k)),
       'fixture: the increment-B keys are new',
@@ -450,8 +460,8 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
       expect(Object.hasOwn(FR, dropped), `fr ${dropped} was dropped by A27`).toBe(false);
     }
 
-    expect(tacticsKeys(EN), 'the English catalog holds exactly the 147-key roster').toEqual(ROSTER);
-    expect(tacticsKeys(FR), 'the French catalog holds exactly the 147-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(EN), 'the English catalog holds exactly the 148-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(FR), 'the French catalog holds exactly the 148-key roster').toEqual(ROSTER);
 
     for (const key of BT11C_PLAIN_KEYS) {
       expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
@@ -822,7 +832,7 @@ describe('tactics strings: the source scans (A6)', () => {
 });
 
 describe('tactics strings: strings.ts (BT10.6, A6)', () => {
-  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 147 tactics.* keys (bt-15 increment B, named intentional change: 60 + 28 + 26 + 18 + 2 + 13) are requested', () => {
+  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 148 tactics.* keys (named intentional change, the Hold Y hint line: 60 + 28 + 26 + 18 + 2 + 13 + 1) are requested', () => {
     // WRONG IMPL KILLED: a dynamic key (`t(\`tactics.stance.${s}\`)` — PARITY-02's dynamic-key scan
     // refuses it, and a typo would only fail at runtime); an aliased import the scan cannot follow;
     // t() on a closure key or tf() on a plain key (the resolver throws); a catalog key nothing
@@ -1222,5 +1232,33 @@ describe('tactics strings: the clock, the forfeit confirm and the results rating
     }
     setLocale('en');
     expect(call('clockRing', 4), 'back to English at the next call').toBe('4 s left');
+  });
+});
+
+describe('tactics strings: the Hold Y hint line', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('tickerHoldToClear() resolves the Hold Y hint at each call: exactly "Hold Y to clear the plan" in English and "Maintenez Y pour effacer le plan" in French, each the catalog`s own plain tactics.ticker.holdToClear', () => {
+    // WRONG IMPL KILLED: a function resolving a sibling key (the Clear plan row "Clear plan", its
+    // confirm "Yes, clear the plan"); the English copied into the French catalog; a parameterised
+    // key; a line resolved once at import (the locale switch would not show).
+    setLocale('en');
+    expect(s.tickerHoldToClear(), 'en tickerHoldToClear()').toBe('Hold Y to clear the plan');
+    expect(EN['tactics.ticker.holdToClear'], 'the English catalog value').toBe(
+      'Hold Y to clear the plan',
+    );
+    setLocale('fr');
+    expect(s.tickerHoldToClear(), 'fr tickerHoldToClear()').toBe(
+      'Maintenez Y pour effacer le plan',
+    );
+    expect(FR['tactics.ticker.holdToClear'], 'the French catalog value').toBe(
+      'Maintenez Y pour effacer le plan',
+    );
+    setLocale('en');
+    expect(s.tickerHoldToClear(), 'back to English at the next call').toBe(
+      'Hold Y to clear the plan',
+    );
   });
 });

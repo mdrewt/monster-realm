@@ -11,8 +11,15 @@
  * three tokens — X is the danger toggle (`{kind:'danger'}`), LB / RB cycle own units
  * (`{kind:'cycle', dir:-1|1}`) and Start is End Turn / Guard / Submit (`{kind:'start'}`; main.ts's
  * `battleButton(..., tactical)` leaves Start to the adapter when the tactical shell owns the frame).
- * Y stays the page's; a held X / LB / RB / Start is swallowed with no token. Were: X, LB, RB
+ * A held X / LB / RB / Start is swallowed with no token. Were: X, LB, RB
  * unhandled and Start swallowed with no token.
+ *
+ * Named intentional change (the Hold Y gesture): Y is the adapter's too. A fresh Y — the tap the
+ * input router hands over at the release while Clear plan is holdable, else at the press — is a
+ * `{kind:'holdHint'}` token; the router's hold input `{button:'Y', repeat:false, hold:true}` is a
+ * `{kind:'clearPlan'}` token; a repeat Y is swallowed with no token. Were: Y unhandled at every
+ * step (the page's). `battleHoldButtons(stack, holdable)` names the bare battle base's
+ * hold-capable buttons: exactly Y while the shell can clear a plan, else none.
  *
  * One case (its tag is the title's first word): the whole key table, fresh and repeat, from a fresh
  * state and from a state still carrying a stale token (a step's op is the NEW token or null, never
@@ -20,11 +27,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { VBUTTONS, type VButton } from '../../input/buttons';
+import type { Stack } from '../contextStack';
 import type { NavInput } from '../nav';
 import {
   type BattleOp,
   type BattleOpsView,
   type BattleScreenState,
+  battleHoldButtons,
   battleScreen,
 } from './battleScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
@@ -53,7 +62,6 @@ const move = (dir: 'Up' | 'Down' | 'Left' | 'Right'): Expected => ({
   op: { kind: 'move', dir },
 });
 const SWALLOWED: Expected = { result: 'consumed', op: null };
-const UNHANDLED: Expected = { result: 'unhandled', op: null };
 
 /** A fresh press, per button. */
 const FRESH: Readonly<Record<VButton, Expected>> = {
@@ -64,9 +72,10 @@ const FRESH: Readonly<Record<VButton, Expected>> = {
   A: { result: 'consumed', op: { kind: 'activate' } },
   B: { result: 'consumed', op: { kind: 'back' } },
   // bt-11 (BT11.6): X toggles the danger overlay, LB / RB cycle own units, Start is the tactical
-  // End Turn / Guard / Submit; Y stays the page's.
+  // End Turn / Guard / Submit.
   X: { result: 'consumed', op: { kind: 'danger' } },
-  Y: UNHANDLED,
+  // Named intentional change: a fresh Y is the Clear plan hint token. Were: unhandled.
+  Y: { result: 'consumed', op: { kind: 'holdHint' } },
   LB: { result: 'consumed', op: { kind: 'cycle', dir: -1 } },
   RB: { result: 'consumed', op: { kind: 'cycle', dir: 1 } },
   Start: { result: 'consumed', op: { kind: 'start' } },
@@ -80,6 +89,8 @@ const REPEAT: Readonly<Record<VButton, Expected>> = {
   A: SWALLOWED,
   B: SWALLOWED,
   X: SWALLOWED,
+  // Named intentional change: a held Y hints once, at its fresh press. Were: unhandled (FRESH's).
+  Y: SWALLOWED,
   LB: SWALLOWED,
   RB: SWALLOWED,
   Start: SWALLOWED,
@@ -87,7 +98,7 @@ const REPEAT: Readonly<Record<VButton, Expected>> = {
 };
 
 describe('the battle adapter (ctl-8i)', () => {
-  it('CTL8I-1-ADAPTER-KEYS: the adapter is nav-capable, ignores the context and starts with no token; every button answers the table (X danger, LB / RB cycle, Start start, Y the page`s), fresh and repeat, from a fresh state and from a stale one; every step returns a NEW state holding the new token or null; and paint applies a token once and a null token never', () => {
+  it('CTL8I-1-ADAPTER-KEYS: the adapter is nav-capable, ignores the context and starts with no token; every button answers the table (X danger, LB / RB cycle, Start start, Y the hold hint), fresh and repeat, from a fresh state and from a stale one; every step returns a NEW state holding the new token or null; and paint applies a token once and a null token never', () => {
     // WRONG IMPL KILLED: an adapter not marked nav (the router would keep the D-pad for the page,
     // and the battle would stay Tab and mouse only); one that reads the store or the context; an A
     // or B that acts on a repeat (a held Enter would press twice, a held Backspace would back out
@@ -96,7 +107,7 @@ describe('the battle adapter (ctl-8i)', () => {
     // RB or Start left unhandled or swallowed with no token (the danger toggle, unit cycling and
     // End Turn would be pointer-only, BT11.6), LB and RB swapped (dir -1 is the PREVIOUS unit), a
     // held X / LB / RB / Start that acts again (a held Q would spin through the units), and a Y
-    // that is swallowed (the page keeps it); a Select that is not help; a state that keeps the
+    // left to the page or hinting again while held; a Select that is not help; a state keeping the
     // previous token (the host paints after EVERY step, so a later button would re-apply an old
     // op); one token object reused for every press (the view dedupes by identity, so the second
     // Down would be dropped); and a state object reused across steps (the host compares nothing,
@@ -170,11 +181,11 @@ describe('the battle adapter (ctl-8i)', () => {
     expect(seen, 'the token reaches the view once').toHaveLength(1);
     expect(seen[0], 'the very token object').toBe(act1.state.op);
 
-    // The host paints after every step: after an A the next step (an unhandled Y — bt-11: LB is a
-    // cycle token now) holds no token, so painting it applies nothing, and the old A is not
-    // applied again.
+    // The host paints after every step: after an A the next step (a held Y, swallowed with no
+    // token) holds no token, so painting it applies nothing, and the earlier A is not applied again.
+    // Named intentional change: the no-token step is a held Y. Were: a fresh Y, unhandled.
     const afterA = adapter.onButton(vm, fresh, nav('A'));
-    const afterY = adapter.onButton(vm, afterA.state, nav('Y'));
+    const afterY = adapter.onButton(vm, afterA.state, nav('Y', true));
     const painted: BattleOp[] = [];
     const recorder: BattleOpsView = {
       applyBattleOp(op) {
@@ -184,5 +195,165 @@ describe('the battle adapter (ctl-8i)', () => {
     adapter.paint?.(recorder, vm, afterA.state);
     adapter.paint?.(recorder, vm, afterY.state);
     expect(painted, 'only the A was applied, once').toEqual([{ kind: 'activate' }]);
+  });
+});
+
+// ==========================================================================================
+// Hold Y: the adapter's two Y tokens, and the battle base's hold-capable buttons
+// ==========================================================================================
+
+/** The input router's hold input of `button` (a listed button held HOLD_MS). */
+const held = (button: VButton): NavInput => ({ button, repeat: false, hold: true });
+
+/** A view that records every op painted into it. */
+function recordingView(): { readonly applied: BattleOp[]; readonly view: BattleOpsView } {
+  const applied: BattleOp[] = [];
+  return {
+    applied,
+    view: {
+      applyBattleOp(op) {
+        applied.push(op);
+      },
+    },
+  };
+}
+
+const BARE_BATTLE: Stack = [{ kind: 'battle', battleId: '7' }];
+
+describe('the battle adapter: Y and the hold-capable buttons', () => {
+  it('a fresh Y (the tap the router hands over) is consumed with a NEW holdHint token from a fresh or a stale state, a held Y is swallowed with no token, and paint hands the hint to the view once as the very token [gp-6.6]', () => {
+    // WRONG IMPL KILLED: Y left unhandled (the tap reaches no view: no hint line); a hint token
+    // reused across presses (the view dedupes by identity, so the second tap would be dropped); a
+    // repeat Y that hints again; a tap read as the clear (a quick press would clear the plan); the
+    // stale token kept in the state (a later paint re-applies an old op).
+    const vm = adapter.viewModel(NO_CTX);
+    const fresh = adapter.init(vm);
+    const stale: BattleScreenState = { op: { kind: 'activate' } };
+    for (const [from, start] of [
+      ['a fresh state', fresh],
+      ['a stale state', stale],
+    ] as const) {
+      const step = adapter.onButton(vm, start, nav('Y'));
+      expect(step.result, `${from}: consumed`).toBe('consumed');
+      expect(step.state.op, `${from}: the hint token`).toEqual({ kind: 'holdHint' });
+      expect(step.state, `${from}: a new state`).not.toBe(start);
+      expect(step.state.op, `${from}: not the previous token`).not.toBe(start.op);
+    }
+    const first = adapter.onButton(vm, fresh, nav('Y'));
+    const second = adapter.onButton(vm, first.state, nav('Y'));
+    expect(second.state.op, 'the second tap hints again').toEqual({ kind: 'holdHint' });
+    expect(second.state.op, 'as a new token object').not.toBe(first.state.op);
+    const repeat = adapter.onButton(vm, first.state, nav('Y', true));
+    expect(repeat.result, 'a held Y').toBe('consumed');
+    expect(repeat.state.op, 'carries no token').toBeNull();
+
+    const { applied, view } = recordingView();
+    adapter.paint?.(view, vm, first.state);
+    adapter.paint?.(view, vm, repeat.state);
+    expect(applied, 'one hint painted').toEqual([{ kind: 'holdHint' }]);
+    expect(applied[0], 'the very token').toBe(first.state.op);
+  });
+
+  it('the hold input of Y is consumed with a NEW clearPlan token per hold, from a fresh or a stale state, painted to the view once; a hold flag on any other button answers exactly as its plain press [gp-6.7]', () => {
+    // WRONG IMPL KILLED: the hold read as a tap (a hint instead of the clear: Hold Y would never
+    // clear); a hold left unhandled or swallowed with no token; one clearPlan object reused (the
+    // second hold would be dropped by the view); a hold flag read on A, B or Start (a stray flag
+    // would change what they do).
+    const vm = adapter.viewModel(NO_CTX);
+    const fresh = adapter.init(vm);
+    const stale: BattleScreenState = { op: { kind: 'holdHint' } };
+    for (const [from, start] of [
+      ['a fresh state', fresh],
+      ['a state holding a hint token', stale],
+    ] as const) {
+      const step = adapter.onButton(vm, start, held('Y'));
+      expect(step.result, `${from}: consumed`).toBe('consumed');
+      expect(step.state.op, `${from}: the clear token`).toEqual({ kind: 'clearPlan' });
+      expect(step.state, `${from}: a new state`).not.toBe(start);
+    }
+    const first = adapter.onButton(vm, fresh, held('Y'));
+    const second = adapter.onButton(vm, first.state, held('Y'));
+    expect(second.state.op, 'a second hold clears again').toEqual({ kind: 'clearPlan' });
+    expect(second.state.op, 'as a new token object').not.toBe(first.state.op);
+
+    const { applied, view } = recordingView();
+    adapter.paint?.(view, vm, first.state);
+    expect(applied, 'one clear painted').toEqual([{ kind: 'clearPlan' }]);
+    expect(applied[0], 'the very token').toBe(first.state.op);
+
+    let others = 0;
+    for (const button of VBUTTONS) {
+      if (button === 'Y') continue;
+      const flagged = adapter.onButton(vm, fresh, held(button));
+      const plain = adapter.onButton(vm, fresh, nav(button));
+      expect(flagged.result, `${button} with a hold flag: result`).toEqual(plain.result);
+      expect(flagged.state.op, `${button} with a hold flag: token`).toEqual(plain.state.op);
+      others += 1;
+    }
+    expect(others, 'ANTI-VACUITY: the eleven other buttons').toBe(11);
+  });
+
+  it('battleHoldButtons lists exactly Y at the bare battle base while Clear plan is holdable, as the SAME set object on every call and for any battle [gp-6.7]', () => {
+    // WRONG IMPL KILLED: no list at the bare base (the router never arms Y: Hold Y does nothing);
+    // a list with more than Y (B would wait for its release: the press-time skip is lost); a new
+    // set per call (read every frame: an allocation per frame).
+    const set = battleHoldButtons(BARE_BATTLE, true);
+    expect(set, 'a list at the bare battle base').toBeDefined();
+    expect([...(set ?? [])], 'exactly Y').toEqual(['Y']);
+    for (const button of VBUTTONS) {
+      expect(set?.has(button), `${button}`).toBe(button === 'Y');
+    }
+    expect(battleHoldButtons(BARE_BATTLE, true), 'the same object on the next call').toBe(set);
+    expect(
+      battleHoldButtons([{ kind: 'battle', battleId: '9007199254740993' }], true),
+      'and for another battle',
+    ).toBe(set);
+  });
+
+  it('battleHoldButtons lists nothing while any frame is over the battle base — the main menu, a screen, a dialogue, help, a prompt, a text entry — even while Clear plan is holdable [gp-6.8]', () => {
+    // WRONG IMPL KILLED: a list read from the base alone (Y held under the main menu would clear
+    // the plan behind it, and the menu's own Y would wait for its release).
+    const battle = { kind: 'battle', battleId: '7' } as const;
+    const over: ReadonlyArray<readonly [string, Stack]> = [
+      ['the main menu', [battle, { kind: 'screen', id: 'menuView' }]],
+      [
+        'a screen opened over the battle',
+        [battle, { kind: 'screen', id: 'boxView', overBattle: '7' }],
+      ],
+      ['a dialogue', [battle, { kind: 'screen', id: 'dialogueView' }]],
+      ['help', [battle, { kind: 'screen', id: 'helpView' }]],
+      ['a prompt', [battle, { kind: 'prompt', id: 'controlsView' }]],
+      [
+        'a text entry',
+        [
+          battle,
+          { kind: 'screen', id: 'profileView' },
+          { kind: 'textEntry', owner: 'profileView' },
+        ],
+      ],
+      [
+        'a screen over the main menu',
+        [battle, { kind: 'screen', id: 'menuView' }, { kind: 'screen', id: 'questLogView' }],
+      ],
+    ];
+    for (const [label, stack] of over) {
+      expect(battleHoldButtons(stack, true), `${label}, holdable`).toBeUndefined();
+      expect(battleHoldButtons(stack, false), `${label}, not holdable`).toBeUndefined();
+    }
+    expect(battleHoldButtons(BARE_BATTLE, true), 'control: the bare base lists Y').toBeDefined();
+  });
+
+  it('battleHoldButtons lists nothing at the bare battle base while Clear plan is not holdable, and nothing at the world base either way [gp-6.10]', () => {
+    // WRONG IMPL KILLED: a list that ignores the holdable flag (every Y tap on the battle base would
+    // wait for its release with nothing to clear); a list at the world (Y there opens the action
+    // sheet at its press).
+    expect(battleHoldButtons(BARE_BATTLE, false), 'not holdable').toBeUndefined();
+    expect(battleHoldButtons([{ kind: 'world' }], true), 'the world, holdable').toBeUndefined();
+    expect(battleHoldButtons([{ kind: 'world' }], false), 'the world').toBeUndefined();
+    expect(
+      battleHoldButtons([{ kind: 'world' }, { kind: 'screen', id: 'battleView' }], true),
+      'the outcome frame (the world base with the battle screen)',
+    ).toBeUndefined();
+    expect(battleHoldButtons(BARE_BATTLE, true), 'control: holdable lists Y').toBeDefined();
   });
 });
