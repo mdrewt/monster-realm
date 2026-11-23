@@ -2520,6 +2520,31 @@ attestation names is "An attestation names the server as the player's own softwa
 it", and the measurements behind both are `docs/local-play.md` §3; the verifier is "The attestation is signed with Ed25519 and
 checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket, so a browser that binds needs the attestation anyway ("An attestation names the server as the player's own software authenticated it" says where one can), and one mechanism serves both.
 
+**Decided, not built: the world checks the account itself (lpw-35).** The binding above is what
+runs until the slices below merge. It is to be replaced by a one-use join ticket that the world
+redeems at the account service through its own procedures. The client asks `POST /ticket` for a
+ticket naming the world as fork (c) names it, and calls the procedure `check_account(ticket)`. The
+procedure presents the ticket with the world's names and database identity at `POST /world/check`,
+and receives a handle and the entitlement. A handle is opaque, one per account per world, and not a
+credential. The world keys a player's character on that handle, and moves the character to
+whichever of its own identities last proved it, so one account is one character in a world
+whatever the client. After the first contact the world re-checks by handle itself:
+
+- once at each connection, from a one-shot row `client_connected` arms;
+- once a day for the hosting account alone, from an interval row, which also confirms the public
+  address the world is reached at.
+
+With no answer, a known identity keeps its last stored status. No build holds an attestation key,
+and no world stores an account subject. Built by acs-14, lpw-41, lpw-23 and lpw-24. lpw-33 removes
+the binding's tables, reducers, crates and key lists. The measurements on 2.16.1, the four
+alternatives with a judge's scores, the procedures and the slice changes are in
+`docs/refactors/account-checks.md`. The choice rests on the bundled host's `[module-http]` being on,
+which reverses an operator default (`decision-defaulted:bundled-host-module-http=disabled`,
+lpw-12). With it off, a shell world checks nobody, and the attestation, which a world verifies
+offline, scores higher. Why the ticket over the attestation: a world that asks for itself
+re-checks a client that never asks. No key or verifier sits in any build. And a reader of a
+world's data finds pseudonyms, not account subjects.
+
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
 itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
 account token given to it could be replayed against the official server. A provider such as Steam
@@ -2701,6 +2726,12 @@ statement, before anything is decoded, read or written, and `world_binding::trus
 signed it and counts only while the build holds that key: a binding made under a dev key counts for
 nothing after a republish as `world`, and retiring a key retires its bindings. On the `world` build
 every token is an anonymous guest's. The two builds have one schema and one set of client bindings.
+Decided, not built (lpw-35, `docs/refactors/account-checks.md`): when the world's own account
+check replaces the attestation, the builds differ by the account service a world checks against
+instead of by key lists. `official` names none, and its four account-check procedures refuse as
+their first statement. `world` names the production service. The dev builds name `hosted-dev`,
+because a procedure cannot reach `local-dev` on loopback (the record's row P2). Until then the key
+lists above are what runs.
 Proved by `mod binding_build` and `mod official_build` in `server-module/src/world_binding_tests.rs`
 (the second under the `official` build, which no run of `just ci` includes: `cargo nextest run
 --workspace --no-default-features --features monster-realm-module/official -E
