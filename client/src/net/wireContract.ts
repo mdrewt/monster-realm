@@ -45,7 +45,11 @@ export interface BindingsExports {
       string,
       {
         readonly sourceName: string;
-        readonly tableDef: { readonly columns: Readonly<Record<string, unknown>> };
+        readonly tableDef: {
+          readonly columns: Readonly<Record<string, unknown>>;
+          readonly isEvent?: boolean;
+          readonly isOutbox?: boolean;
+        };
       }
     >
   >;
@@ -71,6 +75,9 @@ const own = <V>(record: Readonly<Record<string, V>>, key: string): V | undefined
 
 const sortedKeys = (record: object): string[] => Object.keys(record).sort();
 
+/** More builders under already-known names than any bindings declare: the walk is unbounded. */
+const MAX_OTHER_BUILDERS = 10_000;
+
 /** A named type the walk reached: the builder first seen under its name and its definition. */
 interface NamedType {
   readonly builder: unknown;
@@ -89,16 +96,16 @@ class TypeReader {
   private readonly others = new Map<unknown, { name: string; define: () => TypeContract }>();
 
   member(name: string, builder: unknown): Member {
-    return `${name}: ${this.spell(builder)}`;
+    return `${name}: ${this.spell(builder, name)}`;
   }
 
   members(record: Readonly<Record<string, unknown>>): Member[] {
     return Object.entries(record).map(([name, builder]) => this.member(name, builder));
   }
 
-  spell(builder: unknown): string {
+  spell(builder: unknown, at = 'a member'): string {
     if (builder instanceof ColumnBuilder) {
-      return this.spell(builder.typeBuilder);
+      return this.spell(builder.typeBuilder, at);
     }
     if (builder instanceof ProductBuilder && typeof builder.typeName === 'string') {
       const fields: Readonly<Record<string, unknown>> = builder.elements;
@@ -121,7 +128,7 @@ class TypeReader {
     }
     const algebraicType = (builder as { readonly algebraicType?: AlgebraicType }).algebraicType;
     if (algebraicType === undefined) {
-      throw new Error(`wire contract: not an SDK type builder: ${String(builder)}`);
+      throw new Error(`wire contract: ${at} is not an SDK type builder`);
     }
     return spellAlgebraic(algebraicType);
   }
@@ -142,30 +149,17 @@ class TypeReader {
       this.named.set(name, entry);
       entry.definition = define();
     } else if (known.builder !== builder && !this.others.has(builder)) {
+      if (this.others.size >= MAX_OTHER_BUILDERS) {
+        throw new Error(`wire contract: the type ${name} keeps yielding new builders`);
+      }
       this.others.set(builder, { name, define });
     }
     return name;
   }
 }
 
-const PRIMITIVE_TAGS = new Set([
-  'Bool',
-  'I8',
-  'U8',
-  'I16',
-  'U16',
-  'I32',
-  'U32',
-  'I64',
-  'U64',
-  'I128',
-  'U128',
-  'I256',
-  'U256',
-  'F32',
-  'F64',
-  'String',
-]);
+/** The SDK's primitive type tags, each spelled in lower case. */
+const PRIMITIVE_TAG = /^(Bool|String|[IU](8|16|32|64|128|256)|F(32|64))$/;
 
 /** Spells a type the bindings hold no named builder for (SDK special types, byte arrays, unit). */
 function spellAlgebraic(type: AlgebraicType): string {
@@ -181,7 +175,7 @@ function spellAlgebraic(type: AlgebraicType): string {
         .map((variant) => `${variant.name}: ${spellAlgebraic(variant.algebraicType)}`)
         .join(' | ')}>`;
     default:
-      if (PRIMITIVE_TAGS.has(type.tag)) {
+      if (PRIMITIVE_TAG.test(type.tag)) {
         return type.tag.toLowerCase();
       }
       throw new Error(`wire contract: no spelling for the type tag ${type.tag}`);
@@ -197,42 +191,48 @@ export function readWireEntry(bindings: BindingsExports): WireEntry {
     );
   }
   const reader = new TypeReader();
-  const tables: Record<string, TableContract> = {};
-  for (const ref of Object.values(bindings.tables)) {
-    if (Object.hasOwn(tables, ref.sourceName)) {
+  const tables = new Map<string, TableContract>();
+  for (const { sourceName, tableDef } of Object.values(bindings.tables)) {
+    if (tableDef.isEvent === true || tableDef.isOutbox === true) {
+      throw new Error(
+        `wire contract: ${sourceName} is an event or outbox table, which it has no rule for`,
+      );
+    }
+    if (tables.has(sourceName)) {
       continue;
     }
     let primaryKey: string | null = null;
-    const columns = Object.entries(ref.tableDef.columns).map(([key, column]) => {
-      const metadata =
-        column instanceof ColumnBuilder
-          ? (column.columnMetadata as { readonly name?: string; readonly isPrimaryKey?: boolean })
-          : {};
-      const wireName = metadata.name ?? key;
-      if (metadata.isPrimaryKey === true) {
+    const columns: Member[] = [];
+    for (const [key, column] of Object.entries(tableDef.columns)) {
+      const { name, isPrimaryKey } =
+        (
+          column as {
+            readonly columnMetadata?: { readonly name?: string; readonly isPrimaryKey?: boolean };
+          }
+        ).columnMetadata ?? {};
+      const wireName = name ?? key;
+      if (isPrimaryKey === true) {
         primaryKey = wireName;
       }
-      return reader.member(wireName, column);
-    });
-    tables[ref.sourceName] = { primaryKey, columns };
+      columns.push(reader.member(wireName, column));
+    }
+    tables.set(sourceName, { primaryKey, columns });
   }
   const columnReached = new Set(reader.named.keys());
-  const reducers: Record<string, Member[]> = {};
-  for (const reducer of Object.values(bindings.reducers)) {
-    reducers[reducer.name] = Object.entries(reducer.params).map(([key, param]) =>
-      reader.member(key, param),
-    );
-  }
+  const reducers = Object.values(bindings.reducers).map((reducer): [string, Member[]] => [
+    reducer.name,
+    reader.members(reducer.params),
+  ]);
   reader.finish();
-  const serverToClientTypes: Record<string, TypeContract> = {};
-  const clientToServerTypes: Record<string, TypeContract> = {};
-  for (const [name, { definition }] of reader.named) {
-    const part = columnReached.has(name) ? serverToClientTypes : clientToServerTypes;
-    part[name] = definition as TypeContract;
-  }
+  const typesOf = (reached: boolean): Record<string, TypeContract> =>
+    Object.fromEntries(
+      [...reader.named]
+        .filter(([name]) => columnReached.has(name) === reached)
+        .map(([name, { definition }]) => [name, definition as TypeContract]),
+    );
   return {
-    serverToClient: { tables, types: serverToClientTypes },
-    clientToServer: { reducers, types: clientToServerTypes },
+    serverToClient: { tables: Object.fromEntries(tables), types: typesOf(true) },
+    clientToServer: { reducers: Object.fromEntries(reducers), types: typesOf(false) },
   };
 }
 
@@ -436,13 +436,15 @@ export function serializeWireContract(file: WireContractFile): string {
   return `${JSON.stringify(ordered, null, 2)}\n`;
 }
 
-type Json = unknown;
-
 function fail(where: string, problem: string): never {
   throw new Error(`wireContract.json: ${where} ${problem}`);
 }
 
-function objectAt(value: Json, where: string, keys?: readonly string[]): Record<string, Json> {
+function objectAt(
+  value: unknown,
+  where: string,
+  keys?: readonly string[],
+): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     fail(where, 'is not an object');
   }
@@ -452,10 +454,10 @@ function objectAt(value: Json, where: string, keys?: readonly string[]): Record<
       fail(where, `holds [${present.join(', ')}], not [${keys.join(', ')}]`);
     }
   }
-  return value as Record<string, Json>;
+  return value as Record<string, unknown>;
 }
 
-function membersAt(value: Json, where: string): Member[] {
+function membersAt(value: unknown, where: string): Member[] {
   if (!Array.isArray(value) || !value.every((member) => typeof member === 'string')) {
     fail(where, 'is not a list of strings');
   }
@@ -463,9 +465,9 @@ function membersAt(value: Json, where: string): Member[] {
 }
 
 function recordAt<V>(
-  value: Json,
+  value: unknown,
   where: string,
-  read: (v: Json, at: string) => V,
+  read: (v: unknown, at: string) => V,
 ): Record<string, V> {
   const record = objectAt(value, where);
   return Object.fromEntries(
@@ -473,7 +475,7 @@ function recordAt<V>(
   );
 }
 
-function typeAt(value: Json, where: string): TypeContract {
+function typeAt(value: unknown, where: string): TypeContract {
   const type = objectAt(value, where);
   const keys = Object.keys(type);
   if (keys.length !== 1 || (keys[0] !== 'fields' && keys[0] !== 'variants')) {
@@ -484,7 +486,7 @@ function typeAt(value: Json, where: string): TypeContract {
     : { variants: membersAt(type.variants, `${where}.variants`) };
 }
 
-function tableAt(value: Json, where: string): TableContract {
+function tableAt(value: unknown, where: string): TableContract {
   const table = objectAt(value, where, ['primaryKey', 'columns']);
   if (table.primaryKey !== null && typeof table.primaryKey !== 'string') {
     fail(`${where}.primaryKey`, 'is neither a string nor null');
@@ -492,7 +494,7 @@ function tableAt(value: Json, where: string): TableContract {
   return { primaryKey: table.primaryKey, columns: membersAt(table.columns, `${where}.columns`) };
 }
 
-function entryAt(value: Json, where: string): WireEntry {
+function entryAt(value: unknown, where: string): WireEntry {
   const entry = objectAt(value, where, ['serverToClient', 'clientToServer']);
   const read = objectAt(entry.serverToClient, `${where}.serverToClient`, ['tables', 'types']);
   const sent = objectAt(entry.clientToServer, `${where}.clientToServer`, ['reducers', 'types']);
@@ -510,7 +512,7 @@ function entryAt(value: Json, where: string): WireEntry {
 
 /** Parses the committed file, refusing anything but the shape `serializeWireContract` writes. */
 export function parseWireContract(text: string): WireContractFile {
-  const file = objectAt(JSON.parse(text) as Json, 'the file');
+  const file = objectAt(JSON.parse(text), 'the file');
   return Object.fromEntries(
     Object.keys(file).map((protocol) => {
       if (!/^[1-9][0-9]*$/.test(protocol)) {

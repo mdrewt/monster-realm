@@ -114,11 +114,11 @@ pub use world::{
     MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE, STEP_MS,
 };
 
-/// The protocol number of this build. It rises by one with every change to the generated client
-/// bindings, and that change records the new number's entry in `client/src/net/wireContract.json`
-/// (`client/src/net/wireContract.test.ts` fails the client test run until both are done). The
-/// module records it in `module_info.protocol`, and `client-wasm` exports it as
-/// `protocol_version()`.
+/// The protocol number of this build. It rises by one with every change to the entry
+/// `client/src/net/wireContract.json` records for the generated client bindings, and that change
+/// records the new number's entry (`client/src/net/wireContract.test.ts` fails the client test run
+/// until both are done). The module records it in `module_info.protocol`, and `client-wasm`
+/// exports it as `protocol_version()`.
 pub const PROTOCOL_VERSION: u32 = 4;
 /// The oldest client protocol a server of this build still speaks to, recorded in
 /// `module_info.min_client_protocol`; `client-wasm` exports it as `min_client_protocol()`. It
@@ -141,7 +141,8 @@ pub fn tick_seed(state: u64, input: u64, seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-// The generated load-test zones; the default build compiles only the module's constants.
+// The generated load-test zones; the default build compiles only the module's constants and hook
+// macros.
 pub mod load_test_zones;
 
 #[cfg(test)]

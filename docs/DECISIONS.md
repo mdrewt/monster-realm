@@ -1566,16 +1566,13 @@ table.
 both in row 0 of the public table `module_info`, from `init` and from the owner's `sync_content`
 whether or not the content changed. Every recipe and script in this repository that publishes over a
 database and keeps its data then calls `sync_content` as the publishing identity, and fails when
-that call is refused. The client test `client/src/net/wireContract.test.ts` holds the generated
-bindings against `client/src/net/wireContract.json`: one entry per protocol number, appended by the
-test's update mode and never rewritten. An entry is, server to client, every table and view with its
-columns and primary key and every named type a column reaches; client to server, every reducer with
-its arguments and every named type only an argument reaches. `PROTOCOL_VERSION` rises by one with
-any change to the entry and the change records the new one. `MIN_CLIENT_PROTOCOL` rises above every
-entry from it upward that the bindings break: server to client, any difference in a table or type
-the entry holds, an appended column included; client to server, a removed reducer, any change to a
-reducer's arguments or to an argument-only type, except a variant appended to a sum. New tables,
-views, reducers and types break nothing. Entries below `MIN_CLIENT_PROTOCOL` may be deleted.
+that call is refused. `client/src/net/wireContract.test.ts` holds the generated bindings against one
+recorded entry per protocol number (`client/src/net/wireContract.json`): `PROTOCOL_VERSION` rises by
+one with any change to the entry, and `MIN_CLIENT_PROTOCOL` rises above every entry from it upward
+that the bindings break. Server to client, any difference in a table, view or type an entry holds
+breaks it, an appended column included; client to server, any change to a reducer or type it holds
+does, except a variant appended to a sum only an argument reaches. New tables, views, reducers and
+types break nothing.
 
 **Why.** `init` runs only when a database is created, and nothing in the module runs when a new
 module is published over existing data, so the owner's call is what makes the row describe the
@@ -1585,17 +1582,17 @@ misreads rows or sends calls the module cannot decode. Arguments and fields trav
 (BSATN), so an added, removed, reordered or re-typed one breaks an older client's call, while an
 appended variant only adds a tag no older client sends; the SDK builds a reducer event from the
 caller's own arguments, so no client decodes arguments. A renamed member counts as a change although
-no name travels: the bindings hold no other identity for it. The server-to-client side stays exact.
-From SDK 2.16.1 a client skips trailing columns its bindings lack (vendor #6091; measured on
-`module_info`, `docs/spacetimedb-2.16.md`), but not a field appended inside a named type, and a
-rule that told the two apart would have to model the SDK's decoder. Letting a trailing top-level
-column keep `MIN_CLIENT_PROTOCOL` is a default the operator may overrule.
+no name travels: the bindings hold no other identity for it. From SDK 2.16.1 a client skips trailing
+columns its bindings lack (vendor #6091; measured on `module_info`, `docs/spacetimedb-2.16.md`), but
+not a field appended inside a named type, and a rule that told the two apart would have to model the
+SDK's decoder; counting a trailing top-level column as a break is a default the operator may
+overrule.
 
 **Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
 numbers below the content-version check, or from a reducer any caller may run. A recipe or script
 that publishes over kept data without the owner's call, or that ignores the call's exit status.
 Raising `MIN_CLIENT_PROTOCOL` for a change that breaks no entry (it sends every older client to
-update the game for nothing). Rewriting a recorded entry to match new bindings, or deleting one at or
+update the game for nothing). Rewriting an entry a merged change recorded, or deleting one at or
 above `MIN_CLIENT_PROTOCOL`: either hides a break from the check. Treating the numbers as a
 server-side check: they tell a client which side to update, and every reducer still validates its
 own input.
@@ -1610,8 +1607,8 @@ and the line naming the side stays on the world hint until reload. An admitted c
 again whenever the row changes, and only toward refusal. `module_info`'s three columns never change.
 
 **Why.** The numbers help only if a client that cannot speak to the server can still read them, so
-they are read before any other table and from a row whose shape is fixed for good (the SDK cannot
-decode a row that lost a column, see the entry above). The refusal is terminal so that the
+they are read before any other table and from a row whose shape is fixed for good (an SDK cannot
+decode a row that lost a column). The refusal is terminal so that the
 line and the game never disagree: a page that reconnected, was admitted and played under "Update the
 game to join" would be saying something false, and a line that cleared itself would be missed. A
 reload is the retry. An admitted connection is judged again because a client that reconnects between
