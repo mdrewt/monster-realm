@@ -86,11 +86,6 @@ export type PadCaptureOutcome = CaptureOutcome<PadBindings, PadIndex, PadTarget>
 const BUTTON_ROWS: readonly ControlsRow[] = VBUTTONS.map((id) => ({ kind: 'button', id }));
 const ACCEL_ROWS: readonly ControlsRow[] = ACCELS.map((id) => ({ kind: 'accel', id }));
 
-/** A tab's rows, in display order: the twelve buttons, or every accelerator. */
-export function controlsRows(tab: ControlsTab): readonly ControlsRow[] {
-  return tab === 'buttons' ? BUTTON_ROWS : ACCEL_ROWS;
-}
-
 // Each label is a thunk over a literal catalog id, read in the active locale.
 const BUTTON_LABELS: Readonly<Record<VButton, () => string>> = {
   Up: () => t('controls.button.up'),
