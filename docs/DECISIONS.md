@@ -1581,7 +1581,7 @@ AMENDED 2026-11-23 (lpw-34): from SDK 2.16.1 the SDK reads rows by the boundarie
 and skips trailing columns its bindings lack (vendor #6091). Measured on 2.16.1: a client whose
 bindings predate a column appended to `module_info` received its applied callback and the row's
 known fields (`docs/spacetimedb-2.16.md`). Every client built since the SDK reached 2.16.1 carries
-that reader; the rule above stands until lpw-25 rules on whether an appended column still bumps
+that reader; the rule above stands until it is decided whether an appended column still bumps
 the protocol number.
 
 **Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
