@@ -200,6 +200,22 @@ async function selectByBumper(
   ).toEqual([turn.battleId, 'Active', turn.round, turn.turnIdx, turn.events]);
 }
 
+/** After a Start on `turn`: within START_END_WAIT_MS its turn key differs or the phase is Finished. */
+async function expectTurnEnded(p: Page, turn: TacticsSnap, what: string): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const s = await readTactics(p);
+        return s === null || s.phase === 'Finished' || turnKey(s) !== turnKey(turn);
+      },
+      {
+        message: `GP3.1: Start ended ${what} within ${START_END_WAIT_MS} ms`,
+        timeout: START_END_WAIT_MS,
+      },
+    )
+    .toBe(true);
+}
+
 test.describe
   .serial('gp-3 — the tactical battle on the pad', () => {
     let browser: Browser;
@@ -271,6 +287,10 @@ test.describe
 
       let last: string | null = null;
       let fired: TacticsSnap | null = null;
+      /** Set wherever a pad Start was seen to end a live turn. */
+      let startPressedOnLiveTurn = false;
+      /** Set when the battle reached Finished before a live Start was possible. */
+      let finishedEarly = false;
       const trace: string[] = [];
       for (let turn = 0; turn < MAX_OWN_TURNS && fired === null; turn += 1) {
         const t = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
@@ -332,23 +352,32 @@ test.describe
           fired = after;
           // Start ends the turn only while it is still live.
           const now = await readTactics(page);
-          if (now !== null && now.phase !== 'Finished') {
+          if (now === null || now.phase === 'Finished') {
+            finishedEarly = true;
+          } else {
             const live =
               now.phase === 'Active' && now.turnState === 'Waiting' && turnKey(now) === turnKey(t);
             await endTurnIfLive(page, t);
             if (live) {
-              await expect
-                .poll(
-                  async () => {
-                    const s = await readTactics(page);
-                    return s === null || s.phase === 'Finished' || turnKey(s) !== turnKey(t);
-                  },
-                  {
-                    message: `GP3.1: Start ended turn ${turnKey(t)} within ${START_END_WAIT_MS} ms`,
-                    timeout: START_END_WAIT_MS,
-                  },
-                )
-                .toBe(true);
+              await expectTurnEnded(page, t, `the firing turn ${turnKey(t)}`);
+              startPressedOnLiveTurn = true;
+            } else {
+              // The commit spent the whole budget, so the server ended the turn: Start has not
+              // been pressed. Press it on the next own live turn, which has no draft (End Turn).
+              const next = await waitOwnTurnOrEnd(page, turnKey(t), TURN_WAIT_MS);
+              if (next.phase !== 'Active') {
+                finishedEarly = true;
+              } else {
+                await endTurn(page);
+                await expectTurnEnded(page, next, `the follow-up turn ${turnKey(next)}`);
+                await expect
+                  .poll(async () => (await readTactics(page))?.events ?? 0, {
+                    message: `GP3.1: Start on turn ${turnKey(next)} executed an end: events grew past ${next.events} within ${EXECUTE_WAIT_MS} ms`,
+                    timeout: EXECUTE_WAIT_MS,
+                  })
+                  .toBeGreaterThan(next.events);
+                startPressedOnLiveTurn = true;
+              }
             }
           }
         } else {
@@ -370,6 +399,8 @@ test.describe
                 },
               )
               .toBe(true);
+            // The draft only reaches the server through Start's End Turn: Start ended a live turn.
+            startPressedOnLiveTurn = true;
           }
         }
       }
@@ -377,6 +408,18 @@ test.describe
         throw new Error(
           `GP3.1: no [Move, Skill] commit fired within MAX_OWN_TURNS=${MAX_OWN_TURNS} own turns — trace: ${trace.join(' | ')}`,
         );
+      }
+
+      if (!startPressedOnLiveTurn && finishedEarly) {
+        test.info().annotations.push({
+          type: 'gp-3.1-start-unexercised',
+          description: 'the battle reached Finished before a live Start was possible',
+        });
+      } else {
+        expect(
+          startPressedOnLiveTurn,
+          `GP3.1: the pad Start ended a live turn (trace: ${trace.join(' | ')})`,
+        ).toBe(true);
       }
 
       expect(await keyCount(page), 'no keydown or keyup reached the page during the battle').toBe(
