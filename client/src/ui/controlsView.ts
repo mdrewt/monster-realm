@@ -18,11 +18,13 @@
 // `#controls-rows` when it closes. The Display tab (UIF13.2) lists the text-size steps, the live one
 // marked `data-current`; a chosen step goes to `handlers.onTextStep` as a one-shot request.
 //
-// Keycaps are read from the LIVE table on every paint (`handlers.bindings`), so a remap shows in
-// the paint that follows it. A request token is applied before the rows render, for the same
+// Keycaps are read from the LIVE tables on every paint (`handlers.bindings`, and
+// `handlers.padBindings` for the Pad column's pad glyphs), so a remap shows in the paint that
+// follows it. A request token is applied before the rows render, for the same
 // reason, and applied once: the host repaints the same state on every later step.
 //
-// `capturing` is what the shell reads on a keydown to know a slot waits for a key. It is assigned
+// `capturing` is what the shell reads on a keydown or a pad poll to know a slot waits for a key or
+// a Pad cell for a pad button. It is assigned
 // first in `paint`, so a paint that throws later cannot leave the shell capturing keys for a
 // capture the screen has left; `hide()` ends it on every close path.
 //
@@ -36,6 +38,8 @@
 import type { Bindings } from '../input/bindings';
 import type { Accel } from '../input/buttons';
 import { glyph } from '../input/glyphs';
+import { PAD_DEFAULT_BINDINGS, type PadBindings } from '../input/padBindings';
+import { padGlyph } from '../input/padGlyphs';
 import { confirmLayout } from './actionSheetModel';
 import {
   type ContextSheet,
@@ -44,7 +48,14 @@ import {
   placeContextSheet,
   renderContextSheet,
 } from './contextSheet';
-import { capturePrompt, rowLabel, type SlotTarget, slots } from './controlsModel';
+import {
+  type CaptureTarget,
+  capturePrompt,
+  padCapturePrompt,
+  padSlot,
+  rowLabel,
+  slots,
+} from './controlsModel';
 import type { TextStep } from './displayPrefs';
 import { t, tf } from './i18n/resolver';
 import type { NavItem, NavTab } from './nav';
@@ -62,6 +73,9 @@ import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 export interface ControlsViewHandlers {
   /** The live binding table. */
   readonly bindings: () => Bindings;
+  /** The live pad table; `PAD_DEFAULT_BINDINGS` when absent. Optional, like `textStep`, only for
+   *  the shell rigs that never remap the pad; main.ts always passes it. */
+  readonly padBindings?: () => PadBindings;
   /** Unbind an accelerator; false when the new table could not be saved. */
   readonly onClear: (accel: Accel) => boolean;
   /** Restore the default table; false when it could not be saved. */
@@ -111,8 +125,12 @@ const SHEET_ID = 'controls-sheet';
 /** A Reset all confirm row's word (`confirmLayout`'s keys), each a literal catalog key. */
 const confirmLabel = (key: string): string => (key === 'yes' ? t('prompt.yes') : t('prompt.no'));
 
-const sameTarget = (a: SlotTarget | null, b: SlotTarget): boolean =>
+const sameTarget = (a: CaptureTarget | null, b: CaptureTarget): boolean =>
   a !== null && a.slot === b.slot && a.row.kind === b.row.kind && a.row.id === b.row.id;
+
+/** The line shown while `target` waits: a key's prompt, or a pad button's. */
+const promptOf = (target: CaptureTarget): string =>
+  target.slot === 'pad' ? padCapturePrompt(target.row) : capturePrompt(target.row);
 
 /** Find an existing element or create a hidden one appended to `parent`. */
 function ensureElement(id: string, tag = 'div', parent: HTMLElement = document.body): HTMLElement {
@@ -164,7 +182,7 @@ export class ControlsView implements ControlsScreenView {
   readonly #capture: HTMLElement;
   readonly #cancelBtn: HTMLElement;
   readonly #feedback: HTMLElement;
-  #capturing: SlotTarget | null = null;
+  #capturing: CaptureTarget | null = null;
   #confirming = false;
   // The last request token applied: a token is applied once.
   #applied: ControlsRequest | null = null;
@@ -226,8 +244,9 @@ export class ControlsView implements ControlsScreenView {
     return this.#overlay.style.display !== 'none' && this.#overlay.style.display !== '';
   }
 
-  /** The slot waiting for a key, as last painted; null when none does or the frame is closed. */
-  get capturing(): SlotTarget | null {
+  /** The slot or Pad cell waiting for a press, as last painted; null when none does or the frame
+   *  is closed. */
+  get capturing(): CaptureTarget | null {
     return this.#capturing;
   }
 
@@ -274,7 +293,7 @@ export class ControlsView implements ControlsScreenView {
     this.#capturing = p.capturing;
     if (p.capturing !== null && !sameTarget(was, p.capturing)) {
       this.#clearHint();
-      this.#handlers.announce(capturePrompt(p.capturing.row));
+      this.#handlers.announce(promptOf(p.capturing));
     }
     // A hint belongs to the capture that refused the key: it ends with it.
     if (was !== null && p.capturing === null) this.#clearHint();
@@ -309,15 +328,16 @@ export class ControlsView implements ControlsScreenView {
 
   #render(p: ControlsPaint): void {
     const bindings = this.#handlers.bindings();
+    const pad = this.#handlers.padBindings?.() ?? PAD_DEFAULT_BINDINGS;
     const step = this.#handlers.textStep?.() ?? 'normal';
     renderTabBar(this.#tabBar, p.layout, p.nav, { frame: FRAME, label: tabLabel });
     renderNav(this.#rows, p.layout, p.nav, {
       frame: FRAME,
-      fill: (el, item) => this.#fillCell(el, p.nav.tab, item, bindings, step),
+      fill: (el, item) => this.#fillCell(el, p.nav.tab, item, bindings, pad, step),
     });
 
     const waiting = p.capturing;
-    this.#capture.textContent = waiting === null ? '' : capturePrompt(waiting.row);
+    this.#capture.textContent = waiting === null ? '' : promptOf(waiting);
     this.#capture.style.display = waiting === null ? 'none' : '';
     this.#cancelBtn.textContent = t('controls.cancel');
     // A chip hidden while it holds focus would drop focus to <body>, outside the dialog's trap.
@@ -367,13 +387,22 @@ export class ControlsView implements ControlsScreenView {
     tab: string | null,
     item: NavItem,
     bindings: Bindings,
+    pad: PadBindings,
     step: TextStep,
   ): void {
     const cell = controlsItem(tab, item.key);
     delete el.dataset.current;
     switch (cell?.kind) {
       case 'slot': {
-        const { row, slot } = cell.target;
+        const { target } = cell;
+        if (target.slot === 'pad') {
+          const index = padSlot(pad, target.row);
+          const key = index === undefined ? t('controls.slot.none') : padGlyph(index);
+          el.dataset.slot = 'pad';
+          el.textContent = tf('controls.slot.pad', { label: rowLabel(target.row), key });
+          break;
+        }
+        const { row, slot } = target;
         const code = slots(bindings, row)[slot];
         const key = code === undefined ? t('controls.slot.none') : glyph(code);
         const label = rowLabel(row);
@@ -384,6 +413,14 @@ export class ControlsView implements ControlsScreenView {
             : tf('controls.slot.alt', { label, key });
         break;
       }
+      // A row with no pad binding: its disabled placeholder shows no pad button.
+      case 'noPad':
+        el.dataset.slot = 'pad';
+        el.textContent = tf('controls.slot.pad', {
+          label: rowLabel(cell.row),
+          key: t('controls.slot.none'),
+        });
+        break;
       case 'clear':
         el.dataset.slot = 'clear';
         el.textContent = tf('controls.clear', {

@@ -33,10 +33,11 @@ import {
   type WasmMoveInput,
 } from './convert/convert';
 import { browserStorage } from './input/bindingStore';
-import { accelForCode, DEFAULT_BINDINGS } from './input/bindings';
+import { accelForCode, isBindableCode } from './input/bindings';
 import type { ButtonEdge, VButton } from './input/buttons';
 import { learnKey } from './input/glyphs';
 import { isChord } from './input/keyboardSource';
+import type { PadIndex } from './input/padBindings';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
   ACCEL_PATHS,
@@ -121,6 +122,7 @@ import {
 } from './shell/feedback';
 import {
   applyBindings,
+  applyPadBindings,
   bindings,
   held,
   inputRouter,
@@ -131,8 +133,10 @@ import {
   noteInputSource,
   noteNavHeld,
   pad,
+  padBindings,
   releaseAllInput,
   releaseNavHeld,
+  resetAllBindings,
 } from './shell/inputState';
 import {
   bindHealLocation,
@@ -293,7 +297,13 @@ import {
   type UpperFrame,
   WORLD_STACK,
 } from './ui/contextStack';
-import { clearAccel, outcomeText, type SlotTarget } from './ui/controlsModel';
+import {
+  type CaptureTarget,
+  clearAccel,
+  outcomeText,
+  type PadTarget,
+  type SlotTarget,
+} from './ui/controlsModel';
 import type { ControlsViewHandlers } from './ui/controlsView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
@@ -371,7 +381,7 @@ import {
   openMainMenu,
   openSignInGate,
 } from './ui/screens/mainMenuScreen';
-import { captureStep } from './ui/screens/optionsScreen';
+import { type CaptureResult, captureStep, padCaptureStep } from './ui/screens/optionsScreen';
 import type { ProfileSection } from './ui/screens/profileScreen';
 import type { Command, SocialFrameView, SocialPanelId, SocialTab } from './ui/screens/types';
 import {
@@ -2785,8 +2795,8 @@ const openAccelPath = (path: AccelPath): void => {
   for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key), path.tab);
 };
 
-// The slot of Controls waiting for a key, while that frame is the top one; else null.
-const controlsCapture = (): SlotTarget | null => {
+// The slot or Pad cell of Controls waiting for a press, while that frame is the top one; else null.
+const controlsCapture = (): CaptureTarget | null => {
   const top = contextStack[contextStack.length - 1];
   if (top.kind !== 'screen' || top.id !== 'controlsView') return null;
   return controlsView?.capturing ?? null;
@@ -2798,22 +2808,38 @@ const endControlsCapture = (): void => {
   screenHost.button(contextStack, { button: 'B', repeat: false }, screenCtx);
 };
 
+// The one outcome path of a capture, a key's or a pad button's: a refused press keeps the capture
+// waiting with its reason as a hint on the frame's strip; any other ends it, its line a toast, and
+// a changed table is applied and saved through `apply`. True when the capture ended.
+const settleControlsCapture = <T>(
+  step: CaptureResult<T>,
+  apply: (next: T) => boolean,
+): boolean => {
+  if (!step.done) {
+    route('controls-refused', step.text, (hint) => controlsView?.showHint(hint));
+    return false;
+  }
+  if (step.bindings === undefined) toastControls('controls-cancelled', step.text);
+  else if (apply(step.bindings)) toastControls('controls-saved', step.text);
+  else toastControls('controls-save-failed', step.text, false);
+  endControlsCapture();
+  return true;
+};
+
 // A key pressed while `target` waits for one (CTL12.2): any key is taken, Escape, Enter and
 // Backspace included, before any other path can read it. A refused key keeps the slot waiting.
 const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
   const step = captureStep(bindings, target, e);
   if (step.prevent) e.preventDefault();
-  if (!step.done) {
-    // A refused key: the capture still waits, so its reason is a hint on the frame's strip.
-    route('controls-refused', step.text, (hint) => controlsView?.showHint(hint));
-    return;
-  }
-  if (step.bindings === undefined) toastControls('controls-cancelled', step.text);
-  else if (applyBindings(step.bindings)) toastControls('controls-saved', step.text);
-  else toastControls('controls-save-failed', step.text, false);
   // The captured key's OS repeats are not presses of its new button.
-  noteNavHeld(e.code);
-  endControlsCapture();
+  if (settleControlsCapture(step, applyBindings)) noteNavHeld(e.code);
+};
+
+// A pad press read while the Pad cell `target` waits (the pad source's `capture()`): the same
+// outcome path as a key's, over the pad table. The press owes no release, and a bind rebinds the
+// pad, so the captured button acts only once released and pressed again.
+const captureControlsPad = (target: PadTarget, read: PadIndex | 'refused'): void => {
+  settleControlsCapture(padCaptureStep(padBindings, target, read), applyPadBindings);
 };
 
 // The Cancel chip: a capture ends unchanged. Nothing happens unless a slot is waiting.
@@ -2841,7 +2867,8 @@ let paintWorldPrompt: (() => void) | null = null;
 // while the session terminal shows (false then). An edge whose routing throws does not stop the
 // later ones (a release among them would otherwise leave its direction held); the first error is
 // rethrown once every edge has routed.
-const pressEdges = (edges: readonly ButtonEdge[]): boolean => {
+// `stop`, read after each edge, ends the routing early: the later edges are not routed.
+const pressEdges = (edges: readonly ButtonEdge[], stop?: () => boolean): boolean => {
   if (sessionGateBlocks()) return false;
   syncStack();
   try {
@@ -2852,6 +2879,7 @@ const pressEdges = (edges: readonly ButtonEdge[]): boolean => {
       } catch (err) {
         failure ??= { err };
       }
+      if (stop?.() === true) break;
     }
     if (failure !== undefined) throw failure.err;
   } finally {
@@ -2961,13 +2989,23 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // Controls is waiting for a key (CTL12B.1): this press is the capture's, ahead of
   // every path below, so Escape, Enter and Backspace can be bound like any key. The one exception
   // is the Cancel chip's own activation key (Enter or Space with the chip focused): it presses
-  // the chip, so a capture can always be left from the keyboard.
+  // the chip, so a capture can always be left from the keyboard. While a Pad cell waits for a pad
+  // button, the keyboard reaches only Escape (a cancel) and the Cancel chip; every other key is
+  // ignored, its default cancelled unless the browser owns it (Tab, F5).
   const capture = controlsCapture();
   if (capture !== null) {
     const pressesChip =
       controlsView?.isCancelChip(e.target) === true &&
       ownership(e.target, e, gameScreenEl()) === 'target';
-    if (!pressesChip) captureControlsKey(capture, e);
+    if (pressesChip) return;
+    if (capture.slot !== 'pad') {
+      captureControlsKey(capture, e);
+    } else if (e.code === 'Escape') {
+      e.preventDefault();
+      cancelControlsCapture();
+    } else if (isBindableCode(e.code)) {
+      e.preventDefault();
+    }
     return;
   }
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
@@ -3107,15 +3145,30 @@ document.addEventListener('visibilitychange', () => {
 
 // The pad, read once per animation frame. While the session terminal shows, everything held is let
 // go (`releaseAllInput` reads the pad first), so a button held through the terminal acts only once
-// released and pressed again. A pad press is ignored, as a key press is, while focus is outside the
-// game screen, and also while Controls waits for a key: everything held is let go then too, so the
-// ignored press owes no release that could end another source's hold. A release alone still routes,
-// as a keyup does. Inside the game screen a pad press is a button press even with a text field
-// focused (a pad cannot type). A press clears the pointer's hover mark and heals stale focus first,
-// as a key press does; the edges route before the accelerators.
+// released and pressed again. While a Pad cell of Controls waits, the frame takes the pad's
+// `capture()` instead: no pad press routes, and the press read goes to the capture. A pad press is
+// ignored, as a key press is, while focus is outside the game screen, and also while Controls waits
+// for a key: everything held is let go then too, so the ignored press owes no release that could
+// end another source's hold. A release alone still routes, as a keyup does. Inside the game screen a
+// pad press is a button press even with a text field focused (a pad cannot type). A press clears the
+// pointer's hover mark and heals stale focus first, as a key press does; the edges route before the
+// accelerators. An edge that starts a capture ends the poll: no later edge or accelerator routes,
+// and everything held is let go, so a button pressed in that same frame is not a press of the
+// capture's.
 const pollPad = (): void => {
   if (sessionGateBlocks()) {
     releaseAllInput();
+    return;
+  }
+  const capture = controlsCapture();
+  if (capture?.slot === 'pad') {
+    const read = pad.capture();
+    if (read === undefined) return;
+    noteInputSource('pad');
+    // An ignored press: the capture read already took it, so it owes nothing.
+    if (outsideGameScreen(document.activeElement, gameScreenEl())) return;
+    pointerSource?.keyPressed();
+    captureControlsPad(capture, read);
     return;
   }
   const { edges, accels } = pad.poll();
@@ -3126,13 +3179,18 @@ const pollPad = (): void => {
     if (edges.length > 0) pressEdges(edges);
     return;
   }
-  if (outsideGameScreen(document.activeElement, gameScreenEl()) || controlsCapture() !== null) {
+  if (outsideGameScreen(document.activeElement, gameScreenEl()) || capture !== null) {
     releaseAllInput();
     return;
   }
   pointerSource?.keyPressed();
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
-  if (edges.length > 0) pressEdges(edges);
+  const capturing = (): boolean => controlsCapture() !== null;
+  if (edges.length > 0) pressEdges(edges, capturing);
+  if (capturing()) {
+    releaseAllInput();
+    return;
+  }
   if (accels.length === 0) return;
   // The edges' press path, else the frame, has just synced the stack; the sync after is a
   // keydown's, so whatever an accelerator closed is off the stack at once.
@@ -4714,11 +4772,12 @@ async function main(): Promise<void> {
         privacy: privacySection,
       }),
     });
-    // Controls: the view reads the live table, and its requests replace it at once.
+    // Controls: the view reads the live tables, and its requests replace them at once.
     const controlsHandlers: ControlsViewHandlers = {
       bindings: () => bindings,
+      padBindings: () => padBindings,
       onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
-      onReset: () => applyBindings(DEFAULT_BINDINGS),
+      onReset: resetAllBindings,
       textStep: () => textStep,
       // Only `--mr-text-step` moves: the UI scale, the renderer and the world are untouched.
       onTextStep: (step) => {

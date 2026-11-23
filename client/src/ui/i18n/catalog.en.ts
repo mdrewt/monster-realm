@@ -314,6 +314,23 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback line in Controls when a row's Primary and Alt keys traded places;
   // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
   'controls.swappedSlots': (p) => `Swapped: ${p.key} and ${p.otherKey} on ${p.label}`,
+  // @desc: A Pad cell of a Controls row: the row name and the pad button bound to it; {label}
+  // is the row name (e.g. Confirm (A)), {key} a pad button glyph or — when none. ui/controlsView.ts
+  'controls.slot.pad': (p) => `${p.label} (pad): ${p.key}`,
+  // @desc: Line shown in Controls while a Pad cell waits for a pad button press; {label} is the
+  // row name (e.g. Confirm (A)). ui/controlsModel.ts
+  'controls.capture.padPrompt': (p) => `Press a pad button for ${p.label}…`,
+  // @desc: Feedback line in Controls when the pressed pad button cannot be bound (the Home /
+  // Guide button, or one past the bindable range). One sentence. ui/controlsModel.ts
+  'controls.refused.padReserved': 'That button cannot be bound.',
+  // @desc: Feedback line in Controls when a pad change would leave a protected button (D-pad,
+  // A, B, Start) with no pad button. One sentence. ui/controlsModel.ts
+  'controls.refused.padProtected': 'Movement, Confirm, Back and Menu must always keep a pad button.',
+  // @desc: Feedback line in Controls when the pressed pad button moved from another row into an
+  // empty Pad cell, leaving that row without a pad button; {key} is a pad button glyph,
+  // {label}/{otherLabel} row names. ui/controlsModel.ts
+  'controls.swappedPadUnbound': (p) =>
+    `Swapped: ${p.key} is now ${p.label}, ${p.otherLabel} has no pad button`,
   // @desc: Heading of the Controls screen (key remapping). ui/controlsView.ts
   'controls.title': 'Controls',
   // @desc: Tab of Controls listing the twelve virtual buttons. ui/controlsView.ts

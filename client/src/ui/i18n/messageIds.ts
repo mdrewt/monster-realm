@@ -119,6 +119,12 @@ export type MessageId =
   | 'controls.swapped'
   | 'controls.swappedUnbound'
   | 'controls.swappedSlots'
+  // gp-5: the Pad column (ui/controlsModel.ts, ui/controlsView.ts).
+  | 'controls.slot.pad'
+  | 'controls.capture.padPrompt'
+  | 'controls.refused.padReserved'
+  | 'controls.refused.padProtected'
+  | 'controls.swappedPadUnbound'
   // ctl-12b: the Options › Controls view (ui/controlsView.ts).
   | 'controls.title'
   | 'controls.tab.buttons'
@@ -659,6 +665,13 @@ export interface MessageParams {
   };
   readonly 'controls.slot.primary': { readonly label: string; readonly key: string };
   readonly 'controls.slot.alt': { readonly label: string; readonly key: string };
+  readonly 'controls.slot.pad': { readonly label: string; readonly key: string };
+  readonly 'controls.capture.padPrompt': { readonly label: string };
+  readonly 'controls.swappedPadUnbound': {
+    readonly key: string;
+    readonly label: string;
+    readonly otherLabel: string;
+  };
   readonly 'controls.clear': { readonly label: string };
   readonly 'controls.cleared': { readonly label: string };
   // uif-13: {label} is a catalogued text-size name (controls.text.normal / large / xlarge).

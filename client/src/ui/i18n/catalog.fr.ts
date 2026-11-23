@@ -322,6 +322,25 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback line in Controls when a row's Primary and Alt keys traded places;
   // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
   'controls.swappedSlots': (p) => `Échangé : ${p.key} et ${p.otherKey} pour ${p.label}`,
+  // @desc: A Pad cell of a Controls row: the row name and the pad button bound to it; {label}
+  // is the row name (e.g. Confirm (A)), {key} a pad button glyph or — when none. ui/controlsView.ts
+  'controls.slot.pad': (p) => `${p.label} (manette) : ${p.key}`,
+  // @desc: Line shown in Controls while a Pad cell waits for a pad button press; {label} is the
+  // row name (e.g. Confirm (A)). ui/controlsModel.ts
+  'controls.capture.padPrompt': (p) =>
+    `Appuyez sur un bouton de la manette pour : ${p.label}…`,
+  // @desc: Feedback line in Controls when the pressed pad button cannot be bound (the Home /
+  // Guide button, or one past the bindable range). One sentence. ui/controlsModel.ts
+  'controls.refused.padReserved': 'Ce bouton ne peut pas être attribué.',
+  // @desc: Feedback line in Controls when a pad change would leave a protected button (D-pad,
+  // A, B, Start) with no pad button. One sentence. ui/controlsModel.ts
+  'controls.refused.padProtected':
+    'Les déplacements, Valider, Retour et Menu doivent toujours garder un bouton de manette.',
+  // @desc: Feedback line in Controls when the pressed pad button moved from another row into an
+  // empty Pad cell, leaving that row without a pad button; {key} is a pad button glyph,
+  // {label}/{otherLabel} row names. ui/controlsModel.ts
+  'controls.swappedPadUnbound': (p) =>
+    `Échangé : ${p.key} est maintenant ${p.label}, ${p.otherLabel} n’a plus de bouton de manette`,
   // @desc: Heading of the Controls screen (key remapping). ui/controlsView.ts
   'controls.title': 'Commandes',
   // @desc: Tab of Controls listing the twelve virtual buttons. ui/controlsView.ts

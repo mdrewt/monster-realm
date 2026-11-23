@@ -65,8 +65,10 @@ export function isBindablePadIndex(i: unknown): i is PadIndex {
 }
 
 /** Every menu accelerator, in the default table's order (its `accels` literal is checked to hold
- *  exactly the `MenuAccel` keys). */
-const MENU_ACCELS = Object.freeze(Object.keys(PAD_DEFAULT_BINDINGS.accels) as MenuAccel[]);
+ *  exactly the `MenuAccel` keys): the accelerators a pad can bind. */
+export const MENU_ACCELS: readonly MenuAccel[] = Object.freeze(
+  Object.keys(PAD_DEFAULT_BINDINGS.accels) as MenuAccel[],
+);
 
 /** The virtual button index `i` is bound to, or undefined when it is unbound (or an accelerator). */
 export function padButtonFor(b: PadBindings, i: PadIndex): VButton | undefined {
