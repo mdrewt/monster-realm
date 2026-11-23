@@ -914,13 +914,29 @@ describe('shell/inputState functions', { sequential: true }, () => {
     return { writes, real };
   }
 
-  /** The keyboard defaults with A moved to K, as a stored-table object. */
-  const keysWithK = (): Bindings =>
-    JSON.parse(
+  /** The keyboard defaults with A moved to K, as a table: `{buttons, accels}` only (the stored
+   *  record's `v` is not part of a table, and a loaded table never carries it). */
+  const keysWithK = (): Bindings => {
+    const { buttons, accels } = JSON.parse(
       storedTable((raw) => {
         raw.buttons.A = ['KeyK'];
       }),
     ) as Bindings;
+    return { buttons, accels };
+  };
+
+  /** The default tables of the module graph the last `fresh()` imported: its inputState assigns
+   *  these very objects, so an identity pin compares like with like (`fresh()` resets the
+   *  registry, so the copies this file imported statically are another graph's). */
+  async function freshDefaults(): Promise<{ readonly keys: Bindings; readonly pad: PadBindings }> {
+    const [{ DEFAULT_BINDINGS: keys }, { PAD_DEFAULT_BINDINGS: pad }] = await Promise.all([
+      import('../input/bindings'),
+      import('../input/padBindings'),
+    ]);
+    expect(keys, 'fixture: the fresh keyboard defaults are the defaults').toEqual(DEFAULT_BINDINGS);
+    expect(pad, 'fixture: the fresh pad defaults are the defaults').toEqual(PAD_DEFAULT_BINDINGS);
+    return { keys, pad };
+  }
 
   /** A stored record: the keyboard table `change` makes, plus `pad` under the pad key. */
   const storedWithPad = (change: (raw: Raw) => void, pad: unknown): string =>
@@ -1071,10 +1087,11 @@ describe('shell/inputState functions', { sequential: true }, () => {
 
   it('resetAllBindings restores DEFAULT_BINDINGS and PAD_DEFAULT_BINDINGS in one save of both, releases everything held, drives the keyboard and the pad through the defaults, and answers true [gp-5.11]', async () => {
     // WRONG IMPL KILLED: a Reset all that restores the keyboard only (the pad remap survives it),
-    // one that saves the keyboard defaults beside the OLD pad table (a reload brings the pad remap
-    // back), two writes (a refused second write leaves half the reset on disk), a reset saved but
-    // not applied, and one that leaves a held button owing an edge.
+    // one that saves the keyboard defaults beside the remapped pad table (a reload brings the pad
+    // remap back), two writes (a refused second write leaves half the reset on disk), a reset saved
+    // but not applied, and one that leaves a held button owing an edge.
     const ns = await fresh();
+    const defaults = await freshDefaults();
     expect(ns.applyBindings(keysWithK()), 'precondition: a keyboard remap').toBe(true);
     expect(ns.applyPadBindings(SWAP_A_Y()), 'precondition: a pad remap').toBe(true);
     const storage = wrapStorage(false);
@@ -1084,8 +1101,8 @@ describe('shell/inputState functions', { sequential: true }, () => {
     expect(JSON.parse(storage.writes[0] ?? 'null'), 'of both default tables').toEqual(
       savedShape(DEFAULT_BINDINGS, PAD_DEFAULT_BINDINGS),
     );
-    expect(ns.bindings, 'the keyboard defaults').toBe(DEFAULT_BINDINGS);
-    expect(ns.padBindings, 'the pad defaults').toBe(PAD_DEFAULT_BINDINGS);
+    expect(ns.bindings, 'the keyboard defaults').toBe(defaults.keys);
+    expect(ns.padBindings, 'the pad defaults').toBe(defaults.pad);
     expectNothingHeld(ns, 'after resetAllBindings');
     expect(ns.keyboard.buttonFor('Enter'), 'Enter is A again').toBe('A');
     expect(ns.keyboard.buttonFor('KeyK'), 'and K is nothing').toBeUndefined();
@@ -1104,13 +1121,14 @@ describe('shell/inputState functions', { sequential: true }, () => {
     // WRONG IMPL KILLED: a reset applied only when the save succeeds (a full storage would trap the
     // player in a broken table), and a refused write that throws.
     const ns = await fresh();
+    const defaults = await freshDefaults();
     expect(ns.applyBindings(keysWithK()), 'precondition: a keyboard remap').toBe(true);
     expect(ns.applyPadBindings(SWAP_A_Y()), 'precondition: a pad remap').toBe(true);
     const storage = wrapStorage(true);
     expect(ns.resetAllBindings(), 'the refused save answers false').toBe(false);
     expect(storage.writes, 'the save was attempted once').toHaveLength(1);
-    expect(ns.bindings, 'the keyboard defaults still applied').toBe(DEFAULT_BINDINGS);
-    expect(ns.padBindings, 'and the pad defaults').toBe(PAD_DEFAULT_BINDINGS);
+    expect(ns.bindings, 'the keyboard defaults still applied').toBe(defaults.keys);
+    expect(ns.padBindings, 'and the pad defaults').toBe(defaults.pad);
   });
 
   it('with the pad as the last source keycap reads the LIVE pad table: after applyPadBindings the A keycap is Y`s glyph, Y`s is A`s, an emptied row reads nothing, and the keyboard keycaps are unchanged [gp-5.9]', async () => {
