@@ -233,9 +233,13 @@ const askScreen = (ctx: RouteContext, input: NavInput): RouteResult => {
 };
 
 /** The clock a hold of `button` runs on when it is hold-capable here (listed by an uncovered
- *  nav-capable screen), else undefined. */
+ *  nav-capable screen whose adapter can be asked), else undefined. */
 const holdClock = (ctx: RouteContext, button: VButton): number | undefined =>
-  ctx.nav !== undefined && !ctx.nav.covered && ctx.nav.screen === true && ctx.hold?.has(button)
+  ctx.nav !== undefined &&
+  !ctx.nav.covered &&
+  ctx.nav.screen === true &&
+  ctx.screen !== undefined &&
+  ctx.hold?.has(button)
     ? ctx.nav.now
     : undefined;
 

@@ -608,11 +608,13 @@ export class TacticsBattle implements BattleOpsView {
         case 'holdHint':
           this.#holdHint();
           return;
-        case 'clearPlan':
-          if (!this.clearPlanHoldable) return;
-          this.#clearPlan(this.selectedUnitId as number);
+        case 'clearPlan': {
+          const id = this.selectedUnitId;
+          if (!this.clearPlanHoldable || id === null) return;
+          this.#clearPlan(id);
           this.#paint();
           return;
+        }
         default:
           op satisfies never;
       }
@@ -872,7 +874,8 @@ export class TacticsBattle implements BattleOpsView {
   }
 
   /** Clear `unitId`'s READY plan (the confirmed Clear plan row, or Y held): `cancel_queue`, and the
-   *  shell back to idle. The sent plan is gone, so the next submit for this unit is a new round trip. */
+   *  shell back to idle. The sent plan is gone, so the next submit for this unit is a new round
+   *  trip. */
   #clearPlan(unitId: number): void {
     const vm = this.#vm;
     if (vm === null) return;
@@ -881,14 +884,14 @@ export class TacticsBattle implements BattleOpsView {
     this.#mode = IDLE;
   }
 
-  /** A Y tap while Y held would clear the plan: one "Hold Y" ticker line (not again while it is
-   *  still the newest line, so a mashed Y never floods the log), spoken at the next tick. */
+  /** A Y tap while Y held would clear the plan: the "Hold Y" line, spoken at the next tick (once
+   *  per tick) and written to the ticker unless it already is the newest line, so a mashed Y never
+   *  floods the log. */
   #holdHint(): void {
     if (!this.clearPlanHoldable) return;
     const line = s.tickerHoldToClear();
-    if (this.#ticker.lines().at(-1) === line) return;
-    this.#ticker.push(line);
-    this.#saidEvents.push(line);
+    if (!this.#saidEvents.includes(line)) this.#saidEvents.push(line);
+    if (this.#ticker.lines().at(-1) !== line) this.#ticker.push(line);
   }
 
   /** A on a Move aim: the tile in the band drafts a Move of that band's strides (reach1 → 1,

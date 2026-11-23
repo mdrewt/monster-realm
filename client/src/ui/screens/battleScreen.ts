@@ -88,13 +88,14 @@ export const battleScreen: ScreenAdapter<null, BattleScreenState, BattleOpsView>
         return done('consumed', btn.repeat ? null : { kind: 'start' });
       case 'Select':
         return done(btn.repeat ? 'consumed' : { kind: 'toggleHelp' });
-      // Y: the router hands over a tap at its release and a hold once it has been held; the view
-      // acts on either only while it offers Clear plan.
+      // Y: a press asks for the hint (the router hands it over at the release while it lists Y as
+      // hold-capable), and a hold clears; the view acts on either only while it can clear a plan.
       case 'Y':
         if (btn.hold === true) return done('consumed', { kind: 'clearPlan' });
         return done('consumed', btn.repeat ? null : { kind: 'holdHint' });
       default:
-        return btn.button satisfies never;
+        btn.button satisfies never;
+        return done('unhandled');
     }
   },
 
