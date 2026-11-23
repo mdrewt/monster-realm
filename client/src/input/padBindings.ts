@@ -2,7 +2,7 @@
 // to virtual buttons and menu accelerators. It mirrors the keyboard table in `bindings.ts`, keyed by
 // button index instead of `KeyboardEvent.code`. The left stick is not a binding: it always drives
 // the D-pad (`stick.ts`).
-import { ACCELS, VBUTTONS, type VButton } from './buttons';
+import { VBUTTONS, type VButton } from './buttons';
 import type { MenuAccel } from './router';
 
 /** A `Gamepad.buttons` index. */
@@ -44,7 +44,7 @@ export const PAD_DEFAULT_BINDINGS: PadBindings = Object.freeze({
     N: indices(),
     C: indices(),
     Y: indices(),
-  }),
+  } satisfies PadBindings['accels']),
 });
 
 /** Indices the OS owns (16 is Home / Guide); no binding may claim them. */
@@ -64,9 +64,9 @@ export function isBindablePadIndex(i: unknown): i is PadIndex {
   );
 }
 
-const MENU_ACCELS: readonly MenuAccel[] = ACCELS.filter(
-  (a): a is MenuAccel => a !== 'F8' && a !== 'F9',
-);
+/** Every menu accelerator, in the default table's order (its `accels` literal is checked to hold
+ *  exactly the `MenuAccel` keys). */
+const MENU_ACCELS = Object.freeze(Object.keys(PAD_DEFAULT_BINDINGS.accels) as MenuAccel[]);
 
 /** The virtual button index `i` is bound to, or undefined when it is unbound (or an accelerator). */
 export function padButtonFor(b: PadBindings, i: PadIndex): VButton | undefined {

@@ -51,6 +51,17 @@ interface PadState {
   stickLatched: boolean;
 }
 
+/** What the source copied out of one connected pad in one read. */
+interface PadSnapshot {
+  readonly index: number;
+  readonly id: string;
+  /** Whether each button index is pressed. */
+  readonly pressed: readonly boolean[];
+  /** The left stick, `standard` pads only; any other pad's stick reads centred. */
+  readonly x: number;
+  readonly y: number;
+}
+
 /** What a newly pressed index does: the virtual button it pressed, or null. */
 type OnPress = (i: PadIndex) => VButton | null;
 
@@ -97,8 +108,10 @@ export class GamepadSource {
   }
 
   /** Owe nothing for what is held now: each held button and stick direction emits nothing until
-   *  it is released and pressed again (the caller has cleared the router's holders). */
+   *  it is released and pressed again, and the up edges a `capture()` queued are dropped (the
+   *  caller has cleared the router's holders). */
   releaseAll(): void {
+    this.#pending = [];
     for (const state of this.#pads.values()) {
       for (const i of state.held.keys()) state.held.set(i, null);
       state.stickOwed = null;
@@ -132,11 +145,9 @@ export class GamepadSource {
 
   /** The connected pads, each with its state. A slot whose pad vanished, disconnected or changed
    *  `id` first releases everything it owed into `edges` and starts over. */
-  #read(edges: ButtonEdge[]): { pad: PadLike; state: PadState }[] {
-    const present = new Map<number, PadLike>();
-    for (const pad of this.#readPads()) {
-      if (pad !== null && pad.connected === true) present.set(pad.index, pad);
-    }
+  #read(edges: ButtonEdge[]): { pad: PadSnapshot; state: PadState }[] {
+    const present = new Map<number, PadSnapshot>();
+    for (const pad of this.#snapshot()) present.set(pad.index, pad);
     for (const [slot, state] of this.#pads) {
       if (present.get(slot)?.id === state.id) continue;
       for (const i of [...state.held.keys()].sort((a, b) => a - b)) {
@@ -146,7 +157,7 @@ export class GamepadSource {
       if (state.stickOwed !== null) edges.push({ button: state.stickOwed, down: false });
       this.#pads.delete(slot);
     }
-    const out: { pad: PadLike; state: PadState }[] = [];
+    const out: { pad: PadSnapshot; state: PadState }[] = [];
     for (const [slot, pad] of present) {
       let state = this.#pads.get(slot);
       if (state === undefined) {
@@ -158,10 +169,24 @@ export class GamepadSource {
     return out;
   }
 
-  /** `getPads()`, read as no pads when it throws (reported once). */
-  #readPads(): readonly (PadLike | null)[] {
+  /** Copy what the source reads out of every connected pad, so a snapshot the browser mutates in
+   *  place is never read twice. A `getPads()` that throws or returns something malformed reads as no
+   *  pads (reported once). */
+  #snapshot(): PadSnapshot[] {
     try {
-      return this.#getPads();
+      const out: PadSnapshot[] = [];
+      for (const pad of Array.from(this.#getPads())) {
+        if (pad === null || pad.connected !== true) continue;
+        const standard = pad.mapping === 'standard';
+        out.push({
+          index: pad.index,
+          id: pad.id,
+          pressed: Array.from(pad.buttons, (b) => b?.pressed === true),
+          x: standard ? (pad.axes[0] ?? 0) : 0,
+          y: standard ? (pad.axes[1] ?? 0) : 0,
+        });
+      }
+      return out;
     } catch (err) {
       if (!this.#errorReported) {
         this.#errorReported = true;
@@ -177,11 +202,11 @@ export class GamepadSource {
 
   /** Diff the pad's pressed buttons against `state.held`, index ascending: a new press records
    *  what `onPress` returns, a release emits the up edge it owes. */
-  #diffButtons(pad: PadLike, state: PadState, onPress: OnPress, edges: ButtonEdge[]): void {
+  #diffButtons(pad: PadSnapshot, state: PadState, onPress: OnPress, edges: ButtonEdge[]): void {
     const pressed = new Set<PadIndex>();
-    for (let i = 0; i < pad.buttons.length; i++) {
-      if (pad.buttons[i]?.pressed === true) pressed.add(i);
-    }
+    pad.pressed.forEach((down, i) => {
+      if (down) pressed.add(i);
+    });
     const indices = [...new Set([...pressed, ...state.held.keys()])].sort((a, b) => a - b);
     for (const i of indices) {
       const wasHeld = state.held.has(i);
@@ -195,14 +220,11 @@ export class GamepadSource {
     }
   }
 
-  /** Read the left stick (a `standard` pad's axes 0 and 1; any other pad's stick reads centred)
-   *  and emit its changes: the owed direction's up edge before the new direction's down edge. A
-   *  latched stick emits no down edge until it reads centre; `emitDown` false latches a new one. */
-  #diffStick(pad: PadLike, state: PadState, edges: ButtonEdge[], emitDown: boolean): void {
-    const next =
-      pad.mapping === 'standard'
-        ? stickToDpad(pad.axes[0] ?? 0, pad.axes[1] ?? 0, state.stick)
-        : null;
+  /** Emit the left stick's changes: the owed direction's up edge before the new direction's down
+   *  edge. A latched stick emits no down edge until it reads centre; `emitDown` false latches a
+   *  new one. */
+  #diffStick(pad: PadSnapshot, state: PadState, edges: ButtonEdge[], emitDown: boolean): void {
+    const next = stickToDpad(pad.x, pad.y, state.stick);
     state.stick = next;
     if (next === null) state.stickLatched = false;
     if (next === state.stickOwed) return;

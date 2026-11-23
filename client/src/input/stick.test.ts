@@ -235,7 +235,7 @@ describe('stickToDpad: releasing', () => {
   });
 
   it('a flipped sign on the held axis does not hold prev [gp-1.4]', () => {
-    expect(stickToDpad(-0.2, 0.1, 'Right')).toBeNull();
-    expect(stickToDpad(0.1, 0.2, 'Up')).toBeNull();
+    expect(stickToDpad(-0.8, 0, 'Right')).toBe('Left');
+    expect(stickToDpad(0, 0.8, 'Up')).toBe('Down');
   });
 });

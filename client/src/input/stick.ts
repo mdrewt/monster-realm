@@ -4,15 +4,15 @@
 
 /** The magnitude an axis needs to start a direction. */
 export const STICK_ENTER = 0.5;
-/** The magnitude a held direction's own axis keeps it at (below `STICK_ENTER`, so a stick resting
- *  near the deadzone edge does not flicker). */
+/** The least own-axis magnitude that keeps a held direction (below `STICK_ENTER`, so a stick
+ *  resting near the deadzone edge does not flicker). */
 export const STICK_EXIT = 0.35;
 
 export type DpadDir = 'Up' | 'Down' | 'Left' | 'Right';
 
 const finite = (v: number): number => (Number.isFinite(v) ? v : 0);
 
-/** The direction `prev` reads on its own axis, signed so that pushing towards it is positive. */
+/** `dir`'s own axis, signed so that pushing towards `dir` is positive, and the other axis. */
 function ownAxis(dir: DpadDir, x: number, y: number): { own: number; other: number } {
   switch (dir) {
     case 'Right':

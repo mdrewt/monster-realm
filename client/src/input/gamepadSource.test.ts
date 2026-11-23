@@ -334,6 +334,15 @@ describe('GamepadSource: a pad that goes away', () => {
     expect(next.edges).toEqual([up('A'), down('B')]);
   });
 
+  it('a pad whose buttons list is missing releases what it held without throwing [gp-1.10]', () => {
+    const r = rig();
+    expect(r.poll([makePad({ pressed: [12] })]).edges).toEqual([down('Up')]);
+    const broken = { ...makePad(), buttons: undefined as unknown as PadLike['buttons'] };
+    expect(r.poll([broken]).edges).toEqual([up('Up')]);
+    expect(r.poll([broken])).toEqual(NONE);
+    expect(r.poll([makePad()])).toEqual(NONE);
+  });
+
   it('a pad that held nothing emits nothing when it goes away [gp-1.10]', () => {
     const r = rig();
     r.poll([makePad()]);
@@ -557,6 +566,28 @@ describe('GamepadSource: capture', () => {
     expect(source.poll()).toEqual(NONE);
   });
 
+  it('releaseAll drops the ups a capture queued, so the next poll is silent [gp-1.11]', () => {
+    const state = { pads: [makePad({ pressed: [12] })] as readonly (PadLike | null)[] };
+    const source = new GamepadSource(() => state.pads);
+    expect(source.poll().edges).toEqual([down('Up')]);
+    state.pads = [makePad()];
+    expect(source.capture()).toBeUndefined();
+    source.releaseAll();
+    expect(source.poll()).toEqual(NONE);
+    expect(source.poll()).toEqual(NONE);
+  });
+
+  it('rebind drops the ups a capture queued, so the next poll is silent [gp-1.11]', () => {
+    const state = { pads: [makePad({ pressed: [12] })] as readonly (PadLike | null)[] };
+    const source = new GamepadSource(() => state.pads);
+    expect(source.poll().edges).toEqual([down('Up')]);
+    state.pads = [makePad()];
+    expect(source.capture()).toBeUndefined();
+    source.rebind(PAD_DEFAULT_BINDINGS);
+    expect(source.poll()).toEqual(NONE);
+    expect(source.poll()).toEqual(NONE);
+  });
+
   it('a direction first reached during capture is latched until centre [gp-1.11]', () => {
     const state = { pads: [stickPad(0, 0)] as readonly (PadLike | null)[] };
     const source = new GamepadSource(() => state.pads);
@@ -765,7 +796,7 @@ describe('GamepadSource: two pads', () => {
     fc.assert(
       fc.property(
         fc.integer({ min: 1, max: 3 }),
-        fc.array(stepArb, { maxLength: 80 }),
+        fc.array(fc.tuple(stepArb, fc.boolean()), { maxLength: 80 }),
         (n, steps) => {
           const slots: Slot[] = Array.from({ length: n }, () => ({
             present: true,
@@ -796,7 +827,9 @@ describe('GamepadSource: two pads', () => {
           };
 
           pollInto();
-          for (const step of steps) {
+          // A step flagged `viaCapture` shows the new pad state to capture() instead of poll():
+          // capture emits nothing itself, and the ups it owes come out of the next poll.
+          for (const [step, viaCapture] of steps) {
             if (step.kind === 'releaseAll') {
               source.releaseAll();
               counter.clear();
@@ -815,7 +848,12 @@ describe('GamepadSource: two pads', () => {
                 s.connected = true;
               } else s.gen += 1;
             }
-            pollInto();
+            if (viaCapture && step.kind !== 'releaseAll') {
+              pads = snapshot();
+              source.capture();
+            } else {
+              pollInto();
+            }
           }
 
           for (const s of slots) {
@@ -850,6 +888,26 @@ describe('GamepadSource: getPads that throws', () => {
     }
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledWith(failure);
+  });
+
+  it('a getPads result that is not a list reads as no pads and is reported once [gp-1.15]', () => {
+    const onError = vi.fn();
+    const source = new GamepadSource(
+      () => undefined as unknown as readonly (PadLike | null)[],
+      undefined,
+      { onError },
+    );
+    for (let n = 0; n < 4; n++) {
+      expect(source.poll()).toEqual(NONE);
+    }
+    expect(source.capture()).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('an array-like getPads result is read as its entries', () => {
+    const list = { length: 1, 0: makePad({ pressed: [0] }) } as unknown as readonly PadLike[];
+    const source = new GamepadSource(() => list);
+    expect(source.poll().edges).toEqual([down('A')]);
   });
 
   it('with no onError option the poll still returns nothing and does not throw [gp-1.15]', () => {
