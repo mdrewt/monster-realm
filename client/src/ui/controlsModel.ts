@@ -244,14 +244,24 @@ const padHolderOf = (pad: PadBindings, index: PadIndex): PadRow | undefined =>
 function withPadRow(pad: PadBindings, row: PadRow, index: PadIndex | undefined): PadBindings {
   const list: readonly PadIndex[] = Object.freeze(index === undefined ? [] : [index]);
   return row.kind === 'button'
-    ? Object.freeze({ buttons: Object.freeze({ ...pad.buttons, [row.id]: list }), accels: pad.accels })
-    : Object.freeze({ buttons: pad.buttons, accels: Object.freeze({ ...pad.accels, [row.id]: list }) });
+    ? Object.freeze({
+        buttons: Object.freeze({ ...pad.buttons, [row.id]: list }),
+        accels: pad.accels,
+      })
+    : Object.freeze({
+        buttons: pad.buttons,
+        accels: Object.freeze({ ...pad.accels, [row.id]: list }),
+      });
 }
 
 /** What a pad press captured for `target` does to `pad`: `captureKey`'s rule with one slot per
  *  row. The index the cell shows cancels; an index held by another row swaps with the cell's old
  *  one, unless a protected button would end with no pad button. Never mutates `pad`. */
-export function capturePad(pad: PadBindings, target: PadTarget, index: PadIndex): PadCaptureOutcome {
+export function capturePad(
+  pad: PadBindings,
+  target: PadTarget,
+  index: PadIndex,
+): PadCaptureOutcome {
   if (!isBindablePadIndex(index)) return { kind: 'refused', reason: 'reserved' };
   const mine = padSlot(pad, target.row);
   if (index === mine) return { kind: 'cancelled' };
@@ -326,7 +336,12 @@ export function padOutcomeText(outcome: PadCaptureOutcome): string {
       if (outcome.displaced === undefined) {
         return tf('controls.swappedPadUnbound', { key, label, otherLabel });
       }
-      return tf('controls.swapped', { key, label, otherKey: padGlyph(outcome.displaced), otherLabel });
+      return tf('controls.swapped', {
+        key,
+        label,
+        otherKey: padGlyph(outcome.displaced),
+        otherLabel,
+      });
     }
   }
 }

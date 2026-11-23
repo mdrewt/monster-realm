@@ -295,15 +295,15 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback line in Controls when a change would leave a protected button (D-pad,
   // A, B, Start) with no key. One sentence. ui/controlsModel.ts
   'controls.refused.protected': 'Movement, Confirm, Back and Menu must always keep a key.',
-  // @desc: Feedback line in Controls when key capture ends without a change. One or two
-  // words. ui/controlsModel.ts
+  // @desc: Feedback line in Controls when a key or pad button capture ends without a change.
+  // One or two words. ui/controlsModel.ts
   'controls.cancelled': 'Unchanged.',
-  // @desc: Feedback line in Controls when a free key has been bound. One or two words.
-  // ui/controlsModel.ts
+  // @desc: Feedback line in Controls when a free key or pad button has been bound. One or two
+  // words. ui/controlsModel.ts
   'controls.bound': 'Saved.',
-  // @desc: Feedback line in Controls when the pressed key was bound elsewhere and the two
-  // bindings swapped; {key}/{otherKey} are keycaps, {label}/{otherLabel} row names.
-  // ui/controlsModel.ts
+  // @desc: Feedback line in Controls when the pressed key or pad button was bound elsewhere and
+  // the two bindings swapped; {key}/{otherKey} are keycaps or pad button glyphs,
+  // {label}/{otherLabel} row names. ui/controlsModel.ts
   'controls.swapped': (p) =>
     `Swapped: ${p.key} is now ${p.label}, ${p.otherKey} is now ${p.otherLabel}`,
   // @desc: Feedback line in Controls when the pressed key moved from another row into an
@@ -325,7 +325,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'controls.refused.padReserved': 'That button cannot be bound.',
   // @desc: Feedback line in Controls when a pad change would leave a protected button (D-pad,
   // A, B, Start) with no pad button. One sentence. ui/controlsModel.ts
-  'controls.refused.padProtected': 'Movement, Confirm, Back and Menu must always keep a pad button.',
+  'controls.refused.padProtected':
+    'Movement, Confirm, Back and Menu must always keep a pad button.',
   // @desc: Feedback line in Controls when the pressed pad button moved from another row into an
   // empty Pad cell, leaving that row without a pad button; {key} is a pad button glyph,
   // {label}/{otherLabel} row names. ui/controlsModel.ts
@@ -353,10 +354,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'controls.cleared': (p) => `${p.label} has no key now.`,
   // @desc: Last row of each Controls tab: restore every default key. ui/controlsView.ts
   'controls.resetAll': 'Reset all',
-  // @desc: Yes / No question asked before Controls restores every default key.
+  // @desc: Yes / No question asked before Controls restores every default key and pad button.
   // ui/controlsView.ts
   'controls.reset.question': 'Reset every control to its default?',
-  // @desc: Feedback line in Controls after every default key was restored. One
+  // @desc: Feedback line in Controls after every default key and pad button was restored. One
   // sentence. ui/controlsView.ts
   'controls.reset.done': 'All controls are back to their defaults.',
   // @desc: Button shown in Controls while a slot waits for a key press; it ends the

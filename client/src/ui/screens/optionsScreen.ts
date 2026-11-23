@@ -25,6 +25,7 @@ import type { PadBindings, PadIndex } from '../../input/padBindings';
 import { confirmLayout } from '../actionSheetModel';
 import {
   type CapturedKey,
+  type CaptureOutcome,
   type CaptureTarget,
   type ControlsRow,
   type ControlsTab,
@@ -96,7 +97,9 @@ function slotEntries(row: ControlsRow): ItemEntry[] {
     [`${row.id}_1`, { kind: 'slot', target: { row, slot: 1 } }],
     [
       `${row.id}_pad`,
-      pad === undefined ? { kind: 'noPad', row } : { kind: 'slot', target: { row: pad, slot: 'pad' } },
+      pad === undefined
+        ? { kind: 'noPad', row }
+        : { kind: 'slot', target: { row: pad, slot: 'pad' } },
     ],
   ];
 }
@@ -152,16 +155,8 @@ export interface CaptureStep extends CaptureResult<Bindings> {
 /** What a key pressed while `target` waits for one does (the shell applies it). */
 export function captureStep(b: Bindings, target: SlotTarget, key: CapturedKey): CaptureStep {
   const outcome = captureKey(b, target, key);
-  const text = outcomeText(outcome);
-  switch (outcome.kind) {
-    case 'bound':
-    case 'swapped':
-      return { done: true, bindings: outcome.bindings, text, prevent: true };
-    case 'cancelled':
-      return { done: true, bindings: undefined, text, prevent: true };
-    case 'refused':
-      return { done: false, bindings: undefined, text, prevent: outcome.reason !== 'reserved' };
-  }
+  const prevent = outcome.kind !== 'refused' || outcome.reason !== 'reserved';
+  return { ...resultOf(outcome, outcomeText(outcome)), prevent };
 }
 
 /** What a pad press read while the Pad cell `target` waits does (the shell applies it):
@@ -173,7 +168,12 @@ export function padCaptureStep(
 ): CaptureResult<PadBindings> {
   const outcome: PadCaptureOutcome =
     read === 'refused' ? { kind: 'refused', reason: 'reserved' } : capturePad(pad, target, read);
-  const text = padOutcomeText(outcome);
+  return resultOf(outcome, padOutcomeText(outcome));
+}
+
+/** A capture's outcome as the shell applies it: a refusal keeps waiting; a bind or a swap ends the
+ *  capture with its table, a cancel without one. */
+function resultOf<T>(outcome: CaptureOutcome<T, unknown, unknown>, text: string): CaptureResult<T> {
   switch (outcome.kind) {
     case 'bound':
     case 'swapped':

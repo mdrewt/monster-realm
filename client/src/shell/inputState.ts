@@ -8,12 +8,7 @@
 // reads the saved tables from storage and constructs the devices: it registers no listener, writes
 // nothing and reads no Gamepad API (the pad source reads it at each poll).
 
-import {
-  browserStorage,
-  loadBindings,
-  loadPadBindings,
-  saveBindings,
-} from '../input/bindingStore';
+import { browserStorage, loadBindings, loadPadBindings, saveBindings } from '../input/bindingStore';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import type { VButton } from '../input/buttons';
 import { GamepadSource } from '../input/gamepadSource';

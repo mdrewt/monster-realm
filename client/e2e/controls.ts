@@ -35,10 +35,7 @@ const CLOSE_ALL_SETTLE_MS = 4_000;
  */
 export async function liveBindings(page: Page): Promise<Bindings> {
   try {
-    const text = await page.evaluate(
-      (key: string) => window.localStorage.getItem(key),
-      CONTROLS_STORAGE_KEY,
-    );
+    const text = await liveRecordText(page);
     return text === null ? DEFAULT_BINDINGS : parseBindings(JSON.parse(text));
   } catch {
     return DEFAULT_BINDINGS;
@@ -49,15 +46,16 @@ export async function liveBindings(page: Page): Promise<Bindings> {
  *  over a one-value storage. ANY failure gives `PAD_DEFAULT_BINDINGS`, as `liveBindings` does. */
 export async function livePadBindings(page: Page): Promise<PadBindings> {
   try {
-    const text = await page.evaluate(
-      (key: string) => window.localStorage.getItem(key),
-      CONTROLS_STORAGE_KEY,
-    );
+    const text = await liveRecordText(page);
     return loadPadBindings({ getItem: () => text, setItem: () => undefined });
   } catch {
     return PAD_DEFAULT_BINDINGS;
   }
 }
+
+/** The raw `localStorage['mr.controls']` string, read in the page (null when nothing is saved). */
+const liveRecordText = (page: Page): Promise<string | null> =>
+  page.evaluate((key: string) => window.localStorage.getItem(key), CONTROLS_STORAGE_KEY);
 
 /** A press helper found no key for a button or accelerator in the live table (a cleared row):
  *  it fails naming it rather than pressing `undefined`. */

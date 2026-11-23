@@ -99,7 +99,10 @@ function padIndexList(
   if (!Array.isArray(raw) || raw.length > MAX_PAD_INDICES || (raw.length === 0 && !emptyOk)) {
     return undefined;
   }
-  return raw.every((i) => isBindablePadIndex(i) && !claimed.has(i)) ? [...raw] : undefined;
+  if (raw.length === 0) return [];
+  // Read by index, not iterated: a sparse `[,]` holds no index at all.
+  const i: unknown = raw[0];
+  return isBindablePadIndex(i) && !claimed.has(i) ? [i] : undefined;
 }
 
 /** The pad table a stored `pad` value stands for: the defaults for anything but an object. Its

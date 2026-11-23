@@ -29,8 +29,8 @@
 // capture the screen has left; `hide()` ends it on every close path.
 //
 // The strip (`#controls-feedback`, the shared `.mr-frame-feedback` overlay, hidden while empty) is
-// this frame's hint line: main.ts's seam paints a refused key there (`showHint`) for as long as the
-// capture waits. Every outcome (a bind, a swap, a cancel, Clear, Reset, a failed save) is a toast,
+// this frame's hint line: main.ts's seam paints a refused key or pad button there (`showHint`) for
+// as long as the capture waits. Every outcome (a bind, a swap, a cancel, Clear, Reset, a failed save) is a toast,
 // routed by main.ts on its policy channel (uif-4b): the view hands Clear and Reset over through
 // `handlers.onOutcome` and never picks a channel. The strip is not a live region
 // (ui/liveRegion.ts owns the only one): a hint, the capture prompt and the confirm's question go to
@@ -78,7 +78,7 @@ export interface ControlsViewHandlers {
   readonly padBindings?: () => PadBindings;
   /** Unbind an accelerator; false when the new table could not be saved. */
   readonly onClear: (accel: Accel) => boolean;
-  /** Restore the default table; false when it could not be saved. */
+  /** Restore the default keyboard and pad tables; false when they could not be saved. */
   readonly onReset: () => boolean;
   /** The live text-size step (uif-13); Normal when absent. Optional, like `onOutcome`, only for
    *  the shell rigs that never paint Display; main.ts always passes it. */
@@ -86,7 +86,7 @@ export interface ControlsViewHandlers {
   /** Apply and save a text-size step; false when it could not be saved. Optional as above: absent,
    *  a chosen step changes nothing and raises no outcome line. */
   readonly onTextStep?: (step: TextStep) => boolean;
-  /** The Cancel chip was pressed while a slot waits for a key. */
+  /** The Cancel chip was pressed while a slot waits for a key or a Pad cell for a pad button. */
   readonly onCancelCapture: () => void;
   /** Say `text` through the page's live region. */
   readonly announce: (text: string) => void;

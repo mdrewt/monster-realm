@@ -37,7 +37,6 @@ import { accelForCode, isBindableCode } from './input/bindings';
 import type { ButtonEdge, VButton } from './input/buttons';
 import { learnKey } from './input/glyphs';
 import { isChord } from './input/keyboardSource';
-import type { PadIndex } from './input/padBindings';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
   ACCEL_PATHS,
@@ -297,13 +296,7 @@ import {
   type UpperFrame,
   WORLD_STACK,
 } from './ui/contextStack';
-import {
-  type CaptureTarget,
-  clearAccel,
-  outcomeText,
-  type PadTarget,
-  type SlotTarget,
-} from './ui/controlsModel';
+import { type CaptureTarget, clearAccel, outcomeText, type SlotTarget } from './ui/controlsModel';
 import type { ControlsViewHandlers } from './ui/controlsView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
@@ -2811,10 +2804,7 @@ const endControlsCapture = (): void => {
 // The one outcome path of a capture, a key's or a pad button's: a refused press keeps the capture
 // waiting with its reason as a hint on the frame's strip; any other ends it, its line a toast, and
 // a changed table is applied and saved through `apply`. True when the capture ended.
-const settleControlsCapture = <T>(
-  step: CaptureResult<T>,
-  apply: (next: T) => boolean,
-): boolean => {
+const settleControlsCapture = <T>(step: CaptureResult<T>, apply: (next: T) => boolean): boolean => {
   if (!step.done) {
     route('controls-refused', step.text, (hint) => controlsView?.showHint(hint));
     return false;
@@ -2833,13 +2823,6 @@ const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
   if (step.prevent) e.preventDefault();
   // The captured key's OS repeats are not presses of its new button.
   if (settleControlsCapture(step, applyBindings)) noteNavHeld(e.code);
-};
-
-// A pad press read while the Pad cell `target` waits (the pad source's `capture()`): the same
-// outcome path as a key's, over the pad table. The press owes no release, and a bind rebinds the
-// pad, so the captured button acts only once released and pressed again.
-const captureControlsPad = (target: PadTarget, read: PadIndex | 'refused'): void => {
-  settleControlsCapture(padCaptureStep(padBindings, target, read), applyPadBindings);
 };
 
 // The Cancel chip: a capture ends unchanged. Nothing happens unless a slot is waiting.
@@ -2867,7 +2850,8 @@ let paintWorldPrompt: (() => void) | null = null;
 // while the session terminal shows (false then). An edge whose routing throws does not stop the
 // later ones (a release among them would otherwise leave its direction held); the first error is
 // rethrown once every edge has routed.
-// `stop`, read after each edge, ends the routing early: the later edges are not routed.
+// `stop`, read after each edge, ends the routing early: the later edges are not routed, and the
+// caller owes the release of whatever they held.
 const pressEdges = (edges: readonly ButtonEdge[], stop?: () => boolean): boolean => {
   if (sessionGateBlocks()) return false;
   syncStack();
@@ -3000,11 +2984,11 @@ const onKeyDown = (e: KeyboardEvent): void => {
     if (pressesChip) return;
     if (capture.slot !== 'pad') {
       captureControlsKey(capture, e);
-    } else if (e.code === 'Escape') {
+    } else if (e.code === 'Escape' || isBindableCode(e.code)) {
+      // Its OS repeats are cancelled too, until the keyup (a held PageDown would scroll).
       e.preventDefault();
-      cancelControlsCapture();
-    } else if (isBindableCode(e.code)) {
-      e.preventDefault();
+      noteNavHeld(e.code);
+      if (e.code === 'Escape') cancelControlsCapture();
     }
     return;
   }
@@ -3149,7 +3133,8 @@ document.addEventListener('visibilitychange', () => {
 // `capture()` instead: no pad press routes, and the press read goes to the capture. A pad press is
 // ignored, as a key press is, while focus is outside the game screen, and also while Controls waits
 // for a key: everything held is let go then too, so the ignored press owes no release that could
-// end another source's hold. A release alone still routes, as a keyup does. Inside the game screen a
+// end another source's hold. A release alone still routes, as a keyup does, except while a Pad cell
+// waits: the releases `capture()` reads reach the first poll after the capture ends. Inside the game screen a
 // pad press is a button press even with a text field focused (a pad cannot type). A press clears the
 // pointer's hover mark and heals stale focus first, as a key press does; the edges route before the
 // accelerators. An edge that starts a capture ends the poll: no later edge or accelerator routes,
@@ -3168,7 +3153,9 @@ const pollPad = (): void => {
     // An ignored press: the capture read already took it, so it owes nothing.
     if (outsideGameScreen(document.activeElement, gameScreenEl())) return;
     pointerSource?.keyPressed();
-    captureControlsPad(capture, read);
+    // The same outcome path as a key's, over the pad table. The captured press owes no release,
+    // and a bind rebinds the pad, so the button acts only once released and pressed again.
+    settleControlsCapture(padCaptureStep(padBindings, capture, read), applyPadBindings);
     return;
   }
   const { edges, accels } = pad.poll();
@@ -3186,11 +3173,14 @@ const pollPad = (): void => {
   pointerSource?.keyPressed();
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
   const capturing = (): boolean => controlsCapture() !== null;
-  if (edges.length > 0) pressEdges(edges, capturing);
-  if (capturing()) {
-    releaseAllInput();
-    return;
+  try {
+    if (edges.length > 0) pressEdges(edges, capturing);
+  } finally {
+    // A capture began: the edges the stop dropped owe releases, so everything held is let go, even
+    // when an edge's routing threw.
+    if (capturing()) releaseAllInput();
   }
+  if (capturing()) return;
   if (accels.length === 0) return;
   // The edges' press path, else the frame, has just synced the stack; the sync after is a
   // keydown's, so whatever an accelerator closed is off the stack at once.
