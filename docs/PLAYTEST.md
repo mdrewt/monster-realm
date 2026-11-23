@@ -9,7 +9,7 @@ In the game, the hint bar at the bottom names what each button does right now. S
 
 ## 1. Launch it
 
-You need the toolchain from the README (Rust, the `spacetime` CLI 2.12.0, Node 24.22.0,
+You need the toolchain from the README (Rust, the `spacetime` CLI 2.12.0, Node 24.22.3,
 wasm-pack, `just`, and GNU `timeout`) and a local SpacetimeDB:
 
 ```sh
@@ -33,16 +33,16 @@ and its tabs show this screen's buttons, every button and shortcut, and some goa
 
 The default keys:
 
-| Button | Default keys | What it does |
-|---|---|---|
-| D-pad | `WASD` / arrow keys | Move; move the cursor in menus |
-| A | `Enter` | Act on what you face (talk, shop, heal, trade, challenge); choose |
-| B | `Backspace` | Back one level; dismiss a notice |
-| X | `Space` | Jump |
-| Y | `F` | Info; at the world, every action for what you face, or with nothing in front of you, the waiting request |
-| LB / RB | `Q` / `E` (or `Page Up` / `Page Down`) | Previous / next tab |
-| Start | `Escape` or `M` | Open the main menu; close everything |
-| Select | `R` or `/` | Help |
+| Button  | Default keys                           | What it does                                                                                             |
+| ------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| D-pad   | `WASD` / arrow keys                    | Move; move the cursor in menus                                                                           |
+| A       | `Enter`                                | Act on what you face (talk, shop, heal, trade, challenge); choose                                        |
+| B       | `Backspace`                            | Back one level; dismiss a notice                                                                         |
+| X       | `Space`                                | Jump                                                                                                     |
+| Y       | `F`                                    | Info; at the world, every action for what you face, or with nothing in front of you, the waiting request |
+| LB / RB | `Q` / `E` (or `Page Up` / `Page Down`) | Previous / next tab                                                                                      |
+| Start   | `Escape` or `M`                        | Open the main menu; close everything                                                                     |
+| Select  | `R` or `/`                             | Help                                                                                                     |
 
 The main menu (Start) is one list: **Monsters** (Party and Storage), **Inventory**, **Journal**,
 **Social**, **Profile** (one screen: Name, Account and Privacy, walked top to bottom with the
@@ -120,16 +120,16 @@ an earlier failure prevented the step.
 
 **Protocol A: the Box flow by keyboard and speech.**
 
-| # | Action | Expected |
-|---|---|---|
-| A1 | Fresh load; `Tab` until the world takes focus. | The canvas is a single tab stop announced as the application region **"World map"**. |
-| A2 | Press `B`. | The Box opens (the hotkey only works when the world has focus, so this also confirms A1). |
-| A3 | Wait. | The dialog name **"Party & Box"** is announced and focus moves inside the dialog. Silence or no focus move is a FAIL. |
-| A4 | `Tab` / `Shift+Tab` past both ends. | Focus wraps inside the dialog; every stop announces its name and role. |
-| A5 | Activate **To Party** or **To Box** with `Enter` or `Space`. | The move happens, and the change can be heard. If it is only visible, FAIL. |
-| A6 | Press `Escape`. | The Box closes. |
-| A7 | Wait. | **"World map"** is announced and focus returns to the canvas. Both must happen. |
-| A8 | Press `B` again. | The Box reopens, which proves focus really returned. |
+| #   | Action                                                       | Expected                                                                                                              |
+| --- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| A1  | Fresh load; `Tab` until the world takes focus.               | The canvas is a single tab stop announced as the application region **"World map"**.                                  |
+| A2  | Press `B`.                                                   | The Box opens (the hotkey only works when the world has focus, so this also confirms A1).                             |
+| A3  | Wait.                                                        | The dialog name **"Party & Box"** is announced and focus moves inside the dialog. Silence or no focus move is a FAIL. |
+| A4  | `Tab` / `Shift+Tab` past both ends.                          | Focus wraps inside the dialog; every stop announces its name and role.                                                |
+| A5  | Activate **To Party** or **To Box** with `Enter` or `Space`. | The move happens, and the change can be heard. If it is only visible, FAIL.                                           |
+| A6  | Press `Escape`.                                              | The Box closes.                                                                                                       |
+| A7  | Wait.                                                        | **"World map"** is announced and focus returns to the canvas. Both must happen.                                       |
+| A8  | Press `B` again.                                             | The Box reopens, which proves focus really returned.                                                                  |
 
 Expected by design, not bugs: `B` does not close the Box while focus is inside it
 (`Escape` does); the canvas has no focusable parts inside it; sprites and tiles have
@@ -139,12 +139,12 @@ no text alternatives.
 `#app` next to the world canvas, so `aria-modal` has to hide a sibling subtree:
 Battle, Party & Box, Raising & Inventory, Evolution. For each, with NVDA + Chrome:
 
-| # | Action | Expected |
-|---|---|---|
-| B1 | Open the overlay. | It has `role="dialog"` and `aria-modal="true"`. |
-| B2 | In browse mode, move the reading cursor down well past the dialog's end. | Nothing outside the dialog is read. |
-| B3 | Open the elements list (`NVDA+F7`). | Only elements inside the dialog are offered. |
-| B4 | Close the overlay and repeat B2. | The rest of the page is readable again. B4 is the control for B2. |
+| #   | Action                                                                   | Expected                                                          |
+| --- | ------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| B1  | Open the overlay.                                                        | It has `role="dialog"` and `aria-modal="true"`.                   |
+| B2  | In browse mode, move the reading cursor down well past the dialog's end. | Nothing outside the dialog is read.                               |
+| B3  | Open the elements list (`NVDA+F7`).                                      | Only elements inside the dialog are offered.                      |
+| B4  | Close the overlay and repeat B2.                                         | The rest of the page is readable again. B4 is the control for B2. |
 
 **Run log.** Append one entry per run and never edit earlier entries.
 

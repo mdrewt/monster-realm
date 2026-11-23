@@ -70,10 +70,10 @@ tests fail (B1 below). That is the same count lpw-34 measured when it forced the
 
 ## The alternatives
 
-| Alternative | Where the Fixture's host comes from | Fixture API changed | Server-module tests changed | Probe on 2.12.0 |
-|---|---|---|---|---|
-| A — the vendor's `test-utils` feature | `spacetimedb = { workspace = true, features = ["test-utils"] }` as a dev-dependency. The Fixture owns a `spacetimedb::test_utils::TestContext` per test: a fresh `TestDatastore`, the vendor's real in-memory `RelationalDB`, built from `test_utils::module_def()`. Contexts come from `ReducerContext::__test(ctx.db.clone(), sender, auth, connection, timestamp, module identity, None)`, and JWTs from `AuthCtx::from_jwt_payload`. The 18 ABI functions, the `run_as` trampoline and the 91 describer externs are deleted. | 6 members keep their signature and lose their behaviour: `writes_to`, `rows_read`, `requested_indexes`, `open_iters`, `call_view`, and `run_as_conn_at` with no JWT. `writable`, `scannable`, `unique`, `auto_inc`, `reset_writes` and `reset_reads` do nothing. | 203 fail, by cause in "What A changes" | links with `--lib` only; 1108 passed, 203 failed |
-| B — the vendor crates patched where they refuse a native host | `[patch.crates-io]` points `spacetimedb` and `spacetimedb-bindings-sys` at copies of their crates.io 2.12.0 packages under `vendor/`. 27 `#[cfg]` attributes change across the two copies, 1 in `spacetimedb-bindings-sys` and 26 in `spacetimedb`, each with a change notice at the end of its line. Nothing else changes ("The patch"). The Fixture keeps its own ABI host, which the table backend calls again. | none | none | links; 1311 passed, 0 failed |
+| Alternative                                                   | Where the Fixture's host comes from                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Fixture API changed                                                                                                                                                                                                                                              | Server-module tests changed            | Probe on 2.12.0                                  |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------ |
+| A — the vendor's `test-utils` feature                         | `spacetimedb = { workspace = true, features = ["test-utils"] }` as a dev-dependency. The Fixture owns a `spacetimedb::test_utils::TestContext` per test: a fresh `TestDatastore`, the vendor's real in-memory `RelationalDB`, built from `test_utils::module_def()`. Contexts come from `ReducerContext::__test(ctx.db.clone(), sender, auth, connection, timestamp, module identity, None)`, and JWTs from `AuthCtx::from_jwt_payload`. The 18 ABI functions, the `run_as` trampoline and the 91 describer externs are deleted. | 6 members keep their signature and lose their behaviour: `writes_to`, `rows_read`, `requested_indexes`, `open_iters`, `call_view`, and `run_as_conn_at` with no JWT. `writable`, `scannable`, `unique`, `auto_inc`, `reset_writes` and `reset_reads` do nothing. | 203 fail, by cause in "What A changes" | links with `--lib` only; 1108 passed, 203 failed |
+| B — the vendor crates patched where they refuse a native host | `[patch.crates-io]` points `spacetimedb` and `spacetimedb-bindings-sys` at copies of their crates.io 2.12.0 packages under `vendor/`. 27 `#[cfg]` attributes change across the two copies, 1 in `spacetimedb-bindings-sys` and 26 in `spacetimedb`, each with a change notice at the end of its line. Nothing else changes ("The patch"). The Fixture keeps its own ABI host, which the table backend calls again.                                                                                                               | none                                                                                                                                                                                                                                                             | none                                   | links; 1311 passed, 0 failed                     |
 
 ### What A changes
 
@@ -111,16 +111,16 @@ answers none of these:
 
 The 203 failures of the probe, classified by each test's first panic:
 
-| Cause | Failing tests |
-|---|---|
-| `writes_to` has no counter | 171 |
-| `call_view` cannot run a shipped view | 18 |
-| `rows_read` has no counter | 6 |
-| `requested_indexes` has no log | 3 |
-| `open_iters` sees no iterator | 1 |
-| view ids are positional and move | 1 |
-| `Table::delete(row)` bypasses the test backend | 2 |
-| a scratch table outside the module definition (`nh_scannable_writable_table_scans_counts_deletes_and_clears`) | 1 |
+| Cause                                                                                                         | Failing tests |
+| ------------------------------------------------------------------------------------------------------------- | ------------- |
+| `writes_to` has no counter                                                                                    | 171           |
+| `call_view` cannot run a shipped view                                                                         | 18            |
+| `rows_read` has no counter                                                                                    | 6             |
+| `requested_indexes` has no log                                                                                | 3             |
+| `open_iters` sees no iterator                                                                                 | 1             |
+| view ids are positional and move                                                                              | 1             |
+| `Table::delete(row)` bypasses the test backend                                                                | 2             |
+| a scratch table outside the module definition (`nh_scannable_writable_table_scans_counts_deletes_and_clears`) | 1             |
 
 The probe port keeps the signatures and implements nothing more. A fuller port could recover the
 18 `call_view` failures by making the view functions visible. No failure came from a constraint refusing a
@@ -164,12 +164,12 @@ The Fixture, its API and every test stay as they are. What B adds is around them
   release build over the patched copies is byte-identical to one over the unmodified copies at the
   same path. Measured for four builds:
 
-  | Release build | sha256 |
-  |---|---|
-  | default features | `9531db117bcc9d7ec7ea9e5f1009c4663c99795ac25c9da5b2b89c144a345cce` |
+  | Release build                               | sha256                                                             |
+  | ------------------------------------------- | ------------------------------------------------------------------ |
+  | default features                            | `9531db117bcc9d7ec7ea9e5f1009c4663c99795ac25c9da5b2b89c144a345cce` |
   | `--no-default-features --features official` | `581f856542fc5e2f14f36e2fa61dc23f598cf7d557f6292277d288714d8688e3` |
-  | `--no-default-features --features world` | `7fcdeac2fbd3061913b719369ea8b4bab520b72b77fcbff84a005d7b47648e98` |
-  | `--features dev_reducers` | `f76d0c54719239ce9e54d235e738cf104237db89bfc40ee96846429907e2581e` |
+  | `--no-default-features --features world`    | `7fcdeac2fbd3061913b719369ea8b4bab520b72b77fcbff84a005d7b47648e98` |
+  | `--features dev_reducers`                   | `f76d0c54719239ce9e54d235e738cf104237db89bfc40ee96846429907e2581e` |
 
   Building the crates from a path rather than from the registry does change the bytes. Against a
   crates.io build, the type, import, table, memory and global sections are identical, and the
@@ -230,12 +230,12 @@ The Fixture, its API and every test stay as they are. What B adds is around them
 
 ## The cost of a test run, measured on crate 2.12.0
 
-| Build | Build (s) | Run (s) | Run ratio | Target dir (GB) | Cargo.lock packages | Passed | Failed |
-|---|---|---|---|---|---|---|---|
-| 2.11.0 today | 38.30 | 2.652 | 1.00 | 1.9 | 184 | 1311 | 0 |
-| A | 86 | 34.930 | 13.17 | 5.5 | 673 | 1108 | 203 |
-| B | 40.62 | 2.744 | 1.03 | 1.9 | 184 | 1311 | 0 |
-| B1 | not measured | 4.490 | 1.69 | not measured | 184 | 542 | 769 |
+| Build        | Build (s)    | Run (s) | Run ratio | Target dir (GB) | Cargo.lock packages | Passed | Failed |
+| ------------ | ------------ | ------- | --------- | --------------- | ------------------- | ------ | ------ |
+| 2.11.0 today | 38.30        | 2.652   | 1.00      | 1.9             | 184                 | 1311   | 0      |
+| A            | 86           | 34.930  | 13.17     | 5.5             | 673                 | 1108   | 203    |
+| B            | 40.62        | 2.744   | 1.03      | 1.9             | 184                 | 1311   | 0      |
+| B1           | not measured | 4.490   | 1.69      | not measured    | 184                 | 542    | 769    |
 
 - **Run ratio** is the row's run time over the 2.11.0 row's.
 - **A's run** is slower because each `fixture()` builds a fresh `RelationalDB` holding the
@@ -250,14 +250,14 @@ The Fixture, its API and every test stay as they are. What B adds is around them
 A `judge` scored the two alternatives against a rubric whose weights and tie-break were fixed
 before scoring, using the probe logs and the vendor sources:
 
-| Criterion | Weight | A | B |
-|---|---|---|---|
-| Keeps the Fixture's API and every server-module test's assertion | 30 | 4 | 30 |
-| The host answers what the tests ask, as the real host would | 20 | 11 | 12 |
-| Release artefact and supply chain | 20 | 10 | 12 |
-| Cost of a test run | 15 | 2 | 14 |
-| Work at each SpacetimeDB hop | 15 | 8 | 10 |
-| **Total** | 100 | 35 | 78 |
+| Criterion                                                        | Weight | A   | B   |
+| ---------------------------------------------------------------- | ------ | --- | --- |
+| Keeps the Fixture's API and every server-module test's assertion | 30     | 4   | 30  |
+| The host answers what the tests ask, as the real host would      | 20     | 11  | 12  |
+| Release artefact and supply chain                                | 20     | 10  | 12  |
+| Cost of a test run                                               | 15     | 2   | 14  |
+| Work at each SpacetimeDB hop                                     | 15     | 8   | 10  |
+| **Total**                                                        | 100    | 35  | 78  |
 
 The tie-break (fewer server-module assertions changed, then the smaller difference in the shipped
 artefact) applies within five points, so it does not decide here. The reasons, by criterion:
@@ -304,7 +304,7 @@ So the hop moves the CLI, the host, the crate and the npm SDK to 2.12.0 together
 `docs/runbooks/spacetimedb-upgrade.md`:
 
 - The npm SDK 2.12.0 was published on 2026-10-13, so it is past the 7-day cooldown. It declares
-  no `engines` field, so Node 24.22.0 serves.
+  no `engines` field, so Node 24.22.3 serves.
 - The CLI's sha256 for CI is
   `154853dd882abe1e6f8b96e169f9ca43a075df006dd33116b85d03c59a912f89` (lpw-34's note).
 
@@ -315,13 +315,13 @@ Both crates are copied from their crates.io 2.12.0 packages into `vendor/spaceti
 attributes change, and nothing else does. Line numbers are those of 2.12.0, and the patch does
 not shift them.
 
-| Crate | File | Lines | From | To |
-|---|---|---|---|---|
-| `spacetimedb-bindings-sys` | `src/lib.rs` | 990 | `#[cfg(not(target_arch = "wasm32"))]` | `#[cfg(any())]` |
-| `spacetimedb` | `src/table.rs` | 61, 108, 136, 162, 184, 217, 244, 275, 299, 1867, 1879, 1931 | `#[cfg(target_arch = "wasm32")]` | `#[cfg(all())]` |
-| `spacetimedb` | `src/table.rs` | 65, 112, 140, 166, 188, 222, 248, 279, 303, 1869, 1881, 1950 | `#[cfg(not(target_arch = "wasm32"))]` | `#[cfg(any())]` |
-| `spacetimedb` | `src/lib.rs` | 1231 | `#[cfg(target_arch = "wasm32")]` | `#[cfg(not(all(feature = "test-utils", not(target_arch = "wasm32"))))]` |
-| `spacetimedb` | `src/lib.rs` | 1244 | `#[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]` | `#[cfg(any())]` |
+| Crate                      | File           | Lines                                                        | From                                                                    | To                                                                      |
+| -------------------------- | -------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `spacetimedb-bindings-sys` | `src/lib.rs`   | 990                                                          | `#[cfg(not(target_arch = "wasm32"))]`                                   | `#[cfg(any())]`                                                         |
+| `spacetimedb`              | `src/table.rs` | 61, 108, 136, 162, 184, 217, 244, 275, 299, 1867, 1879, 1931 | `#[cfg(target_arch = "wasm32")]`                                        | `#[cfg(all())]`                                                         |
+| `spacetimedb`              | `src/table.rs` | 65, 112, 140, 166, 188, 222, 248, 279, 303, 1869, 1881, 1950 | `#[cfg(not(target_arch = "wasm32"))]`                                   | `#[cfg(any())]`                                                         |
+| `spacetimedb`              | `src/lib.rs`   | 1231                                                         | `#[cfg(target_arch = "wasm32")]`                                        | `#[cfg(not(all(feature = "test-utils", not(target_arch = "wasm32"))))]` |
+| `spacetimedb`              | `src/lib.rs`   | 1244                                                         | `#[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]` | `#[cfg(any())]`                                                         |
 
 `#[cfg(all())]` is always on and `#[cfg(any())]` always off. So, on wasm and on a native build
 without `test-utils`:
@@ -396,14 +396,14 @@ spacetimedb = { path = "vendor/spacetimedb" }
 spacetimedb-bindings-sys = { path = "vendor/spacetimedb-bindings-sys" }
 ```
 
-| Command (crate 2.12.0, patched) | Passed | Failed |
-|---|---|---|
-| `cargo nextest run -p monster-realm-module` | 1311 | 0 |
-| `cargo nextest run --workspace --features monster-realm-module/dev_reducers -E 'package(monster-realm-module)'` | 1329 | 0 |
-| `cargo nextest run --workspace --features monster-realm-module/load_test_zones -E 'package(game-core) \| package(monster-realm-module)'` | 3298 | 0 |
-| `cargo nextest run --workspace --no-default-features --features monster-realm-module/dev_issuers -E 'package(monster-realm-module) & test(/acs6_enforcing/)'` | 18 | 0 |
-| `cargo nextest run --workspace` | 3626 | 0 |
-| `cargo nextest run -p monster-realm-module --features spacetimedb/unstable` | 1311 | 0 |
+| Command (crate 2.12.0, patched)                                                                                                                               | Passed | Failed |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
+| `cargo nextest run -p monster-realm-module`                                                                                                                   | 1311   | 0      |
+| `cargo nextest run --workspace --features monster-realm-module/dev_reducers -E 'package(monster-realm-module)'`                                               | 1329   | 0      |
+| `cargo nextest run --workspace --features monster-realm-module/load_test_zones -E 'package(game-core) \| package(monster-realm-module)'`                      | 3298   | 0      |
+| `cargo nextest run --workspace --no-default-features --features monster-realm-module/dev_issuers -E 'package(monster-realm-module) & test(/acs6_enforcing/)'` | 18     | 0      |
+| `cargo nextest run --workspace`                                                                                                                               | 3626   | 0      |
+| `cargo nextest run -p monster-realm-module --features spacetimedb/unstable`                                                                                   | 1311   | 0      |
 
 No test failed on the probe, so there is no failing test to name. Everything else that ran also
 passed:
@@ -440,37 +440,37 @@ stamps the data directory it starts on, after which a host of the earlier versio
 runbook's step 6). The e2e job in CI is the live two-client e2e that the lockstep entry requires
 for an SDK bump. No proptest seed is committed.
 
-| File | What changed |
-|---|---|
-| `Cargo.toml` | the pin is `spacetimedb = "=2.12.0"`, the `[patch.crates-io]` table above is added, and the pin's comment states both |
-| `Cargo.lock` | the seven `spacetimedb*` packages at 2.12.0; the two patched ones are path packages; 184 packages, as before |
-| `vendor/spacetimedb/**` | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock` |
-| `vendor/spacetimedb-bindings-sys/**` | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock` |
-| `vendor/native-host.patch` | new: the patch |
-| `vendor/PRISTINE.sha256` | new: the crates.io checksums and per-file hashes |
-| `vendor/README.md` | new: what the directory holds, the change notice, how a hop re-vendors |
-| `.gitattributes` | `vendor/** -text`, so that no line-ending normalisation changes a byte the hashes cover |
-| `server-module/Cargo.toml` | the dependency comment points at the root pin (no version of its own to drift) and names the patched copies |
-| `server-module/src/native_host_tests.rs` | the guard test; comments only otherwise: the citations into the 2.11.0 sources point at `vendor/` for the two patched crates and at the crates.io 2.12.0 packages for `spacetimedb-sats` and `spacetimedb-primitives` |
-| `evals/account-e2e.eval.mjs` | `WORKSPACE_NON_MEMBER_DIRS`, beside `WORKSPACE_MEMBERS`: the non-member directories its temp workspace copies, holding `vendor` |
-| `scripts/ci-tools.sh` | `SPACETIME_VERSION=2.12.0` and its sha256 |
-| `client/package.json` | `"spacetimedb": "^2.12.0"` |
-| `client/package-lock.json` | the SDK at 2.12.0 |
-| `client/src/module_bindings/index.ts` | regenerated by `just gen` (the CLI-version stamps) |
-| `client/src/net/authToken.test.ts` | the SDK-drift needle and that test's title (under "Tests whose assertion changes"); two comments now say the message carries the status and the client counts every rejection alike |
-| `client/src/net/authToken.ts` | the comments that quote the SDK's rejection message and cite its `dist` lines (built at `dist/index.mjs:5219`, thrown at `:5247`), the two that called the message the same for every status, and the `errorFromEvent` (`:6343`) and token (`:6214`, `:7059-7060`) citations |
-| `docs/runbooks/spacetimedb-upgrade.md` | the current pin; a `vendor/` row in "What moves together"; step 2 re-vendors before `cargo check`; the section "Re-vendor the two patched crates" (download and check each `.crate`, write `PRISTINE.sha256`, apply and regenerate the patch, pin, read the advisories) |
-| `docs/DECISIONS.md` | the lockstep entry's version; the test-host entry to the built state |
-| `ARCHITECTURE.md` | the server-tests row (the host runs over the patched copies) and a `vendor/` row in the directory map |
-| `AGENTS.md` | the toolchain row's version |
-| `README.md` | the toolchain table's version and pin, a `vendor/` row in the directory table, and the License section, which names the Apache-2.0 copies under `vendor/` |
-| `docs/PLAYTEST.md` | the CLI version it asks for |
-| `docs/runbooks/playtest-ops.md` | the CLI version it asks for |
-| `docs/local-play.md` | §3's quotation of the `Cargo.toml` pin (line 546) |
-| `scripts/playtest-report.mjs` | the comments that call 2.11.0 the pinned CLI, with the `ORDER BY` refusal and the `--format json` envelope re-checked on 2.12.0 |
-| `.claude/skills/spacetimedb-reducer/SKILL.md` | the versions it states and the docs.rs link |
-| `.claude/skills/spacetimedb-client/SKILL.md` | the versions it states |
-| `docs/refactors/native-test-host.md` | brought to the built state |
+| File                                          | What changed                                                                                                                                                                                                                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Cargo.toml`                                  | the pin is `spacetimedb = "=2.12.0"`, the `[patch.crates-io]` table above is added, and the pin's comment states both                                                                                                                                                        |
+| `Cargo.lock`                                  | the seven `spacetimedb*` packages at 2.12.0; the two patched ones are path packages; 184 packages, as before                                                                                                                                                                 |
+| `vendor/spacetimedb/**`                       | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock`                                                                                                                                                                                                          |
+| `vendor/spacetimedb-bindings-sys/**`          | new: the crates.io 2.12.0 package with the patch, less `Cargo.lock`                                                                                                                                                                                                          |
+| `vendor/native-host.patch`                    | new: the patch                                                                                                                                                                                                                                                               |
+| `vendor/PRISTINE.sha256`                      | new: the crates.io checksums and per-file hashes                                                                                                                                                                                                                             |
+| `vendor/README.md`                            | new: what the directory holds, the change notice, how a hop re-vendors                                                                                                                                                                                                       |
+| `.gitattributes`                              | `vendor/** -text`, so that no line-ending normalisation changes a byte the hashes cover                                                                                                                                                                                      |
+| `server-module/Cargo.toml`                    | the dependency comment points at the root pin (no version of its own to drift) and names the patched copies                                                                                                                                                                  |
+| `server-module/src/native_host_tests.rs`      | the guard test; comments only otherwise: the citations into the 2.11.0 sources point at `vendor/` for the two patched crates and at the crates.io 2.12.0 packages for `spacetimedb-sats` and `spacetimedb-primitives`                                                        |
+| `evals/account-e2e.eval.mjs`                  | `WORKSPACE_NON_MEMBER_DIRS`, beside `WORKSPACE_MEMBERS`: the non-member directories its temp workspace copies, holding `vendor`                                                                                                                                              |
+| `scripts/ci-tools.sh`                         | `SPACETIME_VERSION=2.12.0` and its sha256                                                                                                                                                                                                                                    |
+| `client/package.json`                         | `"spacetimedb": "^2.12.0"`                                                                                                                                                                                                                                                   |
+| `client/package-lock.json`                    | the SDK at 2.12.0                                                                                                                                                                                                                                                            |
+| `client/src/module_bindings/index.ts`         | regenerated by `just gen` (the CLI-version stamps)                                                                                                                                                                                                                           |
+| `client/src/net/authToken.test.ts`            | the SDK-drift needle and that test's title (under "Tests whose assertion changes"); two comments now say the message carries the status and the client counts every rejection alike                                                                                          |
+| `client/src/net/authToken.ts`                 | the comments that quote the SDK's rejection message and cite its `dist` lines (built at `dist/index.mjs:5219`, thrown at `:5247`), the two that called the message the same for every status, and the `errorFromEvent` (`:6343`) and token (`:6214`, `:7059-7060`) citations |
+| `docs/runbooks/spacetimedb-upgrade.md`        | the current pin; a `vendor/` row in "What moves together"; step 2 re-vendors before `cargo check`; the section "Re-vendor the two patched crates" (download and check each `.crate`, write `PRISTINE.sha256`, apply and regenerate the patch, pin, read the advisories)      |
+| `docs/DECISIONS.md`                           | the lockstep entry's version; the test-host entry to the built state                                                                                                                                                                                                         |
+| `ARCHITECTURE.md`                             | the server-tests row (the host runs over the patched copies) and a `vendor/` row in the directory map                                                                                                                                                                        |
+| `AGENTS.md`                                   | the toolchain row's version                                                                                                                                                                                                                                                  |
+| `README.md`                                   | the toolchain table's version and pin, a `vendor/` row in the directory table, and the License section, which names the Apache-2.0 copies under `vendor/`                                                                                                                    |
+| `docs/PLAYTEST.md`                            | the CLI version it asks for                                                                                                                                                                                                                                                  |
+| `docs/runbooks/playtest-ops.md`               | the CLI version it asks for                                                                                                                                                                                                                                                  |
+| `docs/local-play.md`                          | §3's quotation of the `Cargo.toml` pin (line 546)                                                                                                                                                                                                                            |
+| `scripts/playtest-report.mjs`                 | the comments that call 2.11.0 the pinned CLI, with the `ORDER BY` refusal and the `--format json` envelope re-checked on 2.12.0                                                                                                                                              |
+| `.claude/skills/spacetimedb-reducer/SKILL.md` | the versions it states and the docs.rs link                                                                                                                                                                                                                                  |
+| `.claude/skills/spacetimedb-client/SKILL.md`  | the versions it states                                                                                                                                                                                                                                                       |
+| `docs/refactors/native-test-host.md`          | brought to the built state                                                                                                                                                                                                                                                   |
 
 `docs/e2e-flakes.md` is unchanged: its one version is a measurement (above).
 
@@ -515,8 +515,8 @@ No server-module test changes: B keeps every one, and the probe passed all 1311 
 Of the suites that ran without a host, one test outside the module changes, in the SDK leg of the
 hop:
 
-| Test | Reason |
-|---|---|
+| Test                                                                                                                                                                                                                                       | Reason                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `client/src/net/authToken.test.ts` :: `SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-rejection message string > BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${response.statusText}"` | SDK 2.12.0 adds the HTTP status to the message: its `dist/index.mjs` builds `Failed to verify token: ${status} ${statusText}` (line 5219). So the needle becomes that string, and so does the part of the title that quotes it. `isStoredCredentialRejected` matches on the prefix `Failed to verify token: `, which is unchanged, and every other test in the file passes on 2.12.0. |
 
 `moved-tests:`

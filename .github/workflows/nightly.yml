@@ -164,7 +164,7 @@ jobs:
         with: { prefix-key: v1-coverage }
       - uses: actions/setup-node@v7 # v7
         with:
-          node-version: '24.22.0'
+          node-version: '24.22.3'
           cache: npm
           cache-dependency-path: client/package-lock.json
       - uses: ./.github/actions/tools
@@ -206,7 +206,7 @@ jobs:
         with: { prefix-key: v1-e2e }
       - uses: actions/setup-node@v7 # v7
         with:
-          node-version: '24.22.0'
+          node-version: '24.22.3'
           cache: npm
           cache-dependency-path: client/package-lock.json
       - uses: ./.github/actions/tools
