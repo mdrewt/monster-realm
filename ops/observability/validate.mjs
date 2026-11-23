@@ -374,7 +374,7 @@ export function main(argv) {
 /**
  * True only when this file is the process entry point.
  *
- * `import.meta.main` needs Node >= 24.22.1 and is `undefined` below that (the default `node` on a
+ * `import.meta.main` needs Node >= 24.2 and is `undefined` below that (the default `node` on a
  * developer box here is 18), so the fallback is required or main() would never run. The fallback
  * uses realpathSync — NOT path.resolve — because `import.meta.url` is realpath-resolved by the
  * ESM loader: a symlinked script, or a symlinked PARENT directory, makes a resolve-only
