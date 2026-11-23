@@ -34,7 +34,7 @@ export const inputRouter = new InputRouter();
 // reporter (`installPadFaultSink`, at its module scope). This module imports no shell module.
 let padFault: (err: unknown) => void = (err) => console.error('[pad]', err);
 
-/** Send every later Gamepad API fault to `sink`. */
+/** The Gamepad API's first fault (the pad source reports no other) goes to `sink`. */
 export function installPadFaultSink(sink: (err: unknown) => void): void {
   padFault = sink;
 }
