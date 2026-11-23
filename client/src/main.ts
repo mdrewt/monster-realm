@@ -3127,8 +3127,9 @@ const pollPad = (): void => {
   pointerSource?.keyPressed();
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
   if (edges.length > 0) pressEdges(edges);
-  if (accels.length === 0 || sessionGateBlocks()) return;
-  syncStack();
+  if (accels.length === 0) return;
+  // The edges' press path, else the frame, has just synced the stack; the sync after is a
+  // keydown's, so whatever an accelerator closed is off the stack at once.
   try {
     for (const accel of accels) runAccel(accel);
   } finally {
