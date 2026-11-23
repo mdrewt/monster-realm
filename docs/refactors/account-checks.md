@@ -255,7 +255,7 @@ keeps every browser player out until it ends.
 
 | | A | B | C | D |
 | --- | --- | --- | --- | --- |
-| Tables | Keeps `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`; `account_subject` holds a handle. Adds two schedule tables and the egress table. | Removes `world_binding` and `world_bind_nonce`. Adds `world_account`, `world_move`, `world_egress` and two schedule tables (section 5.3). Keeps `world_name` and `world_allowlist`; the allowlist's entries become handles. | As B. | Removes `world_binding` and `world_bind_nonce`. Adds a stored status per identity. Keeps `world_name` and `world_allowlist`. |
+| Tables | Keeps `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`; `account_subject` holds a handle. Adds two schedule tables and the egress table. | Removes `world_binding` and `world_bind_nonce`. Adds `world_account`, `world_move`, `world_egress`, `world_check_budget` and two schedule tables (section 5.3). Keeps `world_name` and `world_allowlist`; the allowlist's entries become handles. | As B. | Removes `world_binding` and `world_bind_nonce`. Adds a stored status per identity. Keeps `world_name` and `world_allowlist`. |
 | Reducers and procedures | Keeps the five binding reducers and the two views. Adds two scheduled procedures. | Removes `request_bind_nonce`, `request_bind_nonce_for`, `bind_world_account`, `bind_world_account_for`, `my_bind_nonce` and `my_world_binding`. Adds four procedures (section 5.6), the reducer `set_host_identity`, and the views `my_world_account` and `my_world_move`. Keeps `unbind_world_account`, `set_world_names` and `set_world_allowlist`, the first and last rewritten to read `world_account`. | As B. | Removes what B removes. Adds no procedure: `client_connected` reads the token's claims. |
 | Crates | Keeps `ed25519-dalek`, `base64`, `serde` and `serde_json` in the module. | Removes `ed25519-dalek` and `base64` from the module. Keeps `serde` and `serde_json`, which then build the request and parse the answer. No crate is added. | As B. | Removes `ed25519-dalek` and `base64`. Keeps `serde` and `serde_json` only if something else then uses them. No crate is added. |
 | Build key lists | Keeps `DEV_ATTESTATION_KEYS`, `PRODUCTION_ATTESTATION_KEYS` and `BuildProfile::attestation_keys`. Adds the account service's check address per build profile. | Removes `AttestationKey`, `LOCAL_DEV_ATTESTATION_KEY`, `DEV_ATTESTATION_KEYS`, `PRODUCTION_ATTESTATION_KEYS` and `BuildProfile::attestation_keys`. Adds the account service's check address per build profile: production on `world`, `hosted-dev` on the dev builds, none on `official`. | As B. | Removes the key lists. Adds the world-token issuer to the dev and `world` builds' issuer lists, and lpw-12's gate must admit that issuer. |
@@ -308,8 +308,8 @@ its criteria 1 and 5 fall, and A wins. If keeping a verifier and compiled key li
 be no riskier than trusting a TLS answer, A would win too. Section 5.8 asks for the first default
 to change.
 
-Before scoring, the judge checked sections 1 to 3 against the sources and found eight statements
-false or unsupported, two of them about the key cache. Each is corrected above:
+The judge's check of sections 1 to 3 against the sources found eight statements false or
+unsupported, about seven matters. The sections above state the corrected facts:
 
 - the host's key-cache behaviour, which is idle-window and restart loss;
 - a local test of the whole path, which the probe's rig allows;
@@ -328,13 +328,17 @@ false or unsupported, two of them about the key cache. Each is corrected above:
    - The client asks `POST /ticket` for a ticket naming the world as the player's software
      authenticated it (fork (c)). A browser gets its ticket from fork (f)'s code redemption.
    - It then calls the procedure `check_account(ticket)`. The procedure refuses a ticket that is
-     not 43 base64url characters, and refuses a caller with a check still in flight. Neither
-     refusal sends anything.
+     not 43 base64url characters. It also refuses once the world has sent 30 first-contact
+     redeems in the current minute (the `world_check_budget` row), telling the caller to try again.
+     Neither refusal sends anything. An attacker with free identities in an `Open` world can spend
+     that budget and delay newcomers. The host's answer is to close the world to friends or move
+     it to `Password`.
    - Otherwise it presents the ticket at `POST /world/check`, with the world's accepted names and
      its database identity, under a 3 s timeout.
    - With the answer it opens one transaction. That transaction re-reads every row it decides on,
      because the HTTP wait let other transactions run, and `with_tx` may run its body twice. It
-     stores the handle and the entitlement, and returns the outcome to the caller.
+     stores the handle and the entitlement, takes the world's egress address from the answer
+     (section 5.5), and returns the outcome to the caller.
    - An identity the world's access rule does not admit is refused at connect, so it never
      reaches `check_account`. For that identity the host's gate relays the ticket through the
      owner-only `check_account_for(who, ticket)`, as it relays the door today
@@ -351,8 +355,8 @@ false or unsupported, two of them about the key cache. Each is corrected above:
      again.
 3. **The daily check.** `host_account_check` runs from an interval row every hour, with no
    client. It reads the `world_account` row the owner marked with `set_host_identity(who)`.
-   - That reducer is owner-only. It marks the row of the identity the host plays as, and moves
-     nothing. The owner credential stays out of the page
+   - That reducer is owner-only. It marks the row of the identity the host plays as, clears the
+     mark from any other row, and moves nothing. At most one row is marked. The owner credential stays out of the page
      (`decision-defaulted:world-owner-credential=shell-held-never-in-page`), so the host plays
      under an identity other than `config.owner_identity`.
    - The check makes its request only when its last success is 23 hours old or more, or when the
@@ -380,11 +384,13 @@ false or unsupported, two of them about the key cache. Each is corrected above:
     answers `{ "handle", "entitled", "address", "name" }`, where `name` is the name the ticket was
     issued for.
   - `{ "handle", "world" }`. It answers `{ "handle", "entitled", "address" }`. An account that is
-    gone, and a handle that does not decrypt to an account and that `world`, both answer
-    `entitled: false`, so the route tells no one that an account was deleted.
+    gone answers `entitled: false`, the same as an account that is not entitled, so the route tells
+    no one that an account was deleted. A handle that does not decrypt to an account and that
+    `world` answers `entitled: false` and no `handle`.
 
   `address` is the request's source address as the service saw it. `handle` is under the service's
-  current key, so a world replaces its stored handle when the key rotates. The service keeps
+  current key. When the key rotates, a world replaces the stored handle in `world_account` and in
+  `world_allowlist` in the same transaction. The service keeps
   retired keys for decryption. Limits apply per source address and per handle-and-source pair, so
   harvested handles cannot lock a player out of an honest world. A log line holds the account and
   the time, never a world, name, handle or address.
@@ -399,7 +405,9 @@ All private, written only by `server-module/src/account_checks.rs`:
 - `world_move {identity (primary key), moved_at_ms}`: an identity a character was moved away
   from, and when. The identity's next check-in deletes it.
 - `world_egress {family (primary key), address, confirmed_at_ms}`: at most one row per address
-  family.
+  family, written from the `address` of every answer.
+- `world_check_budget {id, minute_start_ms, redeems}`: one row, counting the current minute's
+  first-contact redeems.
 - `recheck_schedule`: one-shot rows.
 - `host_check_schedule`: one interval row, armed by `set_host_identity`.
 
@@ -439,7 +447,7 @@ leaves the source holding a dialogue-state marker (`server-module/src/npc.rs`), 
 | The daily check of the hosting account | `host_account_check`, from an interval row, presents only the handle `set_host_identity` marked. It refuses a caller that is not the database itself. A failed run is retried at the next hourly tick (P9). | `server-module/src/account_checks_tests.rs` (new, lpw-23). The procedure, run as the scheduler runs it, presents the host's handle and no other, and a client's call to it is refused. A stubbed failure leaves the status unchanged, and the next tick asks again. |
 | No joining player is re-checked within a connection | The only schedule a joining player's handle reaches is the one-shot row `client_connected` arms. Nothing re-arms it while the connection lasts, and the daily row reads the host's handle only. | `server-module/src/account_checks_tests.rs`. One connection arms at most one `recheck_schedule` row. After 48 simulated hours of hourly ticks, no request has named the joiner's handle. |
 | A friend's page with no persistent cache and no service worker | The gate serves the client page and every asset with `Cache-Control: no-store`, and with a content security policy holding `worker-src 'none'`. The client registers no service worker. An earlier holder's code survives only in a tab left open across the change, which the operator accepted. | `desktop/src/hostGate.test.ts` (new, lpw-18, and lpw-17's gate): every page response carries both headers. An e2e beside lpw-18.7's: `navigator.serviceWorker.register` rejects, `getRegistrations()` is empty, and a reload after the gate stops loads nothing. |
-| A moved server stops accepting its old address within a day | `host_account_check` stores the `address` the service saw, per family. The world presents an `ip:` name only while it equals the stored address of its family and that address was confirmed in the last 25 hours. Before the first confirmation, and after a day of failed checks, the world presents none. A ticket naming the old address is then refused at redeem. The check falls due 23 hours after the last one and runs within the next hour. `spki:` names are unaffected. A `dns:` name keeps its certificate's limit (`docs/DECISIONS.md`, "An attestation names the server as the player's own software authenticated it"). | `server-module/src/account_checks_tests.rs`. Once a stubbed answer reports a new address, and also once the last confirmation is 25 hours old, a stubbed redeem receives `names` without the old `ip:` name, and a `spki:` name stays. The measured reason this cannot be exact: the service sees where the world's requests leave from, not where friends reach it. A server whose outgoing address differs from its listed one (a NAT gateway, a reverse proxy, a VPN, IPv6 temporary addresses) never confirms its `ip:` name, and one that shares an address behind NAT confirms it whatever port it listens on. |
+| A moved server stops accepting its old address within a day | Every answer from the service, the daily check's included, stores the `address` the service saw, per family. The world presents an `ip:` name in two cases: while no address of its family is stored yet, so a new world's first contact can redeem; and while the stored address equals it and was confirmed in the last 25 hours. Once a check reports a different address, or a day of checks has failed, the world stops presenting the name, and a ticket naming the old address is refused at redeem. The daily check needs no presented name, since it sends the host's handle, so it confirms the new address and recovers a world whose checks failed. It falls due 23 hours after the last one and runs within the next hour. `spki:` names are unaffected. A `dns:` name keeps its certificate's limit (`docs/DECISIONS.md`, "An attestation names the server as the player's own software authenticated it"). | `server-module/src/account_checks_tests.rs`. Once a stubbed answer reports a new address, and also once the last confirmation is 25 hours old, a stubbed redeem receives `names` without the old `ip:` name, and a `spki:` name stays. A new world with no stored address presents its `ip:` name, and its first answer confirms it. The measured reason this cannot be exact: the service sees where the world's requests leave from, not where friends reach it. A server whose outgoing address differs from its listed one (a NAT gateway, a reverse proxy, a VPN, IPv6 temporary addresses) never confirms its `ip:` name, and one that shares an address behind NAT confirms it whatever port it listens on. |
 
 A stronger check is open to the operator: at redeem, the service could refuse an `ip:` name that
 differs from the request's source address. That would close the window at once and remove

@@ -2536,7 +2536,8 @@ whatever the client. After the first contact the world re-checks by handle itsel
 
 With no answer, a known identity keeps its last stored status. No build holds an attestation key,
 and no world stores an account subject. Built by acs-14, lpw-41, lpw-23 and lpw-24. lpw-33 removes
-the binding's tables, reducers, crates and key lists. The measurements on 2.16.1, the four
+the binding's tables, reducers, crates and key lists, and acs-15 removes `POST /attest` and the
+attestation keys. The measurements on 2.16.1, the four
 alternatives with a judge's scores, the procedures and the slice changes are in
 `docs/refactors/account-checks.md`. The choice rests on the bundled host's `[module-http]` being on,
 which reverses an operator default (`decision-defaulted:bundled-host-module-http=disabled`,
