@@ -40,11 +40,11 @@ import {
   type CapturedKey,
   CONTROLS_TABS,
   type ControlsRow,
+  type ControlsTab,
   captureKey,
   capturePad,
   capturePrompt,
   clearAccel,
-  controlsRows,
   outcomeText,
   type PadCaptureOutcome,
   type PadRow,
@@ -65,6 +65,11 @@ type Outcome = ReturnType<typeof captureKey>;
 
 const btn = (id: VButton): ControlsRow => ({ kind: 'button', id });
 const acc = (id: Accel): ControlsRow => ({ kind: 'accel', id });
+
+/** The rows Options › Controls lists per tab, in display order. */
+function controlsRows(tab: ControlsTab): readonly ControlsRow[] {
+  return tab === 'buttons' ? VBUTTONS.map((id) => btn(id)) : ACCELS.map((id) => acc(id));
+}
 
 function deepFreeze<T>(value: T): T {
   if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {

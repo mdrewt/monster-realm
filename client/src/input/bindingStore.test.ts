@@ -23,7 +23,6 @@ import {
   captureKey,
   capturePad,
   clearAccel,
-  controlsRows,
   type PadRow,
   padRow,
   type Slot,
@@ -116,7 +115,10 @@ const defaultsRaw = (): { buttons: Record<string, string[]>; accels: Record<stri
 
 // --- tables reachable by capture / clear -------------------------------------------------------
 
-const ALL_ROWS: readonly ControlsRow[] = [...controlsRows('buttons'), ...controlsRows('shortcuts')];
+const ALL_ROWS: readonly ControlsRow[] = [
+  ...VBUTTONS.map((id): ControlsRow => ({ kind: 'button', id })),
+  ...ACCELS.map((id): ControlsRow => ({ kind: 'accel', id })),
+];
 
 const DEFAULT_CODES = allCodes(DEFAULT_BINDINGS);
 /** Defaults, a few fresh keys, reserved keys and unbindable junk, so a sequence hits every rule. */
