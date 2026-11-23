@@ -247,6 +247,14 @@ pub fn protocol_version() -> u32 {
     game_core::PROTOCOL_VERSION
 }
 
+/// The oldest client protocol a server of this build speaks to, single-sourced from `game-core`.
+/// A server records it in its `module_info` row; the client's wire-contract test reads it here.
+#[wasm_bindgen]
+#[must_use]
+pub fn min_client_protocol() -> u32 {
+    game_core::MIN_CLIENT_PROTOCOL
+}
+
 /// The NPC talk range (Manhattan tiles, inclusive), single-sourced from
 /// `game-core` so the client's interact prompt never hard-codes it.
 #[wasm_bindgen]
@@ -1837,6 +1845,11 @@ mod tests {
     #[test]
     fn protocol_version_matches_game_core_const() {
         assert_eq!(super::protocol_version(), game_core::PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn min_client_protocol_matches_game_core_const() {
+        assert_eq!(super::min_client_protocol(), game_core::MIN_CLIENT_PROTOCOL);
     }
 
     #[test]

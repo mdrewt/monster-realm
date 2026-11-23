@@ -128,7 +128,7 @@ Rule lookups the screens read: `evolution_eligibility`, `interact_candidates_cod
 `tactics_fresh_budget`, `tactics_is_exhausted`. The golden harness entry the parity
 tests call directly: `tactics_golden`. Constant accessors: `step_ms`, `move_queue_cap`,
 `party_size`, `party_slot_none`, `talk_range`, `max_trade_monsters_per_side`,
-`protocol_version`, `deletion_grace_ms_default` (returned as a JS `BigInt`). Values cross the boundary as
+`protocol_version`, `min_client_protocol`, `deletion_grace_ms_default` (returned as a JS `BigInt`). Values cross the boundary as
 serde values (`serde-wasm-bindgen`). The
 module parses zone maps once per instance and caches the active zone's tile map
 until `set_active_zone` changes it. The parity evals (`prediction-parity`,

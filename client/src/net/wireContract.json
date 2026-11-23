@@ -1,0 +1,1130 @@
+{
+  "4": {
+    "serverToClient": {
+      "tables": {
+        "battle_challenge": {
+          "primaryKey": "challenge_id",
+          "columns": [
+            "challenge_id: u64",
+            "challenger: (__identity__: u256)",
+            "target: (__identity__: u256)",
+            "challenger_party_ids: Array<u64>",
+            "status: ChallengeStatus",
+            "created_at_ms: i64",
+            "format: u8"
+          ]
+        },
+        "character": {
+          "primaryKey": "entity_id",
+          "columns": [
+            "entity_id: u64",
+            "zone_id: u32",
+            "tile_x: i32",
+            "tile_y: i32",
+            "facing: Direction",
+            "action: ActionState",
+            "move_started_at_ms: i64",
+            "sprite_id: u32",
+            "move_queue: Array<MoveInput>",
+            "acked_seq: u64"
+          ]
+        },
+        "config": {
+          "primaryKey": "id",
+          "columns": [
+            "id: u32",
+            "content_version: u32",
+            "owner_identity: (__identity__: u256)"
+          ]
+        },
+        "evolution_path": {
+          "primaryKey": "path_id",
+          "columns": [
+            "path_id: u64",
+            "edge_id: u32",
+            "from_species: u32",
+            "to_species: u32",
+            "min_level: u8",
+            "essence: Array<EssenceRequirementRow>",
+            "min_trust_tier: Option<TrustTier>",
+            "min_quality_time_tier: Option<u8>",
+            "min_nutrition_pct: Option<u8>"
+          ]
+        },
+        "heal_location_row": {
+          "primaryKey": "location_id",
+          "columns": [
+            "location_id: u32",
+            "zone_id: u32",
+            "tile_x: i32",
+            "tile_y: i32",
+            "cost_item_id: Option<u32>",
+            "cost_qty: u32",
+            "cooldown_ms: i64",
+            "cost_currency: u64"
+          ]
+        },
+        "item_row": {
+          "primaryKey": "id",
+          "columns": [
+            "id: u32",
+            "name: string",
+            "description: string",
+            "recruit_bonus: u16",
+            "train_stat: Option<StatKind>",
+            "train_amount: u16",
+            "sell_price: u64",
+            "cure_status: Option<StatusKind>"
+          ]
+        },
+        "leaderboard_top": {
+          "primaryKey": "identity",
+          "columns": [
+            "identity: (__identity__: u256)"
+          ]
+        },
+        "module_info": {
+          "primaryKey": "id",
+          "columns": [
+            "id: u32",
+            "protocol: u32",
+            "min_client_protocol: u32"
+          ]
+        },
+        "my_account": {
+          "primaryKey": null,
+          "columns": [
+            "identity: (__identity__: u256)",
+            "auth_issuer: string",
+            "created_at_ms: i64",
+            "last_login_at_ms: i64",
+            "status: AccountStatus",
+            "deletion_requested_at_ms: Option<i64>",
+            "claimed_from: Option<(__identity__: u256)>",
+            "claimed_at_ms: Option<i64>",
+            "terminal_at_ms: Option<i64>"
+          ]
+        },
+        "my_battle": {
+          "primaryKey": null,
+          "columns": [
+            "battle_id: u64",
+            "player_identity: (__identity__: u256)",
+            "opponent_identity: (__identity__: u256)",
+            "state: BattleState",
+            "party_monster_ids: Array<u64>",
+            "opponent_monster_ids: Array<u64>",
+            "created_at_ms: i64"
+          ]
+        },
+        "my_battle_clock": {
+          "primaryKey": null,
+          "columns": [
+            "clock_id: u64",
+            "battle_id: u64",
+            "side: SideRow",
+            "player: (__identity__: u256)",
+            "window_seq: u32",
+            "window_open_ms: Option<i64>",
+            "deadline_ms: Option<i64>",
+            "windows_this_unit_turn: u8",
+            "idle_ms_total: u64",
+            "autopass_count: u8"
+          ]
+        },
+        "my_battle_deploy": {
+          "primaryKey": null,
+          "columns": [
+            "deploy_id: u64",
+            "battle_id: u64",
+            "owner: (__identity__: u256)",
+            "side: SideRow",
+            "picks: Array<DeployPick>",
+            "locked: bool"
+          ]
+        },
+        "my_battle_events": {
+          "primaryKey": null,
+          "columns": [
+            "event_id: u64",
+            "battle_id: u64",
+            "seq: u32",
+            "round: u16",
+            "payload: EventPayload"
+          ]
+        },
+        "my_battle_queue": {
+          "primaryKey": null,
+          "columns": [
+            "unit_id: u32",
+            "battle_id: u64",
+            "owner: (__identity__: u256)",
+            "entries: Array<QueuedAction>",
+            "submitted_at_ms: i64"
+          ]
+        },
+        "my_battle_units": {
+          "primaryKey": null,
+          "columns": [
+            "unit_id: u32",
+            "battle_id: u64",
+            "side: SideRow",
+            "owner: Option<(__identity__: u256)>",
+            "slot: u8",
+            "monster_id: Option<u64>",
+            "wild_index: Option<u8>",
+            "species_id: u32",
+            "level: u8",
+            "affinity: Affinity",
+            "x: u8",
+            "y: u8",
+            "cur_hp: u16",
+            "stats: StatBlock",
+            "skill_ids: Array<u32>",
+            "status: Option<StatusEffect>",
+            "ap: u8",
+            "strides_used: u8",
+            "attacks: u8",
+            "budget_last: Option<BudgetLastEntry>",
+            "guard: bool",
+            "first_stand: bool",
+            "movement: MoveClassRow",
+            "stride: u8",
+            "stance: Option<StanceRow>",
+            "state: UnitState"
+          ]
+        },
+        "my_bind_nonce": {
+          "primaryKey": null,
+          "columns": [
+            "identity: (__identity__: u256)",
+            "nonce: string",
+            "expires_at_ms: i64"
+          ]
+        },
+        "my_conversation": {
+          "primaryKey": null,
+          "columns": [
+            "owner_identity: (__identity__: u256)",
+            "npc_entity_id: u64",
+            "current_node_id: string"
+          ]
+        },
+        "my_export_bundle": {
+          "primaryKey": null,
+          "columns": [
+            "chunk_id: u64",
+            "owner_identity: (__identity__: u256)",
+            "request_id: u64",
+            "table_name: string",
+            "chunk_index: u32",
+            "total_chunks: u32",
+            "payload_json: string",
+            "created_at_ms: i64"
+          ]
+        },
+        "my_formation": {
+          "primaryKey": null,
+          "columns": [
+            "owner_identity: (__identity__: u256)",
+            "monster_ids: Array<u64>"
+          ]
+        },
+        "my_inventory": {
+          "primaryKey": null,
+          "columns": [
+            "inv_id: u64",
+            "owner_identity: (__identity__: u256)",
+            "item_id: u32",
+            "count: u32"
+          ]
+        },
+        "my_monster_pub": {
+          "primaryKey": null,
+          "columns": [
+            "monster_id: u64",
+            "owner_identity: (__identity__: u256)",
+            "species_id: u32",
+            "nickname: string",
+            "level: u8",
+            "xp: u32",
+            "current_hp: u16",
+            "stat_hp: u16",
+            "stat_attack: u16",
+            "stat_defense: u16",
+            "stat_speed: u16",
+            "stat_sp_attack: u16",
+            "stat_sp_defense: u16",
+            "party_slot: u8",
+            "tier: u8",
+            "essence_fire: u32",
+            "essence_water: u32",
+            "essence_plant: u32",
+            "essence_electric: u32",
+            "essence_earth: u32",
+            "essence_wind: u32",
+            "essence_light: u32",
+            "essence_dark: u32",
+            "trust_tier: TrustTier",
+            "quality_time_tier: u8",
+            "nutrition_pct: u8",
+            "last_care_at_ms: i64"
+          ]
+        },
+        "my_pending_evolution_notices": {
+          "primaryKey": null,
+          "columns": [
+            "owner_identity: (__identity__: u256)",
+            "entries: Array<EvolutionRevealRow>"
+          ]
+        },
+        "my_player_quest": {
+          "primaryKey": null,
+          "columns": [
+            "pq_id: u64",
+            "owner_identity: (__identity__: u256)",
+            "quest_id: string",
+            "step_index: u32"
+          ]
+        },
+        "my_tactical_battle": {
+          "primaryKey": null,
+          "columns": [
+            "battle_id: u64",
+            "kind: BattleKind",
+            "format: u8",
+            "map_id: u32",
+            "content_version: u32",
+            "phase: Phase",
+            "round: u16",
+            "initiative: Array<u32>",
+            "turn_idx: u8",
+            "turn_state: TurnState",
+            "tie_priority_side: SideRow",
+            "pending_pad_ms: u32",
+            "attack_damage_dealt_a: u32",
+            "attack_damage_dealt_b: u32"
+          ]
+        },
+        "my_trade_session": {
+          "primaryKey": null,
+          "columns": [
+            "session_id: u64",
+            "opener: (__identity__: u256)",
+            "partner: (__identity__: u256)",
+            "opener_offer: TradeSessionOffer",
+            "partner_offer: TradeSessionOffer",
+            "opener_confirmed: bool",
+            "partner_confirmed: bool",
+            "revision: u64",
+            "created_at_ms: i64"
+          ]
+        },
+        "my_wallet": {
+          "primaryKey": null,
+          "columns": [
+            "owner_identity: (__identity__: u256)",
+            "balance: u64"
+          ]
+        },
+        "my_world_binding": {
+          "primaryKey": null,
+          "columns": [
+            "identity: (__identity__: u256)",
+            "account_subject: string",
+            "bound_at_ms: i64",
+            "entitled: bool",
+            "key_id: string"
+          ]
+        },
+        "npc": {
+          "primaryKey": "entity_id",
+          "columns": [
+            "entity_id: u64",
+            "npc_id: string",
+            "zone_id: u32",
+            "home_x: i32",
+            "home_y: i32",
+            "wander_radius: u8",
+            "dialogue_tree_id: string",
+            "interaction: NpcInteraction"
+          ]
+        },
+        "player": {
+          "primaryKey": "identity",
+          "columns": [
+            "identity: (__identity__: u256)",
+            "entity_id: u64",
+            "name: string",
+            "online: bool",
+            "last_input_seq: u64",
+            "discriminator: u32",
+            "lead_level: u8"
+          ]
+        },
+        "profile": {
+          "primaryKey": "identity",
+          "columns": [
+            "identity: (__identity__: u256)",
+            "name: string",
+            "rating: i32",
+            "wins: u32",
+            "losses: u32"
+          ]
+        },
+        "shop_item_row": {
+          "primaryKey": "shop_item_id",
+          "columns": [
+            "shop_item_id: u64",
+            "shop_id: u32",
+            "item_id: u32",
+            "buy_price: u64"
+          ]
+        },
+        "shop_row": {
+          "primaryKey": "shop_id",
+          "columns": [
+            "shop_id: u32",
+            "name: string"
+          ]
+        },
+        "skill_row": {
+          "primaryKey": "id",
+          "columns": [
+            "id: u32",
+            "name: string",
+            "affinity: Affinity",
+            "power: u16",
+            "accuracy: u8",
+            "pp: u8"
+          ]
+        },
+        "species_row": {
+          "primaryKey": "id",
+          "columns": [
+            "id: u32",
+            "name: string",
+            "base_hp: u16",
+            "base_attack: u16",
+            "base_defense: u16",
+            "base_speed: u16",
+            "base_sp_attack: u16",
+            "base_sp_defense: u16",
+            "affinity: Affinity",
+            "learnable_skill_ids: Array<u32>",
+            "ability: Option<u32>",
+            "tier: u8"
+          ]
+        },
+        "trade_offer": {
+          "primaryKey": "trade_id",
+          "columns": [
+            "trade_id: u64",
+            "initiator: (__identity__: u256)",
+            "counterparty: (__identity__: u256)",
+            "initiator_monster_ids: Array<u64>",
+            "initiator_items: Array<TradeItem>",
+            "initiator_currency: u64",
+            "counterparty_monster_ids: Array<u64>",
+            "counterparty_items: Array<TradeItem>",
+            "counterparty_currency: u64",
+            "initiator_cards: Array<MonsterCard>",
+            "counterparty_cards: Array<MonsterCard>",
+            "status: TradeStatus",
+            "created_at_ms: i64"
+          ]
+        },
+        "type_relation_row": {
+          "primaryKey": "id",
+          "columns": [
+            "id: u64",
+            "attacker: Affinity",
+            "defender: Affinity",
+            "effectiveness: u8"
+          ]
+        },
+        "zone_def": {
+          "primaryKey": "zone_id",
+          "columns": [
+            "zone_id: u32",
+            "name: string",
+            "width: u32",
+            "height: u32"
+          ]
+        }
+      },
+      "types": {
+        "AccountStatus": {
+          "variants": [
+            "Active: ()",
+            "PendingDeletion: ()"
+          ]
+        },
+        "ActionState": {
+          "variants": [
+            "Idle: ()",
+            "Walking: ()",
+            "Jumping: ()"
+          ]
+        },
+        "ActionTarget": {
+          "variants": [
+            "Unit: u32",
+            "SelfTarget: ()"
+          ]
+        },
+        "Affinity": {
+          "variants": [
+            "Fire: ()",
+            "Water: ()",
+            "Plant: ()",
+            "Electric: ()",
+            "Earth: ()",
+            "Wind: ()",
+            "Light: ()",
+            "Dark: ()"
+          ]
+        },
+        "AutoPassEvent": {
+          "fields": [
+            "unit: u32",
+            "strike: u8"
+          ]
+        },
+        "AwardsEvent": {
+          "fields": [
+            "unit: u32",
+            "xp: u32",
+            "essence: u32",
+            "currency: u64"
+          ]
+        },
+        "BattleEndEvent": {
+          "fields": [
+            "outcome: BattleOutcome",
+            "how: EndHow"
+          ]
+        },
+        "BattleKind": {
+          "variants": [
+            "Wild: ()",
+            "Pvp: ()",
+            "Practice: ()"
+          ]
+        },
+        "BattleMonster": {
+          "fields": [
+            "speciesId: u32",
+            "affinity: Affinity",
+            "level: u8",
+            "currentHp: u16",
+            "maxHp: u16",
+            "stats: StatBlock",
+            "knownSkillIds: Array<u32>",
+            "status: Option<StatusEffect>"
+          ]
+        },
+        "BattleOutcome": {
+          "variants": [
+            "Ongoing: ()",
+            "SideAWins: ()",
+            "SideBWins: ()",
+            "Fled: ()"
+          ]
+        },
+        "BattleSide": {
+          "fields": [
+            "active: u32",
+            "team: Array<BattleMonster>"
+          ]
+        },
+        "BattleStartedEvent": {
+          "fields": [
+            "round: u16"
+          ]
+        },
+        "BattleState": {
+          "fields": [
+            "sideA: BattleSide",
+            "sideB: BattleSide",
+            "outcome: BattleOutcome",
+            "turnNumber: u16",
+            "weather: Option<WeatherEffect>"
+          ]
+        },
+        "BudgetLastEntry": {
+          "variants": [
+            "Move: BudgetMoveSpend",
+            "AttackLight: ()",
+            "AttackHeavy: ()",
+            "Item: ()",
+            "Recruit: ()",
+            "Flee: ()",
+            "EndTurn: ()"
+          ]
+        },
+        "BudgetMoveSpend": {
+          "fields": [
+            "strides: u8",
+            "taxed: bool"
+          ]
+        },
+        "ChallengeStatus": {
+          "variants": [
+            "Pending: ()",
+            "Accepted: ()",
+            "Declined: ()",
+            "Cancelled: ()"
+          ]
+        },
+        "DeployPick": {
+          "fields": [
+            "monsterId: u64",
+            "slot: u8"
+          ]
+        },
+        "Direction": {
+          "variants": [
+            "North: ()",
+            "South: ()",
+            "East: ()",
+            "West: ()"
+          ]
+        },
+        "EndHow": {
+          "variants": [
+            "SideEmpty: ()",
+            "AdjudicatedHpPercent: ()",
+            "AdjudicatedConscious: ()",
+            "AdjudicatedDamageDealt: ()",
+            "AdjudicatedCoin: ()",
+            "FixedOrder: ()",
+            "RoundCap: ()",
+            "Forfeit: ()",
+            "Fled: ()",
+            "AutoFlee: ()"
+          ]
+        },
+        "EssenceRequirementRow": {
+          "fields": [
+            "affinity: Affinity",
+            "amount: u32"
+          ]
+        },
+        "EventPayload": {
+          "variants": [
+            "Executed: ExecutedEvent",
+            "Missed: MissedEvent",
+            "PlanHalted: PlanHaltedEvent",
+            "QueueVoided: QueueVoidedEvent",
+            "AutoPass: AutoPassEvent",
+            "StoodGround: StoodGroundEvent",
+            "Status: StatusEvent",
+            "Surge: SurgeEvent",
+            "Ko: KoEvent",
+            "RecruitResult: RecruitResultEvent",
+            "Awards: AwardsEvent",
+            "Moved: MovedEvent",
+            "ItemUsed: ItemUsedEvent",
+            "TurnEnded: TurnEndedEvent",
+            "RoundEnded: RoundEndedEvent",
+            "BattleStarted: BattleStartedEvent",
+            "BattleEnd: BattleEndEvent"
+          ]
+        },
+        "EvolutionRevealRow": {
+          "fields": [
+            "monsterId: u64",
+            "fromSpecies: u32",
+            "toSpecies: u32",
+            "evolvedAtMs: i64"
+          ]
+        },
+        "ExecutedEvent": {
+          "fields": [
+            "attacker: u32",
+            "skillId: u32",
+            "results: Array<TargetHit>"
+          ]
+        },
+        "HaltKind": {
+          "variants": [
+            "CannotAct: ()",
+            "BadShape: ()",
+            "UnknownSkill: ()",
+            "TargetGone: ()",
+            "Unreachable: ()",
+            "TooFar: ()",
+            "Geometry: ()",
+            "NotAdjacent: ()",
+            "NotWild: ()",
+            "NotAllowed: ()",
+            "NoHeadroom: ()",
+            "ItemNotHeld: ()",
+            "Unaffordable: ()",
+            "BadState: ()"
+          ]
+        },
+        "HitEffectiveness": {
+          "variants": [
+            "Immune: ()",
+            "NotVeryEffective: ()",
+            "Neutral: ()",
+            "SuperEffective: ()"
+          ]
+        },
+        "ItemAction": {
+          "fields": [
+            "itemId: u32",
+            "target: ActionTarget"
+          ]
+        },
+        "ItemUsedEvent": {
+          "fields": [
+            "unit: u32",
+            "itemId: u32",
+            "target: u32"
+          ]
+        },
+        "KoEvent": {
+          "fields": [
+            "unit: u32"
+          ]
+        },
+        "MissedEvent": {
+          "fields": [
+            "attacker: u32",
+            "target: u32"
+          ]
+        },
+        "MonsterCard": {
+          "fields": [
+            "monsterId: u64",
+            "speciesId: u32",
+            "nickname: string",
+            "level: u8",
+            "currentHp: u16",
+            "statHp: u16"
+          ]
+        },
+        "MoveAction": {
+          "fields": [
+            "x: u8",
+            "y: u8",
+            "strides: u8"
+          ]
+        },
+        "MoveClassRow": {
+          "variants": [
+            "Walk: ()",
+            "Nimble: ()",
+            "Swim: ()",
+            "Fly: ()"
+          ]
+        },
+        "MoveInput": {
+          "variants": [
+            "Step: Direction",
+            "Jump: ()",
+            "Face: Direction"
+          ]
+        },
+        "MovedEvent": {
+          "fields": [
+            "unit: u32",
+            "fromX: u8",
+            "fromY: u8",
+            "toX: u8",
+            "toY: u8",
+            "tiles: u8"
+          ]
+        },
+        "NpcInteraction": {
+          "variants": [
+            "Dialogue: ()",
+            "Shop: u32",
+            "Heal: u32"
+          ]
+        },
+        "Phase": {
+          "variants": [
+            "Deploying: ()",
+            "Active: ()",
+            "Finished: ()"
+          ]
+        },
+        "PlanHaltedEvent": {
+          "fields": [
+            "unit: u32",
+            "idx: u8",
+            "reasonKind: HaltKind"
+          ]
+        },
+        "QueueVoidedEvent": {
+          "fields": [
+            "unit: u32"
+          ]
+        },
+        "QueuedAction": {
+          "variants": [
+            "Move: MoveAction",
+            "Skill: SkillAction",
+            "Item: ItemAction",
+            "Recruit: RecruitAction",
+            "Flee: ()",
+            "EndTurn: ()"
+          ]
+        },
+        "RecruitAction": {
+          "fields": [
+            "target: u32",
+            "bait: Option<u32>"
+          ]
+        },
+        "RecruitResultEvent": {
+          "fields": [
+            "unit: u32",
+            "target: u32",
+            "success: bool",
+            "pct: u8"
+          ]
+        },
+        "RoundEndedEvent": {
+          "fields": [
+            "round: u16"
+          ]
+        },
+        "SideRow": {
+          "variants": [
+            "A: ()",
+            "B: ()"
+          ]
+        },
+        "SkillAction": {
+          "fields": [
+            "skillId: u32",
+            "target: ActionTarget"
+          ]
+        },
+        "StanceRow": {
+          "variants": [
+            "Aggressive: ()",
+            "Territorial: ()",
+            "Skittish: ()"
+          ]
+        },
+        "StatBlock": {
+          "fields": [
+            "hp: u16",
+            "attack: u16",
+            "defense: u16",
+            "speed: u16",
+            "spAttack: u16",
+            "spDefense: u16"
+          ]
+        },
+        "StatKind": {
+          "variants": [
+            "Hp: ()",
+            "Attack: ()",
+            "Defense: ()",
+            "Speed: ()",
+            "SpAttack: ()",
+            "SpDefense: ()"
+          ]
+        },
+        "StatusChange": {
+          "variants": [
+            "Applied: ()",
+            "Tick: ()",
+            "Cured: ()",
+            "Blocked: ()"
+          ]
+        },
+        "StatusEffect": {
+          "variants": [
+            "Poison: ()",
+            "Burn: ()",
+            "Paralysis: ()",
+            "Sleep: u8",
+            "Freeze: ()"
+          ]
+        },
+        "StatusEvent": {
+          "fields": [
+            "unit: u32",
+            "status: StatusEffect",
+            "change: StatusChange",
+            "amount: u16"
+          ]
+        },
+        "StatusKind": {
+          "variants": [
+            "Poison: ()",
+            "Burn: ()",
+            "Paralysis: ()",
+            "Sleep: ()",
+            "Freeze: ()"
+          ]
+        },
+        "StoodGroundEvent": {
+          "fields": [
+            "unit: u32"
+          ]
+        },
+        "SurgeEvent": {
+          "fields": [
+            "round: u16",
+            "unit: u32",
+            "amount: u16"
+          ]
+        },
+        "TargetHit": {
+          "fields": [
+            "unit: u32",
+            "hit: bool",
+            "damage: u16",
+            "effectiveness: Option<HitEffectiveness>",
+            "flank: bool",
+            "guard: bool",
+            "ko: bool"
+          ]
+        },
+        "TradeItem": {
+          "fields": [
+            "itemId: u32",
+            "qty: u32"
+          ]
+        },
+        "TradeSessionOffer": {
+          "fields": [
+            "monsterIds: Array<u64>",
+            "items: Array<TradeItem>",
+            "currency: u64",
+            "cards: Array<MonsterCard>"
+          ]
+        },
+        "TradeStatus": {
+          "variants": [
+            "Pending: ()",
+            "ConfirmedByCounterparty: ()"
+          ]
+        },
+        "TrustTier": {
+          "variants": [
+            "Hostile: ()",
+            "Wary: ()",
+            "Neutral: ()",
+            "Friendly: ()",
+            "Devoted: ()"
+          ]
+        },
+        "TurnEndedEvent": {
+          "fields": [
+            "unit: u32",
+            "guard: bool",
+            "committed: bool"
+          ]
+        },
+        "TurnState": {
+          "variants": [
+            "NotActive: ()",
+            "Waiting: u32",
+            "Advancing: ()"
+          ]
+        },
+        "UnitState": {
+          "variants": [
+            "Active: ()",
+            "Fainted: ()",
+            "Recruited: ()"
+          ]
+        },
+        "WeatherEffect": {
+          "variants": [
+            "Rain: u8",
+            "Sun: u8",
+            "Sandstorm: u8",
+            "Hail: u8"
+          ]
+        }
+      }
+    },
+    "clientToServer": {
+      "reducers": {
+        "accept_challenge": [
+          "challengeId: u64",
+          "partyIds: Array<u64>"
+        ],
+        "ack_evolution_notices": [
+          "count: u32"
+        ],
+        "advance_dialogue": [
+          "choiceIdx: u32"
+        ],
+        "bind_world_account": [
+          "attestation: string"
+        ],
+        "bind_world_account_for": [
+          "who: (__identity__: u256)",
+          "attestation: string"
+        ],
+        "buy": [
+          "shopId: u32",
+          "itemId: u32",
+          "qty: u32"
+        ],
+        "cancel_account_deletion": [],
+        "cancel_challenge": [
+          "challengeId: u64"
+        ],
+        "cancel_queue": [
+          "battleId: u64",
+          "unitId: u32"
+        ],
+        "cancel_trade": [
+          "tradeId: u64"
+        ],
+        "cancel_trade_session": [
+          "sessionId: u64"
+        ],
+        "care": [
+          "monsterId: u64"
+        ],
+        "challenge_pvp": [
+          "target: (__identity__: u256)",
+          "partyIds: Array<u64>"
+        ],
+        "clear_queue": [
+          "seq: u64"
+        ],
+        "complete_guest_claim": [
+          "code: string"
+        ],
+        "confirm_trade": [
+          "tradeId: u64"
+        ],
+        "confirm_trade_session": [
+          "sessionId: u64",
+          "revision: u64"
+        ],
+        "consume_crystalized_essence": [
+          "monsterId: u64",
+          "itemId: u32"
+        ],
+        "decline_challenge": [
+          "challengeId: u64"
+        ],
+        "delete_account": [],
+        "deploy_units": [
+          "battleId: u64",
+          "picks: Array<DeployPick>"
+        ],
+        "dismiss_dialogue": [],
+        "enqueue_move": [
+          "input: MoveInput",
+          "seq: u64"
+        ],
+        "essence_train": [
+          "monsterId: u64",
+          "affinity: Affinity"
+        ],
+        "evolve": [
+          "monsterId: u64",
+          "toSpecies: u32"
+        ],
+        "forfeit": [
+          "battleId: u64"
+        ],
+        "heal_party": [
+          "locationId: u32"
+        ],
+        "join_game": [
+          "name: string"
+        ],
+        "open_trade_session": [
+          "partner: (__identity__: u256)"
+        ],
+        "propose_trade": [
+          "counterparty: (__identity__: u256)",
+          "initiatorMonsterIds: Array<u64>",
+          "initiatorItems: Array<TradeItem>",
+          "initiatorCurrency: u64",
+          "counterpartyMonsterIds: Array<u64>",
+          "counterpartyItems: Array<TradeItem>",
+          "counterpartyCurrency: u64"
+        ],
+        "request_bind_nonce": [],
+        "request_bind_nonce_for": [
+          "who: (__identity__: u256)"
+        ],
+        "request_data_export": [],
+        "respond_trade": [
+          "tradeId: u64",
+          "accepted: bool"
+        ],
+        "sell": [
+          "itemId: u32",
+          "qty: u32"
+        ],
+        "set_move": [
+          "input: MoveInput",
+          "seq: u64"
+        ],
+        "set_nickname": [
+          "monsterId: u64",
+          "nickname: string"
+        ],
+        "set_party_slot": [
+          "monsterId: u64",
+          "slot: u8"
+        ],
+        "set_profile_name": [
+          "name: string"
+        ],
+        "set_trade_offer": [
+          "sessionId: u64",
+          "monsterIds: Array<u64>",
+          "items: Array<TradeItem>",
+          "currency: u64"
+        ],
+        "set_world_access": [
+          "rule: WorldAccessRule",
+          "admit: Array<(__identity__: u256)>"
+        ],
+        "set_world_allowlist": [
+          "accounts: Array<string>"
+        ],
+        "set_world_names": [
+          "names: Array<string>"
+        ],
+        "start_guest_claim": [
+          "code: string"
+        ],
+        "submit_queue": [
+          "battleId: u64",
+          "unitId: u32",
+          "entries: Array<QueuedAction>"
+        ],
+        "sync_content": [],
+        "talk": [
+          "npcEntityId: u64"
+        ],
+        "train": [
+          "monsterId: u64",
+          "foodItemId: u32"
+        ],
+        "unbind_world_account": []
+      },
+      "types": {
+        "WorldAccessRule": {
+          "variants": [
+            "Open: ()",
+            "Password: ()",
+            "Allowlist: ()"
+          ]
+        }
+      }
+    }
+  }
+}
