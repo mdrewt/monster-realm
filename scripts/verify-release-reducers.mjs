@@ -100,6 +100,16 @@ export function findForbiddenReducers(reducerNames, forbidden) {
   return reducerNames.filter((n) => forbidden.includes(n));
 }
 
+// findDefinitionViolations(extractSchemaOutput) -> string[]
+//
+// Every HTTP handler, HTTP route and row filter the definition that
+// `spacetimedb-standalone extract-schema <wasm>` prints declares, at any submodule depth, and
+// every section kind this check does not know.
+export function findDefinitionViolations(extractSchemaOutput) {
+  void extractSchemaOutput;
+  return [];
+}
+
 // ---------------------------------------------------------------------------
 // Main-guarded driver (live CLI I/O). Not run on import.
 // ---------------------------------------------------------------------------

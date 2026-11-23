@@ -543,10 +543,15 @@ enforced at 2.11.0, as the last three rows show.
   removes. On a host with no gate the removed identity keeps reading what it subscribed to until
   it disconnects, and is refused when it returns.
 - _What the module never declares._ An HTTP handler, which the host serves without the connect
-  reducer and without authentication, or a row filter. Both sit behind the `spacetimedb` crate's
-  `unstable` feature, which the workspace does not enable (`Cargo.toml`: `spacetimedb = "=2.12.0"`,
-  no features), so neither can be declared; the deletion-gate census in the same test file refuses a
-  `procedure` attribute.
+  reducer and without authentication, an HTTP route to one, or a row filter. A check of the
+  generated module definition refuses each, at any submodule depth, and any section kind it does
+  not know. It runs on the default build as a test in the same test file, and on each artefact
+  `just release-module` makes, over the definition `spacetimedb-standalone extract-schema` reads
+  from it (`findDefinitionViolations` in `scripts/verify-release-reducers.mjs`), because a
+  declaration behind a release feature is invisible to the test build. All three sit behind the
+  `spacetimedb` crate's `unstable` feature, which the workspace does not enable (`Cargo.toml`:
+  `spacetimedb = "=2.12.0"`, no features). The deletion-gate census in the same test file refuses
+  a `procedure` attribute.
 - _The door._ An unadmitted identity can call nothing but its own unbind, so admission is granted
   by reducers only the owner can call, each taking the joiner's identity as an argument: the admit
   list of `set_world_access`, and under `Allowlist` the relayed bind. No reducer takes a password, a

@@ -131,7 +131,10 @@ test('a failed publish is not followed by a sync_content call', () => {
 // `just release-module <official|world>` and `just module-profile <wasm>`, run for real with a
 // recording stand-in for `cargo` first on PATH. The stand-in writes the wasm fixture the test chose
 // where cargo would put the artefact, and records its arguments and the four compiler-flag
-// variables it was handed.
+// variables it receives. Beside it on PATH, a `spacetime` stand-in answers `--version` with a
+// `spacetime Path:` line naming a CLI file in a directory off PATH, where a recording stand-in for
+// `spacetimedb-standalone` prints the module definition the test chose; a second recording
+// `spacetimedb-standalone` on PATH prints the same definition.
 // ---------------------------------------------------------------------------
 
 const RUSTFLAGS_VARS = [
@@ -173,6 +176,80 @@ const CARGO_STAND_IN = [
   'exit 97',
   '',
 ].join('\n');
+
+// `spacetime --version` as the CLI prints it, its first line naming the CLI's own file
+// (`$MR_FAKE_SPACETIME_CLI`, which need not exist). `MR_FAKE_SPACETIME_VERSION=no-path` drops that
+// line; any value but `ok` or `no-path` fails the command. Every other subcommand exits 97.
+const SPACETIME_VERSION_STAND_IN = [
+  '#!/bin/sh',
+  'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then',
+  '  case "$MR_FAKE_SPACETIME_VERSION" in',
+  '    ok) printf \'spacetime Path: %s\\n\' "$MR_FAKE_SPACETIME_CLI" ;;',
+  '    no-path) ;;',
+  "    *) echo 'error: the spacetime CLI could not start' >&2; exit 1 ;;",
+  '  esac',
+  "  echo 'Commit: 1a2b3c4'",
+  "  echo 'spacetimedb tool version 2.12.0; spacetimedb-lib version 2.12.0;'",
+  '  exit 0',
+  'fi',
+  'exit 97',
+  '',
+].join('\n');
+
+// The definition extractor beside the CLI's file: records its arguments (one invocation per line,
+// tab-separated), each release output that exists when it runs, and a copy of the file it is
+// handed; then prints `$MR_FAKE_DEF` and exits `$MR_FAKE_DEF_EXIT`.
+const EXTRACTOR_STAND_IN = [
+  '#!/bin/sh',
+  'for a in "$@"; do printf \'%s\\t\' "$a" >> "$MR_FAKE_DEF_LOG"; done',
+  'printf \'\\n\' >> "$MR_FAKE_DEF_LOG"',
+  'for f in "$MR_FAKE_RELEASE_DIR"/monster-realm-*; do',
+  '  if [ -e "$f" ]; then printf \'%s\\n\' "$f" >> "$MR_FAKE_DEF_OUTPUTS"; fi',
+  'done',
+  'if [ "$#" -eq 2 ] && [ -f "$2" ]; then cp "$2" "$MR_FAKE_DEF_READ"; fi',
+  'printf \'%s\' "$MR_FAKE_DEF"',
+  'exit "$MR_FAKE_DEF_EXIT"',
+  '',
+].join('\n');
+
+// An extractor of the same name first on PATH: it records that it ran and answers as the one
+// beside the CLI's file does.
+const PATH_EXTRACTOR_STAND_IN = [
+  '#!/bin/sh',
+  'for a in "$@"; do printf \'%s\\t\' "$a" >> "$MR_FAKE_PATH_DEF_LOG"; done',
+  'printf \'\\n\' >> "$MR_FAKE_PATH_DEF_LOG"',
+  'printf \'%s\' "$MR_FAKE_DEF"',
+  'exit "$MR_FAKE_DEF_EXIT"',
+  '',
+].join('\n');
+
+// --- module definitions as `spacetimedb-standalone extract-schema <wasm>` prints them: one JSON
+// object, each section an object whose one key is its kind.
+
+const reducerDef = (name) => ({
+  source_name: name,
+  params: { elements: [] },
+  visibility: { ClientCallable: [] },
+  ok_return_type: { Product: { elements: [] } },
+  err_return_type: { String: [] },
+});
+
+const DEF_SECTIONS = [
+  { Typespace: { types: [{ Product: { elements: [] } }] } },
+  { Types: [] },
+  { Tables: [] },
+  { Reducers: [reducerDef('join_game'), reducerDef('sync_content')] },
+  { Views: [] },
+  { Schedules: [] },
+  { LifeCycleReducers: [] },
+  { ExplicitNames: { entries: [] } },
+];
+
+const definitionOf = (...sections) => JSON.stringify({ V10: { sections } });
+
+// A clean definition, with the empty HTTP sections a build with the crate's `unstable` feature
+// adds.
+const CLEAN_DEF = definitionOf(...DEF_SECTIONS, { HttpHandlers: [] }, { HttpRoutes: [] });
 
 // --- wasm fixtures: the 8-byte header, then custom sections (id 0, LEB128 size, LEB128 name
 // length, name, payload).
@@ -236,21 +313,38 @@ function buildArgs(profile, targetRoot) {
   ];
 }
 
-// Run `just <args>` from a fresh temp dir with the cargo stand-in first on PATH. `wasm` is what
-// the stand-in builds; `env(dir)` adds variables; `preseed` writes a good artefact where the build
-// would land before the recipe runs. Returns everything the assertions need, read before the
-// temp dir is removed.
+// Run `just <args>` from a fresh temp dir with the cargo and spacetime stand-ins first on PATH.
+// `wasm` is what the cargo stand-in builds; `env(dir)` adds variables; `preseed` writes a good
+// artefact where the build would land before the recipe runs. `def` and `defExit` are what the
+// definition extractor prints and exits with; `spacetimeVersion` is `ok`, `no-path` or `fail`.
+// Returns everything the assertions need, read before the temp dir is removed.
 function runJust(
   args,
-  { wasm = null, cargoExit = 0, env: extra = () => ({}), preseed = null } = {},
+  {
+    wasm = null,
+    cargoExit = 0,
+    env: extra = () => ({}),
+    preseed = null,
+    def = CLEAN_DEF,
+    defExit = 0,
+    spacetimeVersion = 'ok',
+  } = {},
 ) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'acs6-just-')));
   try {
+    const install = (path, text) => {
+      writeFileSync(path, text);
+      chmodSync(path, 0o755);
+    };
     const bin = join(dir, 'bin');
     mkdirSync(bin);
-    const fake = join(bin, 'cargo');
-    writeFileSync(fake, CARGO_STAND_IN);
-    chmodSync(fake, 0o755);
+    install(join(bin, 'cargo'), CARGO_STAND_IN);
+    install(join(bin, 'spacetime'), SPACETIME_VERSION_STAND_IN);
+    install(join(bin, 'spacetimedb-standalone'), PATH_EXTRACTOR_STAND_IN);
+    // The CLI's own directory, off PATH.
+    const cliDir = join(dir, 'spacetime-cli');
+    mkdirSync(cliDir);
+    install(join(cliDir, 'spacetimedb-standalone'), EXTRACTOR_STAND_IN);
     const fixture = join(dir, 'fixture.wasm');
     if (wasm) writeFileSync(fixture, wasm);
     if (preseed) {
@@ -268,6 +362,12 @@ function runJust(
     const log = join(dir, 'cargo.log');
     const envLog = join(dir, 'cargo.env');
     const compilerLog = join(dir, 'cargo.compiler');
+    const defLog = join(dir, 'extractor.log');
+    const pathDefLog = join(dir, 'extractor-on-path.log');
+    const defOutputs = join(dir, 'extractor.outputs');
+    const defRead = join(dir, 'extractor.read');
+    const extraEnv = extra(dir);
+    const targetRoot = extraEnv.CARGO_TARGET_DIR ?? join(dir, 'target');
     const env = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (
@@ -289,8 +389,17 @@ function runJust(
         MR_FAKE_CARGO_COMPILER: compilerLog,
         MR_FAKE_CARGO_EXIT: String(cargoExit),
         MR_FAKE_WASM: fixture,
+        MR_FAKE_SPACETIME_VERSION: spacetimeVersion,
+        MR_FAKE_SPACETIME_CLI: join(cliDir, 'spacetimedb-cli'),
+        MR_FAKE_DEF: def,
+        MR_FAKE_DEF_EXIT: String(defExit),
+        MR_FAKE_DEF_LOG: defLog,
+        MR_FAKE_PATH_DEF_LOG: pathDefLog,
+        MR_FAKE_DEF_OUTPUTS: defOutputs,
+        MR_FAKE_DEF_READ: defRead,
+        MR_FAKE_RELEASE_DIR: join(targetRoot, 'release-module'),
       },
-      extra(dir),
+      extraEnv,
     );
     const argv = typeof args === 'function' ? args({ dir, fixture }) : args;
     const result = spawnSync(
@@ -305,12 +414,14 @@ function runJust(
       throw new Error(`could not run \`just\`: ${result.error.message}`);
     }
     assert.notEqual(result.status, null, `just was killed by ${result.signal}`);
-    const calls = existsSync(log)
-      ? readFileSync(log, 'utf8')
-          .split('\n')
-          .filter((line) => line !== '')
-          .map((line) => line.split('\t').slice(0, -1))
-      : [];
+    const readCalls = (file) =>
+      existsSync(file)
+        ? readFileSync(file, 'utf8')
+            .split('\n')
+            .filter((line) => line !== '')
+            .map((line) => line.split('\t').slice(0, -1))
+        : [];
+    const calls = readCalls(log);
     const readRecords = (file) =>
       existsSync(file)
         ? readFileSync(file, 'utf8')
@@ -329,8 +440,6 @@ function runJust(
         sum: existsSync(sum) ? readFileSync(sum, 'utf8') : null,
       };
     };
-    const extraEnv = extra(dir);
-    const targetRoot = extraEnv.CARGO_TARGET_DIR ?? join(dir, 'target');
     return {
       dir,
       status: result.status,
@@ -344,6 +453,14 @@ function runJust(
         official: outputsUnder(targetRoot, 'official'),
         world: outputsUnder(targetRoot, 'world'),
       },
+      extractions: readCalls(defLog),
+      pathExtractions: readCalls(pathDefLog),
+      outputsAtExtraction: existsSync(defOutputs)
+        ? readFileSync(defOutputs, 'utf8')
+            .split('\n')
+            .filter((line) => line !== '')
+        : [],
+      extractedBytes: existsSync(defRead) ? readFileSync(defRead) : null,
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
