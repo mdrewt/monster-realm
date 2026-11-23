@@ -1714,6 +1714,33 @@ visibility; a per-panel Social frame; merging the three main.ts tables into one 
 (three small total records with byte-identical thunks are the defense against copy-paste
 sibling bugs); a gate read that pushes, pops, shows or hides a frame.
 
+## A hold gesture is a router edge: the top frame lists its hold-capable buttons
+
+**Decision.** The top frame lists the buttons it treats as hold-capable (`RouteContext.hold` in
+`client/src/input/router.ts`; `HOLD_MS` is 500). A listed button's press asks nothing. A
+release before `HOLD_MS` delivers its tap at the release; held `HOLD_MS`, the frame's adapter
+is asked once with a hold input (`NavInput.hold`, `client/src/ui/nav.ts`) and the release is
+swallowed. Arming is per button whatever the source (key, pad, pointer). A frame change,
+`resetRepeat` / `releaseAll`, or a frame that stops listing the button drops the press with
+nothing delivered. The D-pad and X are never hold-capable. Today only the bare tactical battle
+base lists Y, and only while the shell can clear the selected unit's READY plan
+(`battleHoldButtons` in `client/src/ui/screens/battleScreen.ts`,
+`TacticsBattle.clearPlanHoldable`): a Y tap shows the "Hold Y to clear the plan" line, a Y hold
+sends `cancel_queue` through the same path as the confirmed Clear plan row. B is never listed:
+its skip of a playing beat stays at the press.
+
+**Why.** A held button must never also act as a tap, and a tap must not wait on a timer on
+every screen. Only a frame that offers a hold pays the tap-at-release latency; every other
+button and screen keeps press-time response. One router rule serves the keyboard, the pad and
+the pointer alike, since the pad is one more source of the same edges. B keeps press-time skip
+because keyboard and pointer players already skip at the press; a tap-vs-hold B would turn
+their tap into an undo, a feel change deferred to the tactical battle's depth work and flagged
+to the operator.
+
+**Rules out.** Per-screen hold timers or a second hold clock; listing a button whose tap must
+act at the press (B while a beat plays, the D-pad, X); a hold that also delivers its tap;
+treating a held key's OS auto-repeat as a hold.
+
 ## Code leaves `client/src/main.ts` into owner modules under `client/src/shell/`; `main.ts` stays the composition root
 
 **Decision.** An extraction from `client/src/main.ts` follows the map in

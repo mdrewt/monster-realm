@@ -5554,4 +5554,108 @@ describe('TacticsBattle: Hold Y (the holdHint and clearPlan ops)', () => {
       expect(k.announced, `${label}: nothing said`).toEqual(said);
     }
   });
+
+  it('a holdHint op at the root menu keeps the shell in that menu, not only its painted rows: B after the hint closes the root menu to idle [gp-6.6]', () => {
+    // WRONG IMPL KILLED: a hint that sets the mode to idle without repainting (the rows stay
+    // painted, so a DOM-only check passes, but the shell has left the menu: B then does nothing and
+    // the menu stays on screen, dead to every input).
+    const m = holdableKit('hint, then B');
+    openMenuAt(m, c(3, 2), 'hint, then B');
+    expect(rowIds(m.root), 'fixture: the root menu lists Clear plan').toContain('clear');
+    pressHoldHint(m);
+    expect(tickerTexts(m.root).at(-1), 'fixture: the hint line').toBe(holdHintLine());
+    expect(menuOf(m.root), 'the root menu still shows after the hint').not.toBeNull();
+    pressB(m);
+    expect(menuOf(m.root), 'B closes the root menu: the shell was still in it').toBeNull();
+    expect(m.shell.clearPlanHoldable, 'idle with the READY plan: still holdable').toBe(true);
+  });
+
+  it('a Y tap repeated while its hint is still the ticker`s newest line adds no line but is said again at the next tick, and any number of taps within one tick is said once [gp-6.6]', () => {
+    // WRONG IMPL KILLED: the announcement deduped with the ticker line (a screen-reader player who
+    // missed the first hint never hears it again); one utterance per tap (three taps say the hint
+    // three times); the hint said at the tap instead of at the tick; a hint queued again with no
+    // tap.
+    const k = holdableKit('repeated taps');
+    k.shell.tick();
+    const said = [...k.announced];
+    const lines = tickerTexts(k.root);
+    pressHoldHint(k);
+    pressHoldHint(k);
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'three taps: one hint line').toEqual([...lines, holdHintLine()]);
+    expect(k.announced, 'nothing said before the tick').toEqual(said);
+    k.shell.tick();
+    expect(k.announced, 'three taps in one tick: said once').toEqual([...said, holdHintLine()]);
+    k.shell.tick();
+    expect(k.announced, 'a tick with no tap says nothing').toEqual([...said, holdHintLine()]);
+
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'the hint is still the newest line: none added').toEqual([
+      ...lines,
+      holdHintLine(),
+    ]);
+    k.shell.tick();
+    expect(k.announced, 'the repeated tap is said again').toEqual([
+      ...said,
+      holdHintLine(),
+      holdHintLine(),
+    ]);
+  });
+
+  it('a clearPlan op for the pre-queued unit 2 leaves the other own unit`s in-flight key alone: unit 1`s End Turn, sent before the hold, keeps a second Start for unit 1 swallowed on the same turn [gp-6.7]', () => {
+    // WRONG IMPL KILLED: a clear that empties every unit's in-flight key instead of the cleared
+    // unit's (the live unit's second Start would go out twice on one turn, and the server rejects
+    // the duplicate); a clear sent for the live unit instead of the selected one.
+    const k = make();
+    k.shell.render(tacVm('wild', { readyPlans: readyOf([[2, READY_2]]) }));
+    expect(k.shell.selectedUnitId, 'fixture: the live unit 1').toBe(1);
+    pressStart(k);
+    expect(k.sent, 'fixture: unit 1`s End Turn went out').toEqual([
+      { battleId: 1n, unitId: 1, entries: [W_END] },
+    ]);
+    pressCycle(k, 1);
+    expect(k.shell.selectedUnitId, 'fixture: RB to unit 2').toBe(2);
+    expect(k.shell.clearPlanHoldable, 'fixture: unit 2 is holdable').toBe(true);
+    pressClearPlan(k);
+    expect(k.cancels, 'cancel_queue for unit 2 alone').toEqual([{ battleId: 1n, unitId: 2 }]);
+    pressCycle(k, -1);
+    expect(k.shell.selectedUnitId, 'fixture: LB back to unit 1').toBe(1);
+    pressStart(k);
+    expect(k.sent, 'unit 1 is still in flight: the second Start is swallowed').toHaveLength(1);
+    expect(k.cancels, 'and nothing more is cancelled').toEqual([{ battleId: 1n, unitId: 2 }]);
+  });
+
+  it('an op whose commit throws part-way restores clearPlanHoldable with the rest of the shell state: A on the Clear plan row at the root menu, its paint failing after the new state is assigned, leaves Clear plan holdable and the shell at the root menu [gp-6.10]', () => {
+    // WRONG IMPL KILLED: the holdable flag left out of the op rollback (the failed paint had
+    // assigned the confirm level's "not holdable": a Y hold would then do nothing at the root menu
+    // the player sees, until something repaints); the mode left out of the rollback (B would then
+    // step back from a confirm that was never painted).
+    const k = holdableKit('a failing commit');
+    openMenuAt(k, c(3, 2), 'a failing commit');
+    menuTo(k, 'clear');
+    expect(k.shell.clearPlanHoldable, 'fixture: holdable at the root menu').toBe(true);
+    const list = k.root.classList;
+    const realToggle = list.toggle.bind(list);
+    let calls = 0;
+    // The commit's first DOM write after it assigns the new state is the root's class toggle.
+    list.toggle = (token: string, force?: boolean): boolean => {
+      calls += 1;
+      if (calls === 1) throw new Error('the commit failed part-way');
+      return force === undefined ? realToggle(token) : realToggle(token, force);
+    };
+    try {
+      expect(() => pressA(k), 'A on Clear plan: its paint throws').toThrow(
+        'the commit failed part-way',
+      );
+    } finally {
+      list.toggle = realToggle;
+    }
+    expect(calls, 'fixture: the stub was reached').toBeGreaterThan(0);
+    expect(k.cancels, 'nothing cancelled').toEqual([]);
+    expect(rowIds(k.root), 'the root menu is what shows').toContain('clear');
+    expect(k.shell.clearPlanHoldable, 'restored: Clear plan is holdable again').toBe(true);
+    pressB(k);
+    expect(menuOf(k.root), 'B closes the root menu: the shell is back at it').toBeNull();
+    expect(k.shell.clearPlanHoldable, 'idle with the READY plan: holdable').toBe(true);
+  });
 });
