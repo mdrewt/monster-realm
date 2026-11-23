@@ -2760,9 +2760,9 @@ and no write. Under `Open` and `Password` the list is kept, stored as the owner 
 read; the next change to `Allowlist` adds to it.
 
 The module declares no HTTP handler, no HTTP route and no row filter: a check of the generated
-module definition refuses each, on the default build (a test in
-`server-module/src/privacy_enforcement_tests.rs`) and on each artefact `just release-module` makes
-(`scripts/verify-release-reducers.mjs`, over `spacetimedb-standalone extract-schema`). All three
+module definition refuses each, on the default build (`just module-definition`, in `just ci`) and
+on each artefact `just release-module` makes (`scripts/verify-release-reducers.mjs`, over
+`spacetimedb-standalone extract-schema`). All three
 also sit behind the `spacetimedb` crate's `unstable` feature, which the workspace does not enable
 (`Cargo.toml`). The deletion-gate census refuses a `procedure` attribute. Built: the module's half (`server-module/src/access.rs`,
 and the list in `server-module/src/world_binding.rs`); `mod admission_roster` in

@@ -81,13 +81,12 @@ lockstep hop until the SDK ages.
    `MR_PLAYTEST_DB` exercises `spacetime describe --json`, which
    `scripts/verify-release-reducers.mjs` parses. It accepts both the older flat
    `{"reducers": [...]}` shape and the `{"sections": [...]}` shape with `source_name`,
-   and fails loudly on anything else. A new shape needs a parser update. Also run
-   `just release-module world`: it reads the artefact's definition with
+   and fails loudly on anything else. A new shape needs a parser update. `just module-definition`
+   (in `just ci`) and `just release-module world` read a built module's definition with
    `spacetimedb-standalone extract-schema` (the binary beside the CLI on PATH), which prints
-   `{"V10":{"sections":[...]}}`. The check (`findDefinitionViolations` in the same script, and
-   `definition_violations` in `server-module/src/privacy_enforcement_tests.rs` for the default
-   build) refuses any section kind it does not list. A new kind is reviewed and listed in both:
-   passed if it cannot serve or filter rows, checked like `HttpHandlers` if it can.
+   `{"V10":{"sections":[...]}}`. The check (`findDefinitionViolations` in the same script) refuses
+   any section kind it does not list. A new kind is reviewed and listed there: passed if it cannot
+   serve or filter rows, checked like `HttpHandlers` if it can.
 8. **Check observability.** Confirm `/v1/metrics` still has the families the recording
    rules use (`ops/observability/rules/`), and that module log lines still reach Loki
    and `mr-trace-relay` (host log levels have changed between releases before).

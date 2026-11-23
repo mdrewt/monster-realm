@@ -102,12 +102,115 @@ export function findForbiddenReducers(reducerNames, forbidden) {
 
 // findDefinitionViolations(extractSchemaOutput) -> string[]
 //
-// Every HTTP handler, HTTP route and row filter the definition that
-// `spacetimedb-standalone extract-schema <wasm>` prints declares, at any submodule depth, and
-// every section kind this check does not know.
+// Parses what `spacetimedb-standalone extract-schema <wasm>` prints, one JSON object
+// `{"V10":{"sections":[{"<Kind>": <payload>}, …]}}`, and returns one line for each HTTP handler,
+// HTTP route and row filter it declares, at any submodule depth, and for each section kind this
+// check does not know. The host serves a module's HTTP handlers without authentication and
+// without the connect reducer, so the module declares none, and no row filter either.
+// `just module-definition` applies it to the default build and `just release-module` to each
+// artefact it makes.
+//
+// THROWS on output it cannot use: empty, not JSON, not `{"V10": …}`, a section that is not an
+// object of one kind, a checked section whose payload is not an array, a submodule without a
+// namespace or sections, or a definition with no reducer (a module always has one, so none
+// means the extraction did not work).
+const KNOWN_SECTION_KINDS = [
+  'Typespace',
+  'Types',
+  'Tables',
+  'Reducers',
+  'Procedures',
+  'Views',
+  'Schedules',
+  'LifeCycleReducers',
+  'RowLevelSecurity',
+  'CaseConversionPolicy',
+  'ExplicitNames',
+  'HttpHandlers',
+  'HttpRoutes',
+  'ViewPrimaryKeys',
+  'Submodules',
+  'Environment',
+  'Outboxes',
+];
+
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+function arrayPayload(kind, payload) {
+  if (!Array.isArray(payload)) {
+    throw new Error(`findDefinitionViolations: the ${kind} section is not an array`);
+  }
+  return payload;
+}
+
+function sectionViolations(sections, prefix) {
+  if (!Array.isArray(sections)) {
+    throw new Error(`findDefinitionViolations: ${prefix}the definition has no sections array`);
+  }
+  const found = [];
+  for (const section of sections) {
+    const kinds = isPlainObject(section) ? Object.keys(section) : [];
+    if (kinds.length !== 1) {
+      throw new Error(
+        `findDefinitionViolations: ${prefix}a section is not an object of exactly one kind`,
+      );
+    }
+    const [kind] = kinds;
+    const payload = section[kind];
+    if (kind === 'HttpHandlers') {
+      for (const h of arrayPayload(kind, payload)) {
+        found.push(`${prefix}HTTP handler \`${h?.source_name}\``);
+      }
+    } else if (kind === 'HttpRoutes') {
+      for (const r of arrayPayload(kind, payload)) {
+        found.push(`${prefix}HTTP route \`${r?.path}\` to handler \`${r?.handler_function}\``);
+      }
+    } else if (kind === 'RowLevelSecurity') {
+      for (const f of arrayPayload(kind, payload)) {
+        found.push(`${prefix}row filter \`${f?.sql}\``);
+      }
+    } else if (kind === 'Submodules') {
+      for (const sub of arrayPayload(kind, payload)) {
+        if (typeof sub?.namespace !== 'string' || !Array.isArray(sub?.module?.sections)) {
+          throw new Error(
+            `findDefinitionViolations: ${prefix}a submodule has no namespace or no sections`,
+          );
+        }
+        found.push(
+          ...sectionViolations(sub.module.sections, `${prefix}submodule \`${sub.namespace}\`: `),
+        );
+      }
+    } else if (!KNOWN_SECTION_KINDS.includes(kind)) {
+      found.push(`${prefix}unknown section kind \`${kind}\``);
+    }
+  }
+  return found;
+}
+
 export function findDefinitionViolations(extractSchemaOutput) {
-  void extractSchemaOutput;
-  return [];
+  if (!extractSchemaOutput?.trim()) {
+    throw new Error('findDefinitionViolations: empty output — extract-schema may have failed');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(extractSchemaOutput);
+  } catch {
+    throw new Error('findDefinitionViolations: output is not valid JSON');
+  }
+  if (
+    !isPlainObject(parsed) ||
+    Object.keys(parsed).join() !== 'V10' ||
+    !isPlainObject(parsed.V10)
+  ) {
+    throw new Error('findDefinitionViolations: output is not one V10 module definition');
+  }
+  const { sections } = parsed.V10;
+  const found = sectionViolations(sections, '');
+  const hasReducer = sections.some((s) => Array.isArray(s.Reducers) && s.Reducers.length > 0);
+  if (!hasReducer) {
+    throw new Error('findDefinitionViolations: the definition declares no reducer');
+  }
+  return found;
 }
 
 // ---------------------------------------------------------------------------

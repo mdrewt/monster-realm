@@ -545,10 +545,13 @@ enforced at 2.11.0, as the last three rows show.
 - _What the module never declares._ An HTTP handler, which the host serves without the connect
   reducer and without authentication, an HTTP route to one, or a row filter. A check of the
   generated module definition refuses each, at any submodule depth, and any section kind it does
-  not know. It runs on the default build as a test in the same test file, and on each artefact
-  `just release-module` makes, over the definition `spacetimedb-standalone extract-schema` reads
-  from it (`findDefinitionViolations` in `scripts/verify-release-reducers.mjs`), because a
-  declaration behind a release feature is invisible to the test build. All three sit behind the
+  not know (`findDefinitionViolations` in `scripts/verify-release-reducers.mjs`). It reads the
+  definition `spacetimedb-standalone extract-schema` takes from a built module: the default build in
+  `just ci` (`just module-definition`) and each artefact `just release-module` makes, because a
+  declaration behind a release feature is not in the default build. A native test cannot make the
+  check: the test binary keeps no describer that no test calls, so a handler or a filter never
+  reaches the fixture's definition (measured on 2.12.0 with a planted handler, route and filter).
+  All three sit behind the
   `spacetimedb` crate's `unstable` feature, which the workspace does not enable (`Cargo.toml`:
   `spacetimedb = "=2.12.0"`, no features). The deletion-gate census in the same test file refuses
   a `procedure` attribute.
