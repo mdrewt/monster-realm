@@ -1686,8 +1686,8 @@ store and an ongoing battle cannot be hidden. Pure models make the UI logic test
 without a DOM. Generated hints and help cannot drift from the bindings. A pad-only
 player has no other way out of a cell that takes keys, or of a Pad cell with no button to press
 again; B is always bound and already means back. Nothing else on the pad can press Retry or
-Continue as guest, and the confirm step gives up the account session for good, so one press must
-never both open it and answer it. A total catalog makes a missing
+Continue as guest, and the confirm step gives up this tab's account session, which cannot be undone, so one
+press must never both open it and answer it. A total catalog makes a missing
 translation a compile error rather than a blank label, and throwing (rather than showing the key) keeps an unwired string from looking wired.
 
 **Rules out.** A feature reachable only by a hotkey (F9's menu twin, Options › Report a

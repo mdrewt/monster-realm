@@ -3158,7 +3158,8 @@ let padPhase: TerminalPhase = 'closed';
 // buttons, A chooses, and every other button and accelerator does nothing. Nothing held is let go
 // between presses, or a stick flicked straight from Up to Down would stay latched; `pollPad` lets
 // everything go at each phase change instead. A press that changes the phase ends the poll, so no
-// later edge of it lands on the step that press opened.
+// later edge of it lands on the step that press opened. A press made while focus is outside the game
+// screen is read and dropped: it does not act once focus is back.
 const pollTerminalPad = (phase: TerminalPhase): void => {
   const { edges } = pad.poll();
   if (outsideGameScreen(document.activeElement, gameScreenEl())) return;
@@ -3166,6 +3167,7 @@ const pollTerminalPad = (phase: TerminalPhase): void => {
     const op = edge.down ? sessionPadOp(edge.button) : null;
     if (op === null) continue;
     noteInputSource('pad');
+    pointerSource?.keyPressed();
     sessionView?.applyRowOp(op);
     if (terminalPhase() !== phase) return;
   }
@@ -3174,15 +3176,17 @@ const pollTerminalPad = (phase: TerminalPhase): void => {
 // The pad, read once per animation frame. When the session terminal has opened, closed, armed or
 // disarmed its confirm step since the last poll, that frame only lets everything held go (the pad is
 // read first), so a button held through the change acts only once released and pressed again. A
-// close lets only the pad go: a key pressed since is a press of the game's. While a Pad cell of Controls waits, the frame takes the pad's
-// `capture()` instead: no pad press routes, and the press read goes to the capture. A pad press is
-// ignored, as a key press is, while focus is outside the game screen, and also while Controls waits
-// for a key; inside the game screen a press of B also ends that capture unchanged. Everything held
-// is let go in each case, so the press owes no release that could end another source's hold and acts
-// only once released and pressed again. A release alone still routes, as a keyup does, except while
-// a Pad cell waits: the releases `capture()` reads reach the first poll after the capture ends.
-// Inside the game screen a pad press is a button press even with a text field focused (a pad cannot type). A press clears the
-// pointer's hover mark and heals stale focus first, as a key press does; the edges route before the
+// close lets only the pad go: a key pressed since is a press of the game's. While the terminal is up
+// the pad works it (`pollTerminalPad`). The rest is the pad with no terminal up.
+// While a Pad cell of Controls waits, the frame takes the pad's `capture()` instead: no pad press
+// routes, and the press read goes to the capture. A pad press is ignored, as a key press is, while
+// focus is outside the game screen, and also while Controls waits for a key; inside the game screen
+// a press of B also ends that capture unchanged. Everything held is let go in each case, so the
+// press owes no release that could end another source's hold and acts only once released and pressed
+// again. A release alone still routes, as a keyup does, except while a Pad cell waits: the releases
+// `capture()` reads reach the first poll after the capture ends. Inside the game screen a pad press
+// is a button press even with a text field focused (a pad cannot type). A press clears the pointer's
+// hover mark and heals stale focus first, as a key press does; the edges route before the
 // accelerators. An edge that starts a capture ends the poll: no later edge or accelerator routes,
 // and everything held is let go, so a button pressed in that same frame is not a press of the
 // capture's.

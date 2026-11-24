@@ -60,7 +60,8 @@ export class SessionView {
 
   constructor(handlers: SessionViewHandlers) {
     this.#overlay = ensureElement('session-overlay', 'div', frameAnchor());
-    this.#overlay.classList.add('mr-frame', 'mr-shell', 'mr-shell--top');
+    // `mr-button-rows`: the buttons stack as a column, the axis the pad's Up and Down walk.
+    this.#overlay.classList.add('mr-frame', 'mr-shell', 'mr-shell--top', 'mr-button-rows');
     this.#title = ensureElement('session-title', 'h2');
     this.#body = ensureElement('session-body', 'p');
     this.#feedback = ensureElement('session-feedback', 'p');
