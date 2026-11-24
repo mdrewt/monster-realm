@@ -12,7 +12,6 @@ flake: add an entry.
 | # | Test | State | Next step |
 |---|---|---|---|
 | 1 | `ui-feedback.spec.ts` UIF4B.2 rename: the name field stays hidden after N | signature forced, flake not reproduced | read the trace of its next rerun listing |
-| 2 | `tactics-wild.spec.ts` BT12-5-WILD-RECRUIT and `recruit.spec.ts` R2: a recruit reported as none | cause shown by forcing, CI path inferred; fixed in BT12-5-WILD-RECRUIT, open in R2 | the follow-up slice in the entry |
 | 3 | `zone-scope.spec.ts` "A walks to the warp": no frame sampled before the warp | not studied | read the trace run 43690080900 kept |
 | 4 | `remote-walk.spec.ts` np-a.9: the sprite stands still past its bound | not studied here | its own row, `R-np-a-flake` |
 
@@ -134,120 +133,6 @@ DOM snapshot. It separates three cases:
 - One navigation and a live socket: one of the other conditions held. The film strip shows what
   had the screen or the focus.
 
-## 2. A recruit on the last allowed own turn is reported as none
-
-**Tests.** `client/e2e/tactics-wild.spec.ts` BT12-5-WILD-RECRUIT and `client/e2e/recruit.spec.ts`
-R2. Each has its own copy of one loop, `fightToRecruit`: up to `MAX_OWN_TURNS` (16) own turns of
-close in, weaken, Recruit. When the loop reports no recruit, its caller hunts another wild.
-
-**Run.** 43362803625 attempt 1 (PR #751, shard 3 of 5, 2026-11-13), BT12-5-WILD-RECRUIT. The
-shard passed on attempt 2. Seen once. R2 has no such failure in the runs read for this register.
-
-**Signature.**
-
-```
-Error: expect(received).toBe(expected) // Object.is equality
-
-Expected: 2
-Received: 3
-
-Call Log:
-- Timeout 15000ms exceeded while waiting on the predicate
-
-  562 |         .poll(async () => (await readOwnMonsters(page)).length, { timeout: 15_000 })
-> 563 |         .toBe(2);
-```
-
-Three monsters are the starter and two recruits. The test ran 34.9 s; less the 15 s poll, 19.9 s
-of `beforeAll` and body. A one-battle pass on the same tree ran 8.7 s.
-
-**Cause.** A loop that answers as soon as its bound is spent reports a Recruit pressed on the
-sixteenth own turn as none: that press has not resolved yet. When its roll succeeds the battle
-ends with the wild recruited, the caller finds nothing to flee, passes the results panel and
-recruits a second wild. The tree of run 43362803625 has that loop. BT12-5-WILD-RECRUIT's loop on
-`master` waits for the last turn before it answers (PR #752). R2's copy returns `'stalled'` once
-the sixteenth turn is spent; its caller waits for the turn, sees the battle finished, and keeps
-the `'stalled'` answer.
-
-**Attempts.** The last column counts runs that ended with three or more own monsters, the count
-the CI run's final poll read.
-
-| Recipe | What it does | Runs | Third monster |
-|---|---|---|---|
-| plain | BT12-5-WILD-RECRUIT as on `master`, instrumented: a per-turn log, and an in-page sampler that reads the tactical state on every macrotask for 2 s after each Recruit press | 19 | 0 |
-| CPU 4x | plain under Chromium CPU throttle 4x | 8 | 0 |
-| frames late | plain with every server-to-page frame delivered 150 ms late, in order | 8 | 0 |
-| bound 6 | plain with `MAX_OWN_TURNS` lowered to 6 | 12 | 0 |
-| Recruit held | plain at 16; once the wild is weak and adjacent the loop takes no action until its last own turn and presses Recruit there | 6 | 0 |
-| early answer, bound 6 | the loop of run 43362803625's tree (answers once the bound is spent) on `master`'s product, `MAX_OWN_TURNS` lowered to 6 | 12 | 1 |
-| early answer, Recruit held | that loop at 16 with Recruit held; the probe catches the caller's flee throw and goes on | 8 | 7 |
-| R2, Recruit held | R2 as on `master`, Recruit held in the first encounter | 12 | 5 |
-| R2 waiting, Recruit held | R2 with its loop waiting for the last turn, Recruit held in the first encounter | 12 | 0 |
-
-What the rows show:
-
-- **Early answer, Recruit held.** 33 Recruit presses landed on the sixteenth own turn and 20
-  succeeded. All 20 were answered "no recruit". 9 passed silently into the next hunt, the path to
-  the CI signature. 11 made the caller's flee throw `fleeByButtons: the battle is Finished`: the
-  roll landed between the caller's own-turn wait and its flee. The probe went on past both, so 7
-  of 8 runs ended with three or four monsters. Under the test itself the first such press ends
-  the run with one signature or the other.
-- **Recruit held.** 12 presses on the sixteenth turn, 6 succeeded, all 6 answered "recruited";
-  every run ended with two monsters.
-- **Bound 6.** The early answer reported a real recruit as none in 2 of 12 runs, and one of them
-  ended with three monsters; `master`'s loop caught 3 last-turn recruits in 12 runs. PR #752
-  records the same pair at a bound of 6 to 7: 15 of 80, and 0 of 75 with the wait.
-- **R2, Recruit held.** 9 of the 12 runs reached a Recruit on the sixteenth turn of the first
-  encounter. In 5 it succeeded, the encounter was logged `stalled`, a later one recruited again
-  (the second in 3 runs, the third in 2), and the test failed `Expected: 2 Received: 3`. With the
-  loop waiting, 8 of 12 runs reached that press, 5 succeeded and all 5 were logged `recruited`.
-- **No other path.** Across the 73 BT12-5-WILD-RECRUIT probe runs the sampler saw 86 recruits
-  land. Each arrived as one step: `Finished`, the wild `Recruited` and one more own monster
-  together. A read of the helpers, the server's recruit path and the client store found no second
-  way to two recruits: a success ends its battle in the same transaction, and a finished battle
-  accepts no commit.
-
-**Does run 43362803625 fit.** Not shown: it kept no trace. What can be checked fits.
-
-- Time. The 19.9 s holds two battles: two results panels (3 s each in that tree), two hunts
-  (median 1.5 s here) and two fights. A battle that reaches a Recruit on its sixteenth turn is
-  attacks and failed recruits, about 0.2 s each here: a 3 s fight. A Skittish wild that keeps its
-  distance never lets the starter stand adjacent and draws no Recruit press at all (6 of the 41
-  battles in the plain, CPU 4x and frames late rows).
-- Rate. In those three rows, 79 Recruit presses, 35 succeeded (44 %); the first press of a
-  battle fell on own turn 4 to 11 and the latest press on turn 12. Own turns count from 1. A
-  battle that first presses Recruit on own turn t presses it again on every later own turn until
-  one succeeds, each press an independent 44 %. With the first-press turns as observed, the
-  chance that the press on turn 16 is the first to succeed is the sum over t of
-  P(first press on turn t) x 0.56^(16 - t) x 0.44: about 1 battle in 480. CI saw one failure in
-  the 197 runs created from 2026-11-07 to 2026-11-13.
-- Run 42328156037, half an hour before those days, and the other 24 failed or rerun runs of
-  those days have 20 failed job logs that ran Playwright, every attempt included. None holds the
-  sibling signature (`fleeByButtons: the battle is Finished`) or a second BT12-5-WILD-RECRUIT
-  failure.
-
-**Verdict.** The test is wrong, not the product: the loop answers before its last press resolves.
-BT12-5-WILD-RECRUIT waits (PR #752); R2 does not. That run 43362803625 hit this path is inferred.
-A third monster on a rerun listing of BT12-5-WILD-RECRUIT would refute it and reopen this entry.
-
-**Follow-up slice: `th-7`, the recruit loop has one home.** Test, not product.
-
-- `touches:` `client/e2e/controls.ts`, `client/e2e/controls.spec.ts`,
-  `client/e2e/recruit.spec.ts`, `client/e2e/tactics-wild.spec.ts`.
-- The loop moves to `controls.ts` and both specs call it. It takes its own-turn bound as an
-  argument and keeps R2's three answers and its press and HP bookkeeping, and
-  BT12-5-WILD-RECRUIT's count of forecast attacks. R2's caller reads `'stalled'` only after the
-  last turn has been waited for. Neither spec keeps a local `fightToRecruit`.
-- Forcing regression test: a case in `controls.spec.ts` in which a Recruit pressed on the last
-  allowed own turn resolves only after the loop's last iteration, and the loop answers
-  `'recruited'`. The loop's steps read the tactical shell's DOM (the cursor tile, the menu rows,
-  the bait list, the forecast) as well as `__mrTactics` and `__game`, so the case either fakes
-  that much of the shell on a served-nothing page or drives the loop through its steps passed as
-  arguments. It is run red against a copy of R2's present loop and green against the waiting
-  loop, both runs recorded.
-- After the move, the R2 and early-answer Recruit-held recipes above are run on both specs: no
-  run ends with an extra monster.
-
 ## 3. zone-scope "A walks to the warp": no frame sampled before the warp
 
 **Test.** `client/e2e/zone-scope.spec.ts`, "A walks to the warp with B standing in zone 1: B is
@@ -317,7 +202,6 @@ no failed test.
 | Entry | Row | Lifts when |
 |---|---|---|
 | 1 | `R-th-1-RENAME-HIDDEN` | the rename test is next listed as passed on a rerun |
-| 2 | `R-th-1-RECRUIT-LASTTURN` | `th-7` merges |
 | 3 | `R-th-1-ZONESCOPE-FRAMES` | the zone-scope test is next listed as passed on a rerun, or a study of the kept trace names a cause |
 
 Entry 4's row, `R-np-a-flake`, lifts with its own follow-up.
