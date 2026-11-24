@@ -35,6 +35,7 @@
 
 import * as fc from 'fast-check';
 import { afterEach, describe, expect, it } from 'vitest';
+import { VBUTTONS } from '../input/buttons';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
 import { setLocale } from './i18n/resolver';
@@ -45,6 +46,7 @@ import {
   type SessionEvent,
   type SessionModelState,
   type SessionState,
+  sessionPadOp,
   sessionStep,
 } from './sessionModel';
 
@@ -548,6 +550,12 @@ describe('sessionModel × i18n (21r-b): overlay copy and disconnected feedback r
 /** U+00E9 (e acute), built by code point so no expectation holds a pasted glyph. */
 const E_ACUTE = String.fromCharCode(0x00e9);
 
+/** rb-140 (named intentional change): the hint also says the D-pad moves and A chooses. Was
+ *  'B and Start do nothing here. Tab moves, Enter chooses.' and its French twin. */
+const HINT_EN =
+  'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.';
+const HINT_FR = `B et Start sont sans effet ici. Tab ou la croix pour naviguer, Entr${E_ACUTE}e ou le bouton A pour choisir.`;
+
 /** The unarmed and the armed projection of both showing states. */
 const LABEL_PROJECTIONS: ReadonlyArray<readonly [string, SessionModelState]> =
   SHOWING_STATES.flatMap((state) =>
@@ -575,9 +583,7 @@ describe('sessionModel ctl-8k: the gate labels and the hint are projected by the
       expect(vm.retryLabel, `${where}: retryLabel`).toBe('Retry');
       expect(vm.confirmYesLabel, `${where}: confirmYesLabel`).toBe('Yes');
       expect(vm.confirmNoLabel, `${where}: confirmNoLabel`).toBe('No');
-      expect(vm.hint, `${where}: hint`).toBe(
-        'B and Start do nothing here. Tab moves, Enter chooses.',
-      );
+      expect(vm.hint, `${where}: hint`).toBe(HINT_EN);
       expect(vm.primaryActionLabel, `${where}: Continue is still the Continue label`).toBe(
         'Continue as guest',
       );
@@ -588,7 +594,7 @@ describe('sessionModel ctl-8k: the gate labels and the hint are projected by the
     }
     // The copy comes from the catalog ids the plan names, not from a literal in the model.
     expect(EN['session.retry']).toBe('Retry');
-    expect(EN['session.hint']).toBe('B and Start do nothing here. Tab moves, Enter chooses.');
+    expect(EN['session.hint']).toBe(HINT_EN);
     expect(EN['prompt.yes']).toBe('Yes');
     expect(EN['prompt.no']).toBe('No');
   });
@@ -614,9 +620,7 @@ describe('sessionModel ctl-8k: the gate labels and the hint are projected by the
     expect(vm.retryLabel).toBe(`R${E_ACUTE}essayer`);
     expect(vm.confirmYesLabel).toBe('Oui');
     expect(vm.confirmNoLabel).toBe('Non');
-    expect(vm.hint).toBe(
-      `B et Start sont sans effet ici. Tab pour naviguer, Entr${E_ACUTE}e pour choisir.`,
-    );
+    expect(vm.hint).toBe(HINT_FR);
   });
 
   it('CTL8K-1-VM-FIRST-STEP-CLEAN: the first step (nothing armed) carries no confirmation copy anywhere, Continue is not the default, and arming adds only the prompt', () => {
@@ -840,5 +844,31 @@ describe('ctl-8k red-team: reducer pins', () => {
         expect(step.effect).toBe('none');
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rb-140: which virtual buttons the pad works the terminal with.
+// ---------------------------------------------------------------------------
+
+describe('sessionPadOp (rb-140): the pad button to terminal row op map', () => {
+  it('Up is a move of -1, Down a move of +1 and A an activate [rb-140.1]', () => {
+    // WRONG IMPL KILLED: Up and Down transposed (the list walks backwards), a move of 0 or 2, and
+    // A mapped to a move.
+    expect(sessionPadOp('Up')).toEqual({ kind: 'move', delta: -1 });
+    expect(sessionPadOp('Down')).toEqual({ kind: 'move', delta: 1 });
+    expect(sessionPadOp('A')).toEqual({ kind: 'activate' });
+  });
+
+  it('every other virtual button maps to nothing, B and Start above all [rb-140.4]', () => {
+    // WRONG IMPL KILLED: B answering No (or Start closing the terminal), Left and Right walking the
+    // list, and a default arm that returns an op for a button it does not know.
+    const others = VBUTTONS.filter((b) => b !== 'Up' && b !== 'Down' && b !== 'A');
+    expect(others, 'ANTI-VACUITY: every other button is covered').toHaveLength(VBUTTONS.length - 3);
+    for (const button of others) {
+      expect(sessionPadOp(button), `${button} does nothing`).toBeNull();
+    }
+    expect(sessionPadOp('B')).toBeNull();
+    expect(sessionPadOp('Start')).toBeNull();
   });
 });

@@ -997,7 +997,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8k (named intentional change): 2 new plain keys — the session gate's Retry label and its
   // frame hint that B and Start are inert (sessionModel.ts, painted by sessionView.ts).
   'session.retry': 'Retry',
-  'session.hint': 'B and Start do nothing here. Tab moves, Enter chooses.',
+  // rb-140 (named intentional change): the hint also says the D-pad moves and A chooses (was
+  // 'B and Start do nothing here. Tab moves, Enter chooses.').
+  'session.hint':
+    'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.',
   // ctl-10a (named intentional change): 5 new plain keys — the three interaction verbs the world
   // chip and the picker rows name, the healer's display name (a heal location has no npc id), and
   // the catalog's name for the Enter keycap (main.ts).
@@ -2912,7 +2915,8 @@ const A_CIRCUMFLEX = String.fromCharCode(0x00e2);
 
 const EXPECTED_FR_CTL8K_PLAIN: Record<string, string> = {
   'session.retry': `R${E_ACUTE}essayer`,
-  'session.hint': `B et Start sont sans effet ici. Tab pour naviguer, Entr${E_ACUTE}e pour choisir.`,
+  // rb-140 (named intentional change): the hint also names the pad's cross and A button.
+  'session.hint': `B et Start sont sans effet ici. Tab ou la croix pour naviguer, Entr${E_ACUTE}e ou le bouton A pour choisir.`,
 };
 
 describe('ctl-8k: catalog.fr.ts, the keys ctl-8k adds', () => {
@@ -2932,6 +2936,17 @@ describe('ctl-8k: catalog.fr.ts, the keys ctl-8k adds', () => {
       Object.keys(EXPECTED_FR_CTL8K_PLAIN).length,
       'ANTI-VACUITY: both ctl-8k keys are pinned in French',
     ).toBe(2);
+  });
+
+  it('the session hint tells a pad-only player in both languages that the D-pad moves and the A button chooses, while B and Start stay inert [rb-140.5]', () => {
+    // WRONG IMPL KILLED: a hint reworded in one locale only (a French boot still names Tab and
+    // Enter alone), and one that drops the B and Start line.
+    expect((CATALOG_EN as Record<string, unknown>)['session.hint']).toBe(
+      'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.',
+    );
+    expect((CATALOG_FR as Record<string, unknown>)['session.hint']).toBe(
+      `B et Start sont sans effet ici. Tab ou la croix pour naviguer, Entr${E_ACUTE}e ou le bouton A pour choisir.`,
+    );
   });
 });
 

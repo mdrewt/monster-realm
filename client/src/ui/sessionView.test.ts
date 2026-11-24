@@ -34,6 +34,7 @@ import { ownership } from '../input/router';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
 import { setLocale } from './i18n/resolver';
+import type { RowOp } from './screens/profileScreen';
 import {
   buildSessionViewModel,
   SESSION_INITIAL,
@@ -74,6 +75,11 @@ const CHILD_IDS: readonly string[] = [
   HINT_ID,
 ];
 const BUTTON_IDS: readonly string[] = [RETRY_ID, CONTINUE_ID, YES_ID, NO_ID];
+
+/** rb-140 (named intentional change): the English hint now says the D-pad moves and A chooses too.
+ *  Was: 'B and Start do nothing here. Tab moves, Enter chooses.' */
+const HINT_EN =
+  'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.';
 
 // ---------------------------------------------------------------------------
 // Real model states, reached by RUNNING the reducer (never hand-written).
@@ -338,14 +344,14 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
     expect(vm.body).toBe(EN['chrome.session.expired.body']);
     expect(vm.retryLabel, 'the model owns the Retry copy').toBe('Retry');
     expect(vm.primaryActionLabel).toBe('Continue as guest');
-    expect(vm.hint).toBe('B and Start do nothing here. Tab moves, Enter chooses.');
+    expect(vm.hint).toBe(HINT_EN);
 
     view.render(vm);
 
     expect(el(ROOT_ID).style.display, 'the root is shown').toBe('block');
     expectShown(TITLE_ID, 'Session expired');
     expectShown(BODY_ID, EN['chrome.session.expired.body']);
-    expectShown(HINT_ID, 'B and Start do nothing here. Tab moves, Enter chooses.');
+    expectShown(HINT_ID, HINT_EN);
     expectActionButton(RETRY_ID, 'Retry');
     expectActionButton(CONTINUE_ID, 'Continue as guest');
     // The second step is not on screen yet.
@@ -722,7 +728,7 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
       view = freshView();
       const vm = buildSessionViewModel(state);
       view.render(vm);
-      expectShown(HINT_ID, 'B and Start do nothing here. Tab moves, Enter chooses.');
+      expectShown(HINT_ID, HINT_EN);
       expect(vm.hint).toBe(el(HINT_ID).textContent);
     }
     view = freshView();
@@ -987,7 +993,7 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
     view.render(buildSessionViewModel(UNREACHABLE));
     expectShown(TITLE_ID, EN['chrome.session.unreachable.title']);
     expectActionButton(RETRY_ID, 'Retry');
-    expectShown(HINT_ID, 'B and Start do nothing here. Tab moves, Enter chooses.');
+    expectShown(HINT_ID, HINT_EN);
 
     // Sentinel pair: every label is re-painted from the latest VM.
     view = freshView();
@@ -1315,5 +1321,171 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
     expect(el(ROOT_ID).classList.contains('mr-shell--top')).toBe(true);
     expect(el(ROOT_ID).style.display).toBe('block');
     expectShown(TITLE_ID, 'SENT TITLE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rb-140: a pad-only player works the terminal through `applyRowOp` (the pad's Up, Down and A).
+// ---------------------------------------------------------------------------
+
+const MOVE_UP: RowOp = { kind: 'move', delta: -1 };
+const MOVE_DOWN: RowOp = { kind: 'move', delta: 1 };
+const ACTIVATE: RowOp = { kind: 'activate' };
+const ARMED_VM = (): SessionViewModel => vmOf({ confirmPrompt: 'SENT PROMPT' });
+
+describe('SessionView.applyRowOp (rb-140): the pad moves focus over the shown buttons and chooses one', () => {
+  it('applyRowOp does nothing while the gate is not visible: no focus, no handler, before the first render and after a close [rb-140.1]', () => {
+    // WRONG IMPL KILLED: an op that seats or clicks a button of a hidden gate (a Retry fired
+    // from a page with no terminal on it).
+    for (const op of [MOVE_DOWN, MOVE_UP, ACTIVATE]) view.applyRowOp(op);
+    expect(focusedIds(), 'never rendered: no focus()').toEqual([]);
+    expect(onPage(), 'never rendered: focus stays on the page').toBe(true);
+    for (const name of HANDLER_NAMES) expect(spies[name]).toHaveBeenCalledTimes(0);
+
+    view.render(vmOf());
+    view.hide();
+    resetFocusLog();
+    for (const op of [MOVE_DOWN, MOVE_UP, ACTIVATE]) view.applyRowOp(op);
+    expect(focusedIds(), 'closed: no focus()').toEqual([]);
+    expect(onPage(), 'closed: focus stays on the page').toBe(true);
+    for (const name of HANDLER_NAMES) expect(spies[name]).toHaveBeenCalledTimes(0);
+  });
+
+  it('an unarmed gate: Down moves Retry to Continue, Up moves back, and each end clamps; every move that lands is exactly one focus() [rb-140.1]', () => {
+    // WRONG IMPL KILLED: a wrapping list (Down on Continue lands on Retry), a step that also walks
+    // the hidden Yes and No, a move that focuses twice, and Up and Down transposed.
+    view.render(vmOf());
+    resetFocusLog();
+    expect(activeId(), 'fixture: Retry is focused').toBe(RETRY_ID);
+
+    view.applyRowOp(MOVE_UP);
+    expect(activeId(), 'Up on the first button clamps').toBe(RETRY_ID);
+    view.applyRowOp(MOVE_DOWN);
+    expect(activeId(), 'Down moves to Continue').toBe(CONTINUE_ID);
+    view.applyRowOp(MOVE_DOWN);
+    expect(activeId(), 'Down on the last shown button clamps (no wrap, no hidden Yes)').toBe(
+      CONTINUE_ID,
+    );
+    view.applyRowOp(MOVE_UP);
+    expect(activeId(), 'Up moves back to Retry').toBe(RETRY_ID);
+    expectNoFocusOnHidden();
+    for (const name of HANDLER_NAMES) expect(spies[name], `${name} fired`).toHaveBeenCalledTimes(0);
+
+    resetFocusLog();
+    view.applyRowOp(MOVE_DOWN);
+    expect(focusedIds(), 'one move that lands is one focus() on its target').toEqual([CONTINUE_ID]);
+  });
+
+  it('an armed gate: Up moves No to Yes, Down moves back, and each end clamps; Retry and Continue are never reached [rb-140.1]', () => {
+    // WRONG IMPL KILLED: a row list that keeps the hidden Retry and Continue (Up on Yes would land
+    // on a button nobody can see), and a wrapping list.
+    view.render(ARMED_VM());
+    resetFocusLog();
+    expect(activeId(), 'fixture: No is focused').toBe(NO_ID);
+
+    view.applyRowOp(MOVE_DOWN);
+    expect(activeId(), 'Down on the last button clamps').toBe(NO_ID);
+    view.applyRowOp(MOVE_UP);
+    expect(activeId(), 'Up moves to Yes').toBe(YES_ID);
+    view.applyRowOp(MOVE_UP);
+    expect(activeId(), 'Up on the first shown button clamps').toBe(YES_ID);
+    view.applyRowOp(MOVE_DOWN);
+    expect(activeId(), 'Down moves back to No').toBe(NO_ID);
+    expect(focusedIds().includes(RETRY_ID), 'Retry is never focused while armed').toBe(false);
+    expect(focusedIds().includes(CONTINUE_ID), 'Continue is never focused while armed').toBe(false);
+    expectNoFocusOnHidden();
+  });
+
+  it.each([
+    { op: MOVE_DOWN, which: 'Down' },
+    { op: MOVE_UP, which: 'Up' },
+  ])('with no terminal button focused, $which seats Retry on an unarmed gate and No on an armed one, with one focus() each; focus on a control outside the gate counts as none [rb-140.1]', ({
+    op,
+  }) => {
+    // WRONG IMPL KILLED: a move that seats the first or last shown button (Yes while armed), one
+    // that seats nothing, and one that seats then also steps (Down landing on Continue).
+    view.render(vmOf());
+    blurToPage();
+    resetFocusLog();
+    view.applyRowOp(op);
+    expect(focusedIds(), 'unarmed, from the page: Retry, one focus()').toEqual([RETRY_ID]);
+    expect(activeId()).toBe(RETRY_ID);
+
+    const outside = outsideButton();
+    outside.focus();
+    resetFocusLog();
+    view.applyRowOp(op);
+    expect(focusedIds(), 'unarmed, from an outside control: Retry, one focus()').toEqual([
+      RETRY_ID,
+    ]);
+    expect(activeId()).toBe(RETRY_ID);
+
+    view = freshView();
+    view.render(ARMED_VM());
+    blurToPage();
+    resetFocusLog();
+    view.applyRowOp(op);
+    expect(focusedIds(), 'armed, from the page: No, one focus()').toEqual([NO_ID]);
+    expect(activeId()).toBe(NO_ID);
+  });
+
+  it('activate clicks the focused shown button exactly once, as a click would: Retry, Continue, Yes and No each fire their own handler only, and focus does not move [rb-140.2]', () => {
+    // WRONG IMPL KILLED: an activate that clicks the first row, or the default row, not the focused
+    // one; one that calls a handler directly with the wrong event; a double click.
+    const cases: ReadonlyArray<{
+      readonly vm: SessionViewModel;
+      readonly seat: ReadonlyArray<RowOp>;
+      readonly focused: string;
+      readonly fires: HandlerName;
+    }> = [
+      { vm: vmOf(), seat: [], focused: RETRY_ID, fires: 'onRetry' },
+      { vm: vmOf(), seat: [MOVE_DOWN], focused: CONTINUE_ID, fires: 'onContinueRequested' },
+      { vm: ARMED_VM(), seat: [MOVE_UP], focused: YES_ID, fires: 'onContinueConfirmed' },
+      { vm: ARMED_VM(), seat: [], focused: NO_ID, fires: 'onConfirmCancelled' },
+    ];
+    for (const c of cases) {
+      view = freshView();
+      view.render(c.vm);
+      for (const op of c.seat) view.applyRowOp(op);
+      expect(activeId(), `fixture: ${c.focused} is focused`).toBe(c.focused);
+      resetFocusLog();
+      view.applyRowOp(ACTIVATE);
+      expectOnly(c.fires);
+      expect(focusedIds(), `${c.focused}: activate moves no focus`).toEqual([]);
+      expect(activeId(), `${c.focused}: still focused`).toBe(c.focused);
+    }
+  });
+
+  it('activate with no terminal button focused does nothing at all: no handler, no focus(), and the page or outside control keeps focus [rb-140.2]', () => {
+    // WRONG IMPL KILLED: an activate that seats the default and clicks it (a stray A would reconnect
+    // or arm), and one that clicks the default row.
+    for (const vm of [vmOf(), ARMED_VM()]) {
+      view = freshView();
+      view.render(vm);
+      blurToPage();
+      resetFocusLog();
+      view.applyRowOp(ACTIVATE);
+      expect(focusedIds(), 'from the page: no focus()').toEqual([]);
+      expect(onPage(), 'from the page: focus stays there').toBe(true);
+      for (const name of HANDLER_NAMES)
+        expect(spies[name], `${name} fired`).toHaveBeenCalledTimes(0);
+
+      const outside = outsideButton();
+      outside.focus();
+      resetFocusLog();
+      view.applyRowOp(ACTIVATE);
+      expect(focusedIds(), 'from an outside control: no focus()').toEqual([]);
+      expect(activeId(), 'the outside control keeps focus').toBe(outside.id);
+      for (const name of HANDLER_NAMES)
+        expect(spies[name], `${name} fired`).toHaveBeenCalledTimes(0);
+    }
+  });
+
+  it('the hint of a rendered gate says the D-pad moves and A chooses, in English [rb-140.5]', () => {
+    // WRONG IMPL KILLED: the hint left as 'Tab moves, Enter chooses' (a pad-only player is not told).
+    view.render(buildSessionViewModel(EXPIRED));
+    expectShown(HINT_ID, HINT_EN);
+    view.render(buildSessionViewModel(arm(EXPIRED)));
+    expectShown(HINT_ID, HINT_EN);
   });
 });

@@ -56,7 +56,7 @@ import { glyph } from './input/glyphs';
 import { PAD_DEFAULT_BINDINGS, type PadBindings, type PadIndex } from './input/padBindings';
 import { padGlyph } from './input/padGlyphs';
 import type { MenuAccel } from './input/router';
-import type { ConnectionOptions } from './net/connection';
+import type { Connection, ConnectionOptions } from './net/connection';
 import {
   type ControlsRow,
   captureKey,
@@ -79,6 +79,11 @@ const H = vi.hoisted(() => ({
   /** uif-13 (UIF13.3): every `WorldRenderer.resize(...)` the page issued, oldest first (the stubbed
    *  renderer records its arguments). Reset by every boot. */
   resizes: [] as unknown[][],
+  /** rb-140 (named fixture change): what the connection stub's `sessionState()` answers (was
+   *  always 'hidden') and how many times main.ts asked it to `reconnectNow`. Both reset by every
+   *  boot. */
+  sessionState: 'hidden' as string,
+  reconnects: 0,
 }));
 
 // ctl-12b: named fixture change: the interact export is driven by `H.interact` (default `[]`, reset
@@ -87,7 +92,22 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
   wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
 );
 
-vi.mock('./net/connection', () => connectionRecordingMock(H));
+// rb-140 (named fixture change): the shared recording stub, with its session state and Retry
+// driven by `H` so a case can raise the session terminal and see what pressed Retry.
+vi.mock('./net/connection', () => {
+  const base = connectionRecordingMock(H);
+  return {
+    connect: (o: ConnectionOptions): Connection => {
+      const stub = base.connect(o);
+      return Object.assign(stub, {
+        sessionState: () => H.sessionState,
+        reconnectNow: () => {
+          H.reconnects += 1;
+        },
+      }) as unknown as Connection;
+    },
+  };
+});
 
 vi.mock('./observability/telemetry', async (importOriginal) =>
   telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
@@ -172,6 +192,8 @@ async function boot(o: BootOptions = {}): Promise<void> {
   H.calls = [];
   H.interact = () => [];
   H.resizes = [];
+  H.sessionState = 'hidden';
+  H.reconnects = 0;
   pressAt = 2000;
   clock.t = 1000;
   if (o.keepStorage !== true) {
@@ -3421,5 +3443,28 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     expect(captureText(), 'the keyboard pressed last: the plain line').toBe(
       `Press a key for ${rowLabel(ROW_A)}${ELLIPSIS}`,
     );
+  }, 60_000);
+
+  it('with A remapped to pad button 3, that button chooses the focused session terminal button and the old A index 0 does nothing there [rb-140.2]', async () => {
+    // WRONG IMPL KILLED: a terminal that reads the pad by the default table's index 0 (the old A
+    // still chooses, the remapped one does not), and one that never reads the saved pad table.
+    await bootWithPad({
+      stored: withPad(
+        storedTable(() => undefined),
+        { buttons: { A: [PADI.Y], Y: [PADI.A] }, accels: {} },
+      ),
+    });
+    H.sessionState = 'expired';
+    const expire = opts.onSessionExpired;
+    if (expire === undefined) throw new Error('onSessionExpired was not wired by main.ts');
+    expire();
+    expect(byId('session-overlay').style.display, 'precondition: the terminal is up').toBe('block');
+    expect(document.activeElement?.id, 'precondition: Retry is focused').toBe('session-retry-btn');
+    tick();
+
+    padTap(PADI.A);
+    expect(H.reconnects, 'the old A index chose nothing').toBe(0);
+    padTap(PADI.Y);
+    expect(H.reconnects, 'the remapped button chose Retry').toBe(1);
   }, 60_000);
 });
