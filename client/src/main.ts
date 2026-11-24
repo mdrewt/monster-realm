@@ -37,6 +37,7 @@ import { accelForCode, isBindableCode } from './input/bindings';
 import type { ButtonEdge, VButton } from './input/buttons';
 import { learnKey } from './input/glyphs';
 import { isChord } from './input/keyboardSource';
+import type { InputSource } from './input/padGlyphs';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
   ACCEL_PATHS,
@@ -128,6 +129,7 @@ import {
   installPadFaultSink,
   keyboard,
   keycap,
+  lastSource,
   navHeldCodes,
   noteInputSource,
   noteNavHeld,
@@ -2838,12 +2840,20 @@ const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
   if (settleControlsCapture(step, applyBindings)) noteNavHeld(e.code);
 };
 
-// The Cancel chip: a capture ends unchanged. Nothing happens unless a slot is waiting.
+// The ways out that bind nothing (the Cancel chip, Escape on a Pad cell, the pad's B on a Key cell,
+// the pointer's B): a capture ends unchanged. Nothing happens unless a slot is waiting.
 const cancelControlsCapture = (): void => {
   syncStack();
   if (controlsCapture() === null) return;
   toastControls('controls-cancelled', outcomeText({ kind: 'cancelled' }));
   endControlsCapture();
+};
+
+// The player's last press came from `source`: the keycaps follow it, and a waiting line at once, so
+// a refusal of that same press is announced after it.
+const noteInput = (source: InputSource): void => {
+  noteInputSource(source);
+  controlsView?.refreshPrompt();
 };
 
 // A Controls outcome on its policy channel (the toast); an unsaved change says so, through the
@@ -3118,7 +3128,7 @@ const handleKeyDown = (e: KeyboardEvent): void => {
 window.addEventListener(
   'keydown',
   (e) => {
-    noteInputSource('keys');
+    noteInput('keys');
     if (e.code === 'Escape') handleKeyDown(e);
   },
   true,
@@ -3145,8 +3155,9 @@ document.addEventListener('visibilitychange', () => {
 // released and pressed again. While a Pad cell of Controls waits, the frame takes the pad's
 // `capture()` instead: no pad press routes, and the press read goes to the capture. A pad press is
 // ignored, as a key press is, while focus is outside the game screen, and also while Controls waits
-// for a key: everything held is let go then too, so the ignored press owes no release that could
-// end another source's hold. A release alone still routes, as a keyup does, except while a Pad cell
+// for a key, except that a press of B then ends the capture unchanged: everything held is let go in
+// each case, so the press owes no release that could end another source's hold and acts only once
+// released and pressed again. A release alone still routes, as a keyup does, except while a Pad cell
 // waits: the releases `capture()` reads reach the first poll after the capture ends. Inside the game screen a
 // pad press is a button press even with a text field focused (a pad cannot type). A press clears the
 // pointer's hover mark and heals stale focus first, as a key press does; the edges route before the
@@ -3162,7 +3173,7 @@ const pollPad = (): void => {
   if (capture?.slot === 'pad') {
     const read = pad.capture();
     if (read === undefined) return;
-    noteInputSource('pad');
+    noteInput('pad');
     // An ignored press: the capture read already took it, so it owes nothing.
     if (outsideGameScreen(document.activeElement, gameScreenEl())) return;
     pointerSource?.keyPressed();
@@ -3174,13 +3185,18 @@ const pollPad = (): void => {
   const { edges, accels } = pad.poll();
   const pressed = accels.length > 0 || edges.some((edge) => edge.down);
   // A press, even an ignored one, makes the keycaps the pad's; a release alone leaves them.
-  if (pressed) noteInputSource('pad');
+  if (pressed) noteInput('pad');
   if (!pressed) {
     if (edges.length > 0) pressEdges(edges);
     return;
   }
-  if (outsideGameScreen(document.activeElement, gameScreenEl()) || capture !== null) {
+  const outside = outsideGameScreen(document.activeElement, gameScreenEl());
+  if (outside || capture !== null) {
     releaseAllInput();
+    if (!outside && edges.some((edge) => edge.button === 'B' && edge.down)) {
+      pointerSource?.keyPressed();
+      cancelControlsCapture();
+    }
     return;
   }
   pointerSource?.keyPressed();
@@ -4779,6 +4795,7 @@ async function main(): Promise<void> {
     const controlsHandlers: ControlsViewHandlers = {
       bindings: () => bindings,
       padBindings: () => padBindings,
+      inputSource: () => lastSource,
       onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
       onReset: resetAllBindings,
       textStep: () => textStep,

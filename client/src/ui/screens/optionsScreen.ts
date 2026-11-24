@@ -16,9 +16,9 @@
 // Reset all, which resets bindings only.
 //
 // While a slot waits for a key the shell takes every keydown before the router (`captureStep`
-// below says what that key does); while a Pad cell waits it takes every pad press instead
-// (`padCaptureStep`). So the only button that reaches this screen then is the B the shell sends to
-// end the capture, or a pointer's.
+// below says what that key does), and of the pad's presses only B's acts: it ends the capture. While
+// a Pad cell waits the shell takes every pad press instead (`padCaptureStep`). So the only button
+// that reaches this screen then is the B the shell sends to end the capture, or a pointer's.
 import type { Bindings } from '../../input/bindings';
 import { ACCELS, type Accel, VBUTTONS } from '../../input/buttons';
 import type { PadBindings, PadIndex } from '../../input/padBindings';

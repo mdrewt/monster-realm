@@ -112,6 +112,7 @@ export type MessageId =
   | 'controls.accel.bugReport'
   | 'controls.accel.dismissError'
   | 'controls.capture.prompt'
+  | 'controls.capture.promptLeave'
   | 'controls.refused.reserved'
   | 'controls.refused.protected'
   | 'controls.cancelled'
@@ -122,6 +123,7 @@ export type MessageId =
   // The Controls Pad column (ui/controlsModel.ts, ui/controlsView.ts).
   | 'controls.slot.pad'
   | 'controls.capture.padPrompt'
+  | 'controls.capture.padPromptLeave'
   | 'controls.refused.padReserved'
   | 'controls.refused.padProtected'
   | 'controls.swappedPadUnbound'
@@ -648,6 +650,7 @@ export interface MessageParams {
   readonly 'key.numpad': { readonly key: string };
   readonly 'pad.button': { readonly n: number };
   readonly 'controls.capture.prompt': { readonly label: string };
+  readonly 'controls.capture.promptLeave': { readonly label: string; readonly key: string };
   readonly 'controls.swapped': {
     readonly key: string;
     readonly label: string;
@@ -668,6 +671,7 @@ export interface MessageParams {
   readonly 'controls.slot.alt': { readonly label: string; readonly key: string };
   readonly 'controls.slot.pad': { readonly label: string; readonly key: string };
   readonly 'controls.capture.padPrompt': { readonly label: string };
+  readonly 'controls.capture.padPromptLeave': { readonly label: string; readonly key: string };
   readonly 'controls.swappedPadUnbound': {
     readonly key: string;
     readonly label: string;
