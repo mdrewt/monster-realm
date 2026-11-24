@@ -9,18 +9,18 @@ import {
 } from '@playwright/test';
 import type { Stack } from '../src/ui/contextStack';
 import {
-  attackByButtons,
   closeAll,
   draftMoveToward,
   endTurn,
+  fightToRecruit,
   fleeByButtons,
   menuCursorTo,
   OWN_TURN_WAIT_MS,
   openMenu,
   pressButton,
+  type RecruitTally,
   readOwnMonsters,
   readTactics,
-  recruitByButtons,
   sides,
   TACTICS,
   type TacticsSnap,
@@ -28,7 +28,6 @@ import {
   throughResults,
   tileDistance,
   turnKey,
-  waitExecuted,
   waitOwnTurnOrEnd,
 } from './controls';
 import { sqlRows } from './stdb';
@@ -72,8 +71,6 @@ const SEED_DEFENSE = 250;
 const BAIT_ITEM_ID = 1;
 /** The starter kit's bait: every identity's first join grants one stack of Lure Berry (item 1) x2. */
 const KIT_BAIT_COUNT = 2;
-/** The wild is recruited (not hit again) at or under this share of its max HP. */
-const WEAK_PCT = 45;
 /** Battle-1 restarts (a KO'd wild, a kiting wild, a timed-out loop) before the test gives up. */
 const MAX_BATTLES = 5;
 /** Battle-2 restarts (a pack that never lands a hit) before the test gives up. */
@@ -353,51 +350,6 @@ async function checkBoardArt(p: Page, backdropStatuses: readonly number[]): Prom
   ).toBe(false);
 }
 
-/** How many attacks were committed with the forecast up, across the whole test. */
-let forecastAttacks = 0;
-
-/** Battle 1's live-turn loop. Resolves true when the wild was recruited, false when the battle
- *  ended or stalled without a recruit (the caller restarts). The last own turn's commit is
- *  awaited before the verdict: a Recruit pressed on that turn can still succeed, and a recruit
- *  reported as none makes the caller recruit a second wild. */
-async function fightToRecruit(p: Page): Promise<boolean> {
-  let last: string | null = null;
-  for (let turn = 0; turn < MAX_OWN_TURNS; turn += 1) {
-    const t = await waitOwnTurnOrEnd(p, last, TURN_WAIT_MS);
-    if (t.phase === 'Finished')
-      return t.units.some((u) => u.side === 'B' && u.state === 'Recruited');
-    last = turnKey(t);
-    const { me, enemy: wild } = sides(t);
-    await openMenu(p, me);
-    if (tileDistance(me, wild) === 1) {
-      const weak = wild.curHp * 100 <= wild.maxHp * WEAK_PCT;
-      // Recruit and Flee cost the whole budget: each is the FIRST and only action of a turn.
-      if (weak && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) continue;
-      const hit = await attackByButtons(p, { allowKo: false, enemyHp: wild.curHp });
-      if (hit === 'attacked') {
-        forecastAttacks += 1;
-        // The attack executed on the live turn; the turn is still ours: end it (the shell re-arms
-        // once the unit's spent budget lands).
-        await waitExecuted(p, t.events);
-        await endTurn(p);
-        continue;
-      }
-      // The next hit could KO it: it is weak enough to recruit, whatever WEAK_PCT says.
-      if (hit === 'kills' && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) continue;
-      await endTurn(p); // nothing to do adjacent this turn: EndTurn
-      continue;
-    }
-    // Out of reach: step toward it (a drafted, reversible Move), then end the turn.
-    const drafted = await draftMoveToward(p, wild);
-    if (!drafted) await pressButton(p, 'B'); // the Move aim had no band tile: leave the menu
-    await endTurn(p); // the live draft plus EndTurn
-  }
-  const end = await waitOwnTurnOrEnd(p, last, TURN_WAIT_MS);
-  return (
-    end.phase === 'Finished' && end.units.some((u) => u.side === 'B' && u.state === 'Recruited')
-  );
-}
-
 /** Flee on a fresh own turn (the whole budget) once a wild has damaged us: true. False when no wild
  *  landed a hit within MAX_OWN_TURNS (the battle is then abandoned with a Flee anyway). */
 async function takeAHitThenFlee(p: Page, baseline: Map<string, number>): Promise<boolean> {
@@ -551,6 +503,7 @@ test.describe
         if (r.url().endsWith('/assets/battle-backdrop.png')) backdropStatuses.push(r.status());
       });
       let recruited = false;
+      const tally: RecruitTally = { clicks: 0, hpPcts: [], forecastAttacks: 0 };
       for (let battle = 0; battle < MAX_BATTLES && !recruited; battle += 1) {
         const start = await huntWild(page, `battle ${battle}`);
         expect(start.kind, 'a grass encounter opens a WILD tactical battle').toBe('Wild');
@@ -565,7 +518,12 @@ test.describe
         await expect(page.locator(`${TACTICS.shell} [data-testid="battle-title"]`)).toBeVisible();
         await expect(page.locator(`${TACTICS.shell}[aria-modal="true"]`)).toHaveCount(1);
         if (battle === 0) await checkBoardArt(page, backdropStatuses);
-        recruited = await fightToRecruit(page);
+        recruited =
+          (await fightToRecruit(
+            page,
+            { maxOwnTurns: MAX_OWN_TURNS, baitKey: `bait:${BAIT_ITEM_ID}` },
+            tally,
+          )) === 'recruited';
         if (!recruited) {
           // Abandon a stalled battle: Flee on the next own turn, then let the results pass.
           const t = await readTactics(page);
@@ -580,6 +538,7 @@ test.describe
         }
       }
       expect(recruited, `a wild was recruited within ${MAX_BATTLES} battles`).toBe(true);
+      const { forecastAttacks } = tally;
       expect(
         forecastAttacks,
         'at least one attack was committed with the forecast up',
