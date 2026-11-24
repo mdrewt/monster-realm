@@ -9,7 +9,6 @@ import {
 } from '@playwright/test';
 import { t } from '../src/ui/i18n/resolver';
 import {
-  attackByButtons,
   awaitTacticalActive,
   closeAll,
   draftMoveToward,
@@ -17,6 +16,7 @@ import {
   expectPosted,
   faceTile,
   fightToOutcome,
+  fightToRecruit,
   fleeByButtons,
   interactChip,
   menuCursorTo,
@@ -24,8 +24,8 @@ import {
   openMenu,
   pressAccel,
   pressButton,
+  type RecruitTally,
   readTactics,
-  recruitByButtons,
   StuckStackError,
   sides,
   TACTICS,
@@ -33,7 +33,6 @@ import {
   throughResults,
   tileDistance,
   turnKey,
-  waitExecuted,
   waitOwnTurnOrEnd,
   walkTo,
 } from './controls';
@@ -57,9 +56,9 @@ import {
 //     it is live and its bait list offers the starter kit's bait row (`bait:1`) beside the no-bait
 //     choice (`bait:none`, tacticsBattle.ts); once the berries are gone from the bag, the same
 //     list offers ONLY the no-bait choice.
-//   - R2: retired the 1v1 weaken + Recruit loop → tactics-wild's weaken-then-recruit loop by
-//     buttons (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with the
-//     seeded bait) → ownMonsters +1, the recruit in the BOX (partySlot 255).
+//   - R2: the weaken-then-recruit loop by buttons, controls.ts's `fightToRecruit`
+//     (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with the seeded bait)
+//     → ownMonsters +1, the recruit in the BOX (partySlot 255).
 //   - R3: retired "`outcome-text` reads Victory! + SQL SideAWins for R2's battle" → a battle fought
 //     to a WIN by buttons (`fightToOutcome`; the starter seeded to win) → the results title is the
 //     catalog victory string and the server's battle row is SideAWins.
@@ -128,8 +127,9 @@ interface GameSnap {
  *  entries: P(no encounter) = 0.8^40 ≈ 1.3e-4. */
 const MAX_WALK_STEPS = 80;
 /** R2: battles to try for a recruit. Recruit odds are 80‰ base + up to 500‰ for missing HP +
- *  150‰ bait (roughly 50-70 % per adjacent attempt, several attempts per battle — tactics-wild's
- *  measured BT12.5 loop, 5 battles); 10 leaves margin for kiting and KO'd wilds. */
+ *  150‰ bait (roughly 50-70 % per adjacent attempt, several attempts per battle;
+ *  tactics-wild runs the same `fightToRecruit` loop on 5 battles); 10 leaves margin for kiting and
+ *  KO'd wilds. */
 const MAX_ENCOUNTERS = 10;
 /** Own turns per battle before it is abandoned (Flee) and the grass re-hunted. */
 const MAX_OWN_TURNS = 16;
@@ -153,8 +153,6 @@ const MAX_FLEE_HEALS = 30;
 const STEP_WAIT_MS = 8_000;
 /** One wait for the next own live turn in a wild battle (the AI's turns plus the pad). */
 const TURN_WAIT_MS = 15_000;
-/** The wild is recruited (not hit again) at or under this share of its max HP. */
-const WEAK_PCT = 45;
 /** R2 seeds (tactics-wild's precedent): no wild can KO the starter; bait in the bag. */
 const SEED_HP = 300;
 const SEED_DEFENSE = 250;
@@ -530,55 +528,6 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
   return true;
 }
 
-/** R2's live-turn loop (tactics-wild's BT12.5 loop): close in, weaken with the forecast's KO
- *  guard, recruit adjacent with the seeded bait. Resolves 'recruited', or 'ended' / 'stalled'
- *  (the caller flees a stalled battle and re-hunts). */
-async function fightToRecruit(
-  p: Page,
-  counts: { clicks: number; lastKey: string | null; hpPcts: number[] },
-): Promise<'recruited' | 'ended' | 'stalled'> {
-  let last: string | null = null;
-  counts.lastKey = null;
-  for (let turn = 0; turn < MAX_OWN_TURNS; turn += 1) {
-    const tt = await waitOwnTurnOrEnd(p, last, TURN_WAIT_MS);
-    if (tt.phase === 'Finished') {
-      return tt.units.some((u) => u.side === 'B' && u.state === 'Recruited')
-        ? 'recruited'
-        : 'ended';
-    }
-    last = turnKey(tt);
-    counts.lastKey = last;
-    const { me, enemy: wild } = sides(tt);
-    await openMenu(p, me);
-    if (tileDistance(me, wild) === 1) {
-      const weak = wild.curHp * 100 <= wild.maxHp * WEAK_PCT;
-      const hpPct = Math.round((wild.curHp * 100) / wild.maxHp);
-      if (weak && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) {
-        counts.clicks += 1;
-        counts.hpPcts.push(hpPct);
-        continue;
-      }
-      const hit = await attackByButtons(p, { allowKo: false, enemyHp: wild.curHp });
-      if (hit === 'attacked') {
-        await waitExecuted(p, tt.events);
-        await endTurn(p);
-        continue;
-      }
-      if (hit === 'kills' && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) {
-        counts.clicks += 1;
-        counts.hpPcts.push(hpPct);
-        continue;
-      }
-      await endTurn(p);
-      continue;
-    }
-    const drafted = await draftMoveToward(p, wild);
-    if (!drafted) await pressButton(p, 'B'); // leave the menu
-    await endTurn(p);
-  }
-  return 'stalled';
-}
-
 // ---------------------------------------------------------------------------
 // Suite (describe.serial: one page, sequential tests).
 // ---------------------------------------------------------------------------
@@ -777,7 +726,7 @@ test.describe
     //   WHEN the player weakens a wild monster and Recruits, THE recruit SHALL eventually
     //   succeed: ownMonsters.length increases by 1 and the new monster has partySlot === 255.
     //   SURVIVING CHECK (bt-16): retired the 1v1 weaken + Recruit (Fight / bait list / Yes) loop →
-    //   tactics-wild's weaken-then-`recruitByButtons` loop with the seeded bait.
+    //   controls.ts's weaken-then-Recruit `fightToRecruit` loop with the seeded bait.
     // -------------------------------------------------------------------------
     test('R2: a recruit by buttons after weakening the wild increments ownMonsters by 1 with partySlot 255 (bt-16: tactics-wild`s weaken-then-recruit loop)', async () => {
       // Budget: up to MAX_ENCOUNTERS battles of up to MAX_OWN_TURNS own turns, plus the
@@ -827,11 +776,7 @@ test.describe
       let healCount = 0;
       let fleeHealCount = 0;
       let encountersUsed = 0;
-      const counts: { clicks: number; lastKey: string | null; hpPcts: number[] } = {
-        clicks: 0,
-        lastKey: null,
-        hpPcts: [],
-      };
+      const counts: RecruitTally = { clicks: 0, hpPcts: [], forecastAttacks: 0 };
 
       for (let enc = 0; enc < MAX_ENCOUNTERS && !recruited; enc++) {
         encountersUsed = enc + 1;
@@ -839,10 +784,14 @@ test.describe
           fleeHealCount++;
         }
         await huntEncounter(page, `R2 enc ${enc + 1}`);
-        const result = await fightToRecruit(page, counts);
+        const result = await fightToRecruit(
+          page,
+          { maxOwnTurns: MAX_OWN_TURNS, baitKey: `bait:${BAIT_ITEM_ID}` },
+          counts,
+        );
         if (result === 'stalled') {
-          // A FRESH own turn (after the last End Turn's key): Flee needs the whole budget.
-          const next = await waitOwnTurnOrEnd(page, counts.lastKey, TURN_WAIT_MS);
+          // 'stalled' is answered on a FRESH own turn, still Waiting: Flee needs the whole budget.
+          const next = await waitOwnTurnOrEnd(page, null, TURN_WAIT_MS);
           if (next.phase === 'Active') await fleeByButtons(page);
         }
         await waitForBattleCleared(page);

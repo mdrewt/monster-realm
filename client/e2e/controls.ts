@@ -1511,6 +1511,74 @@ export async function fightToOutcome(
   );
 }
 
+/** The wild is recruited (not hit again) at or under this share of its max HP. */
+const RECRUIT_WEAK_PCT = 45;
+
+/** What `fightToRecruit` counts. The caller owns it, so one tally spans several battles. */
+export interface RecruitTally {
+  /** Recruits committed. */
+  clicks: number;
+  /** The wild's HP, in percent of its max, at each of those Recruits. */
+  hpPcts: number[];
+  /** Attacks committed with the forecast up. */
+  forecastAttacks: number;
+}
+
+/**
+ * Recruits the current WILD battle's wild by buttons, within `maxOwnTurns` own turns: close in,
+ * weaken it with the forecast's KO guard, then recruit it adjacent with the bait row `baitKey`.
+ * Every committed own turn, the last one included, has resolved before the answer: a Recruit
+ * committed on the last turn can still succeed, and a caller told otherwise would recruit a second
+ * wild. Answers 'recruited'; 'ended' when the battle finished with no recruit; 'stalled' on a fresh
+ * own turn, nothing pressed on it, when the bound is spent and the battle is still active (the
+ * caller flees it).
+ */
+export async function fightToRecruit(
+  page: Page,
+  opts: { maxOwnTurns: number; baitKey: string },
+  tally: RecruitTally,
+): Promise<'recruited' | 'ended' | 'stalled'> {
+  let last: string | null = null;
+  for (let turn = 0; ; turn += 1) {
+    const t = await waitOwnTurnOrEnd(page, last, OWN_TURN_WAIT_MS);
+    if (t.phase === 'Finished') {
+      return t.units.some((u) => u.side === 'B' && u.state === 'Recruited') ? 'recruited' : 'ended';
+    }
+    if (turn >= opts.maxOwnTurns) return 'stalled';
+    last = turnKey(t);
+    const { me, enemy: wild } = sides(t);
+    // Recruit costs the whole budget: it is the FIRST and only action of a turn.
+    const recruit = async (): Promise<boolean> => {
+      if (!(await recruitByButtons(page, opts.baitKey))) return false;
+      tally.clicks += 1;
+      tally.hpPcts.push(Math.round((wild.curHp * 100) / wild.maxHp));
+      return true;
+    };
+    await openMenu(page, me);
+    if (tileDistance(me, wild) === 1) {
+      const weak = wild.curHp * 100 <= wild.maxHp * RECRUIT_WEAK_PCT;
+      if (weak && (await recruit())) continue;
+      const hit = await attackByButtons(page, { allowKo: false, enemyHp: wild.curHp });
+      if (hit === 'attacked') {
+        tally.forecastAttacks += 1;
+        // The attack executed on the live turn; the turn is still ours: end it (the shell re-arms
+        // once the unit's spent budget lands).
+        await waitExecuted(page, t.events);
+        await endTurn(page);
+        continue;
+      }
+      // The next hit could KO it: it is weak enough to recruit, whatever RECRUIT_WEAK_PCT says.
+      if (hit === 'kills' && (await recruit())) continue;
+      await endTurn(page); // nothing to do adjacent this turn
+      continue;
+    }
+    // Out of reach: step toward it (a drafted, reversible Move), then end the turn.
+    const drafted = await draftMoveToward(page, wild);
+    if (!drafted) await pressButton(page, 'B'); // the Move aim had no band tile: leave the menu
+    await endTurn(page); // the live draft plus EndTurn
+  }
+}
+
 /**
  * The challenged player's production accept path (pvp-side-b.spec.ts, qf-8 QF8.3): the incoming
  * challenge's `#notice-banner` shows, P opens Social on Challenges with the cursor on the request
