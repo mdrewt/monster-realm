@@ -1682,8 +1682,8 @@ and for dialogue it desyncs server conversation state, so server-owned frames fo
 store and an ongoing battle cannot be hidden. Pure models make the UI logic testable
 without a DOM. Generated hints and help cannot drift from the bindings. A pad-only
 player has no other way out of a cell that takes keys, or of a Pad cell with no button to press
-again; B is always bound and already means back. A total catalog makes a missing translation a compile error rather than a blank label, and throwing
-(rather than showing the key) keeps an unwired string from looking wired.
+again; B is always bound and already means back. A total catalog makes a missing
+translation a compile error rather than a blank label, and throwing (rather than showing the key) keeps an unwired string from looking wired.
 
 **Rules out.** A feature reachable only by a hotkey (F9's menu twin, Options › Report a
 problem, is still owed); a hotkey-only discovery menu; leaving a waiting cell on a

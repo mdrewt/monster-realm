@@ -3149,11 +3149,11 @@ document.addEventListener('visibilitychange', () => {
 // released and pressed again. While a Pad cell of Controls waits, the frame takes the pad's
 // `capture()` instead: no pad press routes, and the press read goes to the capture. A pad press is
 // ignored, as a key press is, while focus is outside the game screen, and also while Controls waits
-// for a key; inside the game screen a press of B also ends that capture unchanged. Everything held is
-// let go in each case, so the press owes no release that could end another source's hold and acts
-// only once released and pressed again. A release alone still routes, as a keyup does, except while a
-// Pad cell waits: the releases `capture()` reads reach the first poll after the capture ends. Inside the game screen a
-// pad press is a button press even with a text field focused (a pad cannot type). A press clears the
+// for a key; inside the game screen a press of B also ends that capture unchanged. Everything held
+// is let go in each case, so the press owes no release that could end another source's hold and acts
+// only once released and pressed again. A release alone still routes, as a keyup does, except while
+// a Pad cell waits: the releases `capture()` reads reach the first poll after the capture ends.
+// Inside the game screen a pad press is a button press even with a text field focused (a pad cannot type). A press clears the
 // pointer's hover mark and heals stale focus first, as a key press does; the edges route before the
 // accelerators. An edge that starts a capture ends the poll: no later edge or accelerator routes,
 // and everything held is let go, so a button pressed in that same frame is not a press of the
