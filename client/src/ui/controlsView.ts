@@ -276,8 +276,8 @@ export class ControlsView implements ControlsScreenView {
     closeOverlayA11y('controlsView', null);
   }
 
-  /** The player's input device may have changed: while a capture waits, show its waiting line as it
-   *  reads now, announced when it changed. */
+  /** While a capture waits, show its waiting line as it reads now (the player's input device may have
+   *  changed), announced when it changed. */
   refreshPrompt(): void {
     if (this.#capturing === null) return;
     const line = this.#promptOf(this.#capturing);

@@ -2270,7 +2270,7 @@ describe('ControlsView: the waiting line and refreshPrompt', () => {
   it('refreshPrompt rewrites #controls-capture and announces the new line once when the last input switches keys to pad and back during a capture; a refresh with no change announces nothing [rb-138.5]', () => {
     // WRONG IMPL KILLED: a line read only at capture start (the player who switches device keeps
     // the wrong line), a refresh that announces on every call, one that writes the text but stays
-    // silent, one that announces without rewriting, and one that announces the old line.
+    // silent, one that announces without rewriting, and one that announces the line of the other device.
     let source: InputSource = 'keys';
     const { view, announce } = rig({ inputSource: () => source });
     view.show();

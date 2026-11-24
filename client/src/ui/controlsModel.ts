@@ -9,8 +9,8 @@
 //
 // The Pad cell is the same rule in the pad's own namespace (`capturePad`): one pad button per row,
 // a captured index held elsewhere swaps, and the protected buttons always keep a pad button. The F8
-// and F9 rows have no pad binding (`padRow`). A pad button always leaves a waiting cell unchanged
-// (`leavePadIndex`): the one a Pad cell shows, else B's.
+// and F9 rows have no pad binding (`padRow`). One pad button always leaves a waiting cell
+// unchanged (`leavePadIndex`): the one a Pad cell shows, else B's.
 import { type Bindings, isBindableCode, type KeyCode, PROTECTED_BUTTONS } from '../input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from '../input/buttons';
 import { glyph } from '../input/glyphs';

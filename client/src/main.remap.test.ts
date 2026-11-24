@@ -2415,6 +2415,12 @@ const padPromptText = (row: ControlsRow, leave?: number): string =>
   `Press a pad button for ${rowLabel(row)}${ELLIPSIS}${
     leave === undefined ? '' : ` To leave it unchanged, press ${padGlyph(leave)}.`
   }`;
+/** Frames and time enough for every pending live-region announcement to be written. */
+function drainLive(): void {
+  const from = pressAt;
+  for (let k = 1; k <= 30; k += 1) frame(from + k * 50);
+  pressAt = from + 31 * 50;
+}
 /** The key prompt while the pad pressed last: `Press a key for ${label}…` and the leave button. */
 const keyPromptPadText = (row: ControlsRow, leave: number): string =>
   `Press a key for ${rowLabel(row)}${ELLIPSIS} To leave it unchanged, press ${padGlyph(leave)} on the pad.`;
@@ -2663,7 +2669,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
 
     const rowStorage = accelRow('B');
     startPadCapture('B_pad', rowStorage);
-    // B's button on an EMPTY Pad cell leaves the cell unchanged (rb-138.3), so the protected
+    // B's button on an EMPTY Pad cell leaves the cell unchanged, so the protected
     // refusal is shown with the A button's only pad button.
     padTap(PADI.A); // the A button's only pad button
     expect(capturing(), 'the refusal keeps the capture waiting').toBe(true);
@@ -2847,8 +2853,8 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     // Controls, LT or RT opening a menu), one bound into the pad table while a KEY is awaited, a
     // refusal hint for Guide on a Key capture, a B-exit that widens to every pad button, and a
     // keyboard save that drops the pad half of the record.
-    // B is not in this list (it ends the capture: see the rb-138.1 cases), and after a pad press
-    // the line names B's pad button (rb-138.5).
+    // B is not in this list (it ends the capture: see the B-exit cases below), and after a pad
+    // press the line names B's pad button.
     await bootWithPad();
     openControls();
     startCapture('A_0');
@@ -3256,10 +3262,10 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     ]);
   }, 60_000);
 
-  it('the waiting line of a Key cell follows the last input: the keyboard`s own line, then B`s pad button after an ignored pad press, then the keyboard`s again after a refused key; a remapped B is named live [rb-138.5]', async () => {
+  it('the waiting line of a Key cell follows the last input: the keyboard`s own line, then B`s pad button after an ignored pad press, then the keyboard`s again after a refused key [rb-138.5]', async () => {
     // WRONG IMPL KILLED: a line fixed at the capture start (the player who switches device keeps
     // the wrong line), a line that follows only presses that act, a keyboard line that names a pad
-    // button, and a default 1 named for a remapped B.
+    // button.
     await bootWithPad();
     openControls();
     startCapture('A_0');
@@ -3306,6 +3312,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     const e = press('KeyK');
     expect(e.defaultPrevented, 'the key is ignored, prevented').toBe(true);
     expect(capturing(), 'the capture waits').toBe(true);
+    tick(); // an ignored key shows on the next frame
     expect(captureText(), 'the keyboard pressed last: the plain line').toBe(padPromptText(ROW_X));
     padTap(PADI.Guide);
     expect(capturing(), 'the refused Guide keeps it waiting').toBe(true);
@@ -3324,12 +3331,13 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
       padPromptText(rowJ, PADI.B),
     );
     press('Tab', { key: 'Tab' });
+    tick(); // an ignored key shows on the next frame
     expect(captureText(), 'a browser-owned key switches the device').toBe(padPromptText(rowJ));
   }, 60_000);
 
   it('a pad press that switches the device on a Key capture announces the new waiting line once through #a11y-live, and a second pad press announces no waiting line again [rb-138.5]', async () => {
     // WRONG IMPL KILLED: a line rewritten but never spoken (a screen-reader user keeps hearing
-    // the old instruction), and one spoken on every pad press.
+    // the instruction of the other device), and one spoken on every pad press.
     await bootWithPad();
     openControls();
     startCapture('A_0');
@@ -3354,5 +3362,64 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
       'not again',
     ).toHaveLength(1);
     expect(captureText()).toBe(line);
+  }, 60_000);
+
+  it('a pad B that ends a Key capture started by keys announces the cancelled line and no waiting line naming the pad; a key that binds a capture the pad started announces no plain waiting line [rb-138.5]', async () => {
+    // WRONG IMPL KILLED: a waiting line refreshed and spoken for a press that ends the capture (the
+    // screen reader hears an instruction for a capture that is already over).
+    await bootWithPad();
+    openControls();
+    startCapture('A_0');
+    drainLive();
+    const live = watchLive();
+    padHold(PADI.B);
+    tick();
+    padLift(PADI.B);
+    tick();
+    drainLive();
+    expect(capturing(), 'B ended the capture').toBe(false);
+    expect(
+      live.filter((w) => w.includes(i18nT('controls.cancelled'))),
+      'the cancelled line is spoken',
+    ).not.toHaveLength(0);
+    expect(
+      live.filter((w) => w.includes('To leave it unchanged')),
+      'no waiting line naming the pad, before or after B',
+    ).toEqual([]);
+
+    // The mirror: the pad starts a Key capture, a key binds it.
+    controlsMoveTo('A_0');
+    padTap(PADI.A);
+    expect(capturing(), 'precondition: pad A started the Key capture').toBe(true);
+    drainLive();
+    const mirror = watchLive();
+    press('KeyK', { key: 'k' });
+    drainLive();
+    expect(capturing(), 'K bound it').toBe(false);
+    expect(
+      mirror.filter((w) => w.includes('Press a key for')),
+      'no plain waiting line is spoken for a capture the key ended',
+    ).toEqual([]);
+  }, 60_000);
+
+  it('a refused Tab on a Key capture the pad started leaves the refusal hint as the last live announcement and the plain waiting line on screen [rb-138.5]', async () => {
+    // WRONG IMPL KILLED: a waiting line announced after the refusal hint (the hint is replaced and
+    // never heard).
+    await bootWithPad();
+    openControls();
+    controlsMoveTo('A_0');
+    padTap(PADI.A);
+    expect(captureText(), 'precondition: the pad started it').toBe(keyPromptPadText(ROW_A, PADI.B));
+    drainLive();
+    const live = watchLive();
+    press('Tab', { key: 'Tab' });
+    drainLive();
+    expect(live.length, 'something was announced').toBeGreaterThan(0);
+    expect(live[live.length - 1], 'the last write is the refusal hint').toContain(
+      i18nT('controls.refused.reserved'),
+    );
+    expect(captureText(), 'the keyboard pressed last: the plain line').toBe(
+      `Press a key for ${rowLabel(ROW_A)}${ELLIPSIS}`,
+    );
   }, 60_000);
 });

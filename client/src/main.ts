@@ -37,7 +37,6 @@ import { accelForCode, isBindableCode } from './input/bindings';
 import type { ButtonEdge, VButton } from './input/buttons';
 import { learnKey } from './input/glyphs';
 import { isChord } from './input/keyboardSource';
-import type { InputSource } from './input/padGlyphs';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
   ACCEL_PATHS,
@@ -2821,6 +2820,8 @@ const endControlsCapture = (): void => {
 // a changed table is applied and saved through `apply`. True when the capture ended.
 const settleControlsCapture = <T>(step: CaptureResult<T>, apply: (next: T) => boolean): boolean => {
   if (!step.done) {
+    // Ahead of the hint, which is the announcement that must last.
+    controlsView?.refreshPrompt();
     route('controls-refused', step.text, (hint) => controlsView?.showHint(hint));
     return false;
   }
@@ -2847,13 +2848,6 @@ const cancelControlsCapture = (): void => {
   if (controlsCapture() === null) return;
   toastControls('controls-cancelled', outcomeText({ kind: 'cancelled' }));
   endControlsCapture();
-};
-
-// The player's last press came from `source`: the keycaps follow it, and a waiting line at once, so
-// a refusal of that same press is announced after it.
-const noteInput = (source: InputSource): void => {
-  noteInputSource(source);
-  controlsView?.refreshPrompt();
 };
 
 // A Controls outcome on its policy channel (the toast); an unsaved change says so, through the
@@ -3128,7 +3122,7 @@ const handleKeyDown = (e: KeyboardEvent): void => {
 window.addEventListener(
   'keydown',
   (e) => {
-    noteInput('keys');
+    noteInputSource('keys');
     if (e.code === 'Escape') handleKeyDown(e);
   },
   true,
@@ -3155,10 +3149,10 @@ document.addEventListener('visibilitychange', () => {
 // released and pressed again. While a Pad cell of Controls waits, the frame takes the pad's
 // `capture()` instead: no pad press routes, and the press read goes to the capture. A pad press is
 // ignored, as a key press is, while focus is outside the game screen, and also while Controls waits
-// for a key, except that a press of B then ends the capture unchanged: everything held is let go in
-// each case, so the press owes no release that could end another source's hold and acts only once
-// released and pressed again. A release alone still routes, as a keyup does, except while a Pad cell
-// waits: the releases `capture()` reads reach the first poll after the capture ends. Inside the game screen a
+// for a key; inside the game screen a press of B also ends that capture unchanged. Everything held is
+// let go in each case, so the press owes no release that could end another source's hold and acts
+// only once released and pressed again. A release alone still routes, as a keyup does, except while a
+// Pad cell waits: the releases `capture()` reads reach the first poll after the capture ends. Inside the game screen a
 // pad press is a button press even with a text field focused (a pad cannot type). A press clears the
 // pointer's hover mark and heals stale focus first, as a key press does; the edges route before the
 // accelerators. An edge that starts a capture ends the poll: no later edge or accelerator routes,
@@ -3173,7 +3167,7 @@ const pollPad = (): void => {
   if (capture?.slot === 'pad') {
     const read = pad.capture();
     if (read === undefined) return;
-    noteInput('pad');
+    noteInputSource('pad');
     // An ignored press: the capture read already took it, so it owes nothing.
     if (outsideGameScreen(document.activeElement, gameScreenEl())) return;
     pointerSource?.keyPressed();
@@ -3185,7 +3179,7 @@ const pollPad = (): void => {
   const { edges, accels } = pad.poll();
   const pressed = accels.length > 0 || edges.some((edge) => edge.down);
   // A press, even an ignored one, makes the keycaps the pad's; a release alone leaves them.
-  if (pressed) noteInput('pad');
+  if (pressed) noteInputSource('pad');
   if (!pressed) {
     if (edges.length > 0) pressEdges(edges);
     return;
@@ -5302,6 +5296,9 @@ async function main(): Promise<void> {
         renderPrivacyCountdown(null);
         return;
       }
+      // The waiting line of Controls follows the device last pressed. Read after the presses were
+      // handled: one that ended its capture changes no line.
+      controlsView?.refreshPrompt();
       const now = performance.now();
       // bt-12 (BT12.4): the results auto-advance — the outcome frame has been on top for the
       // presentation results cap and the results panel is what it shows: continue it, once per shown
