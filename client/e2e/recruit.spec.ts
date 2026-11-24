@@ -56,9 +56,9 @@ import {
 //     it is live and its bait list offers the starter kit's bait row (`bait:1`) beside the no-bait
 //     choice (`bait:none`, tacticsBattle.ts); once the berries are gone from the bag, the same
 //     list offers ONLY the no-bait choice.
-//   - R2: retired the 1v1 weaken + Recruit loop → tactics-wild's weaken-then-recruit loop by
-//     buttons (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with the
-//     seeded bait) → ownMonsters +1, the recruit in the BOX (partySlot 255).
+//   - R2: retired the 1v1 weaken + Recruit loop → the weaken-then-recruit loop by buttons, controls.ts's
+//     `fightToRecruit` (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with
+//     the seeded bait) → ownMonsters +1, the recruit in the BOX (partySlot 255).
 //   - R3: retired "`outcome-text` reads Victory! + SQL SideAWins for R2's battle" → a battle fought
 //     to a WIN by buttons (`fightToOutcome`; the starter seeded to win) → the results title is the
 //     catalog victory string and the server's battle row is SideAWins.
@@ -127,8 +127,9 @@ interface GameSnap {
  *  entries: P(no encounter) = 0.8^40 ≈ 1.3e-4. */
 const MAX_WALK_STEPS = 80;
 /** R2: battles to try for a recruit. Recruit odds are 80‰ base + up to 500‰ for missing HP +
- *  150‰ bait (roughly 50-70 % per adjacent attempt, several attempts per battle — tactics-wild's
- *  measured BT12.5 loop, 5 battles); 10 leaves margin for kiting and KO'd wilds. */
+ *  150‰ bait (roughly 50-70 % per adjacent attempt, several attempts per battle;
+ *  tactics-wild runs the same `fightToRecruit` loop on 5 battles); 10 leaves margin for kiting and
+ *  KO'd wilds. */
 const MAX_ENCOUNTERS = 10;
 /** Own turns per battle before it is abandoned (Flee) and the grass re-hunted. */
 const MAX_OWN_TURNS = 16;
@@ -725,7 +726,7 @@ test.describe
     //   WHEN the player weakens a wild monster and Recruits, THE recruit SHALL eventually
     //   succeed: ownMonsters.length increases by 1 and the new monster has partySlot === 255.
     //   SURVIVING CHECK (bt-16): retired the 1v1 weaken + Recruit (Fight / bait list / Yes) loop →
-    //   tactics-wild's weaken-then-`recruitByButtons` loop with the seeded bait.
+    //   controls.ts's weaken-then-Recruit `fightToRecruit` loop with the seeded bait.
     // -------------------------------------------------------------------------
     test('R2: a recruit by buttons after weakening the wild increments ownMonsters by 1 with partySlot 255 (bt-16: tactics-wild`s weaken-then-recruit loop)', async () => {
       // Budget: up to MAX_ENCOUNTERS battles of up to MAX_OWN_TURNS own turns, plus the

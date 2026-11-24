@@ -1,5 +1,6 @@
 // controls.spec.ts — gating tests for the e2e press helpers (ctl-6a). A fake in-page
-// `window.__game` whose stack the test controls stands in for the game: no server, no Vite.
+// `window.__game` stack the test controls stands in for the game (some cases also fake the
+// tactical shell): no server, no Vite.
 import { expect, type Page, test } from '@playwright/test';
 import { DEFAULT_BINDINGS } from '../src/input/bindings';
 import type { FrameId, Stack, UpperFrame } from '../src/ui/contextStack';
@@ -186,6 +187,7 @@ interface FakeShellWin {
   __commits: number;
   __menuOpens: number;
   __resolved: boolean;
+  __keysAfterResolve: number;
 }
 
 /** How long after the final A press the fake's commit resolves. */
@@ -235,6 +237,7 @@ async function installTacticalShell(page: Page, late: LateOutcome): Promise<void
       w.__commits = 0;
       w.__menuOpens = 0;
       w.__resolved = false;
+      w.__keysAfterResolve = 0;
       w.__mrTactics = { battle: () => w.__snap };
       w.__game = () => ({
         ongoingBattle: { battleId: '7' },
@@ -263,14 +266,20 @@ async function installTacticalShell(page: Page, late: LateOutcome): Promise<void
         if (wild === undefined) throw new Error('fake: no wild');
         if (late === 'failed') {
           w.__snap = { ...w.__snap, round: 2, turnIdx: 0, turnState: 'Waiting' };
+          // A fresh own turn the loop could act on: the menu is closed and ready to open.
+          stage = 'idle';
+          rows = [];
+          at = 0;
+          render();
         } else {
           wild.state = late === 'recruited' ? 'Recruited' : 'Fainted';
-          w.__snap = { ...w.__snap, phase: 'Finished', turnState: 'Done' };
+          w.__snap = { ...w.__snap, phase: 'Finished', turnState: 'NotActive' };
         }
         w.__resolved = true;
       };
       render();
       window.addEventListener('keydown', (e) => {
+        if (w.__resolved) w.__keysAfterResolve += 1;
         if (downKeys.includes(e.code) && rows.length > 0) {
           at = (at + 1) % rows.length;
         } else if (aKeys.includes(e.code)) {
@@ -295,7 +304,6 @@ async function installTacticalShell(page: Page, late: LateOutcome): Promise<void
           } else if (stage === 'aim') {
             stage = 'done';
             w.__commits += 1;
-            w.__snap = { ...w.__snap, turnState: 'Resolving' };
             setTimeout(resolve, delay);
           }
         }
@@ -318,7 +326,12 @@ async function fightOneOwnTurn(page: Page, late: LateOutcome) {
   const answer = await fightToRecruit(page, { maxOwnTurns: 1, baitKey: 'bait:1' }, tally);
   const seen = await page.evaluate(() => {
     const w = window as unknown as FakeShellWin;
-    return { commits: w.__commits, menuOpens: w.__menuOpens, resolved: w.__resolved };
+    return {
+      commits: w.__commits,
+      menuOpens: w.__menuOpens,
+      resolved: w.__resolved,
+      keysAfterResolve: w.__keysAfterResolve,
+    };
   });
   return { answer, tally, seen };
 }
@@ -346,6 +359,7 @@ test.describe('rb-139 fightToRecruit', () => {
     expect(answer, 'the battle is still active on a fresh own turn').toBe('stalled');
     expect(seen.commits, 'the bound holds: no second commit').toBe(1);
     expect(seen.menuOpens, 'the bound holds: the next own turn is not opened').toBe(1);
+    expect(seen.keysAfterResolve, 'nothing is pressed on the fresh own turn').toBe(0);
     expect(tally.clicks).toBe(1);
     expect(tally.hpPcts).toEqual([WILD_PCT]);
   });

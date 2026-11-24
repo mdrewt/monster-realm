@@ -120,9 +120,9 @@ CI job produce one after `ready()`; the 81 runs that inject nothing never reache
 product nor the test is shown wrong.
 
 **Next step.** Its next rerun listing. A failed shard keeps each failed test's trace and the
-SpacetimeDB log for 14 days (`e2e-failure-<shard>-<attempt>`); runs 43554594387 and 43362803625
-kept none. The trace holds the action log, the console, the network log and a film strip, and no
-DOM snapshot. It separates three cases:
+SpacetimeDB log for 14 days (`e2e-failure-<shard>-<attempt>`); run 43554594387 kept none.
+The trace holds the action log, the console, the network log and a film strip, and no DOM
+snapshot. It separates three cases:
 
 - Two main-frame navigations before the press: the press hit a new document before its join.
   Whatever reloaded the page is the cause, a test or environment fix; the held-join recipe forces

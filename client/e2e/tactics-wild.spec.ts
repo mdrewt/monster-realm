@@ -525,7 +525,8 @@ test.describe
             tally,
           )) === 'recruited';
         if (!recruited) {
-          // Abandon a stalled battle: Flee on the next own turn, then let the results pass.
+          // Abandon a stalled battle: Flee on the fresh own turn the loop stopped on, then let the
+          // results pass.
           const t = await readTactics(page);
           if (t !== null && t.phase === 'Active') {
             const next = await waitOwnTurnOrEnd(page, null, TURN_WAIT_MS);
