@@ -1040,8 +1040,8 @@ describe('controlsModel: the Pad column', () => {
     // WRONG IMPL KILLED: a swap that strands the D-pad, A, B or Start on the pad (a pad-only player
     // could not move, confirm, back out or reach the menu that fixes it), a refusal reported with
     // the reserved reason, and a refusal that still hands back a table.
-    // rb-138: B's index on an EMPTY row is the cancel press (its own test below), so the empty
-    // Journal row is refused for every protected button except B.
+    // B's index on an EMPTY row is the cancel press (its own test below), so the empty Journal row
+    // is refused for every protected button except B.
     const frozen = padTable();
     const guarded = PROTECTED_BUTTONS.filter((p) => p !== 'B');
     expect(guarded, 'ANTI-VACUITY: six protected buttons besides B').toHaveLength(6);
@@ -1196,11 +1196,11 @@ describe('controlsModel: the Pad column', () => {
     expect(padCapturePrompt(acc('I'))).toContain(rowLabel(acc('I')));
   });
 
-  // ---- rb-138: the Back button (B) cancels a capture through the live pad table -------------------
+  // ---- the Back button (B) cancels a capture through the live pad table ------------------------
 
   it('capturePad on an empty row cancels on B`s index and changes nothing, on a Journal row and on an emptied button row [rb-138.3]', () => {
-    // WRONG IMPL KILLED: today's refused/protected for B on an empty row (a pad-only player has no
-    // way out of the capture), a "bound" that moves B onto the row, and a swap that strands B.
+    // WRONG IMPL KILLED: a refused/protected for B on an empty row (a pad-only player has no way
+    // out of the capture), a "bound" that moves B onto the row, and a swap that strands B.
     const frozen = padTable();
     expect(capturePad(frozen, padAt(padAcc('J')), 1), 'the Journal on B`s 1').toEqual({
       kind: 'cancelled',
@@ -1233,7 +1233,7 @@ describe('controlsModel: the Pad column', () => {
     expect(taken.displaced).toBeUndefined();
   });
 
-  it('capturePad on an empty row still refuses every other protected button as protected, and an unbindable index as reserved [rb-138.3]', () => {
+  it('capturePad on an empty row refuses every other protected button as protected, and an unbindable index as reserved [rb-138.3]', () => {
     // WRONG IMPL KILLED: a cancel that widens to every protected button (Up, Down, Left, Right, A,
     // Start would silently cancel instead of refusing), and a B cancel that swallows the reserved
     // check order.
@@ -1251,7 +1251,7 @@ describe('controlsModel: the Pad column', () => {
     });
   });
 
-  it('capturePad on a row WITH a pad button treats B`s index as before: another row`s B swaps (X on 1 gives B the 2), the shown button cancels, and no swap there is refused [rb-138.4]', () => {
+  it('capturePad on a row WITH a pad button reads B`s index like any other: another row`s B swaps (X on 1 gives B the 2), the shown button cancels, and no swap there is refused [rb-138.4]', () => {
     // WRONG IMPL KILLED: a B cancel that fires on a filled row too (X could never be swapped with
     // B), a swap that hands B nothing, and a protected refusal on a swap that strands no one.
     const frozen = padTable();
@@ -1310,9 +1310,9 @@ describe('controlsModel: the Pad column', () => {
     expect(leavePadIndex(moved, padAt(padBtn('X'))), 'a remapped shown button').toBe(4);
   });
 
-  it('capturePrompt and padCapturePrompt with no leave read exactly as before, and with a leave button also name its pad glyph, in English [rb-138.5]', () => {
+  it('capturePrompt and padCapturePrompt with no leave read the plain line, and with a leave button also name its pad glyph, in English [rb-138.5]', () => {
     // WRONG IMPL KILLED: a prompt that changes without a leave (the keyboard line is exactly
-    // today's), one that omits the glyph, and one that names the wrong button.
+    // the plain one), one that omits the glyph, and one that names the wrong button.
     const row = btn('A');
     expect(capturePrompt(row)).toBe(`Press a key for Confirm (A)${ELLIPSIS}`);
     expect(capturePrompt(row, undefined)).toBe(`Press a key for Confirm (A)${ELLIPSIS}`);

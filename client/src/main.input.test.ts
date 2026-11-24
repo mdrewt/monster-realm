@@ -6081,9 +6081,9 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
     expect(stack(), 'and LT opened Monsters').toEqual(PAD_BOX);
   });
 
-  it('while Options > Controls waits for a key a pad B, Start and LT change nothing (the capture waits, the stack stays, no toast or hint); once a key ends the capture a pad B backs out [gp-2.7]', async () => {
-    // WRONG IMPL KILLED: pad presses routed while a slot capture waits (B would end the capture,
-    // Start or LT close Controls).
+  it('while Options > Controls waits for a key a pad Start and LT change nothing (the capture waits, the stack stays, no toast or hint); once a key ends the capture a pad B backs out [gp-2.7]', async () => {
+    // WRONG IMPL KILLED: pad presses routed while a slot capture waits (Start or LT would close
+    // Controls). A pad B ends the capture instead: see main.remap.test.ts.
     await bootReady();
     usePad();
     server(1000, { x: 2, y: 6, ack: 0 });
@@ -6123,7 +6123,6 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
 
     let t = 2000;
     for (const [label, i] of [
-      ['B', PADI.B],
       ['Start', PADI.Start],
       ['LT', PADI.LT],
     ] as const) {

@@ -203,8 +203,7 @@ test.describe
           page.locator('#controls-capture'),
           'A on the Pad cell starts it',
         ).toBeVisible();
-        // rb-138 (named intentional change): the pad pressed last, so the line also names the
-        // button the cell shows (A, button 0). Was: `Press a pad button for ${labelA}...` alone.
+        // The pad pressed last, so the line also names the button the cell shows (A, button 0).
         await expect(page.locator('#controls-capture'), 'the pad prompt').toHaveText(
           `Press a pad button for ${labelA}${ELLIPSIS} To leave it unchanged, press ${padGlyph(0)}.`,
         );
@@ -368,7 +367,7 @@ test.describe
         await padHold(page, 1, 300);
         await expect(page.locator('#controls-capture'), 'B ended the capture').toBeHidden();
         expect(await stackNames(page), 'the held B popped nothing').toEqual(controlsStack);
-        await expect(cell(page, 'B_pad'), 'the cell is still empty').toHaveText(
+        await expect(cell(page, 'B_pad'), 'the cell stays empty').toHaveText(
           padCellText(labelStorage, t('controls.slot.none')),
         );
         expect(await livePadBindings(page), 'the pad table is unchanged').toEqual(

@@ -136,7 +136,7 @@ interface RigOptions {
   readonly onTextStep?: (step: Step) => boolean;
   /** The live pad table the Pad cells read; absent, the view is built without the handler. */
   readonly padBindings?: () => PadBindings;
-  /** rb-138: the device of the player's last input; absent, the view is built without the handler. */
+  /** The device of the player's last input; absent, the view is built without the handler. */
   readonly inputSource?: () => InputSource;
 }
 
@@ -2183,14 +2183,14 @@ describe('ControlsView — the Pad column', () => {
   });
 });
 
-// --- rb-138: the waiting line names the pad button that leaves the cell unchanged ------------------
+// --- the waiting line names the pad button that leaves the cell unchanged -----------------------
 //
 // With the pad as the last input (`handlers.inputSource()`), the line adds the leave button through
 // `capturePrompt(row, leave)` / `padCapturePrompt(row, leave)`; with the keyboard, or no handler,
-// it is exactly today's. `refreshPrompt()` re-reads the source and the pad table mid-capture.
+// it is the plain line. `refreshPrompt()` re-reads the source and the pad table mid-capture.
 
-describe('ControlsView rb-138: the waiting line and refreshPrompt', () => {
-  it('a Key cell painted while the last input is the pad shows capturePrompt(row, B`s pad index), announced once; with the keyboard, or no inputSource handler, it is exactly today`s line [rb-138.5]', () => {
+describe('ControlsView: the waiting line and refreshPrompt', () => {
+  it('a Key cell painted while the last input is the pad shows capturePrompt(row, B`s pad index), announced once; with the keyboard, or no inputSource handler, it is the plain line [rb-138.5]', () => {
     // WRONG IMPL KILLED: a leave line shown for the keyboard (a key player is told about a pad), an
     // absent handler that throws, a line that omits the glyph, and a prompt not announced as shown.
     const aKey = slotOf(btnRow('A'), 0);
@@ -2211,7 +2211,7 @@ describe('ControlsView rb-138: the waiting line and refreshPrompt', () => {
       keys.view.paint(paintOf());
       keys.announce.mockClear();
       keys.view.paint(paintOf({ nav: navOn('buttons', 'A_0'), capturing: aKey }));
-      expect(el(CAPTURE_ID).textContent, 'keyboard: today`s line').toBe(
+      expect(el(CAPTURE_ID).textContent, 'keyboard: the plain line').toBe(
         `Press a key for Confirm (A)${ELLIPSIS}`,
       );
       expect(keys.announce).toHaveBeenCalledTimes(1);
@@ -2293,7 +2293,7 @@ describe('ControlsView rb-138: the waiting line and refreshPrompt', () => {
 
     source = 'keys';
     view.refreshPrompt();
-    expect(el(CAPTURE_ID).textContent, 'back to today`s line').toBe(capturePrompt(btnRow('A')));
+    expect(el(CAPTURE_ID).textContent, 'back to the plain line').toBe(capturePrompt(btnRow('A')));
     expect(announce).toHaveBeenCalledTimes(2);
     expect(announce).toHaveBeenLastCalledWith(capturePrompt(btnRow('A')));
     expect(view.capturing, 'the capture itself is untouched').toEqual(aKey);

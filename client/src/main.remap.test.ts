@@ -2409,9 +2409,8 @@ const HELP_STACK: readonly string[] = ['world', 'menuView', 'helpView'];
 
 /** What a Pad cell reads: the plan's `${label} (pad): ${key}`. */
 const padCellText = (row: ControlsRow, key: string): string => `${rowLabel(row)} (pad): ${key}`;
-/** The plan's pad prompt: `Press a pad button for ${label}…`. rb-138 (named intentional change):
- *  with a `leave` pad index (the pad was the last input) the line also names the button that
- *  leaves the cell unchanged. Was: the line without it, whichever device pressed last. */
+/** The plan's pad prompt: `Press a pad button for ${label}…`. With a `leave` pad index (the pad
+ *  was the last input) the line also names the button that leaves the cell unchanged. */
 const padPromptText = (row: ControlsRow, leave?: number): string =>
   `Press a pad button for ${rowLabel(row)}${ELLIPSIS}${
     leave === undefined ? '' : ` To leave it unchanged, press ${padGlyph(leave)}.`
@@ -2467,7 +2466,7 @@ function cancelPathCase(cancel: () => void): void {
   padHold(PADI.A);
   tick();
   expect(capturing(), 'precondition: pad A started the Pad capture').toBe(true);
-  // rb-138: pad A started it, so the line names the button A's Pad cell shows.
+  // Pad A started it, so the line names the button A's Pad cell shows.
   expect(captureText(), 'precondition: the pad prompt').toBe(padPromptText(ROW_A, PADI.A));
   padLift(PADI.A);
   tick();
@@ -2664,9 +2663,8 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
 
     const rowStorage = accelRow('B');
     startPadCapture('B_pad', rowStorage);
-    // rb-138 (named intentional change): was the B button's own index 1 here. B's button on an EMPTY
-    // Pad cell now leaves the cell unchanged (rb-138.3), so the protected refusal is shown with the
-    // A button's only pad button instead.
+    // B's button on an EMPTY Pad cell leaves the cell unchanged (rb-138.3), so the protected
+    // refusal is shown with the A button's only pad button.
     padTap(PADI.A); // the A button's only pad button
     expect(capturing(), 'the refusal keeps the capture waiting').toBe(true);
     expect(controlsFeedback(), 'the protected line, on the strip').toBe(PAD_REFUSED_PROTECTED);
@@ -2833,7 +2831,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     tick();
     expect(stackNames(), 'RT in the same poll opened no Bag').toEqual([...CONTROLS_STACK]);
     expect(capturing(), 'A started the Key capture').toBe(true);
-    // rb-138: pad A started it, so the key line also names B's pad button.
+    // Pad A started it, so the key line also names B's pad button.
     expect(captureText(), 'the key prompt').toBe(keyPromptPadText(ROW_A, PADI.B));
     padLift(PADI.A);
     padLift(PADI.RT);
@@ -2844,14 +2842,13 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     expect(savedTable()).toEqual(tableWith({ A: ['KeyK', 'NumpadEnter'] }));
   }, 60_000);
 
-  it('while a Key cell waits every pad press but B`s is ignored: A, Y, Start, Select, LT, RT, a D-pad press and Guide change nothing and the capture still waits for a key, whose line now names B`s pad button; K then binds, and the saved record carries the untouched pad table [gp-5.7] [rb-138.2]', async () => {
+  it('while a Key cell waits every pad press but B`s is ignored: A, Y, Start, Select, LT, RT, a D-pad press and Guide change nothing and the capture waits for a key, whose line names B`s pad button; K then binds, and the saved record carries the untouched pad table [gp-5.7] [rb-138.2]', async () => {
     // WRONG IMPL KILLED: a pad press that reaches a Key capture (A re-starting it, Start closing
     // Controls, LT or RT opening a menu), one bound into the pad table while a KEY is awaited, a
     // refusal hint for Guide on a Key capture, a B-exit that widens to every pad button, and a
     // keyboard save that drops the pad half of the record.
-    // rb-138 (named intentional change): B is no longer in this list (it ends the capture: see the
-    // rb-138.1 cases), and after a pad press the line names B's pad button (rb-138.5). Was: B in the
-    // list, and the key line unchanged by a pad press.
+    // B is not in this list (it ends the capture: see the rb-138.1 cases), and after a pad press
+    // the line names B's pad button (rb-138.5).
     await bootWithPad();
     openControls();
     startCapture('A_0');
@@ -2895,7 +2892,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     startPadCapture('A_pad', ROW_A);
     padTap(PADI.Guide);
     expect(capturing(), 'still waiting').toBe(true);
-    // rb-138: the ignored Guide press is a pad press, so the line follows the pad now.
+    // The ignored Guide press is a pad press, so the line follows the pad.
     expect(captureText(), 'for the same cell').toBe(padPromptText(ROW_A, PADI.A));
     expect(controlsFeedback(), 'the refusal line, on the strip').toBe(PAD_REFUSED_RESERVED);
     expect(stripGone(), 'the strip is shown').toBe(false);
@@ -2931,7 +2928,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     }
     padTap(PADI.B); // button 1 is A now (button 0 still held)
     expect(capturing(), 'button 1 presses A at once: the Pad capture starts again').toBe(true);
-    // rb-138: a pad press started it, and B's Pad cell now shows button 0.
+    // A pad press started it, and B's Pad cell shows button 0.
     expect(captureText()).toBe(padPromptText(rowB, PADI.A));
     press('Escape', { key: 'Escape' });
     expect(capturing(), 'Escape cancels it').toBe(false);
@@ -3036,7 +3033,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     });
   }, 60_000);
 
-  // ---- rb-138: the pad's B button leaves a capture unchanged ----------------------------------
+  // ---- the pad's B button leaves a capture unchanged ----------------------------------
 
   it('a pad B ends a Key capture unchanged with the cancelled toast and pops nothing, however long it is held; it acts as Back again only once released and pressed again, and no held direction leaks [rb-138.1]', async () => {
     // WRONG IMPL KILLED: a pad B ignored on a Key cell (a pad-only player is stuck), one that ends
@@ -3119,7 +3116,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     expect(savedRaw(), 'the stored record is not rewritten').toBe(stored);
   }, 60_000);
 
-  it('a pad B held in the same poll as RT ends a Key capture and opens no Bag, then and while held; the Bag still opens on a fresh RT [rb-138.1]', async () => {
+  it('a pad B held in the same poll as RT ends a Key capture and opens no Bag, then and while held; a fresh RT opens the Bag [rb-138.1]', async () => {
     // WRONG IMPL KILLED: a B exit that lets the same poll's accelerator run (the Bag opens over
     // Controls), one that opens it on a later held frame, and an RT that stays dead after the exit.
     await bootWithPad();
@@ -3174,7 +3171,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
   }, 60_000);
 
   it('a pad B ends an EMPTY Pad cell`s capture unchanged with the cancelled toast, even held; nothing is saved, the cell stays empty and B acts as Back again only once released and pressed again [rb-138.3]', async () => {
-    // WRONG IMPL KILLED: today's protected refusal for B on an empty cell (the strip hint and a
+    // WRONG IMPL KILLED: a protected refusal for B on an empty cell (the strip hint and a
     // capture that never ends), a B that is bound onto the Journal row, one that also pops Controls,
     // and a cancel that leaves the held B owing a release.
     await bootWithPad();
@@ -3229,7 +3226,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     expect(savedPad()).toEqual(padTableWith({ B: [PADI.LS] }, { J: [PADI.B] }));
   }, 60_000);
 
-  it('a pad B on a Pad cell that HAS a pad button swaps as before: X captures 1 and X is on 1, B on 2, the toast names both rows, and the frame is not popped [rb-138.4]', async () => {
+  it('a pad B on a Pad cell that HAS a pad button swaps: X captures 1 and X is on 1, B on 2, the toast names both rows, and the frame is not popped [rb-138.4]', async () => {
     // WRONG IMPL KILLED: a B cancel that fires on every Pad cell (the swap is lost), a swap that
     // routes B (the frame pops), and a swap without its save.
     await bootWithPad();
@@ -3266,7 +3263,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     await bootWithPad();
     openControls();
     startCapture('A_0');
-    expect(captureText(), 'keys started it: exactly today`s line').toBe(
+    expect(captureText(), 'keys started it: the plain line').toBe(
       `Press a key for ${rowLabel(ROW_A)}${ELLIPSIS}`,
     );
     padTap(PADI.Y);
@@ -3276,7 +3273,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     expect(controlsFeedback(), 'the refused key raised its hint').toBe(
       i18nT('controls.refused.reserved'),
     );
-    expect(captureText(), 'the keyboard pressed last: today`s line again').toBe(
+    expect(captureText(), 'the keyboard pressed last: the plain line again').toBe(
       `Press a key for ${rowLabel(ROW_A)}${ELLIPSIS}`,
     );
     padTap(PADI.Y);
@@ -3308,8 +3305,8 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     expect(captureText(), 'a filled cell: the button it shows').toBe(padPromptText(ROW_X, PADI.X));
     const e = press('KeyK');
     expect(e.defaultPrevented, 'the key is ignored, prevented').toBe(true);
-    expect(capturing(), 'the capture still waits').toBe(true);
-    expect(captureText(), 'the keyboard pressed last: today`s line').toBe(padPromptText(ROW_X));
+    expect(capturing(), 'the capture waits').toBe(true);
+    expect(captureText(), 'the keyboard pressed last: the plain line').toBe(padPromptText(ROW_X));
     padTap(PADI.Guide);
     expect(capturing(), 'the refused Guide keeps it waiting').toBe(true);
     expect(controlsFeedback()).toBe(PAD_REFUSED_RESERVED);
@@ -3327,9 +3324,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
       padPromptText(rowJ, PADI.B),
     );
     press('Tab', { key: 'Tab' });
-    expect(captureText(), 'a browser-owned key still switches the device').toBe(
-      padPromptText(rowJ),
-    );
+    expect(captureText(), 'a browser-owned key switches the device').toBe(padPromptText(rowJ));
   }, 60_000);
 
   it('a pad press that switches the device on a Key capture announces the new waiting line once through #a11y-live, and a second pad press announces no waiting line again [rb-138.5]', async () => {
