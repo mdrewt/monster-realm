@@ -45,6 +45,7 @@ import {
   capturePad,
   capturePrompt,
   clearAccel,
+  leavePadIndex,
   outcomeText,
   type PadCaptureOutcome,
   type PadRow,
@@ -55,6 +56,7 @@ import {
   padSlot,
   rowLabel,
   type Slot,
+  type SlotTarget,
   slots,
 } from './controlsModel';
 import { setLocale, t, tf } from './i18n/resolver';
@@ -1038,8 +1040,12 @@ describe('controlsModel: the Pad column', () => {
     // WRONG IMPL KILLED: a swap that strands the D-pad, A, B or Start on the pad (a pad-only player
     // could not move, confirm, back out or reach the menu that fixes it), a refusal reported with
     // the reserved reason, and a refusal that still hands back a table.
+    // rb-138: B's index on an EMPTY row is the cancel press (its own test below), so the empty
+    // Journal row is refused for every protected button except B.
     const frozen = padTable();
-    for (const p of PROTECTED_BUTTONS) {
+    const guarded = PROTECTED_BUTTONS.filter((p) => p !== 'B');
+    expect(guarded, 'ANTI-VACUITY: six protected buttons besides B').toHaveLength(6);
+    for (const p of guarded) {
       const index = PAD_DEFAULT_BINDINGS.buttons[p][0] as PadIndex;
       expect(capturePad(frozen, padAt(padAcc('J')), index), `the Journal takes ${p}`).toEqual({
         kind: 'refused',
@@ -1188,5 +1194,155 @@ describe('controlsModel: the Pad column', () => {
     setLocale('fr');
     expect(padCapturePrompt(acc('I')), 'the French prompt').not.toBe(en);
     expect(padCapturePrompt(acc('I'))).toContain(rowLabel(acc('I')));
+  });
+
+  // ---- rb-138: the Back button (B) cancels a capture through the live pad table -------------------
+
+  it('capturePad on an empty row cancels on B`s index and changes nothing, on a Journal row and on an emptied button row [rb-138.3]', () => {
+    // WRONG IMPL KILLED: today's refused/protected for B on an empty row (a pad-only player has no
+    // way out of the capture), a "bound" that moves B onto the row, and a swap that strands B.
+    const frozen = padTable();
+    expect(capturePad(frozen, padAt(padAcc('J')), 1), 'the Journal on B`s 1').toEqual({
+      kind: 'cancelled',
+    });
+    expect(capturePad(frozen, padAt(padAcc('Y')), 1), 'the Controls accelerator on B`s 1').toEqual({
+      kind: 'cancelled',
+    });
+    expect(capturePad(padTable({ X: [] }), padAt(padBtn('X')), 1), 'an emptied X row').toEqual({
+      kind: 'cancelled',
+    });
+    expect(frozen, 'the input is untouched').toEqual(PAD_DEFAULT_BINDINGS);
+  });
+
+  it('capturePad on an empty row cancels on B`s LIVE index (a remapped B, not the default 1), and the default 1 is then an ordinary index [rb-138.3]', () => {
+    // WRONG IMPL KILLED: a hard-coded index 1 (the remapped B would stay refused and the old 1 would
+    // cancel), and a cancel that ignores whether the index is B's.
+    const moved = padTable({ B: [10] });
+    expect(capturePad(moved, padAt(padAcc('J')), 10), 'the Journal on B`s new 10').toEqual({
+      kind: 'cancelled',
+    });
+    expect(capturePad(moved, padAt(padAcc('J')), 1), 'the old 1 is free now').toEqual({
+      kind: 'bound',
+      bindings: padTable({ B: [10] }, { J: [1] }),
+    });
+    const held = padTable({ B: [10], X: [1] });
+    const taken = padSwapped(capturePad(held, padAt(padAcc('J')), 1));
+    expect(taken.bindings, 'the old 1 now belongs to X: an ordinary swap').toEqual(
+      padTable({ B: [10], X: [] }, { J: [1] }),
+    );
+    expect(taken.displaced).toBeUndefined();
+  });
+
+  it('capturePad on an empty row still refuses every other protected button as protected, and an unbindable index as reserved [rb-138.3]', () => {
+    // WRONG IMPL KILLED: a cancel that widens to every protected button (Up, Down, Left, Right, A,
+    // Start would silently cancel instead of refusing), and a B cancel that swallows the reserved
+    // check order.
+    const frozen = padTable();
+    for (const p of PROTECTED_BUTTONS.filter((b) => b !== 'B')) {
+      const index = PAD_DEFAULT_BINDINGS.buttons[p][0] as PadIndex;
+      expect(capturePad(frozen, padAt(padAcc('J')), index), `the Journal on ${p}`).toEqual({
+        kind: 'refused',
+        reason: 'protected',
+      });
+    }
+    expect(capturePad(frozen, padAt(padAcc('J')), 16)).toEqual({
+      kind: 'refused',
+      reason: 'reserved',
+    });
+  });
+
+  it('capturePad on a row WITH a pad button treats B`s index as before: another row`s B swaps (X on 1 gives B the 2), the shown button cancels, and no swap there is refused [rb-138.4]', () => {
+    // WRONG IMPL KILLED: a B cancel that fires on a filled row too (X could never be swapped with
+    // B), a swap that hands B nothing, and a protected refusal on a swap that strands no one.
+    const frozen = padTable();
+    expect(padSwapped(capturePad(frozen, padAt(padBtn('X')), 1)), 'X takes B`s 1').toEqual({
+      kind: 'swapped',
+      bindings: padTable({ X: [1], B: [2] }),
+      other: padAt(padBtn('B')),
+      code: 1,
+      displaced: 2,
+    });
+    expect(capturePad(frozen, padAt(padBtn('X')), 2), 'X on its shown 2').toEqual({
+      kind: 'cancelled',
+    });
+    expect(capturePad(frozen, padAt(padBtn('B')), 1), 'B on its own 1').toEqual({
+      kind: 'cancelled',
+    });
+    expect(
+      padSwapped(capturePad(padTable({}, { J: [11] }), padAt(padAcc('J')), 1)).bindings,
+      'a Journal row with a button swaps with B',
+    ).toEqual(padTable({ B: [11] }, { J: [1] }));
+    for (const p of PROTECTED_BUTTONS) {
+      const index = PAD_DEFAULT_BINDINGS.buttons[p][0] as PadIndex;
+      if (p === 'X') continue;
+      expect(capturePad(frozen, padAt(padBtn('X')), index).kind, `X takes ${p}`).toBe('swapped');
+    }
+  });
+
+  it('capturePad on a filled row cancels on its own remapped B index only when that row is B, and swaps with the live B otherwise [rb-138.4]', () => {
+    // WRONG IMPL KILLED: a hard-coded 1 on a filled row, and a swap that gives B the default.
+    const moved = padTable({ B: [10] });
+    const s = padSwapped(capturePad(moved, padAt(padBtn('X')), 10));
+    expect(s.bindings).toEqual(padTable({ X: [10], B: [2] }));
+    expect(s.other).toEqual(padAt(padBtn('B')));
+    expect(capturePad(moved, padAt(padBtn('X')), 1), 'the free old 1 binds').toEqual({
+      kind: 'bound',
+      bindings: padTable({ B: [10], X: [1] }),
+    });
+  });
+
+  it('leavePadIndex names the shown button of a Pad cell, and B`s live first index for an empty Pad cell or any Key cell [rb-138.5]', () => {
+    // WRONG IMPL KILLED: B's index for a filled Pad cell (the line would tell the player to press a
+    // button that swaps), the default 1 for a remapped B, and a Key cell that reads the row's pad.
+    const d = PAD_DEFAULT_BINDINGS;
+    expect(leavePadIndex(d, padAt(padBtn('X'))), 'X shows 2').toBe(2);
+    expect(leavePadIndex(d, padAt(padBtn('A'))), 'A shows 0').toBe(0);
+    expect(leavePadIndex(d, padAt(padBtn('B'))), 'B shows 1').toBe(1);
+    expect(leavePadIndex(d, padAt(padAcc('I'))), 'the Bag shows 7').toBe(7);
+    expect(leavePadIndex(d, padAt(padAcc('J'))), 'an empty Journal cell: B`s 1').toBe(1);
+    expect(leavePadIndex(padTable({ X: [] }), padAt(padBtn('X'))), 'an emptied X: B`s 1').toBe(1);
+    const keyCell: SlotTarget = { row: btn('X'), slot: 1 };
+    expect(leavePadIndex(d, keyCell), 'a Key cell: B`s 1, not the X row`s 2').toBe(1);
+    expect(leavePadIndex(d, { row: acc('I'), slot: 0 }), 'a Key cell of the Bag').toBe(1);
+    const moved = padTable({ B: [10], X: [4] });
+    expect(leavePadIndex(moved, keyCell), 'a remapped B on a Key cell').toBe(10);
+    expect(leavePadIndex(moved, padAt(padAcc('J'))), 'a remapped B on an empty Pad cell').toBe(10);
+    expect(leavePadIndex(moved, padAt(padBtn('X'))), 'a remapped shown button').toBe(4);
+  });
+
+  it('capturePrompt and padCapturePrompt with no leave read exactly as before, and with a leave button also name its pad glyph, in English [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a prompt that changes without a leave (the keyboard line is exactly
+    // today's), one that omits the glyph, and one that names the wrong button.
+    const row = btn('A');
+    expect(capturePrompt(row)).toBe(`Press a key for Confirm (A)${ELLIPSIS}`);
+    expect(capturePrompt(row, undefined)).toBe(`Press a key for Confirm (A)${ELLIPSIS}`);
+    expect(padCapturePrompt(row)).toBe(`Press a pad button for Confirm (A)${ELLIPSIS}`);
+    for (const leave of [1, 10, 2]) {
+      expect(capturePrompt(row, leave), `key, leave ${leave}`).toBe(
+        `Press a key for ${rowLabel(row)}${ELLIPSIS} To leave it unchanged, press ${padGlyph(leave)} on the pad.`,
+      );
+      expect(padCapturePrompt(row, leave), `pad, leave ${leave}`).toBe(
+        `Press a pad button for ${rowLabel(row)}${ELLIPSIS} To leave it unchanged, press ${padGlyph(leave)}.`,
+      );
+    }
+    expect(capturePrompt(row, 1)).not.toBe(capturePrompt(row, 10));
+    expect(padCapturePrompt(acc('J'), 1)).not.toBe(padCapturePrompt(acc('J'), 10));
+  });
+
+  it('capturePrompt and padCapturePrompt with a leave button follow the locale: the French line differs from the English and holds the row label and the pad glyph [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a leave sentence frozen in English, and one that drops the label or glyph.
+    const row = acc('I');
+    const enKey = capturePrompt(row, 1);
+    const enPad = padCapturePrompt(row, 1);
+    setLocale('fr');
+    for (const [en, fr] of [
+      [enKey, capturePrompt(row, 1)],
+      [enPad, padCapturePrompt(row, 1)],
+    ] as const) {
+      expect(fr, 'the French line').not.toBe(en);
+      expect(fr).toContain(rowLabel(row));
+      expect(fr).toContain(padGlyph(1));
+    }
+    expect(capturePrompt(row, 1), 'key and pad lines differ').not.toBe(padCapturePrompt(row, 1));
   });
 });

@@ -1202,4 +1202,52 @@ describe('controlsScreen — the Pad column', () => {
       'swapped',
     ]);
   });
+
+  it('padCaptureStep on an empty row with B`s index (the default 1, or a remapped one) ends the capture with no table and the cancelled line; the old 1 of a remapped B is an ordinary index [rb-138.3]', () => {
+    // WRONG IMPL KILLED: today's keep-waiting protected refusal (the pad-only player is stuck in
+    // the capture), a done step that carries a table (a needless save), and a hard-coded 1.
+    const cancelledLine = padOutcomeText({ kind: 'cancelled' });
+    for (const target of [padOf(padAccRow('J')), padOf(padAccRow('Y'))]) {
+      expect(padCaptureStep(PAD_DEFAULT_BINDINGS, target, 1), `${target.row.id} on B`).toEqual({
+        done: true,
+        bindings: undefined,
+        text: cancelledLine,
+      });
+    }
+    const moved: PadBindings = {
+      buttons: { ...PAD_DEFAULT_BINDINGS.buttons, B: [10] },
+      accels: PAD_DEFAULT_BINDINGS.accels,
+    };
+    expect(padCaptureStep(moved, padOf(padAccRow('J')), 10)).toEqual({
+      done: true,
+      bindings: undefined,
+      text: cancelledLine,
+    });
+    const old = padCaptureStep(moved, padOf(padAccRow('J')), 1);
+    expect(old.done, 'the free old 1 binds').toBe(true);
+    expect(old.bindings?.accels.J).toEqual([1]);
+    expect(cancelledLine, 'ANTI-VACUITY: a real line').not.toBe('');
+  });
+
+  it('padCaptureStep on a row WITH a pad button keeps today`s reading of B`s index: another row`s B swaps (X on 1: X 1, B 2), the shown button cancels with no table [rb-138.4]', () => {
+    // WRONG IMPL KILLED: a cancel on B's index for every row (the swap with B is lost), a swap
+    // without its table, and a cancel that carries a table.
+    const swapped = padCaptureStep(PAD_DEFAULT_BINDINGS, padOf(padBtnRow('X')), 1);
+    expect(swapped.done).toBe(true);
+    expect(swapped.bindings?.buttons.X).toEqual([1]);
+    expect(swapped.bindings?.buttons.B).toEqual([2]);
+    expect(swapped.text).toBe(
+      padOutcomeText(capturePad(PAD_DEFAULT_BINDINGS, padOf(padBtnRow('X')), 1)),
+    );
+    expect(padCaptureStep(PAD_DEFAULT_BINDINGS, padOf(padBtnRow('X')), 2)).toEqual({
+      done: true,
+      bindings: undefined,
+      text: padOutcomeText({ kind: 'cancelled' }),
+    });
+    expect(padCaptureStep(PAD_DEFAULT_BINDINGS, padOf(padBtnRow('B')), 1)).toEqual({
+      done: true,
+      bindings: undefined,
+      text: padOutcomeText({ kind: 'cancelled' }),
+    });
+  });
 });
