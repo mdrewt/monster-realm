@@ -56,9 +56,8 @@ import {
 //     it is live and its bait list offers the starter kit's bait row (`bait:1`) beside the no-bait
 //     choice (`bait:none`, tacticsBattle.ts); once the berries are gone from the bag, the same
 //     list offers ONLY the no-bait choice.
-//   - R2: retired the 1v1 weaken + Recruit loop → the weaken-then-recruit loop by buttons, controls.ts's
-//     `fightToRecruit` (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with
-//     the seeded bait) → ownMonsters +1, the recruit in the BOX (partySlot 255).
+//   - R2: the weaken-then-recruit loop by buttons, controls.ts's `fightToRecruit`
+//     (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with the seeded bait) → ownMonsters +1, the recruit in the BOX (partySlot 255).
 //   - R3: retired "`outcome-text` reads Victory! + SQL SideAWins for R2's battle" → a battle fought
 //     to a WIN by buttons (`fightToOutcome`; the starter seeded to win) → the results title is the
 //     catalog victory string and the server's battle row is SideAWins.
