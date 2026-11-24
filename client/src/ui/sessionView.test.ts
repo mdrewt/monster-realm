@@ -76,8 +76,7 @@ const CHILD_IDS: readonly string[] = [
 ];
 const BUTTON_IDS: readonly string[] = [RETRY_ID, CONTINUE_ID, YES_ID, NO_ID];
 
-/** rb-140 (named intentional change): the English hint now says the D-pad moves and A chooses too.
- *  Was: 'B and Start do nothing here. Tab moves, Enter chooses.' */
+/** The English hint: the D-pad moves and A chooses, beside Tab and Enter. */
 const HINT_EN =
   'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.';
 
@@ -1325,7 +1324,7 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
 });
 
 // ---------------------------------------------------------------------------
-// rb-140: a pad-only player works the terminal through `applyRowOp` (the pad's Up, Down and A).
+// A pad-only player works the terminal through `applyRowOp` (the pad's Up, Down and A).
 // ---------------------------------------------------------------------------
 
 const MOVE_UP: RowOp = { kind: 'move', delta: -1 };
@@ -1333,7 +1332,7 @@ const MOVE_DOWN: RowOp = { kind: 'move', delta: 1 };
 const ACTIVATE: RowOp = { kind: 'activate' };
 const ARMED_VM = (): SessionViewModel => vmOf({ confirmPrompt: 'SENT PROMPT' });
 
-describe('SessionView.applyRowOp (rb-140): the pad moves focus over the shown buttons and chooses one', () => {
+describe('SessionView.applyRowOp: the pad moves focus over the shown buttons and chooses one', () => {
   it('applyRowOp does nothing while the gate is not visible: no focus, no handler, before the first render and after a close [rb-140.1]', () => {
     // WRONG IMPL KILLED: an op that seats or clicks a button of a hidden gate (a Retry fired
     // from a page with no terminal on it).
@@ -1481,11 +1480,10 @@ describe('SessionView.applyRowOp (rb-140): the pad moves focus over the shown bu
     }
   });
 
-  it('the hint of a rendered gate says the D-pad moves and A chooses, in English [rb-140.5]', () => {
-    // WRONG IMPL KILLED: the hint left as 'Tab moves, Enter chooses' (a pad-only player is not told).
-    view.render(buildSessionViewModel(EXPIRED));
-    expectShown(HINT_ID, HINT_EN);
-    view.render(buildSessionViewModel(arm(EXPIRED)));
-    expectShown(HINT_ID, HINT_EN);
+  it('the root carries mr-button-rows, so its buttons stack as the column the pad Up and Down walk [rb-140.1]', () => {
+    // WRONG IMPL KILLED: a root without the column class, whose buttons sit side by side while the
+    // pad moves through them as if they were stacked.
+    view.render(vmOf());
+    expect(el(ROOT_ID).classList.contains('mr-button-rows'), 'class mr-button-rows').toBe(true);
   });
 });

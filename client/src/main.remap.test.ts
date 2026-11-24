@@ -79,9 +79,8 @@ const H = vi.hoisted(() => ({
   /** uif-13 (UIF13.3): every `WorldRenderer.resize(...)` the page issued, oldest first (the stubbed
    *  renderer records its arguments). Reset by every boot. */
   resizes: [] as unknown[][],
-  /** rb-140 (named fixture change): what the connection stub's `sessionState()` answers (was
-   *  always 'hidden') and how many times main.ts asked it to `reconnectNow`. Both reset by every
-   *  boot. */
+  /** What the connection stub's `sessionState()` answers and how many times main.ts asked it to
+   *  `reconnectNow`. Both reset by every boot. */
   sessionState: 'hidden' as string,
   reconnects: 0,
 }));
@@ -92,8 +91,8 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
   wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
 );
 
-// rb-140 (named fixture change): the shared recording stub, with its session state and Retry
-// driven by `H` so a case can raise the session terminal and see what pressed Retry.
+// The shared recording stub, with its session state and Retry driven by `H` so a case can raise
+// the session terminal and see what pressed Retry.
 vi.mock('./net/connection', () => {
   const base = connectionRecordingMock(H);
   return {
@@ -3445,9 +3444,9 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     );
   }, 60_000);
 
-  it('with A remapped to pad button 3, that button chooses the focused session terminal button and the old A index 0 does nothing there [rb-140.2]', async () => {
-    // WRONG IMPL KILLED: a terminal that reads the pad by the default table's index 0 (the old A
-    // still chooses, the remapped one does not), and one that never reads the saved pad table.
+  it('with A remapped to pad button 3, that button chooses the focused session terminal button and the default A index 0 does nothing there [rb-140.2]', async () => {
+    // WRONG IMPL KILLED: a terminal that reads the pad by the default table's index 0 (the default
+    // A still chooses, the remapped one does not), and one that never reads the saved pad table.
     await bootWithPad({
       stored: withPad(
         storedTable(() => undefined),
@@ -3463,7 +3462,7 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     tick();
 
     padTap(PADI.A);
-    expect(H.reconnects, 'the old A index chose nothing').toBe(0);
+    expect(H.reconnects, 'the default A index chose nothing').toBe(0);
     padTap(PADI.Y);
     expect(H.reconnects, 'the remapped button chose Retry').toBe(1);
   }, 60_000);

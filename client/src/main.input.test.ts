@@ -81,9 +81,8 @@ const H = vi.hoisted(() => ({
   /** What the connection stub's `sessionState()` answers. Reset to 'hidden' by every boot, so
    *  only a case that sets it sees a session terminal (ctl-2's CTL2-3-BOOT-SESSION). */
   sessionState: 'hidden' as string,
-  /** rb-140 (named fixture change): how many times main.ts asked the connection stub to
-   *  `reconnectNow` (the session terminal's Retry) and to `continueAnonymously` (its confirmed
-   *  Yes). Both were inert no-ops; both reset to 0 by every boot. */
+  /** How many times main.ts asked the connection stub to `reconnectNow` (the session terminal's
+   *  Retry) and to `continueAnonymously` (its confirmed Yes). Both reset to 0 by every boot. */
   reconnects: 0,
   continues: 0,
   /** The name of every reducer called other than enqueueMove, oldest first (ctl-2 asserts on
@@ -5774,7 +5773,7 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
     expect(dirs(), 'pressed again: one Face').toEqual(['Face:North', 'North', 'Face:North']);
   });
 
-  // --- the session terminal under the pad (rb-140) ----------------------------------------------
+  // --- the session terminal under the pad ----------------------------------------------
   //
   // The terminal is raised as the connection raises it: the stub's `sessionState()` flips and the
   // `onSessionExpired` callback runs, so the real SessionView is up with Retry focused (asserted by
@@ -6316,6 +6315,45 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
     expect(activeId(), 'control: back inside, Down moves').toBe(CONTINUE);
     gateTap(PADI.A);
     expect(overlayShown(NO), 'control: and A arms').toBe(true);
+  });
+
+  it('a pad press made while focus is outside the game screen is dropped, not deferred: refocusing inside with it still held acts on nothing until it is pressed again [rb-140.4]', async () => {
+    // WRONG IMPL KILLED: a terminal poll that returns on outside focus before reading the pad, so
+    // the held button looks freshly pressed once focus is back inside and acts then.
+    await openTerminal();
+    const outside = document.createElement('input');
+    outside.id = 'rb140-outside-held';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(gameScreen().contains(outside), 'precondition: it is outside the game screen').toBe(
+      false,
+    );
+
+    hold(PADI.Down);
+    gateTick();
+    rootOf(RETRY).focus();
+    gateTick(3);
+    expect(activeId(), 'Down held across the refocus does not move').toBe(RETRY);
+    lift(PADI.Down);
+    gateTick();
+    hold(PADI.Down);
+    gateTick();
+    expect(activeId(), 'control: lifted and pressed again, Down moves').toBe(CONTINUE);
+    lift(PADI.Down);
+    gateTick();
+
+    rootOf(RETRY).focus();
+    outside.focus();
+    hold(PADI.A);
+    gateTick();
+    rootOf(RETRY).focus();
+    gateTick(3);
+    expect(H.reconnects, 'A held across the refocus does not press Retry').toBe(0);
+    lift(PADI.A);
+    gateTick();
+    hold(PADI.A);
+    gateTick();
+    expect(H.reconnects, 'control: lifted and pressed again, A presses Retry').toBe(1);
   });
 
   it('the terminal paints the hint that says the D-pad also moves and the A button also chooses [rb-140.5]', async () => {
