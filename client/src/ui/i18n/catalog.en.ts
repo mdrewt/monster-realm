@@ -603,9 +603,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // sessionModel.ts (buildSessionViewModel)
   'session.retry': 'Retry',
   // @desc: Line at the foot of the session overlay; says the B and Start buttons do nothing while it
-  // is up, and names the keys that move between its buttons and choose one.
+  // is up, and names the keys and the pad buttons that move between its buttons and choose one.
   // sessionModel.ts (buildSessionViewModel)
-  'session.hint': 'B and Start do nothing here. Tab moves, Enter chooses.',
+  'session.hint':
+    'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
   // tactics/strings.ts, deployPanel.ts, results.ts, tacticsBattle.ts (the battle frame's title)

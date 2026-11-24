@@ -4,7 +4,8 @@
 // file only places, shows and focuses). REGISTRY-EXTERNAL by design: it is NOT an OverlayId member
 // (a second EXCLUSIVE_TOP would break overlayRegistry's decide(), D17), so it gets no overlayA11y
 // focus trap. main.ts drives it directly from `conn.sessionState()`, checked first on every input
-// path via `sessionGateBlocks()`, which leaves a focused native <button> its Enter and Space.
+// path via `sessionGateBlocks()`, which leaves a focused native <button> its Enter and Space. The
+// pad's D-pad and A come in through `applyRowOp`: the cursor is DOM focus, as Tab's is.
 //
 // ★ ensureElement CREATES EVERY NODE display:none (the trap that hid this gate's title, body and
 // buttons until ctl-8k, B1), so render() writes `display` on every node it owns.
@@ -15,7 +16,7 @@
 // ★ FOCUS: the open edge seats Retry (No when it opens armed); on an open gate only the arm and
 // disarm edges move it (No, then Continue — reseatRow, ui/screens/profileScreen.ts); closing
 // blurs a focused control so focus is never left in a hidden subtree.
-import { reseatRow } from './screens/profileScreen';
+import { type RowOp, reseatRow, rowStep } from './screens/profileScreen';
 import type { SessionViewModel } from './sessionModel';
 
 export interface SessionViewHandlers {
@@ -59,7 +60,8 @@ export class SessionView {
 
   constructor(handlers: SessionViewHandlers) {
     this.#overlay = ensureElement('session-overlay', 'div', frameAnchor());
-    this.#overlay.classList.add('mr-frame', 'mr-shell', 'mr-shell--top');
+    // `mr-button-rows`: the buttons stack as a column, the axis the pad's Up and Down walk.
+    this.#overlay.classList.add('mr-frame', 'mr-shell', 'mr-shell--top', 'mr-button-rows');
     this.#title = ensureElement('session-title', 'h2');
     this.#body = ensureElement('session-body', 'p');
     this.#feedback = ensureElement('session-feedback', 'p');
@@ -103,6 +105,27 @@ export class SessionView {
     return this.#noBtn.style.display !== 'none';
   }
 
+  /** The shown buttons, in reading order. */
+  get #rows(): readonly HTMLElement[] {
+    return [this.#retryBtn, this.#continueBtn, this.#yesBtn, this.#noBtn].filter(
+      (b) => b.style.display !== 'none',
+    );
+  }
+
+  /** The default action: Retry, or No while armed. */
+  get #defaultBtn(): HTMLButtonElement {
+    return this.#armed ? this.#noBtn : this.#retryBtn;
+  }
+
+  /** One pad press on the shown buttons: a move walks focus, clamped, or seats the default action
+   *  with none focused; an activate clicks the focused one, and does nothing with none focused. */
+  applyRowOp(op: RowOp): void {
+    if (!this.visible) return;
+    const step = rowStep(this.#rows, document.activeElement, this.#defaultBtn, op);
+    if (op.kind === 'move') step.focus?.focus();
+    else step.press?.click();
+  }
+
   render(vm: SessionViewModel): void {
     if (!vm.visible) {
       this.hide();
@@ -123,7 +146,7 @@ export class SessionView {
     this.#paint(this.#hint, vm.hint, true);
     this.#overlay.style.display = 'block';
     // After every display write: a browser will not focus a display:none node.
-    if (!wasVisible) (armed ? this.#noBtn : this.#retryBtn).focus();
+    if (!wasVisible) this.#defaultBtn.focus();
     else this.#reseat(wasArmed, armed);
   }
 
@@ -139,14 +162,8 @@ export class SessionView {
     const active = document.activeElement;
     const onPage = !(active instanceof HTMLElement) || active === document.body;
     if (!onPage && !this.#overlay.contains(active)) return;
-    const rows: HTMLElement[] = [
-      this.#retryBtn,
-      this.#continueBtn,
-      this.#yesBtn,
-      this.#noBtn,
-    ].filter((b) => b.style.display !== 'none');
     const target = reseatRow(
-      rows,
+      this.#rows,
       onPage ? null : active,
       { was: wasArmed, now: armed },
       this.#noBtn,

@@ -716,6 +716,8 @@ the top frame is a seek: the D-pad presses that walk that list's cursor there, t
 first press is a probe: if the clicked list's cursor did not move as planned, it is undone and nothing is activated. A click on a tab is LB/RB. A right-click, or a touch long-press
 (`input/longPress.ts`, 500 ms within 10 px, with a fill ring), is B, or cancels a remap capture.
 The pad leaves a waiting Controls cell with the button a Pad cell shows, else with B.
+Under the session terminal (`ui/sessionView.ts`) no pad press reaches the router: the D-pad or the
+stick moves over the terminal's buttons, A presses the focused one, and every other button does nothing.
 A hint-bar chip presses its button. The mouse hovering a row moves the cursor there. All three
 hand button edges to `input/router.ts`, which decides walking, menu navigation or a screen button
 from the context on top. Two clicks skip the router: a main-menu row (the menu's own pick) and the

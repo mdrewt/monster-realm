@@ -81,6 +81,10 @@ const H = vi.hoisted(() => ({
   /** What the connection stub's `sessionState()` answers. Reset to 'hidden' by every boot, so
    *  only a case that sets it sees a session terminal (ctl-2's CTL2-3-BOOT-SESSION). */
   sessionState: 'hidden' as string,
+  /** How many times main.ts asked the connection stub to `reconnectNow` (the session terminal's
+   *  Retry) and to `continueAnonymously` (its confirmed Yes). Both reset to 0 by every boot. */
+  reconnects: 0,
+  continues: 0,
   /** The name of every reducer called other than enqueueMove, oldest first (ctl-2 asserts on
    *  `talk`). Reset by every boot. */
   calls: [] as string[],
@@ -250,10 +254,14 @@ vi.mock('./net/connection', () => {
     identity: () => H.identity,
     linkFrozen: () => H.frozen,
     worldScope: () => ({ own: null, zones: [], settled: false }),
-    continueAnonymously: () => undefined,
+    continueAnonymously: () => {
+      H.continues += 1;
+    },
     sessionState: () => H.sessionState,
     startSignIn: () => undefined,
-    reconnectNow: () => undefined,
+    reconnectNow: () => {
+      H.reconnects += 1;
+    },
   } as unknown as Connection;
   return {
     connect: (opts: ConnectionOptions): Connection => {
@@ -354,6 +362,8 @@ async function boot(): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
   H.sessionState = 'hidden';
+  H.reconnects = 0;
+  H.continues = 0;
   H.calls = [];
   H.callArgs = [];
   H.interactCalls = [];
@@ -5673,8 +5683,8 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
   });
 
   it('a D-pad Up held from before the session gate and still held when it lifts sends no Face or Step on any later frame until it is released and pressed again [gp-2.5]', async () => {
-    // WRONG IMPL KILLED: a gated frame that skips the pad and leaves the held set alone (the walk
-    // resumes the moment the gate lifts).
+    // WRONG IMPL KILLED: a gate that lets go of nothing at its first frame and a lift that latches
+    // nothing (the walk resumes the moment the gate lifts).
     await bootReady();
     usePad();
     server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
@@ -5705,9 +5715,8 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
 
   it('a D-pad Up first pressed during the second gated frame and held through the lift sends nothing, and its later release ends no W walk [gp-2.5]', async () => {
     // WRONG IMPL KILLED: a frame that skips the poll while gated (the first poll after the lift
-    // reads the press as fresh and walks), and a release run once at the gate's onset instead of
-    // on every gated frame (the press seen by a later gated frame owes a release, which ends the W
-    // walk below).
+    // reads the press as fresh and walks), and a lift that latches nothing (the press read by a
+    // later gated frame is still held when the gate lifts, so its release ends the W walk below).
     await bootReady();
     usePad();
     server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
@@ -5742,7 +5751,7 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
 
   it('a W key held from before the session gate and still held when it lifts does not walk again until it is released and pressed again [gp-2.5]', async () => {
     // WRONG IMPL KILLED: a gated frame that leaves the held set alone (the held key resumes its walk
-    // the moment the gate lifts). No pad is installed: the release belongs to every gated frame.
+    // the moment the gate lifts). No pad is installed: the release belongs to the gate's first frame.
     await bootReady();
     server(1000, { x: 2, y: 7, ack: 0, facing: 'North' });
     fire('keydown', 'KeyW', 1000);
@@ -5762,6 +5771,610 @@ describe('main.ts gamepad (runtime)', { sequential: true }, () => {
     fire('keyup', 'KeyW', 1900);
     fire('keydown', 'KeyW', 1910);
     expect(dirs(), 'pressed again: one Face').toEqual(['Face:North', 'North', 'Face:North']);
+  });
+
+  // --- the session terminal under the pad ----------------------------------------------
+  //
+  // The terminal is raised as the connection raises it: the stub's `sessionState()` flips and the
+  // `onSessionExpired` callback runs, so the real SessionView is up with Retry focused (asserted by
+  // `raiseTerminal`, so no negative below is vacuous). It lifts through `onReady` with the state
+  // back to 'hidden'. The first frame after the terminal opens, closes, arms or disarms lets go of
+  // everything held, so a press that must act runs one frame after such a change. A frame is 50 ms
+  // after the last, on the one clock `gateAt`.
+
+  const RETRY = 'session-retry-btn';
+  const CONTINUE = 'session-continue-btn';
+  const YES = 'session-continue-confirm-btn';
+  const NO = 'session-continue-cancel-btn';
+  const HINT_EN =
+    'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.';
+  /** The pad indices of the buttons the terminal ignores, beside the ones `PADI` names. */
+  const IGNORED = [
+    { name: 'B', index: 1 },
+    { name: 'X', index: 2 },
+    { name: 'Y', index: 3 },
+    { name: 'LB', index: 4 },
+    { name: 'RB', index: 5 },
+    { name: 'LT', index: 6 },
+    { name: 'RT', index: 7 },
+    { name: 'Select', index: 8 },
+    { name: 'Start', index: 9 },
+    { name: 'Left', index: 14 },
+    { name: 'Right', index: 15 },
+  ] as const;
+
+  let gateAt = 1000;
+  /** `n` frames, each 50 ms after the last. */
+  const gateTick = (n = 1): void => {
+    for (let i = 0; i < n; i += 1) {
+      gateAt += 50;
+      frame(gateAt);
+    }
+  };
+  /** Press `i` for one frame (it acts there) and release it for the next. */
+  const gateTap = (i: number): void => {
+    hold(i);
+    gateTick();
+    lift(i);
+    gateTick();
+  };
+  const activeId = (): string => document.activeElement?.id ?? '';
+  const barePage = (): void => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+  };
+
+  /** Boot with the own character facing North at (2, 6), a pad that has connected, no terminal. */
+  async function terminalBoot(): Promise<void> {
+    await bootReady();
+    usePad();
+    server(1000, { x: 2, y: 6, ack: 0, facing: 'North' });
+    gateAt = 1000;
+    gateTick();
+  }
+  /** The connection raises the expired terminal: its state, then its callback. No frame runs. */
+  function raiseTerminal(): void {
+    H.sessionState = 'expired';
+    const expire = opts.onSessionExpired;
+    if (expire === undefined) throw new Error('onSessionExpired was not wired by main.ts');
+    expire();
+    expect(rootOf('session-overlay').style.display, 'precondition: the terminal is up').toBe(
+      'block',
+    );
+    expect(activeId(), 'precondition: Retry is focused').toBe(RETRY);
+  }
+  /** The connection lifts the terminal: a connect. No frame runs. */
+  function liftTerminal(): void {
+    H.sessionState = 'hidden';
+    opts.onReady(H.identity);
+    expect(rootOf('session-overlay').style.display, 'precondition: the terminal is gone').toBe(
+      'none',
+    );
+  }
+  /** Boot, raise the terminal and run the frame that lets go of everything held. */
+  async function openTerminal(): Promise<void> {
+    await terminalBoot();
+    raiseTerminal();
+    gateTick();
+  }
+  /** From the open terminal with Retry focused: Down, then A on Continue (held for two frames and
+   *  released). Leaves it armed with No focused and its first armed frame behind. */
+  function armByPad(): void {
+    gateTap(PADI.Down);
+    expect(activeId(), 'precondition: Down moved to Continue').toBe(CONTINUE);
+    hold(PADI.A);
+    gateTick(2);
+    lift(PADI.A);
+    gateTick();
+    expect(overlayShown(NO), 'precondition: A on Continue armed the confirm step').toBe(true);
+    expect(activeId(), 'precondition: No is focused').toBe(NO);
+    expect([H.reconnects, H.continues], 'precondition: nothing was sent').toEqual([0, 0]);
+  }
+
+  const HOLDERS = [
+    {
+      holder: 'D-pad',
+      push: (dir: 'Up' | 'Down'): void => {
+        pad.buttons[dir === 'Up' ? PADI.Up : PADI.Down].pressed = true;
+      },
+      release: (): void => {
+        pad.buttons[PADI.Up].pressed = false;
+        pad.buttons[PADI.Down].pressed = false;
+      },
+    },
+    {
+      holder: 'left stick',
+      push: (dir: 'Up' | 'Down'): void => {
+        pad.axes[1] = dir === 'Up' ? -0.9 : 0.9;
+      },
+      release: (): void => {
+        pad.axes[1] = 0;
+      },
+    },
+  ];
+
+  it.each(
+    HOLDERS,
+  )('the $holder moves focus one shown button per press on the first step, clamped at both ends, and a held direction moves once [rb-140.1]', async ({
+    push,
+    release,
+  }) => {
+    // WRONG IMPL KILLED: a terminal the pad cannot move, a wrapping list, Up and Down transposed, a
+    // direction that moves on every frame it is held, and a move that also presses or sends.
+    await openTerminal();
+    const press = (dir: 'Up' | 'Down'): void => {
+      push(dir);
+      gateTick();
+      release();
+      gateTick();
+    };
+    press('Up');
+    expect(activeId(), 'Up on Retry clamps').toBe(RETRY);
+    press('Down');
+    expect(activeId(), 'Down moves to Continue').toBe(CONTINUE);
+    press('Down');
+    expect(activeId(), 'Down on Continue clamps').toBe(CONTINUE);
+    press('Up');
+    expect(activeId(), 'Up moves back to Retry').toBe(RETRY);
+
+    const landed = vi.spyOn(rootOf(CONTINUE), 'focus');
+    push('Down');
+    gateTick(5);
+    expect(activeId(), 'a held Down landed on Continue').toBe(CONTINUE);
+    expect(landed, 'and focused it exactly once however long it is held').toHaveBeenCalledTimes(1);
+    release();
+    gateTick();
+    expect(dirs(), 'nothing walked').toEqual([]);
+    expect(H.calls, 'no reducer was called').toEqual([]);
+    expect([H.reconnects, H.continues], 'nothing was pressed').toEqual([0, 0]);
+    expect(overlayShown(NO), 'the confirm step was not armed').toBe(false);
+  });
+
+  it.each(
+    HOLDERS,
+  )('the $holder moves focus between Yes and No on the confirm step, clamped at both ends [rb-140.1]', async ({
+    push,
+    release,
+  }) => {
+    // WRONG IMPL KILLED: a row list that still holds the hidden Retry and Continue (Up on Yes lands
+    // on a button nobody can see), and a wrapping list.
+    await openTerminal();
+    armByPad();
+    const press = (dir: 'Up' | 'Down'): void => {
+      push(dir);
+      gateTick();
+      release();
+      gateTick();
+    };
+    press('Down');
+    expect(activeId(), 'Down on No clamps').toBe(NO);
+    press('Up');
+    expect(activeId(), 'Up moves to Yes').toBe(YES);
+    press('Up');
+    expect(activeId(), 'Up on Yes clamps').toBe(YES);
+    press('Down');
+    expect(activeId(), 'Down moves back to No').toBe(NO);
+    expect([H.reconnects, H.continues], 'nothing was pressed').toEqual([0, 0]);
+    expect(overlayShown(NO), 'the confirm step is still armed').toBe(true);
+  });
+
+  it('a stick flicked from Up straight to Down between two polls, without centring, still moves once [rb-140.1]', async () => {
+    // WRONG IMPL KILLED: a gated frame that lets go of everything on every frame (the stick latches
+    // until it reads centre, so the Down edge of the flick is lost).
+    await openTerminal();
+    gateTap(PADI.Down);
+    expect(activeId(), 'precondition: Continue is focused').toBe(CONTINUE);
+    pad.axes[1] = -0.9;
+    gateTick();
+    expect(activeId(), 'stick Up moved to Retry').toBe(RETRY);
+    pad.axes[1] = 0.9;
+    gateTick();
+    expect(activeId(), 'the flick to Down moved to Continue, once').toBe(CONTINUE);
+    pad.axes[1] = 0;
+    gateTick();
+    expect(activeId()).toBe(CONTINUE);
+  });
+
+  it.each([
+    { dir: 'Down', armed: false, seated: RETRY },
+    { dir: 'Up', armed: false, seated: RETRY },
+    { dir: 'Down', armed: true, seated: NO },
+    { dir: 'Up', armed: true, seated: NO },
+  ] as const)('with no terminal button focused, D-pad $dir seats $seated (armed: $armed) and moves no further [rb-140.1]', async ({
+    dir,
+    armed,
+    seated,
+  }) => {
+    // WRONG IMPL KILLED: a move from no focus that seats the first or last shown button (Yes while
+    // armed), one that seats nothing, and one that seats and then also steps.
+    await openTerminal();
+    if (armed) armByPad();
+    barePage();
+    gateTap(dir === 'Up' ? PADI.Up : PADI.Down);
+    expect(activeId(), `${dir} seated ${seated}`).toBe(seated);
+    expect([H.reconnects, H.continues], 'seating pressed nothing').toEqual([0, 0]);
+  });
+
+  it('A on Retry reconnects exactly once however long it is held, and once more for a second press [rb-140.2]', async () => {
+    // WRONG IMPL KILLED: a pad A that never reaches the terminal, one that clicks on every frame it
+    // is held (a Retry flood), and one that talks to the world's NPC or walks instead.
+    await openTerminal();
+    hold(PADI.A);
+    gateTick(5);
+    expect(H.reconnects, 'a held A pressed Retry once').toBe(1);
+    expect(H.continues, 'and nothing else').toBe(0);
+    expect(activeId(), 'Retry keeps focus').toBe(RETRY);
+    lift(PADI.A);
+    gateTick();
+    hold(PADI.A);
+    gateTick();
+    expect(H.reconnects, 'a second press is a second Retry').toBe(2);
+    expect(H.calls, 'no reducer was called').toEqual([]);
+    expect(dirs(), 'nothing walked').toEqual([]);
+  });
+
+  it('A on Continue arms the confirm step and sends nothing: Yes and No show, Retry and Continue go, No is focused [rb-140.2]', async () => {
+    // WRONG IMPL KILLED: an A that confirms at once (a guest session minted by one press), and one
+    // that arms without moving focus to No.
+    await openTerminal();
+    gateTap(PADI.Down);
+    hold(PADI.A);
+    gateTick();
+    expect(overlayShown(NO), 'No is shown').toBe(true);
+    expect(overlayShown(YES), 'Yes is shown').toBe(true);
+    expect(overlayShown(RETRY), 'Retry is gone').toBe(false);
+    expect(overlayShown(CONTINUE), 'Continue is gone').toBe(false);
+    expect(activeId(), 'No is focused').toBe(NO);
+    expect([H.reconnects, H.continues], 'the first step sent nothing').toEqual([0, 0]);
+  });
+
+  it('A on Yes, reached by Up from No, continues anonymously exactly once however long it is held, and the held A then presses nothing on the first step [rb-140.2]', async () => {
+    // WRONG IMPL KILLED: an A that clicks the default No instead of the focused Yes, a confirm that
+    // fires on every held frame, and a held A that goes on to press Retry or Continue once the
+    // confirm step is spent.
+    await openTerminal();
+    armByPad();
+    gateTap(PADI.Up);
+    expect(activeId(), 'precondition: Up moved to Yes').toBe(YES);
+    hold(PADI.A);
+    gateTick(5);
+    expect(H.continues, 'one confirmed continue').toBe(1);
+    expect(H.reconnects, 'the held A pressed no Retry').toBe(0);
+    expect(overlayShown(NO), 'the confirm step is spent').toBe(false);
+    expect(overlayShown(CONTINUE), 'the first step is back and not re-armed').toBe(true);
+  });
+
+  it('A on No disarms the confirm step and sends nothing: Retry and Continue are back and Continue is focused [rb-140.2]', async () => {
+    // WRONG IMPL KILLED: an A on No that confirms, and one that leaves the confirm step armed.
+    await openTerminal();
+    armByPad();
+    hold(PADI.A);
+    gateTick();
+    expect(overlayShown(NO), 'the confirm step is gone').toBe(false);
+    expect(overlayShown(RETRY), 'Retry is back').toBe(true);
+    expect(overlayShown(CONTINUE), 'Continue is back').toBe(true);
+    expect(activeId(), 'Continue is focused').toBe(CONTINUE);
+    expect([H.reconnects, H.continues], 'No sent nothing').toEqual([0, 0]);
+  });
+
+  it.each([
+    { armed: false },
+    { armed: true },
+  ])('A with no terminal button focused does nothing at all, then a move seats the default and A acts (armed: $armed) [rb-140.2]', async ({
+    armed,
+  }) => {
+    // WRONG IMPL KILLED: an A that seats the default and clicks it (a stray A reconnects or arms),
+    // and one that seats it without clicking (focus appears from nowhere).
+    await openTerminal();
+    if (armed) armByPad();
+    barePage();
+    hold(PADI.A);
+    gateTick(3);
+    lift(PADI.A);
+    gateTick();
+    expect([H.reconnects, H.continues], 'nothing was pressed').toEqual([0, 0]);
+    expect(overlayShown(NO), 'the confirm step is as it was').toBe(armed);
+    expect(document.activeElement, 'and focus was not seated').toBe(document.body);
+
+    gateTap(PADI.Down);
+    expect(activeId(), 'control: Down seats the default').toBe(armed ? NO : RETRY);
+    hold(PADI.A);
+    gateTick();
+    if (armed) expect(overlayShown(NO), 'control: A on No disarmed').toBe(false);
+    else expect(H.reconnects, 'control: A on Retry reconnected').toBe(1);
+  });
+
+  it.each([
+    { when: 'pressed as it opens', beforeOpen: false },
+    { when: 'held since before it opened', beforeOpen: true },
+  ])('an A $when presses nothing until it is released and pressed again [rb-140.3]', async ({
+    beforeOpen,
+  }) => {
+    // WRONG IMPL KILLED: a terminal whose first frame reads a fresh A as a press (a Retry the player
+    // never chose, from the press that was meant for the world).
+    await terminalBoot();
+    if (beforeOpen) {
+      hold(PADI.A);
+      gateTick();
+    }
+    raiseTerminal();
+    if (!beforeOpen) hold(PADI.A);
+    gateTick(4);
+    expect(H.reconnects, 'the A held through the open pressed nothing').toBe(0);
+    lift(PADI.A);
+    gateTick();
+    hold(PADI.A);
+    gateTick();
+    expect(H.reconnects, 'control: the pressed again A acts').toBe(1);
+  });
+
+  it('the A that arms, held for several frames, does not press No; a fresh A does [rb-140.3]', async () => {
+    // WRONG IMPL KILLED: an arming A that carries on into the confirm step it just opened and
+    // presses No (the confirm step flashes and is gone).
+    await openTerminal();
+    gateTap(PADI.Down);
+    hold(PADI.A);
+    gateTick(5);
+    expect(overlayShown(NO), 'the confirm step is still up').toBe(true);
+    expect(activeId(), 'No is still focused').toBe(NO);
+    lift(PADI.A);
+    gateTick();
+    hold(PADI.A);
+    gateTick();
+    expect(overlayShown(NO), 'control: a fresh A presses No').toBe(false);
+  });
+
+  it('two pad buttons bound to A pressed in one poll act once: the second does not press No on the confirm step the first opened [rb-140.3]', async () => {
+    // WRONG IMPL KILLED: a poll loop that keeps routing the edges after one changed what the
+    // terminal shows (the second A clicks the freshly focused No, which disarms it again).
+    await openTerminal();
+    const second = makeFakePad();
+    second.index = 1;
+    setPadApi(() => [pad, second, null, null]);
+    gateTick();
+    gateTap(PADI.Down);
+    expect(activeId(), 'precondition: Continue is focused').toBe(CONTINUE);
+    hold(PADI.A);
+    second.buttons[PADI.A].pressed = true;
+    gateTick();
+    expect(overlayShown(NO), 'the confirm step is up').toBe(true);
+    expect(activeId(), 'No is focused and was not pressed').toBe(NO);
+    gateTick(2);
+    expect(overlayShown(NO), 'and it stays up while both are held').toBe(true);
+  });
+
+  it('an A held through the disarm that pressing No made does not arm the confirm step again [rb-140.3]', async () => {
+    // WRONG IMPL KILLED: a disarm that does not let go of the A still held (it presses the Continue
+    // the disarm just focused, and the confirm step comes back).
+    await openTerminal();
+    armByPad();
+    hold(PADI.A);
+    gateTick(5);
+    expect(overlayShown(NO), 'the confirm step is gone and stays gone').toBe(false);
+    expect(activeId(), 'Continue is focused').toBe(CONTINUE);
+    lift(PADI.A);
+    gateTick();
+    hold(PADI.A);
+    gateTick();
+    expect(overlayShown(NO), 'control: a fresh A on Continue arms again').toBe(true);
+  });
+
+  it.each([
+    { button: 'A', index: PADI.A, moves: false },
+    { button: 'Up', index: PADI.Up, moves: true },
+  ])('a $button pressed between frames while a mouse click arms the confirm step acts on nothing there until pressed again [rb-140.3]', async ({
+    index,
+    moves,
+  }) => {
+    // WRONG IMPL KILLED: a poll that routes the press it finds in the first armed frame (an A
+    // presses No, or an Up moves to Yes, in a confirm step the player never saw).
+    await openTerminal();
+    hold(index);
+    rootOf(CONTINUE).click();
+    expect(overlayShown(NO), 'precondition: the click armed it').toBe(true);
+    expect(activeId(), 'precondition: No is focused').toBe(NO);
+    gateTick(3);
+    expect(overlayShown(NO), 'the confirm step is still up').toBe(true);
+    expect(activeId(), 'and focus is still on No').toBe(NO);
+    lift(index);
+    gateTick();
+    hold(index);
+    gateTick();
+    if (moves) expect(activeId(), 'control: a fresh Up moves to Yes').toBe(YES);
+    else expect(overlayShown(NO), 'control: a fresh A presses No').toBe(false);
+  });
+
+  it.each([
+    { when: 'pressed as it closes', beforeClose: false },
+    { when: 'held since before it closed', beforeClose: true },
+  ])('a D-pad Up $when sends nothing to the world until it is released and pressed again [rb-140.3]', async ({
+    beforeClose,
+  }) => {
+    // WRONG IMPL KILLED: a lift that latches nothing, or that lets the first frame route the press
+    // (the character walks off on the press that was meant for the terminal).
+    await terminalBoot();
+    raiseTerminal();
+    gateTick();
+    if (beforeClose) {
+      hold(PADI.Up);
+      gateTick(2);
+    }
+    liftTerminal();
+    if (!beforeClose) hold(PADI.Up);
+    gateTick(4);
+    expect(dirs(), 'nothing reached the world').toEqual([]);
+    lift(PADI.Up);
+    gateTick();
+    expect(dirs(), 'and nor did its release').toEqual([]);
+    hold(PADI.Up);
+    gateTick();
+    expect(dirs(), 'control: a fresh press walks').toEqual(['Face:North']);
+  });
+
+  it('a W key pressed after the terminal lifts and before the first ungated frame stays held and keeps walking [rb-140.3]', async () => {
+    // Regression guard (green before the change): only the pad is latched at the lift. WRONG IMPL
+    // KILLED: a lift that lets go of the keys as well (the walk dies on the frame after the lift).
+    await terminalBoot();
+    raiseTerminal();
+    gateTick();
+    liftTerminal();
+    const down = gateAt + 1;
+    fire('keydown', 'KeyW', down);
+    expect(dirs(), 'the press sent its Face').toEqual(['Face:North']);
+    frame(down + 1);
+    ackAllNorth(down + 10, 6, 'North');
+    frame(down + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'the key is still held: the walk continues').toEqual(['Face:North', 'North']);
+    gateAt = down + HOLD_COMMIT_MS + 10;
+    fire('keyup', 'KeyW', gateAt + 5);
+  });
+
+  it.each([
+    { phase: 'first step', armed: false },
+    { phase: 'confirm step', armed: true },
+  ])('B, Start, Select, X, Y, LB, RB, LT, RT, Left and Right and a stick pushed sideways do nothing on the $phase: no focus moved, no press, no frame, no accelerator, no walk; Down or Up still works [rb-140.4]', async ({
+    armed,
+  }) => {
+    // WRONG IMPL KILLED: B answering No or Start closing the terminal, a pad press that reaches
+    // the game's frames or the accelerators (LT and RT open Monsters and the Bag), Left and Right
+    // walking the list, and a press of an ignored button that makes the keycaps the pad's.
+    await openTerminal();
+    if (armed) armByPad();
+    const ns = await import('./shell/inputState');
+    const focused = activeId();
+    const source = ns.lastSource;
+    for (const { index } of IGNORED) {
+      hold(index);
+      gateTick(2);
+      lift(index);
+      gateTick();
+    }
+    for (const x of [-0.9, 0.9]) {
+      pad.axes[0] = x;
+      gateTick(2);
+      pad.axes[0] = 0;
+      gateTick();
+    }
+    expect(activeId(), 'focus did not move').toBe(focused);
+    expect(stack(), 'no frame opened or closed').toEqual(PAD_WORLD);
+    expect(boxShown(), 'no accelerator opened Monsters').toBe(false);
+    expect(dirs(), 'nothing walked').toEqual([]);
+    expect(H.calls, 'no reducer was called').toEqual([]);
+    expect([H.reconnects, H.continues], 'nothing was pressed').toEqual([0, 0]);
+    expect(overlayShown(NO), 'the confirm step is as it was').toBe(armed);
+    expect(overlayShown('session-overlay'), 'the terminal is still up').toBe(true);
+    expect(ns.lastSource, 'the keycaps did not follow an ignored button').toBe(source);
+
+    gateTap(armed ? PADI.Up : PADI.Down);
+    expect(activeId(), 'control: the D-pad still moves').toBe(armed ? YES : CONTINUE);
+  });
+
+  it.each([
+    { button: 'Up', index: PADI.Up },
+    { button: 'Down', index: PADI.Down },
+    { button: 'A', index: PADI.A },
+  ])('a pad $button pressed inside the game screen makes the keycaps the pad`s; the ignored buttons do not [rb-140.4]', async ({
+    index,
+  }) => {
+    // WRONG IMPL KILLED: a terminal press that never notes the pad (the keycaps behind it keep
+    // showing keys), and an ignored button that does.
+    await openTerminal();
+    const ns = await import('./shell/inputState');
+    expect(ns.lastSource, 'precondition: the keycaps are the keyboard`s').toBe('keys');
+    gateTap(PADI.B);
+    gateTap(PADI.Start);
+    expect(ns.lastSource, 'B and Start note nothing').toBe('keys');
+    hold(index);
+    gateTick();
+    expect(ns.lastSource, 'the press made the keycaps the pad`s').toBe('pad');
+  });
+
+  it('with focus on a field outside the game screen a pad Down, Up and A act on nothing and note nothing; back inside they act [rb-140.4]', async () => {
+    // WRONG IMPL KILLED: a terminal poll that skips the focus guard (a pad press moves focus out of
+    // a text field the player is typing in), and an outside press that is kept and acts later.
+    await openTerminal();
+    const ns = await import('./shell/inputState');
+    const outside = document.createElement('input');
+    outside.id = 'rb140-outside-field';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: the field has focus').toBe(outside);
+    expect(gameScreen().contains(outside), 'precondition: it is outside the game screen').toBe(
+      false,
+    );
+    gateTap(PADI.Down);
+    gateTap(PADI.Up);
+    gateTap(PADI.A);
+    expect(document.activeElement, 'focus stayed on the field').toBe(outside);
+    expect([H.reconnects, H.continues], 'nothing was pressed').toEqual([0, 0]);
+    expect(overlayShown(NO), 'nothing armed').toBe(false);
+    expect(ns.lastSource, 'the keycaps did not follow').toBe('keys');
+
+    rootOf(RETRY).focus();
+    gateTap(PADI.Down);
+    expect(activeId(), 'control: back inside, Down moves').toBe(CONTINUE);
+    gateTap(PADI.A);
+    expect(overlayShown(NO), 'control: and A arms').toBe(true);
+  });
+
+  it('a pad press made while focus is outside the game screen is dropped, not deferred: refocusing inside with it still held acts on nothing until it is pressed again [rb-140.4]', async () => {
+    // WRONG IMPL KILLED: a terminal poll that returns on outside focus before reading the pad, so
+    // the held button looks freshly pressed once focus is back inside and acts then.
+    await openTerminal();
+    const outside = document.createElement('input');
+    outside.id = 'rb140-outside-held';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(gameScreen().contains(outside), 'precondition: it is outside the game screen').toBe(
+      false,
+    );
+
+    hold(PADI.Down);
+    gateTick();
+    rootOf(RETRY).focus();
+    gateTick(3);
+    expect(activeId(), 'Down held across the refocus does not move').toBe(RETRY);
+    lift(PADI.Down);
+    gateTick();
+    hold(PADI.Down);
+    gateTick();
+    expect(activeId(), 'control: lifted and pressed again, Down moves').toBe(CONTINUE);
+    lift(PADI.Down);
+    gateTick();
+
+    rootOf(RETRY).focus();
+    outside.focus();
+    hold(PADI.A);
+    gateTick();
+    rootOf(RETRY).focus();
+    gateTick(3);
+    expect(H.reconnects, 'A held across the refocus does not press Retry').toBe(0);
+    lift(PADI.A);
+    gateTick();
+    hold(PADI.A);
+    gateTick();
+    expect(H.reconnects, 'control: lifted and pressed again, A presses Retry').toBe(1);
+  });
+
+  it('the terminal paints the hint that says the D-pad also moves and the A button also chooses [rb-140.5]', async () => {
+    // WRONG IMPL KILLED: a hint that tells a pad-only player about Tab and Enter alone.
+    await openTerminal();
+    const hint = rootOf('session-hint');
+    expect(hint.style.display, 'the hint is on screen').not.toBe('none');
+    expect(hint.textContent, 'the hint reads').toBe(HINT_EN);
+  });
+
+  it('a Tab, Enter or Space keydown on a focused terminal button is left to the browser: not default-prevented [rb-140.5]', async () => {
+    // Regression guard (green before the change): the keyboard keeps working as it does today.
+    // WRONG IMPL KILLED: a gate that swallows the keys a focused native button owns.
+    await openTerminal();
+    expect(activeId(), 'precondition: Retry is focused').toBe(RETRY);
+    for (const code of ['Tab', 'Enter', 'Space']) {
+      gateAt += 10;
+      const event = fire('keydown', code, gateAt, { target: rootOf(RETRY) });
+      expect(event.defaultPrevented, `${code} on the focused Retry is the browser's`).toBe(false);
+      fire('keyup', code, gateAt + 1, { target: rootOf(RETRY) });
+    }
   });
 
   // --- an absent, empty or throwing Gamepad API -------------------------------------------------

@@ -997,7 +997,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8k (named intentional change): 2 new plain keys — the session gate's Retry label and its
   // frame hint that B and Start are inert (sessionModel.ts, painted by sessionView.ts).
   'session.retry': 'Retry',
-  'session.hint': 'B and Start do nothing here. Tab moves, Enter chooses.',
+  // The hint also says the D-pad moves and A chooses.
+  'session.hint':
+    'B and Start do nothing here. Tab or the D-pad moves, Enter or the A button chooses.',
   // ctl-10a (named intentional change): 5 new plain keys — the three interaction verbs the world
   // chip and the picker rows name, the healer's display name (a heal location has no npc id), and
   // the catalog's name for the Enter keycap (main.ts).
@@ -2912,7 +2914,8 @@ const A_CIRCUMFLEX = String.fromCharCode(0x00e2);
 
 const EXPECTED_FR_CTL8K_PLAIN: Record<string, string> = {
   'session.retry': `R${E_ACUTE}essayer`,
-  'session.hint': `B et Start sont sans effet ici. Tab pour naviguer, Entr${E_ACUTE}e pour choisir.`,
+  // The hint also names the pad's cross and A button.
+  'session.hint': `B et Start sont sans effet ici. Tab ou la croix directionnelle pour naviguer, Entr${E_ACUTE}e ou le bouton A pour choisir.`,
 };
 
 describe('ctl-8k: catalog.fr.ts, the keys ctl-8k adds', () => {
