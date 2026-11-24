@@ -9,7 +9,9 @@
 // directly by `conn.sessionState()` (registry-external, D17). `connection.ts` imports the
 // `SessionState` type from here as the SSOT.
 
+import type { VButton } from '../input/buttons';
 import { t } from './i18n/resolver';
+import type { RowOp } from './screens/profileScreen';
 
 /** The three states the session terminal can be in. `hidden` is the ordinary case (nothing
  *  showing); `expired` and `unreachable` each own DISTINCT copy. The `'hidden'`
@@ -122,11 +124,27 @@ export interface SessionViewModel {
   /** The second step's options; No is the default (CTL8K.1). */
   readonly confirmYesLabel: string;
   readonly confirmNoLabel: string;
-  /** Says B and Start are inert under the gate (CTL8K.1). */
+  /** Says B and Start are inert under the gate (CTL8K.1), and what moves and chooses: Tab and Enter,
+   *  and the pad's D-pad and A. */
   readonly hint: string;
   /** Present ONLY while confirmPending (AUTH-56's distinct second step). */
   readonly confirmPrompt: string | undefined;
   readonly feedback: string | undefined;
+}
+
+/** What a pad press of `button` does on the session terminal: the D-pad and the stick move over its
+ *  buttons, A chooses, and every other button (B and Start among them) does nothing. */
+export function sessionPadOp(button: VButton): RowOp | null {
+  switch (button) {
+    case 'Up':
+      return { kind: 'move', delta: -1 };
+    case 'Down':
+      return { kind: 'move', delta: 1 };
+    case 'A':
+      return { kind: 'activate' };
+    default:
+      return null;
+  }
 }
 
 /** Pure projection of the model state into what the DOM shell renders. */

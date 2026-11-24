@@ -1659,7 +1659,10 @@ The hint bar and Help are generated from the context table, the live bindings an
 catalog (`client/src/ui/hintBarModel.ts`, `client/src/ui/helpModel.ts`). Bindings persist
 per browser in `localStorage['mr.controls']` (versioned; D-pad, A, B and Start always keep
 a key). Every waiting Controls cell has a way out on the pad: the button a Pad cell shows,
-else the live B, and the waiting line names it for a player on the pad. Escape alone is
+else the live B, and the waiting line names it for a player on the pad. The session terminal is
+outside the router and the overlay registry, so the pad reaches its buttons directly: the D-pad or
+the stick moves and A presses, while B and Start do nothing. A button held while the terminal
+opens, closes, arms or disarms its confirm step acts only once released and pressed again. Escape alone is
 routed in the capture phase, so a view's `stopPropagation` cannot trap it; every other key
 keeps the bubble phase, where text-entry views shield their
 fields from the accelerators. Each view keeps its state in a pure model (`*Model.ts`) with
@@ -1682,13 +1685,16 @@ and for dialogue it desyncs server conversation state, so server-owned frames fo
 store and an ongoing battle cannot be hidden. Pure models make the UI logic testable
 without a DOM. Generated hints and help cannot drift from the bindings. A pad-only
 player has no other way out of a cell that takes keys, or of a Pad cell with no button to press
-again; B is always bound and already means back. A total catalog makes a missing
+again; B is always bound and already means back. Nothing else on the pad can press Retry or
+Continue as guest, and the confirm step gives up the account session for good, so one press must
+never both open it and answer it. A total catalog makes a missing
 translation a compile error rather than a blank label, and throwing (rather than showing the key) keeps an unwired string from looking wired.
 
 **Rules out.** A feature reachable only by a hotkey (F9's menu twin, Options › Report a
 problem, is still owed); a hotkey-only discovery menu; leaving a waiting cell on a
 timeout or disabling Key cells after pad input (a pad player with a keyboard at hand can
-still bind keys); a
+still bind keys); B answering No on the session terminal (a step there is left by choosing a
+button, and B keeps one meaning on every step of it: nothing); a
 hand-written controls list; a dedicated interact key; new per-overlay tiers,
 mutual-exclusion checks or force-hide lists; overlays anchored to the window or in page
 flow; menus that hide themselves on a pick; conveying meaning by colour alone; WAAPI
