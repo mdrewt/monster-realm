@@ -707,14 +707,16 @@ positions, and draws.
 ### UI
 
 Input is a console-style pipeline of virtual buttons (`input/buttons.ts`: the D-pad, A, B,
-X, Y, LB, RB, Start, Select). Two sources feed it: `input/keyboardSource.ts` maps keys through
+X, Y, LB, RB, Start, Select). Three sources feed it: `input/keyboardSource.ts` maps keys through
 the remappable binding table (`input/bindings.ts`, saved by `input/bindingStore.ts`, drawn by
-`input/glyphs.ts`), and `input/pointerSource.ts` is ONE dispatcher on `#game-screen`. A click on
-the canvas at the world base is A (no coordinates). A click on a row of the top frame is a seek:
-the D-pad presses that walk that list's cursor there, then A. The first press is a probe: if the
-clicked list's cursor did not move as planned, it is undone and nothing is activated. A click on a tab is LB/RB. A right-click, or a touch long-press
+`input/glyphs.ts`), `input/gamepadSource.ts` polls every connected pad once per frame through the
+remappable pad table (`input/padBindings.ts`), and `input/pointerSource.ts` is ONE dispatcher on
+`#game-screen`. A click on the canvas at the world base is A (no coordinates). A click on a row of
+the top frame is a seek: the D-pad presses that walk that list's cursor there, then A. The
+first press is a probe: if the clicked list's cursor did not move as planned, it is undone and nothing is activated. A click on a tab is LB/RB. A right-click, or a touch long-press
 (`input/longPress.ts`, 500 ms within 10 px, with a fill ring), is B, or cancels a remap capture.
-A hint-bar chip presses its button. The mouse hovering a row moves the cursor there. Both sources
+The pad leaves a waiting Controls cell with the button a Pad cell shows, else with B.
+A hint-bar chip presses its button. The mouse hovering a row moves the cursor there. All three
 hand button edges to `input/router.ts`, which decides walking, menu navigation or a screen button
 from the context on top. Two clicks skip the router: a main-menu row (the menu's own pick) and the
 dialogue's choice and shop buttons.

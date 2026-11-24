@@ -9,7 +9,8 @@
 //
 // The Pad cell is the same rule in the pad's own namespace (`capturePad`): one pad button per row,
 // a captured index held elsewhere swaps, and the protected buttons always keep a pad button. The F8
-// and F9 rows have no pad binding (`padRow`).
+// and F9 rows have no pad binding (`padRow`). One pad button always leaves a waiting cell
+// unchanged (`leavePadIndex`): the one a Pad cell shows, else B's.
 import { type Bindings, isBindableCode, type KeyCode, PROTECTED_BUTTONS } from '../input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from '../input/buttons';
 import { glyph } from '../input/glyphs';
@@ -18,6 +19,7 @@ import {
   MENU_ACCELS,
   type PadBindings,
   type PadIndex,
+  padButtonFor,
 } from '../input/padBindings';
 import { padGlyph } from '../input/padGlyphs';
 import type { MenuAccel } from '../input/router';
@@ -121,14 +123,21 @@ export function rowLabel(row: ControlsRow): string {
   return row.kind === 'button' ? BUTTON_LABELS[row.id]() : ACCEL_LABELS[row.id]();
 }
 
-/** The line shown while a slot of `row` waits for a key. */
-export function capturePrompt(row: ControlsRow): string {
-  return tf('controls.capture.prompt', { label: rowLabel(row) });
+/** The line shown while a slot of `row` waits for a key; `leave` is the pad button it names as the
+ *  way out (none for a player on the keyboard). */
+export function capturePrompt(row: ControlsRow, leave?: PadIndex): string {
+  const label = rowLabel(row);
+  return leave === undefined
+    ? tf('controls.capture.prompt', { label })
+    : tf('controls.capture.promptLeave', { label, key: padGlyph(leave) });
 }
 
-/** The line shown while the Pad cell of `row` waits for a pad button. */
-export function padCapturePrompt(row: ControlsRow): string {
-  return tf('controls.capture.padPrompt', { label: rowLabel(row) });
+/** The line shown while the Pad cell of `row` waits for a pad button; `leave` as `capturePrompt`. */
+export function padCapturePrompt(row: ControlsRow, leave?: PadIndex): string {
+  const label = rowLabel(row);
+  return leave === undefined
+    ? tf('controls.capture.padPrompt', { label })
+    : tf('controls.capture.padPromptLeave', { label, key: padGlyph(leave) });
 }
 
 const codesOf = (b: Bindings, row: ControlsRow): readonly KeyCode[] =>
@@ -231,6 +240,12 @@ export function padSlot(pad: PadBindings, row: PadRow): PadIndex | undefined {
   return padIndicesOf(pad, row)[0];
 }
 
+/** The pad button that ends `target`'s capture unchanged: the one a Pad cell shows, else B's. */
+export function leavePadIndex(pad: PadBindings, target: CaptureTarget): PadIndex | undefined {
+  const shown = target.slot === 'pad' ? padSlot(pad, target.row) : undefined;
+  return shown ?? pad.buttons.B[0];
+}
+
 /** The row `index` is bound to, if any. */
 const padHolderOf = (pad: PadBindings, index: PadIndex): PadRow | undefined =>
   PAD_ROWS.find((row) => padIndicesOf(pad, row).includes(index));
@@ -250,8 +265,9 @@ function withPadRow(pad: PadBindings, row: PadRow, index: PadIndex | undefined):
 }
 
 /** What a pad press captured for `target` does to `pad`: `captureKey`'s rule with one slot per
- *  row. The index the cell shows cancels; an index held by another row swaps with the cell's old
- *  one, unless a protected button would end with no pad button. Never mutates `pad`. */
+ *  row. The index the cell shows cancels, as does B's on an empty cell; an index held by another row
+ *  swaps with the cell's old one, unless a protected button would end with no pad button. Never
+ *  mutates `pad`. */
 export function capturePad(
   pad: PadBindings,
   target: PadTarget,
@@ -259,7 +275,10 @@ export function capturePad(
 ): PadCaptureOutcome {
   if (!isBindablePadIndex(index)) return { kind: 'refused', reason: 'reserved' };
   const mine = padSlot(pad, target.row);
-  if (index === mine) return { kind: 'cancelled' };
+  // As `captureKey`'s cancel; an empty cell shows no button to press again, so B leaves it.
+  if (index === mine || (mine === undefined && padButtonFor(pad, index) === 'B')) {
+    return { kind: 'cancelled' };
+  }
   const holder = padHolderOf(pad, index);
   const bound = withPadRow(pad, target.row, index);
   if (holder === undefined) return { kind: 'bound', bindings: bound };

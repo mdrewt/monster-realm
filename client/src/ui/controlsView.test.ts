@@ -26,7 +26,7 @@ import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from '../input/buttons';
 import { glyph, resetLearnedKeys } from '../input/glyphs';
 import { PAD_DEFAULT_BINDINGS, type PadBindings, type PadIndex } from '../input/padBindings';
-import { padGlyph } from '../input/padGlyphs';
+import { type InputSource, padGlyph } from '../input/padGlyphs';
 import type { MenuAccel } from '../input/router';
 import { t as a11yT } from './a11yCopy';
 import { confirmLayout } from './actionSheetModel';
@@ -136,6 +136,8 @@ interface RigOptions {
   readonly onTextStep?: (step: Step) => boolean;
   /** The live pad table the Pad cells read; absent, the view is built without the handler. */
   readonly padBindings?: () => PadBindings;
+  /** The device of the player's last input; absent, the view is built without the handler. */
+  readonly inputSource?: () => InputSource;
 }
 
 /** A fresh document and one view over it, every handler a spy. */
@@ -166,6 +168,7 @@ function rig(opts: RigOptions = {}) {
     textStep,
     onTextStep,
     ...(opts.padBindings === undefined ? {} : { padBindings: opts.padBindings }),
+    ...(opts.inputSource === undefined ? {} : { inputSource: opts.inputSource }),
   } as Handlers);
   return { view, onClear, onReset, onCancelCapture, announce, onOutcome, textStep, onTextStep };
 }
@@ -2177,5 +2180,178 @@ describe('ControlsView — the Pad column', () => {
     );
     expect(readCell('Y_pad')).toBe(padText(btnRow('Y'), padGlyph(3)));
     expect(readCell('A_0'), 'and the default key').toBe(slotText(DEFAULT_BINDINGS, btnRow('A'), 0));
+  });
+});
+
+// --- the waiting line names the pad button that leaves the cell unchanged -----------------------
+//
+// With the pad as the last input (`handlers.inputSource()`), the line adds the leave button through
+// `capturePrompt(row, leave)` / `padCapturePrompt(row, leave)`; with the keyboard, or no handler,
+// it is the plain line. `refreshPrompt()` re-reads the source and the pad table mid-capture.
+
+describe('ControlsView: the waiting line and refreshPrompt', () => {
+  it('a Key cell painted while the last input is the pad shows capturePrompt(row, B`s pad index), announced once; with the keyboard, or no inputSource handler, it is the plain line [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a leave line shown for the keyboard (a key player is told about a pad), an
+    // absent handler that throws, a line that omits the glyph, and a prompt not announced as shown.
+    const aKey = slotOf(btnRow('A'), 0);
+    const pad = rig({ inputSource: () => 'pad' });
+    pad.view.show();
+    pad.view.paint(paintOf());
+    pad.announce.mockClear();
+    pad.view.paint(paintOf({ nav: navOn('buttons', 'A_0'), capturing: aKey }));
+    expect(readable(el(CAPTURE_ID), 'the prompt')).toBe(capturePrompt(btnRow('A'), 1));
+    expect(el(CAPTURE_ID).textContent).toContain(padGlyph(1));
+    expect(el(CAPTURE_ID).textContent).not.toBe(capturePrompt(btnRow('A')));
+    expect(pad.announce).toHaveBeenCalledTimes(1);
+    expect(pad.announce).toHaveBeenCalledWith(capturePrompt(btnRow('A'), 1));
+
+    for (const opts of [{ inputSource: (): InputSource => 'keys' }, {}] as const) {
+      const keys = rig(opts);
+      keys.view.show();
+      keys.view.paint(paintOf());
+      keys.announce.mockClear();
+      keys.view.paint(paintOf({ nav: navOn('buttons', 'A_0'), capturing: aKey }));
+      expect(el(CAPTURE_ID).textContent, 'keyboard: the plain line').toBe(
+        `Press a key for Confirm (A)${ELLIPSIS}`,
+      );
+      expect(keys.announce).toHaveBeenCalledTimes(1);
+      expect(keys.announce).toHaveBeenCalledWith(capturePrompt(btnRow('A')));
+    }
+  });
+
+  it('a Pad cell painted while the last input is the pad names the button it shows (X: 2), and an empty Pad cell names B`s live button, a remapped one included [rb-138.5]', () => {
+    // WRONG IMPL KILLED: B's button named for a Pad cell that has its own (pressing it would swap), a
+    // default 1 for a remapped B, and a keyboard-source line carrying a glyph.
+    let pad: PadBindings = PAD_DEFAULT_BINDINGS;
+    const { view, announce } = rig({ padBindings: () => pad, inputSource: () => 'pad' });
+    view.show();
+    view.paint(paintOf());
+    announce.mockClear();
+    view.paint(paintOf({ nav: navOn('buttons', 'X_pad'), capturing: padAt(padBtnRow('X')) }));
+    expect(el(CAPTURE_ID).textContent).toBe(padCapturePrompt(btnRow('X'), 2));
+    expect(announce).toHaveBeenLastCalledWith(padCapturePrompt(btnRow('X'), 2));
+    view.paint(paintOf());
+    view.paint(paintOf({ nav: navOn('shortcuts', 'J_pad'), capturing: padAt(padAccRow('J')) }));
+    expect(el(CAPTURE_ID).textContent, 'empty Journal Pad cell: B`s 1').toBe(
+      padCapturePrompt(accRow('J'), 1),
+    );
+    view.paint(paintOf());
+    pad = padWith({ B: [10] });
+    view.paint(paintOf({ nav: navOn('shortcuts', 'J_pad'), capturing: padAt(padAccRow('J')) }));
+    expect(el(CAPTURE_ID).textContent, 'remapped B: 10').toBe(padCapturePrompt(accRow('J'), 10));
+    view.paint(paintOf());
+    view.paint(paintOf({ nav: navOn('buttons', 'A_0'), capturing: slotOf(btnRow('A'), 0) }));
+    expect(el(CAPTURE_ID).textContent, 'a Key cell: B`s live 10').toBe(
+      capturePrompt(btnRow('A'), 10),
+    );
+  });
+
+  it('refreshPrompt does nothing while nothing captures: no announcement, no prompt text, the chip stays hidden [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a refresh that announces a line for a capture that is not there (a screen
+    // reader says "Press a key" on every idle pad press), and one that shows the prompt.
+    const { view, announce } = rig({ inputSource: () => 'pad' });
+    view.show();
+    view.paint(paintOf());
+    announce.mockClear();
+    view.refreshPrompt();
+    expect(announce).not.toHaveBeenCalled();
+    expect(el(CAPTURE_ID).textContent).toBe('');
+    expect(hiddenAncestorOf(el(CAPTURE_ID))).not.toBeNull();
+    expect(hiddenAncestorOf(el(CANCEL_ID))).not.toBeNull();
+    // A capture that ended is no capture either.
+    view.paint(paintOf({ capturing: slotOf(btnRow('A'), 0) }));
+    view.paint(paintOf());
+    announce.mockClear();
+    view.refreshPrompt();
+    expect(announce).not.toHaveBeenCalled();
+    expect(hiddenAncestorOf(el(CAPTURE_ID))).not.toBeNull();
+  });
+
+  it('refreshPrompt rewrites #controls-capture and announces the new line once when the last input switches keys to pad and back during a capture; a refresh with no change announces nothing [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a line read only at capture start (the player who switches device keeps
+    // the wrong line), a refresh that announces on every call, one that writes the text but stays
+    // silent, one that announces without rewriting, and one that announces the line of the other device.
+    let source: InputSource = 'keys';
+    const { view, announce } = rig({ inputSource: () => source });
+    view.show();
+    view.paint(paintOf());
+    const aKey = slotOf(btnRow('A'), 0);
+    view.paint(paintOf({ nav: navOn('buttons', 'A_0'), capturing: aKey }));
+    announce.mockClear();
+
+    view.refreshPrompt();
+    expect(announce, 'no change: silent').not.toHaveBeenCalled();
+    expect(el(CAPTURE_ID).textContent).toBe(capturePrompt(btnRow('A')));
+
+    source = 'pad';
+    view.refreshPrompt();
+    expect(el(CAPTURE_ID).textContent, 'rewritten').toBe(capturePrompt(btnRow('A'), 1));
+    expect(announce, 'announced once').toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(capturePrompt(btnRow('A'), 1));
+    view.refreshPrompt();
+    expect(announce, 'a second refresh on the same device is silent').toHaveBeenCalledTimes(1);
+
+    source = 'keys';
+    view.refreshPrompt();
+    expect(el(CAPTURE_ID).textContent, 'back to the plain line').toBe(capturePrompt(btnRow('A')));
+    expect(announce).toHaveBeenCalledTimes(2);
+    expect(announce).toHaveBeenLastCalledWith(capturePrompt(btnRow('A')));
+    expect(view.capturing, 'the capture itself is untouched').toEqual(aKey);
+  });
+
+  it('refreshPrompt follows the LIVE pad table too: a Pad cell whose shown button changes, or a remapped B, rewrites and announces the new glyph once; a repaint of the same capture then keeps that line and says nothing [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a pad table read once at capture start, a repaint that snaps the line back
+    // to the start line, and a repaint that re-announces the refreshed line.
+    let pad: PadBindings = PAD_DEFAULT_BINDINGS;
+    const { view, announce } = rig({ padBindings: () => pad, inputSource: () => 'pad' });
+    view.show();
+    view.paint(paintOf());
+    const jPad = padAt(padAccRow('J'));
+    const paintJ = (): void =>
+      view.paint(paintOf({ nav: navOn('shortcuts', 'J_pad'), capturing: jPad }));
+    paintJ();
+    expect(el(CAPTURE_ID).textContent).toBe(padCapturePrompt(accRow('J'), 1));
+    announce.mockClear();
+    pad = padWith({ B: [10] });
+    view.refreshPrompt();
+    expect(el(CAPTURE_ID).textContent).toBe(padCapturePrompt(accRow('J'), 10));
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(padCapturePrompt(accRow('J'), 10));
+    paintJ();
+    expect(el(CAPTURE_ID).textContent, 'the repaint keeps the refreshed line').toBe(
+      padCapturePrompt(accRow('J'), 10),
+    );
+    expect(announce, 'and says nothing').toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshPrompt leaves a standing hint and the capture target alone: only the waiting line changes [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a refresh that clears the refusal hint raised by the same press (the
+    // player would never read why the key was refused) or ends the capture.
+    let source: InputSource = 'keys';
+    const { view } = rig({ inputSource: () => source });
+    view.show();
+    const aKey = slotOf(btnRow('A'), 0);
+    view.paint(paintOf({ capturing: aKey }));
+    view.showHint(t('controls.refused.reserved'));
+    source = 'pad';
+    view.refreshPrompt();
+    expect(el(FEEDBACK_ID).textContent).toBe(t('controls.refused.reserved'));
+    expect(stripHidden()).toBe(false);
+    expect(view.capturing).toEqual(aKey);
+  });
+
+  it('the pad leave line follows the locale: the French waiting line differs from the English and holds the row label and the pad glyph [rb-138.5]', () => {
+    // WRONG IMPL KILLED: a leave sentence frozen in English.
+    const { view } = rig({ inputSource: () => 'pad' });
+    view.show();
+    view.paint(paintOf({ capturing: slotOf(btnRow('A'), 0) }));
+    const en = el(CAPTURE_ID).textContent;
+    setLocale('fr');
+    view.paint(paintOf());
+    view.paint(paintOf({ capturing: slotOf(btnRow('A'), 0) }));
+    const fr = el(CAPTURE_ID).textContent ?? '';
+    expect(fr).not.toBe(en);
+    expect(fr).toBe(capturePrompt(btnRow('A'), 1));
+    expect(fr).toContain(padGlyph(1));
   });
 });

@@ -39,7 +39,7 @@ import type { Bindings } from '../input/bindings';
 import type { Accel } from '../input/buttons';
 import { glyph } from '../input/glyphs';
 import { PAD_DEFAULT_BINDINGS, type PadBindings } from '../input/padBindings';
-import { padGlyph } from '../input/padGlyphs';
+import { type InputSource, padGlyph } from '../input/padGlyphs';
 import { confirmLayout } from './actionSheetModel';
 import {
   type ContextSheet,
@@ -51,6 +51,7 @@ import {
 import {
   type CaptureTarget,
   capturePrompt,
+  leavePadIndex,
   padCapturePrompt,
   padSlot,
   rowLabel,
@@ -76,6 +77,9 @@ export interface ControlsViewHandlers {
   /** The live pad table; `PAD_DEFAULT_BINDINGS` when absent. Optional, like `textStep`, only for
    *  the shell rigs that never remap the pad; main.ts always passes it. */
   readonly padBindings?: () => PadBindings;
+  /** The device of the player's last press; 'keys' when absent. Optional, like `padBindings`;
+   *  main.ts always passes it. */
+  readonly inputSource?: () => InputSource;
   /** Unbind an accelerator; false when the new table could not be saved. */
   readonly onClear: (accel: Accel) => boolean;
   /** Restore the default keyboard and pad tables; false when they could not be saved. */
@@ -127,10 +131,6 @@ const confirmLabel = (key: string): string => (key === 'yes' ? t('prompt.yes') :
 
 const sameTarget = (a: CaptureTarget | null, b: CaptureTarget): boolean =>
   a !== null && a.slot === b.slot && a.row.kind === b.row.kind && a.row.id === b.row.id;
-
-/** The line shown while `target` waits: a key's prompt, or a pad button's. */
-const promptOf = (target: CaptureTarget): string =>
-  target.slot === 'pad' ? padCapturePrompt(target.row) : capturePrompt(target.row);
 
 /** Find an existing element or create a hidden one appended to `parent`. */
 function ensureElement(id: string, tag = 'div', parent: HTMLElement = document.body): HTMLElement {
@@ -276,6 +276,31 @@ export class ControlsView implements ControlsScreenView {
     closeOverlayA11y('controlsView', null);
   }
 
+  /** While a capture waits, show its waiting line as it reads now (the player's input device may have
+   *  changed), announced when it changed. */
+  refreshPrompt(): void {
+    if (this.#capturing === null) return;
+    const line = this.#promptOf(this.#capturing);
+    if (line === this.#capture.textContent) return;
+    this.#capture.textContent = line;
+    this.#handlers.announce(line);
+  }
+
+  /** The line shown while `target` waits: a key's prompt, or a pad button's. For a player on the pad
+   *  it names the pad button that leaves the cell unchanged. */
+  #promptOf(target: CaptureTarget): string {
+    const leave =
+      this.#handlers.inputSource?.() === 'pad' ? leavePadIndex(this.#pad(), target) : undefined;
+    return target.slot === 'pad'
+      ? padCapturePrompt(target.row, leave)
+      : capturePrompt(target.row, leave);
+  }
+
+  /** The live pad table. */
+  #pad(): PadBindings {
+    return this.#handlers.padBindings?.() ?? PAD_DEFAULT_BINDINGS;
+  }
+
   /** Write a hint on the strip and announce it, once per call. */
   showHint(text: string): void {
     this.#feedback.textContent = text;
@@ -293,7 +318,7 @@ export class ControlsView implements ControlsScreenView {
     this.#capturing = p.capturing;
     if (p.capturing !== null && !sameTarget(was, p.capturing)) {
       this.#clearHint();
-      this.#handlers.announce(promptOf(p.capturing));
+      this.#handlers.announce(this.#promptOf(p.capturing));
     }
     // A hint belongs to the capture that refused the key: it ends with it.
     if (was !== null && p.capturing === null) this.#clearHint();
@@ -328,7 +353,7 @@ export class ControlsView implements ControlsScreenView {
 
   #render(p: ControlsPaint): void {
     const bindings = this.#handlers.bindings();
-    const pad = this.#handlers.padBindings?.() ?? PAD_DEFAULT_BINDINGS;
+    const pad = this.#pad();
     const step = this.#handlers.textStep?.() ?? 'normal';
     renderTabBar(this.#tabBar, p.layout, p.nav, { frame: FRAME, label: tabLabel });
     renderNav(this.#rows, p.layout, p.nav, {
@@ -337,7 +362,7 @@ export class ControlsView implements ControlsScreenView {
     });
 
     const waiting = p.capturing;
-    this.#capture.textContent = waiting === null ? '' : promptOf(waiting);
+    this.#capture.textContent = waiting === null ? '' : this.#promptOf(waiting);
     this.#capture.style.display = waiting === null ? 'none' : '';
     this.#cancelBtn.textContent = t('controls.cancel');
     // A chip hidden while it holds focus would drop focus to <body>, outside the dialog's trap.

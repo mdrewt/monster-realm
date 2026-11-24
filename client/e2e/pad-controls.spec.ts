@@ -9,6 +9,7 @@ import {
 } from '@playwright/test';
 import { CONTROLS_STORAGE_KEY } from '../src/input/bindingStore';
 import { PAD_DEFAULT_BINDINGS } from '../src/input/padBindings';
+import { padGlyph } from '../src/input/padGlyphs';
 import { t } from '../src/ui/i18n/resolver';
 import { closeAll, livePadBindings, pressButton, setPressSource } from './controls';
 import { installFakePad, padHold, padPress } from './pad';
@@ -202,8 +203,9 @@ test.describe
           page.locator('#controls-capture'),
           'A on the Pad cell starts it',
         ).toBeVisible();
+        // The pad pressed last, so the line also names the button the cell shows (A, button 0).
         await expect(page.locator('#controls-capture'), 'the pad prompt').toHaveText(
-          `Press a pad button for ${labelA}${ELLIPSIS}`,
+          `Press a pad button for ${labelA}${ELLIPSIS} To leave it unchanged, press ${padGlyph(0)}.`,
         );
 
         // ---- 4. button 3 held for 300 ms: bound, swapped, and no second capture -----------------
@@ -277,5 +279,114 @@ test.describe
       expect(await livePadBindings(page), 'the default pad table is back').toEqual(
         PAD_DEFAULT_BINDINGS,
       );
+    });
+
+    test('on the mocked pad only, pad B held for 300 ms ends a Key capture and an empty Pad capture unchanged, naming B in the waiting line, and leaves Controls open until B is pressed again [rb-138.1] [rb-138.3]', async () => {
+      test.setTimeout(120_000);
+      const labelUp = t('controls.button.up');
+      const labelStorage = t('controls.accel.storage');
+      const controlsStack = ['world', 'menuView', 'controlsView'];
+      try {
+        await closeAll(page);
+        expect(await stackNames(page), 'precondition: the bare world').toEqual(['world']);
+        expect(await livePadBindings(page), 'precondition: the default pad table').toEqual(
+          PAD_DEFAULT_BINDINGS,
+        );
+
+        // ---- Start, Down to Controls, A: the Controls frame, the cursor on its first cell --------
+        await pressButton(page, 'Start');
+        await expect
+          .poll(() => stackNames(page), { message: 'pad Start opens the menu' })
+          .toEqual(['world', 'menuView']);
+        await downTo(page, navActive, 'controls', 7, 'the main menu');
+        await pressButton(page, 'A');
+        await expect
+          .poll(() => stackNames(page), { message: 'pad A on Controls opens it above the menu' })
+          .toEqual(controlsStack);
+        await expect
+          .poll(() => controlsActive(page), { message: 'Controls opens on the first cell' })
+          .toBe('Up_0');
+        const upBefore = await cell(page, 'Up_0').textContent();
+
+        // ---- A on a Key cell: the line names B's pad button ----------------------------------------
+        await pressButton(page, 'A');
+        await expect(
+          page.locator('#controls-capture'),
+          'A on the Key cell starts the capture',
+        ).toBeVisible();
+        await expect(
+          page.locator('#controls-capture'),
+          'the pad pressed last: B is named',
+        ).toHaveText(
+          `Press a key for ${labelUp}${ELLIPSIS} To leave it unchanged, press ${padGlyph(1)} on the pad.`,
+        );
+
+        // ---- B held for 300 ms: the capture ends unchanged, and Controls stays open ---------------
+        await padHold(page, 1, 300);
+        await expect(page.locator('#controls-capture'), 'B ended the capture').toBeHidden();
+        expect(await stackNames(page), 'the held B popped nothing').toEqual(controlsStack);
+        await expect(cell(page, 'Up_0'), 'the Key cell is unchanged').toHaveText(upBefore ?? '');
+        expect(await livePadBindings(page), 'the pad table is unchanged').toEqual(
+          PAD_DEFAULT_BINDINGS,
+        );
+
+        // ---- RB: Shortcuts; onto the Storage row's empty Pad cell ----------------------------------
+        await pressButton(page, 'RB');
+        await expect(page.locator('#controls-tab-shortcuts'), 'RB opens Shortcuts').toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+        await expect
+          .poll(() => controlsActive(page), { message: 'Shortcuts opens on its first cell' })
+          .toBe('B_0');
+        for (const [button, key] of [
+          ['Right', 'B_1'],
+          ['Right', 'B_pad'],
+        ] as const) {
+          await pressButton(page, button);
+          await expect
+            .poll(() => controlsActive(page), { message: `pad ${button} onto ${key}` })
+            .toBe(key);
+        }
+        await expect(cell(page, 'B_pad'), 'the Storage row has no pad button').toHaveText(
+          padCellText(labelStorage, t('controls.slot.none')),
+        );
+
+        // ---- A on the empty Pad cell: the line names B's pad button --------------------------------
+        await pressButton(page, 'A');
+        await expect(
+          page.locator('#controls-capture'),
+          'A on the Pad cell starts the capture',
+        ).toBeVisible();
+        await expect(
+          page.locator('#controls-capture'),
+          'the pad pressed last: B is named',
+        ).toHaveText(
+          `Press a pad button for ${labelStorage}${ELLIPSIS} To leave it unchanged, press ${padGlyph(1)}.`,
+        );
+        await padHold(page, 1, 300);
+        await expect(page.locator('#controls-capture'), 'B ended the capture').toBeHidden();
+        expect(await stackNames(page), 'the held B popped nothing').toEqual(controlsStack);
+        await expect(cell(page, 'B_pad'), 'the cell stays empty').toHaveText(
+          padCellText(labelStorage, t('controls.slot.none')),
+        );
+        expect(await livePadBindings(page), 'the pad table is unchanged').toEqual(
+          PAD_DEFAULT_BINDINGS,
+        );
+
+        // ---- B again: now it is Back ----------------------------------------------------------------
+        await pressButton(page, 'B');
+        await expect
+          .poll(() => stackNames(page), { message: 'pressed again, pad B pops Controls' })
+          .toEqual(['world', 'menuView']);
+        await closeAll(page);
+      } finally {
+        await page.evaluate(
+          (key: string) => window.localStorage.removeItem(key),
+          CONTROLS_STORAGE_KEY,
+        );
+        await page.reload();
+        await ready(page);
+      }
     });
   });

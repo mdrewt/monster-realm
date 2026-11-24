@@ -295,6 +295,11 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Line shown in Controls while a slot waits for a key press; {label} is the row
   // name (e.g. Confirm (A)). ui/controlsModel.ts
   'controls.capture.prompt': (p) => `Appuyez sur une touche pour : ${p.label}…`,
+  // @desc: Line shown in Controls while a slot waits for a key press and the player's last
+  // input is the pad; {label} is the row name (e.g. Confirm (A)), {key} the glyph of the pad button
+  // that leaves the slot as it is. ui/controlsModel.ts
+  'controls.capture.promptLeave': (p) =>
+    `Appuyez sur une touche pour : ${p.label}… Pour ne rien changer, appuyez sur ${p.key} sur la manette.`,
   // @desc: Feedback line in Controls when the pressed key is reserved (Tab, F5, F11, F12,
   // a modifier or a Ctrl/Alt/Meta chord). One sentence. ui/controlsModel.ts
   'controls.refused.reserved':
@@ -328,6 +333,11 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Line shown in Controls while a Pad cell waits for a pad button press; {label} is the
   // row name (e.g. Confirm (A)). ui/controlsModel.ts
   'controls.capture.padPrompt': (p) => `Appuyez sur un bouton de la manette pour : ${p.label}…`,
+  // @desc: Line shown in Controls while a Pad cell waits for a pad button press and the player's last
+  // input is the pad; {label} is the row name (e.g. Confirm (A)), {key} the glyph of the pad button
+  // that leaves the cell as it is. ui/controlsModel.ts
+  'controls.capture.padPromptLeave': (p) =>
+    `Appuyez sur un bouton de la manette pour : ${p.label}… Pour ne rien changer, appuyez sur ${p.key}.`,
   // @desc: Feedback line in Controls when the pressed pad button cannot be bound (the Home /
   // Guide button, or one past the bindable range). One sentence. ui/controlsModel.ts
   'controls.refused.padReserved': 'Ce bouton ne peut pas être attribué.',

@@ -1658,8 +1658,10 @@ is the shared chrome (the main menu uses it today). Menus are D-pad lists, grids
 The hint bar and Help are generated from the context table, the live bindings and the
 catalog (`client/src/ui/hintBarModel.ts`, `client/src/ui/helpModel.ts`). Bindings persist
 per browser in `localStorage['mr.controls']` (versioned; D-pad, A, B and Start always keep
-a key). Escape alone is routed in the capture phase, so a view's `stopPropagation` cannot
-trap it; every other key keeps the bubble phase, where text-entry views shield their
+a key). Every waiting Controls cell has a way out on the pad: the button a Pad cell shows,
+else the live B, and the waiting line names it for a player on the pad. Escape alone is
+routed in the capture phase, so a view's `stopPropagation` cannot trap it; every other key
+keeps the bubble phase, where text-entry views shield their
 fields from the accelerators. Each view keeps its state in a pure model (`*Model.ts`) with
 a thin DOM view. Accessibility metadata for every overlay is one total record
 (`OVERLAY_A11Y`); a status condition is named by text, never by colour alone — on the tactical
@@ -1678,12 +1680,15 @@ hotkeys are shortcuts, is the intended interface. One stack makes "back one leve
 "exit everything" uniform. Silently dismissing a modal on a stray keypress loses input,
 and for dialogue it desyncs server conversation state, so server-owned frames follow the
 store and an ongoing battle cannot be hidden. Pure models make the UI logic testable
-without a DOM. Generated hints and help cannot drift from the bindings. A total catalog
-makes a missing translation a compile error rather than a blank label, and throwing
-(rather than showing the key) keeps an unwired string from looking wired.
+without a DOM. Generated hints and help cannot drift from the bindings. A pad-only
+player has no other way out of a cell that takes keys, or of a Pad cell with no button to press
+again; B is always bound and already means back. A total catalog makes a missing
+translation a compile error rather than a blank label, and throwing (rather than showing the key) keeps an unwired string from looking wired.
 
 **Rules out.** A feature reachable only by a hotkey (F9's menu twin, Options › Report a
-problem, is still owed); a hotkey-only discovery menu; a
+problem, is still owed); a hotkey-only discovery menu; leaving a waiting cell on a
+timeout or disabling Key cells after pad input (a pad player with a keyboard at hand can
+still bind keys); a
 hand-written controls list; a dedicated interact key; new per-overlay tiers,
 mutual-exclusion checks or force-hide lists; overlays anchored to the window or in page
 flow; menus that hide themselves on a pick; conveying meaning by colour alone; WAAPI

@@ -128,6 +128,7 @@ import {
   installPadFaultSink,
   keyboard,
   keycap,
+  lastSource,
   navHeldCodes,
   noteInputSource,
   noteNavHeld,
@@ -2819,6 +2820,8 @@ const endControlsCapture = (): void => {
 // a changed table is applied and saved through `apply`. True when the capture ended.
 const settleControlsCapture = <T>(step: CaptureResult<T>, apply: (next: T) => boolean): boolean => {
   if (!step.done) {
+    // Ahead of the hint, which is the announcement that must last.
+    controlsView?.refreshPrompt();
     route('controls-refused', step.text, (hint) => controlsView?.showHint(hint));
     return false;
   }
@@ -2838,7 +2841,8 @@ const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
   if (settleControlsCapture(step, applyBindings)) noteNavHeld(e.code);
 };
 
-// The Cancel chip: a capture ends unchanged. Nothing happens unless a slot is waiting.
+// The ways out that bind nothing (the Cancel chip, Escape on a Pad cell, the pad's B on a Key cell,
+// the pointer's B): a capture ends unchanged. Nothing happens unless a slot is waiting.
 const cancelControlsCapture = (): void => {
   syncStack();
   if (controlsCapture() === null) return;
@@ -3145,10 +3149,11 @@ document.addEventListener('visibilitychange', () => {
 // released and pressed again. While a Pad cell of Controls waits, the frame takes the pad's
 // `capture()` instead: no pad press routes, and the press read goes to the capture. A pad press is
 // ignored, as a key press is, while focus is outside the game screen, and also while Controls waits
-// for a key: everything held is let go then too, so the ignored press owes no release that could
-// end another source's hold. A release alone still routes, as a keyup does, except while a Pad cell
-// waits: the releases `capture()` reads reach the first poll after the capture ends. Inside the game screen a
-// pad press is a button press even with a text field focused (a pad cannot type). A press clears the
+// for a key; inside the game screen a press of B also ends that capture unchanged. Everything held
+// is let go in each case, so the press owes no release that could end another source's hold and acts
+// only once released and pressed again. A release alone still routes, as a keyup does, except while
+// a Pad cell waits: the releases `capture()` reads reach the first poll after the capture ends.
+// Inside the game screen a pad press is a button press even with a text field focused (a pad cannot type). A press clears the
 // pointer's hover mark and heals stale focus first, as a key press does; the edges route before the
 // accelerators. An edge that starts a capture ends the poll: no later edge or accelerator routes,
 // and everything held is let go, so a button pressed in that same frame is not a press of the
@@ -3179,8 +3184,13 @@ const pollPad = (): void => {
     if (edges.length > 0) pressEdges(edges);
     return;
   }
-  if (outsideGameScreen(document.activeElement, gameScreenEl()) || capture !== null) {
+  const outside = outsideGameScreen(document.activeElement, gameScreenEl());
+  if (outside || capture !== null) {
     releaseAllInput();
+    if (!outside && edges.some((edge) => edge.button === 'B' && edge.down)) {
+      pointerSource?.keyPressed();
+      cancelControlsCapture();
+    }
     return;
   }
   pointerSource?.keyPressed();
@@ -4779,6 +4789,7 @@ async function main(): Promise<void> {
     const controlsHandlers: ControlsViewHandlers = {
       bindings: () => bindings,
       padBindings: () => padBindings,
+      inputSource: () => lastSource,
       onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
       onReset: resetAllBindings,
       textStep: () => textStep,
@@ -5285,6 +5296,9 @@ async function main(): Promise<void> {
         renderPrivacyCountdown(null);
         return;
       }
+      // The waiting line of Controls follows the device last pressed. Read after the presses were
+      // handled: one that ended its capture changes no line.
+      controlsView?.refreshPrompt();
       const now = performance.now();
       // bt-12 (BT12.4): the results auto-advance — the outcome frame has been on top for the
       // presentation results cap and the results panel is what it shows: continue it, once per shown
