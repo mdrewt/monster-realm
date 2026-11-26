@@ -108,4 +108,4 @@ Read it first when it exists.
   parameter (it may arrive decoded or doubled). After writing, Grep the file for
   a stray `\\u[0-9a-f]{4}` to catch a doubled escape.
 
-<!-- Single source: the harness copy. scripts/sync-agents.mjs generates each project's .claude/agents/tester.md from it and mr-selfcheck fails on drift, so edit it here, never in a project. -->
+<!-- Single source: the harness copy. scripts/sync-agents.mjs generates each project's .claude/agents/tester.md from it and reports drift, so edit it here, never in a project. -->
