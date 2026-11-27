@@ -842,3 +842,7 @@ pub fn host_account_check(
 #[cfg(test)]
 #[path = "account_checks_tests.rs"]
 mod account_checks_tests;
+
+#[cfg(test)]
+#[path = "account_checks_host_tests.rs"]
+mod account_checks_host_tests;

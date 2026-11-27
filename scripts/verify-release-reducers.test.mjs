@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  ALLOWED_PROCEDURES,
+  ALLOWED_SCHEDULES,
   FORBIDDEN_REDUCERS,
   findDefinitionViolations,
   findForbiddenReducers,
@@ -365,7 +367,7 @@ const schedule = (table, fn) => ({
 });
 const schedules = (...pairs) => ({ Schedules: pairs.map(([table, fn]) => schedule(table, fn)) });
 
-// The module's schedules, `table_name -> function_name`, as this slice leaves them.
+// The module's schedules, `table_name -> function_name`.
 const MODULE_SCHEDULES = [
   ['guest_claim_reaper_schedule', 'guest_claim_reaper'],
   ['account_deletion_reaper_schedule', 'account_deletion_reaper'],
@@ -382,21 +384,31 @@ const MODULE_SCHEDULES = [
   ['battle_challenge_reaper_schedule', 'battle_challenge_reaper'],
   ['trade_offer_reaper_schedule', 'trade_offer_reaper'],
   ['recheck_schedule', 'recheck_account'],
+  ['host_check_schedule', 'host_account_check'],
 ];
 
-test('findDefinitionViolations passes the three procedures and every schedule of the module (lpw-23.9)', () => {
-  assert.equal(MODULE_SCHEDULES.length, 15, 'fixture: the 14 schedules and the re-check');
+// The module's procedures.
+const MODULE_PROCEDURES = [
+  'check_account',
+  'check_account_for',
+  'recheck_account',
+  'host_account_check',
+];
+
+test('findDefinitionViolations passes the four procedures and every schedule of the module (lpw-23.9)', () => {
+  assert.equal(
+    MODULE_SCHEDULES.length,
+    16,
+    "fixture: the 14 schedules, the re-check and the host's check",
+  );
   assert.deepEqual(
     findDefinitionViolations(
-      withClean(
-        procedures('check_account', 'check_account_for', 'recheck_account'),
-        schedules(...MODULE_SCHEDULES),
-      ),
+      withClean(procedures(...MODULE_PROCEDURES), schedules(...MODULE_SCHEDULES)),
     ),
     [],
   );
   // Each one alone, and in a submodule.
-  for (const name of ['check_account', 'check_account_for', 'recheck_account']) {
+  for (const name of MODULE_PROCEDURES) {
     assert.deepEqual(findDefinitionViolations(withClean(procedures(name))), [], name);
     assert.deepEqual(
       findDefinitionViolations(withClean(submodules(submodule('inner', [procedures(name)])))),
@@ -487,6 +499,109 @@ test('findDefinitionViolations names a schedule the module does not declare, or 
     ),
     ['submodule `timers`: schedule `recheck_schedule` to `tick_battle`'],
   );
+});
+
+test('the definition check allows exactly the four procedures (lpw-43.2)', () => {
+  assert.deepEqual([...ALLOWED_PROCEDURES].sort(), [
+    'check_account',
+    'check_account_for',
+    'host_account_check',
+    'recheck_account',
+  ]);
+});
+
+test('the definition check allows exactly the module schedules, the host check among them (lpw-43.2)', () => {
+  assert.deepEqual(ALLOWED_SCHEDULES, {
+    guest_claim_reaper_schedule: 'guest_claim_reaper',
+    account_deletion_reaper_schedule: 'account_deletion_reaper',
+    trade_session_reaper_schedule: 'trade_session_reaper',
+    playtest_reaper_schedule: 'playtest_reaper',
+    export_bundle_reaper_schedule: 'export_bundle_reaper',
+    battle_summary_reaper_schedule: 'battle_summary_reaper',
+    tactical_deadline_sched: 'tactical_deadline_fire',
+    tactical_advance_sched: 'tactical_advance',
+    battle_gc_sched: 'battle_gc',
+    movement_tick_schedule: 'movement_tick',
+    mr_heartbeat_schedule: 'mr_heartbeat',
+    pvp_deadline_schedule: 'pvp_deadline_reaper',
+    battle_challenge_reaper_schedule: 'battle_challenge_reaper',
+    trade_offer_reaper_schedule: 'trade_offer_reaper',
+    recheck_schedule: 'recheck_account',
+    host_check_schedule: 'host_account_check',
+  });
+});
+
+test('findDefinitionViolations passes the procedure host_account_check, alone and in a submodule (lpw-43.2)', () => {
+  assert.deepEqual(findDefinitionViolations(withClean(procedures('host_account_check'))), []);
+  assert.deepEqual(
+    findDefinitionViolations(
+      withClean(submodules(submodule('inner', [procedures('host_account_check')]))),
+    ),
+    [],
+  );
+});
+
+test('findDefinitionViolations names a near miss of host_account_check, beside the allowed name (lpw-43.2)', () => {
+  // The allowed name passes in the same section; each near miss is named alone.
+  for (const name of [
+    'host_account_check_for',
+    'host_account_checks',
+    'Host_account_check',
+    'host_check_account',
+    'host_account_chec',
+  ]) {
+    assert.deepEqual(
+      findDefinitionViolations(withClean(procedures('host_account_check', name))),
+      [`procedure \`${name}\``],
+      name,
+    );
+  }
+});
+
+test('findDefinitionViolations passes host_check_schedule to host_account_check, alone and in a submodule (lpw-43.2)', () => {
+  assert.deepEqual(
+    findDefinitionViolations(withClean(schedules(['host_check_schedule', 'host_account_check']))),
+    [],
+  );
+  assert.deepEqual(
+    findDefinitionViolations(
+      withClean(
+        submodules(submodule('timers', [schedules(['host_check_schedule', 'host_account_check'])])),
+      ),
+    ),
+    [],
+  );
+});
+
+test('findDefinitionViolations names host_check_schedule re-pointed, or host_account_check behind another table (lpw-43.2)', () => {
+  // The allowed pair passes in the same section; each re-pointed pair is its one line.
+  for (const [table, fn] of [
+    ['host_check_schedule', 'recheck_account'],
+    ['recheck_schedule', 'host_account_check'],
+    ['host_check_schedule', 'host_account_check_for'],
+    ['host_check_schedules', 'host_account_check'],
+  ]) {
+    assert.deepEqual(
+      findDefinitionViolations(
+        withClean(schedules(['host_check_schedule', 'host_account_check'], [table, fn])),
+      ),
+      [`schedule \`${table}\` to \`${fn}\``],
+      `${table} -> ${fn}`,
+    );
+    assert.deepEqual(
+      findDefinitionViolations(
+        withClean(
+          submodules(
+            submodule('timers', [
+              schedules(['host_check_schedule', 'host_account_check'], [table, fn]),
+            ]),
+          ),
+        ),
+      ),
+      [`submodule \`timers\`: schedule \`${table}\` to \`${fn}\``],
+      `${table} -> ${fn} in a submodule`,
+    );
+  }
 });
 
 test('findDefinitionViolations finds a handler, route or filter inside a submodule (lpw-34.6)', () => {

@@ -81,7 +81,8 @@ const HANDLE_B: &str = "k1.BbBbBb0123456789xy";
 /// The owner's account.
 const HANDLE_OWNER: &str = "k1.OwNeR0123456789abcd";
 
-/// The address the service reports; a check never reads it.
+/// The address the service reports, the one [`IP_NAME`] carries: a usable answer stores it as
+/// the world's IPv4 address, which confirms [`IP_NAME`].
 const ADDRESS: &str = "203.0.113.9";
 
 /// The 64 URL-safe base64 characters.
@@ -177,12 +178,14 @@ struct W<'a> {
     budget: Handle<'a, WorldCheckBudget, u32>,
     rechecks: Handle<'a, RecheckSchedule>,
     moves: Handle<'a, WorldMove>,
+    egress: Handle<'a, WorldEgress, u8>,
 }
 
 /// Registers what the checks, the arming, the view and the unbind touch. `config`,
 /// `world_access` and `account` are read-only: a write to one aborts the test. The account
 /// rows are read on both their keys; the re-check rows on both of theirs, the key drawn from a
-/// sequence; the binding and nonce tables are registered for the unbind's erasure.
+/// sequence; the binding and nonce tables are registered for the unbind's erasure; the
+/// world's addresses are found, updated and inserted by `family`.
 fn world(fx: &Fixture) -> W<'_> {
     let _ = fx
         .table_keyed::<WorldAccount, String>("world_account", "handle", |r| r.handle.clone())
@@ -239,6 +242,10 @@ fn world(fx: &Fixture) -> W<'_> {
             .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
         moves: fx
             .table::<WorldMove>("world_move", "identity", |r| r.identity)
+            .unique()
+            .writable(),
+        egress: fx
+            .table_keyed::<WorldEgress, u8>("world_egress", "family", |r| r.family)
             .unique()
             .writable(),
     }
@@ -354,6 +361,30 @@ fn unknown_handle_answer(entitled: bool) -> String {
     serde_json::json!({ "entitled": entitled, "address": ADDRESS }).to_string()
 }
 
+/// The service's answer to a ticket whose `address` member is `address`, or absent on `None`.
+fn ticket_answer_with(
+    handle: &str,
+    entitled: bool,
+    name: &str,
+    address: Option<serde_json::Value>,
+) -> String {
+    let mut body = serde_json::json!({ "handle": handle, "entitled": entitled, "name": name });
+    if let Some(address) = address {
+        body["address"] = address;
+    }
+    body.to_string()
+}
+
+/// The service's answer to a handle it knows, whose `address` member is `address`, or absent
+/// on `None`.
+fn handle_answer_with(handle: &str, entitled: bool, address: Option<serde_json::Value>) -> String {
+    let mut body = serde_json::json!({ "handle": handle, "entitled": entitled });
+    if let Some(address) = address {
+        body["address"] = address;
+    }
+    body.to_string()
+}
+
 fn ok_answer<'q>(body: String) -> HttpAnswer<'q> {
     HttpAnswer::status(200, body)
 }
@@ -405,6 +436,26 @@ fn moves(w: &W<'_>) -> Vec<([u8; 32], i64)> {
             .map(|r| (r.identity.to_byte_array(), r.moved_at_ms))
             .collect(),
     )
+}
+
+/// Every `world_egress` row as `(family, address, confirmed_at_ms)`, sorted.
+fn egress(w: &W<'_>) -> Vec<(u8, String, i64)> {
+    sorted(
+        w.egress
+            .rows()
+            .into_iter()
+            .map(|r| (r.family, r.address, r.confirmed_at_ms))
+            .collect(),
+    )
+}
+
+/// The `world_egress` row of `family` holding `address`, confirmed at `ms`.
+fn egress_row(family: u8, address: &str, ms: i64) -> WorldEgress {
+    WorldEgress {
+        family,
+        address: address.to_string(),
+        confirmed_at_ms: ms,
+    }
 }
 
 /// The budget rows as `(id, minute_start_ms, redeems)`.
@@ -471,11 +522,16 @@ fn footprint(fx: &Fixture, w: &W<'_>) -> Footprint {
             encs(&w.moves.rows()),
             fx.writes_to("world_move"),
         ),
+        (
+            "world_egress",
+            encs(&w.egress.rows()),
+            fx.writes_to("world_egress"),
+        ),
     ]
 }
 
 /// Every table a check could read.
-const READ_TABLES: [&str; 10] = [
+const READ_TABLES: [&str; 11] = [
     "config",
     "world_access",
     "world_admission",
@@ -486,6 +542,7 @@ const READ_TABLES: [&str; 10] = [
     "world_check_budget",
     "recheck_schedule",
     "world_move",
+    "world_egress",
 ];
 
 fn assert_nothing_read(fx: &Fixture, label: &str) {
@@ -606,9 +663,10 @@ mod first_contact {
     use super::*;
 
     /// An identity the world does not know checks a ticket the service accepts: one POST to
-    /// the profile's service with the ticket, every world name and the world's identity, and
-    /// the answered handle and entitlement stored for the caller at the transaction's time,
-    /// in one write. The bystander's row stays.
+    /// the profile's service over the IPv4 family the world's `ip:` name carries, with the
+    /// ticket, every world name and the world's identity, and the answered handle and
+    /// entitlement stored for the caller at the transaction's time, in one write. The
+    /// bystander's row stays.
     ///
     /// kills: the inert procedure; the row stored under the bystander or the owner; the
     /// stored time another than the check's; a name left out of the request; more than one
@@ -624,7 +682,7 @@ mod first_contact {
         assert_eq!(sent.len(), 1, "one request");
         assert_first_contact(
             &sent[0],
-            "https://auth.monster-realm.spookyowltech.com/world/check",
+            "https://ipv4.auth.monster-realm.spookyowltech.com/world/check",
             &ticket(),
             &[WORLD_NAME, IP_NAME],
         );
@@ -656,7 +714,7 @@ mod first_contact {
     }
 
     /// A `world` build asks the production service: the URL is the profile's, not a constant
-    /// of the module.
+    /// of the module, asked over the IPv4 family the world's `ip:` name carries.
     ///
     /// kills: the URL hard-coded to the dev service.
     #[test]
@@ -670,7 +728,7 @@ mod first_contact {
         assert_eq!(http.requests().len(), 1);
         assert_eq!(
             http.requests()[0].url,
-            "https://auth.monster-realm.invalid/world/check"
+            "https://ipv4.auth.monster-realm.invalid/world/check"
         );
     }
 
@@ -695,7 +753,7 @@ mod first_contact {
         assert_eq!(got, Ok(true));
         assert_eq!(
             http.requests()[0].url,
-            "https://auth.monster-realm.spookyowltech.com/world/check"
+            "https://ipv4.auth.monster-realm.spookyowltech.com/world/check"
         );
         assert!(accounts(&w).contains(&view(&account_row(alice(), HANDLE_A, true, NOW, false))));
     }
@@ -750,7 +808,7 @@ mod first_contact {
         assert_eq!(http.requests().len(), 1);
         assert_first_contact(
             &http.requests()[0],
-            "https://auth.monster-realm.spookyowltech.com/world/check",
+            "https://ipv4.auth.monster-realm.spookyowltech.com/world/check",
             &ticket(),
             &[WORLD_NAME, IP_NAME],
         );
@@ -1385,7 +1443,7 @@ mod during_the_wait {
         assert_eq!(got, Ok(true), "a name added");
     }
 
-    /// The re-checked row is unbound while the re-check waits: nothing is written.
+    /// The re-checked row is unbound while the re-check waits: no account row is written.
     ///
     /// kills: the answer written from the first transaction's row.
     #[test]
@@ -1552,7 +1610,7 @@ mod recheck {
             assert_eq!(http.requests().len(), 1);
             assert_recheck_request(
                 &http.requests()[0],
-                "https://auth.monster-realm.spookyowltech.com/world/check",
+                "https://ipv4.auth.monster-realm.spookyowltech.com/world/check",
                 HANDLE_A,
             );
             assert_eq!(
@@ -2835,7 +2893,7 @@ mod character_move {
     /// [`bob`] holds [`HANDLE_B`] (the host's row) with a whole character, transient rows and
     /// history, and an armed re-check; [`carol`] is a bystander with her own re-check; both
     /// rank on the leaderboard; [`alice`] holds nothing.
-    fn moving_world(fx: &Fixture) -> MW<'_> {
+    pub(super) fn moving_world(fx: &Fixture) -> MW<'_> {
         let m = move_world(fx);
         hold(&m, bob(), HANDLE_B, true);
         seed_character(&m, bob());
@@ -2859,7 +2917,7 @@ mod character_move {
     // Observations: per table, the encoded rows naming an identity.
     // ---------------------------------------------------------------------------------
 
-    type Snapshot = Vec<(&'static str, Vec<Vec<u8>>)>;
+    pub(super) type Snapshot = Vec<(&'static str, Vec<Vec<u8>>)>;
 
     fn naming<R: Serialize>(rows: Vec<R>, keep: impl Fn(&R) -> bool) -> Vec<Vec<u8>> {
         let picked: Vec<R> = rows.into_iter().filter(keep).collect();
@@ -2867,7 +2925,7 @@ mod character_move {
     }
 
     /// The rows a character is made of, per table.
-    fn character_rows(m: &MW<'_>, who: Identity) -> Snapshot {
+    pub(super) fn character_rows(m: &MW<'_>, who: Identity) -> Snapshot {
         vec![
             (
                 "monster",
@@ -2931,7 +2989,7 @@ mod character_move {
     }
 
     /// [`character_rows`] of a character [`seed_character`] gave to `who`.
-    fn character_expected(who: Identity) -> Snapshot {
+    pub(super) fn character_expected(who: Identity) -> Snapshot {
         let monsters: Vec<Monster> = SRC_MONSTERS.iter().map(|&id| mon(id, who)).collect();
         let pubs: Vec<MonsterPub> = monsters.iter().map(|r| pub_from_monster(r, 0)).collect();
         let stacks: Vec<Inventory> = SRC_STACKS
@@ -3063,8 +3121,9 @@ mod character_move {
         ]
     }
 
-    /// Every row of every registered table but `world_check_budget`.
-    fn snapshot(m: &MW<'_>) -> Snapshot {
+    /// Every row of every registered table but `world_check_budget` and `world_egress`, the two a
+    /// redeem refused after its answer still writes.
+    pub(super) fn snapshot(m: &MW<'_>) -> Snapshot {
         vec![
             ("config", encs(&m.c.config.rows())),
             ("world_access", encs(&m.c.access.rows())),
@@ -3119,7 +3178,7 @@ mod character_move {
     }
 
     /// The tables of [`snapshot`] written since the last `reset_writes`, with their counts.
-    fn written(fx: &Fixture, m: &MW<'_>) -> Vec<(&'static str, u32)> {
+    pub(super) fn written(fx: &Fixture, m: &MW<'_>) -> Vec<(&'static str, u32)> {
         snapshot(m)
             .into_iter()
             .map(|(table, _)| (table, fx.writes_to(table)))
@@ -3140,6 +3199,16 @@ mod character_move {
             .find(|(t, _)| *t == table)
             .map(|(_, rows)| rows.as_slice())
             .unwrap_or_else(|| panic!("no observer reads {table}"))
+    }
+
+    /// A redeem refused after an answer that reports [`ADDRESS`] has stored that address, and
+    /// nothing else, at the check's time.
+    fn assert_answer_address_stored(m: &MW<'_>, label: &str) {
+        assert_eq!(
+            egress(&m.c),
+            vec![(4, ADDRESS.to_string(), NOW)],
+            "{label}: the answer's address is stored"
+        );
     }
 
     fn armed(m: &MW<'_>) -> Vec<[u8; 32]> {
@@ -3167,7 +3236,7 @@ mod character_move {
     }
 
     /// `who` holds no row of a character and none of the rows a move clears.
-    fn assert_holds_nothing(m: &MW<'_>, who: Identity, label: &str) {
+    pub(super) fn assert_holds_nothing(m: &MW<'_>, who: Identity, label: &str) {
         assert_eq!(
             nonempty(character_rows(m, who)),
             Vec::<(&str, usize)>::new(),
@@ -3311,10 +3380,12 @@ mod character_move {
 
     /// A source whose second monster has lost its `monster_pub` twin cannot be moved: the check
     /// answers "the character could not be moved" and every registered table keeps its rows
-    /// with no write but the budget's charge (the first monster's re-key is rolled back).
+    /// with no write but the budget's charge and the answer's address (the first monster's
+    /// re-key is rolled back).
     ///
     /// kills: the move's error swallowed (`let _ = move_character(..)`), which re-points the
-    /// handle over a half-moved character; the refusal text changed.
+    /// handle over a half-moved character; the refusal text changed; the address rolled back
+    /// with the refused redeem.
     #[test]
     fn a_move_that_fails_refuses_and_changes_nothing_lpw42_1() {
         assert_eq!(REJECT_MOVE_FAILED, "the character could not be moved");
@@ -3333,8 +3404,9 @@ mod character_move {
         assert_eq!(
             written(&fx, &m),
             Vec::<(&str, u32)>::new(),
-            "no write but the budget's"
+            "no write but the budget's and the address's"
         );
+        assert_answer_address_stored(&m, "a move that fails");
     }
 
     /// The world's owner checks itself in under `Allowlist` with a ticket for a handle another
@@ -3361,10 +3433,10 @@ mod character_move {
 
     /// The same check onto a full list (256 handles, none the answered one) is refused with
     /// the list's reason, and every registered table keeps its rows with no write but the
-    /// budget's charge.
+    /// budget's charge and the answer's address.
     ///
     /// kills: the list bound skipped when the handle is held; the character moved before the
-    /// list refuses.
+    /// list refuses; the address rolled back with the refused redeem.
     #[test]
     fn the_owners_own_move_onto_a_full_allowlist_is_refused_and_changes_nothing_lpw42_1() {
         let fx = fixture();
@@ -3383,8 +3455,9 @@ mod character_move {
         assert_eq!(
             written(&fx, &m),
             Vec::<(&str, u32)>::new(),
-            "no write but the budget's"
+            "no write but the budget's and the address's"
         );
+        assert_answer_address_stored(&m, "a full list");
     }
 
     /// What a move does with a table that holds an identity's rows.
@@ -3574,8 +3647,9 @@ mod character_move {
 
     /// The row writes of one move of a source holding 100 monsters (each with its twin), 5
     /// stacks, 1 quest, one row in each single-row table, two challenges with their reaper
-    /// rows and one export chunk, and the procedure's two committed transactions (the charge,
-    /// then the redeem). Each count follows from the helper the move goes through:
+    /// rows and one export chunk, and the procedure's three committed transactions (the charge,
+    /// the answer's address, then the redeem). Each count follows from the helper the move goes
+    /// through:
     ///
     /// - `monster`, `monster_pub`: `monster_mgmt::rekey_monsters` updates each row and its
     ///   twin in place through `update_monster_synced` (1 + 1 per monster; the level and
@@ -3601,13 +3675,15 @@ mod character_move {
     ///
     /// - `world_move`: the source's row inserted (1); the caller holds none, so nothing else
     ///   is written to it.
+    /// - `world_egress`: the answer's address inserted (1), in a transaction of its own
+    ///   between the charge and the redeem.
     ///
     /// Every other registered table is written 0 times (in this `Open` world `world_admission`
     /// among them).
     ///
     /// kills: a move that re-writes rows it need not (a second pass over the monsters, a
     /// rescan per table, a wallet row deleted and re-created); a write to a table the move
-    /// leaves alone; a third procedure transaction.
+    /// leaves alone; a fourth procedure transaction.
     #[test]
     fn the_cost_of_one_move_for_a_collection_of_100_monsters_lpw42_1() {
         let fx = fixture();
@@ -3649,6 +3725,7 @@ mod character_move {
         );
         let mut tables: Vec<&'static str> = snapshot(&m).into_iter().map(|(t, _)| t).collect();
         tables.push("world_check_budget");
+        tables.push("world_egress");
         let got_writes: BTreeMap<&str, u32> = tables
             .into_iter()
             .map(|t| (t, fx.writes_to(t)))
@@ -3676,11 +3753,16 @@ mod character_move {
             ("battle_challenge_reaper_schedule", 2),
             ("export_bundle", 1),
             ("world_move", 1),
+            ("world_egress", 1),
         ]
         .into_iter()
         .collect();
         assert_eq!(got_writes, want, "the writes of one move");
-        assert_eq!(fx.procedure_commits(), 2, "the charge and the redeem");
+        assert_eq!(
+            fx.procedure_commits(),
+            3,
+            "the charge, the address and the redeem"
+        );
     }
 
     // ---------------------------------------------------------------------------------
@@ -3849,7 +3931,7 @@ mod character_move {
 
     /// In [`moving_world`] with `case` added, alice's ticket for bob's handle is refused with
     /// `want`, and every registered table keeps its rows with no write but the budget's
-    /// charge.
+    /// charge and the answer's address.
     fn assert_refused_unchanged(case: &str, want: &str) {
         let fx = fixture();
         let m = moving_world(&fx);
@@ -3863,8 +3945,9 @@ mod character_move {
         assert_eq!(
             written(&fx, &m),
             Vec::<(&str, u32)>::new(),
-            "{case}: no write but the budget's"
+            "{case}: no write but the budget's and the address's"
         );
+        assert_answer_address_stored(&m, case);
     }
 
     /// kills: `owns_character` blind to a `player` row or to a game-data row.
@@ -4163,18 +4246,23 @@ mod character_move {
         }
     }
 
-    /// A ticket answered with the world's `ip:` name for a handle another identity holds is
-    /// refused with [`REJECT_HANDLE_HELD`] and changes nothing; the same world answered with
-    /// its `spki:` name moves the character.
+    /// A ticket answered with the world's `ip:` name for a handle another identity holds, by an
+    /// answer that reports no address on a world with no stored address, presents the name but
+    /// does not confirm it: refused with [`REJECT_HANDLE_HELD`], nothing moved and nothing
+    /// stored; the same world answered with its `spki:` name moves the character.
     ///
-    /// kills: the shell passing `ip_confirmed = true`; any held handle moved.
+    /// kills: `ip_confirmed = true` whenever the name is presented; an `ip:` name confirmed by
+    /// an empty `world_egress`; any held handle moved.
     #[test]
     fn an_ip_name_moves_nothing_lpw42_5() {
         let fx = fixture();
         let m = moving_world(&fx);
         let before = snapshot(&m);
         fx.reset_writes();
-        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_B, true, IP_NAME)));
+        let (got, _) = alice_checks(
+            &fx,
+            ok_answer(ticket_answer_with(HANDLE_B, true, IP_NAME, None)),
+        );
         assert_eq!(got, Err(REJECT_HANDLE_HELD.to_string()));
         assert_eq!(snapshot(&m), before, "every row stays");
         assert_eq!(
@@ -4182,6 +4270,8 @@ mod character_move {
             Vec::<(&str, u32)>::new(),
             "no write but the budget's"
         );
+        assert_eq!(egress(&m.c), Vec::<(u8, String, i64)>::new(), "no address");
+        assert_eq!(fx.writes_to("world_egress"), 0, "no address written");
         drop(fx);
 
         let fx = fixture();
@@ -4237,5 +4327,917 @@ mod character_move {
         assert_eq!(seen(alice()), vec![(alice().to_byte_array(), T0 - 1)]);
         assert_eq!(seen(bob()), vec![(bob().to_byte_array(), T0 - 2)]);
         assert_eq!(seen(carol()), Vec::<([u8; 32], i64)>::new());
+    }
+}
+
+// =====================================================================================
+// The world's address: the pure rules, what an answer stores, and which names a redeem
+// presents.
+// =====================================================================================
+
+mod egress_rules {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    const DNS: &str = "dns:realm-one.example.net";
+    /// An `ip:` name carrying the IPv6 address [`IP6`].
+    const IP6_NAME: &str = "ip:[2606:4700:4700::1111]:8443/world-1";
+    /// An IPv6 address as std prints it.
+    const IP6: &str = "2606:4700:4700::1111";
+    /// [`IP6`] with its zero run spelled out.
+    const IP6_LONG: &str = "2606:4700:4700:0:0:0:0:1111";
+    /// An IPv4 address [`IP_NAME`] does not carry.
+    const OTHER_ADDRESS: &str = "198.51.100.7";
+    const DEV_URL: &str = "https://auth.monster-realm.spookyowltech.com/world/check";
+    const DEV_V4: &str = "https://ipv4.auth.monster-realm.spookyowltech.com/world/check";
+    const DEV_V6: &str = "https://ipv6.auth.monster-realm.spookyowltech.com/world/check";
+
+    fn v4() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))
+    }
+
+    fn v6() -> IpAddr {
+        IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111))
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The pure rules.
+    // ---------------------------------------------------------------------------------
+
+    /// An `ip:` name carries the address before its port or path, an IPv6 one in brackets;
+    /// every other name carries none.
+    ///
+    /// kills: the inert `None`; the port or path read as part of the address; brackets
+    /// refused around IPv6 or accepted around IPv4; an unbracketed IPv6 address read; a
+    /// case-blind prefix; a host name accepted; an unclosed bracket read to the end.
+    #[test]
+    fn ip_name_address_reads_the_address_an_ip_name_carries_lpw43_5() {
+        let rows: Vec<(&str, Option<IpAddr>)> = vec![
+            ("ip:203.0.113.9:3000", Some(v4())),
+            ("ip:203.0.113.9:3000/world-1", Some(v4())),
+            ("ip:203.0.113.9/world-1", Some(v4())),
+            ("ip:203.0.113.9", Some(v4())),
+            (IP6_NAME, Some(v6())),
+            ("ip:[2606:4700:4700::1111]", Some(v6())),
+            (WORLD_NAME, None),
+            (DNS, None),
+            ("IP:203.0.113.9:1", None),
+            ("ip:[203.0.113.9]:1", None),
+            ("ip:2606:4700::1111:1", None),
+            ("ip:example.com:1", None),
+            ("ip:", None),
+            ("ip:[::1", None),
+        ];
+        for (name, want) in rows {
+            assert_eq!(crate::account_checks::ip_name_address(name), want, "{name}");
+        }
+    }
+
+    /// kills: an IPv4-mapped address kept as an IPv6 address.
+    #[test]
+    fn an_ipv4_mapped_ip_name_carries_the_ipv4_address_lpw43_5() {
+        assert_eq!(
+            crate::account_checks::ip_name_address("ip:[::ffff:203.0.113.9]:1"),
+            Some(v4())
+        );
+    }
+
+    /// `check_url` puts `ipv4.` or `ipv6.` directly after the first `://`, and leaves every
+    /// other case as it is.
+    ///
+    /// kills: the inert identity; the label put before the scheme or after the host; another
+    /// family number labelled; a URL with no scheme labelled; the label put after a later
+    /// `://`.
+    #[test]
+    fn check_url_labels_the_host_with_the_family_lpw43_5() {
+        let world_url = "https://auth.monster-realm.invalid/world/check";
+        let rows: Vec<(&str, Option<u8>, &str)> = vec![
+            (DEV_URL, Some(4), DEV_V4),
+            (DEV_URL, Some(6), DEV_V6),
+            (DEV_URL, None, DEV_URL),
+            (DEV_URL, Some(5), DEV_URL),
+            (DEV_URL, Some(0), DEV_URL),
+            (
+                world_url,
+                Some(4),
+                "https://ipv4.auth.monster-realm.invalid/world/check",
+            ),
+            (
+                world_url,
+                Some(6),
+                "https://ipv6.auth.monster-realm.invalid/world/check",
+            ),
+            (
+                "auth.monster-realm.invalid/world/check",
+                Some(4),
+                "auth.monster-realm.invalid/world/check",
+            ),
+            (
+                "https://a.example/next?to=https://b.example",
+                Some(4),
+                "https://ipv4.a.example/next?to=https://b.example",
+            ),
+        ];
+        for (url, family, want) in rows {
+            assert_eq!(
+                crate::account_checks::check_url(url, family),
+                want,
+                "{url} over {family:?}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // What an answer stores.
+    // ---------------------------------------------------------------------------------
+
+    /// The two procedures that store an answer's address.
+    #[derive(Clone, Copy, Debug)]
+    enum Path {
+        Redeem,
+        Recheck,
+    }
+
+    const PATHS: [Path; 2] = [Path::Redeem, Path::Recheck];
+
+    /// Seeds what `path` needs on [`owned_world`]: for the re-check, alice's row.
+    fn prepare(w: &W<'_>, path: Path) {
+        if let Path::Recheck = path {
+            w.accounts.seed(&account_row(
+                alice(),
+                HANDLE_A,
+                false,
+                T0 - 86_400_000,
+                false,
+            ));
+        }
+    }
+
+    /// `path` at [`NOW`] on the `test` build, answered `200` with `address` as the answer's
+    /// `address` member: alice redeems a ticket the service accepts for [`HANDLE_A`] under
+    /// [`WORLD_NAME`], or the database re-checks alice's row.
+    fn run(fx: &Fixture, path: Path, address: Option<Value>) -> Result<(), String> {
+        let mut http = HttpQueue::new();
+        match path {
+            Path::Redeem => {
+                http.push(ok_answer(ticket_answer_with(
+                    HANDLE_A, true, WORLD_NAME, address,
+                )));
+                check_as(fx, alice(), NOW, &mut http, &test_profile(), &ticket()).map(|_| ())
+            }
+            Path::Recheck => {
+                http.push(ok_answer(handle_answer_with(HANDLE_A, true, address)));
+                recheck_as(
+                    fx,
+                    Caller::Database,
+                    NOW,
+                    &mut http,
+                    &test_profile(),
+                    recheck_of(alice(), 1),
+                )
+            }
+        }
+    }
+
+    /// What `path` leaves on an [`owned_world`] holding `rows` in `world_egress`, answered with
+    /// `address`.
+    struct After {
+        got: Result<(), String>,
+        egress: Vec<(u8, String, i64)>,
+        egress_writes: u32,
+        /// Alice's row holds the answer: [`HANDLE_A`], entitled, at [`NOW`].
+        answer_stored: bool,
+    }
+
+    fn after(path: Path, rows: &[WorldEgress], address: Option<Value>) -> After {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        prepare(&w, path);
+        for row in rows {
+            w.egress.seed(row);
+        }
+        fx.reset_writes();
+        let got = run(&fx, path, address);
+        After {
+            got,
+            egress: egress(&w),
+            egress_writes: fx.writes_to("world_egress"),
+            answer_stored: accounts(&w).contains(&view(&account_row(
+                alice(),
+                HANDLE_A,
+                true,
+                NOW,
+                false,
+            ))),
+        }
+    }
+
+    /// kills: the inert store; the address stored under family 6 or at another time; the
+    /// answer's own storing skipped.
+    #[test]
+    fn an_ipv4_address_is_stored_for_family_4_lpw43_5() {
+        for path in PATHS {
+            let a = after(path, &[], Some(json!(ADDRESS)));
+            assert_eq!(a.got, Ok(()), "{path:?}");
+            assert_eq!(a.egress, vec![(4, ADDRESS.to_string(), NOW)], "{path:?}");
+            assert!(a.answer_stored, "{path:?}: the answer is stored");
+        }
+    }
+
+    /// An IPv6 address the service spells out in full is stored as std prints it.
+    ///
+    /// kills: the answer's text stored as it came; the family taken as 4.
+    #[test]
+    fn an_ipv6_address_is_stored_for_family_6_as_std_prints_it_lpw43_5() {
+        for path in PATHS {
+            let a = after(path, &[], Some(json!(IP6_LONG)));
+            assert_eq!(a.got, Ok(()), "{path:?}");
+            assert_eq!(a.egress, vec![(6, IP6.to_string(), NOW)], "{path:?}");
+        }
+    }
+
+    /// kills: an IPv4-mapped IPv6 address stored as family 6.
+    #[test]
+    fn an_ipv4_mapped_address_is_stored_as_the_ipv4_address_lpw43_5() {
+        for path in PATHS {
+            let a = after(path, &[], Some(json!("::ffff:203.0.113.9")));
+            assert_eq!(a.got, Ok(()), "{path:?}");
+            assert_eq!(a.egress, vec![(4, ADDRESS.to_string(), NOW)], "{path:?}");
+        }
+    }
+
+    /// A stored row of the answer's family is replaced; the other family's row stays.
+    ///
+    /// kills: a second insert under one family; the family's row kept; the other family's row
+    /// erased or restamped.
+    #[test]
+    fn a_stored_row_of_the_same_family_is_replaced_and_the_other_family_kept_lpw43_5() {
+        let rows = [
+            egress_row(4, OTHER_ADDRESS, T0 - 5_000),
+            egress_row(6, IP6, T0 - 7_000),
+        ];
+        for path in PATHS {
+            let a = after(path, &rows, Some(json!(ADDRESS)));
+            assert_eq!(a.got, Ok(()), "{path:?}");
+            assert_eq!(
+                a.egress,
+                vec![
+                    (4, ADDRESS.to_string(), NOW),
+                    (6, IP6.to_string(), T0 - 7_000),
+                ],
+                "{path:?}"
+            );
+        }
+    }
+
+    /// An absent or `null` address and a string that is no address store nothing, and the
+    /// rest of the answer is stored as usual; a string that is an address, on the same path, is
+    /// stored.
+    ///
+    /// kills: the answer refused for its address; the text stored unparsed; a bracketed, zoned
+    /// or ported address accepted; a stored row cleared by an answer that reports none.
+    #[test]
+    fn an_absent_null_or_unparsable_address_stores_nothing_lpw43_5() {
+        let cases: Vec<(&str, Option<Value>)> = vec![
+            ("absent", None),
+            ("null", Some(Value::Null)),
+            ("a word", Some(json!("not-an-address"))),
+            ("empty", Some(json!(""))),
+            ("bracketed", Some(json!("[2606:4700:4700::1111]"))),
+            ("with a zone", Some(json!("fe80::1%1"))),
+            ("with a port", Some(json!("203.0.113.9:3000"))),
+        ];
+        let kept = egress_row(6, IP6, T0 - 1_000);
+        for path in PATHS {
+            for (label, address) in cases.clone() {
+                let a = after(path, std::slice::from_ref(&kept), address);
+                assert_eq!(a.got, Ok(()), "{path:?}, {label}");
+                assert!(a.answer_stored, "{path:?}, {label}: the answer is stored");
+                assert_eq!(
+                    a.egress,
+                    vec![(6, IP6.to_string(), T0 - 1_000)],
+                    "{path:?}, {label}: the stored row stays"
+                );
+                assert_eq!(a.egress_writes, 0, "{path:?}, {label}: no address written");
+            }
+            let control = after(path, &[], Some(json!(ADDRESS)));
+            assert_eq!(
+                control.egress,
+                vec![(4, ADDRESS.to_string(), NOW)],
+                "{path:?}: control"
+            );
+        }
+    }
+
+    /// An `address` member of another JSON type makes the body no answer: refused with
+    /// [`REJECT_CHECK_UNANSWERED`], no account row written and no address stored.
+    ///
+    /// kills: the member ignored when it is not a string; the address read out of an array or
+    /// object.
+    #[test]
+    fn an_address_of_another_json_type_is_no_answer_lpw43_5() {
+        let cases: Vec<(&str, Value)> = vec![
+            ("a number", json!(7)),
+            ("a boolean", json!(true)),
+            ("an array", json!([ADDRESS])),
+            ("an object", json!({ "address": ADDRESS })),
+        ];
+        for path in PATHS {
+            for (label, address) in cases.clone() {
+                let fx = fixture();
+                let w = owned_world(&fx);
+                prepare(&w, path);
+                let before = accounts(&w);
+                fx.reset_writes();
+                let got = run(&fx, path, Some(address));
+                assert_eq!(
+                    got,
+                    Err(REJECT_CHECK_UNANSWERED.to_string()),
+                    "{path:?}, {label}"
+                );
+                assert_eq!(accounts(&w), before, "{path:?}, {label}: the rows stay");
+                assert_eq!(fx.writes_to("world_account"), 0, "{path:?}, {label}");
+                assert_eq!(
+                    egress(&w),
+                    Vec::<(u8, String, i64)>::new(),
+                    "{path:?}, {label}"
+                );
+                assert_eq!(fx.writes_to("world_egress"), 0, "{path:?}, {label}");
+            }
+        }
+    }
+
+    /// A redeem answered with no usable answer stores no address, though the body reports one;
+    /// the same world answered usably stores it.
+    ///
+    /// kills: the address read from a `403` or another status; the address stored before the
+    /// body is judged the answer's shape.
+    #[test]
+    fn a_redeem_with_no_usable_answer_stores_no_address_lpw43_5() {
+        let raw = |text: &str| -> Stubbed { Ok((200, text.to_string())) };
+        let good = ticket_answer(HANDLE_A, true, WORLD_NAME);
+        let cases: Vec<(&str, Stubbed, &str)> = vec![
+            ("403", Ok((403, good.clone())), REJECT_TICKET_REFUSED),
+            ("500", Ok((500, good.clone())), REJECT_CHECK_UNANSWERED),
+            (
+                "a transport error",
+                Err("the request timed out".to_string()),
+                REJECT_CHECK_UNANSWERED,
+            ),
+            (
+                "no handle",
+                raw(r#"{"entitled":true,"address":"203.0.113.9","name":"ip:203.0.113.9:3000"}"#),
+                REJECT_CHECK_UNANSWERED,
+            ),
+            (
+                "entitled a string",
+                raw(
+                    r#"{"handle":"k1.AbCdEf0123456789-_","entitled":"true","address":"203.0.113.9","name":"ip:203.0.113.9:3000"}"#,
+                ),
+                REJECT_CHECK_UNANSWERED,
+            ),
+            (
+                "a 1025-byte handle",
+                Ok((
+                    200,
+                    ticket_answer(&format!("k1.{}", "a".repeat(1022)), true, WORLD_NAME),
+                )),
+                REJECT_CHECK_UNANSWERED,
+            ),
+        ];
+        for (label, outcome, want) in cases {
+            let fx = fixture();
+            let w = owned_world(&fx);
+            fx.reset_writes();
+            let (got, sent) = alice_checks(&fx, answer_of(&outcome));
+            assert_eq!(sent.len(), 1, "{label}: the one request");
+            assert_eq!(got, Err(want.to_string()), "{label}");
+            assert_eq!(egress(&w), Vec::<(u8, String, i64)>::new(), "{label}");
+            assert_eq!(fx.writes_to("world_egress"), 0, "{label}");
+        }
+        let fx = fixture();
+        let w = owned_world(&fx);
+        let (got, _) = alice_checks(&fx, ok_answer(good));
+        assert_eq!(got, Ok(true), "control");
+        assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)], "control");
+    }
+
+    /// A redeem refused when it lands (the caller holds another handle) has still stored the
+    /// answer's address, and its account row stays.
+    ///
+    /// kills: the address stored in the transaction that stores the account row, so the
+    /// refusal rolls it back.
+    #[test]
+    fn a_redeem_refused_after_its_answer_has_stored_the_address_lpw43_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, true, T0 - 1_000, false));
+        let before = accounts(&w);
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_A2, true, WORLD_NAME)));
+        assert_eq!(got, Err(REJECT_IDENTITY_HOLDS_ANOTHER.to_string()));
+        assert_eq!(accounts(&w), before, "the account rows stay");
+        assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
+    }
+
+    /// A re-check whose row is checked again while it waits leaves the newer row alone and
+    /// still stores the answer's address.
+    ///
+    /// kills: the address stored only when the account row is.
+    #[test]
+    fn a_recheck_whose_row_changed_during_the_wait_has_stored_the_address_lpw43_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.accounts.seed(&account_row(
+            alice(),
+            HANDLE_A,
+            false,
+            T0 - 86_400_000,
+            false,
+        ));
+        let mut http = HttpQueue::new();
+        http.push(ok_answer(handle_answer(HANDLE_A, true)).while_waiting(|| {
+            assert_eq!(w.accounts.remove(alice()), 1);
+            w.accounts
+                .seed(&account_row(alice(), HANDLE_A, false, NOW - 1, false));
+        }));
+        let got = recheck_as(
+            &fx,
+            Caller::Database,
+            NOW,
+            &mut http,
+            &test_profile(),
+            recheck_of(alice(), 1),
+        );
+        assert_eq!(got, Ok(()));
+        assert!(
+            accounts(&w).contains(&view(&account_row(
+                alice(),
+                HANDLE_A,
+                false,
+                NOW - 1,
+                false
+            ))),
+            "the newer row stays: {:?}",
+            accounts(&w)
+        );
+        assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Which names a redeem presents, and where it asks.
+    // ---------------------------------------------------------------------------------
+
+    /// A world owned by [`owner`] named `names`, holding no account row.
+    fn named_world<'a>(fx: &'a Fixture, names: &[&str]) -> W<'a> {
+        let w = world(fx);
+        w.config.seed(&Config {
+            id: 0,
+            content_version: 0,
+            owner_identity: owner(),
+        });
+        for name in names {
+            w.names.seed(&WorldName {
+                name: (*name).to_string(),
+            });
+        }
+        w
+    }
+
+    /// The request's `names`, sorted.
+    fn sent_names(req: &SentRequest) -> Vec<String> {
+        sorted(
+            body_of(req)["names"]
+                .as_array()
+                .expect("`names` is an array")
+                .iter()
+                .map(|n| n.as_str().expect("a name is a string").to_string())
+                .collect(),
+        )
+    }
+
+    /// The names alice's redeem at [`NOW`] presents, and the URL it asks, on a world named
+    /// `names` holding `rows` in `world_egress`.
+    fn presented(names: &[&str], rows: &[WorldEgress]) -> (Vec<String>, String) {
+        let fx = fixture();
+        let w = named_world(&fx, names);
+        for row in rows {
+            w.egress.seed(row);
+        }
+        let (_, sent) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_A, true, WORLD_NAME)));
+        assert_eq!(sent.len(), 1, "one request");
+        (sent_names(&sent[0]), sent[0].url.clone())
+    }
+
+    /// A row of the other family leaves the world's IPv4 `ip:` name presented, beside its
+    /// `spki:` and `dns:` names, over IPv4.
+    ///
+    /// kills: the other family's row read as disowning the name; the request sent over the
+    /// profile's own URL.
+    #[test]
+    fn an_ip_name_is_presented_while_its_family_holds_no_address_lpw43_5() {
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, DNS, IP_NAME],
+                &[egress_row(6, IP6, NOW - 1_000)]
+            ),
+            (strings(&[WORLD_NAME, DNS, IP_NAME]), DEV_V4.to_string())
+        );
+    }
+
+    /// kills: a freshness bound below 25 h.
+    #[test]
+    fn an_ip_name_confirmed_25_hours_less_1_ms_ago_is_presented_lpw43_5() {
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, DNS, IP_NAME],
+                &[egress_row(4, ADDRESS, NOW - 89_999_999)]
+            ),
+            (strings(&[WORLD_NAME, DNS, IP_NAME]), DEV_V4.to_string())
+        );
+    }
+
+    /// kills: no freshness bound; a bound above 25 h; `<=` for `<`.
+    #[test]
+    fn an_ip_name_confirmed_exactly_25_hours_ago_is_not_presented_lpw43_5() {
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, DNS, IP_NAME],
+                &[egress_row(4, ADDRESS, NOW - 90_000_000)]
+            ),
+            (strings(&[WORLD_NAME, DNS]), DEV_V4.to_string())
+        );
+    }
+
+    /// kills: the stored address not compared; any row of the family read as confirming.
+    #[test]
+    fn an_ip_name_whose_family_holds_another_address_is_not_presented_lpw43_5() {
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, DNS, IP_NAME],
+                &[egress_row(4, OTHER_ADDRESS, NOW - 1_000)]
+            ),
+            (strings(&[WORLD_NAME, DNS]), DEV_V4.to_string())
+        );
+    }
+
+    /// kills: a row stamped after the check's time read as fresh (an unsigned or absolute age).
+    #[test]
+    fn an_ip_name_confirmed_after_now_is_not_presented_lpw43_5() {
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, DNS, IP_NAME],
+                &[egress_row(4, ADDRESS, NOW + 1)]
+            ),
+            (strings(&[WORLD_NAME, DNS]), DEV_V4.to_string())
+        );
+    }
+
+    /// An IPv6 `ip:` name spelling its address in full matches the stored address std prints.
+    ///
+    /// kills: the addresses compared as text.
+    #[test]
+    fn an_ipv6_ip_name_spelled_another_way_is_presented_lpw43_5() {
+        let name = "ip:[2606:4700:4700:0:0:0:0:1111]:8443";
+        assert_eq!(
+            presented(&[WORLD_NAME, DNS, name], &[egress_row(6, IP6, NOW - 1_000)]),
+            (strings(&[WORLD_NAME, DNS, name]), DEV_V6.to_string())
+        );
+    }
+
+    /// An `ip:` name carrying an IPv4-mapped address is an IPv4 name: asked over IPv4 and
+    /// confirmed by the IPv4 row.
+    ///
+    /// kills: the mapped name read as IPv6 (asked over IPv6, or never presented).
+    #[test]
+    fn an_ipv4_mapped_ip_name_is_presented_as_ipv4_lpw43_5() {
+        let name = "ip:[::ffff:203.0.113.9]:3000";
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, DNS, name],
+                &[egress_row(4, ADDRESS, NOW - 1_000)]
+            ),
+            (strings(&[WORLD_NAME, DNS, name]), DEV_V4.to_string())
+        );
+    }
+
+    /// An `ip:` name that carries no address is never presented, and gives the world no
+    /// family.
+    ///
+    /// kills: every name not starting with `spki:` or `dns:` presented while no row is stored;
+    /// a host name read as a family.
+    #[test]
+    fn an_ip_name_that_carries_no_address_is_never_presented_lpw43_5() {
+        assert_eq!(
+            presented(&[WORLD_NAME, DNS, "ip:example.com:3000"], &[]),
+            (strings(&[WORLD_NAME, DNS]), DEV_URL.to_string())
+        );
+    }
+
+    /// A world naming `ip:` names of both families asks over IPv4 and never presents the
+    /// IPv6 one.
+    ///
+    /// kills: IPv6 preferred; the name of the other family presented.
+    #[test]
+    fn a_world_with_ip_names_of_both_families_asks_over_ipv4_only_lpw43_5() {
+        assert_eq!(
+            presented(&[WORLD_NAME, IP_NAME, IP6_NAME], &[]),
+            (strings(&[WORLD_NAME, IP_NAME]), DEV_V4.to_string())
+        );
+    }
+
+    /// kills: the family fixed at 4; an IPv6 name never presented.
+    #[test]
+    fn a_world_naming_only_an_ipv6_ip_name_asks_over_ipv6_lpw43_5() {
+        assert_eq!(
+            presented(&[WORLD_NAME, IP6_NAME], &[]),
+            (strings(&[WORLD_NAME, IP6_NAME]), DEV_V6.to_string())
+        );
+    }
+
+    /// kills: a family label added to a world with no `ip:` name.
+    #[test]
+    fn a_world_with_no_ip_name_asks_the_profiles_own_url_lpw43_5() {
+        assert_eq!(
+            presented(&[WORLD_NAME, DNS], &[egress_row(4, ADDRESS, NOW - 1_000)]),
+            (strings(&[WORLD_NAME, DNS]), DEV_URL.to_string())
+        );
+    }
+
+    /// A world whose only name is an `ip:` name its row disowns presents no name: refused with
+    /// [`REJECT_WORLD_UNNAMED`] before the charge, with no request; the same world whose row
+    /// holds the name's address sends.
+    ///
+    /// kills: the unnamed check made on the stored names, not the presented ones; the budget
+    /// charged before it; a request with an empty `names`.
+    #[test]
+    fn a_world_that_presents_no_name_is_unnamed_lpw43_5() {
+        let fx = fixture();
+        let w = named_world(&fx, &[IP_NAME]);
+        w.egress.seed(&egress_row(4, OTHER_ADDRESS, NOW - 1_000));
+        w.budget.seed(&budget_row(T0, 3));
+        fx.reset_writes();
+        let mut http = HttpQueue::new();
+        let got = check_as(&fx, alice(), NOW, &mut http, &test_profile(), &ticket());
+        assert_eq!(got, Err(REJECT_WORLD_UNNAMED.to_string()));
+        assert!(http.requests().is_empty(), "no request");
+        assert_eq!(budget(&w), vec![(0, T0, 3)], "nothing spent");
+        assert_eq!(fx.writes_to("world_check_budget"), 0);
+        drop(fx);
+
+        let fx = fixture();
+        let w = named_world(&fx, &[IP_NAME]);
+        w.egress.seed(&egress_row(4, ADDRESS, NOW - 1_000));
+        let mut http = HttpQueue::new();
+        http.push(ok_answer(ticket_answer(HANDLE_A, true, IP_NAME)));
+        let got = check_as(&fx, alice(), NOW, &mut http, &test_profile(), &ticket());
+        assert_eq!(got, Ok(true), "control");
+        assert_eq!(http.requests().len(), 1, "control: one request");
+        assert_eq!(sent_names(&http.requests()[0]), strings(&[IP_NAME]));
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The name judged when the answer lands.
+    // ---------------------------------------------------------------------------------
+
+    /// A world with no stored address presents its `ip:` name; an answer naming it that
+    /// reports another address is refused with [`REJECT_TICKET_REFUSED`], stores no account
+    /// row, and has stored the reported address.
+    ///
+    /// kills: the answered name judged against the names as stored, not as presented after
+    /// the answer's address; the refusal rolling back the address.
+    #[test]
+    fn an_answer_reporting_another_address_than_its_ip_name_is_refused_lpw43_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        let before = accounts(&w);
+        fx.reset_writes();
+        let (got, sent) = alice_checks(
+            &fx,
+            ok_answer(ticket_answer_with(
+                HANDLE_A,
+                true,
+                IP_NAME,
+                Some(json!(OTHER_ADDRESS)),
+            )),
+        );
+        assert_eq!(sent.len(), 1, "one request");
+        assert_eq!(
+            sent_names(&sent[0]),
+            strings(&[WORLD_NAME, IP_NAME]),
+            "the name is presented"
+        );
+        assert_eq!(got, Err(REJECT_TICKET_REFUSED.to_string()));
+        assert_eq!(accounts(&w), before, "no account row");
+        assert_eq!(fx.writes_to("world_account"), 0);
+        assert_eq!(egress(&w), vec![(4, OTHER_ADDRESS.to_string(), NOW)]);
+    }
+
+    /// The same world answered with the name's own address stores the row, and the name is
+    /// confirmed.
+    ///
+    /// kills: an `ip:` answer refused whatever it reports; the address not stored.
+    #[test]
+    fn an_answer_reporting_its_ip_names_own_address_is_stored_and_confirms_it_lpw43_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_A, true, IP_NAME)));
+        assert_eq!(got, Ok(true));
+        assert!(accounts(&w).contains(&view(&account_row(alice(), HANDLE_A, true, NOW, false))));
+        assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
+    }
+
+    /// kills: the re-check left on the profile's own URL.
+    #[test]
+    fn a_recheck_asks_over_the_family_of_the_worlds_ip_name_lpw43_5() {
+        let fx = fixture();
+        let w = named_world(&fx, &[WORLD_NAME, IP6_NAME]);
+        w.accounts.seed(&account_row(
+            alice(),
+            HANDLE_A,
+            false,
+            T0 - 86_400_000,
+            false,
+        ));
+        let mut http = HttpQueue::new();
+        http.push(ok_answer(handle_answer(HANDLE_A, true)));
+        let got = recheck_as(
+            &fx,
+            Caller::Database,
+            NOW,
+            &mut http,
+            &test_profile(),
+            recheck_of(alice(), 1),
+        );
+        assert_eq!(got, Ok(()));
+        assert_eq!(http.requests().len(), 1);
+        assert_recheck_request(&http.requests()[0], DEV_V6, HANDLE_A);
+    }
+}
+
+// =====================================================================================
+// A move through an `ip:` name the world has confirmed.
+// =====================================================================================
+
+mod ip_move {
+    use super::character_move::{
+        assert_holds_nothing, character_expected, character_rows, moving_world, snapshot, written,
+        MW,
+    };
+    use super::*;
+    use serde_json::json;
+
+    const DNS: &str = "dns:realm-one.example.net";
+    /// An IPv4 address [`IP_NAME`] does not carry.
+    const OTHER_ADDRESS: &str = "198.51.100.7";
+
+    /// Bob's character is alice's: the handle's row points at her, bob holds a `world_move`
+    /// row at the check's time, and every character row is under her.
+    fn assert_moved_to_alice(m: &MW<'_>, label: &str) {
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(alice(), HANDLE_B, true, NOW, true))],
+            "{label}: the handle's one row is the caller's"
+        );
+        assert_eq!(
+            moves(&m.c),
+            vec![(bob().to_byte_array(), NOW)],
+            "{label}: the source's world_move row"
+        );
+        assert_eq!(
+            character_rows(m, alice()),
+            character_expected(alice()),
+            "{label}: every character row is under the caller"
+        );
+        assert_holds_nothing(m, bob(), label);
+    }
+
+    /// kills: `ip_confirmed` false whatever `world_egress` holds; the address judged before
+    /// the answer's own is stored.
+    #[test]
+    fn an_ip_name_the_answer_confirms_moves_the_character_lpw43_6() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_B, true, IP_NAME)));
+        assert_eq!(got, Ok(true));
+        assert_moved_to_alice(&m, "confirmed by the answer");
+    }
+
+    /// kills: a confirmation that needs the answer to report the address; a freshness bound
+    /// below 25 h.
+    #[test]
+    fn an_ip_name_a_row_confirmed_25_hours_less_1_ms_ago_moves_the_character_lpw43_6() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        m.c.egress.seed(&egress_row(4, ADDRESS, NOW - 89_999_999));
+        let (got, _) = alice_checks(
+            &fx,
+            ok_answer(ticket_answer_with(HANDLE_B, true, IP_NAME, None)),
+        );
+        assert_eq!(got, Ok(true));
+        assert_moved_to_alice(&m, "confirmed by the stored row");
+    }
+
+    /// A row exactly 25 h old leaves the `ip:` name unpresented, so the service refuses the
+    /// ticket (`403`) and nothing moves.
+    ///
+    /// kills: the stale name presented; `<=` for `<` in the freshness bound.
+    #[test]
+    fn an_ip_name_confirmed_exactly_25_hours_ago_moves_nothing_lpw43_6() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        m.c.egress.seed(&egress_row(4, ADDRESS, NOW - 90_000_000));
+        let before = snapshot(&m);
+        fx.reset_writes();
+        let (got, sent) = alice_checks(
+            &fx,
+            HttpAnswer::status(403, ticket_answer_with(HANDLE_B, true, IP_NAME, None)),
+        );
+        assert_eq!(sent.len(), 1, "one request");
+        let names: Vec<String> = sorted(
+            body_of(&sent[0])["names"]
+                .as_array()
+                .expect("`names` is an array")
+                .iter()
+                .map(|n| n.as_str().expect("a name is a string").to_string())
+                .collect(),
+        );
+        assert_eq!(
+            names,
+            strings(&[WORLD_NAME]),
+            "the ip: name is not presented"
+        );
+        assert_eq!(got, Err(REJECT_TICKET_REFUSED.to_string()));
+        assert_eq!(snapshot(&m), before, "every row stays");
+        assert_eq!(written(&fx, &m), Vec::<(&str, u32)>::new(), "no write");
+        assert_eq!(
+            egress(&m.c),
+            vec![(4, ADDRESS.to_string(), NOW - 90_000_000)],
+            "the stale row stays"
+        );
+    }
+
+    /// An answer naming the `ip:` name that reports another address is refused when it lands,
+    /// and nothing moves; the reported address is stored.
+    ///
+    /// kills: the move judged on the name alone; a held handle moved by an address the name
+    /// does not carry.
+    #[test]
+    fn an_answer_reporting_another_address_moves_nothing_lpw43_6() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let before = snapshot(&m);
+        fx.reset_writes();
+        let (got, _) = alice_checks(
+            &fx,
+            ok_answer(ticket_answer_with(
+                HANDLE_B,
+                true,
+                IP_NAME,
+                Some(json!(OTHER_ADDRESS)),
+            )),
+        );
+        assert_eq!(got, Err(REJECT_TICKET_REFUSED.to_string()));
+        assert_eq!(snapshot(&m), before, "every row stays");
+        assert_eq!(
+            written(&fx, &m),
+            Vec::<(&str, u32)>::new(),
+            "no write but the budget's and the address's"
+        );
+        assert_eq!(egress(&m.c), vec![(4, OTHER_ADDRESS.to_string(), NOW)]);
+    }
+
+    /// With a stored row that disowns the `ip:` name, and an answer that reports that row's
+    /// address, a `spki:` name and a `dns:` name each still move the character.
+    ///
+    /// kills: `spki:` or `dns:` names made to need a confirmed address; the presentation rule
+    /// applied to names that are not `ip:` names.
+    #[test]
+    fn spki_and_dns_names_move_the_character_whatever_world_egress_holds_lpw43_6() {
+        for name in [WORLD_NAME, DNS] {
+            let fx = fixture();
+            let m = moving_world(&fx);
+            m.c.names.seed(&WorldName {
+                name: DNS.to_string(),
+            });
+            m.c.egress.seed(&egress_row(4, OTHER_ADDRESS, NOW - 1_000));
+            let (got, _) = alice_checks(
+                &fx,
+                ok_answer(ticket_answer_with(
+                    HANDLE_B,
+                    true,
+                    name,
+                    Some(json!(OTHER_ADDRESS)),
+                )),
+            );
+            assert_eq!(got, Ok(true), "{name}");
+            assert_moved_to_alice(&m, name);
+            assert_eq!(
+                egress(&m.c),
+                vec![(4, OTHER_ADDRESS.to_string(), NOW)],
+                "{name}: the reported address"
+            );
+        }
     }
 }
