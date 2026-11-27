@@ -21,6 +21,10 @@
 //! pass. Tests seed rows through [`Fixture::table`] / [`Fixture::table_keyed`] — never the
 //! db handle.
 //!
+//! PROCEDURES run here too: [`Fixture::run_procedure`] hands a real `ProcedureContext` to a
+//! test, with transactions that commit or roll back and every HTTP answer stubbed by the test
+//! (the PROCEDURES banner below).
+//!
 //! that actually keeps this module out of the published wasm is the compiler:
 //! any non-test reference to it fails the publish build with E0433.
 //!
@@ -800,12 +804,13 @@ impl Fixture {
 //   (insert/update collisions return UNIQUE_ALREADY_EXISTS); `Handle::auto_inc`
 //   models ONE u64 sequence column (0 is the trigger, as in
 //   `spacetimedb::table::SequenceTrigger`; the generated value is written back
-//   exactly as `table.rs` `insert`/`update` decode it). No other constraint and
-//   no transaction rollback is modelled: a reducer that errors after a write
-//   leaves that write in the store.
+//   exactly as `table.rs` `insert`/`update` decode it). No other constraint is
+//   modelled, and a reducer's transaction is not rolled back: a reducer that
+//   errors after a write leaves that write in the store. A procedure's
+//   transactions do roll back (the PROCEDURES banner).
 // * A SETTABLE CALLER. `Fixture::run_as(_at)` runs a closure inside the SHIPPED
 //   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1299`), which is
-//   the only code that builds a `ReducerContext` with a chosen sender (the
+//   the only code that hands a reducer a `ReducerContext` with a chosen sender (the
 //   constructor is private, `vendor/spacetimedb/src/lib.rs:1209`). A trampoline
 //   reducer is registered once per process through the public `rt::register_reducer`
 //   and published into `REDUCERS` by calling `__describe_module__`. The closure's panics are
@@ -815,7 +820,7 @@ impl Fixture {
 //   `run_as_conn_at` opens a client connection and serves its JWT (see the
 //   connection banner below).
 // * A CONTROLLABLE CLOCK. `Fixture::ctx_at` (the dummy context with its public
-//   `timestamp` set) and `run_as_at`.
+//   `timestamp` set), `run_as_at`, and the `at` of `run_procedure`.
 // * A MODULE IDENTITY. The `identity` syscall answers the fixture's database
 //   identity (default [`DEFAULT_DATABASE_IDENTITY`], neither the all-zero
 //   `WILD_IDENTITY` nor a small `[n; 32]` test identity); before this, reaching
@@ -878,6 +883,19 @@ struct Model {
     jwt_conn: [u8; 16],
     jwt: Option<Vec<u8>>,
     jwt_cursor: usize,
+    /// What a procedure's open transaction started from; `None` outside one.
+    tx: Option<TxStart>,
+    /// The byte sources of a procedure's HTTP answers not yet read to the end: id -> (bytes,
+    /// read cursor). Ids count up from [`ANSWER_SOURCE_BASE`].
+    answer_sources: HashMap<u32, (Vec<u8>, usize)>,
+    answer_sources_opened: u32,
+}
+
+/// The state a procedure's transaction puts back if it aborts: every table's rows, and the
+/// write counts (a subscriber is told nothing of an aborted transaction).
+struct TxStart {
+    rows: HashMap<u32, Vec<Row>>,
+    writes: HashMap<u32, u32>,
 }
 
 impl Default for Model {
@@ -888,6 +906,9 @@ impl Default for Model {
             jwt_conn: [0; 16],
             jwt: None,
             jwt_cursor: 0,
+            tx: None,
+            answer_sources: HashMap::new(),
+            answer_sources_opened: 0,
         }
     }
 }
@@ -1111,8 +1132,7 @@ impl Fixture {
         let erased: RunAsBody =
             unsafe { std::mem::transmute(body_ref as *mut (dyn FnMut(&ReducerContext) + '_)) };
         RUN_AS_BODY.with(|slot| *slot.borrow_mut() = Some(erased));
-        let s = sender.to_byte_array();
-        let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+        let [s0, s1, s2, s3] = identity_words(sender);
         // The runtime rebuilds the id from its two words as native-endian u64s
         // read back as a LITTLE-ENDIAN byte array (`rt.rs:1340-1345`).
         let c = conn.to_le_bytes();
@@ -1123,10 +1143,10 @@ impl Fixture {
         let rc = unsafe {
             __call_reducer__(
                 0,
-                word(0),
-                word(1),
-                word(2),
-                word(3),
+                s0,
+                s1,
+                s2,
+                s3,
                 conn_word(0),
                 conn_word(1),
                 micros,
@@ -1150,6 +1170,13 @@ thread_local! {
     /// The closure [`Fixture::run_as_at`] hands to the trampoline.
     static RUN_AS_BODY: RefCell<Option<RunAsBody>> =
         const { RefCell::new(None) };
+}
+
+/// An identity as the four words the runtime's entry points take: its byte array read as
+/// native-endian `u64`s (`vendor/spacetimedb/src/rt.rs:1331`).
+fn identity_words(id: Identity) -> [u64; 4] {
+    let bytes = id.to_byte_array();
+    std::array::from_fn(|i| u64::from_ne_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap()))
 }
 
 /// `BytesSink` handles this host accepts writes to (and discards).
@@ -1606,12 +1633,10 @@ impl Fixture {
     ) -> Vec<R> {
         ensure_run_as_registered();
         VIEW_OUT.with(|b| b.borrow_mut().clear());
-        let s = sender.to_byte_array();
-        let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+        let [s0, s1, s2, s3] = identity_words(sender);
         // SAFETY: the shipped entry point; args are the INVALID (empty) source (a
         // zero-argument view), and the sink is one `bytes_sink_write` accepts.
-        let rc =
-            unsafe { __call_view__(view_id, word(0), word(1), word(2), word(3), 0, VIEW_SINK) };
+        let rc = unsafe { __call_view__(view_id, s0, s1, s2, s3, 0, VIEW_SINK) };
         assert_eq!(
             rc, 2,
             "native_host_tests: __call_view__ must answer with the header ABI (2)"
@@ -1706,11 +1731,13 @@ pub(crate) fn sorted_hexes(ids: impl IntoIterator<Item = Identity>) -> Vec<Strin
     out
 }
 
-/// Registers the trampoline and publishes `REDUCERS`, once per process.
+/// Registers the two trampolines and publishes `REDUCERS`, `PROCEDURES` and `VIEWS`, once per
+/// process.
 fn ensure_run_as_registered() {
     static READY: OnceLock<()> = OnceLock::new();
     READY.get_or_init(|| {
         spacetimedb::rt::register_reducer::<(), RunAsTrampoline>(run_as_signature);
+        spacetimedb::rt::register_procedure::<(), (), ProcedureTrampoline>(procedure_signature);
         // The shipped `#[view]` describers, in `VIEWS` order (see `call_view`). Each is
         // the `pub extern "C"` symbol the view macro exports; calling it pushes the
         // SHIPPED view fn into the module's `views` list, exactly as a host's preinit
@@ -1894,7 +1921,7 @@ unsafe extern "C" fn identity(out_ptr: *mut u8) {
     unsafe { std::ptr::copy_nonoverlapping(id.as_ptr(), out_ptr, 32) };
 }
 
-/// Accepts (and discards) writes to the two sinks this host hands out.
+/// Accepts writes to the sinks this host hands out, and keeps the describe and view bytes.
 #[no_mangle]
 unsafe extern "C" fn bytes_sink_write(
     sink: u32,
@@ -1910,7 +1937,7 @@ unsafe extern "C" fn bytes_sink_write(
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .extend_from_slice(bytes);
         0
-    } else if sink == ERROR_SINK {
+    } else if sink == ERROR_SINK || sink == PROCEDURE_SINK {
         0
     } else if sink == VIEW_SINK {
         // SAFETY: the runtime hands a valid `buffer_ptr[..*len_ptr]`.
@@ -1930,13 +1957,15 @@ unsafe extern "C" fn bytes_sink_write(
 // exactly as a client call does (`lib.rs:1216`): the first `has_jwt()` / `jwt()`
 // asks the `get_jwt` syscall for that connection, and a valid bytes source is
 // then read through `bytes_source_remaining_length` + `bytes_source_read`
-// (`rt.rs:1588-1599`, `read_bytes_source_into` at `rt.rs:1610`). This host serves ONE source, [`JWT_SOURCE`],
-// holding the claims payload the test chose; `None` answers the INVALID source,
-// which the runtime reads as "no JWT" (the anonymous player). Reducer ARGS stay
-// the INVALID source (`run_as` passes none), so no other source is ever read.
+// (`rt.rs:1588-1599`, `read_bytes_source_into` at `rt.rs:1610`). This host serves the JWT
+// through ONE source, [`JWT_SOURCE`], holding the claims payload the test chose; `None`
+// answers the INVALID source, which the runtime reads as "no JWT" (the anonymous player).
+// Reducer and procedure ARGS stay the INVALID source (`run_as` and `run_procedure` pass
+// none). The only other sources are the answers to a procedure's HTTP requests (the
+// PROCEDURES banner), which the same two syscalls serve.
 // ---------------------------------------------------------------------------
 
-/// The one bytes source this host hands out: the current connection's JWT.
+/// The bytes source of the current connection's JWT.
 const JWT_SOURCE: u32 = 0x0A57;
 
 #[no_mangle]
@@ -1945,42 +1974,68 @@ unsafe extern "C" fn bytes_source_read(
     buffer_ptr: *mut u8,
     len_ptr: *mut usize,
 ) -> i16 {
+    let mut h = host();
+    let model = &mut h.model;
+    if let Some((payload, cursor)) = model.answer_sources.get_mut(&source) {
+        // SAFETY: as for the JWT source below.
+        let exhausted = unsafe { read_source(payload, cursor, buffer_ptr, len_ptr) };
+        if exhausted {
+            model.answer_sources.remove(&source);
+            return -1;
+        }
+        return 0;
+    }
     if source != JWT_SOURCE {
         unmodelled("bytes_source_read of a source this host never handed out")
     }
-    let mut h = host();
-    let model = &mut h.model;
     let Some(payload) = model.jwt.as_ref() else {
         unmodelled("bytes_source_read of a JWT source with no payload")
     };
-    let rest = &payload[model.jwt_cursor..];
     // SAFETY: `len_ptr` is the caller's spare-capacity length and `buffer_ptr`
     // points at that many writable bytes (`read_bytes_source_into`).
-    let room = unsafe { len_ptr.read() };
-    let n = room.min(rest.len());
-    unsafe {
-        std::ptr::copy_nonoverlapping(rest.as_ptr(), buffer_ptr, n);
-        len_ptr.write(n);
-    }
-    model.jwt_cursor += n;
-    if model.jwt_cursor == payload.len() {
+    if unsafe { read_source(payload, &mut model.jwt_cursor, buffer_ptr, len_ptr) } {
         -1 // exhausted
     } else {
         0
     }
 }
 
+/// Copies as much of `payload[*cursor..]` as the caller's buffer takes, moves the cursor past
+/// it, and says whether the payload is now read to its end.
+///
+/// SAFETY: `len_ptr` holds the capacity of `buffer_ptr[..]`, both live for the call.
+unsafe fn read_source(
+    payload: &[u8],
+    cursor: &mut usize,
+    buffer_ptr: *mut u8,
+    len_ptr: *mut usize,
+) -> bool {
+    let rest = &payload[*cursor..];
+    let room = unsafe { len_ptr.read() };
+    let n = room.min(rest.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(rest.as_ptr(), buffer_ptr, n);
+        len_ptr.write(n);
+    }
+    *cursor += n;
+    *cursor == payload.len()
+}
+
 #[no_mangle]
 unsafe extern "C" fn bytes_source_remaining_length(source: u32, out: *mut u32) -> i16 {
-    if source != JWT_SOURCE {
-        unmodelled("bytes_source_remaining_length of a source this host never handed out")
-    }
     let h = host();
-    let Some(payload) = h.model.jwt.as_ref() else {
-        unmodelled("bytes_source_remaining_length of a JWT source with no payload")
+    let (payload, cursor) = match h.model.answer_sources.get(&source) {
+        Some((payload, cursor)) => (payload, *cursor),
+        None if source != JWT_SOURCE => {
+            unmodelled("bytes_source_remaining_length of a source this host never handed out")
+        }
+        None => match h.model.jwt.as_ref() {
+            Some(payload) => (payload, h.model.jwt_cursor),
+            None => unmodelled("bytes_source_remaining_length of a JWT source with no payload"),
+        },
     };
-    let rest = u32::try_from(payload.len() - h.model.jwt_cursor)
-        .expect("native_host_tests: a JWT payload fits a u32 length");
+    let rest = u32::try_from(payload.len() - cursor)
+        .expect("native_host_tests: a byte source fits a u32 length");
     // SAFETY: `out` points at the bindings' `u32` out-param.
     unsafe { out.write(rest) };
     0
@@ -2161,11 +2216,445 @@ fn nh_scannable_writable_table_scans_counts_deletes_and_clears() {
 }
 
 // ---------------------------------------------------------------------------
+// PROCEDURES. `Fixture::run_procedure` runs a closure inside the SHIPPED
+// `__call_procedure__` entry point (`vendor/spacetimedb/src/rt.rs:1395`), the only code that
+// builds a `ProcedureContext` (its constructor is private, `vendor/spacetimedb/src/lib.rs:1508`).
+// A trampoline procedure is registered beside the reducer one and is procedure 0 of the
+// fixture's definition, which therefore lists the two trampolines and no shipped procedure.
+// The closure calls the procedure under test as a plain function.
+//
+// * TRANSACTIONS. `with_tx` / `try_with_tx` reach `procedure_start_mut_tx`, which keeps every
+//   table's rows and the write counts as it found them, and then `procedure_commit_mut_tx`
+//   (the copy is dropped) or `procedure_abort_mut_tx` (both are put back). The crate aborts
+//   when the body returns `Err` and, through a drop guard, when it panics. An `#[auto_inc]`
+//   sequence is not rewound, as a real one is not, and `rows_read` keeps what it counted.
+//   Every transaction reads the run's one time: the clock does not move while a request waits.
+// * HTTP. `ctx.http.send` reaches `procedure_http_request`, which records the request in the
+//   test's `HttpQueue` and answers with the queue's next `HttpAnswer`: a status and body, or
+//   an error. Nothing leaves the process (the test binary holds no HTTP client), and the
+//   request's timeout is recorded, never enforced. The answer goes back as byte sources the
+//   runtime reads through `bytes_source_read`: the BSATN response head and the body (the
+//   INVALID source when the body is empty, which is what the crate reads as an empty body,
+//   `vendor/spacetimedb/src/http.rs:555`), or the BSATN error text with the code `HTTP_ERROR`.
+// * A REQUEST WITH NO ANSWER LEFT fails the test. The host function runs inside an
+//   `extern "C"` frame, where a panic aborts the process, so it answers that request with an
+//   error and `run_procedure` panics in the test's frame once the procedure has returned. A
+//   second such request in one run is answered with a code the bindings panic on, in the
+//   procedure's own frame, so a retry loop stops there instead of hanging the test. A panic
+//   inside a `while_waiting` closure is carried out to the test's frame the same way.
+// * NOT MODELLED: `sleep_until` (the crate refuses it natively), a connection id or JWT on
+//   the context, request and response headers, a failed commit, and the host's refusal of a
+//   request or a second start while a transaction is open (the crate's API cannot make either:
+//   a transaction's body holds the context's only borrow).
+// ---------------------------------------------------------------------------
+
+use spacetimedb::spacetimedb_lib::http as wire;
+use spacetimedb::{ProcedureContext, TimeDuration};
+use std::any::Any;
+
+/// Who a procedure runs as. Either way `ctx.connection_id()` is `None`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Caller {
+    /// A client: `ctx.sender()` is this identity.
+    Sender(Identity),
+    /// The database itself, as a scheduled procedure runs: `ctx.sender()` is the fixture's
+    /// module identity when the run starts, which `ctx.database_identity()` also answers.
+    Database,
+}
+
+/// One HTTP request a procedure sent, as the host received it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SentRequest {
+    /// The HTTP method's own spelling: `GET`, `POST`, ...
+    pub(crate) method: String,
+    pub(crate) url: String,
+    /// Empty for a request with no body.
+    pub(crate) body: Vec<u8>,
+    /// The `http::Timeout` the request carried, or `None`. The host answers at once whatever
+    /// it says.
+    pub(crate) timeout: Option<TimeDuration>,
+}
+
+/// One stubbed answer to a procedure's HTTP request.
+pub(crate) struct HttpAnswer<'q> {
+    /// The status and body, or the text of the error `ctx.http.send` returns.
+    outcome: Result<(u16, Vec<u8>), String>,
+    while_waiting: Option<Box<dyn FnOnce() + 'q>>,
+}
+
+impl<'q> HttpAnswer<'q> {
+    /// A response with the status `code` and `body`.
+    pub(crate) fn status(code: u16, body: impl Into<Vec<u8>>) -> Self {
+        assert!(
+            (100..=999).contains(&code),
+            "native_host_tests: {code} is not an HTTP status code"
+        );
+        HttpAnswer {
+            outcome: Ok((code, body.into())),
+            while_waiting: None,
+        }
+    }
+
+    /// A request that got no response: `ctx.http.send` returns an `Err` whose text is `message`.
+    pub(crate) fn error(message: impl Into<String>) -> Self {
+        HttpAnswer {
+            outcome: Err(message.into()),
+            while_waiting: None,
+        }
+    }
+
+    /// Runs `change` while the procedure waits for this answer, before the answer is given: the
+    /// place for a test to change a row another transaction would have changed meanwhile.
+    pub(crate) fn while_waiting(mut self, change: impl FnOnce() + 'q) -> Self {
+        self.while_waiting = Some(Box::new(change));
+        self
+    }
+}
+
+/// The stubbed answers a procedure's requests get, in order, and every request it sent.
+pub(crate) struct HttpQueue<'q> {
+    answers: VecDeque<HttpAnswer<'q>>,
+    requests: Vec<SentRequest>,
+}
+
+impl<'q> HttpQueue<'q> {
+    /// A queue with no answers and no requests.
+    pub(crate) fn new() -> Self {
+        HttpQueue {
+            answers: VecDeque::new(),
+            requests: Vec::new(),
+        }
+    }
+
+    /// Adds `answer` behind the ones already queued.
+    pub(crate) fn push(&mut self, answer: HttpAnswer<'q>) -> &mut Self {
+        self.answers.push_back(answer);
+        self
+    }
+
+    /// Every request sent through this queue, oldest first, across every run it was given to;
+    /// a request that found no answer left is among them.
+    pub(crate) fn requests(&self) -> &[SentRequest] {
+        &self.requests
+    }
+}
+
+type ProcedureBody = *mut (dyn FnMut(&mut ProcedureContext) + 'static);
+
+/// What one [`Fixture::run_procedure`] call keeps while the runtime runs its body.
+struct ProcedureRun {
+    /// The closure the trampoline runs.
+    body: ProcedureBody,
+    /// The time the procedure runs at; each of its transactions reads it.
+    at_micros: i64,
+    /// The test's queue.
+    http: *mut HttpQueue<'static>,
+    /// The first request that found no answer left, as `<METHOD> <url>`.
+    unanswered: Option<String>,
+    /// The panic of a `while_waiting` closure.
+    waiting_panic: Option<Box<dyn Any + Send>>,
+}
+
+thread_local! {
+    /// The run in progress on this thread, if any.
+    static PROCEDURE_RUN: RefCell<Option<ProcedureRun>> = const { RefCell::new(None) };
+}
+
+/// Applies `f` to the run in progress; `None` when no procedure is running.
+fn with_procedure_run<T>(f: impl FnOnce(&mut ProcedureRun) -> T) -> Option<T> {
+    PROCEDURE_RUN.with(|slot| slot.borrow_mut().as_mut().map(f))
+}
+
+/// The `BytesSink` a procedure's result is written to (and discarded: the trampoline returns
+/// nothing, and `run_procedure` hands the closure's value back itself).
+const PROCEDURE_SINK: u32 = 0x9C0C;
+
+/// HTTP answer sources are numbered from here, clear of [`JWT_SOURCE`] and the INVALID `0`.
+const ANSWER_SOURCE_BASE: u32 = 0x4000_0000;
+
+unsafe extern "C" {
+    /// `vendor/spacetimedb/src/rt.rs:1395` (`#[unsafe(no_mangle)]`).
+    fn __call_procedure__(
+        id: usize,
+        sender_0: u64,
+        sender_1: u64,
+        sender_2: u64,
+        sender_3: u64,
+        conn_id_0: u64,
+        conn_id_1: u64,
+        timestamp: u64,
+        args: u32,
+        result_sink: u32,
+    ) -> i16;
+}
+
+/// The trampoline procedure's registration metadata (what `#[procedure]` would generate). Not
+/// a module procedure: this file only exists in the test binary.
+struct ProcedureTrampoline;
+
+impl spacetimedb::rt::ExplicitNames for ProcedureTrampoline {}
+
+impl spacetimedb::rt::FnInfo for ProcedureTrampoline {
+    type Invoke = spacetimedb::rt::ProcedureFn;
+    type FnKind = spacetimedb::rt::FnKindProcedure<()>;
+    const NAME: &'static str = "native_host_run_procedure";
+    const ARG_NAMES: &'static [Option<&'static str>] = &[];
+    const INVOKE: Self::Invoke = procedure_trampoline;
+}
+
+/// Type witness for `register_procedure` (the zero-argument, unit-returning procedure shape).
+fn procedure_signature(_ctx: &mut ProcedureContext) {}
+
+fn procedure_trampoline(ctx: &mut ProcedureContext, _args: &[u8]) -> spacetimedb::ProcedureResult {
+    let body = with_procedure_run(|run| run.body)
+        .expect("native_host_tests: the procedure trampoline was called outside run_procedure");
+    // SAFETY: `run_procedure` keeps the pointee alive for this whole call (see there).
+    unsafe { (*body)(ctx) };
+    Vec::new()
+}
+
+impl Fixture {
+    /// Runs `f` with a real `ProcedureContext` whose sender is `caller` and whose `timestamp`
+    /// is `at` (at or after the Unix epoch), answering its HTTP requests from `http`. See the
+    /// PROCEDURES banner for the mechanism.
+    ///
+    /// Returns what `f` returns. Once the procedure has returned, the first of these that
+    /// happened is raised here, in the caller's frame: a panic inside a `while_waiting`
+    /// closure; a request that found no answer left in `http`; a panic in `f`.
+    pub(crate) fn run_procedure<T>(
+        &self,
+        caller: Caller,
+        at: Timestamp,
+        http: &mut HttpQueue<'_>,
+        f: impl FnOnce(&mut ProcedureContext) -> T,
+    ) -> T {
+        ensure_run_as_registered();
+        let sender = match caller {
+            Caller::Sender(sender) => sender,
+            Caller::Database => Identity::from_byte_array(host().model.database_identity),
+        };
+        let at_micros = at.to_micros_since_unix_epoch();
+        let micros = u64::try_from(at_micros).expect(
+            "native_host_tests: run_procedure needs a timestamp at or after the Unix epoch",
+        );
+        let mut f = Some(f);
+        let mut out: Option<std::thread::Result<T>> = None;
+        let mut body = |ctx: &mut ProcedureContext| {
+            let f = f
+                .take()
+                .expect("native_host_tests: the run_procedure body runs once");
+            out = Some(catch_unwind(AssertUnwindSafe(|| f(ctx))));
+        };
+        let body_ref: &mut (dyn FnMut(&mut ProcedureContext) + '_) = &mut body;
+        // SAFETY: only lifetimes are erased, of the closure here and of the queue below. The
+        // trampoline and `procedure_http_request` use the two pointers during the
+        // `__call_procedure__` call below, and the slot is emptied right after it, while
+        // `body` and `http` are still alive and otherwise unused.
+        let body: ProcedureBody = unsafe {
+            std::mem::transmute(body_ref as *mut (dyn FnMut(&mut ProcedureContext) + '_))
+        };
+        let http: *mut HttpQueue<'static> = std::ptr::from_mut(http).cast();
+        PROCEDURE_RUN.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(
+                slot.is_none(),
+                "native_host_tests: run_procedure called while a procedure is running"
+            );
+            *slot = Some(ProcedureRun {
+                body,
+                at_micros,
+                http,
+                unanswered: None,
+                waiting_panic: None,
+            });
+        });
+        let [s0, s1, s2, s3] = identity_words(sender);
+        // SAFETY: the shipped entry point; procedure 0 is the trampoline (the only registered
+        // procedure), there is no connection, args are the INVALID (empty) source, and the
+        // result sink is one `bytes_sink_write` accepts.
+        unsafe { __call_procedure__(0, s0, s1, s2, s3, 0, 0, micros, 0, PROCEDURE_SINK) };
+        let run = PROCEDURE_RUN
+            .with(|slot| slot.borrow_mut().take())
+            .expect("native_host_tests: the procedure run left its slot during the call");
+        if let Some(panic) = run.waiting_panic {
+            resume_unwind(panic);
+        }
+        if let Some(request) = run.unanswered {
+            panic!(
+                "native_host_tests: the procedure sent `{request}` with no stubbed HTTP answer left"
+            );
+        }
+        match out.expect("native_host_tests: __call_procedure__ never ran the run_procedure body") {
+            Ok(value) => value,
+            Err(panic) => resume_unwind(panic),
+        }
+    }
+}
+
+/// Starts a procedure's transaction: keeps what an abort puts back, and answers the run's time.
+#[no_mangle]
+unsafe extern "C" fn procedure_start_mut_tx(out: *mut i64) -> u16 {
+    let Some(at_micros) = with_procedure_run(|run| run.at_micros) else {
+        unmodelled("procedure_start_mut_tx outside `Fixture::run_procedure`")
+    };
+    let mut h = host();
+    h.model.tx = Some(TxStart {
+        rows: h.rows.clone(),
+        writes: h.writes.clone(),
+    });
+    // SAFETY: `out` points at the bindings' `MaybeUninit<i64>` out-param.
+    unsafe { out.write(at_micros) };
+    0
+}
+
+/// Commits a procedure's transaction: its writes stay.
+#[no_mangle]
+unsafe extern "C" fn procedure_commit_mut_tx() -> u16 {
+    match host().model.tx.take() {
+        Some(_) => 0,
+        None => Errno::TRANSACTION_NOT_ANONYMOUS.code(),
+    }
+}
+
+/// Aborts a procedure's transaction: the rows and the write counts are what they were when
+/// it started.
+#[no_mangle]
+unsafe extern "C" fn procedure_abort_mut_tx() -> u16 {
+    let mut h = host();
+    let Some(start) = h.model.tx.take() else {
+        return Errno::TRANSACTION_NOT_ANONYMOUS.code();
+    };
+    h.rows = start.rows;
+    h.writes = start.writes;
+    0
+}
+
+/// Hands `bytes` to the runtime as a byte source and returns its id.
+fn open_answer_source(bytes: Vec<u8>) -> u32 {
+    let mut h = host();
+    let model = &mut h.model;
+    model.answer_sources_opened += 1;
+    let id = ANSWER_SOURCE_BASE + model.answer_sources_opened;
+    model.answer_sources.insert(id, (bytes, 0));
+    id
+}
+
+/// Answers a request with the error `message`: one source holding its BSATN, and `HTTP_ERROR`.
+///
+/// SAFETY: `out` points at the bindings' `[BytesSource; 2]` out-param.
+unsafe fn answer_with_error(out: *mut [u32; 2], message: &str) -> u16 {
+    let message = bsatn::to_vec(&message).expect("native_host_tests: a string BSATN-encodes");
+    let source = open_answer_source(message);
+    unsafe { out.write([source, 0]) };
+    Errno::HTTP_ERROR.code()
+}
+
+/// The HTTP method's own spelling.
+fn method_name(method: wire::Method) -> String {
+    let name = match method {
+        wire::Method::Get => "GET",
+        wire::Method::Head => "HEAD",
+        wire::Method::Post => "POST",
+        wire::Method::Put => "PUT",
+        wire::Method::Delete => "DELETE",
+        wire::Method::Connect => "CONNECT",
+        wire::Method::Options => "OPTIONS",
+        wire::Method::Trace => "TRACE",
+        wire::Method::Patch => "PATCH",
+        wire::Method::Extension(name) => return name,
+    };
+    name.to_string()
+}
+
+/// Records the request and answers it with the next stubbed answer of the run's queue (see
+/// the PROCEDURES banner). It opens no connection.
+#[no_mangle]
+unsafe extern "C" fn procedure_http_request(
+    request_ptr: *const u8,
+    request_len: u32,
+    body_ptr: *const u8,
+    body_len: u32,
+    out: *mut [u32; 2],
+) -> u16 {
+    // SAFETY: `request_ptr[..request_len]` and `body_ptr[..body_len]` are the caller's
+    // serialised request and its body, live for the call's duration.
+    let request = unsafe { std::slice::from_raw_parts(request_ptr, request_len as usize) };
+    let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len as usize) };
+    let Ok(request) = bsatn::from_slice::<wire::Request>(request) else {
+        return Errno::BSATN_DECODE_ERROR.code();
+    };
+    let sent = SentRequest {
+        method: method_name(request.method),
+        url: request.uri,
+        body: body.to_vec(),
+        timeout: request.timeout,
+    };
+    let line = format!("{} {}", sent.method, sent.url);
+    // The run is borrowed only for this step, so a `while_waiting` closure may use the fixture.
+    let next = with_procedure_run(|run| {
+        // SAFETY: `run_procedure` keeps the queue alive and otherwise unused for the call.
+        let queue = unsafe { &mut *run.http };
+        queue.requests.push(sent);
+        let answer = queue.answers.pop_front();
+        let had_unanswered = run.unanswered.is_some();
+        if answer.is_none() && !had_unanswered {
+            run.unanswered = Some(line.clone());
+        }
+        (answer, had_unanswered)
+    });
+    let Some((answer, had_unanswered)) = next else {
+        unmodelled("procedure_http_request outside `Fixture::run_procedure`")
+    };
+    let Some(answer) = answer else {
+        if had_unanswered {
+            // Any code but `HTTP_ERROR` makes the bindings panic in the procedure's frame
+            // (`vendor/spacetimedb-bindings-sys/src/lib.rs:1961`), which ends the run.
+            return Errno::HOST_CALL_FAILURE.code();
+        }
+        let message = format!("native_host_tests: no stubbed HTTP answer left for `{line}`");
+        // SAFETY: `out` is the bindings' out-param.
+        return unsafe { answer_with_error(out, &message) };
+    };
+    if let Some(change) = answer.while_waiting {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(change)) {
+            with_procedure_run(|run| {
+                run.waiting_panic.get_or_insert(panic);
+            });
+            let message = "native_host_tests: a `while_waiting` closure panicked";
+            // SAFETY: `out` is the bindings' out-param.
+            return unsafe { answer_with_error(out, message) };
+        }
+    }
+    match answer.outcome {
+        Ok((code, body)) => {
+            let head = wire::Response {
+                headers: std::iter::empty().collect(),
+                version: wire::Version::Http11,
+                code,
+            };
+            let head = bsatn::to_vec(&head).expect("native_host_tests: a response BSATN-encodes");
+            let head = open_answer_source(head);
+            let body = if body.is_empty() {
+                0
+            } else {
+                open_answer_source(body)
+            };
+            // SAFETY: `out` points at the bindings' `[BytesSource; 2]` out-param.
+            unsafe { out.write([head, body]) };
+            0
+        }
+        // SAFETY: `out` is the bindings' out-param.
+        Err(message) => unsafe { answer_with_error(out, &message) },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // THE VENDORED CRATES. `spacetimedb` and `spacetimedb-bindings-sys` build from the copies
 // under `vendor/` (the root `Cargo.toml` `[patch.crates-io]`): their crates.io packages,
-// patched in `#[cfg]` attributes only, so that off wasm the table backend calls the host ABI
-// above and the vendor's native stubs compile out. On wasm every patched attribute selects
-// what the original selected, so the module ships the vendor's code.
+// patched in `#[cfg]` attributes only, so that off wasm the table backend, a procedure's
+// transactions and its HTTP client call the host ABI above and the vendor's native stubs
+// compile out. On wasm every patched attribute selects what the original selected, so the
+// module ships the vendor's code.
 // ---------------------------------------------------------------------------
 
 use sha2::{Digest, Sha256};
@@ -2970,4 +3459,954 @@ fn check(vendor: &Path, root_manifest: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Running a procedure on this host: stubbed HTTP answers, recorded requests, transactions that
+/// commit or roll back, rows changed during a wait, and the caller and clock a procedure sees.
+mod procedure_tests {
+    use super::*;
+    use spacetimedb::http::{Error as HttpError, Request, Response, Timeout};
+    use spacetimedb::sys;
+    use spacetimedb::{ProcedureContext, TimeDuration};
+    use std::io::ErrorKind;
+    use std::net::TcpListener;
+
+    /// The scratch table every test here seeds and its procedures write: bare `u64` rows.
+    const TABLE: &str = "nh_proc_rows";
+
+    /// What a procedure saw of one HTTP request: the status and body bytes, or the error text.
+    type Outcome = Result<(u16, Vec<u8>), String>;
+
+    fn me() -> Identity {
+        Identity::from_byte_array([7u8; 32])
+    }
+
+    fn at() -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(1_700_000_000_000_000)
+    }
+
+    fn proc_rows(fx: &Fixture) -> Handle<'_, u64, u64> {
+        fx.table_keyed::<u64, u64>(TABLE, "id", |r| *r)
+            .writable()
+            .scannable()
+    }
+
+    /// A second scratch table of bare `u64` rows, for transactions that write two tables.
+    const OTHER: &str = "nh_proc_other";
+
+    fn other_rows(fx: &Fixture) -> Handle<'_, u64, u64> {
+        fx.table_keyed::<u64, u64>(OTHER, "id", |r| *r)
+            .writable()
+            .scannable()
+    }
+
+    /// An identity whose 32 bytes all differ: `first`, `first + 1`, ... `first + 31`.
+    fn distinct_identity(first: u8) -> Identity {
+        Identity::from_byte_array(std::array::from_fn(|i| {
+            first.wrapping_add(u8::try_from(i).expect("an identity byte index fits a u8"))
+        }))
+    }
+
+    /// Inserts `n` into the scratch table through the insert syscall.
+    fn insert(n: u64) {
+        insert_into(TABLE, n);
+    }
+
+    /// Inserts `n` into the table named `name` through the insert syscall.
+    fn insert_into(name: &str, n: u64) {
+        let table = sys::table_id_from_name(name).expect("the scratch table resolves");
+        let mut row = bsatn::to_vec(&n).expect("a u64 row encodes");
+        sys::datastore_insert_bsatn(table, &mut row).expect("the insert succeeds");
+    }
+
+    /// Deletes every row equal to `n`; returns how many went.
+    fn delete(n: u64) -> u32 {
+        delete_from(TABLE, n)
+    }
+
+    /// Deletes every row equal to `n` from the table named `name`; returns how many went.
+    fn delete_from(name: &str, n: u64) -> u32 {
+        let table = sys::table_id_from_name(name).expect("the scratch table resolves");
+        let relation = bsatn::to_vec(&vec![n]).expect("the relation encodes");
+        sys::datastore_delete_all_by_eq_bsatn(table, &relation).expect("the delete succeeds")
+    }
+
+    /// Empties the scratch table; returns how many rows went.
+    fn clear() -> u64 {
+        let table = sys::table_id_from_name(TABLE).expect("the scratch table resolves");
+        sys::datastore_clear(table).expect("the clear succeeds")
+    }
+
+    /// Every row of the scratch table, in store order, through a full-table scan.
+    fn scan() -> Vec<u64> {
+        scan_of(TABLE)
+    }
+
+    /// Every row of the table named `name`, in store order, through a full-table scan.
+    fn scan_of(name: &str) -> Vec<u64> {
+        let table = sys::table_id_from_name(name).expect("the scratch table resolves");
+        let mut iter = sys::datastore_table_scan_bsatn(table).expect("the scan opens");
+        let mut buf = Vec::new();
+        while !iter.is_exhausted() {
+            iter.read(&mut buf);
+        }
+        buf.as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c))
+            .collect()
+    }
+
+    fn build(
+        method: &str,
+        uri: &str,
+        body: Vec<u8>,
+        timeout: Option<TimeDuration>,
+    ) -> Request<Vec<u8>> {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(t) = timeout {
+            builder = builder.extension(Timeout::from(t));
+        }
+        builder.body(body).expect("the request builds")
+    }
+
+    fn outcome(sent: Result<Response, HttpError>) -> Outcome {
+        sent.map(|response| {
+            let (parts, body) = response.into_parts();
+            (parts.status.as_u16(), body.into_bytes().to_vec())
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+        if let Some(s) = payload.downcast_ref::<String>() {
+            return s.clone();
+        }
+        if let Some(s) = payload.downcast_ref::<&'static str>() {
+            return (*s).to_string();
+        }
+        "<a panic payload that is not text>".to_string()
+    }
+
+    /// A test-only procedure: reads the table, waits on one GET, reads the table again.
+    fn read_wait_read(ctx: &mut ProcedureContext) -> (Vec<u64>, Outcome, Vec<u64>) {
+        let before = ctx.with_tx(|_tx| scan());
+        let answer = outcome(ctx.http.get("https://accounts.invalid/wait"));
+        let after = ctx.with_tx(|_tx| scan());
+        (before, answer, after)
+    }
+
+    #[test]
+    fn stubbed_answers_reach_the_procedure_in_order_with_their_exact_bodies_lpw41_1() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "first"))
+            .push(HttpAnswer::status(404, Vec::<u8>::new()))
+            .push(HttpAnswer::status(201, vec![0u8, 255, 7]));
+        let got = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            vec![
+                outcome(ctx.http.get("https://accounts.invalid/one")),
+                outcome(ctx.http.send(build(
+                    "POST",
+                    "https://accounts.invalid/two",
+                    b"2".to_vec(),
+                    None,
+                ))),
+                outcome(ctx.http.get("https://accounts.invalid/three")),
+            ]
+        });
+        assert_eq!(
+            got,
+            vec![
+                Ok((200, b"first".to_vec())),
+                Ok((404, Vec::new())),
+                Ok((201, vec![0u8, 255, 7])),
+            ],
+            "each request gets the next stubbed status and exactly its body bytes"
+        );
+    }
+
+    #[test]
+    fn a_stubbed_error_reaches_the_procedure_as_err_with_its_text_lpw41_1() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::error("the stub refused the connection"))
+            .push(HttpAnswer::status(200, "after"));
+        let got = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            (
+                outcome(ctx.http.get("https://accounts.invalid/down")),
+                outcome(ctx.http.get("https://accounts.invalid/up")),
+            )
+        });
+        assert_eq!(
+            got,
+            (
+                Err("the stub refused the connection".to_string()),
+                Ok((200, b"after".to_vec())),
+            ),
+            "a stubbed error is an Err with exactly its text, and the next answer follows it"
+        );
+    }
+
+    #[test]
+    fn each_sent_request_is_recorded_with_its_method_url_body_and_timeout_lpw41_1() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "a"))
+            .push(HttpAnswer::status(202, "b"))
+            .push(HttpAnswer::status(204, Vec::<u8>::new()));
+        let first = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            (
+                outcome(ctx.http.send(build(
+                    "POST",
+                    "https://accounts.invalid/redeem?ticket=abc",
+                    b"hello".to_vec(),
+                    Some(TimeDuration::from_micros(3_000_000)),
+                ))),
+                outcome(ctx.http.send(build(
+                    "PATCH",
+                    "https://accounts.invalid/patch",
+                    Vec::new(),
+                    Some(TimeDuration::from_micros(250_000)),
+                ))),
+            )
+        });
+        let second = fx.run_procedure(Caller::Database, at(), &mut http, |ctx| {
+            outcome(ctx.http.get("https://accounts.invalid/status"))
+        });
+        assert_eq!(
+            first,
+            (Ok((200, b"a".to_vec())), Ok((202, b"b".to_vec()))),
+            "the first run's requests got their stubbed answers"
+        );
+        assert_eq!(
+            second,
+            Ok((204, Vec::new())),
+            "the second run's request got the next stubbed answer"
+        );
+        assert_eq!(
+            http.requests(),
+            &[
+                SentRequest {
+                    method: "POST".to_string(),
+                    url: "https://accounts.invalid/redeem?ticket=abc".to_string(),
+                    body: b"hello".to_vec(),
+                    timeout: Some(TimeDuration::from_micros(3_000_000)),
+                },
+                SentRequest {
+                    method: "PATCH".to_string(),
+                    url: "https://accounts.invalid/patch".to_string(),
+                    body: Vec::new(),
+                    timeout: Some(TimeDuration::from_micros(250_000)),
+                },
+                SentRequest {
+                    method: "GET".to_string(),
+                    url: "https://accounts.invalid/status".to_string(),
+                    body: Vec::new(),
+                    timeout: None,
+                },
+            ][..],
+            "the record holds every request of both runs, oldest first, as sent"
+        );
+    }
+
+    #[test]
+    fn a_request_to_a_listening_local_port_gets_the_stub_and_opens_no_socket_lpw41_1() {
+        let fx = fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a local port binds");
+        listener
+            .set_nonblocking(true)
+            .expect("the listener goes non-blocking");
+        let port = listener.local_addr().expect("the bound address").port();
+        let url = format!("http://127.0.0.1:{port}/probe");
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "stubbed"));
+        let got = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            outcome(ctx.http.get(url.as_str()))
+        });
+        assert_eq!(
+            got,
+            Ok((200, b"stubbed".to_vec())),
+            "the stubbed answer reached the procedure"
+        );
+        match listener.accept() {
+            Err(e) => assert_eq!(
+                e.kind(),
+                ErrorKind::WouldBlock,
+                "nothing connected to the listener"
+            ),
+            Ok((_, peer)) => panic!("a connection from {peer} reached the listener"),
+        }
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| r.url.clone())
+                .collect::<Vec<_>>(),
+            vec![url],
+            "the request is recorded with the local URL"
+        );
+    }
+
+    #[test]
+    fn a_request_with_no_answer_left_fails_the_run_when_the_procedure_returns_the_error_lpw41_2() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let seen: RefCell<Option<String>> = RefCell::new(None);
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let sent = ctx.http.send(build(
+                    "POST",
+                    "https://accounts.invalid/redeem",
+                    b"t".to_vec(),
+                    None,
+                ));
+                let text = sent.map(|_| ()).map_err(|e| e.to_string());
+                *seen.borrow_mut() = text.clone().err();
+                text
+            })
+        }));
+        let text = panic_text(caught.expect_err("a request with no answer left fails the run"));
+        assert!(
+            text.contains(
+                "the procedure sent `POST https://accounts.invalid/redeem` with no stubbed HTTP answer left"
+            ),
+            "the failure names the request and says no answer is left: {text}"
+        );
+        let seen = seen
+            .into_inner()
+            .expect("the procedure got an Err for the request");
+        assert!(
+            seen.contains("no stubbed HTTP answer left"),
+            "the procedure's own Err says no answer is left: {seen}"
+        );
+        assert_eq!(
+            http.requests(),
+            &[SentRequest {
+                method: "POST".to_string(),
+                url: "https://accounts.invalid/redeem".to_string(),
+                body: b"t".to_vec(),
+                timeout: None,
+            }][..],
+            "the unanswered request is recorded"
+        );
+    }
+
+    #[test]
+    fn a_request_with_no_answer_left_fails_the_run_when_the_procedure_swallows_the_error_lpw41_2() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Database, at(), &mut http, |ctx| {
+                let swallowed = ctx
+                    .http
+                    .send(build(
+                        "POST",
+                        "https://accounts.invalid/quiet",
+                        Vec::new(),
+                        None,
+                    ))
+                    .is_err();
+                u32::from(swallowed) + 41
+            })
+        }));
+        let text = panic_text(
+            caught.expect_err("a swallowed request with no answer left still fails the run"),
+        );
+        assert!(
+            text.contains(
+                "the procedure sent `POST https://accounts.invalid/quiet` with no stubbed HTTP answer left"
+            ),
+            "the failure names the request and says no answer is left: {text}"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| r.url.clone())
+                .collect::<Vec<_>>(),
+            vec!["https://accounts.invalid/quiet".to_string()],
+            "the unanswered request is recorded"
+        );
+    }
+
+    #[test]
+    fn a_second_request_after_the_only_answer_fails_the_run_lpw41_2() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "only"));
+        let seen: RefCell<Option<(Outcome, Outcome)>> = RefCell::new(None);
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let first = outcome(ctx.http.get("https://accounts.invalid/first"));
+                let second = outcome(ctx.http.send(build(
+                    "POST",
+                    "https://accounts.invalid/second",
+                    b"two".to_vec(),
+                    None,
+                )));
+                *seen.borrow_mut() = Some((first, second));
+            })
+        }));
+        let text = panic_text(caught.expect_err("the second request found no answer left"));
+        assert!(
+            text.contains(
+                "the procedure sent `POST https://accounts.invalid/second` with no stubbed HTTP answer left"
+            ),
+            "the failure names the second request: {text}"
+        );
+        let (first, second) = seen.into_inner().expect("the procedure ran to its end");
+        assert_eq!(
+            first,
+            Ok((200, b"only".to_vec())),
+            "the first request got the one answer"
+        );
+        let second = second.expect_err("the second request got an Err");
+        assert!(
+            second.contains("no stubbed HTTP answer left"),
+            "the second request's Err says no answer is left: {second}"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| r.url.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://accounts.invalid/first".to_string(),
+                "https://accounts.invalid/second".to_string(),
+            ],
+            "both requests are recorded, the unanswered one included"
+        );
+    }
+
+    #[test]
+    fn a_transaction_body_that_returns_keeps_its_writes_lpw41_3() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        rows.seed(&1);
+        let mut http = HttpQueue::new();
+        let (inside, tried, next) =
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let inside = ctx.with_tx(|_tx| {
+                    insert(2);
+                    let removed = delete(1);
+                    (removed, scan())
+                });
+                let tried = ctx.try_with_tx(|_tx| -> Result<Vec<u64>, String> {
+                    insert(3);
+                    Ok(scan())
+                });
+                let next = ctx.with_tx(|_tx| scan());
+                (inside, tried, next)
+            });
+        assert_eq!(
+            inside,
+            (1, vec![2]),
+            "the with_tx body inserted and deleted"
+        );
+        assert_eq!(
+            tried,
+            Ok(vec![2, 3]),
+            "the try_with_tx body saw the earlier commit and its own insert"
+        );
+        assert_eq!(next, vec![2, 3], "the next transaction sees both commits");
+        assert_eq!(rows.rows(), vec![2, 3], "the store keeps both commits");
+        let later = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            ctx.with_tx(|_tx| scan())
+        });
+        assert_eq!(later, vec![2, 3], "the next run sees both commits");
+    }
+
+    #[test]
+    fn a_try_with_tx_body_that_returns_err_keeps_none_of_its_writes_lpw41_3() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        rows.seed(&10);
+        rows.seed(&20);
+        let mut http = HttpQueue::new();
+        let (aborted, next) = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            ctx.with_tx(|_tx| insert(30));
+            let aborted = ctx.try_with_tx(|_tx| -> Result<(), (u32, Vec<u64>, u32)> {
+                insert(40);
+                let removed = delete(10);
+                Err((removed, scan(), fx.writes_to(TABLE)))
+            });
+            let next = ctx.with_tx(|_tx| scan());
+            (aborted, next)
+        });
+        assert_eq!(
+            aborted,
+            Err((1, vec![20, 30, 40], 3)),
+            "the body ran: it deleted a seeded row, saw its own insert, and its Err came back"
+        );
+        assert_eq!(
+            next,
+            vec![10, 20, 30],
+            "the next transaction sees the earlier commit and none of the aborted writes"
+        );
+        assert_eq!(
+            rows.rows(),
+            vec![10, 20, 30],
+            "the store holds the seeded rows and the earlier commit, the deleted row back"
+        );
+        assert_eq!(
+            fx.writes_to(TABLE),
+            1,
+            "the write count is back at what it read when the aborted transaction started"
+        );
+    }
+
+    #[test]
+    fn a_transaction_body_that_panics_keeps_none_of_its_writes_lpw41_3() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        rows.seed(&5);
+        rows.seed(&6);
+        let mut http = HttpQueue::new();
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                ctx.with_tx(|_tx| insert(7));
+                ctx.with_tx(|_tx| {
+                    insert(8);
+                    let cleared = clear();
+                    insert(9);
+                    let seen = scan();
+                    if !seen.is_empty() {
+                        panic!("rolled-back body cleared {cleared} and saw {seen:?}");
+                    }
+                    seen.len()
+                })
+            })
+        }));
+        let text = panic_text(caught.expect_err("the body's panic reaches the test"));
+        assert_eq!(
+            text, "rolled-back body cleared 4 and saw [9]",
+            "the panic that reaches the test is the body's own, after its clear and inserts"
+        );
+        assert_eq!(
+            rows.rows(),
+            vec![5, 6, 7],
+            "the store holds the seeded rows and the earlier commit, none of the panicked writes"
+        );
+        assert_eq!(
+            fx.writes_to(TABLE),
+            1,
+            "the write count is back at what it read when the panicked transaction started"
+        );
+        let mut again = HttpQueue::new();
+        let later = fx.run_procedure(Caller::Sender(me()), at(), &mut again, |ctx| {
+            ctx.with_tx(|_tx| scan())
+        });
+        assert_eq!(later, vec![5, 6, 7], "the next run sees the same rows");
+    }
+
+    #[test]
+    fn a_row_changed_while_the_procedure_waits_is_what_its_next_transaction_reads_lpw41_4() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        rows.seed(&100);
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "ok").while_waiting(|| {
+            assert_eq!(rows.remove(100), 1, "the wait removes the seeded row");
+            rows.seed(&200);
+        }));
+        let (before, answer, after) =
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, read_wait_read);
+        assert_eq!(
+            before,
+            vec![100],
+            "the first transaction reads the seeded row"
+        );
+        assert_eq!(
+            answer,
+            Ok((200, b"ok".to_vec())),
+            "the answer arrived after the wait"
+        );
+        assert_eq!(
+            after,
+            vec![200],
+            "the next transaction reads the row the test changed during the wait"
+        );
+    }
+
+    #[test]
+    fn a_row_left_alone_while_the_procedure_waits_reads_the_same_in_its_next_transaction_lpw41_4() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        rows.seed(&100);
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "ok"));
+        let (before, answer, after) =
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, read_wait_read);
+        assert_eq!(
+            before,
+            vec![100],
+            "the first transaction reads the seeded row"
+        );
+        assert_eq!(answer, Ok((200, b"ok".to_vec())), "the answer arrived");
+        assert_eq!(
+            after, before,
+            "with no change during the wait the second read equals the first"
+        );
+        assert_eq!(rows.rows(), vec![100], "the store is unchanged");
+    }
+
+    #[test]
+    fn run_procedure_as_a_sender_lands_the_sender_and_the_time() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let (sender, module, connection, stamp, tx_stamps) =
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let first = ctx.with_tx(|tx| tx.timestamp);
+                let second = ctx.with_tx(|tx| tx.timestamp);
+                (
+                    ctx.sender(),
+                    ctx.database_identity(),
+                    ctx.connection_id(),
+                    ctx.timestamp,
+                    (first, second),
+                )
+            });
+        assert_eq!(sender, me(), "the sender is the chosen identity");
+        assert_eq!(module, Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY));
+        assert!(connection.is_none(), "a procedure run has no connection id");
+        assert_eq!(stamp, at(), "the procedure's timestamp is the chosen time");
+        assert_eq!(
+            tx_stamps,
+            (at(), at()),
+            "each transaction reads the chosen time"
+        );
+    }
+
+    #[test]
+    fn run_procedure_as_the_database_makes_the_sender_the_database_identity() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let probe = |ctx: &mut ProcedureContext| {
+            let tx_stamp = ctx.with_tx(|tx| tx.timestamp);
+            (
+                ctx.sender(),
+                ctx.database_identity(),
+                ctx.connection_id().is_none(),
+                ctx.timestamp,
+                tx_stamp,
+            )
+        };
+        let default_module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        assert_eq!(
+            fx.run_procedure(Caller::Database, at(), &mut http, probe),
+            (default_module, default_module, true, at(), at()),
+            "the database caller is the default module identity"
+        );
+        let other = Identity::from_byte_array([8u8; 32]);
+        fx.set_database_identity(other);
+        assert_eq!(
+            fx.run_procedure(Caller::Database, at(), &mut http, probe),
+            (other, other, true, at(), at()),
+            "the database caller follows set_database_identity"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_while_waiting_fails_the_caller_with_its_own_payload() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "unused").while_waiting(|| {
+            rows.seed(&77);
+            panic!("the wait's own check failed on row 77");
+        }));
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let swallowed = ctx.http.get("https://accounts.invalid/wait").is_ok();
+                u32::from(swallowed)
+            })
+        }));
+        let text = panic_text(caught.expect_err("the closure's panic fails the run"));
+        assert_eq!(
+            text, "the wait's own check failed on row 77",
+            "the panic that reaches the test is the closure's own"
+        );
+        assert_eq!(
+            rows.rows(),
+            vec![77],
+            "the closure ran: the row it seeded before panicking is in the store"
+        );
+        assert_eq!(
+            http.requests(),
+            &[SentRequest {
+                method: "GET".to_string(),
+                url: "https://accounts.invalid/wait".to_string(),
+                body: Vec::new(),
+                timeout: None,
+            }][..],
+            "the request whose wait panicked is recorded"
+        );
+        let mut again = HttpQueue::new();
+        again.push(HttpAnswer::status(200, "next"));
+        let later = fx.run_procedure(Caller::Sender(me()), at(), &mut again, |ctx| {
+            let answer = outcome(ctx.http.get("https://accounts.invalid/next"));
+            (answer, ctx.with_tx(|_tx| scan()))
+        });
+        assert_eq!(
+            later,
+            (Ok((200, b"next".to_vec())), vec![77]),
+            "a following run on the same fixture gets its answer and reads the store normally"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_while_waiting_wins_over_the_body_panic_it_causes() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "unused").while_waiting(|| {
+            panic!("the wait's check failed before the body's");
+        }));
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| -> u32 {
+                let reply = ctx.http.get("https://accounts.invalid/wait-then-panic");
+                panic!("the body panics on its reply, ok = {}", reply.is_ok())
+            })
+        }));
+        let text = panic_text(caught.expect_err("the run fails"));
+        assert_eq!(
+            text, "the wait's check failed before the body's",
+            "the closure's panic reaches the test ahead of the body's own"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| r.url.clone())
+                .collect::<Vec<_>>(),
+            vec!["https://accounts.invalid/wait-then-panic".to_string()],
+            "the request whose wait panicked is recorded"
+        );
+    }
+
+    #[test]
+    fn run_procedure_hands_over_every_byte_of_the_sender_and_the_database_identity() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let client = distinct_identity(1);
+        let module = distinct_identity(101);
+        fx.set_database_identity(module);
+        let ids = |ctx: &mut ProcedureContext| {
+            (
+                ctx.sender().to_byte_array(),
+                ctx.database_identity().to_byte_array(),
+            )
+        };
+        assert_eq!(
+            fx.run_procedure(Caller::Sender(client), at(), &mut http, ids),
+            (client.to_byte_array(), module.to_byte_array()),
+            "a client sender and the module identity arrive byte for byte"
+        );
+        assert_eq!(
+            fx.run_procedure(Caller::Database, at(), &mut http, ids),
+            (module.to_byte_array(), module.to_byte_array()),
+            "the database sender is the module identity byte for byte"
+        );
+    }
+
+    #[test]
+    fn a_large_body_travels_both_ways_byte_for_byte_lpw41_1() {
+        let fx = fixture();
+        let big: Vec<u8> = (0u32..200_000)
+            .map(|i| ((i % 251) ^ (i / 251)).to_le_bytes()[0])
+            .collect();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, big.clone()));
+        let got = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            outcome(ctx.http.send(build(
+                "POST",
+                "https://accounts.invalid/upload",
+                big.clone(),
+                None,
+            )))
+        });
+        let (status, body) = got.expect("the large answer arrived");
+        assert_eq!(status, 200, "the large answer's status arrived");
+        assert_eq!(body.len(), big.len(), "the whole answer body arrived");
+        assert!(
+            body == big,
+            "the answer body arrived exactly; the first differing byte is at {:?}",
+            body.iter().zip(&big).position(|(a, b)| a != b)
+        );
+        let sent = &http.requests()[0].body;
+        assert_eq!(sent.len(), big.len(), "the whole request body is recorded");
+        assert!(
+            *sent == big,
+            "the request body is recorded exactly; the first differing byte is at {:?}",
+            sent.iter().zip(&big).position(|(a, b)| a != b)
+        );
+    }
+
+    #[test]
+    fn every_method_is_recorded_exactly_as_spelled_lpw41_1() {
+        const METHODS: [&str; 8] = [
+            "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "PURGE",
+        ];
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        for method in METHODS {
+            http.push(HttpAnswer::status(200, method));
+        }
+        let got = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            METHODS
+                .iter()
+                .map(|method| {
+                    let url = format!("https://accounts.invalid/{method}");
+                    outcome(ctx.http.send(build(method, &url, Vec::new(), None)))
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            got,
+            METHODS
+                .iter()
+                .map(|method| Ok((200, method.as_bytes().to_vec())))
+                .collect::<Vec<Outcome>>(),
+            "each request got its own answer, in order"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| (r.method.clone(), r.url.clone()))
+                .collect::<Vec<_>>(),
+            METHODS
+                .iter()
+                .map(|method| (
+                    method.to_string(),
+                    format!("https://accounts.invalid/{method}")
+                ))
+                .collect::<Vec<_>>(),
+            "each request's method is recorded exactly as spelled"
+        );
+    }
+
+    #[test]
+    fn two_unanswered_requests_fail_the_run_naming_the_first_lpw41_2() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let first_seen: RefCell<Option<String>> = RefCell::new(None);
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let first = outcome(ctx.http.send(build(
+                    "POST",
+                    "https://accounts.invalid/first-unanswered",
+                    b"1".to_vec(),
+                    None,
+                )));
+                *first_seen.borrow_mut() = first.err();
+                let second = outcome(ctx.http.send(build(
+                    "PUT",
+                    "https://accounts.invalid/second-unanswered",
+                    b"2".to_vec(),
+                    None,
+                )));
+                second.is_ok()
+            })
+        }));
+        let text = panic_text(caught.expect_err("unanswered requests fail the run"));
+        assert!(
+            text.contains(
+                "the procedure sent `POST https://accounts.invalid/first-unanswered` with no stubbed HTTP answer left"
+            ),
+            "the failure names the first unanswered request: {text}"
+        );
+        let first = first_seen
+            .into_inner()
+            .expect("the first unanswered request got an Err");
+        assert!(
+            first.contains("no stubbed HTTP answer left"),
+            "the first unanswered request's Err says no answer is left: {first}"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| (r.method.clone(), r.url.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "POST".to_string(),
+                    "https://accounts.invalid/first-unanswered".to_string()
+                ),
+                (
+                    "PUT".to_string(),
+                    "https://accounts.invalid/second-unanswered".to_string()
+                ),
+            ],
+            "both unanswered requests are recorded, in order"
+        );
+    }
+
+    #[test]
+    fn a_retry_loop_against_an_empty_queue_ends_at_its_second_request_lpw41_2() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let mut tries = 0u32;
+                while tries < 1_000 && ctx.http.get("https://accounts.invalid/retry").is_err() {
+                    tries += 1;
+                }
+                tries
+            })
+        }));
+        let text = panic_text(caught.expect_err("the retry loop's run fails"));
+        assert!(
+            text.contains(
+                "the procedure sent `GET https://accounts.invalid/retry` with no stubbed HTTP answer left"
+            ),
+            "the failure names the unanswered request: {text}"
+        );
+        assert_eq!(
+            http.requests().len(),
+            2,
+            "the second unanswered request stops the procedure"
+        );
+    }
+
+    #[test]
+    fn an_aborted_transaction_restores_every_table_it_wrote_lpw41_3() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        let other = other_rows(&fx);
+        rows.seed(&1);
+        rows.seed(&2);
+        other.seed(&50);
+        let mut http = HttpQueue::new();
+        let (aborted, next) = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            ctx.with_tx(|_tx| {
+                insert_into(TABLE, 3);
+                insert_into(OTHER, 51);
+            });
+            let aborted = ctx.try_with_tx(|_tx| -> Result<(), (Vec<u64>, u32, Vec<u64>)> {
+                insert_into(TABLE, 4);
+                let removed = delete_from(OTHER, 50);
+                insert_into(OTHER, 52);
+                Err((scan_of(TABLE), removed, scan_of(OTHER)))
+            });
+            let next = ctx.with_tx(|_tx| (scan_of(TABLE), scan_of(OTHER)));
+            (aborted, next)
+        });
+        assert_eq!(
+            aborted,
+            Err((vec![1, 2, 3, 4], 1, vec![51, 52])),
+            "the body ran: it wrote both tables and its Err came back"
+        );
+        assert_eq!(
+            next,
+            (vec![1, 2, 3], vec![50, 51]),
+            "the next transaction sees both tables as the aborted one found them"
+        );
+        assert_eq!(
+            rows.rows(),
+            vec![1, 2, 3],
+            "the first table is back exactly"
+        );
+        assert_eq!(
+            other.rows(),
+            vec![50, 51],
+            "the second table is back exactly, its deleted row included"
+        );
+    }
 }

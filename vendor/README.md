@@ -15,11 +15,13 @@ never read them. The other `spacetimedb-*` crates (`-lib`, `-sats`, `-primitives
 
 ## Why the copies exist
 
-From crate 2.12.0 on, the vendor's crates refuse a native host in two places. `spacetimedb-bindings-sys`
-defines every host function itself on a non-wasm target (`mod native_link_stubs`), and
+From crate 2.12.0 on, the vendor's crates refuse a native host. `spacetimedb-bindings-sys`
+defines every host function itself on a non-wasm target (`mod native_link_stubs`).
 `spacetimedb`'s table backend returns `HOST_CALL_FAILURE` on a non-wasm target without calling the
-host. `server-module/src/native_host_tests.rs` defines the host functions over an in-memory row
-store, so its test binary needs the host calls to reach it. The decision is in `docs/DECISIONS.md`
+host, and a procedure's context refuses there too: its transactions and its database identity
+panic, and its HTTP client returns an error. `server-module/src/native_host_tests.rs` defines the
+host functions over an in-memory row store, with each HTTP answer stubbed by the test, so its test
+binary needs the host calls to reach it. The decision is in `docs/DECISIONS.md`
 ("Server-module tests run on our own host ABI, over the two vendor crates patched where they refuse
 a native host"); the measurements behind it are in `docs/spacetimedb-2.16.md` ("The vendor's
 unit-test harness").
@@ -33,12 +35,19 @@ sites, with their line numbers:
 |---|---|
 | `spacetimedb-bindings-sys/src/lib.rs` | the `native_link_stubs` module is compiled on no target |
 | `spacetimedb/src/table.rs` | in the table backend and its row iterator, the branch that calls the host is compiled on every target, and the branch that returns `HOST_CALL_FAILURE` on none |
-| `spacetimedb/src/lib.rs` | `ReducerContext::database_identity()` reads the `identity` host function unless `test-utils` is on natively |
+| `spacetimedb/src/lib.rs` | `ReducerContext::database_identity()` and `ProcedureContext::database_identity()` read the `identity` host function unless `test-utils` is on natively; in `ProcedureContext::try_with_tx` (which `with_tx` calls), the branch that starts, commits and aborts a transaction through the host is compiled on every target, and the branch that panics on none |
+| `spacetimedb/src/http.rs` | in `HttpClient::send`, the branch that calls the host is compiled on every target, with the imports and the two wire converters it uses, and the branch that returns the "only available in wasm" error on none |
 
 On `wasm32` each patched attribute selects what the original selects, under every feature
 choice, so the published module is built from the vendor's code. Native code without `test-utils`
 takes the wasm branch. The guard test checks both: each changed line is a `#[cfg]` attribute with
 its notice, and it evaluates each pair on wasm32.
+
+Two limits. `ProcedureContext::sleep_until` is as published, so it panics natively. And the
+native HTTP path uses three items the vendor compiles under
+`any(target_arch = "wasm32", feature = "unstable")` (the wire-types import in `http.rs`, and
+`read_bytes_source_as` with its import in `rt.rs`), so it builds natively only while the workspace
+turns the crate's `unstable` feature on, which the guard test checks.
 
 ## License
 

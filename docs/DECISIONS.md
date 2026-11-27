@@ -1513,7 +1513,12 @@ sender and the JWT; vendor release notes, 2.14.0).
 and `spacetimedb`'s table backend stops calling it off wasm. So the workspace builds both crates
 from copies of their crates.io packages under `vendor/`, through `[patch.crates-io]`, changed only
 by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change notice
-(`vendor/native-host.patch`). A test (`nh_vendored_crates_are_the_crates_io_release_plus_the_patch`)
+(`vendor/native-host.patch`). A procedure runs natively through more such attributes: its
+transactions and its HTTP client reach the host's `procedure_*` functions, which put an aborted
+transaction's rows back and answer each request from a queue the test stubs, so a procedure's
+request opens no connection (`Fixture::run_procedure`). `ProcedureContext::sleep_until` refuses
+natively: a native test of a procedure that sleeps adds two more such attributes and a
+`procedure_sleep_until` to the host. A test (`nh_vendored_crates_are_the_crates_io_release_plus_the_patch`)
 proves each copy, with the patch undone, matches the hashes recorded from the crates.io release
 (`vendor/PRISTINE.sha256`), and that every changed line is such an attribute, selecting on wasm
 what the original selected; every SpacetimeDB hop re-records them and re-applies the patch
@@ -1535,7 +1540,6 @@ attributes select what they selected before, so the module we ship is the vendor
 and runs the shipped views; a linker flag that tolerates the duplicate symbols (the stubs win, and
 769 tests fail); switching off only the stubs, since the table backend still refuses; testing on an
 older crate than the one that ships; any edit to the copies beyond such attributes and their notices.
-Procedures still refuse natively, so a native test of one adds more such attributes.
 
 ## Schema changes are additive
 

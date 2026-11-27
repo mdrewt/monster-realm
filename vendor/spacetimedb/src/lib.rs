@@ -1596,7 +1596,7 @@ impl ProcedureContext {
             self.module_identity
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "test-utils", not(target_arch = "wasm32"))))] // monster-realm: was #[cfg(target_arch = "wasm32")]
         {
             // Hypothetically, we *could* read the module identity out of the system tables.
             // However, this would be:
@@ -1609,7 +1609,7 @@ impl ProcedureContext {
             Identity::from_byte_array(spacetimedb_bindings_sys::identity())
         }
 
-        #[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]
+        #[cfg(any())] // monster-realm: was #[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]
         {
             panic!("ProcedureContext::database_identity() is only available in wasm or native test-utils contexts")
         }
@@ -1800,7 +1800,7 @@ impl ProcedureContext {
             return res;
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
         {
             let abort = || {
                 sys::procedure::procedure_abort_mut_tx()
@@ -1859,7 +1859,7 @@ impl ProcedureContext {
             res
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = body;
             panic!("ProcedureContext::try_with_tx() is only available in wasm or native test-utils contexts")

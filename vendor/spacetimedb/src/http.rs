@@ -5,9 +5,9 @@
 //! The [`get`](HttpClient::get) helper can be used for simple `GET` requests,
 //! while [`send`](HttpClient::send) allows more complex requests with headers, bodies and other methods.
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
 use crate::rt::{read_bytes_source_as, read_bytes_source_into};
-#[cfg(target_arch = "wasm32")]
+#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
 use crate::IterBuf;
 // Imports used only by the (still-unstable) HTTP handler machinery.
 #[cfg(all(feature = "unstable", feature = "rand08"))]
@@ -17,7 +17,7 @@ use crate::{try_with_tx, with_tx, AuthCtx, Timestamp, TxContext};
 use bytes::Bytes;
 #[cfg(all(feature = "rand08", feature = "unstable"))]
 use rand08::RngCore;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
 use spacetimedb_lib::bsatn;
 #[cfg(feature = "unstable")]
 use spacetimedb_lib::db::raw_def::v10::MethodOrAny;
@@ -540,7 +540,7 @@ impl HttpClient {
 
         match &self.backend {
             HttpClientBackend::Host => {
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
                 {
                     let (request, body) = request.into_parts();
                     let request = convert_request(request);
@@ -570,7 +570,7 @@ impl HttpClient {
                     }
                 }
 
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
                 {
                     let _ = request;
                     Err(Error::new(
@@ -618,7 +618,7 @@ impl HttpClient {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
 fn convert_request(parts: http::request::Parts) -> st_http::Request {
     let http::request::Parts {
         method,
@@ -663,7 +663,7 @@ fn convert_request(parts: http::request::Parts) -> st_http::Request {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
 fn convert_response(response: st_http::Response) -> http::Result<http::response::Parts> {
     let st_http::Response { headers, version, code } = response;
 
