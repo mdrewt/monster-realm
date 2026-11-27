@@ -41,6 +41,8 @@ netcode deterministically without a browser.
 The Cargo workspace (`Cargo.toml`) has five members: `game-core`, `client-wasm`,
 `server-module`, `sim-harness`, and `evals/release-overflow-teeth` (a fixture crate
 used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.toml`.
+`server-module`, `client-wasm` and `sim-harness` take `game-core` as a path dependency;
+only `server-module` turns on its `spacetimedb` feature.
 
 ## game-core: the rule layer
 
@@ -63,11 +65,25 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `content` | Parsing, loading and validation of every content registry. |
 
 Rules take their inputs explicitly. Time arrives as `Millis`; randomness arrives as a
-seed or as pre-rolled values (`TurnVariance`, `StatusVariance`, individuality seeds).
+seed or as pre-rolled values (individuality seeds; `StatusVariance`, which the tactical
+upkeep fills from the battle's roll stream; `combat`'s `TurnVariance`, which no shipped
+caller uses). On the server, `now_ms`
+(`server-module/src/marshal.rs`) turns `ctx.timestamp` into the milliseconds a rule
+takes as `Millis`, and seeds are drawn from `ctx.random()`. A tactical battle keeps its seed in
+the private `battle_secret` row and draws each target's accuracy and variance rolls
+from `splitmix64(seed ^ action_seq)` (`tactics::resolve::draw_rolls`).
 `clippy.toml` bans wall-clock and unseeded-RNG calls workspace-wide, and `just lint`
-treats clippy warnings as errors. Arithmetic is integer-only; the release profile
-keeps overflow checks on. The `spacetimedb` Cargo feature adds the `SpacetimeType`
+treats clippy warnings as errors. Arithmetic is integer-only; the release and bench
+profiles keep overflow checks on. The `spacetimedb` Cargo feature adds the `SpacetimeType`
 derives the server needs; the client builds without it.
+
+Damage is `combat::damage::calc_damage`, with `u64` intermediates and a `u16` result:
+`base = (2·level/5 + 2)·power·attack/defense/50 + 2`, then STAB ×3/2, type
+effectiveness ×{0,5,10,20}/10 (0 returns an immune hit before any other term), the
+variance roll in `85..=100` /100, the weather multiplier as an integer
+numerator/denominator, and a floor of 1. The tactical pipeline
+(`tactics::resolve::damage_pipeline`) passes no weather, then applies flank and Guard
+and floors any non-immune hit at 1 again.
 
 ## Content pipeline
 
@@ -113,7 +129,16 @@ Content is data, not code. Each registry is a directory under `game-core/content
    `MR_BLESS_DIALOGUE_TREES=1 cargo nextest run -p monster-realm-module dialogue_trees_contract`),
    and `dialogueContent.contract.test.ts` requires the client mirror to render
    byte-equal to it. A dialogue edit therefore changes the RON, the TS mirror and the
-   contract file together.
+   contract file together. No content table has a locale column; the text a player
+   reads is localized in the client catalog (`client/src/ui/i18n/`).
+
+Tactical content lives in four registries keyed by another row's id
+(`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`), beside
+`battle_maps/` and `tactics_tuning.ron`. `validate_tactics_content`
+(`game-core/src/tactics/content.rs`) joins and lints them; the `game-core` tests run it
+over the shipped content, and `sync_content_inner` runs it in its validate phase, before
+any write. `docs/refactors/tactics-content.md` lists the slices that move each field
+onto the row it describes.
 
 ## client-wasm: the prediction boundary
 
