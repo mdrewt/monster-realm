@@ -922,22 +922,52 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
 
 /// Whether `identity` owns a character: it is in the game, or it holds any row
 /// [`account_has_game_data`] counts.
-pub(crate) fn owns_character(_ctx: &ReducerContext, _identity: Identity) -> bool {
-    false
+pub(crate) fn owns_character(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db.player().identity().find(identity).is_some() || account_has_game_data(ctx, identity)
 }
 
 /// Whether `identity` is in a battle or a trade: an ongoing battle in either role, a trade
 /// offer in either role, or a trade session.
-pub(crate) fn in_battle_or_trade(_ctx: &ReducerContext, _identity: Identity) -> bool {
-    false
+pub(crate) fn in_battle_or_trade(ctx: &ReducerContext, identity: Identity) -> bool {
+    is_in_ongoing_battle(ctx, identity)
+        || crate::guards::offers_of(ctx, identity).next().is_some()
+        || crate::guards::sessions_of(ctx, identity).next().is_some()
 }
 
-/// Move the character `from` owns to `to`, which owns none.
+/// Move the character `from` owns to `to`, one delegated helper per table, and leave `from`
+/// nothing [`owns_character`] counts, so the character can move back. The caller has refused a
+/// `to` that owns a character (no insert below can collide) and either identity in a battle
+/// or a trade. `?` on the fallible monster re-key aborts the caller's transaction.
+///
+/// Where the claim's re-key leaves the guest a row, the move removes it: the dialogue marker
+/// and the zeroed wallet go with their module's erase, and the ladder profile moves whole.
+/// The challenges that name `from` are cancelled, its saved or live position becomes `to`'s
+/// saved position, and its export bundles, which hold the character, are purged. A body of a
+/// procedure's transaction logs nothing, so the purge is not published.
+///
+/// Not moved, by decision: finished battles and what records them (`battle`,
+/// `battle_summary`, the tactical rows until their sweep, `playtest_event`), and what is about
+/// the identity's own connection, admission and login (`player_session`, `world_admission`,
+/// `world_binding`, `account`).
 pub(crate) fn move_character(
-    _ctx: &ReducerContext,
-    _from: Identity,
-    _to: Identity,
+    ctx: &ReducerContext,
+    from: Identity,
+    to: Identity,
 ) -> Result<(), String> {
+    crate::pvp::erase_pvp_rows(ctx, from);
+    crate::monster_mgmt::rekey_monsters(ctx, from, to)?;
+    crate::evolution::rekey_evolution_notices(ctx, from, to);
+    crate::inventory::rekey_inventory(ctx, from, to);
+    crate::npc::rekey_npc_state(ctx, from, to);
+    crate::npc::erase_npc_state(ctx, from);
+    crate::raising::rekey_heal_cooldown(ctx, from, to);
+    crate::economy::rekey_wallet(ctx, from, to);
+    crate::economy::erase_wallet(ctx, from);
+    crate::ranking::move_profile(ctx, from, to);
+    crate::schema::rekey_formation(ctx, from, to);
+    crate::movement::move_position(ctx, from, to);
+    crate::onboarding::rekey_handle(ctx, from, to);
+    crate::privacy::purge_export_bundles(ctx, from);
     Ok(())
 }
 

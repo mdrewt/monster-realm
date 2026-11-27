@@ -1695,8 +1695,12 @@ fn rows_world_account(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
     Ok(rows)
 }
 
-fn rows_world_move(_ctx: &ReducerContext, _owner: Identity) -> Result<Vec<String>, String> {
-    Ok(Vec::new())
+fn rows_world_move(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let mut rows = Vec::new();
+    if let Some(row) = crate::account_checks::move_of(ctx, owner) {
+        rows.push(json_world_move(&row));
+    }
+    Ok(rows)
 }
 
 fn rows_player(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
@@ -1980,7 +1984,7 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // the reaper retires in one whole retention window, so the write side cannot
 // outpace the drain. the inequality it rests on: EXPORT_REAP_MAX_STAMPS_PER_TICK *
 // EXPORT_MIN_BUNDLE_ROWS
-// >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 20 = 320 >= 256), which is what makes
+// >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 21 = 336 >= 256), which is what makes
 // a tick retire at least as many rows as it read. Stamps are deleted WHOLE, so
 // no bundle is ever partly reaped and the floor holds whatever order the window
 // arrives in; Draining a FULL store therefore takes at most 168 ticks (seven days),

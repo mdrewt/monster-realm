@@ -139,8 +139,8 @@ fn my_world_account(ctx: &spacetimedb::ViewContext) -> Option<WorldAccount> {
 
 /// Owner-scoped read path for `world_move`: the sender's own row.
 #[spacetimedb::view(accessor = my_world_move, public)]
-fn my_world_move(_ctx: &spacetimedb::ViewContext) -> Option<WorldMove> {
-    None
+fn my_world_move(ctx: &spacetimedb::ViewContext) -> Option<WorldMove> {
+    ctx.db.world_move().identity().find(ctx.sender())
 }
 
 // --- Pure core --------------------------------------------------------------------------
@@ -216,9 +216,13 @@ fn parse_answer<'a, T: Deserialize<'a>>(body: &'a [u8]) -> Option<T> {
 }
 
 /// Whether a ticket issued for the world name `name` may carry a character from one identity
-/// to another. `ip_confirmed` says whether the world has confirmed `name` as its address.
-fn name_carries_move(_name: &str, _ip_confirmed: bool) -> bool {
-    false
+/// to another: a `spki:` name, a `dns:` name, or an `ip:` name when `ip_confirmed` says the
+/// world has confirmed it as its address. An address can change hands while its name is still
+/// presented, and a ticket through it would carry the character to the address's new holder.
+fn name_carries_move(name: &str, ip_confirmed: bool) -> bool {
+    name.starts_with("spki:")
+        || name.starts_with("dns:")
+        || (ip_confirmed && name.starts_with("ip:"))
 }
 
 fn is_handle(text: &str) -> bool {
@@ -254,8 +258,12 @@ pub(crate) fn move_of(ctx: &ReducerContext, identity: Identity) -> Option<WorldM
 
 /// Refuses a caller whose character was moved to another identity and has not checked in
 /// since, with [`REJECT_CHARACTER_MOVED`]. Reads the caller's `world_move` row and writes nothing.
-pub(crate) fn require_not_moved(_ctx: &ReducerContext, _reducer: &str) -> Result<(), String> {
-    Ok(())
+pub(crate) fn require_not_moved(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
+    if move_of(ctx, ctx.sender()).is_none() {
+        return Ok(());
+    }
+    log_reject(reducer, ctx.sender(), REJECT_CHARACTER_MOVED);
+    Err(REJECT_CHARACTER_MOVED.to_string())
 }
 
 /// Whether `identity`'s row says its account owns the game. A build of a `profile` that names
@@ -286,10 +294,8 @@ pub(crate) fn admitted_handles(
 
 // --- Writes -----------------------------------------------------------------------------
 
-/// Erase what this module holds about `identity`: its row and its armed re-check. Answers
-/// whether a `world_account` row went. The step for these two tables of the deletion cascade,
-/// of a guest claim for the guest identity it retires, of an unbind and of the owner's drop.
-pub(crate) fn erase_world_account(ctx: &ReducerContext, identity: Identity) -> bool {
+/// Delete `identity`'s armed re-check, when one is armed.
+fn disarm_recheck(ctx: &ReducerContext, identity: Identity) {
     if ctx
         .db
         .recheck_schedule()
@@ -299,6 +305,22 @@ pub(crate) fn erase_world_account(ctx: &ReducerContext, identity: Identity) -> b
     {
         ctx.db.recheck_schedule().identity().delete(identity);
     }
+}
+
+/// Delete `identity`'s move record, when it holds one.
+fn forget_move(ctx: &ReducerContext, identity: Identity) {
+    if move_of(ctx, identity).is_some() {
+        ctx.db.world_move().identity().delete(identity);
+    }
+}
+
+/// Erase what this module holds about `identity`: its row, its armed re-check and its move
+/// record. Answers whether a `world_account` row went. The step for these three tables of the
+/// deletion cascade, of a guest claim for the guest identity it retires, of an unbind and of
+/// the owner's drop.
+pub(crate) fn erase_world_account(ctx: &ReducerContext, identity: Identity) -> bool {
+    disarm_recheck(ctx, identity);
+    forget_move(ctx, identity);
     if account_of(ctx, identity).is_none() {
         return false;
     }
@@ -396,11 +418,37 @@ fn prepare_redeem(
     Ok(names)
 }
 
+/// What refuses moving the character `from` owns to `who`: `who` owning a character, and, under
+/// one reason so the answer tells nothing of the other identity's state, either identity in a
+/// battle or a trade or `from`'s account pending deletion (the cascade keyed on `from` must
+/// still find the character).
+fn move_gates(tx: &ReducerContext, from: Identity, who: Identity) -> Result<(), &'static str> {
+    if crate::accounts::owns_character(tx, who) {
+        return Err(REJECT_CALLER_OWNS_CHARACTER);
+    }
+    if crate::accounts::in_battle_or_trade(tx, from)
+        || crate::accounts::in_battle_or_trade(tx, who)
+        || crate::accounts::is_pending_deletion(tx, from)
+    {
+        return Err(REJECT_MOVE_NOT_NOW);
+    }
+    Ok(())
+}
+
 /// The transaction that stores a redeemed ticket's answer for `who`, deciding from the rows as
 /// they are now. Refused with no write: a gate that fails now; an answered name this world does
-/// not answer to now; a handle another identity holds; `who` holding another handle; and, when
-/// `who` is the world's owner under `Allowlist`, a full list that lacks the handle. Otherwise
-/// `who`'s row holds the answer, and the owner's handle is on the list under `Allowlist`.
+/// not answer to now; `who` holding another handle; and, when `who` is the world's owner under
+/// `Allowlist`, a full list that lacks the handle.
+///
+/// A handle another identity holds is the same account at another client, so its character
+/// moves to `who` (`accounts::move_character`) and the handle's row points at `who`, keeping its
+/// host mark. That is refused, again with no write, when the ticket's name cannot carry a move
+/// ([`name_carries_move`]; no `ip:` name is confirmed here), by [`move_gates`], and when the
+/// move itself fails. The identity the character left gets a `world_move` row and loses its
+/// armed re-check. A holder that owns no character is re-pointed the same way.
+///
+/// Otherwise `who`'s row holds the answer. Either way the owner's handle is on the list under
+/// `Allowlist`, and `who`'s own `world_move` row is deleted: it has checked in.
 fn store_redeem(
     tx: &ReducerContext,
     who: Identity,
@@ -411,13 +459,21 @@ fn store_redeem(
     if !crate::world_binding::is_world_name(tx, &answer.name) {
         return Err(REJECT_TICKET_REFUSED);
     }
-    let holder = tx.db.world_account().handle().find(answer.handle.clone());
-    if holder.is_some_and(|row| row.identity != who) {
+    let held = tx
+        .db
+        .world_account()
+        .handle()
+        .find(answer.handle.clone())
+        .filter(|row| row.identity != who);
+    if held.is_some() && !name_carries_move(&answer.name, false) {
         return Err(REJECT_HANDLE_HELD);
     }
     let own = account_of(tx, who);
     if own.as_ref().is_some_and(|row| row.handle != answer.handle) {
         return Err(REJECT_IDENTITY_HOLDS_ANOTHER);
+    }
+    if let Some(row) = &held {
+        move_gates(tx, row.identity, who)?;
     }
     if crate::access::is_world_owner(tx, who)
         && crate::access::rule_in_force(tx) == WorldAccessRule::Allowlist
@@ -425,15 +481,31 @@ fn store_redeem(
         crate::world_binding::add_to_allowlist(tx, std::slice::from_ref(&answer.handle))?;
     }
     let checked_at_ms = now_ms(tx);
-    match own {
-        Some(row) => {
+    match (held, own) {
+        (Some(row), _) => {
+            let from = row.identity;
+            crate::accounts::move_character(tx, from, who).map_err(|_| REJECT_MOVE_FAILED)?;
+            disarm_recheck(tx, from);
+            tx.db.world_account().handle().update(WorldAccount {
+                identity: who,
+                entitled: answer.entitled,
+                checked_at_ms,
+                ..row
+            });
+            forget_move(tx, from);
+            tx.db.world_move().insert(WorldMove {
+                identity: from,
+                moved_at_ms: checked_at_ms,
+            });
+        }
+        (None, Some(row)) => {
             tx.db.world_account().handle().update(WorldAccount {
                 entitled: answer.entitled,
                 checked_at_ms,
                 ..row
             });
         }
-        None => {
+        (None, None) => {
             tx.db.world_account().insert(WorldAccount {
                 handle: answer.handle.clone(),
                 identity: who,
@@ -443,6 +515,7 @@ fn store_redeem(
             });
         }
     }
+    forget_move(tx, who);
     Ok(answer.entitled)
 }
 

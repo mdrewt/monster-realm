@@ -250,8 +250,21 @@ pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) 
     refresh_leaderboard_top(ctx);
 }
 
-/// Move `from`'s whole `profile` row to `to`, which holds none.
-pub(crate) fn move_profile(_ctx: &ReducerContext, _from: Identity, _to: Identity) {}
+/// Move `from`'s whole `profile` row to `to`: name, rating, wins and losses as stored, with no
+/// live-name lookup, then rescan the leaderboard membership. The ladder keeps the entry under
+/// `to`, and `from` is left no row. Called only from `accounts::move_character`, whose caller
+/// refuses a destination that holds a profile, so the insert cannot collide. A source with
+/// no profile costs no write and no scan.
+pub(crate) fn move_profile(ctx: &ReducerContext, from: Identity, to: Identity) {
+    for row in ctx.db.profile().identity().find(from).into_iter() {
+        ctx.db.profile().identity().delete(from);
+        ctx.db.profile().insert(Profile {
+            identity: to,
+            ..row
+        });
+        refresh_leaderboard_top(ctx);
+    }
+}
 
 /// True if `identity` has a `profile` row (for
 /// `accounts::account_has_game_data`). Read-only.
