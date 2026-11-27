@@ -1016,6 +1016,50 @@ describe('the other answers of the token endpoint', () => {
     expect(w.lines[0]).not.toContain(FAILURE_MESSAGE);
   });
 
+  // An error the provider would answer with its own status and words, were it rethrown to it.
+  const EXPOSED_MESSAGE = `INTERNAL_SECRET_exposed_${randomBytes(8).toString('hex')}`;
+  const exposing = (error: Error): Error =>
+    Object.assign(error, {
+      expose: true,
+      statusCode: 418,
+      status: 418,
+      error: EXPOSED_MESSAGE,
+      error_description: EXPOSED_MESSAGE,
+    });
+  const exposed: ReadonlyArray<readonly [string, () => Error, string]> = [
+    ['an Error', () => exposing(new Error(EXPOSED_MESSAGE)), 'Error'],
+    [
+      'a StoreDownError',
+      () => {
+        const error = exposing(new StoreDownError());
+        error.message = EXPOSED_MESSAGE;
+        return error;
+      },
+      'StoreDownError',
+    ],
+  ];
+  const exposedCases = (['entitlement', 'authenticate'] as const).flatMap((fault) =>
+    exposed.map(([kind, make, name]) => [fault, kind, make, name] as const),
+  );
+  test.each(
+    exposedCases,
+  )('%s rejecting with %s that carries expose, a status and an error_description is still 500 and says nothing of it', async (fault, _kind, make, name) => {
+    const w = await world();
+    const ticket = await entitledTicket(w);
+    w.faults[fault] = make();
+    const reply = await exchange(w, ticket);
+    expect(reply.status).toBe(500);
+    expect(reply.body).not.toContain(EXPOSED_MESSAGE);
+    expect(reply.body).not.toContain('id_token');
+    const body = bodyOf(reply);
+    expect(body).not.toHaveProperty('id_token');
+    expect(body.error).not.toBe(EXPOSED_MESSAGE);
+    expect(body.error_description).not.toBe(EXPOSED_MESSAGE);
+    expect(w.lines).toHaveLength(1);
+    expect(w.lines[0]).toContain(name);
+    expect(w.lines[0]).not.toContain(EXPOSED_MESSAGE);
+  });
+
   test('a token whose line cannot be written is not handed out: 500 with no token', async () => {
     const w = await world();
     const ticket = await entitledTicket(w);

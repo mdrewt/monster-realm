@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { type SteamStub, startSteamStub } from '../test-util/steamStub.ts';
 import { ID_TOKEN_CLAIMS } from './claims.ts';
 import { ConfigError, HOSTED_DEV_ISSUER } from './config.ts';
+import { denyList, steamAccounts } from './denyList.ts';
 import {
   ATTESTATION_KEY_FILE_NAME,
   generateAttestationKey,
@@ -31,7 +32,10 @@ import {
   HANDLE_KEY_FILE_NAME,
   publishedAttestationKeys,
 } from './keys.ts';
-import { type RunningServer, startServer } from './server.ts';
+import { type RunningServer, startServer, steamEntitlement } from './server.ts';
+import { parseSteamId, type SteamId } from './steam/ownership.ts';
+import { createSteamWebApi } from './steam/webApi.ts';
+import { type AccountStore, openAccountStore } from './store/sqliteAdapter.ts';
 
 const ACCOUNT_SERVICE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(ACCOUNT_SERVICE_DIR, '..');
@@ -2221,5 +2225,150 @@ describe('the Steam ticket grant served by startServer', () => {
     }
     // The start line names the address the server listens on; every line after it is checked.
     for (const line of after) expect(line).not.toContain('127.0.0.1');
+  });
+});
+
+// ---- the entitlement decision startServer wires for the grant ----
+
+const PRODUCTION_APP_ID = 2_000_000;
+const OWNERSHIP_PATH = '/ISteamUser/CheckAppOwnership/v4/';
+const ENTITLED_PLAYER = parseSteamId('76561198000000101')!;
+const LENDER = parseSteamId('76561198000000102')!;
+
+interface EntitlementRig {
+  readonly stub: SteamStub;
+  readonly decide: (steamId: SteamId) => Promise<unknown>;
+  readonly deny: ReturnType<typeof denyList>;
+  readonly accounts: ReturnType<typeof steamAccounts>;
+}
+
+describe('the entitlement decision startServer wires for the grant', () => {
+  const stores: AccountStore[] = [];
+
+  afterEach(() => {
+    for (const store of stores.splice(0)) store.close();
+  });
+
+  /** A Steam fake answering as a game of its own, and a production client of it. */
+  async function productionSteam() {
+    const stub = await startSteamStub({ appId: PRODUCTION_APP_ID });
+    stubs.push(stub);
+    const steam = createSteamWebApi({
+      config: { profile: 'production', steam: { appId: PRODUCTION_APP_ID } },
+      env: { MR_STEAM_PUBLISHER_KEY: stub.key },
+      log: () => undefined,
+      baseUrl: stub.url,
+    });
+    return { stub, steam };
+  }
+
+  /** A Steam fake answering as app 480, and a client of it under a dev profile. */
+  async function devSteam(profile: 'local-dev' | 'hosted-dev') {
+    const stub = await startSteamStub();
+    stubs.push(stub);
+    const steam = createSteamWebApi({
+      config: { profile, steam: { appId: 480 } },
+      env: { MR_STEAM_WEB_API_KEY: stub.key },
+      log: () => undefined,
+      baseUrl: stub.url,
+    });
+    return { stub, steam };
+  }
+
+  function rigOf(
+    profile: 'local-dev' | 'hosted-dev' | 'production',
+    steam: { readonly stub: SteamStub; readonly steam: ReturnType<typeof createSteamWebApi> },
+  ): EntitlementRig {
+    const store = openAccountStore(':memory:');
+    stores.push(store);
+    return {
+      stub: steam.stub,
+      decide: steamEntitlement(profile, store.adapter, steam.steam),
+      deny: denyList(store.adapter),
+      accounts: steamAccounts(store.adapter),
+    };
+  }
+
+  function ownershipAsks(rig: EntitlementRig): string[] {
+    return rig.stub.requests
+      .filter((sent) => sent.path === OWNERSHIP_PATH)
+      .map((sent) => sent.query.get('steamid') ?? '');
+  }
+
+  function owns(steamId: SteamId, holder: SteamId = steamId) {
+    return { ownsapp: true, permanent: true, sitelicense: false, ownersteamid: holder };
+  }
+
+  test('on production a player flagged entitled whom Steam reports not owning the game is not entitled', async () => {
+    const rig = rigOf('production', await productionSteam());
+    await rig.accounts.setEntitled(ENTITLED_PLAYER, true);
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: false, reason: 'not-owned' });
+    expect(ownershipAsks(rig)).toEqual([ENTITLED_PLAYER]);
+  });
+
+  test('on production a player with no flag whom Steam reports owning the game is entitled', async () => {
+    const rig = rigOf('production', await productionSteam());
+    rig.stub.setOwnership(ENTITLED_PLAYER, owns(ENTITLED_PLAYER));
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: true });
+    expect(ownershipAsks(rig)).toEqual([ENTITLED_PLAYER]);
+  });
+
+  test('on production a borrowed licence is not entitled, a flag set entitled beside it', async () => {
+    const rig = rigOf('production', await productionSteam());
+    await rig.accounts.setEntitled(ENTITLED_PLAYER, true);
+    rig.stub.setOwnership(ENTITLED_PLAYER, owns(ENTITLED_PLAYER, LENDER));
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: false, reason: 'not-owned' });
+    expect(ownershipAsks(rig)).toEqual([ENTITLED_PLAYER]);
+  });
+
+  test('on production a player on the deny-list whom Steam reports owning the game is denied and Steam is not asked', async () => {
+    const rig = rigOf('production', await productionSteam());
+    rig.stub.setOwnership(ENTITLED_PLAYER, owns(ENTITLED_PLAYER));
+    await rig.deny.add(ENTITLED_PLAYER);
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: false, reason: 'denied' });
+    expect(ownershipAsks(rig)).toEqual([]);
+  });
+
+  test('on production Steam failing to answer is unavailable, a flag set entitled beside it', async () => {
+    const rig = rigOf('production', await productionSteam());
+    await rig.accounts.setEntitled(ENTITLED_PLAYER, true);
+    rig.stub.setOwnership(ENTITLED_PLAYER, owns(ENTITLED_PLAYER));
+    rig.stub.respondNext('CheckAppOwnership', { kind: 'status', status: 500 });
+    const decision = await rig.decide(ENTITLED_PLAYER);
+    expect(decision).toMatchObject({ entitled: false, reason: 'unavailable' });
+    expect((decision as { readonly error?: unknown }).error).toBeInstanceOf(Error);
+    expect(ownershipAsks(rig)).toEqual([ENTITLED_PLAYER]);
+  });
+
+  const DEV_PROFILES = ['local-dev', 'hosted-dev'] as const;
+
+  test.each(DEV_PROFILES)('on %s a player flagged entitled is entitled', async (profile) => {
+    const rig = rigOf(profile, await devSteam(profile));
+    await rig.accounts.setEntitled(ENTITLED_PLAYER, true);
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: true });
+    expect(ownershipAsks(rig)).toEqual([]);
+  });
+
+  // A Steam client that can ask, and a fake that answers "owns it": only the flag may decide.
+  test.each(
+    DEV_PROFILES,
+  )('on %s the flag decides and no CheckAppOwnership request is sent, whatever Steam would answer', async (profile) => {
+    const rig = rigOf(profile, await productionSteam());
+    rig.stub.setOwnership(ENTITLED_PLAYER, owns(ENTITLED_PLAYER));
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: false, reason: 'not-owned' });
+    await rig.accounts.setEntitled(ENTITLED_PLAYER, false);
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: false, reason: 'not-owned' });
+    await rig.accounts.setEntitled(ENTITLED_PLAYER, true);
+    rig.stub.setOwnership(ENTITLED_PLAYER, owns(ENTITLED_PLAYER, LENDER));
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: true });
+    expect(ownershipAsks(rig)).toEqual([]);
+  });
+
+  test.each(DEV_PROFILES)('on %s the deny-list wins over a flag set entitled', async (profile) => {
+    const rig = rigOf(profile, await devSteam(profile));
+    await rig.accounts.setEntitled(ENTITLED_PLAYER, true);
+    await rig.deny.add(ENTITLED_PLAYER);
+    expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: false, reason: 'denied' });
+    expect(ownershipAsks(rig)).toEqual([]);
   });
 });
