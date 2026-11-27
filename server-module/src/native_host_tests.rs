@@ -810,7 +810,7 @@ impl Fixture {
 //   transactions do roll back (the PROCEDURES banner).
 // * A SETTABLE CALLER. `Fixture::run_as(_at)` runs a closure inside the SHIPPED
 //   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1299`), which is
-//   the only code that builds a `ReducerContext` with a chosen sender (the
+//   the only code that hands a reducer a `ReducerContext` with a chosen sender (the
 //   constructor is private, `vendor/spacetimedb/src/lib.rs:1209`). A trampoline
 //   reducer is registered once per process through the public `rt::register_reducer`
 //   and published into `REDUCERS` by calling `__describe_module__`. The closure's panics are
@@ -820,7 +820,7 @@ impl Fixture {
 //   `run_as_conn_at` opens a client connection and serves its JWT (see the
 //   connection banner below).
 // * A CONTROLLABLE CLOCK. `Fixture::ctx_at` (the dummy context with its public
-//   `timestamp` set) and `run_as_at`.
+//   `timestamp` set), `run_as_at`, and the `at` of `run_procedure`.
 // * A MODULE IDENTITY. The `identity` syscall answers the fixture's database
 //   identity (default [`DEFAULT_DATABASE_IDENTITY`], neither the all-zero
 //   `WILD_IDENTITY` nor a small `[n; 32]` test identity); before this, reaching
@@ -2234,14 +2234,18 @@ fn nh_scannable_writable_table_scans_counts_deletes_and_clears() {
 //   an error. Nothing leaves the process (the test binary holds no HTTP client), and the
 //   request's timeout is recorded, never enforced. The answer goes back as byte sources the
 //   runtime reads through `bytes_source_read`: the BSATN response head and the body (the
-//   INVALID source when the body is empty, as a real host answers), or the BSATN error text
-//   with the code `HTTP_ERROR`.
+//   INVALID source when the body is empty, which is what the crate reads as an empty body,
+//   `vendor/spacetimedb/src/http.rs:555`), or the BSATN error text with the code `HTTP_ERROR`.
 // * A REQUEST WITH NO ANSWER LEFT fails the test. The host function runs inside an
 //   `extern "C"` frame, where a panic aborts the process, so it answers that request with an
 //   error and `run_procedure` panics in the test's frame once the procedure has returned. A
-//   panic inside a `while_waiting` closure is carried out the same way.
-// * NOT MODELLED: `sleep_until` (the crate still refuses it natively), a connection id or JWT
-//   on the context, request and response headers, and a failed commit.
+//   second such request in one run is answered with a code the bindings panic on, in the
+//   procedure's own frame, so a retry loop stops there instead of hanging the test. A panic
+//   inside a `while_waiting` closure is carried out to the test's frame the same way.
+// * NOT MODELLED: `sleep_until` (the crate refuses it natively), a connection id or JWT on
+//   the context, request and response headers, a failed commit, and the host's refusal of a
+//   request or a second start while a transaction is open (the crate's API cannot make either:
+//   a transaction's body holds the context's only borrow).
 // ---------------------------------------------------------------------------
 
 use spacetimedb::spacetimedb_lib::http as wire;
@@ -2339,15 +2343,14 @@ type ProcedureBody = *mut (dyn FnMut(&mut ProcedureContext) + 'static);
 
 /// What one [`Fixture::run_procedure`] call keeps while the runtime runs its body.
 struct ProcedureRun {
-    /// The closure the trampoline takes and runs.
-    body: Option<ProcedureBody>,
+    /// The closure the trampoline runs.
+    body: ProcedureBody,
     /// The time the procedure runs at; each of its transactions reads it.
     at_micros: i64,
     /// The test's queue.
     http: *mut HttpQueue<'static>,
-    /// The first request that found no answer left, as `<METHOD> <url>`, and how many did.
+    /// The first request that found no answer left, as `<METHOD> <url>`.
     unanswered: Option<String>,
-    unanswered_count: u32,
     /// The panic of a `while_waiting` closure.
     waiting_panic: Option<Box<dyn Any + Send>>,
 }
@@ -2365,10 +2368,6 @@ fn with_procedure_run<T>(f: impl FnOnce(&mut ProcedureRun) -> T) -> Option<T> {
 /// The `BytesSink` a procedure's result is written to (and discarded: the trampoline returns
 /// nothing, and `run_procedure` hands the closure's value back itself).
 const PROCEDURE_SINK: u32 = 0x9C0C;
-
-/// A run that sends this many requests with no answer left is a retry loop that would never
-/// return, so the host stops the process instead of hanging the test.
-const UNANSWERED_LIMIT: u32 = 64;
 
 /// HTTP answer sources are numbered from here, clear of [`JWT_SOURCE`] and the INVALID `0`.
 const ANSWER_SOURCE_BASE: u32 = 0x4000_0000;
@@ -2407,9 +2406,8 @@ impl spacetimedb::rt::FnInfo for ProcedureTrampoline {
 fn procedure_signature(_ctx: &mut ProcedureContext) {}
 
 fn procedure_trampoline(ctx: &mut ProcedureContext, _args: &[u8]) -> spacetimedb::ProcedureResult {
-    let body = with_procedure_run(|run| run.body.take())
-        .flatten()
-        .expect("native_host_tests: the procedure trampoline was called without a body");
+    let body = with_procedure_run(|run| run.body)
+        .expect("native_host_tests: the procedure trampoline was called outside run_procedure");
     // SAFETY: `run_procedure` keeps the pointee alive for this whole call (see there).
     unsafe { (*body)(ctx) };
     Vec::new()
@@ -2463,11 +2461,10 @@ impl Fixture {
                 "native_host_tests: run_procedure called while a procedure is running"
             );
             *slot = Some(ProcedureRun {
-                body: Some(body),
+                body,
                 at_micros,
                 http,
                 unanswered: None,
-                unanswered_count: 0,
                 waiting_panic: None,
             });
         });
@@ -2475,14 +2472,10 @@ impl Fixture {
         // SAFETY: the shipped entry point; procedure 0 is the trampoline (the only registered
         // procedure), there is no connection, args are the INVALID (empty) source, and the
         // result sink is one `bytes_sink_write` accepts.
-        let rc = unsafe { __call_procedure__(0, s0, s1, s2, s3, 0, 0, micros, 0, PROCEDURE_SINK) };
+        unsafe { __call_procedure__(0, s0, s1, s2, s3, 0, 0, micros, 0, PROCEDURE_SINK) };
         let run = PROCEDURE_RUN
             .with(|slot| slot.borrow_mut().take())
             .expect("native_host_tests: the procedure run left its slot during the call");
-        assert_eq!(
-            rc, 0,
-            "native_host_tests: the procedure trampoline reported failure"
-        );
         if let Some(panic) = run.waiting_panic {
             resume_unwind(panic);
         }
@@ -2603,21 +2596,21 @@ unsafe extern "C" fn procedure_http_request(
         let queue = unsafe { &mut *run.http };
         queue.requests.push(sent);
         let answer = queue.answers.pop_front();
-        if answer.is_none() {
-            run.unanswered.get_or_insert_with(|| line.clone());
-            run.unanswered_count += 1;
+        let had_unanswered = run.unanswered.is_some();
+        if answer.is_none() && !had_unanswered {
+            run.unanswered = Some(line.clone());
         }
-        (answer, run.unanswered_count)
+        (answer, had_unanswered)
     });
-    let Some((answer, unanswered_count)) = next else {
+    let Some((answer, had_unanswered)) = next else {
         unmodelled("procedure_http_request outside `Fixture::run_procedure`")
     };
     let Some(answer) = answer else {
-        assert!(
-            unanswered_count < UNANSWERED_LIMIT,
-            "native_host_tests: {unanswered_count} requests of one run found no stubbed HTTP \
-             answer left (the latest: `{line}`): a retry loop that would never return"
-        );
+        if had_unanswered {
+            // Any code but `HTTP_ERROR` makes the bindings panic in the procedure's frame
+            // (`vendor/spacetimedb-bindings-sys/src/lib.rs:1961`), which ends the run.
+            return Errno::HOST_CALL_FAILURE.code();
+        }
         let message = format!("native_host_tests: no stubbed HTTP answer left for `{line}`");
         // SAFETY: `out` is the bindings' out-param.
         return unsafe { answer_with_error(out, &message) };
