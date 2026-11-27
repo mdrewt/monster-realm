@@ -4978,6 +4978,16 @@ mod nh {
             assert_eq!(snapshot(&w, &saved, &r), joined);
             assert_eq!(w.players.rows().len(), 2, "both entitled players joined");
         }
+
+        /// An entitled caller whose character was moved to another identity is refused the
+        /// join and nothing is written; with its `world_move` row gone it joins.
+        ///
+        /// kills: `join_game` without the moved check on a dev-enforcing build.
+        #[test]
+        fn an_entitled_caller_holding_a_world_move_row_is_refused_the_join_lpw42_1() {
+            let jwt = payload(DEV_LOGIN_ISSUERS[0], AUD, Some(CLAIM));
+            super::lpw42_join_refused_while_moved(|fx, who| join_as(fx, who, Some(&jwt)));
+        }
     }
 
     /// The real `join_game` on a test build (`open_join` named): anyone joins,
@@ -5056,5 +5066,401 @@ mod nh {
             assert_eq!(join_as(&fx, a(), Some(&dev)), Ok(()));
             assert_eq!(joined(&w, a()), vec!["Ada".to_string()]);
         }
+
+        /// A caller whose character was moved to another identity is refused the join on a
+        /// build that does not enforce ownership, and nothing is written; with its
+        /// `world_move` row gone it joins.
+        ///
+        /// kills: `join_game` without the moved check; the check placed only on an
+        /// enforcing branch.
+        #[test]
+        fn a_caller_holding_a_world_move_row_is_refused_the_join_lpw42_1() {
+            super::lpw42_join_refused_while_moved(|fx, who| join_as(fx, who, None));
+        }
+    }
+
+    // --- a character moved to another identity ---------------------------------
+
+    use crate::account_checks::{WorldMove, REJECT_CHARACTER_MOVED};
+
+    /// The `world_move` table on its primary key. Not writable: nothing under test here
+    /// writes it, so a write aborts the test.
+    fn lpw42_moves(fx: &Fixture) -> Handle<'_, WorldMove> {
+        fx.table::<WorldMove>("world_move", "identity", |r| r.identity)
+            .unique()
+    }
+
+    /// The movement world plus the `last_position` table `move_position` writes.
+    fn lpw42_world(fx: &Fixture) -> (World<'_>, Handle<'_, LastPosition>) {
+        let w = world(fx);
+        let saved = fx
+            .table::<LastPosition>("last_position", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique();
+        (w, saved)
+    }
+
+    /// Rows as sorted BSATN encodings: a table compared as a set of byte-equal rows.
+    fn lpw42_enc<R: spacetimedb::Serialize>(rows: Vec<R>) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = rows
+            .iter()
+            .map(|r| to_vec(r).expect("a row always BSATN-encodes"))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// A third identity, neither the source nor the destination of a move.
+    fn lpw42_c() -> Identity {
+        Identity::from_byte_array([0xC3; 32])
+    }
+
+    const LPW42_ENTITY: u64 = 42;
+
+    /// `who` in the game: its character stands in zone 1 on (5, 7) facing West, which is
+    /// none of the spawn's zone, tile or facing, with a step queued and a seq of 6.
+    fn lpw42_live(w: &World<'_>, who: Identity) {
+        w.join(
+            who,
+            LPW42_ENTITY,
+            Character {
+                zone_id: 1,
+                tile_x: 5,
+                tile_y: 7,
+                facing: Direction::West,
+                acked_seq: 6,
+                ..character(
+                    LPW42_ENTITY,
+                    vec![MoveInput::Step(Direction::North)],
+                    ActionState::Idle,
+                )
+            },
+        );
+    }
+
+    /// The player, character and move_intent rows of the movement world, by table.
+    fn lpw42_presence(w: &World<'_>) -> Vec<Vec<Vec<u8>>> {
+        vec![
+            lpw42_enc(w.players.rows()),
+            lpw42_enc(w.chars.rows()),
+            lpw42_enc(w.intents.rows()),
+        ]
+    }
+
+    /// The bystander's own player, character and move_intent rows.
+    fn lpw42_bystander_rows(w: &World<'_>) -> Vec<Vec<Vec<u8>>> {
+        vec![
+            lpw42_enc(
+                w.players
+                    .rows()
+                    .into_iter()
+                    .filter(|p| p.identity == bystander())
+                    .collect(),
+            ),
+            lpw42_enc(
+                w.chars
+                    .rows()
+                    .into_iter()
+                    .filter(|c| c.entity_id == BYSTANDER)
+                    .collect(),
+            ),
+            lpw42_enc(
+                w.intents
+                    .rows()
+                    .into_iter()
+                    .filter(|i| i.entity_id == BYSTANDER)
+                    .collect(),
+            ),
+        ]
+    }
+
+    /// A source in the game: the destination holds exactly one `last_position` row, the
+    /// live zone, tile and facing; the source holds no `player`, `character`, `move_intent`
+    /// or `last_position` row, the destination no presence row; a bystander's presence is
+    /// byte-equal.
+    ///
+    /// kills: `move_position` a no-op; the position read from the spawn or a default; the
+    /// facing dropped; the presence rows re-keyed to the destination instead of deleted;
+    /// the `move_intent` or `character` delete dropped; a delete keyed on the wrong identity.
+    #[test]
+    fn a_live_character_carries_its_position_and_leaves_no_presence_lpw42_4() {
+        let fx = fixture();
+        let (w, saved) = lpw42_world(&fx);
+        lpw42_live(&w, a());
+        w.bystander(1);
+        let sp = game_core::spawn();
+        assert_ne!(
+            (1, 5, 7, Direction::West),
+            (crate::ZONE_0, sp.x, sp.y, Direction::South),
+            "fixture: the live position is not the spawn"
+        );
+        let bystander_before = lpw42_bystander_rows(&w);
+
+        fx.run_as_at(b(), at(T0), |ctx| {
+            crate::movement::move_position(ctx, a(), b())
+        });
+
+        assert_eq!(
+            lpw42_enc(saved.rows()),
+            lpw42_enc(vec![sr11_saved(b(), 1, 5, 7, Direction::West)]),
+            "the destination holds the live position, and no other row exists"
+        );
+        assert!(
+            w.players
+                .rows()
+                .iter()
+                .all(|p| p.identity != a() && p.identity != b()),
+            "no player row at the source, none re-keyed to the destination"
+        );
+        assert!(
+            w.chars.rows().iter().all(|c| c.entity_id != LPW42_ENTITY),
+            "the source's character is deleted"
+        );
+        assert!(
+            w.intents.rows().iter().all(|i| i.entity_id != LPW42_ENTITY),
+            "the source's move_intent is deleted"
+        );
+        assert_eq!(
+            lpw42_bystander_rows(&w),
+            bystander_before,
+            "the bystander's presence is untouched"
+        );
+    }
+
+    /// A source in the game that also holds a stale `last_position` row: none is left at
+    /// the source, and the destination's row is the live position, not the stale one.
+    ///
+    /// kills: the stale row re-keyed instead of the live position saved; the stale row
+    /// left at the source.
+    #[test]
+    fn a_live_character_moves_its_live_position_over_a_stale_saved_one_lpw42_4() {
+        let fx = fixture();
+        let (w, saved) = lpw42_world(&fx);
+        lpw42_live(&w, a());
+        saved.seed(&sr11_saved(a(), 2, 9, 9, Direction::North));
+
+        fx.run_as_at(b(), at(T0), |ctx| {
+            crate::movement::move_position(ctx, a(), b())
+        });
+
+        assert_eq!(
+            lpw42_enc(saved.rows()),
+            lpw42_enc(vec![sr11_saved(b(), 1, 5, 7, Direction::West)]),
+            "one row, at the destination, holding the live position"
+        );
+        assert!(
+            w.players.rows().iter().all(|p| p.identity != a()),
+            "no player row at the source"
+        );
+    }
+
+    /// A source not in the game with a saved position: the row is re-keyed to the
+    /// destination, zone, tile and facing unchanged; no `player`, `character` or
+    /// `move_intent` row is written or deleted; another owner's saved row stays.
+    ///
+    /// kills: `move_position` a no-op; the saved row copied but left at the source; a field
+    /// of the row changed; a presence write on the saved-position path.
+    #[test]
+    fn a_saved_position_is_rekeyed_to_the_destination_lpw42_1() {
+        let fx = fixture();
+        let (w, saved) = lpw42_world(&fx);
+        w.bystander(0);
+        let other = sr11_saved(lpw42_c(), 0, 2, 1, Direction::North);
+        saved.seed(&other);
+        saved.seed(&sr11_saved(a(), 1, 3, 4, Direction::East));
+        let presence_before = lpw42_presence(&w);
+        fx.reset_writes();
+
+        fx.run_as_at(b(), at(T0), |ctx| {
+            crate::movement::move_position(ctx, a(), b())
+        });
+
+        assert_eq!(
+            lpw42_enc(saved.rows()),
+            lpw42_enc(vec![sr11_saved(b(), 1, 3, 4, Direction::East), other]),
+            "the source's row is at the destination unchanged; the other owner's row stays"
+        );
+        assert_eq!(
+            lpw42_presence(&w),
+            presence_before,
+            "presence rows as they were"
+        );
+        for table in ["player", "character", "move_intent"] {
+            assert_eq!(fx.writes_to(table), 0, "{table} took a write call");
+        }
+    }
+
+    /// A source with neither a `player` row nor a saved position: no write to any of the
+    /// four tables. The control moves a third identity's saved row in the same fixture, so
+    /// the silence is the empty source's, not a no-op move.
+    ///
+    /// kills: a write (an empty insert, a delete) on the empty path; another owner's row
+    /// moved for an empty source.
+    #[test]
+    fn a_source_with_no_position_writes_nothing_lpw42_1() {
+        let fx = fixture();
+        let (w, saved) = lpw42_world(&fx);
+        w.bystander(0);
+        let other = sr11_saved(lpw42_c(), 0, 2, 1, Direction::North);
+        saved.seed(&other);
+        let presence_before = lpw42_presence(&w);
+        fx.reset_writes();
+
+        fx.run_as_at(b(), at(T0), |ctx| {
+            crate::movement::move_position(ctx, a(), b())
+        });
+
+        for table in ["player", "character", "move_intent", "last_position"] {
+            assert_eq!(fx.writes_to(table), 0, "{table} took a write call");
+        }
+        assert_eq!(
+            lpw42_presence(&w),
+            presence_before,
+            "presence rows as they were"
+        );
+        assert_eq!(
+            lpw42_enc(saved.rows()),
+            lpw42_enc(vec![other]),
+            "the other owner's saved row stays where it is"
+        );
+
+        fx.run_as_at(b(), at(T0), |ctx| {
+            crate::movement::move_position(ctx, lpw42_c(), b())
+        });
+        assert_eq!(
+            lpw42_enc(saved.rows()),
+            lpw42_enc(vec![sr11_saved(b(), 0, 2, 1, Direction::North)]),
+            "control: a source that holds a saved row is moved"
+        );
+    }
+
+    /// `join_game` as a caller that holds a `world_move` row answers the moved refusal and
+    /// writes no presence, starter, kit or handle row and consumes no saved position; the
+    /// same caller with the row removed joins. `join` runs the reducer as the build's own
+    /// admission and entitlement checks admit.
+    #[cfg(feature = "dev_issuers")]
+    fn lpw42_join_refused_while_moved(join: impl Fn(&Fixture, Identity) -> Result<(), String>) {
+        let fx = fixture();
+        let (w, saved) = sr11_world(&fx);
+        let moves = lpw42_moves(&fx);
+        let inventory =
+            fx.table::<crate::schema::Inventory>("inventory", "lpw42_rows", |r| r.owner_identity);
+        let handles = fx.table::<PlayerHandle>("player_handle", "lpw42_rows", |r| r.owner_identity);
+        saved.seed(&sr11_saved(a(), 1, 2, 4, Direction::West));
+        moves.seed(&WorldMove {
+            identity: a(),
+            moved_at_ms: T0 - 1,
+        });
+        let snapshot = || {
+            vec![
+                lpw42_enc(w.players.rows()),
+                lpw42_enc(w.chars.rows()),
+                lpw42_enc(w.intents.rows()),
+                lpw42_enc(w.monsters.rows()),
+                lpw42_enc(w.pubs.rows()),
+                lpw42_enc(inventory.rows()),
+                lpw42_enc(handles.rows()),
+                lpw42_enc(saved.rows()),
+                lpw42_enc(moves.rows()),
+            ]
+        };
+        let before = snapshot();
+        fx.reset_writes();
+
+        assert_eq!(
+            join(&fx, a()),
+            Err(REJECT_CHARACTER_MOVED.to_string()),
+            "a moved caller is refused the join"
+        );
+        assert_eq!(snapshot(), before, "every table as it was");
+        for table in [
+            "player",
+            "character",
+            "move_intent",
+            "monster",
+            "monster_pub",
+            "inventory",
+            "player_handle",
+            "last_position",
+            "world_move",
+        ] {
+            assert_eq!(fx.writes_to(table), 0, "{table} took a write call");
+        }
+
+        assert_eq!(
+            moves.remove(a()),
+            1,
+            "the caller's world_move row is removed"
+        );
+        assert_eq!(join(&fx, a()), Ok(()), "control: without the row it joins");
+        assert_eq!(
+            w.players
+                .rows()
+                .iter()
+                .filter(|p| p.identity == a())
+                .count(),
+            1,
+            "control: the join wrote its player row"
+        );
+    }
+
+    /// `require_not_moved` admits a sender that holds no `world_move` row and refuses the
+    /// same sender once it holds one, with the moved refusal's exact text; it writes nothing.
+    ///
+    /// kills: a check that always refuses; one that never refuses; one that writes.
+    #[test]
+    fn require_not_moved_admits_a_sender_with_no_row_lpw42_1() {
+        assert_eq!(
+            REJECT_CHARACTER_MOVED,
+            "this character is playing on another client; sign in again to play here"
+        );
+        let fx = fixture();
+        let moves = lpw42_moves(&fx);
+        let check = |who: Identity| {
+            fx.run_as_at(who, at(T0), |ctx| {
+                crate::account_checks::require_not_moved(ctx, "join_game")
+            })
+        };
+        assert_eq!(check(a()), Ok(()), "no row: admitted");
+        moves.seed(&WorldMove {
+            identity: a(),
+            moved_at_ms: T0 - 1,
+        });
+        assert_eq!(
+            check(a()),
+            Err(REJECT_CHARACTER_MOVED.to_string()),
+            "control: the sender's own row refuses it"
+        );
+        assert_eq!(fx.writes_to("world_move"), 0, "the check writes nothing");
+    }
+
+    /// `require_not_moved` admits a sender when only another identity holds a `world_move`
+    /// row, and refuses that other identity.
+    ///
+    /// kills: a check that reads any row of the table (a scan, the first row) instead of
+    /// the sender's own.
+    #[test]
+    fn require_not_moved_ignores_another_identitys_row_lpw42_1() {
+        let fx = fixture();
+        let moves = lpw42_moves(&fx);
+        moves.seed(&WorldMove {
+            identity: b(),
+            moved_at_ms: T0 - 1,
+        });
+        let check = |who: Identity| {
+            fx.run_as_at(who, at(T0), |ctx| {
+                crate::account_checks::require_not_moved(ctx, "join_game")
+            })
+        };
+        assert_eq!(
+            check(a()),
+            Ok(()),
+            "another identity's row does not refuse the sender"
+        );
+        assert_eq!(
+            check(b()),
+            Err(REJECT_CHARACTER_MOVED.to_string()),
+            "control: the row's own identity is refused"
+        );
     }
 }

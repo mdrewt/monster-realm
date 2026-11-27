@@ -2005,12 +2005,36 @@ fn a_procedures_verdict_holds_every_classified_table_its_body_reaches_lpw23_9() 
 }
 
 /// Over the real crate with every manifest table classified: the procedures are exactly
-/// `check_account`, `check_account_for` and `recheck_account`; the first two write exactly
-/// `world_account`, `world_check_budget` and `world_allowlist`, the re-check exactly
-/// `world_account` and `world_allowlist`.
+/// `check_account`, `check_account_for` and `recheck_account`. The first two write
+/// `world_account`, `world_check_budget` and `world_allowlist`, the redeem's own `world_move`
+/// and `recheck_schedule`, and every table the character move reaches; the re-check writes
+/// exactly `world_account` and `world_allowlist`.
+///
+/// The move's tables, per callee of `accounts::move_character`, each followed through every
+/// crate fn it calls:
+/// - `pvp::erase_pvp_rows`: `battle_challenge`; `disarm_challenge_reaper`:
+///   `battle_challenge_reaper_schedule`.
+/// - `monster_mgmt::rekey_monsters` -> `update_monster_synced`: `monster`, `monster_pub`;
+///   `trading_session::cancel_sessions_listing` -> `delete_session` (`trade_session_reaper_schedule`)
+///   -> `delete_session_rows` (`trade_session`) -> `delete_snapshots` (`trade_session_snapshot`);
+///   `battle::refresh_lead_level`: `player`.
+/// - `evolution::rekey_evolution_notices`: `pending_evolution_notice`.
+/// - `inventory::rekey_inventory`: `inventory`.
+/// - `npc::rekey_npc_state`: `player_quest`, `player_dialogue_state`; `npc::erase_npc_state`:
+///   those two and `player_conversation`.
+/// - `raising::rekey_heal_cooldown`: `heal_cooldown`.
+/// - `economy::rekey_wallet` -> `grant_currency`, and `economy::erase_wallet`: `player_wallet`.
+/// - `ranking::move_profile`: `profile`; `refresh_leaderboard_top`: `leaderboard_top`.
+/// - `schema::rekey_formation`: `player_formation`.
+/// - `movement::move_position`: `character`, `move_intent`, `player`; `save_last_position`:
+///   `last_position`.
+/// - `onboarding::rekey_handle`: `player_handle`.
+/// - `privacy::purge_export_bundles`: `export_bundle`; `ensure_export_bundle_reaper` ->
+///   `arm_export_bundle_reaper`: `export_bundle_reaper_schedule`.
 ///
 /// kills: a procedure declared anywhere else or under another name; a procedure writing a
-/// table outside its named set; the budget charged by the re-check.
+/// table outside its named set; the budget charged by the re-check; a redeem that moves no
+/// character, or moves it through a primitive reaching a table the move must not write.
 #[test]
 fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
     let every_table: BTreeSet<&str> = crate::schema::DATA_LIFECYCLE_MANIFEST
@@ -2022,6 +2046,7 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
         "world_check_budget",
         "world_allowlist",
         "recheck_schedule",
+        "world_move",
     ] {
         assert!(
             every_table.contains(table),
@@ -2042,7 +2067,39 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
     let writes = |tables: &[&str]| census::Verdict::Procedure {
         writes: tables.iter().map(|t| (*t).to_string()).collect(),
     };
-    let first_contact = writes(&["world_account", "world_allowlist", "world_check_budget"]);
+    let first_contact = writes(&[
+        "world_account",
+        "world_allowlist",
+        "world_check_budget",
+        // The redeem: the source's move record and its disarmed re-check.
+        "world_move",
+        "recheck_schedule",
+        // The character move.
+        "battle_challenge",
+        "battle_challenge_reaper_schedule",
+        "monster",
+        "monster_pub",
+        "trade_session",
+        "trade_session_snapshot",
+        "trade_session_reaper_schedule",
+        "player",
+        "pending_evolution_notice",
+        "inventory",
+        "player_quest",
+        "player_dialogue_state",
+        "player_conversation",
+        "heal_cooldown",
+        "player_wallet",
+        "profile",
+        "leaderboard_top",
+        "player_formation",
+        "character",
+        "move_intent",
+        "last_position",
+        "player_handle",
+        "export_bundle",
+        "export_bundle_reaper_schedule",
+    ]);
     assert_eq!(verdict_of(&report, "check_account"), &first_contact);
     assert_eq!(verdict_of(&report, "check_account_for"), &first_contact);
     assert_eq!(
@@ -2330,6 +2387,96 @@ fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
             encs(&got),
             encs(&want),
             "[ts2/view-participants] {label}: exactly its own sessions, full row values"
+        );
+    }
+}
+
+/// In the generated module definition `world_move` is PRIVATE and `my_world_move` is the one
+/// view serving its row: public, caller-scoped and parameterless. Through the shipped view entry
+/// point that view answers each caller its own row alone, and a caller with no row nothing.
+///
+/// kills: `public` on `world_move` (every client would read who moved away and when); a second
+/// view over its rows; `my_world_move` taking a parameter or anonymous; a view body answering
+/// nothing, every row, or another identity's row.
+#[test]
+fn world_move_is_private_and_my_world_move_is_its_one_read_path_lpw42_6() {
+    use crate::account_checks::WorldMove;
+    use spacetimedb::sats::bsatn;
+    use spacetimedb::spacetimedb_lib::db::raw_def::v9::TableAccess;
+    use spacetimedb::Identity;
+    const TABLE: &str = "world_move";
+    const VIEW: &str = "my_world_move";
+
+    let fx = crate::native_host_tests::fixture();
+    let def = fx.module_def();
+    let tables = def.tables().unwrap_or_else(|| {
+        panic!("[lpw42/describe-tables] the generated module def carries no Tables section")
+    });
+    let Some(table) = tables.iter().find(|t| &*t.source_name == TABLE) else {
+        panic!("[lpw42/table-missing] `{TABLE}` is not a table of the generated module def")
+    };
+    assert_eq!(
+        table.table_access,
+        TableAccess::Private,
+        "[lpw42/table-private] `{TABLE}` must be PRIVATE"
+    );
+    let ts = def.typespace().unwrap_or_else(|| {
+        panic!("[lpw42/describe-typespace] the generated module def carries no typespace")
+    });
+    let views = def.views().unwrap_or_else(|| {
+        panic!("[lpw42/describe-views] the generated module def carries no Views section")
+    });
+    let mut over_moves: Vec<String> = Vec::new();
+    for v in views {
+        let name = v.source_name.to_string();
+        let (row_ref, columns) = ts2_view_row(ts, &v.return_type, &name);
+        if row_ref == Some(table.product_type_ref) || columns.iter().any(|c| c == "moved_at_ms") {
+            over_moves.push(name);
+        }
+    }
+    assert_eq!(
+        over_moves,
+        [VIEW],
+        "[lpw42/one-move-view] the only view over `{TABLE}` rows"
+    );
+    let Some(v) = views.iter().find(|v| &*v.source_name == VIEW) else {
+        panic!("[lpw42/view-missing] `{VIEW}`")
+    };
+    assert!(v.is_public, "[lpw42/view-public] `{VIEW}` is public");
+    assert!(
+        !v.is_anonymous,
+        "[lpw42/view-caller-scoped] `{VIEW}` must know its caller (ViewContext)"
+    );
+    assert!(
+        v.params.elements.is_empty(),
+        "[lpw42/view-no-params] `{VIEW}` takes parameters: a caller-chosen identity is a leak"
+    );
+    let view_id = usize::try_from(v.index).expect("a view index fits a usize");
+
+    let moves = fx.table::<WorldMove>(TABLE, "identity", |r| r.identity);
+    let id = |b: u8| Identity::from_byte_array([b; 32]);
+    let (a, b, stranger) = (id(0xD1), id(0xD2), id(0xD3));
+    let row_of = |identity: Identity, moved_at_ms: i64| WorldMove {
+        identity,
+        moved_at_ms,
+    };
+    moves.seed(&row_of(a, 1_700_000_000_111));
+    moves.seed(&row_of(b, 1_700_000_000_222));
+    let enc = |rows: &[WorldMove]| -> Vec<Vec<u8>> {
+        rows.iter()
+            .map(|r| bsatn::to_vec(r).expect("a row always BSATN-encodes"))
+            .collect()
+    };
+    for (label, who, want) in [
+        ("A", a, vec![row_of(a, 1_700_000_000_111)]),
+        ("B", b, vec![row_of(b, 1_700_000_000_222)]),
+        ("a stranger", stranger, vec![]),
+    ] {
+        let got: Vec<WorldMove> = fx.call_view::<WorldMove>(view_id, who);
+        assert_eq!(
+            enc(&got),
+            enc(&want),
+            "[lpw42/view-own-row] {label} reads exactly its own `{TABLE}` row through `{VIEW}`"
         );
     }
 }

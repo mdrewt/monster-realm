@@ -1085,3 +1085,316 @@ mod recheck_arming {
         assert_eq!(armed(&t), Vec::new());
     }
 }
+
+// ===========================================================================
+// EXECUTED — a source whose character was moved to another identity
+// disconnects and writes nothing of that character.
+// ===========================================================================
+
+mod moved_source_disconnect {
+    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::schema::{
+        Character, LastPosition, MoveIntent, Player, PlayerConversation, PlayerSession,
+    };
+    use game_core::{ActionState, Direction};
+    use spacetimedb::sats::bsatn::to_vec;
+    use spacetimedb::{ConnectionId, Identity, Serialize, Timestamp};
+
+    const T0: i64 = 1_760_000_000_000;
+    const CONN_SOURCE: u128 = 0x5e55_0042;
+    const CONN_BYSTANDER: u128 = 0x5e55_0043;
+    const SOURCE_ENTITY: u64 = 42;
+    const BYSTANDER_ENTITY: u64 = 43;
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    fn source() -> Identity {
+        Identity::from_byte_array([0x42; 32])
+    }
+
+    fn dest() -> Identity {
+        Identity::from_byte_array([0x24; 32])
+    }
+
+    fn bystander() -> Identity {
+        Identity::from_byte_array([0x43; 32])
+    }
+
+    struct T<'a> {
+        sessions: Handle<'a, PlayerSession>,
+        players: Handle<'a, Player>,
+        chars: Handle<'a, Character, u64>,
+        intents: Handle<'a, MoveIntent, u64>,
+        saved: Handle<'a, LastPosition>,
+        conversations: Handle<'a, PlayerConversation>,
+    }
+
+    /// What `on_disconnect` and `move_position` read and write: the session rows (the
+    /// leaving connection's own deleted by its key), the presence rows, the saved positions
+    /// and the conversation rows. The interaction resolvers read tables this fixture never
+    /// registers and find nothing.
+    fn tables(fx: &Fixture) -> T<'_> {
+        let _ = fx
+            .table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
+                r.connection_id
+            })
+            .unique()
+            .writable();
+        let _ = fx.table_keyed::<Player, u64>("player", "entity_id", |r| r.entity_id);
+        let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        T {
+            sessions: fx
+                .table::<PlayerSession>("player_session", "identity", |r| r.identity)
+                .writable(),
+            players: fx
+                .table::<Player>("player", "identity", |r| r.identity)
+                .writable()
+                .unique(),
+            chars: fx
+                .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+                .writable()
+                .unique(),
+            intents: fx
+                .table_keyed::<MoveIntent, u64>("move_intent", "entity_id", |r| r.entity_id)
+                .writable()
+                .unique(),
+            saved: fx
+                .table::<LastPosition>("last_position", "owner_identity", |r| r.owner_identity)
+                .writable()
+                .unique(),
+            conversations: fx
+                .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable()
+                .unique(),
+        }
+    }
+
+    /// `who` connected over `conn` and in the game, its character in zone 1 on `(x, y)`.
+    fn in_game(
+        t: &T<'_>,
+        who: Identity,
+        conn: u128,
+        entity_id: u64,
+        x: i32,
+        y: i32,
+        facing: Direction,
+    ) {
+        t.sessions.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(conn),
+            identity: who,
+        });
+        t.players.seed(&Player {
+            identity: who,
+            entity_id,
+            name: "p".to_string(),
+            online: true,
+            discriminator: 7,
+            lead_level: 0,
+        });
+        t.chars.seed(&Character {
+            entity_id,
+            zone_id: 1,
+            tile_x: x,
+            tile_y: y,
+            facing,
+            action: ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: Vec::new(),
+            acked_seq: 5,
+        });
+        t.intents.seed(&MoveIntent {
+            entity_id,
+            queue: Vec::new(),
+            last_input_seq: 5,
+        });
+    }
+
+    /// The source in the game on (6, 3) facing East, and a bystander in the game with a
+    /// conversation open.
+    fn seed_world(t: &T<'_>) {
+        in_game(
+            t,
+            source(),
+            CONN_SOURCE,
+            SOURCE_ENTITY,
+            6,
+            3,
+            Direction::East,
+        );
+        in_game(
+            t,
+            bystander(),
+            CONN_BYSTANDER,
+            BYSTANDER_ENTITY,
+            2,
+            2,
+            Direction::South,
+        );
+        t.conversations.seed(&PlayerConversation {
+            owner_identity: bystander(),
+            npc_entity_id: 9,
+            current_node_id: "n".to_string(),
+        });
+    }
+
+    fn enc<R: Serialize>(rows: Vec<R>) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = rows
+            .iter()
+            .map(|r| to_vec(r).expect("a row always BSATN-encodes"))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// `who`'s `last_position` rows, encoded.
+    fn saved_of(t: &T<'_>, who: Identity) -> Vec<Vec<u8>> {
+        enc(t
+            .saved
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .collect())
+    }
+
+    fn position(owner: Identity, x: i32, y: i32, facing: Direction) -> LastPosition {
+        LastPosition {
+            owner_identity: owner,
+            zone_id: 1,
+            tile_x: x,
+            tile_y: y,
+            facing,
+        }
+    }
+
+    /// The bystander's session, presence and conversation rows.
+    fn bystander_rows(t: &T<'_>) -> Vec<Vec<Vec<u8>>> {
+        vec![
+            enc(t
+                .sessions
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == bystander())
+                .collect()),
+            enc(t
+                .players
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == bystander())
+                .collect()),
+            enc(t
+                .chars
+                .rows()
+                .into_iter()
+                .filter(|r| r.entity_id == BYSTANDER_ENTITY)
+                .collect()),
+            enc(t
+                .intents
+                .rows()
+                .into_iter()
+                .filter(|r| r.entity_id == BYSTANDER_ENTITY)
+                .collect()),
+            enc(t.conversations.rows()),
+        ]
+    }
+
+    /// The source's last connection closes after its character was moved: its own session
+    /// row goes, the disconnect writes nothing to `last_position`, `player`, `character`,
+    /// `move_intent` or `monster`, the destination's saved position is byte-equal before and
+    /// after, the source holds no saved position, and the bystander is untouched.
+    ///
+    /// kills: a move that leaves the source's `player` row (its disconnect then saves a
+    /// position for the source and deletes the presence rows); a live position not carried.
+    #[test]
+    fn a_moved_sources_disconnect_writes_nothing_of_the_character_lpw42_4() {
+        let fx = fixture();
+        let t = tables(&fx);
+        seed_world(&t);
+
+        fx.run_as_at(dest(), at(T0), |ctx| {
+            crate::movement::move_position(ctx, source(), dest())
+        });
+        let dest_after_move = saved_of(&t, dest());
+        assert_eq!(
+            dest_after_move,
+            enc(vec![position(dest(), 6, 3, Direction::East)]),
+            "precondition: the move carried the live position to the destination"
+        );
+        let bystander_before = bystander_rows(&t);
+        fx.reset_writes();
+
+        fx.run_as_conn_at(
+            source(),
+            CONN_SOURCE,
+            None,
+            at(T0 + 1),
+            crate::on_disconnect,
+        );
+
+        assert!(
+            t.sessions.rows().iter().all(|r| r.identity != source()),
+            "the leaving connection's own session row is deleted"
+        );
+        for table in [
+            "last_position",
+            "player",
+            "character",
+            "move_intent",
+            "monster",
+        ] {
+            assert_eq!(
+                fx.writes_to(table),
+                0,
+                "the disconnect wrote {table} for a moved character"
+            );
+        }
+        assert_eq!(
+            saved_of(&t, dest()),
+            dest_after_move,
+            "the destination's saved position is untouched"
+        );
+        assert!(
+            saved_of(&t, source()).is_empty(),
+            "the source holds no saved position"
+        );
+        assert_eq!(
+            bystander_rows(&t),
+            bystander_before,
+            "the bystander's rows are untouched"
+        );
+    }
+
+    /// The control for the test above: the same disconnect with no move saves the source's
+    /// position and deletes its presence rows, so a move that leaves the source in the game
+    /// fails the test above.
+    ///
+    /// kills: a fixture under which the disconnect never reaches the presence branch.
+    #[test]
+    fn an_unmoved_sources_disconnect_saves_its_position_lpw42_4() {
+        let fx = fixture();
+        let t = tables(&fx);
+        seed_world(&t);
+
+        fx.run_as_conn_at(
+            source(),
+            CONN_SOURCE,
+            None,
+            at(T0 + 1),
+            crate::on_disconnect,
+        );
+
+        assert_eq!(
+            saved_of(&t, source()),
+            enc(vec![position(source(), 6, 3, Direction::East)]),
+            "the disconnect saved where the source's character stood"
+        );
+        assert!(
+            t.players.rows().iter().all(|r| r.identity != source()),
+            "the disconnect deleted the source's player row"
+        );
+    }
+}

@@ -176,6 +176,7 @@ struct W<'a> {
     accounts: Handle<'a, WorldAccount>,
     budget: Handle<'a, WorldCheckBudget, u32>,
     rechecks: Handle<'a, RecheckSchedule>,
+    moves: Handle<'a, WorldMove>,
 }
 
 /// Registers what the checks, the arming, the view and the unbind touch. `config`,
@@ -236,6 +237,10 @@ fn world(fx: &Fixture) -> W<'_> {
             .unique()
             .writable()
             .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
+        moves: fx
+            .table::<WorldMove>("world_move", "identity", |r| r.identity)
+            .unique()
+            .writable(),
     }
 }
 
@@ -391,6 +396,17 @@ fn accounts(w: &W<'_>) -> Vec<AccountView> {
     sorted(w.accounts.rows().iter().map(view).collect())
 }
 
+/// Every `world_move` row as `(identity, moved_at_ms)`, sorted.
+fn moves(w: &W<'_>) -> Vec<([u8; 32], i64)> {
+    sorted(
+        w.moves
+            .rows()
+            .iter()
+            .map(|r| (r.identity.to_byte_array(), r.moved_at_ms))
+            .collect(),
+    )
+}
+
 /// The budget rows as `(id, minute_start_ms, redeems)`.
 fn budget(w: &W<'_>) -> Vec<(u32, i64, u32)> {
     w.budget
@@ -450,11 +466,16 @@ fn footprint(fx: &Fixture, w: &W<'_>) -> Footprint {
             encs(&w.admission.rows()),
             fx.writes_to("world_admission"),
         ),
+        (
+            "world_move",
+            encs(&w.moves.rows()),
+            fx.writes_to("world_move"),
+        ),
     ]
 }
 
 /// Every table a check could read.
-const READ_TABLES: [&str; 9] = [
+const READ_TABLES: [&str; 10] = [
     "config",
     "world_access",
     "world_admission",
@@ -464,6 +485,7 @@ const READ_TABLES: [&str; 9] = [
     "world_account",
     "world_check_budget",
     "recheck_schedule",
+    "world_move",
 ];
 
 fn assert_nothing_read(fx: &Fixture, label: &str) {
@@ -812,19 +834,30 @@ mod first_contact {
         assert_eq!(listed(&w).len(), 256);
     }
 
-    /// An answered handle another identity holds is refused, and nothing is written.
+    /// An answered handle another identity holds, whose holder owns no character, is stored
+    /// for the caller on the handle's one row, updated in place: the answer's entitlement at
+    /// the check's time, and the holder keeps no row.
     ///
-    /// kills: the handle's row taken over by the caller; a second row under one handle.
+    /// kills: the held handle refused; a second row under one handle; the holder's row kept
+    /// beside the caller's; the stored time or entitlement left at the holder's.
     #[test]
-    fn a_handle_another_identity_holds_is_refused_lpw23_1() {
+    fn a_handle_another_identity_holds_is_stored_for_the_caller_lpw23_1() {
         let fx = fixture();
-        let w = owned_world(&fx);
-        let before = accounts(&w);
+        let m = super::character_move::move_world(&fx);
+        m.c.accounts
+            .seed(&account_row(bob(), HANDLE_B, false, T0 - 86_400_000, false));
         fx.reset_writes();
         let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_B, true, WORLD_NAME)));
-        assert_eq!(got, Err(REJECT_HANDLE_HELD.to_string()));
-        assert_eq!(accounts(&w), before);
-        assert_eq!(fx.writes_to("world_account"), 0);
+        assert_eq!(got, Ok(true));
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(alice(), HANDLE_B, true, NOW, false))]
+        );
+        assert_eq!(
+            fx.writes_to("world_account"),
+            1,
+            "one write to world_account"
+        );
     }
 
     /// A caller holding a row under another handle is refused, and its row stays.
@@ -1224,21 +1257,27 @@ mod bad_answers {
 mod during_the_wait {
     use super::*;
 
-    /// Another identity takes the answered handle while the request waits: refused with
-    /// [`REJECT_HANDLE_HELD`], and the caller holds no row.
+    /// Another identity takes the answered handle while the request waits: the outcome is the
+    /// one the rows after the wait call for, so the handle's one row is the caller's and the
+    /// identity that took it during the wait is left a `world_move` row.
     ///
-    /// kills: the handle judged from the first transaction's read.
+    /// kills: the handle judged from the first transaction's read (a second row inserted
+    /// under the handle, or no `world_move` row for the identity holding it after the wait).
     #[test]
-    fn a_handle_taken_during_the_wait_is_refused_lpw23_4() {
+    fn a_handle_taken_during_the_wait_is_judged_as_held_after_the_wait_lpw23_4() {
         let fx = fixture();
-        let w = owned_world(&fx);
+        let m = super::character_move::move_world(&fx);
         let answer = ok_answer(ticket_answer(HANDLE_A, true, WORLD_NAME)).while_waiting(|| {
-            w.accounts
+            m.c.accounts
                 .seed(&account_row(carol(), HANDLE_A, true, NOW, false));
         });
         let (got, _) = alice_checks(&fx, answer);
-        assert_eq!(got, Err(REJECT_HANDLE_HELD.to_string()));
-        assert!(accounts(&w).iter().all(|r| r.1 != alice().to_byte_array()));
+        assert_eq!(got, Ok(true));
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(alice(), HANDLE_A, true, NOW, false))]
+        );
+        assert_eq!(moves(&m.c), vec![(carol().to_byte_array(), NOW)]);
     }
 
     /// The caller loses its admission row while the request waits on a `Password` world:
@@ -2056,5 +2095,1986 @@ mod own_row {
             "after the unbind"
         );
         assert_eq!(seen(&fx, bob()), vec![bob_row], "bob's row stays");
+    }
+}
+
+// =====================================================================================
+// One character per account: a ticket for a handle another identity holds moves that
+// identity's character to the identity the ticket is redeemed for.
+// =====================================================================================
+
+mod character_move {
+    use super::*;
+    use crate::marshal::pub_from_monster;
+    use crate::native_host_tests::VIEW_MY_WORLD_MOVE;
+    use crate::playtest::PlaytestEvent;
+    use crate::privacy::ExportBundleReaperSchedule;
+    use crate::pvp::BattleChallengeReaperSchedule;
+    use crate::schema::{
+        Battle, BattleChallenge, BattleClock, BattleDeploy, BattleQueue, BattleSummary, BattleUnit,
+        ChallengeStatus, Character, DeletionPolicy, EvolutionRevealRow, ExportBundle, HealCooldown,
+        Inventory, LastPosition, LeaderboardTop, Monster, MonsterPub, MoveIntent,
+        PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
+        PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerSession, PlayerWallet, Profile,
+        TradeOffer, TradeSession, WorldAdmissionAttempt, DATA_LIFECYCLE_MANIFEST,
+    };
+    use game_core::tactics::tuning::BattleKind;
+    use game_core::{BattleOutcome, Direction};
+    use spacetimedb::ConnectionId;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// A `dns:` name; a test that answers with it seeds it in `world_name`.
+    const DNS_NAME: &str = "dns:realm-one.example.net";
+    /// A second check-in, an hour after [`NOW`].
+    const LATER: i64 = NOW + 3_600_000;
+
+    const SRC_MONSTERS: [u64; 2] = [901, 902];
+    /// `(inv_id, item_id, count)` of each stack the source holds.
+    const SRC_STACKS: [(u64, u32, u32); 2] = [(911, 4, 3), (912, 7, 1)];
+    const SRC_QUEST: u64 = 921;
+    const SRC_BALANCE: u64 = 1_234;
+    const SRC_DISCRIMINATOR: u32 = 9_100_051;
+    /// The source's outgoing and incoming challenges.
+    const CH_OUT: u64 = 941;
+    const CH_IN: u64 = 942;
+    const SRC_CHUNK: u64 = 951;
+    const FINISHED_BATTLE: u64 = 700;
+    const LIVE_ENTITY: u64 = 77;
+    const BYSTANDER_ENTITY: u64 = 78;
+    const BYSTANDER_MONSTER: u64 = 931;
+
+    // ---------------------------------------------------------------------------------
+    // The world: the check tables plus every table the move reads or writes.
+    // ---------------------------------------------------------------------------------
+
+    pub(super) struct MW<'a> {
+        pub(super) c: W<'a>,
+        binding: Handle<'a, WorldBinding>,
+        bind_nonce: Handle<'a, WorldBindNonce>,
+        admission_attempt: Handle<'a, WorldAdmissionAttempt>,
+        player: Handle<'a, Player>,
+        session: Handle<'a, PlayerSession>,
+        character: Handle<'a, Character, u64>,
+        intent: Handle<'a, MoveIntent, u64>,
+        monster: Handle<'a, Monster>,
+        monster_pub: Handle<'a, MonsterPub, u64>,
+        notice: Handle<'a, PendingEvolutionNotice>,
+        inventory: Handle<'a, Inventory>,
+        quest: Handle<'a, PlayerQuestRow>,
+        dialogue: Handle<'a, PlayerDialogueStateRow>,
+        conversation: Handle<'a, PlayerConversation>,
+        heal: Handle<'a, HealCooldown>,
+        last_position: Handle<'a, LastPosition>,
+        wallet: Handle<'a, PlayerWallet>,
+        profile: Handle<'a, Profile>,
+        ladder: Handle<'a, LeaderboardTop>,
+        formation: Handle<'a, PlayerFormation>,
+        handle: Handle<'a, PlayerHandle>,
+        challenge: Handle<'a, BattleChallenge>,
+        challenge_reaper: Handle<'a, BattleChallengeReaperSchedule, u64>,
+        export: Handle<'a, ExportBundle>,
+        export_reaper: Handle<'a, ExportBundleReaperSchedule, u64>,
+        battle: Handle<'a, Battle>,
+        summary: Handle<'a, BattleSummary, u64>,
+        unit: Handle<'a, BattleUnit, u64>,
+        queue: Handle<'a, BattleQueue, u64>,
+        deploy: Handle<'a, BattleDeploy, u64>,
+        clock: Handle<'a, BattleClock, u64>,
+        playtest: Handle<'a, PlaytestEvent, u64>,
+        trade: Handle<'a, TradeOffer>,
+        trade_session: Handle<'a, TradeSession, u64>,
+    }
+
+    /// An `Open` world owned by [`owner`] and named [`WORLD_NAME`] and [`IP_NAME`], holding no
+    /// account row, with every index the move, the guards and the redeem read or write through
+    /// registered (writable where a path writes, scannable where it scans).
+    pub(super) fn move_world(fx: &Fixture) -> MW<'_> {
+        let c = world(fx);
+        c.config.seed(&Config {
+            id: 0,
+            content_version: 0,
+            owner_identity: owner(),
+        });
+        for name in [WORLD_NAME, IP_NAME] {
+            c.names.seed(&WorldName {
+                name: name.to_string(),
+            });
+        }
+        let _ =
+            fx.table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
+                r.connection_id
+            });
+        let _ = fx.table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id);
+        let _ = fx.table_composite::<Monster, Identity, u8>(
+            "monster",
+            ["owner_identity", "party_slot"],
+            |r| (r.owner_identity, r.party_slot),
+        );
+        let _ = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
+        let _ = fx.table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id);
+        let _ = fx.table_keyed::<PlayerQuestRow, u64>("player_quest", "pq_id", |r| r.pq_id);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let _ = fx.table_keyed::<TradeOffer, u64>("trade_offer", "trade_id", |r| r.trade_id);
+        let _ = fx.table::<BattleChallenge>("battle_challenge", "target", |r| r.target);
+        let _ = fx.table_keyed::<BattleChallenge, u64>("battle_challenge", "challenge_id", |r| {
+            r.challenge_id
+        });
+        let _ = fx.table_keyed::<BattleChallengeReaperSchedule, u64>(
+            "battle_challenge_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ = fx.table_keyed::<ExportBundle, u64>("export_bundle", "chunk_id", |r| r.chunk_id);
+        let _ = fx.table_keyed::<ExportBundle, i64>("export_bundle", "created_at_ms", |r| {
+            r.created_at_ms
+        });
+        let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+        let _ = fx.table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id);
+        let _ =
+            fx.table::<BattleSummary>("battle_summary", "player_identity", |r| r.player_identity);
+        let _ = fx.table::<BattleSummary>("battle_summary", "opponent_identity", |r| {
+            r.opponent_identity
+        });
+        let _ = fx.table::<TradeSession>("trade_session", "opener", |r| r.opener);
+        let _ = fx.table::<TradeSession>("trade_session", "partner", |r| r.partner);
+        let handle = fx
+            .table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique()
+            .auto_inc(
+                |r| u64::from(r.discriminator),
+                |r, v| {
+                    r.discriminator = u32::try_from(v).expect("a test sequence value fits a u32")
+                },
+            );
+        let _ = fx
+            .table_keyed::<PlayerHandle, u32>("player_handle", "discriminator", |r| r.discriminator)
+            .unique();
+        let profile = fx
+            .table::<Profile>("profile", "identity", |r| r.identity)
+            .writable();
+        MW {
+            binding: fx
+                .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+                .unique()
+                .writable(),
+            bind_nonce: fx
+                .table::<WorldBindNonce>("world_bind_nonce", "identity", |r| r.identity)
+                .unique()
+                .writable(),
+            admission_attempt: fx
+                .table::<WorldAdmissionAttempt>("world_admission_attempt", "identity", |r| {
+                    r.identity
+                })
+                .unique()
+                .writable(),
+            player: fx
+                .table::<Player>("player", "identity", |r| r.identity)
+                .writable(),
+            session: fx
+                .table::<PlayerSession>("player_session", "identity", |r| r.identity)
+                .writable(),
+            character: fx
+                .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+                .writable(),
+            intent: fx
+                .table_keyed::<MoveIntent, u64>("move_intent", "entity_id", |r| r.entity_id)
+                .writable(),
+            monster: fx
+                .table::<Monster>("monster", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            monster_pub: fx
+                .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+                .writable(),
+            notice: fx
+                .table::<PendingEvolutionNotice>(
+                    "pending_evolution_notice",
+                    "owner_identity",
+                    |r| r.owner_identity,
+                )
+                .writable(),
+            inventory: fx
+                .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            quest: fx
+                .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            dialogue: fx
+                .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable(),
+            conversation: fx
+                .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable(),
+            heal: fx
+                .table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            last_position: fx
+                .table::<LastPosition>("last_position", "owner_identity", |r| r.owner_identity)
+                .unique()
+                .writable(),
+            wallet: fx
+                .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            profile,
+            ladder: fx.ladder(),
+            formation: fx
+                .table::<PlayerFormation>("player_formation", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .unique()
+                .writable(),
+            handle,
+            challenge: fx
+                .table::<BattleChallenge>("battle_challenge", "challenger", |r| r.challenger)
+                .writable(),
+            challenge_reaper: fx
+                .table_keyed::<BattleChallengeReaperSchedule, u64>(
+                    "battle_challenge_reaper_schedule",
+                    "challenge_id",
+                    |r| r.challenge_id,
+                )
+                .writable(),
+            export: fx
+                .table::<ExportBundle>("export_bundle", "owner_identity", |r| r.owner_identity)
+                .writable()
+                .scannable()
+                .auto_inc(|r| r.chunk_id, |r, v| r.chunk_id = v),
+            export_reaper: fx
+                .table_keyed::<ExportBundleReaperSchedule, u64>(
+                    "export_bundle_reaper_schedule",
+                    "id",
+                    |r| r.id,
+                )
+                .writable()
+                .scannable()
+                .auto_inc(|r| r.id, |r, v| r.id = v),
+            battle: fx
+                .table::<Battle>("battle", "player_identity", |r| r.player_identity)
+                .writable(),
+            summary: fx
+                .table_keyed::<BattleSummary, u64>("battle_summary", "battle_id", |r| r.battle_id)
+                .writable(),
+            unit: fx
+                .table_keyed::<BattleUnit, u64>("battle_unit", "battle_id", |r| r.battle_id)
+                .writable()
+                .scannable(),
+            queue: fx
+                .table_keyed::<BattleQueue, u64>("battle_queue", "battle_id", |r| r.battle_id)
+                .writable(),
+            deploy: fx
+                .table_keyed::<BattleDeploy, u64>("battle_deploy", "battle_id", |r| r.battle_id)
+                .writable(),
+            clock: fx
+                .table_keyed::<BattleClock, u64>("battle_clock", "battle_id", |r| r.battle_id)
+                .writable(),
+            playtest: fx
+                .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+                .writable()
+                .scannable(),
+            trade: fx
+                .table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator)
+                .writable(),
+            trade_session: fx
+                .table_keyed::<TradeSession, u64>("trade_session", "session_id", |r| r.session_id)
+                .unique()
+                .writable()
+                .auto_inc(|r| r.session_id, |r, v| r.session_id = v),
+            c,
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Rows. Each builder takes the owner, so a row moved to another identity is the same
+    // builder called with that identity.
+    // ---------------------------------------------------------------------------------
+
+    fn mon(monster_id: u64, owner: Identity) -> Monster {
+        Monster {
+            monster_id,
+            owner_identity: owner,
+            species_id: 1,
+            nickname: format!("mon-{monster_id}"),
+            level: 12,
+            xp: 900,
+            iv_hp: 11,
+            iv_attack: 12,
+            iv_defense: 13,
+            iv_speed: 14,
+            iv_sp_attack: 15,
+            iv_sp_defense: 16,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 1,
+            ev_attack: 2,
+            ev_defense: 3,
+            ev_speed: 4,
+            ev_sp_attack: 5,
+            ev_sp_defense: 6,
+            stat_hp: 40,
+            stat_attack: 41,
+            stat_defense: 42,
+            stat_speed: 43,
+            stat_sp_attack: 44,
+            stat_sp_defense: 45,
+            current_hp: 39,
+            party_slot: 0,
+            last_care_at_ms: 7,
+            essence_fire: 1,
+            essence_water: 0,
+            essence_plant: 0,
+            essence_electric: 0,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 0,
+            essence_dark: 0,
+            trust_favorable_count: 3,
+            trust_unfavorable_count: 1,
+            trust_favorable_battle_day_epoch: 0,
+            quality_time_ticks_total: 5,
+            quality_time_accum_ms: 0,
+            quality_time_window_ms: 0,
+            quality_time_window_start_ms: 0,
+            last_essence_train_at_ms: 0,
+        }
+    }
+
+    fn notice_row(who: Identity) -> PendingEvolutionNotice {
+        PendingEvolutionNotice {
+            owner_identity: who,
+            entries: vec![EvolutionRevealRow {
+                monster_id: SRC_MONSTERS[0],
+                from_species: 1,
+                to_species: 2,
+                evolved_at_ms: T0 - 3,
+            }],
+        }
+    }
+
+    fn stack(inv_id: u64, who: Identity, item_id: u32, count: u32) -> Inventory {
+        Inventory {
+            inv_id,
+            owner_identity: who,
+            item_id,
+            count,
+        }
+    }
+
+    fn quest_row(pq_id: u64, who: Identity) -> PlayerQuestRow {
+        PlayerQuestRow {
+            pq_id,
+            owner_identity: who,
+            quest_id: "q_forest".to_string(),
+            step_index: 2,
+        }
+    }
+
+    /// A non-system flag, the starter marker and one done quest.
+    fn dialogue_row(who: Identity) -> PlayerDialogueStateRow {
+        PlayerDialogueStateRow {
+            owner_identity: who,
+            flags: vec![
+                "met_elder".to_string(),
+                crate::npc::STARTER_CLAIMED_FLAG.to_string(),
+            ],
+            done_quests: vec!["q_intro".to_string()],
+        }
+    }
+
+    fn conversation_row(who: Identity) -> PlayerConversation {
+        PlayerConversation {
+            owner_identity: who,
+            npc_entity_id: 3,
+            current_node_id: "n_greet".to_string(),
+        }
+    }
+
+    fn heal_row(who: Identity) -> HealCooldown {
+        HealCooldown {
+            owner_identity: who,
+            last_heal_at_ms: T0 - 5_000,
+        }
+    }
+
+    fn wallet_row(who: Identity, balance: u64) -> PlayerWallet {
+        PlayerWallet {
+            owner_identity: who,
+            balance,
+        }
+    }
+
+    fn profile_row(who: Identity) -> Profile {
+        Profile {
+            identity: who,
+            name: "Wanderer".to_string(),
+            rating: 1_640,
+            wins: 12,
+            losses: 5,
+        }
+    }
+
+    fn formation_row(who: Identity) -> PlayerFormation {
+        PlayerFormation {
+            owner_identity: who,
+            monster_ids: SRC_MONSTERS.to_vec(),
+        }
+    }
+
+    fn handle_row(who: Identity, discriminator: u32) -> PlayerHandle {
+        PlayerHandle {
+            owner_identity: who,
+            discriminator,
+        }
+    }
+
+    fn saved_position(who: Identity) -> LastPosition {
+        LastPosition {
+            owner_identity: who,
+            zone_id: 1,
+            tile_x: 7,
+            tile_y: 9,
+            facing: Direction::West,
+        }
+    }
+
+    fn challenge_row(challenge_id: u64, challenger: Identity, target: Identity) -> BattleChallenge {
+        BattleChallenge {
+            challenge_id,
+            challenger,
+            target,
+            challenger_party_ids: vec![],
+            status: ChallengeStatus::Pending,
+            created_at_ms: T0,
+            format: 0,
+        }
+    }
+
+    fn challenge_reaper_row(challenge_id: u64) -> BattleChallengeReaperSchedule {
+        BattleChallengeReaperSchedule {
+            scheduled_id: challenge_id + 10_000,
+            scheduled_at: ScheduleAt::Time(at(NOW + 60_000)),
+            challenge_id,
+        }
+    }
+
+    fn chunk_row(chunk_id: u64, who: Identity) -> ExportBundle {
+        ExportBundle {
+            chunk_id,
+            owner_identity: who,
+            request_id: 1,
+            table_name: "monster".to_string(),
+            chunk_index: 0,
+            total_chunks: 1,
+            payload_json: "{}".to_string(),
+            created_at_ms: NOW - 1_000,
+        }
+    }
+
+    fn battle_row(
+        battle_id: u64,
+        player: Identity,
+        opponent: Identity,
+        outcome: BattleOutcome,
+    ) -> Battle {
+        let lead = game_core::BattleMonster {
+            species_id: 1,
+            affinity: game_core::Affinity::Fire,
+            level: 7,
+            current_hp: 30,
+            max_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            known_skill_ids: vec![1],
+            status: None,
+        };
+        Battle {
+            battle_id,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead.clone()],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead],
+                },
+                outcome,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 1,
+        }
+    }
+
+    fn summary_row(battle_id: u64, player: Identity, opponent: Identity) -> BattleSummary {
+        BattleSummary {
+            battle_id,
+            player_identity: player,
+            opponent_identity: opponent,
+            kind: BattleKind::Pvp,
+            outcome: BattleOutcome::SideAWins,
+            rounds: 5,
+            wall_ms: 90_000,
+            idle_ms_a: 1_000,
+            idle_ms_b: 2_000,
+            windows_histogram: vec![0, 3, 1],
+            autopasses: 0,
+            recruit_attempts: 0,
+            recruit_successes: 0,
+            weaken_first: false,
+            items_used: 1,
+            damage_dealt_a: 40,
+            damage_dealt_b: 30,
+            hits: 6,
+            misses: 2,
+            unit_turns_prequeued: 3,
+            unit_turns_live: 4,
+            halted_plans: 1,
+            se_kos_after_r1: 0,
+            kos_after_r1: 0,
+            end_how: None,
+        }
+    }
+
+    fn playtest_row(event_id: u64, who: Identity) -> PlaytestEvent {
+        PlaytestEvent {
+            event_id,
+            identity: who,
+            kind: 1,
+            created_at_ms: T0 - 9_000,
+            battle_id: FINISHED_BATTLE,
+            species_id: 1,
+            hp_permille: 500,
+            bait_item_id: 0,
+            success: true,
+        }
+    }
+
+    fn session_row(session_id: u64, opener: Identity, partner: Identity) -> TradeSession {
+        TradeSession {
+            session_id,
+            opener,
+            partner,
+            opener_offer: game_core::trading::TradeSessionOffer::default(),
+            partner_offer: game_core::trading::TradeSessionOffer::default(),
+            opener_confirmed: false,
+            partner_confirmed: false,
+            revision: 3,
+            created_at_ms: NOW - 60_000,
+        }
+    }
+
+    fn trade_row(trade_id: u64, initiator: Identity, counterparty: Identity) -> TradeOffer {
+        TradeOffer {
+            trade_id,
+            initiator,
+            counterparty,
+            initiator_monster_ids: vec![],
+            initiator_items: vec![],
+            initiator_currency: 5,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: game_core::TradeStatus::Pending,
+            created_at_ms: 1,
+        }
+    }
+
+    fn player_row(who: Identity, entity_id: u64) -> Player {
+        Player {
+            identity: who,
+            entity_id,
+            name: "Wanderer".to_string(),
+            online: true,
+            discriminator: SRC_DISCRIMINATOR,
+            lead_level: 12,
+        }
+    }
+
+    fn character_at(
+        entity_id: u64,
+        zone_id: u32,
+        tile_x: i32,
+        tile_y: i32,
+        facing: Direction,
+    ) -> Character {
+        Character {
+            entity_id,
+            zone_id,
+            tile_x,
+            tile_y,
+            facing,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: Vec::new(),
+            acked_seq: 0,
+        }
+    }
+
+    fn intent_row(entity_id: u64) -> MoveIntent {
+        MoveIntent {
+            entity_id,
+            queue: vec![game_core::MoveInput::Jump],
+            last_input_seq: 4,
+        }
+    }
+
+    fn active_account(who: Identity) -> Account {
+        Account {
+            identity: who,
+            auth_issuer: crate::accounts::DEV_LOGIN_ISSUERS[0].to_string(),
+            created_at_ms: 10,
+            last_login_at_ms: 20,
+            status: AccountStatus::Active,
+            deletion_requested_at_ms: None,
+            claimed_from: None,
+            claimed_at_ms: None,
+            terminal_at_ms: None,
+        }
+    }
+
+    fn session_of(who: Identity) -> PlayerSession {
+        PlayerSession {
+            connection_id: ConnectionId::from_u128(
+                0x5E55_0000 + u128::from(who.to_byte_array()[0]),
+            ),
+            identity: who,
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Seeding.
+    // ---------------------------------------------------------------------------------
+
+    /// `who` holds `handle`, last checked a day ago and not entitled.
+    fn hold(m: &MW<'_>, who: Identity, handle: &str, is_host: bool) {
+        m.c.accounts
+            .seed(&account_row(who, handle, false, T0 - 86_400_000, is_host));
+    }
+
+    /// One character: two monsters with their `monster_pub` twins, an evolution notice, two
+    /// stacks, a quest, the dialogue row, a heal cooldown, a wallet, a profile, a formation,
+    /// a handle and a saved position.
+    fn seed_character(m: &MW<'_>, who: Identity) {
+        for id in SRC_MONSTERS {
+            let row = mon(id, who);
+            m.monster_pub.seed(&pub_from_monster(&row, 0));
+            m.monster.seed(&row);
+        }
+        m.notice.seed(&notice_row(who));
+        for (inv_id, item_id, count) in SRC_STACKS {
+            m.inventory.seed(&stack(inv_id, who, item_id, count));
+        }
+        m.quest.seed(&quest_row(SRC_QUEST, who));
+        m.dialogue.seed(&dialogue_row(who));
+        m.heal.seed(&heal_row(who));
+        m.wallet.seed(&wallet_row(who, SRC_BALANCE));
+        m.profile.seed(&profile_row(who));
+        m.formation.seed(&formation_row(who));
+        m.handle.seed(&handle_row(who, SRC_DISCRIMINATOR));
+        m.last_position.seed(&saved_position(who));
+    }
+
+    /// A conversation, an outgoing and an incoming challenge (each with its reaper row) and
+    /// one export chunk.
+    fn seed_transient(m: &MW<'_>, who: Identity, peer: Identity) {
+        m.conversation.seed(&conversation_row(who));
+        m.challenge.seed(&challenge_row(CH_OUT, who, peer));
+        m.challenge.seed(&challenge_row(CH_IN, peer, who));
+        m.challenge_reaper.seed(&challenge_reaper_row(CH_OUT));
+        m.challenge_reaper.seed(&challenge_reaper_row(CH_IN));
+        m.export.seed(&chunk_row(SRC_CHUNK, who));
+    }
+
+    /// A finished battle against `peer` and its summary, a playtest event, an admission, an
+    /// account row and a connection.
+    fn seed_history(m: &MW<'_>, who: Identity, peer: Identity) {
+        m.battle.seed(&battle_row(
+            FINISHED_BATTLE,
+            who,
+            peer,
+            BattleOutcome::SideAWins,
+        ));
+        m.summary.seed(&summary_row(FINISHED_BATTLE, who, peer));
+        m.playtest.seed(&playtest_row(961, who));
+        m.c.admission.seed(&admission_row(who));
+        m.c.account.seed(&active_account(who));
+        m.session.seed(&session_of(who));
+    }
+
+    /// A bystander's own monster, wallet and profile.
+    fn seed_bystander(m: &MW<'_>, who: Identity) {
+        let row = mon(BYSTANDER_MONSTER, who);
+        m.monster_pub.seed(&pub_from_monster(&row, 0));
+        m.monster.seed(&row);
+        m.wallet.seed(&wallet_row(who, 77));
+        m.profile.seed(&Profile {
+            identity: who,
+            name: "Bystander".to_string(),
+            rating: 1_500,
+            wins: 3,
+            losses: 4,
+        });
+    }
+
+    /// [`bob`] holds [`HANDLE_B`] (the host's row) with a whole character, transient rows and
+    /// history, and an armed re-check; [`carol`] is a bystander with her own re-check; both
+    /// rank on the leaderboard; [`alice`] holds nothing.
+    fn moving_world(fx: &Fixture) -> MW<'_> {
+        let m = move_world(fx);
+        hold(&m, bob(), HANDLE_B, true);
+        seed_character(&m, bob());
+        seed_transient(&m, bob(), carol());
+        seed_history(&m, bob(), carol());
+        seed_bystander(&m, carol());
+        for who in [bob(), carol()] {
+            m.ladder.seed(&LeaderboardTop { identity: who });
+        }
+        m.c.rechecks.seed(&recheck_of(bob(), 1));
+        m.c.rechecks.seed(&recheck_of(carol(), 2));
+        m
+    }
+
+    /// The ticket answer naming [`HANDLE_B`], entitled, under the world's `spki:` name.
+    fn spki_answer<'q>() -> HttpAnswer<'q> {
+        ok_answer(ticket_answer(HANDLE_B, true, WORLD_NAME))
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Observations: per table, the encoded rows naming an identity.
+    // ---------------------------------------------------------------------------------
+
+    type Snapshot = Vec<(&'static str, Vec<Vec<u8>>)>;
+
+    fn naming<R: Serialize>(rows: Vec<R>, keep: impl Fn(&R) -> bool) -> Vec<Vec<u8>> {
+        let picked: Vec<R> = rows.into_iter().filter(keep).collect();
+        encs(&picked)
+    }
+
+    /// The rows a character is made of, per table.
+    fn character_rows(m: &MW<'_>, who: Identity) -> Snapshot {
+        vec![
+            (
+                "monster",
+                naming(m.monster.rows(), |r: &Monster| r.owner_identity == who),
+            ),
+            (
+                "monster_pub",
+                naming(m.monster_pub.rows(), |r: &MonsterPub| {
+                    r.owner_identity == who
+                }),
+            ),
+            (
+                "pending_evolution_notice",
+                naming(m.notice.rows(), |r: &PendingEvolutionNotice| {
+                    r.owner_identity == who
+                }),
+            ),
+            (
+                "inventory",
+                naming(m.inventory.rows(), |r: &Inventory| r.owner_identity == who),
+            ),
+            (
+                "player_quest",
+                naming(m.quest.rows(), |r: &PlayerQuestRow| r.owner_identity == who),
+            ),
+            (
+                "player_dialogue_state",
+                naming(m.dialogue.rows(), |r: &PlayerDialogueStateRow| {
+                    r.owner_identity == who
+                }),
+            ),
+            (
+                "heal_cooldown",
+                naming(m.heal.rows(), |r: &HealCooldown| r.owner_identity == who),
+            ),
+            (
+                "player_wallet",
+                naming(m.wallet.rows(), |r: &PlayerWallet| r.owner_identity == who),
+            ),
+            (
+                "profile",
+                naming(m.profile.rows(), |r: &Profile| r.identity == who),
+            ),
+            (
+                "player_formation",
+                naming(m.formation.rows(), |r: &PlayerFormation| {
+                    r.owner_identity == who
+                }),
+            ),
+            (
+                "player_handle",
+                naming(m.handle.rows(), |r: &PlayerHandle| r.owner_identity == who),
+            ),
+            (
+                "last_position",
+                naming(m.last_position.rows(), |r: &LastPosition| {
+                    r.owner_identity == who
+                }),
+            ),
+        ]
+    }
+
+    /// [`character_rows`] of a character [`seed_character`] gave to `who`.
+    fn character_expected(who: Identity) -> Snapshot {
+        let monsters: Vec<Monster> = SRC_MONSTERS.iter().map(|&id| mon(id, who)).collect();
+        let pubs: Vec<MonsterPub> = monsters.iter().map(|r| pub_from_monster(r, 0)).collect();
+        let stacks: Vec<Inventory> = SRC_STACKS
+            .iter()
+            .map(|&(inv_id, item_id, count)| stack(inv_id, who, item_id, count))
+            .collect();
+        vec![
+            ("monster", encs(&monsters)),
+            ("monster_pub", encs(&pubs)),
+            ("pending_evolution_notice", encs(&[notice_row(who)])),
+            ("inventory", encs(&stacks)),
+            ("player_quest", encs(&[quest_row(SRC_QUEST, who)])),
+            ("player_dialogue_state", encs(&[dialogue_row(who)])),
+            ("heal_cooldown", encs(&[heal_row(who)])),
+            ("player_wallet", encs(&[wallet_row(who, SRC_BALANCE)])),
+            ("profile", encs(&[profile_row(who)])),
+            ("player_formation", encs(&[formation_row(who)])),
+            ("player_handle", encs(&[handle_row(who, SRC_DISCRIMINATOR)])),
+            ("last_position", encs(&[saved_position(who)])),
+        ]
+    }
+
+    /// The rows a move clears: the conversation, the challenges naming `who` on either side,
+    /// its export chunks and its presence row.
+    fn transient_rows(m: &MW<'_>, who: Identity) -> Snapshot {
+        vec![
+            (
+                "player_conversation",
+                naming(m.conversation.rows(), |r: &PlayerConversation| {
+                    r.owner_identity == who
+                }),
+            ),
+            (
+                "battle_challenge",
+                naming(m.challenge.rows(), |r: &BattleChallenge| {
+                    r.challenger == who || r.target == who
+                }),
+            ),
+            (
+                "export_bundle",
+                naming(m.export.rows(), |r: &ExportBundle| r.owner_identity == who),
+            ),
+            (
+                "player",
+                naming(m.player.rows(), |r: &Player| r.identity == who),
+            ),
+        ]
+    }
+
+    /// The rows whose presence refuses a move.
+    fn refusing_rows(m: &MW<'_>, who: Identity) -> Snapshot {
+        vec![
+            (
+                "trade_offer",
+                naming(m.trade.rows(), |r: &TradeOffer| {
+                    r.initiator == who || r.counterparty == who
+                }),
+            ),
+            (
+                "trade_session",
+                naming(m.trade_session.rows(), |r: &TradeSession| {
+                    r.opener == who || r.partner == who
+                }),
+            ),
+        ]
+    }
+
+    /// The rows a move leaves where they are.
+    fn history_rows(m: &MW<'_>, who: Identity) -> Snapshot {
+        vec![
+            (
+                "playtest_event",
+                naming(m.playtest.rows(), |r: &PlaytestEvent| r.identity == who),
+            ),
+            (
+                "player_session",
+                naming(m.session.rows(), |r: &PlayerSession| r.identity == who),
+            ),
+            (
+                "battle_unit",
+                naming(m.unit.rows(), |r: &BattleUnit| r.owner == Some(who)),
+            ),
+            (
+                "battle_queue",
+                naming(m.queue.rows(), |r: &BattleQueue| r.owner == who),
+            ),
+            (
+                "battle_deploy",
+                naming(m.deploy.rows(), |r: &BattleDeploy| r.owner == who),
+            ),
+            (
+                "battle_clock",
+                naming(m.clock.rows(), |r: &BattleClock| r.player == who),
+            ),
+            (
+                "world_admission",
+                naming(m.c.admission.rows(), |r: &WorldAdmission| r.identity == who),
+            ),
+            (
+                "world_admission_attempt",
+                naming(m.admission_attempt.rows(), |r: &WorldAdmissionAttempt| {
+                    r.identity == who
+                }),
+            ),
+            (
+                "world_binding",
+                naming(m.binding.rows(), |r: &WorldBinding| r.identity == who),
+            ),
+            (
+                "world_bind_nonce",
+                naming(m.bind_nonce.rows(), |r: &WorldBindNonce| r.identity == who),
+            ),
+            (
+                "account",
+                naming(m.c.account.rows(), |r: &Account| r.identity == who),
+            ),
+            (
+                "battle",
+                naming(m.battle.rows(), |r: &Battle| {
+                    r.player_identity == who || r.opponent_identity == who
+                }),
+            ),
+            (
+                "battle_summary",
+                naming(m.summary.rows(), |r: &BattleSummary| {
+                    r.player_identity == who || r.opponent_identity == who
+                }),
+            ),
+        ]
+    }
+
+    /// Every row of every registered table but `world_check_budget`.
+    fn snapshot(m: &MW<'_>) -> Snapshot {
+        vec![
+            ("config", encs(&m.c.config.rows())),
+            ("world_access", encs(&m.c.access.rows())),
+            ("world_admission", encs(&m.c.admission.rows())),
+            ("account", encs(&m.c.account.rows())),
+            ("world_name", encs(&m.c.names.rows())),
+            ("world_allowlist", encs(&m.c.allow.rows())),
+            ("world_account", encs(&m.c.accounts.rows())),
+            ("recheck_schedule", encs(&m.c.rechecks.rows())),
+            ("world_move", encs(&m.c.moves.rows())),
+            ("world_binding", encs(&m.binding.rows())),
+            ("world_bind_nonce", encs(&m.bind_nonce.rows())),
+            ("world_admission_attempt", encs(&m.admission_attempt.rows())),
+            ("player", encs(&m.player.rows())),
+            ("player_session", encs(&m.session.rows())),
+            ("character", encs(&m.character.rows())),
+            ("move_intent", encs(&m.intent.rows())),
+            ("monster", encs(&m.monster.rows())),
+            ("monster_pub", encs(&m.monster_pub.rows())),
+            ("pending_evolution_notice", encs(&m.notice.rows())),
+            ("inventory", encs(&m.inventory.rows())),
+            ("player_quest", encs(&m.quest.rows())),
+            ("player_dialogue_state", encs(&m.dialogue.rows())),
+            ("player_conversation", encs(&m.conversation.rows())),
+            ("heal_cooldown", encs(&m.heal.rows())),
+            ("last_position", encs(&m.last_position.rows())),
+            ("player_wallet", encs(&m.wallet.rows())),
+            ("profile", encs(&m.profile.rows())),
+            ("leaderboard_top", encs(&m.ladder.rows())),
+            ("player_formation", encs(&m.formation.rows())),
+            ("player_handle", encs(&m.handle.rows())),
+            ("battle_challenge", encs(&m.challenge.rows())),
+            (
+                "battle_challenge_reaper_schedule",
+                encs(&m.challenge_reaper.rows()),
+            ),
+            ("export_bundle", encs(&m.export.rows())),
+            (
+                "export_bundle_reaper_schedule",
+                encs(&m.export_reaper.rows()),
+            ),
+            ("battle", encs(&m.battle.rows())),
+            ("battle_summary", encs(&m.summary.rows())),
+            ("battle_unit", encs(&m.unit.rows())),
+            ("battle_queue", encs(&m.queue.rows())),
+            ("battle_deploy", encs(&m.deploy.rows())),
+            ("battle_clock", encs(&m.clock.rows())),
+            ("playtest_event", encs(&m.playtest.rows())),
+            ("trade_offer", encs(&m.trade.rows())),
+            ("trade_session", encs(&m.trade_session.rows())),
+        ]
+    }
+
+    /// The tables of [`snapshot`] written since the last `reset_writes`, with their counts.
+    fn written(fx: &Fixture, m: &MW<'_>) -> Vec<(&'static str, u32)> {
+        snapshot(m)
+            .into_iter()
+            .map(|(table, _)| (table, fx.writes_to(table)))
+            .filter(|(_, n)| *n != 0)
+            .collect()
+    }
+
+    /// The tables of `snap` that hold a row, with their counts.
+    fn nonempty(snap: Snapshot) -> Vec<(&'static str, usize)> {
+        snap.into_iter()
+            .filter(|(_, rows)| !rows.is_empty())
+            .map(|(table, rows)| (table, rows.len()))
+            .collect()
+    }
+
+    fn rows_in<'s>(snap: &'s [(&'static str, Vec<Vec<u8>>)], table: &str) -> &'s [Vec<u8>] {
+        snap.iter()
+            .find(|(t, _)| *t == table)
+            .map(|(_, rows)| rows.as_slice())
+            .unwrap_or_else(|| panic!("no observer reads {table}"))
+    }
+
+    fn armed(m: &MW<'_>) -> Vec<[u8; 32]> {
+        sorted(
+            m.c.rechecks
+                .rows()
+                .iter()
+                .map(|r| r.identity.to_byte_array())
+                .collect(),
+        )
+    }
+
+    fn members(m: &MW<'_>) -> Vec<[u8; 32]> {
+        sorted(
+            m.ladder
+                .rows()
+                .iter()
+                .map(|r| r.identity.to_byte_array())
+                .collect(),
+        )
+    }
+
+    fn ids(who: &[Identity]) -> Vec<[u8; 32]> {
+        sorted(who.iter().map(|w| w.to_byte_array()).collect())
+    }
+
+    /// `who` holds no row of a character and none of the rows a move clears.
+    fn assert_holds_nothing(m: &MW<'_>, who: Identity, label: &str) {
+        assert_eq!(
+            nonempty(character_rows(m, who)),
+            Vec::<(&str, usize)>::new(),
+            "{label}: character rows left"
+        );
+        assert_eq!(
+            nonempty(transient_rows(m, who)),
+            Vec::<(&str, usize)>::new(),
+            "{label}: rows a move clears left"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The move.
+    // ---------------------------------------------------------------------------------
+
+    /// A ticket for the handle another identity holds moves that identity's whole character to
+    /// the caller: every character row is under the caller with its content unchanged, the
+    /// source holds none and none of the rows a move clears (the conversation, both
+    /// challenges and their reapers, the export chunk), the handle's row is the caller's with
+    /// the answer's entitlement at the check's time and its `is_host` kept, the source holds a
+    /// `world_move` row stamped with the check's time and no armed re-check, the leaderboard
+    /// is rescanned, and the finished battle, its summary, the playtest event, the admission,
+    /// the account and the connection stay byte for byte, as do the bystander's rows.
+    ///
+    /// kills: the inert move; any one table not moved, moved with changed content, or left
+    /// copied at the source; the dialogue row reduced to its system flags at the caller or a
+    /// marker row left at the source; the wallet left zeroed at the source; the profile name
+    /// or stats dropped; the handle's discriminator re-minted; a challenge, a reaper row or the
+    /// chunk left; `is_host` reset; the stored time or entitlement kept; the re-check left
+    /// armed or the bystander's dropped; no `world_move` row, or one for the caller; a finished
+    /// battle, its summary or the telemetry moved or erased; a bystander's row touched.
+    #[test]
+    fn a_full_move_carries_the_whole_character_to_the_caller_lpw42_1() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let history = history_rows(&m, bob());
+        let bystander = character_rows(&m, carol());
+        let (got, sent) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true), "the answer's entitlement");
+        assert_eq!(sent.len(), 1, "one request");
+        assert_eq!(
+            character_rows(&m, alice()),
+            character_expected(alice()),
+            "every character row is under the caller, unchanged"
+        );
+        assert_holds_nothing(&m, bob(), "the source");
+        assert!(
+            m.challenge_reaper
+                .rows()
+                .iter()
+                .all(|r| r.challenge_id != CH_OUT && r.challenge_id != CH_IN),
+            "the challenges' reaper rows go with them"
+        );
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(alice(), HANDLE_B, true, NOW, true))],
+            "the handle's one row is the caller's"
+        );
+        assert_eq!(moves(&m.c), vec![(bob().to_byte_array(), NOW)]);
+        assert_eq!(armed(&m), ids(&[carol()]), "the source's re-check goes");
+        assert_eq!(
+            members(&m),
+            ids(&[alice(), carol()]),
+            "the board is rescanned"
+        );
+        assert_eq!(history_rows(&m, bob()), history, "history stays");
+        assert_eq!(
+            character_rows(&m, carol()),
+            bystander,
+            "the bystander's rows"
+        );
+    }
+
+    /// The owner's relay for an identity that is not connected moves the character the same
+    /// way: the rows are under `who`, the handle is `who`'s, and the source holds a
+    /// `world_move` row.
+    ///
+    /// kills: the move run for the relay's caller; the relay refused a held handle.
+    #[test]
+    fn the_owners_relay_moves_the_character_to_who_lpw42_1() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let mut http = HttpQueue::new();
+        http.push(spki_answer());
+        let got = relay_as(
+            &fx,
+            owner(),
+            alice(),
+            NOW,
+            &mut http,
+            &test_profile(),
+            &ticket(),
+        );
+        assert_eq!(got, Ok(true));
+        assert_eq!(character_rows(&m, alice()), character_expected(alice()));
+        assert_holds_nothing(&m, bob(), "the source");
+        assert_holds_nothing(&m, owner(), "the relay's caller");
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(alice(), HANDLE_B, true, NOW, true))]
+        );
+        assert_eq!(moves(&m.c), vec![(bob().to_byte_array(), NOW)]);
+    }
+
+    /// A holder that owns no character is re-pointed the same way: the handle's row is the
+    /// caller's and the holder holds a `world_move` row stamped with the check's time.
+    ///
+    /// kills: the `world_move` row written only when rows moved; the re-point skipped.
+    #[test]
+    fn a_holder_that_owns_no_character_is_re_pointed_and_told_lpw42_1() {
+        let fx = fixture();
+        let m = move_world(&fx);
+        hold(&m, bob(), HANDLE_B, false);
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true));
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(alice(), HANDLE_B, true, NOW, false))]
+        );
+        assert_eq!(moves(&m.c), vec![(bob().to_byte_array(), NOW)]);
+    }
+
+    /// A `world_move` row the source already holds from an earlier move is replaced by one
+    /// stamped with this check's time: one row.
+    ///
+    /// kills: the stale row kept; a second insert under the same identity.
+    #[test]
+    fn a_stale_world_move_row_at_the_source_is_replaced_lpw42_1() {
+        let fx = fixture();
+        let m = move_world(&fx);
+        hold(&m, bob(), HANDLE_B, false);
+        m.c.moves.seed(&WorldMove {
+            identity: bob(),
+            moved_at_ms: T0 - 999,
+        });
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true));
+        assert_eq!(moves(&m.c), vec![(bob().to_byte_array(), NOW)]);
+    }
+
+    /// What a move does with a table that holds an identity's rows.
+    #[derive(Clone, Copy, Debug)]
+    enum Fate {
+        /// Every row of the source is under the caller, its owner column re-keyed and nothing
+        /// else changed; the source holds none.
+        Moved,
+        /// Neither identity holds a row afterwards.
+        Cleared,
+        /// Derived from `profile`: the caller is a member exactly when its profile ranks, the
+        /// source is not.
+        Rederived,
+        /// A row naming either identity refuses the move (the refusal tests below).
+        RefusedWhilePresent(&'static str),
+        /// The source keeps its rows byte for byte, for the reason given.
+        Stays(&'static str),
+        /// Written by the redeem itself, not by the move.
+        Redeem,
+    }
+
+    const FATES: &[(&str, Fate)] = &[
+        ("monster", Fate::Moved),
+        ("monster_pub", Fate::Moved),
+        ("inventory", Fate::Moved),
+        ("player_dialogue_state", Fate::Moved),
+        ("player_quest", Fate::Moved),
+        ("player_conversation", Fate::Cleared),
+        ("heal_cooldown", Fate::Moved),
+        ("last_position", Fate::Moved),
+        ("player_wallet", Fate::Moved),
+        (
+            "playtest_event",
+            Fate::Stays("telemetry of finished battles, left as the guest claim leaves it"),
+        ),
+        (
+            "trade_offer",
+            Fate::RefusedWhilePresent("a trade in either role"),
+        ),
+        (
+            "trade_session",
+            Fate::RefusedWhilePresent("a trade in either role"),
+        ),
+        ("battle_challenge", Fate::Cleared),
+        ("export_bundle", Fate::Cleared),
+        (
+            "player_session",
+            Fate::Stays("about the identity's own connection, not the character"),
+        ),
+        ("pending_evolution_notice", Fate::Moved),
+        ("battle_unit", Fate::Stays("finished battles are history")),
+        ("battle_queue", Fate::Stays("finished battles are history")),
+        ("battle_deploy", Fate::Stays("finished battles are history")),
+        ("battle_clock", Fate::Stays("finished battles are history")),
+        ("player_formation", Fate::Moved),
+        ("player_handle", Fate::Moved),
+        (
+            "world_admission",
+            Fate::Stays("about the identity's own admission, not the character"),
+        ),
+        (
+            "world_admission_attempt",
+            Fate::Stays("about the identity's own admission, not the character"),
+        ),
+        (
+            "world_binding",
+            Fate::Stays("an attestation-era binding that entitles nobody"),
+        ),
+        (
+            "world_bind_nonce",
+            Fate::Stays("an attestation-era nonce that entitles nobody"),
+        ),
+        ("world_account", Fate::Redeem),
+        ("recheck_schedule", Fate::Redeem),
+        ("world_move", Fate::Redeem),
+        ("player", Fate::Cleared),
+        ("profile", Fate::Moved),
+        ("leaderboard_top", Fate::Rederived),
+        (
+            "account",
+            Fate::Stays("the identity's own account; a pending deletion refuses the move"),
+        ),
+        ("battle", Fate::Stays("finished battles are history")),
+        (
+            "battle_summary",
+            Fate::Stays("finished battles are history"),
+        ),
+    ];
+
+    /// Every `Erase` and `Anonymize` table of the lifecycle manifest has a stated fate in a
+    /// move, and a full move meets each one: a table added later fails here until it is
+    /// classified and observed.
+    ///
+    /// kills: a table that holds an identity's rows left out of the move's reckoning; a moved
+    /// table left at the source; a cleared table moved; a staying table moved or erased.
+    #[test]
+    fn every_erase_and_anonymize_table_has_a_fate_the_move_meets_lpw42_1() {
+        let manifest: BTreeSet<&str> = DATA_LIFECYCLE_MANIFEST
+            .iter()
+            .filter(|e| matches!(e.policy, DeletionPolicy::Erase | DeletionPolicy::Anonymize))
+            .map(|e| e.table)
+            .collect();
+        let roster: BTreeSet<&str> = FATES.iter().map(|(table, _)| *table).collect();
+        assert_eq!(roster.len(), FATES.len(), "each table is classified once");
+        assert_eq!(roster, manifest, "the fates name exactly these tables");
+
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let moved_before = character_rows(&m, bob());
+        let stays_before = history_rows(&m, bob());
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true));
+        let expected = character_expected(alice());
+        let moved_to = character_rows(&m, alice());
+        let moved_from = character_rows(&m, bob());
+        let cleared_from = transient_rows(&m, bob());
+        let cleared_to = transient_rows(&m, alice());
+        let refusing = [refusing_rows(&m, bob()), refusing_rows(&m, alice())];
+        let stays_after = history_rows(&m, bob());
+        for (table, fate) in FATES {
+            match fate {
+                Fate::Moved => {
+                    assert!(
+                        !rows_in(&moved_before, table).is_empty(),
+                        "{table}: the source held a row"
+                    );
+                    assert_eq!(
+                        rows_in(&moved_to, table),
+                        rows_in(&expected, table),
+                        "{table}: under the caller"
+                    );
+                    assert!(
+                        rows_in(&moved_from, table).is_empty(),
+                        "{table}: left at the source"
+                    );
+                }
+                Fate::Cleared => {
+                    assert!(
+                        rows_in(&cleared_from, table).is_empty(),
+                        "{table}: left at the source"
+                    );
+                    assert!(
+                        rows_in(&cleared_to, table).is_empty(),
+                        "{table}: given to the caller"
+                    );
+                }
+                Fate::Rederived => match *table {
+                    "leaderboard_top" => {
+                        assert_eq!(members(&m), ids(&[alice(), carol()]), "{table}");
+                    }
+                    other => panic!("no observer reads {other}"),
+                },
+                Fate::RefusedWhilePresent(reason) => {
+                    for snap in &refusing {
+                        assert!(
+                            rows_in(snap, table).is_empty(),
+                            "{table} ({reason}): a successful move had no such row"
+                        );
+                    }
+                }
+                Fate::Stays(reason) => {
+                    assert_eq!(
+                        rows_in(&stays_after, table),
+                        rows_in(&stays_before, table),
+                        "{table} stays: {reason}"
+                    );
+                }
+                Fate::Redeem => match *table {
+                    "world_account" => {
+                        assert_eq!(
+                            accounts(&m.c),
+                            vec![view(&account_row(alice(), HANDLE_B, true, NOW, true))],
+                            "{table}"
+                        );
+                    }
+                    "recheck_schedule" => {
+                        assert_eq!(armed(&m), ids(&[carol()]), "{table}");
+                    }
+                    "world_move" => {
+                        assert_eq!(moves(&m.c), vec![(bob().to_byte_array(), NOW)], "{table}");
+                    }
+                    other => panic!("no observer reads {other}"),
+                },
+            }
+        }
+    }
+
+    /// The row writes of one move of a source holding 100 monsters (each with its twin), 5
+    /// stacks, 1 quest, one row in each single-row table, two challenges with their reaper
+    /// rows and one export chunk, and the procedure's two committed transactions (the charge,
+    /// then the redeem). Each count follows from the helper the move goes through:
+    ///
+    /// - `monster`, `monster_pub`: `monster_mgmt::rekey_monsters` updates each row and its
+    ///   twin in place through `update_monster_synced` (1 + 1 per monster; the level and
+    ///   slot are unchanged, so no lead refresh writes `player`).
+    /// - `inventory`: `rekey_inventory`, 1 update per stack.
+    /// - `player_quest`: `npc::rekey_npc_state` 1 update; `erase_npc_state` then finds none.
+    /// - `player_dialogue_state`: `rekey_npc_state` deletes the source row, inserts the
+    ///   caller's and inserts the source's marker row (3); `erase_npc_state` deletes that
+    ///   marker (1).
+    /// - `player_conversation`: `erase_npc_state`'s point delete (1).
+    /// - `pending_evolution_notice`, `heal_cooldown`, `player_formation`, `player_handle`,
+    ///   `last_position` (saved, not live): delete then insert (2 each).
+    /// - `player_wallet`: `economy::rekey_wallet` inserts the caller's row through
+    ///   `grant_currency` and zeroes the source's in place (2); `erase_wallet` deletes it (1).
+    /// - `profile`: `ranking::move_profile` deletes then inserts (2); `leaderboard_top`: its
+    ///   one rescan deletes the source's membership and inserts the caller's (2).
+    /// - `battle_challenge`, `battle_challenge_reaper_schedule`: `pvp::erase_pvp_rows`
+    ///   deletes each challenge and its one reaper row (2 + 2).
+    /// - `export_bundle`: `privacy::purge_export_bundles` deletes the chunk (1); the emptied
+    ///   table had no reaper row, so its re-arm writes none.
+    /// - `world_account`: the handle's row updated in place (1); `recheck_schedule`: the
+    ///   source's armed row deleted (1); `world_check_budget`: the charge (1).
+    ///
+    /// Every other registered table is written 0 times. `world_move` is not counted here (its
+    /// row is pinned by the tests above).
+    ///
+    /// kills: a move that re-writes rows it need not (a second pass over the monsters, a
+    /// rescan per table, a wallet row deleted and re-created); a write to a table the move
+    /// leaves alone; a third procedure transaction.
+    #[test]
+    fn the_cost_of_one_move_for_a_collection_of_100_monsters_lpw42_1() {
+        let fx = fixture();
+        let m = move_world(&fx);
+        hold(&m, bob(), HANDLE_B, false);
+        for id in 1_000..1_100u64 {
+            let row = mon(id, bob());
+            m.monster_pub.seed(&pub_from_monster(&row, 0));
+            m.monster.seed(&row);
+        }
+        for n in 0..5u32 {
+            m.inventory
+                .seed(&stack(2_000 + u64::from(n), bob(), 10 + n, 1));
+        }
+        m.quest.seed(&quest_row(SRC_QUEST, bob()));
+        m.notice.seed(&notice_row(bob()));
+        m.dialogue.seed(&dialogue_row(bob()));
+        m.heal.seed(&heal_row(bob()));
+        m.wallet.seed(&wallet_row(bob(), SRC_BALANCE));
+        m.profile.seed(&profile_row(bob()));
+        m.ladder.seed(&LeaderboardTop { identity: bob() });
+        m.formation.seed(&formation_row(bob()));
+        m.handle.seed(&handle_row(bob(), SRC_DISCRIMINATOR));
+        m.last_position.seed(&saved_position(bob()));
+        seed_transient(&m, bob(), carol());
+        m.c.rechecks.seed(&recheck_of(bob(), 1));
+        fx.reset_writes();
+        assert_eq!(fx.procedure_commits(), 0, "fixture");
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true));
+        assert_eq!(
+            m.monster
+                .rows()
+                .iter()
+                .filter(|r| r.owner_identity == alice())
+                .count(),
+            100,
+            "the collection moved"
+        );
+        let mut tables: Vec<&'static str> = snapshot(&m).into_iter().map(|(t, _)| t).collect();
+        tables.push("world_check_budget");
+        let got_writes: BTreeMap<&str, u32> = tables
+            .into_iter()
+            .filter(|t| *t != "world_move")
+            .map(|t| (t, fx.writes_to(t)))
+            .filter(|(_, n)| *n != 0)
+            .collect();
+        let want: BTreeMap<&str, u32> = [
+            ("world_check_budget", 1),
+            ("world_account", 1),
+            ("recheck_schedule", 1),
+            ("monster", 100),
+            ("monster_pub", 100),
+            ("inventory", 5),
+            ("player_quest", 1),
+            ("player_dialogue_state", 4),
+            ("player_conversation", 1),
+            ("pending_evolution_notice", 2),
+            ("heal_cooldown", 2),
+            ("player_wallet", 3),
+            ("profile", 2),
+            ("leaderboard_top", 2),
+            ("player_formation", 2),
+            ("player_handle", 2),
+            ("last_position", 2),
+            ("battle_challenge", 2),
+            ("battle_challenge_reaper_schedule", 2),
+            ("export_bundle", 1),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got_writes, want, "the writes of one move");
+        assert_eq!(fx.procedure_commits(), 2, "the charge and the redeem");
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The move back.
+    // ---------------------------------------------------------------------------------
+
+    /// After a move from bob to alice, bob checks in again with the same account later: the
+    /// character is back under bob whole, alice holds none of it, bob's `world_move` row is
+    /// gone and alice holds one stamped with the second check's time.
+    ///
+    /// kills: a move that only runs one way; bob refused as owning a character (a marker row
+    /// left at him by the first move); bob's `world_move` row kept; alice's stamped with the
+    /// first check's time.
+    #[test]
+    fn the_first_identity_checking_in_again_gets_the_character_back_lpw42_2() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let (first, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(first, Ok(true), "fixture: the first move");
+        let mut http = HttpQueue::new();
+        http.push(spki_answer());
+        let back = check_as(&fx, bob(), LATER, &mut http, &test_profile(), &ticket());
+        assert_eq!(back, Ok(true));
+        assert_eq!(character_rows(&m, bob()), character_expected(bob()));
+        assert_holds_nothing(&m, alice(), "the first move's caller");
+        assert_eq!(moves(&m.c), vec![(alice().to_byte_array(), LATER)]);
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(bob(), HANDLE_B, true, LATER, true))]
+        );
+    }
+
+    /// A check-in for a handle no one holds deletes the caller's own `world_move` row, and
+    /// a bystander's stays.
+    ///
+    /// kills: the row deleted only on a move; every `world_move` row deleted.
+    #[test]
+    fn a_check_in_for_a_free_handle_deletes_the_callers_world_move_row_lpw42_2() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        for (who, ms) in [(alice(), T0 - 1), (bob(), T0 - 2)] {
+            w.moves.seed(&WorldMove {
+                identity: who,
+                moved_at_ms: ms,
+            });
+        }
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_A, true, WORLD_NAME)));
+        assert_eq!(got, Ok(true));
+        assert_eq!(moves(&w), vec![(bob().to_byte_array(), T0 - 2)]);
+    }
+
+    /// A check-in for the handle the caller already holds deletes its own `world_move` row.
+    ///
+    /// kills: the row deleted only on first contact.
+    #[test]
+    fn a_check_in_for_the_callers_own_handle_deletes_its_world_move_row_lpw42_2() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, true, T0 - 1_000, false));
+        w.moves.seed(&WorldMove {
+            identity: alice(),
+            moved_at_ms: T0 - 1,
+        });
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_A, true, WORLD_NAME)));
+        assert_eq!(got, Ok(true));
+        assert_eq!(moves(&w), Vec::<([u8; 32], i64)>::new());
+    }
+
+    /// A refused check-in leaves the caller's `world_move` row as it is (a name the world does
+    /// not hold; a caller holding another handle); the next accepted one deletes it.
+    ///
+    /// kills: the row deleted before the decision; the deletion surviving the abort.
+    #[test]
+    fn a_refused_check_in_deletes_no_world_move_row_lpw42_2() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, true, T0 - 1_000, false));
+        w.moves.seed(&WorldMove {
+            identity: alice(),
+            moved_at_ms: T0 - 1,
+        });
+        let kept = vec![(alice().to_byte_array(), T0 - 1)];
+        for (answer, want) in [
+            (
+                ticket_answer(HANDLE_A, true, OTHER_NAME),
+                REJECT_TICKET_REFUSED,
+            ),
+            (
+                ticket_answer(HANDLE_A2, true, WORLD_NAME),
+                REJECT_IDENTITY_HOLDS_ANOTHER,
+            ),
+        ] {
+            let (got, _) = alice_checks(&fx, ok_answer(answer));
+            assert_eq!(got, Err(want.to_string()));
+            assert_eq!(moves(&w), kept, "{want}: the row stays");
+        }
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_A, true, WORLD_NAME)));
+        assert_eq!(got, Ok(true), "control");
+        assert_eq!(moves(&w), Vec::<([u8; 32], i64)>::new(), "control: deleted");
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The refusals.
+    // ---------------------------------------------------------------------------------
+
+    /// What each refusal case adds to [`moving_world`].
+    fn twist(m: &MW<'_>, case: &str) {
+        match case {
+            "the caller has only a player row" => m.player.seed(&player_row(alice(), 61)),
+            "the caller has only a handle" => m.handle.seed(&handle_row(alice(), 9_100_061)),
+            "the source plays an ongoing battle" => {
+                m.battle
+                    .seed(&battle_row(711, bob(), carol(), BattleOutcome::Ongoing))
+            }
+            "the source is an ongoing battle's opponent" => {
+                m.battle
+                    .seed(&battle_row(712, carol(), bob(), BattleOutcome::Ongoing))
+            }
+            "the caller plays an ongoing battle" => {
+                m.battle
+                    .seed(&battle_row(713, alice(), carol(), BattleOutcome::Ongoing))
+            }
+            "the caller is an ongoing battle's opponent" => {
+                m.battle
+                    .seed(&battle_row(714, carol(), alice(), BattleOutcome::Ongoing))
+            }
+            "the source opened a trade session" => {
+                m.trade_session.seed(&session_row(41, bob(), carol()));
+            }
+            "the source is a trade session's partner" => {
+                m.trade_session.seed(&session_row(42, carol(), bob()));
+            }
+            "the source made a trade offer" => m.trade.seed(&trade_row(51, bob(), carol())),
+            "the source was offered a trade" => m.trade.seed(&trade_row(52, carol(), bob())),
+            "the caller opened a trade session" => {
+                m.trade_session.seed(&session_row(43, alice(), carol()));
+            }
+            "the caller is a trade session's partner" => {
+                m.trade_session.seed(&session_row(44, carol(), alice()));
+            }
+            "the caller made a trade offer" => m.trade.seed(&trade_row(53, alice(), carol())),
+            "the source's account is pending deletion" => {
+                assert_eq!(
+                    m.c.account.remove(bob()),
+                    1,
+                    "fixture: bob's active account"
+                );
+                m.c.account.seed(&deleting_account(bob()));
+            }
+            "the caller has a player row and plays an ongoing battle" => {
+                twist(m, "the caller has only a player row");
+                twist(m, "the caller plays an ongoing battle");
+            }
+            "the caller holds another handle and owns a monster" => {
+                m.c.accounts
+                    .seed(&account_row(alice(), HANDLE_A, true, T0 - 1_000, false));
+                let row = mon(981, alice());
+                m.monster_pub.seed(&pub_from_monster(&row, 0));
+                m.monster.seed(&row);
+            }
+            other => panic!("no case {other}"),
+        }
+    }
+
+    /// In [`moving_world`] with `case` added, alice's ticket for bob's handle is refused with
+    /// `want`, and every registered table keeps its rows with no write but the budget's
+    /// charge.
+    fn assert_refused_unchanged(case: &str, want: &str) {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        twist(&m, case);
+        let before = snapshot(&m);
+        fx.reset_writes();
+        let (got, sent) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Err(want.to_string()), "{case}");
+        assert_eq!(sent.len(), 1, "{case}: refused after the answer");
+        assert_eq!(snapshot(&m), before, "{case}: every row stays");
+        assert_eq!(
+            written(&fx, &m),
+            Vec::<(&str, u32)>::new(),
+            "{case}: no write but the budget's"
+        );
+    }
+
+    /// kills: `owns_character` blind to a `player` row or to a game-data row.
+    #[test]
+    fn a_caller_that_owns_a_character_is_refused_and_nothing_changes_lpw42_3() {
+        for case in [
+            "the caller has only a player row",
+            "the caller has only a handle",
+        ] {
+            assert_refused_unchanged(case, REJECT_CALLER_OWNS_CHARACTER);
+        }
+    }
+
+    /// kills: the battle guard on the caller only; the opponent arm missing.
+    #[test]
+    fn a_source_in_an_ongoing_battle_is_refused_and_nothing_changes_lpw42_3() {
+        for case in [
+            "the source plays an ongoing battle",
+            "the source is an ongoing battle's opponent",
+        ] {
+            assert_refused_unchanged(case, REJECT_MOVE_NOT_NOW);
+        }
+    }
+
+    /// The caller has the battle row alone, so it owns no character.
+    ///
+    /// kills: the battle guard on the source only.
+    #[test]
+    fn a_caller_in_an_ongoing_battle_is_refused_and_nothing_changes_lpw42_3() {
+        for case in [
+            "the caller plays an ongoing battle",
+            "the caller is an ongoing battle's opponent",
+        ] {
+            assert_refused_unchanged(case, REJECT_MOVE_NOT_NOW);
+        }
+    }
+
+    /// kills: a trade guard blind to sessions, to offers, or to one role.
+    #[test]
+    fn a_source_in_a_trade_is_refused_and_nothing_changes_lpw42_3() {
+        for case in [
+            "the source opened a trade session",
+            "the source is a trade session's partner",
+            "the source made a trade offer",
+            "the source was offered a trade",
+        ] {
+            assert_refused_unchanged(case, REJECT_MOVE_NOT_NOW);
+        }
+    }
+
+    /// kills: the trade guard on the source only.
+    #[test]
+    fn a_caller_in_a_trade_is_refused_and_nothing_changes_lpw42_3() {
+        for case in [
+            "the caller opened a trade session",
+            "the caller is a trade session's partner",
+            "the caller made a trade offer",
+        ] {
+            assert_refused_unchanged(case, REJECT_MOVE_NOT_NOW);
+        }
+    }
+
+    /// kills: a character moved away from an account the deletion cascade is about to erase.
+    #[test]
+    fn a_source_pending_deletion_is_refused_and_nothing_changes_lpw42_3() {
+        assert_refused_unchanged(
+            "the source's account is pending deletion",
+            REJECT_MOVE_NOT_NOW,
+        );
+    }
+
+    /// A caller that owns a character and is in a battle is told it owns a character.
+    ///
+    /// kills: the battle and trade guard judged before `owns_character`.
+    #[test]
+    fn a_caller_owning_a_character_is_told_so_before_its_battle_lpw42_3() {
+        assert_refused_unchanged(
+            "the caller has a player row and plays an ongoing battle",
+            REJECT_CALLER_OWNS_CHARACTER,
+        );
+    }
+
+    /// A caller holding another handle is told so even when it owns a character.
+    ///
+    /// kills: `owns_character` judged before the caller's own handle.
+    #[test]
+    fn a_caller_holding_another_handle_is_told_so_before_its_character_lpw42_3() {
+        assert_refused_unchanged(
+            "the caller holds another handle and owns a monster",
+            REJECT_IDENTITY_HOLDS_ANOTHER,
+        );
+    }
+
+    /// Finished battles at the source and at the caller refuse nothing: the character moves.
+    ///
+    /// kills: a battle guard that counts a finished battle.
+    #[test]
+    fn a_finished_battle_at_either_identity_does_not_refuse_lpw42_3() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        m.battle
+            .seed(&battle_row(715, alice(), carol(), BattleOutcome::SideAWins));
+        m.battle
+            .seed(&battle_row(716, carol(), alice(), BattleOutcome::Fled));
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true));
+        assert_eq!(character_rows(&m, alice()), character_expected(alice()));
+    }
+
+    // ---------------------------------------------------------------------------------
+    // A source in the game.
+    // ---------------------------------------------------------------------------------
+
+    /// The source is in the game (a `player` row, its character at zone 2, tile (14, 15)
+    /// facing North, a `move_intent` row, a conversation, no saved position): the caller holds
+    /// a `last_position` row with that zone, tile and facing, and the source holds no
+    /// `player`, `character`, `move_intent`, `player_conversation` or `last_position` row. A
+    /// bystander in the game keeps its presence rows.
+    ///
+    /// kills: the live position dropped, or the saved one taken over it; the presence rows
+    /// re-keyed or left; a bystander's character deleted.
+    #[test]
+    fn a_source_in_the_game_leaves_its_live_position_to_the_caller_lpw42_4() {
+        let fx = fixture();
+        let m = move_world(&fx);
+        hold(&m, bob(), HANDLE_B, false);
+        seed_character(&m, bob());
+        assert_eq!(
+            m.last_position.remove(bob()),
+            1,
+            "fixture: an identity in the game has no saved position"
+        );
+        m.player.seed(&player_row(bob(), LIVE_ENTITY));
+        m.character
+            .seed(&character_at(LIVE_ENTITY, 2, 14, 15, Direction::North));
+        m.intent.seed(&intent_row(LIVE_ENTITY));
+        m.conversation.seed(&conversation_row(bob()));
+        m.player.seed(&player_row(carol(), BYSTANDER_ENTITY));
+        m.character
+            .seed(&character_at(BYSTANDER_ENTITY, 0, 1, 2, Direction::South));
+        m.intent.seed(&intent_row(BYSTANDER_ENTITY));
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true));
+        assert_eq!(
+            encs(&m.last_position.rows()),
+            encs(&[LastPosition {
+                owner_identity: alice(),
+                zone_id: 2,
+                tile_x: 14,
+                tile_y: 15,
+                facing: Direction::North,
+            }]),
+            "the live position, under the caller alone"
+        );
+        assert_eq!(
+            encs(&m.player.rows()),
+            encs(&[player_row(carol(), BYSTANDER_ENTITY)]),
+            "the source's player row goes; the bystander's stays"
+        );
+        assert_eq!(
+            encs(&m.character.rows()),
+            encs(&[character_at(BYSTANDER_ENTITY, 0, 1, 2, Direction::South)]),
+            "the source's character goes"
+        );
+        assert_eq!(
+            encs(&m.intent.rows()),
+            encs(&[intent_row(BYSTANDER_ENTITY)]),
+            "the source's move_intent goes"
+        );
+        assert_eq!(
+            encs(&m.conversation.rows()),
+            Vec::<Vec<u8>>::new(),
+            "the conversation goes"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The names that carry a move.
+    // ---------------------------------------------------------------------------------
+
+    /// `spki:` and `dns:` names carry a move whatever `ip_confirmed` says; an `ip:` name
+    /// exactly when it is confirmed; nothing else does.
+    ///
+    /// kills: the inert `false`; an `ip:` name carrying a move unconfirmed; a case-blind or
+    /// space-trimming prefix test; a prefix with no colon accepted.
+    #[test]
+    fn a_name_carries_a_move_when_it_is_spki_dns_or_a_confirmed_ip_name_lpw42_5() {
+        let rows: Vec<(&str, bool, bool)> = vec![
+            (WORLD_NAME, false, true),
+            (WORLD_NAME, true, true),
+            (DNS_NAME, false, true),
+            (DNS_NAME, true, true),
+            (IP_NAME, false, false),
+            (IP_NAME, true, true),
+            ("", false, false),
+            ("", true, false),
+            ("spki", false, false),
+            ("spki", true, false),
+            ("SPKI:TEST-fingerprint_00/realm-one", false, false),
+            ("SPKI:TEST-fingerprint_00/realm-one", true, false),
+            (" spki:TEST-fingerprint_00/realm-one", false, false),
+            (" spki:TEST-fingerprint_00/realm-one", true, false),
+            ("dns", true, false),
+            ("DNS:realm-one.example.net", true, false),
+            (" dns:realm-one.example.net", true, false),
+            ("ip", true, false),
+            ("IP:203.0.113.9:3000", true, false),
+            (" ip:203.0.113.9:3000", true, false),
+        ];
+        for (name, ip_confirmed, want) in rows {
+            assert_eq!(
+                crate::account_checks::name_carries_move(name, ip_confirmed),
+                want,
+                "{name:?}, ip confirmed: {ip_confirmed}"
+            );
+        }
+    }
+
+    /// A ticket answered with the world's `ip:` name for a handle another identity holds is
+    /// refused with [`REJECT_HANDLE_HELD`] and changes nothing; the same world answered with
+    /// its `spki:` name moves the character.
+    ///
+    /// kills: the shell passing `ip_confirmed = true`; any held handle moved.
+    #[test]
+    fn an_ip_name_moves_nothing_lpw42_5() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let before = snapshot(&m);
+        fx.reset_writes();
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_B, true, IP_NAME)));
+        assert_eq!(got, Err(REJECT_HANDLE_HELD.to_string()));
+        assert_eq!(snapshot(&m), before, "every row stays");
+        assert_eq!(
+            written(&fx, &m),
+            Vec::<(&str, u32)>::new(),
+            "no write but the budget's"
+        );
+        drop(fx);
+
+        let fx = fixture();
+        let m = moving_world(&fx);
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Ok(true), "control: the spki name");
+        assert_eq!(character_rows(&m, alice()), character_expected(alice()));
+    }
+
+    /// A ticket answered with a `dns:` name the world holds moves the character.
+    ///
+    /// kills: a move limited to `spki:` names.
+    #[test]
+    fn a_dns_name_the_world_holds_moves_the_character_lpw42_5() {
+        let fx = fixture();
+        let m = move_world(&fx);
+        m.c.names.seed(&WorldName {
+            name: DNS_NAME.to_string(),
+        });
+        hold(&m, bob(), HANDLE_B, false);
+        seed_character(&m, bob());
+        let (got, _) = alice_checks(&fx, ok_answer(ticket_answer(HANDLE_B, true, DNS_NAME)));
+        assert_eq!(got, Ok(true));
+        assert_eq!(character_rows(&m, alice()), character_expected(alice()));
+        assert_holds_nothing(&m, bob(), "the source");
+        assert_eq!(moves(&m.c), vec![(bob().to_byte_array(), NOW)]);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The read path.
+    // ---------------------------------------------------------------------------------
+
+    /// Two identities each hold a `world_move` row and each reads its own alone through
+    /// `my_world_move`; a third reads none.
+    ///
+    /// kills: the inert view; a view answering every row or another identity's.
+    #[test]
+    fn my_world_move_answers_the_senders_own_row_alone_lpw42_6() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        for (who, ms) in [(alice(), T0 - 1), (bob(), T0 - 2)] {
+            w.moves.seed(&WorldMove {
+                identity: who,
+                moved_at_ms: ms,
+            });
+        }
+        let seen = |who: Identity| -> Vec<([u8; 32], i64)> {
+            fx.call_view::<WorldMove>(VIEW_MY_WORLD_MOVE, who)
+                .iter()
+                .map(|r| (r.identity.to_byte_array(), r.moved_at_ms))
+                .collect()
+        };
+        assert_eq!(seen(alice()), vec![(alice().to_byte_array(), T0 - 1)]);
+        assert_eq!(seen(bob()), vec![(bob().to_byte_array(), T0 - 2)]);
+        assert_eq!(seen(carol()), Vec::<([u8; 32], i64)>::new());
     }
 }

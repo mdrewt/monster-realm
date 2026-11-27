@@ -1798,3 +1798,203 @@ fn a_claim_in_a_small_world_keeps_the_guest_tombstone_a_member_sr4b_2() {
         "the zero-rated tombstone still ranks in a world of fewer than 100"
     );
 }
+
+// ===========================================================================
+// A character's `profile` row moved whole to another identity (`move_profile`).
+// ===========================================================================
+
+/// The moved profile's name: neither seeded player row's name ("Alice", "Bob"), so a name
+/// read from a live `player` row shows.
+const LPW42_NAME: &str = "Wanderer";
+
+/// `from`'s profile as seeded: the moved row's name, rating, wins and losses.
+fn lpw42_profile(from: Identity) -> Profile {
+    Profile {
+        identity: from,
+        name: LPW42_NAME.to_string(),
+        rating: 1450,
+        wins: 8,
+        losses: 3,
+    }
+}
+
+/// Rows as sorted BSATN encodings: a table compared as a set of byte-equal rows.
+fn lpw42_enc(rows: Vec<Profile>) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = rows
+        .iter()
+        .map(|r| spacetimedb::sats::bsatn::to_vec(r).expect("a row always BSATN-encodes"))
+        .collect();
+    out.sort();
+    out
+}
+
+impl RkWorld<'_> {
+    /// Every profile row except `who`'s, encoded.
+    fn lpw42_others(&self, who: Identity) -> Vec<Vec<u8>> {
+        lpw42_enc(
+            self.profiles
+                .rows()
+                .into_iter()
+                .filter(|p| p.identity != who)
+                .collect(),
+        )
+    }
+
+    /// `who`'s profile rows, encoded.
+    fn lpw42_own(&self, who: Identity) -> Vec<Vec<u8>> {
+        lpw42_enc(
+            self.profiles
+                .rows()
+                .into_iter()
+                .filter(|p| p.identity == who)
+                .collect(),
+        )
+    }
+}
+
+/// `move_profile` puts `from`'s name, rating, wins and losses on exactly one row at `to`,
+/// leaves `from` no row, and every other profile row byte-equal.
+///
+/// kills: `move_profile` a no-op; the name read from `to`'s live `player` row or reset; the
+/// stats zeroed or reset to the initial rating; the source tombstoned in place instead of
+/// deleted; another row rewritten.
+#[test]
+fn move_profile_carries_the_whole_row_to_the_destination_lpw42_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let (from, to) = (rk_a(), rk_b());
+    sr4b_seed_fillers(&w, 0, 5, |i| 900 + i as i32 * 10);
+    w.profiles.seed(&lpw42_profile(from));
+    assert!(
+        w.name(from).as_deref() != Some(LPW42_NAME) && w.name(to).as_deref() != Some(LPW42_NAME),
+        "fixture: the profile's name is neither player row's name"
+    );
+    let others_before = w.lpw42_others(from);
+
+    super::move_profile(&fx.ctx(), from, to);
+
+    assert_eq!(
+        w.lpw42_own(to),
+        lpw42_enc(vec![Profile {
+            identity: to,
+            ..lpw42_profile(from)
+        }]),
+        "one row at the destination: the source's name, rating, wins and losses"
+    );
+    assert!(
+        w.lpw42_own(from).is_empty(),
+        "the source holds no profile row"
+    );
+    assert_eq!(
+        w.lpw42_others(to),
+        others_before,
+        "every other profile row byte-equal"
+    );
+}
+
+/// With `from` a member of a full board and `to` holding no profile, the move makes `to` a
+/// member and `from` not, the board is the true ladder over the stored profiles, and the
+/// one rescan changes it by one delete and one insert.
+///
+/// kills: no rescan after the move (the source stays, the destination stays out); a rescan
+/// before the insert (the 101st filler enters, then leaves); a rescan that rewrites every row.
+#[test]
+fn move_profile_moves_the_leaderboard_membership_lpw42_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let (from, to) = (rk_a(), rk_b());
+    sr4b_seed_fillers(&w, 0, 100, |i| 1 + (i as i32 * 37) % 1500);
+    w.seed_profile(from, LPW42_NAME, 1800, 12, 3);
+    w.seed_true_board();
+    assert!(
+        w.is_member(from) && !w.is_member(to),
+        "precondition: the source is a member, the destination has no profile"
+    );
+    fx.reset_writes();
+
+    super::move_profile(&fx.ctx(), from, to);
+
+    assert!(w.is_member(to), "the destination is a member");
+    assert!(!w.is_member(from), "the source is not");
+    assert_eq!(
+        w.members(),
+        w.true_top(),
+        "the board is the true ladder after the move"
+    );
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        2,
+        "one delete (the source) and one insert (the destination)"
+    );
+}
+
+/// A source with no profile: no write to `profile` or `leaderboard_top`, every row as it
+/// was. The control moves a seeded source in the same fixture, so the silence is the empty
+/// source's.
+///
+/// kills: an insert of an initial-rating row for an empty source; a rescan run regardless.
+#[test]
+fn move_profile_of_a_source_with_no_profile_writes_nothing_lpw42_1() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let (from, to) = (rk_a(), rk_b());
+    sr4b_seed_fillers(&w, 0, 10, |i| 900 + (i as i32 % 4) * 25);
+    w.seed_true_board();
+    let profiles_before = w.lpw42_others(from);
+    let members_before = w.members();
+    fx.reset_writes();
+
+    super::move_profile(&fx.ctx(), from, to);
+
+    assert_eq!(fx.writes_to("profile"), 0, "profile took a write call");
+    assert_eq!(
+        fx.writes_to("leaderboard_top"),
+        0,
+        "leaderboard_top took a write call"
+    );
+    assert_eq!(
+        w.lpw42_others(from),
+        profiles_before,
+        "profile rows as they were"
+    );
+    assert!(w.lpw42_own(from).is_empty() && w.lpw42_own(to).is_empty());
+    assert_eq!(w.members(), members_before, "the board as it was");
+
+    w.profiles.seed(&lpw42_profile(from));
+    super::move_profile(&fx.ctx(), from, to);
+    assert_eq!(
+        w.profile(to),
+        Some((LPW42_NAME.to_string(), 1450, 8, 3)),
+        "control: a source that holds a profile is moved"
+    );
+}
+
+/// Moved there and back: after `from` -> `to` the row is at `to`; after `to` -> `from`
+/// `from`'s row is byte-equal to the seed and `to` holds none.
+///
+/// kills: `move_profile` a no-op; a move that keeps the destination's identity on the way
+/// back; a field lost on either leg.
+#[test]
+fn move_profile_there_and_back_restores_the_source_row_lpw42_2() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    let (from, to) = (rk_a(), rk_b());
+    sr4b_seed_fillers(&w, 0, 10, |i| 900 + (i as i32 % 4) * 25);
+    w.profiles.seed(&lpw42_profile(from));
+    w.seed_true_board();
+    let seed = lpw42_enc(vec![lpw42_profile(from)]);
+
+    super::move_profile(&fx.ctx(), from, to);
+    assert!(
+        w.lpw42_own(from).is_empty() && w.lpw42_own(to).len() == 1,
+        "precondition: the first move put the row at the destination"
+    );
+
+    super::move_profile(&fx.ctx(), to, from);
+    assert_eq!(
+        w.lpw42_own(from),
+        seed,
+        "the source's row is the seed again"
+    );
+    assert!(w.lpw42_own(to).is_empty(), "the destination holds none");
+}
