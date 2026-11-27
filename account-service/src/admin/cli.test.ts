@@ -834,7 +834,7 @@ describe('the Steam commands and the configuration', () => {
     expect(run.out).toEqual([]);
     expect(run.err).toHaveLength(1);
     expect(run.err[0]).toContain(setting);
-    if (setting !== 'MR_STEAM_APP_ID') expect(run.err[0]).not.toContain(value);
+    expect(run.err[0]).not.toContain(value);
     expect(existsSync(dataDir)).toBe(false);
   });
 });

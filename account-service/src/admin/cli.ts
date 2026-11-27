@@ -3,7 +3,12 @@ import { ConfigError, loadConfig } from '../config.ts';
 import { denyList, steamAccounts } from '../denyList.ts';
 import { type DevAccount, DevAccountError, devAccounts } from '../interactions/devPassword.ts';
 import { registerClient } from '../provider.ts';
-import { type SteamId, steamIdOfSubject, steamSubject } from '../steam/ownership.ts';
+import {
+  STEAM_SUBJECT_PREFIX,
+  type SteamId,
+  steamIdOfSubject,
+  steamSubject,
+} from '../steam/ownership.ts';
 import { openAccountStore } from '../store/sqliteAdapter.ts';
 
 export interface AdminIo {
@@ -130,9 +135,6 @@ async function run(
 
 class ClientRefused extends Error {}
 
-/** What a Steam account's name begins with; no email this command takes is treated as one. */
-const STEAM_TARGET = 'steam:';
-
 function describe(account: DevAccount): string[] {
   return [`sub=${account.sub}`, `email=${account.email}`, `entitled=${account.entitled}`];
 }
@@ -153,7 +155,7 @@ function parse(argv: readonly string[]): Command | typeof NOT_A_STEAM_ACCOUNT | 
     case 'set-entitlement':
       if (first === undefined || values.length !== 2 || flags.length > 0) return undefined;
       if (second !== 'entitled' && second !== 'not-entitled') return undefined;
-      if (first.startsWith(STEAM_TARGET)) {
+      if (first.startsWith(STEAM_SUBJECT_PREFIX)) {
         const steamId = steamIdOfSubject(first);
         if (steamId === undefined) return NOT_A_STEAM_ACCOUNT;
         return { name: 'set-steam-entitlement', steamId, entitled: second === 'entitled' };

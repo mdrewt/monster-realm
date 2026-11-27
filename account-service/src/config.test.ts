@@ -271,6 +271,13 @@ describe('production refuses every dev-only setting and names it', () => {
     );
   });
 
+  test('production refusing the development app 480 does not show 480 acs-8.5', () => {
+    expectNoLeak(
+      expectRefused({ ...PRODUCTION, MR_STEAM_APP_ID: '480' }, 'MR_STEAM_APP_ID'),
+      '480',
+    );
+  });
+
   test('production checks the web key before the app id acs-8.5', () => {
     expectRefused(
       { ...PRODUCTION, MR_STEAM_APP_ID: '0', [WEB_KEY_SETTING]: 'x' },
@@ -720,6 +727,12 @@ describe('the Steam settings', () => {
     ),
   )('%s refuses MR_STEAM_APP_ID %s, which is not exactly 480 acs-8.5', (_p, _shown, base, value) => {
     expectRefused({ ...base, MR_STEAM_APP_ID: value }, 'MR_STEAM_APP_ID');
+  });
+
+  test.each(devProfiles)('%s does not show a refused app id near 480 acs-8.5', (_p, base) => {
+    for (const value of [' 480', '481', '0480']) {
+      expectNoLeak(expectRefused({ ...base, MR_STEAM_APP_ID: value }, 'MR_STEAM_APP_ID'), value);
+    }
   });
 
   test.each(

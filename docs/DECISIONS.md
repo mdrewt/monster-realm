@@ -2973,18 +2973,23 @@ it admits only a connection bound by an attestation that carried it (see "A priv
 an account by a per-world attestation our account service signs"). The account service issues the
 claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence held by the player
 themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
-removes entitlement at the next issuance (an hour at most on the official server). A build that names the dev feature `open_join` does not enforce it, so the e2e suite and local development still join anonymously (see "Ownership is enforced unless a dev feature switches it off"). Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. Operator ruling, 2026-11-16 ("for now, all players, including browser
+removes entitlement at the next issuance (an hour at most on the official server). A build that names the dev feature `open_join` does not enforce it, so the e2e suite and local development still join anonymously (see "Ownership is enforced unless a dev feature switches it off"). Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. A dev issuer checks Steam only as App ID 480, Valve's development app: a Steam player there is entitled by an admin flag on `steam:<steamid64>` that an account lacks until an admin sets it, and a dev issuer never asks Steam who owns the game and never holds the publisher key (operator, 2026-11-23). Operator ruling, 2026-11-16 ("for now, all players, including browser
 players, must own the game in order to play").
 
 **Why.** The operator's ruling. The claim is checked by the module, not implied by the issuer, so
 a later free tier or demo changes what the service issues, not the module. Enforcing in `join_game`
 covers every gameplay reducer, because a player row exists only through it. Checking ownership at
 every issuance, not once, lets a refund or a ban reach the official server within a token's life.
+Every Steam account can run App ID 480, and Steam's ownership check answers only for a publisher's
+own apps, so under 480 Steam proves a sign-in and never a purchase; the hosted dev issuer is
+reachable from the internet, so a Steam player there owns nothing until an admin says so.
 
 **Rules out.** Anonymous (guest) play on an enforcing build; the guest claim flow stays built
 ("Accounts, guest identity and the claim flow") and is unreachable there until the ruling changes.
 A sign-in method that cannot prove a Steam licence (Google, Discord, email) for players. Treating a
-Family Sharing borrower as an owner (one policy function in the account service changes it). Known
+Family Sharing borrower as an owner (one policy function in the account service changes it). A dev
+issuer that takes another app id or the publisher key, asks Steam's ownership check, or entitles a
+Steam player by default as it does a dev account. Known
 limits, accepted: a host can patch the module on its own server to switch the rule off, and a
 player refunded after binding a world keeps playing there until its host removes them.
 

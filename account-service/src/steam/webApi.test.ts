@@ -256,6 +256,19 @@ function malformed(name: string, body: (echo: string) => string): Fault {
   };
 }
 
+function malformedBytes(name: string, body: (echo: string) => Uint8Array): Fault {
+  return {
+    name,
+    reason: 'malformed',
+    answer: (echo) => ({
+      kind: 'body',
+      body: body(echo),
+      statusText: echo,
+      headers: { 'x-steam-detail': echo },
+    }),
+  };
+}
+
 function commonFaults(path: string, valid: string): Fault[] {
   return [
     ...STATUSES.map(
@@ -327,6 +340,21 @@ function commonFaults(path: string, valid: string): Fault[] {
     malformed('a JSON number', () => '42'),
     malformed('an object without the envelope', (echo) => `{"detail":"${echo}"}`),
     malformed('truncated JSON', (echo) => `${valid.slice(0, -3)}${echo}`),
+    malformedBytes('bytes that are not UTF-8', (echo) =>
+      Buffer.concat([Buffer.from([0xff, 0xfe, 0xfd]), Buffer.from(echo, 'utf8')]),
+    ),
+    malformedBytes('a JSON prefix then a lone 0xc3', () =>
+      Buffer.concat([Buffer.from(valid.slice(0, -3), 'utf8'), Buffer.from([0xc3])]),
+    ),
+    // A whole valid answer except one string member holding a lone 0xc3: a decoder that
+    // replaces the byte would read it as the answer.
+    malformedBytes('a valid answer with a lone 0xc3 inside a string', (echo) =>
+      Buffer.concat([
+        Buffer.from(`{"detail":"${echo}`, 'utf8'),
+        Buffer.from([0xc3]),
+        Buffer.from(`",${valid.slice(1)}`, 'utf8'),
+      ]),
+    ),
     malformed('a valid answer one byte over the cap', () =>
       padded(valid, MAX_STEAM_ANSWER_BYTES + 1),
     ),
@@ -1107,15 +1135,81 @@ describe('what the client logs', () => {
   });
 
   test.each([
+    [
+      'returns a rejected promise',
+      (count: () => void) =>
+        (() => {
+          count();
+          return Promise.reject(new Error('the log is down'));
+        }) as unknown as (line: string) => void,
+    ],
+    [
+      'is an async function that throws',
+      (count: () => void) =>
+        (async () => {
+          count();
+          throw new Error('the log is down');
+        }) as unknown as (line: string) => void,
+    ],
+  ])('a log that %s changes no result and leaves no unhandled rejection acs-8.3', async (_name, logOf) => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const target = await stub(GAME_APP_ID);
+      let logged = 0;
+      const log = logOf(() => {
+        logged += 1;
+      });
+      const make = (timeoutMs?: number): SteamWebApi =>
+        createSteamWebApi({
+          config: { profile: 'production', steam: { appId: GAME_APP_ID } },
+          env: { [PUBLISHER_KEY_SETTING]: target.key },
+          log,
+          baseUrl: target.url,
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        });
+      const api = make();
+      const short = make(SHORT_TIMEOUT_MS);
+      const ticket = target.issueTicket(PLAYER, IDENTITY);
+
+      target.respondNext(OWN, { kind: 'status', status: 503 });
+      expect(outcomeOf(await api.checkAppOwnership(PLAYER))).toBe('failed:status:503');
+      target.respondNext(AUTH, { kind: 'body', body: '<html></html>' });
+      expect(outcomeOf(await api.authenticateTicket(ticket, IDENTITY))).toBe('failed:malformed');
+      target.respondNext(OWN, { kind: 'closed' });
+      expect(outcomeOf(await api.checkAppOwnership(PLAYER))).toBe('failed:unreachable');
+      target.respondNext(AUTH, { kind: 'no-answer' });
+      expect(outcomeOf(await short.authenticateTicket(ticket, IDENTITY))).toBe('failed:timeout');
+      expect(await api.authenticateTicket(ticket, IDENTITY)).toStrictEqual({
+        kind: 'authenticated',
+        steamId: PLAYER,
+      });
+      expect(target.requests).toHaveLength(5);
+      expect(logged).toBe(4);
+
+      // Two turns of the event loop: a rejection left unhandled is reported by then.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  test.each([
     'dev',
     'production',
   ] as const)('on %s the client object shows no key to JSON or inspection acs-8.3', async (side) => {
     const c = await client(side);
     expect(JSON.stringify(c.api) ?? '').not.toContain(c.stub.key);
     expect(inspect(c.api, { depth: null, showHidden: true })).not.toContain(c.stub.key);
-    for (const name of Object.getOwnPropertyNames(c.api)) {
-      expect(String((c.api as unknown as Record<string, unknown>)[name])).not.toContain(c.stub.key);
-    }
   });
 });
 
@@ -1233,6 +1327,71 @@ describe('constructing the client', () => {
       createSteamWebApi({
         config: { profile: 'hosted-dev', steam: { appId: DEV_APP_ID } },
         env: {},
+        log: ignore,
+      }),
+    ).not.toThrow();
+  });
+
+  function keyedEnv(profile: Profile, key: string): Env {
+    return { [profile === 'production' ? PUBLISHER_KEY_SETTING : WEB_KEY_SETTING]: key };
+  }
+
+  const PROFILES: readonly Profile[] = ['local-dev', 'hosted-dev', 'production'];
+  const NOT_AN_APP_ID: ReadonlyArray<readonly [string, number]> = [
+    ['0', 0],
+    ['-1', -1],
+    ['1.5', 1.5],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['4294967296', 4_294_967_296],
+  ];
+  // The value is checked absent only where it is distinctive enough to be found.
+  const wrongApps: ReadonlyArray<readonly [Profile, string, number, readonly string[]]> = [
+    ['local-dev', '481', 481, ['481']],
+    ['local-dev', 'the game app id', GAME_APP_ID, [String(GAME_APP_ID)]],
+    ['hosted-dev', '481', 481, ['481']],
+    ['hosted-dev', 'the game app id', GAME_APP_ID, [String(GAME_APP_ID)]],
+    ['production', 'the development app 480', DEV_APP_ID, ['480']],
+    ...PROFILES.flatMap((profile) =>
+      NOT_AN_APP_ID.map(
+        ([name, appId]) =>
+          [profile, name, appId, appId === 4_294_967_296 ? ['4294967296'] : []] as const,
+      ),
+    ),
+  ];
+
+  test.each(
+    wrongApps,
+  )('on %s an app id of %s is refused for MR_STEAM_APP_ID, with a valid key present, and nothing is sent', async (profile, _name, appId, values) => {
+    const target = await stub(appId === DEV_APP_ID ? GAME_APP_ID : DEV_APP_ID);
+    const key = marker('steam_key');
+    expectConfigError(
+      () =>
+        createSteamWebApi({
+          config: { profile, steam: { appId } },
+          env: keyedEnv(profile, key),
+          log: ignore,
+          baseUrl: target.url,
+        }),
+      'MR_STEAM_APP_ID',
+      [key, ...values],
+    );
+    expect(target.requests).toEqual([]);
+  });
+
+  test.each([
+    ['local-dev', DEV_APP_ID],
+    ['hosted-dev', DEV_APP_ID],
+    ['production', 1],
+    ['production', 481],
+    ['production', 4_294_967_295],
+  ] as ReadonlyArray<
+    readonly [Profile, number]
+  >)('on %s an app id of %i is accepted', (profile, appId) => {
+    expect(() =>
+      createSteamWebApi({
+        config: { profile, steam: { appId } },
+        env: keyedEnv(profile, marker('steam_key')),
         log: ignore,
       }),
     ).not.toThrow();

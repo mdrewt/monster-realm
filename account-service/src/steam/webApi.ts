@@ -1,4 +1,4 @@
-import { type Config, ConfigError } from '../config.ts';
+import { type Config, ConfigError, MAX_STEAM_APP_ID, STEAM_DEV_APP_ID } from '../config.ts';
 import { type AppOwnership, type OwnershipCheck, parseSteamId, type SteamId } from './ownership.ts';
 
 /** Steam's public Web API host: what an ordinary Web API key may call. */
@@ -14,7 +14,7 @@ export const MAX_STEAM_ANSWER_BYTES = 65_536;
 /**
  * Why Steam gave no answer: it took too long, could not be reached, answered with a status that
  * is not 200, or answered with a body this module cannot read. `unconfigured` is the one failure
- * that sends nothing: this profile holds no key for the call.
+ * that sends nothing: this profile holds no key for the call, or may not make it.
  */
 export type SteamFailure = 'timeout' | 'unreachable' | 'status' | 'malformed' | 'unconfigured';
 
@@ -23,7 +23,7 @@ const MESSAGES: Readonly<Record<SteamFailure, string>> = {
   unreachable: 'Steam could not be reached',
   status: 'Steam answered with an error status',
   malformed: 'Steam answered with a body that could not be read',
-  unconfigured: 'this profile has no Steam key for that call',
+  unconfigured: 'this profile cannot make that call to Steam',
 };
 
 /**
@@ -60,6 +60,7 @@ export interface SteamWebApi {
 }
 
 type Call = 'AuthenticateUserTicket' | 'CheckAppOwnership';
+type Failed = Extract<TicketCheck, { readonly kind: 'failed' }>;
 
 const PATHS: Readonly<Record<Call, string>> = {
   AuthenticateUserTicket: '/ISteamUserAuth/AuthenticateUserTicket/v1/',
@@ -79,9 +80,11 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
  * a dev profile, which calls the public host as the profile's app.
  *
  * The key travels in a request header and nowhere else, so no request target holds it. Each call
- * is one request with a timeout over the whole exchange, never retried: a refusal would not
- * change, and Steam rate-limits an address that keeps sending refused requests. A redirect is
- * not followed, because a followed request would carry the key to another host.
+ * is one request with a timeout over the whole exchange, never retried. A refusal would not
+ * change, and the partner host rate-limits an address that keeps sending refused requests; a
+ * failure of Steam's is the player's to retry by signing in again, so an outage costs this
+ * address one request per attempt and no more. A redirect is not followed, because a followed
+ * request would carry the key to another host.
  *
  * A call resolves for everything Steam does. What Steam sent is parsed into the result types and
  * otherwise dropped: no error and no log line holds a body, a status text or a header. One line
@@ -123,21 +126,33 @@ export function createSteamWebApi(options: {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new TypeError(`timeoutMs must be an integer from 1 to ${MAX_TIMEOUT_MS}`);
   }
-  const appid = String(config.steam.appId);
+  // The key's only reader holds the pairing itself: the ordinary key goes out only as Valve's
+  // development app, and the publisher key never as it.
+  const { appId } = config.steam;
+  if (
+    !Number.isInteger(appId) ||
+    appId < 1 ||
+    appId > MAX_STEAM_APP_ID ||
+    (appId === STEAM_DEV_APP_ID) === production
+  ) {
+    throw new ConfigError('MR_STEAM_APP_ID', 'is not an app this profile checks Steam as');
+  }
+  const appid = String(appId);
 
-  const failed = (call: Call, error: SteamApiError): { kind: 'failed'; error: SteamApiError } => {
+  const failed = (call: Call, error: SteamApiError): Failed => {
     try {
       const status = error.status === undefined ? '' : ` status=${error.status}`;
-      log(`account-service: steam ${call} failed reason=${error.reason}${status}`);
+      const written: unknown = log(
+        `account-service: steam ${call} failed reason=${error.reason}${status}`,
+      );
+      // A log that answers with a promise is watched too: its rejection must not go unhandled.
+      if (written instanceof Promise) written.catch(() => undefined);
     } catch {
       // a log that cannot be written changes nothing about the answer
     }
     return { kind: 'failed', error };
   };
-  const unconfigured = (): { kind: 'failed'; error: SteamApiError } => ({
-    kind: 'failed',
-    error: new SteamApiError('unconfigured'),
-  });
+  const unconfigured = (): Failed => ({ kind: 'failed', error: new SteamApiError('unconfigured') });
 
   /** One GET with the key in its header: the answer's JSON value, or why there is none. */
   const ask = async (
@@ -148,6 +163,7 @@ export function createSteamWebApi(options: {
     // Every value is of a closed alphabet, and is still written through URLSearchParams.
     const url = `${origin}${PATHS[call]}?${new URLSearchParams(parameters)}`;
     let text: string | undefined;
+    // Only the exchange itself is inside: whatever it throws is Steam failing to answer.
     try {
       const response = await fetch(url, {
         method: 'GET',
@@ -189,7 +205,7 @@ export function createSteamWebApi(options: {
     },
     async checkAppOwnership(steamId) {
       if (parseSteamId(steamId) === undefined) throw new TypeError('a SteamID is 17 digits');
-      // An ordinary key cannot ask this, and Steam penalises the address that tries.
+      // Only the publisher key of the app itself may ask this.
       if (!production || key === undefined) return unconfigured();
       const answer = await ask('CheckAppOwnership', key, { appid, steamid: steamId });
       if (answer instanceof SteamApiError) return failed('CheckAppOwnership', answer);

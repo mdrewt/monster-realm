@@ -4,7 +4,8 @@ import type { Profile } from '../config.ts';
 export type SteamId = string & { readonly __brand: 'SteamId' };
 
 const STEAM_ID = /^[0-9]{17}$/;
-const SUBJECT_PREFIX = 'steam:';
+/** What the subject of every Steam player begins with, and no other subject does. */
+export const STEAM_SUBJECT_PREFIX = 'steam:';
 
 /** The value as a SteamId when it is a string of exactly 17 ASCII digits; otherwise undefined. */
 export function parseSteamId(value: unknown): SteamId | undefined {
@@ -13,13 +14,13 @@ export function parseSteamId(value: unknown): SteamId | undefined {
 
 /** `steam:<steamid64>`, the subject of a Steam player. */
 export function steamSubject(steamId: SteamId): string {
-  return `${SUBJECT_PREFIX}${steamId}`;
+  return `${STEAM_SUBJECT_PREFIX}${steamId}`;
 }
 
 /** The SteamID of exactly `steam:<17 digits>`; undefined for anything else. */
 export function steamIdOfSubject(sub: string): SteamId | undefined {
-  if (typeof sub !== 'string' || !sub.startsWith(SUBJECT_PREFIX)) return undefined;
-  return parseSteamId(sub.slice(SUBJECT_PREFIX.length));
+  if (typeof sub !== 'string' || !sub.startsWith(STEAM_SUBJECT_PREFIX)) return undefined;
+  return parseSteamId(sub.slice(STEAM_SUBJECT_PREFIX.length));
 }
 
 /** The four members of Steam's ownership answer the rule reads. */
@@ -68,8 +69,8 @@ export type SteamEntitlement =
  * the admin flag: under Valve's development app Steam cannot say who owns the game, so it is
  * never asked. `production` asks Steam and applies `entitled`, and never reads a flag.
  *
- * The decision rejects when one of the three functions does: a failure of our own never comes
- * back as an answer.
+ * The decision rejects when one of the three functions does, and for a `steamId` that is not a
+ * SteamID: a failure of our own never comes back as an answer.
  */
 export function steamEntitlementSource(options: {
   readonly profile: Profile;
@@ -80,6 +81,7 @@ export function steamEntitlementSource(options: {
   const { denied } = options;
   const decide = profileDecision(options);
   return async (steamId) => {
+    if (parseSteamId(steamId) === undefined) throw new TypeError('a SteamID is 17 digits');
     if ((await denied(steamId)) !== false) return { entitled: false, reason: 'denied' };
     return decide(steamId);
   };
@@ -101,7 +103,8 @@ function profileDecision(options: {
     case 'production':
       return async (steamId) => {
         const answer = await checkAppOwnership(steamId);
-        if (answer.kind === 'failed') {
+        // Only an answer is read as one: anything else is Steam not answering.
+        if (answer.kind !== 'answered') {
           return { entitled: false, reason: 'unavailable', error: answer.error };
         }
         return entitled(answer.ownership, steamId)

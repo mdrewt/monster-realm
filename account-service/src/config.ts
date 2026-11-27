@@ -21,8 +21,9 @@ export interface Config {
   readonly keys: KeySource;
   readonly signIn: SignInMethod;
   /**
-   * Present when `MR_STEAM_APP_ID` is set: the profile offers the Steam sign-ins. A dev profile
-   * offers them beside its own `signIn`. No Steam key is held here: `steam/webApi.ts` reads it.
+   * Present when `MR_STEAM_APP_ID` is set: Steam is configured, and this is the app a Steam
+   * sign-in checks a player against. A dev profile keeps its own `signIn` beside it. No Steam key
+   * is held here: `steam/webApi.ts` reads it.
    */
   readonly steam?: SteamConfig;
 }
@@ -36,6 +37,8 @@ export const LOCAL_DEV_DATA_DIR = resolve(import.meta.dirname, '..', '.data');
  * account can run it, so it proves a sign-in and never ownership of the game.
  */
 export const STEAM_DEV_APP_ID = 480;
+/** A Steam app id is an unsigned 32-bit number. */
+export const MAX_STEAM_APP_ID = 0xffff_ffff;
 
 /**
  * A setting the service refuses to start with. `setting` is the env name at fault. The message
@@ -66,7 +69,6 @@ const SETTINGS: ReadonlySet<string> = new Set([
 ]);
 const SETTING_PREFIXES = ['MR_ACCOUNT_', 'MR_STEAM_'];
 const APP_ID = /^[1-9]\d{0,9}$/;
-const MAX_APP_ID = 0xffff_ffff;
 const DEV_HOSTNAMES = [LOCAL_DEV_ISSUER, HOSTED_DEV_ISSUER].map(
   (issuer) => new URL(issuer).hostname,
 );
@@ -170,7 +172,7 @@ function devSteam(
   if (appId !== undefined && appId !== String(STEAM_DEV_APP_ID)) {
     throw new ConfigError(
       'MR_STEAM_APP_ID',
-      `${profile} checks Steam only as app ${STEAM_DEV_APP_ID}, written exactly so`,
+      `${profile} checks Steam only as Valve's development app, its id written with no other character`,
     );
   }
   if (appId === undefined) {
@@ -200,16 +202,16 @@ function productionSteam(set: ReadonlyMap<string, string>): { readonly steam?: S
   const value = set.get('MR_STEAM_APP_ID');
   if (value === undefined) return {};
   const appId = APP_ID.test(value) ? Number(value) : Number.NaN;
-  if (!(appId <= MAX_APP_ID)) {
+  if (!(appId <= MAX_STEAM_APP_ID)) {
     throw new ConfigError(
       'MR_STEAM_APP_ID',
-      `must be a Steam app id: a decimal number from 1 to ${MAX_APP_ID}`,
+      `must be a Steam app id: a decimal number from 1 to ${MAX_STEAM_APP_ID}`,
     );
   }
   if (appId === STEAM_DEV_APP_ID) {
     throw new ConfigError(
       'MR_STEAM_APP_ID',
-      `app ${STEAM_DEV_APP_ID} is Valve's development app; the production profile takes the game's own`,
+      "Valve's development app is never the game; the production profile takes the game's own app id",
     );
   }
   return { steam: { appId } };

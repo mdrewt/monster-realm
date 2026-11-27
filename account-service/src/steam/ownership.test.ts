@@ -5,6 +5,7 @@ import {
   entitled,
   type OwnershipCheck,
   parseSteamId,
+  STEAM_SUBJECT_PREFIX,
   type SteamEntitlement,
   type SteamId,
   steamEntitlementSource,
@@ -220,6 +221,8 @@ describe('SteamIDs and Steam subjects', () => {
   });
 
   test('the subject of a Steam player is steam: and the SteamID, and it reads back as that id', () => {
+    expect(STEAM_SUBJECT_PREFIX).toBe('steam:');
+    expect(steamSubject(PLAYER).startsWith(STEAM_SUBJECT_PREFIX)).toBe(true);
     expect(steamSubject(PLAYER)).toBe(`steam:${PLAYER_DIGITS}`);
     expect(steamIdOfSubject(steamSubject(PLAYER))).toBe(PLAYER);
     expect(steamIdOfSubject(steamSubject(OTHER))).toBe(OTHER);
@@ -350,6 +353,63 @@ describe('the decision on production', () => {
     if (result.entitled || result.reason !== 'unavailable') throw new Error('not unavailable');
     expect(result.error).toBe(error);
     expect(f.calls.devFlag).toEqual([]);
+  });
+
+  test.each([
+    ['an unknown kind', { kind: 'weird', ownership: owner(PLAYER) }],
+    ['a capitalised kind', { kind: 'Answered', ownership: owner(PLAYER) }],
+    ['an undefined kind', { kind: undefined, ownership: owner(PLAYER) }],
+    ['no kind', { ownership: owner(PLAYER) }],
+  ])('a check result with %s carrying a perfect owner answer is not entitled: unavailable acs-8.2', async (_name, check) => {
+    const f = fakes({ denied: false, flag: true, check: check as unknown as OwnershipCheck });
+    const result = await decide('production', f);
+    expect(result.entitled).toBe(false);
+    expect(result.entitled === false && result.reason).toBe('unavailable');
+    expect(f.calls.devFlag).toEqual([]);
+  });
+
+  test.each([
+    ['null', null],
+    ['undefined', undefined],
+  ])('a check result of %s never resolves entitled acs-8.2', async (_name, check) => {
+    const f = fakes({ denied: false, flag: true, check: check as unknown as OwnershipCheck });
+    const outcome = await settle(decide('production', f));
+    if (outcome.ok) expect(outcome.value.entitled).toBe(false);
+    expect(f.calls.devFlag).toEqual([]);
+  });
+});
+
+describe('a steamId that is not 17 digits at run time', () => {
+  const notSteamIds: ReadonlyArray<readonly [string, string]> = [
+    ['0', '0'],
+    ['an empty string', ''],
+    ['letters', 'abc'],
+    ['16 digits', PLAYER_DIGITS.slice(1)],
+    ['18 digits', `${PLAYER_DIGITS}0`],
+  ];
+
+  async function expectRefusedBeforeAnyEffect(profile: Profile, raw: string): Promise<void> {
+    const f = fakes({ denied: false, flag: true, check: answered(owner(raw)) });
+    const outcome = await settle(decide(profile, f, raw as unknown as SteamId));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toBeInstanceOf(TypeError);
+    expect(f.calls.denied).toEqual([]);
+    expect(f.calls.devFlag).toEqual([]);
+    expect(f.calls.check).toEqual([]);
+  }
+
+  test.each(
+    DEV_PROFILES.flatMap((profile) =>
+      notSteamIds.map(([name, raw]) => [profile, name, raw] as const),
+    ),
+  )('on %s a steamId of %s rejects with TypeError and the flag is never read acs-8.6', async (profile, _name, raw) => {
+    await expectRefusedBeforeAnyEffect(profile, raw);
+  });
+
+  test.each(
+    notSteamIds,
+  )('on production a steamId of %s rejects with TypeError and Steam is never asked', async (_name, raw) => {
+    await expectRefusedBeforeAnyEffect('production', raw);
   });
 });
 
