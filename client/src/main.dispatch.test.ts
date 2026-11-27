@@ -6195,7 +6195,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
       shell.querySelector('.tactics-turnbar-badge')?.textContent,
       // wr261127-b (named intentional change): the badge shows from the tuning's cap (37) minus the
       // retreat lead, so round 32 is the first round it names the cap.
-      'round 32 of a wild battle (the cap 37 minus the retreat lead): the retreat badge at the TUNING`s round cap (37)',
+      'wild round 32 (cap 37 - lead): the retreat badge names the TUNING`s cap (37)',
     ).toBe(i18n.tf('tactics.turnbar.retreatAt', { round: 37 }));
     expect(
       bt12bIdsOf(shell, '.tactics-turnbar .tactics-chip--ghost'),

@@ -3,8 +3,8 @@
 // WRONG-IMPL-KILLED list (one per criterion):
 //   - "no trim before non-empty check" → whitespace-only draft → canSubmit:false ★ catches it
 //   - "trim not reflected in trimmedDraft"  → trimmedDraft:'' for '   ' catches it
-//   - "''  passes as truthy display name"  → ''→'(unnamed)' test catches it
-//   - "non-empty currentName shows '(unnamed)'" → passthrough test catches it
+//   - "''  passes as truthy display name"  → ''→ the en `rename.unnamed` test catches it
+//   - "non-empty currentName shows the stand-in" → passthrough test catches it
 //   - "canSubmit:false for a valid non-empty draft" → happy-path test catches it
 //   - "trimmedDraft is raw (not trimmed)"  → ('Old','  New  ')→'New' test catches it
 //
@@ -90,13 +90,13 @@ describe('buildRenameViewModel PTC1B-7: whitespace-only / empty draft → canSub
 });
 
 // ---------------------------------------------------------------------------
-// D6: currentName === '' → displayCurrentName = '(unnamed)'; non-empty passes through
+// D6: currentName === '' → displayCurrentName = the en `rename.unnamed`; non-empty passes through
 // ---------------------------------------------------------------------------
 
-describe('buildRenameViewModel D6: empty currentName → displayCurrentName "(unnamed)"', () => {
-  it('BITES: currentName:"" → displayCurrentName:"(unnamed)" — kills impl that passes "" through as display name', () => {
+describe('buildRenameViewModel D6: empty currentName → displayCurrentName the `rename.unnamed` stand-in', () => {
+  it('BITES: currentName:"" → displayCurrentName:the en `rename.unnamed` — kills impl that passes "" through as display name', () => {
     // D6: store.player(identity)?.name can be '' for a never-named player.
-    // The overlay must show '(unnamed)' as a placeholder, not a blank label.
+    // The overlay must show the `rename.unnamed` stand-in as a placeholder, not a blank label.
     // WRONG IMPL KILLED: `displayCurrentName: currentName` (passes '' through).
     // wr261127-b (named intentional change): the stand-in is the active catalog's `rename.unnamed`
     // (English under the default locale), not a literal in the model.
@@ -107,18 +107,18 @@ describe('buildRenameViewModel D6: empty currentName → displayCurrentName "(un
     expect(vm.trimmedDraft).toBe('SomeDraft');
   });
 
-  it('BITES: non-empty currentName passes through unchanged — kills impl that always shows "(unnamed)"', () => {
-    // WRONG IMPL KILLED: an impl that always substitutes '(unnamed)' regardless of currentName.
+  it('BITES: non-empty currentName passes through unchanged — kills impl that always shows the stand-in', () => {
+    // WRONG IMPL KILLED: an impl that always substitutes the stand-in regardless of currentName.
     const vm = buildRenameViewModel('Mira', 0, 'NewName');
     expect(vm.displayCurrentName).toBe('Mira');
   });
 
-  it('BITES: whitespace currentName is NOT "(unnamed)" — only empty string triggers the fallback (D6)', () => {
-    // D6 specifies ''→'(unnamed)'; a name that is literally '   ' (unlikely but possible
-    // from server) must not collapse to '(unnamed)' — the server is the SSOT on what is
+  it('BITES: whitespace currentName is NOT the stand-in — only empty string triggers the fallback (D6)', () => {
+    // D6 specifies ''→ the stand-in; a name that is literally '   ' (unlikely but possible
+    // from server) must not collapse to the stand-in — the server is the SSOT on what is
     // a valid name.
     // WRONG IMPL KILLED: an impl that calls trim() on currentName to decide the fallback,
-    // turning a whitespace-only but non-empty stored name into '(unnamed)'.
+    // turning a whitespace-only but non-empty stored name into the stand-in.
     const vm = buildRenameViewModel('   ', 0, 'NewName');
     expect(vm.displayCurrentName).toBe('   ');
   });
@@ -173,7 +173,7 @@ describe('buildRenameViewModel displayTag', () => {
     }
   });
 
-  it('with no tag the name fields are unchanged, an empty name still reads (unnamed) [lpw-40.2]', () => {
+  it('with no tag the name fields are unchanged, an empty name still reads the stand-in [lpw-40.2]', () => {
     // WRONG IMPL KILLED: a model that blanks or placeholders the name when there is no tag.
     const vm = buildRenameViewModel('Aria', 0, ' x ');
     expect(vm.displayCurrentName).toBe('Aria');
