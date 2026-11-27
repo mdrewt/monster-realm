@@ -32,8 +32,8 @@
 //! `host_check_schedule`. The row ticks [`host_account_check`] every
 //! [`HOST_CHECK_INTERVAL_MS`], and a tick asks about the marked row's handle, and no other,
 //! once the last success is [`HOST_CHECK_MIN_AGE_MS`] old. A world nobody reconnects to so
-//! learns within about a day that its host's account no longer owns the game, and what address
-//! it is reached at. A tick that gets no answer writes nothing and the next one asks again.
+//! learns within about a day whether its host's account owns the game, and what address it is
+//! reached at. A tick that gets no answer writes nothing and the next one asks again.
 //!
 //! The world's address: every answer reports the address the service saw the request leave
 //! from, and the world stores it in `world_egress`, one row per address family. A world asks
@@ -946,7 +946,7 @@ struct HostCheck {
 }
 
 /// The check a tick of the schedule row `scheduled_id` makes at this transaction's time. None,
-/// and the tick sends nothing, when `host_check_schedule` no longer holds that row, when the
+/// and the tick sends nothing, when `host_check_schedule` holds no row under that id, when the
 /// row is not due ([`host_check_due`], judged on the stored row), and when no row is marked.
 fn due_host_check(tx: &ReducerContext, scheduled_id: u64) -> Option<HostCheck> {
     let fired = tx
