@@ -275,8 +275,7 @@ points there.
    and wait for the records to resolve to it. Then `docker compose --profile "$P" up -d`: Caddy
    obtains the certificates.
 6. Check discovery and `/jwks` at the issuer URL, sign in with a test account, and run section 2's
-   source-address check: every world's stored address is the old host's view of it until its next
-   check.
+   source-address check against the new host.
 
 Keep the old host's volumes until the new host has served sign-ins; then delete them with
 `down -v`.

@@ -166,7 +166,7 @@ own. No module calls them in this build.
   followed by the subject. The encryption is deterministic, so one account in one world has one
   handle under one key, another world or account has another, and the service keeps no table of
   who joined which world. The first handle key seals; every key in the file opens, and what a
-  retired key's handle holds is answered sealed under the first. Only the one spelling the
+  handle under any other key holds is answered sealed under the first. Only the one spelling the
   service writes opens.
 - **Source address.** `address` in an answer, and the address a limit counts, is the address at
   the other end of the request's socket. When that address is inside `MR_ACCOUNT_TRUSTED_PROXY`
