@@ -85,7 +85,8 @@ the art.
 ### 1.3 Concerns, their ports and what each adapter provides
 
 Every concern has one owner. The owner is a port, a module under `client/src/platform/`, only
-where a second host is known to need one (1.5). Every other concern keeps the owner it has: an
+where a second host is known to need one (1.5): "one port per concern" and "no port for a single
+implementation no second host needs" are read together as one owner per concern. Every other concern keeps the owner it has: an
 injected structural type the real global satisfies, or the module that registers the DOM event.
 The Electron and Tauri columns say what that shell's adapter provides; "same web API" means the
 shell provides nothing of its own and the browser code runs. A claim
@@ -396,16 +397,18 @@ well.
    the `catch` runs today, and removes the anchor and revokes the URL in its `finally`, so the
    order of those steps is today's. `applyMenuStep` and `downloadExportBundle` call them; the
    export keeps its completeness guard and passes its static console line and its blocked-download
-   message as `onBlocked`. `downloadBugBundle` is not touched (finding F3). Touches:
+   message as `onBlocked`. It computes the file's name before the call, where today that sits
+   inside the `try`: `exportBundleFilename` formats a request id and a clock reading and throws on
+   neither. `downloadBugBundle` is not touched (finding F3). Touches:
    `client/src/platform/handoff.ts`, `client/src/platform/handoff.test.ts`, `client/src/main.ts`,
    the `client/src/main.*.test.ts` family, this file and `ARCHITECTURE.md`. Pins: none; the
    whole-tree i18n scans cover the new file.
 2. `client/src/shell/config.ts` takes `OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE` and
    `ACCOUNT_REQUIRED`. They are constants with no writer, resolved from `TARGET_KIND` and one
-   build value, and they import nothing new into `config.ts`. `SIGN_IN_OFFER` goes with row 8;
-   `TELEMETRY_CONFIG` and the locale block stay in `main.ts`. Touches: `client/src/main.ts`,
-   `client/src/shell/config.ts`, `client/src/shell/config.test.ts`, the
-   `client/src/main.*.test.ts` family, this file, `docs/refactors/client-shell.md` and
+   build value; `config.ts` gains one type import (`SignInMode`) and nothing at run time.
+   `SIGN_IN_OFFER` goes with row 8; `TELEMETRY_CONFIG` and the locale block stay in `main.ts`.
+   Touches: `client/src/main.ts`, `client/src/shell/config.ts`, `client/src/shell/config.test.ts`,
+   the `client/src/main.*.test.ts` family, this file, `docs/refactors/client-shell.md` and
    `ARCHITECTURE.md`.
 3. `client/src/shell/commandPort.ts` is created (2.2). `main.ts` installs it beside the hint host.
    `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and

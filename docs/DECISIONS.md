@@ -2330,8 +2330,9 @@ per shell, and shell code in the client tree); leaving everything to the shell's
 APIs (no route for a call with no web API); a port for a concern no second host needs; a bridge that
 hands the page an object of the shell's, or a bridge function that acts on what the page sends without
 checking it in the shell's own process. Whether a shell's page may call into the shell at all is that
-shell's security posture: the bridge is the default, one the operator may overrule, and a shell that
-exposes none still fits, because the browser's code runs and the shell handles those web APIs itself.
+shell's security posture. The bridge is the default, one the operator may overrule: the Electron shell
+as specified exposes nothing but the shell document, and would have to allow the bridge's functions. A
+shell that exposes none still fits, because the browser's code runs and it handles those web APIs itself.
 
 ## Local-play budgets are measured medians with stated headroom, on one machine profile
 
