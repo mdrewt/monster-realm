@@ -61,23 +61,85 @@ pub struct MovementTickSchedule {
 /// the tick's warp arm, the load build's `dev_place_character`) and by
 /// `ensure_zone_schedules` (init, content sync). The scan is over one row per armed zone.
 pub(crate) fn arm_zone_tick(ctx: &ReducerContext, zone_id: u32) {
-    if ctx
+    // PROTOTYPE lpw-26 B: a slow row is replaced by a fast one; a fast one is kept.
+    let rows: Vec<MovementTickSchedule> = ctx
         .db
         .movement_tick_schedule()
         .iter()
-        .any(|s| s.zone_id == zone_id)
-    {
+        .filter(|s| s.zone_id == zone_id)
+        .collect();
+    if rows.iter().any(|s| !is_slow(&s.scheduled_at)) {
         return;
+    }
+    for row in rows {
+        ctx.db.movement_tick_schedule().id().delete(row.id);
     }
     ctx.db
         .movement_tick_schedule()
         .insert(MovementTickSchedule {
             id: 0,
             zone_id,
-            scheduled_at: ScheduleAt::Interval(
-                Duration::from_millis(STEP_MS.unsigned_abs()).into(),
-            ),
+            scheduled_at: interval_of(STEP_MS.unsigned_abs()),
         });
+}
+
+/// PROTOTYPE lpw-26 B: the quiescent interval, five steps.
+const SLOW_MS: u64 = STEP_MS.unsigned_abs() * 5;
+
+fn interval_of(ms: u64) -> ScheduleAt {
+    ScheduleAt::Interval(Duration::from_millis(ms).into())
+}
+
+fn is_slow(at: &ScheduleAt) -> bool {
+    match at {
+        ScheduleAt::Interval(d) => d.to_micros().unsigned_abs() == SLOW_MS * 1000,
+        ScheduleAt::Time(_) => false,
+    }
+}
+
+/// PROTOTYPE lpw-26 B: arm the fast tick of the zone character `entity_id` stands in. Called
+/// by every writer of a `move_intent` row.
+pub(crate) fn arm_tick_for(ctx: &ReducerContext, entity_id: u64) {
+    if let Some(ch) = ctx.db.character().entity_id().find(entity_id) {
+        arm_zone_tick(ctx, ch.zone_id);
+    }
+}
+
+/// PROTOTYPE lpw-26 B: is there anything in `zone` the next tick has to do? A character whose
+/// row still shows a step, a private intent pair the row does not publish yet, an undrained
+/// input that can drain, or an NPC that wanders. A queue held by a battle is not work.
+fn zone_has_work(ctx: &ReducerContext, zone: u32) -> bool {
+    if ctx
+        .db
+        .npc()
+        .zone_id()
+        .filter(zone)
+        .any(|n| n.wander_radius > 0)
+    {
+        return true;
+    }
+    let chars: Vec<Character> = ctx.db.character().zone_id().filter(zone).collect();
+    chars.into_iter().any(|c| {
+        if c.action != ActionState::Idle {
+            return true;
+        }
+        let Some(intent) = ctx.db.move_intent().entity_id().find(c.entity_id) else {
+            return false;
+        };
+        if c.move_queue != intent.queue || c.acked_seq != intent.last_input_seq {
+            return true;
+        }
+        if intent.queue.is_empty() {
+            return false;
+        }
+        !ctx.db
+            .player()
+            .entity_id()
+            .filter(c.entity_id)
+            .next()
+            .map(|p| is_in_ongoing_battle(ctx, p.identity))
+            .unwrap_or(false)
+    })
 }
 
 /// Is this character a player's? The `player` row is the one fact that separates
@@ -367,7 +429,9 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
         return Err(e);
     }
     intent.queue.push(input);
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
     // THE movement call site — a genuinely player-triggered reducer
     // (never movement_tick). Once per party monster over lead_party's
     // FULL id list (not just the lead); accrual first, auto-evolution
@@ -417,7 +481,9 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
     let mut intent = authorize_move(ctx, "set_move", seq)?;
     intent.queue.clear();
     intent.queue.push(input);
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
     Ok(())
 }
 
@@ -434,7 +500,9 @@ pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
     // the seq.
     let mut intent = authorize_move(ctx, "clear_queue", seq)?;
     intent.queue.clear();
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
     Ok(())
 }
 
@@ -459,7 +527,9 @@ pub(crate) fn drop_queued_moves(ctx: &ReducerContext, player: Identity) {
         return;
     }
     intent.queue.clear();
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
 }
 
 // --- Rate-limited encounter-failure logging -------------
@@ -846,6 +916,25 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         // zone_id: an NPC stays in its home zone. The wander step resolves no warp,
         // so npc.zone_id and character.zone_id stay equal.
         ctx.db.character().entity_id().update(ch);
+    }
+
+    // PROTOTYPE lpw-26 B: a fast row whose zone has gone quiescent is replaced by a slow one;
+    // a slow row whose zone has work again is replaced by a fast one.
+    let slow = is_slow(&sched.scheduled_at);
+    let work = zone_has_work(ctx, zone);
+    if work == slow {
+        ctx.db.movement_tick_schedule().id().delete(sched.id);
+        ctx.db
+            .movement_tick_schedule()
+            .insert(MovementTickSchedule {
+                id: 0,
+                zone_id: zone,
+                scheduled_at: interval_of(if work {
+                    STEP_MS.unsigned_abs()
+                } else {
+                    SLOW_MS
+                }),
+            });
     }
 
     Ok(())
