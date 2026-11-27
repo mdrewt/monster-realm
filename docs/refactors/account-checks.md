@@ -151,12 +151,15 @@ end:
 - **Retry.** A failed run is retried only by an interval row. A one-shot row is spent (P8, P9).
 - **Cost.** Reducers keep committing while a procedure waits (P10). What a procedure costs the
   reducer thread is the transaction it opens, about 0.12 ms of CPU for a one-row insert.
-- **Native tests.** The vendored crate's native branches refuse a `ProcedureContext`
+- **Native tests.** As published, the crate's native branches refuse a `ProcedureContext`
   (`vendor/spacetimedb/src/lib.rs:1614, 1661, 1865` panic, and `src/http.rs:573-576` returns an
-  error, at 2.16.1). A native test of a procedure therefore needs a `cfg` edit in
-  `vendor/native-host.patch` and `procedure_*` host functions in
-  `server-module/src/native_host_tests.rs`. The entry "Server-module tests run on our own host
-  ABI, over the two vendor crates patched where they refuse a native host" allows exactly that.
+  error, at 2.16.1). `vendor/native-host.patch` turns the transaction, database-identity and HTTP
+  branches to the host, and `server-module/src/native_host_tests.rs` supplies the `procedure_*`
+  host functions: `Fixture::run_procedure` runs a procedure as a sender or as the database, rolls
+  an aborted transaction back, and answers each HTTP request from a queue the test stubs, recording
+  the request. `sleep_until` (`:1661`) refuses natively. The entry "Server-module tests run on our
+  own host ABI, over the two vendor crates patched where they refuse a native host" allows exactly
+  that.
 
 ## 3. The alternatives
 

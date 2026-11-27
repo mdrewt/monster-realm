@@ -3537,8 +3537,10 @@ mod procedure_tests {
         while !iter.is_exhausted() {
             iter.read(&mut buf);
         }
-        buf.chunks_exact(8)
-            .map(|c| u64::from_le_bytes(c.try_into().expect("a u64 row is 8 bytes")))
+        buf.as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c))
             .collect()
     }
 
@@ -4088,6 +4090,44 @@ mod procedure_tests {
             fx.run_procedure(Caller::Database, at(), &mut http, probe),
             (other, other, true, at(), at()),
             "the database caller follows set_database_identity"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_while_waiting_fails_the_caller_with_its_own_payload() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "unused").while_waiting(|| {
+            rows.seed(&77);
+            panic!("the wait's own check failed on row 77");
+        }));
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let swallowed = ctx.http.get("https://accounts.invalid/wait").is_ok();
+                u32::from(swallowed)
+            })
+        }));
+        let text = panic_text(caught.expect_err("the closure's panic fails the run"));
+        assert_eq!(
+            text, "the wait's own check failed on row 77",
+            "the panic that reaches the test is the closure's own"
+        );
+        assert_eq!(
+            rows.rows(),
+            vec![77],
+            "the closure ran: the row it seeded before panicking is in the store"
+        );
+        let mut again = HttpQueue::new();
+        again.push(HttpAnswer::status(200, "next"));
+        let later = fx.run_procedure(Caller::Sender(me()), at(), &mut again, |ctx| {
+            let answer = outcome(ctx.http.get("https://accounts.invalid/next"));
+            (answer, ctx.with_tx(|_tx| scan()))
+        });
+        assert_eq!(
+            later,
+            (Ok((200, b"next".to_vec())), vec![77]),
+            "a following run on the same fixture gets its answer and reads the store normally"
         );
     }
 }
