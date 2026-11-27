@@ -357,9 +357,9 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   of those rules of form, holds anything but Ed25519 private keys with distinct `kid`s whose `x`
   is the public half of their `d`, repeats a login key's `kid`, or holds the `local-dev`
   attestation key (the refusal names the file);
-- any other name beginning `MR_ACCOUNT_` or `MR_STEAM_`, in any letter case, is set: a misspelt
-  setting never falls back to a default, and a Steam key under another spelling is never taken
-  for no key.
+- any other name beginning `MR_ACCOUNT_` or `MR_STEAM_`, in any letter case and with or without a
+  space around it, is set: a misspelt setting never falls back to a default, and a Steam key
+  under another spelling is never taken for no key.
 
 A refusal never repeats a setting's value. A refused configuration or key file leaves nothing
 written.
