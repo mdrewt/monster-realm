@@ -45,6 +45,8 @@ import {
   capturePad,
   capturePrompt,
   clearAccel,
+  clearedText,
+  clearPadAccel,
   leavePadIndex,
   outcomeText,
   type PadCaptureOutcome,
@@ -1325,5 +1327,86 @@ describe('controlsModel: the Pad column', () => {
       expect(fr).toContain(padGlyph(1));
     }
     expect(capturePrompt(row, 1), 'key and pad lines differ').not.toBe(padCapturePrompt(row, 1));
+  });
+});
+
+// Clear empties a shortcut's pad row as well as its keys; its cleared line says so.
+describe('controlsModel: clearing the pad half of a shortcut', () => {
+  const RIGHT_QUOTE = String.fromCharCode(0x2019);
+
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('clearPadAccel empties the accelerator`s pad row (the default Bag 7, a remapped Party 12 + LT on Journal) and changes no other row; it never mutates its input [rb-141.1]', () => {
+    // WRONG IMPL KILLED: a missing export (Clear leaves the pad button live); one that clears the
+    // wrong namespace (the button of the same name: the accelerator B vs the B button), one that
+    // clears a neighbour or resets the table to defaults, one that falls back to the default index
+    // instead of empty, and one that mutates the frozen input.
+    const bag = clearPadAccel(PAD_DEFAULT_BINDINGS, 'I');
+    expect(bag.accels.I, 'the Bag has no pad index').toEqual([]);
+    expect(bag).toEqual(padTable({}, { I: [] }));
+    expect(bag.buttons, 'no button row changed').toEqual(PAD_DEFAULT_BINDINGS.buttons);
+    expect(PAD_DEFAULT_BINDINGS.accels.I, 'the default table is untouched').toEqual([7]);
+    expect(Object.isFrozen(bag), 'the result is frozen like a real table').toBe(true);
+
+    const remapped = padTable({}, { J: [6], V: [] });
+    const cleared = clearPadAccel(remapped, 'J');
+    expect(cleared.accels.J, 'the remapped Journal button is gone').toEqual([]);
+    expect(cleared.accels.I, 'a neighbour keeps its index').toEqual([7]);
+    expect(cleared.accels.V, 'a neighbour keeps its (empty) row').toEqual([]);
+    expect(cleared.buttons).toEqual(PAD_DEFAULT_BINDINGS.buttons);
+    expect(remapped.accels.J, 'the input is untouched').toEqual([6]);
+
+    const accelB = clearPadAccel(PAD_DEFAULT_BINDINGS, 'B');
+    expect(accelB.buttons.B, 'the B button is a different row').toEqual([1]);
+
+    for (const a of MENU_ACCEL_IDS) {
+      const result = clearPadAccel(PAD_DEFAULT_BINDINGS, a);
+      expect(result.accels[a], a).toEqual([]);
+      for (const other of MENU_ACCEL_IDS) {
+        if (other !== a)
+          expect(result.accels[other], `${a} clears not ${other}`).toEqual(
+            PAD_DEFAULT_BINDINGS.accels[other],
+          );
+      }
+      expect(result.buttons, a).toEqual(PAD_DEFAULT_BINDINGS.buttons);
+    }
+  });
+
+  it('clearPadAccel answers the same table object for F8 and F9, which have no pad row [rb-141.1]', () => {
+    // WRONG IMPL KILLED: an F8 / F9 clear that throws on the missing row, adds a key to the table,
+    // or returns a copy (a needless re-save and re-apply).
+    expect(clearPadAccel(PAD_DEFAULT_BINDINGS, 'F8')).toBe(PAD_DEFAULT_BINDINGS);
+    expect(clearPadAccel(PAD_DEFAULT_BINDINGS, 'F9')).toBe(PAD_DEFAULT_BINDINGS);
+    const remapped = padTable({}, { J: [6] });
+    expect(clearPadAccel(remapped, 'F9')).toBe(remapped);
+  });
+
+  it('clearedText says the row has no key and no pad button for every pad-bindable accelerator, and no key for F8 and F9, in English and French [rb-141.3]', () => {
+    // WRONG IMPL KILLED: the old "has no key now" line for a pad-bindable row (the pad button is
+    // never mentioned); a "no pad button" line for F8 / F9 (they never had one); a hard-coded row
+    // label; the French lines left as the English text; an ASCII apostrophe for U+2019.
+    for (const a of MENU_ACCEL_IDS) {
+      const label = rowLabel(acc(a));
+      expect(clearedText(a), a).toBe(`${label} has no key and no pad button now.`);
+      expect(clearedText(a), a).toBe(tf('controls.clearedPad', { label }));
+    }
+    for (const a of ['F8', 'F9'] as const) {
+      const label = rowLabel(acc(a));
+      expect(clearedText(a), a).toBe(`${label} has no key now.`);
+      expect(clearedText(a), a).toBe(tf('controls.cleared', { label }));
+    }
+    setLocale('fr');
+    for (const a of MENU_ACCEL_IDS) {
+      expect(clearedText(a), `fr ${a}`).toBe(
+        `${rowLabel(acc(a))} n${RIGHT_QUOTE}a plus ni touche ni bouton de manette.`,
+      );
+    }
+    for (const a of ['F8', 'F9'] as const) {
+      expect(clearedText(a), `fr ${a}`).toBe(
+        `${rowLabel(acc(a))} n${RIGHT_QUOTE}a plus de touche.`,
+      );
+    }
   });
 });

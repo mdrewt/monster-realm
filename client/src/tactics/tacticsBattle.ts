@@ -38,6 +38,7 @@
 // player battle whose `forfeit` level is a two-row confirm that opens on "Keep fighting" — a mashed A
 // never forfeits — and whose Yes calls `deps.onForfeit` once (not a queue entry: the in-flight map is
 // untouched).
+import type { VButton } from '../input/buttons';
 import type { EventPayload, QueuedAction } from '../module_bindings/types';
 import { structurallyEqual } from '../ui/battlePolicy';
 import type { HintBattle } from '../ui/hintBarModel';
@@ -141,6 +142,8 @@ export interface TacticsBattleDeps {
   readonly onCancelQueue: (battleId: bigint, unitId: number) => void;
   /** bt-15 (BT15.3): the confirmed Forfeit row → `forfeit` (not a queue entry, 0 AP). */
   readonly onForfeit: (battleId: bigint) => void;
+  /** The live keycap of `button` on the last-used device, '' when nothing is bound to it there. */
+  readonly keycap: (button: VButton) => string;
   /** ts-6b-7.1: one utterance for the live region (main.ts: the status-notice queue). */
   readonly announce: (text: string) => void;
 }
@@ -374,6 +377,8 @@ export class TacticsBattle implements BattleOpsView {
   #saidEvents: string[] = [];
   #saidTurn: string | null = null;
   #heardTurn: string | null = null;
+  /** The last hold-to-clear line shown, '' before the first. */
+  #hintLine = '';
 
   constructor(parent: HTMLElement, deps: TacticsBattleDeps) {
     this.#deps = deps;
@@ -884,14 +889,20 @@ export class TacticsBattle implements BattleOpsView {
     this.#mode = IDLE;
   }
 
-  /** A Y tap while Y held would clear the plan: the "Hold Y" line, spoken at the next tick (once
-   *  per tick) and written to the ticker unless it already is the newest line, so a mashed Y never
+  /** A Y tap while Y held would clear the plan: the line naming Y's live keycap (Y when the device
+   *  in use binds nothing to it), spoken at the next tick (once per tick) and written to the ticker.
+   *  A hint already queued, or already the newest line, is reworded in place, so a mashed Y never
    *  floods the log. */
   #holdHint(): void {
     if (!this.clearPlanHoldable) return;
-    const line = s.tickerHoldToClear();
-    if (!this.#saidEvents.includes(line)) this.#saidEvents.push(line);
-    if (this.#ticker.lines().at(-1) !== line) this.#ticker.push(line);
+    const last = this.#hintLine;
+    const line = s.tickerHoldToClear(this.#deps.keycap('Y') || 'Y');
+    this.#hintLine = line;
+    const said = this.#saidEvents.indexOf(last);
+    if (said === -1) this.#saidEvents.push(line);
+    else this.#saidEvents[said] = line;
+    if (this.#ticker.lines().at(-1) !== last) this.#ticker.push(line);
+    else if (line !== last) this.#ticker.replaceLast(line);
   }
 
   /** A on a Move aim: the tile in the band drafts a Move of that band's strides (reach1 → 1,

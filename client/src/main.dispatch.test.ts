@@ -10005,3 +10005,225 @@ describe('ts-6b-7: the server-time estimate and the results drain', { sequential
     expect(said.includes(TURN2), 'and so did the round-2 turn line').toBe(true);
   });
 });
+
+// --- the Hold Y hint names the live keycap of Y --------------------------------------
+//
+// Fixture: a WILD battle on a FOE's turn (unit 62 waits), the own unit 61 pre-queued with a READY
+// plan row (my_battle_queue), so the shell lists Y as hold-capable: a Y tap (key down and up within
+// HOLD_MS = 500) is delivered at its release and writes / speaks the hint. The keycap is read at the
+// tap from the last-used source's table (keyboard: Y is KeyF by default, glyph "F"; pad: Y is index 3,
+// remapped here to index 10, glyph "LS").
+
+const HOLD_HINT_BATTLE = 2n ** 60n + 701n;
+const HOLD_HINT_MON = 2n ** 60n + 703n;
+
+/** The English hint line naming `key`. */
+const holdHintLine = (key: string): string => i18n.tf('tactics.ticker.holdToClear', { key });
+
+/** Seed the foe-turn wild battle with unit 61's READY plan. */
+function holdHintSeed(): void {
+  opts.store.upsertMonster(bt12Monster(HOLD_HINT_MON, 0));
+  opts.store.upsertBattle(bt12bAnchor(HOLD_HINT_BATTLE, 'Ongoing', [HOLD_HINT_MON]));
+  opts.store.reconcileBattleUnitsFromView([
+    bt12bUnit(HOLD_HINT_BATTLE, 61, {
+      owner: H.identity,
+      monsterId: HOLD_HINT_MON,
+      side: 'A',
+      slot: 0,
+      x: 1,
+      y: 1,
+    }),
+    bt12bUnit(HOLD_HINT_BATTLE, 62, {
+      owner: null,
+      monsterId: null,
+      side: 'B',
+      slot: 0,
+      x: 5,
+      y: 4,
+      wild: 0,
+    }),
+  ]);
+  opts.store.reconcileTacticalBattlesFromView([
+    bt12bTactical(HOLD_HINT_BATTLE, 'Wild', {
+      initiative: [62, 61],
+      turnIdx: 0,
+      turnState: { kind: 'Waiting', unitId: 62 },
+      tiePrioritySide: 'A',
+    }),
+  ]);
+  opts.store.reconcileBattleQueuesFromView([
+    {
+      unitId: 61,
+      battleId: HOLD_HINT_BATTLE,
+      owner: H.identity,
+      entries: ['EndTurn'],
+      submittedAtMs: 5n,
+    },
+  ]);
+}
+
+interface HoldHintRig {
+  /** The next frame / press instant, 100 ms on. */
+  readonly at: () => number;
+  /** What the live region was written since the last `hear()`, joined. */
+  readonly hear: () => string;
+}
+
+/** Boot, seed, settle every opening utterance, and start a fresh live-region log. */
+async function holdHintReady(beforeImport?: () => void): Promise<HoldHintRig> {
+  await bootReady(beforeImport);
+  server(1000);
+  holdHintSeed();
+  let t = 1100;
+  server(t);
+  for (let i = 1; i <= 40; i += 1) frame(t + i * 100);
+  t += 4_100;
+  const shell = bt12bShell();
+  expect(shell, 'fixture: the tactical shell is shown').not.toBeNull();
+  expect(
+    shell?.querySelector('.tactics-strip--locked'),
+    'fixture: the selected own unit shows its READY plan locked',
+  ).not.toBeNull();
+  const log = ts7WriteLog();
+  const at = (): number => {
+    t += 100;
+    return t;
+  };
+  const hear = (): string => {
+    for (let i = 0; i < 40; i += 1) {
+      frame(at());
+      log.collect();
+    }
+    return log.writes.splice(0).join(' | ');
+  };
+  return { at, hear };
+}
+
+/** `said` holds `hint` exactly once and nothing else (apart from blanks and separators). */
+function expectOnlyHint(said: string, hint: string, label: string): void {
+  expect(said.split(hint).length - 1, `${label}: the hint is spoken once`).toBe(1);
+  expect(said.split(hint).join('').replace(/[\s|]/g, ''), `${label}: nothing else is spoken`).toBe(
+    '',
+  );
+}
+
+/** A standard fake pad behind `navigator.getGamepads` (as main.input.test.ts), slot 0. */
+function holdHintUsePad(): { readonly buttons: { pressed: boolean }[] } {
+  const pad = {
+    index: 0,
+    id: 'fake standard pad',
+    connected: true,
+    mapping: 'standard',
+    buttons: Array.from({ length: 17 }, () => ({ pressed: false })),
+    axes: [0, 0, 0, 0],
+  };
+  Object.defineProperty(navigator, 'getGamepads', {
+    value: () => [pad, null, null, null],
+    configurable: true,
+    writable: true,
+  });
+  return pad;
+}
+
+describe('the Hold Y hint names the live keycap of Y', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (navigator as unknown as { getGamepads?: unknown }).getGamepads;
+    window.localStorage.removeItem('mr.controls');
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('a Y tap at the booted shell writes and speaks exactly "Hold <Y`s key> to clear the plan": the default F, then a keyboard remap applied live (the hint rewritten in place, one line) [rb-141.5]', async () => {
+    // WRONG IMPL KILLED: the old literal "Hold Y to clear the plan" (default Y is the F key); a
+    // keycap read once at boot (the live remap to G would still say F); a remap that appends a
+    // second hint line; a hint written but not spoken, or spoken twice; another button's keycap.
+    window.localStorage.removeItem('mr.controls');
+    const r = await holdHintReady();
+    const before = bt12bTicker();
+    press('KeyF', r.at());
+    expect(bt12bTicker(), 'the default Y key F: one new line naming it').toEqual([
+      ...before,
+      holdHintLine('F'),
+    ]);
+    expectOnlyHint(r.hear(), holdHintLine('F'), 'default key');
+
+    const input = await import('./shell/inputState');
+    input.applyBindings({
+      ...input.bindings,
+      buttons: { ...input.bindings.buttons, Y: ['KeyG'] },
+    });
+    press('KeyG', r.at());
+    expect(bt12bTicker(), 'the remapped Y key G: the one hint line rewritten in place').toEqual([
+      ...before,
+      holdHintLine('G'),
+    ]);
+    expectOnlyHint(r.hear(), holdHintLine('G'), 'remapped key');
+  });
+
+  it('the hint names the Y of the LAST-USED source: stored key G and pad index 10 (LS); a keyboard tap says G, a pad tap says LS, a keyboard tap says G again; with the pad`s Y unbound and the pad the last source it names Y [rb-141.5]', async () => {
+    // WRONG IMPL KILLED: the keyboard table read whatever the source (the pad tap would say G);
+    // the pad glyph of the DEFAULT Y index 3 ("Y") instead of the remapped index; the source
+    // remembered at boot instead of at the tap; an unbound pad Y printed as an empty "Hold  to
+    // clear the plan" instead of falling back to Y; a hint that stops at the first tap.
+    window.localStorage.setItem(
+      'mr.controls',
+      JSON.stringify({
+        v: 1,
+        buttons: { Y: ['KeyG'] },
+        accels: {},
+        pad: { buttons: { Y: [10] }, accels: {} },
+      }),
+    );
+    const pad = holdHintUsePad();
+    const r = await holdHintReady();
+    const before = bt12bTicker();
+
+    press('KeyG', r.at());
+    expect(bt12bTicker(), 'the stored key G').toEqual([...before, holdHintLine('G')]);
+    expectOnlyHint(r.hear(), holdHintLine('G'), 'stored key');
+
+    // A pad tap of the stored Y index: the pad is now the last source.
+    const padTap = (index: number): void => {
+      const button = pad.buttons[index];
+      if (button === undefined) throw new Error(`no pad button ${index}`);
+      button.pressed = true;
+      frame(r.at());
+      button.pressed = false;
+      frame(r.at());
+    };
+    padTap(10);
+    expect(bt12bTicker(), 'the pad`s Y glyph, the hint rewritten in place').toEqual([
+      ...before,
+      holdHintLine('LS'),
+    ]);
+    expectOnlyHint(r.hear(), holdHintLine('LS'), 'pad Y');
+
+    press('KeyG', r.at());
+    expect(bt12bTicker(), 'back on the keyboard: G again').toEqual([...before, holdHintLine('G')]);
+    expectOnlyHint(r.hear(), holdHintLine('G'), 'keyboard again');
+
+    // The pad table binds nothing to Y; the pad is the last source (noted between the key's down
+    // and its release, where the tap is read): the hint names Y.
+    const input = await import('./shell/inputState');
+    input.applyPadBindings({
+      ...input.padBindings,
+      buttons: { ...input.padBindings.buttons, Y: [] },
+    });
+    keyDown('KeyG', r.at());
+    input.noteInputSource('pad');
+    keyUp('KeyG', r.at());
+    expect(bt12bTicker(), 'an unbound pad Y: the line names Y').toEqual([
+      ...before,
+      holdHintLine('Y'),
+    ]);
+    expectOnlyHint(r.hear(), holdHintLine('Y'), 'unbound pad Y');
+  });
+});

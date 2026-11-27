@@ -122,6 +122,7 @@ import {
 import {
   applyBindings,
   applyPadBindings,
+  applyTables,
   bindings,
   held,
   inputRouter,
@@ -297,7 +298,13 @@ import {
   type UpperFrame,
   WORLD_STACK,
 } from './ui/contextStack';
-import { type CaptureTarget, clearAccel, outcomeText, type SlotTarget } from './ui/controlsModel';
+import {
+  type CaptureTarget,
+  clearAccel,
+  clearPadAccel,
+  outcomeText,
+  type SlotTarget,
+} from './ui/controlsModel';
 import type { ControlsViewHandlers } from './ui/controlsView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
@@ -3719,6 +3726,7 @@ function tacticsShellDeps(): TacticsBattleDeps {
       void dispatch({ kind: 'submitQueue', battleId, unitId, entries }),
     onCancelQueue: (battleId, unitId) => void dispatch({ kind: 'cancelQueue', battleId, unitId }),
     onForfeit: (battleId) => void dispatch({ kind: 'forfeit', battleId }),
+    keycap,
     // Joined onto a notice still queued, never replacing it (the queue holds one).
     announce: (text) =>
       queueNotice(
@@ -4833,7 +4841,8 @@ async function main(): Promise<void> {
       bindings: () => bindings,
       padBindings: () => padBindings,
       inputSource: () => lastSource,
-      onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
+      onClear: (accel) =>
+        applyTables(clearAccel(bindings, accel), clearPadAccel(padBindings, accel)),
       onReset: resetAllBindings,
       textStep: () => textStep,
       // Only `--mr-text-step` moves: the UI scale, the renderer and the world are untouched.

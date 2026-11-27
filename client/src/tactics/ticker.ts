@@ -171,6 +171,14 @@ export class Ticker {
     this.#list.scrollTop = this.#list.scrollHeight;
   }
 
+  /** Rewrite the newest line in place; nothing while the list is empty. */
+  replaceLast(line: string): void {
+    const item = this.#list.lastElementChild;
+    if (item === null) return;
+    item.textContent = line;
+    this.#lines[this.#lines.length - 1] = line;
+  }
+
   /** Drop every line (a new battle starts with an empty log). */
   clear(): void {
     this.#lines = [];

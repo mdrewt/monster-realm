@@ -377,6 +377,12 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   ],
   'controls.clear': [{ label: 'Bag' }, { label: 'Save bug report' }],
   'controls.cleared': [{ label: 'Journal' }, { label: 'Dismiss error' }],
+  // rb-141 (named intentional change): +controls.clearedPad, the cleared line of a row that also
+  // lost its pad button; `controls.cleared` stays for the rows no pad can bind (F8, F9).
+  'controls.clearedPad': [{ label: 'Journal' }, { label: 'Dismiss error' }],
+  // rb-141 (named intentional change): `tactics.ticker.holdToClear` is parameterised, moved from
+  // EXPECTED_PLAIN; `key` is the live keycap of the Y button.
+  'tactics.ticker.holdToClear': [{ key: 'Y' }, { key: 'U' }],
   // The pad remap (named intentional change): the Pad cell, the Pad capture prompt and the swap
   // line that leaves the other row with no pad button (3 ★). `label` / `otherLabel` are
   // controlsModel row labels and `key` a padGlyph keycap, carried verbatim; every field differs
@@ -1244,10 +1250,6 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tactics.results.endHow.adjudicatedDamageDealt': 'Decided on damage dealt',
   'tactics.results.endHow.adjudicatedCoin': 'Decided by the coin',
   'tactics.results.endHow.forfeit': 'Ended by forfeit',
-  // The Hold Y gesture (named intentional change): +1 plain `tactics.*` key = 571 keys, the ticker
-  // line a Y tap shows while Hold Y can clear the selected unit's READY plan (tactics/strings.ts
-  // is its only requester).
-  'tactics.ticker.holdToClear': 'Hold Y to clear the plan',
   // uif-7 (named intentional change, UIF7.2): +2 plain `kit.sheet.*` keys = 496 keys. The context
   // sheet's closing rows: Close ends the Monsters sheet, Back ends its Feed… and Evolve… lists. They
   // are the kit's, reused by later slices with no further catalog edit.
@@ -1744,6 +1746,21 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     outputA: 'Journal has no key now.',
     inputB: { label: 'Dismiss error' },
     outputB: 'Dismiss error has no key now.',
+  },
+  // rb-141 (named intentional change): the cleared line of a row that lost its key and its pad
+  // button; `controls.cleared` above is now the F8 / F9 line.
+  'controls.clearedPad': {
+    inputA: { label: 'Journal' },
+    outputA: 'Journal has no key and no pad button now.',
+    inputB: { label: 'Dismiss error' },
+    outputB: 'Dismiss error has no key and no pad button now.',
+  },
+  // rb-141 (named intentional change): was plain 'Hold Y to clear the plan'; now names the live key.
+  'tactics.ticker.holdToClear': {
+    inputA: { key: 'Y' },
+    outputA: 'Hold Y to clear the plan',
+    inputB: { key: 'U' },
+    outputB: 'Hold U to clear the plan',
   },
   // The pad remap: the Pad cell names its row, the prompt asks for a pad button, and a swap that
   // empties the other row says it has no pad button.
@@ -2526,16 +2543,17 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 573 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 574 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The pinned roster is 573 keys: chrome.status.privateHostNotice and the eight claim.gate.*
+    // The pinned roster is 574 keys: chrome.status.privateHostNotice and the eight claim.gate.*
     // sign-in gate lines among them.
     // The pad remap (named intentional change): 565 -> 570, +controls.slot.pad,
     // +controls.capture.padPrompt, +controls.refused.padReserved, +controls.refused.padProtected,
     // +controls.swappedPadUnbound.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 573 keys').toHaveLength(573);
+    // rb-141 (named intentional change): 573 -> 574, +controls.clearedPad.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 574 keys').toHaveLength(574);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3751,14 +3769,14 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 573 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 574 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 573 keys').toBe(573);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 574 keys').toBe(574);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 573 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(573);
+    // The French catalog holds the same 574 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(574);
   });
 });
 
@@ -3885,14 +3903,14 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 573 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 574 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 573 keys').toBe(573);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 574 keys').toBe(574);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 573 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(573);
+    // The French catalog holds the same 574 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(574);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -4216,15 +4234,15 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 573 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 574 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 573 keys').toBe(573);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 574 keys').toBe(574);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
-    // The French catalog holds the same 573 keys, chrome.status.privateHostNotice among them.
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(573);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(573);
+    // The French catalog holds the same 574 keys, chrome.status.privateHostNotice among them.
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(574);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(574);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4913,14 +4931,14 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 573 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 574 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    // Both rosters count chrome.status.privateHostNotice among their 573 keys.
-    expect(Object.keys(en), 'the English roster is 573 keys').toHaveLength(573);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(573);
+    // Both rosters count chrome.status.privateHostNotice among their 574 keys.
+    expect(Object.keys(en), 'the English roster is 574 keys').toHaveLength(574);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(574);
   });
 });
 
@@ -5043,14 +5061,14 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-6b-11 (named intentional change): -claim.privacyButton -raising.inventory.heading
     // +privacy.disclosure, 545 -> 544.
     // ts-6b-13 (named intentional change): 544 -> 543, -chrome.status.healUnavailable.
-    // Each catalog holds 573 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
+    // Each catalog holds 574 keys: identity.tag, identity.taggedName, claim.signInWithProvider,
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    // Both rosters count chrome.status.privateHostNotice among their 573 keys.
-    expect(Object.keys(en), 'the English roster is 573 keys').toHaveLength(573);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(573);
+    // Both rosters count chrome.status.privateHostNotice among their 574 keys.
+    expect(Object.keys(en), 'the English roster is 574 keys').toHaveLength(574);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(574);
   });
 });
 
@@ -5519,5 +5537,47 @@ describe('the pad remap: the Pad column ids in both catalogs', () => {
         otherLabel: 'Prev tab (LB)',
       }),
     );
+  });
+});
+
+// =============================================================================
+// The cleared line of a row that lost its pad button too, and the Hold Y line that names the live
+// keycap. Both are closures in BOTH catalogs; U+2019 is built by code point.
+// =============================================================================
+
+describe('the Clear line and the Hold Y line in both catalogs', () => {
+  const en = CATALOG_EN as unknown as Record<string, unknown>;
+  const fr = CATALOG_FR as unknown as Record<string, unknown>;
+  type LabelFn = (p: { label: string }) => string;
+  type KeyFn = (p: { key: string }) => string;
+
+  it('controls.clearedPad says the row has no key and no pad button, in English and French, and controls.cleared keeps its F8 / F9 text [rb-141.3]', () => {
+    // WRONG IMPL KILLED: the key added to en only (a French Clear throws); the French line left as
+    // the old "n'a plus de touche" copy (a pad-less player is told the pad still works); a closure
+    // that hard-codes its row; an ASCII apostrophe where the catalog writes U+2019; the F8 / F9 line
+    // changed too (it must not claim a pad button those rows never had).
+    // The English values are pinned in EXPECTED_PARAM_OUTPUTS; this adds the French ones.
+    expect(typeof en['controls.clearedPad'], 'en closure').toBe('function');
+    expect(typeof fr['controls.clearedPad'], 'fr closure').toBe('function');
+    const frFn = fr['controls.clearedPad'] as LabelFn;
+    expect(frFn({ label: 'Bag' })).toBe(
+      `Bag n${RIGHT_QUOTE}a plus ni touche ni bouton de manette.`,
+    );
+    expect(frFn({ label: 'Journal' })).toBe(
+      `Journal n${RIGHT_QUOTE}a plus ni touche ni bouton de manette.`,
+    );
+    expect((fr['controls.cleared'] as LabelFn)({ label: 'Save bug report' })).toBe(
+      `Save bug report n${RIGHT_QUOTE}a plus de touche.`,
+    );
+  });
+
+  it('tactics.ticker.holdToClear is a closure that names the key it is given, in English and French [rb-141.5]', () => {
+    // WRONG IMPL KILLED: the line left plain (the hint says Y whatever the remap); a closure that
+    // ignores its key or hard-codes Y; a French line left as English or still naming a fixed Y.
+    expect(typeof en['tactics.ticker.holdToClear'], 'en closure').toBe('function');
+    expect(typeof fr['tactics.ticker.holdToClear'], 'fr closure').toBe('function');
+    const frFn = fr['tactics.ticker.holdToClear'] as KeyFn;
+    expect(frFn({ key: 'Y' })).toBe('Maintenez Y pour effacer le plan');
+    expect(frFn({ key: 'RT' })).toBe('Maintenez RT pour effacer le plan');
   });
 });

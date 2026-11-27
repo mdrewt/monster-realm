@@ -2,8 +2,8 @@
 // source built over the one, the pad source built over the other, the router, the held movement
 // directions, the key codes whose OS repeats are cancelled and the source of the last press, which
 // the keycaps follow. Every other module reads them through its import, which is live. Only this
-// module assigns `bindings`, `keyboard` and `padBindings` (`applyBindings`, `applyPadBindings`,
-// `resetAllBindings`) and `lastSource` (`noteInputSource`); only its functions change
+// module assigns `bindings`, `keyboard` and `padBindings` (`applyTables`, behind every
+// function that changes a table) and `lastSource` (`noteInputSource`); only its functions change
 // `navHeldCodes`; `held`, `pad` and `inputRouter` are used through their own methods. Module scope
 // reads the saved tables from storage and constructs the devices: it registers no listener, writes
 // nothing and reads no Gamepad API (the pad source reads it at each poll).
@@ -19,7 +19,7 @@ import { InputRouter } from '../input/router';
 import { HeldDirections } from '../prediction/heldKeys';
 
 // The ONE binding table every input path and keycap reads: the player's saved table, else the
-// defaults (CTL12.4). Read at import; Controls replaces it live (`applyBindings`).
+// defaults (CTL12.4). Read at import; Controls replaces it live (`applyTables`).
 export let bindings = loadBindings(browserStorage());
 
 // Held movement keys (most-recently-pressed stack) — drives the frame-loop
@@ -44,7 +44,7 @@ export function installPadFaultSink(sink: (err: unknown) => void): void {
 }
 
 // The ONE pad table the pad source and the keycaps both read: the player's saved pad table, else
-// the defaults, from the same record as `bindings`. Controls replaces it live (`applyPadBindings`).
+// the defaults, from the same record as `bindings`. Controls replaces it live (`applyTables`).
 export let padBindings: PadBindings = loadPadBindings(browserStorage());
 
 // The pad source: every connected pad through the pad table into the same
@@ -96,13 +96,13 @@ export const releaseAllInput = (): void => {
   held.clear();
 };
 
-// A remap applies at once (CTL12B.2): both tables saved in one record, then every input path reads
-// the new tables. The keyboard source takes its table at construction, so it is replaced; whatever
-// was held is released first, or its keyup (unknown to the new source) would leave a button stuck.
-// The pad source is rebound, which latches every pad button held now: it acts only once released
-// and pressed again. False when the tables could not be saved: they still apply, until the page
-// reloads.
-const applyTables = (keys: Bindings, padTable: PadBindings): boolean => {
+// A remap or a Clear applies at once (CTL12B.2): both tables saved in one record, then every input
+// path reads the new tables. The keyboard source takes its table at construction, so it is replaced;
+// whatever was held is released first, or its keyup (unknown to the new source) would leave a button
+// stuck. The pad source is rebound, which latches every pad button held now: it acts only once
+// released and pressed again. False when the tables could not be saved: they still apply, until the
+// page reloads.
+export const applyTables = (keys: Bindings, padTable: PadBindings): boolean => {
   const saved = saveBindings(browserStorage(), keys, padTable);
   releaseAllInput();
   bindings = keys;

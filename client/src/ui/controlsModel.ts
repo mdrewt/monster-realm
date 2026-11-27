@@ -295,10 +295,28 @@ export function capturePad(
   };
 }
 
-/** Clear on an accelerator row (CTL12.7): both slots unbound, so its key does nothing until it is
- *  bound again. Button rows have no Clear: a protected button can never be emptied. */
+/** The keyboard half of Clear on an accelerator row (CTL12.7): both slots unbound, so its key does
+ *  nothing until it is bound again. Button rows have no Clear: a protected button can never be
+ *  emptied. */
 export function clearAccel(b: Bindings, accel: Accel): Bindings {
   return withRow(b, { kind: 'accel', id: accel }, []);
+}
+
+/** The pad half of Clear: `accel`'s pad button unbound. `pad` itself for F8 and F9, which have no
+ *  pad row. */
+export function clearPadAccel(pad: PadBindings, accel: Accel): PadBindings {
+  const row = padRow({ kind: 'accel', id: accel });
+  return row === undefined ? pad : withPadRow(pad, row, undefined);
+}
+
+/** The feedback line once `accel`'s row was cleared: it names the pad button only where a pad can
+ *  bind one. */
+export function clearedText(accel: Accel): string {
+  const row: ControlsRow = { kind: 'accel', id: accel };
+  const label = rowLabel(row);
+  return padRow(row) === undefined
+    ? tf('controls.cleared', { label })
+    : tf('controls.clearedPad', { label });
 }
 
 /** The feedback line for a capture's outcome. */
