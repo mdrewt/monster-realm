@@ -9,6 +9,11 @@ import Provider, {
 } from 'oidc-provider';
 import { accountClaims, ENTITLEMENT_CLAIM, ID_TOKEN_TTL_SECONDS } from './claims.ts';
 import {
+  createSteamTicketGrant,
+  STEAM_TICKET_GRANT,
+  type SteamTicketGrantOptions,
+} from './grants/steamTicket.ts';
+import {
   createInteractionRouter,
   interactionPath,
   interactionUid,
@@ -44,6 +49,9 @@ export interface AccountProvider {
  * Without `signIn` there is no sign-in step and no client, so nothing is issued. With it, a
  * registered client gets authorization code with PKCE, and every authorization request runs the
  * step: the service keeps no sign-in session to reuse.
+ *
+ * With `steamTicket`, a registered client can also exchange a Steam ticket for an ID token at the
+ * token endpoint (`grants/steamTicket.ts`); without it the endpoint knows no such grant.
  */
 export function createAccountProvider(options: {
   readonly issuer: string;
@@ -52,8 +60,11 @@ export function createAccountProvider(options: {
   readonly signIn?: SignInStep;
   /** Sign-ins that may be started within `SIGN_IN_TTL_SECONDS`; default `MAX_PENDING_SIGN_INS`. */
   readonly maxPendingSignIns?: number;
+  readonly steamTicket?: SteamTicketGrantOptions;
 }): AccountProvider {
   const { signIn } = options;
+  const steamTicket =
+    options.steamTicket === undefined ? undefined : createSteamTicketGrant(options.steamTicket);
 
   const signInsStarted = createRateLimiter({
     limit: options.maxPendingSignIns ?? MAX_PENDING_SIGN_INS,
@@ -90,7 +101,11 @@ export function createAccountProvider(options: {
   };
 
   const configuration: Configuration = {
-    adapter: storeAdapter(options.adapter, signIn !== undefined),
+    adapter: storeAdapter(
+      options.adapter,
+      signIn !== undefined,
+      steamTicket === undefined ? [] : [STEAM_TICKET_GRANT],
+    ),
     jwks: { keys: options.keys.keys.map((key) => ({ ...key })) },
     clients: [],
     responseTypes: ['code'],
@@ -164,6 +179,7 @@ export function createAccountProvider(options: {
   // With `proxy` on, the provider takes the request's scheme from X-Forwarded-Proto, which the
   // handler sets from the issuer: TLS ends at a reverse proxy, so the socket is always plain.
   provider.proxy = true;
+  steamTicket?.register(provider);
   const callback = provider.callback();
 
   const issuer = new URL(options.issuer);
@@ -187,6 +203,9 @@ export function createAccountProvider(options: {
       refuse(res, 414, `a request target is at most ${MAX_TARGET_LENGTH} characters`);
       return;
     }
+    // The ticket grant counts exchanges per source address, which a proxy of ours names in a
+    // forwarding header: it is read here, since nothing past this point sees those headers.
+    steamTicket?.noteSource(req);
     for (const name of Object.keys(req.headers)) {
       if (name === 'forwarded' || name.startsWith('x-forwarded-')) delete req.headers[name];
     }
@@ -268,12 +287,13 @@ const BEARER_MODELS: ReadonlySet<string> = new Set([
  * a copy of the database holds nothing that can be presented.
  *
  * A client is a stored `{ redirectUri }`. Whatever else its record holds, the provider sees a
- * public client with that one redirect address, the code and refresh grants and ES256 ID tokens.
- * Without a sign-in step there is no client.
+ * public client with that one redirect address, the code and refresh grants, each of
+ * `otherGrants`, and ES256 ID tokens. Without a sign-in step there is no client.
  */
 function storeAdapter(
   adapter: (model: string) => Adapter,
   clients: boolean,
+  otherGrants: readonly string[],
 ): (model: string) => Adapter {
   return (model) => {
     const store = adapter(model);
@@ -287,7 +307,7 @@ function storeAdapter(
             client_id: id,
             redirect_uris: [record.redirectUri],
             token_endpoint_auth_method: 'none',
-            grant_types: ['authorization_code', 'refresh_token'],
+            grant_types: ['authorization_code', 'refresh_token', ...otherGrants],
             response_types: ['code'],
             id_token_signed_response_alg: 'ES256',
           };
