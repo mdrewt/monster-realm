@@ -1,14 +1,15 @@
 //! `account_checks` — server-module domain submodule.
 //!
 //! A world asks our account service itself whether a player's account owns the game, through
-//! three procedures, and keeps the answer in `world_account`. An account plays one character
+//! four procedures, and keeps the answer in `world_account`. An account plays one character
 //! in a world, whatever the client: a check under a handle another identity holds moves that
 //! character to the caller.
 //!
 //! First contact: a client whose identity the world does not know gets a one-use ticket from
 //! the account service (`POST /ticket`) and calls [`check_account`]. The world presents the
-//! ticket, the names it answers to and its database identity at `POST /world/check`, and stores
-//! what the service answers: the account's handle in this world and whether it owns the game.
+//! ticket, its names ([`name_presented`]) and its database identity at `POST /world/check`, and
+//! stores what the service answers: the account's handle in this world and whether it owns the
+//! game.
 //! An identity the access rule has not admitted cannot connect, so the world's owner relays its
 //! ticket through [`check_account_for`]. A second account for an identity that holds one is
 //! refused. A handle another identity holds is the same account at another client: its character
@@ -26,10 +27,28 @@
 //! admitted and entitled by the stored row the whole time, and a run that gets no answer leaves
 //! whether the account owns the game unchanged; the host spends the one-shot row at its one run.
 //!
+//! The host's own check: the world's owner names the identity the host plays as
+//! ([`set_host_identity`]), which marks that identity's row and arms one row of
+//! `host_check_schedule`. The row ticks [`host_account_check`] every
+//! [`HOST_CHECK_INTERVAL_MS`], and a tick asks about the marked row's handle, and no other,
+//! once the last success is [`HOST_CHECK_MIN_AGE_MS`] old. A world nobody reconnects to so
+//! learns within about a day that its host's account no longer owns the game, and what address
+//! it is reached at. A tick that gets no answer writes nothing and the next one asks again.
+//!
+//! The world's address: every answer reports the address the service saw the request leave
+//! from, and the world stores it in `world_egress`, one row per address family. A world asks
+//! over the family its `ip:` names are in ([`asked_family`], [`check_url`]). It presents an
+//! `ip:` name in a redeem only while no address of that family is stored or the stored one is
+//! the name's own and under [`EGRESS_MAX_AGE_MS`] old, and a ticket through an `ip:` name
+//! carries a move only while the stored address confirms the name ([`ip_name_confirmed`]). An
+//! address can change hands, and a name that went on being presented would vouch for another
+//! host's world. A change of the world's names has the host's own check ask at its next tick
+//! ([`names_changed`]).
+//!
 //! A build asks the account service its profile names (`BuildProfile::world_check_url`). A
 //! build that names none checks no account: each procedure answers
-//! [`REJECT_BUILD_CHECKS_NOTHING`] as its first statement, and [`account_entitled`] answers
-//! `false` without reading.
+//! [`REJECT_BUILD_CHECKS_NOTHING`] as its first statement, [`set_host_identity`] answers it to
+//! the owner, and [`account_entitled`] answers `false` without reading.
 //!
 //! Every request carries a [`CHECK_TIMEOUT_MS`] timeout. Other transactions run while a
 //! request waits, and a transaction's body may run twice, so the transaction that stores an
@@ -38,14 +57,15 @@
 //! log line or return value holds a handle.
 //!
 //! WRITE-ISOLATION: this module alone declares and writes `world_account`,
-//! `world_check_budget`, `recheck_schedule` and `world_move`. Its procedures write three things
-//! else, each through the owning module: `world_allowlist` through `crate::world_binding` (the
-//! owner's own handle under the `Allowlist` rule, and a handle the service answered under a
-//! newer key), the tables of a character through `crate::accounts::move_character`, and an
-//! admission row a move would otherwise bring back into force through `crate::access`. They
-//! read the owner, the rule and the admission through `crate::access`, the world's names
-//! through `crate::world_binding`, and the deletion state and what an identity owns through
-//! `crate::accounts`.
+//! `world_check_budget`, `recheck_schedule`, `world_move`, `world_egress` and
+//! `host_check_schedule`. Its procedures write three things else, each through the owning
+//! module: `world_allowlist` through `crate::world_binding` (the owner's own handle under the
+//! `Allowlist` rule, and a handle the service answered under a newer key), the tables of a
+//! character through `crate::accounts::move_character`, and an admission row a move would
+//! otherwise bring back into force through `crate::access`. They read the owner, the rule and
+//! the admission through `crate::access`, the world's names through `crate::world_binding`, and
+//! the deletion state and what an identity owns through `crate::accounts`.
+//! `crate::world_binding` writes `host_check_schedule` only through [`names_changed`].
 
 use crate::accounts::{BuildProfile, BUILD_PROFILE};
 use crate::guards::log_reject;
@@ -75,7 +95,7 @@ pub(crate) const REJECT_CHECK_BUDGET: &str =
     "too many account checks this minute; try again shortly";
 pub(crate) const REJECT_WORLD_UNNAMED: &str = "this world has no name to check an account under";
 /// The service answered `403`: the ticket is unknown, spent or expired, or names another world.
-/// Also the refusal of an answer whose name this world does not answer to when it lands.
+/// Also the refusal of an answer whose name this world does not present when it lands.
 pub(crate) const REJECT_TICKET_REFUSED: &str = "the account service refused the ticket";
 /// No usable answer: the request failed or timed out, the status was neither `200` nor a
 /// ticket's `403`, or the body is not the answer's shape.
@@ -114,7 +134,8 @@ const STATUS_FORBIDDEN: u16 = 403;
 /// the account's handle in this world and whether it owns the game. `checked_at_ms` is when the
 /// world last asked about the row: the time of the last answer stored, or of the last re-check
 /// armed. PRIVATE; an identity reads its own row through `my_world_account`. `is_host` marks the
-/// row of the identity the host plays as; nothing here sets it.
+/// row of the identity the host plays as: [`set_host_identity`] sets it, on one row at most, and
+/// the row keeps it through a newer handle and a move to another identity.
 #[spacetimedb::table(accessor = world_account)]
 pub struct WorldAccount {
     #[primary_key]

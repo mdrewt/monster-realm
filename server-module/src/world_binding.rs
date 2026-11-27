@@ -3,7 +3,9 @@
 //! The world's names, the host's list for the `Allowlist` rule, and the attestation binding.
 //!
 //! A world answers to the names its owner set ([`set_world_names`]): an attestation's `aud`
-//! and the name a ticket was issued for must be one of them, byte for byte.
+//! and the name a ticket was issued for must be one of them, byte for byte. A call that changes
+//! the set tells `crate::account_checks`, whose check of the host's own account then asks again
+//! at its next tick.
 //!
 //! The host's list holds handles: what the account service answers for an account in this
 //! world, kept in `world_account` (`crate::account_checks`). Under `Allowlist`
@@ -45,7 +47,8 @@
 //! WRITE-ISOLATION: this module alone writes `world_binding`, `world_bind_nonce`, `world_name`
 //! and `world_allowlist`. It reads the owner and the rule in force through `crate::access` and
 //! withdraws an admission through it, reads and erases a `world_account` row through
-//! `crate::account_checks`, and reads the deletion state through `crate::guards`.
+//! `crate::account_checks` and tells it when the world's names change, and reads the deletion
+//! state through `crate::guards`.
 
 use crate::accounts::{AttestationKey, BuildProfile, BUILD_PROFILE, ENTITLEMENT_BASE_GAME};
 use crate::guards::log_reject;
