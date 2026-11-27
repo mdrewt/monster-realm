@@ -2400,7 +2400,7 @@ a per-input, per-batch or per-join cost that grows with stored accounts or monst
 
 **Decision.** In a single-player or friends world the player connects under that world's own
 anonymous token and never sends an account token. The world asks our account service itself whether
-the player's account owns the game, through three procedures in
+the player's account owns the game, through four procedures in
 `server-module/src/account_checks.rs`, and keeps the answer in private `world_account {handle,
 identity, entitled, checked_at_ms, is_host}`, which an identity reads through `my_world_account`
 (its own row alone). A handle is what the service answers for one account in one world: opaque, the
@@ -2435,6 +2435,36 @@ same at every check, and not a credential.
   stored row the whole time, and a row never expires. A run with no answer leaves whether the
   account owns the game unchanged, the host spends the one-shot row whatever the run did, and the
   first connection 10 minutes after the arming asks again.
+- **The host's own check.** The owner names the identity the host plays as with
+  `set_host_identity(who)`: it marks that identity's row (`is_host`), clears the mark on every
+  other row and arms one row of private `host_check_schedule {scheduled_id, scheduled_at,
+  last_success_ms}`, which ticks `host_account_check` every hour. Refused with no write: a caller
+  that is not the owner, an identity whose account is pending deletion, a build that names no
+  account service, and an identity that holds no row (`that identity holds no account here`). A
+  tick asks about the marked row's handle, and no other, when the row holds no success or one 23
+  hours old or more; otherwise, and while no row is marked, it sends nothing. Any caller but the
+  database is refused before anything is read. The answer is stored as a re-check stores it, and
+  the success is stamped only when the answer landed on the row asked about, still marked, and the
+  schedule row still holds what the tick read. A tick that gets no answer writes nothing, so the
+  next one asks again. Naming another identity, and a `set_world_names` call that changes the set
+  of names, leave the schedule row with no success, so the next tick asks. The schedule row is
+  never updated: every change deletes it and inserts another. The mark stays on its row through a
+  newer handle and a move, until another identity is named or the row is erased.
+- **The world's address.** Every answer reports the address the service saw the request leave
+  from, and the world stores it in private `world_egress {family, address, confirmed_at_ms}`, one
+  row for IPv4 and one for IPv6. A re-check and the host's check store it in the transaction that
+  stores their answer. A redeem stores it in a transaction of its own, before the one that stores
+  the account, so a redeem that is then refused has still stored it. The world sends every request
+  to the service's check name for the address family of its `ip:` names, `ipv4.` or `ipv6.` in
+  front of the host its profile names (IPv4 when it lists `ip:` names of both), so the address
+  reported is of that family. A redeem presents a `spki:` or `dns:` name always, and an `ip:` name
+  only when it carries an address of that family and either no address is stored for the family or
+  the stored one is the name's own and was confirmed under 25 hours ago. A world that presents no
+  name is refused before anything is sent (`this world has no name to check an account under`).
+  The answered name must be one the world presents when the answer lands, that answer's own
+  address counted, or the redeem is refused (`the account service refused the ticket`). Addresses
+  are compared as addresses, an IPv4-mapped IPv6 address as the IPv4 address it carries, and a row
+  stamped after the transaction's own time vouches for nothing.
 - **Deciding after a wait.** Other transactions run while a request waits, and a transaction's body
   may run twice. The transaction that stores an answer reads again every row it decides on (the
   admission or the ownership, the deletion state, the world's names, who holds the handle), and a
@@ -2459,24 +2489,28 @@ same at every check, and not a credential.
   key and a world build trusts no login issuer").
 - **What keeps the surface closed.** `findDefinitionViolations`
   (`scripts/verify-release-reducers.mjs`) refuses a module definition that declares any procedure
-  but these three, or any schedule but the module's own, on the default build and on each release
+  but these four, or any schedule but the module's own, on the default build and on each release
   artefact. The reducer census (`server-module/src/privacy_enforcement_tests.rs`) refuses a
   `procedure` attribute outside `account_checks.rs` and pins the tables each procedure reaches:
   for the two first-contact procedures `world_account`, `world_check_budget`, `world_allowlist`,
-  `world_move`, `recheck_schedule` and the tables a character move writes; `world_account` and
-  `world_allowlist` for the re-check. The client's procedure
+  `world_move`, `recheck_schedule`, `world_egress` and the tables a character move writes;
+  `world_account`, `world_allowlist` and `world_egress` for the re-check; those three and
+  `host_check_schedule` for the host's check. The same file proves `world_egress` and
+  `host_check_schedule` private, with no view over either. The client's procedure
   surface is pinned by `evals/client-surface-privacy.eval.mjs`, and the wire contract records each
   procedure's arguments and return type.
 
 The attestation binding is compiled beside it (`server-module/src/world_binding.rs`: the
 tables `world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers
 and the verifier). It records a binding that nothing reads: it entitles and admits nobody, and
-it is to be removed with `POST /attest`. Not built: the
-host account's daily check and the rule for a world's `ip:` names (until then every name is
-presented), the client's half, and the gate that refuses a caller who is not entitled in
-every reducer. Proved by `server-module/src/account_checks_tests.rs` on the native test
-host, with every answer of the service stubbed. The measurements on 2.16.1, the four alternatives
-with a judge's scores and the slice changes are in `docs/refactors/account-checks.md`.
+it is to be removed with `POST /attest`. Not built: the client's half, and the gate that refuses a
+caller who is not entitled in every reducer. Proved by
+`server-module/src/account_checks_tests.rs` and, for the host's own check,
+`server-module/src/account_checks_host_tests.rs` on the native test host, with every answer of the
+service stubbed. That host runs a scheduled procedure as the scheduler would call it and runs no
+scheduler, so the hourly tick and a request to a check name are not measured on a published
+module. The measurements on 2.16.1, the four alternatives with a judge's scores and the slice
+changes are in `docs/refactors/account-checks.md`.
 
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
 itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
@@ -2494,7 +2528,23 @@ free identities in an `Open` world can make a world send; the relay is outside i
 whoever it chooses, its own player included. The unbind and the drop take the admission row
 because, while an identity holds a `world_account` row, `Allowlist` governs it by its handle alone
 and leaves the admission row unread, and every rule change keeps that row: erasing the account row
-alone would let back in an identity whose handle the owner removed. The choice rests on the bundled
+alone would let back in an identity whose handle the owner removed. The host's own check exists
+because a world asks only when somebody connects: one its host leaves running would otherwise keep
+a standing and an address nothing has confirmed for days. The mark sits on a `world_account` row
+because the owner's credential stays out of the page, so the host plays under another identity
+than the owner's. The check ticks hourly and asks at 23 hours so that one falls due within a day
+and a failed tick is tried again before a stored address, good for 25 hours, lapses. The schedule
+row is replaced because the pinned host (2.16.1, read in its source and not measured on a running
+host) queues an updated scheduled row again at the call, under the new row's hash, and drops that
+entry when the transaction then aborts: an interval row would stop ticking until the host
+restarts, while a delete and an insert that roll back leave the first row's entry queued. An
+address can change hands, and a world that went on presenting its `ip:` name would vouch for
+whoever holds the address next. The account service sees where a world's requests leave from, so
+the world learns its address from the party it already asks and calls no other. One request
+reports one family, so the world asks over the family its `ip:` names are in: a dual-stack host's
+requests could otherwise leave over IPv6 and its IPv4 name would never be confirmed. The redeem
+stores the address apart from the account because a refusal aborts the storing transaction, and
+the answer that shows a name to be another's is the one refused. The choice rests on the bundled
 host's `[module-http]` being on, which the operator decided
 (<https://github.com/mdrewt/monster-realm/issues/874>): with it off a shell world checks nobody.
 On, it adds nothing a host's owner could not already do: the host refuses loopback and private
@@ -2507,7 +2557,10 @@ the service cannot be reached; running a failed re-check again within the connec
 it, or arming one for an identity at every connection;
 storing an answer without reading again the rows it was decided on; refusing the owner's relay by
 the budget; an admission check on the unbind (a removed player could not erase the link); keeping
-the admission row through an unbind or a drop. Defaults the operator may overrule (asked on
+the admission row through an unbind or a drop; updating a `host_check_schedule` row in place; a
+host check a client can start, or one that asks about any handle but the marked row's; presenting
+an `ip:` name once the stored address is another or is 25 hours old; storing an answer's address
+only together with the account row. Defaults the operator may overrule (asked on
 <https://github.com/mdrewt/monster-realm/issues/861>): the withdrawal writes `world_admission`, so an
 unbind in a `Password` world costs the player the door, and so does an unbind under `Open` by a
 player who is offline when the rule changes to `Password`; after an unbind under `Password` or
@@ -2516,7 +2569,15 @@ without the owner's relay; a removed player who has disconnected cannot reach th
 every route runs the connect reducer first (see "A world that is not open refuses an unadmitted
 identity at connect and in every reducer"); the `test` and `dev-enforcing` builds name the
 `hosted-dev` account service, so a dev server's `check_account` sends real requests there; and an
-answer whose `handle` is missing is stored as not entitled whatever else it says.
+answer whose `handle` is missing is stored as not entitled whatever else it says. Defaults of the
+address rule and the host's check, which the operator may overrule too: a world that lists `ip:`
+names of both families asks over IPv4 and never presents the IPv6 one; a world whose requests
+leave from another address than the one it lists (a NAT gateway, a proxy, a VPN) never confirms
+its `ip:` name and checks nobody in through it; a world reached only by an `ip:` name, with no
+host marked and no known player returning, stays closed to first contact once its stored address
+is 25 hours old; nothing clears the host mark but naming another identity or erasing the row, and
+a schedule row whose marked row was erased keeps ticking and sends nothing; an answer that reports
+no address is judged by the stored row alone (the service reports one in every answer).
 
 ## One character per account in a world: a check under a handle another identity holds moves the character
 
@@ -2538,12 +2599,15 @@ to play here`), so checking in again with the same account moves the character b
   the destination's `last_position`, and its `character`, `move_intent` and `player` rows are
   deleted, the `player` row last. The destination's own `join_game` makes its character there. The
   source's later disconnect finds no `player` row and writes nothing of the character.
-- **Refusals, each with no write.** A ticket whose answered name is not a `spki:` or `dns:` name
-  (`this account already plays here under another identity`; no `ip:` name is confirmed in this
-  module); a caller that holds another account; a caller that owns a character (`this identity
-  already plays a character here`); and, under one reason (`this character cannot change clients
-  right now`), either identity in an ongoing battle or named by a trade offer or session, or a
-  source whose account is pending deletion.
+- **Refusals, each with no write.** A ticket whose answered name is neither a `spki:` name, a
+  `dns:` name nor an `ip:` name the world has confirmed (`this account already plays here under
+  another identity`); a caller that holds another account; a caller that owns a character (`this
+  identity already plays a character here`); and, under one reason (`this character cannot change
+  clients right now`), either identity in an ongoing battle or named by a trade offer or session,
+  or a source whose account is pending deletion. The world has confirmed an `ip:` name while the
+  address stored for its family in `world_egress` is the name's own and was confirmed under 25
+  hours ago, read after the answer's own address is stored (see "A private world checks an account
+  itself: a one-use ticket at first contact, then the account's handle").
 - **What stays under the source.** Its `world_move` row; finished battles and what records them
   (`battle`, `battle_summary`, the tactical rows until their sweep, `playtest_event`); and the rows
   about that identity's own connection, admission and login (`player_session`, `world_admission`,
@@ -2558,7 +2622,8 @@ to play here`), so checking in again with the same account moves the character b
   data export carries the caller's own. An unbind and the owner's drop leave it: the row goes only
   by a check, the identity's own or one the owner relays, or by the cascade.
 
-Proved by `server-module/src/account_checks_tests.rs` (`mod character_move`) through the procedures
+Proved by `server-module/src/account_checks_tests.rs` (`mod character_move`, and `mod ip_move` for
+a move through an `ip:` name) through the procedures
 with the service's answer stubbed, and by the tests of `accounts::move_character`,
 `movement::move_position` and `ranking::move_profile`. `docs/local-play.md` ("One character per
 account: what a move carries and what it costs") holds the measured cost.
@@ -2581,8 +2646,10 @@ is refused for the same caller because the claimed character would be one it can
 with, while the row stands, nor replace by checking in, since it would own a character. While an
 identity holds a `world_account` row, `Allowlist` reads its handle and not its admission row, so
 an admission row left under a source whose handle the host removed would let that identity back
-in the moment its account row moved away. An address can change hands while a world still presents its `ip:` name, and a ticket
-through it would carry a character to the address's new holder. A pending deletion keeps the
+in the moment its account row moved away. An address can change hands while a world still lists
+its `ip:` name, and a ticket through it would carry a character to the address's new holder, so
+such a name carries a move only while the address the account service last reported for the world
+is the name's own. A pending deletion keeps the
 character under the identity its cascade is keyed on. One reason covers the three states of the
 other identity so the answer tells a ticket's holder nothing about it. The relay moves too: an
 identity the access rule has not admitted reaches the world only through it, and the owner already
@@ -2681,11 +2748,14 @@ browsers itself); a name supplied by the world or by a page a gate served; an in
 document or address entry that carries a reconnect token; an `ip:` or `dns:` name kept after its
 certificate. Limits, a default the operator may overrule: an address or a domain name proves who
 answers there when the player binds, and nothing about before or after. A world that moved keeps
-accepting its old address's name until its certificate expires (160 hours at most for an address,
-the certificate's life for a domain name), and a browser
-that loaded an earlier server's page at the same address and port may still run what that page
-left there. A name issued for the server's key, under a DNS zone we would operate, closes both and
-was weighed and not chosen (R-lpw-19-CHANGEDHANDS).
+accepting an attestation under its old address's name until its certificate expires (160 hours at
+most for an address, the certificate's life for a domain name), and a ticket under a `dns:` name
+as long. A ticket under an `ip:` name it refuses once the account service reports the world
+another address, or none for 25 hours (see "A private world checks an account itself: a one-use
+ticket at first contact, then the account's handle"). A browser that loaded an earlier server's
+page at the same address and port may still run what that page left there. A name issued for the
+server's key, under a DNS zone we would operate, closes both and was weighed and not chosen
+(R-lpw-19-CHANGEDHANDS).
 
 ## A browser binds a friends server by a sign-in on the account service's own origin; the attestation names the address the browser is sent back to
 

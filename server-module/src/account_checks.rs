@@ -700,9 +700,10 @@ fn move_gates(tx: &ReducerContext, from: Identity, who: Identity) -> Result<(), 
 /// moves to `who` (`accounts::move_character`) and the handle's row points at `who`, keeping its
 /// host mark. That is refused, again with no write, when the ticket's name cannot carry a move
 /// ([`name_carries_move`]; an `ip:` name carries one while the stored address confirms it,
-/// [`ip_name_confirmed`]), by [`move_gates`], and when the move itself fails. The identity the character left gets a `world_move` row and loses its
-/// armed re-check, and its admission row too when the access rule was refusing it, so the move
-/// admits nobody. A holder that owns no character is re-pointed the same way.
+/// [`ip_name_confirmed`]), by [`move_gates`], and when the move itself fails. The identity the
+/// character left gets a `world_move` row and loses its armed re-check, and its admission row too
+/// when the access rule was refusing it, so the move admits nobody. A holder that owns no
+/// character is re-pointed the same way.
 ///
 /// Otherwise `who`'s row holds the answer. Either way the owner's handle is on the list under
 /// `Allowlist`, and `who`'s own `world_move` row is deleted: it has checked in.
