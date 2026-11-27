@@ -40,7 +40,6 @@ use game_core::{
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::sync::Mutex;
-use std::time::Duration;
 
 /// Per-zone movement schedule: an interval row makes the scheduler call
 /// `movement_tick` for THAT zone every `STEP_MS`. A zone holds a row only while a
@@ -61,23 +60,110 @@ pub struct MovementTickSchedule {
 /// the tick's warp arm, the load build's `dev_place_character`) and by
 /// `ensure_zone_schedules` (init, content sync). The scan is over one row per armed zone.
 pub(crate) fn arm_zone_tick(ctx: &ReducerContext, zone_id: u32) {
-    if ctx
+    // PROTOTYPE lpw-26 A: the next multiple of `STEP_MS` on the server clock.
+    let at_ms = (now_ms(ctx).div_euclid(STEP_MS) + 1) * STEP_MS;
+    arm_zone_tick_at(ctx, zone_id, at_ms, None);
+}
+
+fn sched_ms(at: &ScheduleAt) -> Option<i64> {
+    match at {
+        ScheduleAt::Time(t) => Some(t.to_micros_since_unix_epoch() / 1000),
+        ScheduleAt::Interval(_) => None,
+    }
+}
+
+/// PROTOTYPE lpw-26 A: arm `zone_id`'s one-shot tick for `at_ms`. A zone holds one pending
+/// row at most: a row already due at or before `at_ms` is kept, a later one is replaced.
+/// `calling` is the row whose tick is running (the host deletes it after the call), which
+/// never counts as pending. An interval row a live database still holds is left for its own
+/// next tick to convert.
+fn arm_zone_tick_at(ctx: &ReducerContext, zone_id: u32, at_ms: i64, calling: Option<u64>) {
+    let pending: Vec<MovementTickSchedule> = ctx
         .db
         .movement_tick_schedule()
         .iter()
-        .any(|s| s.zone_id == zone_id)
-    {
-        return;
+        .filter(|s| s.zone_id == zone_id && Some(s.id) != calling)
+        .collect();
+    for row in pending {
+        match sched_ms(&row.scheduled_at) {
+            None => return,
+            Some(t) if t <= at_ms => return,
+            Some(_) => {
+                ctx.db.movement_tick_schedule().id().delete(row.id);
+            }
+        }
     }
+    // A zone's rows carry one of two ids the module chooses, so arming never takes a value
+    // from the table's sequence (each one taken rewrites a system row). They sit above every
+    // id a sequence handed out to a row a live database still holds. The running tick's row
+    // still holds one of the two until the host deletes it.
+    let first = (1u64 << 40) + u64::from(zone_id) * 2;
+    let id = if calling == Some(first) {
+        first + 1
+    } else {
+        first
+    };
     ctx.db
         .movement_tick_schedule()
         .insert(MovementTickSchedule {
-            id: 0,
+            id,
             zone_id,
-            scheduled_at: ScheduleAt::Interval(
-                Duration::from_millis(STEP_MS.unsigned_abs()).into(),
-            ),
+            scheduled_at: ScheduleAt::Time(spacetimedb::Timestamp::from_micros_since_unix_epoch(
+                at_ms * 1000,
+            )),
         });
+}
+
+/// PROTOTYPE lpw-26 A: arm the tick of the zone character `entity_id` stands in. Called by
+/// every writer of a `move_intent` row.
+pub(crate) fn arm_tick_for(ctx: &ReducerContext, entity_id: u64) {
+    if let Some(ch) = ctx.db.character().entity_id().find(entity_id) {
+        arm_zone_tick(ctx, ch.zone_id);
+    }
+}
+
+/// PROTOTYPE lpw-26 A: is there anything in `zone` the next tick has to do? A character whose
+/// row still shows a step, a private intent pair the row does not publish yet, or an undrained
+/// input that can drain. A queue held by a battle is not work.
+fn zone_has_work(ctx: &ReducerContext, zone: u32) -> bool {
+    let chars: Vec<Character> = ctx.db.character().zone_id().filter(zone).collect();
+    chars.into_iter().any(|c| {
+        if c.action != ActionState::Idle {
+            return true;
+        }
+        let Some(intent) = ctx.db.move_intent().entity_id().find(c.entity_id) else {
+            return false;
+        };
+        if c.move_queue != intent.queue || c.acked_seq != intent.last_input_seq {
+            return true;
+        }
+        if intent.queue.is_empty() {
+            return false;
+        }
+        !ctx.db
+            .player()
+            .entity_id()
+            .filter(c.entity_id)
+            .next()
+            .map(|p| is_in_ongoing_battle(ctx, p.identity))
+            .unwrap_or(false)
+    })
+}
+
+/// PROTOTYPE lpw-26 A: the first tick after `tick` on which an NPC of `zone` that wanders may
+/// step, or `None` when the zone has none.
+fn next_npc_due_tick(ctx: &ReducerContext, zone: u32, tick: u64) -> Option<u64> {
+    ctx.db
+        .npc()
+        .zone_id()
+        .filter(zone)
+        .filter(|n| n.wander_radius > 0)
+        .map(|n| {
+            let period = game_core::npc::rules::NPC_STEP_TICKS;
+            let phase = tick.wrapping_add(1).wrapping_add(n.entity_id) % period;
+            tick + 1 + (period - phase) % period
+        })
+        .min()
 }
 
 /// Is this character a player's? The `player` row is the one fact that separates
@@ -367,7 +453,9 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
         return Err(e);
     }
     intent.queue.push(input);
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
     // THE movement call site — a genuinely player-triggered reducer
     // (never movement_tick). Once per party monster over lead_party's
     // FULL id list (not just the lead); accrual first, auto-evolution
@@ -417,7 +505,9 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
     let mut intent = authorize_move(ctx, "set_move", seq)?;
     intent.queue.clear();
     intent.queue.push(input);
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
     Ok(())
 }
 
@@ -434,7 +524,9 @@ pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
     // the seq.
     let mut intent = authorize_move(ctx, "clear_queue", seq)?;
     intent.queue.clear();
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
     Ok(())
 }
 
@@ -459,7 +551,9 @@ pub(crate) fn drop_queued_moves(ctx: &ReducerContext, player: Identity) {
         return;
     }
     intent.queue.clear();
+    let entity_id = intent.entity_id;
     ctx.db.move_intent().entity_id().update(intent);
+    arm_tick_for(ctx, entity_id);
 }
 
 // --- Rate-limited encounter-failure logging -------------
@@ -565,14 +659,25 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     // run only when no character has an intent row, where they find a session
     // that pre-dates `move_intent`. Checked before the map is read so a zone
     // whose content fails to load still stops ticking.
+    // PROTOTYPE lpw-26 A: an interval row a live database held at publish is removed by its
+    // own first tick, which then arms one-shots like any other.
+    let called_by_interval = matches!(sched.scheduled_at, ScheduleAt::Interval(_));
+    if called_by_interval {
+        ctx.db.movement_tick_schedule().id().delete(sched.id);
+    }
     let occupied = chars.iter().any(|(_, intent)| intent.is_some())
         || chars.iter().any(|&(id, _)| is_player_character(ctx, id));
     if !occupied {
+        // Nothing is armed again: the host deletes the one-shot row after this call.
         reset_npcs_home(ctx, zone);
-        ctx.db.movement_tick_schedule().id().delete(sched.id);
         return Ok(());
     }
     let now = Millis(now_ms(ctx));
+    // The tick this call stands for: the row's own time, or the clock's when the call is late
+    // by a whole tick or the row is an interval row.
+    let tick_ms = sched_ms(&sched.scheduled_at)
+        .unwrap_or(0)
+        .max(now.0.div_euclid(STEP_MS) * STEP_MS);
     // The zone's map: built once per process from the compile-time-embedded
     // RON, borrowed here every tick (never rebuilt per tick).
     let map = match crate::content_cache::cached_zone_tile_map(zone) {
@@ -584,7 +689,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
                 json_escape(&e)
             );
-            return Ok(()); // logged no-op: a content failure must not abort the tick
+            return Ok(()); // logged no-op: a content failure must not abort the tick (not re-armed)
         }
     };
     for (id, intent) in chars {
@@ -787,7 +892,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     // ticks that ran: it keeps advancing while a zone's schedule is removed, so a
     // zone that empties and is entered again cannot replay or rewind an NPC's
     // step sequence.
-    let tick_counter: u64 = now.0.unsigned_abs() / (STEP_MS.unsigned_abs().max(1));
+    let tick_counter: u64 = tick_ms.unsigned_abs() / (STEP_MS.unsigned_abs().max(1));
     let npc_entity_ids: Vec<u64> = ctx
         .db
         .npc()
@@ -846,6 +951,18 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         // zone_id: an NPC stays in its home zone. The wander step resolves no warp,
         // so npc.zone_id and character.zone_id stay equal.
         ctx.db.character().entity_id().update(ch);
+    }
+
+    // PROTOTYPE lpw-26 A: arm the next tick only where there is work for one: the next tick
+    // when a character has work now, else the tick an NPC's next step comes due on, else none.
+    let next_tick = if zone_has_work(ctx, zone) {
+        Some(tick_counter + 1)
+    } else {
+        next_npc_due_tick(ctx, zone, tick_counter)
+    };
+    if let Some(t) = next_tick {
+        let at_ms = i64::try_from(t).unwrap_or(i64::MAX / STEP_MS) * STEP_MS;
+        arm_zone_tick_at(ctx, zone, at_ms, Some(sched.id));
     }
 
     Ok(())
