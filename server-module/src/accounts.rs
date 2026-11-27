@@ -1188,6 +1188,12 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // how many chunks it deleted; the count is published
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
+    // The guest's world rows are not re-keyed either: its admission, its
+    // wrong-password record, its binding and its bind nonce go with the identity,
+    // so a later change to `Allowlist` does not list the account of a guest that
+    // is gone. The host's list is not written here.
+    crate::access::erase_admission(ctx, guest);
+    crate::world_binding::erase_world_binding(ctx, guest);
     // The guest's finished battles are not re-keyed (why: docs/DECISIONS.md,
     // "Accounts, guest identity and the claim flow"). The claim erases them as
     // the deletion cascade erases its subject's: the per-battle tactical rows
@@ -1506,6 +1512,8 @@ pub fn account_deletion_reaper(
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::access::erase_admission(ctx, args.account_identity);
+    // Before the binding goes: it is the only record of the account to take off the list.
+    crate::world_binding::delist_account_of(ctx, &BUILD_PROFILE, args.account_identity);
     crate::world_binding::erase_world_binding(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);

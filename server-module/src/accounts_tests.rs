@@ -12959,8 +12959,7 @@ mod acct_nh {
         /// place of the guest's; only some of the four tables erased; an erase that breaks
         /// the claim itself.
         #[test]
-        fn a_completed_claim_erases_the_retired_guests_world_rows_and_no_one_elses_wr261127a_1()
-        {
+        fn a_completed_claim_erases_the_retired_guests_world_rows_and_no_one_elses_wr261127a_1() {
             let fx = fixture();
             let w = world(&fx);
             let _list = listing(&fx);
@@ -13059,8 +13058,7 @@ mod acct_nh {
         /// kills: a claim that leaves the guest's binding (its subject is seeded); a claim that
         /// erases the claimer's binding in place of the guest's.
         #[test]
-        fn after_the_claim_the_switch_to_allowlist_does_not_list_the_guests_subject_wr261127a_2()
-        {
+        fn after_the_claim_the_switch_to_allowlist_does_not_list_the_guests_subject_wr261127a_2() {
             let fx = fixture();
             let w = world(&fx);
             let list = switchable(&fx);
@@ -13189,7 +13187,11 @@ mod acct_nh {
             enlist(&list, &[OWN_SUB, KEPT_SUB]);
             cascade(&fx, &w, v);
             assert_eq!(listed(&list), subjects(&[OWN_SUB, KEPT_SUB]));
-            assert_eq!(fx.writes_to("world_allowlist"), 0, "no write call on the list");
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
             assert_eq!(
                 world_rows_of(&w, twin)[2].1.len(),
                 1,
@@ -13211,7 +13213,11 @@ mod acct_nh {
             enlist(&list, &[OTHER_SUB, KEPT_SUB]);
             cascade(&fx, &w, v);
             assert_eq!(listed(&list), subjects(&[OTHER_SUB, KEPT_SUB]));
-            assert_eq!(fx.writes_to("world_allowlist"), 0, "no write call on the list");
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
         }
 
         /// The deleted identity is bound to a subject the list does not hold: the list is left
@@ -13228,7 +13234,11 @@ mod acct_nh {
             enlist(&list, &[KEPT_SUB]);
             cascade(&fx, &w, v);
             assert_eq!(listed(&list), subjects(&[KEPT_SUB]));
-            assert_eq!(fx.writes_to("world_allowlist"), 0, "no write call on the list");
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
         }
     }
 }

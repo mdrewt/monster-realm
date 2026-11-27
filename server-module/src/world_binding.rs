@@ -14,14 +14,20 @@
 //! rule is in force each of those writes keeps the account of the owner's own trusted binding
 //! on it: the owner's list cannot leave it out, and a bind of the owner's identity adds it. The
 //! list never holds more than [`MAX_ALLOWLIST_ACCOUNTS`]; a write that would exceed that is
-//! refused whole.
+//! refused whole. An account's deletion takes the account of the deleted identity's binding
+//! off the list, unless another binding the build counts carries it ([`delist_account_of`]).
 //!
 //! A player erases their own binding with [`unbind_world_account`], the one client-callable
-//! reducer the access rule does not gate. An unbind of a binding the build counts withdraws the
-//! caller's admission row too, so it never lets in an identity whose account the owner removed.
+//! reducer the access rule does not gate, and the owner erases a named identity's with
+//! [`drop_world_binding`]. The table keeps a row for every identity that bound, and a change to
+//! `Allowlist` lists the account of every counted one, so the drop is how the owner brings
+//! those accounts under the bound. Either way, erasing a binding the build counts withdraws
+//! that identity's admission row too, so it never lets in an identity whose account the owner
+//! removed. A guest claim erases the binding and nonce of the guest identity it retires
+//! ([`erase_world_binding`]).
 //!
 //! A build accepts attestations under the keys of its profile and no others
-//! (`BuildProfile::attestation_keys`). A build with no key binds nothing: its five binding
+//! (`BuildProfile::attestation_keys`). A build with no key binds nothing: its six binding
 //! reducers answer [`REJECT_BUILD_BINDS_NOTHING`] before they decode, read or write anything,
 //! and [`trusted_binding`] answers `None` without reading. A binding records the `kid` that
 //! signed it and counts only while the build holds that key.
@@ -36,8 +42,8 @@
 //!
 //! WRITE-ISOLATION: this module alone writes `world_binding`, `world_bind_nonce`, `world_name`
 //! and `world_allowlist`. It reads the owner, the rule in force and the admission through
-//! `crate::access`, withdraws an unbinding caller's admission through it, and reads the
-//! deletion state through `crate::guards`.
+//! `crate::access`, withdraws the admission of an identity whose counted binding an unbind or a
+//! drop erases through it, and reads the deletion state through `crate::guards`.
 
 use crate::accounts::{AttestationKey, BuildProfile, BUILD_PROFILE, ENTITLEMENT_BASE_GAME};
 use crate::guards::log_reject;
@@ -53,7 +59,7 @@ use serde::Deserialize;
 use spacetimedb::{Identity, ReducerContext, Table};
 use std::collections::BTreeSet;
 
-/// The refusal of a build that holds no attestation key, from each of the five binding
+/// The refusal of a build that holds no attestation key, from each of the six binding
 /// reducers, before anything is decoded, read or written.
 pub(crate) const REJECT_BUILD_BINDS_NOTHING: &str = "this server takes no world binding";
 pub(crate) const REJECT_ATTESTATION_TOO_LONG: &str = "attestation too long";
@@ -362,11 +368,40 @@ pub(crate) fn on_allowlist(ctx: &ReducerContext, account_subject: &str) -> bool 
         .is_some()
 }
 
-/// Erase what this module holds about `identity`: its binding and its bind nonce. The deletion
-/// cascade's step for these two tables.
+/// Erase what this module holds about `identity`: its binding and its bind nonce. The step for
+/// these two tables of the deletion cascade, and of a guest claim for the guest identity it
+/// retires.
 pub(crate) fn erase_world_binding(ctx: &ReducerContext, identity: Identity) {
     ctx.db.world_binding().identity().delete(identity);
     ctx.db.world_bind_nonce().identity().delete(identity);
+}
+
+/// Take the account `identity` is bound to off the host's list, unless another identity's
+/// binding that a build of `profile` counts carries the same account, byte for byte. The
+/// deletion cascade's step for `world_allowlist`. It runs before [`erase_world_binding`]: the
+/// binding, whatever key signed it, is the only record of the account, so an identity with no
+/// binding takes nothing off the list. An entry the host typed that equals the account goes
+/// too, because it names the same person. The other bindings are read only when the account
+/// is listed.
+pub(crate) fn delist_account_of(ctx: &ReducerContext, profile: &BuildProfile, identity: Identity) {
+    let Some(binding) = ctx.db.world_binding().identity().find(identity) else {
+        return;
+    };
+    let account_subject = binding.account_subject;
+    if !on_allowlist(ctx, &account_subject) {
+        return;
+    }
+    let carried_by_another = ctx.db.world_binding().iter().any(|other| {
+        other.identity != identity
+            && other.account_subject == account_subject
+            && counts_under(profile, &other)
+    });
+    if !carried_by_another {
+        ctx.db
+            .world_allowlist()
+            .account_subject()
+            .delete(account_subject);
+    }
 }
 
 // --- Guards and writes ------------------------------------------------------------------
@@ -409,6 +444,20 @@ fn require_binding_build(
         return reject(reducer, ctx.sender(), REJECT_BUILD_BINDS_NOTHING);
     }
     Ok(())
+}
+
+/// Delete `binding`'s row and the bind nonce its identity holds, expired or not, and withdraw
+/// that identity's admission when the build counts the binding. What an unbind and the owner's
+/// drop share; both refuse a build that binds nothing first.
+fn remove_binding(ctx: &ReducerContext, binding: &WorldBinding) {
+    let who = binding.identity;
+    ctx.db.world_binding().identity().delete(who);
+    if ctx.db.world_bind_nonce().identity().find(who).is_some() {
+        ctx.db.world_bind_nonce().identity().delete(who);
+    }
+    if counts_under(&BUILD_PROFILE, binding) {
+        crate::access::withdraw_admission(ctx, who);
+    }
 }
 
 /// The nonce for `who` from one call's random bytes: each byte XORed with the byte of the
@@ -598,21 +647,28 @@ pub fn unbind_world_account(ctx: &ReducerContext) -> Result<(), String> {
         return Ok(());
     };
     crate::guards::require_not_deleting(ctx, "unbind_world_account")?;
-    ctx.db.world_binding().identity().delete(who);
-    if ctx.db.world_bind_nonce().identity().find(who).is_some() {
-        ctx.db.world_bind_nonce().identity().delete(who);
-    }
-    if counts_under(&BUILD_PROFILE, &binding) {
-        crate::access::withdraw_admission(ctx, who);
-    }
+    remove_binding(ctx, &binding);
     Ok(())
 }
 
-/// Erase the binding of `identity`, by the world's owner. A skeleton: it answers `Ok` and
-/// writes nothing.
+/// Erase the binding of `identity`, by the world's owner: what [`unbind_world_account`] erases
+/// for its caller, with the same withdrawal of the admission row when the build counts the
+/// binding. Refused with no write, in this order: a build that binds nothing; a caller that is
+/// not the owner; an `identity` whose account is pending deletion (the cascade erases its
+/// binding, and reads the account to take off the list from it); an `identity` with no binding
+/// ([`REJECT_NO_BINDING`]). The host's list is not written: the account stays listed until the
+/// owner's [`set_world_allowlist`] leaves it out. Under `Open` the dropped identity can bind
+/// again at once; under the other rules it is refused until the owner admits it or relays a
+/// bind.
 #[spacetimedb::reducer]
 pub fn drop_world_binding(ctx: &ReducerContext, identity: Identity) -> Result<(), String> {
-    let _ = (ctx, identity);
+    require_binding_build(ctx, &BUILD_PROFILE, "drop_world_binding")?;
+    crate::access::require_world_owner(ctx, "drop_world_binding")?;
+    crate::guards::require_subject_not_deleting(ctx, identity)?;
+    let Some(binding) = ctx.db.world_binding().identity().find(identity) else {
+        return reject("drop_world_binding", ctx.sender(), REJECT_NO_BINDING);
+    };
+    remove_binding(ctx, &binding);
     Ok(())
 }
 

@@ -56,6 +56,7 @@ import DeclineChallengeReducer from "./decline_challenge_reducer";
 import DeleteAccountReducer from "./delete_account_reducer";
 import DeployUnitsReducer from "./deploy_units_reducer";
 import DismissDialogueReducer from "./dismiss_dialogue_reducer";
+import DropWorldBindingReducer from "./drop_world_binding_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EssenceTrainReducer from "./essence_train_reducer";
 import EvolveReducer from "./evolve_reducer";
@@ -520,6 +521,7 @@ const reducersSchema = __reducers(
   __reducerSchema("delete_account", DeleteAccountReducer),
   __reducerSchema("deploy_units", DeployUnitsReducer),
   __reducerSchema("dismiss_dialogue", DismissDialogueReducer),
+  __reducerSchema("drop_world_binding", DropWorldBindingReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("essence_train", EssenceTrainReducer),
   __reducerSchema("evolve", EvolveReducer),

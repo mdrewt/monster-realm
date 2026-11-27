@@ -70,6 +70,9 @@
       "picks: array(DeployPick)"
     ],
     "dismiss_dialogue": [],
+    "drop_world_binding": [
+      "identity: identity()"
+    ],
     "enqueue_move": [
       "input: MoveInput",
       "seq: u64()"

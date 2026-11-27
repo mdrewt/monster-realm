@@ -13,8 +13,7 @@
 use super::{
     attestation_expired, bind_nonce_expired, bind_world_account, bind_world_account_for,
     binds_nothing, bound_entitled, drop_world_binding, erase_world_binding, is_visible_ascii,
-    on_allowlist,
-    request_bind_nonce, request_bind_nonce_for, set_world_allowlist, set_world_names,
+    on_allowlist, request_bind_nonce, request_bind_nonce_for, set_world_allowlist, set_world_names,
     trusted_binding, verify_attestation, VerifiedAttestation, ACCOUNT_SUBJECT_MAX_BYTES,
     ATTESTATION_MAX_BYTES, BIND_NONCE_BYTES, BIND_NONCE_SWEEP_MAX, BIND_NONCE_TTL_MS,
     MAX_ALLOWLIST_ACCOUNTS, MAX_WORLD_NAMES, REJECT_ALLOWLIST_ACCOUNT, REJECT_ATTESTATION_EXPIRED,
@@ -5791,7 +5790,10 @@ mod drop_binding {
     /// row; the owner holds a dev-key binding to [`THIRD_SUB`], a nonce and an admission row
     /// of its own. `world_admission` is writable (the drop withdraws a row of it), and the
     /// wrong-password records are registered on their key, read-only.
-    fn drop_world(fx: &Fixture, rule: WorldAccessRule) -> (W<'_>, Handle<'_, WorldAdmissionAttempt>) {
+    fn drop_world(
+        fx: &Fixture,
+        rule: WorldAccessRule,
+    ) -> (W<'_>, Handle<'_, WorldAdmissionAttempt>) {
         let w = valid_world(fx);
         let _ = fx
             .table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
@@ -6053,12 +6055,22 @@ mod drop_binding {
         w.binding
             .seed(&binding_row(dave(), THIRD_SUB, T0 - 3_000, true, dev_kid()));
         w.account.seed(&deleting_account(dave()));
-        assert_eq!(passes(&fx, alice(), T0), Ok(()), "fixture: alice is admitted");
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: alice is admitted"
+        );
         for (pair, label) in [
             ((alice(), bob()), "alice naming bob"),
             ((alice(), alice()), "alice naming herself"),
-            ((alice(), carol()), "alice naming an identity with no binding"),
-            ((alice(), dave()), "alice naming an identity pending deletion"),
+            (
+                (alice(), carol()),
+                "alice naming an identity with no binding",
+            ),
+            (
+                (alice(), dave()),
+                "alice naming an identity pending deletion",
+            ),
             ((bob(), alice()), "bob naming alice"),
             ((carol(), alice()), "an unbound, unadmitted caller"),
         ] {
@@ -6078,7 +6090,14 @@ mod drop_binding {
         w.admission.seed(&admission_row(alice()));
         for who in [carol(), alice()] {
             let label = format!("no binding: {}", who.to_hex());
-            assert_drop_refused(&fx, &w, &attempts, (owner(), who), REJECT_NO_BINDING, &label);
+            assert_drop_refused(
+                &fx,
+                &w,
+                &attempts,
+                (owner(), who),
+                REJECT_NO_BINDING,
+                &label,
+            );
         }
         assert_eq!(
             nonce_of(&w, alice()),
