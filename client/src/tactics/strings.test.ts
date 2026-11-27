@@ -49,7 +49,8 @@
 // The Hold Y hint line (named intentional change): the roster grows 147 → 148 (+1 plain,
 // `tactics.ticker.holdToClear`, the ticker line a Y tap shows while Hold Y can clear a READY plan).
 // The exact-roster test pins the 148 and the French and resolver tests follow the grown roster; the
-// last describe CALLS `tickerHoldToClear()` under English and French.
+// last describe CALLS `tickerHoldToClear(key)` under English and French. Named intentional change
+// (rb-141.5): that key now takes the live keycap, so 94 plain / 54 parameterised become 93 / 55.
 //
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
@@ -277,11 +278,13 @@ const BT15B_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /** The Hold Y gesture: the ticker line a Y tap shows while Hold Y can clear the selected unit's
- *  READY plan — 1 plain key. */
-const HOLD_Y_PLAIN_KEYS: readonly string[] = ['tactics.ticker.holdToClear'];
+ *  READY plan, naming the live keycap of the Y button — 1 parameterised key. */
+const HOLD_Y_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'tactics.ticker.holdToClear': ['key'],
+};
 
-/** Every `tactics.*` key: 94 plain, 54 parameterised = 148 (named intentional change, the Hold Y
- *  hint line: +1 plain. Were: 93 + 54 = 147). */
+/** Every `tactics.*` key: 93 plain, 55 parameterised = 148 (named intentional change, rb-141.5,
+ *  the Hold Y hint line names a keycap: 94 -> 93 plain, 54 -> 55 parameterised, total unchanged). */
 const PLAIN_KEYS: readonly string[] = [
   ...BT10_PLAIN_KEYS,
   ...BT11_PLAIN_KEYS,
@@ -289,7 +292,6 @@ const PLAIN_KEYS: readonly string[] = [
   ...BT12_PLAIN_KEYS,
   ...BT12B_PLAIN_KEYS,
   ...BT15B_PLAIN_KEYS,
-  ...HOLD_Y_PLAIN_KEYS,
 ];
 const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT10_PARAM_FIELDS,
@@ -298,6 +300,7 @@ const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT12_PARAM_FIELDS,
   ...BT12B_PARAM_FIELDS,
   ...BT15B_PARAM_FIELDS,
+  ...HOLD_Y_PARAM_FIELDS,
 };
 
 const PARAM_KEYS = Object.keys(PARAM_FIELDS);
@@ -417,7 +420,7 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     ).toEqual([]);
   });
 
-  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 148 tactics.* keys (named intentional change: 147 → 148, + the Hold Y hint line) — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys, (bt-12 increment B) the wild-pack label and the Still-there countdown, and (bt-15 increment B, named intentional change: 134 → 147) the clock / forfeit / results 9 plain and 4 parameterised keys — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
+  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 148 tactics.* keys (named intentional change: 147 → 148, + the Hold Y hint line) — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys, (bt-12 increment B) the wild-pack label and the Still-there countdown, and (bt-15 increment B, named intentional change: 134 → 147) the clock / forfeit / results 9 plain and 4 parameterised keys — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap} [rb-141.5]', () => {
     // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam; round 4: REV 6 R6.7): a menu label, reason,
     // dock or queue key missing from one locale (a French boot throws on opening the command menu);
     // a badge word, a forecast line or a Projected line missing from one locale (a French boot
@@ -441,11 +444,11 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     expect(Object.keys(BT15B_PARAM_FIELDS), 'fixture: 4 bt-15 B parameterised keys').toHaveLength(
       4,
     );
-    // Named intentional change (the Hold Y hint line): 93 → 94 plain
-    // (+tactics.ticker.holdToClear), 147 → 148.
-    expect(HOLD_Y_PLAIN_KEYS, 'fixture: 1 Hold Y plain key').toHaveLength(1);
-    expect(PLAIN_KEYS, 'fixture: 94 plain keys in all').toHaveLength(94);
-    expect(PARAM_KEYS, 'fixture: 54 parameterised keys in all').toHaveLength(54);
+    // Named intentional change (the Hold Y hint line, rb-141.5): tactics.ticker.holdToClear takes
+    // the keycap, so 94 → 93 plain, 54 → 55 parameterised, total unchanged at 148.
+    expect(Object.keys(HOLD_Y_PARAM_FIELDS), 'fixture: 1 Hold Y parameterised key').toHaveLength(1);
+    expect(PLAIN_KEYS, 'fixture: 93 plain keys in all').toHaveLength(93);
+    expect(PARAM_KEYS, 'fixture: 55 parameterised keys in all').toHaveLength(55);
     expect(new Set(ROSTER).size, 'fixture: 148 keys, none listed twice').toBe(148);
     expect(
       BT11_ROSTER.filter((k) => BT10_ROSTER.includes(k)),
@@ -1240,25 +1243,39 @@ describe('tactics strings: the Hold Y hint line', () => {
     setLocale('en');
   });
 
-  it('tickerHoldToClear() resolves the Hold Y hint at each call: exactly "Hold Y to clear the plan" in English and "Maintenez Y pour effacer le plan" in French, each the catalog`s own plain tactics.ticker.holdToClear', () => {
-    // WRONG IMPL KILLED: a function resolving a sibling key (the Clear plan row "Clear plan", its
-    // confirm "Yes, clear the plan"); the English copied into the French catalog; a parameterised
-    // key; a line resolved once at import (the locale switch would not show).
+  it('tickerHoldToClear(key) names the given keycap: "Hold T to clear the plan" / "Hold Enter to clear the plan" in English, "Maintenez T pour effacer le plan" in French, each the catalog`s own parameterised tactics.ticker.holdToClear [rb-141.5]', () => {
+    // Named intentional change (rb-141.5): the line was the plain "Hold Y to clear the plan"; it now
+    // names the key it is given.
+    // WRONG IMPL KILLED: a hard-coded Y (the old plain line); the key ignored in one locale; the
+    // English copied into the French catalog; a plain catalog key; a line resolved once at import
+    // (the locale switch would not show); a key printed in the wrong slot.
     setLocale('en');
-    expect(s.tickerHoldToClear(), 'en tickerHoldToClear()').toBe('Hold Y to clear the plan');
-    expect(EN['tactics.ticker.holdToClear'], 'the English catalog value').toBe(
-      'Hold Y to clear the plan',
+    expect(s.tickerHoldToClear('T'), 'en tickerHoldToClear(T)').toBe('Hold T to clear the plan');
+    expect(s.tickerHoldToClear('Enter'), 'en tickerHoldToClear(Enter)').toBe(
+      'Hold Enter to clear the plan',
+    );
+    expect(typeof EN['tactics.ticker.holdToClear'], 'the English catalog value is a closure').toBe(
+      'function',
+    );
+    expect((EN['tactics.ticker.holdToClear'] as (p: { key: string }) => string)({ key: 'Q' })).toBe(
+      'Hold Q to clear the plan',
     );
     setLocale('fr');
-    expect(s.tickerHoldToClear(), 'fr tickerHoldToClear()').toBe(
-      'Maintenez Y pour effacer le plan',
+    expect(s.tickerHoldToClear('T'), 'fr tickerHoldToClear(T)').toBe(
+      'Maintenez T pour effacer le plan',
     );
-    expect(FR['tactics.ticker.holdToClear'], 'the French catalog value').toBe(
-      'Maintenez Y pour effacer le plan',
+    expect(s.tickerHoldToClear('Enter'), 'fr tickerHoldToClear(Enter)').toBe(
+      'Maintenez Enter pour effacer le plan',
+    );
+    expect(typeof FR['tactics.ticker.holdToClear'], 'the French catalog value is a closure').toBe(
+      'function',
+    );
+    expect((FR['tactics.ticker.holdToClear'] as (p: { key: string }) => string)({ key: 'Q' })).toBe(
+      'Maintenez Q pour effacer le plan',
     );
     setLocale('en');
-    expect(s.tickerHoldToClear(), 'back to English at the next call').toBe(
-      'Hold Y to clear the plan',
+    expect(s.tickerHoldToClear('T'), 'back to English at the next call').toBe(
+      'Hold T to clear the plan',
     );
   });
 });

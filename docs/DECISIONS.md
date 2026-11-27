@@ -1746,9 +1746,10 @@ swallowed. Arming is per button whatever the source (key, pad, pointer). A frame
 nothing delivered. The D-pad and X are never hold-capable. Today only the bare tactical battle
 base lists Y, and only while the shell can clear the selected unit's READY plan
 (`battleHoldButtons` in `client/src/ui/screens/battleScreen.ts`,
-`TacticsBattle.clearPlanHoldable`): a Y tap shows the "Hold Y to clear the plan" line, a Y hold
-sends `cancel_queue` through the same path as the confirmed Clear plan row. B is never listed:
-its skip of a playing beat stays at the press.
+`TacticsBattle.clearPlanHoldable`): a Y tap shows the hold-to-clear line, which names the live
+keycap of Y on the last-used device ("Hold F to clear the plan" on the default keyboard; "Y" where
+that device binds nothing to it), a Y hold sends `cancel_queue` through the same path as the
+confirmed Clear plan row. B is never listed: its skip of a playing beat stays at the press.
 
 **Why.** A held button must never also act as a tap, and a tap must not wait on a timer on
 every screen. Only a frame that offers a hold pays the tap-at-release latency; every other

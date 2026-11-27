@@ -136,6 +136,7 @@ export type MessageId =
   | 'controls.slot.none'
   | 'controls.clear'
   | 'controls.cleared'
+  | 'controls.clearedPad'
   | 'controls.resetAll'
   | 'controls.reset.question'
   | 'controls.reset.done'
@@ -505,7 +506,6 @@ export type MessageId =
   | 'tactics.ticker.lost'
   | 'tactics.ticker.fled'
   | 'tactics.ticker.battleEnded'
-  | 'tactics.ticker.holdToClear'
   | 'tactics.turnbar.round'
   | 'tactics.turnbar.surgeIn'
   | 'tactics.turnbar.retreatAt'
@@ -513,6 +513,7 @@ export type MessageId =
   | 'tactics.hud.hp'
   | 'tactics.hud.ap'
   | 'tactics.hud.role'
+  | 'tactics.ticker.holdToClear'
   | 'tactics.ticker.executed'
   | 'tactics.ticker.hit'
   | 'tactics.ticker.missed'
@@ -679,6 +680,7 @@ export interface MessageParams {
   };
   readonly 'controls.clear': { readonly label: string };
   readonly 'controls.cleared': { readonly label: string };
+  readonly 'controls.clearedPad': { readonly label: string };
   // uif-13: {label} is a catalogued text-size name (controls.text.normal / large / xlarge).
   readonly 'controls.text.row': { readonly label: string };
   readonly 'controls.text.current': { readonly label: string };
@@ -834,6 +836,7 @@ export interface MessageParams {
   readonly 'tactics.hud.hp': { readonly hp: number; readonly max: number };
   readonly 'tactics.hud.ap': { readonly ap: number; readonly max: number };
   readonly 'tactics.hud.role': { readonly role: string };
+  readonly 'tactics.ticker.holdToClear': { readonly key: string };
   readonly 'tactics.ticker.executed': { readonly unit: string; readonly skill: string };
   readonly 'tactics.ticker.hit': { readonly target: string; readonly damage: number };
   readonly 'tactics.ticker.missed': { readonly unit: string; readonly target: string };

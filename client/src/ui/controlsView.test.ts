@@ -34,6 +34,7 @@ import {
   type ControlsRow,
   capturePrompt,
   clearAccel,
+  clearPadAccel,
   type PadRow,
   type PadTarget,
   padCapturePrompt,
@@ -478,14 +479,16 @@ describe('ControlsView — the live table and the one-shot request (ctl-12b)', (
     expect(onClear).toHaveBeenCalledWith('J');
     expect(onReset).not.toHaveBeenCalled();
     expect(onOutcome).toHaveBeenCalledTimes(1);
+    // Named intentional change (rb-141.3): a pad-bindable row's cleared line is
+    // `controls.clearedPad`, it also says the pad button is gone. Was: `controls.cleared`.
     expect(onOutcome).toHaveBeenLastCalledWith(
-      tf('controls.cleared', { label: rowLabel(accRow('J')) }),
+      tf('controls.clearedPad', { label: rowLabel(accRow('J')) }),
       true,
     );
     expect(el(FEEDBACK_ID).textContent, 'the view paints no strip line of its own').toBe('');
     expect(stripHidden(), 'and the strip stays hidden').toBe(true);
     expect(announce, 'and does not announce it (the toast does)').not.toHaveBeenCalledWith(
-      tf('controls.cleared', { label: rowLabel(accRow('J')) }),
+      tf('controls.clearedPad', { label: rowLabel(accRow('J')) }),
     );
 
     view.paint(p);
@@ -504,6 +507,11 @@ describe('ControlsView — the live table and the one-shot request (ctl-12b)', (
     );
     expect(onClear).toHaveBeenCalledTimes(3);
     expect(onClear).toHaveBeenLastCalledWith('F9');
+    // F9 has no pad row: its line keeps saying it has no key.
+    expect(onOutcome).toHaveBeenLastCalledWith(
+      tf('controls.cleared', { label: rowLabel(accRow('F9')) }),
+      true,
+    );
 
     const reset: ControlsRequest = { kind: 'reset' };
     const r = paintOf({ nav: navOn('buttons', 'reset'), request: reset });
@@ -532,7 +540,8 @@ describe('ControlsView — the live table and the one-shot request (ctl-12b)', (
     failing.view.paint(
       paintOf({ nav: navOn('shortcuts', 'I_clear'), request: { kind: 'clear', accel: 'I' } }),
     );
-    const cleared = tf('controls.cleared', { label: rowLabel(accRow('I')) });
+    // Named intentional change (rb-141.3): the Bag has a pad row, so its line is `controls.clearedPad`.
+    const cleared = tf('controls.clearedPad', { label: rowLabel(accRow('I')) });
     expect(failing.onOutcome).toHaveBeenLastCalledWith(cleared, false);
     failing.view.paint(paintOf({ nav: navOn('buttons', 'reset'), request: { kind: 'reset' } }));
     expect(failing.onOutcome).toHaveBeenLastCalledWith(t('controls.reset.done'), false);
@@ -2180,6 +2189,53 @@ describe('ControlsView — the Pad column', () => {
     );
     expect(readCell('Y_pad')).toBe(padText(btnRow('Y'), padGlyph(3)));
     expect(readCell('A_0'), 'and the default key').toBe(slotText(DEFAULT_BINDINGS, btnRow('A'), 0));
+  });
+
+  it('a Clear that empties both tables shows the row`s Primary, Alt and Pad cells empty in the same paint, and hands the cleared-with-pad line (F9: the no-key line) to onOutcome [rb-141.3]', () => {
+    // WRONG IMPL KILLED: a paint that renders before applying the request (the Pad cell keeps
+    // showing RT after Clear), a Clear that leaves the Pad cell showing the old button, a cleared
+    // line that still says only "no key" for a row that lost its pad button, and an F9 line that
+    // claims a pad button it never had.
+    let keys: Bindings = DEFAULT_BINDINGS;
+    let pad: PadBindings = PAD_DEFAULT_BINDINGS;
+    const { view, onOutcome } = rig({
+      bindings: () => keys,
+      padBindings: () => pad,
+      onClear: (accel) => {
+        keys = clearAccel(keys, accel);
+        pad = clearPadAccel(pad, accel);
+        return true;
+      },
+    });
+    view.show();
+    const nav = navOn('shortcuts', 'I_clear');
+    view.paint(paintOf({ nav }));
+    expect(readCell('I_pad'), 'before: the Bag on RT').toBe(padText(accRow('I'), padGlyph(7)));
+    expect(readCell('I_0'), 'before: the Bag on its key').toContain(glyph('KeyI'));
+
+    view.paint(paintOf({ nav, request: { kind: 'clear', accel: 'I' } }));
+    expect(readCell('I_0'), 'the same paint: Primary empty').toBe(
+      tf('controls.slot.primary', { label: rowLabel(accRow('I')), key: EM_DASH }),
+    );
+    expect(readCell('I_1'), 'Alt empty').toBe(
+      tf('controls.slot.alt', { label: rowLabel(accRow('I')), key: EM_DASH }),
+    );
+    expect(readCell('I_pad'), 'Pad empty').toBe(padText(accRow('I'), EM_DASH));
+    expect(readCell('V_pad'), 'a neighbour keeps its pad button').toBe(
+      padText(accRow('V'), padGlyph(6)),
+    );
+    expect(onOutcome).toHaveBeenLastCalledWith(
+      tf('controls.clearedPad', { label: rowLabel(accRow('I')) }),
+      true,
+    );
+
+    view.paint(
+      paintOf({ nav: navOn('shortcuts', 'F8_clear'), request: { kind: 'clear', accel: 'F8' } }),
+    );
+    expect(onOutcome).toHaveBeenLastCalledWith(
+      tf('controls.cleared', { label: rowLabel(accRow('F8')) }),
+      true,
+    );
   });
 });
 

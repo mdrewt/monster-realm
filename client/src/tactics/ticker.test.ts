@@ -524,4 +524,44 @@ describe('Ticker: the capped log (BT10.5)', () => {
     expect(writes.length > before, 'every push follows the newest line').toBe(true);
     expect(writes.at(-1), 'and lands on the bottom').toBe(777);
   });
+
+  it('replaceLast rewrites the newest line in the list and the DOM, keeps the count and every older line, and does nothing on an empty ticker [rb-141.5]', () => {
+    // WRONG IMPL KILLED: a replaceLast that appends instead (the count grows: the Hold Y hint would
+    // be written twice); one that rewrites the OLDEST line; one that updates lines() but not the
+    // DOM (or the reverse); one that throws on an empty ticker; one that leaves an empty line behind.
+    const parent = mount();
+    const ticker = new Ticker(parent);
+    const el = tickerEl(parent);
+    ticker.replaceLast('nothing to replace');
+    expect(ticker.lines(), 'empty ticker: no line appears').toEqual([]);
+    expect(el.children, 'empty ticker: no child appears').toHaveLength(0);
+
+    ticker.push('first');
+    ticker.push('second');
+    ticker.push('third');
+    ticker.replaceLast('third, rewritten');
+    expect(ticker.lines(), 'the newest line is rewritten, the older two stay').toEqual([
+      'first',
+      'second',
+      'third, rewritten',
+    ]);
+    expect(texts(el), 'the DOM shows the same three lines').toEqual([
+      'first',
+      'second',
+      'third, rewritten',
+    ]);
+    ticker.replaceLast('third, again');
+    expect(texts(el), 'a second rewrite replaces, never stacks').toEqual([
+      'first',
+      'second',
+      'third, again',
+    ]);
+    ticker.push('fourth');
+    expect(ticker.lines(), 'a later push still appends after a rewrite').toEqual([
+      'first',
+      'second',
+      'third, again',
+      'fourth',
+    ]);
+  });
 });

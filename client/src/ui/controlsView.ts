@@ -51,6 +51,7 @@ import {
 import {
   type CaptureTarget,
   capturePrompt,
+  clearedText,
   leavePadIndex,
   padCapturePrompt,
   padSlot,
@@ -80,7 +81,7 @@ export interface ControlsViewHandlers {
   /** The device of the player's last press; 'keys' when absent. Optional, like `padBindings`;
    *  main.ts always passes it. */
   readonly inputSource?: () => InputSource;
-  /** Unbind an accelerator; false when the new table could not be saved. */
+  /** Unbind an accelerator's keys and its pad button; false when the new tables could not be saved. */
   readonly onClear: (accel: Accel) => boolean;
   /** Restore the default keyboard and pad tables; false when they could not be saved. */
   readonly onReset: () => boolean;
@@ -333,8 +334,7 @@ export class ControlsView implements ControlsScreenView {
     switch (request.kind) {
       case 'clear': {
         const saved = this.#handlers.onClear(request.accel);
-        const label = rowLabel({ kind: 'accel', id: request.accel });
-        this.#handlers.onOutcome?.(tf('controls.cleared', { label }), saved);
+        this.#handlers.onOutcome?.(clearedText(request.accel), saved);
         break;
       }
       case 'reset':

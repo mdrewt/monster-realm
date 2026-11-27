@@ -356,13 +356,17 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'controls.slot.alt': (p) => `${p.label} (alt): ${p.key}`,
   // @desc: Mark shown in an Controls key cell that holds no key. ui/controlsView.ts
   'controls.slot.none': '—',
-  // @desc: Cell on a shortcut row of Controls that removes the shortcut's keys; {label}
-  // is the row name. ui/controlsView.ts
+  // @desc: Cell on a shortcut row of Controls that removes the shortcut's keys and pad button;
+  // {label} is the row name. ui/controlsView.ts
   'controls.clear': (p) => `Clear ${p.label}`,
-  // @desc: Feedback line in Controls after a shortcut's keys were removed; {label} is
-  // the row name. One sentence. ui/controlsView.ts
+  // @desc: Feedback line in Controls after the keys of a shortcut no pad can bind were removed;
+  // {label} is the row name. One sentence. ui/controlsModel.ts
   'controls.cleared': (p) => `${p.label} has no key now.`,
-  // @desc: Last row of each Controls tab: restore every default key. ui/controlsView.ts
+  // @desc: Feedback line in Controls after a shortcut's keys and pad button were removed; {label}
+  // is the row name. One sentence. ui/controlsModel.ts
+  'controls.clearedPad': (p) => `${p.label} has no key and no pad button now.`,
+  // @desc: Last row of each Controls tab: restore every default key and pad button.
+  // ui/controlsView.ts
   'controls.resetAll': 'Reset all',
   // @desc: Yes / No question asked before Controls restores every default key and pad button.
   // ui/controlsView.ts
@@ -1573,8 +1577,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Battle-log line when the battle ends with no winner recorded. Two words.
   'tactics.ticker.battleEnded': 'Battle over',
   // @desc: Battle-log hint when Y is tapped while holding Y would clear the selected unit's READY
-  // plan. One short sentence naming the Y button.
-  'tactics.ticker.holdToClear': 'Hold Y to clear the plan',
+  // plan; {key} is the keycap or pad button glyph of Y, or the letter Y when none is bound.
+  // One short sentence.
+  'tactics.ticker.holdToClear': (p) => `Hold ${p.key} to clear the plan`,
   // @desc: Turn-bar heading with the current round; {round} is the round number counted from 1. Two
   // words.
   'tactics.turnbar.round': (p) => `Round ${p.round}`,

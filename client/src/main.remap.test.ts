@@ -1376,7 +1376,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(savedTable().buttons.A[0], 'the fresh press binds').toBe('KeyK');
   });
 
-  it('UIF4B.1 Clear on an accelerator row (Shortcuts, reached by RB) unbinds it at once: the cleared toast, an empty slot, [] in storage, and back at the world its key opens nothing while J still does', async () => {
+  it('UIF4B.1 Clear on an accelerator row (Shortcuts, reached by RB) unbinds it at once: the cleared toast, an empty slot, [] in storage, and back at the world its key opens nothing while J still does [rb-141.3]', async () => {
     // WRONG IMPL KILLED: a Clear that is saved but not applied (I still opens the Bag), one that is
     // applied but not saved, one that clears the wrong row or every row (J is the control), a Clear
     // that starts a capture instead, a cleared line naming the wrong row, and an RB that does not
@@ -1399,8 +1399,10 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     const rowI: ControlsRow = { kind: 'accel', id: 'I' };
     // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the cleared line reaches the toast through the view's
     // `onOutcome` handler, and the strip stays empty. Was: the view wrote it to the strip.
+    // Named intentional change (rb-141.3): the Bag has a pad row, so the line also says its pad
+    // button is gone (`controls.clearedPad`). Was: `controls.cleared`.
     expect(toastNow(), 'the cleared line names the row, on the toast').toBe(
-      tf('controls.cleared', { label: rowLabel(rowI) }),
+      tf('controls.clearedPad', { label: rowLabel(rowI) }),
     );
     expect(controlsFeedback(), 'and the strip stays empty').toBe('');
     expect(cellText('I_0'), 'the Primary slot is empty now').toBe(
@@ -3465,5 +3467,234 @@ describe('main.ts Options > Controls: the Pad column over a fake pad (runtime)',
     expect(H.reconnects, 'the default A index chose nothing').toBe(0);
     padTap(PADI.Y);
     expect(H.reconnects, 'the remapped button chose Retry').toBe(1);
+  }, 60_000);
+});
+
+// ==========================================================================================
+// Clear on a Shortcuts row unbinds its keys AND its pad button, in one save
+// ==========================================================================================
+//
+// The Bag (accelerator I, default KeyI and pad RT) is the row the cases clear: at the world a press
+// of KeyI or of RT opens the Bag (stack `world, menuView, raisingView`), and a cleared row opens
+// nothing. J (KeyJ, no pad button by default) and Party (LT) are the controls that still open theirs.
+
+const BAG_STACK: readonly string[] = ['world', 'menuView', 'raisingView'];
+const RIGHT_QUOTE = String.fromCharCode(0x2019);
+const ROW_BAG = accelRow('I');
+
+/** RB from the Buttons tab: the Shortcuts tab (a no-op when it is already shown). */
+function toShortcuts(): void {
+  if (byId('controls-tab-shortcuts').getAttribute('aria-selected') !== 'true') press('KeyE');
+  expect(
+    byId('controls-tab-shortcuts').getAttribute('aria-selected'),
+    'precondition: Shortcuts shows',
+  ).toBe('true');
+}
+
+/** Start until nothing is open but the world. */
+function toWorld(): void {
+  for (let i = 0; i < 5 && stackNames().length > 1; i += 1) press('Escape');
+  expect(stackNames(), 'precondition: back at the world').toEqual(['world']);
+}
+
+/** Open Controls on the Shortcuts tab, the cursor on `cell`, and press A there. */
+function pressOnShortcut(cell: string): void {
+  openControls();
+  toShortcuts();
+  controlsMoveTo(cell);
+  press('Enter');
+}
+
+describe('main.ts Clear on a Shortcuts row clears its keys and its pad button (runtime)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('Clear on the Bag saves both tables in ONE write with every other row at its default, toasts the no-key-and-no-pad-button line, empties the Primary, Alt and Pad cells, and at the world neither KeyI nor pad RT opens anything while J and LT still open theirs; a reload over that storage keeps both unbound [rb-141.1] [rb-141.2] [rb-141.3]', async () => {
+    // WRONG IMPL KILLED: a Clear that empties only the keys (RT still opens the Bag), one that
+    // saves the keys and the pad table in two writes, one that empties the wrong row or every row
+    // (J and LT are the controls), a toast that still says only "no key", a Pad cell that keeps
+    // showing RT, a pad table that is applied live but not saved (RT is back after a reload), an
+    // F9 line that claims a pad button F9 never had, and an F9 Clear that rewrites the pad table.
+    await bootWithPad();
+    const storage = throwingStorage(STORAGE_KEY, {});
+    pressOnShortcut('I_clear');
+    expect(capturing(), 'Clear starts no capture').toBe(false);
+    expect(storage.writes, 'exactly one write of mr.controls').toHaveLength(1);
+    expect(savedTable(), 'the keys: the Bag empty, every other row at its default').toEqual(
+      tableWith({}, { I: [] }),
+    );
+    expect(savedPad(), 'the pad table: the Bag empty, every other row at its default').toEqual(
+      padTableWith({}, { I: [] }),
+    );
+    expect(toastNow(), 'the line says no key and no pad button').toBe(
+      `${rowLabel(ROW_BAG)} has no key and no pad button now.`,
+    );
+    expect(toastNow()).toBe(tf('controls.clearedPad', { label: rowLabel(ROW_BAG) }));
+    expect(controlsFeedback(), 'and the strip stays empty').toBe('');
+    expect(cellText('I_0'), 'Primary is empty').toBe(primaryText(ROW_BAG, keycapOf(undefined)));
+    expect(cellText('I_1'), 'Alt is empty').toBe(altText(ROW_BAG, keycapOf(undefined)));
+    expect(cellText('I_pad'), 'Pad is empty').toBe(padCellText(ROW_BAG, keycapOf(undefined)));
+    expect(cellText('V_pad'), 'Party keeps its pad button').toBe(
+      padCellText(accelRow('V'), padGlyph(PADI.LT)),
+    );
+
+    toWorld();
+    const i = press('KeyI');
+    expect(i.defaultPrevented, 'the cleared key is not consumed').toBe(false);
+    expect(stackNames(), 'KeyI opens no Bag').toEqual(['world']);
+    padTap(PADI.RT);
+    expect(stackNames(), 'pad RT opens no Bag').toEqual(['world']);
+    press('KeyJ');
+    expect(stackNames(), 'control: J opens the Journal').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+    toWorld();
+    padTap(PADI.LT);
+    expect(stackNames(), 'control: LT opens Party').toEqual(['world', 'menuView', 'boxView']);
+    toWorld();
+
+    teardown({ keepStorage: true });
+    await bootWithPad({ keepStorage: true });
+    press('KeyI');
+    expect(stackNames(), 'after a reload KeyI still opens nothing').toEqual(['world']);
+    padTap(PADI.RT);
+    expect(stackNames(), 'and pad RT still opens nothing').toEqual(['world']);
+    press('KeyJ');
+    expect(stackNames(), 'control: the reload reads the table, J still opens').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+    toWorld();
+
+    // F9 has no pad button: its Clear says only "no key" and leaves the pad table as it was.
+    pressOnShortcut('F9_clear');
+    expect(toastNow(), 'F9 says the no-key line').toBe(
+      tf('controls.cleared', { label: rowLabel(accelRow('F9')) }),
+    );
+    expect(toastNow()).toBe(`${rowLabel(accelRow('F9'))} has no key now.`);
+    expect(savedTable(), 'the F9 keys are gone beside the Bag').toEqual(
+      tableWith({}, { I: [], F9: [] }),
+    );
+    expect(savedPad(), 'the pad table is exactly as it was').toEqual(padTableWith({}, { I: [] }));
+  }, 60_000);
+
+  it('a cleared Bag opens nothing until it is bound again: a key capture on its Primary cell and a pad capture on its Pad cell each open the Bag again, and after a second Clear Reset all restores both KeyI and RT [rb-141.2]', async () => {
+    // WRONG IMPL KILLED: a Clear that leaves a ghost binding behind that blocks the rebind, a
+    // rebind that cannot take the freed key or pad button, one that revives the other half as well,
+    // and a Reset all that restores the keys but not the pad table (or the reverse).
+    await bootWithPad();
+    pressOnShortcut('I_clear');
+    toWorld();
+    press('KeyI');
+    expect(stackNames(), 'precondition: KeyI is unbound').toEqual(['world']);
+    padTap(PADI.RT);
+    expect(stackNames(), 'precondition: RT is unbound').toEqual(['world']);
+
+    openControls();
+    toShortcuts();
+    startCapture('I_0');
+    press('KeyK', { key: 'k' });
+    expect(capturing(), 'K bound and ended the capture').toBe(false);
+    toWorld();
+    press('KeyK', { key: 'k' });
+    expect(stackNames(), 'bound again: K opens the Bag').toEqual([...BAG_STACK]);
+    toWorld();
+    press('KeyI');
+    expect(stackNames(), 'the old key stays unbound').toEqual(['world']);
+    padTap(PADI.RT);
+    expect(stackNames(), 'the key rebind leaves RT dead').toEqual(['world']);
+
+    openControls();
+    toShortcuts();
+    startPadCapture('I_pad', ROW_BAG);
+    padTap(PADI.RT);
+    expect(capturing(), 'RT bound and ended the capture').toBe(false);
+    expect(cellText('I_pad'), 'the Pad cell shows RT again').toBe(
+      padCellText(ROW_BAG, padGlyph(PADI.RT)),
+    );
+    toWorld();
+    padTap(PADI.RT);
+    expect(stackNames(), 'bound again: RT opens the Bag').toEqual([...BAG_STACK]);
+    toWorld();
+    press('KeyK', { key: 'k' });
+    expect(stackNames(), 'the rebound key still opens the Bag').toEqual([...BAG_STACK]);
+    toWorld();
+
+    pressOnShortcut('I_clear');
+    toWorld();
+    press('KeyK', { key: 'k' });
+    expect(stackNames(), 'cleared again: K opens nothing').toEqual(['world']);
+    padTap(PADI.RT);
+    expect(stackNames(), 'cleared again: RT opens nothing').toEqual(['world']);
+
+    openControls();
+    toShortcuts();
+    controlsMoveTo('reset');
+    press('Enter'); // A: Reset all asks
+    expect(sheetActive(), 'the confirm opens on No').toBe('no');
+    press('ArrowUp');
+    press('Enter'); // A on Yes
+    expect(toastNow(), 'the reset line').toBe(i18nT('controls.reset.done'));
+    expect(savedPad(), 'the pad table is back to its defaults').toEqual(padTableWith({}));
+    expect(savedTable(), 'and the keys').toEqual(tableWith({}));
+    toWorld();
+    press('KeyI');
+    expect(stackNames(), 'Reset all: KeyI opens the Bag').toEqual([...BAG_STACK]);
+    toWorld();
+    padTap(PADI.RT);
+    expect(stackNames(), 'Reset all: RT opens the Bag').toEqual([...BAG_STACK]);
+  }, 60_000);
+
+  it('in French the Clear toast says the row has no key and no pad button [rb-141.3]', async () => {
+    // WRONG IMPL KILLED: a French line left as the English text or as the old "no key" copy, one
+    // naming no row, and an ASCII apostrophe where the catalog writes U+2019.
+    await bootWithPad();
+    const i18n = await import('./ui/i18n/resolver');
+    const model = await import('./ui/controlsModel');
+    openControls();
+    toShortcuts();
+    controlsMoveTo('I_clear');
+    i18n.setLocale('fr');
+    try {
+      press('Enter');
+      expect(toastNow()).toBe(
+        `${model.rowLabel(ROW_BAG)} n${RIGHT_QUOTE}a plus ni touche ni bouton de manette.`,
+      );
+    } finally {
+      i18n.setLocale('en');
+    }
+  }, 60_000);
+
+  it('when the storage refuses the save, Clear still applies both tables (KeyI and RT open nothing), attempts exactly one write, and the toast is the cleared line, a space and the save-failed suffix [rb-141.4]', async () => {
+    // WRONG IMPL KILLED: a Clear applied only when the save succeeds (a full storage leaves the Bag
+    // live), one that applies the keys but not the pad table, a retry that writes twice, a failed
+    // save reported as a success, and a failure line that replaces the cleared line.
+    await bootWithPad();
+    const storage = throwingStorage(STORAGE_KEY, { set: true });
+    pressOnShortcut('I_clear');
+    expect(storage.writes, 'one write was attempted').toHaveLength(1);
+    expect(storage.real.getItem(STORAGE_KEY), 'nothing reached storage').toBeNull();
+    expect(toastNow(), 'the cleared line, a space, the suffix').toBe(
+      `${tf('controls.clearedPad', { label: rowLabel(ROW_BAG) })} ${i18nT('controls.saveFailed')}`,
+    );
+    expect(cellText('I_0'), 'Primary is empty').toBe(primaryText(ROW_BAG, keycapOf(undefined)));
+    expect(cellText('I_pad'), 'Pad is empty').toBe(padCellText(ROW_BAG, keycapOf(undefined)));
+    toWorld();
+    press('KeyI');
+    expect(stackNames(), 'KeyI opens nothing').toEqual(['world']);
+    padTap(PADI.RT);
+    expect(stackNames(), 'RT opens nothing').toEqual(['world']);
+    press('KeyJ');
+    expect(stackNames(), 'control: J opens the Journal').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
   }, 60_000);
 });

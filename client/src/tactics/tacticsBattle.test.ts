@@ -100,6 +100,7 @@
 // absent.
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { VBUTTONS, type VButton } from '../input/buttons';
 import type { EventPayload, QueuedAction } from '../module_bindings/types';
 import { CATALOG_EN } from '../ui/i18n/catalog.en';
 import { CATALOG_FR } from '../ui/i18n/catalog.fr';
@@ -608,6 +609,16 @@ interface DepsOpts {
   readonly forfeits?: bigint[];
   /** ts-6b-7: every utterance `deps.announce` was handed, oldest first. */
   readonly announced?: string[];
+  /** rb-141.5: the live keycap per button `deps.keycap` answers, read at each call. */
+  readonly keycaps?: Record<VButton, string>;
+}
+
+/** rb-141.5: a keycap table answering a distinct cap per button (`<Up>`, `<A>` ...) with Y as 'T',
+ *  so a hard-coded 'Y' or a wrong button's cap shows in a line. */
+function distinctKeycaps(): Record<VButton, string> {
+  const caps = Object.fromEntries(VBUTTONS.map((b) => [b, `<${b}>`])) as Record<VButton, string>;
+  caps.Y = 'T';
+  return caps;
 }
 
 /** The shell's deps: the fake rules (lazily handed out, as main.ts will), recording submit / cancel
@@ -623,10 +634,12 @@ function depsOf(o: DepsOpts = {}): TacticsBattleDeps {
   const fail = o.failSubmit ?? { on: false };
   const forfeits = o.forfeits ?? [];
   const announced = o.announced ?? [];
+  const keycaps = o.keycaps ?? distinctKeycaps();
   return {
     announce: (text) => {
       announced.push(text);
     },
+    keycap: (button) => keycaps[button],
     now: o.now ?? (() => 0),
     reduceMotion: o.reduceMotion ?? (() => false),
     names: o.names ?? makeNames(),
@@ -658,6 +671,8 @@ interface Kit {
   readonly forfeits: bigint[];
   /** ts-6b-7: every utterance the shell announced, oldest first. */
   readonly announced: string[];
+  /** rb-141.5: the live keycap table `deps.keycap` reads; a test mutates it between taps. */
+  readonly keycaps: Record<VButton, string>;
 }
 
 /** A constructed, shown shell on a fresh parent. */
@@ -671,6 +686,7 @@ function make(reduce = false, mySide: Side = 'A', fake: Fake = fakeRules()): Kit
   const failSubmit = { on: false };
   const forfeits: bigint[] = [];
   const announced: string[] = [];
+  const keycaps = distinctKeycaps();
   const shell = new TacticsBattle(
     parent,
     depsOf({
@@ -683,6 +699,7 @@ function make(reduce = false, mySide: Side = 'A', fake: Fake = fakeRules()): Kit
       failSubmit,
       forfeits,
       announced,
+      keycaps,
     }),
   );
   shell.show();
@@ -700,6 +717,7 @@ function make(reduce = false, mySide: Side = 'A', fake: Fake = fakeRules()): Kit
     failSubmit,
     forfeits,
     announced,
+    keycaps,
   };
 }
 
@@ -5147,7 +5165,7 @@ describe('ts-6b-7: the tactical shell announces through deps.announce', () => {
 // Hold Y: the shell answers the battle adapter's two Y ops. `clearPlanHoldable` is true exactly
 // while the shell shows, the selected unit is in pre-queue with a READY plan and no draft (its root
 // menu lists Clear plan) and the shell is idle or at that root menu. `holdHint` (a Y tap) appends
-// the "Hold Y to clear the plan" ticker line, said at the next tick; `clearPlan` (a Y hold) sends
+// the hold-to-clear ticker line, said at the next tick; `clearPlan` (a Y hold) sends
 // cancel_queue for the selected unit with no confirm row, drops its in-flight key and closes to
 // idle. Otherwise both ops change nothing.
 // =============================================================================================
@@ -5163,8 +5181,17 @@ const readyTurn = (kind: Kind = 'wild', o: Partial<TacticsBattleVM> = {}): Tacti
 const pressHoldHint = (k: Kit): void => press(k, { kind: 'holdHint' });
 const pressClearPlan = (k: Kit): void => press(k, { kind: 'clearPlan' });
 
-/** The English hint line, read from the catalog. */
-const holdHintLine = (): string => en('tactics.ticker.holdToClear');
+/** The English hint line naming `key`, as a literal (not read from the catalog, so the old plain
+ *  'Hold Y ...' catalog value cannot satisfy it). Named intentional change (rb-141.5):
+ *  the line names the live keycap of Y (the kit answers 'T' for Y), not a literal Y. */
+const holdHintLine = (key = 'T'): string => `Hold ${key} to clear the plan`;
+
+/** The French hint line naming `key`, read from the French catalog. */
+const frHoldHintLine = (key: string): string => {
+  const line = (CATALOG_FR as unknown as Record<string, unknown>)['tactics.ticker.holdToClear'];
+  if (typeof line !== 'function') throw new Error('the French hint is not parameterised');
+  return (line as (p: { key: string }) => string)({ key });
+};
 
 /** A shell rendered with `vm`, unit 2 selected (RB) holding its READY plan with no draft, idle. */
 function holdableKit(label: string, vm: TacticsBattleVM = readyTurn()): Kit {
@@ -5226,7 +5253,9 @@ function watchConfirmRows(root: HTMLElement): () => number {
 }
 
 describe('TacticsBattle: Hold Y (the holdHint and clearPlan ops)', () => {
-  it('while the shell offers Clear plan, a holdHint op appends ONE "Hold Y to clear the plan" ticker line, said at the next tick, and leaves the plan, the menu, the selection and every sink as they were, at idle and at the root menu; repeated taps keep one line until a battle line lands between them; the line is the locale`s [gp-6.6]', () => {
+  it('while the shell offers Clear plan, a holdHint op appends ONE hold-to-clear ticker line, said at the next tick, and leaves the plan, the menu, the selection and every sink as they were, at idle and at the root menu; repeated taps keep one line until a battle line lands between them; the line is the locale`s and names the live keycap of Y [gp-6.6] [rb-141.5]', () => {
+    // Named intentional change (rb-141.5): the expected line names the kit's Y keycap 'T', where it
+    // was the literal "Hold Y to clear the plan".
     // WRONG IMPL KILLED: a tap that clears or submits the plan; no hint line, or the Clear plan
     // row's label instead of the hint; a line pushed on every tap (a mashed Y floods the 50-line
     // log); a dedupe against ANY earlier hint line instead of the newest (after a battle line the
@@ -5284,9 +5313,7 @@ describe('TacticsBattle: Hold Y (the holdHint and clearPlan ops)', () => {
     const f = holdableKit('hint in French');
     const frLines = tickerTexts(f.root);
     pressHoldHint(f);
-    const frHint = (CATALOG_FR as unknown as Record<string, unknown>)['tactics.ticker.holdToClear'];
-    expect(typeof frHint, 'the French catalog holds the hint').toBe('string');
-    expect(tickerTexts(f.root), 'the French hint line').toEqual([...frLines, frHint]);
+    expect(tickerTexts(f.root), 'the French hint line').toEqual([...frLines, frHoldHintLine('T')]);
   });
 
   it('while the shell offers Clear plan, a clearPlan op sends cancel_queue ONCE for the selected unit, never painting the confirm row, and closes to idle — at idle, from the root menu, beside another own unit`s live turn — and a plan submitted for that unit afterwards goes out on the same turn [gp-6.7]', () => {
@@ -5600,6 +5627,136 @@ describe('TacticsBattle: Hold Y (the holdHint and clearPlan ops)', () => {
       holdHintLine(),
       holdHintLine(),
     ]);
+  });
+
+  it('a Y tap names the keycap `deps.keycap("Y")` answers AT THE TAP: never a literal Y, never another button`s cap, "Y" only when the cap is empty, in English and French [rb-141.5]', () => {
+    // WRONG IMPL KILLED: a hard-coded "Y" (the old line); the cap of another button (the kit
+    // answers <A>, <B> ... for those); the cap read once at construction or at render (the table
+    // changes after the shell is shown); an empty cap printed as "Hold  to clear the plan" instead
+    // of falling back to Y; the key named in English only.
+    const k = holdableKit('keycap read at the tap');
+    k.keycaps.Y = 'Q';
+    pressHoldHint(k);
+    expect(tickerTexts(k.root).at(-1), 'the cap at the tap, not the one at render').toBe(
+      holdHintLine('Q'),
+    );
+    k.shell.tick();
+    expect(k.announced.at(-1), 'the spoken line names the same cap').toBe(holdHintLine('Q'));
+
+    const blank = holdableKit('empty cap');
+    blank.keycaps.Y = '';
+    pressHoldHint(blank);
+    expect(tickerTexts(blank.root).at(-1), 'an empty cap names Y').toBe(holdHintLine('Y'));
+    blank.shell.tick();
+    expect(blank.announced.at(-1), 'and speaks Y').toBe(holdHintLine('Y'));
+
+    setLocale('fr');
+    const f = holdableKit('French cap');
+    f.keycaps.Y = 'Enter';
+    pressHoldHint(f);
+    expect(tickerTexts(f.root).at(-1), 'the French line names the cap').toBe(
+      frHoldHintLine('Enter'),
+    );
+    f.shell.tick();
+    expect(f.announced.at(-1), 'and speaks it').toBe(frHoldHintLine('Enter'));
+    const fBlank = holdableKit('French empty cap');
+    fBlank.keycaps.Y = '';
+    pressHoldHint(fBlank);
+    expect(tickerTexts(fBlank.root).at(-1), 'an empty cap names Y in French').toBe(
+      frHoldHintLine('Y'),
+    );
+  });
+
+  it('when the keycap changes between two taps and the hint is still the newest ticker line, that line is REWRITTEN IN PLACE (the count unchanged) and the tick speaks it once, naming the last tap`s cap [rb-141.5]', () => {
+    // WRONG IMPL KILLED: a second hint line appended for the new cap (the log grows by one per
+    // remap); the old cap left on screen (a stale key shown while the live one is another); the
+    // old line spoken as well as the new one in one tick (two utterances, one of them wrong); the
+    // FIRST tap's cap spoken; a rewrite that touches an older line; a rewrite on an unchanged cap
+    // that appends.
+    const k = holdableKit('rewrite in place');
+    k.shell.tick();
+    const said = [...k.announced];
+    const lines = tickerTexts(k.root);
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'fixture: the first tap names T').toEqual([
+      ...lines,
+      holdHintLine('T'),
+    ]);
+    k.keycaps.Y = 'G';
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'the one hint line now names G, the count unchanged').toEqual([
+      ...lines,
+      holdHintLine('G'),
+    ]);
+    const watcher = new MutationObserver(() => {});
+    watcher.observe(q(k.root, '.tactics-ticker'), {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+    pressHoldHint(k);
+    const touched = watcher.takeRecords();
+    watcher.disconnect();
+    expect(touched, 'an unchanged cap writes nothing to the ticker DOM').toEqual([]);
+    expect(tickerTexts(k.root), 'an unchanged cap leaves it as it is').toEqual([
+      ...lines,
+      holdHintLine('G'),
+    ]);
+    expect(k.announced, 'nothing said before the tick').toEqual(said);
+    k.shell.tick();
+    expect(k.announced, 'one utterance, naming the last tap`s cap').toEqual([
+      ...said,
+      holdHintLine('G'),
+    ]);
+
+    // Two taps with different caps inside one tick: spoken once, with the last.
+    const j = holdableKit('two caps in one tick');
+    j.shell.tick();
+    const jSaid = [...j.announced];
+    pressHoldHint(j);
+    j.keycaps.Y = 'H';
+    pressHoldHint(j);
+    j.shell.tick();
+    expect(j.announced, 'one utterance for the tick, the last cap').toEqual([
+      ...jSaid,
+      holdHintLine('H'),
+    ]);
+  });
+
+  it('a tap after a tick that spoke the hint speaks again with the new cap, and the newest hint line is rewritten in place; after a battle line a changed cap writes a NEW hint line [rb-141.5]', () => {
+    // WRONG IMPL KILLED: the new cap swallowed because the old hint was already spoken (a
+    // screen-reader player never hears the remapped key); the spoken-dedupe keyed on the old text;
+    // the hint rewritten over a BATTLE line (the newest line is not the hint, so a new line is
+    // written and the battle line survives); a new hint line written after a battle line that names
+    // the old cap.
+    const k = holdableKit('later tick, new cap');
+    k.shell.tick();
+    const said = [...k.announced];
+    const lines = tickerTexts(k.root);
+    pressHoldHint(k);
+    k.shell.tick();
+    k.keycaps.Y = 'G';
+    pressHoldHint(k);
+    expect(tickerTexts(k.root), 'rewritten in place').toEqual([...lines, holdHintLine('G')]);
+    k.shell.tick();
+    expect(k.announced, 'each tick speaks its own tap`s cap').toEqual([
+      ...said,
+      holdHintLine('T'),
+      holdHintLine('G'),
+    ]);
+
+    const j = holdableKit('battle line between');
+    pressHoldHint(j);
+    j.shell.ingest([roundEnded(1)]);
+    const withEvent = tickerTexts(j.root);
+    j.keycaps.Y = 'G';
+    pressHoldHint(j);
+    expect(tickerTexts(j.root), 'the battle line stays; a new hint names G').toEqual([
+      ...withEvent,
+      holdHintLine('G'),
+    ]);
+    expect(tickerTexts(j.root).includes(holdHintLine('T')), 'the T hint is still above').toBe(true);
   });
 
   it('a clearPlan op for the pre-queued unit 2 leaves the other own unit`s in-flight key alone: unit 1`s End Turn, sent before the hold, keeps a second Start for unit 1 swallowed on the same turn [gp-6.7]', () => {

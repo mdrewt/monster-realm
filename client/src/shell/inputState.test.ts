@@ -20,7 +20,7 @@ import {
 } from '../../test-util/mainBootHarness';
 import type { WasmMoveInput } from '../convert/convert';
 import { CONTROLS_STORAGE_KEY } from '../input/bindingStore';
-import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
+import { accelForCode, type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { VBUTTONS, type VButton } from '../input/buttons';
 import { glyph } from '../input/glyphs';
 import { PAD_DEFAULT_BINDINGS, type PadBindings, type PadIndex } from '../input/padBindings';
@@ -1129,6 +1129,64 @@ describe('shell/inputState functions', { sequential: true }, () => {
     expect(storage.writes, 'the save was attempted once').toHaveLength(1);
     expect(ns.bindings, 'the keyboard defaults still applied').toBe(defaults.keys);
     expect(ns.padBindings, 'and the pad defaults').toBe(defaults.pad);
+  });
+
+  /** The keyboard defaults with the Bag emptied, and the pad defaults with the Bag emptied: the
+   *  two tables a Clear on the Bag applies. */
+  const bagCleared = (): { readonly keys: Bindings; readonly pad: PadBindings } => {
+    const { buttons, accels } = JSON.parse(
+      storedTable((raw) => {
+        raw.accels.I = [];
+      }),
+    ) as Bindings;
+    return { keys: { buttons, accels }, pad: padWith({}, { I: [] }) };
+  };
+
+  it('applyTables saves both tables in ONE write of mr.controls, releases everything held, applies both to their sources, and answers true [rb-141.1]', async () => {
+    // WRONG IMPL KILLED: a missing export (a Clear cannot apply both halves at once); a Clear that
+    // applies the keyboard table and then the pad table (two writes: a refused second leaves half
+    // the clear on disk), one that saves only the keyboard half or the pad half, one that
+    // applies but does not save, and one that leaves a held direction or code behind.
+    const ns = await fresh();
+    const storage = wrapStorage(false);
+    const { keys, pad } = bagCleared();
+    holdEverything(ns);
+    expect(ns.applyTables(keys, pad), 'the save succeeded').toBe(true);
+    expect(storage.writes, 'exactly one write').toHaveLength(1);
+    expect(JSON.parse(storage.writes[0] ?? 'null'), 'of both tables').toEqual(
+      savedShape(keys, pad),
+    );
+    expect(ns.bindings, 'the keyboard table is the one applied').toBe(keys);
+    expect(ns.padBindings, 'the pad table is the one applied').toBe(pad);
+    expectNothingHeld(ns, 'after applyTables');
+    expect(accelForCode(ns.bindings, 'KeyI'), 'the cleared key opens nothing').toBeUndefined();
+    expect(accelForCode(ns.bindings, 'KeyJ'), 'a neighbour still opens its shortcut').toBe('J');
+    const fake = usePadApi();
+    expect(ns.pad.poll(), 'precondition: nothing is pressed').toEqual(NO_POLL);
+    fake.buttons[7].pressed = true;
+    expect(ns.pad.poll(), 'the cleared pad button does nothing').toEqual(NO_POLL);
+    fake.buttons[7].pressed = false;
+    fake.buttons[6].pressed = true;
+    expect(ns.pad.poll(), 'LT still opens Party').toEqual({ edges: [], accels: ['V'] });
+  });
+
+  it('applyTables answers false when the storage refuses the save, and still applies both tables [rb-141.4]', async () => {
+    // WRONG IMPL KILLED: a Clear applied only when the save succeeds (a full storage leaves the
+    // cleared key live), one that applies the keyboard half but not the pad half, a refused write
+    // that throws, one that retries with a second write, and a refusal reported as a success.
+    const ns = await fresh();
+    const storage = wrapStorage(true);
+    const { keys, pad } = bagCleared();
+    expect(ns.applyTables(keys, pad), 'the refused save answers false').toBe(false);
+    expect(storage.writes, 'the save was attempted once').toHaveLength(1);
+    expect(storage.real.getItem(CONTROLS_STORAGE_KEY), 'nothing reached storage').toBeNull();
+    expect(ns.bindings, 'the keyboard table still applied').toBe(keys);
+    expect(ns.padBindings, 'and the pad table').toBe(pad);
+    expect(accelForCode(ns.bindings, 'KeyI'), 'KeyI opens nothing').toBeUndefined();
+    const fake = usePadApi();
+    expect(ns.pad.poll(), 'precondition: nothing is pressed').toEqual(NO_POLL);
+    fake.buttons[7].pressed = true;
+    expect(ns.pad.poll(), 'RT opens nothing').toEqual(NO_POLL);
   });
 
   it('with the pad as the last source keycap reads the LIVE pad table: after applyPadBindings the A keycap is Y`s glyph, Y`s is A`s, an emptied row reads nothing, and the keyboard keycaps are unchanged [gp-5.9]', async () => {
