@@ -22,7 +22,7 @@ use super::{
     REJECT_DUPLICATE_ENTRY, REJECT_NO_BIND_NONCE, REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
     REJECT_TOO_MANY_WORLD_NAMES, REJECT_WORLD_NAME, WORLD_NAME_MAX_BYTES,
 };
-use crate::account_checks::{RecheckSchedule, WorldAccount};
+use crate::account_checks::{HostCheckSchedule, RecheckSchedule, WorldAccount};
 use crate::accounts::{
     build_profile, AttestationKey, BuildFeatures, BuildProfile, DEV_ATTESTATION_KEYS,
     DEV_LOGIN_ISSUERS, PRODUCTION_ATTESTATION_KEYS,
@@ -363,13 +363,20 @@ fn recheck_row(who: Identity, n: u64) -> RecheckSchedule {
 /// `world_access`, `world_admission` and `account` are read-only here: a write to one aborts
 /// the test. The nonce table is registered on its `expires_at_ms` index too, so the sweep's
 /// range read finds rows; the name and allowlist tables are scannable so a setter can replace
-/// the whole set.
+/// the whole set; the tick table of the host's own check is scannable and read-only, so a
+/// setter that changes the names can look for an armed row and a write to it aborts the test.
 fn world(fx: &Fixture) -> W<'_> {
     let _ = fx
         .table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
             r.connection_id
         })
         .unique();
+    let _ = fx
+        .table_keyed::<HostCheckSchedule, u64>("host_check_schedule", "scheduled_id", |r| {
+            r.scheduled_id
+        })
+        .unique()
+        .scannable();
     let _ = fx.table_keyed::<WorldBindNonce, i64>("world_bind_nonce", "expires_at_ms", |r| {
         r.expires_at_ms
     });
@@ -6141,7 +6148,6 @@ mod checked_accounts {
 
 mod names_reset_the_host_check {
     use super::*;
-    use crate::account_checks::HostCheckSchedule;
     use spacetimedb::{ScheduleAt, TimeDuration};
 
     const NAME_A: &str = "spki:alpha-fingerprint/realm";
