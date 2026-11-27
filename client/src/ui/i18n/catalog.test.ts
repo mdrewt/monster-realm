@@ -595,7 +595,7 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // The Account section's Sign In label (1 ★). `provider` is the build's provider name, or its
   // issuer string when no name is set, carried verbatim; the two sets differ.
   'claim.signInWithProvider': [{ provider: 'Acme ID' }, { provider: 'https://auth.example.test/' }],
-  // lpw-24 (named intentional change): the world gate's two parameterised lines (2 ★). `time` is
+  // Named intentional change:the world gate's two parameterised lines (2 ★). `time` is
   // the page's formatted move time and `reason` the world's printable refusal text, each carried
   // verbatim; the two sets differ.
   'world.gate.moved.body': [{ time: 'Nov 14, 2023, 10:13 PM' }, { time: 'Jan 2, 2024, 9:05 AM' }],
@@ -886,7 +886,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'claim.gate.store.title': 'Open the Steam store',
   'claim.gate.store.desc': 'Opens the Steam store in a new tab.',
   'claim.gate.stays': 'You need to sign in before you can play.',
-  // lpw-24 (named intentional change): 575 -> 587, +10 plain `world.gate.*` lines here and +2
+  // Named intentional change:575 -> 587, +10 plain `world.gate.*` lines here and +2
   // parameterised ones in SAMPLE_PARAMS (`world.gate.{moved,refused}.body`): the world account
   // check's gate, its unreachable and failed lines, and the moved-to-another-client step.
   'world.gate.check.title': 'Account check',
@@ -2225,7 +2225,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { label: 'Extra large' },
     outputB: 'Text size: Extra large.',
   },
-  // lpw-24 (named intentional change): the moved step's body names the time once, and the refused
+  // Named intentional change:the moved step's body names the time once, and the refused
   // line quotes the world's reason once, after the failed sentence.
   'world.gate.moved.body': {
     inputA: { time: 'Nov 14, 2023, 10:13 PM' },
@@ -2594,7 +2594,7 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
     // rb-141 (named intentional change): 573 -> 574, +controls.clearedPad.
     // wr261127-b (named intentional change): 574 -> 575, +rename.unnamed.
-    // lpw-24 (named intentional change): 575 -> 587, +10 plain and +2 parameterised `world.gate.*`.
+    // Named intentional change:575 -> 587, +10 plain and +2 parameterised `world.gate.*`.
     expect(EXPECTED_KEYS, 'ANTI-VACUITY: the pinned roster is 587 keys').toHaveLength(587);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
@@ -3815,7 +3815,7 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    // lpw-24 (named intentional change): 575 -> 587, +12 `world.gate.*` keys.
+    // Named intentional change:575 -> 587, +12 `world.gate.*` keys.
     expect(Object.keys(en).length, 'the English catalog holds exactly 587 keys').toBe(587);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The French catalog holds the same 587 keys, chrome.status.privateHostNotice among them.
@@ -3950,7 +3950,7 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    // lpw-24 (named intentional change): 575 -> 587, +12 `world.gate.*` keys.
+    // Named intentional change:575 -> 587, +12 `world.gate.*` keys.
     expect(Object.keys(en).length, 'the English catalog holds exactly 587 keys').toBe(587);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The French catalog holds the same 587 keys, chrome.status.privateHostNotice among them.
@@ -4282,7 +4282,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // claim.prompt.noProvider and the eight claim.gate.* lines among them, claim.signInButton not.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    // lpw-24 (named intentional change): 575 -> 587, +12 `world.gate.*` keys.
+    // Named intentional change:575 -> 587, +12 `world.gate.*` keys.
     expect(Object.keys(en).length, 'the English catalog holds exactly 587 keys').toBe(587);
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The French catalog holds the same 587 keys, chrome.status.privateHostNotice among them.
@@ -4981,7 +4981,7 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    // lpw-24 (named intentional change): 575 -> 587, +12 `world.gate.*` keys.
+    // Named intentional change:575 -> 587, +12 `world.gate.*` keys.
     // Both rosters count chrome.status.privateHostNotice among their 587 keys.
     expect(Object.keys(en), 'the English roster is 587 keys').toHaveLength(587);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(587);
@@ -5112,7 +5112,7 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // lpw-6 (named intentional change): 548 -> 549, +pvp.empty.
     // The pad remap (named intentional change): 565 -> 570, the five Pad column ids.
     // The Hold Y hint (named intentional change): 570 -> 571, +tactics.ticker.holdToClear.
-    // lpw-24 (named intentional change): 575 -> 587, +12 `world.gate.*` keys.
+    // Named intentional change:575 -> 587, +12 `world.gate.*` keys.
     // Both rosters count chrome.status.privateHostNotice among their 587 keys.
     expect(Object.keys(en), 'the English roster is 587 keys').toHaveLength(587);
     expect(Object.keys(fr), 'and the French one matches it').toHaveLength(587);
@@ -5401,9 +5401,9 @@ describe('the sign-in gate lines in both catalogs', () => {
 });
 
 // =============================================================================
-// lpw-24: the world account check's gate lines in the French catalog. The English bytes are
+// The world account check's gate lines in the French catalog. The English bytes are
 // pinned in EXPECTED_PLAIN / EXPECTED_PARAM_OUTPUTS; the French accents are built by code point. A
-// French space before a colon may be a no-break space or a plain one (the ctl-12b precedent).
+// French space before a colon may be a no-break space or a plain one.
 // =============================================================================
 
 describe('the world gate lines in the French catalog', () => {

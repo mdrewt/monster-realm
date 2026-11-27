@@ -1000,7 +1000,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ).toEqual([{ module: 'a11y', orig: 't', kind: 'literal', literal: 'a11y.world.region' }]);
     // shell/session.ts resolves the guarded send's disconnected line and the world gate's lines,
     // through the i18n resolver's `t` and `tf`, and nothing through a11yCopy.
-    // lpw-24 (named intentional change): + the world gate view's and status line's keys, 7
+    // Named intentional change:+ the world gate view's and status line's keys, 7
     // `claim.gate.*` and 10 plain `world.gate.*` through `t`, `world.gate.{moved,refused}.body`
     // through `tf`. Compared as a sorted set of (kind, binding, key): a key may be resolved at more
     // than one call site and the source order is the implementation's.
@@ -1056,7 +1056,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       unionOfLiteralKeys('i18n'),
       'the i18n keys main.ts, shell/feedback.ts and shell/session.ts resolve together',
     ).toEqual([
-      // lpw-24 (named intentional change): + the 19 keys shell/session.ts's world gate resolves
+      // Named intentional change:+ the 19 keys shell/session.ts's world gate resolves
       // (7 `claim.gate.*`, 12 `world.gate.*`).
       'chrome.chip.ok',
       'chrome.rename.updated',

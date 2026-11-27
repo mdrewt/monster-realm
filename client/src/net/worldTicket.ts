@@ -195,7 +195,7 @@ export type FirstContactOutcome =
   | { readonly kind: 'sign-in-needed' }
   | { readonly kind: 'unreachable' }
   | { readonly kind: 'refused'; readonly reason: string }
-  /** The connection the contact ran on is no longer the live one. */
+  /** The contact's connection dropped, or another one replaced it, while the contact ran. */
   | { readonly kind: 'superseded' };
 
 export interface FirstContactDeps {
@@ -233,8 +233,8 @@ function outcomeOfCheck(answer: unknown): FirstContactOutcome {
 
 /**
  * A world's first contact with this identity: get a ticket, hand it to the world's
- * `check_account`, and say what the world answered. Total. `live` is asked after each wait: once
- * the connection is no longer the live one the ticket is not presented and an answer is dropped.
+ * `check_account`, and say what the world answered. Total. `live` is asked after each wait: a
+ * ticket is presented, and an answer kept, only while the connection is still the live one.
  * The ticket lives in this call only.
  */
 export async function firstContact(deps: FirstContactDeps): Promise<FirstContactOutcome> {
