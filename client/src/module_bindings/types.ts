@@ -1521,6 +1521,12 @@ export const WorldCheckBudget = __t.object("WorldCheckBudget", {
 });
 export type WorldCheckBudget = __Infer<typeof WorldCheckBudget>;
 
+export const WorldMove = __t.object("WorldMove", {
+  identity: __t.identity(),
+  movedAtMs: __t.i64(),
+});
+export type WorldMove = __Infer<typeof WorldMove>;
+
 export const WorldName = __t.object("WorldName", {
   name: __t.string(),
 });
