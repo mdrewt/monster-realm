@@ -213,8 +213,9 @@ pub(crate) fn validate_name(name: &str) -> Result<String, String> {
 /// later `Err("queue full")` returns before any write of an existing row.
 ///
 /// A joined caller with no intent row gets one created from the published
-/// character row (`seed_intent`), which keeps its queued steps and its seq guard. An `Err` after that insert rolls
-/// it back with the rest of the transaction.
+/// character row (`seed_intent`), which keeps its queued steps and its seq
+/// guard. An `Err` after that insert rolls it back with the rest of the
+/// transaction.
 pub(crate) fn authorize_move(
     ctx: &ReducerContext,
     reducer: &str,

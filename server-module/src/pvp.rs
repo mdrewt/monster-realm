@@ -419,8 +419,7 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
 /// delete every `battle_challenge` naming `owner` on EITHER side — challenger
 /// AND target, any status (contrast `cancel_challenges_on_disconnect` above,
 /// outgoing pending only) — disarming each challenge's TTL schedule row (the
-/// JOIN_ONLY sweep riding its parent). Called only from
-/// `accounts::account_deletion_reaper`.
+/// JOIN_ONLY sweep riding its parent). Called only from `accounts::account_deletion_reaper`.
 pub(crate) fn erase_pvp_rows(ctx: &ReducerContext, owner: Identity) {
     let mut challenge_ids: Vec<u64> = ctx
         .db

@@ -548,19 +548,19 @@ pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
 /// Resolve the disconnecting caller's Ongoing WILD battle.
 ///
 /// `pvp::forfeit_on_disconnect` deliberately excludes WILD battles and no
-/// scheduled reaper covers the wild `battle` row class, so a
-/// mid-wild-battle disconnect would otherwise leave an `Ongoing` `battle` row
-/// forever — soft-locking the returning player
-/// out of any new battle (`is_in_ongoing_battle`'s player arm has no WILD
-/// exclusion, so any lingering `Ongoing` row blocks `tactics::start_wild_tactical`).
+/// scheduled reaper covers the wild `battle` row class, so a mid-wild-battle
+/// disconnect would otherwise leave an `Ongoing` `battle` row forever —
+/// soft-locking the returning player out of any new battle
+/// (`is_in_ongoing_battle`'s player arm has no WILD exclusion, so any lingering
+/// `Ongoing` row blocks `tactics::start_wild_tactical`).
 ///
 /// Resolution = **auto-flee**: the flee write-back this path owns
 /// (`write_back_battle_results` — persists damaged HP clamped to `stat_hp`, no XP
-/// on `Fled`), then DELETE the `battle` row. We do
-/// NOT `update()` it to `Fled`: a disconnected client has no subscription to
-/// observe a terminal frame, and a lingering row is a stale-overlay hazard on
-/// reconnect. Persisting damage (not a pre-battle-HP restore) keeps disconnect ≈
-/// a flee — no "disconnect-to-heal" advantage.
+/// on `Fled`), then DELETE the `battle` row. We do NOT `update()` it to `Fled`:
+/// a disconnected client has no subscription to observe a terminal frame, and a
+/// lingering row is a stale-overlay hazard on reconnect. Persisting damage (not
+/// a pre-battle-HP restore) keeps disconnect ≈ a flee — no "disconnect-to-heal"
+/// advantage.
 ///
 /// Idempotent + caller-scoped: a no-op when the caller has no wild
 /// battle; never touches another player's rows. Reached via
@@ -681,20 +681,18 @@ pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> 
 }
 
 /// for EVERY battle naming `owner` on either side, FORCE a still-`Ongoing` row
-/// terminal against the
-/// erased side through the pure `battle_with_forced_terminal` seam, then swap
-/// the owner's side(s) to `crate::TOMBSTONE_IDENTITY` via the pure
-/// `battle_with_tombstoned_party` seam. The force runs BEFORE the swap because
-/// it needs the original identities to find the erased side. Both index passes
-/// are collected BEFORE any mutation, and the second pass excludes rows the
-/// first already matched — the `my_battle` dedup idiom, so a practice battle
-/// is visited once.
+/// terminal against the erased side through the pure
+/// `battle_with_forced_terminal` seam, then swap the owner's side(s) to
+/// `crate::TOMBSTONE_IDENTITY` via the pure `battle_with_tombstoned_party` seam.
+/// The force runs BEFORE the swap because it needs the original identities to
+/// find the erased side. Both index passes are collected BEFORE any mutation,
+/// and the second pass excludes rows the first already matched — the
+/// `my_battle` dedup idiom, so a practice battle is visited once.
 ///
-/// An `Ongoing` row reaching this step means the 6a
-/// resolver left it live; forcing it closes the channels through which an
-/// erased identity could later settle it or be handed its win. The
-/// forced outcome is a degraded settlement — no rating, HP, XP, currency or
-/// evolution write-back. A forced row emits one
+/// An `Ongoing` row reaching this step means the 6a resolver left it live;
+/// forcing it closes the channels through which an erased identity could later
+/// settle it or be handed its win. The forced outcome is a degraded settlement —
+/// no rating, HP, XP, currency or evolution write-back. A forced row emits one
 /// `deletion_cascade_forced_battle_terminal` line carrying only the battle id:
 /// it marks a 6a-resolver gap to investigate, and the cascade line carries the
 /// subject.

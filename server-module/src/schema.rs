@@ -50,8 +50,8 @@ pub struct Character {
 /// it is `move_intent.last_input_seq`.
 ///
 /// `discriminator` is the public copy of the identity's `player_handle` value,
-/// written by `join_game`; 0 means no tag (a row that pre-dates the column, or
-/// one the deletion cascade tombstoned). `lead_level` is the public column for
+/// written by `join_game`; 0 means no tag (a row the deletion cascade
+/// tombstoned). `lead_level` is the public column for
 /// the level of the owner's lead party monster, where 0 reads as no party:
 /// `join_game` writes 0, `battle::refresh_lead_level` keeps it on the lead's
 /// level after each write that can move it, and the deletion cascade zeroes it.

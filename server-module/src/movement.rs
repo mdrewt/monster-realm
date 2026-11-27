@@ -559,8 +559,8 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     // the zone and the next tick sees the zone without it. An intent row is
     // proof of a player (only a player's character ever gets one), so a zone
     // with a player in it pays no `player` read for this; the `player` lookups
-    // run only when no character has an intent row, where they find a session
-    // that pre-dates `move_intent`. Checked before the map is read so a zone
+    // run only when no character has an intent row, where they find a player's
+    // character that lacks one. Checked before the map is read so a zone
     // whose content fails to load still stops ticking.
     let occupied = chars.iter().any(|(_, intent)| intent.is_some())
         || chars.iter().any(|&(id, _)| is_player_character(ctx, id));
@@ -591,7 +591,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         let mut intent = match intent {
             Some(intent) => intent,
             // No intent row and nothing published to drain: an NPC, or an idle
-            // session that pre-dates `move_intent`. Normalise to Idle write-on-change.
+            // player's character that lacks one. Normalise to Idle write-on-change.
             None if row.move_queue.is_empty() => {
                 if row.action != ActionState::Idle {
                     row.action = ActionState::Idle;
@@ -599,8 +599,8 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 }
                 continue;
             }
-            // A published queue with no intent row: a session that was mid-walk
-            // when `move_intent` was added. Its row is created from what it published.
+            // A published queue with no intent row (`join_game` creates the two
+            // together): the row is created from what the character published.
             None => ctx.db.move_intent().insert(seed_intent(&row)),
         };
         if intent.queue.is_empty() {

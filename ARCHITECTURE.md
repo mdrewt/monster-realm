@@ -476,8 +476,8 @@ call or by the tick.
   such a call is deleted when it returns.
 - Subscribing to a private table from the client fails the whole subscription batch.
   Clients subscribe to the owner-scoped view instead.
-- Schema changes on a live database must be additive (append columns with a
-  `#[default]`); see `docs/DECISIONS.md`.
+- Schema changes on a live database must be additive between consolidations
+  (append columns with a `#[default]`); see `docs/DECISIONS.md`.
 
 ## Schema and privacy model
 

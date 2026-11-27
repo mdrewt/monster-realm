@@ -1807,8 +1807,8 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     // currency is shed before any other caller. Both answers are read EAGERLY,
     // one unique-index point read each, and the tier seam stays pure. This first
     // gate asks whether even the SMALLEST possible bundle fits, so a caller who
-    // cannot be served is refused BEFORE the manifest walk (which includes two
-    // unindexed own-row scans). An Err here rolls the purge above back with it.
+    // cannot be served is refused BEFORE the manifest walk (which includes one
+    // unindexed own-row scan). An Err here rolls the purge above back with it.
     let cap = export_live_row_cap(
         crate::accounts::is_account_holder(ctx, me),
         crate::economy::wallet_exists(ctx, me),
@@ -1819,7 +1819,7 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     // This request's UNIQUE creation stamp. AFTER the
     // admission pre-gate, so a caller who cannot be served pays no probe
     // reads; BEFORE the manifest walk, so contention is refused before the
-    // two unindexed own-row scans. The `?` is an early exit that rolls the
+    // unindexed own-row scan. The `?` is an early exit that rolls the
     // purge above back with it, the same contract the two
     // admission rejects carry.
     let stamp = mint_export_stamp(ctx, now)?;
