@@ -2468,6 +2468,117 @@ mod allowlist_seed {
             assert_eq!(listed(&s), want, "{off:?}: the kept list and the new seed");
         }
     }
+
+    // --- the owner drops bindings until the seed fits ----------------------------------
+
+    /// [`owned`] with no rule row, `world_binding` writable as well as scannable, and
+    /// `world_bind_nonce` registered on its key, writable: what the owner's
+    /// `drop_world_binding` reads and writes.
+    fn droppable(fx: &Fixture) -> S<'_> {
+        let s = owned(fx, None);
+        let _ = fx
+            .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+            .unique()
+            .writable()
+            .scannable();
+        let _ = fx
+            .table::<crate::schema::WorldBindNonce>("world_bind_nonce", "identity", |r| r.identity)
+            .unique()
+            .writable();
+        s
+    }
+
+    /// The owner drops `who`'s binding.
+    fn drop_bound(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
+        call(fx, owner(), ms, |ctx| {
+            crate::world_binding::drop_world_binding(ctx, who)
+        })
+    }
+
+    /// The switch is refused with the too-many error, every table unchanged and no write
+    /// call made.
+    fn assert_switch_refused(fx: &Fixture, s: &S<'_>, ms: i64, label: &str) {
+        fx.reset_writes();
+        let before = footprint_all(fx, s);
+        assert_eq!(
+            to_allowlist(fx, Vec::new(), ms),
+            Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS.to_string()),
+            "{label}"
+        );
+        assert_eq!(
+            footprint_all(fx, s),
+            before,
+            "{label}: every table as it was, and no write call"
+        );
+    }
+
+    /// The list starts empty and 257 distinct accounts are bound under a key the build holds,
+    /// on an `Open` world that admits every identity. The switch to `Allowlist` is refused
+    /// with no write; the owner drops one binding; the switch is then accepted and lists
+    /// exactly the 256 remaining accounts, the dropped one absent.
+    ///
+    /// kills: the inert drop (the switch stays refused); a drop that leaves the binding the
+    /// seed reads.
+    #[test]
+    fn dropping_one_of_257_bound_accounts_lets_the_switch_seed_the_other_256_wr261127a_7() {
+        let fx = fixture();
+        let s = droppable(&fx);
+        for n in 0..=MAX_ALLOWLIST_ACCOUNTS {
+            bind(&s, crowd(n), &acct(n));
+        }
+        assert_eq!(s.binding.rows().len(), 257, "fixture: 257 bound accounts");
+        assert!(listed(&s).is_empty(), "fixture: the list starts empty");
+        assert_switch_refused(&fx, &s, T0, "257 distinct accounts");
+
+        assert_eq!(drop_bound(&fx, crowd(100), T0 + 1), Ok(()), "the drop");
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0 + 2), Ok(()), "the switch");
+        let want = sorted_accts((0..=MAX_ALLOWLIST_ACCOUNTS).filter(|&n| n != 100));
+        assert_eq!(want.len(), 256, "fixture: 256 remaining accounts");
+        assert_eq!(listed(&s), want, "exactly the remaining accounts");
+        assert!(
+            !listed(&s).contains(&acct(100)),
+            "the dropped account is not listed"
+        );
+        assert_eq!(access_row(&s.w), enc(&allowlist_row()));
+    }
+
+    /// Of 257 distinct bound accounts, one is carried by two identities. Dropping one of
+    /// those two leaves the distinct count at 257 and the switch refused with no write;
+    /// dropping the binding of an account no one else carries brings it to 256, and the
+    /// switch lists every remaining account, the shared one included.
+    ///
+    /// kills: the inert drop; a bound counted per binding rather than per distinct account;
+    /// a drop that removes every binding of the account it names.
+    #[test]
+    fn dropping_one_of_two_bindings_of_a_shared_account_keeps_the_switch_refused_wr261127a_7() {
+        let fx = fixture();
+        let s = droppable(&fx);
+        for n in 0..=MAX_ALLOWLIST_ACCOUNTS {
+            bind(&s, crowd(n), &acct(n));
+        }
+        let twin = crowd(400);
+        bind(&s, twin, &acct(5));
+        assert_switch_refused(&fx, &s, T0, "257 distinct accounts");
+
+        assert_eq!(
+            drop_bound(&fx, crowd(5), T0 + 1),
+            Ok(()),
+            "the drop of a shared account's binding"
+        );
+        assert_switch_refused(&fx, &s, T0 + 2, "the shared account is still bound");
+
+        assert_eq!(
+            drop_bound(&fx, crowd(6), T0 + 3),
+            Ok(()),
+            "the drop of an account no one else carries"
+        );
+        assert_eq!(to_allowlist(&fx, Vec::new(), T0 + 4), Ok(()), "the switch");
+        assert_eq!(
+            listed(&s),
+            sorted_accts((0..=MAX_ALLOWLIST_ACCOUNTS).filter(|&n| n != 6)),
+            "every remaining account, the shared one included"
+        );
+    }
 }
 
 // =====================================================================================
