@@ -189,7 +189,7 @@ helper, never copied per module. A module writes only its own tables; a write in
 table goes through a helper the owning module provides.
 
 **Why.** Reducers are the only writers and the only trust boundary. Keeping them thin keeps every
-rule testable without a database, and keeping guards in one place stops PvE and PvP paths from
+rule testable without a database, and keeping each guard in one place stops PvE and PvP paths from
 growing slightly different versions of the same check.
 
 **Rules out.** Game rules inside reducers; a second copy of a guard; a module writing another
