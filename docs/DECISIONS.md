@@ -166,32 +166,28 @@ content rows; localized strings in RON content.
 
 **Decision.** A value the tactical engine reads about a skill, a species, a battle item or a
 zone's wild encounters is a field of that row: `SkillDef.tactics` (tier and geometry),
-`Species.tactics` (movement class, role, stance and kit), `ItemDef.battle_use` (reach and target
-filter), and `EncounterTable.pack_weights` and `battle_map_pool`. RON must spell the tactical
-fields of a skill, a species and an encounter table. `battle_maps/` and `tactics_tuning.ron`
-stay registries of their own: a map has its own id and the tuning is one record. The server
-takes content from the registry compiled into `game-core`, the grass trigger included; the
-content tables are what a client reads, and no tactical field has a column. This is the target.
-The code still holds four registries keyed by another row's id (`tactics_skills/`,
-`tactics_species/`, `tactics_items/`, `tactics_zones/`) and the join that reads them
-(`tactics::content::build_kits`, `validate_tactics_content`);
-`docs/refactors/tactics-content.md` lists the slices that move each, in order, with the
-alternatives a judge scored.
+`Species.tactics` (movement class, role, stance, kit, signature and footprint),
+`ItemDef.battle_use` (reach and target filter), and `EncounterTable.pack_weights` and
+`battle_map_pool`. RON must spell them for every skill, species and encounter table.
+`battle_maps/` and `tactics_tuning.ron` stay registries of their own. No tactical field has a
+table column. `validate_tactics_content` is the one content gate: CI runs it as ordinary tests
+and `sync_content` runs it in its validate phase, before any write. This is the target. The
+code still holds four registries that only add fields to another registry's rows
+(`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`), and
+`docs/refactors/tactics-content.md` lists the slices that move each, in order.
 
 **Why.** A skill's power and its reach are one balance decision, and the engine reads them
 together. Kept as two entries that must agree by id, they let an author change one and forget
 the other, and what notices is a join that names an id and no file. One row cannot disagree
-with itself, and a lever left out is a parse error at that row. The same holds on the server: a
-wild encounter decided from a table row and filled from the registry fires in a zone whose
-encounters the content has removed, and the battle is then refused. No player-facing reason
-keeps the halves apart: the tactical data ships to the client inside the wasm module either way.
+with itself, and a lever left out is a parse error at that row. Nothing a player sees depends
+on keeping the halves apart: the tactical data reaches the client inside the wasm module either
+way, and neither layout puts it in a table.
 
-**Rules out.** A registry whose entries are keyed by another registry's id and describe its
-rows; a tactical field RON may omit for a skill, a species or an encounter table; a content
-struct built from a table row; a column on a content table for a field only the engine reads; a
-field that holds one value in every row and has no reader (it is added when a rule reads it);
-building a content row for a test anywhere but `game-core`'s `fixtures`, or compiling those
-into a release build.
+**Rules out.** A registry that exists only to add fields to the rows of another; a tactical
+field RON may omit for a skill, a species or an encounter table; a default entry for a row that
+has none; a second copy of the lints in the server; a column on a content table for a field only
+the engine reads; a made-up tactical value in a content struct built from a table row (a rule
+that reads two values of a struct takes the two values).
 
 ## Server authority: thin reducers in domain modules
 
