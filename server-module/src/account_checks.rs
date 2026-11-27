@@ -55,6 +55,7 @@ use crate::world_binding::is_visible_ascii;
 use serde::{Deserialize, Serialize};
 use spacetimedb::http::{Request, Timeout};
 use spacetimedb::{Identity, ProcedureContext, ReducerContext, ScheduleAt, Table, TimeDuration};
+use std::net::IpAddr;
 
 /// A ticket is this many base64url characters: 32 random bytes, unpadded.
 pub(crate) const TICKET_LEN: usize = 43;
@@ -90,6 +91,14 @@ pub(crate) const REJECT_MOVE_NOT_NOW: &str = "this character cannot change clien
 pub(crate) const REJECT_MOVE_FAILED: &str = "the character could not be moved";
 pub(crate) const REJECT_CHARACTER_MOVED: &str =
     "this character is playing on another client; sign in again to play here";
+pub(crate) const REJECT_NO_HOST_ACCOUNT: &str = "that identity holds no account here";
+
+/// How often the host's own check ticks.
+pub(crate) const HOST_CHECK_INTERVAL_MS: i64 = 60 * 60 * 1000;
+/// The host's own check asks once its last success is this old.
+pub(crate) const HOST_CHECK_MIN_AGE_MS: i64 = 23 * 60 * 60 * 1000;
+/// A stored address vouches for an `ip:` name for this long after it was confirmed.
+pub(crate) const EGRESS_MAX_AGE_MS: i64 = 25 * 60 * 60 * 1000;
 
 const BUDGET_ROW: u32 = 0;
 const STATUS_OK: u16 = 200;
@@ -140,6 +149,28 @@ pub struct WorldMove {
     #[primary_key]
     pub identity: Identity,
     pub moved_at_ms: i64,
+}
+
+/// The address the account service last saw this world's requests leave from, one row per
+/// address family: `family` is 4 or 6, `address` that family's address in its one spelling.
+/// PRIVATE.
+#[spacetimedb::table(accessor = world_egress)]
+pub struct WorldEgress {
+    #[primary_key]
+    pub family: u8,
+    pub address: String,
+    pub confirmed_at_ms: i64,
+}
+
+/// The tick of the host's own check: one interval row, and when that check last succeeded.
+/// PRIVATE.
+#[spacetimedb::table(accessor = host_check_schedule, scheduled(host_account_check))]
+pub struct HostCheckSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub last_success_ms: Option<i64>,
 }
 
 /// Owner-scoped read path for `world_account`: the sender's own row.
@@ -234,6 +265,21 @@ fn name_carries_move(name: &str, ip_confirmed: bool) -> bool {
     name.starts_with("spki:")
         || name.starts_with("dns:")
         || (ip_confirmed && name.starts_with("ip:"))
+}
+
+/// Whether the host's own check asks at `now_ms`, given when it last succeeded.
+fn host_check_due(_last_success_ms: Option<i64>, _now_ms: i64) -> bool {
+    false
+}
+
+/// The address an `ip:` name carries.
+fn ip_name_address(_name: &str) -> Option<IpAddr> {
+    None
+}
+
+/// The address `url` is asked at over the address family `family` (4 or 6).
+fn check_url(url: &str, _family: Option<u8>) -> String {
+    url.to_string()
 }
 
 fn is_handle(text: &str) -> bool {
@@ -588,6 +634,18 @@ fn store_recheck(tx: &ReducerContext, asked: &WorldAccount, answer: &HandleAnswe
     });
 }
 
+/// Mark `who`'s row as the one the host plays as and arm the host's own check.
+pub(crate) fn mark_host(
+    _ctx: &ReducerContext,
+    _profile: &BuildProfile,
+    _who: Identity,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Note that the world's names changed.
+pub(crate) fn names_changed(_ctx: &ReducerContext) {}
+
 // --- The account service ----------------------------------------------------------------
 
 /// `POST` a JSON `body` to `url` under the check timeout. Answers the status and the body's
@@ -727,6 +785,21 @@ pub(crate) fn recheck_account_under(
     Ok(())
 }
 
+/// [`host_account_check`] as a build of `profile` runs it.
+pub(crate) fn host_account_check_under(
+    _ctx: &mut ProcedureContext,
+    _profile: &BuildProfile,
+    _row: HostCheckSchedule,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Mark `who`'s `world_account` row as the one the host plays as. Owner-only.
+#[spacetimedb::reducer]
+pub fn set_host_identity(_ctx: &ReducerContext, _who: Identity) -> Result<(), String> {
+    Ok(())
+}
+
 /// Check the caller's account by a ticket the account service issued it for this world, and
 /// store the answer. `Ok` carries whether the account owns the game; a refusal is an `Err` with
 /// one of this module's constants, `access::REJECT_NOT_ADMITTED`, the deletion gate's reason or
@@ -754,6 +827,16 @@ pub fn check_account_for(
 #[spacetimedb::procedure]
 pub fn recheck_account(ctx: &mut ProcedureContext, row: RecheckSchedule) -> Result<(), String> {
     recheck_account_under(ctx, &BUILD_PROFILE, row)
+}
+
+/// The host's own check of the account it plays under. Run by the host from the
+/// `host_check_schedule` row.
+#[spacetimedb::procedure]
+pub fn host_account_check(
+    ctx: &mut ProcedureContext,
+    row: HostCheckSchedule,
+) -> Result<(), String> {
+    host_account_check_under(ctx, &BUILD_PROFILE, row)
 }
 
 #[cfg(test)]

@@ -2371,6 +2371,18 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         exportable: false,
     },
     DataLifecycleEntry {
+        table: "world_egress",
+        policy: DeletionPolicy::NotOwned,
+        basis: "the address the account service last saw this world's requests leave from, one row per address family: no Identity column, the world's own address and not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "host_check_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "one interval row, the tick of the host account's own check and when it last succeeded: no Identity column, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
         table: "world_allowlist",
         policy: DeletionPolicy::NotOwned,
         basis: "the account subjects the host lets in: the host's own list, no Identity column; the cascade deletes the row holding the account of the deleted identity's binding unless another binding the build counts carries that account, and a row no binding of the deleted identity names stays until the owner removes it; a guest claim does not write it",
