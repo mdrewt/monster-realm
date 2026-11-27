@@ -5329,6 +5329,11 @@ mod acct_nh {
         // export test seeds the binding through it to prove the export leaves it out).
         binding: Handle<'a, WorldBinding>,
         bind_nonce: Handle<'a, WorldBindNonce>,
+        // The identity's checked account and its armed re-check, both on their `identity`
+        // key (the cascade's and the claim's `account_checks::erase_world_account` deletes
+        // through them; the export reads the account row through it).
+        world_account: Handle<'a, crate::account_checks::WorldAccount>,
+        recheck: Handle<'a, crate::account_checks::RecheckSchedule>,
     }
 
     /// Registers every index the shipped accounts / claim / cascade / export
@@ -5707,6 +5712,36 @@ mod acct_nh {
                 .table::<WorldBindNonce>("world_bind_nonce", "identity", |r| r.identity)
                 .unique()
                 .writable(),
+            world_account: {
+                let _ = fx
+                    .table_keyed::<crate::account_checks::WorldAccount, String>(
+                        "world_account",
+                        "handle",
+                        |r| r.handle.clone(),
+                    )
+                    .unique();
+                fx.table::<crate::account_checks::WorldAccount>("world_account", "identity", |r| {
+                    r.identity
+                })
+                .unique()
+                .writable()
+            },
+            recheck: {
+                let _ = fx
+                    .table_keyed::<crate::account_checks::RecheckSchedule, u64>(
+                        "recheck_schedule",
+                        "scheduled_id",
+                        |r| r.scheduled_id,
+                    )
+                    .unique();
+                fx.table::<crate::account_checks::RecheckSchedule>(
+                    "recheck_schedule",
+                    "identity",
+                    |r| r.identity,
+                )
+                .unique()
+                .writable()
+            },
         }
     }
 
@@ -13334,6 +13369,131 @@ mod acct_nh {
                 "the longer spelling's binding stays"
             );
         }
+
+        // --- the checked account ------------------------------------------------------
+
+        const HANDLE_OWN: &str = "k1.OwnOwnOwn0123456789-_";
+        const HANDLE_OTHER: &str = "k1.OthOthOth0123456789_-";
+        const HANDLE_THIRD: &str = "k1.ThiThiThi0123456789ab";
+
+        /// `who` holds a checked account under `handle` and an armed re-check numbered `k`.
+        fn checked(w: &W<'_>, who: Identity, handle: &str, k: u64) {
+            let k_ms = i64::try_from(k).expect("a small test number fits an i64");
+            w.world_account.seed(&crate::account_checks::WorldAccount {
+                handle: handle.to_string(),
+                identity: who,
+                entitled: true,
+                checked_at_ms: T0 - 1_000 + k_ms,
+                is_host: false,
+            });
+            w.recheck.seed(&crate::account_checks::RecheckSchedule {
+                scheduled_id: k,
+                scheduled_at: ScheduleAt::Time(at(T0 + k_ms)),
+                identity: who,
+            });
+        }
+
+        /// `who`'s `world_account` and `recheck_schedule` rows, as sorted canonical bytes.
+        fn account_rows_of(w: &W<'_>, who: Identity) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+            (
+                encs(
+                    &w.world_account
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+                encs(
+                    &w.recheck
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            )
+        }
+
+        /// The deleted identity and a bystander each hold a checked account, an armed
+        /// re-check and a listed handle. The cascade erases the deleted identity's account
+        /// row and its re-check and takes its handle off the list; the bystander's rows and
+        /// listed handle, and an unrelated list row, stay byte for byte.
+        ///
+        /// kills: a cascade with no `world_account` step; the re-check left armed; the
+        /// bystander's rows erased; the delist still keyed on a binding (no binding is
+        /// seeded, so the handle would stay); the delist run after the row is erased.
+        #[test]
+        fn the_cascade_erases_the_deleted_identitys_checked_account_and_no_others_lpw23_10() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (v, b) = (id(0xE7), id(0xE8));
+            checked(&w, v, HANDLE_OWN, 1);
+            checked(&w, b, HANDLE_OTHER, 2);
+            enlist(&list, &[HANDLE_OWN, HANDLE_OTHER, KEPT_SUB]);
+            let bystander_before = account_rows_of(&w, b);
+            assert_eq!(
+                bystander_before.0.len(),
+                1,
+                "fixture: the bystander's account row"
+            );
+            assert_eq!(
+                bystander_before.1.len(),
+                1,
+                "fixture: the bystander's re-check"
+            );
+            cascade(&fx, &w, v);
+            assert_eq!(
+                account_rows_of(&w, v),
+                (Vec::new(), Vec::new()),
+                "the deleted identity's account row and re-check are gone"
+            );
+            assert_eq!(
+                account_rows_of(&w, b),
+                bystander_before,
+                "the bystander's account row and re-check stay"
+            );
+            assert_eq!(
+                listed(&list),
+                subjects(&[HANDLE_OTHER, KEPT_SUB]),
+                "only the deleted identity's handle leaves the list"
+            );
+        }
+
+        /// The retired guest, the claimer and a bystander each hold a checked account and an
+        /// armed re-check. The claim completes and erases the guest's two rows; the
+        /// claimer's and the bystander's stay byte for byte.
+        ///
+        /// kills: a claim with no `world_account` erase; the claimer's rows erased in place
+        /// of the guest's; the guest's re-check left armed.
+        #[test]
+        fn the_claim_erases_the_retired_guests_checked_account_and_no_others_lpw23_10() {
+            let fx = fixture();
+            let w = world(&fx);
+            let _list = listing(&fx);
+            let (g, c, b) = (id(0xE9), id(0xEA), id(0xEB));
+            checked(&w, g, HANDLE_OWN, 3);
+            checked(&w, c, HANDLE_OTHER, 4);
+            checked(&w, b, HANDLE_THIRD, 5);
+            let claimer_before = account_rows_of(&w, c);
+            let bystander_before = account_rows_of(&w, b);
+            assert_eq!(claim_guest(&fx, &w, g, c), Ok(()), "the claim completes");
+            assert!(owns_monster_101(&w, c), "the claim still moves the monster");
+            assert_eq!(
+                account_rows_of(&w, g),
+                (Vec::new(), Vec::new()),
+                "the retired guest holds no account row and no re-check"
+            );
+            assert_eq!(
+                account_rows_of(&w, c),
+                claimer_before,
+                "the claimer's rows stay"
+            );
+            assert_eq!(
+                account_rows_of(&w, b),
+                bystander_before,
+                "the bystander's rows stay"
+            );
+        }
     }
 }
 
@@ -13472,6 +13632,19 @@ mod acs6_profile {
             login_issuers,
             dev_reducers: has("dev_reducers"),
             attestation_keys,
+            world_check_url: world_check_url_of(name),
+        }
+    }
+
+    /// The account service a world of the build `name` asks: the production placeholder for
+    /// `world`, hosted-dev for the two dev builds, none for the rest.
+    pub(super) fn world_check_url_of(name: &str) -> Option<&'static str> {
+        match name {
+            "world" => Some("https://auth.monster-realm.invalid/world/check"),
+            "test" | "dev-enforcing" => {
+                Some("https://auth.monster-realm.spookyowltech.com/world/check")
+            }
+            _ => None,
         }
     }
 
@@ -13488,6 +13661,7 @@ mod acs6_profile {
             login_issuers,
             dev_reducers,
             attestation_keys,
+            world_check_url: world_check_url_of(name),
         }
     }
 
@@ -14816,22 +14990,22 @@ mod acs6_door {
         }
     }
 
-    /// The door writes nothing and reads only the caller's world binding, and
-    /// that only when the profile enforces ownership, the token does not
-    /// entitle the caller and the profile holds an attestation key. Every
+    /// The door writes nothing and reads only the caller's `world_account` row,
+    /// and that only when the profile enforces ownership, the token does not
+    /// entitle the caller and the profile names an account service. Every
     /// table it could consult holds a row for the caller, all writable. The
-    /// binding row names no key and does not carry the base game, so it never
-    /// admits. Each `ask` runs the door twice (`entitled`, then
-    /// `require_entitled`), and a read is one point find of the caller's one
-    /// row, so a reading case reads exactly two rows.
+    /// account row says not entitled, so it never admits; the binding row is
+    /// entitled under the dev key and is never read. Each `ask` runs the door
+    /// twice (`entitled`, then `require_entitled`), and a read is one point
+    /// find of the caller's one row, so a reading case reads exactly two rows.
     ///
-    /// kills: a door that reads the binding before or regardless of the token,
-    /// under a non-enforcing profile, or under a keyless profile; a door that
-    /// writes any table; a door that consults any other table.
+    /// kills: a door that reads the account row before or regardless of the
+    /// token, under a non-enforcing profile, or under a profile that names no
+    /// service; a door that still reads `world_binding`; a door that writes any
+    /// table; a door that consults any other table.
     #[test]
-    fn acs6_door_writes_nothing_and_reads_a_binding_only_when_a_keyed_profile_lacks_an_entitling_token(
+    fn acs6_door_writes_nothing_and_reads_the_callers_world_account_only_when_a_checking_profile_lacks_an_entitling_token_lpw23_7(
     ) {
-        const UNHELD_KID: &str = "no-such-kid";
         let fx = fixture();
         fx.table::<crate::schema::WorldBinding>("world_binding", "identity", |r| r.identity)
             .unique()
@@ -14840,9 +15014,21 @@ mod acs6_door {
                 identity: who(),
                 account_subject: "sub-door".to_string(),
                 bound_at_ms: T0,
-                entitled: false,
-                key_id: UNHELD_KID.to_string(),
+                entitled: true,
+                key_id: crate::accounts::DEV_ATTESTATION_KEYS[0].kid.to_string(),
             });
+        fx.table::<crate::account_checks::WorldAccount>("world_account", "identity", |r| {
+            r.identity
+        })
+        .unique()
+        .writable()
+        .seed(&crate::account_checks::WorldAccount {
+            handle: "k1.DoorDoorDoor0123456789".to_string(),
+            identity: who(),
+            entitled: false,
+            checked_at_ms: T0 - 1_000,
+            is_host: false,
+        });
         fx.table::<crate::schema::Account>("account", "identity", |r| r.identity)
             .writable()
             .seed(&super::base_account(0x6A));
@@ -14890,7 +15076,7 @@ mod acs6_door {
                 connection_id: ConnectionId::from_u128(CONN),
                 identity: who(),
             });
-        const TABLES: [&str; 7] = [
+        const TABLES: [&str; 8] = [
             "account",
             "player",
             "world_admission",
@@ -14898,6 +15084,7 @@ mod acs6_door {
             "world_access",
             "player_handle",
             "player_session",
+            "world_binding",
         ];
         let dev = dev_enforcing();
         let open = build_profile(feats(&["open_join"]));
@@ -14911,24 +15098,20 @@ mod acs6_door {
             assert!(p.enforces_ownership, "fixture: {label} enforces");
         }
         assert!(
-            !dev.attestation_keys.is_empty(),
-            "fixture: dev-enforcing holds a key"
+            dev.world_check_url.is_some(),
+            "fixture: dev-enforcing names a service"
         );
         assert!(
-            dev.attestation_keys.iter().all(|k| k.kid != UNHELD_KID),
-            "fixture: no dev key has the binding's kid"
+            official.world_check_url.is_none(),
+            "fixture: official names no service"
         );
         assert!(
-            official.attestation_keys.is_empty(),
-            "fixture: official holds no key"
-        );
-        assert!(
-            world.attestation_keys.is_empty(),
-            "fixture: world holds no key"
+            world.world_check_url.is_some(),
+            "fixture: world names a service"
         );
         let entitled_jwt = payload(LOCAL_DEV, AUD, Some(CLAIM));
         let prod_jwt = payload(PRODUCTION, AUD, Some(CLAIM));
-        // (label, profile, over the internal context, token, outcome, binding rows read)
+        // (label, profile, over the internal context, token, outcome, account rows read)
         let cases = vec![
             ("admitted, not enforcing", &open, false, None, admitted(), 0),
             (
@@ -14948,7 +15131,7 @@ mod acs6_door {
                 0,
             ),
             (
-                "refused, enforcing, no token, a key held",
+                "refused, enforcing, no token, a service named",
                 &dev,
                 false,
                 None,
@@ -14956,7 +15139,7 @@ mod acs6_door {
                 2,
             ),
             (
-                "refused, enforcing, no connection, a key held",
+                "refused, enforcing, no connection, a service named",
                 &dev,
                 true,
                 None,
@@ -14964,7 +15147,7 @@ mod acs6_door {
                 2,
             ),
             (
-                "admitted, enforcing, an entitling token, no key",
+                "admitted, enforcing, an entitling token, no service",
                 &official,
                 false,
                 Some(prod_jwt.as_str()),
@@ -14972,7 +15155,7 @@ mod acs6_door {
                 0,
             ),
             (
-                "refused, enforcing, no token, no key (official)",
+                "refused, enforcing, no token, no service (official)",
                 &official,
                 false,
                 None,
@@ -14980,23 +15163,23 @@ mod acs6_door {
                 0,
             ),
             (
-                "refused, enforcing, no token, no key (world)",
+                "refused, enforcing, no token, a service named (world)",
                 &world,
                 false,
                 None,
                 refused(),
-                0,
+                2,
             ),
             (
-                "refused, enforcing, no connection, no key (world)",
+                "refused, enforcing, no connection, a service named (world)",
                 &world,
                 true,
                 None,
                 refused(),
-                0,
+                2,
             ),
         ];
-        for (label, p, internal, jwt, want, binding_reads) in cases {
+        for (label, p, internal, jwt, want, account_reads) in cases {
             fx.reset_reads();
             fx.reset_writes();
             let got = if internal {
@@ -15006,19 +15189,113 @@ mod acs6_door {
             };
             assert_eq!(got, want, "{label}");
             assert_eq!(
-                fx.rows_read("world_binding"),
-                binding_reads,
-                "{label}: rows the door read from world_binding"
+                fx.rows_read("world_account"),
+                account_reads,
+                "{label}: rows the door read from world_account"
             );
             assert_eq!(
-                fx.writes_to("world_binding"),
+                fx.writes_to("world_account"),
                 0,
-                "{label}: the door wrote world_binding"
+                "{label}: the door wrote world_account"
             );
             for t in TABLES {
                 assert_eq!(fx.rows_read(t), 0, "{label}: the door read {t}");
                 assert_eq!(fx.writes_to(t), 0, "{label}: the door wrote {t}");
             }
+        }
+    }
+
+    /// `who()`'s checked account, as the account service last answered.
+    fn account_row(
+        who: Identity,
+        entitled: bool,
+        checked_at_ms: i64,
+    ) -> crate::account_checks::WorldAccount {
+        crate::account_checks::WorldAccount {
+            handle: format!("k1.Door{}0123456789-_", who.to_byte_array()[0]),
+            identity: who,
+            entitled,
+            checked_at_ms,
+            is_host: false,
+        }
+    }
+
+    /// On the enforcing dev build, a caller with no entitling token is admitted by its
+    /// `world_account` row that says entitled, however old the row (checked at the epoch, or
+    /// ten years before the call), and refused by one that says not entitled. A neighbour's
+    /// entitled row admits only the neighbour.
+    ///
+    /// kills: `entitled` blind to `world_account`; a freshness bound on the stored row; the
+    /// row's `entitled` ignored; a row read for another identity.
+    #[test]
+    fn an_entitled_world_account_row_admits_however_old_and_any_other_is_refused_lpw23_7() {
+        let p = dev_enforcing();
+        for (label, row, want) in [
+            (
+                "entitled, checked at the epoch",
+                Some(account_row(who(), true, 0)),
+                admitted(),
+            ),
+            (
+                "entitled, checked ten years ago",
+                Some(account_row(
+                    who(),
+                    true,
+                    T0 - 10 * 365 * 24 * 60 * 60 * 1000,
+                )),
+                admitted(),
+            ),
+            (
+                "entitled, checked now",
+                Some(account_row(who(), true, T0)),
+                admitted(),
+            ),
+            (
+                "not entitled, checked now",
+                Some(account_row(who(), false, T0)),
+                refused(),
+            ),
+            ("no row", None, refused()),
+        ] {
+            let fx = fixture();
+            let accounts = fx
+                .table::<crate::account_checks::WorldAccount>("world_account", "identity", |r| {
+                    r.identity
+                })
+                .unique();
+            accounts.seed(&account_row(
+                Identity::from_byte_array([0x6B; 32]),
+                true,
+                T0,
+            ));
+            if let Some(row) = row {
+                accounts.seed(&row);
+            }
+            assert_eq!(ask(&fx, &p, None), want, "{label}");
+            assert_eq!(ask_internal(&fx, &p), want, "{label}, no connection");
+        }
+    }
+
+    /// On every enforcing build that names no account service (`official`, `default`,
+    /// `conflict`), an entitled `world_account` row admits nobody.
+    ///
+    /// kills: `account_entitled` that ignores the profile.
+    #[test]
+    fn an_entitled_world_account_row_admits_nobody_on_a_build_that_names_no_service_lpw23_7() {
+        for named in [&["official"][..], &[][..], &["official", "world"][..]] {
+            let p = build_profile(feats(named));
+            assert!(p.enforces_ownership, "fixture: {named:?} enforces");
+            assert!(
+                p.world_check_url.is_none(),
+                "fixture: {named:?} names no service"
+            );
+            let fx = fixture();
+            fx.table::<crate::account_checks::WorldAccount>("world_account", "identity", |r| {
+                r.identity
+            })
+            .unique()
+            .seed(&account_row(who(), true, T0));
+            assert_eq!(ask(&fx, &p, None), refused(), "{named:?}");
         }
     }
 }

@@ -781,3 +781,160 @@ fn presence_deletes_take_the_intent_row_with_the_character_before_the_player() {
         "erase_character_rows never deletes the player anchor"
     );
 }
+
+// ===========================================================================
+// EXECUTED — a connection arms one re-check of the identity's checked account.
+// The build's own profile names an account service (the `test` and `world`
+// builds); `official` and `conflict` name none, and `account_checks_tests.rs`
+// runs the arming under those profiles.
+// ===========================================================================
+
+#[cfg(not(feature = "official"))]
+mod recheck_arming {
+    use crate::account_checks::{RecheckSchedule, WorldAccount};
+    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::schema::PlayerSession;
+    use spacetimedb::{ConnectionId, Identity, ScheduleAt, Timestamp};
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    fn alice() -> Identity {
+        Identity::from_byte_array([0x11; 32])
+    }
+
+    fn bob() -> Identity {
+        Identity::from_byte_array([0x22; 32])
+    }
+
+    struct T<'a> {
+        accounts: Handle<'a, WorldAccount>,
+        rechecks: Handle<'a, RecheckSchedule>,
+    }
+
+    /// What `on_connect` reads and writes on an `Open` world: the session table, the
+    /// account rows (read) and the re-check table (written, its key drawn from a sequence).
+    fn tables(fx: &Fixture) -> T<'_> {
+        let _ = fx
+            .table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
+                r.connection_id
+            })
+            .unique()
+            .writable();
+        let _ = fx
+            .table::<PlayerSession>("player_session", "identity", |r| r.identity)
+            .writable();
+        let _ = fx
+            .table_keyed::<WorldAccount, String>("world_account", "handle", |r| r.handle.clone())
+            .unique();
+        let _ = fx
+            .table_keyed::<RecheckSchedule, u64>("recheck_schedule", "scheduled_id", |r| {
+                r.scheduled_id
+            })
+            .unique();
+        T {
+            accounts: fx
+                .table::<WorldAccount>("world_account", "identity", |r| r.identity)
+                .unique(),
+            rechecks: fx
+                .table::<RecheckSchedule>("recheck_schedule", "identity", |r| r.identity)
+                .unique()
+                .writable()
+                .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
+        }
+    }
+
+    fn checked(t: &T<'_>, who: Identity, handle: &str, checked_at_ms: i64) {
+        t.accounts.seed(&WorldAccount {
+            handle: handle.to_string(),
+            identity: who,
+            entitled: true,
+            checked_at_ms,
+            is_host: false,
+        });
+    }
+
+    /// `who` connects over connection `conn` at `ms`.
+    fn connect(fx: &Fixture, who: Identity, conn: u128, ms: i64) {
+        assert_eq!(
+            fx.run_as_conn_at(who, conn, None, at(ms), crate::on_connect),
+            Ok(()),
+            "the connection is accepted"
+        );
+    }
+
+    /// The armed re-checks, as `(identity bytes, fire time in ms)`, sorted.
+    fn armed(tables: &T<'_>) -> Vec<([u8; 32], i64)> {
+        let mut out: Vec<([u8; 32], i64)> = tables
+            .rechecks
+            .rows()
+            .into_iter()
+            .map(|r| {
+                let fire = match r.scheduled_at {
+                    ScheduleAt::Time(stamp) => stamp.to_micros_since_unix_epoch() / 1000,
+                    ScheduleAt::Interval(_) => panic!("a re-check is a one-shot row"),
+                };
+                (r.identity.to_byte_array(), fire)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// A row checked exactly ten minutes (600 000 ms) before the connection arms one
+    /// re-check, firing at once, for the connecting identity; a neighbour whose row is as
+    /// old but who does not connect gets none.
+    ///
+    /// kills: no arming at connect; a strict `>` on the age; a re-check armed for every
+    /// stale row; a fire time other than the connection's.
+    #[test]
+    fn a_connection_arms_one_recheck_for_a_row_checked_ten_minutes_ago_lpw23_5() {
+        let fx = fixture();
+        let t = tables(&fx);
+        checked(&t, alice(), "k1.AbCdEf0123456789-_", NOW - 600_000);
+        checked(&t, bob(), "k1.ZyXwVu9876543210_-", NOW - 600_000);
+        connect(&fx, alice(), 0xC0_0001, NOW);
+        assert_eq!(armed(&t), vec![(alice().to_byte_array(), NOW)]);
+    }
+
+    /// A row checked 9 minutes 59 seconds (599 000 ms) before the connection arms nothing.
+    ///
+    /// kills: a bound below ten minutes; arming whatever the age.
+    #[test]
+    fn a_row_checked_nine_minutes_59_seconds_ago_arms_nothing_lpw23_5() {
+        let fx = fixture();
+        let t = tables(&fx);
+        checked(&t, alice(), "k1.AbCdEf0123456789-_", NOW - 599_000);
+        connect(&fx, alice(), 0xC0_0001, NOW);
+        assert_eq!(armed(&t), Vec::new());
+        assert_eq!(fx.writes_to("recheck_schedule"), 0, "no write on the table");
+    }
+
+    /// A second connection while the first's re-check is armed arms no second one.
+    ///
+    /// kills: arming without looking for an armed row.
+    #[test]
+    fn a_second_connection_arms_no_second_recheck_lpw23_5() {
+        let fx = fixture();
+        let t = tables(&fx);
+        checked(&t, alice(), "k1.AbCdEf0123456789-_", NOW - 3_600_000);
+        connect(&fx, alice(), 0xC0_0001, NOW);
+        connect(&fx, alice(), 0xC0_0002, NOW + 1_000);
+        assert_eq!(armed(&t), vec![(alice().to_byte_array(), NOW)]);
+    }
+
+    /// An identity with no `world_account` row arms nothing.
+    ///
+    /// kills: arming for every connection.
+    #[test]
+    fn an_identity_with_no_account_row_arms_nothing_lpw23_5() {
+        let fx = fixture();
+        let t = tables(&fx);
+        checked(&t, bob(), "k1.ZyXwVu9876543210_-", NOW - 3_600_000);
+        connect(&fx, alice(), 0xC0_0001, NOW);
+        assert_eq!(armed(&t), Vec::new());
+    }
+}

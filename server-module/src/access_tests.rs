@@ -3025,3 +3025,152 @@ mod admitted_outright {
         assert_eq!(footprint(&fx, &w), before, "the refusals write nothing");
     }
 }
+
+// =====================================================================================
+// A switch to `Allowlist` seeds the list with the handles of the checked accounts the rule
+// in force admitted; an attestation binding seeds nothing.
+// =====================================================================================
+
+mod handle_seeding {
+    use super::*;
+    use crate::account_checks::WorldAccount;
+    use crate::schema::{WorldAllowlist, WorldBinding};
+
+    const HANDLE_A: &str = "k1.AbCdEf0123456789-_";
+    const HANDLE_B: &str = "k1.BbBbBb0123456789xy";
+    const HANDLE_OWNER: &str = "k1.OwNeR0123456789abcd";
+
+    fn alice() -> Identity {
+        id(0x11)
+    }
+
+    fn bob() -> Identity {
+        id(0x22)
+    }
+
+    fn carol() -> Identity {
+        id(0x33)
+    }
+
+    struct S<'a> {
+        w: W<'a>,
+        accounts: Handle<'a, WorldAccount>,
+        binding: Handle<'a, WorldBinding>,
+        list: Handle<'a, WorldAllowlist, String>,
+    }
+
+    /// [`world`] plus the checked accounts (read on both keys and scanned for the seed), the
+    /// bindings (scanned, never written) and the list (read, scanned and written).
+    fn seeding_world(fx: &Fixture) -> S<'_> {
+        let _ = fx
+            .table_keyed::<WorldAccount, String>("world_account", "handle", |r| r.handle.clone())
+            .unique();
+        S {
+            w: world(fx),
+            accounts: fx
+                .table::<WorldAccount>("world_account", "identity", |r| r.identity)
+                .unique()
+                .scannable(),
+            binding: fx
+                .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+                .unique()
+                .scannable(),
+            list: fx
+                .table_keyed::<WorldAllowlist, String>("world_allowlist", "account_subject", |r| {
+                    r.account_subject.clone()
+                })
+                .unique()
+                .writable()
+                .scannable(),
+        }
+    }
+
+    fn checked(s: &S<'_>, who: Identity, handle: &str) {
+        s.accounts.seed(&WorldAccount {
+            handle: handle.to_string(),
+            identity: who,
+            entitled: true,
+            checked_at_ms: T0 - 1_000,
+            is_host: false,
+        });
+    }
+
+    fn listed(s: &S<'_>) -> Vec<String> {
+        let mut out: Vec<String> = s
+            .list
+            .rows()
+            .into_iter()
+            .map(|r| r.account_subject)
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn strings(xs: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> = xs.iter().map(|x| (*x).to_string()).collect();
+        out.sort();
+        out
+    }
+
+    /// Leaving `Open`, which admits everyone, for `Allowlist` lists every checked account's
+    /// handle, the owner's included; an identity bound by attestation alone adds nothing.
+    ///
+    /// kills: the seed still read from bindings; the owner's handle left out.
+    #[test]
+    fn leaving_open_for_allowlist_lists_every_checked_handle_lpw23_7() {
+        let fx = fixture();
+        let s = seeding_world(&fx);
+        seed_owner(&s.w, owner());
+        checked(&s, alice(), HANDLE_A);
+        checked(&s, bob(), HANDLE_B);
+        checked(&s, owner(), HANDLE_OWNER);
+        s.binding.seed(&WorldBinding {
+            identity: carol(),
+            account_subject: "dev:carol-8b6c7d8e".to_string(),
+            bound_at_ms: T0 - 100,
+            entitled: true,
+            key_id: crate::accounts::DEV_ATTESTATION_KEYS[0].kid.to_string(),
+        });
+        assert_eq!(
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0),
+            Ok(())
+        );
+        assert_eq!(listed(&s), strings(&[HANDLE_A, HANDLE_B, HANDLE_OWNER]));
+        assert_eq!(
+            passes(&fx, alice(), T0 + 1),
+            Ok(()),
+            "a listed handle is admitted"
+        );
+        assert_eq!(
+            passes(&fx, carol(), T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "a binding alone is not"
+        );
+    }
+
+    /// Leaving `Password` for `Allowlist` lists the handles of the identities `Password`
+    /// admitted (the owner, and an identity holding an admission row) and not the others.
+    ///
+    /// kills: every handle listed whatever the rule admitted.
+    #[test]
+    fn leaving_password_for_allowlist_lists_only_the_admitted_handles_lpw23_7() {
+        let fx = fixture();
+        let s = seeding_world(&fx);
+        seed_owner(&s.w, owner());
+        s.w.access.seed(&password_row());
+        checked(&s, alice(), HANDLE_A);
+        checked(&s, bob(), HANDLE_B);
+        checked(&s, owner(), HANDLE_OWNER);
+        s.w.admission.seed(&admission_row(alice(), T0 - 5_000));
+        assert_eq!(
+            set_access(&fx, owner(), WorldAccessRule::Allowlist, Vec::new(), T0),
+            Ok(())
+        );
+        assert_eq!(listed(&s), strings(&[HANDLE_A, HANDLE_OWNER]));
+        assert_eq!(
+            passes(&fx, bob(), T0 + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "bob's handle is not listed"
+        );
+    }
+}

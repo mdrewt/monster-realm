@@ -755,19 +755,228 @@ describe('an entry read from the generated bindings', () => {
     ).toThrow();
   });
 
-  it('refuses bindings that declare a procedure [lpw-25.1]', () => {
-    const declared = convertToAccessorMap(
-      procedures(procedureSchema('grant_badge', { badge: t.string() }, t.unit())).procedures,
-    );
-    expect(() => readWireEntry(bindingsOf(baseWorld(), declared))).toThrow();
-  });
-
   it('refuses bindings that hold an event table [lpw-25.1]', () => {
     const withChatEvent = settingTable('chatEvent', () =>
       table({ name: 'chat_event', event: true }, { id: t.u64(), text: t.string() }),
     );
     expect(() => entryOf(withChatEvent(baseWorld()))).toThrow();
   });
+});
+
+/** The procedures export a generated `module_bindings/index.ts` holds for `defs`. */
+function procedureMapOf(defs: readonly unknown[]): Readonly<Record<string, unknown>> {
+  return convertToAccessorMap(
+    procedures(defs as Parameters<typeof procedures>[0]).procedures,
+  ) as Readonly<Record<string, unknown>>;
+}
+
+const checkAccount = () =>
+  procedureSchema('check_account', { ticket: t.string() }, t.result(t.bool(), t.string()));
+const checkAccountFor = () =>
+  procedureSchema(
+    'check_account_for',
+    { who: t.identity(), ticket: t.string() },
+    t.result(t.bool(), t.string()),
+  );
+
+/** The entry of `baseWorld()` with `defs` declared as procedures. */
+const entryWith = (...defs: readonly unknown[]): WireEntry =>
+  readWireEntry(bindingsOf(baseWorld(), procedureMapOf(defs)));
+
+const CHECK_ACCOUNT = 'clientToServer.procedures.check_account';
+
+describe('procedures in an entry', () => {
+  it('records each declared procedure under its wire name, its arguments in order and its return type [lpw-23]', () => {
+    const entry = entryWith(checkAccountFor(), checkAccount());
+    expect(entry.clientToServer.procedures).toEqual({
+      check_account_for: {
+        args: ['who: (__identity__: u256)', 'ticket: string'],
+        returns: 'Result<bool, string>',
+      },
+      check_account: { args: ['ticket: string'], returns: 'Result<bool, string>' },
+    });
+    expect(entry.clientToServer.reducers).toEqual(entryOf(baseWorld()).clientToServer.reducers);
+    const unit = entryWith(procedureSchema('ping_service', {}, t.unit()));
+    expect(unit.clientToServer.procedures).toEqual({ ping_service: { args: [], returns: '()' } });
+  });
+
+  it('omits the procedures key when the bindings declare none [lpw-23]', () => {
+    expect(Object.keys(entryOf(baseWorld()).clientToServer).sort()).toEqual(['reducers', 'types']);
+    expect(Object.keys(entryWith().clientToServer).sort()).toEqual(['reducers', 'types']);
+  });
+
+  it('files a named type reached only from a procedure under client to server [lpw-23]', () => {
+    const Ticket = t.object('Ticket', { code: t.string() });
+    const Verdict = t.enum('Verdict', { Entitled: t.unit(), Refused: t.string() });
+    const entry = entryWith(procedureSchema('redeem', { ticket: Ticket }, Verdict));
+    expect(entry.clientToServer.procedures).toEqual({
+      redeem: { args: ['ticket: Ticket'], returns: 'Verdict' },
+    });
+    expect(entry.clientToServer.types).toEqual({
+      MoveInput: { fields: ['dx: i32', 'dy: i32'] },
+      Emote: { variants: ['Wave: ()', 'Bow: ()'] },
+      Ticket: { fields: ['code: string'] },
+      Verdict: { variants: ['Entitled: ()', 'Refused: string'] },
+    });
+    expect(Object.keys(entry.serverToClient.types).sort()).toEqual(['Direction', 'Tile']);
+    // A type a column reaches stays server to client when a procedure reaches it too.
+    const facing = entryWith(procedureSchema('turn', { facing: directionEnum() }, t.unit()));
+    expect(Object.keys(facing.serverToClient.types).sort()).toEqual(['Direction', 'Tile']);
+    expect(facing.clientToServer.types).not.toHaveProperty('Direction');
+  });
+
+  it('keeps an older entry while every procedure it records exists with the same arguments and return [lpw-23]', () => {
+    const older = entryWith(checkAccount());
+    const current = entryWith(checkAccount());
+    expect(check({ 4: older, 5: current }, current, 5, 4)).toEqual([]);
+  });
+
+  it('a procedure the bindings add breaks no older entry [lpw-23]', () => {
+    const older = entryWith(checkAccount());
+    const current = entryWith(checkAccount(), checkAccountFor());
+    expect(check({ 4: older, 5: current }, current, 5, 4)).toEqual([]);
+    const withoutAny = entryOf(baseWorld());
+    expect(check({ 4: withoutAny, 5: current }, current, 5, 4)).toEqual([]);
+  });
+
+  it('an argument added, retyped or reordered, a return retyped, or the procedure dropped breaks the older entry [lpw-23]', () => {
+    const older = entryWith(checkAccount(), checkAccountFor());
+    const cases: readonly {
+      readonly edit: string;
+      readonly current: WireEntry;
+      readonly path: string;
+    }[] = [
+      {
+        edit: 'an argument appended',
+        current: entryWith(
+          procedureSchema(
+            'check_account',
+            { ticket: t.string(), retries: t.u8() },
+            t.result(t.bool(), t.string()),
+          ),
+          checkAccountFor(),
+        ),
+        path: CHECK_ACCOUNT,
+      },
+      {
+        edit: 'an argument retyped',
+        current: entryWith(
+          procedureSchema(
+            'check_account',
+            { ticket: t.byteArray() },
+            t.result(t.bool(), t.string()),
+          ),
+          checkAccountFor(),
+        ),
+        path: CHECK_ACCOUNT,
+      },
+      {
+        edit: 'the arguments reordered',
+        current: entryWith(
+          checkAccount(),
+          procedureSchema(
+            'check_account_for',
+            { ticket: t.string(), who: t.identity() },
+            t.result(t.bool(), t.string()),
+          ),
+        ),
+        path: 'clientToServer.procedures.check_account_for',
+      },
+      {
+        edit: 'the return retyped',
+        current: entryWith(
+          procedureSchema('check_account', { ticket: t.string() }, t.result(t.u8(), t.string())),
+          checkAccountFor(),
+        ),
+        path: CHECK_ACCOUNT,
+      },
+      { edit: 'the procedure dropped', current: entryWith(checkAccountFor()), path: CHECK_ACCOUNT },
+    ];
+    for (const { edit, current, path } of cases) {
+      expect(check({ 4: older, 5: current }, current, 5, 4), edit).toEqual([broken(4, path)]);
+      expect(check({ 4: older, 5: current }, current, 5, 5), `${edit}, entry 4 retired`).toEqual(
+        [],
+      );
+    }
+  });
+
+  it('the entry for PROTOCOL_VERSION must hold exactly the procedures the bindings declare [lpw-23]', () => {
+    const without = entryOf(baseWorld());
+    const withOne = entryWith(checkAccount());
+    expect(check({ 5: without }, withOne, 5, 5)).toEqual([differs(5, CHECK_ACCOUNT)]);
+    expect(check({ 5: withOne }, without, 5, 5)).toEqual([differs(5, CHECK_ACCOUNT)]);
+    const retyped = entryWith(
+      procedureSchema('check_account', { ticket: t.string() }, t.result(t.u8(), t.string())),
+    );
+    expect(check({ 5: withOne }, retyped, 5, 5)).toEqual([differs(5, CHECK_ACCOUNT)]);
+    expect(check({ 5: withOne }, entryWith(checkAccount()), 5, 5)).toEqual([]);
+  });
+
+  it('a file holding procedures parses back to the same entries and rewrites to the same text [lpw-23]', () => {
+    const file: WireContractFile = {
+      4: entryOf(baseWorld()),
+      6: entryWith(checkAccountFor(), checkAccount()),
+    };
+    const text = serializeWireContract(file);
+    expect(parseWireContract(text)).toEqual(file);
+    expect(serializeWireContract(parseWireContract(text))).toBe(text);
+    const written = JSON.parse(text) as Record<string, Json>;
+    const sent6 = written['6'].clientToServer as Json;
+    expect(Object.keys(sent6.procedures as Json)).toEqual(['check_account', 'check_account_for']);
+    expect((sent6.procedures as Record<string, Json>).check_account_for.args).toEqual([
+      'who: (__identity__: u256)',
+      'ticket: string',
+    ]);
+    expect(Object.keys(written['4'].clientToServer as Json).sort()).toEqual(['reducers', 'types']);
+  });
+
+  it('the text of an entry without procedures is unchanged [lpw-23]', () => {
+    const file = parseWireContract(JSON.stringify({ 4: wellFormedEntry() }));
+    expect(serializeWireContract(file)).toBe(
+      `${JSON.stringify({ 4: wellFormedEntry() }, null, 2)}\n`,
+    );
+    expect(Object.keys(file['4'].clientToServer).sort()).toEqual(['reducers', 'types']);
+  });
+
+  it('parses an entry that records procedures [lpw-23]', () => {
+    const recorded = {
+      check_account: { args: ['ticket: string'], returns: 'Result<bool, string>' },
+      redeem: { args: [], returns: '()' },
+    };
+    const file = parseWireContract(fileWith(['clientToServer', 'procedures'], recorded));
+    expect(file['4'].clientToServer.procedures).toEqual(recorded);
+  });
+
+  const MALFORMED_PROCEDURES: readonly { readonly problem: string; readonly value: unknown }[] = [
+    { problem: 'procedures that are a list', value: [] },
+    { problem: 'procedures that are a string', value: 'check_account' },
+    { problem: 'a procedure that is a list', value: { check_account: ['ticket: string'] } },
+    {
+      problem: 'arguments that are a string',
+      value: { check_account: { args: 'ticket: string', returns: 'bool' } },
+    },
+    {
+      problem: 'an argument that is not a string',
+      value: { check_account: { args: [7], returns: 'bool' } },
+    },
+    {
+      problem: 'a return that is not a string',
+      value: { check_account: { args: ['ticket: string'], returns: ['bool'] } },
+    },
+    { problem: 'no return', value: { check_account: { args: ['ticket: string'] } } },
+    { problem: 'no arguments', value: { check_account: { returns: 'bool' } } },
+    {
+      problem: 'an unknown member',
+      value: { check_account: { args: ['ticket: string'], returns: 'bool', notes: [] } },
+    },
+  ];
+  for (const { problem, value } of MALFORMED_PROCEDURES) {
+    it(`a file with ${problem} is refused [lpw-23]`, () => {
+      expect(() => parseWireContract(fileWith(['clientToServer', 'procedures'], value))).toThrow(
+        /wireContract\.json/,
+      );
+    });
+  }
 });
 
 describe('the entry for PROTOCOL_VERSION', () => {

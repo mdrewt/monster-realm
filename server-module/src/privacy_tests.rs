@@ -10055,3 +10055,72 @@ fn an_export_holds_the_callers_formation_and_no_other_players_rb137_2() {
          array of a caller who stored no formation at all"
     );
 }
+
+/// Through the shipped `request_data_export` on the native host: the caller and a neighbour
+/// each hold a checked account (`world_account`), under different handles. The caller's
+/// bundle holds exactly one `world_account` chunk whose payload holds exactly the caller's
+/// row: its handle, identity, entitlement, check time and host flag. No chunk names the
+/// neighbour's identity or handle.
+///
+/// kills: no `world_account` exporter; an exporter reading every row or the neighbour's; a
+/// column left out.
+#[test]
+fn an_export_holds_the_callers_world_account_row_and_no_other_identitys_lpw23_10() {
+    let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
+    let t0: i64 = 1_700_000_000_000;
+    let caller = m22s4_id(0xE4);
+    let neighbour = m22s4_id(0xE5);
+    const OWN_HANDLE: &str = "k1.ExPoRt0123456789-_";
+    const NEIGHBOUR_HANDLE: &str = "k1.NeIgHb9876543210_-";
+    let fx = crate::native_host_tests::fixture();
+    let w = ih1_export_world(&fx);
+    let accounts =
+        fx.table::<crate::account_checks::WorldAccount>("world_account", "identity", |r| {
+            r.identity
+        });
+    accounts.seed(&crate::account_checks::WorldAccount {
+        handle: OWN_HANDLE.to_string(),
+        identity: caller,
+        entitled: true,
+        checked_at_ms: t0 - 5_000,
+        is_host: true,
+    });
+    accounts.seed(&crate::account_checks::WorldAccount {
+        handle: NEIGHBOUR_HANDLE.to_string(),
+        identity: neighbour,
+        entitled: false,
+        checked_at_ms: t0 - 9_000,
+        is_host: false,
+    });
+
+    assert_eq!(
+        fx.run_as_at(caller, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "the caller's export is served"
+    );
+    let chunks = w.chunks_of(caller);
+    let own_row = m22s4_obj(&[
+        ("handle", m22s4_qtxt(OWN_HANDLE)),
+        ("identity", m22s4_qid(caller)),
+        ("entitled", m22s4_bool(true)),
+        ("checked_at_ms", m22s4_quoted_num(i128::from(t0 - 5_000))),
+        ("is_host", m22s4_bool(true)),
+    ]);
+    let payloads: Vec<String> = chunks
+        .iter()
+        .filter(|(t, _)| t == "world_account")
+        .map(|(_, p)| p.clone())
+        .collect();
+    assert_eq!(
+        payloads,
+        vec![m22s4_expected_payload("world_account", &[own_row])],
+        "exactly one world_account chunk, holding exactly the caller's row"
+    );
+    let neighbour_hex = neighbour.to_string();
+    for (table, payload) in &chunks {
+        assert!(
+            !payload.contains(NEIGHBOUR_HANDLE) && !payload.contains(&neighbour_hex),
+            "the `{table}` chunk names the neighbour: {payload}"
+        );
+    }
+}

@@ -1359,6 +1359,7 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
 const EXPECTED_MODULES: &[&str] = &[
     "crate",
     "access",
+    "account_checks",
     "accounts",
     "battle",
     "content",
@@ -1615,6 +1616,30 @@ const OK_TAIL: &str = "Ok(())";
 /// counts reducers with this needle.
 const REDUCER_ATTR_HEAD: &str = "#[spacetimedb::reducer";
 
+/// The qualified procedure attribute, spelled once: the real-crate test counts procedures
+/// with it and the fixtures declare them with it.
+const PROCEDURE_ATTR_HEAD: &str = "#[spacetimedb::procedure";
+
+/// One procedure: `name(ctx: &mut ProcedureContext) -> Result<(), String>` over `body`.
+fn fixture_procedure(name: &str, body: &[String]) -> String {
+    let mut out = format!("{PROCEDURE_ATTR_HEAD}]\n");
+    out.push_str(&format!(
+        "pub fn {name}(ctx: &mut ProcedureContext) -> Result<(), String> {{\n"
+    ));
+    for stmt in body {
+        out.push_str("    ");
+        out.push_str(stmt);
+        out.push('\n');
+    }
+    out.push_str("}\n\n");
+    out
+}
+
+/// A write through a transaction's context: `tx.db.<accessor>().<verb>(row);`.
+fn fixture_tx_write_stmt(accessor: &str, verb: &str) -> String {
+    format!("tx.db.{accessor}().{verb}(row);")
+}
+
 fn fixture_reducer_attr(arg: &str) -> String {
     if arg.is_empty() {
         format!("{REDUCER_ATTR_HEAD}]")
@@ -1761,23 +1786,31 @@ fn real_crate_matches_the_reducer_rosters_with_no_dev_tactical_start_bt16_1() {
     let report =
         census::census(&sources, &classified, owners).expect("the real corpus must census cleanly");
 
-    let want_n: usize = sources
-        .iter()
-        .map(|(_, source)| {
-            source
-                .lines()
-                .filter(|line| line.trim_start().starts_with(REDUCER_ATTR_HEAD))
-                .count()
-        })
-        .sum();
+    let attrs_with = |head: &str| -> usize {
+        sources
+            .iter()
+            .map(|(_, source)| {
+                source
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with(head))
+                    .count()
+            })
+            .sum()
+    };
+    let want_n = attrs_with(REDUCER_ATTR_HEAD);
     assert!(
         want_n >= REDUCER_FLOOR,
         "the corpus carries {want_n} reducer attributes, below the rb-45 floor"
     );
+    let procedures_n = attrs_with(PROCEDURE_ATTR_HEAD);
+    assert_eq!(
+        procedures_n, 3,
+        "the corpus carries the three procedure attributes"
+    );
     assert_eq!(
         report.verdicts.len(),
-        want_n,
-        "every reducer attribute in the corpus gets exactly one verdict"
+        want_n + procedures_n,
+        "every reducer and procedure attribute in the corpus gets exactly one verdict"
     );
 
     if let Err(msg) = roster_mismatch(&report, DELIBERATE_EXEMPTIONS) {
@@ -1847,6 +1880,165 @@ fn real_crate_matches_the_reducer_rosters_with_no_dev_tactical_start_bt16_1() {
             "roster row {name} names a reducer that no longer exists"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Procedures: declared only in `account_checks`, each with the classified tables
+// its body reaches.
+// ---------------------------------------------------------------------------
+
+const SYNTH_PROCEDURE: &str = "rogue_check";
+
+/// A procedure declared in a module other than `account_checks` is refused by the census
+/// with the module and the procedure named, and the same procedure in `account_checks` is
+/// accepted.
+///
+/// kills: a procedure accepted in any module; a procedure refused everywhere.
+#[test]
+fn a_procedure_outside_account_checks_is_refused_by_the_census_lpw23_9() {
+    let mut src = fixture_table_item("monster", "", "SynthMonster");
+    src.push_str(&fixture_procedure(
+        SYNTH_PROCEDURE,
+        &[String::from(OK_TAIL)],
+    ));
+    let classified = classified_of(&["monster"]);
+    let owners = game_core::STATE_TRANSITION_OWNERS;
+    let got = census::census(&[(String::from("synth"), src.clone())], &classified, owners);
+    assert_eq!(
+        got.map(|r| r.verdicts),
+        Err(census::CensusError::UnsupportedShape {
+            module: String::from("synth"),
+            what: format!("procedure attribute on {SYNTH_PROCEDURE} outside account_checks"),
+        })
+    );
+    let accepted = census_one("account_checks", src, &["monster"]);
+    assert_eq!(
+        verdict_of(&accepted, SYNTH_PROCEDURE),
+        &census::Verdict::Procedure {
+            writes: BTreeSet::new()
+        },
+        "the same procedure in account_checks is accepted"
+    );
+}
+
+/// In `account_checks`, a procedure's verdict holds every classified table its body
+/// reaches: a write in its own body, one inside a `try_with_tx` closure, one inside a
+/// `with_tx` closure through a helper in another module; a write to a table outside the
+/// classified set is not listed, and a procedure that writes none has an empty set.
+///
+/// kills: closures not walked; helpers not followed across modules; the classified filter
+/// dropped; one procedure's writes credited to another.
+#[test]
+fn a_procedures_verdict_holds_every_classified_table_its_body_reaches_lpw23_9() {
+    let mut checks = String::new();
+    for (accessor, type_name) in [
+        ("monster", "SynthMonster"),
+        ("battle", "SynthBattle"),
+        ("inventory", "SynthInventory"),
+        ("config", "SynthConfig"),
+    ] {
+        checks.push_str(&fixture_table_item(accessor, "", type_name));
+    }
+    checks.push_str(&fixture_procedure(
+        "direct_writer",
+        &[
+            fixture_write_stmt("monster", "insert"),
+            String::from(OK_TAIL),
+        ],
+    ));
+    checks.push_str(&fixture_procedure(
+        "closure_writer",
+        &[
+            format!(
+                "ctx.try_with_tx(|tx| {{ {} {} Ok::<(), String>(()) }})?;",
+                fixture_tx_write_stmt("battle", "delete"),
+                fixture_tx_write_stmt("config", "update"),
+            ),
+            String::from(OK_TAIL),
+        ],
+    ));
+    checks.push_str(&fixture_procedure(
+        "helper_writer",
+        &[
+            String::from("ctx.with_tx(|tx| crate::other::write_inventory(tx));"),
+            String::from(OK_TAIL),
+        ],
+    ));
+    checks.push_str(&fixture_procedure(
+        "unclassified_writer",
+        &[
+            String::from("ctx.with_tx(|tx| { tx.db.config().insert(row); });"),
+            String::from(OK_TAIL),
+        ],
+    ));
+    let other = format!(
+        "pub(crate) fn write_inventory({REDUCER_CTX}) {{\n    {}\n}}\n",
+        fixture_write_stmt("inventory", "insert")
+    );
+    let report = census_of(
+        vec![
+            (String::from("account_checks"), checks),
+            (String::from("other"), other),
+        ],
+        &["monster", "battle", "inventory"],
+    );
+    let writes = |tables: &[&str]| census::Verdict::Procedure {
+        writes: tables.iter().map(|t| (*t).to_string()).collect(),
+    };
+    assert_eq!(verdict_of(&report, "direct_writer"), &writes(&["monster"]));
+    assert_eq!(verdict_of(&report, "closure_writer"), &writes(&["battle"]));
+    assert_eq!(
+        verdict_of(&report, "helper_writer"),
+        &writes(&["inventory"])
+    );
+    assert_eq!(verdict_of(&report, "unclassified_writer"), &writes(&[]));
+}
+
+/// Over the real crate with every manifest table classified: the procedures are exactly
+/// `check_account`, `check_account_for` and `recheck_account`; the first two write exactly
+/// `world_account`, `world_check_budget` and `world_allowlist`, the re-check exactly
+/// `world_account` and `world_allowlist`.
+///
+/// kills: a procedure declared anywhere else or under another name; a procedure writing a
+/// table outside its named set; the budget charged by the re-check.
+#[test]
+fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
+    let every_table: BTreeSet<&str> = crate::schema::DATA_LIFECYCLE_MANIFEST
+        .iter()
+        .map(|entry| entry.table)
+        .collect();
+    for table in [
+        "world_account",
+        "world_check_budget",
+        "world_allowlist",
+        "recheck_schedule",
+    ] {
+        assert!(
+            every_table.contains(table),
+            "fixture: {table} is in the manifest"
+        );
+    }
+    let sources = census::real_sources().expect("real_sources must read the crate");
+    let report = census::census(&sources, &every_table, game_core::STATE_TRANSITION_OWNERS)
+        .expect("the real corpus must census cleanly with every manifest table classified");
+    let procedures = report.names_with(|v| matches!(v, census::Verdict::Procedure { .. }));
+    assert_eq!(
+        procedures,
+        ["check_account", "check_account_for", "recheck_account"]
+            .into_iter()
+            .collect::<BTreeSet<&str>>(),
+        "the procedure roster"
+    );
+    let writes = |tables: &[&str]| census::Verdict::Procedure {
+        writes: tables.iter().map(|t| (*t).to_string()).collect(),
+    };
+    let first_contact = writes(&["world_account", "world_allowlist", "world_check_budget"]);
+    assert_eq!(verdict_of(&report, "check_account"), &first_contact);
+    assert_eq!(verdict_of(&report, "check_account_for"), &first_contact);
+    assert_eq!(
+        verdict_of(&report, "recheck_account"),
+        &writes(&["world_account", "world_allowlist"])
+    );
 }
 
 /// bt-17 (BT17.1): the tables the 1v1 engine wrote and that stay in the schema, retired from use

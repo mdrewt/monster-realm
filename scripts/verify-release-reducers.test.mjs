@@ -213,7 +213,7 @@ test('findDefinitionViolations passes a clean V10 definition, empty HTTP section
     {
       Procedures: [
         {
-          source_name: 'fetch_rates',
+          source_name: 'check_account',
           params: { elements: [] },
           return_type: { Product: { elements: [] } },
           visibility: { Private: [] },
@@ -236,9 +236,9 @@ test('findDefinitionViolations passes a clean V10 definition, empty HTTP section
       Schedules: [
         {
           source_name: { none: [] },
-          table_name: 'battle_timer',
+          table_name: 'recheck_schedule',
           schedule_at_col: 1,
-          function_name: 'tick_battle',
+          function_name: 'recheck_account',
         },
       ],
     },
@@ -348,6 +348,145 @@ test('findDefinitionViolations names each HTTP handler, HTTP route and row filte
     'HTTP route `/second` to handler `on_second`',
     'HTTP handler `on_second`',
   ]);
+});
+
+const procedure = (name) => ({
+  source_name: name,
+  params: { elements: [] },
+  return_type: { Product: { elements: [] } },
+  visibility: { ClientCallable: [] },
+});
+const procedures = (...names) => ({ Procedures: names.map(procedure) });
+const schedule = (table, fn) => ({
+  source_name: { none: [] },
+  table_name: table,
+  schedule_at_col: 1,
+  function_name: fn,
+});
+const schedules = (...pairs) => ({ Schedules: pairs.map(([table, fn]) => schedule(table, fn)) });
+
+// The module's schedules, `table_name -> function_name`, as this slice leaves them.
+const MODULE_SCHEDULES = [
+  ['guest_claim_reaper_schedule', 'guest_claim_reaper'],
+  ['account_deletion_reaper_schedule', 'account_deletion_reaper'],
+  ['trade_session_reaper_schedule', 'trade_session_reaper'],
+  ['playtest_reaper_schedule', 'playtest_reaper'],
+  ['export_bundle_reaper_schedule', 'export_bundle_reaper'],
+  ['battle_summary_reaper_schedule', 'battle_summary_reaper'],
+  ['tactical_deadline_sched', 'tactical_deadline_fire'],
+  ['tactical_advance_sched', 'tactical_advance'],
+  ['battle_gc_sched', 'battle_gc'],
+  ['movement_tick_schedule', 'movement_tick'],
+  ['mr_heartbeat_schedule', 'mr_heartbeat'],
+  ['pvp_deadline_schedule', 'pvp_deadline_reaper'],
+  ['battle_challenge_reaper_schedule', 'battle_challenge_reaper'],
+  ['trade_offer_reaper_schedule', 'trade_offer_reaper'],
+  ['recheck_schedule', 'recheck_account'],
+];
+
+test('findDefinitionViolations passes the three procedures and every schedule of the module (lpw-23.9)', () => {
+  assert.equal(MODULE_SCHEDULES.length, 15, 'fixture: the 14 schedules and the re-check');
+  assert.deepEqual(
+    findDefinitionViolations(
+      withClean(
+        procedures('check_account', 'check_account_for', 'recheck_account'),
+        schedules(...MODULE_SCHEDULES),
+      ),
+    ),
+    [],
+  );
+  // Each one alone, and in a submodule.
+  for (const name of ['check_account', 'check_account_for', 'recheck_account']) {
+    assert.deepEqual(findDefinitionViolations(withClean(procedures(name))), [], name);
+    assert.deepEqual(
+      findDefinitionViolations(withClean(submodules(submodule('inner', [procedures(name)])))),
+      [],
+      `${name} in a submodule`,
+    );
+  }
+  for (const pair of MODULE_SCHEDULES) {
+    assert.deepEqual(findDefinitionViolations(withClean(schedules(pair))), [], pair.join(' -> '));
+  }
+});
+
+test('findDefinitionViolations does not ask for an allowed procedure or schedule (lpw-23.9)', () => {
+  // CLEAN carries no Procedures section and an empty Schedules section.
+  assert.deepEqual(findDefinitionViolations(extracted(CLEAN)), []);
+  assert.deepEqual(findDefinitionViolations(withClean(procedures('check_account'))), []);
+  assert.deepEqual(findDefinitionViolations(withClean(procedures())), []);
+  assert.deepEqual(
+    findDefinitionViolations(withClean(schedules(['recheck_schedule', 'recheck_account']))),
+    [],
+  );
+});
+
+test('findDefinitionViolations names a procedure the module does not declare (lpw-23.9)', () => {
+  assert.deepEqual(findDefinitionViolations(withClean(procedures('fetch_rates'))), [
+    'procedure `fetch_rates`',
+  ]);
+  // Near misses of an allowed name are refused too.
+  for (const name of [
+    'check_accounts',
+    'Check_account',
+    'recheck_account_now',
+    'check_account_fo',
+  ]) {
+    assert.deepEqual(
+      findDefinitionViolations(withClean(procedures(name))),
+      [`procedure \`${name}\``],
+      name,
+    );
+  }
+  // Among the allowed ones: only the extra is named.
+  assert.deepEqual(
+    findDefinitionViolations(
+      withClean(procedures('check_account', 'fetch_rates', 'recheck_account', 'sync_remote')),
+    ),
+    ['procedure `fetch_rates`', 'procedure `sync_remote`'],
+  );
+  assert.deepEqual(
+    findDefinitionViolations(withClean(submodules(submodule('payments', [procedures('charge')])))),
+    ['submodule `payments`: procedure `charge`'],
+  );
+});
+
+test('findDefinitionViolations names a schedule the module does not declare, or one re-pointed (lpw-23.9)', () => {
+  assert.deepEqual(
+    findDefinitionViolations(withClean(schedules(['battle_timer', 'tick_battle']))),
+    ['schedule `battle_timer` to `tick_battle`'],
+  );
+  // A known table pointed at another function, an allowed function behind another table.
+  assert.deepEqual(
+    findDefinitionViolations(withClean(schedules(['recheck_schedule', 'check_account']))),
+    ['schedule `recheck_schedule` to `check_account`'],
+  );
+  assert.deepEqual(
+    findDefinitionViolations(withClean(schedules(['movement_tick_schedule', 'mr_heartbeat']))),
+    ['schedule `movement_tick_schedule` to `mr_heartbeat`'],
+  );
+  assert.deepEqual(
+    findDefinitionViolations(withClean(schedules(['extra_schedule', 'recheck_account']))),
+    ['schedule `extra_schedule` to `recheck_account`'],
+  );
+  // Among the module's: only the extra and the re-pointed are named.
+  assert.deepEqual(
+    findDefinitionViolations(
+      withClean(
+        schedules(
+          ...MODULE_SCHEDULES,
+          ['battle_timer', 'tick_battle'],
+          ['battle_gc_sched', 'movement_tick'],
+        ),
+      ),
+    ),
+    ['schedule `battle_timer` to `tick_battle`', 'schedule `battle_gc_sched` to `movement_tick`'],
+  );
+  assert.deepEqual(
+    findDefinitionViolations(
+      withClean(submodules(submodule('timers', [schedules(['recheck_schedule', 'tick_battle'])]))),
+    ),
+    ['submodule `timers`: schedule `recheck_schedule` to `tick_battle`'],
+  );
 });
 
 test('findDefinitionViolations finds a handler, route or filter inside a submodule (lpw-34.6)', () => {
