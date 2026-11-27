@@ -444,8 +444,15 @@ reducers (`evals/baselines/client-visible-tables.json`,
 ## Client
 
 `client/src/main.ts` wires everything; the logic lives in small modules, mostly pure
-with thin shells. Code leaves it into owner modules under `client/src/shell/` on the plan in
-`docs/refactors/client-shell.md`. `shell/config.ts` holds the values fixed for the session,
+with thin shells. Code leaves it into owner modules under `client/src/shell/`: the module map and
+the owner of each binding are in `docs/refactors/client-shell.md`, and the extractions still to
+make are listed in order in `docs/refactors/client-platform.md`. That plan also covers what the
+client takes from its host, so that one bundle runs in a browser tab and in a desktop shell: each
+such capability has one owner, listed there by call site. Most are web APIs every host provides,
+reached through a narrow type the real global satisfies or a DOM listener `main.ts` registers; a
+capability a second host must provide differently gets a port under `client/src/platform/`, whose
+default is the browser's code. No port module exists yet. `shell/config.ts` holds the values
+fixed for the session,
 set at import: the connection target (`URI`, `DB`, `TARGET_KIND`, resolved from the shell
 document on the page global; a production build throws at import when the document is missing
 or refused), the dev-log level and its send and fate
