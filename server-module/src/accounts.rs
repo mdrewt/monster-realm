@@ -10,6 +10,7 @@
 //! (the tactical tables' `schema::erase_tactical_rows` included). The guest
 //! claim delegates to five of that family, `access::erase_admission`,
 //! `world_binding::erase_world_binding`, `account_checks::erase_world_account`,
+//! `account_checks::erase_world_move`,
 //! `schema::erase_tactical_rows` and `battle::anonymize_battles`, for the guest
 //! identity it retires. The reaper also calls `world_binding::delist_account_of`,
 //! which takes the deleted identity's handle off the host's list. `move_character`,
@@ -1233,6 +1234,10 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     if account.claimed_from.is_some() {
         return reject("complete_guest_claim", me, "account already claimed");
     }
+    // The caller's character plays under another identity: a claimed character would be one
+    // it could neither join with nor replace by checking in. A caller-state check, so it stands
+    // before any code is read.
+    crate::account_checks::require_not_moved(ctx, "complete_guest_claim")?;
     // Guard 5 (AUTH-15a) — code well-formed.
     if !is_valid_claim_code(&code) {
         return reject("complete_guest_claim", me, ERR_INVALID_CODE);
@@ -1281,12 +1286,13 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
     // The guest's world rows are not re-keyed either: its admission, its
-    // wrong-password record, its binding, its bind nonce and its checked account go
-    // with the identity, so a later change to `Allowlist` does not list the handle
+    // wrong-password record, its binding, its bind nonce, its checked account and
+    // its move record go with the identity, so a later change to `Allowlist` does not list the handle
     // of a guest that is gone. The host's list is not written here.
     crate::access::erase_admission(ctx, guest);
     crate::world_binding::erase_world_binding(ctx, guest);
     crate::account_checks::erase_world_account(ctx, guest);
+    crate::account_checks::erase_world_move(ctx, guest);
     // The guest's finished battles are not re-keyed (why: docs/DECISIONS.md,
     // "Accounts, guest identity and the claim flow"). The claim erases them as
     // the deletion cascade erases its subject's: the per-battle tactical rows
@@ -1612,6 +1618,7 @@ pub fn account_deletion_reaper(
     crate::world_binding::delist_account_of(ctx, args.account_identity);
     crate::world_binding::erase_world_binding(ctx, args.account_identity);
     crate::account_checks::erase_world_account(ctx, args.account_identity);
+    crate::account_checks::erase_world_move(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);

@@ -38,10 +38,11 @@
 //! log line or return value holds a handle.
 //!
 //! WRITE-ISOLATION: this module alone declares and writes `world_account`,
-//! `world_check_budget`, `recheck_schedule` and `world_move`. Its procedures write two things
+//! `world_check_budget`, `recheck_schedule` and `world_move`. Its procedures write three things
 //! else, each through the owning module: `world_allowlist` through `crate::world_binding` (the
 //! owner's own handle under the `Allowlist` rule, and a handle the service answered under a
-//! newer key), and the tables of a character through `crate::accounts::move_character`. They
+//! newer key), the tables of a character through `crate::accounts::move_character`, and an
+//! admission row a move would otherwise bring back into force through `crate::access`. They
 //! read the owner, the rule and the admission through `crate::access`, the world's names
 //! through `crate::world_binding`, and the deletion state and what an identity owns through
 //! `crate::accounts`.
@@ -317,24 +318,23 @@ fn disarm_recheck(ctx: &ReducerContext, identity: Identity) {
     }
 }
 
-/// Delete `identity`'s move record, when it holds one.
-fn forget_move(ctx: &ReducerContext, identity: Identity) {
+/// Delete `identity`'s move record, when it holds one: at its next successful check, and as
+/// the step for `world_move` of the deletion cascade and of a guest claim for the guest
+/// identity it retires. An unbind and the owner's drop do not run it: a moved-away identity
+/// that could clear its own record without checking in would pass `join_game`'s refusal and be
+/// granted a second starter.
+pub(crate) fn erase_world_move(ctx: &ReducerContext, identity: Identity) {
     if move_of(ctx, identity).is_some() {
         ctx.db.world_move().identity().delete(identity);
     }
 }
 
-/// Delete `identity`'s move record: the step for `world_move` of the deletion cascade and of
-/// a guest claim for the guest identity it retires.
-pub(crate) fn erase_world_move(_ctx: &ReducerContext, _identity: Identity) {}
-
-/// Erase what this module holds about `identity`: its row, its armed re-check and its move
-/// record. Answers whether a `world_account` row went. The step for these three tables of the
-/// deletion cascade, of a guest claim for the guest identity it retires, of an unbind and of
-/// the owner's drop.
+/// Erase what this module holds about the account `identity` plays under: its row and its
+/// armed re-check. Answers whether a `world_account` row went. The step for these two tables
+/// of the deletion cascade, of a guest claim for the guest identity it retires, of an unbind
+/// and of the owner's drop.
 pub(crate) fn erase_world_account(ctx: &ReducerContext, identity: Identity) -> bool {
     disarm_recheck(ctx, identity);
-    forget_move(ctx, identity);
     if account_of(ctx, identity).is_none() {
         return false;
     }
@@ -459,7 +459,8 @@ fn move_gates(tx: &ReducerContext, from: Identity, who: Identity) -> Result<(), 
 /// host mark. That is refused, again with no write, when the ticket's name cannot carry a move
 /// ([`name_carries_move`]; no `ip:` name is confirmed here), by [`move_gates`], and when the
 /// move itself fails. The identity the character left gets a `world_move` row and loses its
-/// armed re-check. A holder that owns no character is re-pointed the same way.
+/// armed re-check, and its admission row too when the access rule was refusing it, so the move
+/// admits nobody. A holder that owns no character is re-pointed the same way.
 ///
 /// Otherwise `who`'s row holds the answer. Either way the owner's handle is on the list under
 /// `Allowlist`, and `who`'s own `world_move` row is deleted: it has checked in.
@@ -499,6 +500,11 @@ fn store_redeem(
         (Some(row), _) => {
             let from = row.identity;
             crate::accounts::move_character(tx, from, who).map_err(|_| REJECT_MOVE_FAILED)?;
+            // Without an account row the rule reads `from`'s admission row. One the rule was
+            // not honouring goes, so the move admits nobody.
+            if !crate::access::is_admitted(tx, from) {
+                crate::access::withdraw_admission(tx, from);
+            }
             disarm_recheck(tx, from);
             tx.db.world_account().handle().update(WorldAccount {
                 identity: who,
@@ -506,7 +512,7 @@ fn store_redeem(
                 checked_at_ms,
                 ..row
             });
-            forget_move(tx, from);
+            erase_world_move(tx, from);
             tx.db.world_move().insert(WorldMove {
                 identity: from,
                 moved_at_ms: checked_at_ms,
@@ -529,7 +535,7 @@ fn store_redeem(
             });
         }
     }
-    forget_move(tx, who);
+    erase_world_move(tx, who);
     Ok(answer.entitled)
 }
 
