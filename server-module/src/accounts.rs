@@ -84,6 +84,16 @@ const LOCAL_DEV_ATTESTATION_KEY: AttestationKey = AttestationKey {
 /// which publishes no key. No release build holds them.
 pub(crate) const DEV_ATTESTATION_KEYS: &[AttestationKey] = &[LOCAL_DEV_ATTESTATION_KEY];
 
+/// Where a `world` build asks about an account: `POST /world/check` on the production account
+/// service. The same fail-closed placeholder as [`PRODUCTION_LOGIN_ISSUERS`], under the same
+/// sequencing gate: no request to it is answered, so a `world` build entitles nobody.
+pub(crate) const PRODUCTION_WORLD_CHECK_URL: &str =
+    "https://auth.monster-realm.invalid/world/check";
+/// Where a dev build asks: `POST /world/check` on the `hosted-dev` account service. The host
+/// refuses a request to a loopback address, so `local-dev` cannot be asked.
+pub(crate) const DEV_WORLD_CHECK_URL: &str =
+    "https://auth.monster-realm.spookyowltech.com/world/check";
+
 /// The cargo features a build names: the build input for ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuildFeatures {
@@ -109,6 +119,9 @@ pub(crate) struct BuildProfile {
     /// The keys whose world attestations bind an identity here. A build with none binds
     /// nothing and reads no binding.
     pub(crate) attestation_keys: &'static [AttestationKey],
+    /// The account service's `POST /world/check` a world of this build asks about an account.
+    /// A build with none checks no account.
+    pub(crate) world_check_url: Option<&'static str>,
 }
 
 /// The profile of a feature set (`docs/local-play.md` §3, "The build input"). A release
@@ -129,20 +142,34 @@ pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
         bool,
         &'static [&'static str],
         &'static [AttestationKey],
+        Option<&'static str>,
     );
-    let (name, enforces_ownership, login_issuers, attestation_keys): Row =
+    let (name, enforces_ownership, login_issuers, attestation_keys, world_check_url): Row =
         match (features.official, features.world) {
-            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS, &[]),
-            (false, true) => ("world", true, &[], PRODUCTION_ATTESTATION_KEYS),
-            (true, true) => ("conflict", true, &[], &[]),
-            (false, false) if open_join => ("test", false, DEV_LOGIN_ISSUERS, DEV_ATTESTATION_KEYS),
+            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS, &[], None),
+            (false, true) => (
+                "world",
+                true,
+                &[],
+                PRODUCTION_ATTESTATION_KEYS,
+                Some(PRODUCTION_WORLD_CHECK_URL),
+            ),
+            (true, true) => ("conflict", true, &[], &[], None),
+            (false, false) if open_join => (
+                "test",
+                false,
+                DEV_LOGIN_ISSUERS,
+                DEV_ATTESTATION_KEYS,
+                Some(DEV_WORLD_CHECK_URL),
+            ),
             (false, false) if dev_issuers => (
                 "dev-enforcing",
                 true,
                 DEV_LOGIN_ISSUERS,
                 DEV_ATTESTATION_KEYS,
+                Some(DEV_WORLD_CHECK_URL),
             ),
-            (false, false) => ("default", true, &[], &[]),
+            (false, false) => ("default", true, &[], &[], None),
         };
     BuildProfile {
         name,
@@ -150,6 +177,7 @@ pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
         login_issuers,
         dev_reducers,
         attestation_keys,
+        world_check_url,
     }
 }
 

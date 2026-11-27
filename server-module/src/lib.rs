@@ -22,6 +22,7 @@ use spacetimedb::{Identity, ReducerContext, Table};
 
 // --- Domain modules ---------
 mod access;
+mod account_checks;
 mod accounts;
 mod battle;
 mod content;

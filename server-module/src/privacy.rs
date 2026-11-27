@@ -1495,6 +1495,7 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(battle), rows_battle),
     (stringify!(battle_summary), rows_battle_summary),
     (stringify!(character), rows_character),
+    (stringify!(world_account), rows_world_account),
 ];
 
 // Length-first equality rejects a strict prefix in both argument orders
@@ -1780,6 +1781,11 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
         }
     }
     Ok(rows)
+}
+
+fn rows_world_account(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let _ = (ctx, owner);
+    Ok(Vec::new())
 }
 
 // ===========================================================================
