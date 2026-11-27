@@ -6396,7 +6396,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
         turnIdx: 0,
         turnState: { kind: 'Waiting', unitId: 61 },
         tiePrioritySide: 'B',
-        round: 8,
+        round: 9,
       }),
     ]);
     server(at());
@@ -6407,8 +6407,10 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     ]);
     expect(
       shell.querySelector('.tactics-turnbar-badge')?.textContent,
-      'Practice runs the PvP ruleset: Surge in (11 - 8) at round 8',
-    ).toBe(i18n.tf('tactics.turnbar.surgeIn', { n: 3 }));
+      // wr261127-b (named intentional change): the lead-in shows from the tuning's surge start (11)
+      // minus the surge lead, so round 9 is its first round and counts 2 to the tuning's round.
+      'Practice runs the PvP ruleset: Surge in (11 - 9) at round 9',
+    ).toBe(i18n.tf('tactics.turnbar.surgeIn', { n: 2 }));
     H.calls = [];
     press('KeyM', at());
     await flush();
