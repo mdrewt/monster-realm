@@ -6,8 +6,15 @@ import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { ConfigError, loadConfig } from '../config.ts';
+import { ConfigError, loadConfig, type Profile } from '../config.ts';
+import { denyList, steamAccounts } from '../denyList.ts';
 import { devPasswordStep } from '../interactions/devPassword.ts';
+import {
+  parseSteamId,
+  type SteamEntitlement,
+  type SteamId,
+  steamEntitlementSource,
+} from '../steam/ownership.ts';
 import { openAccountStore } from '../store/sqliteAdapter.ts';
 import { runAdmin } from './cli.ts';
 
@@ -492,6 +499,342 @@ describe('the entry file, as a process', () => {
     expect(result.code).toBe(2);
     expect(result.stdout).toBe('');
     expect(result.stderr).not.toBe('');
+    expect(existsSync(dataDir)).toBe(false);
+  });
+});
+
+const STEAM_DIGITS = '76561198000000001';
+const STEAM_PLAYER = parseSteamId(STEAM_DIGITS)!;
+const STEAM_OTHER = parseSteamId('76561198000000002')!;
+const STEAM_SUB = `steam:${STEAM_DIGITS}`;
+const WEB_KEY_SETTING = 'MR_STEAM_WEB_API_KEY';
+const PUBLISHER_KEY_SETTING = 'MR_STEAM_PUBLISHER_KEY';
+
+function hostedEnv(): Env {
+  return { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: dataDir };
+}
+
+function productionEnv(dir: string): Env {
+  return {
+    MR_ACCOUNT_PROFILE: 'production',
+    MR_ACCOUNT_ISSUER: 'https://accounts.example.com',
+    MR_ACCOUNT_DATA_DIR: dir,
+  };
+}
+
+/** Reads the database the command wrote, through the store. */
+async function overDatabase<T>(
+  read: (adapter: ReturnType<typeof openAccountStore>['adapter']) => Promise<T>,
+): Promise<T> {
+  const store = openAccountStore(databasePath());
+  try {
+    return await read(store.adapter);
+  } finally {
+    store.close();
+  }
+}
+
+/** The decision of `profile` over the database the command wrote; Steam is never to be asked. */
+function decision(profile: Profile, steamId: SteamId): Promise<SteamEntitlement> {
+  return overDatabase((adapter) => {
+    const list = denyList(adapter);
+    const accounts = steamAccounts(adapter);
+    return steamEntitlementSource({
+      profile,
+      denied: (id) => list.has(id),
+      devFlag: (id) => accounts.entitled(id),
+      checkAppOwnership: async () => {
+        throw new Error('a dev profile never asks Steam');
+      },
+    })(steamId);
+  });
+}
+
+/** Exactly the two `name=value` lines `names`, returned by name. */
+function twoLines(run: Run, names: readonly [string, string]): Map<string, string> {
+  expect(run.code, run.err.join('\n')).toBe(0);
+  expect(run.err).toEqual([]);
+  expect(run.out).toHaveLength(2);
+  const out = fields(run.out);
+  expect([...out.keys()].sort()).toEqual([...names].sort());
+  return out;
+}
+
+const MALFORMED_STEAM_TARGETS: ReadonlyArray<readonly [string, string]> = [
+  ['16 digits', `steam:${STEAM_DIGITS.slice(1)}`],
+  ['18 digits', `steam:${STEAM_DIGITS}0`],
+  ['a letter among the digits', `steam:${STEAM_DIGITS.slice(0, -1)}a`],
+  ['nothing after the colon', 'steam:'],
+  ['a trailing space', `${STEAM_SUB} `],
+  ['a space after the colon', `steam: ${STEAM_DIGITS}`],
+  ['a second colon', `${STEAM_SUB}:`],
+  ['a sign', `steam:+${STEAM_DIGITS.slice(1)}`],
+];
+
+describe('set-entitlement for a Steam account', () => {
+  test('set-entitlement steam:<id> entitled prints only the subject and the flag, and the decision then entitles acs-8.6', async () => {
+    const out = twoLines(await admin(['set-entitlement', STEAM_SUB, 'entitled']), [
+      'sub',
+      'entitled',
+    ]);
+    expect(out.get('sub')).toBe(STEAM_SUB);
+    expect(out.get('entitled')).toBe('true');
+    expect(out.has('email')).toBe(false);
+    expect(await overDatabase((adapter) => steamAccounts(adapter).entitled(STEAM_PLAYER))).toBe(
+      true,
+    );
+    expect(await decision('local-dev', STEAM_PLAYER)).toStrictEqual({ entitled: true });
+  });
+
+  test('not-entitled turns the flag off, and the decision then says not-owned acs-8.6', async () => {
+    expect((await admin(['set-entitlement', STEAM_SUB, 'entitled'])).code).toBe(0);
+    const out = twoLines(await admin(['set-entitlement', STEAM_SUB, 'not-entitled']), [
+      'sub',
+      'entitled',
+    ]);
+    expect(out.get('sub')).toBe(STEAM_SUB);
+    expect(out.get('entitled')).toBe('false');
+    expect(await overDatabase((adapter) => steamAccounts(adapter).entitled(STEAM_PLAYER))).toBe(
+      false,
+    );
+    expect(await decision('local-dev', STEAM_PLAYER)).toStrictEqual({
+      entitled: false,
+      reason: 'not-owned',
+    });
+  });
+
+  test('not-entitled on an account never flagged exits 0 and leaves it not entitled acs-8.6', async () => {
+    const out = twoLines(await admin(['set-entitlement', STEAM_SUB, 'not-entitled']), [
+      'sub',
+      'entitled',
+    ]);
+    expect(out.get('entitled')).toBe('false');
+    expect(await decision('local-dev', STEAM_PLAYER)).toStrictEqual({
+      entitled: false,
+      reason: 'not-owned',
+    });
+  });
+
+  test('an id never flagged is not entitled beside one that is acs-8.6', async () => {
+    expect((await admin(['set-entitlement', STEAM_SUB, 'entitled'])).code).toBe(0);
+    expect(await overDatabase((adapter) => steamAccounts(adapter).entitled(STEAM_OTHER))).toBe(
+      false,
+    );
+    expect(await decision('local-dev', STEAM_OTHER)).toStrictEqual({
+      entitled: false,
+      reason: 'not-owned',
+    });
+  });
+
+  test.each([
+    ['hosted-dev', 'hosted-dev', (): Env => hostedEnv()],
+    [
+      'local-dev with MR_STEAM_APP_ID 480',
+      'local-dev',
+      (): Env => ({ ...localEnv(), MR_STEAM_APP_ID: '480' }),
+    ],
+    [
+      'hosted-dev with MR_STEAM_APP_ID 480 and a web key',
+      'hosted-dev',
+      (): Env => ({
+        ...hostedEnv(),
+        MR_STEAM_APP_ID: '480',
+        [WEB_KEY_SETTING]: 'INTERNAL_SECRET_dev_web_key',
+      }),
+    ],
+  ] as ReadonlyArray<
+    readonly [string, Profile, () => Env]
+  >)('works on %s, and that profile decision reads the flag acs-8.6', async (_name, profile, env) => {
+    const on = twoLines(await admin(['set-entitlement', STEAM_SUB, 'entitled'], env()), [
+      'sub',
+      'entitled',
+    ]);
+    expect(on.get('entitled')).toBe('true');
+    expect(await decision(profile, STEAM_PLAYER)).toStrictEqual({ entitled: true });
+    expect((await admin(['set-entitlement', STEAM_SUB, 'not-entitled'], env())).code).toBe(0);
+    expect(await decision(profile, STEAM_PLAYER)).toStrictEqual({
+      entitled: false,
+      reason: 'not-owned',
+    });
+  });
+
+  test.each(
+    MALFORMED_STEAM_TARGETS,
+  )('a Steam target with %s exits 1 with one line, nothing on out, and nothing created acs-8.6', async (_name, target) => {
+    const run = await admin(['set-entitlement', target, 'entitled']);
+    expect(run.code).toBe(1);
+    expect(run.out).toEqual([]);
+    expect(run.err).toHaveLength(1);
+    expect(existsSync(dataDir)).toBe(false);
+  });
+
+  test('create-account refuses a Steam subject as an invalid email', async () => {
+    const run = await admin(['create-account', STEAM_SUB]);
+    expect(run.code).toBe(1);
+    expect(run.out).toEqual([]);
+    expect(run.err).toHaveLength(1);
+    expect(rows('DevAccount')).toEqual([]);
+  });
+
+  test('an email target still prints the dev account with its email', async () => {
+    await createAccount('player@example.com');
+    const run = await admin(['set-entitlement', 'player@example.com', 'not-entitled']);
+    expect(run.code, run.err.join('\n')).toBe(0);
+    const out = fields(run.out);
+    expect([...out.keys()].sort()).toEqual(['email', 'entitled', 'sub']);
+    expect(out.get('sub')).toMatch(SUB_SHAPE);
+  });
+});
+
+describe('deny and allow', () => {
+  test('deny steam:<id> prints the subject and denied=true, and the deny-list has the id acs-8.4', async () => {
+    const out = twoLines(await admin(['deny', STEAM_SUB]), ['sub', 'denied']);
+    expect(out.get('sub')).toBe(STEAM_SUB);
+    expect(out.get('denied')).toBe('true');
+    expect(await overDatabase((adapter) => denyList(adapter).has(STEAM_PLAYER))).toBe(true);
+    expect(await overDatabase((adapter) => denyList(adapter).has(STEAM_OTHER))).toBe(false);
+  });
+
+  test('a second deny prints the same and the id stays denied acs-8.4', async () => {
+    const first = await admin(['deny', STEAM_SUB]);
+    const second = await admin(['deny', STEAM_SUB]);
+    twoLines(second, ['sub', 'denied']);
+    expect(second.out).toEqual(first.out);
+    expect(await overDatabase((adapter) => denyList(adapter).has(STEAM_PLAYER))).toBe(true);
+  });
+
+  test.each([
+    ['local-dev', 'local-dev', (): Env => localEnv()],
+    ['hosted-dev', 'hosted-dev', (): Env => hostedEnv()],
+  ] as ReadonlyArray<
+    readonly [string, Profile, () => Env]
+  >)('on %s a denied id is denied with its flag set entitled by the command, and entitled again after allow acs-8.4', async (_name, profile, env) => {
+    expect((await admin(['set-entitlement', STEAM_SUB, 'entitled'], env())).code).toBe(0);
+    expect((await admin(['deny', STEAM_SUB], env())).code).toBe(0);
+    expect(await decision(profile, STEAM_PLAYER)).toStrictEqual({
+      entitled: false,
+      reason: 'denied',
+    });
+    expect(await overDatabase((adapter) => steamAccounts(adapter).entitled(STEAM_PLAYER))).toBe(
+      true,
+    );
+
+    const out = twoLines(await admin(['allow', STEAM_SUB], env()), ['sub', 'denied']);
+    expect(out.get('sub')).toBe(STEAM_SUB);
+    expect(out.get('denied')).toBe('false');
+    expect(await overDatabase((adapter) => denyList(adapter).has(STEAM_PLAYER))).toBe(false);
+    expect(await decision(profile, STEAM_PLAYER)).toStrictEqual({ entitled: true });
+  });
+
+  test('allow of an id never denied exits 0 with its two lines acs-8.4', async () => {
+    const out = twoLines(await admin(['allow', STEAM_SUB]), ['sub', 'denied']);
+    expect(out.get('sub')).toBe(STEAM_SUB);
+    expect(out.get('denied')).toBe('false');
+    expect(await overDatabase((adapter) => denyList(adapter).has(STEAM_PLAYER))).toBe(false);
+  });
+
+  test.each(
+    ['deny', 'allow'].flatMap((command) =>
+      [
+        ...MALFORMED_STEAM_TARGETS,
+        ['a bare id without the prefix', STEAM_DIGITS] as const,
+        ['an email', 'player@example.com'] as const,
+        ['an upper-case prefix', `STEAM:${STEAM_DIGITS}`] as const,
+      ].map(([name, target]) => [command, name, target] as const),
+    ),
+  )('%s of a target with %s exits 1 with one line, nothing on out, and nothing created acs-8.4', async (command, _name, target) => {
+    const run = await admin([command, target]);
+    expect(run.code).toBe(1);
+    expect(run.out).toEqual([]);
+    expect(run.err).toHaveLength(1);
+    expect(existsSync(dataDir)).toBe(false);
+  });
+
+  test.each([
+    ['deny with no argument', ['deny']],
+    ['allow with no argument', ['allow']],
+    ['deny with two arguments', ['deny', STEAM_SUB, 'steam:76561198000000002']],
+    ['allow with an extra argument', ['allow', STEAM_SUB, 'extra']],
+    ['deny with a flag', ['deny', STEAM_SUB, '--force']],
+    ['allow with only a flag', ['allow', '--all']],
+    ['deny with a flag before the target', ['deny', '--', STEAM_SUB]],
+  ])('%s exits 2 with usage on err, nothing on out, and nothing created, on a dev profile and on production acs-8.4', async (_name, argv) => {
+    const run = await admin(argv);
+    expect(run.code).toBe(2);
+    expect(run.out).toEqual([]);
+    expect(run.err.length).toBeGreaterThan(0);
+    expect(existsSync(dataDir)).toBe(false);
+
+    const absent = join(root, 'absent');
+    const production = await admin(argv, productionEnv(join(absent, 'data')));
+    expect(production.code).toBe(2);
+    expect(production.out).toEqual([]);
+    expect(existsSync(absent)).toBe(false);
+  });
+});
+
+describe('the Steam commands and the configuration', () => {
+  const commands: ReadonlyArray<readonly [string, readonly string[]]> = [
+    ['set-entitlement', ['set-entitlement', STEAM_SUB, 'entitled']],
+    ['deny', ['deny', STEAM_SUB]],
+    ['allow', ['allow', STEAM_SUB]],
+  ];
+
+  test.each(
+    commands,
+  )('%s on production exits 1 naming MR_ACCOUNT_PROFILE and creates nothing acs-8.4', async (_command, argv) => {
+    const absent = join(root, 'absent');
+    const run = await admin(argv, productionEnv(join(absent, 'data')));
+    expect(run.code).toBe(1);
+    expect(run.out).toEqual([]);
+    expect(run.err).toHaveLength(1);
+    expect(run.err[0]).toContain('MR_ACCOUNT_PROFILE');
+    expect(existsSync(absent)).toBe(false);
+  });
+
+  test.each([
+    ['set-entitlement', ['set-entitlement', STEAM_SUB, 'entitled']],
+    ['set-entitlement of a malformed target', ['set-entitlement', 'steam:1', 'entitled']],
+    ['deny of a malformed target', ['deny', 'steam:1']],
+  ])('%s on production is refused for the profile first acs-8.6', async (_name, argv) => {
+    const absent = join(root, 'absent');
+    const run = await admin(argv, productionEnv(join(absent, 'data')));
+    expect(run.code).toBe(1);
+    expect(run.out).toEqual([]);
+    expect(run.err).toHaveLength(1);
+    expect(run.err[0]).toContain('MR_ACCOUNT_PROFILE');
+    expect(existsSync(absent)).toBe(false);
+  });
+
+  const refusals: ReadonlyArray<readonly [string, Env, string, string]> = [
+    ['an app id other than 480', { MR_STEAM_APP_ID: '481' }, 'MR_STEAM_APP_ID', '481'],
+    [
+      'a publisher key',
+      { [PUBLISHER_KEY_SETTING]: 'INTERNAL_SECRET_cli_publisher_key' },
+      PUBLISHER_KEY_SETTING,
+      'INTERNAL_SECRET_cli_publisher_key',
+    ],
+    [
+      'a web key without the app id',
+      { [WEB_KEY_SETTING]: 'INTERNAL_SECRET_cli_web_key' },
+      WEB_KEY_SETTING,
+      'INTERNAL_SECRET_cli_web_key',
+    ],
+  ];
+
+  test.each(
+    commands.flatMap(([command, argv]) =>
+      refusals.map(
+        ([name, extra, setting, value]) => [command, name, argv, extra, setting, value] as const,
+      ),
+    ),
+  )('%s with %s exits 1 naming the setting, never its value, and creates nothing acs-8.6', async (_command, _name, argv, extra, setting, value) => {
+    const run = await admin(argv, { ...localEnv(), ...extra });
+    expect(run.code).toBe(1);
+    expect(run.out).toEqual([]);
+    expect(run.err).toHaveLength(1);
+    expect(run.err[0]).toContain(setting);
+    if (setting !== 'MR_STEAM_APP_ID') expect(run.err[0]).not.toContain(value);
     expect(existsSync(dataDir)).toBe(false);
   });
 });

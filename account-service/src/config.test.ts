@@ -1,13 +1,19 @@
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { request } from 'node:http';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  type Config,
   ConfigError,
   HOSTED_DEV_ISSUER,
   LOCAL_DEV_DATA_DIR,
   LOCAL_DEV_ISSUER,
   loadConfig,
+  STEAM_DEV_APP_ID,
 } from './config.ts';
+import { type RunningServer, startServer } from './server.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -28,7 +34,13 @@ const HOSTED: Env = { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: HOS
 
 // Arabic-Indic digits four, four, five, five.
 const ARABIC_INDIC_4455 = String.fromCharCode(0x0664, 0x0664, 0x0665, 0x0665);
+// Arabic-Indic digits four, eight, zero.
+const ARABIC_INDIC_480 = String.fromCharCode(0x0664, 0x0668, 0x0660);
+// LATIN SMALL LETTER LONG S, which upper-cases to S.
+const LONG_S = String.fromCharCode(0x017f);
 const NUL = String.fromCharCode(0);
+const WEB_KEY_SETTING = 'MR_STEAM_WEB_API_KEY';
+const PUBLISHER_KEY_SETTING = 'MR_STEAM_PUBLISHER_KEY';
 
 function refusalOf(env: Env): ConfigError {
   try {
@@ -212,13 +224,104 @@ describe('production refuses every dev-only setting and names it', () => {
     expect(loadConfig({ ...PRODUCTION, MR_ACCOUNT_ISSUER: issuer }).issuer).toBe(issuer);
   });
 
-  test('production does not read Steam settings in this slice', () => {
-    const config = loadConfig({
+  test('production refuses a Steam web key, whatever else is set, never showing its value acs-8.5', () => {
+    const webKey = 'INTERNAL_SECRET_production_web_key';
+    const publisherKey = 'INTERNAL_SECRET_production_publisher';
+    expectNoLeak(
+      expectRefused({ ...PRODUCTION, [WEB_KEY_SETTING]: webKey }, 'MR_STEAM_WEB_API_KEY'),
+      webKey,
+    );
+    const error = expectRefused(
+      {
+        ...PRODUCTION,
+        MR_STEAM_APP_ID: '1234567',
+        [PUBLISHER_KEY_SETTING]: publisherKey,
+        [WEB_KEY_SETTING]: webKey,
+      },
+      'MR_STEAM_WEB_API_KEY',
+    );
+    expectNoLeak(error, webKey);
+    expectNoLeak(error, publisherKey);
+  });
+
+  test.each([
+    ['0', '0'],
+    ['the development app 480', '480'],
+    ['a leading zero', '0480'],
+    ['a leading zero on 1', '01'],
+    ['a leading space', ' 1234567'],
+    ['a trailing space', '1234567 '],
+    ['a plus sign', '+1234567'],
+    ['a minus sign', '-1234567'],
+    ['a decimal point', '1234567.0'],
+    ['an exponent', '1e3'],
+    ['hex', '0x10'],
+    ['one over the largest app id', '4294967296'],
+    ['a long number', '12345678901234567890'],
+    ['Arabic-Indic digits', ARABIC_INDIC_4455],
+    ['a word', 'spacewar'],
+  ])('production refuses %s as MR_STEAM_APP_ID acs-8.5', (_name, value) => {
+    expectRefused({ ...PRODUCTION, MR_STEAM_APP_ID: value }, 'MR_STEAM_APP_ID');
+  });
+
+  test('a refused production app id is not in the refusal acs-8.5', () => {
+    expectNoLeak(
+      expectRefused({ ...PRODUCTION, MR_STEAM_APP_ID: '01234567' }, 'MR_STEAM_APP_ID'),
+      '1234567',
+    );
+  });
+
+  test('production checks the web key before the app id acs-8.5', () => {
+    expectRefused(
+      { ...PRODUCTION, MR_STEAM_APP_ID: '0', [WEB_KEY_SETTING]: 'x' },
+      'MR_STEAM_WEB_API_KEY',
+    );
+  });
+
+  test('production checks its Steam settings after the key file and before the data directory acs-8.5', () => {
+    expectRefused(
+      {
+        ...PRODUCTION,
+        MR_ACCOUNT_KEY_FILE: join(PROD_DATA_DIR, 'keys.json'),
+        MR_STEAM_APP_ID: '0',
+      },
+      'MR_ACCOUNT_KEY_FILE',
+    );
+    expectRefused(
+      { ...PRODUCTION, MR_ACCOUNT_DATA_DIR: undefined, MR_STEAM_APP_ID: '0' },
+      'MR_STEAM_APP_ID',
+    );
+    expectRefused(
+      { ...PRODUCTION, MR_ACCOUNT_DATA_DIR: undefined, [WEB_KEY_SETTING]: 'x' },
+      'MR_STEAM_WEB_API_KEY',
+    );
+  });
+
+  test.each([
+    ['1', 1],
+    ['1234567', 1234567],
+    ['4294967295', 4294967295],
+  ])('production loads MR_STEAM_APP_ID %s as its Steam app, with or without a publisher key acs-8.5', (value, appId) => {
+    const publisherKey = 'INTERNAL_SECRET_production_publisher';
+    const expected = { ...loadConfig(PRODUCTION), steam: { appId } };
+    expect(loadConfig({ ...PRODUCTION, MR_STEAM_APP_ID: value })).toEqual(expected);
+    const withKey = loadConfig({
       ...PRODUCTION,
-      MR_STEAM_PUBLISHER_KEY: 'INTERNAL_SECRET_production_publisher',
-      MR_STEAM_APP_ID: '480',
+      MR_STEAM_APP_ID: value,
+      [PUBLISHER_KEY_SETTING]: publisherKey,
     });
-    expect(config.profile).toBe('production');
+    expect(withKey).toEqual(expected);
+    expect(JSON.stringify(withKey)).not.toContain(publisherKey);
+  });
+
+  test('production without MR_STEAM_APP_ID loads with no steam member, with or without a publisher key acs-8.5', () => {
+    const publisherKey = 'INTERNAL_SECRET_production_publisher';
+    const bare = loadConfig(PRODUCTION);
+    expect('steam' in bare).toBe(false);
+    const withKey = loadConfig({ ...PRODUCTION, [PUBLISHER_KEY_SETTING]: publisherKey });
+    expect('steam' in withKey).toBe(false);
+    expect(withKey).toEqual(bare);
+    expect(JSON.stringify(withKey)).not.toContain(publisherKey);
   });
 
   test.each([
@@ -515,5 +618,301 @@ describe('ConfigError', () => {
     expect(error).toBeInstanceOf(Error);
     expect(error.setting).toBe('MR_ACCOUNT_PORT');
     expect(error.message).toContain('MR_ACCOUNT_PORT');
+  });
+});
+
+describe('the Steam settings', () => {
+  const devProfiles: ReadonlyArray<readonly [string, Env]> = [
+    ['local-dev', LOCAL],
+    ['hosted-dev', HOSTED],
+  ];
+  const everyProfile: ReadonlyArray<readonly [string, Env]> = [
+    ...devProfiles,
+    ['production', PRODUCTION],
+  ];
+  const DEV_WEB_KEY = 'INTERNAL_SECRET_dev_web_key';
+  const DEV_PUBLISHER_KEY = 'INTERNAL_SECRET_dev_publisher_key';
+
+  test('the dev app id is Valve development app 480 acs-8.5', () => {
+    expect(STEAM_DEV_APP_ID).toBe(480);
+  });
+
+  const unknownNames = [
+    'mr_steam_publisher_key',
+    'mr_steam_web_api_key',
+    'Mr_Steam_App_Id',
+    ' MR_STEAM_APP_ID',
+    'MR_STEAM_APP_ID ',
+    'MR_STEAM_PUBLISHER_KEY_FILE',
+    'MR_STEAM_APPID',
+    'MR_STEAM_KEY',
+    'MR_STEAM_',
+    `MR_${LONG_S}TEAM_APP_ID`,
+  ];
+
+  test.each(
+    everyProfile.flatMap(([profile, base]) =>
+      unknownNames.map((name) => [profile, JSON.stringify(name), base, name] as const),
+    ),
+  )('%s refuses the setting %s, named as written, even holding a value its real name takes acs-8.5', (_p, _shown, base, name) => {
+    expectRefused({ ...base, [name]: '480' }, name);
+  });
+
+  test('the value of an unknown Steam setting is not in the refusal acs-8.5', () => {
+    const marker = 'INTERNAL_SECRET_unknown_steam_setting';
+    expectNoLeak(expectRefused({ ...LOCAL, MR_STEAM_APIKEY: marker }, 'MR_STEAM_APIKEY'), marker);
+  });
+
+  test('an unknown Steam name is refused before the profile is read acs-8.5', () => {
+    expectRefused({ MR_STEAM_APPID: '480' }, 'MR_STEAM_APPID');
+    expectRefused({ MR_ACCOUNT_PROFILE: 'staging', MR_STEAM_APPID: '480' }, 'MR_STEAM_APPID');
+  });
+
+  test('an unknown Steam name beside an unknown account name: one of the two is named acs-8.5', () => {
+    const error = refusalOf({ ...LOCAL, MR_ACCOUNT_BOGUS: 'x', MR_STEAM_APPID: '480' });
+    expect(['MR_ACCOUNT_BOGUS', 'MR_STEAM_APPID']).toContain(error.setting);
+    expect(error.message).toContain(error.setting);
+  });
+
+  test.each(
+    devProfiles,
+  )('%s refuses a publisher key whatever else is set, never showing a key acs-8.5', (_p, base) => {
+    const envs: Env[] = [
+      { ...base, [PUBLISHER_KEY_SETTING]: DEV_PUBLISHER_KEY },
+      { ...base, MR_STEAM_APP_ID: '480', [PUBLISHER_KEY_SETTING]: DEV_PUBLISHER_KEY },
+      {
+        ...base,
+        MR_STEAM_APP_ID: '480',
+        [WEB_KEY_SETTING]: DEV_WEB_KEY,
+        [PUBLISHER_KEY_SETTING]: DEV_PUBLISHER_KEY,
+      },
+      { ...base, MR_STEAM_APP_ID: '481', [PUBLISHER_KEY_SETTING]: DEV_PUBLISHER_KEY },
+      { ...base, [WEB_KEY_SETTING]: DEV_WEB_KEY, [PUBLISHER_KEY_SETTING]: DEV_PUBLISHER_KEY },
+    ];
+    for (const env of envs) {
+      const error = expectRefused(env, 'MR_STEAM_PUBLISHER_KEY');
+      expectNoLeak(error, DEV_PUBLISHER_KEY);
+      expectNoLeak(error, DEV_WEB_KEY);
+    }
+  });
+
+  const devAppIds = [
+    '0480',
+    ' 480',
+    '480 ',
+    '481',
+    '479',
+    '4800',
+    '48',
+    '4.8e2',
+    '0x1e0',
+    '+480',
+    '-480',
+    '480.0',
+    '0',
+    '1234567',
+    ARABIC_INDIC_480,
+  ];
+
+  test.each(
+    devProfiles.flatMap(([profile, base]) =>
+      devAppIds.map((value) => [profile, JSON.stringify(value), base, value] as const),
+    ),
+  )('%s refuses MR_STEAM_APP_ID %s, which is not exactly 480 acs-8.5', (_p, _shown, base, value) => {
+    expectRefused({ ...base, MR_STEAM_APP_ID: value }, 'MR_STEAM_APP_ID');
+  });
+
+  test.each(
+    devProfiles,
+  )('%s does not show a refused app id, and checks it before the web key acs-8.5', (_p, base) => {
+    expectNoLeak(
+      expectRefused({ ...base, MR_STEAM_APP_ID: '1234567' }, 'MR_STEAM_APP_ID'),
+      '1234567',
+    );
+    const error = expectRefused(
+      { ...base, MR_STEAM_APP_ID: '1234567', [WEB_KEY_SETTING]: DEV_WEB_KEY },
+      'MR_STEAM_APP_ID',
+    );
+    expectNoLeak(error, DEV_WEB_KEY);
+    expectNoLeak(error, '1234567');
+  });
+
+  test.each(
+    devProfiles,
+  )('%s refuses a web key without the app id, never showing it acs-8.5', (_p, base) => {
+    for (const env of [
+      { ...base, [WEB_KEY_SETTING]: DEV_WEB_KEY },
+      { ...base, MR_STEAM_APP_ID: '', [WEB_KEY_SETTING]: DEV_WEB_KEY },
+      { ...base, MR_STEAM_APP_ID: undefined, [WEB_KEY_SETTING]: DEV_WEB_KEY },
+    ]) {
+      expectNoLeak(expectRefused(env, 'MR_STEAM_WEB_API_KEY'), DEV_WEB_KEY);
+    }
+  });
+
+  test.each(
+    devProfiles,
+  )('%s checks its Steam settings before MR_ACCOUNT_ISSUER acs-8.5', (_p, base) => {
+    const withIssuer = { ...base, MR_ACCOUNT_ISSUER: PROD_ISSUER };
+    expectRefused(
+      { ...withIssuer, [PUBLISHER_KEY_SETTING]: DEV_PUBLISHER_KEY },
+      'MR_STEAM_PUBLISHER_KEY',
+    );
+    expectRefused({ ...withIssuer, MR_STEAM_APP_ID: '481' }, 'MR_STEAM_APP_ID');
+    expectRefused({ ...withIssuer, [WEB_KEY_SETTING]: DEV_WEB_KEY }, 'MR_STEAM_WEB_API_KEY');
+  });
+
+  test.each(
+    devProfiles,
+  )('%s with MR_STEAM_APP_ID 480 loads Steam beside the password form, with or without a web key acs-8.5', (_p, base) => {
+    const expected = { ...loadConfig(base), steam: { appId: 480 } };
+    const without = loadConfig({ ...base, MR_STEAM_APP_ID: '480' });
+    expect(without).toEqual(expected);
+    expect(without.signIn).toBe('dev-password');
+    expect(without.steam).toEqual({ appId: STEAM_DEV_APP_ID });
+    const withKey = loadConfig({ ...base, MR_STEAM_APP_ID: '480', [WEB_KEY_SETTING]: DEV_WEB_KEY });
+    expect(withKey).toEqual(expected);
+    expect(withKey.signIn).toBe('dev-password');
+    expect(JSON.stringify(withKey)).not.toContain(DEV_WEB_KEY);
+  });
+
+  test.each(everyProfile)('%s with no Steam setting has no steam member acs-8.5', (_p, base) => {
+    expect('steam' in loadConfig(base)).toBe(false);
+  });
+
+  test.each(
+    everyProfile,
+  )('%s takes empty and undefined Steam settings as unset acs-8.5', (_p, base) => {
+    for (const env of [
+      { ...base, MR_STEAM_APP_ID: '', [WEB_KEY_SETTING]: undefined, [PUBLISHER_KEY_SETTING]: '' },
+      {
+        ...base,
+        MR_STEAM_APP_ID: undefined,
+        [WEB_KEY_SETTING]: '',
+        [PUBLISHER_KEY_SETTING]: undefined,
+      },
+    ]) {
+      const config = loadConfig(env);
+      expect(config).toEqual(loadConfig(base));
+      expect('steam' in config).toBe(false);
+    }
+  });
+
+  test('a polluted prototype supplies no Steam setting and faults none acs-8.5', () => {
+    const polluted: Record<string, string> = {
+      MR_STEAM_APP_ID: '480',
+      [WEB_KEY_SETTING]: 'x',
+      [PUBLISHER_KEY_SETTING]: 'x',
+      MR_STEAM_APPID: '480',
+    };
+    for (const [name, value] of Object.entries(polluted)) {
+      Object.defineProperty(Object.prototype, name, {
+        value,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      });
+    }
+    let local: Config | undefined;
+    let production: Config | undefined;
+    let error: unknown;
+    let webKeyAlone: unknown;
+    try {
+      local = loadConfig({ ...LOCAL });
+      production = loadConfig({ ...PRODUCTION });
+      webKeyAlone = refusalOf({ ...LOCAL, [WEB_KEY_SETTING]: 'k' });
+    } catch (caught) {
+      error = caught;
+    } finally {
+      for (const name of Object.keys(polluted)) Reflect.deleteProperty(Object.prototype, name);
+    }
+    expect(error).toBeUndefined();
+    expect(local).toEqual(loadConfig(LOCAL));
+    expect('steam' in local!).toBe(false);
+    expect(production).toEqual(loadConfig(PRODUCTION));
+    expect('steam' in production!).toBe(false);
+    expect((webKeyAlone as ConfigError).setting).toBe('MR_STEAM_WEB_API_KEY');
+  });
+
+  describe('startServer with Steam configured', () => {
+    let root = '';
+    const servers: RunningServer[] = [];
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'acs8-'));
+    });
+
+    afterEach(async () => {
+      for (const server of servers.splice(0)) await server.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    function discoveryStatus(port: number): Promise<number> {
+      return new Promise((resolveStatus, reject) => {
+        const req = request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/.well-known/openid-configuration',
+            headers: { host: 'localhost:4455' },
+            agent: false,
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () => {
+              resolveStatus(res.statusCode ?? 0);
+            });
+            res.on('error', reject);
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    test.each([
+      ['with a web key', true],
+      ['without a web key', false],
+    ])('local-dev with MR_STEAM_APP_ID 480 starts %s, reports steam, keeps the password sign-in and serves discovery acs-8.5', async (_name, withKey) => {
+      const lines: string[] = [];
+      const env: Env = {
+        MR_ACCOUNT_PROFILE: 'local-dev',
+        MR_ACCOUNT_DATA_DIR: join(root, 'data'),
+        MR_ACCOUNT_PORT: '0',
+        MR_STEAM_APP_ID: '480',
+        ...(withKey ? { [WEB_KEY_SETTING]: DEV_WEB_KEY } : {}),
+      };
+      const server = await startServer(env, (line) => {
+        lines.push(line);
+      });
+      servers.push(server);
+      expect(server.config.steam).toEqual({ appId: 480 });
+      expect(server.config.signIn).toBe('dev-password');
+      expect(await discoveryStatus(Number(new URL(server.url).port))).toBe(200);
+      for (const line of lines) expect(line).not.toContain(DEV_WEB_KEY);
+    });
+
+    test('local-dev with MR_STEAM_APP_ID 481 does not start, names the setting and leaves the data directory absent acs-8.5', async () => {
+      const dataDir = join(root, 'data');
+      let error: unknown;
+      try {
+        servers.push(
+          await startServer(
+            {
+              MR_ACCOUNT_PROFILE: 'local-dev',
+              MR_ACCOUNT_DATA_DIR: dataDir,
+              MR_ACCOUNT_PORT: '0',
+              MR_STEAM_APP_ID: '481',
+            },
+            () => undefined,
+          ),
+        );
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).setting).toBe('MR_STEAM_APP_ID');
+      expect((error as ConfigError).message).toContain('MR_STEAM_APP_ID');
+      expect(existsSync(dataDir)).toBe(false);
+    });
   });
 });
