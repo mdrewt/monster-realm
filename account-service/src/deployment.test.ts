@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { type IncomingHttpHeaders, request } from 'node:http';
+import { isIP } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
@@ -436,6 +437,113 @@ function exec(project: string, args: readonly string[]): Run {
   return compose(project, LOCAL, ['exec', '-T', SERVICE, ...args]);
 }
 
+// ---- the world ticket routes through the recipe ----
+
+const WORLD_NAME = 'dns:play.example.com:3000/c200a1b2c3d4e5f6';
+const WORLD_ID = createHash('sha256').update('acs14 deployment world').digest('hex');
+// A documentation address (RFC 5737): never a container's, never the host's.
+const FORGED_ADDRESS = '203.0.113.66';
+const IPV4_CHECK_HOST = 'ipv4.localhost:4455';
+const IPV6_CHECK_HOST = 'ipv6.localhost:4455';
+
+function postJson(
+  port: number,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<Reply> {
+  return send(
+    port,
+    'POST',
+    path,
+    { 'content-type': 'application/json', ...headers },
+    JSON.stringify(body),
+  );
+}
+
+function jsonBody(reply: Reply): Record<string, unknown> {
+  return JSON.parse(reply.body) as Record<string, unknown>;
+}
+
+async function ticketThrough(
+  port: number,
+  idToken: string,
+  headers: Record<string, string> = {},
+): Promise<string> {
+  const reply = await postJson(
+    port,
+    '/ticket',
+    { world: WORLD_NAME },
+    { authorization: `Bearer ${idToken}`, ...headers },
+  );
+  expect(reply.status, reply.body).toBe(200);
+  const ticket = jsonBody(reply).ticket;
+  expect(ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  return String(ticket);
+}
+
+function redeemThrough(
+  port: number,
+  ticket: string,
+  headers: Record<string, string> = {},
+): Promise<Reply> {
+  return postJson(port, '/world/check', { ticket, names: [WORLD_NAME], world: WORLD_ID }, headers);
+}
+
+/** The handle a stack answers for the token's account, or undefined when it answers none. */
+async function handleIfAnswered(port: number, idToken: string): Promise<string | undefined> {
+  try {
+    const issued = await postJson(
+      port,
+      '/ticket',
+      { world: WORLD_NAME },
+      { authorization: `Bearer ${idToken}` },
+    );
+    if (issued.status !== 200) return undefined;
+    const ticket = jsonBody(issued).ticket;
+    if (typeof ticket !== 'string') return undefined;
+    const redeemed = await redeemThrough(port, ticket);
+    if (redeemed.status !== 200) return undefined;
+    const handle = jsonBody(redeemed).handle;
+    return typeof handle === 'string' ? handle : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every address docker gives a compose service's container, on every network it joins. */
+function containerAddresses(project: string, service: string): string[] {
+  const id = expectOk(compose(project, LOCAL, ['ps', '-q', service]), `ps ${service}`).out.trim();
+  expect(id).not.toBe('');
+  const inspected = spawnSync(
+    'docker',
+    [
+      'inspect',
+      '--format',
+      '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{.GlobalIPv6Address}} {{end}}',
+      id,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(inspected.status, inspected.stderr).toBe(0);
+  return inspected.stdout.split(/\s+/).filter((address) => address !== '');
+}
+
+// Run inside the account container: POSTs argv[2] to the service itself, on its own loopback
+// port, with argv[1] as X-Forwarded-For, and prints the status and body as JSON.
+const IN_CONTAINER_CHECK = [
+  'const http = require("node:http");',
+  'const body = process.argv[2];',
+  'const req = http.request({ host: "127.0.0.1", port: 4455, path: "/world/check", method: "POST",',
+  'headers: { host: "localhost:4455", "content-type": "application/json",',
+  '"x-forwarded-for": process.argv[1], "content-length": Buffer.byteLength(body) } }, (res) => {',
+  'let text = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; });',
+  'res.on("end", () => { process.stdout.write(JSON.stringify({ status: res.statusCode, body: text })); });',
+  '});',
+  'req.on("error", (error) => { process.stderr.write(String(error)); process.exitCode = 1; });',
+  'req.end(body);',
+].join(' ');
+
 describe('the image runs locked down', () => {
   let project = '';
   let port = 0;
@@ -560,6 +668,72 @@ describe('the image runs locked down', () => {
     expect(run.status).not.toBe(0);
     expect(run.err).toContain('refusing to start');
     expect(run.err).toContain('MR_ACCOUNT_PROFILE');
+  });
+
+  // The world ticket routes, in this same stack.
+  describe('the world ticket routes behind Caddy', () => {
+    let idToken = '';
+
+    beforeAll(async () => {
+      setClient(project);
+      const password = createAccount(project, 'world@example.com', true);
+      idToken = (await signInToTokens(port, 'world@example.com', password)).id_token;
+    });
+
+    test("a ticket issued and redeemed through Caddy under a forged X-Forwarded-For answers the address Caddy saw, not the forged one or Caddy's own", async () => {
+      const forged = { 'x-forwarded-for': FORGED_ADDRESS };
+      const ticket = await ticketThrough(port, idToken, forged);
+      const reply = await redeemThrough(port, ticket, forged);
+      expect(reply.status, reply.body).toBe(200);
+      const answer = jsonBody(reply);
+      expect(Object.keys(answer).sort()).toEqual(['address', 'entitled', 'handle', 'name']);
+      expect(answer.entitled).toBe(true);
+      expect(answer.name).toBe(WORLD_NAME);
+      const address = String(answer.address);
+      expect(isIP(address), address).not.toBe(0);
+      expect(address).not.toBe(FORGED_ADDRESS);
+      const caddy = containerAddresses(project, 'caddy-local-dev');
+      expect(caddy.length).toBeGreaterThan(0);
+      expect(caddy).not.toContain(address);
+
+      const checked = await postJson(
+        port,
+        '/world/check',
+        { handle: answer.handle, world: WORLD_ID },
+        forged,
+      );
+      expect(checked.status, checked.body).toBe(200);
+      expect(jsonBody(checked)).toEqual({ handle: answer.handle, entitled: true, address });
+    });
+
+    test('a check sent from inside the account container with a forged X-Forwarded-For answers 127.0.0.1', () => {
+      const body = JSON.stringify({ handle: 'not-a-handle', world: WORLD_ID });
+      const run = expectOk(
+        exec(project, ['node', '-e', IN_CONTAINER_CHECK, FORGED_ADDRESS, body]),
+        'a check from inside the container',
+      );
+      const outcome = JSON.parse(run.out) as { status: number; body: string };
+      expect(outcome.status, outcome.body).toBe(200);
+      expect(JSON.parse(outcome.body)).toEqual({ entitled: false, address: '127.0.0.1' });
+    });
+
+    test('a check under the ipv4. and ipv6. names is answered, and discovery under them is not', async () => {
+      for (const host of [IPV4_CHECK_HOST, IPV6_CHECK_HOST]) {
+        const reply = await postJson(
+          port,
+          '/world/check',
+          { handle: 'not-a-handle', world: WORLD_ID },
+          { host },
+        );
+        expect(reply.status, `${host}: ${reply.body}`).toBe(200);
+        const answer = jsonBody(reply);
+        expect(Object.keys(answer).sort(), host).toEqual(['address', 'entitled']);
+        expect(answer.entitled, host).toBe(false);
+        expect(isIP(String(answer.address)), host).not.toBe(0);
+        const discovered = await send(port, 'GET', '/.well-known/openid-configuration', { host });
+        expect(discovered.status, host).toBe(421);
+      }
+    });
   });
 });
 
@@ -708,6 +882,8 @@ describe('a backup restored into fresh volumes', () => {
     const r2 = second.refresh_token;
     expect(r2).not.toBe(r1);
     const sourceKeys = await keySet(sourcePort);
+    // The handle the source stack answers for this account and world, asserted at the end.
+    const sourceHandle = await handleIfAnswered(sourcePort, signedIn.id_token);
 
     const backup = takeBackup(source);
     expect(backup.db.length).toBeGreaterThan(0);
@@ -747,5 +923,18 @@ describe('a backup restored into fresh volumes', () => {
     // The spent mark came across: a spent token is refused and takes the chain's newest with it.
     expectInvalidGrant(await refresh(port, r1));
     expectInvalidGrant(await refresh(port, r3));
+
+    // The handle key came across: the restored stack answers the source stack's handle unchanged,
+    // for a check by that handle and for a new ticket of the same account and world.
+    expect(sourceHandle, 'the source stack answered a handle').toEqual(expect.any(String));
+    const checked = await postJson(port, '/world/check', {
+      handle: sourceHandle,
+      world: WORLD_ID,
+    });
+    expect(checked.status, checked.body).toBe(200);
+    expect(jsonBody(checked).handle).toBe(sourceHandle);
+    const redeemed = await redeemThrough(port, await ticketThrough(port, signedIn.id_token));
+    expect(redeemed.status, redeemed.body).toBe(200);
+    expect(jsonBody(redeemed).handle).toBe(sourceHandle);
   });
 });

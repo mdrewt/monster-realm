@@ -1,5 +1,12 @@
+import type { IncomingMessage } from 'node:http';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createRateLimiter, type RateLimiter } from './rateLimit.ts';
+import type { AddressBlock } from './config.ts';
+import {
+  addressLimitKey,
+  createRateLimiter,
+  createSourceAddress,
+  type RateLimiter,
+} from './rateLimit.ts';
 
 const T0 = 1_700_000_000;
 let t = T0;
@@ -375,5 +382,276 @@ describe('retryAfter', () => {
     t = T0 + 601;
     expect(rl.retryAfter('k')).toBe(0);
     expect(takes(rl, 'k', 3)).toEqual([true, true, false]);
+  });
+});
+
+describe('maxKeys', () => {
+  function bounded(maxKeys: number, limit = 3, windowSeconds = 600): RateLimiter {
+    return createRateLimiter({ limit, windowSeconds, now, maxKeys });
+  }
+
+  test('while that many keys have a live hit, a new key is refused acs-14.7', () => {
+    const rl = bounded(2);
+    expect(rl.take('a')).toBe(true);
+    expect(rl.take('b')).toBe(true);
+    expect(rl.take('c')).toBe(false);
+    expect(rl.size).toBe(2);
+  });
+
+  test('a key that already has live hits is still let through to its own limit acs-14.7', () => {
+    const rl = bounded(2, 3);
+    expect(rl.take('a')).toBe(true);
+    expect(rl.take('b')).toBe(true);
+    expect(rl.take('c')).toBe(false);
+    expect(takes(rl, 'a', 3)).toEqual([true, true, false]);
+    expect(takes(rl, 'b', 3)).toEqual([true, true, false]);
+  });
+
+  test('a refused new key records nothing acs-14.7', () => {
+    const rl = bounded(1, 2);
+    expect(rl.take('a')).toBe(true); // T0
+    t = T0 + 300; // refusals that, recorded, would still be live at T0 + 600
+    for (let i = 0; i < 5; i += 1) expect(rl.take('c')).toBe(false);
+    expect(rl.size).toBe(1);
+    t = T0 + 600;
+    expect(takes(rl, 'c', 3)).toEqual([true, true, false]);
+  });
+
+  test("room opens as keys' hits die, one key at a time acs-14.7", () => {
+    const rl = bounded(2);
+    expect(rl.take('a')).toBe(true); // T0
+    t = T0 + 100;
+    expect(rl.take('b')).toBe(true);
+    t = T0 + 599;
+    expect(rl.take('c')).toBe(false);
+    t = T0 + 600; // the hit of a dies; b's is live
+    expect(rl.take('c')).toBe(true);
+    expect(rl.take('d')).toBe(false);
+    expect(rl.take('a')).toBe(false);
+    t = T0 + 700; // the hit of b dies
+    expect(rl.take('d')).toBe(true);
+  });
+
+  test('a key whose only hit is given back leaves room acs-14.7', () => {
+    const rl = bounded(2);
+    expect(rl.take('a')).toBe(true);
+    expect(rl.take('b')).toBe(true);
+    rl.giveBack('a');
+    expect(rl.take('c')).toBe(true);
+    expect(rl.take('a')).toBe(false);
+  });
+
+  test('without maxKeys every new key is let through', () => {
+    const rl = limiter(1, 600);
+    for (let i = 0; i < 5000; i += 1) expect(rl.take(`key-${i}`)).toBe(true);
+    expect(rl.size).toBe(5000);
+  });
+});
+
+function request(remoteAddress: string | undefined, forwardedFor?: string): IncomingMessage {
+  const headers: Record<string, string> =
+    forwardedFor === undefined ? {} : { 'x-forwarded-for': forwardedFor };
+  return { socket: { remoteAddress }, headers } as unknown as IncomingMessage;
+}
+
+const PRIVATE_10: AddressBlock = { address: '10.0.0.0', prefix: 8, family: 'ipv4' };
+const ONE_PROXY: AddressBlock = { address: '192.0.2.7', prefix: 32, family: 'ipv4' };
+const ULA: AddressBlock = { address: 'fc00::', prefix: 7, family: 'ipv6' };
+const PROXIES: readonly AddressBlock[] = [PRIVATE_10, ONE_PROXY, ULA];
+
+describe('createSourceAddress', () => {
+  test('with no trusted proxy the source is the peer, whatever X-Forwarded-For says acs-14.7', () => {
+    const source = createSourceAddress([]);
+    expect(source(request('203.0.113.9'))).toBe('203.0.113.9');
+    expect(source(request('203.0.113.9', '198.51.100.4'))).toBe('203.0.113.9');
+    expect(source(request('10.0.0.5', '198.51.100.4'))).toBe('10.0.0.5');
+  });
+
+  test('a peer outside every trusted block is never believed acs-14.7', () => {
+    const source = createSourceAddress(PROXIES);
+    for (const peer of ['203.0.113.9', '11.0.0.1', '9.255.255.255', '192.0.2.8', '2001:db8::1']) {
+      expect(source(request(peer, '198.51.100.4')), peer).toBe(peer);
+      expect(source(request(peer, '198.51.100.4, 10.0.0.1')), peer).toBe(peer);
+      expect(source(request(peer)), peer).toBe(peer);
+    }
+  });
+
+  test('a trusted peer gives the last X-Forwarded-For entry, never the first acs-14.7', () => {
+    const source = createSourceAddress(PROXIES);
+    expect(source(request('10.0.0.5', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('10.0.0.5', '203.0.113.66, 198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('10.0.0.5', '203.0.113.66,203.0.113.67,198.51.100.4'))).toBe(
+      '198.51.100.4',
+    );
+  });
+
+  test("a trusted proxy's own address is never the answer acs-14.7", () => {
+    const source = createSourceAddress(PROXIES);
+    const answer = source(request('192.0.2.7', '198.51.100.4'));
+    expect(answer).toBe('198.51.100.4');
+    expect(answer).not.toBe('192.0.2.7');
+  });
+
+  test('the spaces around the commas are optional acs-14.7', () => {
+    const source = createSourceAddress(PROXIES);
+    for (const header of [
+      '203.0.113.66,198.51.100.4',
+      '203.0.113.66, 198.51.100.4',
+      '203.0.113.66 ,  198.51.100.4',
+      '203.0.113.66 , 198.51.100.4 ',
+    ]) {
+      expect(source(request('10.0.0.5', header)), header).toBe('198.51.100.4');
+    }
+  });
+
+  test('an entry before the last is not read, whatever it holds acs-14.7', () => {
+    const source = createSourceAddress(PROXIES);
+    expect(source(request('10.0.0.5', 'not-an-address, 198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('10.0.0.5', ', 198.51.100.4'))).toBe('198.51.100.4');
+  });
+
+  test('every address of a block is trusted, and only those acs-14.7', () => {
+    const source = createSourceAddress([PRIVATE_10]);
+    for (const peer of ['10.0.0.0', '10.0.0.1', '10.128.7.9', '10.255.255.255']) {
+      expect(source(request(peer, '198.51.100.4')), peer).toBe('198.51.100.4');
+    }
+    for (const peer of ['9.255.255.255', '11.0.0.0', '110.0.0.1', '100.0.0.1']) {
+      expect(source(request(peer, '198.51.100.4')), peer).toBe(peer);
+    }
+  });
+
+  test('a /32 trusts that one address acs-14.7', () => {
+    const source = createSourceAddress([ONE_PROXY]);
+    expect(source(request('192.0.2.7', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('192.0.2.6', '198.51.100.4'))).toBe('192.0.2.6');
+    expect(source(request('192.0.2.70', '198.51.100.4'))).toBe('192.0.2.70');
+  });
+
+  test('a prefix that is not a multiple of eight is honoured acs-14.7', () => {
+    const source = createSourceAddress([
+      { address: '172.16.0.0', prefix: 12, family: 'ipv4' },
+      ULA,
+    ]);
+    expect(source(request('172.31.255.254', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('172.32.0.1', '198.51.100.4'))).toBe('172.32.0.1');
+    expect(source(request('172.15.255.255', '198.51.100.4'))).toBe('172.15.255.255');
+    expect(source(request('fd12:3456::1', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('fc00::1', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('fe00::1', '198.51.100.4'))).toBe('fe00::1');
+    expect(source(request('fbff::1', '198.51.100.4'))).toBe('fbff::1');
+  });
+
+  test('a /0 block trusts every address of its family and none of the other acs-14.7', () => {
+    const v4 = createSourceAddress([{ address: '0.0.0.0', prefix: 0, family: 'ipv4' }]);
+    expect(v4(request('203.0.113.9', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(v4(request('2001:db8::1', '198.51.100.4'))).toBe('2001:db8::1');
+    const v6 = createSourceAddress([{ address: '::', prefix: 0, family: 'ipv6' }]);
+    expect(v6(request('2001:db8::1', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(v6(request('203.0.113.9', '198.51.100.4'))).toBe('203.0.113.9');
+  });
+
+  test('an IPv4-mapped peer is matched and answered as its IPv4 form acs-14.7', () => {
+    const source = createSourceAddress([PRIVATE_10]);
+    expect(source(request('::ffff:10.0.0.5', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('::ffff:203.0.113.9', '198.51.100.4'))).toBe('203.0.113.9');
+    expect(createSourceAddress([])(request('::ffff:203.0.113.9'))).toBe('203.0.113.9');
+    expect(createSourceAddress([])(request('::ffff:cb00:7109'))).toBe('203.0.113.9');
+  });
+
+  test('a trusted IPv6 peer gives the forwarded IPv4 or IPv6 entry acs-14.7', () => {
+    const source = createSourceAddress([ULA]);
+    expect(source(request('fd00::2', '198.51.100.4'))).toBe('198.51.100.4');
+    expect(source(request('fd00::2', '2001:db8::42'))).toBe('2001:db8::42');
+  });
+
+  test.each([
+    ['a mapped entry', '::ffff:198.51.100.4', '198.51.100.4'],
+    ['a mapped entry in upper case', '::FFFF:198.51.100.4', '198.51.100.4'],
+    ['an upper-case IPv6 entry', '2001:DB8::1', '2001:db8::1'],
+    ['a fully written IPv6 entry', '2001:0db8:0000:0000:0000:0000:0000:0001', '2001:db8::1'],
+    ['an entry whose longest zero run is last', '2001:db8:0:0:1:0:0:0', '2001:db8:0:0:1::'],
+    ['an entry with two equal zero runs', '2001:db8:0:0:1:0:0:1', '2001:db8::1:0:0:1'],
+  ])('the forwarded entry is spelt one way: %s acs-14.7', (_name, entry, canonical) => {
+    const source = createSourceAddress(PROXIES);
+    expect(source(request('10.0.0.5', entry))).toBe(canonical);
+  });
+
+  test.each([
+    ['an upper-case peer', '2001:DB8::1', '2001:db8::1'],
+    ['a fully written peer', '2001:0db8:0000:0000:0000:0000:0000:0001', '2001:db8::1'],
+    ['a peer with an uncompressed zero run', '2001:db8:0:0:0:0:0:7', '2001:db8::7'],
+  ])('the peer is spelt one way: %s acs-14.7', (_name, peer, canonical) => {
+    expect(createSourceAddress(PROXIES)(request(peer, '198.51.100.4'))).toBe(canonical);
+  });
+
+  test('a peer without an address is unknown, whatever else is sent acs-14.7', () => {
+    for (const proxies of [[], PROXIES]) {
+      const source = createSourceAddress(proxies);
+      expect(source(request(undefined))).toBeUndefined();
+      expect(source(request(undefined, '198.51.100.4'))).toBeUndefined();
+    }
+  });
+
+  test('a trusted peer that wrote no X-Forwarded-For is unknown acs-14.7', () => {
+    const source = createSourceAddress(PROXIES);
+    expect(source(request('10.0.0.5'))).toBeUndefined();
+    expect(source(request('10.0.0.5', ''))).toBeUndefined();
+  });
+
+  test.each([
+    ['a host name', '203.0.113.66, proxy.internal'],
+    ['the word unknown', 'unknown'],
+    ['an address with a port', '198.51.100.4:8080'],
+    ['a bracketed IPv6 address', '[2001:db8::1]'],
+    ['a bracketed IPv6 address with a port', '[2001:db8::1]:443'],
+    ['an empty last entry', '198.51.100.4,'],
+    ['an empty last entry after a space', '198.51.100.4, '],
+    ['a zone id', 'fe80::1%eth0'],
+    ['an obfuscated identifier', '_hidden'],
+    ['an IPv4 address out of range', '198.51.100.256'],
+    ['an IPv4 address of three parts', '198.51.100'],
+    ['a block', '198.51.100.0/24'],
+  ])('a trusted peer whose last entry is not an IP address is unknown: %s acs-14.7', (_name, header) => {
+    const source = createSourceAddress(PROXIES);
+    expect(source(request('10.0.0.5', header))).toBeUndefined();
+  });
+});
+
+describe('addressLimitKey', () => {
+  test('an IPv4 address is its own key acs-14.7', () => {
+    expect(addressLimitKey('192.0.2.7')).toBe('192.0.2.7');
+    expect(addressLimitKey('192.0.2.8')).not.toBe(addressLimitKey('192.0.2.7'));
+  });
+
+  test('two IPv6 addresses in one /64 share a key acs-14.7', () => {
+    const key = addressLimitKey('2001:db8:1:2::1');
+    expect(addressLimitKey('2001:db8:1:2:ffff:ffff:ffff:ffff')).toBe(key);
+    expect(addressLimitKey('2001:db8:1:2::')).toBe(key);
+    expect(addressLimitKey('2001:db8:1:2:8000::42')).toBe(key);
+    expect(addressLimitKey('2001:db8::1')).toBe(addressLimitKey('2001:db8::abcd:1'));
+  });
+
+  test('IPv6 addresses in different /64s have different keys acs-14.7', () => {
+    const key = addressLimitKey('2001:db8:1:2::1');
+    expect(addressLimitKey('2001:db8:1:3::1')).not.toBe(key);
+    expect(addressLimitKey('2001:db8:1:2:0:0:0:1')).toBe(key);
+    expect(addressLimitKey('2001:db8:0:1::1')).not.toBe(addressLimitKey('2001:db8::1'));
+    expect(addressLimitKey('2001:db9:1:2::1')).not.toBe(key);
+  });
+
+  test('no two of a set of IPv4 and IPv6 addresses in different /64s share a key acs-14.7', () => {
+    const addresses = [
+      '192.0.2.7',
+      '192.0.2.8',
+      '10.0.0.1',
+      '0.0.0.0',
+      '2001:db8::1',
+      '2001:db8:0:1::1',
+      '::',
+      '::1:0:0:0:1',
+      'fd00::1',
+    ];
+    const keys = new Set(addresses.map((address) => addressLimitKey(address)));
+    expect(keys.size).toBe(addresses.length);
   });
 });

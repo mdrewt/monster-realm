@@ -22,7 +22,9 @@ import { ConfigError, HOSTED_DEV_ISSUER } from './config.ts';
 import {
   ATTESTATION_KEY_FILE_NAME,
   generateAttestationKey,
+  generateHandleKey,
   generateSigningKey,
+  HANDLE_KEY_FILE_NAME,
   publishedAttestationKeys,
 } from './keys.ts';
 import { type RunningServer, startServer } from './server.ts';
@@ -306,6 +308,7 @@ describe('startServer, in process', () => {
       { mode: 0o600 },
     );
     chmodSync(attestationKeyFile, 0o600);
+    writeHandleKeyFile(join(dataDir, HANDLE_KEY_FILE_NAME), 'hosted-dev');
     const lines: string[] = [];
     const server = await start(
       { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: dataDir, MR_ACCOUNT_PORT: '0' },
@@ -329,6 +332,7 @@ describe('startServer refuses before anything is written or listening', () => {
         MR_ACCOUNT_ISSUER: 'https://accounts.example.com',
         MR_ACCOUNT_DATA_DIR: dataDir,
         MR_ACCOUNT_SIGN_IN: 'dev-password',
+        MR_ACCOUNT_HANDLE_KEY_FILE: join(root, 'handle', 'handle-keys.json'),
         MR_ACCOUNT_PORT: '0',
       }),
       'MR_ACCOUNT_SIGN_IN',
@@ -366,6 +370,7 @@ describe('startServer refuses before anything is written or listening', () => {
         MR_ACCOUNT_PROFILE: 'production',
         MR_ACCOUNT_ISSUER: 'https://accounts.example.com',
         MR_ACCOUNT_DATA_DIR: dataDir,
+        MR_ACCOUNT_HANDLE_KEY_FILE: productionHandleKeyFile(),
         MR_ACCOUNT_PORT: '0',
       }),
       'MR_ACCOUNT_PROFILE',
@@ -420,6 +425,7 @@ describe('the entry file, as a process', () => {
         MR_ACCOUNT_ISSUER: 'https://accounts.example.com',
         MR_ACCOUNT_DATA_DIR: dataDir,
         MR_ACCOUNT_SIGN_IN: 'dev-password',
+        MR_ACCOUNT_HANDLE_KEY_FILE: join(root, 'handle', 'handle-keys.json'),
         MR_ACCOUNT_PORT: '0',
       }),
       false,
@@ -1003,6 +1009,7 @@ describe('the attestation route served by startServer', () => {
       join(dataDir, ATTESTATION_KEY_FILE_NAME),
       JSON.stringify({ profile: 'hosted-dev', keys: [attestationKey] }),
     );
+    writeHandleKeyFile(join(dataDir, HANDLE_KEY_FILE_NAME), 'hosted-dev');
     const env: Env = { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: dataDir };
     const email = 'hosted.attest@example.com';
     await admin(env, ['set-client', CLIENT_ID, REDIRECT_URI]);
@@ -1121,5 +1128,491 @@ describe('the attestation route served by startServer', () => {
         expect(line).not.toContain(part);
       }
     }
+  });
+});
+
+// ---- the world ticket routes, served by startServer ----
+
+const TICKET_NAME = 'dns:NAMEMARK-t4Wq8Ze1Lc.example:3000/NAMEMARK-0b7d2e91';
+const WORLD_ID = createHash('sha256').update('acs14 server world').digest('hex');
+const FORGED_ADDRESS = '203.0.113.66';
+const PEER_ADDRESS = '127.0.0.1';
+const LOCAL_IPV4_CHECK_HOST = 'ipv4.localhost:4455';
+const LOCAL_IPV6_CHECK_HOST = 'ipv6.localhost:4455';
+const HANDLE_SETTING = 'MR_ACCOUNT_HANDLE_KEY_FILE';
+
+type HandleKey = ReturnType<typeof generateHandleKey>;
+
+/** Writes a handle key file of one new key marked for `profile`, and returns that key. */
+function writeHandleKeyFile(path: string, profile: string, mode = 0o600): HandleKey {
+  const key = generateHandleKey();
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify({ profile, keys: [key] }), { mode });
+  chmodSync(path, mode);
+  return key;
+}
+
+/** A valid production handle key file outside any data directory; returns its path. */
+function productionHandleKeyFile(): string {
+  const path = join(root, 'handle', HANDLE_KEY_FILE_NAME);
+  writeHandleKeyFile(path, 'production');
+  return path;
+}
+
+function postJson(
+  port: number,
+  path: string,
+  body: unknown,
+  extra: Record<string, string> = {},
+): Promise<FlowReply> {
+  return flowSend(
+    port,
+    'POST',
+    path,
+    { host: LOCAL_HOST_HEADER, 'content-type': 'application/json', ...extra },
+    typeof body === 'string' ? body : JSON.stringify(body),
+  );
+}
+
+function bodyOf(reply: FlowReply): Record<string, unknown> {
+  return JSON.parse(reply.body) as Record<string, unknown>;
+}
+
+async function ticketFor(port: number, idToken: string, host = LOCAL_HOST_HEADER): Promise<string> {
+  const reply = await postJson(
+    port,
+    '/ticket',
+    { world: TICKET_NAME },
+    { host, authorization: `Bearer ${idToken}` },
+  );
+  expect(reply.status, reply.body).toBe(200);
+  const json = bodyOf(reply);
+  expect(Object.keys(json)).toEqual(['ticket']);
+  expect(json.ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  return json.ticket as string;
+}
+
+function redeemTicket(
+  port: number,
+  ticket: string,
+  extra: Record<string, string> = {},
+): Promise<FlowReply> {
+  return postJson(port, '/world/check', { ticket, names: [TICKET_NAME], world: WORLD_ID }, extra);
+}
+
+function checkHandleAt(
+  port: number,
+  handle: string,
+  extra: Record<string, string> = {},
+): Promise<FlowReply> {
+  return postJson(port, '/world/check', { handle, world: WORLD_ID }, extra);
+}
+
+/** A redemption's answer: exactly handle, entitled, address and name. */
+function redeemedIn(reply: FlowReply): Record<string, unknown> {
+  expect(reply.status, reply.body).toBe(200);
+  const json = bodyOf(reply);
+  expect(Object.keys(json).sort()).toEqual(['address', 'entitled', 'handle', 'name']);
+  expect(json.handle).toEqual(expect.any(String));
+  return json;
+}
+
+async function startRefusal(env: Env, lines: string[]): Promise<unknown> {
+  try {
+    await start(env, lines);
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+/** Bytes of the database and any journal beside it. */
+function databaseBytes(dataDir: string): Buffer {
+  const files = readdirSync(dataDir).filter((name) => name.startsWith('account.sqlite'));
+  expect(files).toContain('account.sqlite');
+  return Buffer.concat(files.map((name) => readFileSync(join(dataDir, name))));
+}
+
+function hostedKeyFiles(dataDir: string): void {
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  writeOwnerOnly(
+    join(dataDir, 'keys.json'),
+    JSON.stringify({ profile: 'hosted-dev', keys: [generateSigningKey()] }),
+  );
+  writeOwnerOnly(
+    join(dataDir, ATTESTATION_KEY_FILE_NAME),
+    JSON.stringify({ profile: 'hosted-dev', keys: [generateAttestationKey()] }),
+  );
+}
+
+describe('the world ticket routes served by startServer', () => {
+  test('on local-dev a real ID token gets a ticket a world redeems for handle, entitled, address and name, and the handle checks back acs-14.2', async () => {
+    const local = await signedInLocal();
+    const ticket = await ticketFor(local.port, local.idToken);
+    const answer = redeemedIn(await redeemTicket(local.port, ticket));
+    expect(answer).toMatchObject({ entitled: true, address: PEER_ADDRESS, name: TICKET_NAME });
+    const checked = await checkHandleAt(local.port, String(answer.handle));
+    expect(checked.status, checked.body).toBe(200);
+    expect(bodyOf(checked)).toEqual({
+      handle: answer.handle,
+      entitled: true,
+      address: PEER_ADDRESS,
+    });
+    const again = await redeemTicket(local.port, ticket);
+    expect(again.status).toBe(403);
+    expect(Object.keys(bodyOf(again))).toEqual(['error']);
+  });
+
+  test('the check is answered under the ipv4. and ipv6. names of the issuer, and /ticket is not acs-14.2', async () => {
+    const local = await signedInLocal();
+    const ticket = await ticketFor(local.port, local.idToken);
+    const answer = redeemedIn(
+      await redeemTicket(local.port, ticket, { host: LOCAL_IPV4_CHECK_HOST }),
+    );
+    const checked = await checkHandleAt(local.port, String(answer.handle), {
+      host: LOCAL_IPV6_CHECK_HOST,
+    });
+    expect(checked.status, checked.body).toBe(200);
+    expect(bodyOf(checked).handle).toBe(answer.handle);
+    const misplaced = await postJson(
+      local.port,
+      '/ticket',
+      { world: TICKET_NAME },
+      { host: LOCAL_IPV4_CHECK_HOST, authorization: `Bearer ${local.idToken}` },
+    );
+    expect(misplaced.status).toBe(421);
+    expect(misplaced.body).not.toContain('"ticket"');
+  });
+
+  test('a ticket is issued to an account that is not entitled, and its redemption answers entitled false with a handle acs-14.1', async () => {
+    const local = await signedInLocal();
+    await admin(local.adminEnv, ['set-entitlement', local.email, 'not-entitled']);
+    const ticket = await ticketFor(local.port, local.idToken);
+    const answer = redeemedIn(await redeemTicket(local.port, ticket));
+    expect(answer.entitled).toBe(false);
+    expect(answer.name).toBe(TICKET_NAME);
+  });
+
+  test('no ticket is issued without a valid ID token: none, or one changed after signing acs-14.1', async () => {
+    const lines: string[] = [];
+    const local = await signedInLocal(lines);
+    const [header, payload, signature] = local.idToken.split('.');
+    const signedClaims = JSON.parse(
+      Buffer.from(payload ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    const otherSub = Buffer.from(
+      JSON.stringify({ ...signedClaims, sub: 'dev:00000000-0000-4000-8000-000000000000' }),
+    ).toString('base64url');
+    const refusals: ReadonlyArray<readonly [string, Record<string, string>]> = [
+      ['no token', {}],
+      ['a changed token', { authorization: `Bearer ${header}.${otherSub}.${signature}` }],
+      ['a token under another scheme', { authorization: `Basic ${local.idToken}` }],
+    ];
+    for (const [name, extra] of refusals) {
+      const reply = await postJson(local.port, '/ticket', { world: TICKET_NAME }, extra);
+      expect(reply.status, name).toBe(401);
+      expect(reply.headers['www-authenticate'], name).toBe('Bearer');
+      expect(Object.keys(bodyOf(reply)), name).toEqual(['error']);
+    }
+    expect(lines).toHaveLength(1);
+  });
+
+  test('with no trusted proxy set a forged X-Forwarded-For is ignored: the address is the peer acs-14.2', async () => {
+    const local = await signedInLocal();
+    const forged = { 'x-forwarded-for': FORGED_ADDRESS };
+    const ticket = await ticketFor(local.port, local.idToken);
+    const answer = redeemedIn(await redeemTicket(local.port, ticket, forged));
+    expect(answer.address).toBe(PEER_ADDRESS);
+    const checked = await checkHandleAt(local.port, String(answer.handle), forged);
+    expect(bodyOf(checked).address).toBe(PEER_ADDRESS);
+  });
+
+  test('the log gains one line with the sub per ticket issued and redeemed, none per handle check, and never a world, name, handle, ticket or address acs-14.8', async () => {
+    const lines: string[] = [];
+    const local = await signedInLocal(lines);
+    expect(lines).toHaveLength(1);
+    const forged = { 'x-forwarded-for': FORGED_ADDRESS };
+
+    const ticket = await ticketFor(local.port, local.idToken);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain(local.sub);
+    const answer = redeemedIn(await redeemTicket(local.port, ticket, forged));
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toContain(local.sub);
+    const handle = String(answer.handle);
+    expect((await checkHandleAt(local.port, handle, forged)).status).toBe(200);
+    expect((await checkHandleAt(local.port, `${handle}A`, forged)).status).toBe(200);
+
+    const refused: ReadonlyArray<readonly [string, Promise<FlowReply>]> = [
+      ['a ticket with no token', postJson(local.port, '/ticket', { world: TICKET_NAME })],
+      ['a spent ticket', redeemTicket(local.port, ticket, forged)],
+      [
+        'a check with a member more',
+        postJson(local.port, '/world/check', { handle, world: WORLD_ID, x: TICKET_NAME }),
+      ],
+    ];
+    for (const [name, pending] of refused) {
+      expect((await pending).status, name).not.toBe(200);
+    }
+    expect(lines).toHaveLength(3);
+
+    const dot = handle.indexOf('.');
+    const secrets = [
+      ticket,
+      handle,
+      handle.slice(dot + 1),
+      local.idToken,
+      ...local.idToken.split('.'),
+      WORLD_ID,
+      WORLD_ID.slice(0, 16),
+      FORGED_ADDRESS,
+      PEER_ADDRESS,
+    ];
+    // The start line names the address the server listens on; every line after it is checked.
+    for (const line of lines.slice(1)) {
+      expect(line).not.toContain('NAMEMARK');
+      for (const secret of secrets) expect(line).not.toContain(secret);
+    }
+  });
+
+  test('the database file holds no ticket text, issued or spent acs-14.8', async () => {
+    const local = await signedInLocal();
+    const spent = await ticketFor(local.port, local.idToken);
+    const kept = await ticketFor(local.port, local.idToken);
+    redeemedIn(await redeemTicket(local.port, spent));
+    const bytes = databaseBytes(local.dataDir);
+    // The control: the live ticket's record reached the file.
+    const keptId = createHash('sha256').update(kept).digest('base64url');
+    expect(bytes.includes(Buffer.from(keptId))).toBe(true);
+    expect(bytes.includes(Buffer.from(spent))).toBe(false);
+    expect(bytes.includes(Buffer.from(kept))).toBe(false);
+  });
+
+  test('local-dev writes an owner-only handle key file beside the login key file, and a restart answers the same handle', async () => {
+    const local = await signedInLocal();
+    const handleFile = join(local.dataDir, HANDLE_KEY_FILE_NAME);
+    expect(existsSync(handleFile)).toBe(true);
+    const bytes = readFileSync(handleFile);
+    const ticket = await ticketFor(local.port, local.idToken);
+    const handle = String(redeemedIn(await redeemTicket(local.port, ticket)).handle);
+    await local.server.close();
+
+    const again = await start(localEnv(local.dataDir));
+    const checked = await checkHandleAt(portOf(again.url), handle);
+    expect(checked.status, checked.body).toBe(200);
+    expect(bodyOf(checked)).toEqual({ handle, entitled: true, address: PEER_ADDRESS });
+    expect(readFileSync(handleFile).equals(bytes)).toBe(true);
+    if (POSIX) expect(statSync(handleFile).mode & 0o077).toBe(0);
+  });
+
+  test('local-dev with the login key file elsewhere writes its handle key file beside that file', async () => {
+    const dataDir = join(root, 'data');
+    const keyDir = join(root, 'elsewhere');
+    const server = await start({
+      ...localEnv(dataDir),
+      MR_ACCOUNT_KEY_FILE: join(keyDir, 'keys.json'),
+    });
+    await publishedKeys(portOf(server.url));
+    expect(existsSync(join(keyDir, HANDLE_KEY_FILE_NAME))).toBe(true);
+    expect(existsSync(join(dataDir, HANDLE_KEY_FILE_NAME))).toBe(false);
+  });
+});
+
+describe('the handle key file at start', () => {
+  test('hosted-dev with its login and attestation key files and no handle key file is refused naming the setting, writing and listening on nothing', async () => {
+    const dataDir = join(root, 'hosted');
+    hostedKeyFiles(dataDir);
+    const port = await freePort();
+    const lines: string[] = [];
+    const error = await startRefusal(
+      {
+        MR_ACCOUNT_PROFILE: 'hosted-dev',
+        MR_ACCOUNT_DATA_DIR: dataDir,
+        MR_ACCOUNT_PORT: String(port),
+      },
+      lines,
+    );
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe(HANDLE_SETTING);
+    expect(readdirSync(dataDir).sort()).toEqual([ATTESTATION_KEY_FILE_NAME, 'keys.json'].sort());
+    expect(lines).toEqual([]);
+    expect(await connectOutcome(port)).toBe('refused');
+  });
+
+  test.each([
+    ['group can read', 'hosted-dev', 0o640],
+    ['others can read', 'hosted-dev', 0o604],
+    ['marked local-dev', 'local-dev', 0o600],
+    ['marked production', 'production', 0o600],
+  ] as ReadonlyArray<
+    readonly [string, string, number]
+  >)('hosted-dev refuses a handle key file that %s, naming the setting and no part of its key', async (_name, profile, mode) => {
+    if (!POSIX && mode !== 0o600) return;
+    const dataDir = join(root, 'hosted');
+    hostedKeyFiles(dataDir);
+    const key = writeHandleKeyFile(join(dataDir, HANDLE_KEY_FILE_NAME), profile, mode);
+    const lines: string[] = [];
+    const error = await startRefusal(
+      { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: dataDir, MR_ACCOUNT_PORT: '0' },
+      lines,
+    );
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe(HANDLE_SETTING);
+    expect((error as ConfigError).message).not.toContain(key.k);
+    expect((error as ConfigError).message).not.toContain(key.k.slice(0, 16));
+    expect(lines).toEqual([]);
+  });
+
+  test("hosted-dev with MR_ACCOUNT_HANDLE_KEY_FILE elsewhere starts, leaves that file as it is, and seals under that file's key", async () => {
+    const { createHandleCodec } = await import('./worldHandle.ts');
+    const dataDir = join(root, 'hosted');
+    hostedKeyFiles(dataDir);
+    const handleFile = join(root, 'handle-elsewhere', 'hosted-handle.json');
+    const key = writeHandleKeyFile(handleFile, 'hosted-dev');
+    const bytes = readFileSync(handleFile);
+    const env: Env = {
+      MR_ACCOUNT_PROFILE: 'hosted-dev',
+      MR_ACCOUNT_DATA_DIR: dataDir,
+      MR_ACCOUNT_HANDLE_KEY_FILE: handleFile,
+    };
+    const email = 'hosted.ticket@example.com';
+    await admin(env, ['set-client', CLIENT_ID, REDIRECT_URI]);
+    const made = await admin(env, ['create-account', email]);
+    const server = await start({ ...env, MR_ACCOUNT_PORT: '0' });
+    const port = portOf(server.url);
+    const idToken = await signInToIdToken({
+      port,
+      host: HOSTED_HOST_HEADER,
+      origin: HOSTED_DEV_ISSUER,
+      email,
+      password: made.get('password')!,
+    });
+    const ticket = await ticketFor(port, idToken, HOSTED_HOST_HEADER);
+    const answer = redeemedIn(
+      await redeemTicket(port, ticket, { host: `ipv4.${HOSTED_HOST_HEADER}` }),
+    );
+    expect(answer.entitled).toBe(true);
+    expect(createHandleCodec({ keys: [key] }).open(String(answer.handle))).toEqual({
+      account: made.get('sub'),
+      world: WORLD_ID,
+    });
+    expect(readFileSync(handleFile).equals(bytes)).toBe(true);
+    expect(readdirSync(dataDir)).not.toContain(HANDLE_KEY_FILE_NAME);
+  });
+
+  function productionEnv(dataDir: string, port: number, extra: Env = {}): Env {
+    return {
+      MR_ACCOUNT_PROFILE: 'production',
+      MR_ACCOUNT_ISSUER: 'https://accounts.example.com',
+      MR_ACCOUNT_DATA_DIR: dataDir,
+      MR_ACCOUNT_PORT: String(port),
+      ...extra,
+    };
+  }
+
+  interface ProductionRefusal {
+    readonly name: string;
+    /** The handle key setting to start with; `written` collects the key text of any file made. */
+    readonly setting: (written: string[]) => Env;
+    readonly posixOnly?: boolean;
+  }
+
+  const PRODUCTION_REFUSALS: readonly ProductionRefusal[] = [
+    { name: 'unset', setting: () => ({}) },
+    { name: 'empty', setting: () => ({ [HANDLE_SETTING]: '' }) },
+    {
+      name: 'naming a path with no file',
+      setting: () => ({ [HANDLE_SETTING]: join(root, 'absent', 'handle-keys.json') }),
+    },
+    {
+      name: 'a relative path',
+      setting: () => ({ [HANDLE_SETTING]: 'HANDLEPATHMARK/handle-keys.json' }),
+    },
+    {
+      name: 'a path through ..',
+      setting: () => ({ [HANDLE_SETTING]: `${root}/x/../HANDLEPATHMARK.json` }),
+    },
+    {
+      name: 'naming a file marked hosted-dev',
+      setting: (written) => {
+        const path = join(root, 'handle', 'handle-keys.json');
+        written.push(writeHandleKeyFile(path, 'hosted-dev').k);
+        return { [HANDLE_SETTING]: path };
+      },
+    },
+    {
+      name: 'naming a production file that group can read',
+      setting: (written) => {
+        const path = join(root, 'handle', 'handle-keys.json');
+        written.push(writeHandleKeyFile(path, 'production', 0o640).k);
+        return { [HANDLE_SETTING]: path };
+      },
+      posixOnly: true,
+    },
+  ];
+
+  test.each(
+    PRODUCTION_REFUSALS,
+  )('production with the handle key setting $name is refused naming it and never its value, writing and listening on nothing acs-14.9', async ({
+    setting,
+    posixOnly = false,
+  }) => {
+    if (posixOnly && !POSIX) return;
+    const dataDir = join(root, 'data');
+    const port = await freePort();
+    const written: string[] = [];
+    const lines: string[] = [];
+    const error = await startRefusal(productionEnv(dataDir, port, setting(written)), lines);
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe(HANDLE_SETTING);
+    const message = (error as ConfigError).message;
+    expect(message).toContain(HANDLE_SETTING);
+    expect(message).not.toContain('HANDLEPATHMARK');
+    for (const k of written) {
+      expect(message).not.toContain(k);
+      expect(message).not.toContain(k.slice(0, 16));
+    }
+    expect(existsSync(dataDir)).toBe(false);
+    expect(existsSync(join(root, 'absent'))).toBe(false);
+    expect(lines).toEqual([]);
+    expect(await connectOutcome(port)).toBe('refused');
+  });
+
+  test('production with a valid handle key file goes on to the refusal of the profile, since this build holds no external signer acs-14.9', async () => {
+    const dataDir = join(root, 'data');
+    const handleFile = productionHandleKeyFile();
+    const bytes = readFileSync(handleFile);
+    const lines: string[] = [];
+    const error = await startRefusal(
+      productionEnv(dataDir, 0, { [HANDLE_SETTING]: handleFile }),
+      lines,
+    );
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe('MR_ACCOUNT_PROFILE');
+    expect(readFileSync(handleFile).equals(bytes)).toBe(true);
+    expect(existsSync(dataDir)).toBe(false);
+    expect(lines).toEqual([]);
+  });
+
+  test('the entry file refuses a production env with no handle key setting: it exits 1 and names the setting on stderr acs-14.9', async () => {
+    const dataDir = join(root, 'data');
+    const proc = track(
+      process.execPath,
+      ['src/server.ts'],
+      ACCOUNT_SERVICE_DIR,
+      childEnv({
+        MR_ACCOUNT_PROFILE: 'production',
+        MR_ACCOUNT_ISSUER: 'https://accounts.example.com',
+        MR_ACCOUNT_DATA_DIR: dataDir,
+        MR_ACCOUNT_PORT: '0',
+      }),
+      false,
+    );
+    const result = await proc.exit;
+    expect(result.error).toBeUndefined();
+    expect(result.code, proc.output.stderr).toBe(1);
+    expect(proc.output.stderr).toContain(HANDLE_SETTING);
+    expect(proc.output.stdout).not.toContain('listening=');
+    expect(existsSync(dataDir)).toBe(false);
   });
 });

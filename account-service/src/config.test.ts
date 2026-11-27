@@ -13,6 +13,7 @@ import {
   loadConfig,
   STEAM_DEV_APP_ID,
 } from './config.ts';
+import { HANDLE_KEY_FILE_NAME } from './keys.ts';
 import { type RunningServer, startServer } from './server.ts';
 
 type Env = Record<string, string | undefined>;
@@ -23,11 +24,13 @@ const EXPECTED_LOCAL_DATA_DIR = resolve(dirname(fileURLToPath(import.meta.url)),
 const PROD_DATA_DIR = resolve('/var/lib/x');
 const HOSTED_DATA_DIR = resolve('/srv/account-data');
 const PROD_ISSUER = 'https://accounts.example.com';
+const PROD_HANDLE_KEY_FILE = resolve('/etc/account-service/handle-keys.json');
 
 const PRODUCTION: Env = {
   MR_ACCOUNT_PROFILE: 'production',
   MR_ACCOUNT_ISSUER: PROD_ISSUER,
   MR_ACCOUNT_DATA_DIR: PROD_DATA_DIR,
+  MR_ACCOUNT_HANDLE_KEY_FILE: PROD_HANDLE_KEY_FILE,
 };
 const LOCAL: Env = { MR_ACCOUNT_PROFILE: 'local-dev' };
 const HOSTED: Env = { MR_ACCOUNT_PROFILE: 'hosted-dev', MR_ACCOUNT_DATA_DIR: HOSTED_DATA_DIR };
@@ -76,6 +79,8 @@ describe('each profile loads from its smallest valid env', () => {
       databasePath: join(LOCAL_DEV_DATA_DIR, 'account.sqlite'),
       keys: { kind: 'file', path: join(LOCAL_DEV_DATA_DIR, 'keys.json'), generateIfMissing: true },
       signIn: 'dev-password',
+      handleKeys: { path: join(LOCAL_DEV_DATA_DIR, HANDLE_KEY_FILE_NAME), generateIfMissing: true },
+      trustedProxies: [],
     });
   });
 
@@ -99,6 +104,8 @@ describe('each profile loads from its smallest valid env', () => {
       databasePath: join(HOSTED_DATA_DIR, 'account.sqlite'),
       keys: { kind: 'file', path: join(HOSTED_DATA_DIR, 'keys.json'), generateIfMissing: false },
       signIn: 'dev-password',
+      handleKeys: { path: join(HOSTED_DATA_DIR, HANDLE_KEY_FILE_NAME), generateIfMissing: false },
+      trustedProxies: [],
     });
   });
 
@@ -111,6 +118,8 @@ describe('each profile loads from its smallest valid env', () => {
       databasePath: join(PROD_DATA_DIR, 'account.sqlite'),
       keys: { kind: 'external' },
       signIn: 'steam',
+      handleKeys: { path: PROD_HANDLE_KEY_FILE, generateIfMissing: false },
+      trustedProxies: [],
     });
   });
 
@@ -927,5 +936,275 @@ describe('the Steam settings', () => {
       expect((error as ConfigError).message).toContain('MR_STEAM_APP_ID');
       expect(existsSync(dataDir)).toBe(false);
     });
+  });
+});
+
+const HANDLE_SETTING = 'MR_ACCOUNT_HANDLE_KEY_FILE';
+const PROXY_SETTING = 'MR_ACCOUNT_TRUSTED_PROXY';
+const EVERY_PROFILE: ReadonlyArray<readonly [string, Env]> = [
+  ['local-dev', LOCAL],
+  ['hosted-dev', HOSTED],
+  ['production', PRODUCTION],
+];
+
+describe('MR_ACCOUNT_HANDLE_KEY_FILE', () => {
+  const base = resolve('/srv/handles');
+  const badPaths: ReadonlyArray<readonly [string, string]> = [
+    ['a relative path', join('relative', 'handle-keys.json')],
+    ['a dot-relative path', `.${sep}handle-keys.json`],
+    ['a path with ..', `${base}${sep}..${sep}handle-keys.json`],
+    ['a path with .', `${base}${sep}.${sep}handle-keys.json`],
+    ['a trailing separator', `${base}${sep}`],
+    ['a doubled separator', `${base}${sep}${sep}handle-keys.json`],
+    ['the filesystem root', resolve('/')],
+    ['an absolute path with a NUL character inside it', `${join(base, 'a')}${NUL}b`],
+  ];
+
+  test('local-dev keeps its handle key file beside its login key file, and makes it when missing', () => {
+    const config = loadConfig(LOCAL);
+    expect(config.keys).toEqual({
+      kind: 'file',
+      path: join(LOCAL_DEV_DATA_DIR, 'keys.json'),
+      generateIfMissing: true,
+    });
+    expect(config.handleKeys).toEqual({
+      path: join(LOCAL_DEV_DATA_DIR, HANDLE_KEY_FILE_NAME),
+      generateIfMissing: true,
+    });
+  });
+
+  test.each([
+    ['local-dev', LOCAL, true],
+    ['hosted-dev', HOSTED, false],
+  ] as const)('%s with its login key file elsewhere keeps the handle key file beside that file', (_p, env, generateIfMissing) => {
+    const keyFile = resolve('/srv/keys/signing.json');
+    const config = loadConfig({
+      ...env,
+      MR_ACCOUNT_DATA_DIR: resolve('/srv/data'),
+      MR_ACCOUNT_KEY_FILE: keyFile,
+    });
+    expect(config.handleKeys).toEqual({
+      path: join(dirname(keyFile), HANDLE_KEY_FILE_NAME),
+      generateIfMissing,
+    });
+  });
+
+  test('hosted-dev unset keeps the file beside its key file and never makes it', () => {
+    expect(loadConfig(HOSTED).handleKeys).toEqual({
+      path: join(HOSTED_DATA_DIR, HANDLE_KEY_FILE_NAME),
+      generateIfMissing: false,
+    });
+  });
+
+  test.each([
+    ['local-dev', LOCAL, true],
+    ['hosted-dev', HOSTED, false],
+    ['production', PRODUCTION, false],
+  ] as const)('%s takes a set handle key file exactly as written', (_p, env, generateIfMissing) => {
+    const path = resolve('/srv/elsewhere/handles.json');
+    expect(loadConfig({ ...env, MR_ACCOUNT_HANDLE_KEY_FILE: path }).handleKeys).toEqual({
+      path,
+      generateIfMissing,
+    });
+  });
+
+  test.each([
+    ['unset', undefined],
+    ['empty', ''],
+  ])('production with the handle key file %s does not start, naming that setting acs-14.9', (_name, value) => {
+    expectRefused({ ...PRODUCTION, MR_ACCOUNT_HANDLE_KEY_FILE: value }, HANDLE_SETTING);
+  });
+
+  test('production with no handle key setting at all is refused for that setting acs-14.9', () => {
+    const env: Env = {
+      MR_ACCOUNT_PROFILE: 'production',
+      MR_ACCOUNT_ISSUER: PROD_ISSUER,
+      MR_ACCOUNT_DATA_DIR: PROD_DATA_DIR,
+    };
+    expectRefused(env, HANDLE_SETTING);
+    expectRefused({ ...env, MR_STEAM_APP_ID: '1234567' }, HANDLE_SETTING);
+    expectRefused({ ...env, MR_ACCOUNT_SIGN_IN: 'steam' }, HANDLE_SETTING);
+  });
+
+  test('production checks the handle key file after the issuer and every earlier setting acs-14.9', () => {
+    const withoutHandle: Env = { ...PRODUCTION, MR_ACCOUNT_HANDLE_KEY_FILE: undefined };
+    expectRefused({ ...withoutHandle, MR_ACCOUNT_ISSUER: undefined }, 'MR_ACCOUNT_ISSUER');
+    expectRefused(
+      { ...withoutHandle, MR_ACCOUNT_ISSUER: 'http://accounts.example.com' },
+      'MR_ACCOUNT_ISSUER',
+    );
+    expectRefused(
+      { ...withoutHandle, MR_ACCOUNT_KEY_FILE: join(PROD_DATA_DIR, 'keys.json') },
+      'MR_ACCOUNT_KEY_FILE',
+    );
+    expectRefused({ ...withoutHandle, MR_STEAM_APP_ID: '0' }, 'MR_STEAM_APP_ID');
+    expectRefused({ ...withoutHandle, [WEB_KEY_SETTING]: 'x' }, 'MR_STEAM_WEB_API_KEY');
+    expectRefused({ ...withoutHandle, MR_ACCOUNT_DATA_DIR: undefined }, 'MR_ACCOUNT_DATA_DIR');
+    expectRefused(
+      { ...withoutHandle, MR_ACCOUNT_DATA_DIR: join('relative', 'dir') },
+      'MR_ACCOUNT_DATA_DIR',
+    );
+  });
+
+  test.each(
+    badPaths,
+  )('production refuses %s as the handle key file, naming the setting acs-14.9', (_kind, value) => {
+    expectRefused({ ...PRODUCTION, MR_ACCOUNT_HANDLE_KEY_FILE: value }, HANDLE_SETTING);
+  });
+
+  test.each(badPaths)('the dev profiles refuse %s as the handle key file', (_kind, value) => {
+    expectRefused({ ...LOCAL, MR_ACCOUNT_HANDLE_KEY_FILE: value }, HANDLE_SETTING);
+    expectRefused({ ...HOSTED, MR_ACCOUNT_HANDLE_KEY_FILE: value }, HANDLE_SETTING);
+  });
+
+  test('a refused handle key file is never repeated in the refusal acs-14.9', () => {
+    const marker = 'INTERNAL_MARKER_handle_path';
+    const values = [
+      join('relative', marker),
+      `${base}${sep}..${sep}${marker}`,
+      `${base}${sep}${sep}${marker}`,
+      `${base}${sep}${marker}${sep}`,
+    ];
+    for (const value of values) {
+      for (const env of [PRODUCTION, LOCAL, HOSTED]) {
+        expectNoLeak(
+          expectRefused({ ...env, MR_ACCOUNT_HANDLE_KEY_FILE: value }, HANDLE_SETTING),
+          marker,
+        );
+      }
+    }
+  });
+
+  test('an empty handle key file is unset on the dev profiles', () => {
+    expect(loadConfig({ ...LOCAL, MR_ACCOUNT_HANDLE_KEY_FILE: '' })).toEqual(loadConfig(LOCAL));
+    expect(loadConfig({ ...HOSTED, MR_ACCOUNT_HANDLE_KEY_FILE: '' })).toEqual(loadConfig(HOSTED));
+  });
+
+  test.each([
+    'MR_ACCOUNT_HANDLE_KEYFILE',
+    'MR_ACCOUNT_HANDLE_KEYS_FILE',
+    'mr_account_handle_key_file',
+    'MR_ACCOUNT_HANDLE_KEY_FILE ',
+    'MR_ACCOUNT_TRUSTED_PROXIES',
+    'MR_ACCOUNT_TRUSTEDPROXY',
+    'mr_account_trusted_proxy',
+  ])('a misspelling %j is refused under its own name', (name) => {
+    for (const [, env] of EVERY_PROFILE) {
+      expectRefused({ ...env, [name]: PROD_HANDLE_KEY_FILE }, name);
+    }
+  });
+});
+
+describe('MR_ACCOUNT_TRUSTED_PROXY', () => {
+  const TAB = String.fromCharCode(9);
+  // Arabic-Indic digit four.
+  const ARABIC_INDIC_4 = String.fromCharCode(0x0664);
+
+  test.each(EVERY_PROFILE)('%s unset or empty trusts no proxy', (_p, env) => {
+    expect(loadConfig(env).trustedProxies).toEqual([]);
+    expect(loadConfig({ ...env, MR_ACCOUNT_TRUSTED_PROXY: '' }).trustedProxies).toEqual([]);
+    expect(loadConfig({ ...env, MR_ACCOUNT_TRUSTED_PROXY: '' })).toEqual(loadConfig(env));
+  });
+
+  test.each(EVERY_PROFILE)('%s loads a list of blocks and addresses in order', (_p, env) => {
+    const config = loadConfig({
+      ...env,
+      MR_ACCOUNT_TRUSTED_PROXY: '10.0.0.0/8,192.0.2.7,fc00::/7',
+    });
+    expect(config.trustedProxies).toEqual([
+      { address: '10.0.0.0', prefix: 8, family: 'ipv4' },
+      { address: '192.0.2.7', prefix: 32, family: 'ipv4' },
+      { address: 'fc00::', prefix: 7, family: 'ipv6' },
+    ]);
+  });
+
+  test.each([
+    ['an IPv6 address', '2001:db8::1', [{ address: '2001:db8::1', prefix: 128, family: 'ipv6' }]],
+    ['every IPv4 address', '0.0.0.0/0', [{ address: '0.0.0.0', prefix: 0, family: 'ipv4' }]],
+    ['every IPv6 address', '::/0', [{ address: '::', prefix: 0, family: 'ipv6' }]],
+    ['an IPv4 /32', '192.0.2.0/32', [{ address: '192.0.2.0', prefix: 32, family: 'ipv4' }]],
+    ['an IPv6 /128', 'fc00::/128', [{ address: 'fc00::', prefix: 128, family: 'ipv6' }]],
+    [
+      'the private ranges',
+      '172.16.0.0/12,192.168.0.0/16',
+      [
+        { address: '172.16.0.0', prefix: 12, family: 'ipv4' },
+        { address: '192.168.0.0', prefix: 16, family: 'ipv4' },
+      ],
+    ],
+  ] as const)('%s loads', (_name, value, expected) => {
+    expect(loadConfig({ ...LOCAL, MR_ACCOUNT_TRUSTED_PROXY: value }).trustedProxies).toEqual(
+      expected,
+    );
+  });
+
+  test('sixteen entries load, and a seventeenth is refused', () => {
+    const entries = Array.from({ length: 17 }, (_, i) => `192.0.2.${i}`);
+    const sixteen = loadConfig({
+      ...LOCAL,
+      MR_ACCOUNT_TRUSTED_PROXY: entries.slice(0, 16).join(','),
+    });
+    expect(sixteen.trustedProxies).toHaveLength(16);
+    expect(sixteen.trustedProxies[15]).toEqual({
+      address: '192.0.2.15',
+      prefix: 32,
+      family: 'ipv4',
+    });
+    expectRefused({ ...LOCAL, MR_ACCOUNT_TRUSTED_PROXY: entries.join(',') }, PROXY_SETTING);
+  });
+
+  const refused: ReadonlyArray<readonly [string, string]> = [
+    ['a space alone', ' '],
+    ['a leading space', ' 10.0.0.0/8'],
+    ['a trailing space', '10.0.0.0/8 '],
+    ['a space after a comma', '10.0.0.0/8, 192.0.2.7'],
+    ['a tab', `10.0.0.0/8${TAB}`],
+    ['an empty last entry', '10.0.0.0/8,'],
+    ['an empty first entry', ',10.0.0.0/8'],
+    ['an empty middle entry', '10.0.0.0/8,,192.0.2.7'],
+    ['a semicolon separator', '10.0.0.0/8;192.0.2.7'],
+    ['a host name', 'proxy.internal'],
+    ['localhost', 'localhost'],
+    ['a zone id', 'fe80::1%eth0'],
+    ['a zone id on a block', 'fe80::%1/64'],
+    ['a bracketed IPv6 address', '[2001:db8::1]'],
+    ['an address with a port', '192.0.2.7:443'],
+    ['an IPv4 address out of range', '256.0.0.1'],
+    ['an IPv4 address of three parts', '10.0.0'],
+    ['an IPv4 prefix of 33', '10.0.0.0/33'],
+    ['an IPv6 prefix of 129', '2001:db8::/129'],
+    ['a prefix with a leading zero', '10.0.0.0/08'],
+    ['a prefix of two zeros', '10.0.0.0/00'],
+    ['an empty prefix', '10.0.0.0/'],
+    ['a prefix alone', '/8'],
+    ['a negative prefix', '10.0.0.0/-1'],
+    ['a prefix with a plus sign', '10.0.0.0/+8'],
+    ['a hex prefix', '10.0.0.0/0x8'],
+    ['an exponent prefix', '10.0.0.0/1e1'],
+    ['a fractional prefix', '10.0.0.0/8.0'],
+    ['two prefixes', '10.0.0.0/8/8'],
+    ['a netmask in place of a prefix', '10.0.0.0/255.0.0.0'],
+    ['a prefix in Arabic-Indic digits', `10.0.0.0/${ARABIC_INDIC_4}`],
+    ['a good entry then a bad one', '10.0.0.0/8,proxy.internal'],
+  ];
+
+  test.each(
+    EVERY_PROFILE.flatMap(([profile, env]) =>
+      refused.map(([name, value]) => [profile, name, env, value] as const),
+    ),
+  )('%s refuses %s', (_p, _name, env, value) => {
+    expectRefused({ ...env, MR_ACCOUNT_TRUSTED_PROXY: value }, PROXY_SETTING);
+  });
+
+  test('a refused list is never repeated in the refusal', () => {
+    const marker = 'INTERNALMARKERproxyhost';
+    for (const value of [`${marker}.example`, `10.0.0.0/8,${marker}`, `203.0.113.77/33`]) {
+      for (const [, env] of EVERY_PROFILE) {
+        const error = expectRefused({ ...env, MR_ACCOUNT_TRUSTED_PROXY: value }, PROXY_SETTING);
+        expectNoLeak(error, marker);
+        expectNoLeak(error, '203.0.113.77');
+        expectNoLeak(error, value);
+      }
+    }
   });
 });
