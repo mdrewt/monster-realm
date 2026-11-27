@@ -1,6 +1,7 @@
 // net/shellDocument.ts — the shell document: what the page's host tells the client about the
-// server it should join, and whether that host is the desktop shell. The host assigns it to a page global from a classic script that runs
-// before the client module; `net/connectionConfig.ts` validates what is read here.
+// server it should join, and whether that host is the desktop shell. The host assigns it to a
+// page global from a classic script that runs before the client module;
+// `net/connectionConfig.ts` validates what is read here.
 //
 // PURE and free of `import.meta`: `vite.config.ts` imports it to write the script it serves.
 

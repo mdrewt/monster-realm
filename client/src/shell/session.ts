@@ -210,7 +210,7 @@ export function stepRankedEmit(): void {
 // A single-player world or a friends server checks a player's account itself
 // (net/worldTicket.ts). Until it has accepted the account the menu frame shows this gate, in the
 // gate mode it shows a server's sign-in gate in (ui/claimModel.ts): one row runs the check again,
-// and the store row joins it once the world has said the account does not own the game.
+// and the Store row is added once the world has said the account does not own the game.
 
 type WorldGateRow = SignInGateView['rows'][number];
 

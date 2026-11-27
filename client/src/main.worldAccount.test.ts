@@ -445,6 +445,33 @@ describe('the world account gate in the menu frame, with a ticket source', () =>
     expect(menuShown()).toBe(true);
     expect(frameTitle()).toBe(t('world.gate.moved.title'));
   });
+
+  // B on the gate puts the stays line in the frame; showing the gate afresh puts its own line back.
+  it('two batches holding the own player row leave the shown moved gate as it stands: the stays line B put up stays [lpw-24.5]', async () => {
+    const opts = await boot(LOCAL_DOC, WITH_ISSUER);
+    const { t } = await resolver();
+    opts.onReady(H.identity);
+    worldGate(opts, { kind: 'moved', movedAtMs: MOVED_AT_MS });
+    tap('Backspace');
+    expect(frameLine(), 'precondition: B shows the stays line').toBe(t('claim.gate.stays'));
+    joinWorld(opts);
+    expect(frameLine(), 'after the first batch').toBe(t('claim.gate.stays'));
+    joinWorld(opts);
+    expect(frameLine(), 'after the second batch').toBe(t('claim.gate.stays'));
+    expect(menuShown()).toBe(true);
+    expect(frameTitle()).toBe(t('world.gate.moved.title'));
+  });
+
+  it('the same batch on an unreachable gate showing the stays line lowers the gate [lpw-24.5]', async () => {
+    const opts = await boot(LOCAL_DOC, WITH_ISSUER);
+    const { t } = await resolver();
+    opts.onReady(H.identity);
+    worldGate(opts, { kind: 'unreachable' });
+    tap('Backspace');
+    expect(frameLine(), 'precondition: B shows the stays line').toBe(t('claim.gate.stays'));
+    joinWorld(opts);
+    expect(menuShown()).toBe(false);
+  });
 });
 
 // --- no source: the status line -----------------------------------------------------------------

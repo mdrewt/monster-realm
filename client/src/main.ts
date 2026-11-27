@@ -470,8 +470,8 @@ const OIDC_ISSUER = OPERATED_BY_US
   ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
   : '';
 // Sign-in is on only where OIDC_ISSUER holds an issuer: a server we operate whose build names one.
-// Off, `connect` builds no OIDC client, so no OIDC request leaves the page whatever the URL or
-// storage holds.
+// Off, `connect` builds no OIDC client and sends no account token: the one sign-in a page can
+// still make is for a world's ticket (WORLD_ACCESS below), and its token never reaches `connect`.
 const SIGN_IN_MODE: SignInMode = OIDC_ISSUER === '' ? 'off' : 'oidc';
 const SIGN_IN_OFFER = signInOffer(
   OIDC_ISSUER,

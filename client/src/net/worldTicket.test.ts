@@ -159,6 +159,14 @@ const NAME_ROWS: readonly NameRow[] = [
     undefined,
   ],
   ['local wss [::2] with a fingerprint', 'local', 'wss://[::2]/', FP, undefined],
+  [
+    'local wss 127.evil.example with a fingerprint',
+    'local',
+    'wss://127.evil.example/',
+    FP,
+    undefined,
+  ],
+  ['local https localhost with a fingerprint', 'local', 'https://localhost/', FP, undefined],
   // private over wss: dns or ip, the port always written.
   ['private wss dns', 'private', 'wss://play.example/', undefined, `dns:play.example:443/${DB}`],
   [
@@ -256,6 +264,12 @@ describe('createIdTokenTicketSource: ticket()', () => {
     expect(p.headers.get('authorization')).toBe('Bearer idToken-A');
     expect(p.headers.get('content-type')).toBe('application/json');
     expect(p.body).toBe(JSON.stringify({ world: WORLD }));
+    const init: object = fetch.mock.calls[0]?.[1] ?? {};
+    expect(Reflect.ownKeys(init).map(String).sort(), 'the init holds nothing else').toEqual([
+      'body',
+      'headers',
+      'method',
+    ]);
   });
 
   it.each([
@@ -439,7 +453,97 @@ describe('createIdTokenTicketSource: ticket()', () => {
     const source = createIdTokenTicketSource(host, { issuer: ISSUER, oidc: makeOidc([OK_A]) });
     expect(await source.ticket(WORLD)).toStrictEqual({ kind: 'unreachable' });
   });
+
+  // --- the deadline: the host's setTimeout, a hand-rolled recorder fired by the test ---------
+
+  it('ticket() registers one timer of 15000 ms on the host [lpw-24.3]', async () => {
+    const { source, timer } = timedSetup();
+    void source.ticket(WORLD);
+    await flush();
+    expect(timer).toHaveBeenCalledTimes(1);
+    expect(typeof timer.mock.calls[0]?.[0]).toBe('function');
+    expect(timer.mock.calls[0]?.[1]).toBe(15000);
+  });
+
+  it('a fetch that never settles leaves ticket() pending until the host timer fires, then resolves unreachable [lpw-24.3]', async () => {
+    const { source, fetch, fire } = timedSetup();
+    const outcome = source.ticket(WORLD);
+    expect(await settledOrPending(outcome), 'pending before the timer').toBe(PENDING);
+    expect(fetch, 'precondition: the request went out').toHaveBeenCalledTimes(1);
+    fire();
+    expect(await outcome).toStrictEqual({ kind: 'unreachable' });
+  });
+
+  it('a renewal that never settles leaves ticket() pending until the host timer fires, then resolves unreachable [lpw-24.3]', async () => {
+    const { source, fetch, fire } = timedSetup({
+      renewOrExchange: () => new Promise<RenewalOutcome>(() => {}),
+    });
+    const outcome = source.ticket(WORLD);
+    expect(await settledOrPending(outcome), 'pending before the timer').toBe(PENDING);
+    fire();
+    expect(await outcome).toStrictEqual({ kind: 'unreachable' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('an answer that settles before the host timer fires wins, and the timer firing afterwards changes nothing [lpw-24.3]', async () => {
+    const { source, fetch, oidc, fire } = timedSetup({
+      fetch: async () => reply(200, { ticket: TICKET }),
+    });
+    const outcome = source.ticket(WORLD);
+    expect(await outcome).toStrictEqual({ kind: 'ticket', ticket: TICKET });
+    fire();
+    await flush();
+    expect(await outcome).toStrictEqual({ kind: 'ticket', ticket: TICKET });
+    expect(await source.ticket(WORLD), 'the next call').toStrictEqual({
+      kind: 'ticket',
+      ticket: TICKET,
+    });
+    expect(oidc.renewOrExchange, 'the held token survives the timer').toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('with no setTimeout on the host, a fetch that never settles leaves ticket() pending past 15000 ms of the page clock [lpw-24.3]', async () => {
+    vi.useFakeTimers();
+    try {
+      const { source } = timedSetup({ timer: false });
+      const outcome = source.ticket(WORLD);
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(await Promise.race([outcome, Promise.resolve(PENDING)])).toBe(PENDING);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
+const PENDING = Symbol('pending');
+
+/** `p`'s value once queued work has run, or PENDING while it is unsettled. */
+async function settledOrPending<T>(p: Promise<T>): Promise<T | typeof PENDING> {
+  await flush();
+  return Promise.race([p, Promise.resolve(PENDING)]);
+}
+
+type TimerFn = (callback: () => void, ms?: number) => unknown;
+
+/** A ticket source over a host whose `setTimeout` records each timer (`timer: false` leaves it
+ *  out), a `fetch` that never settles unless one is given, and one `ok` renewal unless a
+ *  `renewOrExchange` is given. `fire` runs every recorded timer's callback. */
+function timedSetup(
+  opts: { fetch?: FetchFn; renewOrExchange?: () => Promise<RenewalOutcome>; timer?: boolean } = {},
+) {
+  const timer = vi.fn<TimerFn>(() => 1);
+  const fetch = vi.fn<FetchFn>(opts.fetch ?? (() => new Promise<Reply>(() => {})));
+  const oidc = makeOidc([OK_A]);
+  if (opts.renewOrExchange !== undefined)
+    oidc.renewOrExchange.mockImplementation(opts.renewOrExchange);
+  const location = { assign: vi.fn() };
+  const host = opts.timer === false ? { fetch, location } : { fetch, location, setTimeout: timer };
+  const source = createIdTokenTicketSource(host, { issuer: ISSUER, oidc });
+  const fire = (): void => {
+    for (const [callback] of timer.mock.calls) callback();
+  };
+  return { source, fetch, oidc, timer, fire };
+}
 
 // ---------------------------------------------------------------------------
 // createIdTokenTicketSource: signIn()

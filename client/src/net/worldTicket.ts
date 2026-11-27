@@ -33,6 +33,7 @@ export interface WorldTarget {
 }
 
 const TLS_SCHEME = 'wss:';
+const PLAIN_SCHEME = 'ws:';
 const DEFAULT_TLS_PORT = '443';
 // A dotted IPv4 address as the URL parser writes one.
 const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
@@ -66,18 +67,24 @@ export function worldNameFor(target: WorldTarget): string | undefined {
   }
   const address = url.hostname.startsWith('[') || IPV4.test(url.hostname);
   const host = address ? url.hostname : url.hostname.replace(/\.$/, '');
+  const tls = url.protocol === TLS_SCHEME;
   if (kind === 'local') {
-    return fingerprint !== undefined && isLoopback(host) ? `spki:${fingerprint}/${db}` : undefined;
+    const named = fingerprint !== undefined && isLoopback(host);
+    return named && (tls || url.protocol === PLAIN_SCHEME)
+      ? `spki:${fingerprint}/${db}`
+      : undefined;
   }
-  if (url.protocol !== TLS_SCHEME) return undefined;
+  if (!tls) return undefined;
   const port = url.port === '' ? DEFAULT_TLS_PORT : url.port;
   return `${address ? 'ip' : 'dns'}:${host}:${port}/${db}`;
 }
 
-/** The host a ticket source reaches: `fetch` for the ticket route, `location` for the sign-in. */
+/** The host a ticket source reaches: `fetch` for the ticket route, `location` for the sign-in,
+ *  and `setTimeout` for the time it gives the account service to answer. */
 export interface TicketHost {
   readonly fetch?: unknown;
   readonly location?: unknown;
+  readonly setTimeout?: unknown;
 }
 
 export interface IdTokenTicketSourceOptions {
@@ -90,6 +97,9 @@ const TICKET_ROUTE = '/ticket';
 /** A ticket is 32 random bytes as unpadded base64url. */
 const TICKET = /^[A-Za-z0-9_-]{43}$/;
 const STATUS_UNAUTHORIZED = 401;
+/** How long a ticket may take, sign-in renewal included, before the service counts as out of
+ *  reach. A request that never answers would otherwise leave the player with no gate at all. */
+const TICKET_DEADLINE_MS = 15_000;
 
 /** What one request to the ticket route gave: a ticket, a token it does not take, or nothing. */
 type Posted = { readonly ticket: string } | 'token-refused' | 'none';
@@ -124,26 +134,37 @@ export function createIdTokenTicketSource(
     return typeof ticket === 'string' && TICKET.test(ticket) ? { ticket } : 'none';
   }
 
-  return {
-    async ticket(world) {
-      try {
-        // Two rounds at most: a held token the route refuses is renewed once.
-        for (let round = 0; round < 2; round += 1) {
-          if (idToken === undefined) {
-            const renewed = await oidc.renewOrExchange();
-            if (renewed.kind === 'transient-error') return { kind: 'unreachable' };
-            if (renewed.kind !== 'ok') return { kind: 'sign-in-needed' };
-            idToken = renewed.token;
-          }
-          const posted = await post(idToken, world);
-          if (posted === 'none') return { kind: 'unreachable' };
-          if (posted !== 'token-refused') return { kind: 'ticket', ticket: posted.ticket };
-          idToken = undefined;
+  async function ask(world: string): Promise<TicketOutcome> {
+    try {
+      // Two rounds at most: a held token the route refuses is renewed once.
+      for (let round = 0; round < 2; round += 1) {
+        if (idToken === undefined) {
+          const renewed = await oidc.renewOrExchange();
+          if (renewed.kind === 'transient-error') return { kind: 'unreachable' };
+          if (renewed.kind !== 'ok') return { kind: 'sign-in-needed' };
+          idToken = renewed.token;
         }
-        return { kind: 'sign-in-needed' };
-      } catch {
-        return { kind: 'unreachable' };
+        const posted = await post(idToken, world);
+        if (posted === 'none') return { kind: 'unreachable' };
+        if (posted !== 'token-refused') return { kind: 'ticket', ticket: posted.ticket };
+        idToken = undefined;
       }
+      return { kind: 'sign-in-needed' };
+    } catch {
+      return { kind: 'unreachable' };
+    }
+  }
+
+  return {
+    ticket(world) {
+      const asked = ask(world);
+      const setTimer = host?.setTimeout;
+      if (typeof setTimer !== 'function') return asked;
+      // A ticket that arrives after the deadline is never presented, and lapses unspent.
+      const late = new Promise<TicketOutcome>((resolve) => {
+        setTimer(() => resolve({ kind: 'unreachable' }), TICKET_DEADLINE_MS);
+      });
+      return Promise.race([asked, late]);
     },
 
     async signIn() {

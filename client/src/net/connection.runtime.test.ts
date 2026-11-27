@@ -5449,6 +5449,35 @@ describe('connect(): the world account gate', { sequential: true }, () => {
     expect(tickets.ticket).not.toHaveBeenCalled();
   });
 
+  it('after a join refused with "ownership required" for a known identity with no world source, the rebuilt snapshot joins again [lpw-24.4]', async () => {
+    const { opts } = wgOpts('local', { world: undefined, onAccountRequired: vi.fn() });
+    await wgBoot(opts, { account: [wgAccount()] }, wgRejectOwnership);
+    expect(opts.onOwnershipRefused, 'precondition: the refusal').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0, { account: [wgAccount()] });
+    expect(b1.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+  });
+
+  it('after a join refused with "ownership required" for an unknown identity with no world source, the rebuilt snapshot joins again [lpw-24.3]', async () => {
+    const { opts, events } = wgOpts('local', { world: undefined, onAccountRequired: vi.fn() });
+    await wgBoot(opts, {}, wgRejectOwnership);
+    expect(events, 'precondition: the refusal').toEqual([{ kind: 'unreachable' }]);
+    const b1 = await wgReconnect(0);
+    expect(b1.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(events).toEqual([{ kind: 'unreachable' }]);
+  });
+
+  it('after a join refused with "ownership required" toward an official target, the rebuilt snapshot sends no join and reports the account required [lpw-24.8]', async () => {
+    const { opts } = wgOpts('official', { onAccountRequired: vi.fn() });
+    await wgBoot(opts, {}, wgRejectOwnership);
+    expect(opts.onOwnershipRefused, 'precondition: the refusal').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0);
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(1);
+  });
+
   // --- moved ----------------------------------------------------------------------------------
 
   it('an own my_world_move row in the snapshot reports moved once with its time, even when its insert callback follows, and neither joins nor asks for a ticket [lpw-24.5]', async () => {
@@ -5504,15 +5533,65 @@ describe('connect(): the world account gate', { sequential: true }, () => {
     expect(b.joinGame).toHaveBeenCalledTimes(1);
   });
 
+  it('an own my_world_move row inserted on a build a rebuild replaced reports nothing; the live build`s insert reports it [lpw-24.5]', async () => {
+    const { opts, events } = wgOpts('local');
+    const { b } = await wgBoot(opts, { account: [wgAccount()] });
+    const b1 = await wgReconnect(0, { account: [wgAccount()] });
+    expect(b1.joinGame, 'precondition: the rebuilt build joined').toHaveBeenCalledTimes(1);
+    const move = wgMove(1_700_000_200_000n);
+    wgFireMove(b, move);
+    await wgFlush();
+    expect(events, 'the replaced build reports nothing').toEqual([]);
+    wgFireMove(b1, move);
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'moved', movedAtMs: 1_700_000_200_000 }]);
+  });
+
   // --- once per connect(), and checkIn() ------------------------------------------------------
 
-  it('the automatic first contact runs once per connect(): a rebuilt snapshot that still finds neither row reports sign-in-needed and asks nothing, until checkIn() [lpw-24.1]', async () => {
+  it('the automatic first contact runs once per connect(): after it reported unreachable, a rebuilt snapshot that still finds neither row reports unreachable again and asks nothing, until checkIn() [lpw-24.1]', async () => {
     const { opts, tickets, events } = wgOpts('local');
     tickets.ticket.mockResolvedValue({ kind: 'unreachable' });
     const { handle } = await wgBoot(opts);
     expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'unreachable' }]);
     const b1 = await wgReconnect(0);
-    expect(events).toEqual([{ kind: 'unreachable' }, { kind: 'sign-in-needed' }]);
+    expect(events).toEqual([{ kind: 'unreachable' }, { kind: 'unreachable' }]);
+    expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(1);
+    expect(b1.checkAccount).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'checkIn() runs the first contact').toHaveBeenCalledTimes(2);
+  });
+
+  it('after the automatic first contact reported refused with a reason, a rebuilt snapshot that still finds neither row reports the same reason again and asks nothing, until checkIn() [lpw-24.1]', async () => {
+    const reason = 'too many account checks this minute; try again shortly';
+    const { opts, tickets, events } = wgOpts('local');
+    const { handle } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockResolvedValue({ err: reason });
+    });
+    expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'refused', reason }]);
+    const b1 = await wgReconnect(0);
+    expect(events).toEqual([
+      { kind: 'refused', reason },
+      { kind: 'refused', reason },
+    ]);
+    expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(1);
+    expect(b1.checkAccount).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'checkIn() runs the first contact').toHaveBeenCalledTimes(2);
+    expect(b1.checkAccount.mock.calls).toEqual([[{ ticket: WG_TICKET }]]);
+  });
+
+  it('after the automatic first contact ended entitled, a rebuilt snapshot that finds neither row reports sign-in-needed and asks nothing, until checkIn() [lpw-24.1]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    const { handle, b } = await wgBoot(opts);
+    expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'entitled' }]);
+    expect(b.joinGame, 'precondition: the entitled identity joined').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0);
+    expect(events).toEqual([{ kind: 'entitled' }, { kind: 'sign-in-needed' }]);
     expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(1);
     expect(b1.checkAccount).not.toHaveBeenCalled();
     expect(b1.joinGame).not.toHaveBeenCalled();
@@ -5534,6 +5613,69 @@ describe('connect(): the world account gate', { sequential: true }, () => {
     expect(events).toEqual([{ kind: 'sign-in-needed' }, { kind: 'sign-in-needed' }]);
     expect(tickets.signIn).toHaveBeenCalledTimes(1);
     expect(order).toEqual(['gate:sign-in-needed', 'gate:sign-in-needed', 'signIn']);
+  });
+
+  it('checkIn() answered sign-in-needed whose sign-in does not start reports sign-in-needed, then unreachable [lpw-24.3]', async () => {
+    const { opts, tickets, events, order } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    tickets.signIn.mockImplementation(() => {
+      order.push('signIn');
+      return Promise.resolve(false);
+    });
+    const { handle } = await wgBoot(opts);
+    expect(events, 'precondition: the automatic contact').toEqual([{ kind: 'sign-in-needed' }]);
+    handle.checkIn();
+    await wgFlush();
+    expect(events).toEqual([
+      { kind: 'sign-in-needed' },
+      { kind: 'sign-in-needed' },
+      { kind: 'unreachable' },
+    ]);
+    expect(order).toEqual([
+      'gate:sign-in-needed',
+      'gate:sign-in-needed',
+      'signIn',
+      'gate:unreachable',
+    ]);
+  });
+
+  it('a checkIn() while the sign-in a checkIn() started is pending asks the source nothing; once it settled, checkIn() asks again [lpw-24.5]', async () => {
+    const { opts, tickets } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    const signing = wgDeferred<boolean>();
+    tickets.signIn.mockImplementation(() => signing.promise);
+    const { handle } = await wgBoot(opts);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.signIn, 'precondition: the sign-in is pending').toHaveBeenCalledTimes(1);
+    expect(tickets.ticket).toHaveBeenCalledTimes(2);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'the second checkIn() asks nothing').toHaveBeenCalledTimes(2);
+    expect(tickets.signIn).toHaveBeenCalledTimes(1);
+    signing.resolve(true);
+    await wgFlush();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'settled: checkIn() asks again').toHaveBeenCalledTimes(3);
+  });
+
+  it('a sign-in started by checkIn() that resolves false after the link dropped reports nothing more [lpw-24.5]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    const signing = wgDeferred<boolean>();
+    tickets.signIn.mockImplementation(() => signing.promise);
+    const { handle, b } = await wgBoot(opts);
+    handle.checkIn();
+    await wgFlush();
+    expect(events, 'precondition: both contacts reported').toEqual([
+      { kind: 'sign-in-needed' },
+      { kind: 'sign-in-needed' },
+    ]);
+    b.onDisconnect?.();
+    signing.resolve(false);
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'sign-in-needed' }, { kind: 'sign-in-needed' }]);
   });
 
   it('a checkIn() while a checkIn() first contact is pending asks the source nothing; once it settled, checkIn() asks again [lpw-24.1]', async () => {
@@ -5638,6 +5780,24 @@ describe('connect(): the world account gate', { sequential: true }, () => {
     expect(events).toEqual([]);
     expect(b.joinGame).not.toHaveBeenCalled();
   });
+
+  for (const late of [{ ok: false }, { ok: true }] as const) {
+    it(`a check_account answer ${JSON.stringify(late)} of a dropped build, settling after the rebuilt build applied a snapshot with the own account row and joined, reports nothing and joins nothing [lpw-24.1]`, async () => {
+      const { opts } = wgOpts('local');
+      const answer = wgDeferred<unknown>();
+      const { b } = await wgBoot(opts, {}, (b0) => {
+        b0.checkAccount.mockImplementation(() => answer.promise);
+      });
+      expect(b.checkAccount, 'precondition: the procedure is pending').toHaveBeenCalledTimes(1);
+      const b1 = await wgReconnect(0, { account: [wgAccount()] });
+      expect(b1.joinGame, 'precondition: the known identity joined').toHaveBeenCalledTimes(1);
+      answer.resolve(late);
+      await wgFlush();
+      expect(opts.onWorldGate).not.toHaveBeenCalled();
+      expect(b1.joinGame).toHaveBeenCalledTimes(1);
+      expect(b.joinGame).not.toHaveBeenCalled();
+    });
+  }
 
   // --- the reconnect token --------------------------------------------------------------------
 

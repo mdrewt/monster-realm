@@ -292,9 +292,12 @@ export function connect(opts: ConnectionOptions): Connection {
   if (isWorld && tokenPersistence === 'tab') forgetDeviceToken(globalThis, opts.uri, opts.db);
   const auth = createAuthTokenGate(opts.uri, opts.db, globalThis, tokenPersistence);
   const world = isWorld ? opts.world : undefined;
-  // Whether this page has already run a first contact nobody asked for. Each one costs the
+  // Whether this page has already run a first contact nobody asked for. One can cost the
   // account a ticket, and a host that drops the link would otherwise draw one per reconnect.
   let firstContactSpent = false;
+  // What the world's gate was last told to raise by a first contact: said again on each later
+  // snapshot of an identity the world still does not know.
+  let lastRaised: WorldGateEvent = { kind: 'sign-in-needed' };
   // The build generation a first contact is in flight on, 0 for none: a rebuild frees it.
   let contactGen = 0;
   let identity = '';
@@ -894,8 +897,9 @@ export function connect(opts: ConnectionOptions): Connection {
    * A world's first contact with this identity on the raw connection `raw` (a ticket is a bearer
    * credential, so it never passes the dev reducer-arg logger): the world checks the account, and
    * an accepted one joins. `asked` is whether the player asked: only then does a source with no
-   * session start the sign-in. One runs at a time per build, and an outcome that settles after
-   * the link dropped or a newer build started reports nothing and joins nothing.
+   * session start the sign-in, and a sign-in that cannot start is reported as the service out of
+   * reach. One runs at a time per build, the sign-in's start included, and an outcome that
+   * settles after the link dropped or a newer build started reports nothing and joins nothing.
    */
   function runFirstContact(raw: DbConnection, asked: boolean): void {
     if (world === undefined || contactGen === buildGen) return;
@@ -908,26 +912,40 @@ export function connect(opts: ConnectionOptions): Connection {
       world: world.name,
       check: (ticket) => raw.procedures.checkAccount({ ticket }),
       live,
-    }).then((outcome) => {
-      if (contactGen === gen) contactGen = 0;
-      if (outcome.kind === 'superseded' || !live()) return;
-      if (outcome.kind === 'entitled' || outcome.kind === 'no-check') {
-        // A build that checks no account answers the join itself.
-        if (outcome.kind === 'entitled') opts.onWorldGate?.(outcome);
-        if (current !== undefined) attemptJoin(current, name, opts.onError);
-        return;
-      }
-      opts.onWorldGate?.(outcome);
-      if (asked && outcome.kind === 'sign-in-needed') void tickets.signIn();
-    });
+    })
+      .then(async (outcome) => {
+        if (outcome.kind === 'superseded' || !live()) return;
+        if (outcome.kind === 'entitled' || outcome.kind === 'no-check') {
+          // A build that checks no account answers the join itself.
+          if (outcome.kind === 'entitled') {
+            lastRaised = { kind: 'sign-in-needed' };
+            opts.onWorldGate?.(outcome);
+          }
+          if (current !== undefined) attemptJoin(current, name, opts.onError);
+          return;
+        }
+        const raise = (event: WorldGateEvent): void => {
+          lastRaised = event;
+          opts.onWorldGate?.(event);
+        };
+        raise(outcome);
+        if (asked && outcome.kind === 'sign-in-needed' && !(await tickets.signIn()) && live()) {
+          raise({ kind: 'unreachable' });
+        }
+      })
+      .catch((err) => console.error('[net] world gate handler threw', err))
+      .finally(() => {
+        if (contactGen === gen) contactGen = 0;
+      });
   }
 
   /** Issue joinGame through a WRAPPED connection — the ONE join path (onApplied, the
    *  cancel-deletion re-join, and join() for the claim flow). Extracted ONCE:
    *  devLog builds a fresh Proxy per call, so an inline re-wrap double-logs every reducer call.
    *  The server's ownership refusal turns `accountRequired` on and goes to onOwnershipRefused,
-   *  whichever of them asked; toward a `local` or `private` world it goes to the world's gate
-   *  instead, unless the world knows the identity and this client has no ticket source. */
+   *  whichever of them asked. A `local` or `private` world's refusal turns nothing on and goes to
+   *  the world's gate, or to onOwnershipRefused when the world knows the identity and this client
+   *  has no ticket source. */
   function attemptJoin(
     conn: DbConnection,
     name: string,
@@ -943,7 +961,8 @@ export function connect(opts: ConnectionOptions): Connection {
         if (isWorld) {
           // A world entitles an identity by its account row alone. With no row the account was
           // never checked, which is not the same as not owning the game: the first visit needs
-          // the account service. Neither answer withholds a later join.
+          // the account service. A world's refusal never turns `accountRequired` on: the world
+          // asks about a known account again by itself, so the next snapshot's join finds out.
           const raw = current === undefined ? undefined : rawConnectionOf.get(current);
           if (raw === undefined || !worldKnowsIdentity(raw)) {
             opts.onWorldGate?.({ kind: 'unreachable' });
@@ -953,8 +972,9 @@ export function connect(opts: ConnectionOptions): Connection {
             opts.onWorldGate?.({ kind: 'not-entitled' });
             return;
           }
+        } else {
+          accountRequired = true;
         }
-        accountRequired = true;
         opts.onOwnershipRefused?.();
         return;
       }
@@ -1168,7 +1188,8 @@ export function connect(opts: ConnectionOptions): Connection {
               // are in the cache of `conn` by now as the own account row below is. A character
               // that plays under another identity sends nothing. A world that does not know
               // this identity checks the account before the join, when a ticket can be had: the
-              // page's first such snapshot asks by itself, a later one waits for `checkIn`.
+              // page's first such snapshot asks by itself, a later one says again what the gate
+              // was last told and waits for `checkIn`.
               const entry = isWorld
                 ? worldEntryFor({ known: worldKnowsIdentity(conn), movedAtMs: ownMoveTime(conn) })
                 : undefined;
@@ -1176,7 +1197,7 @@ export function connect(opts: ConnectionOptions): Connection {
                 reportMove(entry.movedAtMs);
               } else if (entry?.kind === 'first-contact' && world !== undefined) {
                 if (firstContactSpent) {
-                  opts.onWorldGate?.({ kind: 'sign-in-needed' });
+                  opts.onWorldGate?.(lastRaised);
                 } else {
                   firstContactSpent = true;
                   runFirstContact(c, false);
