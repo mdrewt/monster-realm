@@ -197,8 +197,10 @@ Supporting modules have no reducers: `schema` (tables, views, the data-lifecycle
 manifest), `guards` (shared validation), `marshal` (row ⇄ `game-core` conversion,
 `now_ms`), `inventory` (the single `grant_item` insert path), `content`,
 `content_cache` and `module_info` (`ensure_module_info`, the only writer of the `module_info`
-row). The checks more than one module needs are in `guards.rs`: `require_owner`,
-`is_in_ongoing_battle`, `require_not_deleting` and the battle-input validators. A module
+row). Most checks more than one module needs are in `guards.rs`: `require_owner`,
+`is_in_ongoing_battle`, `require_not_deleting` and the battle-input validators; the
+admission check is `access::require_admitted`, and the item and currency headroom rules are
+game-core's (`trading/rules.rs`). A module
 writes another module's table only through a helper that module owns: `accounts::rekey_all`,
 for example, calls each owner's `rekey_*` helper.
 
@@ -250,14 +252,15 @@ past `MAX_ITEM_STACK` or `MAX_BALANCE` is refused before anything moves (`check_
   one-shot row even when its reducer's transaction fails, and the re-arm rolls back with that
   transaction, so a failed run leaves nothing armed until the next write to the table (a
   recruit attempt for `playtest_event`; an export request or a purge for `export_bundle`),
-  `init` or `sync_content` re-arms from the table's true oldest row.
+  `init` or `sync_content` re-arms it from the table's true oldest row.
   `docs/runbooks/observability-dr.md` says how to see that state.
 
 ### Movement
 
 Movement is paced by the server, per zone. A client sends intent (`enqueue_move`,
 `set_move`, `clear_queue`) tagged with a strictly increasing `seq`. The intent lives
-in the private `move_intent` table, one row per player character: the undrained queue
+in the private `move_intent` table, one row per player character keyed by
+`character.entity_id`: the undrained queue
 (capped at `MOVE_QUEUE_CAP`) and `last_input_seq`. `guards::authorize_move` rejects a
 seq at or below that value, and the reducer then writes the queue and the new seq in
 one `move_intent` update. An accepted input reads the caller's `player` row for its
@@ -269,7 +272,7 @@ while a player's character is in it. `movement::arm_zone_tick` inserts the row w
 player enters (`join_game` for the zone it starts in, the tick's warp arm, and in the
 load-test build `dev_place_in_load_zone`) and never adds a second row for a zone. The tick that finds no player's character in its zone puts each of the zone's
 NPCs back on its home tile, Idle, writing only the rows that differ, and deletes the
-zone's row, so leaving, warping out, disconnecting and timing out all disarm the zone
+zone's row, so leaving, warping out, disconnecting, timing out and account deletion all disarm the zone
 through that one path and a world with nobody connected runs no `movement_tick`. An
 NPC's facing is left as it was: it has no authored default. A
 player in a battle is still in their zone. NPC wander reads a tick counter that is the
@@ -306,8 +309,10 @@ deletion cascade deletes the row (`movement::erase_last_position`), and during t
 period `join_game` is refused before it reads the row, so a cancelled deletion resumes like
 any other account. A guest claim re-keys the row onto the claiming account
 (`movement::rekey_last_position`), and the row counts as game data for the claim's
-destination-is-empty guard. `request_data_export` also accepts an account that has not
-joined on any connection; that export omits the saved position.
+destination-is-empty guard, so the claimed account's first join puts it where the guest
+stood. `request_data_export` also accepts an account that has not
+joined on any connection; that export omits the saved position, which the next export made
+from inside the game carries in its `character` row.
 
 `join_game` creates the `move_intent` row with the character; the last disconnect and
 the account-deletion cascade delete it with the character. A character with no intent
@@ -423,7 +428,8 @@ body is the whole security boundary.
   The second lock, or the auto-fill when the 45 s window closes (`tactics::expire_pvp_deploy`,
   `pvp_deploy_ms` in `game-core/src/tactics/tuning.rs`), calls `tactics::materialize`, which
   copies both stagings into `battle_unit` rows and flips the phase in one transaction, so no
-  unit row exists before both lock. `battle_clock` holds one row per side (a Practice
+  unit row exists before both lock and the only participant-visible deploy fact is the phase
+  flip. `battle_clock` holds one row per side (a Practice
   battle's two name one player), and both participants read both. `tactics::store` writes a
   row only when it moved, so a pre-queue or a cancel leaves nothing participant-visible.
   Forfeit is its own client-confirmed reducer (`tactics::forfeit`), not a queue entry, and
@@ -496,8 +502,8 @@ tactical battle `Ongoing`. Every close goes
 through one `finish`, idempotent against the stored row, which hands `tactics_settle::settle`
 the close kind. Forfeit, disconnect, the fourth auto-pass, Surge and adjudication all reach
 `finish` as `Close::Settled`; a PvP battle settles through `pvp::settle_pvp_battle` in
-`SideAWriteBack::HpOnly` mode, the one caller of `ranking::apply_pvp_rating`, and the
-tactical settlement pays essence to both sides with no XP and no currency. A Practice battle
+`SideAWriteBack::HpOnly` mode, the one caller of `ranking::apply_pvp_rating`, and for a PvP
+battle the settlement pays essence to both sides, with no XP and no currency. A Practice battle
 is neither rated nor paid. Settlement (design §7): the reward ledger is a fold of the persisted
 transcript — each `Ko` is credited through `game_core::tactics::rewards::on_unit_defeated` to
 the attacker of the last opposite-side hit on the victim, against the board as it stood at

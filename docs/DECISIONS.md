@@ -184,9 +184,9 @@ content struct built from a table row (a rule takes the values it reads).
 
 **Decision.** The server module is split into domain modules, each owning its reducers and
 the tables it writes. A reducer validates the caller (`ctx.sender()`) and the request, calls
-`game-core`, and writes tables. A check that more than one module needs lives once, among the
-shared guards. A module writes only its own tables; a write into another module's table goes
-through a helper the owning module provides.
+`game-core`, and writes tables. A check that more than one module needs lives once, in one shared
+helper, never copied per module. A module writes only its own tables; a write into another module's
+table goes through a helper the owning module provides.
 
 **Why.** Reducers are the only writers and the only trust boundary. Keeping them thin keeps every
 rule testable without a database, and keeping guards in one place stops PvE and PvP paths from
@@ -255,9 +255,9 @@ and at `init` and `sync_content`. The client subscribes `profile` joined to `lea
 its own row, ranks the rows it holds, and shows its own row marked `100+` when it is not a member.
 
 **Why.** A whole-table `profile` subscription sent every profile to every joining client. Measured
-2026-11-16 at 50,002 profiles: 2,440,223 bytes against 5,041 for the join and the own row,
-and about 7.5 ms of reducer thread per rescan. The membership is an invariant recomputed from
-`profile`, not an incremental guess, and display data stays in `profile`, so a rename or a
+2026-11-16: 2,440,223 bytes at 50,002 profiles against 5,041 for the join and the own row, and
+about 7.5 ms of reducer thread per rescan at 50,000. The membership is an invariant recomputed
+from `profile`, not an incremental guess, and display data stays in `profile`, so a rename or a
 tombstone needs no second write; profile writes come at human rates. Names compare by UTF-16 code
 units because the client ranks the rows it holds with JavaScript's `<`, and the two orders must
 agree at the 100th place. The client holds no profile below the top 100, so a true rank there
@@ -284,40 +284,41 @@ only `battle_summary` and `player_formation` are exported, with the other side's
 per-side columns null, as the `battle` export treats the other participant.
 
 **Why.** Whether a READY plan exists is the one fact an opponent could act on (design §6.3), and
-the summary's whole-battle columns move only when a step the participants watched executes, so not
-even a mid-battle export shows one. The seed replays every roll; a wild's seed rebuilds a recruited
-wild. A roster seen before both locks would let a player deploy against it, and the anchor keeps
-both rosters because the settlement writes HP back from them by position, so the read path hides
-them. The opponent's clock is match state, not a secret. The queue and staging are secrets while
-a battle runs and gone after it, and transcripts are deleted 24 h after it, so an export would
-copy nothing durable of them; the summary and the formation are game state the export scope rule
-includes (operator, monster-realm#755). A wild unit has no owner, so no index can key unit rows
-and they are reached through their battle. Still revealed, and accepted: a PvP battle closed while
-Deploying is returned as stored, the emptied side keeps its monster-id list, `player.lead_level` is
-public, and a `QueueVoided` after a KO, a turn skip or the battle's end shows that a plan existed.
+the summary's whole-battle columns move only when a step the participants watched executes or the
+battle closes, so not even a mid-battle export shows one. The seed replays every roll; a wild's
+seed rebuilds a recruited wild. A roster seen before both locks would let a player deploy against
+it, and the anchor keeps both rosters because the settlement writes HP back from them by position,
+so the read path hides them. The opponent's clock is match state, not a secret. The queue and
+staging are secrets while a battle runs and gone after it, and transcripts are deleted 24 h after
+it, so an export would copy nothing durable of them; the summary and the formation are game state
+an owner-keyed index query on an existing table provides, so the export scope rule includes them
+(operator, monster-realm#755). A wild unit has no owner, so no index can key unit rows and they are
+reached through their battle. Still revealed, and accepted: a PvP battle closed while Deploying is
+returned as stored, the emptied side keeps its monster-id list, `player.lead_level` is public, and
+a `QueueVoided` after a KO, a turn skip or the battle's end shows that a plan existed.
 
 **Rules out.** A ready, queued or lock flag on `battle_unit` or `battle_tactical`; writing one
-side's units at its own lock; emptying the stored anchor's teams while Deploying; a view over the
-seed, the wild units or the summary, or one taking an identity argument; an exporter for any other
-tactical table; exporting the other side's identity or per-side columns; a summary column that
-moves while a plan waits, unless the export redacts it; an erase step that finds unit rows by owner
-or tactical rows only through the anchor (wild units have no owner, and the reaper's first step can
-delete an ongoing wild anchor before the sweep runs); settling a tactical anchor through the 1v1
-write-back (its side-A XP and currency grant is the asymmetry design §7 removes); a second caller
-of the rating update.
+side's units at its own lock; emptying the stored anchor's teams while Deploying (the reveal would
+have to rebuild them from the monster rows); a view over the seed, the wild units or the summary,
+or one taking an identity argument; an exporter for any other tactical table; exporting the other
+side's identity or per-side columns; a summary column that moves while a plan waits, unless the
+export redacts it; an erase step that finds unit rows by owner or tactical rows only through the
+anchor (wild units have no owner, and the reaper's first step can delete an ongoing wild anchor
+before the sweep runs); settling a tactical anchor through the 1v1 write-back (its side-A XP and
+currency grant is the asymmetry design §7 removes); a second caller of the rating update.
 
 Views, deploy, settlement and the erase step: `ARCHITECTURE.md` "Schema and privacy model".
 
 ## Movement intent is private; the tick publishes it
 
 **Decision.** A player's movement intent (the undrained queue and the monotonic seq guard) is
-stored in the private `move_intent` table, one row per character. The intent reducers, and a battle
-start emptying the queue, write that row and touch no public row. The zone's `movement_tick` is the
-only writer of the published queue and ack on the `character` row: it copies the private pair there
-in the update that carries the position, writes the row only when something changed, and publishes
-whenever the private pair differs from the published one, so the owner learns of every accepted
-input within one tick. There is no view and no extra subscription; the owner reads the queue and
-the ack from its own `character` row.
+stored in the private `move_intent` table, one row per player character. The intent reducers, and a
+battle start emptying the queue, write that row and touch no public row. The zone's `movement_tick`
+is the only writer of the published queue and ack on the `character` row: it copies the private
+pair there in the update that carries the position, writes the row only when something changed, and
+publishes whenever the private pair differs from the published one, so the owner learns of every
+accepted input within one tick. There is no view and no extra subscription; the owner reads the
+queue and the ack from its own `character` row.
 
 **Why.** A public row written per input is delivered to every subscriber of the table, so the
 deliveries grow with the square of the players walking. With intent private, a walking character
@@ -336,20 +337,22 @@ The intent row's lifecycle and the publish step: `ARCHITECTURE.md` "Movement".
 
 ## An empty zone does no work; no state depends on a tick having run
 
-**Decision.** A zone's `movement_tick` is scheduled only while a player's character is in the zone:
-entering arms it, and the tick that finds no player's character resets the zone's ambient state and
-removes its own schedule row, so every way of leaving ends in that one path a tick later. State
+**Decision.** A zone's `movement_tick` is scheduled only while a player's character is in
+the zone: entering arms it, and the tick that finds no player's character resets the zone's
+ambient state and removes its own schedule row, so every way of leaving (walking out through a
+warp, disconnecting, timing out, account deletion) ends in that one path a tick later. State
 is of three kinds. **Ambient** state, what the world does by itself and no player would miss
 (today NPC wander), is frozen while the zone is empty and reset to its authored default as it
 empties. **Player-caused** state (a quest step, an item taken, a purchase) is never reset and
 needs no tick. **Time-driven** state (a respawn, a restock, a growth timer) is stored as a time
-or a deadline and computed from elapsed time when next read. In a world with nobody connected no
-`movement_tick` runs, and the one schedule that keeps running is the 60 s heartbeat, which writes
-no row: every reaper is a one-shot armed when something is owed, and one that bounds a table holds
-at most one row, at the oldest row's expiry, re-armed no sooner than its fixed delay. Decided, not
-built (lpw-26, designed and measured in `docs/refactors/idle-tick.md`): an NPC's step is written
-once, at rest, and the interval row stays; removing the ticks that move nothing waits on the
-operator and, if built, rewrites this entry.
+or a deadline and computed from elapsed time when next read. In a world with nobody connected
+no `movement_tick` runs, and the one schedule that keeps running is the 60 s heartbeat, which
+writes no row: every reaper is a one-shot armed when something is owed, and one that bounds a
+table by age holds at most one row, at the oldest row's expiry, re-armed no sooner than its fixed
+delay. Decided, not built (lpw-26, designed and measured in `docs/refactors/idle-tick.md`): an
+NPC's step is written once, at rest, and the interval row stays, with nothing else about the tick
+changed; removing the ticks that move nothing waits on the operator and, if built, rewrites this
+entry.
 
 **Why.** The same module runs on a player's own machine and on the official server. A tick for
 every zone costs reducer-thread time and wake-ups in proportion to the zones, and a commit-log
@@ -360,11 +363,13 @@ does not draw it. One disarm path, driven by the tick, means a new way of leavin
 disarm. The heartbeat is the operator's dead-man's switch: its log line says the module is alive
 when nobody plays, and the alerting treats ten minutes without module log bytes as a stalled log
 pipeline. A table's oldest row already says when its next reap is due, so a periodic sweep with
-nothing due is a call that does nothing; the delay keeps a burst of inserts (a run is a scan and
-sort of the whole table) from coming back seven days later as one run each, and a row is still
-reaped within one delay of its expiry. On SpacetimeDB 2.16.1 a transaction that writes no row adds
+nothing due is a call that does nothing; the delay keeps a burst of inserts (a playtest run is
+a scan and sort of the whole table; for the export reaper's bounded read the delay bounds the
+transaction count) from coming back seven days later as one run each, and a row is still reaped
+within one delay of its expiry. On SpacetimeDB 2.16.1 a transaction that writes no row adds
 nothing to the commit log and sends nothing, so an idle player's log cost is the wandering NPC's
-row written twice a step, and writing it once halves it. The operator asked for the ticks that move
+row written twice a step, and writing it once halves it. What the empty ticks still cost is a small
+share of one thread for each zone with a player at rest. The operator asked for the ticks that move
 nothing to go (disk, bandwidth, reducer thread), but removing them adds a table, a reducer and a
 row lifecycle whose failed opening tick leaves a zone waiting for a key press. Keeping them, and a
 reduced-motion step drawn with no walking frame, are defaults the operator may overrule.
@@ -374,14 +379,14 @@ tick, an effect that expires after N ticks of an unwatched zone); elapsed-time c
 is entered; a second schedule row for a zone; disarming from the paths that remove a character
 instead of from the tick; resetting anything a player caused; arming every zone at `init` or
 `sync_content`; an interval schedule for a reaper, or a periodic re-check after a failed run (it
-would ride the heartbeat, which is to do nothing but beat; a failed run is accepted to wait for
-the table's next write); a schedule row for a table with nothing to reap. Under either idle-tick
-design: a one-shot row for every tick (the host deletes each in a transaction of its own and the
-next has to be inserted, which grows the idle commit log and every tick of a walk, and a failed
-tick strands its zone); a slower interval for a quiet zone (it still ticks, and swapping rows costs
-more log than it saves); an event table for position (its insert is logged like a stored row's, and
-a client that connects mid-walk is sent nothing); a wander step written twice once its single write
-has merged.
+would ride the heartbeat, which is to do nothing but beat; a failed run is accepted to wait for the
+table's next write, the same recovery the per-entity reapers have); a schedule row for a table with
+nothing to reap. Under either idle-tick design: a one-shot row for every tick (the host deletes
+each in a transaction of its own and the next has to be inserted, which grows the idle commit log
+and every tick of a walk, and a failed tick strands its zone); a slower interval for a quiet zone
+(it still ticks, and swapping rows costs more log than it saves); an event table for position
+(its insert is logged like a stored row's, and a client that connects mid-walk is sent nothing);
+a wander step written twice once its single write has merged.
 
 The arming paths, the reset and the reapers' shape: `ARCHITECTURE.md` "server-module: the
 authority".
@@ -391,10 +396,10 @@ authority".
 **Decision.** The private `battle_summary` telemetry table keeps its newest 100,000 rows by
 `battle_id`, twice the 50,000 stored accounts the official server is sized for. Older rows are
 deleted by a reaper that runs only when something is owed: the summary insert that takes the table
-over the cap arms one run if none is armed, as do `init` and `sync_content`. A run never deletes
-a row whose battle still has a `battle` or `battle_tactical` row (held: a live battle, a finished
-one whose anchor is kept, an erased account's last battle), so the table can exceed the cap by the
-held rows.
+over the cap arms one run a fixed delay out if none is armed, as do `init` and `sync_content`, so
+a database already over the cap at publish is reaped. A run never deletes a row whose battle still
+has a `battle` or `battle_tactical` row (held: a live battle, a finished one whose anchor is kept,
+an erased account's last battle), so the table can exceed the cap by the held rows.
 
 **Why.** Every battle adds a row and nothing else removes one. 100,000 rows, about three days of
 battles at 1,000 daily players, is more than the playtest's match-length and tuning reads need,
@@ -404,7 +409,7 @@ telemetry so far and write a row that is wrong. The delay batches the inserts be
 and holds the reaper, a scan and sort of the whole table (the key's accessor has no range filter
 to walk only the lowest ids), to one run per delay. A run that left only held rows does not re-arm,
 so a table held over the cap does not repeat that scan while no battle starts. A run's bound drains
-about 27 rows a second, against the official server's 0.35 battles.
+about 27 rows a second, against the 0.35 battles a second the official server is sized for.
 
 **Rules out.** An age-based TTL on `battle_summary` (the reads want a row count, not a window);
 reaping a held row; a schedule row while the table is at or below the cap; a re-arm after a run
@@ -424,17 +429,19 @@ is not exported.
 
 **Why.** With every session starting in zone 0, the spawn zone holds every player's first minutes
 and is the population peak the per-client byte budget has to survive; and a single-player world
-sent the player back to the start each time the game was opened. Saving at disconnect costs
-one row write per session; saving per step would add a private write to every step for a value
-read once. Keeping the character row across a disconnect would leave offline players standing in
-the world, visible, counted as occupying their zone and keeping its tick armed. The world spawn
-is the fallback because content guarantees it walkable and connected to the rest of the world:
-a nearest-walkable search can land behind a wall or in a pocket with no way out, and zones have
-no authored entry point; a saved tile that content invalidates is rare and costs a walk. A warp
-tile is kept because a warp's arrival tile is the tile of the warp back, so a player who has just
-changed zone stands on one; occupancy is ignored because characters block each other nowhere. An
-account in the game has no row, and its position is in its exported `character` row; an export from
-an account that never joined omits it, an accepted limit, since the client joins before it can ask.
+sent the player back to the start each time the game was opened. Saving at disconnect costs one
+row write per session; saving per step would add a private write to every step for a value read
+once. Keeping the character row across a disconnect would leave offline players standing in the
+world, visible, counted as occupying their zone and keeping its tick armed. The world spawn is
+the fallback because it is the one tile content guarantees walkable and connected to the rest
+of the world: a nearest-walkable search can land behind a wall or in a pocket with no way out,
+and zones have no authored entry point; a saved tile that content invalidates is rare and costs
+a walk. A warp tile is kept because a warp fires only on the step onto its tile, and a warp's
+arrival tile is the tile of the warp back, so a player who has just changed zone stands on one;
+occupancy is ignored because characters block each other nowhere (a move asks only whether the tile
+is walkable). An account in the game has no row, and its position is in its exported `character`
+row; an export from an account that never joined omits it, an accepted limit, since the client
+joins before it can ask and the next export from inside the game carries it.
 
 **Rules out.** Writing the saved position from the tick or a move reducer; a row for an account
 that has a character; a client-readable view of the table; restoring a position mid-session;
@@ -442,56 +449,58 @@ treating occupancy or a warp as a reason to move a resuming character; a second 
 nearest-tile search; a zone-0 assumption in anything that runs after the join (tests and tools that
 need the spawn use a new identity); arming zone 0 for a character that resumed elsewhere.
 
-Where the position is saved, consumed, erased and re-keyed: `ARCHITECTURE.md` "Movement".
+Where the position is saved, consumed, erased and re-keyed: `ARCHITECTURE.md` "server-module:
+the authority".
 
 ## World rows are subscribed by zone
 
 **Decision.** The client never subscribes `character` whole. Beside its base set, a connection
-holds one subscription set for its own character row and one per wanted zone, and one client module
-builds both query texts and decides which sets are wanted. The scope follows the authoritative
-own row, never the map being drawn: the own row's zone, plus the destination of every warp of that
-zone within four tiles of the own row's tile, so a destination's rows are held before the warp. A
-new set is subscribed before an old one is released, and a set goes only after the own zone's set
-has applied and it has stayed unwanted for 5 s. No character is drawn on a new connection until
-the own-row and own-zone sets have applied; a client with no own character row wants no zone. A
-failed own-row or own-zone set is retried in place and then ends the connection; a prefetched set
-never gates anything. `player` stays in the base set, unfiltered, as the world directory. No table,
-reducer, view or binding is involved: the queries use `character`'s primary key and its indexed
-`zone_id`, so the client works against any published module.
+holds one subscription set for its own character row and one per wanted zone. The scope follows
+the authoritative own row, never the map being drawn: the own row's zone, plus the destination of
+every warp of that zone within four tiles of the own row's tile, so a destination's rows are held
+before the warp. A new set is subscribed before an old one is released, and a set goes only after
+the own zone's set has applied and it has stayed unwanted for 5 s. A failed own-row or own-zone set
+is retried in place and then ends the connection, which costs the player the character row, not
+the place; a prefetched set never gates anything. `player` stays in the base set, unfiltered, as
+the world directory. No table, reducer, view or binding is involved: the queries use `character`'s
+primary key and its indexed `zone_id`, so the client works against any published module.
 
 **Why.** `character` is the only public table written on every step, so an unfiltered subscription
-delivers every step of every player to every client. Measured on a local host on 2026-11-12,
-every player walking: 57 KB/s per client at 500 players unscoped, against 5 KB/s in a zone of
-50 and 9.5 in a zone of 100 scoped, and walkers in another zone cost a scoped client nothing
-(2.6 KB/s beside 20 walkers, 2.5 after 100 more walk in zone 1). Without the prefetch every warp
-drew the arriving zone without its NPCs and players for 1 or 2 frames on loopback and 17 at a 300
-ms round trip; with it, only a round trip longer than the walk from the prefetch line, or a move
-into a zone by no warp, still does. `player` is written at join, leave and rename, never per step,
-so scoping it would save little and change what the Players tab lists. The own-row set keeps the
-warp path intact: while it is held, the host delivers a warp as one update of the own row (no
-insert and no delete in 3,417 measured warps), so the zone switch and the row's position, queue
-and ack arrive together as they do unscoped. The rest was measured on SpacetimeDB 2.11.0 and has
-not been measured again: the host shares a query among subscribers by its SQL text, which is why
-one module builds it; both queries are pruned by value, so a write is evaluated only against its
-own zone's and its own row's queries (2 evaluations per write at 20 and at 120 walkers); an applied
-set's rows are consistent with the updates that follow (no gap and no duplicate in 8,400 compared
-sequences), and an unsubscribe returns its rows as deletes, so the store needs no sweep; a rejected
-set fails only its own handle and subscribing inside a row callback is safe, which makes retrying
-in place possible, where a reconnect replaces the character with a new entity; and a subscribe and
-unsubscribe pair costs about 20 µs of the database thread, which the linger bounds to one pair
-per zone per 5 s for a player pacing across a door. The own-row query is the design's whole thread
-cost, about 3.4 µs a step (0.9 % of the thread at 500 walking players, 1.7 % at 1,000), inside
-the budgets it was sized for (the database thread under 50 %, a tick's p95 under the step interval,
-input round-trip p95 under 50 ms, 20 KB/s per client), and the zone query alone measures 1.6 % more
-thread share than the unfiltered subscription; if thread share binds, the next step is an own-row
-query held only until the zone's set applies. Scoping `player` waits until the directory measures
-above 1 KB/s per client or the population target passes about 5,000 concurrent players; its shape
-is a cold, zone-indexed roster with one owner module, counterparts' names read by identity, shipped
-server-first with a client fallback for older modules.
+delivers every step of every player to every client. Measured on a local host on 2026-11-12, every
+player walking: 57 KB/s per client at 500 players unscoped, against 5 KB/s in a zone of 50 and 9.5
+in a zone of 100 scoped, and walkers in another zone cost a scoped client nothing (2.6 KB/s beside
+20 walkers, 2.5 after 100 more walk in zone 1). Without the prefetch every warp drew the arriving
+zone without its NPCs and players for 1 or 2 frames on loopback and 17 at a 300 ms round trip;
+with it, only a round trip longer than the walk from the prefetch line, or a move into a zone
+by no warp, still does. `player` is written at join, leave, a rename, a lead-level change and
+account deletion, never per step, so scoping it would save little and change what the Players tab
+lists. The own-row set keeps the warp path intact: while it is held, the host delivers a warp as
+one update of the own row (no insert and no delete in 3,417 measured warps), so the zone switch
+and the row's position, queue and ack arrive together as they do unscoped. The rest was measured
+on SpacetimeDB 2.11.0, not assumed: the host shares a query among subscribers by its SQL text
+(50 clients in one zone add one zone query between them, plus 50 own-row queries), which is why
+one module builds it; both queries are pruned by value, so a write is evaluated only against
+its own zone's and its own row's queries (2 evaluations per write at 20 and at 120 walkers);
+an applied set's rows are consistent with the updates that follow (no gap and no duplicate in
+8,400 compared sequences), and an unsubscribe returns its rows as deletes, so the store needs no
+re-seeding and no sweep; a rejected set fails only its own handle and subscribing inside a row
+callback is safe, which makes retrying in place possible, where a reconnect replaces the character
+with a new entity; and a subscribe and unsubscribe pair costs about 20 µs of the database thread,
+which the linger bounds to one pair per zone per 5 s for a player pacing across a door, who also
+re-downloads nothing. The own-row query is the design's whole thread cost, about 3.4 µs a step,
+the same at 100 and at 500 walking players (0.9 % of the thread at 500 walking players, 1.7 % at
+1,000), inside the budgets it was sized for (the database thread under 50 %, a tick's p95 under
+the step interval, input round-trip p95 under 50 ms, 20 KB/s per client), and the zone query alone
+measures 1.6 % more thread share than the unfiltered subscription; if thread share binds, the next
+step is an own-row query held only until the zone's set applies and issued again if the own row is
+lost. Scoping `player` waits until the directory measures above 1 KB/s per client or the population
+target passes about 5,000 concurrent players; its shape is a cold, zone-indexed roster with one
+owner module, counterparts' names read by identity, shipped server-first with a client fallback for
+older modules.
 
 **Rules out.** A `character` query in the base set, or one with no `WHERE`; building either query's
-text anywhere but that one module; taking the zone from the drawn map or assuming one; taking the
-prefetch position from the predicted tile, or the warps from the drawn map; a prefetched zone
+text anywhere but one client module; taking the zone from the drawn map or assuming one; taking
+the prefetch position from the predicted tile, or the warps from the drawn map; a prefetched zone
 on the own zone's retry ladder or timeout, or its age or rejections as a prefetch counted once
 the player is in it; a standing subscription to every neighbouring zone; releasing the old zone
 before the new one is applied; unsubscribing on a dropped connection; drawing characters on a new
