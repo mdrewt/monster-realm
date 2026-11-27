@@ -117,6 +117,20 @@ pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
 /// The admission check of a client-callable reducer: its first statement, so an identity the
 /// rule does not admit is refused before anything is read or written on its behalf.
 pub(crate) fn require_admitted(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
+    require_admitted_under(ctx, &crate::accounts::BUILD_PROFILE, reducer)
+}
+
+/// [`require_admitted`] with the build's profile an argument. The profile is not read.
+fn require_admitted_under(
+    ctx: &ReducerContext,
+    _profile: &crate::accounts::BuildProfile,
+    reducer: &str,
+) -> Result<(), String> {
+    require_rule_admits(ctx, reducer)
+}
+
+/// Refuses an identity the access rule does not admit with [`REJECT_NOT_ADMITTED`].
+pub(crate) fn require_rule_admits(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     if is_admitted(ctx, ctx.sender()) {
         return Ok(());
     }
