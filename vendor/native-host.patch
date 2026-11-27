@@ -9,6 +9,65 @@
  mod native_link_stubs {
      use super::raw::{BytesSink, BytesSource, RowIter};
      use super::{ColId, IndexId, TableId};
+--- a/spacetimedb/src/http.rs
++++ b/spacetimedb/src/http.rs
+@@ -5,9 +5,9 @@
+ //! The [`get`](HttpClient::get) helper can be used for simple `GET` requests,
+ //! while [`send`](HttpClient::send) allows more complex requests with headers, bodies and other methods.
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+ use crate::rt::{read_bytes_source_as, read_bytes_source_into};
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+ use crate::IterBuf;
+ // Imports used only by the (still-unstable) HTTP handler machinery.
+ #[cfg(all(feature = "unstable", feature = "rand08"))]
+@@ -17,7 +17,7 @@
+ use bytes::Bytes;
+ #[cfg(all(feature = "rand08", feature = "unstable"))]
+ use rand08::RngCore;
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+ use spacetimedb_lib::bsatn;
+ #[cfg(feature = "unstable")]
+ use spacetimedb_lib::db::raw_def::v10::MethodOrAny;
+@@ -540,7 +540,7 @@
+ 
+         match &self.backend {
+             HttpClientBackend::Host => {
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+                 {
+                     let (request, body) = request.into_parts();
+                     let request = convert_request(request);
+@@ -570,7 +570,7 @@
+                     }
+                 }
+ 
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+                 {
+                     let _ = request;
+                     Err(Error::new(
+@@ -618,7 +618,7 @@
+     }
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+ fn convert_request(parts: http::request::Parts) -> st_http::Request {
+     let http::request::Parts {
+         method,
+@@ -663,7 +663,7 @@
+     }
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+ fn convert_response(response: st_http::Response) -> http::Result<http::response::Parts> {
+     let st_http::Response { headers, version, code } = response;
+ 
 --- a/spacetimedb/src/lib.rs
 +++ b/spacetimedb/src/lib.rs
 @@ -1276,7 +1276,7 @@
@@ -29,6 +88,42 @@
          {
              panic!("ReducerContext::identity() is only available in wasm or native test-utils contexts")
          }
+@@ -1596,7 +1596,7 @@
+             self.module_identity
+         }
+ 
+-        #[cfg(target_arch = "wasm32")]
++        #[cfg(not(all(feature = "test-utils", not(target_arch = "wasm32"))))] // monster-realm: was #[cfg(target_arch = "wasm32")]
+         {
+             // Hypothetically, we *could* read the module identity out of the system tables.
+             // However, this would be:
+@@ -1609,7 +1609,7 @@
+             Identity::from_byte_array(spacetimedb_bindings_sys::identity())
+         }
+ 
+-        #[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]
++        #[cfg(any())] // monster-realm: was #[cfg(all(not(feature = "test-utils"), not(target_arch = "wasm32")))]
+         {
+             panic!("ProcedureContext::database_identity() is only available in wasm or native test-utils contexts")
+         }
+@@ -1800,7 +1800,7 @@
+             return res;
+         }
+ 
+-        #[cfg(target_arch = "wasm32")]
++        #[cfg(all())] // monster-realm: was #[cfg(target_arch = "wasm32")]
+         {
+             let abort = || {
+                 sys::procedure::procedure_abort_mut_tx()
+@@ -1859,7 +1859,7 @@
+             res
+         }
+ 
+-        #[cfg(not(target_arch = "wasm32"))]
++        #[cfg(any())] // monster-realm: was #[cfg(not(target_arch = "wasm32"))]
+         {
+             let _ = body;
+             panic!("ProcedureContext::try_with_tx() is only available in wasm or native test-utils contexts")
 --- a/spacetimedb/src/table.rs
 +++ b/spacetimedb/src/table.rs
 @@ -59,11 +59,11 @@

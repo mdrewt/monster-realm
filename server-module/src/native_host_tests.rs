@@ -21,6 +21,10 @@
 //! pass. Tests seed rows through [`Fixture::table`] / [`Fixture::table_keyed`] — never the
 //! db handle.
 //!
+//! PROCEDURES run here too: [`Fixture::run_procedure`] hands a real `ProcedureContext` to a
+//! test, with transactions that commit or roll back and every HTTP answer stubbed by the test
+//! (the PROCEDURES banner below).
+//!
 //! that actually keeps this module out of the published wasm is the compiler:
 //! any non-test reference to it fails the publish build with E0433.
 //!
@@ -800,9 +804,10 @@ impl Fixture {
 //   (insert/update collisions return UNIQUE_ALREADY_EXISTS); `Handle::auto_inc`
 //   models ONE u64 sequence column (0 is the trigger, as in
 //   `spacetimedb::table::SequenceTrigger`; the generated value is written back
-//   exactly as `table.rs` `insert`/`update` decode it). No other constraint and
-//   no transaction rollback is modelled: a reducer that errors after a write
-//   leaves that write in the store.
+//   exactly as `table.rs` `insert`/`update` decode it). No other constraint is
+//   modelled, and a reducer's transaction is not rolled back: a reducer that
+//   errors after a write leaves that write in the store. A procedure's
+//   transactions do roll back (the PROCEDURES banner).
 // * A SETTABLE CALLER. `Fixture::run_as(_at)` runs a closure inside the SHIPPED
 //   `__call_reducer__` entry point (`vendor/spacetimedb/src/rt.rs:1299`), which is
 //   the only code that builds a `ReducerContext` with a chosen sender (the
@@ -878,6 +883,19 @@ struct Model {
     jwt_conn: [u8; 16],
     jwt: Option<Vec<u8>>,
     jwt_cursor: usize,
+    /// What a procedure's open transaction started from; `None` outside one.
+    tx: Option<TxStart>,
+    /// The byte sources of a procedure's HTTP answers not yet read to the end: id -> (bytes,
+    /// read cursor). Ids count up from [`ANSWER_SOURCE_BASE`].
+    answer_sources: HashMap<u32, (Vec<u8>, usize)>,
+    answer_sources_opened: u32,
+}
+
+/// The state a procedure's transaction puts back if it aborts: every table's rows, and the
+/// write counts (a subscriber is told nothing of an aborted transaction).
+struct TxStart {
+    rows: HashMap<u32, Vec<Row>>,
+    writes: HashMap<u32, u32>,
 }
 
 impl Default for Model {
@@ -888,6 +906,9 @@ impl Default for Model {
             jwt_conn: [0; 16],
             jwt: None,
             jwt_cursor: 0,
+            tx: None,
+            answer_sources: HashMap::new(),
+            answer_sources_opened: 0,
         }
     }
 }
@@ -1111,8 +1132,7 @@ impl Fixture {
         let erased: RunAsBody =
             unsafe { std::mem::transmute(body_ref as *mut (dyn FnMut(&ReducerContext) + '_)) };
         RUN_AS_BODY.with(|slot| *slot.borrow_mut() = Some(erased));
-        let s = sender.to_byte_array();
-        let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+        let [s0, s1, s2, s3] = identity_words(sender);
         // The runtime rebuilds the id from its two words as native-endian u64s
         // read back as a LITTLE-ENDIAN byte array (`rt.rs:1340-1345`).
         let c = conn.to_le_bytes();
@@ -1123,10 +1143,10 @@ impl Fixture {
         let rc = unsafe {
             __call_reducer__(
                 0,
-                word(0),
-                word(1),
-                word(2),
-                word(3),
+                s0,
+                s1,
+                s2,
+                s3,
                 conn_word(0),
                 conn_word(1),
                 micros,
@@ -1150,6 +1170,13 @@ thread_local! {
     /// The closure [`Fixture::run_as_at`] hands to the trampoline.
     static RUN_AS_BODY: RefCell<Option<RunAsBody>> =
         const { RefCell::new(None) };
+}
+
+/// An identity as the four words the runtime's entry points take: its byte array read as
+/// native-endian `u64`s (`vendor/spacetimedb/src/rt.rs:1331`).
+fn identity_words(id: Identity) -> [u64; 4] {
+    let bytes = id.to_byte_array();
+    std::array::from_fn(|i| u64::from_ne_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap()))
 }
 
 /// `BytesSink` handles this host accepts writes to (and discards).
@@ -1606,12 +1633,10 @@ impl Fixture {
     ) -> Vec<R> {
         ensure_run_as_registered();
         VIEW_OUT.with(|b| b.borrow_mut().clear());
-        let s = sender.to_byte_array();
-        let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+        let [s0, s1, s2, s3] = identity_words(sender);
         // SAFETY: the shipped entry point; args are the INVALID (empty) source (a
         // zero-argument view), and the sink is one `bytes_sink_write` accepts.
-        let rc =
-            unsafe { __call_view__(view_id, word(0), word(1), word(2), word(3), 0, VIEW_SINK) };
+        let rc = unsafe { __call_view__(view_id, s0, s1, s2, s3, 0, VIEW_SINK) };
         assert_eq!(
             rc, 2,
             "native_host_tests: __call_view__ must answer with the header ABI (2)"
@@ -1706,11 +1731,13 @@ pub(crate) fn sorted_hexes(ids: impl IntoIterator<Item = Identity>) -> Vec<Strin
     out
 }
 
-/// Registers the trampoline and publishes `REDUCERS`, once per process.
+/// Registers the two trampolines and publishes `REDUCERS`, `PROCEDURES` and `VIEWS`, once per
+/// process.
 fn ensure_run_as_registered() {
     static READY: OnceLock<()> = OnceLock::new();
     READY.get_or_init(|| {
         spacetimedb::rt::register_reducer::<(), RunAsTrampoline>(run_as_signature);
+        spacetimedb::rt::register_procedure::<(), (), ProcedureTrampoline>(procedure_signature);
         // The shipped `#[view]` describers, in `VIEWS` order (see `call_view`). Each is
         // the `pub extern "C"` symbol the view macro exports; calling it pushes the
         // SHIPPED view fn into the module's `views` list, exactly as a host's preinit
@@ -1894,7 +1921,7 @@ unsafe extern "C" fn identity(out_ptr: *mut u8) {
     unsafe { std::ptr::copy_nonoverlapping(id.as_ptr(), out_ptr, 32) };
 }
 
-/// Accepts (and discards) writes to the two sinks this host hands out.
+/// Accepts writes to the sinks this host hands out, and keeps the describe and view bytes.
 #[no_mangle]
 unsafe extern "C" fn bytes_sink_write(
     sink: u32,
@@ -1910,7 +1937,7 @@ unsafe extern "C" fn bytes_sink_write(
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .extend_from_slice(bytes);
         0
-    } else if sink == ERROR_SINK {
+    } else if sink == ERROR_SINK || sink == PROCEDURE_SINK {
         0
     } else if sink == VIEW_SINK {
         // SAFETY: the runtime hands a valid `buffer_ptr[..*len_ptr]`.
@@ -1930,13 +1957,15 @@ unsafe extern "C" fn bytes_sink_write(
 // exactly as a client call does (`lib.rs:1216`): the first `has_jwt()` / `jwt()`
 // asks the `get_jwt` syscall for that connection, and a valid bytes source is
 // then read through `bytes_source_remaining_length` + `bytes_source_read`
-// (`rt.rs:1588-1599`, `read_bytes_source_into` at `rt.rs:1610`). This host serves ONE source, [`JWT_SOURCE`],
-// holding the claims payload the test chose; `None` answers the INVALID source,
-// which the runtime reads as "no JWT" (the anonymous player). Reducer ARGS stay
-// the INVALID source (`run_as` passes none), so no other source is ever read.
+// (`rt.rs:1588-1599`, `read_bytes_source_into` at `rt.rs:1610`). This host serves the JWT
+// through ONE source, [`JWT_SOURCE`], holding the claims payload the test chose; `None`
+// answers the INVALID source, which the runtime reads as "no JWT" (the anonymous player).
+// Reducer and procedure ARGS stay the INVALID source (`run_as` and `run_procedure` pass
+// none). The only other sources are the answers to a procedure's HTTP requests (the
+// PROCEDURES banner), which the same two syscalls serve.
 // ---------------------------------------------------------------------------
 
-/// The one bytes source this host hands out: the current connection's JWT.
+/// The bytes source of the current connection's JWT.
 const JWT_SOURCE: u32 = 0x0A57;
 
 #[no_mangle]
@@ -1945,42 +1974,68 @@ unsafe extern "C" fn bytes_source_read(
     buffer_ptr: *mut u8,
     len_ptr: *mut usize,
 ) -> i16 {
+    let mut h = host();
+    let model = &mut h.model;
+    if let Some((payload, cursor)) = model.answer_sources.get_mut(&source) {
+        // SAFETY: as for the JWT source below.
+        let exhausted = unsafe { read_source(payload, cursor, buffer_ptr, len_ptr) };
+        if exhausted {
+            model.answer_sources.remove(&source);
+            return -1;
+        }
+        return 0;
+    }
     if source != JWT_SOURCE {
         unmodelled("bytes_source_read of a source this host never handed out")
     }
-    let mut h = host();
-    let model = &mut h.model;
     let Some(payload) = model.jwt.as_ref() else {
         unmodelled("bytes_source_read of a JWT source with no payload")
     };
-    let rest = &payload[model.jwt_cursor..];
     // SAFETY: `len_ptr` is the caller's spare-capacity length and `buffer_ptr`
     // points at that many writable bytes (`read_bytes_source_into`).
-    let room = unsafe { len_ptr.read() };
-    let n = room.min(rest.len());
-    unsafe {
-        std::ptr::copy_nonoverlapping(rest.as_ptr(), buffer_ptr, n);
-        len_ptr.write(n);
-    }
-    model.jwt_cursor += n;
-    if model.jwt_cursor == payload.len() {
+    if unsafe { read_source(payload, &mut model.jwt_cursor, buffer_ptr, len_ptr) } {
         -1 // exhausted
     } else {
         0
     }
 }
 
+/// Copies as much of `payload[*cursor..]` as the caller's buffer takes, moves the cursor past
+/// it, and says whether the payload is now read to its end.
+///
+/// SAFETY: `len_ptr` holds the capacity of `buffer_ptr[..]`, both live for the call.
+unsafe fn read_source(
+    payload: &[u8],
+    cursor: &mut usize,
+    buffer_ptr: *mut u8,
+    len_ptr: *mut usize,
+) -> bool {
+    let rest = &payload[*cursor..];
+    let room = unsafe { len_ptr.read() };
+    let n = room.min(rest.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(rest.as_ptr(), buffer_ptr, n);
+        len_ptr.write(n);
+    }
+    *cursor += n;
+    *cursor == payload.len()
+}
+
 #[no_mangle]
 unsafe extern "C" fn bytes_source_remaining_length(source: u32, out: *mut u32) -> i16 {
-    if source != JWT_SOURCE {
-        unmodelled("bytes_source_remaining_length of a source this host never handed out")
-    }
     let h = host();
-    let Some(payload) = h.model.jwt.as_ref() else {
-        unmodelled("bytes_source_remaining_length of a JWT source with no payload")
+    let (payload, cursor) = match h.model.answer_sources.get(&source) {
+        Some((payload, cursor)) => (payload, *cursor),
+        None if source != JWT_SOURCE => {
+            unmodelled("bytes_source_remaining_length of a source this host never handed out")
+        }
+        None => match h.model.jwt.as_ref() {
+            Some(payload) => (payload, h.model.jwt_cursor),
+            None => unmodelled("bytes_source_remaining_length of a JWT source with no payload"),
+        },
     };
-    let rest = u32::try_from(payload.len() - h.model.jwt_cursor)
-        .expect("native_host_tests: a JWT payload fits a u32 length");
+    let rest = u32::try_from(payload.len() - cursor)
+        .expect("native_host_tests: a byte source fits a u32 length");
     // SAFETY: `out` points at the bindings' `u32` out-param.
     unsafe { out.write(rest) };
     0
@@ -2161,11 +2216,463 @@ fn nh_scannable_writable_table_scans_counts_deletes_and_clears() {
 }
 
 // ---------------------------------------------------------------------------
+// PROCEDURES. `Fixture::run_procedure` runs a closure inside the SHIPPED
+// `__call_procedure__` entry point (`vendor/spacetimedb/src/rt.rs:1395`), the only code that
+// builds a `ProcedureContext` (its constructor is private, `vendor/spacetimedb/src/lib.rs:1508`).
+// A trampoline procedure is registered beside the reducer one and is procedure 0 of the
+// fixture's definition, which therefore lists the two trampolines and no shipped procedure.
+// The closure calls the procedure under test as a plain function.
+//
+// * TRANSACTIONS. `with_tx` / `try_with_tx` reach `procedure_start_mut_tx`, which keeps every
+//   table's rows and the write counts as it found them, and then `procedure_commit_mut_tx`
+//   (the copy is dropped) or `procedure_abort_mut_tx` (both are put back). The crate aborts
+//   when the body returns `Err` and, through a drop guard, when it panics. An `#[auto_inc]`
+//   sequence is not rewound, as a real one is not, and `rows_read` keeps what it counted.
+//   Every transaction reads the run's one time: the clock does not move while a request waits.
+// * HTTP. `ctx.http.send` reaches `procedure_http_request`, which records the request in the
+//   test's `HttpQueue` and answers with the queue's next `HttpAnswer`: a status and body, or
+//   an error. Nothing leaves the process (the test binary holds no HTTP client), and the
+//   request's timeout is recorded, never enforced. The answer goes back as byte sources the
+//   runtime reads through `bytes_source_read`: the BSATN response head and the body (the
+//   INVALID source when the body is empty, as a real host answers), or the BSATN error text
+//   with the code `HTTP_ERROR`.
+// * A REQUEST WITH NO ANSWER LEFT fails the test. The host function runs inside an
+//   `extern "C"` frame, where a panic aborts the process, so it answers that request with an
+//   error and `run_procedure` panics in the test's frame once the procedure has returned. A
+//   panic inside a `while_waiting` closure is carried out the same way.
+// * NOT MODELLED: `sleep_until` (the crate still refuses it natively), a connection id or JWT
+//   on the context, request and response headers, and a failed commit.
+// ---------------------------------------------------------------------------
+
+use spacetimedb::spacetimedb_lib::http as wire;
+use spacetimedb::{ProcedureContext, TimeDuration};
+use std::any::Any;
+
+/// Who a procedure runs as. Either way `ctx.connection_id()` is `None`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Caller {
+    /// A client: `ctx.sender()` is this identity.
+    Sender(Identity),
+    /// The database itself, as a scheduled procedure runs: `ctx.sender()` is the fixture's
+    /// module identity when the run starts, which `ctx.database_identity()` also answers.
+    Database,
+}
+
+/// One HTTP request a procedure sent, as the host received it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SentRequest {
+    /// The HTTP method's own spelling: `GET`, `POST`, ...
+    pub(crate) method: String,
+    pub(crate) url: String,
+    /// Empty for a request with no body.
+    pub(crate) body: Vec<u8>,
+    /// The `http::Timeout` the request carried, or `None`. The host answers at once whatever
+    /// it says.
+    pub(crate) timeout: Option<TimeDuration>,
+}
+
+/// One stubbed answer to a procedure's HTTP request.
+pub(crate) struct HttpAnswer<'q> {
+    /// The status and body, or the text of the error `ctx.http.send` returns.
+    outcome: Result<(u16, Vec<u8>), String>,
+    while_waiting: Option<Box<dyn FnOnce() + 'q>>,
+}
+
+impl<'q> HttpAnswer<'q> {
+    /// A response with the status `code` and `body`.
+    pub(crate) fn status(code: u16, body: impl Into<Vec<u8>>) -> Self {
+        assert!(
+            (100..=999).contains(&code),
+            "native_host_tests: {code} is not an HTTP status code"
+        );
+        HttpAnswer {
+            outcome: Ok((code, body.into())),
+            while_waiting: None,
+        }
+    }
+
+    /// A request that got no response: `ctx.http.send` returns an `Err` whose text is `message`.
+    pub(crate) fn error(message: impl Into<String>) -> Self {
+        HttpAnswer {
+            outcome: Err(message.into()),
+            while_waiting: None,
+        }
+    }
+
+    /// Runs `change` while the procedure waits for this answer, before the answer is given: the
+    /// place for a test to change a row another transaction would have changed meanwhile.
+    pub(crate) fn while_waiting(mut self, change: impl FnOnce() + 'q) -> Self {
+        self.while_waiting = Some(Box::new(change));
+        self
+    }
+}
+
+/// The stubbed answers a procedure's requests get, in order, and every request it sent.
+pub(crate) struct HttpQueue<'q> {
+    answers: VecDeque<HttpAnswer<'q>>,
+    requests: Vec<SentRequest>,
+}
+
+impl<'q> HttpQueue<'q> {
+    /// A queue with no answers and no requests.
+    pub(crate) fn new() -> Self {
+        HttpQueue {
+            answers: VecDeque::new(),
+            requests: Vec::new(),
+        }
+    }
+
+    /// Adds `answer` behind the ones already queued.
+    pub(crate) fn push(&mut self, answer: HttpAnswer<'q>) -> &mut Self {
+        self.answers.push_back(answer);
+        self
+    }
+
+    /// Every request sent through this queue, oldest first, across every run it was given to;
+    /// a request that found no answer left is among them.
+    pub(crate) fn requests(&self) -> &[SentRequest] {
+        &self.requests
+    }
+}
+
+type ProcedureBody = *mut (dyn FnMut(&mut ProcedureContext) + 'static);
+
+/// What one [`Fixture::run_procedure`] call keeps while the runtime runs its body.
+struct ProcedureRun {
+    /// The closure the trampoline takes and runs.
+    body: Option<ProcedureBody>,
+    /// The time the procedure runs at; each of its transactions reads it.
+    at_micros: i64,
+    /// The test's queue.
+    http: *mut HttpQueue<'static>,
+    /// The first request that found no answer left, as `<METHOD> <url>`, and how many did.
+    unanswered: Option<String>,
+    unanswered_count: u32,
+    /// The panic of a `while_waiting` closure.
+    waiting_panic: Option<Box<dyn Any + Send>>,
+}
+
+thread_local! {
+    /// The run in progress on this thread, if any.
+    static PROCEDURE_RUN: RefCell<Option<ProcedureRun>> = const { RefCell::new(None) };
+}
+
+/// Applies `f` to the run in progress; `None` when no procedure is running.
+fn with_procedure_run<T>(f: impl FnOnce(&mut ProcedureRun) -> T) -> Option<T> {
+    PROCEDURE_RUN.with(|slot| slot.borrow_mut().as_mut().map(f))
+}
+
+/// The `BytesSink` a procedure's result is written to (and discarded: the trampoline returns
+/// nothing, and `run_procedure` hands the closure's value back itself).
+const PROCEDURE_SINK: u32 = 0x9C0C;
+
+/// A run that sends this many requests with no answer left is a retry loop that would never
+/// return, so the host stops the process instead of hanging the test.
+const UNANSWERED_LIMIT: u32 = 64;
+
+/// HTTP answer sources are numbered from here, clear of [`JWT_SOURCE`] and the INVALID `0`.
+const ANSWER_SOURCE_BASE: u32 = 0x4000_0000;
+
+unsafe extern "C" {
+    /// `vendor/spacetimedb/src/rt.rs:1395` (`#[unsafe(no_mangle)]`).
+    fn __call_procedure__(
+        id: usize,
+        sender_0: u64,
+        sender_1: u64,
+        sender_2: u64,
+        sender_3: u64,
+        conn_id_0: u64,
+        conn_id_1: u64,
+        timestamp: u64,
+        args: u32,
+        result_sink: u32,
+    ) -> i16;
+}
+
+/// The trampoline procedure's registration metadata (what `#[procedure]` would generate). Not
+/// a module procedure: this file only exists in the test binary.
+struct ProcedureTrampoline;
+
+impl spacetimedb::rt::ExplicitNames for ProcedureTrampoline {}
+
+impl spacetimedb::rt::FnInfo for ProcedureTrampoline {
+    type Invoke = spacetimedb::rt::ProcedureFn;
+    type FnKind = spacetimedb::rt::FnKindProcedure<()>;
+    const NAME: &'static str = "native_host_run_procedure";
+    const ARG_NAMES: &'static [Option<&'static str>] = &[];
+    const INVOKE: Self::Invoke = procedure_trampoline;
+}
+
+/// Type witness for `register_procedure` (the zero-argument, unit-returning procedure shape).
+fn procedure_signature(_ctx: &mut ProcedureContext) {}
+
+fn procedure_trampoline(ctx: &mut ProcedureContext, _args: &[u8]) -> spacetimedb::ProcedureResult {
+    let body = with_procedure_run(|run| run.body.take())
+        .flatten()
+        .expect("native_host_tests: the procedure trampoline was called without a body");
+    // SAFETY: `run_procedure` keeps the pointee alive for this whole call (see there).
+    unsafe { (*body)(ctx) };
+    Vec::new()
+}
+
+impl Fixture {
+    /// Runs `f` with a real `ProcedureContext` whose sender is `caller` and whose `timestamp`
+    /// is `at` (at or after the Unix epoch), answering its HTTP requests from `http`. See the
+    /// PROCEDURES banner for the mechanism.
+    ///
+    /// Returns what `f` returns. Once the procedure has returned, the first of these that
+    /// happened is raised here, in the caller's frame: a panic inside a `while_waiting`
+    /// closure; a request that found no answer left in `http`; a panic in `f`.
+    pub(crate) fn run_procedure<T>(
+        &self,
+        caller: Caller,
+        at: Timestamp,
+        http: &mut HttpQueue<'_>,
+        f: impl FnOnce(&mut ProcedureContext) -> T,
+    ) -> T {
+        ensure_run_as_registered();
+        let sender = match caller {
+            Caller::Sender(sender) => sender,
+            Caller::Database => Identity::from_byte_array(host().model.database_identity),
+        };
+        let at_micros = at.to_micros_since_unix_epoch();
+        let micros = u64::try_from(at_micros).expect(
+            "native_host_tests: run_procedure needs a timestamp at or after the Unix epoch",
+        );
+        let mut f = Some(f);
+        let mut out: Option<std::thread::Result<T>> = None;
+        let mut body = |ctx: &mut ProcedureContext| {
+            let f = f
+                .take()
+                .expect("native_host_tests: the run_procedure body runs once");
+            out = Some(catch_unwind(AssertUnwindSafe(|| {
+                assert_eq!(
+                    ctx.sender(),
+                    sender,
+                    "native_host_tests: run_procedure sender did not land"
+                );
+                assert_eq!(
+                    ctx.timestamp, at,
+                    "native_host_tests: run_procedure timestamp did not land"
+                );
+                f(ctx)
+            })));
+        };
+        let body_ref: &mut (dyn FnMut(&mut ProcedureContext) + '_) = &mut body;
+        // SAFETY: only lifetimes are erased, of the closure here and of the queue below. The
+        // trampoline and `procedure_http_request` use the two pointers during the
+        // `__call_procedure__` call below, and the slot is emptied right after it, while
+        // `body` and `http` are still alive and otherwise unused.
+        let body: ProcedureBody = unsafe {
+            std::mem::transmute(body_ref as *mut (dyn FnMut(&mut ProcedureContext) + '_))
+        };
+        let http: *mut HttpQueue<'static> = std::ptr::from_mut(http).cast();
+        PROCEDURE_RUN.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(
+                slot.is_none(),
+                "native_host_tests: run_procedure called while a procedure is running"
+            );
+            *slot = Some(ProcedureRun {
+                body: Some(body),
+                at_micros,
+                http,
+                unanswered: None,
+                unanswered_count: 0,
+                waiting_panic: None,
+            });
+        });
+        let [s0, s1, s2, s3] = identity_words(sender);
+        // SAFETY: the shipped entry point; procedure 0 is the trampoline (the only registered
+        // procedure), there is no connection, args are the INVALID (empty) source, and the
+        // result sink is one `bytes_sink_write` accepts.
+        let rc = unsafe { __call_procedure__(0, s0, s1, s2, s3, 0, 0, micros, 0, PROCEDURE_SINK) };
+        let run = PROCEDURE_RUN
+            .with(|slot| slot.borrow_mut().take())
+            .expect("native_host_tests: the procedure run left its slot during the call");
+        assert_eq!(
+            rc, 0,
+            "native_host_tests: the procedure trampoline reported failure"
+        );
+        if let Some(panic) = run.waiting_panic {
+            resume_unwind(panic);
+        }
+        if let Some(request) = run.unanswered {
+            panic!(
+                "native_host_tests: the procedure sent `{request}` with no stubbed HTTP answer left"
+            );
+        }
+        match out.expect("native_host_tests: __call_procedure__ never ran the run_procedure body") {
+            Ok(value) => value,
+            Err(panic) => resume_unwind(panic),
+        }
+    }
+}
+
+/// Starts a procedure's transaction: keeps what an abort puts back, and answers the run's time.
+#[no_mangle]
+unsafe extern "C" fn procedure_start_mut_tx(out: *mut i64) -> u16 {
+    let Some(at_micros) = with_procedure_run(|run| run.at_micros) else {
+        unmodelled("procedure_start_mut_tx outside `Fixture::run_procedure`")
+    };
+    let mut h = host();
+    h.model.tx = Some(TxStart {
+        rows: h.rows.clone(),
+        writes: h.writes.clone(),
+    });
+    // SAFETY: `out` points at the bindings' `MaybeUninit<i64>` out-param.
+    unsafe { out.write(at_micros) };
+    0
+}
+
+/// Commits a procedure's transaction: its writes stay.
+#[no_mangle]
+unsafe extern "C" fn procedure_commit_mut_tx() -> u16 {
+    match host().model.tx.take() {
+        Some(_) => 0,
+        None => Errno::TRANSACTION_NOT_ANONYMOUS.code(),
+    }
+}
+
+/// Aborts a procedure's transaction: the rows and the write counts are what they were when
+/// it started.
+#[no_mangle]
+unsafe extern "C" fn procedure_abort_mut_tx() -> u16 {
+    let mut h = host();
+    let Some(start) = h.model.tx.take() else {
+        return Errno::TRANSACTION_NOT_ANONYMOUS.code();
+    };
+    h.rows = start.rows;
+    h.writes = start.writes;
+    0
+}
+
+/// Hands `bytes` to the runtime as a byte source and returns its id.
+fn open_answer_source(bytes: Vec<u8>) -> u32 {
+    let mut h = host();
+    let model = &mut h.model;
+    model.answer_sources_opened += 1;
+    let id = ANSWER_SOURCE_BASE + model.answer_sources_opened;
+    model.answer_sources.insert(id, (bytes, 0));
+    id
+}
+
+/// Answers a request with the error `message`: one source holding its BSATN, and `HTTP_ERROR`.
+///
+/// SAFETY: `out` points at the bindings' `[BytesSource; 2]` out-param.
+unsafe fn answer_with_error(out: *mut [u32; 2], message: &str) -> u16 {
+    let message = bsatn::to_vec(&message).expect("native_host_tests: a string BSATN-encodes");
+    let source = open_answer_source(message);
+    unsafe { out.write([source, 0]) };
+    Errno::HTTP_ERROR.code()
+}
+
+/// The HTTP method's own spelling.
+fn method_name(method: wire::Method) -> String {
+    let name = match method {
+        wire::Method::Get => "GET",
+        wire::Method::Head => "HEAD",
+        wire::Method::Post => "POST",
+        wire::Method::Put => "PUT",
+        wire::Method::Delete => "DELETE",
+        wire::Method::Connect => "CONNECT",
+        wire::Method::Options => "OPTIONS",
+        wire::Method::Trace => "TRACE",
+        wire::Method::Patch => "PATCH",
+        wire::Method::Extension(name) => return name,
+    };
+    name.to_string()
+}
+
+/// Records the request and answers it with the next stubbed answer of the run's queue (see
+/// the PROCEDURES banner). It opens no connection.
+#[no_mangle]
+unsafe extern "C" fn procedure_http_request(
+    request_ptr: *const u8,
+    request_len: u32,
+    body_ptr: *const u8,
+    body_len: u32,
+    out: *mut [u32; 2],
+) -> u16 {
+    // SAFETY: `request_ptr[..request_len]` and `body_ptr[..body_len]` are the caller's
+    // serialised request and its body, live for the call's duration.
+    let request = unsafe { std::slice::from_raw_parts(request_ptr, request_len as usize) };
+    let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len as usize) };
+    let Ok(request) = bsatn::from_slice::<wire::Request>(request) else {
+        return Errno::BSATN_DECODE_ERROR.code();
+    };
+    let sent = SentRequest {
+        method: method_name(request.method),
+        url: request.uri,
+        body: body.to_vec(),
+        timeout: request.timeout,
+    };
+    let line = format!("{} {}", sent.method, sent.url);
+    // The run is borrowed only for this step, so a `while_waiting` closure may use the fixture.
+    let next = with_procedure_run(|run| {
+        // SAFETY: `run_procedure` keeps the queue alive and otherwise unused for the call.
+        let queue = unsafe { &mut *run.http };
+        queue.requests.push(sent);
+        let answer = queue.answers.pop_front();
+        if answer.is_none() {
+            run.unanswered.get_or_insert_with(|| line.clone());
+            run.unanswered_count += 1;
+        }
+        (answer, run.unanswered_count)
+    });
+    let Some((answer, unanswered_count)) = next else {
+        unmodelled("procedure_http_request outside `Fixture::run_procedure`")
+    };
+    let Some(answer) = answer else {
+        assert!(
+            unanswered_count < UNANSWERED_LIMIT,
+            "native_host_tests: {unanswered_count} requests of one run found no stubbed HTTP \
+             answer left (the latest: `{line}`): a retry loop that would never return"
+        );
+        let message = format!("native_host_tests: no stubbed HTTP answer left for `{line}`");
+        // SAFETY: `out` is the bindings' out-param.
+        return unsafe { answer_with_error(out, &message) };
+    };
+    if let Some(change) = answer.while_waiting {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(change)) {
+            with_procedure_run(|run| {
+                run.waiting_panic.get_or_insert(panic);
+            });
+            let message = "native_host_tests: a `while_waiting` closure panicked";
+            // SAFETY: `out` is the bindings' out-param.
+            return unsafe { answer_with_error(out, message) };
+        }
+    }
+    match answer.outcome {
+        Ok((code, body)) => {
+            let head = wire::Response {
+                headers: std::iter::empty().collect(),
+                version: wire::Version::Http11,
+                code,
+            };
+            let head = bsatn::to_vec(&head).expect("native_host_tests: a response BSATN-encodes");
+            let head = open_answer_source(head);
+            let body = if body.is_empty() {
+                0
+            } else {
+                open_answer_source(body)
+            };
+            // SAFETY: `out` points at the bindings' `[BytesSource; 2]` out-param.
+            unsafe { out.write([head, body]) };
+            0
+        }
+        // SAFETY: `out` is the bindings' out-param.
+        Err(message) => unsafe { answer_with_error(out, &message) },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // THE VENDORED CRATES. `spacetimedb` and `spacetimedb-bindings-sys` build from the copies
 // under `vendor/` (the root `Cargo.toml` `[patch.crates-io]`): their crates.io packages,
-// patched in `#[cfg]` attributes only, so that off wasm the table backend calls the host ABI
-// above and the vendor's native stubs compile out. On wasm every patched attribute selects
-// what the original selected, so the module ships the vendor's code.
+// patched in `#[cfg]` attributes only, so that off wasm the table backend, a procedure's
+// transactions and its HTTP client call the host ABI above and the vendor's native stubs
+// compile out. On wasm every patched attribute selects what the original selected, so the
+// module ships the vendor's code.
 // ---------------------------------------------------------------------------
 
 use sha2::{Digest, Sha256};
