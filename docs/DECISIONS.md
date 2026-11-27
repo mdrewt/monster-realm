@@ -512,107 +512,97 @@ The sets, the prefetch, the linger and the failure path: `ARCHITECTURE.md` "Conn
 
 ## Bounded client prediction
 
-**Decision.** The client never predicts further ahead than the server would accept.
-The `Predictor` (`client/src/prediction/predictor.ts`) refuses an enqueue past
-`MOVE_QUEUE_CAP` (2, the game-core value) and applies backpressure at 16 unacknowledged
-ops. It records queue *operations* (`Enqueue`/`SetMove`/`Clear`) rather than raw moves
-and replays them onto the server's queue on reconcile. The acknowledgement it prunes
-against is the own row's `character.acked_seq`, which arrives with the queue and the
-position in one row. Each predictor carries a
-generation id (`PredictorEpoch`), so a rejection addressed to a predictor discarded by
-a warp or reconnect does nothing. A rebuilt predictor starts its sequence numbers
-above the highest one already sent. Zone warps resolve only server-side, in
-`movement_tick` (`server-module/src/movement.rs`); the client never predicts a zone
-crossing. It learns of one as a single update of its own `character` row, which its
-own-row subscription holds across the change of zone (see "World rows are subscribed
-by zone"). `skip_warp` there defaults `true` when the mover has no player row, so an NPC
-never leaves its home zone.
+**Decision.** The client never predicts further ahead than the server would accept. The predictor
+refuses a move past the server's queue cap (`MOVE_QUEUE_CAP`, the game-core value) and applies
+backpressure at 16 unacknowledged operations. It records queue *operations* (enqueue, set, clear)
+rather than raw moves and replays them onto the server's queue on reconcile. The acknowledgement
+it prunes against arrives in the own `character` row, with the queue and the position. A rejection
+addressed to a predictor that a warp or a reconnect discarded does nothing, and a rebuilt predictor
+starts its sequence numbers above the highest one already sent. Zone warps resolve only on the
+server, in the zone's movement tick, and the client never predicts a zone crossing. It learns of
+one as a single update of its own `character` row, which its own-row subscription holds across
+the change of zone. A mover with no player row never takes a warp, so an NPC never leaves its home
+zone.
 
-**Why.** A client that runs ahead of authority has to pull the player back, which is
-the rubber-band this architecture exists to prevent. Recording operations instead of
-moves is what makes a mid-flight `SetMove` or `Clear` replay correctly. A warp changes
-the map the predictor runs on, so only the server can resolve it; keeping every NPC in
-its home zone keeps NPC movement local to one zone's map.
+**Why.** A client that runs ahead of authority has to pull the player back, which is the
+rubber-band this architecture exists to prevent. Recording operations instead of moves is what
+makes a mid-flight set or clear replay correctly. A warp changes the map the predictor runs on, so
+only the server can resolve it; keeping every NPC in its home zone keeps NPC movement local to one
+zone's map.
 
-**Rules out.** Unbounded local queues; dropping unacknowledged ops to make room;
-reusing a sequence number after a rebuild; predicting a zone crossing client-side; an
-NPC crossing zones.
+**Rules out.** Unbounded local queues; dropping unacknowledged ops to make room; reusing a sequence
+number after a rebuild; predicting a zone crossing client-side; an NPC crossing zones.
+
+The predictor's intent, drain, reconcile and rejection steps: `ARCHITECTURE.md` "Prediction and
+reconciliation".
 
 ## Held keys: commit threshold and warp continuity
 
-**Decision.** Movement is driven by virtual D-pad edges from the input router
-(`client/src/input/router.ts`), refcounted across physical keys, so releasing ArrowUp
-does not stop a held W. OS key-repeat drives neither movement nor menus (`e.repeat` is
-ignored). A press sends one `Face` immediately (see "Turning in place"): a turn for a
-character facing another way, a step for one already facing the direction. A release
-sends nothing: it only drops the direction from the held set. Continuation comes from
-the frame loop sending `Step` in the held direction only after the key has been held for `HOLD_COMMIT_MS` (150 ms, `client/src/prediction/heldKeys.ts`), only when
-the predictor has no outstanding steps and no sent input is still owed, and only while
-`movementEnabled` (the world base with no frame above it and the session gate open). A
-hold from another facing therefore turns, waits for the row that drains the `Face`, then
-walks with no second press; a tap only turns. Every push of a non-base frame clears the
-held set, so a direction held through a menu does not resume when the menu closes. Menu auto-repeat is synthesized by the router on an
-injected clock (350 ms, then 100 ms) and clamps at list ends. A zone warp keeps the
-held-key stack across the prediction reset; a reconnect does not.
+**Decision.** Movement is driven by virtual D-pad edges, counted per button across physical keys,
+so releasing one key does not stop another held for the same direction. OS key-repeat drives
+neither movement nor menus; a menu repeats on an injected clock instead. A press sends one `Face`
+at once: a turn for a character facing another way, a step for one already facing the direction. A
+release sends nothing. A hold continues with `Step`, which the frame loop sends only after the key
+has been held for the commit threshold (150 ms), only when the predictor has no outstanding steps
+and no sent input is still owed, and only while the world has no frame above it and the session
+gate is open; a tap only turns. Every push of a frame over the world clears the held set. A zone
+warp keeps the held set across the prediction reset; a reconnect does not.
 
-**Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a
-tap (one input) from a hold (walk), and waiting for outstanding steps stops the client
-queueing moves faster than the server drains them. One step in flight is also the
-measured choice over two (`docs/send-pipeline-depth.md`). Against a local server a step
-already lands on every tick, so a second gives a watcher nothing. A second step multiplies
-teleports of the own avatar unless it is kept to the frame loop's send, and either way it
-fills the server's queue, which then refuses a press made mid-walk, and adds a tile to
-every committed hold. The cost of one step falls on a player whose delay each way nears
-half of `STEP_MS`: steps miss ticks and the walk drops toward half speed. The
-continuation sends `Step`, which turns and moves in one input, so a walk that falls back
-to a second held key or resumes after a server correction does not stop for a turn slot.
-Keeping the stack across a warp lets a player walk through a door without re-pressing. A
-walk that resumes behind a closing menu is a step the player did not ask for, and stale
-hold stamps would skip the commit threshold. A step sent and then cancelled on keyup
-would take back steps the predictor has already drawn, pulling the own avatar backward.
+**Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a tap (one
+input) from a hold (a walk), and waiting for outstanding steps stops the client queueing moves
+faster than the server drains them. One step in flight is also the measured choice over two
+(`docs/send-pipeline-depth.md`). Against a local server a second gives a watcher nothing, since
+a step already lands on every tick. It multiplies teleports of the own avatar unless only the
+frame loop sends it, and either way it fills the server's queue, which then refuses a press made
+mid-walk, and adds a tile to every committed hold. One step costs only a player whose delay each
+way nears half the step interval: steps miss ticks and the walk drops toward half speed. The
+continuation sends `Step`, which turns and moves in one input, so a walk that falls back to a
+second held key or resumes after a server correction does not stop for a turn slot. Keeping the set
+across a warp lets a player walk through a door without re-pressing. A walk that resumes behind
+a closing menu is a step the player did not ask for, and stale hold stamps would skip the commit
+threshold. A step sent and then cancelled on keyup would take back steps the predictor has already
+drawn, pulling the own avatar backward.
 
-**Rules out.** Repeat-driven movement or menus; continuation steps while earlier ones
-are in flight; a step cancelled on keyup (`clear_queue` or `set_move` on release);
-resuming a held walk after a frame closes; `Step` on a fresh press (a tap would move
-instead of turning); `Face` from the continuation.
+**Rules out.** Repeat-driven movement or menus; continuation steps while earlier ones are in
+flight; a step cancelled on keyup (`clear_queue` or `set_move` on release); resuming a held walk
+after a frame closes; `Step` on a fresh press (a tap would move instead of turning); `Face` from
+the continuation.
+
+The router, the held set and the owed inputs: `ARCHITECTURE.md` "Prediction and reconciliation".
 
 ## Turning in place: `Face` turns, or steps when already facing
 
-**Decision.** `MoveInput::Face(Direction)` is a press of a direction.
-`game_core::apply_move` turns a character that does not face it (same tile, `Idle`,
-`move_started_at` stamped) and gives one that already faces it exactly the `Step`
-result; the two share one match arm. `Face` travels on the existing `enqueue_move` and
-`set_move` reducers and drains like any other input, so a turn takes one movement slot
-(`STEP_MS`) on the server and in the predictor's replay, and it passes the same battle
-locks, deletion gate and sequence guard. The variant is appended after `Jump`. The
-flat-code helper `apply_move_coded` carries only `Step` and `Jump`; `Face` crosses the
-wasm boundary on the serde path.
+**Decision.** `MoveInput::Face(Direction)` is a press of a direction. game-core's one movement rule
+turns a character that does not face it, in place, and gives one that already faces it exactly the
+`Step` result. `Face` travels on the existing `enqueue_move` and `set_move` reducers and drains
+like any other input, so a turn takes one movement slot on the server and in the predictor's
+replay, and it passes the same battle locks, deletion gate and sequence guard. The variant is
+appended after `Jump`.
 
-**Why.** The operator ruled that a player faces a direction before moving in it
-(feedback item pt3-2026-10-165), and interaction targets the faced tile, so facing
-needs an input that does not move. The turn-or-step choice is made when the input
-drains: the server and the predictor then both judge it against the facing left by the
-inputs before it, from the same compiled rule, and the client never works out an
-"effective facing" of its own. The existing reducers already carry every guard a
-movement input needs.
+**Why.** The operator ruled that a player faces a direction before moving in it (feedback item
+pt3-2026-10-165), and interaction targets the faced tile, so facing needs an input that does not
+move. The turn-or-step choice is made when the input drains: the server and the predictor then
+both judge it against the facing left by the inputs before it, from the same compiled rule, and the
+client never works out an "effective facing" of its own. The existing reducers already carry every
+guard a movement input needs.
 
-**Rules out.** A separate facing reducer (a second intake path with its own battle
-lock, deletion gate and seq); an extra reducer argument (it changes every caller and
-the client-callable reducer baseline); changing `Step` itself (NPC wander and the bump
-rule use it); choosing between `Face` and `Step` at intake or on the client; marshaling
-a variant the client does not know as `Step`; publishing a module that adds a
-`MoveInput` variant apart from the client bundle that decodes it — a bundle built
-before the variant cannot decode a `character` row whose public queue holds one,
-whoever queued it.
+**Rules out.** A separate facing reducer (a second intake path with its own battle lock, deletion
+gate and seq); an extra reducer argument (it changes every caller and the signature of a reducer
+every deployed client calls); changing `Step` itself (NPC wander and the bump rule use it);
+choosing between `Face` and `Step` at intake or on the client; marshaling a variant the client
+does not know as `Step`; publishing a module that adds a `MoveInput` variant apart from the client
+bundle that decodes it — a bundle built before the variant cannot decode a `character` row whose
+public queue holds one, whoever queued it.
+
+The rule's two arms and how `Face` crosses the wasm boundary: `ARCHITECTURE.md` "Movement".
 
 ## Reconnect backoff climbs one rung per failed attempt
 
-**Decision.** The client owns its reconnect policy: a pure state machine in
-`client/src/prediction/reconnectPolicy.ts`, driven by `client/src/net/connection.ts`. After `n`
-failed attempts in a row, the next attempt waits `min(1000 ms · 2^n, 30 s)`. The ladder has no
-give-up rung. Only the session terminals stop retrying (an expired account session, an
-unreachable auth service) until the player retries or continues anonymously. Every build path
-starts an attempt (the reconnect timer, the first boot, `reconnectNow`, `continueAnonymously`),
+**Decision.** The client owns its reconnect policy: a pure state machine that its connection
+adapter drives. After `n` failed attempts in a row, the next attempt waits `min(1000 ms · 2^n,
+30 s)`. The ladder has no give-up rung. Two things stop retrying: a session terminal (an expired
+account session, an unreachable auth service) until the player retries or continues anonymously,
+and the protocol check's refusal, which lasts until reload. Every build path starts an attempt,
 and every attempt that fails climbs exactly one rung, whether it ends in a connect error, a drop
 after the socket opened, or both in either order. A failed attempt is marked, so a second event
 for the same failure changes nothing. Only an applied subscription resets the ladder. A drop from
@@ -620,66 +610,61 @@ a connected link does not climb, so its first retry waits the base delay. The "c
 notice shows on the connected-to-disconnected edge only.
 
 **Why.** The SDK does not reconnect on the raw builder path, so the app owns its retries. A
-restarting host often accepts the socket and drops it before the subscription applies. If only
-a connect error climbed, that client would retry every second for as long as the restart lasts.
-The SDK can report one drop as both an error and a close, so the ladder counts failed attempts,
-not failure events.
+restarting host often accepts the socket and drops it before the subscription applies. If only a
+connect error climbed, that client would retry every second for as long as the restart lasts. The
+SDK can report one drop as both an error and a close, so the ladder counts failed attempts, not
+failure events.
 
 **Rules out.** Resetting the ladder when the socket opens, or on anything but an applied
 subscription; climbing once per failure event; a build path that does not start an attempt; a
 give-up rung on the ladder.
 
+The policy module and the build paths: `ARCHITECTURE.md` "Connection and store".
+
 ## Remote interpolation: adaptive delay; hold, except a bounded continued walk
 
-**Decision.** Other characters render at `now − delay` between buffered snapshots
-(`client/src/render/interpolation.ts`). The delay adapts per character from a jitter
-estimate that ignores intervals longer than three steps (idleness), bounded between 0.5
-and 2.5 steps. The store keeps one snapshot per position: a row update on the same tile
-replaces the row and is neither a snapshot nor a jitter sample
-(`client/src/net/store.ts`). At the newest snapshot a remote holds position, with one
-exception: a remote whose last two position changes were the same one-tile step, at
-most three steps apart, the newer at most three steps ago, and which has not turned in
-place since, is drawn on past its newest tile at the walk's cadence, at most half a
-tile and only toward a walkable tile. A gap of up to three steps between two steps of a
-walking remote is crossed at the walk's pace, not held and then slid. The remote arm
-(`client/src/render/renderResolver.ts`) walks each drawn position to its target at no
-more than one tile per step, and draws it at the target once it is two tiles behind.
-The own character snaps instead of sliding when the server correction is more than one
-tile away.
+**Decision.** Other characters render at `now − delay` between buffered snapshots. The delay
+adapts per character from a jitter estimate that ignores intervals longer than three steps
+(idleness), bounded between 0.5 and 2.5 steps. The store keeps one snapshot per position: a row
+update on the same tile replaces the row and is neither a snapshot nor a jitter sample. At the
+newest snapshot a remote holds position, with one exception: a remote whose last two position
+changes were the same one-tile step, at most three steps apart, the newer at most three steps ago,
+and which has not turned in place since, is drawn on past its newest tile at the walk's cadence,
+at most half a tile and only toward a walkable tile.
 
-**Why.** Snapshots arrive in bursts: a fixed delay either pops under jitter or lags all
-the time, and treating a pause as jitter would inflate the delay after every stop. The
-own client sends one step at a time, so a walker's row stream often has an empty tick
-between steps, on which the server writes a same-tile `Idle` row. Holding at the newest
-snapshot draws that as a pause on every tile, so the operator ruled that a remote
-continues its last walk for a short window and then settles (feedback item
-pt3-2026-10-159). A stop is only known when the window runs out, so the half-tile cap
-is also the backward correction a stop can show.
+**Why.** Snapshots arrive in bursts: a fixed delay either pops under jitter or lags all the time,
+and treating a pause as jitter would inflate the delay after every stop. The own client sends one
+step at a time, so a walker's row stream often has an empty tick between steps, on which the server
+writes a same-tile `Idle` row. Holding at the newest snapshot draws that as a pause on every tile,
+so the operator ruled that a remote continues its last walk for a short window and then settles
+(feedback item pt3-2026-10-159). A stop is only known when the window runs out, so the half-tile
+cap is also the backward correction a stop can show.
 
-**Rules out.** Continuing a remote that is not on a straight walk, farther than half a
-tile, past the window, or toward a tile that is not walkable; continuing from a single
-step (a tap, an NPC's wander); appending a same-tile row to the snapshot ring; a single
-global interpolation delay.
+**Rules out.** Continuing a remote that is not on a straight walk, farther than half a tile, past
+the window, or toward a tile that is not walkable; continuing from a single step (a tap, an NPC's
+wander); appending a same-tile row to the snapshot ring; a single global interpolation delay.
+
+The interpolation core, the resolver's two arms and the store's snapshots: `ARCHITECTURE.md`
+"Rendering".
 
 ## Integer pixel scaling
 
-**Decision.** The renderer runs Pixi at `resolution = devicePixelRatio` with
-`autoDensity`, and chooses an integer device scale (source pixels to device pixels) in
-`client/src/render/viewport.ts` from the target visible tile count
-(`TARGET_VISIBLE_TILES` 11, clamped to 7..16 in `client/src/render/config.ts`). The CSS
-stage scale is that integer divided by `devicePixelRatio`, so it is fractional whenever
-the ratio is not 1. When the map is smaller than the viewport, the camera centres it.
-Terrain chunk textures bake at resolution 1 with nearest sampling at every device scale
-(`client/src/render/terrainLayout.ts` `CHUNK_TEXTURE_OPTIONS`). The integer device scale upsamples
-each texel to a whole number of device pixels, so a device-scale change re-bakes nothing; a
-context restore still re-bakes.
+**Decision.** The renderer chooses an integer device scale (source pixels to device pixels) from
+a target visible tile count, and runs Pixi at the display's device-pixel ratio, so the CSS stage
+scale is that integer divided by the ratio and is fractional whenever the ratio is not 1. When the
+map is smaller than the viewport, the camera centres it. Terrain chunk textures bake at resolution
+1 with nearest sampling at every device scale. The integer device scale upsamples each texel to a
+whole number of device pixels, so a device-scale change re-bakes nothing; a context restore still
+re-bakes.
 
-**Why.** Non-integer scaling blurs or shimmers pixel art.
-A chunk baked at the device scale costs 4 KB × scale² per tile, about 165 MB for today's zone on a
-4K display. At resolution 1 it costs 4 KB per tile, about 10 MB.
+**Why.** Non-integer scaling blurs or shimmers pixel art. A chunk baked at the device scale costs
+the scale squared times one baked at resolution 1, which costs 4 KB per tile: 36 times as much at
+device scale 6, the scale a 4K display gets.
 
 **Rules out.** Fractional device scales; fitting the map by stretching; baking terrain at the
 device scale, or re-baking it when the device scale changes.
+
+The viewport's scale choice and the chunk bake: `ARCHITECTURE.md` "Rendering".
 
 ## Evolution graph and the auto-evolve rule
 
