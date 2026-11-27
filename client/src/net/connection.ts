@@ -909,11 +909,10 @@ export function connect(opts: ConnectionOptions): Connection {
     };
     // The own account row reached the store. A claim the gate left waiting goes out now, alone:
     // onClaimPending is the gate's (the caller re-opens its claim prompt from it on a reconnect),
-    // so this path reports only through onClaimResult.
+    // so this path reports only through onClaimResult. ingestAccount calls it only for the current
+    // build, and sendClaim sends nothing once the code is gone.
     const sendAwaitedClaim = (): void => {
-      if (stale() || claim !== 'awaiting') return;
-      if (!claimCode.hasUnconsumed(globalThis, opts.uri, opts.db)) return;
-      sendClaim(conn);
+      if (claim === 'awaiting') sendClaim(conn);
     };
 
     // The world scope of THIS build: which `character` query sets it holds beyond the base set.
