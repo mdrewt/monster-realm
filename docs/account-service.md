@@ -11,10 +11,12 @@ email and a password, through authorization code with PKCE, and the game client 
 a refresh token. Accounts and clients are made by an admin command; there is no sign-up and no reset
 mail. The `production` profile has no sign-in step in this build.
 
-The service also holds the Steam checks the Steam sign-ins will call (section "Steam"): asking
-Steam whose ticket a ticket is and what licence a player holds, the rule that turns that licence
-into "owns the game", our own deny-list, and the settings that say which Steam app a profile
-checks. No sign-in step calls them in this build, so a running service never reaches Steam.
+With Steam configured for a profile (`MR_STEAM_APP_ID`), the token endpoint also takes a Steam
+ticket: a desktop client exchanges the ticket its Steam client made for an ID token, with no
+browser and no password (Design, "Steam ticket sign-in"). The checks behind it are in section
+"Steam": asking Steam whose ticket a ticket is and what licence a player holds, the rule that
+turns that licence into "owns the game", our own deny-list, and the settings that say which Steam
+app a profile checks. A service with no Steam setting never reaches Steam.
 
 The service also signs world attestations at `POST /attest`: a statement, good for five minutes
 and addressed to one world, that an account owns the game. A `local` or `private` world's module
@@ -70,6 +72,43 @@ own. No module calls them in this build.
   left. The account is read again at every exchange and refresh: when it is gone or not
   entitled the request is refused and the chain revoked, so only an entitled account is ever
   issued a token. An ID token already issued stays valid until its `exp`.
+- **Steam ticket sign-in.** With `MR_STEAM_APP_ID` set, the token endpoint takes the grant
+  `urn:monster-realm:steam-ticket` (`src/grants/steamTicket.ts`): `POST /token` as
+  `application/x-www-form-urlencoded` with `grant_type`, `client_id` and `steam_ticket`, the hex
+  of the ticket the player's Steam client made with
+  `GetAuthTicketForWebApi("monster-realm-account")`. Any registered client may use it; the
+  desktop shell sends the game client's id, so the token's `aud` is the audience a module
+  allows. The answer is `{ "id_token": "…", "expires_in": 3600 }`: an ID token with the claims
+  above and `sub` `steam:<steamid64>`, good for an hour. There is no refresh token, no access
+  token and no stored record: a desktop client exchanges a fresh ticket for its next token.
+  - *The steps, in order; the first that answers ends the exchange.* The source address's limit,
+    60 in any minute: every exchange counts, whatever its end. Then a ticket Steam has
+    authenticated before, which is remembered with its SteamID (under the SHA-256 of its hex, in
+    either letter case; at most 100,000 tickets): while that SteamID's limit is full the ticket
+    is refused, and Steam is not asked. Then Steam is asked whose ticket it is
+    (`authenticateTicket`, with the identity `monster-realm-account`). Then the limit of the
+    SteamID Steam returned, 30 in any hour: over it nothing more is asked. Then the profile's
+    entitlement source decides about that SteamID (section "Steam", "The decision").
+  - *The answers.* A ticket Steam does not authenticate (not a ticket, not hex, made for another
+    identity or app) and a player who is denied or does not own the game get one `400
+    invalid_grant` with one description, the same bytes whatever the cause. A full limit is `429
+    rate_limited` with `Retry-After`, in seconds. Steam giving no answer, to either question, is
+    `503 temporarily_unavailable`. No `steam_ticket`, or a source address that is unknown (Source
+    address, below), is `400 invalid_request`, and Steam is not asked. A failure of the store or
+    of the signing is `500`, with nothing of the failure in it.
+  - *What the limits count.* Only Steam says whose ticket a ticket is, so a ticket seen for the
+    first time costs one request to Steam even when its player is over the limit; the
+    remembered ticket saves that request for one presented again, and only ever refuses: a
+    remembered ticket whose player has room is sent to Steam like any other. A SteamID's limit
+    counts the exchanges that were decided, issued or refused; one that Steam failed to answer
+    is not counted, so an outage does not lock a player out when it ends. The address limit
+    bounds every request to Steam a caller can cause: 60 a minute from one address, made-up
+    tickets included.
+  - *What is logged.* One line per ID token issued, with the `sub` and the time, before the token
+    is sent, and one per failure of the service, with the time and the error's class name. A
+    refusal logs nothing, and no line holds a ticket, an address or an error's message.
+  - *What it does not stop.* A ticket authenticates for as long as it lives, so whoever captures
+    one can sign in as its player until then; the limit per SteamID bounds how often.
 - **Attestations.** `POST /attest` (`src/attest.ts`) takes `Authorization: Bearer <ID token>` and
   the JSON body `{ "world": "…", "nonce": "…" }`, and answers `{ "attestation": "<JWT>" }`. The
   attestation is a compact JWT with the header `{ "alg": "Ed25519", "kid": … }` and exactly eight
@@ -169,20 +208,21 @@ own. No module calls them in this build.
   who joined which world. The first handle key seals; every key in the file opens, and what a
   handle under any other key holds is answered sealed under the first. Only the one spelling the
   service writes opens.
-- **Source address.** `address` in an answer, and the address a limit counts, is the address at
-  the other end of the request's socket. When that address is inside `MR_ACCOUNT_TRUSTED_PROXY`
+- **Source address.** `address` in an answer, and the address a limit counts (a world check's
+  and a Steam ticket exchange's), is the address at the other end of the request's socket. When that address is inside `MR_ACCOUNT_TRUSTED_PROXY`
   (the reverse proxy in front), it is instead the last address in the request's
   `X-Forwarded-For`, the one that proxy wrote; from anyone else the header is not read
   (`createSourceAddress` in `src/rateLimit.ts`). A trusted proxy that wrote no address leaves
-  the source unknown, and the check answers `400`: the proxy's own address is never given as a
-  caller's. An address is written in one spelling: dotted IPv4, IPv6 in lower case with its
+  the source unknown, and the check or the exchange answers `400`: the proxy's own address is
+  never given as a caller's. A deployment behind a proxy that is not in the setting counts every
+  caller under the proxy's address, so they share one limit. An address is written in one spelling: dotted IPv4, IPv6 in lower case with its
   longest run of zeros compressed, and an IPv4-mapped IPv6 address as IPv4.
 - **Clients.** A client is a stored record: a client id and one redirect address, written by the
   admin command. Whatever else a record holds, the provider treats the client as public (no
-  secret), with exactly that redirect address, the code and refresh grants and ES256 ID tokens. The
-  token endpoint answers cross-origin requests from the redirect address's origin only. A game
-  module accepts a token by its `aud`, so the game client's id is the audience the module allows
-  (`monster-realm`).
+  secret), with exactly that redirect address, the code and refresh grants, the Steam ticket
+  grant when Steam is configured, and ES256 ID tokens. The token endpoint answers cross-origin
+  requests from the redirect address's origin only. A game module accepts a token by its `aud`,
+  so the game client's id is the audience the module allows (`monster-realm`).
 - **Accounts.** A dev account is an email, an argon2id password hash (19 MiB, two passes; Node's
   built-in `crypto.argon2`) and an entitlement flag, stored under the email in lower case after
   Unicode NFKC normalisation. Passwords are generated by the admin command, 24 characters, printed
@@ -197,8 +237,10 @@ own. No module calls them in this build.
   an authorization request is answered `503`, and everything else keeps answering. The lock, the
   hash ceiling and the cap live in the process, so a restart clears them. There is no limit per
   network address: a flood can hold the busy answer or the 503 for as long as it lasts, and anyone
-  who knows an account's email can keep it locked. An account gets at most 20 attestations in any
-  hour. The count is of requests that reached it with a valid token and body: one refused because
+  who knows an account's email can keep it locked. A Steam ticket exchange has both of its own
+  limits (Steam ticket sign-in): 60 in any minute per source address and 30 in any hour per
+  SteamID, each holding at most 1,000,000 keys and refusing a new one past that. An account gets
+  at most 20 attestations in any hour. The count is of requests that reached it with a valid token and body: one refused because
   the account is gone or not entitled still counts, and one the service failed does not. It lives
   in the process too, so each instance counts alone. An account gets at most 10 tickets in any
   minute, counted the same way. A source address gets at most 120 world checks in any minute,
@@ -299,8 +341,8 @@ world accepts until its public half is in a build.
 ## Steam
 
 Every player must own the game on Steam (`docs/DECISIONS.md`, "Every player must own the game on
-Steam, for now"). This section is what the service can ask Steam and how it decides; the sign-in
-steps that use it are not in this build.
+Steam, for now"). This section is what the service can ask Steam and how it decides. The Steam
+ticket sign-in (Design) uses it; the browser's Steam sign-in is not in this build.
 
 - **Which app.** `MR_STEAM_APP_ID` configures Steam for a profile: the loaded configuration then
   carries `steam: { appId }`, and a dev profile keeps its password sign-in beside it. A dev
@@ -313,7 +355,10 @@ steps that use it are not in this build.
   configuration holds no key. A key is 1 to 256 characters of visible ASCII. The client refuses to
   be built without `MR_STEAM_APP_ID`, on `production` without the publisher key, and for an app
   that is not the profile's (anything but `480` on a dev profile, `480` on `production`); loading
-  the configuration alone requires no Steam setting.
+  the configuration alone requires no Steam setting. The service builds the client when it
+  starts with `MR_STEAM_APP_ID` set, so what the client refuses refuses the start. A dev profile
+  with `480` and no key starts and offers the Steam ticket sign-in, which then answers `503` to
+  every well-formed ticket and sends Steam nothing.
 - **The client.** `createSteamWebApi` makes one client for the profile: the partner host
   `https://partner.steam-api.com` with the publisher key on `production`, the public host
   `https://api.steampowered.com` with the ordinary key on a dev profile. The key travels in the
@@ -441,7 +486,7 @@ as written.
 | `MR_ACCOUNT_HOST` | The address to listen on: an IP address or `localhost`. Default `127.0.0.1`. |
 | `MR_ACCOUNT_PORT` | The port to listen on, 0 to 65535 (0 lets the system choose). Default 4455. |
 | `MR_STEAM_APP_ID` | The Steam app the profile checks players against. A dev profile takes exactly `480`; `production` takes the game's app id, a decimal number from 1 to 4294967295 that is not `480`. Unset: Steam is not configured. |
-| `MR_STEAM_WEB_API_KEY` | A dev profile's ordinary Steam Web API key, for checking a real ticket under App ID 480. Optional, and taken only with `MR_STEAM_APP_ID`. Refused by `production`. |
+| `MR_STEAM_WEB_API_KEY` | A dev profile's ordinary Steam Web API key, for checking a real ticket under App ID 480: 1 to 256 characters of visible ASCII. Optional, and taken only with `MR_STEAM_APP_ID`; without it no ticket can be checked. Refused by `production`. |
 | `MR_STEAM_PUBLISHER_KEY` | The publisher Web API key of the game's app. `production` only; refused by the dev profiles. |
 
 The service refuses to start, naming the setting on stderr and exiting 1, when:
@@ -452,6 +497,8 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   is not exactly `480`, or `MR_STEAM_WEB_API_KEY` without `MR_STEAM_APP_ID`;
 - `production` is given `MR_STEAM_WEB_API_KEY`, or an `MR_STEAM_APP_ID` that is `480` or not an
   app id;
+- `MR_STEAM_APP_ID` is set and the profile's Steam key is not 1 to 256 characters of visible
+  ASCII, or `production` has `MR_STEAM_APP_ID` and no `MR_STEAM_PUBLISHER_KEY`;
 - a key file is missing (except on `local-dev`), not a regular file, larger than 64 KiB,
   malformed, marked for another profile, holds anything but P-256 private keys with distinct
   `kid`s, or, on `hosted-dev`, grants group or others any access;
@@ -471,8 +518,8 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   space around it, is set: a misspelt setting never falls back to a default, and a Steam key
   under another spelling is never taken for no key.
 
-A refusal never repeats a setting's value. A refused configuration or key file leaves nothing
-written.
+A refusal never repeats a setting's value. A refused configuration, Steam key or key file leaves
+nothing written.
 
 ## Running it
 
@@ -494,6 +541,16 @@ written.
   A sign-in needs both: the game client's id with the exact address it returns to (the dev client
   is served at `http://localhost:5290/`), and an account. Each command prints `name=value` lines;
   `create-account` prints the account's generated `password=` once.
+- The Steam ticket sign-in on a dev profile needs `MR_STEAM_APP_ID=480` and the Web API key in the
+  service's environment (`just account-dev` passes its caller's environment on; the compose
+  recipe in `ops/auth/` passes no `MR_STEAM_*` setting, so a containerised service has no Steam
+  sign-in), a registered client, and the Steam account's flag set (below). An exchange is then:
+
+  ```sh
+  curl -sS http://localhost:4455/token \
+    -d grant_type=urn:monster-realm:steam-ticket -d client_id=monster-realm -d steam_ticket=<hex>
+  ```
+
 - A Steam account's entitlement on a dev profile, and a ban:
 
   ```sh

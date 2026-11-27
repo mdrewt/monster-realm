@@ -1,12 +1,16 @@
 import { mkdirSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { type AddressInfo, isIPv6 } from 'node:net';
+import type { Adapter } from 'oidc-provider';
 import { createAttestRoute } from './attest.ts';
-import { type Config, ConfigError, loadConfig } from './config.ts';
+import { type Config, ConfigError, loadConfig, type Profile } from './config.ts';
+import { denyList, steamAccounts } from './denyList.ts';
 import { signInStepFor } from './interactions/router.ts';
 import { createHandleKeys, loadAttestationKeys, loadSigningKeys, readHandleKeys } from './keys.ts';
 import { createAccountProvider } from './provider.ts';
 import { createSourceAddress } from './rateLimit.ts';
+import { type SteamEntitlement, type SteamId, steamEntitlementSource } from './steam/ownership.ts';
+import { createSteamWebApi, type SteamWebApi } from './steam/webApi.ts';
 import { openAccountStore } from './store/sqliteAdapter.ts';
 import { createHandleCodec } from './worldHandle.ts';
 import { createWorldRoutes, createWorldTickets } from './worldTicket.ts';
@@ -22,18 +26,45 @@ export interface RunningServer {
 const PURGE_INTERVAL_MS = 60_000;
 
 /**
+ * How a profile decides whether a Steam player is entitled, as the running service wires it: the
+ * store's deny-list and dev flag, and Steam's ownership answer through `steam`.
+ */
+export function steamEntitlement(
+  profile: Profile,
+  adapter: (model: string) => Adapter,
+  steam: Pick<SteamWebApi, 'checkAppOwnership'>,
+): (steamId: SteamId) => Promise<SteamEntitlement> {
+  return steamEntitlementSource({
+    profile,
+    denied: denyList(adapter).has,
+    devFlag: steamAccounts(adapter).entitled,
+    checkAppOwnership: steam.checkAppOwnership,
+  });
+}
+
+/**
  * Starts the account service from an env record. A setting the service refuses rejects with its
- * `ConfigError` before anything listens; a refused configuration or key file leaves nothing
- * written. `log` receives the start line and every line the attestation, ticket and world-check
- * routes log.
+ * `ConfigError` before anything listens; a refused configuration, Steam key or key file leaves
+ * nothing written. `log` receives the start line and every line the attestation, ticket and
+ * world-check routes, the Steam ticket grant and the Steam client log.
+ *
+ * With `MR_STEAM_APP_ID` set the token endpoint takes the Steam ticket grant, decided by the
+ * profile's entitlement source. `options.steamBaseUrl` replaces the profile's Steam origin, for a
+ * test's Steam fake: the Steam key is sent wherever it names, so no setting reaches it and the
+ * entry file passes none.
  */
 export async function startServer(
   env: Readonly<Record<string, string | undefined>>,
   log: (line: string) => void = (line) => {
     console.log(line);
   },
+  options: { readonly steamBaseUrl?: string } = {},
 ): Promise<RunningServer> {
   const config = loadConfig(env);
+  const steam =
+    config.steam === undefined
+      ? undefined
+      : createSteamWebApi({ config, env, log, baseUrl: options.steamBaseUrl });
   // A handle key file that is there and wrong refuses the start before any key file is made.
   const heldHandleKeys = readHandleKeys(config);
   const keys = loadSigningKeys(config);
@@ -44,11 +75,21 @@ export async function startServer(
   let server: Server;
   try {
     const signIn = signInStepFor(config.signIn, store.adapter);
+    const sourceAddress = createSourceAddress(config.trustedProxies);
     const { handler } = createAccountProvider({
       issuer: config.issuer,
       keys,
       adapter: store.adapter,
       signIn,
+      steamTicket:
+        steam === undefined
+          ? undefined
+          : {
+              authenticateTicket: steam.authenticateTicket,
+              entitlement: steamEntitlement(config.profile, store.adapter, steam),
+              sourceAddress,
+              log,
+            },
     });
     // Without a sign-in step nothing is issued, an attestation included.
     const attest =
@@ -71,7 +112,7 @@ export async function startServer(
             tickets: createWorldTickets(store),
             handles: createHandleCodec(handleKeys),
             account: (sub) => signIn.account(sub),
-            sourceAddress: createSourceAddress(config.trustedProxies),
+            sourceAddress,
             log,
           });
     // Each of these routes takes only its own path under its own hosts; every other request, a
