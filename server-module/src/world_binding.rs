@@ -73,6 +73,8 @@ pub(crate) const REJECT_ALLOWLIST_ACCOUNT: &str =
 /// a bind of the owner's identity under that rule.
 pub(crate) const REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS: &str = "an allowlist has at most 256 accounts";
 pub(crate) const REJECT_DUPLICATE_ENTRY: &str = "the list repeats an entry";
+/// The owner's drop of an identity that holds no binding.
+pub(crate) const REJECT_NO_BINDING: &str = "that identity holds no world binding";
 
 /// A signature check hashes the whole token, so its cost grows with the token's length and a
 /// token that fails costs what a valid one costs. An attestation at the account service's
@@ -603,6 +605,14 @@ pub fn unbind_world_account(ctx: &ReducerContext) -> Result<(), String> {
     if counts_under(&BUILD_PROFILE, &binding) {
         crate::access::withdraw_admission(ctx, who);
     }
+    Ok(())
+}
+
+/// Erase the binding of `identity`, by the world's owner. A skeleton: it answers `Ok` and
+/// writes nothing.
+#[spacetimedb::reducer]
+pub fn drop_world_binding(ctx: &ReducerContext, identity: Identity) -> Result<(), String> {
+    let _ = (ctx, identity);
     Ok(())
 }
 
