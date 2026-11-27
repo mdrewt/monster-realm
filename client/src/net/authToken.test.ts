@@ -1518,7 +1518,7 @@ describe('forgetDeviceToken: removes a token an earlier build left on the device
     ).toBeUndefined();
   });
 
-  it.each([
+  const BROKEN_HOSTS: ReadonlyArray<readonly [string, () => unknown]> = [
     ['an absent host', () => undefined],
     ['a host with no storage', () => ({})],
     ['a localStorage getter that throws', () => hostThrowingOn('localStorage', undefined).host],
@@ -1535,7 +1535,8 @@ describe('forgetDeviceToken: removes a token an earlier build left on the device
         },
       }),
     ],
-  ] as const)('returns quietly over %s [lpw-24.6]', (_label, makeHost) => {
+  ];
+  it.each(BROKEN_HOSTS)('returns quietly over %s [lpw-24.6]', (_label, makeHost) => {
     const host = makeHost() as TokenStorageHost | undefined;
     expect(forgetDeviceToken(host, DEVICE_URI, DEVICE_DB)).toBeUndefined();
   });

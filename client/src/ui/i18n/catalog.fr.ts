@@ -1236,6 +1236,43 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Line shown when the player tries to close the sign-in screen: it cannot be closed. One
   // sentence.
   'claim.gate.stays': 'Vous devez vous connecter avant de pouvoir jouer.',
+  // @desc: Title of the screen a single-player world or a friends server shows before play when its
+  // check of the player's account did not finish. Short heading.
+  'world.gate.check.title': 'Vérification du compte',
+  // @desc: Line under the rows of that screen when the player has to sign in first: why the screen is
+  // up. Two short sentences.
+  'world.gate.signIn.body':
+    'Ce monde vérifie que votre compte possède le jeu. Connectez-vous pour jouer.',
+  // @desc: Row on that screen that starts the sign-in. Short phrase.
+  'world.gate.signIn.row': 'Se connecter',
+  // @desc: Line under the rows of that screen when our account service cannot be reached and the
+  // world has not met this player before. One sentence.
+  'world.gate.unreachable.body':
+    'Une première visite dans ce monde nécessite le service de comptes, qui est injoignable.',
+  // @desc: Row on that screen that runs the account check again. Short phrase.
+  'world.gate.retry.row': 'Réessayer',
+  // @desc: Description of the try-again row, shown when the player asks what the row does. One
+  // sentence.
+  'world.gate.retry.desc': 'Interroge à nouveau le service de comptes.',
+  // @desc: Row on that screen that checks the player's account again, after the world said the account
+  // does not own the game or that the character plays elsewhere. Short phrase.
+  'world.gate.again.row': 'Se reconnecter',
+  // @desc: Description of the sign-in-again row, shown when the player asks what the row does. One
+  // sentence.
+  'world.gate.again.desc': 'Vérifie à nouveau votre compte pour jouer sur ce client.',
+  // @desc: Title of that screen when the player's character is being played from another copy of the
+  // game (another computer or browser). Short heading.
+  'world.gate.moved.title': 'En jeu sur un autre client',
+  // @desc: Line under the rows of that screen: the character is being played from another copy of
+  // the game. `time` is a date and time already written for the player's locale. One sentence.
+  'world.gate.moved.body': (p) => `Ce personnage joue sur un autre client depuis ${p.time}.`,
+  // @desc: Line under the rows of that screen when the account check failed and there is no reason
+  // to show. One sentence.
+  'world.gate.failed.body': 'La vérification du compte a échoué.',
+  // @desc: Line under the rows of that screen when the world refused the account check. `reason` is
+  // the world's own short English text, shown as it came. Two sentences.
+  'world.gate.refused.body': (p) =>
+    `La vérification du compte a échoué. Le monde a répondu : ${p.reason}`,
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
   // leaderboardView.ts:60

@@ -384,6 +384,20 @@ export type MessageId =
   | 'claim.gate.store.title'
   | 'claim.gate.store.desc'
   | 'claim.gate.stays'
+  // The account gate of a single-player world or a friends server (shell/session.ts
+  // `buildWorldGateView`): the screen before play until the world knows the player's account.
+  | 'world.gate.check.title'
+  | 'world.gate.signIn.body'
+  | 'world.gate.signIn.row'
+  | 'world.gate.unreachable.body'
+  | 'world.gate.retry.row'
+  | 'world.gate.retry.desc'
+  | 'world.gate.again.row'
+  | 'world.gate.again.desc'
+  | 'world.gate.moved.title'
+  | 'world.gate.moved.body'
+  | 'world.gate.failed.body'
+  | 'world.gate.refused.body'
   // Leaderboard.* : the ranked leaderboard overlay (leaderboardView.ts).
   | 'leaderboard.empty'
   | 'leaderboard.row'
@@ -829,6 +843,10 @@ export interface MessageParams {
   // The build's provider name, or its issuer string when the build names none: build text, never
   // player data.
   readonly 'claim.signInWithProvider': { readonly provider: string };
+  // `time` is a date and time the caller formatted for the locale; `reason` is the world's own
+  // refusal text, bounded and plain by the time it reaches the catalog.
+  readonly 'world.gate.moved.body': { readonly time: string };
+  readonly 'world.gate.refused.body': { readonly reason: string };
   // bt-10: the tactical client's parameterised lines. Names, status words and halt reasons are
   // catalog text or model data resolved by the caller; `currency` is a bigint, every other count a number.
   readonly 'tactics.turnbar.round': { readonly round: number };
