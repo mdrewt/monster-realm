@@ -15,8 +15,8 @@
 //! `super::`.
 //!
 //! This module also owns `leaderboard_top`, the leaderboard's membership. The
-//! three crate-visible `profile` writers — `apply_pvp_rating`, `rekey_profile`
-//! and `anonymize_display_names` — end their profile writes with
+//! four crate-visible `profile` writers — `apply_pvp_rating`, `rekey_profile`,
+//! `move_profile` and `anonymize_display_names` — end their profile writes with
 //! `refresh_leaderboard_top`, a full rescan that leaves exactly the top
 //! `LEADERBOARD_TOP_K` identities in the table. `get_or_init_profile` inserts
 //! too, but it is private and reached only through the first two, so its insert

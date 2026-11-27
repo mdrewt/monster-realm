@@ -2418,7 +2418,9 @@ same at every check, and not a credential.
   answer`), refuse the call and change no `world_account` row. An identity the access rule has not
   admitted cannot connect, so the world's owner relays its ticket through `check_account_for(who,
   ticket)`; the relay counts in the budget and is never refused by it. A handle another identity
-  holds is refused, and so is a second account for an identity that holds one (it unbinds first).
+  holds moves that identity's character to the caller (see "One character per account in a world:
+  a check under a handle another identity holds moves the character"). A second account for an
+  identity that holds one is refused (it unbinds first).
 - **Each later connection.** The connect reducer arms one one-shot `recheck_schedule` row for an
   identity whose row was last checked 10 minutes ago or more, that has none armed and whose
   account is not pending deletion, and stamps the row's `checked_at_ms` as it arms: the world asks
@@ -2443,16 +2445,16 @@ same at every check, and not a credential.
   switches it off") and, under `Allowlist`, `access::is_admitted`, which admits an identity that
   holds a row exactly while its handle is on the host's list (see "A world that is not open refuses
   an unadmitted identity at connect and in every reducer; the owner relays the door").
-- **Erasing it.** `unbind_world_account()` erases the caller's row with its armed re-check, and the
-  owner's `drop_world_binding(identity)` does the same for a named identity. The unbind is the one
+- **Erasing it.** `unbind_world_account()` erases the caller's row with its armed re-check and its
+  `world_move` row, and the owner's `drop_world_binding(identity)` does the same for a named identity. The unbind is the one
   reducer of the client roster the access rule does not gate, so a player whose handle the host
   took off the list can still erase the link, over a connection the connect reducer let in while
   the player was admitted. When a row goes, that identity's `world_admission` row goes with it,
   under every rule. A caller with nothing to erase gets `Ok` with no write (the drop answers `that
   identity holds no world binding`), and an account pending deletion is refused by the deletion
-  gate. The deletion cascade takes the identity's handle off the host's list and erases the row;
-  a guest claim erases the row of the guest identity it retires and moves none; the data export carries the
-  caller's own row.
+  gate. The deletion cascade takes the identity's handle off the host's list and erases the row
+  and the identity's `world_move` row; a guest claim erases both for the guest identity it retires
+  and moves none; the data export carries the caller's own row of each.
 - **Which service.** `BuildProfile::world_check_url` (see "The official build holds no attestation
   key and a world build trusts no login issuer").
 - **What keeps the surface closed.** `findDefinitionViolations`
@@ -2460,16 +2462,16 @@ same at every check, and not a credential.
   but these three, or any schedule but the module's own, on the default build and on each release
   artefact. The reducer census (`server-module/src/privacy_enforcement_tests.rs`) refuses a
   `procedure` attribute outside `account_checks.rs` and pins the tables each procedure reaches:
-  `world_account`, `world_check_budget` and `world_allowlist` for the two first-contact
-  procedures, `world_account` and `world_allowlist` for the re-check. The client's procedure
+  for the two first-contact procedures `world_account`, `world_check_budget`, `world_allowlist`,
+  `world_move`, `recheck_schedule` and the tables a character move writes; `world_account` and
+  `world_allowlist` for the re-check. The client's procedure
   surface is pinned by `evals/client-surface-privacy.eval.mjs`, and the wire contract records each
   procedure's arguments and return type.
 
 The attestation binding is compiled beside it (`server-module/src/world_binding.rs`: the
 tables `world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers
 and the verifier). It records a binding that nothing reads: it entitles and admits nobody, and
-it is to be removed with `POST /attest`. Not built: the character that follows the account
-from one identity to another (until then the second identity of one account is refused), the
+it is to be removed with `POST /attest`. Not built: the
 host account's daily check and the rule for a world's `ip:` names (until then every name is
 presented), the client's half, and the gate that refuses a caller who is not entitled in
 every reducer. Proved by `server-module/src/account_checks_tests.rs` on the native test
@@ -2515,6 +2517,76 @@ every route runs the connect reducer first (see "A world that is not open refuse
 identity at connect and in every reducer"); the `test` and `dev-enforcing` builds name the
 `hosted-dev` account service, so a dev server's `check_account` sends real requests there; and an
 answer whose `handle` is missing is stored as not entitled whatever else it says.
+
+## One character per account in a world: a check under a handle another identity holds moves the character
+
+**Decision.** When `check_account` or the owner's `check_account_for` is answered with a handle
+that another identity of the world holds, the two identities are one account at two clients, and
+the transaction that stores the answer moves the character to the identity the ticket was redeemed
+for. `accounts::move_character` carries every row that makes up the character: monsters and their
+public twins, pending evolution notices, inventory, quests and the whole dialogue row, the heal
+cooldown, the wallet, the ladder profile with its name, the formation, the handle with its
+discriminator, and the position. It deletes the challenges that name the source and the source's
+export bundles. The handle's `world_account` row then points at the new identity and keeps its
+host mark, the source's armed re-check is deleted, and private `world_move {identity,
+moved_at_ms}` records the identity the character left, which reads its own row through
+`my_world_move`. That identity's next successful check deletes the row, and until then `join_game`
+refuses it (`this character is playing on another client; sign in again to play here`), so
+checking in again with the same account moves the character back.
+
+- **Position.** A source that is in the game has its character's zone, tile and facing saved as
+  the destination's `last_position`, and its `character`, `move_intent` and `player` rows are
+  deleted, the `player` row last. The destination's own `join_game` makes its character there. The
+  source's later disconnect finds no `player` row and writes nothing of the character.
+- **Refusals, each with no write.** A ticket whose answered name is not a `spki:` or `dns:` name
+  (`this account already plays here under another identity`; no `ip:` name is confirmed in this
+  module); a caller that holds another account; a caller that owns a character (`this identity
+  already plays a character here`); and, under one reason (`this character cannot change clients
+  right now`), either identity in an ongoing battle or named by a trade offer or session, or a
+  source whose account is pending deletion.
+- **What stays under the source.** Its `world_move` row; finished battles and what records them
+  (`battle`, `battle_summary`, the tactical rows until their sweep, `playtest_event`); and the rows
+  about that identity's own connection, admission and login (`player_session`, `world_admission`,
+  `world_binding`, `account`).
+- **Deletion and export.** `account_checks::erase_world_account` deletes an identity's
+  `world_move` row with its account row, and the data export carries the caller's own.
+
+Proved by `server-module/src/account_checks_tests.rs` (`mod character_move`) through the procedures
+with the service's answer stubbed, and by the tests of `accounts::move_character`,
+`movement::move_position` and `ranking::move_profile`. `docs/local-play.md` ("One character per
+account: what a move carries and what it costs") holds the measured cost.
+
+**Why.** An account owns the game once, and a browser connects under a fresh identity at every
+session, so without a move a returning player would start over or hold one character per browser
+session. The move is its own primitive because the guest claim's re-key leaves the source a
+starter marker, a zeroed wallet and a tombstoned profile: the claim retires its source, while a
+move's source must be able to receive the character again. For the same reason the profile row is
+re-keyed whole. `profile` rows otherwise survive every path, an account deletion included, so the
+ladder never loses an entry; a move keeps the entry and changes the identity it is filed under.
+The presence rows are deleted and not re-keyed because `guards::authorize_move` refuses an input
+sequence at or below the character's last one, so a second client would be refused until its
+counter passed the first's; because the owner's relay names an identity that is not connected,
+whose `player` row no disconnect would remove; and because a client calls `join_game` after its
+check. The join is refused while a `world_move` row stands because a build that entitles the
+source by its token, or that does not enforce ownership, would otherwise grant it a second
+starter. An address can change hands while a world still presents its `ip:` name, and a ticket
+through it would carry a character to the address's new holder. A pending deletion keeps the
+character under the identity its cascade is keyed on. One reason covers the three states of the
+other identity so the answer tells a ticket's holder nothing about it. The relay moves too: an
+identity the access rule has not admitted reaches the world only through it, and the owner already
+holds the database.
+
+**Rules out.** `accounts::rekey_all` for a move; re-keying a `player`, `character` or `move_intent`
+row to another identity; a marker, a zeroed row or a tombstone left at the source; a second
+character for one handle; a move through an `ip:` name the world has not confirmed; a move out of
+a battle, a trade or a pending deletion; a log line inside the transaction (its body may run
+twice); a refusal reason that tells which state the other identity is in. Defaults the operator
+may overrule: `playtest_event` rows, seven-day telemetry of the source's battles, stay under the
+source as finished battles do; a move has no cooldown, so two clients of one account can move a
+character back and forth at the rate the check budget allows; a `world_move` row of an identity
+that never returns is kept; and `unbind_world_account`, the owner's `drop_world_binding` and a
+guest claim free a handle while its identity keeps the character, after which a check from another
+identity starts a second character.
 
 ## The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the module
 

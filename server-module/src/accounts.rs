@@ -12,7 +12,11 @@
 //! `world_binding::erase_world_binding`, `account_checks::erase_world_account`,
 //! `schema::erase_tactical_rows` and `battle::anonymize_battles`, for the guest
 //! identity it retires. The reaper also calls `world_binding::delist_account_of`,
-//! which takes the deleted identity's handle off the host's list. Bare reads of
+//! which takes the deleted identity's handle off the host's list. `move_character`,
+//! which an account check runs to move a character between two identities of one
+//! account, delegates the same way: the `rekey_*` family, `npc::erase_npc_state`,
+//! `economy::erase_wallet`, `pvp::erase_pvp_rows`, `ranking::move_profile`,
+//! `movement::move_position` and `privacy::purge_export_bundles`. Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read
 //! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.

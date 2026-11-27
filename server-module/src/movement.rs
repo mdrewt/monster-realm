@@ -217,12 +217,14 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 /// read back by every later one (`onboarding::ensure_handle`), and the level of its lead
 /// party monster (`battle::refresh_lead_level`, 0 with no party).
 /// The character stands where the account's last one stood when it disconnected
-/// (`take_start`), or on the spawn. Rejects a double-join within the same session.
+/// (`take_start`), or on the spawn. Rejects a double-join within the same session, and a
+/// caller whose character was moved to another identity until it checks its account in
+/// again (`account_checks::require_not_moved`).
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     crate::access::require_admitted(ctx, "join_game")?;
     // Ownership: an enforcing build lets only an entitled caller join. It reads the caller's
-    // token and, when the token does not entitle it, the caller's world binding.
+    // token and, when the token does not entitle it, the caller's checked account.
     crate::accounts::require_entitled(ctx, &crate::accounts::BUILD_PROFILE, "join_game")?;
     // A caller whose character plays under another identity checks its account in first.
     crate::account_checks::require_not_moved(ctx, "join_game")?;

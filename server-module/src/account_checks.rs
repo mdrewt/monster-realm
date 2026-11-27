@@ -1,15 +1,22 @@
 //! `account_checks` — server-module domain submodule.
 //!
 //! A world asks our account service itself whether a player's account owns the game, through
-//! three procedures, and keeps the answer in `world_account`.
+//! three procedures, and keeps the answer in `world_account`. An account plays one character
+//! in a world, whatever the client: a check under a handle another identity holds moves that
+//! character to the caller.
 //!
 //! First contact: a client whose identity the world does not know gets a one-use ticket from
 //! the account service (`POST /ticket`) and calls [`check_account`]. The world presents the
 //! ticket, the names it answers to and its database identity at `POST /world/check`, and stores
 //! what the service answers: the account's handle in this world and whether it owns the game.
 //! An identity the access rule has not admitted cannot connect, so the world's owner relays its
-//! ticket through [`check_account_for`]. Until a character can move between identities, a handle
-//! another identity holds is refused, and so is a second account for an identity that holds one.
+//! ticket through [`check_account_for`]. A second account for an identity that holds one is
+//! refused. A handle another identity holds is the same account at another client: its character
+//! moves to the identity the ticket is redeemed for (`accounts::move_character`), the handle's row
+//! points at it, and `world_move` records the identity the character left, which reads its own
+//! row through `my_world_move` and is refused `join_game` until it checks in again. The move
+//! runs only through a ticket whose name can carry one ([`name_carries_move`]) and is refused
+//! while the caller owns a character or [`move_gates`] refuses.
 //!
 //! Each later connection: the connect reducer arms a one-shot [`recheck_account`] run for an
 //! identity whose row was last checked [`RECHECK_MIN_AGE_MS`] ago or more
@@ -31,11 +38,13 @@
 //! log line or return value holds a handle.
 //!
 //! WRITE-ISOLATION: this module alone declares and writes `world_account`,
-//! `world_check_budget` and `recheck_schedule`. Its procedures write nothing else but
-//! `world_allowlist`, through `crate::world_binding`: the owner's own handle under the
-//! `Allowlist` rule, and a handle the service answered under a newer key. They read the owner,
-//! the rule and the admission through `crate::access`, the world's names through
-//! `crate::world_binding` and the deletion state through `crate::accounts`.
+//! `world_check_budget`, `recheck_schedule` and `world_move`. Its procedures write two things
+//! else, each through the owning module: `world_allowlist` through `crate::world_binding` (the
+//! owner's own handle under the `Allowlist` rule, and a handle the service answered under a
+//! newer key), and the tables of a character through `crate::accounts::move_character`. They
+//! read the owner, the rule and the admission through `crate::access`, the world's names
+//! through `crate::world_binding`, and the deletion state and what an identity owns through
+//! `crate::accounts`.
 
 use crate::accounts::{BuildProfile, BUILD_PROFILE};
 use crate::guards::log_reject;
@@ -74,7 +83,8 @@ pub(crate) const REJECT_HANDLE_HELD: &str =
 pub(crate) const REJECT_IDENTITY_HOLDS_ANOTHER: &str =
     "this identity already holds another account here";
 pub(crate) const REJECT_NOT_DATABASE: &str = "only the database runs this check";
-pub(crate) const REJECT_CALLER_OWNS_CHARACTER: &str = "this identity already plays a character here";
+pub(crate) const REJECT_CALLER_OWNS_CHARACTER: &str =
+    "this identity already plays a character here";
 pub(crate) const REJECT_MOVE_NOT_NOW: &str = "this character cannot change clients right now";
 pub(crate) const REJECT_MOVE_FAILED: &str = "the character could not be moved";
 pub(crate) const REJECT_CHARACTER_MOVED: &str =
@@ -123,7 +133,7 @@ pub struct RecheckSchedule {
 }
 
 /// An identity a character was moved away from, and when. PRIVATE; an identity reads its own
-/// row through `my_world_move`.
+/// row through `my_world_move`. The identity's next successful check deletes the row.
 #[spacetimedb::table(accessor = world_move)]
 pub struct WorldMove {
     #[primary_key]
