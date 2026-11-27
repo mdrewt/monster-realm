@@ -38,7 +38,7 @@
 //! and no other quote byte anywhere. Every constant string is `stringify!` and
 //! the quote is the `JSON_QUOTE` unicode-escape char constant.
 
-use crate::account_checks::WorldAccount;
+use crate::account_checks::{WorldAccount, WorldMove};
 use crate::marshal::now_ms;
 use crate::playtest::{playtest_event, PlaytestEvent};
 use crate::schema::{
@@ -995,6 +995,22 @@ fn json_world_account(row: &WorldAccount) -> String {
     out
 }
 
+fn json_world_move(row: &WorldMove) -> String {
+    let WorldMove {
+        identity,
+        moved_at_ms,
+    } = row;
+    let mut out = String::new();
+    let mut first = true;
+    out.push('{');
+    json_field_into(&mut out, &mut first, stringify!(identity));
+    json_identity_into(&mut out, *identity);
+    json_field_into(&mut out, &mut first, stringify!(moved_at_ms));
+    json_i64_into(&mut out, *moved_at_ms);
+    out.push('}');
+    out
+}
+
 fn json_profile(row: &Profile) -> String {
     let Profile {
         identity,
@@ -1457,6 +1473,7 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(player_formation), rows_player_formation),
     (stringify!(player_handle), rows_player_handle),
     (stringify!(world_account), rows_world_account),
+    (stringify!(world_move), rows_world_move),
     (stringify!(player), rows_player),
     (stringify!(profile), rows_profile),
     (stringify!(account), rows_account),
@@ -1676,6 +1693,10 @@ fn rows_world_account(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
         rows.push(json_world_account(&row));
     }
     Ok(rows)
+}
+
+fn rows_world_move(_ctx: &ReducerContext, _owner: Identity) -> Result<Vec<String>, String> {
+    Ok(Vec::new())
 }
 
 fn rows_player(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {

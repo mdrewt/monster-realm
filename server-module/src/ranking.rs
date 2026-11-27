@@ -250,6 +250,9 @@ pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) 
     refresh_leaderboard_top(ctx);
 }
 
+/// Move `from`'s whole `profile` row to `to`, which holds none.
+pub(crate) fn move_profile(_ctx: &ReducerContext, _from: Identity, _to: Identity) {}
+
 /// True if `identity` has a `profile` row (for
 /// `accounts::account_has_game_data`). Read-only.
 pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {

@@ -1310,6 +1310,9 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_world_account, public)]` in account_checks.rs.
     #[link_name = "__preinit__20_register_describer_my_world_account"]
     fn register_view_my_world_account();
+    /// `#[spacetimedb::view(accessor = my_world_move, public)]` in account_checks.rs.
+    #[link_name = "__preinit__20_register_describer_my_world_move"]
+    fn register_view_my_world_move();
     // Every `#[spacetimedb::table]` describer (macro `table.rs:1421`
     // `__preinit__20_register_describer_<accessor>`), registered before the views
     // so `Fixture::module_def` carries the full generated table set — the
@@ -1458,6 +1461,8 @@ unsafe extern "C" {
     fn register_table_world_check_budget();
     #[link_name = "__preinit__20_register_describer_recheck_schedule"]
     fn register_table_recheck_schedule();
+    #[link_name = "__preinit__20_register_describer_world_move"]
+    fn register_table_world_move();
     /// `vendor/spacetimedb/src/rt.rs:1543` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1472,7 +1477,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 72] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 73] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1545,10 +1550,11 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 72] = [
     register_table_world_account,
     register_table_world_check_budget,
     register_table_recheck_schedule,
+    register_table_world_move,
 ];
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 20] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 21] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1569,6 +1575,7 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 20] = [
     register_view_my_world_binding,
     register_view_my_bind_nonce,
     register_view_my_world_account,
+    register_view_my_world_move,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1627,6 +1634,9 @@ pub(crate) const VIEW_MY_BIND_NONCE: usize = 18;
 
 /// `VIEWS` id of `my_world_account` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_WORLD_ACCOUNT: usize = 19;
+
+/// `VIEWS` id of `my_world_move` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_WORLD_MOVE: usize = 20;
 
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
 /// `RawModuleDef` (V10 on 2.16.1, `vendor/spacetimedb/src/rt.rs:1251`), captured once per

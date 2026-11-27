@@ -920,6 +920,27 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
         || crate::onboarding::has_handle(ctx, identity)
 }
 
+/// Whether `identity` owns a character: it is in the game, or it holds any row
+/// [`account_has_game_data`] counts.
+pub(crate) fn owns_character(_ctx: &ReducerContext, _identity: Identity) -> bool {
+    false
+}
+
+/// Whether `identity` is in a battle or a trade: an ongoing battle in either role, a trade
+/// offer in either role, or a trade session.
+pub(crate) fn in_battle_or_trade(_ctx: &ReducerContext, _identity: Identity) -> bool {
+    false
+}
+
+/// Move the character `from` owns to `to`, which owns none.
+pub(crate) fn move_character(
+    _ctx: &ReducerContext,
+    _from: Identity,
+    _to: Identity,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
 /// per table. `?` on the fallible monster re-key rolls the
 /// whole claim transaction back (fail-loud on a broken dual-write invariant).

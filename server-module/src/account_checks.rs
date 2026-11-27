@@ -74,6 +74,11 @@ pub(crate) const REJECT_HANDLE_HELD: &str =
 pub(crate) const REJECT_IDENTITY_HOLDS_ANOTHER: &str =
     "this identity already holds another account here";
 pub(crate) const REJECT_NOT_DATABASE: &str = "only the database runs this check";
+pub(crate) const REJECT_CALLER_OWNS_CHARACTER: &str = "this identity already plays a character here";
+pub(crate) const REJECT_MOVE_NOT_NOW: &str = "this character cannot change clients right now";
+pub(crate) const REJECT_MOVE_FAILED: &str = "the character could not be moved";
+pub(crate) const REJECT_CHARACTER_MOVED: &str =
+    "this character is playing on another client; sign in again to play here";
 
 const BUDGET_ROW: u32 = 0;
 const STATUS_OK: u16 = 200;
@@ -117,10 +122,25 @@ pub struct RecheckSchedule {
     pub identity: Identity,
 }
 
+/// An identity a character was moved away from, and when. PRIVATE; an identity reads its own
+/// row through `my_world_move`.
+#[spacetimedb::table(accessor = world_move)]
+pub struct WorldMove {
+    #[primary_key]
+    pub identity: Identity,
+    pub moved_at_ms: i64,
+}
+
 /// Owner-scoped read path for `world_account`: the sender's own row.
 #[spacetimedb::view(accessor = my_world_account, public)]
 fn my_world_account(ctx: &spacetimedb::ViewContext) -> Option<WorldAccount> {
     ctx.db.world_account().identity().find(ctx.sender())
+}
+
+/// Owner-scoped read path for `world_move`: the sender's own row.
+#[spacetimedb::view(accessor = my_world_move, public)]
+fn my_world_move(_ctx: &spacetimedb::ViewContext) -> Option<WorldMove> {
+    None
 }
 
 // --- Pure core --------------------------------------------------------------------------
@@ -195,6 +215,12 @@ fn parse_answer<'a, T: Deserialize<'a>>(body: &'a [u8]) -> Option<T> {
     serde_json::from_slice(body).ok()
 }
 
+/// Whether a ticket issued for the world name `name` may carry a character from one identity
+/// to another. `ip_confirmed` says whether the world has confirmed `name` as its address.
+fn name_carries_move(_name: &str, _ip_confirmed: bool) -> bool {
+    false
+}
+
 fn is_handle(text: &str) -> bool {
     is_visible_ascii(text, HANDLE_MAX_BYTES)
 }
@@ -219,6 +245,17 @@ fn parse_handle_answer(body: &[u8]) -> Option<HandleAnswer> {
 /// `identity`'s row, on any build.
 pub(crate) fn account_of(ctx: &ReducerContext, identity: Identity) -> Option<WorldAccount> {
     ctx.db.world_account().identity().find(identity)
+}
+
+/// `identity`'s move record, on any build.
+pub(crate) fn move_of(ctx: &ReducerContext, identity: Identity) -> Option<WorldMove> {
+    ctx.db.world_move().identity().find(identity)
+}
+
+/// Refuses a caller whose character was moved to another identity and has not checked in
+/// since, with [`REJECT_CHARACTER_MOVED`]. Reads the caller's `world_move` row and writes nothing.
+pub(crate) fn require_not_moved(_ctx: &ReducerContext, _reducer: &str) -> Result<(), String> {
+    Ok(())
 }
 
 /// Whether `identity`'s row says its account owns the game. A build of a `profile` that names

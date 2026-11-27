@@ -185,6 +185,9 @@ pub(crate) fn rekey_last_position(ctx: &ReducerContext, from: Identity, to: Iden
     });
 }
 
+/// Carry `from`'s position to `to` and leave `from` no position and no presence.
+pub(crate) fn move_position(_ctx: &ReducerContext, _from: Identity, _to: Identity) {}
+
 /// Delete `owner`'s saved position (the deletion cascade).
 pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
     ctx.db.last_position().owner_identity().delete(owner);

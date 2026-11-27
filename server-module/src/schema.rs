@@ -2197,6 +2197,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         basis: "names an identity whose account is about to be asked about again: a one-shot row the host spends at its one run, deleted with the identity's world_account row; not exported: it lives for moments",
         exportable: false,
     },
+    DataLifecycleEntry {
+        table: "world_move",
+        policy: DeletionPolicy::Erase,
+        basis: "names an identity a character was moved away from and when, deleted outright at cascade time and by that identity's next account check; a guest claim, the identity's own unbind and the owner's drop delete it too; exported as what the world tells that client about its character",
+        exportable: true,
+    },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---
     DataLifecycleEntry {
         table: "player",
