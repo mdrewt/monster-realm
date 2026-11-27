@@ -224,8 +224,8 @@ participant), `my_trade_session` (either participant), `my_export_bundle` (`priv
 `my_battle_units`, `my_battle_events`, `my_battle_clock` for either participant;
 `my_battle_queue`, `my_battle_deploy`, `my_formation` for the owner). Some tables have no
 client read path at all: `monster` (IVs, EVs, nature), `encounter` (spawn weights),
-`battle_wild` and `battle_wild_unit` (wild individuality seeds), `battle_secret` (the
-tactical seed), `battle_summary` (telemetry), `battle_action` (secret PvP picks),
+`battle_wild_unit` (wild individuality seeds), `battle_secret` (the
+tactical seed), `battle_summary` (telemetry),
 `trade_session_snapshot` (the review copy of each monster offered in a trade session,
 genes included), `move_intent` (each character's undrained input queue and seq guard;
 `movement_tick` publishes a copy on the public `character` row), `last_position` (where
@@ -1157,7 +1157,7 @@ module keeps the write-back, terminal-sweep, faint-penalty and disconnect helper
 settle funnel calls. `marshal.rs` has no 1v1 row→`BattleMonster` marshaling helper and
 `content_cache.rs` no 1v1 skill, ability or type-chart cache: a helper only its own tests call is
 dead code, not a fallback engine. `game-core/src/combat/` follows the same rule. It holds the
-types stored in `Battle.state`, `battle_action` and the content rows, and the rules a production
+types stored in `Battle.state` and the content rows, and the rules a production
 path calls: the damage formula and accuracy check, the type chart, lead selection, the status
 countdown, the XP rules, and the PvP forfeit and challenge rules. Everything else in it (the
 turn driver in `combat/resolve.rs`, the enemy skill picker, the entry-ability hooks, the weather
@@ -1166,13 +1166,11 @@ lists what is left to remove and in what order. The tactical engine calls a carr
 rule's signature takes the 1v1 `BattleState`, the engine states it once in `tactics/`, pinned by
 tests that hold literal expected values. A test of a removed rule goes with it, naming the
 removed function or the surviving test of the rule it carried; a test that executes no product
-function is no check and goes for that reason. The 1v1
-tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from use, never
-dropped or reordered (see "Schema changes are additive"): a census test pins that no client-callable reducer
-reaches `pvp_deadline_schedule` (the erase cascade's disarm still deletes from it), and that `battle_action` and `battle_wild` are reached by exactly
-four tactical reducers (today only through the settle funnel's deletes — the census pins WHICH
-reducers reach a table, not how). The account-e2e's vacuity allowlist names each retired table
-with that reason.
+function is no check and goes for that reason. The module declares
+no 1v1 table, reducer or pick type: `battle_action`, `battle_wild`, `pvp_deadline_schedule`, the
+scheduled `pvp_deadline_reaper` and `PvpAction` went in a schema consolidation (see "Schema
+changes are additive"), and tests over the generated module definition hold that none of them
+is declared.
 
 **Why.** Two engines reachable at once would need a per-battle discriminator in every
 guard, settlement and client renderer, and a runtime toggle is exactly the surface a
@@ -1188,8 +1186,8 @@ formulas. The wave states its rule on `TacticalState` from the values the plan f
 and `calc_damage` already carries the Rain and Sun modifier through its `weather` parameter.
 
 **Rules out.** A feature flag or config row selecting the engine; starting a tactical
-battle through a dev-only reducer in any shipped build; dropping or reordering the
-retired tables (live data, additive schema).
+battle through a dev-only reducer in any shipped build; a 1v1 table or reducer brought back
+as a fallback.
 In `combat/`: a 1v1 rule kept as the source for a later wave or as the expected value of a
 tactics test; a second copy of a rule the engine can call; keeping a test that executes no
 product function until a survivor is found for it.
@@ -1372,25 +1370,38 @@ older crate than the one that ships; any edit to the copies beyond such attribut
 
 ## Schema changes are additive
 
-**Decision.** New columns go at the end of a table and carry an explicit `#[default]`
-(`i64` defaults are typed, e.g. `#[default(0i64)]`, because an untyped `0` encodes as
-4 bytes and the publish fails). Illegal combinations of states that a column-type
-change would rule out are enforced by a checked predicate instead (for example
-`accounts::account_state_is_legal`). Whether a table is scheduled is fixed at first
-publish, so scheduled tables ship together with their reducer. A new table needs an
-entry in `schema::DATA_LIFECYCLE_MANIFEST` (a test fails otherwise). A new column on
-an exportable table breaks the compile of the exhaustive export fixtures in
-`server-module/src/privacy_tests.rs`, which forces an explicit export-or-omit
-decision in that table's serializer in `privacy.rs`. A column whose job has moved stays
-in the table: `player.last_input_seq` is retired (the seq guard is
-`move_intent.last_input_seq`), is written as 0 by `join_game` and never again, and is
-still exported.
+**Decision.** Between consolidations a schema change only adds. New columns go at the end of a
+table and carry an explicit `#[default]` (`i64` defaults are typed, e.g. `#[default(0i64)]`,
+because an untyped `0` encodes as 4 bytes and the publish fails). Illegal combinations of states
+that a column-type change would rule out are enforced by a checked predicate instead (for
+example `accounts::account_state_is_legal`). Whether a table is scheduled is fixed at first
+publish, so scheduled tables ship together with their reducer. A new table needs an entry in
+`schema::DATA_LIFECYCLE_MANIFEST` (a test fails otherwise). A new column on an exportable table
+breaks the compile of the exhaustive export fixtures in `server-module/src/privacy_tests.rs`,
+which forces an explicit export-or-omit decision in that table's serializer in `privacy.rs`. A
+table or column whose job has moved stays in place, unused, until a consolidation.
 
-**Why.** SpacetimeDB's automatic migration accepts only appended columns with
-defaults. Anything else needs `--delete-data`, which wipes every player.
+A consolidation is a slice whose spec declares it. It removes what additive changes left unused
+in one break, and it ships with a wipe of every database (`docs/runbooks/playtest-ops.md`,
+"A schema consolidation"). It raises `MIN_CLIENT_PROTOCOL` to the new `PROTOCOL_VERSION`, so
+every client built before it is told to update the game. The two schema evals
+(`battle-schema-snapshot`, `spacetime-type-snapshot`) compare each baseline with its copy at the
+merge-base and refuse a removal, a reorder or a type change; they skip that comparison only when
+the working baseline carries a top-level `consolidation` key whose value is in the evals' own
+`DECLARED_CONSOLIDATIONS` list and which the merge-base copy lacks. `--write` never writes the
+key, so the next schema change drops it, and a key kept past that change fails the eval.
 
-**Rules out.** Mid-struct column inserts, column removals, and type changes on a live
-table.
+**Why.** SpacetimeDB's automatic migration accepts only appended columns with defaults. Anything
+else needs `--delete-data`, which wipes every player. While no database holds data the game has
+promised to keep, a wipe costs nothing, and carrying dead tables into early access would cost
+every later reader of the schema, the deletion cascade and the export. So the unused parts go in
+declared breaks before early access, and the additive rule holds between them and after the
+last one.
+
+**Rules out.** Mid-struct column inserts, column removals, and type changes on a live table
+outside a consolidation. A consolidation once a database holds player data the game keeps. A
+slice skipping the merge-base comparison on its own authority: the declared list lives in an
+eval file, which a slice edits only when its spec names that file.
 
 ## The module publishes its protocol numbers; a publish that keeps data is followed by the owner's `sync_content`
 
@@ -2843,9 +2854,8 @@ comes first.
 ## The gate checks a world's password; the module never receives one
 
 **Decision.** No reducer the module declares takes a password, a hash of one or a value derived
-from one. `set_world_access(rule, admit)` is owner-only and stores the rule with an empty salt and
-hash under every rule, so a salt and hash an earlier module stored go at the owner's next call; the
-module never reads them, and they admit nobody meanwhile. A `Password` world admits the owner and
+from one. `set_world_access(rule, admit)` is owner-only and stores the rule and nothing else: `world_access`
+has no salt or hash column. A `Password` world admits the owner and
 the identities holding a `world_admission` row, and nothing else (see "A world that is not open
 refuses an unadmitted identity at connect and in every reducer; the owner relays the door"). The
 host gate checks the password: it keeps an Argon2id salt and hash in the world's directory with the
@@ -2864,8 +2874,7 @@ ruling, 2026-11-22 (monster-realm#840).
 and every wrong guess counted by a committed call, sits on the host's disk whatever the table
 stores; a password stretched before the call is still a password-equivalent there. The operator
 named a reader of logs as the attacker. The gate sees the source address, the one count that bounds
-guessing when an identity costs nothing, and it holds the owner credential that admits. The salt
-and hash columns stay, written empty, because schema changes are additive.
+guessing when an identity costs nothing, and it holds the owner credential that admits.
 
 **Rules out.** A reducer argument that carries a typed password, its hash or anything derived from
 it, under any name; a door reducer of any kind in the module; counting wrong passwords in the

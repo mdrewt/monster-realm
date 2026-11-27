@@ -1414,7 +1414,6 @@ const EXPECTED_SCHEDULED: &[&str] = &[
     "movement_tick",
     "mr_heartbeat",
     "playtest_reaper",
-    "pvp_deadline_reaper",
     "tactical_advance",
     "tactical_deadline_fire",
     "trade_offer_reaper",
@@ -1481,17 +1480,17 @@ const EXPECTED_NO_WRITES: &[&str] = &[
     "start_guest_claim",
 ];
 
-/// Vacuity floor for the manifest-derived classified set (the 48 tables the
+/// Vacuity floor for the manifest-derived classified set (the 47 tables the
 /// manifest classifies other than `NotOwned`, `world_binding` and
 /// `world_bind_nonce` among them): the set itself is derived in the test from
 /// `DATA_LIFECYCLE_MANIFEST`, so this only refuses a manifest that shrank.
-const CLASSIFIED_TABLE_FLOOR: usize = 48;
+const CLASSIFIED_TABLE_FLOOR: usize = 47;
 
-/// Reducer floor for the real corpus: the 70 reducer attributes it carries
+/// Reducer floor for the real corpus: the 69 reducer attributes it carries
 /// (the five trade-session reducers and the eight world-binding reducers
 /// included), so the per-reducer verdict pin cannot be satisfied by an engine
 /// that finds almost none of them.
-const REDUCER_FLOOR: usize = 70;
+const REDUCER_FLOOR: usize = 69;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)
@@ -1784,7 +1783,7 @@ fn real_crate_matches_the_reducer_rosters_with_no_dev_tactical_start_bt16_1() {
         classified, derived,
         "the classified set IS the manifest minus NotOwned"
     );
-    for table in ["monster", "battle", "pvp_deadline_schedule"] {
+    for table in ["monster", "battle"] {
         assert!(classified.contains(table), "{table} is manifest-classified");
     }
     assert!(
@@ -2050,198 +2049,6 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
         verdict_of(&report, "recheck_account"),
         &writes(&["world_account", "world_allowlist"])
     );
-}
-
-/// bt-17 (BT17.1): the tables the 1v1 engine wrote and that stay in the schema, retired from use
-/// ("no new rows written"): the 1v1 action log, the 1v1 wild roster and the 60 s secret-pick
-/// deadline schedule.
-const RETIRED_1V1_TABLES: &[&str] = &["battle_action", "battle_wild", "pvp_deadline_schedule"];
-
-/// One synthetic reducer per retired table, each writing it with no gate: the anti-vacuity half
-/// of the bt-17 census (the accessor names really are what the census sees).
-fn fixture_synthetic_retired_writers() -> String {
-    let mut src = String::new();
-    for (i, table) in RETIRED_1V1_TABLES.iter().enumerate() {
-        src.push_str(&fixture_table_item(table, "", &format!("SynthRetired{i}")));
-        src.push_str(&fixture_reducer(
-            &fixture_reducer_attr(""),
-            &format!("synth_bt17_writes_{table}"),
-            "",
-            &[fixture_write_stmt(table, "insert"), String::from(OK_TAIL)],
-        ));
-    }
-    src
-}
-
-/// The client-callable reducers that legitimately reach `battle_wild` after bt-17, and only by
-/// DELETING the rows of a finished 1v1-anchored battle: each tactical reducer that can end a
-/// battle runs `tactics::finish` → `tactics_settle::settle` → `battle::sweep_prior_terminals`
-/// (the legacy funnel's prior-terminal sweep, run on every `Close` kind), which clears the old
-/// anchor's `battle_wild` roster. The census counts every write verb (insert AND delete), so a
-/// delete-only sweep is a "reach" — pinned here as an exact set, so a NEW reducer reaching
-/// `battle_wild` (an insert path above all) still fails.
-const BT17_BATTLE_WILD_SWEEPERS: &[&str] =
-    &["cancel_queue", "deploy_units", "forfeit", "submit_queue"];
-
-/// The client-callable reducers that reach `battle_wild` AND `pvp_deadline_schedule` by erasing a
-/// retired identity's battles: `complete_guest_claim` calls `battle::anonymize_battles` for the
-/// guest identity it retires, which, per battle row naming that identity, deletes the row's
-/// `battle_wild` roster and runs `pvp::disarm_pvp_deadlines` (a delete on
-/// `pvp_deadline_schedule`). Neither helper inserts into either table, and neither touches
-/// `battle_action`. Pinned as an exact set.
-const BT17_RETIRED_IDENTITY_ERASERS: &[&str] = &["complete_guest_claim"];
-
-/// The seven 1v1 reducers bt-17 deletes, plus the deleted dev-only `start_wild_battle`.
-const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
-    "start_battle",
-    "submit_attack",
-    "swap_active",
-    "flee",
-    "use_battle_item",
-    "attempt_recruit",
-    "submit_pvp_action",
-    "start_wild_battle",
-];
-
-/// BT17.1 "retired from use (no new rows written)", as a census over the real crate, run once PER
-/// retired table (the classified set narrowed to that one table, NO owner exemption), so every
-/// reducer that reaches a write verb on it (gated or not) is listed for that table:
-///   (a) `pvp_deadline_schedule` — reached by EXACTLY [`BT17_RETIRED_IDENTITY_ERASERS`]
-///       (`battle::anonymize_battles` → `pvp::disarm_pvp_deadlines`, a delete; nothing inserts into
-///       the table);
-///   (b) `battle_action` — reached by EXACTLY [`BT17_BATTLE_WILD_SWEEPERS`]
-///       (`pvp::settle_pvp_battle`'s stale-action delete under the settle funnel; nothing inserts
-///       into the table);
-///   (c) `battle_wild` — reached by EXACTLY [`BT17_BATTLE_WILD_SWEEPERS`] (the tactical terminal
-///       sweep's deletes) plus [`BT17_RETIRED_IDENTITY_ERASERS`] (`anonymize_battles`' delete of
-///       each erased battle's roster);
-///   (d) none of [`BT17_RETIRED_1V1_REDUCERS`] appears in any table's set.
-/// BT17.1 says "no NEW rows written", and the census cannot tell an insert from a delete, so a
-/// delete-only reach is listed; every listed reach is a delete, and the exact-set pins fail any
-/// reducer outside them. Lifecycle and scheduled reducers keep their own verdicts and are out of
-/// scope (the `pvp_deadline_reaper` stays scheduled: its scheduled-ness is fixed at first publish,
-/// and it only consumes rows nothing arms; `account_deletion_reaper`, which also runs
-/// `anonymize_battles`, is scheduled).
-///
-/// RED BEFORE bt-17: `submit_pvp_action` (a client-callable reducer until bt-17, now deleted)
-/// reached all three tables (`battle_action`, `pvp_deadline_schedule`, and `battle_wild` through
-/// `write_back_battle_results`); `submit_attack`, `swap_active`, `flee` and `attempt_recruit`
-/// reached `battle_wild` through the same write-back; `start_wild_battle` inserted `battle_wild`.
-///
-/// kills: a 1v1 reducer left a reducer (its attribute kept — it then reaches a retired table and the
-/// exact-set pins fail); any reducer OUTSIDE the pinned sets reaching a retired table; any
-/// client-callable reducer other than `complete_guest_claim` reaching `pvp_deadline_schedule`;
-/// `complete_guest_claim` reaching `battle_action` (lifecycle and scheduled reducers keep their own
-/// verdicts). NOT killed (the census sees a reach, not a verb): an insert added INSIDE one of the
-/// pinned reducers or their helpers, or a de-attributed body re-wired into one of them — those are
-/// the reviewer's and the continuation's (which deletes the bodies).
-#[test]
-fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
-    let no_owners: &[&str] = &[];
-    let writers = |report: &census::Report| -> BTreeSet<String> {
-        report
-            .names_with(|v| {
-                matches!(
-                    v,
-                    census::Verdict::Gated { .. }
-                        | census::Verdict::Ungated { .. }
-                        | census::Verdict::Owner
-                )
-            })
-            .into_iter()
-            .map(String::from)
-            .collect()
-    };
-
-    // Anti-vacuity: the same per-table pipeline flags that table's synthetic writer (and, the
-    // census being per table, NOT the other two tables' writers).
-    let mut injected_sources = census::real_sources().expect("real_sources must read the crate");
-    injected_sources.push((String::from("synth"), fixture_synthetic_retired_writers()));
-    // Parsed once: the real corpus is the injected one minus its last (synthetic) file.
-    let injected_files = census::parse_sources(&injected_sources).expect("the corpus must parse");
-    for table in RETIRED_1V1_TABLES {
-        let only: BTreeSet<&str> = [*table].into_iter().collect();
-        let injected = census::census_parsed(&injected_files, &only, no_owners)
-            .expect("the real corpus plus the synthetic writers must census cleanly");
-        let flagged = writers(&injected);
-        for other in RETIRED_1V1_TABLES {
-            let name = format!("synth_bt17_writes_{other}");
-            assert_eq!(
-                flagged.contains(&name),
-                other == table,
-                "the {table} census must flag exactly its own synthetic writer ({name}); \
-                 flagged: {flagged:?}"
-            );
-        }
-    }
-
-    let real_files = &injected_files[..injected_files.len() - 1];
-    let per_table = |table: &str| -> (BTreeSet<String>, Vec<String>) {
-        let only: BTreeSet<&str> = [table].into_iter().collect();
-        let report = census::census_parsed(real_files, &only, no_owners)
-            .expect("the real corpus must census cleanly");
-        let set = writers(&report);
-        let described = set
-            .iter()
-            .map(|name| format!("{name}: {}", describe_verdict(&report, name)))
-            .collect();
-        (set, described)
-    };
-
-    let erasers: BTreeSet<String> = BT17_RETIRED_IDENTITY_ERASERS
-        .iter()
-        .map(|s| String::from(*s))
-        .collect();
-
-    let (deadline, deadline_desc) = per_table("pvp_deadline_schedule");
-    assert_eq!(
-        deadline, erasers,
-        "(a) pvp_deadline_schedule is reached by EXACTLY the reducers that erase a retired \
-         identity's battles through battle::anonymize_battles -> pvp::disarm_pvp_deadlines (a \
-         delete; BT17.1: the 1v1 secret-pick deadline is armed by nothing); reached by: \
-         {deadline_desc:#?}"
-    );
-
-    let sweepers: BTreeSet<String> = BT17_BATTLE_WILD_SWEEPERS
-        .iter()
-        .map(|s| String::from(*s))
-        .collect();
-
-    // Measured on the purged tree (orchestrator correction, disclosed; the tester pre-authorised
-    // "pin that set the same way as (c)" if a settle path reached this table too): the tactical
-    // settle funnel reaches `pvp::settle_pvp_battle`, whose stale-action sweep deletes the finished
-    // battle's `battle_action` rows, so the same four reducers reach it — a delete, never a new row.
-    let (action, action_desc) = per_table("battle_action");
-    assert_eq!(
-        action, sweepers,
-        "(b) battle_action is reached by EXACTLY the tactical reducers whose terminal path runs \
-         tactics::finish -> tactics_settle::settle -> pvp::settle_pvp_battle (its stale-action delete, \
-         not a new row — the 1v1 action log gains no row, BT17.1); reached by: {action_desc:#?}"
-    );
-
-    let (wild, wild_desc) = per_table("battle_wild");
-    let wild_expected: BTreeSet<String> = sweepers.union(&erasers).cloned().collect();
-    assert_eq!(
-        wild, wild_expected,
-        "(c) battle_wild is reached by EXACTLY the tactical reducers whose terminal path runs \
-         tactics::finish -> tactics_settle::settle -> battle::sweep_prior_terminals, plus the \
-         reducers that erase a retired identity's battles through battle::anonymize_battles \
-         (each a delete of a finished anchor's roster, not a new row); reached by: {wild_desc:#?}"
-    );
-
-    for name in BT17_RETIRED_1V1_REDUCERS {
-        for (table, set) in [
-            ("pvp_deadline_schedule", &deadline),
-            ("battle_action", &action),
-            ("battle_wild", &wild),
-        ] {
-            assert!(
-                !set.contains(*name),
-                "(d) the retired 1v1 reducer {name} still reaches {table}: it must no longer be a \
-                 reducer (BT17.1)"
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2806,44 +2613,13 @@ mod admission_roster {
         w
     }
 
-    /// A `Password` world whose row holds no salt and no hash.
+    /// A `Password` world.
     fn password_world(fx: &Fixture) -> World<'_> {
         world_with(
             fx,
             &WorldAccess {
                 id: 0,
                 rule: WorldAccessRule::Password,
-                password_salt: Vec::new(),
-                password_hash: Vec::new(),
-            },
-        )
-    }
-
-    /// The salt and the Argon2id hash under it that an earlier module stored for a
-    /// `Password` world (the access tests' independent known answer).
-    const LEGACY_SALT: &[u8; 16] = b"0123456789abcdef";
-    const LEGACY_HASH_HEX: &str =
-        "ae4d8c8b713876044c8347c76986a9b5655944aaacfffe9bea4dff9e7b6a1899";
-
-    fn unhex(hex: &str) -> Vec<u8> {
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("a known answer is hex"))
-            .collect()
-    }
-
-    /// A `Password` world whose row holds [`LEGACY_SALT`] and the hash under it, as an earlier
-    /// module stored it.
-    fn legacy_password_world(fx: &Fixture) -> World<'_> {
-        let hash = unhex(LEGACY_HASH_HEX);
-        assert_eq!(hash.len(), 32, "fixture: a full Argon2id hash");
-        world_with(
-            fx,
-            &WorldAccess {
-                id: 0,
-                rule: WorldAccessRule::Password,
-                password_salt: LEGACY_SALT.to_vec(),
-                password_hash: hash,
             },
         )
     }
@@ -2997,7 +2773,7 @@ mod admission_roster {
         );
     }
 
-    /// The sweep on a `Password` world whose row holds no salt and no hash.
+    /// The sweep on a `Password` world.
     ///
     /// kills: a client-callable reducer with no admission check; one whose check is not its
     /// first statement (it reads, writes or scans first, or refuses with its own earlier
@@ -3007,22 +2783,6 @@ mod admission_roster {
         let fx = fixture();
         let w = password_world(&fx);
         assert_every_player_reducer_refuses_first(&fx, &w, "a Password world");
-    }
-
-    /// The sweep on a `Password` world whose row holds a salt and hash an earlier module
-    /// stored: nothing they hold lets the caller into any player reducer.
-    ///
-    /// kills: a reducer that admits a caller because the world holds a salt and hash (any
-    /// reducer let through while they exist); a player reducer with no admission check.
-    #[test]
-    fn every_player_reducer_refuses_an_unadmitted_caller_on_a_legacy_password_world_lpw20_2() {
-        let fx = fixture();
-        let w = legacy_password_world(&fx);
-        assert_every_player_reducer_refuses_first(
-            &fx,
-            &w,
-            "a Password world holding a legacy salt and hash",
-        );
     }
 
     /// The sweep on a world whose `Password` row the owner's `set_world_access(Password, [])`
@@ -3290,7 +3050,6 @@ mod reducer_arguments {
         declare_reducer!(d, SCHEDULED, crate::observability::mr_heartbeat);
         declare_reducer!(d, SCHEDULED, crate::playtest::playtest_reaper);
         declare_reducer!(d, SCHEDULED, crate::privacy::export_bundle_reaper);
-        declare_reducer!(d, SCHEDULED, crate::pvp::pvp_deadline_reaper);
         declare_reducer!(d, SCHEDULED, crate::pvp::battle_challenge_reaper);
         declare_reducer!(d, SCHEDULED, crate::summary_reaper::battle_summary_reaper);
         declare_reducer!(d, SCHEDULED, crate::tactics::tactical_deadline_fire);
@@ -3698,5 +3457,184 @@ mod lpw34_7_unstable {
             filter.ends_with("::Filter"),
             "the type name of spacetimedb::Filter is {filter}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The consolidated schema, read from the generated module definition
+// ---------------------------------------------------------------------------
+
+/// The module's generated definition declares none of the 1v1 action, wild-battle and deadline
+/// tables, schedules no deadline reaper, and carries `player` and `world_access` with exactly
+/// the columns the consolidated schema names.
+mod consolidated_schema {
+    use crate::native_host_tests::fixture;
+    use spacetimedb::sats::AlgebraicType;
+    use spacetimedb::spacetimedb_lib::db::raw_def::v10::RawModuleDefV10;
+    use std::collections::BTreeSet;
+
+    /// The source names of the tables `def` declares.
+    fn table_names(def: &RawModuleDefV10) -> BTreeSet<String> {
+        def.tables()
+            .unwrap_or_else(|| panic!("the generated module def carries no Tables section"))
+            .iter()
+            .map(|t| t.source_name.to_string())
+            .collect()
+    }
+
+    /// The column names of `table`'s row, in declared order.
+    fn columns_of(def: &RawModuleDefV10, table: &str) -> Vec<String> {
+        let ts = def
+            .typespace()
+            .unwrap_or_else(|| panic!("the generated module def carries no typespace"));
+        let tables = def
+            .tables()
+            .unwrap_or_else(|| panic!("the generated module def carries no Tables section"));
+        let Some(t) = tables.iter().find(|t| &*t.source_name == table) else {
+            panic!("`{table}` is not in the generated module def")
+        };
+        let AlgebraicType::Product(row) = &ts[t.product_type_ref] else {
+            panic!("`{table}`'s row type is not a product")
+        };
+        row.elements
+            .iter()
+            .map(|e| e.name.as_deref().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// The generated table list holds no `battle_action`, `battle_wild` or
+    /// `pvp_deadline_schedule`, and holds the live battle tables beside them.
+    ///
+    /// kills: any of the three tables left declared; `battle_wild_unit` dropped with
+    /// `battle_wild`; a table listing that reads empty.
+    #[test]
+    fn the_generated_tables_hold_none_of_the_three_dropped_tables_lpw32_1() {
+        let fx = fixture();
+        let names = table_names(&fx.module_def());
+        for live in [
+            "battle_wild_unit",
+            "battle",
+            "battle_challenge",
+            "move_intent",
+        ] {
+            assert!(
+                names.contains(live),
+                "fixture: `{live}` is a generated table (the listing is the module's)"
+            );
+        }
+        for gone in ["battle_action", "battle_wild", "pvp_deadline_schedule"] {
+            assert!(
+                !names.contains(gone),
+                "the generated module def declares the table `{gone}`"
+            );
+        }
+    }
+
+    /// No scheduled table runs `pvp_deadline_reaper` and no schedule sits on a table named
+    /// `pvp_deadline_schedule`, while `battle_challenge_reaper` stays scheduled; the generated
+    /// bindings' reducer roster holds no `pvp_deadline_reaper` and does hold `join_game`.
+    ///
+    /// kills: the deadline schedule table kept; the reaper kept as a client-callable reducer
+    /// once its schedule table goes; a schedule listing that reads empty.
+    #[test]
+    fn no_schedule_and_no_reducer_runs_the_pvp_deadline_reaper_lpw32_1() {
+        let fx = fixture();
+        let def = fx.module_def();
+        let schedules = def
+            .schedules()
+            .unwrap_or_else(|| panic!("the generated module def carries no Schedules section"));
+        let functions: BTreeSet<String> = schedules
+            .iter()
+            .map(|s| s.function_name.to_string())
+            .collect();
+        let tables: BTreeSet<String> = schedules.iter().map(|s| s.table_name.to_string()).collect();
+        assert!(
+            functions.contains("battle_challenge_reaper"),
+            "fixture: `battle_challenge_reaper` is scheduled; the schedules are {functions:?}"
+        );
+        assert!(
+            !functions.contains("pvp_deadline_reaper"),
+            "a scheduled table runs `pvp_deadline_reaper`"
+        );
+        assert!(
+            !tables.contains("pvp_deadline_schedule"),
+            "a schedule sits on the table `pvp_deadline_schedule`"
+        );
+
+        let reducers = super::admission_roster::generated_reducers();
+        assert!(
+            reducers.contains("join_game"),
+            "fixture: the generated bindings carry `join_game`"
+        );
+        assert!(
+            !reducers.contains("pvp_deadline_reaper"),
+            "the generated bindings carry `pvp_deadline_reaper` as a client-callable reducer"
+        );
+    }
+
+    /// `player`'s generated columns are exactly `identity`, `entity_id`, `name`, `online`,
+    /// `discriminator`, `lead_level`, in that order.
+    ///
+    /// kills: `last_input_seq` kept on `player`; a column reordered or dropped in passing.
+    #[test]
+    fn the_player_table_has_exactly_its_six_columns_in_order_lpw32_1() {
+        let fx = fixture();
+        assert_eq!(
+            columns_of(&fx.module_def(), "player"),
+            [
+                "identity",
+                "entity_id",
+                "name",
+                "online",
+                "discriminator",
+                "lead_level"
+            ],
+            "`player`'s generated columns, in order"
+        );
+    }
+
+    /// `world_access`'s generated columns are exactly `id`, `rule`, in that order.
+    ///
+    /// kills: `password_salt` or `password_hash` kept on `world_access`.
+    #[test]
+    fn the_world_access_table_has_exactly_the_id_and_rule_columns_lpw32_1() {
+        let fx = fixture();
+        assert_eq!(
+            columns_of(&fx.module_def(), "world_access"),
+            ["id", "rule"],
+            "`world_access`'s generated columns, in order"
+        );
+    }
+
+    /// The definition's named types hold none of `BattleAction`, `BattleWild`,
+    /// `PvpDeadlineSchedule` or `PvpAction`, and hold `BattleWildUnit`.
+    ///
+    /// kills: a row type of a dropped table left reachable; the 1v1 action type left in a
+    /// column; a types listing that reads empty.
+    #[test]
+    fn the_named_types_hold_none_of_the_dropped_row_and_action_types_lpw32_1() {
+        let fx = fixture();
+        let def = fx.module_def();
+        let types: BTreeSet<String> = def
+            .types()
+            .unwrap_or_else(|| panic!("the generated module def carries no Types section"))
+            .iter()
+            .map(|t| t.source_name.source_name.to_string())
+            .collect();
+        assert!(
+            types.contains("BattleWildUnit"),
+            "fixture: `BattleWildUnit` is a named type; the types are {types:?}"
+        );
+        for gone in [
+            "BattleAction",
+            "BattleWild",
+            "PvpDeadlineSchedule",
+            "PvpAction",
+        ] {
+            assert!(
+                !types.contains(gone),
+                "the generated module def names the type `{gone}`"
+            );
+        }
     }
 }

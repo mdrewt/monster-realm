@@ -13,7 +13,8 @@
  * is `'missing'`.
  */
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import * as clientWasm from '../../../client-wasm/pkg/client_wasm.js';
 import { checkProtocol, type ServerProtocol, serverProtocolFrom } from './protocolCheck';
 
 const VERDICTS = ['ok', 'update-game', 'update-server'] as const;
@@ -207,5 +208,41 @@ describe('serverProtocolFrom: the row with id 0', () => {
     // Through the verdict: the row with id 0 (floor 3) refuses client 2, the first row would admit.
     expect(checkProtocol(serverProtocolFrom([a, zero]), 2)).toBe('update-game');
     expect(checkProtocol(serverProtocolFrom([a, zero]), 4)).toBe('ok');
+  });
+});
+
+describe('checkProtocol against the numbers this build publishes', () => {
+  // The module's protocol row as this build publishes it, read through the wasm pkg in the
+  // same way the wire-contract check reads it.
+  const published = { protocol: 0, minClientProtocol: 0 };
+
+  beforeAll(() => {
+    published.protocol = clientWasm.protocol_version();
+    published.minClientProtocol = clientWasm.min_client_protocol();
+  });
+
+  const row = (): ServerProtocol => server(published.protocol, published.minClientProtocol);
+
+  it('asks every client of protocol 1 to 6 to update the game, 6 being the last protocol built before the consolidation [lpw-32.4]', () => {
+    // WRONG IMPL KILLED: the floor left at or below any protocol from 1 to 6, which admits a
+    // client that reads the dropped tables and the removed columns.
+    expect(published.protocol, 'the wasm pkg was read').toBeGreaterThan(0);
+    expect(checkProtocol(row(), 1)).toBe('update-game');
+    expect(checkProtocol(row(), 2)).toBe('update-game');
+    expect(checkProtocol(row(), 3)).toBe('update-game');
+    expect(checkProtocol(row(), 4)).toBe('update-game');
+    expect(checkProtocol(row(), 5)).toBe('update-game');
+    expect(checkProtocol(row(), 6)).toBe('update-game');
+  });
+
+  it('admits a client built at the protocol_version this build publishes [lpw-32.4]', () => {
+    // WRONG IMPL KILLED: the floor raised above the protocol, which turns away every client.
+    expect(published.protocol, 'the wasm pkg was read').toBeGreaterThan(0);
+    expect(checkProtocol(row(), published.protocol)).toBe('ok');
+  });
+
+  it('publishes a floor at most its protocol, a row a client can be admitted by [lpw-32.4]', () => {
+    expect(published.minClientProtocol, 'the wasm pkg was read').toBeGreaterThan(0);
+    expect(published.minClientProtocol).toBeLessThanOrEqual(published.protocol);
   });
 });

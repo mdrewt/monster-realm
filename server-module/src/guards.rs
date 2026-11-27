@@ -212,10 +212,10 @@ pub(crate) fn validate_name(name: &str) -> Result<String, String> {
 /// `move_intent` update, so the queue and the seq are a single row write and a
 /// later `Err("queue full")` returns before any write of an existing row.
 ///
-/// A joined caller with no intent row is a session that pre-dates the table:
-/// the row is created from the published character row (`seed_intent`), which
-/// keeps its queued steps and its seq guard. An `Err` after that insert rolls
-/// it back with the rest of the transaction.
+/// A joined caller with no intent row gets one created from the published
+/// character row (`seed_intent`), which keeps its queued steps and its seq
+/// guard. An `Err` after that insert rolls it back with the rest of the
+/// transaction.
 pub(crate) fn authorize_move(
     ctx: &ReducerContext,
     reducer: &str,
@@ -237,7 +237,7 @@ pub(crate) fn authorize_move(
             };
             ctx.db
                 .move_intent()
-                .insert(crate::movement::seed_intent(&ch, Some(&player)))
+                .insert(crate::movement::seed_intent(&ch))
         }
     };
     if seq <= intent.last_input_seq {

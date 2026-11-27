@@ -28,9 +28,9 @@ use crate::native_host_tests::{fixture, Fixture, Handle};
 use crate::playtest::PlaytestEvent;
 use crate::schema::{
     Account, Battle, BattleClock, BattleDeploy, BattleEvent, BattleQueue, BattleSecret,
-    BattleSummary, BattleTactical, BattleUnit, BattleWild, BattleWildUnit, Character, Config,
-    DeployPick, EncounterRow, EvolutionPathRow, Inventory, Monster, MonsterPub, MoveClassRow,
-    Player, PlayerConversation, PlayerFormation, PlayerSession, PlayerWallet, SideRow, StanceRow,
+    BattleSummary, BattleTactical, BattleUnit, BattleWildUnit, Character, Config, DeployPick,
+    EncounterRow, EvolutionPathRow, Inventory, Monster, MonsterPub, MoveClassRow, Player,
+    PlayerConversation, PlayerFormation, PlayerSession, PlayerWallet, SideRow, StanceRow,
     TradeOffer,
 };
 use game_core::tactics::{
@@ -388,7 +388,6 @@ pub(crate) fn none() -> Vec<&'static str> {
 
 pub(crate) struct World<'a> {
     pub(crate) battles: Handle<'a, Battle, u64>,
-    pub(crate) battle_wilds: Handle<'a, BattleWild, u64>,
     pub(crate) monsters: Handle<'a, Monster, u64>,
     pub(crate) pubs: Handle<'a, MonsterPub, u64>,
     pub(crate) inventory: Handle<'a, Inventory, u64>,
@@ -486,10 +485,6 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
             .writable()
             .unique()
             .auto_inc(|r| r.battle_id, |r, id| r.battle_id = id),
-        battle_wilds: fx
-            .table_keyed::<BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
-            .writable()
-            .unique(),
         monsters: fx
             .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
             .writable()
@@ -663,7 +658,6 @@ impl World<'_> {
             entity_id,
             name: format!("p{entity_id}"),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
@@ -700,7 +694,6 @@ impl World<'_> {
     pub(crate) fn snapshot(&self) -> Snap {
         vec![
             ("battle", row_set(&self.battles.rows())),
-            ("battle_wild", row_set(&self.battle_wilds.rows())),
             ("monster", row_set(&self.monsters.rows())),
             ("monster_pub", row_set(&self.pubs.rows())),
             ("inventory", row_set(&self.inventory.rows())),
@@ -1603,10 +1596,6 @@ fn pack_of_one_start_inserts_every_row_and_runs_the_chain_to_the_first_player_wi
         vec![w.monster(11).current_hp, w.monster(12).current_hp]
     );
     assert_eq!(anchor.state.side_b.team.len(), 1);
-    assert!(
-        w.battle_wilds.rows().is_empty(),
-        "the legacy battle_wild sidecar is never written"
-    );
 
     // battle_tactical.
     let t = w.tactical(id);
@@ -2526,7 +2515,7 @@ fn pvp_gate_call(fx: &Fixture) -> Result<u64, String> {
 
 /// After a successful wild start, every wild's individuality seed lives in `battle_wild_unit` —
 /// exactly one row per wild, `(battle_id, wild_index, wild_seed(encounter_seed, i))`, keyed by the
-/// id the start RETURNED — and nowhere the anchor's readers see: no `battle_wild` row is written.
+/// id the start RETURNED.
 /// The returned id is the inserted anchor's `battle_id`. Two players' starts (a forced pack of
 /// three, a natural pack of one) in one store, so a constant or zero id cannot match both anchors.
 /// (The rows' lifetime is the 24 h `battle_gc` — DECISIONS "Tactical battle privacy is structural".)
@@ -2534,7 +2523,7 @@ fn pvp_gate_call(fx: &Fixture) -> Result<u64, String> {
 /// Replaces `battle_tests::bn_begin_encounter_keeps_the_seed_private_and_short_lived` (the 1v1
 /// `begin_encounter` is deleted, bt-17).
 ///
-/// kills: the seed also written to the anchor-visible `battle_wild` sidecar; `Ok(0)` or any
+/// kills: `Ok(0)` or any
 /// constant returned instead of the inserted id; a seed row keyed by another battle id; a missing
 /// or duplicated wild row; a seed other than `wild_seed(encounter_seed, i)`; the two derivations
 /// swapped (`battle_secret.seed` from the encounter seed, or the wilds from the battle seed) — the
@@ -2608,10 +2597,6 @@ fn wild_start_keeps_every_wild_seed_in_battle_wild_unit_under_the_returned_id_bt
     assert_eq!(
         got, want,
         "one battle_wild_unit per wild, under the returned id, with its derived individuality seed"
-    );
-    assert!(
-        w.battle_wilds.rows().is_empty(),
-        "no battle_wild row: the seed never reaches the anchor-visible 1v1 sidecar"
     );
 }
 
@@ -8095,7 +8080,6 @@ fn npd_join_queued(
         entity_id,
         name: format!("p{entity_id}"),
         online: true,
-        last_input_seq: 0,
         discriminator: 0,
         lead_level: 0,
     });

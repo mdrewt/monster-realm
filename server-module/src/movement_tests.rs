@@ -634,7 +634,6 @@ mod nh {
                 entity_id,
                 name: String::new(),
                 online: true,
-                last_input_seq: 0,
                 discriminator: 0,
                 lead_level: 0,
             });
@@ -1208,41 +1207,36 @@ mod nh {
         );
     }
 
-    /// `seed_intent` builds the row for a character that has none: its key, the
-    /// queue the character publishes, and the HIGHER of `character.acked_seq`
-    /// and `player.last_input_seq` (no player: the character's own).
+    /// `seed_intent` builds the row for a character that has none from the
+    /// character alone: its key, a copy of the queue the character publishes,
+    /// and `last_input_seq == character.acked_seq`, for a non-empty and an empty
+    /// queue and for seqs 0, 1, 7 and `u64::MAX`.
     ///
-    /// kills: `max` -> `min` / either operand dropped / an empty queue / the
+    /// kills: a constant or a zero seq / a seq off by one / an empty queue
+    /// written for a non-empty one / a queue other than the character's / the
     /// wrong entity id.
     #[test]
-    fn seed_intent_carries_the_published_queue_and_the_higher_seq() {
-        let q = vec![MoveInput::Jump, MoveInput::Step(Direction::West)];
-        let ch = |acked_seq: u64| Character {
-            acked_seq,
-            ..character(41, q.clone(), ActionState::Idle)
-        };
-        let player = |last_input_seq: u64| Player {
-            identity: a(),
-            entity_id: 41,
-            name: String::new(),
-            online: true,
-            last_input_seq,
-            discriminator: 0,
-            lead_level: 0,
-        };
-        for (label, acked, from_player, want) in [
-            ("player column higher", 4, Some(9), 9),
-            ("character column higher", 12, Some(9), 12),
-            ("equal", 7, Some(7), 7),
-            ("no player row", 5, None, 5),
-        ] {
-            let p = from_player.map(player);
-            let got = seed_intent(&ch(acked), p.as_ref());
-            assert_eq!(
-                (got.entity_id, got.queue, got.last_input_seq),
-                (41, q.clone(), want),
-                "{label}"
-            );
+    fn seed_intent_reads_the_entity_the_published_queue_and_the_acked_seq() {
+        let walking = vec![MoveInput::Jump, MoveInput::Step(Direction::West)];
+        let facing = vec![MoveInput::Face(Direction::North)];
+        for (entity_id, queue) in [(41, walking), (77, facing), (5, Vec::new())] {
+            for acked_seq in [0, 1, 7, u64::MAX] {
+                let ch = Character {
+                    acked_seq,
+                    ..character(entity_id, queue.clone(), ActionState::Idle)
+                };
+                let got = seed_intent(&ch);
+                assert_eq!(
+                    (got.entity_id, got.queue, got.last_input_seq),
+                    (entity_id, queue.clone(), acked_seq),
+                    "entity {entity_id}, queue {queue:?}, acked_seq {acked_seq}"
+                );
+                assert_eq!(
+                    (ch.entity_id, ch.move_queue.clone(), ch.acked_seq),
+                    (entity_id, queue.clone(), acked_seq),
+                    "the character is read, not changed"
+                );
+            }
         }
     }
 
@@ -1593,22 +1587,21 @@ mod nh {
 
     /// A joined player with NO intent row (a session that pre-dates the table)
     /// gets one from its public rows on its first move call: the published queue
-    /// is carried over and the seq guard starts at the higher of
-    /// `character.acked_seq` and `player.last_input_seq`, so a seq at or below
-    /// either is still stale. A player with no character is refused
-    /// `Err("no character")` with nothing created; a caller who never joined is
-    /// refused `Err("not joined")`.
+    /// is carried over and the seq guard starts at `character.acked_seq`, so a
+    /// seq at or below it is still stale and the next one is accepted. A player
+    /// with no character is refused `Err("no character")` with nothing created;
+    /// a caller who never joined is refused `Err("not joined")`.
     ///
     /// (This host has no rollback, so the row seeded by a call that then
     /// refuses stays; on a real host that insert rolls back and the next call
     /// seeds the same row again.)
     ///
     /// kills: the seeding branch replaced by an empty row (queued steps lost,
-    /// the guard reset to 0) / `max` -> `min` / the stale check run before the
-    /// seed / the no-character refusal dropped.
+    /// the guard reset to 0) / a guard other than `acked_seq` / the stale check
+    /// run before the seed / the no-character refusal dropped.
     #[test]
     fn nh_a_move_call_without_an_intent_row_seeds_it_from_the_public_rows() {
-        for (label, acked, player_seq) in [("player higher", 4, 9), ("character higher", 9, 4)] {
+        for acked in [4u64, 9] {
             let fx = fixture();
             let w = world(&fx);
             w.players.seed(&Player {
@@ -1616,7 +1609,6 @@ mod nh {
                 entity_id: 1,
                 name: String::new(),
                 online: true,
-                last_input_seq: player_seq,
                 discriminator: 0,
                 lead_level: 0,
             });
@@ -1625,26 +1617,29 @@ mod nh {
                 ..character(1, vec![MoveInput::Jump], ActionState::Idle)
             });
             assert_eq!(
-                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 9)),
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, acked)),
                 Err("stale seq".to_string()),
-                "{label}: the highest seq either column holds is already used"
+                "acked {acked}: the character's acked seq is already used"
             );
             assert_eq!(
                 fx.run_as_at(a(), at(T0), |ctx| enqueue_move(
                     ctx,
                     MoveInput::Step(Direction::North),
-                    10
+                    acked + 1
                 )),
                 Ok(()),
-                "{label}"
+                "acked {acked}: the next seq is accepted"
             );
             assert_eq!(
                 w.intent(1),
-                (vec![MoveInput::Jump, MoveInput::Step(Direction::North)], 10),
-                "{label}: the published step is kept ahead of the new one"
+                (
+                    vec![MoveInput::Jump, MoveInput::Step(Direction::North)],
+                    acked + 1
+                ),
+                "acked {acked}: the published step is kept ahead of the new one"
             );
-            assert_eq!(fx.writes_to("character"), 0, "{label}");
-            assert_eq!(fx.writes_to("player"), 0, "{label}");
+            assert_eq!(fx.writes_to("character"), 0, "acked {acked}");
+            assert_eq!(fx.writes_to("player"), 0, "acked {acked}");
         }
 
         let fx = fixture();
@@ -1654,7 +1649,6 @@ mod nh {
             entity_id: 1,
             name: String::new(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
@@ -1673,10 +1667,10 @@ mod nh {
     /// A character that publishes a queue but has no intent row (a session that
     /// was mid-walk when the table was added) is seeded BY THE TICK and drained
     /// in that same tick: the first published step is applied, the rest stays
-    /// queued, and the seq guard is the higher of the two public seq columns.
+    /// queued, and the seq guard is the character's `acked_seq`.
     ///
     /// kills: the tick's seeding arm dropped (the walk freezes until the next
-    /// input) / seeded without the player's seq (the guard moves backwards) /
+    /// input) / seeded with a seq other than `acked_seq` (the guard moves) /
     /// the seeded row not drained in the same tick.
     #[test]
     fn nh_the_tick_seeds_a_mid_walk_character_that_has_no_intent_row() {
@@ -1688,7 +1682,6 @@ mod nh {
             entity_id: 1,
             name: String::new(),
             online: true,
-            last_input_seq: 8,
             discriminator: 0,
             lead_level: 0,
         });
@@ -1700,7 +1693,7 @@ mod nh {
             state_of(&w.character(1)) == want,
             "the first step is applied"
         );
-        assert_eq!(w.intent(1), (vec![MoveInput::Jump], 8));
+        assert_eq!(w.intent(1), (vec![MoveInput::Jump], 6));
         assert_eq!(w.published(1), w.intent(1));
         assert_eq!(fx.writes_to("character"), 1);
     }
@@ -1793,7 +1786,6 @@ mod nh {
             entity_id: 1,
             name: String::new(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
@@ -1839,8 +1831,8 @@ mod nh {
     }
 
     /// Row counts of `[battle, battle_tactical, battle_secret, battle_wild_unit, battle_clock,
-    /// battle_unit, battle_wild]` — every table a started battle (of either engine) writes.
-    fn bt16_counts(w: &tt::World<'_>) -> [usize; 7] {
+    /// battle_unit]` — every table a started battle writes.
+    fn bt16_counts(w: &tt::World<'_>) -> [usize; 6] {
         [
             w.battles.rows().len(),
             w.tacticals.rows().len(),
@@ -1848,7 +1840,6 @@ mod nh {
             w.wild_units.rows().len(),
             w.clocks.rows().len(),
             w.units.rows().len(),
-            w.battle_wilds.rows().len(),
         ]
     }
 
@@ -1911,7 +1902,7 @@ mod nh {
             if !opens {
                 assert_eq!(
                     bt16_counts(&w),
-                    [0; 7],
+                    [0; 6],
                     "{label}: no battle of either engine"
                 );
                 continue;
@@ -1964,11 +1955,6 @@ mod nh {
                     .any(|u| u.owner == Some(a()) && u.monster_id == Some(11)),
                 "{label}: the walker's monster is deployed as a battle_unit"
             );
-            assert_eq!(
-                w.battle_wilds.rows().len(),
-                0,
-                "{label}: the retired 1v1 battle_wild table is never written"
-            );
         }
     }
 
@@ -2012,7 +1998,7 @@ mod nh {
                 );
                 assert_eq!(
                     bt16_counts(&w),
-                    [0; 7],
+                    [0; 6],
                     "{label}: the refused start left no battle rows"
                 );
                 assert!(
@@ -2035,7 +2021,7 @@ mod nh {
                 );
                 assert_eq!(
                     bt16_counts(&w),
-                    [0; 7],
+                    [0; 6],
                     "{label}: the writer undid its own inserts before returning"
                 );
             }
@@ -2159,7 +2145,6 @@ mod nh {
                 entity_id: 1,
                 name: String::new(),
                 online: true,
-                last_input_seq: 0,
                 discriminator: 0,
                 lead_level: 0,
             });
@@ -2195,7 +2180,7 @@ mod nh {
                 );
                 assert_eq!(
                     bt16_counts(&w),
-                    [0; 7],
+                    [0; 6],
                     "{label}: no battle of either engine"
                 );
                 assert_eq!(
@@ -2672,7 +2657,7 @@ mod nh {
                 Some(0),
                 "{label}: neither the window nor the suppressed counter was charged"
             );
-            assert_eq!(bt16_counts(&w), [0; 7], "{label}: no battle opened");
+            assert_eq!(bt16_counts(&w), [0; 6], "{label}: no battle opened");
             assert_eq!(
                 mv_lines("wild_start_error"),
                 Vec::<(String, String)>::new(),
@@ -3100,7 +3085,6 @@ mod nh {
                     entity_id,
                     name: String::new(),
                     online: true,
-                    last_input_seq: 0,
                     discriminator: 0,
                     lead_level: 0,
                 }),
@@ -4794,8 +4778,6 @@ mod nh {
                 .seed(&WorldAccess {
                     id: 0,
                     rule: WorldAccessRule::Password,
-                    password_salt: vec![1; 16],
-                    password_hash: vec![2; 32],
                 });
             assert_eq!(
                 join_as(&fx, a(), None),

@@ -78,13 +78,10 @@ export const HIDDEN_FIELDS = [
 export const HIDDEN_TYPES = [
   'Monster', // genes (iv/ev/nature) — the private half of monster/monster_pub
   'NatureKind',
-  'BattleWild',
   'EncounterRow',
   'EncounterEntryRow', // spawn weights
   'GuestClaim',
   'PlayerSession',
-  'BattleAction',
-  'PvpAction', // an opponent's pending PvP action
   'PlayerWallet',
   'HealCooldown',
   'LastPosition', // where an account's character stood at its last disconnect
@@ -97,7 +94,6 @@ export const HIDDEN_TYPES = [
   'MovementTickSchedule',
   'MrHeartbeatSchedule',
   'PlaytestReaperSchedule',
-  'PvpDeadlineSchedule',
   'TradeOfferReaperSchedule',
   'RecheckSchedule', // whose account is about to be asked about again
   'WorldCheckBudget',

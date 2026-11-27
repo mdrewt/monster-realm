@@ -16,7 +16,7 @@
 //! - `ability`    — passive per-species ability rules
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
 //! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)
-//! - `pvp`        — pure PvP orchestration rules: `PvpAction`, forfeit/deadline logic
+//! - `pvp`        — pure PvP orchestration rules: the forfeit outcome and the challenge TTL
 
 pub mod ability;
 #[cfg(test)]
@@ -44,9 +44,7 @@ pub use ability::{
 };
 pub use ai::pick_best_skill;
 pub use damage::{accuracy_check, calc_damage};
-pub use pvp::{
-    is_challenge_stale, pvp_deadline_forfeit_side, pvp_forfeit_outcome, PvpAction, CHALLENGE_TTL_MS,
-};
+pub use pvp::{is_challenge_stale, pvp_forfeit_outcome, CHALLENGE_TTL_MS};
 pub use resolve::{resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn};
 pub use status::{
     apply_post_turn_effects, apply_pre_turn_effects, tick_status, BattleStatusStore, StatusVariance,

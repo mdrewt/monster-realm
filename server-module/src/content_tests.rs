@@ -2929,7 +2929,6 @@ mod nh_sync {
             entity_id: PLAYER_ENTITY,
             name: "Ada".to_string(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });

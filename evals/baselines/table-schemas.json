@@ -1,4 +1,5 @@
 {
+  "consolidation": "lpw-32",
   "guest_claim_reaper_schedule": {
     "pk": "scheduled_id",
     "visibility": "private",
@@ -99,26 +100,6 @@
     "indexes": [],
     "scheduled": "playtest_reaper"
   },
-  "pvp_deadline_schedule": {
-    "pk": "scheduled_id",
-    "visibility": "private",
-    "columns": {
-      "scheduled_id": "u64",
-      "scheduled_at": "ScheduleAt",
-      "battle_id": "u64",
-      "turn_number": "u16"
-    },
-    "order": [
-      "scheduled_id",
-      "scheduled_at",
-      "battle_id",
-      "turn_number"
-    ],
-    "defaults": [],
-    "unique": [],
-    "indexes": [],
-    "scheduled": "pvp_deadline_reaper"
-  },
   "battle_challenge_reaper_schedule": {
     "pk": "scheduled_id",
     "visibility": "private",
@@ -183,7 +164,6 @@
       "entity_id": "u64",
       "name": "String",
       "online": "bool",
-      "last_input_seq": "u64",
       "discriminator": "u32",
       "lead_level": "u8"
     },
@@ -192,7 +172,6 @@
       "entity_id",
       "name",
       "online",
-      "last_input_seq",
       "discriminator",
       "lead_level"
     ],
@@ -651,26 +630,6 @@
     ],
     "scheduled": null
   },
-  "battle_wild": {
-    "pk": "battle_id",
-    "visibility": "private",
-    "columns": {
-      "battle_id": "u64",
-      "wild_species_id": "u32",
-      "wild_level": "u8",
-      "individuality_seed": "u32"
-    },
-    "order": [
-      "battle_id",
-      "wild_species_id",
-      "wild_level",
-      "individuality_seed"
-    ],
-    "defaults": [],
-    "unique": [],
-    "indexes": [],
-    "scheduled": null
-  },
   "inventory": {
     "pk": "inv_id",
     "visibility": "private",
@@ -1026,32 +985,6 @@
     "indexes": [
       "challenger",
       "target"
-    ],
-    "scheduled": null
-  },
-  "battle_action": {
-    "pk": "action_id",
-    "visibility": "private",
-    "columns": {
-      "action_id": "u64",
-      "battle_id": "u64",
-      "player_identity": "Identity",
-      "action": "game_core::PvpAction",
-      "turn_number": "u16",
-      "submitted_at_ms": "i64"
-    },
-    "order": [
-      "action_id",
-      "battle_id",
-      "player_identity",
-      "action",
-      "turn_number",
-      "submitted_at_ms"
-    ],
-    "defaults": [],
-    "unique": [],
-    "indexes": [
-      "battle_id"
     ],
     "scheduled": null
   },
@@ -1860,15 +1793,11 @@
     "visibility": "private",
     "columns": {
       "id": "u32",
-      "rule": "WorldAccessRule",
-      "password_salt": "Vec<u8>",
-      "password_hash": "Vec<u8>"
+      "rule": "WorldAccessRule"
     },
     "order": [
       "id",
-      "rule",
-      "password_salt",
-      "password_hash"
+      "rule"
     ],
     "defaults": [],
     "unique": [],

@@ -814,7 +814,6 @@ fn rb80_seed_player(fx: &crate::native_host_tests::Fixture, me: Identity) {
         entity_id: 7,
         name: String::new(),
         online: true,
-        last_input_seq: 0,
         discriminator: 0,
         lead_level: 0,
     });
@@ -1388,7 +1387,6 @@ mod nh_range {
                 entity_id: 1,
                 name: String::new(),
                 online: true,
-                last_input_seq: 0,
                 discriminator: 0,
                 lead_level: 0,
             });
@@ -1666,7 +1664,6 @@ mod nh_dialogue_security {
                 entity_id,
                 name: String::new(),
                 online: true,
-                last_input_seq: 0,
                 discriminator: 0,
                 lead_level: 0,
             });
@@ -2111,7 +2108,6 @@ mod ctl16_battle_guard {
                 entity_id: 1,
                 name: String::new(),
                 online: true,
-                last_input_seq: 0,
                 discriminator: 0,
                 lead_level: 0,
             });
@@ -2510,7 +2506,6 @@ fn rw_world<'a>(fx: &'a RwFixture, npc_id: &str, tree_id: &str) -> RwWorld<'a> {
             entity_id: RW_ME_ENTITY,
             name: String::new(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });

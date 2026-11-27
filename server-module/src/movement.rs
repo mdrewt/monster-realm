@@ -252,7 +252,6 @@ pub(crate) fn join_with_kit(
         entity_id: ch.entity_id,
         name,
         online: true,
-        last_input_seq: 0,
         discriminator,
         lead_level: 0,
     });
@@ -304,16 +303,14 @@ pub(crate) fn join_with_kit(
     Ok(())
 }
 
-/// The `move_intent` row for a character that has none: a session that joined
-/// before the table existed. It starts from what the character row publishes, so
-/// queued steps survive, and from the higher of the two seq columns, so the
-/// guard never moves backwards (`player.last_input_seq` held it before
-/// `character.acked_seq` did).
-pub(crate) fn seed_intent(ch: &Character, player: Option<&Player>) -> MoveIntent {
+/// The `move_intent` row for a character that has none. It starts from what the
+/// character row publishes: its queue, so queued steps survive, and its
+/// `acked_seq`, so the guard never moves backwards.
+pub(crate) fn seed_intent(ch: &Character) -> MoveIntent {
     MoveIntent {
         entity_id: ch.entity_id,
         queue: ch.move_queue.clone(),
-        last_input_seq: ch.acked_seq.max(player.map_or(0, |p| p.last_input_seq)),
+        last_input_seq: ch.acked_seq,
     }
 }
 
@@ -562,8 +559,8 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     // the zone and the next tick sees the zone without it. An intent row is
     // proof of a player (only a player's character ever gets one), so a zone
     // with a player in it pays no `player` read for this; the `player` lookups
-    // run only when no character has an intent row, where they find a session
-    // that pre-dates `move_intent`. Checked before the map is read so a zone
+    // run only when no character has an intent row, where they find a player's
+    // character that lacks one. Checked before the map is read so a zone
     // whose content fails to load still stops ticking.
     let occupied = chars.iter().any(|(_, intent)| intent.is_some())
         || chars.iter().any(|&(id, _)| is_player_character(ctx, id));
@@ -594,7 +591,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         let mut intent = match intent {
             Some(intent) => intent,
             // No intent row and nothing published to drain: an NPC, or an idle
-            // session that pre-dates `move_intent`. Normalise to Idle write-on-change.
+            // player's character that lacks one. Normalise to Idle write-on-change.
             None if row.move_queue.is_empty() => {
                 if row.action != ActionState::Idle {
                     row.action = ActionState::Idle;
@@ -602,14 +599,9 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 }
                 continue;
             }
-            // A published queue with no intent row: a session that was mid-walk
-            // when `move_intent` was added. Its row is created from what it published.
-            None => {
-                let player = ctx.db.player().entity_id().filter(id).next();
-                ctx.db
-                    .move_intent()
-                    .insert(seed_intent(&row, player.as_ref()))
-            }
+            // A published queue with no intent row (`join_game` creates the two
+            // together): the row is created from what the character published.
+            None => ctx.db.move_intent().insert(seed_intent(&row)),
         };
         if intent.queue.is_empty() {
             publish_standing(ctx, row, &intent);

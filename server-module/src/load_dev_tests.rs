@@ -119,7 +119,6 @@ mod nh {
             entity_id,
             name: format!("p{entity_id}"),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         }

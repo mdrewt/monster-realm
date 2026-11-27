@@ -383,10 +383,6 @@ fn dw_world(fx: &Fixture) -> DwWorld<'_> {
     let _ = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
     let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
     let _ = fx
-        .table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
-        .writable()
-        .unique();
-    let _ = fx
         .table_keyed::<crate::playtest::PlaytestEvent, u64>("playtest_event", "event_id", |r| {
             r.event_id
         })
@@ -613,7 +609,6 @@ fn dw_raising_sites() {
                 entity_id: 5,
                 name: String::new(),
                 online: true,
-                last_input_seq: 0,
                 discriminator: 0,
                 lead_level: 0,
             });
@@ -850,7 +845,7 @@ fn dw_insert_sites() {
 /// row AND its projection.
 #[test]
 fn dw_pvp_side_b_site() {
-    use crate::schema::{BattleAction, Profile};
+    use crate::schema::Profile;
     let fx = fixture();
     let w = dw_world(&fx);
     w.monster(11, dw_a(), 0);
@@ -861,17 +856,6 @@ fn dw_pvp_side_b_site() {
         .unique();
     // sr-4b: the settle's rating ends with the leaderboard membership rescan.
     let _ = fx.ladder();
-    let _ = fx
-        .table_keyed::<BattleAction, u64>("battle_action", "battle_id", |r| r.battle_id)
-        .writable();
-    let _ = fx
-        .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
-            "pvp_deadline_schedule",
-            "scheduled_id",
-            |r| r.scheduled_id,
-        )
-        .writable()
-        .scannable();
     let mon = |hp: u16| game_core::BattleMonster {
         species_id: 1,
         affinity: game_core::Affinity::Fire,
@@ -1540,10 +1524,10 @@ fn ts2_auto_cancel_on_faint_writeback() {
 /// the stranger session is untouched.
 ///
 /// Opens, beyond `dw_world` and the session tables, exactly what the settle path writes:
-/// `profile` (the rating), `battle_action` (the sweep) and `pvp_deadline_schedule`.
+/// `profile` (the rating) and the leaderboard membership.
 #[test]
 fn ts2_auto_cancel_on_pvp_settle_writeback() {
-    use crate::schema::{BattleAction, Profile};
+    use crate::schema::Profile;
     let fx = fixture();
     let w = dw_world(&fx);
     let s = ts2_session_tables(&fx);
@@ -1553,17 +1537,6 @@ fn ts2_auto_cancel_on_pvp_settle_writeback() {
         .unique();
     // sr-4b: the settle's rating ends with the leaderboard membership rescan.
     let _ = fx.ladder();
-    let _ = fx
-        .table_keyed::<BattleAction, u64>("battle_action", "battle_id", |r| r.battle_id)
-        .writable();
-    let _ = fx
-        .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
-            "pvp_deadline_schedule",
-            "scheduled_id",
-            |r| r.scheduled_id,
-        )
-        .writable()
-        .scannable();
     w.monster(11, dw_a(), 0);
     w.monster(21, dw_b(), 0);
     w.monster(22, dw_b(), 1);
@@ -1829,7 +1802,6 @@ fn ih2_player(who: Identity, entity_id: u64, lead_level: u8) -> crate::schema::P
         entity_id,
         name: format!("p{entity_id}"),
         online: true,
-        last_input_seq: 0,
         discriminator: 7,
         lead_level,
     }

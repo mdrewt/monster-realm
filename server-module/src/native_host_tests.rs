@@ -1326,8 +1326,6 @@ unsafe extern "C" {
     fn register_table_playtest_reaper_schedule();
     #[link_name = "__preinit__20_register_describer_battle_summary_reaper_schedule"]
     fn register_table_battle_summary_reaper_schedule();
-    #[link_name = "__preinit__20_register_describer_pvp_deadline_schedule"]
-    fn register_table_pvp_deadline_schedule();
     #[link_name = "__preinit__20_register_describer_battle_challenge_reaper_schedule"]
     fn register_table_battle_challenge_reaper_schedule();
     #[link_name = "__preinit__20_register_describer_character"]
@@ -1362,8 +1360,6 @@ unsafe extern "C" {
     fn register_table_monster_pub();
     #[link_name = "__preinit__20_register_describer_battle"]
     fn register_table_battle();
-    #[link_name = "__preinit__20_register_describer_battle_wild"]
-    fn register_table_battle_wild();
     #[link_name = "__preinit__20_register_describer_inventory"]
     fn register_table_inventory();
     #[link_name = "__preinit__20_register_describer_evolution_path"]
@@ -1394,8 +1390,6 @@ unsafe extern "C" {
     fn register_table_leaderboard_top();
     #[link_name = "__preinit__20_register_describer_battle_challenge"]
     fn register_table_battle_challenge();
-    #[link_name = "__preinit__20_register_describer_battle_action"]
-    fn register_table_battle_action();
     #[link_name = "__preinit__20_register_describer_trade_offer_reaper_schedule"]
     fn register_table_trade_offer_reaper_schedule();
     #[link_name = "__preinit__20_register_describer_export_bundle"]
@@ -1478,14 +1472,13 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 75] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 72] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
     register_table_playtest_event,
     register_table_playtest_reaper_schedule,
     register_table_battle_summary_reaper_schedule,
-    register_table_pvp_deadline_schedule,
     register_table_battle_challenge_reaper_schedule,
     register_table_character,
     register_table_player,
@@ -1503,7 +1496,6 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 75] = [
     register_table_monster,
     register_table_monster_pub,
     register_table_battle,
-    register_table_battle_wild,
     register_table_inventory,
     register_table_evolution_path,
     register_table_npc,
@@ -1519,7 +1511,6 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 75] = [
     register_table_profile,
     register_table_leaderboard_top,
     register_table_battle_challenge,
-    register_table_battle_action,
     register_table_trade_offer_reaper_schedule,
     register_table_export_bundle,
     register_table_account_deletion_reaper_schedule,

@@ -1271,7 +1271,6 @@ impl NhWorld<'_> {
             entity_id: u64::from(who.to_byte_array()[0]),
             name: String::new(),
             online,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
@@ -1373,10 +1372,6 @@ fn nh_open_writes(fx: &Fixture) {
         .writable()
         .unique()
         .auto_inc(|r| r.scheduled_id, |r, id| r.scheduled_id = id);
-    let _ = fx
-        .table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
-        .writable()
-        .unique();
     let _ = fx
         .table_keyed::<crate::playtest::PlaytestEvent, u64>("playtest_event", "event_id", |r| {
             r.event_id

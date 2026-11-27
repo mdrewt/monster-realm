@@ -2174,10 +2174,6 @@ describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04
 //   tests drive it with registry entries (HANDLED_ENUM_VARIANTS.Phase) and inline
 //   variant lists; .tag reads that feed bare-string store fields need no narrowing.
 //
-// PvpAction is EXCLUDED from the registry because rowConvert never READS it
-//   (PvpAction is a write-direction enum: the client writes it in submitPvpAction
-//   via the hook; the store never ingests a PvpAction .tag field from a row).
-//
 // WHAT THESE TESTS KILL
 // =====================
 //   "narrowTag identity miss"  — unknown tag silently assigned as typed union →
@@ -2363,8 +2359,6 @@ describe('rowConvert ts-4.4: no trade_offer converter and no TradeStatus boundar
 //   Excluded (write-direction or non-.tag reads):
 //     TradeStatus    — generated for the drained `trade_offer` table; no converter reads a
 //                      trade_offer row, so no boundary reads its tag (ts-4.4)
-//     PvpAction      — the client WRITES this via submitPvpAction; rowConvert never
-//                      reads a PvpAction .tag from an incoming row
 //     StatKind       — itemRowToStore reads row.trainStat?.tag (a write-direction
 //                      enum; the store field trainStat is string|null, not StatKind)
 //                      INCLUDED only as a boundary read — verify actual read sites
@@ -2434,21 +2428,10 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     }
   });
 
-  it('BITES: registry does NOT contain PvpAction (write-direction, never read by rowConvert)', () => {
-    // PvpAction is written by the client (submitPvpAction hook) but never read
-    // from an incoming SDK row by rowConvert. Including it would be misleading.
-    // Kills: an impl that accidentally registers PvpAction (the eval would then
-    // check it against types.ts, but it should never be in the read-boundary set).
-    expect(
-      Object.hasOwn(HANDLED_ENUM_VARIANTS, 'PvpAction'),
-      'HANDLED_ENUM_VARIANTS must NOT contain PvpAction (write-direction enum, not a row-read boundary)',
-    ).toBe(false);
-  });
-
   it('BITES: registry has EXACTLY 20 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
     // Exact-count gate: the required set is exactly the boundary-read enums listed
     // in the T4-6 comment above. No more, no less. This kills:
-    //   - An impl that adds extra enums (e.g. StatKind, PvpAction, MoveInput) that
+    //   - An impl that adds extra enums (e.g. StatKind, MoveInput) that
     //     are NOT boundary-read enums in rowConvert.ts — the eval would silently
     //     check them against types.ts, masking gaps in the real required set.
     //   - An impl that correctly includes the 9 required keys but also adds extras,

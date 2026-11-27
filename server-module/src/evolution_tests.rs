@@ -1593,7 +1593,7 @@ pub(crate) fn apply_evolution_seam(
     // from the monster row — the row has already been transformed above, so
     // reading `m.species_id` for `from_species` would record the POST species
     // as the pre-evolution form. The owner is the MONSTER's owner: the auto
-    // path is reachable from `pvp_deadline_reaper`, whose sender is the
+    // path is reachable from `account_deletion_reaper`, whose sender is the
     // scheduler, so a sender-keyed write would file the reveal under an
     // identity that owns nothing.
     db.push_notice(
@@ -2094,7 +2094,7 @@ fn s20rd_seam_player_evolve_writes_one_notice() {
 /// THE AUTO PATH IS THE SENDER-INDEPENDENCE WITNESS: `check_and_evolve_seam`
 /// takes no caller at all, exactly as production's `check_and_evolve(ctx,
 /// monster_id)` gets its sender from a `ReducerContext` that, at the
-/// `pvp_deadline_reaper` call site, belongs to the SCHEDULER. The entries must
+/// `account_deletion_reaper` call site, belongs to the SCHEDULER. The entries must
 /// still land on the monster's owner, and on nobody else — including the
 /// all-zero identity a sender-keyed implementation would use in a native test.
 ///
