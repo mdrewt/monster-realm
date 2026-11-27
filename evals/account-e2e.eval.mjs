@@ -135,6 +135,10 @@ export const TOMBSTONE_IDENTITY_HEX_E2E =
 
 // THE 65-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
+// the tables this rig seeds and follows through the cascade and the export. It
+// leaves out the world's access, name, list and attestation tables,
+// `world_check_budget`, and `recheck_schedule` (a seeded row there would have
+// the module send a real request).
 // entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).

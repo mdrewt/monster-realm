@@ -228,25 +228,29 @@ export function readWireEntry(bindings: BindingsExports): WireEntry {
     }
     tables.set(sourceName, { primaryKey, columns });
   }
-  const columnReached = new Set(reader.named.keys());
+  // A procedure's return travels server to client, like a column: its types are spelled before
+  // the set of server-to-client types is taken, so an appended variant in one breaks an entry.
+  const declared = Object.values(bindings.procedures ?? {});
+  const returns = new Map(
+    declared.map((procedure) => [
+      procedure.name,
+      reader.spell(procedure.returnType, `the return of ${procedure.name}`),
+    ]),
+  );
+  const serverSent = new Set(reader.named.keys());
   const reducers = Object.values(bindings.reducers).map((reducer): [string, Member[]] => [
     reducer.name,
     reader.members(reducer.params),
   ]);
-  const procedures = Object.values(bindings.procedures ?? {}).map(
-    (procedure): [string, ProcedureContract] => [
-      procedure.name,
-      {
-        args: reader.members(procedure.params),
-        returns: reader.spell(procedure.returnType, `the return of ${procedure.name}`),
-      },
-    ],
-  );
+  const procedures = declared.map((procedure): [string, ProcedureContract] => [
+    procedure.name,
+    { args: reader.members(procedure.params), returns: returns.get(procedure.name) ?? '' },
+  ]);
   reader.finish();
   const typesOf = (reached: boolean): Record<string, TypeContract> =>
     Object.fromEntries(
       [...reader.named]
-        .filter(([name]) => columnReached.has(name) === reached)
+        .filter(([name]) => serverSent.has(name) === reached)
         .map(([name, { definition }]) => [name, definition as TypeContract]),
     );
   return {

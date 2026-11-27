@@ -13,10 +13,11 @@
 //!
 //! Each later connection: the connect reducer arms a one-shot [`recheck_account`] run for an
 //! identity whose row was last checked [`RECHECK_MIN_AGE_MS`] ago or more
-//! ([`arm_recheck_at_connect`]). The run presents the stored handle and stores the answer. The
-//! connection is admitted and entitled by the stored row the whole time, and a run that gets no
-//! answer leaves it unchanged; the host spends the one-shot row after its one run, so nothing
-//! asks again until the next connection.
+//! ([`arm_recheck_at_connect`]), and stamps the row's `checked_at_ms` as it arms, so the world
+//! asks about one identity at most once in that time however often it connects and whatever the
+//! run does. The run presents the stored handle and stores the answer. The connection is
+//! admitted and entitled by the stored row the whole time, and a run that gets no answer leaves
+//! whether the account owns the game unchanged; the host spends the one-shot row at its one run.
 //!
 //! A build asks the account service its profile names (`BuildProfile::world_check_url`). A
 //! build that names none checks no account: each procedure answers
@@ -79,9 +80,10 @@ const STATUS_OK: u16 = 200;
 const STATUS_FORBIDDEN: u16 = 403;
 
 /// The account an identity of this world plays under, as the account service last answered:
-/// the account's handle in this world and whether it owns the game. PRIVATE; an identity reads
-/// its own row through `my_world_account`. `is_host` marks the row of the identity the host
-/// plays as; nothing here sets it.
+/// the account's handle in this world and whether it owns the game. `checked_at_ms` is when the
+/// world last asked about the row: the time of the last answer stored, or of the last re-check
+/// armed. PRIVATE; an identity reads its own row through `my_world_account`. `is_host` marks the
+/// row of the identity the host plays as; nothing here sets it.
 #[spacetimedb::table(accessor = world_account)]
 pub struct WorldAccount {
     #[primary_key]
@@ -269,7 +271,11 @@ pub(crate) fn erase_world_account(ctx: &ReducerContext, identity: Identity) -> b
 
 /// Arm one re-check of the connecting identity's account, when the build of `profile` names an
 /// account service, the identity holds a row last checked [`RECHECK_MIN_AGE_MS`] ago or more,
-/// and none is armed. Writes nothing otherwise.
+/// its account is not pending deletion, and none is armed. Arming stamps the row's
+/// `checked_at_ms`, so a run that gets no answer, and a connection made while a run waits, arm
+/// nothing for that long: the host spends the one-shot row before the run ends, and without the
+/// stamp a client that reconnects in a loop would have the world send a request at each
+/// connection. Writes nothing otherwise.
 pub(crate) fn arm_recheck_at_connect(ctx: &ReducerContext, profile: &BuildProfile) {
     if profile.world_check_url.is_none() {
         return;
@@ -278,12 +284,20 @@ pub(crate) fn arm_recheck_at_connect(ctx: &ReducerContext, profile: &BuildProfil
     let Some(account) = account_of(ctx, who) else {
         return;
     };
-    if !recheck_due(account.checked_at_ms, now_ms(ctx)) {
+    let now = now_ms(ctx);
+    if !recheck_due(account.checked_at_ms, now) {
+        return;
+    }
+    if crate::accounts::is_pending_deletion(ctx, who) {
         return;
     }
     if ctx.db.recheck_schedule().identity().find(who).is_some() {
         return;
     }
+    ctx.db.world_account().handle().update(WorldAccount {
+        checked_at_ms: now,
+        ..account
+    });
     ctx.db.recheck_schedule().insert(RecheckSchedule {
         scheduled_id: 0,
         scheduled_at: ScheduleAt::Time(ctx.timestamp),
@@ -480,8 +494,12 @@ fn redeem(
     who: Identity,
     relayed: bool,
     ticket: &str,
-    procedure: &str,
 ) -> Result<bool, String> {
+    let procedure = if relayed {
+        "check_account_for"
+    } else {
+        "check_account"
+    };
     let sender = ctx.sender();
     if !is_ticket(ticket) {
         return refuse(procedure, sender, REJECT_TICKET_MALFORMED);
@@ -524,7 +542,7 @@ pub(crate) fn check_account_under(
         return refuse("check_account", ctx.sender(), REJECT_BUILD_CHECKS_NOTHING);
     };
     let who = ctx.sender();
-    redeem(ctx, url, who, false, ticket, "check_account")
+    redeem(ctx, url, who, false, ticket)
 }
 
 /// [`check_account_for`] as a build of `profile` runs it.
@@ -541,7 +559,7 @@ pub(crate) fn check_account_for_under(
             REJECT_BUILD_CHECKS_NOTHING,
         );
     };
-    redeem(ctx, url, who, true, ticket, "check_account_for")
+    redeem(ctx, url, who, true, ticket)
 }
 
 /// [`recheck_account`] as a build of `profile` runs it.

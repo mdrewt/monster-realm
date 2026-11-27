@@ -2,7 +2,7 @@
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
 //! the only writers, beside the three account-check procedures of `account_checks.rs`,
-//! which write that module's tables. Reducers are THIN — validate `ctx.sender()` + legality, delegate
+//! which write that module's tables and the host's allowlist. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone**: clients
 //! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick
