@@ -3,13 +3,13 @@
 //! Who may join this world. The host's rule is the one row of the private `world_access`
 //! table; a world with no row is `Open`. Under `Password` an identity may join once it is the
 //! owner (`config.owner_identity`) or holds a `world_admission` row. Under `Allowlist` the
-//! owner may join; an identity with a binding the build counts
-//! (`world_binding::trusted_binding`) may join exactly while its bound account is on the
-//! host's list, whatever else it holds; and an identity with no such binding may join when it
-//! holds a `world_admission` row, so one the world admitted before gets in with no attestation
-//! and a new one does not. The list is read at every check and nothing is stored from it.
+//! owner may join; an identity that holds a `world_account` row (`account_checks::account_of`)
+//! may join exactly while that row's handle is on the host's list, whatever else it holds; and
+//! an identity with no such row may join when it holds a `world_admission` row, so one the
+//! world admitted before gets in with no account check and a new one does not. The list is
+//! read at every check and nothing is stored from it.
 //!
-//! A change to `Allowlist` adds to the list the accounts of the players the rule in force let
+//! A change to `Allowlist` adds to the list the handles of the players the rule in force let
 //! in ([`set_world_access`]). Under `Open` and `Password` the list is kept and not read.
 //!
 //! The connect reducer refuses anyone the rule does not admit
@@ -18,15 +18,16 @@
 //! same check ([`require_admitted`]) before it reads or writes anything else, because the host
 //! checks a connection only when it opens. The one exception is
 //! `world_binding::unbind_world_account`, which makes no admission check, so an identity the
-//! rule refuses can still erase its own binding over a connection already open. The binding
+//! rule refuses can still erase its own account row over a connection already open. The binding
 //! reducers of `world_binding.rs` answer their build's refusal first, which reads nothing. The
 //! reducers that exist only in a dev build (`dev_reducers`, `load_test_zones`) are outside that
-//! roster and make no check.
+//! roster and make no check. The procedure `account_checks::check_account` makes the check
+//! before it sends anything and again before it stores the answer.
 //!
 //! An identity that is not admitted can call nothing but that unbind, so admission is granted
-//! by reducers only the owner can call: [`set_world_access`] sets the rule and admits
-//! identities outright, and under `Allowlist` the owner relays the joiner's bind
-//! (`world_binding::bind_world_account_for`).
+//! by calls only the owner can make: [`set_world_access`] sets the rule and admits identities
+//! outright, and under `Allowlist` the owner relays the joiner's account check
+//! (`account_checks::check_account_for`) and lists the handle it stored.
 //!
 //! No reducer of this module takes a password or a value derived from one, because the host's
 //! commit log keeps every committed call's arguments in the clear. A `Password` world's password
@@ -36,10 +37,10 @@
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access` and `world_admission`, and deletes
 //! `world_admission_attempt` rows (an identity's, when it is admitted or erased); an unbind and
-//! the owner's drop of a binding delete an admission row through [`withdraw_admission`]. It
-//! reads `config` for the owner,
-//! reads a binding and the host's list and adds to that list through `crate::world_binding`, and,
-//! when the rule changes, reads the live sessions through `crate::live_session_identities`.
+//! the owner's drop delete an admission row through [`withdraw_admission`]. It reads `config`
+//! for the owner, reads an identity's handle through `crate::account_checks`, reads the host's
+//! list and adds to it through `crate::world_binding`, and, when the rule changes, reads the
+//! live sessions through `crate::live_session_identities`.
 
 use crate::guards::log_reject;
 use crate::marshal::now_ms;
@@ -93,10 +94,10 @@ fn holds_admission(ctx: &ReducerContext, identity: Identity) -> bool {
 
 /// Whether the host's rule lets `identity` in: always under `Open`; under `Password` only the
 /// owner and an identity with a `world_admission` row; under `Allowlist` the owner, an
-/// identity whose trusted binding names a listed account, and an identity with no trusted
-/// binding that holds a `world_admission` row. A bound identity whose account is not listed
-/// is refused even with an admission row: the list alone governs it, and its unbind or the
-/// owner's drop takes the row with it (`world_binding::unbind_world_account`,
+/// identity whose `world_account` row holds a listed handle, and an identity with no such row
+/// that holds a `world_admission` row. An identity whose handle is not listed is refused even
+/// with an admission row: the list alone governs it, and its unbind or the owner's drop takes
+/// the admission row with the account row (`world_binding::unbind_world_account`,
 /// `world_binding::drop_world_binding`).
 pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
     match rule_in_force(ctx) {
@@ -106,14 +107,8 @@ pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
         }
         WorldAccessRule::Allowlist => {
             is_world_owner(ctx, identity)
-                || match crate::world_binding::trusted_binding(
-                    ctx,
-                    &crate::accounts::BUILD_PROFILE,
-                    identity,
-                ) {
-                    Some(binding) => {
-                        crate::world_binding::on_allowlist(ctx, &binding.account_subject)
-                    }
+                || match crate::account_checks::account_of(ctx, identity) {
+                    Some(account) => crate::world_binding::on_allowlist(ctx, &account.handle),
                     None => holds_admission(ctx, identity),
                 }
         }
@@ -180,7 +175,7 @@ fn admit_identity(ctx: &ReducerContext, who: Identity, now: i64) {
 }
 
 /// Delete `identity`'s admission row, when it holds one, and nothing else. Called when
-/// `world_binding.rs` erases a binding the build counts, for an unbind or the owner's drop.
+/// `world_binding.rs` erases a `world_account` row, for an unbind or the owner's drop.
 pub(crate) fn withdraw_admission(ctx: &ReducerContext, identity: Identity) {
     if holds_admission(ctx, identity) {
         ctx.db.world_admission().identity().delete(identity);
@@ -207,12 +202,12 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 /// delisted account, a removed admission) is not let back in. Each identity in `admit` gets an
 /// admission row under every rule: this is how the host admits its own player, and how the host
 /// gate admits a joiner who gave the world's password; under `Allowlist` the row lets in only an
-/// identity with no trusted binding. Admission rows outlive every rule change.
+/// identity with no `world_account` row. Admission rows outlive every rule change.
 ///
-/// When the rule changes to `Allowlist`, the account of every binding the build counts whose
+/// When the rule changes to `Allowlist`, the handle of every `world_account` row whose
 /// identity the rule in force before the call admitted is added to the host's list, beside
-/// the accounts already there, so the identities bound to those accounts stay in, the owner's
-/// among them. The `admit` argument adds no account. A list that would then hold more than
+/// the handles already there, so those identities stay in, the owner's among them. The `admit`
+/// argument adds no handle. A list that would then hold more than
 /// `world_binding::MAX_ALLOWLIST_ACCOUNTS` refuses the whole call with no write. Leaving
 /// `Allowlist` neither reads nor writes the list.
 #[spacetimedb::reducer]
@@ -234,11 +229,8 @@ pub fn set_world_access(
         Vec::new()
     };
     if rule == WorldAccessRule::Allowlist && rule != was {
-        let seed = crate::world_binding::bound_accounts(
-            ctx,
-            &crate::accounts::BUILD_PROFILE,
-            |identity| is_admitted(ctx, identity),
-        );
+        let seed =
+            crate::account_checks::admitted_handles(ctx, |identity| is_admitted(ctx, identity));
         if let Err(reason) = crate::world_binding::add_to_allowlist(ctx, &seed) {
             return reject("set_world_access", ctx.sender(), reason);
         }

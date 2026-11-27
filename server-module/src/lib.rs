@@ -222,7 +222,9 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Lifecycle: refuse an identity the world's access rule does not admit, record the live
-/// connection, then lazy-provision or touch an `account`. Returning `Err` from this hook
+/// connection, arm a re-check of the account the identity plays under when one is due
+/// (`account_checks::arm_recheck_at_connect`, which cannot fail), then lazy-provision or touch
+/// an `account`. Returning `Err` from this hook
 /// DISCONNECTS the client (crate doc). The admission check is the first statement and the one
 /// refusal an anonymous connection can meet: under `Open`, the rule of a world with no
 /// `world_access` row, it admits everyone. Anonymous play is FIRST-CLASS: after that check no
@@ -238,6 +240,7 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
     access::require_admitted_at_connect(ctx)?;
     let jwt = ctx.sender_auth().has_jwt();
     open_player_session(ctx);
+    account_checks::arm_recheck_at_connect(ctx, &accounts::BUILD_PROFILE);
     if !jwt {
         return Ok(());
     }

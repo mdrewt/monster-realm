@@ -73,6 +73,8 @@ mod census {
     const REDUCER_ATTR: &str = "reducer";
     const TABLE_ATTR: &str = "table";
     const PROCEDURE_ATTR: &str = "procedure";
+    /// The one module that may declare a procedure.
+    const PROCEDURE_MODULE: &str = "account_checks";
     const SCHEDULED_ARG: &str = "scheduled";
     const WILDCARD: &str = "_";
     const LIB_STEM: &str = "lib";
@@ -406,6 +408,7 @@ mod census {
         name: String,
         block: syn::Block,
         reducer: Option<Option<String>>,
+        procedure: bool,
         bindings: BTreeSet<String>,
     }
 
@@ -496,8 +499,10 @@ mod census {
 
         fn scan_fn(&mut self, module: &str, item_fn: &syn::ItemFn) -> Result<(), CensusError> {
             let name = item_fn.sig.ident.to_string();
-            if carries_attr(&item_fn.attrs, PROCEDURE_ATTR) {
-                return Err(shape(module, format!("procedure attribute on {name}")));
+            let procedure = carries_attr(&item_fn.attrs, PROCEDURE_ATTR);
+            if procedure && module != PROCEDURE_MODULE {
+                let what = format!("procedure attribute on {name} outside {PROCEDURE_MODULE}");
+                return Err(shape(module, what));
             }
             if probe_signature(&item_fn.sig).handle {
                 let what = format!("fn {name} has a table handle in its signature");
@@ -519,6 +524,7 @@ mod census {
                 name,
                 block: (*item_fn.block).clone(),
                 reducer,
+                procedure,
                 bindings: value_bindings(item_fn),
             });
             Ok(())
@@ -1129,6 +1135,11 @@ mod census {
 
             let mut verdicts = BTreeMap::new();
             for (idx, entry) in self.fns.iter().enumerate() {
+                if entry.procedure {
+                    let writes = reachable[idx].clone();
+                    verdicts.insert(entry.name.clone(), Verdict::Procedure { writes });
+                    continue;
+                }
                 let Some(argument) = &entry.reducer else {
                     continue;
                 };
