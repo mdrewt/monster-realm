@@ -125,13 +125,13 @@ pub(crate) const EGRESS_MAX_AGE_MS: i64 = 25 * 60 * 60 * 1000;
 
 const BUDGET_ROW: u32 = 0;
 const STATUS_OK: u16 = 200;
+const STATUS_FORBIDDEN: u16 = 403;
 /// What a world name that names an address starts with.
 const IP_NAME_PREFIX: &str = "ip:";
 /// The `family` of a `world_egress` row that holds an IPv4 address, and of one that holds an
 /// IPv6 address.
 const FAMILY_V4: u8 = 4;
 const FAMILY_V6: u8 = 6;
-const STATUS_FORBIDDEN: u16 = 403;
 
 /// The account an identity of this world plays under, as the account service last answered:
 /// the account's handle in this world and whether it owns the game. `checked_at_ms` is when the
