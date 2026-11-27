@@ -723,15 +723,16 @@ sessions.
 
 ## Trade sessions open face to face, one per pair, and are never one-sided
 
-**Decision.** A trade is a session that two players open face to face, the partner on the tile in
-front or on the opener's own tile, and then edit, confirm or cancel from Social › Trades. Each
-side offers any mix of monsters, items and currency. Two players share at most one session,
-whichever of them opened it, and a player may have at most four sessions they opened; sessions
-others opened with them never count. A confirmed side cannot edit (cancelling is the way out), and
-a confirm names the session revision it reviewed: every accepted edit advances the revision and
-clears both confirms. A confirm is refused when either offer is empty or when the side would own
-no monster afterwards, and no other soft-lock check exists. A received monster takes the receiver's
-lowest free party slot, else Storage; the receiver's party size never refuses a trade.
+**Decision.** A trade is a session that two players open face to face (the client offers it only
+toward a player the opener faces, and the server refuses a partner out of interact range) and then
+edit, confirm or cancel from Social › Trades. Each side offers any mix of monsters, items and
+currency. Two players share at most one session, whichever of them opened it, and a player may have
+at most four sessions they opened; sessions others opened with them never count. A confirmed side
+cannot edit (cancelling is the way out), and a confirm names the session revision it reviewed:
+every accepted edit advances the revision and clears both confirms. A confirm is refused when
+either offer is empty or when the side would own no monster afterwards, and no other soft-lock
+check exists. A received monster takes the receiver's lowest free party slot, else Storage; the
+receiver's party size never refuses a trade.
 
 **Why.** The operator's trade-scope ruling (monster-realm #585): all three asset classes,
 face-to-face initiation, one active trade per pair, no one-sided gifts, simple soft-lock guards

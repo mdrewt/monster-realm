@@ -609,8 +609,8 @@ monotone, nothing heals mid-battle); `rewards::pay` pays only the units consciou
 on every terminal path alike, through the carried per-monster credit
 (`battle::credit_monster`) over the whole conscious party, so the win-only trust-favorable
 credit, Quality Time and the evolution check keep their carried scope; the currency goes to
-the wallet; one `Awards` line per paid monster plus one `unit 0` line for the currency is
-appended after `BattleEnd`. The faint penalty (`battle::apply_faint_penalties`) and the
+the wallet; one `Awards` line per paid monster (ascending unit) plus one `unit 0` line for
+the currency is appended after `BattleEnd`. The faint penalty (`battle::apply_faint_penalties`) and the
 prior-terminal sweep run from the same place, so a recruit success penalises and sweeps like
 every other end. `battle_summary` is one row per battle: inserted at the Active start (an insert
 that takes the table over its cap arms `summary_reaper`),
