@@ -2456,8 +2456,8 @@ same at every check, and not a credential.
   The host runs
   `recheck_account` from it (any other caller is refused before anything is sent), which presents
   the stored handle and stores the answer: a handle the service does not know is stored as not
-  entitled; a handle under the service's newer key replaces the old one in `world_account` and in
-  `world_allowlist` in the same transaction; a newer handle another identity already holds leaves
+  entitled; a handle under the service's newer key takes the stored one's place in `world_account`
+  and in `world_allowlist` in the same transaction; a newer handle another identity already holds leaves
   the row's handle and stores the standing on it. The connection is admitted and entitled by the
   stored row the whole time, and a row never expires. A run with no answer leaves whether the
   account owns the game unchanged, the host spends the one-shot row whatever the run did, and the
@@ -2480,7 +2480,7 @@ same at every check, and not a credential.
   under every rule. A caller with nothing to erase gets `Ok` with no write (the drop answers `that
   identity holds no world binding`), and an account pending deletion is refused by the deletion
   gate. The deletion cascade takes the identity's handle off the host's list and erases the row;
-  a guest claim erases the retired guest's row and moves none; the data export carries the
+  a guest claim erases the row of the guest identity it retires and moves none; the data export carries the
   caller's own row.
 - **Which service.** `BuildProfile::world_check_url` (see "The official build holds no attestation
   key and a world build trusts no login issuer").
@@ -2496,12 +2496,12 @@ same at every check, and not a credential.
 
 The attestation binding is compiled beside it (`server-module/src/world_binding.rs`: the
 tables `world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers
-and the verifier). It records a binding that nothing reads: it entitles and admits nobody. lpw-33
-removes it and acs-15 removes `POST /attest`. Not built: the character that follows the account
-from one identity to another (lpw-42; until then the second identity of one account is refused), the
-host account's daily check and the rule for a world's `ip:` names (lpw-43; until then every name is
-presented), the client's half (lpw-24) and the gate that refuses a caller who is not entitled in
-every reducer (lpw-36). Proved by `server-module/src/account_checks_tests.rs` on the native test
+and the verifier). It records a binding that nothing reads: it entitles and admits nobody, and
+it is to be removed with `POST /attest`. Not built: the character that follows the account
+from one identity to another (until then the second identity of one account is refused), the
+host account's daily check and the rule for a world's `ip:` names (until then every name is
+presented), the client's half, and the gate that refuses a caller who is not entitled in
+every reducer. Proved by `server-module/src/account_checks_tests.rs` on the native test
 host, with every answer of the service stubbed. The measurements on 2.16.1, the four alternatives
 with a judge's scores and the slice changes are in `docs/refactors/account-checks.md`.
 
@@ -2548,8 +2548,8 @@ answer whose `handle` is missing is stored as not entitled whatever else it says
 ## The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the module
 
 **Decision.** A world attestation is what the account service's `POST /attest` signs; the binding
-the module records from one grants nothing (see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"), and
-lpw-33 removes this verifier with it. It is signed with an Ed25519 key, and the module checks the
+the module records from one grants nothing (see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle").
+It is signed with an Ed25519 key, and the module checks the
 signature with the `ed25519-dalek` crate (3.0.0, no default features), through `verify_strict`.
 `world_binding::verify_attestation(keys, attestation)` runs these checks in order: a token over 4096
 bytes is refused before anything is decoded; three non-empty segments of strict unpadded base64url
@@ -2813,7 +2813,7 @@ it names the same account (`world_binding::delist_account_of`, called by
 `accounts::account_deletion_reaper` before the row's erase). The row is the only record of the
 handle, so an identity whose row is already gone takes nothing off: a player who unbinds, or whose
 row the owner drops, before the account's deletion leaves the handle listed. A guest claim does not
-write the list either, so the retired guest's handle stays listed until the host removes it.
+write the list either, so the handle of the guest identity it retires stays listed until the host removes it.
 
 The module declares no HTTP handler, no HTTP route and no row filter: a check of the generated
 module definition refuses each, on the default build (`just module-definition`, in `just ci`) and
@@ -2844,8 +2844,8 @@ identity: the handle is the same whichever identity the account plays under. The
 and admission rows already say who the rule let in, so the list is made from them with no new
 table. Nothing bounds `world_account`: a row stays until its identity unbinds, the owner drops
 it, a claim retires its identity or its account is deleted. A change to `Allowlist` lists the
-handle of every row whose identity the rule in force admitted, so a guest's row left under its
-retired identity would be listed by a later change; the claim erases it. With more than 256
+handle of every row whose identity the rule in force admitted, so a row left under a guest
+identity a claim retires would be listed by a later change; the claim erases it. With more than 256
 such handles the change to `Allowlist` is refused, and `drop_world_binding` is the owner's
 reducer for bringing them under the bound; a drop that erases a `world_account` row takes that
 identity's admission row with it under every rule, as its own unbind does, so the owner admits
