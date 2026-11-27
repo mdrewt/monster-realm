@@ -8,9 +8,9 @@ state, not a log.
 
 ## One repository, one cargo workspace
 
-**Decision.** The four product crates (`game-core`, `client-wasm`, `server-module`, `sim-harness`) are
-members of one cargo workspace in this repository, beside the TypeScript client in `client/`. The server module and the
-prediction wasm consume `game-core` by path.
+**Decision.** The four product crates (`game-core`, `client-wasm`, `server-module`, `sim-harness`)
+are members of one cargo workspace in this repository, beside the TypeScript client in `client/`.
+The server module and the prediction wasm consume `game-core` by path.
 
 **Why.** The rule crate's whole value is that the client and the server compile the same code at the
 same revision. Split across repositories it becomes a versioned dependency, and a version skew between
@@ -20,24 +20,25 @@ rule core.
 **Rules out.** Extracting `game-core` (or an "engine") into its own repository or published crate;
 letting the client and the server pin different revisions of it.
 
+The crates and their dependencies: `ARCHITECTURE.md` "Workspace".
+
 ## One game, three ways to play: no code may assume we run the server
 
 **Decision.** The same server module, rules crate and client are played three ways: a single-player
 world on a server the game starts on the player's machine, a private server a player hosts for
 friends, and the one official server. A way to play is a deployment — where the server runs and who
 may connect — never a build of the rules. A deployment's module is built to trust the accounts that
-deployment takes (see "The official build holds no attestation key and a world build trusts no
-login issuer"); the rules, the schema and the client bindings are the same in every build. A
-character belongs to one world; nothing moves between
-worlds. Private worlds run the official rules until modding ships after early access, and the code is
-written so that modding can be added: content stays data behind one loader per registry, rules never
-name a specific content id, and each kind of extension has one seam.
+deployment takes; the rules, the schema and the client bindings are the same in every build. A
+character belongs to one world; nothing moves between worlds. Private worlds run the official rules
+until modding ships after early access, and the code is written so that modding can be added: content
+stays data behind one loader per registry, rules never name a specific content id, and each kind of
+extension has one seam.
 
 **Why.** Most players are expected to play alone or with a few friends, and early access is that
-build; the official server follows. Three rule sets or three clients would triple every change and let
-the ways to play drift apart. Isolation between worlds is what keeps the official server's economy and
-ladder meaningful when anyone can run their own world. The design intent is `game-design.md` §14 in
-the harness's spec corpus.
+build; the official server follows. Three rule sets or three clients would triple every change and
+let the ways to play drift apart. Isolation between worlds is what keeps the official server's economy
+and ladder meaningful when anyone can run their own world. The design intent is `game-design.md` §14
+in the harness's spec corpus.
 
 **Rules out.** A server address, database name or operator-run service assumed in shared client or
 module code (the connection target is configuration); an upgrade or migration step a person runs by
@@ -63,130 +64,120 @@ the same core.
 **Rules out.** Game rules in SpacetimeDB-specific code; a second game-state server beside the module;
 adopting a game-server framework that cannot execute `game-core`.
 
+The module's layout: `ARCHITECTURE.md` "server-module: the authority".
+
 ## PixiJS and TypeScript render the client
 
 **Decision.** The client renders with PixiJS 8 in TypeScript. The renderer is a pure view of
-authoritative and predicted state and owns none of it. `TILE_PX` (`client/src/render/config.ts`) is
-the one constant tying visual resolution to the grid; `game-core` works in integer tiles.
+authoritative and predicted state and owns none of it. One client constant, `TILE_PX`, ties visual
+resolution to the grid; `game-core` works in integer tiles.
 
 **Why.** For a 2D pixel-art game PixiJS gives a small bundle, mature web tooling and sprite and
 tilemap performance. A Rust/bevy wasm client would remove the TypeScript boundary, but at roughly an
-order of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin
-and drift-gated. Phaser's batteries (scenes, physics, input) duplicate what `game-core` and the
-client shell provide. A custom WebGL or WebGPU renderer is unjustified for 2D. A native or desktop
-client goal is the condition that would reopen this.
+order of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin:
+generated bindings and a small set of wasm exports. Phaser's batteries (scenes, physics, input)
+duplicate what `game-core` and the client shell provide. A custom WebGL or WebGPU renderer is
+unjustified for 2D. A native or desktop client goal is the condition that would reopen this.
 
 **Rules out.** Game state or rules in the render layer; a 3D-environment renderer; coupling rules or
 netcode to pixels-per-tile.
 
+How the client draws: `ARCHITECTURE.md` "Rendering".
+
 ## Rules are written once, in game-core
 
-**Decision.** Every game rule lives in the `game-core` crate exactly once. The server
-module calls it for truth; the browser runs the same compiled code through the thin
-`wasm-bindgen` shell in `client-wasm` for prediction. Constants the client needs
-(`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
-`max_trade_monsters_per_side`, `deletion_grace_ms_default`, `protocol_version`,
-`min_client_protocol`) and derived queries
-(`evolution_eligibility`, `interact_candidates_coded`, `zone_map`, `care_remaining_ms`)
-are wasm exports (`client-wasm/src/lib.rs`), not TypeScript literals.
+**Decision.** Every game rule lives in the `game-core` crate exactly once. The server module calls it
+for truth; the browser runs the same compiled code through the thin `wasm-bindgen` shell in
+`client-wasm` for prediction. A constant or a derived query the client needs is a wasm export, not a
+TypeScript literal.
 
-**Why.** A rule implemented twice drifts, and a drifted movement or battle rule is a
-desync: the client predicts one outcome, the server commits another, and the player
-sees rubber-banding. A hand-copied constant drifts the same way, only more quietly.
+**Why.** A rule implemented twice drifts, and a drifted movement or battle rule is a desync: the
+client predicts one outcome, the server commits another, and the player sees rubber-banding. A
+hand-copied constant drifts the same way, only more quietly.
 
-**Rules out.** Re-implementing a rule in TypeScript or in a reducer; copying a
-game-core constant into client code. `client-wasm` depends on `game-core` without the
-`spacetimedb` feature (`client-wasm/Cargo.toml`), so server-only code never reaches
-the browser bundle.
+**Rules out.** Re-implementing a rule in TypeScript or in a reducer; copying a game-core constant into
+client code; server-only code in the browser bundle, which is why `client-wasm` builds `game-core`
+without its `spacetimedb` feature.
+
+The exports the client reads: `ARCHITECTURE.md` "client-wasm: the prediction boundary".
 
 ## Determinism: integer math, injected time and randomness
 
-**Decision.** `game-core` is pure and deterministic. `clippy.toml` bans wall-clock
-reads (`SystemTime::now`, `Instant::now`, `chrono::{Utc,Local}::now`) and unseeded or
-OS randomness (`rand::thread_rng`, `rand::random`, `rand::rng`, `getrandom`, `OsRng`,
-`ThreadRng`) workspace-wide, and `just lint` runs clippy with `-D warnings`. Time comes
-in as `Millis` (the server converts `ctx.timestamp` in `server-module/src/marshal.rs`
-`now_ms`); randomness comes in as a seed (`ctx.random()` mapped through
-`TurnVariance::from_ctx_random` in `game-core/src/combat/types.rs`). The release and
-bench profiles set `overflow-checks = true` (root `Cargo.toml`).
+**Decision.** `game-core` is pure and deterministic. A rule takes time as `Millis` and randomness as a
+seed, both handed in by its caller, and computes in integers with overflow checks on in release
+builds. Clippy bans wall-clock reads and unseeded or OS randomness workspace-wide, and a clippy
+warning fails the lint.
 
-**Why.** The same inputs must produce byte-identical output natively on the server and
-in wasm on the client, and a replayed seed must reproduce a battle turn. A clock read
-or an ambient RNG inside a rule makes that impossible, and an overflow that wraps
-silently in release (but panics in tests) hides exactly the bugs tests exist to catch.
+**Why.** The same inputs must produce byte-identical output natively on the server and in wasm on the
+client, and a replayed seed must reproduce a battle turn. A clock read or an ambient RNG inside a rule
+makes that impossible, and an overflow that wraps silently in release (but panics in tests) hides
+exactly the bugs tests exist to catch.
 
-**Rules out.** Floats in rules, clock reads in rules, unseeded RNG anywhere in Rust. In
-TypeScript the ban is not mechanical: client code may read `performance.now()` for
-rendering and pacing, and `Date.now()` against a server-epoch column for display or an
-advisory gate whose readiness only a wasm export over the game-core predicate decides
-(`care_remaining_ms` on the Monsters sheet); the server re-decides on its own clock.
+**Rules out.** Floats in rules, clock reads in rules, unseeded RNG anywhere in Rust. In TypeScript the
+ban is not mechanical: client code may read `performance.now()` for rendering and pacing, and
+`Date.now()` against a server-epoch column for display or an advisory gate whose readiness only a
+wasm export over the game-core predicate decides (`care_remaining_ms` on the Monsters sheet); the
+server re-decides on its own clock.
+
+Where time and seeds enter: `ARCHITECTURE.md` "game-core: the rule layer".
 
 ## Integer damage formula with a seeded variance roll
 
-**Decision.** `calc_damage` (`game-core/src/combat/damage.rs`) is integer-only with
-`u64` intermediates: `base = (2·level/5 + 2)·power·attack/defense/50 + 2`, then STAB
-×3/2, type effectiveness ×{0,5,10,20}/10, a variance roll in `85..=100` /100, an
-integer weather numerator/denominator, and a floor of 1 for any non-immune hit. The
-five per-turn rolls come from one `ctx.random()` seed via `TurnVariance`.
+**Decision.** Damage is one integer-only formula with `u64` intermediates: a base from level, power,
+attack and defense, then the same-type bonus, type effectiveness, a variance roll in `85..=100` and
+weather, each an integer ratio, and a floor of 1 for any hit the target is not immune to. The
+variance roll is drawn from the battle's seed, which the server takes from `ctx.random()`.
 
-**Why.** Balance tuning happens in content (species stats, skill power, the type
-chart), so the formula itself has to be stable and bit-reproducible. Integers make it
-identical on every target; the floor of 1 keeps a hit from ever doing nothing.
+**Why.** Balance tuning happens in content (species stats, skill power, the type chart), so the
+formula itself has to be stable and bit-reproducible. Integers make it identical on every target; the
+floor of 1 keeps a hit from ever doing nothing.
 
-**Rules out.** Float math in combat; per-platform rounding; reading randomness inside
-the resolver.
+**Rules out.** Float math in combat; per-platform rounding; reading randomness inside the resolver.
+
+The formula term by term: `ARCHITECTURE.md` "game-core: the rule layer".
 
 ## Content is data compiled into game-core
 
-**Decision.** Game content (species, skills, items, zones, maps, encounters, NPCs,
-dialogue, quests, shops, abilities, heal locations, evolution paths, the type chart)
-is RON under `game-core/content/`. `game-core/build.rs` embeds every `*.ron` file of
-each registry directory in sorted filename order; `validate_content` checks it; a
-content-invariant violation in the pure core is a panic. The server seeds the public
-content tables in `sync_content` and skips re-seeding while the stored
-`config.content_version` equals `CONTENT_VERSION` (`server-module/src/lib.rs`). The
-`content-version` eval pins `CONTENT_VERSION` to a hash of every content file's bytes
-(`evals/baselines/content-hash.json`), so any content edit — comments included —
-needs a version bump. No content row table carries a `locale` column: content stays
-locale-agnostic; localization lives in the client catalog (`client/src/ui/i18n/`).
+**Decision.** Game content (species, skills, items, zones, maps, encounters, NPCs, dialogue, quests,
+shops, abilities, heal locations, evolution paths, the type chart) is RON under `game-core/content/`,
+one directory per registry, embedded into `game-core` at build time and validated there. The server
+seeds its content tables from it only when its stored content version differs from
+`CONTENT_VERSION`, so every content edit, comments included, bumps that number; an eval enforces it.
+Content is locale-agnostic: no content table has a locale column, and the client localizes.
 
-**Why.** Content has to reach the client (prediction, maps) and the server (truth)
-from one source with no runtime loading. Directory-per-registry files let content be
-added without editing shared files. Without the version pin, edited content would
-silently never reach a live database. Localized strings in content would turn every
-translation fix into a `CONTENT_VERSION` bump and a server reseed, for text only the
-client renders.
+**Why.** Content has to reach the client (prediction, maps) and the server (truth) from one source
+with no runtime loading. Directory-per-registry files let content be added without editing shared
+files. Without the version pin, edited content would silently never reach a live database. Localized
+strings in content would turn every translation fix into a `CONTENT_VERSION` bump and a server
+reseed, for text only the client renders.
 
-**Rules out.** Hard-coding content in Rust or TypeScript; loading content at runtime;
-editing `game-core/content/` without bumping `CONTENT_VERSION` and regenerating the
-baseline (the eval failure message prints the exact command); a locale column on
-content rows; localized strings in RON content.
+**Rules out.** Hard-coding content in Rust or TypeScript; loading content at runtime; editing
+`game-core/content/` without bumping `CONTENT_VERSION`; a locale column on content rows; localized
+strings in RON content.
+
+The embed, validate, seed and version steps: `ARCHITECTURE.md` "Content pipeline".
 
 ## Tactical content is part of the row it describes
 
-**Decision.** A value the tactical engine reads about a skill, a species, a battle item or a
-zone's wild encounters is a field of that row: `SkillDef.tactics` (tier and geometry),
-`Species.tactics` (movement class, role, stance, kit, signature and footprint),
-`ItemDef.battle_use` (reach and target filter), and `EncounterTable.pack_weights` and
-`battle_map_pool`. RON must spell them for every skill, species and encounter table.
-`battle_maps/` and `tactics_tuning.ron` stay registries of their own. No tactical field has a
-table column. `validate_tactics_content` is the gate for tactical content: CI runs it as
-ordinary tests and `sync_content` runs it in its validate phase, before any write. This is the
-target. The code still holds four registries of tactical fields keyed by another row's id
-(`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`), and
-`docs/refactors/tactics-content.md` lists the slices that move each, in order.
+**Decision.** A value the tactical engine reads about a skill, a species, a battle item or a zone's
+wild encounters is a field of that row, and RON must spell it for every skill, species and encounter
+table. Battle maps and the tactical tuning stay registries of their own. No tactical field has a table
+column. One `game-core` gate checks tactical content: CI runs it as ordinary tests and the content
+sync runs it before any write. This is the target. The code still holds four registries of tactical
+fields keyed by another row's id, and `docs/refactors/tactics-content.md` gives each field's home and
+lists the slices that move each registry, in order.
 
-**Why.** A skill's power and its reach are one balance decision, and the engine reads them
-together. Kept as two entries that must agree by id, they let an author change one and forget
-the other, and what notices is a join that names an id and no file. One row cannot disagree
-with itself, and a lever left out is a parse error at that row. Nothing a player sees depends
-on keeping the halves apart: the tactical data reaches the client inside the wasm module either
-way, and neither layout puts it in a table.
+**Why.** A skill's power and its reach are one balance decision, and the engine reads them together.
+Kept as two entries that must agree by id, they let an author change one and forget the other, and
+what notices is a join that names an id and no file. One row cannot disagree with itself, and a lever
+left out is a parse error at that row. Nothing a player sees depends on keeping the halves apart: the
+tactical data reaches the client inside the wasm module either way, and neither layout puts it in a
+table.
 
-**Rules out.** A registry of tactical fields keyed by the id of the row they describe; a
-tactical field RON may omit for a skill, a species or an encounter table; a second copy of the
-lints in the server; a column on a content table for a field only the engine reads; a made-up
-tactical value in a content struct built from a table row (a rule takes the values it reads).
+**Rules out.** A registry of tactical fields keyed by the id of the row they describe; a tactical
+field RON may omit for a skill, a species or an encounter table; a second copy of the lints in the
+server; a column on a content table for a field only the engine reads; a made-up tactical value in a
+content struct built from a table row (a rule takes the values it reads).
 
 ## Server authority: thin reducers in domain modules
 
