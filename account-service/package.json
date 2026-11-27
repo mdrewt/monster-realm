@@ -8,6 +8,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "jose": "6.2.18",
     "oidc-provider": "9.15.1"
   },
   "engines": {

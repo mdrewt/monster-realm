@@ -4,9 +4,12 @@ import { type AddressInfo, isIPv6 } from 'node:net';
 import { createAttestRoute } from './attest.ts';
 import { type Config, ConfigError, loadConfig } from './config.ts';
 import { signInStepFor } from './interactions/router.ts';
-import { loadAttestationKeys, loadSigningKeys } from './keys.ts';
+import { createHandleKeys, loadAttestationKeys, loadSigningKeys, readHandleKeys } from './keys.ts';
 import { createAccountProvider } from './provider.ts';
+import { createSourceAddress } from './rateLimit.ts';
 import { openAccountStore } from './store/sqliteAdapter.ts';
+import { createHandleCodec } from './worldHandle.ts';
+import { createWorldRoutes, createWorldTickets } from './worldTicket.ts';
 
 export interface RunningServer {
   readonly config: Config;
@@ -21,7 +24,8 @@ const PURGE_INTERVAL_MS = 60_000;
 /**
  * Starts the account service from an env record. A setting the service refuses rejects with its
  * `ConfigError` before anything listens; a refused configuration or key file leaves nothing
- * written. `log` receives the start line and every line the attestation route logs.
+ * written. `log` receives the start line and every line the attestation, ticket and world-check
+ * routes log.
  */
 export async function startServer(
   env: Readonly<Record<string, string | undefined>>,
@@ -30,8 +34,11 @@ export async function startServer(
   },
 ): Promise<RunningServer> {
   const config = loadConfig(env);
+  // A handle key file that is there and wrong refuses the start before any key file is made.
+  const heldHandleKeys = readHandleKeys(config);
   const keys = loadSigningKeys(config);
   const attestationKeys = loadAttestationKeys(config, keys);
+  const handleKeys = heldHandleKeys ?? createHandleKeys(config);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   const store = openAccountStore(config.databasePath);
   let server: Server;
@@ -54,10 +61,24 @@ export async function startServer(
             account: (sub) => signIn.account(sub),
             log,
           });
-    // The attestation route takes only its own path under the issuer's host; every other request,
-    // a wrong host for that path included, is the provider handler's to answer or refuse.
+    // Nor a ticket, and without tickets no world has a handle to check.
+    const world =
+      signIn === undefined
+        ? undefined
+        : createWorldRoutes({
+            issuer: config.issuer,
+            loginKeys: keys,
+            tickets: createWorldTickets(store),
+            handles: createHandleCodec(handleKeys),
+            account: (sub) => signIn.account(sub),
+            sourceAddress: createSourceAddress(config.trustedProxies),
+            log,
+          });
+    // Each of these routes takes only its own path under its own hosts; every other request, a
+    // wrong host for one of those paths included, is the provider handler's to answer or refuse.
     server = createServer((req, res) => {
-      if (attest?.(req, res) !== true) handler(req, res);
+      if (attest?.(req, res) === true || world?.(req, res) === true) return;
+      handler(req, res);
     });
     await listen(server, config.listen);
   } catch (error) {
