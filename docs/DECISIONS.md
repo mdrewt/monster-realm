@@ -725,7 +725,7 @@ sessions.
 ## Trade sessions open face to face, one per pair, and are never one-sided
 
 **Decision.** A trade is a session that two players open face to face (the client offers it only
-toward a player on the tile the opener faces, or on the opener's own tile when none is in front,
+toward a player on the tile the opener faces, or on the opener's own tile when nothing is in front,
 and the server refuses a partner out of interact range) and then edit, confirm or cancel from
 Social › Trades. Each side offers any mix of monsters, items and currency. Two players share at
 most one session, whichever of them opened it, and a player may have at most four sessions they
@@ -803,8 +803,9 @@ recruit-heavy play and a one-monster party meets only lone wilds. No mechanic co
 
 **Rules out.** Charging currency or an item to heal as a currency sink; paying currency for a
 successful recruit; restating prices, rewards or battle budgets in prose docs; raising battle
-payouts or cutting shop prices to fund recruit-heavy play. A heal charge, a recruit payout or a
-monster sink changes the reasoning, so it changes the worksheet and this entry together.
+payouts, cutting shop prices or raising the sell price's fraction of the buy price to fund
+recruit-heavy play. A heal charge, a recruit payout or a monster sink changes the reasoning, so it
+changes the worksheet and this entry together.
 
 ## Battle lifecycle and PvP
 
@@ -812,14 +813,14 @@ monster sink changes the reasoning, so it changes the worksheet and this entry t
 view. Everything a battle must block checks both battle roles through the shared guards: a
 per-player predicate (movement, guest claims and the other player actions), or, for evolution
 and a trade side, a per-monster one. Movement is blocked twice: the movement tick drains nothing
-for a player in a battle, and new moves are refused mid-battle. A battle start also empties
-each battler's private move queue on the server, keeping the sequence guard, so a step queued
-before a battle never runs after it. Accepting a challenge opens a tactical battle: secret queue
-rows under a 30 s window per unit-turn, forfeit on the fourth auto-pass or the last connection
-closing. Challenges expire after 120 s. Only battles between two distinct real players change
-the public rating (Elo from 1000, no floor). When an identity's last connection closes, its live
-trades, PvP battles, wild battles and challenges are resolved. Ranked PvP requires both players to
-hold an account, but this is inactive until a real OIDC issuer is configured.
+for a player in a battle, and new moves are refused mid-battle. A battle start also empties each
+battler's private move queue on the server, keeping the sequence guard, so a step queued before a
+battle never runs after it. Accepting a challenge opens a tactical battle: secret queue rows under
+a 30 s window each time the battle waits on a unit, forfeit on the fourth auto-pass or the last
+connection closing. Challenges expire after 120 s. Only battles between two distinct real players
+change the public rating (Elo from 1000, no floor). When an identity's last connection closes,
+its live trades, PvP battles, wild battles and challenges are resolved. Ranked PvP requires both
+players to hold an account, but this is inactive until a real OIDC issuer is configured.
 
 **Why.** Every blocking rule reads the same guards, so PvE and PvP cannot drift apart. Disconnect
 handling keys on the *last* connection, so a second tab or an overlapping reconnect cannot forfeit
@@ -917,7 +918,7 @@ board with no seed, roll counter or budget field, and costs every candidate plan
 budget, never the unit's stored one. The executor hands it the public view (seed and roll counter
 zeroed), halts any entry but Move, Skill or EndTurn as a bad shape, and runs every entry, the
 trailing EndTurn included, through the same pop-time check as a player plan. The planner therefore
-calls the gate's own path, target, disengage, stride and validity functions and restates no rule. A
+calls the gate's path search, target, disengage, stride and validity rules and restates no rule. A
 stance that needs randomness must move it into server-pushed battle events. The planner's signature
 forbids the parameter and the view keeps the seed and roll counter out by structure; the view's
 units still expose a budget, so tests are what catch a regression there.
