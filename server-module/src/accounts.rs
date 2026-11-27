@@ -10,9 +10,14 @@
 //! (the tactical tables' `schema::erase_tactical_rows` included). The guest
 //! claim delegates to five of that family, `access::erase_admission`,
 //! `world_binding::erase_world_binding`, `account_checks::erase_world_account`,
+//! `account_checks::erase_world_move`,
 //! `schema::erase_tactical_rows` and `battle::anonymize_battles`, for the guest
 //! identity it retires. The reaper also calls `world_binding::delist_account_of`,
-//! which takes the deleted identity's handle off the host's list. Bare reads of
+//! which takes the deleted identity's handle off the host's list. `move_character`,
+//! which an account check runs to move a character between two identities of one
+//! account, delegates the same way: the `rekey_*` family, `npc::erase_npc_state`,
+//! `economy::erase_wallet`, `pvp::erase_pvp_rows`, `ranking::move_profile`,
+//! `movement::move_position` and `privacy::purge_export_bundles`. Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read
 //! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
@@ -920,6 +925,57 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
         || crate::onboarding::has_handle(ctx, identity)
 }
 
+/// Whether `identity` owns a character: it is in the game, or it holds any row
+/// [`account_has_game_data`] counts.
+pub(crate) fn owns_character(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db.player().identity().find(identity).is_some() || account_has_game_data(ctx, identity)
+}
+
+/// Whether `identity` is in a battle or a trade: an ongoing battle in either role, a trade
+/// offer in either role, or a trade session.
+pub(crate) fn in_battle_or_trade(ctx: &ReducerContext, identity: Identity) -> bool {
+    is_in_ongoing_battle(ctx, identity)
+        || crate::guards::offers_of(ctx, identity).next().is_some()
+        || crate::guards::sessions_of(ctx, identity).next().is_some()
+}
+
+/// Move the character `from` owns to `to`, one delegated helper per table, and leave `from`
+/// nothing [`owns_character`] counts, so the character can move back. The caller has refused a
+/// `to` that owns a character (no insert below can collide) and either identity in a battle
+/// or a trade. `?` on the fallible monster re-key aborts the caller's transaction.
+///
+/// Where the claim's re-key leaves the guest a row, the move removes it: the dialogue marker
+/// and the zeroed wallet go with their module's erase, and the ladder profile moves whole.
+/// The challenges that name `from` are cancelled, its saved or live position becomes `to`'s
+/// saved position, and its export bundles, which hold the character, are purged. A body of a
+/// procedure's transaction logs nothing, so the purge is not published.
+///
+/// Not moved, by decision: finished battles and what records them (`battle`,
+/// `battle_summary`, the tactical rows until their sweep, `playtest_event`), and what is about
+/// the identity's own connection, admission and login (`player_session`, `world_admission`,
+/// `world_binding`, `account`).
+pub(crate) fn move_character(
+    ctx: &ReducerContext,
+    from: Identity,
+    to: Identity,
+) -> Result<(), String> {
+    crate::pvp::erase_pvp_rows(ctx, from);
+    crate::monster_mgmt::rekey_monsters(ctx, from, to)?;
+    crate::evolution::rekey_evolution_notices(ctx, from, to);
+    crate::inventory::rekey_inventory(ctx, from, to);
+    crate::npc::rekey_npc_state(ctx, from, to);
+    crate::npc::erase_npc_state(ctx, from);
+    crate::raising::rekey_heal_cooldown(ctx, from, to);
+    crate::economy::rekey_wallet(ctx, from, to);
+    crate::economy::erase_wallet(ctx, from);
+    crate::ranking::move_profile(ctx, from, to);
+    crate::schema::rekey_formation(ctx, from, to);
+    crate::movement::move_position(ctx, from, to);
+    crate::onboarding::rekey_handle(ctx, from, to);
+    crate::privacy::purge_export_bundles(ctx, from);
+    Ok(())
+}
+
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
 /// per table. `?` on the fallible monster re-key rolls the
 /// whole claim transaction back (fail-loud on a broken dual-write invariant).
@@ -1178,6 +1234,10 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     if account.claimed_from.is_some() {
         return reject("complete_guest_claim", me, "account already claimed");
     }
+    // The caller's character plays under another identity: a claimed character would be one
+    // it could neither join with nor replace by checking in. A caller-state check, so it stands
+    // before any code is read.
+    crate::account_checks::require_not_moved(ctx, "complete_guest_claim")?;
     // Guard 5 (AUTH-15a) — code well-formed.
     if !is_valid_claim_code(&code) {
         return reject("complete_guest_claim", me, ERR_INVALID_CODE);
@@ -1226,12 +1286,13 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
     // The guest's world rows are not re-keyed either: its admission, its
-    // wrong-password record, its binding, its bind nonce and its checked account go
-    // with the identity, so a later change to `Allowlist` does not list the handle
+    // wrong-password record, its binding, its bind nonce, its checked account and
+    // its move record go with the identity, so a later change to `Allowlist` does not list the handle
     // of a guest that is gone. The host's list is not written here.
     crate::access::erase_admission(ctx, guest);
     crate::world_binding::erase_world_binding(ctx, guest);
     crate::account_checks::erase_world_account(ctx, guest);
+    crate::account_checks::erase_world_move(ctx, guest);
     // The guest's finished battles are not re-keyed (why: docs/DECISIONS.md,
     // "Accounts, guest identity and the claim flow"). The claim erases them as
     // the deletion cascade erases its subject's: the per-battle tactical rows
@@ -1557,6 +1618,7 @@ pub fn account_deletion_reaper(
     crate::world_binding::delist_account_of(ctx, args.account_identity);
     crate::world_binding::erase_world_binding(ctx, args.account_identity);
     crate::account_checks::erase_world_account(ctx, args.account_identity);
+    crate::account_checks::erase_world_move(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);

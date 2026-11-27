@@ -855,7 +855,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
     // + `trade_session` (an open session names both participants)
     // + `player_handle` (the identity's minted discriminator)
     // + the host's admission records, an identity's world binding and its bind nonce
-    // + an identity's checked account and its armed re-check.
+    // + an identity's checked account and its armed re-check
+    // + the record that a character was moved away from an identity.
     let expected_erase = [
         "battle_challenge",
         "battle_clock",
@@ -885,6 +886,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "world_admission_attempt",
         "world_bind_nonce",
         "world_binding",
+        "world_move",
     ];
     assert_eq!(
         erase, expected_erase,
@@ -903,7 +905,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
          passwords given for an identity), and `world_binding` and `world_bind_nonce` \
          (the account an identity of this world is bound to, and its outstanding bind \
          nonce), and `world_account` and `recheck_schedule` (the account a world checked \
-         for an identity, and its armed re-check): twenty-eight in all. A table moved OUT of \
+         for an identity, and its armed re-check), and `world_move` (the identity a \
+         character was moved away from, and when): twenty-nine in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
@@ -1091,7 +1094,7 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
 
-/// the `exportable == true` set equals EXACTLY the twenty tables the export
+/// the `exportable == true` set equals EXACTLY the twenty-one tables the export
 /// scope admits — set equality, BOTH directions.
 ///
 /// a negative-only spot check ("guest_claim is false, export_bundle is false") is
@@ -1101,9 +1104,9 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 /// Set equality in both directions is the only shape that rejects an over-broad
 /// AND an empty export scope.
 ///
-/// The twenty are fourteen ERASE tables (`player_handle`, `player_formation`
-/// and `world_account` among them) + five ANONYMIZE tables (`battle_summary` among
-/// them) + `character`: 14 + 5 + 1 = 20. The `false` side includes two the spec
+/// The twenty-one are fifteen ERASE tables (`player_handle`, `player_formation`,
+/// `world_account` and `world_move` among them) + five ANONYMIZE tables (`battle_summary`
+/// among them) + `character`: 15 + 5 + 1 = 21. The `false` side includes two the spec
 /// calls out by name:
 /// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
 /// own output — including it makes the walk self-feeding).
@@ -1144,6 +1147,7 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         "profile",
         "trade_offer",
         "world_account",
+        "world_move",
     ];
     assert_eq!(
         exportable, expected_exportable,
@@ -1151,7 +1155,8 @@ fn data_lifecycle_export_scope_structurally_narrower() {
          ERASE tables + the four ANONYMIZE tables + `character` + `player_handle` (the owner's \
          own discriminator) + `battle_summary` (the caller's side of each battle summary) \
          + `player_formation` (the caller's saved deploy order) + `world_account` (what \
-         the world holds about the caller's account): twenty. Both \
+         the world holds about the caller's account) + `world_move` (when a character was \
+         moved away from the caller): twenty-one. Both \
          directions matter: an \
          all-false manifest passes every negative spot check and ships an export feature \
          that returns an empty bundle for every request (§5's walk filters on \
@@ -3189,6 +3194,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::account_checks::RecheckSchedule as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "world_move",
+            <crate::account_checks::WorldMove as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "zone_def",
             <crate::schema::ZoneDefRow as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3227,7 +3236,7 @@ fn m22s6_identity_column_count(accessor: &str, ty: &AlgebraicType) -> usize {
 
 /// the S6 row-type registry and `DATA_LIFECYCLE_MANIFEST`
 /// name the SAME set of tables, with no duplicates on either side, the census
-/// pinned at 72, and a non-vacuity floor on how many of the 72 are identity-bearing.
+/// pinned at 73, and a non-vacuity floor on how many of the 73 are identity-bearing.
 ///
 /// This is DISTINCT from `data_lifecycle_manifest_totality_bidirectional`,
 /// which proves every LIVE TABLE has a manifest entry by scanning table-attribute
@@ -3288,9 +3297,9 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 72,
+        registry_len, 73,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 72 (28 ERASE + 6 ANONYMIZE + 13 JOIN-ONLY + 25 NOT-OWNED) — \
+         manifest carries exactly 73 (29 ERASE + 6 ANONYMIZE + 13 JOIN-ONLY + 25 NOT-OWNED) — \
          37 base tables, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
@@ -3302,7 +3311,8 @@ fn m22s6_table_row_registry_matches_manifest() {
          binding tables (`world_binding`, `world_bind_nonce`, `world_name`, \
          `world_allowlist`), plus the three account-check tables (`world_account`, each \
          identity's checked account; `recheck_schedule`, each identity's armed re-check; \
-         `world_check_budget`, the current minute's ticket-redeem count). A registry that grew \
+         `world_check_budget`, the current minute's ticket-redeem count), plus `world_move` \
+         (each identity a character was moved away from). A registry that grew \
          or shrank without a matching manifest change is \
          a registry nobody reviewed against the schema it claims to cover."
     );
@@ -3314,11 +3324,12 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 38,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 72 registered row types \
-         carry an Identity column at some depth; exactly 38 is the live count (the 34 \
+        identity_bearing, 39,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 73 registered row types \
+         carry an Identity column at some depth; exactly 39 is the live count (the 35 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). `world_account` and `recheck_schedule` add one each \
+         exceptions R3 below names). `world_move` adds one (its `identity` key). \
+         `world_account` and `recheck_schedule` add one each \
          (their `identity` columns, the keys their Erase classification rests on); \
          `world_check_budget` adds none (a row id, a minute and a count). `world_binding` and `world_bind_nonce` add one each \
          (their `identity` keys); `world_name` and `world_allowlist` add none (a name and an \
@@ -3415,9 +3426,10 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 34,
+        population, 35,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 34 (28 ERASE + 6 ANONYMIZE — the Erase `world_account` \
+         the live partition is exactly 35 (29 ERASE + 6 ANONYMIZE — the Erase `world_move` \
+         (each identity a character was moved away from), the Erase `world_account` \
          (each identity's checked account) and `recheck_schedule` (each identity's armed \
          re-check), the Erase `world_binding` and `world_bind_nonce`, lpw-9's Erase \
          `world_admission` and `world_admission_attempt`, rb-73's `player_session`, \
@@ -5044,7 +5056,7 @@ fn tactical_view_row_types_reach_no_secret_or_staging_field_bt7_3() {
 /// `battle`) and `player_formation` (the caller's saved deploy order), while the
 /// other eight are `exportable: false` — the transcripts are GC-bound and the
 /// staging rows are secrets. The export bundle's table set is EXACTLY the
-/// eighteen non-tactical exportable tables plus those two: 18 + 2 = 20.
+/// nineteen non-tactical exportable tables plus those two: 19 + 2 = 21.
 ///
 /// Kills: one of the eight other tactical tables flipped to `exportable: true`
 ///        (the export ships seeds, plans or staging rows to the subject's
@@ -5131,21 +5143,22 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
             "profile",
             "trade_offer",
             "world_account",
+            "world_move",
         ],
-        "[bt7/export-set] the exportable set must be EXACTLY the eighteen non-tactical \
-         exportable tables (`world_account` among them) plus `battle_summary` and \
-         `player_formation`: 18 + 2 = 20"
+        "[bt7/export-set] the exportable set must be EXACTLY the nineteen non-tactical \
+         exportable tables (`world_account` and `world_move` among them) plus `battle_summary` \
+         and `player_formation`: 19 + 2 = 21"
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        72,
+        73,
         "[bt7/manifest-census] 40 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
          schedule tables plus the three trade-session tables plus move_intent plus last_position \
          plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top plus \
          module_info plus lpw-9's world_access, world_admission and world_admission_attempt \
          plus the four world binding tables (world_binding, world_bind_nonce, world_name, \
          world_allowlist) plus the three account-check tables (world_account, \
-         world_check_budget, recheck_schedule)"
+         world_check_budget, recheck_schedule) plus world_move"
     );
 }
 
@@ -5340,6 +5353,9 @@ mod acct_nh {
         // through them; the export reads the account row through it).
         world_account: Handle<'a, crate::account_checks::WorldAccount>,
         recheck: Handle<'a, crate::account_checks::RecheckSchedule>,
+        // The identity's move record on its `identity` key (`erase_world_account` deletes
+        // through it; the export reads it through `move_of`).
+        world_move: Handle<'a, crate::account_checks::WorldMove>,
     }
 
     /// Registers every index the shipped accounts / claim / cascade / export
@@ -5732,6 +5748,10 @@ mod acct_nh {
                 .unique()
                 .writable()
             },
+            world_move: fx
+                .table::<crate::account_checks::WorldMove>("world_move", "identity", |r| r.identity)
+                .unique()
+                .writable(),
         }
     }
 
@@ -8137,8 +8157,10 @@ mod acct_nh {
         // a claim never moves a binding or a nonce. The claim erases the
         // retired guest's rows of all four tables and leaves the claimer's. A
         // checked account and its armed re-check belong to the identity the
-        // world checked: the claim erases the retired guest's and moves none.
-        const NOT_REKEYED: [&str; 21] = [
+        // world checked: the claim erases the retired guest's and moves none. A move
+        // record belongs to the identity a character was moved away from: the claim
+        // erases the retired guest's and moves none.
+        const NOT_REKEYED: [&str; 22] = [
             "player",
             "player_conversation",
             "player_session",
@@ -8160,6 +8182,7 @@ mod acct_nh {
             "world_bind_nonce",
             "world_account",
             "recheck_schedule",
+            "world_move",
         ];
         let mut owner_keyed: Vec<&str> = DATA_LIFECYCLE_MANIFEST
             .iter()
@@ -8265,6 +8288,926 @@ mod acct_nh {
             assert!(has, "a lone `{table}` row must count as game data");
             wipe(&w);
         }
+    }
+
+    // --- the character move (`accounts::move_character`) ---------------------
+
+    /// The tables whose rows `move_character` carries from the source to the destination,
+    /// as `owned_by` names them.
+    const LPW42_MOVED: [&str; 12] = [
+        "monster",
+        "monster_pub",
+        "pending_evolution_notice",
+        "inventory",
+        "player_quest",
+        "player_dialogue_state",
+        "heal_cooldown",
+        "last_position",
+        "player_wallet",
+        "profile",
+        "player_formation",
+        "player_handle",
+    ];
+
+    /// The source, the destination, a bystander with its own character, and a peer the
+    /// source has challenges and a finished battle with.
+    fn lpw42_ids() -> (Identity, Identity, Identity, Identity) {
+        (id(0x91), id(0x92), id(0x93), id(0x94))
+    }
+
+    /// One character: two monsters, a notice, two stacks, two quests, a dialogue row, a heal
+    /// cooldown, a saved position, a non-zero wallet, a ranked profile, a formation and a
+    /// handle. Every value is fixed but the owner, so the same call for another identity is
+    /// that character moved there.
+    struct Lpw42Character {
+        monsters: Vec<Monster>,
+        notice: PendingEvolutionNotice,
+        stacks: Vec<Inventory>,
+        quests: Vec<PlayerQuestRow>,
+        dialogue: PlayerDialogueStateRow,
+        heal: HealCooldown,
+        position: LastPosition,
+        wallet: PlayerWallet,
+        profile: Profile,
+        formation: PlayerFormation,
+        handle: PlayerHandle,
+    }
+
+    fn lpw42_character(who: Identity) -> Lpw42Character {
+        Lpw42Character {
+            monsters: vec![
+                monster_row(4101, who),
+                Monster {
+                    party_slot: 1,
+                    level: 9,
+                    ..monster_row(4102, who)
+                },
+            ],
+            notice: PendingEvolutionNotice {
+                owner_identity: who,
+                entries: vec![EvolutionRevealRow {
+                    monster_id: 4101,
+                    from_species: 1,
+                    to_species: 2,
+                    evolved_at_ms: 3,
+                }],
+            },
+            stacks: vec![
+                Inventory {
+                    inv_id: 4201,
+                    owner_identity: who,
+                    item_id: 4,
+                    count: 5,
+                },
+                Inventory {
+                    inv_id: 4202,
+                    owner_identity: who,
+                    item_id: 7,
+                    count: 2,
+                },
+            ],
+            quests: vec![
+                PlayerQuestRow {
+                    pq_id: 4301,
+                    owner_identity: who,
+                    quest_id: "quest_a".to_string(),
+                    step_index: 1,
+                },
+                PlayerQuestRow {
+                    pq_id: 4302,
+                    owner_identity: who,
+                    quest_id: "quest_b".to_string(),
+                    step_index: 3,
+                },
+            ],
+            dialogue: PlayerDialogueStateRow {
+                owner_identity: who,
+                flags: vec!["met_elder_oak".to_string(), EO1_MARKER.to_string()],
+                done_quests: vec!["quest_001".to_string()],
+            },
+            heal: HealCooldown {
+                owner_identity: who,
+                last_heal_at_ms: 4400,
+            },
+            position: LastPosition {
+                owner_identity: who,
+                zone_id: 1,
+                tile_x: 7,
+                tile_y: 8,
+                facing: game_core::Direction::West,
+            },
+            wallet: PlayerWallet {
+                owner_identity: who,
+                balance: 4500,
+            },
+            profile: Profile {
+                identity: who,
+                name: "Wanderer".to_string(),
+                rating: 1612,
+                wins: 9,
+                losses: 4,
+            },
+            formation: PlayerFormation {
+                owner_identity: who,
+                monster_ids: vec![4101, 4102],
+            },
+            handle: PlayerHandle {
+                owner_identity: who,
+                discriminator: 9_200_001,
+            },
+        }
+    }
+
+    fn lpw42_seed(w: &W<'_>, c: &Lpw42Character) {
+        for m in &c.monsters {
+            w.monster_pub.seed(&crate::marshal::pub_from_monster(m, 0));
+            w.monster.seed(m);
+        }
+        w.notice.seed(&c.notice);
+        for s in &c.stacks {
+            w.inventory.seed(s);
+        }
+        for q in &c.quests {
+            w.quest.seed(q);
+        }
+        w.dialogue.seed(&c.dialogue);
+        w.heal.seed(&c.heal);
+        w.last_position.seed(&c.position);
+        w.wallet.seed(&c.wallet);
+        w.profile.seed(&c.profile);
+        w.formation.seed(&c.formation);
+        w.handle.seed(&c.handle);
+    }
+
+    /// `c`'s rows per moved table, as sorted canonical bytes.
+    fn lpw42_expected(
+        c: &Lpw42Character,
+    ) -> std::collections::BTreeMap<&'static str, Vec<Vec<u8>>> {
+        let pubs: Vec<MonsterPub> = c
+            .monsters
+            .iter()
+            .map(|m| crate::marshal::pub_from_monster(m, 0))
+            .collect();
+        std::collections::BTreeMap::from([
+            ("monster", encs(&c.monsters)),
+            ("monster_pub", encs(&pubs)),
+            (
+                "pending_evolution_notice",
+                encs(std::slice::from_ref(&c.notice)),
+            ),
+            ("inventory", encs(&c.stacks)),
+            ("player_quest", encs(&c.quests)),
+            (
+                "player_dialogue_state",
+                encs(std::slice::from_ref(&c.dialogue)),
+            ),
+            ("heal_cooldown", encs(std::slice::from_ref(&c.heal))),
+            ("last_position", encs(std::slice::from_ref(&c.position))),
+            ("player_wallet", encs(std::slice::from_ref(&c.wallet))),
+            ("profile", encs(std::slice::from_ref(&c.profile))),
+            ("player_formation", encs(std::slice::from_ref(&c.formation))),
+            ("player_handle", encs(std::slice::from_ref(&c.handle))),
+        ])
+    }
+
+    /// The rows `who` holds in the moved tables.
+    fn lpw42_held(
+        w: &W<'_>,
+        who: Identity,
+    ) -> std::collections::BTreeMap<&'static str, Vec<Vec<u8>>> {
+        owned_by(w, who)
+            .into_iter()
+            .filter(|(t, _)| LPW42_MOVED.contains(t))
+            .collect()
+    }
+
+    /// What stays under the source as history or as its own connection and admission: the
+    /// finished battle's anchor and summary, the source's playtest event, admission, session,
+    /// account, checked account and armed re-check.
+    fn lpw42_history(w: &W<'_>) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+        vec![
+            ("battle", encs(&w.battle.rows())),
+            ("battle_summary", encs(&w.summary.rows())),
+            ("playtest_event", encs(&w.playtest.rows())),
+            ("world_admission", encs(&w.admission.rows())),
+            ("player_session", encs(&w.session.rows())),
+            ("account", encs(&w.account.rows())),
+            ("world_account", encs(&w.world_account.rows())),
+            ("recheck_schedule", encs(&w.recheck.rows())),
+        ]
+    }
+
+    /// The source holds one character (offline: a saved position, no `player` row), a
+    /// conversation row, two challenges with the peer (one in each role, each with its reaper),
+    /// an export chunk, a finished battle with the peer, a playtest event, an admission, a
+    /// session, an account, a checked account and an armed re-check. The bystander holds its
+    /// own character, a challenge from the peer and an export chunk. The board holds the true
+    /// ladder.
+    fn lpw42_seed_world(w: &W<'_>) {
+        let (from, _, b, p) = lpw42_ids();
+        lpw42_seed(w, &lpw42_character(from));
+        seed_rekey_rows(w, b, 2);
+        for identity in ladder_oracle(&w.profile.rows(), 100) {
+            w.ladder.seed(&crate::schema::LeaderboardTop { identity });
+        }
+        w.conversation.seed(&PlayerConversation {
+            owner_identity: from,
+            npc_entity_id: 3,
+            current_node_id: "n".to_string(),
+        });
+        for (challenge_id, challenger, target, status) in [
+            (4601u64, from, p, ChallengeStatus::Pending),
+            (4602, p, from, ChallengeStatus::Accepted),
+            (4603, p, b, ChallengeStatus::Pending),
+        ] {
+            w.challenge
+                .seed(&challenge_row(challenge_id, challenger, target, status));
+            w.challenge_reaper.seed(&BattleChallengeReaperSchedule {
+                scheduled_id: challenge_id,
+                scheduled_at: ScheduleAt::Time(at(T0)),
+                challenge_id,
+            });
+        }
+        w.export.seed(&export_row(4701, from, T0 - 5));
+        w.export.seed(&export_row(4702, b, T0 - 5));
+        seed_tactical_battle(w, 4801, from, Some(p));
+        w.playtest.seed(&PlaytestEvent {
+            event_id: 4901,
+            identity: from,
+            kind: 1,
+            created_at_ms: 1,
+            battle_id: 4801,
+            species_id: 1,
+            hp_permille: 500,
+            bait_item_id: 0,
+            success: true,
+        });
+        w.admission.seed(&WorldAdmission {
+            identity: from,
+            admitted_at_ms: T0 - 100,
+        });
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(0x4242),
+            identity: from,
+        });
+        w.account.seed(&crate::accounts::new_account_row(
+            from,
+            "iss".to_string(),
+            1,
+        ));
+        w.world_account.seed(&crate::account_checks::WorldAccount {
+            handle: "k1.lpw42-source".to_string(),
+            identity: from,
+            entitled: true,
+            checked_at_ms: T0 - 50,
+            is_host: false,
+        });
+        w.recheck.seed(&crate::account_checks::RecheckSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(T0 + 5)),
+            identity: from,
+        });
+    }
+
+    fn lpw42_move(fx: &Fixture, from: Identity, to: Identity, ms: i64) -> Result<(), String> {
+        fx.run_as_at(to, at(ms), |ctx| {
+            crate::accounts::move_character(ctx, from, to)
+        })
+    }
+
+    /// `move_character(from, to)` over a source seeded in every table the move reaches: the
+    /// destination holds each moved row with only the owner changed, the source holds none of
+    /// them, nor a conversation, a challenge or an export chunk; the challenges' reapers go;
+    /// the board ranks the destination in the source's place; the finished battle and every
+    /// row about the source's connection and admission stay byte-equal; the move writes no
+    /// `world_account`, `world_move` or `recheck_schedule` row; the bystander is untouched.
+    ///
+    /// kills: any moved table left behind (a re-key helper dropped from the move); a wallet
+    /// zeroed in place instead of removed, or a dialogue marker row left at the source; a
+    /// profile re-keyed through the claim's tombstoning (the source keeps a zeroed row, the
+    /// destination a fresh name); the challenge or export purge dropped; a challenge reaper
+    /// left armed; the board not rescanned; a move that erases a finished battle, the session,
+    /// the admission or the account; a move that writes the redeem's tables itself; a helper
+    /// keyed on the wrong identity (the bystander loses rows).
+    #[test]
+    fn move_character_carries_every_row_and_leaves_the_source_only_its_history_lpw42_1() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (from, to, b, _) = lpw42_ids();
+        lpw42_seed_world(&w);
+        let history_before = lpw42_history(&w);
+        let tactical_before = per_battle_rows(&w);
+        let bystander_before = owned_by(&w, b);
+        fx.reset_writes();
+
+        assert_eq!(lpw42_move(&fx, from, to, T0 + 100), Ok(()), "the move runs");
+
+        assert_eq!(
+            lpw42_held(&w, to),
+            lpw42_expected(&lpw42_character(to)),
+            "every moved row is at the destination, owner re-keyed, nothing else changed"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, from)),
+            vec![
+                "account",
+                "playtest_event",
+                "player_session",
+                "battle_unit",
+                "battle_clock",
+                "battle_summary"
+            ],
+            "the source keeps only its account, telemetry, session and finished battle"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, to)),
+            vec![
+                "profile",
+                "monster",
+                "monster_pub",
+                "pending_evolution_notice",
+                "inventory",
+                "player_quest",
+                "player_dialogue_state",
+                "heal_cooldown",
+                "last_position",
+                "player_wallet",
+                "player_formation",
+                "player_handle"
+            ],
+            "the destination holds rows in the moved tables only: no conversation, challenge, \
+             export chunk, session, account or battle row"
+        );
+        assert_eq!(
+            lpw42_history(&w),
+            history_before,
+            "the finished battle, telemetry, admission, session, account, checked account \
+             and re-check are byte-equal"
+        );
+        assert_eq!(
+            per_battle_rows(&w),
+            tactical_before,
+            "the finished battle's per-battle rows are byte-equal"
+        );
+        let challenges: Vec<u64> = w.challenge.rows().iter().map(|c| c.challenge_id).collect();
+        assert_eq!(
+            challenges,
+            vec![4603],
+            "both challenges naming the source go; the peer's challenge to the bystander stays"
+        );
+        let reapers: Vec<u64> = w
+            .challenge_reaper
+            .rows()
+            .iter()
+            .map(|r| r.challenge_id)
+            .collect();
+        assert_eq!(
+            reapers,
+            vec![4603],
+            "a deleted challenge's reaper goes with it"
+        );
+        assert!(
+            chunks_of(&w, from).is_empty() && chunks_of(&w, to).is_empty(),
+            "the source's export chunk is purged and none is written for the destination"
+        );
+        let members = sorted_hexes(w.ladder.rows().into_iter().map(|r| r.identity));
+        assert_eq!(
+            members,
+            sorted_hexes(ladder_oracle(&w.profile.rows(), 100)),
+            "the board is the true ladder after the move"
+        );
+        assert!(
+            members.contains(&to.to_hex().to_string())
+                && !members.contains(&from.to_hex().to_string()),
+            "the destination ranks in the source's place: {members:?}"
+        );
+        for table in ["world_account", "world_move", "recheck_schedule"] {
+            assert_eq!(
+                fx.writes_to(table),
+                0,
+                "move_character writes no `{table}` row (the redeem does)"
+            );
+        }
+        assert!(
+            w.world_move.rows().is_empty(),
+            "no world_move row is written"
+        );
+        assert_eq!(
+            owned_by(&w, b),
+            bystander_before,
+            "the bystander's rows are untouched"
+        );
+    }
+
+    /// A character moved to `to` and back to `from` arrives under `from` byte-equal to the seed
+    /// (the wallet holds a non-zero balance, so it is carried both ways), and `to` is left
+    /// nothing: the source of a move can receive the character again.
+    ///
+    /// kills: a move that leaves a row at the source that blocks or collides with the move
+    /// back (a zeroed wallet, a dialogue marker, a tombstoned profile); a move that leaves the
+    /// destination a copy of anything; a value changed in transit (a monster tier, a stack
+    /// count, a discriminator).
+    #[test]
+    fn a_character_moved_back_is_byte_equal_to_the_seed_and_the_destination_holds_nothing_lpw42_1()
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let (from, to, _, _) = lpw42_ids();
+        lpw42_seed_world(&w);
+        assert_eq!(
+            lpw42_move(&fx, from, to, T0 + 100),
+            Ok(()),
+            "the first move runs"
+        );
+        assert_eq!(
+            lpw42_held(&w, to),
+            lpw42_expected(&lpw42_character(to)),
+            "precondition: the first move carries the character to the destination"
+        );
+
+        assert_eq!(
+            lpw42_move(&fx, to, from, T0 + 200),
+            Ok(()),
+            "the move back runs"
+        );
+
+        assert_eq!(
+            lpw42_held(&w, from),
+            lpw42_expected(&lpw42_character(from)),
+            "the character is back under the source, byte-equal to the seed"
+        );
+        assert!(
+            owned_tables(&owned_by(&w, to)).is_empty(),
+            "the destination holds nothing after the move back"
+        );
+        let members = sorted_hexes(w.ladder.rows().into_iter().map(|r| r.identity));
+        assert!(
+            members.contains(&from.to_hex().to_string())
+                && !members.contains(&to.to_hex().to_string()),
+            "the source ranks again and the destination does not: {members:?}"
+        );
+    }
+
+    /// `owns_character`: no row is no character; a lone row in each table the contract counts
+    /// (a `player` row included) is one; a lone row in a table it does not count is none; the
+    /// source of a move owns none afterwards and the destination owns one.
+    ///
+    /// kills: the `player` arm dropped; a delegate of `account_has_game_data` not reached; a
+    /// predicate counting the account, the session, the admission or a world_move row; a
+    /// predicate keyed on the caller instead of its argument.
+    #[test]
+    fn owns_character_is_a_player_row_or_game_data_lpw42_1() {
+        let fx = fixture();
+        let w = world(&fx);
+        let x = id(0x95);
+        let owns =
+            |who: Identity| fx.run_as(id(0x96), |ctx| crate::accounts::owns_character(ctx, who));
+        assert!(!owns(x), "an identity with no row owns no character");
+
+        let c = lpw42_character(x);
+        let wipe = |w: &W<'_>| {
+            w.player.remove(x);
+            w.monster.remove(x);
+            w.notice.remove(x);
+            w.inventory.remove(x);
+            w.quest.remove(x);
+            w.dialogue.remove(x);
+            w.heal.remove(x);
+            w.wallet.remove(x);
+            w.profile.remove(x);
+            w.formation.remove(x);
+            w.last_position.remove(x);
+            w.handle.remove(x);
+            w.account.remove(x);
+            w.session.remove(x);
+            w.admission.remove(x);
+            w.world_move.remove(x);
+        };
+        let counted: [(&str, &dyn Fn()); 12] = [
+            ("player", &|| w.player.seed(&player_row(x, 4950, "Solo"))),
+            ("monster", &|| w.monster.seed(&c.monsters[0])),
+            ("pending_evolution_notice", &|| w.notice.seed(&c.notice)),
+            ("inventory", &|| w.inventory.seed(&c.stacks[0])),
+            ("player_quest", &|| w.quest.seed(&c.quests[0])),
+            ("player_dialogue_state", &|| w.dialogue.seed(&c.dialogue)),
+            ("heal_cooldown", &|| w.heal.seed(&c.heal)),
+            ("player_wallet", &|| w.wallet.seed(&c.wallet)),
+            ("profile", &|| w.profile.seed(&c.profile)),
+            ("player_formation", &|| w.formation.seed(&c.formation)),
+            ("last_position", &|| w.last_position.seed(&c.position)),
+            ("player_handle", &|| w.handle.seed(&c.handle)),
+        ];
+        for (table, seed) in counted {
+            seed();
+            assert!(owns(x), "a lone `{table}` row is a character");
+            wipe(&w);
+        }
+        let uncounted: [(&str, &dyn Fn()); 4] = [
+            ("account", &|| {
+                w.account
+                    .seed(&crate::accounts::new_account_row(x, "iss".to_string(), 1))
+            }),
+            ("player_session", &|| {
+                w.session.seed(&PlayerSession {
+                    connection_id: ConnectionId::from_u128(0x4950),
+                    identity: x,
+                })
+            }),
+            ("world_admission", &|| {
+                w.admission.seed(&WorldAdmission {
+                    identity: x,
+                    admitted_at_ms: T0,
+                })
+            }),
+            ("world_move", &|| {
+                w.world_move.seed(&crate::account_checks::WorldMove {
+                    identity: x,
+                    moved_at_ms: T0,
+                })
+            }),
+        ];
+        for (table, seed) in uncounted {
+            seed();
+            assert!(!owns(x), "a lone `{table}` row is no character");
+            wipe(&w);
+        }
+
+        let (from, to) = (id(0x97), id(0x98));
+        lpw42_seed(&w, &lpw42_character(from));
+        assert!(owns(from), "precondition: the source owns its character");
+        assert_eq!(lpw42_move(&fx, from, to, T0), Ok(()), "the move runs");
+        assert!(!owns(from), "the source owns no character after the move");
+        assert!(
+            owns(to),
+            "the destination owns the character after the move"
+        );
+    }
+
+    /// `in_battle_or_trade`, one identity per case: an `Ongoing` battle as player and as a
+    /// non-wild opponent count; the wild sentinel opponent does not count for
+    /// `WILD_IDENTITY` while that battle's player does; a finished battle in either role does
+    /// not count; a trade offer as initiator and as counterparty count; a trade session as
+    /// opener and as partner count; no row is not in one.
+    ///
+    /// kills: either battle arm dropped; the wild-sentinel exclusion dropped; a finished battle
+    /// counted; either offer arm or either session arm dropped; a predicate true for everyone.
+    #[test]
+    fn in_battle_or_trade_truth_table_lpw42_3() {
+        let fx = fixture();
+        let w = world(&fx);
+        let busy = |who: Identity| {
+            fx.run_as(id(0x9F), |ctx| {
+                crate::accounts::in_battle_or_trade(ctx, who)
+            })
+        };
+        let battle = |battle_id: u64, player: Identity, opponent: Identity, ongoing: bool| {
+            let mut row = battle_row(player, opponent);
+            row.battle_id = battle_id;
+            if !ongoing {
+                row.state.outcome = game_core::BattleOutcome::SideAWins;
+            }
+            w.battle.seed(&row);
+        };
+        let (as_player, as_opponent, wild_player) = (id(0xA1), id(0xA3), id(0xA5));
+        let (done_player, done_opponent) = (id(0xA6), id(0xA8));
+        let (initiator, counterparty, opener, partner) = (id(0xAA), id(0xAC), id(0xAE), id(0xB0));
+        let nobody = id(0xB2);
+        battle(5001, as_player, id(0xA2), true);
+        battle(5002, id(0xA4), as_opponent, true);
+        battle(5003, wild_player, crate::WILD_IDENTITY, true);
+        battle(5004, done_player, done_opponent, false);
+        w.trade.seed(&trade_row(5101, initiator, id(0xAB)));
+        w.trade.seed(&trade_row(5102, id(0xAD), counterparty));
+        w.trade_session
+            .seed(&session_row(5201, opener, id(0xAF), T0));
+        w.trade_session
+            .seed(&session_row(5202, id(0xB1), partner, T0));
+
+        for (label, who, want) in [
+            ("an Ongoing battle as player", as_player, true),
+            (
+                "an Ongoing battle as a non-wild opponent",
+                as_opponent,
+                true,
+            ),
+            ("the player of a wild battle", wild_player, true),
+            ("the wild sentinel opponent", crate::WILD_IDENTITY, false),
+            ("a finished battle as player", done_player, false),
+            ("a finished battle as opponent", done_opponent, false),
+            ("a trade offer as initiator", initiator, true),
+            ("a trade offer as counterparty", counterparty, true),
+            ("a trade session as opener", opener, true),
+            ("a trade session as partner", partner, true),
+            ("no battle and no trade", nobody, false),
+        ] {
+            assert_eq!(busy(who), want, "in_battle_or_trade for {label}");
+        }
+    }
+
+    /// The deletion cascade erases the subject's own `world_move` row and leaves another
+    /// identity's.
+    ///
+    /// kills: a cascade (or an `erase_world_account`) that leaves the row; one that erases
+    /// every row or the wrong identity's.
+    #[test]
+    fn the_deletion_cascade_erases_the_subjects_world_move_row_only_lpw42_6() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (v, other) = (id(0x99), id(0x9A));
+        let requested = T0;
+        w.account.seed(&crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(v, "iss".to_string(), 1),
+            requested,
+        ));
+        let other_row = crate::account_checks::WorldMove {
+            identity: other,
+            moved_at_ms: T0 - 7_000,
+        };
+        w.world_move.seed(&crate::account_checks::WorldMove {
+            identity: v,
+            moved_at_ms: T0 - 3_000,
+        });
+        w.world_move.seed(&other_row);
+        let grace_end = crate::accounts::deletion_fire_at_ms(requested);
+        let sched = AccountDeletionReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(grace_end)),
+            account_identity: v,
+        };
+        assert_eq!(
+            fx.run_as_at(scheduler(), at(grace_end), |ctx| {
+                crate::accounts::account_deletion_reaper(ctx, sched)
+            }),
+            Ok(()),
+            "the cascade runs"
+        );
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            encs(&[other_row]),
+            "the subject's world_move row is erased and the other identity's stays"
+        );
+    }
+
+    /// The guest claim erases the retired guest's `world_move` row and leaves another
+    /// identity's.
+    ///
+    /// kills: a claim that leaves the guest's row (the retired guest would still be told its
+    /// character moved), or that moves it onto the claimer, or erases another identity's.
+    #[test]
+    fn the_guest_claim_erases_the_retired_guests_world_move_row_only_lpw42_6() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (g, c, other) = (id(0x9B), id(0x9C), id(0x9D));
+        let secret = code('6');
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(()),
+            "the guest starts a claim"
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest leaves");
+        seed_rekey_rows(&w, g, 5);
+        let other_row = crate::account_checks::WorldMove {
+            identity: other,
+            moved_at_ms: T0 - 9_000,
+        };
+        w.world_move.seed(&crate::account_checks::WorldMove {
+            identity: g,
+            moved_at_ms: T0 - 4_000,
+        });
+        w.world_move.seed(&other_row);
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(&fx, c, T0 + 1_000, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "the account completes the claim"
+        );
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            encs(&[other_row]),
+            "the retired guest's world_move row is erased, none is moved onto the claimer, \
+             and the other identity's stays"
+        );
+    }
+
+    /// A signed-in account whose character plays under another identity (it holds a
+    /// `world_move` row) is refused `complete_guest_claim` with the moved-character reason, for
+    /// a live code, an unknown code and a malformed code alike, and nothing changes; without
+    /// the `world_move` row the same claim succeeds.
+    ///
+    /// kills: the guard missing (the caller takes the guest's character and can then neither
+    /// join nor check in); the guard placed after the code checks (a malformed or unknown code
+    /// answers differently from a live one: a code oracle); a guard keyed on anything but the
+    /// caller's own row; a refusal that writes.
+    #[test]
+    fn a_guest_claim_by_a_caller_whose_character_moved_is_refused_before_the_code_lpw42_3() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (g, c) = (id(0xBA), id(0xBB));
+        let live = code('5');
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                live.clone()
+            )),
+            Ok(()),
+            "the guest starts a claim"
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest leaves");
+        seed_rekey_rows(&w, g, 6);
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        w.world_move.seed(&crate::account_checks::WorldMove {
+            identity: c,
+            moved_at_ms: T0 - 2_000,
+        });
+        let snapshot = |w: &W<'_>| {
+            (
+                encs(&w.claim.rows()),
+                encs(&w.claim_reaper.rows()),
+                owned_by(w, g),
+                owned_by(w, c),
+                encs(&w.world_move.rows()),
+            )
+        };
+        let before = snapshot(&w);
+        let claim = |k: &str, ms: i64| {
+            signed_in(&fx, c, ms, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, k.to_string())
+            })
+        };
+        fx.reset_writes();
+
+        for (label, k) in [
+            ("a live code", live.clone()),
+            ("an unknown code", code('d')),
+            ("a malformed code", "not-a-code".to_string()),
+        ] {
+            assert_eq!(
+                claim(&k, T0 + 10),
+                Err(crate::account_checks::REJECT_CHARACTER_MOVED.to_string()),
+                "{label}: the moved-character refusal, before the code is read"
+            );
+        }
+        assert_eq!(
+            crate::account_checks::REJECT_CHARACTER_MOVED,
+            "this character is playing on another client; sign in again to play here"
+        );
+        assert_eq!(snapshot(&w), before, "a refused claim changes nothing");
+        for table in [
+            "account",
+            "guest_claim",
+            "guest_claim_reaper_schedule",
+            "player",
+            "monster",
+            "monster_pub",
+            "pending_evolution_notice",
+            "inventory",
+            "player_quest",
+            "player_dialogue_state",
+            "heal_cooldown",
+            "last_position",
+            "player_wallet",
+            "profile",
+            "leaderboard_top",
+            "player_formation",
+            "player_handle",
+            "export_bundle",
+            "world_account",
+            "recheck_schedule",
+            "world_move",
+        ] {
+            assert_eq!(
+                fx.writes_to(table),
+                0,
+                "a refused claim writes no `{table}` row"
+            );
+        }
+
+        assert_eq!(w.world_move.remove(c), 1, "the caller checks in again");
+        assert_eq!(
+            claim(&live, T0 + 20),
+            Ok(()),
+            "without the world_move row the same claim succeeds"
+        );
+        assert!(
+            w.claim.rows().is_empty(),
+            "the successful claim consumes the code"
+        );
+    }
+
+    /// `erase_world_account` deletes the identity's account row and answers whether one went
+    /// (`false` for an identity holding a `world_move` row and no account row, `true` for one
+    /// holding both), and leaves every `world_move` row byte-equal: an unbind or the owner's drop,
+    /// which reach only this helper, never clear the record that a character moved away. A third
+    /// identity's account row stays.
+    ///
+    /// kills: a `world_move` delete folded into `erase_world_account` (an unbind would let a
+    /// moved-away identity join again and be granted a second starter); the answer taken from
+    /// anything but the account row; an account delete keyed on another identity.
+    #[test]
+    fn erase_world_account_leaves_every_world_move_row_and_answers_for_the_account_row_lpw42_6() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (moved_only, both, other) = (id(0x9E), id(0xB3), id(0xB4));
+        let move_of = |who: Identity, ms: i64| crate::account_checks::WorldMove {
+            identity: who,
+            moved_at_ms: ms,
+        };
+        let account_of = |who: Identity, handle: &str| crate::account_checks::WorldAccount {
+            handle: handle.to_string(),
+            identity: who,
+            entitled: true,
+            checked_at_ms: T0,
+            is_host: false,
+        };
+        w.world_move.seed(&move_of(moved_only, T0 - 1));
+        w.world_move.seed(&move_of(both, T0 - 2));
+        w.world_move.seed(&move_of(other, T0 - 3));
+        w.world_account.seed(&account_of(both, "k1.lpw42-both"));
+        w.world_account.seed(&account_of(other, "k1.lpw42-other"));
+        let erase = |who: Identity| {
+            fx.run_as(id(0xB5), |ctx| {
+                crate::account_checks::erase_world_account(ctx, who)
+            })
+        };
+
+        let moves_before = encs(&w.world_move.rows());
+        fx.reset_writes();
+
+        assert!(
+            !erase(moved_only),
+            "no world_account row went, so the answer is false"
+        );
+        assert!(
+            erase(both),
+            "a world_account row went, so the answer is true"
+        );
+        assert_eq!(
+            encs(&w.world_account.rows()),
+            encs(&[account_of(other, "k1.lpw42-other")]),
+            "the erased identity's account row goes and the third identity's stays"
+        );
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            moves_before,
+            "every world_move row is byte-equal"
+        );
+        assert_eq!(
+            fx.writes_to("world_move"),
+            0,
+            "erase_world_account writes no world_move row"
+        );
+    }
+
+    /// `erase_world_move` deletes the identity's `world_move` row and no other identity's, and
+    /// writes nothing for an identity holding none.
+    ///
+    /// kills: an empty body; a delete keyed on another identity or clearing every row; a
+    /// delete issued for an identity with no row.
+    #[test]
+    fn erase_world_move_deletes_only_that_identitys_row_lpw42_6() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (moved, other, unmoved) = (id(0xB6), id(0xB7), id(0xB8));
+        let move_of = |who: Identity, ms: i64| crate::account_checks::WorldMove {
+            identity: who,
+            moved_at_ms: ms,
+        };
+        w.world_move.seed(&move_of(moved, T0 - 11));
+        w.world_move.seed(&move_of(other, T0 - 12));
+        let erase = |who: Identity| {
+            fx.run_as(id(0xB9), |ctx| {
+                crate::account_checks::erase_world_move(ctx, who)
+            })
+        };
+
+        fx.reset_writes();
+        erase(unmoved);
+        assert_eq!(
+            fx.writes_to("world_move"),
+            0,
+            "an identity holding no world_move row costs no write"
+        );
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            encs(&[move_of(moved, T0 - 11), move_of(other, T0 - 12)]),
+            "no row goes for an identity holding none"
+        );
+
+        erase(moved);
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            encs(&[move_of(other, T0 - 12)]),
+            "the identity's row goes and the other identity's stays"
+        );
     }
 
     // --- the minted discriminator across the claim, the cascade and the gate ----
@@ -9589,6 +10532,10 @@ mod acct_nh {
                 checked_at_ms: 1_800_000_000_000 + k as i64,
                 is_host: false,
             });
+            w.world_move.seed(&crate::account_checks::WorldMove {
+                identity: who,
+                moved_at_ms: 1_800_000_100_000 + k as i64,
+            });
         }
         // Dual-column tables: a->b, b->a, a->a, b->c.
         for (n, x, y) in [(1u64, a, b), (2, b, a), (3, a, a), (4, b, c)] {
@@ -9657,6 +10604,7 @@ mod acct_nh {
                 "handle",
                 vec![q("k1.export-handle-1".into())],
             ),
+            ("world_move", "identity", vec![me.clone()]),
         ];
         for (table, key, want) in &cases {
             let p = payload(table);
@@ -10330,14 +11278,14 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            72,
+            73,
             "[bt7/manifest-totality-census] 40 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
              plus last_position plus player_handle plus battle_summary_reaper_schedule plus \
              leaderboard_top plus module_info plus lpw-9's world_access, world_admission and \
              world_admission_attempt plus the four world binding tables (world_binding, \
              world_bind_nonce, world_name, world_allowlist) plus the three account-check tables \
-             (world_account, world_check_budget, recheck_schedule)"
+             (world_account, world_check_budget, recheck_schedule) plus world_move"
         );
         for table in [
             "battle_tactical",
@@ -10597,15 +11545,15 @@ mod acct_nh {
         }
     }
 
-    /// BT7.1 — the GENERATED view roster is exactly the twenty views (the
+    /// BT7.1 — the GENERATED view roster is exactly the twenty-one views (the
     /// eight pre-bt-7, the seven tactical ones, `my_trade_session`,
-    /// `my_player_quest`, `my_world_binding`, `my_bind_nonce` and
-    /// `my_world_account`), each at the position its id names, every one public,
-    /// caller-scoped (not anonymous) and parameterless; no view is named for a
-    /// secret table; and each tactical view, `my_trade_session`,
-    /// `my_world_binding`, `my_bind_nonce` and `my_world_account` serves exactly
-    /// its own table's row (its generated return type resolved through the
-    /// typespace).
+    /// `my_player_quest`, `my_world_binding`, `my_bind_nonce`,
+    /// `my_world_account` and `my_world_move`), each at the position its id names,
+    /// every one public, caller-scoped (not anonymous) and parameterless; no view is
+    /// named for a secret table; and each tactical view, `my_trade_session`,
+    /// `my_world_binding`, `my_bind_nonce`, `my_world_account` and `my_world_move`
+    /// serves exactly its own table's row (its generated return type resolved
+    /// through the typespace).
     ///
     /// Kills: a view for `battle_secret`, `battle_wild_unit` or
     ///        `battle_summary` (BT7.2: none, ever); a view taking an argument
@@ -10619,13 +11567,13 @@ mod acct_nh {
     ///        non-public (it would pass every native-host call and be invisible
     ///        to clients).
     #[test]
-    fn generated_view_roster_is_exactly_twenty_caller_scoped_views_bt7_1() {
+    fn generated_view_roster_is_exactly_twenty_one_caller_scoped_views_bt7_1() {
         use crate::native_host_tests::{
             VIEW_MY_BATTLE, VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_EVENTS,
             VIEW_MY_BATTLE_QUEUE, VIEW_MY_BATTLE_UNITS, VIEW_MY_CONVERSATION,
             VIEW_MY_EXPORT_BUNDLE, VIEW_MY_FORMATION, VIEW_MY_INVENTORY, VIEW_MY_MONSTER_PUB,
             VIEW_MY_PENDING_EVOLUTION_NOTICES, VIEW_MY_PLAYER_QUEST, VIEW_MY_TACTICAL_BATTLE,
-            VIEW_MY_WALLET, VIEW_MY_WORLD_ACCOUNT,
+            VIEW_MY_WALLET, VIEW_MY_WORLD_ACCOUNT, VIEW_MY_WORLD_MOVE,
         };
         let fx = fixture();
         let def = fx.module_def();
@@ -10658,8 +11606,9 @@ mod acct_nh {
                 "my_wallet",
                 "my_world_account",
                 "my_world_binding",
+                "my_world_move",
             ],
-            "[bt7/view-roster] the generated view set (twenty views)"
+            "[bt7/view-roster] the generated view set (twenty-one views)"
         );
 
         for (id, name) in [
@@ -10689,6 +11638,8 @@ mod acct_nh {
             (VIEW_MY_PLAYER_QUEST + 1, "my_world_binding"),
             (VIEW_MY_PLAYER_QUEST + 2, "my_bind_nonce"),
             (VIEW_MY_WORLD_ACCOUNT, "my_world_account"),
+            // `my_world_move` is registered after `my_world_account`.
+            (VIEW_MY_WORLD_MOVE, "my_world_move"),
         ] {
             let v = &views[id];
             assert_eq!(
@@ -10753,6 +11704,8 @@ mod acct_nh {
         // The `world_account` row, in declaration order.
         const WORLD_ACCOUNT_COLUMNS: &[&str] =
             &["handle", "identity", "entitled", "checked_at_ms", "is_host"];
+        // The `world_move` row, in declaration order.
+        const WORLD_MOVE_COLUMNS: &[&str] = &["identity", "moved_at_ms"];
         for (view, columns) in [
             ("my_tactical_battle", super::BT7_COLUMNS_BATTLE_TACTICAL),
             ("my_battle_units", super::BT7_COLUMNS_BATTLE_UNIT),
@@ -10765,6 +11718,7 @@ mod acct_nh {
             ("my_world_binding", WORLD_BINDING_COLUMNS),
             ("my_bind_nonce", WORLD_BIND_NONCE_COLUMNS),
             ("my_world_account", WORLD_ACCOUNT_COLUMNS),
+            ("my_world_move", WORLD_MOVE_COLUMNS),
         ] {
             let Some(v) = views.iter().find(|v| &*v.source_name == view) else {
                 panic!("[bt7/view-missing] `{view}`")

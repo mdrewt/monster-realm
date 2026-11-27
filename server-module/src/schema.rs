@@ -1129,8 +1129,10 @@ pub struct GuestClaim {
 /// Persistent per-player ranked-ladder record — the
 /// progression counterpart to the ephemeral `player` presence row.
 ///
-/// PUBLIC = world-readable leaderboard record. NEVER deleted: no code path
-/// removes a `profile` row — `on_disconnect` does not touch it. Runtime table,
+/// PUBLIC = world-readable leaderboard record. A ladder entry is never lost:
+/// `on_disconnect` does not touch it, an account deletion and a guest claim
+/// overwrite its name in place, and a character move re-keys the row to the
+/// character's new identity (`ranking::move_profile`). Runtime table,
 /// not seeded content → NO CONTENT_VERSION bump. Clients do not subscribe the
 /// whole table: they read the `leaderboard_top` members' rows through a join,
 /// plus their own row. No `#[index(btree)]` on `rating`: the membership is
@@ -2197,6 +2199,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         basis: "names an identity whose account is about to be asked about again: a one-shot row the host spends at its one run, deleted with the identity's world_account row; not exported: it lives for moments",
         exportable: false,
     },
+    DataLifecycleEntry {
+        table: "world_move",
+        policy: DeletionPolicy::Erase,
+        basis: "names an identity a character was moved away from and when, deleted outright at cascade time, by a guest claim for the guest identity it retires and by that identity's next account check; exported as what the world tells that client about its character",
+        exportable: true,
+    },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---
     DataLifecycleEntry {
         table: "player",
@@ -2209,9 +2217,9 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "profile",
         policy: DeletionPolicy::Anonymize,
-        basis: "ladder never-delete invariant: the ladder row survives and name is \
-                overwritten with the tombstone (anonymize is a field update, never a delete, \
-                so the invariant holds by construction)",
+        basis: "the ladder never loses an entry: the row survives and name is \
+                overwritten with the tombstone (anonymize is a field update, never a delete); \
+                a character move re-keys the row to the new identity",
         exportable: true,
     },
     DataLifecycleEntry {

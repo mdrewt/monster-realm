@@ -185,6 +185,26 @@ pub(crate) fn rekey_last_position(ctx: &ReducerContext, from: Identity, to: Iden
     });
 }
 
+/// Carry `from`'s position to `to`, whose next `join_game` starts there, and leave `from` no
+/// position and no presence. Called only from `accounts::move_character`.
+///
+/// A `from` that is in the game has its character's zone, tile and facing saved as `to`'s
+/// position, and its `character`, `move_intent` and `player` rows deleted, the `player` row
+/// last. Its later `on_disconnect` finds no `player` row and writes nothing of the character.
+/// The presence rows are not re-keyed: `to` joins a new character, whose input sequence starts
+/// over. A `from` that is not in the game has its saved position re-keyed.
+pub(crate) fn move_position(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let Some(p) = ctx.db.player().identity().find(from) else {
+        rekey_last_position(ctx, from, to);
+        return;
+    };
+    save_last_position(ctx, to, p.entity_id);
+    erase_last_position(ctx, from);
+    ctx.db.character().entity_id().delete(p.entity_id);
+    ctx.db.move_intent().entity_id().delete(p.entity_id);
+    ctx.db.player().identity().delete(from);
+}
+
 /// Delete `owner`'s saved position (the deletion cascade).
 pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
     ctx.db.last_position().owner_identity().delete(owner);
@@ -197,15 +217,19 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 /// read back by every later one (`onboarding::ensure_handle`), and the level of its lead
 /// party monster (`battle::refresh_lead_level`, 0 with no party).
 /// The character stands where the account's last one stood when it disconnected
-/// (`take_start`), or on the spawn. Rejects a double-join within the same session.
+/// (`take_start`), or on the spawn. Rejects a double-join within the same session, and a
+/// caller whose character plays under another identity, until it checks its account in
+/// again (`account_checks::require_not_moved`).
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     crate::access::require_admitted(ctx, "join_game")?;
     // Ownership: an enforcing build lets only an entitled caller join. It reads the caller's
-    // token and, when the token does not entitle it, the caller's world binding.
+    // token and, when the token does not entitle it, the caller's checked account.
     crate::accounts::require_entitled(ctx, &crate::accounts::BUILD_PROFILE, "join_game")?;
     // Deletion gate: before every other table read and every write.
     crate::guards::require_not_deleting(ctx, "join_game")?;
+    // A caller whose character plays under another identity checks its account in first.
+    crate::account_checks::require_not_moved(ctx, "join_game")?;
     join_with_kit(ctx, name, crate::content_cache::cached_starter_kit())
 }
 

@@ -118,6 +118,7 @@ import MyTradeSessionRow from "./my_trade_session_table";
 import MyWalletRow from "./my_wallet_table";
 import MyWorldAccountRow from "./my_world_account_table";
 import MyWorldBindingRow from "./my_world_binding_table";
+import MyWorldMoveRow from "./my_world_move_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
 import ProfileRow from "./profile_table";
@@ -505,6 +506,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyWorldBindingRow),
+  myWorldMove: __table({
+    name: 'my_world_move',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyWorldMoveRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
@@ -635,6 +643,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_world_account": Omit<typeof tablesSchema.schemaType.tables["myWorldAccount"], "accessorName"> & { readonly accessorName: "my_world_account" };
     /** @deprecated Use `myWorldBinding` instead. This alias will be removed in the next major version. */
     readonly "my_world_binding": Omit<typeof tablesSchema.schemaType.tables["myWorldBinding"], "accessorName"> & { readonly accessorName: "my_world_binding" };
+    /** @deprecated Use `myWorldMove` instead. This alias will be removed in the next major version. */
+    readonly "my_world_move": Omit<typeof tablesSchema.schemaType.tables["myWorldMove"], "accessorName"> & { readonly accessorName: "my_world_move" };
   };
 };
 
@@ -686,6 +696,7 @@ const tableAccessorAliases = {
   "my_wallet": "myWallet",
   "my_world_account": "myWorldAccount",
   "my_world_binding": "myWorldBinding",
+  "my_world_move": "myWorldMove",
 } as const;
 
 function __withTableAccessorAliases<T extends object>(target: T, freeze = false): T {
@@ -774,6 +785,8 @@ export type Tables = __TablesBase & {
   readonly "my_world_account": __TablesBase["myWorldAccount"];
   /** @deprecated Use `myWorldBinding` instead. This alias will be removed in the next major version. */
   readonly "my_world_binding": __TablesBase["myWorldBinding"];
+  /** @deprecated Use `myWorldMove` instead. This alias will be removed in the next major version. */
+  readonly "my_world_move": __TablesBase["myWorldMove"];
 };
 
 /** The tables available in this remote SpacetimeDB module. Each table reference doubles as a query builder. */
