@@ -20,13 +20,14 @@ app a profile checks. A service with no Steam setting never reaches Steam.
 
 The service also signs world attestations at `POST /attest`: a statement, good for five minutes
 and addressed to one world, that an account owns the game. A `local` or `private` world's module
-checks it with a key it holds as data and binds the account (`docs/DECISIONS.md`, "A private world
-verifies an account by a per-world attestation our account service signs").
+checks it with a key it holds as data and records a binding that grants nothing.
 
-The service also answers a world that checks an account itself (`docs/refactors/account-checks.md`
-§5): `POST /ticket` gives a signed-in player a one-use ticket for one world, and `POST
+The service answers a world that checks an account itself (`docs/DECISIONS.md`, "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"): `POST /ticket` gives a signed-in player a one-use ticket for one world, and `POST
 /world/check` lets that world's server redeem it, and later ask again, without a token of its
-own. No module calls them in this build.
+own. The module calls `POST /world/check` from its procedures `check_account`,
+`check_account_for` and `recheck_account` (`server-module/src/account_checks.rs`), at the address
+its build names: `hosted-dev` for a dev build, since the host refuses a request to a loopback
+address. No client asks for a ticket yet.
 
 ## Design
 

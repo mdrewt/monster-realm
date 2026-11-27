@@ -22,6 +22,10 @@
 //       price on buy/sell and any new client-callable reducer (a second profile writer
 //       beside set_profile_name). Any change needs conductor sign-off + bindings
 //       regeneration + a deliberate baseline update.
+//   (E) PROCEDURE SURFACE. The `*_procedure.ts` schemas == the index.ts `__procedureSchema`
+//       roster == PROCEDURE_BASELINE below, down to each argument's name and type and the
+//       return type. A procedure can send HTTP requests, so a new client-callable one, or a
+//       new argument on one, fails here until the baseline is edited on purpose.
 //
 // Why a reachability walk and not "does the type exist": types.ts ALSO defines the
 // row types of PRIVATE tables (Monster with its genes, GuestClaim, PlayerSession),
@@ -66,6 +70,8 @@ export const HIDDEN_FIELDS = [
   // Item counts are owner-private: the inventory row (keyed by inv_id) reaches clients ONLY
   // through the owner-scoped my_inventory view.
   { name: 'inv_id', source: 'inventory', allowedIn: ['my_inventory'] },
+  // An account's handle in this world reaches a client only as its own row.
+  { name: 'handle', source: 'world_account', allowedIn: ['my_world_account'] },
 ];
 
 // Whole private row / payload types that no accessor may reference.
@@ -93,6 +99,8 @@ export const HIDDEN_TYPES = [
   'PlaytestReaperSchedule',
   'PvpDeadlineSchedule',
   'TradeOfferReaperSchedule',
+  'RecheckSchedule', // whose account is about to be asked about again
+  'WorldCheckBudget',
 ].map((type) => ({ type, allowedIn: [] }));
 
 // ---------------------------------------------------------------------------
@@ -296,8 +304,12 @@ const SURFACE_CHANGED =
 
 /** Top-level `export default { … }` entries of a reducer arg file → ['name: type', …] in order. */
 export function reducerArgs(src) {
-  const body = stripComments(src);
-  const m = /export\s+default\s+\{/.exec(body);
+  return schemaEntries(stripComments(src), /export\s+default\s+\{/);
+}
+
+/** The top-level entries of the object literal `head` opens in `body` → ['name: type', …]. */
+function schemaEntries(body, head) {
+  const m = head.exec(body);
   if (!m) return null;
   const entries = [];
   let depth = 0;
@@ -372,6 +384,88 @@ export function analyzeReducers({ reducerFiles, indexSrc, baseline }) {
   for (const [name, stem] of idx) {
     if (stem !== name)
       failures.push(`[D index] reducer '${name}' binds its args from ./${stem}_reducer`);
+  }
+  return { failures, actual };
+}
+
+// ---------------------------------------------------------------------------
+// (E) CLIENT PROCEDURE SURFACE — every procedure a client can call, with its arguments and
+// its return type. A scheduled procedure is not generated, so it is not in the surface.
+// `check_account` is every player's; `check_account_for` refuses anyone but the world's owner.
+// ---------------------------------------------------------------------------
+
+export const PROCEDURE_BASELINE = {
+  check_account: { args: ['ticket: string()'], returns: 'result(bool(),string())' },
+  check_account_for: {
+    args: ['who: identity()', 'ticket: string()'],
+    returns: 'result(bool(),string())',
+  },
+};
+const PROCEDURES_CHANGED =
+  'client procedure surface changed — a procedure can send HTTP requests; intentional ' +
+  'changes need bindings regeneration + a PROCEDURE_BASELINE update';
+
+/** A procedure file's `params` entries and its `returnType` expression, or null. */
+export function procedureSchema(src) {
+  const body = stripComments(src);
+  const args = schemaEntries(body, /export\s+const\s+params\s*=\s*\{/);
+  const returns = /export\s+const\s+returnType\s*=\s*([^;]+?)\s*;?\s*$/.exec(body);
+  if (args === null || !returns) return null;
+  return { args, returns: returns[1].replace(/\s+/g, '').replaceAll('__t.', '') };
+}
+
+/** index.ts → Map(procedure name → procedure file stem its schema import resolves to). */
+export function parseIndexProcedures(indexSrc) {
+  const src = stripComments(indexSrc);
+  const imports = new Map();
+  for (const m of src.matchAll(
+    /import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+["']\.\/([a-z0-9_]+)_procedure["']/g,
+  )) {
+    imports.set(m[1], m[2]);
+  }
+  const out = new Map();
+  for (const m of src.matchAll(
+    /__procedureSchema\(\s*["']([a-z0-9_]+)["']\s*,\s*([A-Za-z_$][\w$]*)\.params\s*,\s*([A-Za-z_$][\w$]*)\.returnType\s*\)/g,
+  )) {
+    out.set(m[1], m[2] === m[3] ? (imports.get(m[2]) ?? `<unresolved ${m[2]}>`) : '<mixed>');
+  }
+  return out;
+}
+
+export function analyzeProcedures({ procedureFiles, indexSrc, baseline }) {
+  const failures = [];
+  const actual = {};
+  for (const [name, src] of procedureFiles) {
+    const schema = procedureSchema(src);
+    if (schema === null) {
+      failures.push(`[E walk] ${name}_procedure.ts has no \`params\` and \`returnType\``);
+    } else actual[name] = schema;
+  }
+  const have = Object.keys(actual).sort();
+  const want = Object.keys(baseline).sort();
+  const extra = have.filter((r) => !want.includes(r));
+  const missing = want.filter((r) => !have.includes(r));
+  if (extra.length || missing.length) {
+    failures.push(`[E roster] ${PROCEDURES_CHANGED}: extra=[${extra}] missing=[${missing}]`);
+  }
+  for (const r of have.filter((x) => want.includes(x))) {
+    const a = actual[r].args.join(', ');
+    const b = baseline[r].args.join(', ');
+    if (a !== b) failures.push(`[E args] ${PROCEDURES_CHANGED}: ${r}(${a}) != baseline ${r}(${b})`);
+    if (actual[r].returns !== baseline[r].returns) {
+      failures.push(
+        `[E returns] ${PROCEDURES_CHANGED}: ${r} returns ${actual[r].returns}, baseline ${baseline[r].returns}`,
+      );
+    }
+  }
+  const idx = parseIndexProcedures(indexSrc);
+  const idxNames = [...idx.keys()].sort();
+  if (idxNames.join() !== have.join()) {
+    failures.push(`[E index] index.ts proceduresSchema [${idxNames}] != procedure files [${have}]`);
+  }
+  for (const [name, stem] of idx) {
+    if (stem !== name)
+      failures.push(`[E index] procedure '${name}' binds its schema from ./${stem}_procedure`);
   }
   return { failures, actual };
 }
@@ -531,7 +625,57 @@ export function teeth() {
     },
     null,
   );
-  return { count: 19, bad };
+
+  // (E) procedure surface teeth
+  const fxProcedure = (params, returns) =>
+    `import { t as __t } from "spacetimedb";\nexport const params = {\n${params}\n};\nexport const returnType = ${returns}`;
+  const fxPIndex = (names) =>
+    names.map((n) => `import * as P_${n} from "./${n}_procedure";`).join('\n') +
+    `\nconst p = __procedures(\n${names.map((n) => `  __procedureSchema("${n}", P_${n}.params, P_${n}.returnType),`).join('\n')}\n);`;
+  const cleanP = {
+    redeem: fxProcedure('  ticket: __t.string(),', '__t.result(__t.bool(), __t.string())'),
+    ping: fxProcedure('', '__t.unit()'),
+  };
+  const pBase = {
+    redeem: { args: ['ticket: string()'], returns: 'result(bool(),string())' },
+    ping: { args: [], returns: 'unit()' },
+  };
+  const expectP = (label, files, needle, { base = pBase, index } = {}) => {
+    const f = analyzeProcedures({
+      procedureFiles: new Map(Object.entries(files)),
+      indexSrc: index ?? fxPIndex(Object.keys(files)),
+      baseline: base,
+    }).failures;
+    const ok = needle === null ? f.length === 0 : f.some((x) => x.includes(needle));
+    if (!ok) bad.push(`${label}: expected ${needle ?? 'PASS'}, got [${f.join(' | ')}]`);
+  };
+  expectP('T19 clean procedure surface', cleanP, null);
+  expectP(
+    'T20 new client-callable procedure',
+    { ...cleanP, fetch_url: fxProcedure('  url: __t.string(),', '__t.string()') },
+    `[E roster] ${PROCEDURES_CHANGED}: extra=[fetch_url]`,
+  );
+  expectP(
+    'T21 argument added to a procedure',
+    {
+      ...cleanP,
+      redeem: fxProcedure(
+        '  ticket: __t.string(),\n  url: __t.string(),',
+        '__t.result(__t.bool(), __t.string())',
+      ),
+    },
+    `[E args] ${PROCEDURES_CHANGED}: redeem(`,
+  );
+  expectP(
+    'T22 return retyped',
+    { ...cleanP, redeem: fxProcedure('  ticket: __t.string(),', '__t.string()') },
+    '[E returns]',
+  );
+  expectP('T23 index/file drift', cleanP, '[E index]', { index: fxPIndex(['redeem']) });
+  expectP('T24 baseline lists a removed procedure', cleanP, 'missing=[gone]', {
+    base: { ...pBase, gone: { args: [], returns: 'unit()' } },
+  });
+  return { count: 25, bad };
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +736,20 @@ export default async function clientSurfacePrivacyEval() {
     baseline: reducerBaseline,
   });
   failures.push(...d.failures);
+  const procedureFiles = new Map();
+  for (const f of readdirSync(BINDINGS)) {
+    if (f.endsWith('_procedure.ts'))
+      procedureFiles.set(
+        f.slice(0, -'_procedure.ts'.length),
+        readFileSync(path.join(BINDINGS, f), 'utf8'),
+      );
+  }
+  const e = analyzeProcedures({
+    procedureFiles,
+    indexSrc: readFileSync(path.join(BINDINGS, 'index.ts'), 'utf8'),
+    baseline: PROCEDURE_BASELINE,
+  });
+  failures.push(...e.failures);
   if (failures.length > 0) return { name, pass: false, detail: failures.join(' | ') };
   return {
     name,
@@ -600,7 +758,8 @@ export default async function clientSurfacePrivacyEval() {
       `${accessors.size} client-visible accessors == allowlist == index.ts; ${walked} type reference(s) ` +
       `walked; none reaches any of ${HIDDEN_FIELDS.length} hidden fields / ${HIDDEN_TYPES.length} hidden ` +
       `types outside its allowedIn; ${reducerFiles.size} client reducers == ${REDUCER_BASELINE} ` +
-      `(names + arg names/types) (${t.count} teeth verified)`,
+      `(names + arg names/types); ${procedureFiles.size} client procedures == PROCEDURE_BASELINE ` +
+      `(${t.count} teeth verified)`,
   };
 }
 

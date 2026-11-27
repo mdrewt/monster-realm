@@ -1,7 +1,8 @@
-//! monster-realm server module (`spacetimedb` crate 2.8.1, lockstep with the 2.8.1 host).
+//! monster-realm server module (`spacetimedb` crate 2.16.1, lockstep with the 2.16.1 host).
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
-//! the ONLY writers. Reducers are THIN — validate `ctx.sender()` + legality, delegate
+//! the only writers, beside the three account-check procedures of `account_checks.rs`,
+//! which write that module's tables and the host's allowlist. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone**: clients
 //! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick
@@ -9,8 +10,8 @@
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 2.x.
 //!
 //! The former monolith is split into cohesive domain submodules.
-//! This `lib.rs` is reduced to module wiring + crate-wide constants + the three
-//! lifecycle reducers (`init` / `sync_content` / `on_disconnect`).
+//! This `lib.rs` is reduced to module wiring + crate-wide constants + the
+//! lifecycle reducers (`init` / `sync_content` / `on_connect` / `on_disconnect`).
 
 use crate::content::sync_content_inner;
 use crate::movement::movement_tick_schedule;
@@ -22,6 +23,7 @@ use spacetimedb::{Identity, ReducerContext, Table};
 
 // --- Domain modules ---------
 mod access;
+mod account_checks;
 mod accounts;
 mod battle;
 mod content;
@@ -221,7 +223,9 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Lifecycle: refuse an identity the world's access rule does not admit, record the live
-/// connection, then lazy-provision or touch an `account`. Returning `Err` from this hook
+/// connection, arm a re-check of the account the identity plays under when one is due
+/// (`account_checks::arm_recheck_at_connect`, which cannot fail), then lazy-provision or touch
+/// an `account`. Returning `Err` from this hook
 /// DISCONNECTS the client (crate doc). The admission check is the first statement and the one
 /// refusal an anonymous connection can meet: under `Open`, the rule of a world with no
 /// `world_access` row, it admits everyone. Anonymous play is FIRST-CLASS: after that check no
@@ -237,6 +241,7 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
     access::require_admitted_at_connect(ctx)?;
     let jwt = ctx.sender_auth().has_jwt();
     open_player_session(ctx);
+    account_checks::arm_recheck_at_connect(ctx, &accounts::BUILD_PROFILE);
     if !jwt {
         return Ok(());
     }

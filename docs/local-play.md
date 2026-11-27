@@ -216,9 +216,10 @@ issuer's keys (below).
 
 **Decided and built in part.** The issuer is our own account service, and the attestation is signed
 by a route beside it, with its own issuer name and signing key, neither trusted by the official
-server (DECISIONS.md, "A private world verifies an account by a per-world attestation our account
-service signs"). The route exists (`account-service/src/attest.ts`), and the module's half is built
-(`server-module/src/world_binding.rs`). No issuer is deployed (`PRODUCTION_LOGIN_ISSUERS` in
+server. The route exists (`account-service/src/attest.ts`), and the module's half is built
+(`server-module/src/world_binding.rs`); the binding it records grants nothing, because a world
+checks an account itself (`server-module/src/account_checks.rs`; DECISIONS.md,
+"A private world checks an account itself: a one-use ticket at first contact, then the account's handle"). No issuer is deployed (`PRODUCTION_LOGIN_ISSUERS` in
 `server-module/src/accounts.rs` is a placeholder; a test or dev build trusts the dev issuers) and no
 production attestation key is published (`PRODUCTION_ATTESTATION_KEYS` is empty). SpacetimeDB puts nothing in the way: a host verifies a
 token from any issuer whose discovery document it can fetch, and a module reads every claim. The
@@ -857,9 +858,9 @@ is not switched on: a build enforces ownership unless it names `open_join`.
 
 | Feature                           | What it does                                                                    |
 | --------------------------------- | ------------------------------------------------------------------------------- |
-| `official`                        | a release build: the production login issuer                                    |
-| `world`                           | a release build: the production attestation keys                                |
-| `dev_issuers`                     | the dev login issuers and the dev attestation keys; ownership is still enforced |
+| `official`                        | a release build: the production login issuer; no account service to ask         |
+| `world`                           | a release build: the production attestation keys and account service            |
+| `dev_issuers`                     | the dev login issuers, attestation keys and account service (`hosted-dev`); ownership is still enforced |
 | `open_join`                       | switches enforcement off; implies `dev_issuers`                                 |
 | `dev_reducers`, `load_test_zones` | as today; `dev_reducers` implies `open_join`                                    |
 
@@ -868,7 +869,10 @@ linted in every build), and a release feature wins over a dev feature: a build i
 it names `official` or `world`; it enforces when it is a release or does not name `open_join`; it
 trusts the dev issuers and keys when it names `dev_issuers` and is not a release; it trusts the
 production login issuer when it names `official` and not `world`, and holds the production
-attestation keys when it names `world` and not `official`.
+attestation keys when it names `world` and not `official`. The account service a world asks about
+an account follows the same rule (`BuildProfile::world_check_url`): the production one for
+`world`, `hosted-dev` for a dev build, none for `official`, for a build that names both release
+features and for one that names no feature, whose account-check procedures refuse every call.
 
 | Features named                                  | Enforces ownership | Login issuers trusted | Attestation keys held | What the build is                       |
 | ----------------------------------------------- | ------------------ | --------------------- | --------------------- | --------------------------------------- |
@@ -1373,9 +1377,9 @@ The own-issuer design, with the attestation verified as a reducer argument under
 anonymous token, and the access design above. LP4 (sign in once, then offline) and LP6
 (private-server access) elaborate against it. The in-module verifier is measured: Ed25519,
 108.4 µs a check against a budget of 5 ms. Of the three conditions the design holds on, one is
-decided, an attestation route beside our own account service (DECISIONS.md, "A private world
-verifies an account by a per-world attestation our account service signs"), which exists
-(`account-service/src/attest.ts`), and two are built in the module and proved in its tests: the
+decided, an attestation route beside our own account service, which exists
+(`account-service/src/attest.ts`) and whose binding grants nothing (DECISIONS.md,
+"A private world checks an account itself: a one-use ticket at first contact, then the account's handle"), and two are built in the module and proved in its tests: the
 official server refusing attestation binding (fork (b)) and the relay between private worlds
 closed (fork (c)), the latter in halves. What is not built: the client's bind flow (asking for an
 attestation, the name function `spki:`/`dns:`/`ip:` in `client/src/net/attestation.ts`, the

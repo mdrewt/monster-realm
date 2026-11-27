@@ -302,6 +302,13 @@ impl Fixture {
     pub(crate) fn reset_reads(&self) {
         host().reads.clear();
     }
+
+    /// The procedure transactions that committed since the fixture was made: one per
+    /// `with_tx` or `try_with_tx` whose body returned `Ok`, a transaction that wrote nothing
+    /// included. An aborted transaction is not counted.
+    pub(crate) fn procedure_commits(&self) -> u32 {
+        host().model.procedure_commits
+    }
 }
 
 /// A typed handle onto one registered table: seeds and removes rows without
@@ -889,6 +896,8 @@ struct Model {
     /// read cursor). Ids count up from [`ANSWER_SOURCE_BASE`].
     answer_sources: HashMap<u32, (Vec<u8>, usize)>,
     answer_sources_opened: u32,
+    /// The procedure transactions committed since the fixture was made.
+    procedure_commits: u32,
 }
 
 /// The state a procedure's transaction puts back if it aborts: every table's rows, and the
@@ -909,6 +918,7 @@ impl Default for Model {
             tx: None,
             answer_sources: HashMap::new(),
             answer_sources_opened: 0,
+            procedure_commits: 0,
         }
     }
 }
@@ -1297,6 +1307,9 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_bind_nonce, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_bind_nonce"]
     fn register_view_my_bind_nonce();
+    /// `#[spacetimedb::view(accessor = my_world_account, public)]` in account_checks.rs.
+    #[link_name = "__preinit__20_register_describer_my_world_account"]
+    fn register_view_my_world_account();
     // Every `#[spacetimedb::table]` describer (macro `table.rs:1421`
     // `__preinit__20_register_describer_<accessor>`), registered before the views
     // so `Fixture::module_def` carries the full generated table set — the
@@ -1445,6 +1458,12 @@ unsafe extern "C" {
     fn register_table_world_name();
     #[link_name = "__preinit__20_register_describer_world_allowlist"]
     fn register_table_world_allowlist();
+    #[link_name = "__preinit__20_register_describer_world_account"]
+    fn register_table_world_account();
+    #[link_name = "__preinit__20_register_describer_world_check_budget"]
+    fn register_table_world_check_budget();
+    #[link_name = "__preinit__20_register_describer_recheck_schedule"]
+    fn register_table_recheck_schedule();
     /// `vendor/spacetimedb/src/rt.rs:1543` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1459,7 +1478,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 72] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 75] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1532,10 +1551,13 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 72] = [
     register_table_world_bind_nonce,
     register_table_world_name,
     register_table_world_allowlist,
+    register_table_world_account,
+    register_table_world_check_budget,
+    register_table_recheck_schedule,
 ];
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 19] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 20] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1555,6 +1577,7 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 19] = [
     register_view_my_player_quest,
     register_view_my_world_binding,
     register_view_my_bind_nonce,
+    register_view_my_world_account,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1610,6 +1633,9 @@ pub(crate) const VIEW_MY_WORLD_BINDING: usize = 17;
 
 /// `VIEWS` id of `my_bind_nonce` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_BIND_NONCE: usize = 18;
+
+/// `VIEWS` id of `my_world_account` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_WORLD_ACCOUNT: usize = 19;
 
 /// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
 /// `RawModuleDef` (V10 on 2.16.1, `vendor/spacetimedb/src/rt.rs:1251`), captured once per
@@ -2229,6 +2255,8 @@ fn nh_scannable_writable_table_scans_counts_deletes_and_clears() {
 //   when the body returns `Err` and, through a drop guard, when it panics. An `#[auto_inc]`
 //   sequence is not rewound, as a real one is not, and `rows_read` keeps what it counted.
 //   Every transaction reads the run's one time: the clock does not move while a request waits.
+//   `Fixture::procedure_commits` counts the transactions that committed, so a test can show
+//   that two writes shared one.
 // * HTTP. `ctx.http.send` reaches `procedure_http_request`, which records the request in the
 //   test's `HttpQueue` and answers with the queue's next `HttpAnswer`: a status and body, or
 //   an error. Nothing leaves the process (the test binary holds no HTTP client), and the
@@ -2510,8 +2538,12 @@ unsafe extern "C" fn procedure_start_mut_tx(out: *mut i64) -> u16 {
 /// Commits a procedure's transaction: its writes stay.
 #[no_mangle]
 unsafe extern "C" fn procedure_commit_mut_tx() -> u16 {
-    match host().model.tx.take() {
-        Some(_) => 0,
+    let mut h = host();
+    match h.model.tx.take() {
+        Some(_) => {
+            h.model.procedure_commits += 1;
+            0
+        }
         None => Errno::TRANSACTION_NOT_ANONYMOUS.code(),
     }
 }
