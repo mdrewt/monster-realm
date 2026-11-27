@@ -12,8 +12,17 @@
 # writable. Nothing publishes the service's own port: each profile's Caddy proxies to its own
 # account service (MR_AUTH_UPSTREAM) and passes the Host the client sent, which the service
 # checks against its issuer.
+#
+# Caddy serves MR_AUTH_SITE: the issuer, and for the dev profiles the issuer's two check names
+# (ipv4. and ipv6. in front of its host), which answer POST /world/check alone.
 
 name: mr-auth
+
+# Where a request to an account service may come from and be believed about its source address
+# (MR_ACCOUNT_TRUSTED_PROXY): the private ranges docker makes a compose network from. No account
+# service publishes a port, so only this project's containers and this host reach one from
+# inside them.
+x-trusted-proxy: &trusted-proxy "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
 
 x-account: &account
   build: ../../account-service
@@ -44,6 +53,7 @@ services:
     environment:
       MR_ACCOUNT_PROFILE: local-dev
       MR_ACCOUNT_KEY_FILE: /var/lib/account-service/keys/keys.json
+      MR_ACCOUNT_TRUSTED_PROXY: *trusted-proxy
     volumes:
       - local-dev-db:/var/lib/account-service/db
       - local-dev-keys:/var/lib/account-service/keys
@@ -53,7 +63,7 @@ services:
     profiles: [local-dev]
     depends_on: [account-local-dev]
     environment:
-      MR_AUTH_SITE: http://localhost:4455
+      MR_AUTH_SITE: http://localhost:4455, http://ipv4.localhost:4455, http://ipv6.localhost:4455
       MR_AUTH_UPSTREAM: account-local-dev:4455
     # Loopback only. The issuer is http://localhost:4455, so a request must name that host;
     # MR_AUTH_LOCAL_PORT moves only the host side (0 lets docker choose, for tests that send
@@ -71,6 +81,7 @@ services:
     environment:
       MR_ACCOUNT_PROFILE: hosted-dev
       MR_ACCOUNT_KEY_FILE: /var/lib/account-service/keys/keys.json
+      MR_ACCOUNT_TRUSTED_PROXY: *trusted-proxy
     volumes:
       - hosted-dev-db:/var/lib/account-service/db
       - hosted-dev-keys:/var/lib/account-service/keys
@@ -80,7 +91,10 @@ services:
     profiles: [hosted-dev]
     depends_on: [account-hosted-dev]
     environment:
-      MR_AUTH_SITE: https://auth.monster-realm.spookyowltech.com
+      MR_AUTH_SITE: >-
+        https://auth.monster-realm.spookyowltech.com,
+        https://ipv4.auth.monster-realm.spookyowltech.com,
+        https://ipv6.auth.monster-realm.spookyowltech.com
       MR_AUTH_UPSTREAM: account-hosted-dev:4455
     ports:
       - "80:80"
@@ -99,6 +113,7 @@ services:
       # Unset, the service refuses to start and names it (a required ${…:?} here would stop
       # every other profile from starting too).
       MR_ACCOUNT_ISSUER: ${MR_ACCOUNT_ISSUER:-}
+      MR_ACCOUNT_TRUSTED_PROXY: *trusted-proxy
     volumes:
       - production-db:/var/lib/account-service/db
 

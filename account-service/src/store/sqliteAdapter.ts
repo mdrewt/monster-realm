@@ -6,6 +6,12 @@ import type { Adapter, AdapterPayload } from 'oidc-provider';
 export interface AccountStore {
   /** The provider's `adapter` option: one adapter per model name, all over this database. */
   readonly adapter: (model: string) => Adapter;
+  /**
+   * Removes the record `id` of `model` and returns its payload when it was live. An expired
+   * record is removed and not returned. One statement does both: of two calls for one record,
+   * in this process or another on the same file, at most one is given it.
+   */
+  take(model: string, id: string): AdapterPayload | undefined;
   /** Deletes the expired records and returns how many there were. */
   purgeExpired(): number;
   close(): void;
@@ -82,6 +88,9 @@ export function openAccountStore(
      WHERE model = ? AND id = ? AND consumed_at IS NULL AND ${LIVE}`,
   );
   const destroy = db.prepare('DELETE FROM oidc_record WHERE model = ? AND id = ?');
+  const take = db.prepare(
+    'DELETE FROM oidc_record WHERE model = ? AND id = ? RETURNING payload, expires_at',
+  );
   const revoke = db.prepare('DELETE FROM oidc_record WHERE model = ? AND grant_id = ?');
   const purge = db.prepare(
     'DELETE FROM oidc_record WHERE expires_at IS NOT NULL AND expires_at <= ?',
@@ -130,6 +139,14 @@ export function openAccountStore(
         revoke.run(model, grantId);
       },
     }),
+    take(model, id) {
+      const row = take.get(model, id) as
+        | { readonly payload: string; readonly expires_at: number | null }
+        | undefined;
+      if (row === undefined) return undefined;
+      if (row.expires_at !== null && row.expires_at <= now()) return undefined;
+      return JSON.parse(row.payload) as AdapterPayload;
+    },
     purgeExpired() {
       return Number(purge.run(now()).changes);
     },

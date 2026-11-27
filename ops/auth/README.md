@@ -10,7 +10,7 @@ to another host.
 | File | Purpose |
 |---|---|
 | `docker-compose.yml` | One compose profile per service profile (`local-dev`, `hosted-dev`, `production`): the account service built from `../../account-service/Dockerfile`, and Caddy in front |
-| `Caddyfile` | Serves the profile's issuer origin and proxies it to the service |
+| `Caddyfile` | Serves the profile's issuer origin and its two check names, proxies them to the service, and writes the address each request came from |
 | `.env.example` | The settings a profile may take: copy it to `.env` (git ignores it) |
 
 ```sh
@@ -24,6 +24,11 @@ curl -fsS http://localhost:4455/.well-known/openid-configuration
 - Caddy is the only published port: `127.0.0.1:4455` for `local-dev`, 80 and 443 with an ACME
   certificate for the others. Nothing here holds a secret; `hosted-dev` keys are made in their
   volume (runbook section 2), and `production` refuses to start in this build.
+- A world's server asks `POST /world/check` at `ipv4.<issuer host>` or `ipv6.<issuer host>`: a
+  hosted profile gives the first an `A` record alone and the second an `AAAA` record alone
+  (runbook section 2). Each account container believes `X-Forwarded-For` only from the private
+  ranges its Caddy connects from (`MR_ACCOUNT_TRUSTED_PROXY`), and Caddy writes that header
+  itself.
 - `account-service/src/deployment.test.ts` (in `just account-test`) builds the image and runs this
   recipe: the refusals, the restart and the backup drill.
 

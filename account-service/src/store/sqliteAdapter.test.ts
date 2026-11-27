@@ -2,6 +2,8 @@ import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import Provider, { type AdapterPayload } from 'oidc-provider';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { type AccountStore, openAccountStore } from './sqliteAdapter.ts';
@@ -592,5 +594,212 @@ describe('the provider itself, over this adapter', () => {
     expect(found?.accountId).toBe('acct-1');
     expect(found?.uid).toBe(session.uid);
     expect(await provider.Session.findByUid(`${session.uid}x`)).toBeUndefined();
+  });
+});
+
+describe('take removes a record and gives its payload only while it is live', () => {
+  const MODEL = 'WorldTicket';
+  const TICKET = payload({
+    account: 'dev:1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed',
+    world: 'ip:192.0.2.7',
+  });
+
+  function tempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'acs14-'));
+    dirs.push(dir);
+    return dir;
+  }
+
+  test('a live record is given once, and never again acs-14.3', async () => {
+    const store = open();
+    await store.adapter(MODEL).upsert('r1', TICKET, 60);
+    expect(store.take(MODEL, 'r1')).toEqual(TICKET);
+    expect(store.take(MODEL, 'r1')).toBeUndefined();
+    expect(store.take(MODEL, 'r1')).toBeUndefined();
+    expect(await store.adapter(MODEL).find('r1')).toBeUndefined();
+  });
+
+  test('a record written for 60 s is given at 59 s acs-14.3', async () => {
+    const store = open();
+    await store.adapter(MODEL).upsert('r1', TICKET, 60);
+    t = T0 + 59;
+    expect(store.take(MODEL, 'r1')).toEqual(TICKET);
+  });
+
+  test('a record written for 60 s is not given at 60 s, and is removed all the same acs-14.3', async () => {
+    const store = open();
+    await store.adapter(MODEL).upsert('r1', TICKET, 60);
+    t = T0 + 60;
+    expect(store.take(MODEL, 'r1')).toBeUndefined();
+    // A clock moved back finds nothing: the row is gone, not hidden by the clock.
+    t = T0;
+    expect(await store.adapter(MODEL).find('r1')).toBeUndefined();
+    expect(store.take(MODEL, 'r1')).toBeUndefined();
+  });
+
+  test('a record that expired long ago is removed by take, and purgeExpired finds nothing left acs-14.3', async () => {
+    const store = open();
+    await store.adapter(MODEL).upsert('old', TICKET, 60);
+    t = T0 + 3600;
+    expect(store.take(MODEL, 'old')).toBeUndefined();
+    expect(store.purgeExpired()).toBe(0);
+  });
+
+  test('a record with no expiry is given acs-14.3', async () => {
+    const store = open();
+    await store.adapter(MODEL).upsert('forever', TICKET, undefined);
+    t = T0 + 100 * 365 * 24 * 3600;
+    expect(store.take(MODEL, 'forever')).toEqual(TICKET);
+    expect(store.take(MODEL, 'forever')).toBeUndefined();
+  });
+
+  test('an absent id gives nothing and creates nothing acs-14.3', async () => {
+    const store = open();
+    expect(store.take(MODEL, 'nope')).toBeUndefined();
+    expect(await store.adapter(MODEL).find('nope')).toBeUndefined();
+    await store.adapter(MODEL).upsert('nope', TICKET, 60);
+    expect(store.take(MODEL, 'nope')).toEqual(TICKET);
+  });
+
+  test('the same id in another model and another id in this model are untouched acs-14.3', async () => {
+    const store = open();
+    await store.adapter(MODEL).upsert('same', payload({ m: 'ticket' }), 60);
+    await store.adapter(MODEL).upsert('other', payload({ m: 'other ticket' }), 60);
+    await store.adapter('Session').upsert('same', payload({ m: 'session' }), 60);
+    expect(store.take(MODEL, 'same')).toEqual({ m: 'ticket' });
+    expect(await store.adapter('Session').find('same')).toEqual({ m: 'session' });
+    expect(await store.adapter(MODEL).find('other')).toEqual({ m: 'other ticket' });
+    expect(store.take('Session', 'same')).toEqual({ m: 'session' });
+    expect(store.take(MODEL, 'other')).toEqual({ m: 'other ticket' });
+  });
+
+  test('ids match as exact strings acs-14.3', async () => {
+    const store = open();
+    await store.adapter(MODEL).upsert('abc', payload({ v: 'abc' }), 60);
+    for (const probe of ['a%', 'a_c', 'ABC', 'ab', 'abc ', '%', '']) {
+      expect(store.take(MODEL, probe), probe).toBeUndefined();
+    }
+    expect(store.take('WorldTicke%', 'abc')).toBeUndefined();
+    expect(store.take(MODEL, 'abc')).toEqual({ v: 'abc' });
+  });
+
+  test('a payload comes back equal, nested members included acs-14.3', async () => {
+    const store = open();
+    const stored = payload({ account: 'steam:76561198000000001', nested: { list: [1, 'two'] } });
+    await store.adapter(MODEL).upsert('r1', stored, 60);
+    expect(store.take(MODEL, 'r1')).toEqual(stored);
+  });
+
+  test('a take on a file-backed store holds across close and reopen acs-14.3', async () => {
+    const path = join(tempDir(), 'account.sqlite');
+    const first = open(path);
+    await first.adapter(MODEL).upsert('taken', TICKET, 60);
+    await first.adapter(MODEL).upsert('kept', TICKET, 60);
+    expect(first.take(MODEL, 'taken')).toEqual(TICKET);
+    first.close();
+    const second = open(path);
+    expect(second.take(MODEL, 'taken')).toBeUndefined();
+    expect(await second.adapter(MODEL).find('taken')).toBeUndefined();
+    expect(second.take(MODEL, 'kept')).toEqual(TICKET);
+  });
+
+  test('of two stores on one file, only the first to take a record is given it acs-14.3', async () => {
+    const path = join(tempDir(), 'account.sqlite');
+    const one = open(path);
+    const two = open(path);
+    await one.adapter(MODEL).upsert('r1', TICKET, 60);
+    await one.adapter(MODEL).upsert('r2', TICKET, 60);
+    expect(two.take(MODEL, 'r1')).toEqual(TICKET);
+    expect(one.take(MODEL, 'r1')).toBeUndefined();
+    expect(one.take(MODEL, 'r2')).toEqual(TICKET);
+    expect(two.take(MODEL, 'r2')).toBeUndefined();
+  });
+
+  describe('two stores taking the same records at the same time', () => {
+    const ADAPTER_URL = pathToFileURL(join(import.meta.dirname, 'sqliteAdapter.ts')).href;
+    // Each racer opens its own store on the file, reports ready, waits for the shared flag, then
+    // takes every id in turn and reports the ids given to it.
+    const RACER_SOURCE = `
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        const { openAccountStore } = await import(workerData.module);
+        const store = openAccountStore(workerData.path, () => workerData.now);
+        const flag = new Int32Array(workerData.flag);
+        parentPort.postMessage({ ready: true });
+        Atomics.wait(flag, 0, 0);
+        const given = [];
+        for (const id of workerData.ids) {
+          if (store.take(workerData.model, id) !== undefined) given.push(id);
+        }
+        store.close();
+        parentPort.postMessage({ given });
+      })().catch((error) => {
+        parentPort.postMessage({ error: String(error) });
+      });
+    `;
+
+    const workers: Worker[] = [];
+
+    afterEach(async () => {
+      for (const worker of workers.splice(0)) await worker.terminate();
+    });
+
+    interface RacerMessage {
+      readonly ready?: boolean;
+      readonly given?: string[];
+      readonly error?: string;
+    }
+
+    function racer(
+      path: string,
+      ids: readonly string[],
+      flag: SharedArrayBuffer,
+    ): { readonly ready: Promise<void>; readonly given: Promise<string[]> } {
+      const worker = new Worker(RACER_SOURCE, {
+        eval: true,
+        workerData: { module: ADAPTER_URL, path, now: T0, ids, flag, model: MODEL },
+      });
+      workers.push(worker);
+      let markReady = (): void => undefined;
+      const ready = new Promise<void>((resolveReady) => {
+        markReady = () => {
+          resolveReady();
+        };
+      });
+      const given = new Promise<string[]>((resolveGiven, reject) => {
+        worker.on('message', (message: RacerMessage) => {
+          if (message.ready === true) markReady();
+          else if (message.given !== undefined) resolveGiven(message.given);
+          else reject(new Error(message.error ?? 'the racer failed'));
+        });
+        worker.on('error', reject);
+        worker.on('exit', (code) => {
+          if (code !== 0) reject(new Error(`the racer exited with ${code}`));
+        });
+      });
+      given.catch(() => undefined);
+      return { ready, given };
+    }
+
+    test('every record is given to exactly one of them acs-14.3', async () => {
+      const path = join(tempDir(), 'account.sqlite');
+      const store = open(path);
+      const ids = Array.from({ length: 200 }, (_, i) => `ticket-${i}`);
+      for (const id of ids) await store.adapter(MODEL).upsert(id, TICKET, 60);
+
+      const flag = new SharedArrayBuffer(4);
+      const a = racer(path, ids, flag);
+      const b = racer(path, ids, flag);
+      await Promise.race([Promise.all([a.ready, b.ready]), a.given, b.given]);
+      const view = new Int32Array(flag);
+      Atomics.store(view, 0, 1);
+      Atomics.notify(view, 0);
+      const [givenToA, givenToB] = await Promise.all([a.given, b.given]);
+
+      const both = givenToA.filter((id) => givenToB.includes(id));
+      expect(both).toEqual([]);
+      expect([...givenToA, ...givenToB].sort()).toEqual([...ids].sort());
+      expect(store.take(MODEL, ids[0]!)).toBeUndefined();
+    });
   });
 });

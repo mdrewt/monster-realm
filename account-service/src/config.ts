@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import { join, parse, resolve } from 'node:path';
+import { dirname, join, parse, resolve } from 'node:path';
 
 export type Profile = 'local-dev' | 'hosted-dev' | 'production';
 export type SignInMethod = 'dev-password' | 'steam';
@@ -10,6 +10,19 @@ export type KeySource =
 /** The Steam app a profile checks players against. */
 export interface SteamConfig {
   readonly appId: number;
+}
+
+/** Where a profile's handle key file is, and whether the profile makes it when it is absent. */
+export interface HandleKeySource {
+  readonly path: string;
+  readonly generateIfMissing: boolean;
+}
+
+/** An address (`prefix` 32 or 128) or a CIDR block. */
+export interface AddressBlock {
+  readonly address: string;
+  readonly prefix: number;
+  readonly family: 'ipv4' | 'ipv6';
 }
 
 export interface Config {
@@ -26,6 +39,12 @@ export interface Config {
    * is held here: `steam/webApi.ts` reads it.
    */
   readonly steam?: SteamConfig;
+  readonly handleKeys: HandleKeySource;
+  /**
+   * The reverse proxies in front of the service: a request from one of them has the source
+   * address that proxy wrote, and any other request has its socket's.
+   */
+  readonly trustedProxies: readonly AddressBlock[];
 }
 
 export const LOCAL_DEV_ISSUER = 'http://localhost:4455';
@@ -37,6 +56,8 @@ export const LOCAL_DEV_DATA_DIR = resolve(import.meta.dirname, '..', '.data');
  * account can run it, so it proves a sign-in and never ownership of the game.
  */
 export const STEAM_DEV_APP_ID = 480;
+/** The handle key file's name where a dev profile keeps it by default: beside its login key file. */
+export const HANDLE_KEY_FILE_NAME = 'handle-keys.json';
 /** A Steam app id is an unsigned 32-bit number. */
 export const MAX_STEAM_APP_ID = 0xffff_ffff;
 
@@ -61,6 +82,8 @@ const SETTINGS: ReadonlySet<string> = new Set([
   'MR_ACCOUNT_SIGN_IN',
   'MR_ACCOUNT_DATA_DIR',
   'MR_ACCOUNT_KEY_FILE',
+  'MR_ACCOUNT_HANDLE_KEY_FILE',
+  'MR_ACCOUNT_TRUSTED_PROXY',
   'MR_ACCOUNT_HOST',
   'MR_ACCOUNT_PORT',
   'MR_STEAM_APP_ID',
@@ -74,6 +97,10 @@ const DEV_HOSTNAMES = [LOCAL_DEV_ISSUER, HOSTED_DEV_ISSUER].map(
 );
 const DNS_LABEL = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const PORT = /^(0|[1-9]\d{0,4})$/;
+const HANDLE_KEY_FILE_SETTING = 'MR_ACCOUNT_HANDLE_KEY_FILE';
+const TRUSTED_PROXY_SETTING = 'MR_ACCOUNT_TRUSTED_PROXY';
+const MAX_TRUSTED_PROXIES = 16;
+const PREFIX_LENGTH = /^(0|[1-9]\d{0,2})$/;
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 4455;
 
@@ -114,15 +141,28 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
     }
     const steam = productionSteam(set);
     const dataDir = requiredDataDir(set, profile);
+    const issuer = productionIssuer(set);
+    const signIn = signInMethod(set, profile, 'steam');
+    // The profile has no key file to keep one beside, and none is ever made for it.
+    const databasePath = join(dataDir, 'account.sqlite');
+    const handleKeyFile = handleKeyFileSetting(set, [databasePath]);
+    if (handleKeyFile === undefined) {
+      throw new ConfigError(
+        HANDLE_KEY_FILE_SETTING,
+        'the production profile needs its handle key file',
+      );
+    }
     return {
       profile,
-      issuer: productionIssuer(set),
+      issuer,
       listen,
       dataDir,
-      databasePath: join(dataDir, 'account.sqlite'),
+      databasePath,
       keys: { kind: 'external' },
-      signIn: signInMethod(set, profile, 'steam'),
+      signIn,
       ...steam,
+      handleKeys: { path: handleKeyFile, generateIfMissing: false },
+      trustedProxies: trustedProxies(set),
     };
   }
 
@@ -137,20 +177,84 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
     profile === 'local-dev' && !set.has('MR_ACCOUNT_DATA_DIR')
       ? LOCAL_DEV_DATA_DIR
       : requiredDataDir(set, profile);
+  const keyFile = pathSetting(set, 'MR_ACCOUNT_KEY_FILE') ?? join(dataDir, 'keys.json');
+  const databasePath = join(dataDir, 'account.sqlite');
   return {
     profile,
     issuer: profile === 'local-dev' ? LOCAL_DEV_ISSUER : HOSTED_DEV_ISSUER,
     listen,
     dataDir,
-    databasePath: join(dataDir, 'account.sqlite'),
-    keys: {
-      kind: 'file',
-      path: pathSetting(set, 'MR_ACCOUNT_KEY_FILE') ?? join(dataDir, 'keys.json'),
-      generateIfMissing: profile === 'local-dev',
-    },
+    databasePath,
+    keys: { kind: 'file', path: keyFile, generateIfMissing: profile === 'local-dev' },
     signIn: signInMethod(set, profile, 'dev-password'),
     ...steam,
+    handleKeys: {
+      path:
+        handleKeyFileSetting(set, [keyFile, databasePath]) ??
+        join(dirname(keyFile), HANDLE_KEY_FILE_NAME),
+      generateIfMissing: profile === 'local-dev',
+    },
+    trustedProxies: trustedProxies(set),
   };
+}
+
+/**
+ * The handle key file a profile is given, or undefined when it is given none. `others` are the
+ * files the service keeps at paths of their own: a handle key file at one of them would be read
+ * as that file, or written over it.
+ */
+function handleKeyFileSetting(
+  set: ReadonlyMap<string, string>,
+  others: readonly string[],
+): string | undefined {
+  const path = pathSetting(set, HANDLE_KEY_FILE_SETTING);
+  if (path !== undefined && others.includes(path)) {
+    throw new ConfigError(
+      HANDLE_KEY_FILE_SETTING,
+      'must be a file of its own, not the key file or the database',
+    );
+  }
+  return path;
+}
+
+/**
+ * The addresses and CIDR blocks of `MR_ACCOUNT_TRUSTED_PROXY`: a comma-separated list with no
+ * space, each entry an IPv4 or IPv6 address, alone or followed by `/` and a prefix length.
+ */
+function trustedProxies(set: ReadonlyMap<string, string>): AddressBlock[] {
+  const value = set.get(TRUSTED_PROXY_SETTING);
+  if (value === undefined) return [];
+  const entries = value.split(',');
+  if (entries.length > MAX_TRUSTED_PROXIES) {
+    throw new ConfigError(
+      TRUSTED_PROXY_SETTING,
+      `lists at most ${MAX_TRUSTED_PROXIES} addresses or blocks`,
+    );
+  }
+  return entries.map((entry) => {
+    const slash = entry.indexOf('/');
+    const address = slash === -1 ? entry : entry.slice(0, slash);
+    // An address with a zone names an interface of this machine, never a proxy.
+    const version = address.includes('%') ? 0 : isIP(address);
+    const bits = version === 4 ? 32 : 128;
+    const length = slash === -1 ? String(bits) : entry.slice(slash + 1);
+    const prefix = PREFIX_LENGTH.test(length) ? Number(length) : Number.NaN;
+    if (version === 0 || !(prefix <= bits)) {
+      throw new ConfigError(
+        TRUSTED_PROXY_SETTING,
+        'must be a comma-separated list of IP addresses and CIDR blocks, with no space',
+      );
+    }
+    // A request from an IPv4 address is matched as IPv4 however its socket spells it, so an
+    // IPv4-mapped block would match nothing and its proxy would pass for a caller.
+    if (version === 6 && new URL(`http://[${address}]/`).hostname.startsWith('[::ffff:')) {
+      throw new ConfigError(
+        TRUSTED_PROXY_SETTING,
+        'an IPv4 proxy is written as an IPv4 address or block, not as an IPv4-mapped IPv6 one',
+      );
+    }
+    return { address, prefix, family: version === 4 ? 'ipv4' : 'ipv6' };
+  });
 }
 
 /**

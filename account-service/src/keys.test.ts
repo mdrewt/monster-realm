@@ -11,12 +11,14 @@ import {
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,12 +28,17 @@ import { type Config, ConfigError, type Profile } from './config.ts';
 import {
   ATTESTATION_KEY_FILE_NAME,
   type AttestationJwk,
+  createHandleKeys,
   generateAttestationKey,
+  generateHandleKey,
   generateSigningKey,
+  HANDLE_KEY_FILE_NAME,
+  type HandleJwk,
   loadAttestationKeys,
   loadSigningKeys,
   publicAttestationKey,
   publishedAttestationKeys,
+  readHandleKeys,
   type SigningJwk,
   type SigningKeys,
 } from './keys.ts';
@@ -949,6 +956,489 @@ describe('attestation keys', () => {
       writeKeyFile(setup.path, attestationFile([generateAttestationKey()]));
       const error = refusalOf(() => loadSigningKeys(fileSource('hosted-dev', setup.path, false)));
       expect(error.setting).toBe('MR_ACCOUNT_KEY_FILE');
+    });
+  });
+});
+
+// ---- the handle keys ----
+
+const HANDLE_SETTING = 'MR_ACCOUNT_HANDLE_KEY_FILE';
+const HANDLE_KEY_MEMBERS = ['k', 'kid', 'kty'];
+const B64URL_64 = /^[A-Za-z0-9_-]{86}$/;
+const KID = /^[A-Za-z0-9_-]{1,64}$/;
+const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const PROFILES: readonly Profile[] = ['local-dev', 'hosted-dev', 'production'];
+
+type HandleSource = Pick<Config, 'profile' | 'keys' | 'handleKeys'>;
+
+describe('handle keys', () => {
+  let hdir = '';
+
+  beforeEach(() => {
+    hdir = mkdtempSync(join(tmpdir(), 'acs14-'));
+  });
+
+  afterEach(() => {
+    rmSync(hdir, { recursive: true, force: true });
+  });
+
+  /** A profile's handle key source: the handle key file at `path`, the login key file in `hdir`. */
+  function handleSource(profile: Profile, path: string, generateIfMissing = false): HandleSource {
+    return {
+      profile,
+      keys:
+        profile === 'production'
+          ? { kind: 'external' }
+          : {
+              kind: 'file',
+              path: join(hdir, 'keys.json'),
+              generateIfMissing: profile === 'local-dev',
+            },
+      handleKeys: { path, generateIfMissing },
+    };
+  }
+
+  const handleFile = (keys: unknown, profile: unknown = 'local-dev'): string =>
+    JSON.stringify({ profile, keys });
+
+  function handleRefusalOf(load: () => unknown): ConfigError {
+    try {
+      load();
+    } catch (error) {
+      if (error instanceof ConfigError) return error;
+      throw error;
+    }
+    throw new Error('the handle key file was accepted where it must be refused');
+  }
+
+  /** Pieces of a key's `k` that a refusal must not hold: its start, its middle and its end. */
+  function partsOfK(k: string): string[] {
+    return [k, k.slice(0, 12), k.slice(37, 49), k.slice(-12)];
+  }
+
+  function expectCleanHandleRefusal(error: ConfigError, keys: readonly HandleJwk[]): void {
+    expect(error.setting).toBe(HANDLE_SETTING);
+    expect(error.message).toContain(HANDLE_SETTING);
+    for (const key of keys) {
+      for (const part of partsOfK(key.k)) {
+        expect(error.message).not.toContain(part);
+        expect(String(error)).not.toContain(part);
+      }
+    }
+  }
+
+  /** A fresh key whose `k` satisfies `wanted`. */
+  function keyWhere(wanted: (k: string) => boolean): HandleJwk {
+    for (let i = 0; i < 500; i += 1) {
+      const key = generateHandleKey();
+      if (wanted(key.k)) return key;
+    }
+    throw new Error('no generated handle key had the wanted k');
+  }
+
+  /** A hand-made key of `bytes` random-looking bytes under `kid`. */
+  function keyOfBytes(bytes: Buffer, kid: string): Record<string, unknown> {
+    return { kty: 'oct', kid, k: bytes.toString('base64url') };
+  }
+
+  describe('generateHandleKey', () => {
+    test('returns an oct JWK of 64 bytes in canonical unpadded base64url and a well-formed kid', () => {
+      const key = generateHandleKey();
+      expect(Object.keys(key).sort()).toEqual(HANDLE_KEY_MEMBERS);
+      expect(key.kty).toBe('oct');
+      expect(key.k).toMatch(B64URL_64);
+      const bytes = Buffer.from(key.k, 'base64url');
+      expect(bytes.length).toBe(64);
+      expect(bytes.toString('base64url')).toBe(key.k);
+      expect(key.kid).toMatch(KID);
+    });
+
+    test('two calls give two different keys under two different kids', () => {
+      const first = generateHandleKey();
+      const second = generateHandleKey();
+      expect(second.k).not.toBe(first.k);
+      expect(second.kid).not.toBe(first.kid);
+    });
+  });
+
+  describe('readHandleKeys', () => {
+    test.each([
+      'local-dev',
+      'hosted-dev',
+    ] as const)('an absent file under %s is undefined and nothing is written', (profile) => {
+      const path = join(hdir, 'nested', HANDLE_KEY_FILE_NAME);
+      for (const generateIfMissing of [false, true]) {
+        expect(readHandleKeys(handleSource(profile, path, generateIfMissing))).toBeUndefined();
+        expect(readdirSync(hdir)).toEqual([]);
+      }
+    });
+
+    test('an absent file under production, which holds no key file of its own, is refused and nothing is written', () => {
+      const path = join(hdir, 'nested', HANDLE_KEY_FILE_NAME);
+      const error = handleRefusalOf(() => readHandleKeys(handleSource('production', path)));
+      expect(error.setting).toBe(HANDLE_SETTING);
+      expect(readdirSync(hdir)).toEqual([]);
+    });
+
+    test.each(
+      PROFILES,
+    )('a valid file marked %s loads under that profile and is left unchanged acs-14.6', (profile) => {
+      const a = generateHandleKey();
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, handleFile([a], profile));
+      const bytes = readFileSync(path);
+      expect(readHandleKeys(handleSource(profile, path))).toEqual({ keys: [a] });
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+      expect(readdirSync(hdir)).toEqual([HANDLE_KEY_FILE_NAME]);
+    });
+
+    test.each(
+      PROFILES,
+    )('a file of two keys under %s loads both in file order, so a retired key stays acs-14.6', (profile) => {
+      const current = generateHandleKey();
+      const retired = generateHandleKey();
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, handleFile([current, retired], profile));
+      expect(readHandleKeys(handleSource(profile, path))).toEqual({ keys: [current, retired] });
+      writeKeyFile(path, handleFile([retired, current], profile));
+      expect(readHandleKeys(handleSource(profile, path))).toEqual({ keys: [retired, current] });
+    });
+
+    test('the file is read where handleKeys.path says, not beside the login key file acs-14.6', () => {
+      const wanted = generateHandleKey();
+      const elsewhere = join(hdir, 'elsewhere');
+      mkdirSync(elsewhere, { mode: 0o700 });
+      writeKeyFile(
+        join(hdir, HANDLE_KEY_FILE_NAME),
+        handleFile([generateHandleKey()], 'hosted-dev'),
+      );
+      const path = join(elsewhere, 'named.json');
+      writeKeyFile(path, handleFile([wanted], 'hosted-dev'));
+      expect(readHandleKeys(handleSource('hosted-dev', path))).toEqual({ keys: [wanted] });
+    });
+
+    test('a file marked for another profile is refused under every profile', () => {
+      const a = generateHandleKey();
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      for (const marked of PROFILES) {
+        writeKeyFile(path, handleFile([a], marked));
+        for (const profile of PROFILES) {
+          if (profile === marked) continue;
+          const error = handleRefusalOf(() => readHandleKeys(handleSource(profile, path)));
+          expectCleanHandleRefusal(error, [a]);
+        }
+        expect(readHandleKeys(handleSource(marked, path))).toEqual({ keys: [a] });
+      }
+    });
+
+    test.each([
+      'hosted-dev',
+      'production',
+    ] as const)('%s refuses a file its group or others may access, and loads it at 0600', (profile) => {
+      if (!POSIX) return;
+      const a = generateHandleKey();
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, handleFile([a], profile), 0o600);
+      expect(readHandleKeys(handleSource(profile, path))).toEqual({ keys: [a] });
+      for (const mode of [0o644, 0o640, 0o604, 0o610, 0o601, 0o660]) {
+        chmodSync(path, mode);
+        expectCleanHandleRefusal(
+          handleRefusalOf(() => readHandleKeys(handleSource(profile, path))),
+          [a],
+        );
+      }
+      chmodSync(path, 0o600);
+      expect(readHandleKeys(handleSource(profile, path))).toEqual({ keys: [a] });
+    });
+
+    test('local-dev loads a 0644 handle key file', () => {
+      const a = generateHandleKey();
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, handleFile([a]), 0o644);
+      expect(readHandleKeys(handleSource('local-dev', path))).toEqual({ keys: [a] });
+    });
+
+    test('a valid file padded to exactly 65,536 bytes loads, and one byte more is refused', () => {
+      const a = generateHandleKey();
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      const content = handleFile([a]);
+      writeKeyFile(path, content + ' '.repeat(65_536 - Buffer.byteLength(content)));
+      expect(statSync(path).size).toBe(65_536);
+      expect(readHandleKeys(handleSource('local-dev', path))).toEqual({ keys: [a] });
+      writeKeyFile(path, content + ' '.repeat(65_537 - Buffer.byteLength(content)));
+      expect(statSync(path).size).toBe(65_537);
+      const bytes = readFileSync(path);
+      expectCleanHandleRefusal(
+        handleRefusalOf(() => readHandleKeys(handleSource('local-dev', path))),
+        [a],
+      );
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+    });
+
+    test.each(
+      PROFILES,
+    )('a directory at the handle key path is refused by %s and left in place', (profile) => {
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      mkdirSync(path, { mode: 0o700 });
+      expectCleanHandleRefusal(
+        handleRefusalOf(() => readHandleKeys(handleSource(profile, path))),
+        [],
+      );
+      expect(statSync(path).isDirectory()).toBe(true);
+      expect(readdirSync(path)).toEqual([]);
+    });
+  });
+
+  interface HandleFixtures {
+    readonly a: HandleJwk;
+    readonly b: HandleJwk;
+    /** A key whose `k` holds a `-` or a `_`. */
+    readonly dashed: HandleJwk;
+  }
+
+  describe('every malformed handle key file is refused, names the setting and leaks no key', () => {
+    let fx: HandleFixtures;
+
+    beforeEach(() => {
+      fx = {
+        a: generateHandleKey(),
+        b: generateHandleKey(),
+        dashed: keyWhere((k) => k.includes('-') || k.includes('_')),
+      };
+    });
+
+    const kOf = (key: HandleJwk): Buffer => Buffer.from(key.k, 'base64url');
+
+    /** `k` spelt with other unused bits in its last character: the same 64 bytes. */
+    function otherUnusedBits(k: string): string {
+      const last = BASE64URL_ALPHABET.indexOf(k[k.length - 1]!);
+      return `${k.slice(0, -1)}${BASE64URL_ALPHABET[last ^ 1]!}`;
+    }
+
+    test('the valid control file loads', () => {
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, handleFile([fx.a, fx.b]));
+      expect(readHandleKeys(handleSource('local-dev', path))).toEqual({ keys: [fx.a, fx.b] });
+    });
+
+    test('the fixtures of the spelling cases spell the same bytes another way', () => {
+      const standard = fx.dashed.k.replaceAll('-', '+').replaceAll('_', '/');
+      expect(standard).not.toBe(fx.dashed.k);
+      expect(Buffer.from(standard, 'base64').equals(kOf(fx.dashed))).toBe(true);
+      const other = otherUnusedBits(fx.a.k);
+      expect(other).not.toBe(fx.a.k);
+      expect(Buffer.from(other, 'base64url').equals(kOf(fx.a))).toBe(true);
+    });
+
+    const cases: ReadonlyArray<readonly [string, (f: HandleFixtures) => string]> = [
+      ['a file that is not JSON', (f) => handleFile([f.a]).slice(0, -1)],
+      ['a JSON array', (f) => JSON.stringify([f.a])],
+      ['JSON null', () => 'null'],
+      [
+        'an extra top-level member',
+        (f) => JSON.stringify({ profile: 'local-dev', keys: [f.a], comment: 'x' }),
+      ],
+      ['a file without a profile', (f) => JSON.stringify({ keys: [f.a] })],
+      ['a file without keys', () => JSON.stringify({ profile: 'local-dev' })],
+      ['a file marked hosted-dev', (f) => handleFile([f.a], 'hosted-dev')],
+      ['a file marked production', (f) => handleFile([f.a], 'production')],
+      ['a numeric profile', (f) => handleFile([f.a], 1)],
+      ['an empty key list', () => handleFile([])],
+      ['keys that are not an array', (f) => handleFile(f.a)],
+      ['a key that is null', (f) => handleFile([f.a, null])],
+      ['a key that is a string', (f) => handleFile([f.a.k])],
+      ['a key with an alg member', (f) => handleFile([{ ...f.a, alg: 'A256SIV' }])],
+      ['a key with a use member', (f) => handleFile([{ ...f.a, use: 'enc' }])],
+      ['kty OCT', (f) => handleFile([{ ...f.a, kty: 'OCT' }])],
+      ['kty EC', (f) => handleFile([{ ...f.a, kty: 'EC' }])],
+      ['a key without kty', (f) => handleFile([without(f.a, 'kty')])],
+      ['a key without a kid', (f) => handleFile([without(f.a, 'kid')])],
+      ['an empty kid', (f) => handleFile([{ ...f.a, kid: '' }])],
+      ['a kid of 65 characters', (f) => handleFile([{ ...f.a, kid: 'k'.repeat(65) }])],
+      ['a kid containing a slash', (f) => handleFile([{ ...f.a, kid: 'a/b' }])],
+      ['a kid containing a dot', (f) => handleFile([{ ...f.a, kid: 'a.b' }])],
+      ['a kid containing a control character', (f) => handleFile([{ ...f.a, kid: `a${BELL}b` }])],
+      ['a numeric kid', (f) => handleFile([{ ...f.a, kid: 1 }])],
+      ['a key without k', (f) => handleFile([without(f.a, 'k')])],
+      ['a numeric k', (f) => handleFile([{ ...f.a, k: 64 }])],
+      ['a k of 63 bytes', (f) => handleFile([keyOfBytes(kOf(f.a).subarray(0, 63), f.a.kid)])],
+      [
+        'a k of 65 bytes',
+        (f) =>
+          handleFile([keyOfBytes(Buffer.concat([kOf(f.a), kOf(f.b).subarray(0, 1)]), f.a.kid)]),
+      ],
+      ['a k of 32 bytes', (f) => handleFile([keyOfBytes(kOf(f.a).subarray(0, 32), f.a.kid)])],
+      ['a k with base64 padding', (f) => handleFile([{ ...f.a, k: `${f.a.k}==` }])],
+      ['a k with a trailing newline', (f) => handleFile([{ ...f.a, k: `${f.a.k}\n` }])],
+      [
+        'a k in the standard base64 alphabet',
+        (f) =>
+          handleFile([{ ...f.dashed, k: f.dashed.k.replaceAll('-', '+').replaceAll('_', '/') }]),
+      ],
+      [
+        'a k whose last character carries other unused bits',
+        (f) => handleFile([{ ...f.a, k: otherUnusedBits(f.a.k) }]),
+      ],
+      ['two keys sharing one kid', (f) => handleFile([f.a, { ...f.b, kid: f.a.kid }])],
+      [
+        'two keys sharing one k',
+        (f) => handleFile([f.a, { ...f.a, kid: `${f.a.kid}x`.slice(-64) }]),
+      ],
+      ['a valid key followed by an invalid one', (f) => handleFile([f.a, { ...f.b, kty: 'EC' }])],
+    ];
+
+    test.each(
+      cases,
+    )('%s is refused by readHandleKeys, and the file is left as it is', (_name, build) => {
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, build(fx));
+      const bytes = readFileSync(path);
+      const error = handleRefusalOf(() => readHandleKeys(handleSource('local-dev', path, true)));
+      expectCleanHandleRefusal(error, [fx.a, fx.b, fx.dashed]);
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+      expect(readdirSync(hdir)).toEqual([HANDLE_KEY_FILE_NAME]);
+    });
+
+    test.each(
+      cases,
+    )('%s is refused by createHandleKeys on local-dev, and never replaced', (_name, build) => {
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, build(fx));
+      const bytes = readFileSync(path);
+      const error = handleRefusalOf(() => createHandleKeys(handleSource('local-dev', path, true)));
+      expectCleanHandleRefusal(error, [fx.a, fx.b, fx.dashed]);
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+      expect(readdirSync(hdir)).toEqual([HANDLE_KEY_FILE_NAME]);
+    });
+  });
+
+  describe('createHandleKeys', () => {
+    test('local-dev makes the absent file owner-only with one new key, in directories it makes owner-only acs-14.6', () => {
+      const parent = join(hdir, 'made', 'here');
+      const path = join(parent, HANDLE_KEY_FILE_NAME);
+      const created = createHandleKeys(handleSource('local-dev', path, true));
+      expect(created.keys).toHaveLength(1);
+      const [key] = created.keys;
+      expect(Object.keys(key!).sort()).toEqual(HANDLE_KEY_MEMBERS);
+      expect(key!.kty).toBe('oct');
+      expect(key!.k).toMatch(B64URL_64);
+      expect(key!.kid).toMatch(KID);
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      expect(parsed).toEqual({ profile: 'local-dev', keys: [key] });
+      if (POSIX) {
+        expect(statSync(path).mode & 0o777).toBe(0o600);
+        expect(statSync(parent).mode & 0o777).toBe(0o700);
+        expect(statSync(join(hdir, 'made')).mode & 0o777).toBe(0o700);
+      }
+    });
+
+    test('what it made is what readHandleKeys reads, on every later read acs-14.6', () => {
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      const created = createHandleKeys(handleSource('local-dev', path, true));
+      expect(readHandleKeys(handleSource('local-dev', path, true))).toEqual(created);
+      expect(readHandleKeys(handleSource('local-dev', path, false))).toEqual(created);
+    });
+
+    test('a second call returns the same keys and leaves the file bytes unchanged acs-14.6', () => {
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      const first = createHandleKeys(handleSource('local-dev', path, true));
+      const bytes = readFileSync(path);
+      expect(createHandleKeys(handleSource('local-dev', path, true))).toEqual(first);
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+    });
+
+    test('an existing valid file of two keys is returned as it is, never replaced acs-14.6', () => {
+      const current = generateHandleKey();
+      const retired = generateHandleKey();
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      writeKeyFile(path, handleFile([current, retired]));
+      const bytes = readFileSync(path);
+      expect(createHandleKeys(handleSource('local-dev', path, true))).toEqual({
+        keys: [current, retired],
+      });
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+    });
+
+    test('two fresh files hold two different keys', () => {
+      const one = createHandleKeys(handleSource('local-dev', join(hdir, 'one', 'h.json'), true));
+      const two = createHandleKeys(handleSource('local-dev', join(hdir, 'two', 'h.json'), true));
+      expect(two.keys[0]!.k).not.toBe(one.keys[0]!.k);
+    });
+
+    const parents: ReadonlyArray<readonly [string, (root: string) => string]> = [
+      ['a parent that already existed', (root) => root],
+      ['a parent the call made', (root) => join(root, 'made', 'here')],
+    ];
+
+    test.each(
+      parents,
+    )('making the file in %s leaves it the only entry beside it', (_name, parentOf) => {
+      const parent = parentOf(hdir);
+      const path = join(parent, HANDLE_KEY_FILE_NAME);
+      createHandleKeys(handleSource('local-dev', path, true));
+      expect(readdirSync(parent)).toEqual([HANDLE_KEY_FILE_NAME]);
+      createHandleKeys(handleSource('local-dev', path, true));
+      expect(readdirSync(parent)).toEqual([HANDLE_KEY_FILE_NAME]);
+    });
+
+    test.each([
+      ['hosted-dev', 'hosted-dev', false],
+      ['production', 'production', false],
+      ['local-dev without generateIfMissing', 'local-dev', false],
+    ] as const)('%s refuses to make the file and writes nothing', (_name, profile, generateIfMissing) => {
+      const path = join(hdir, 'missing', HANDLE_KEY_FILE_NAME);
+      const error = handleRefusalOf(() =>
+        createHandleKeys(handleSource(profile, path, generateIfMissing)),
+      );
+      expect(error.setting).toBe(HANDLE_SETTING);
+      expect(error.message).toContain(HANDLE_SETTING);
+      expect(existsSync(path)).toBe(false);
+      expect(readdirSync(hdir)).toEqual([]);
+    });
+
+    test('a directory at the path is refused and left in place', () => {
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      mkdirSync(path, { mode: 0o700 });
+      const error = handleRefusalOf(() => createHandleKeys(handleSource('local-dev', path, true)));
+      expect(error.setting).toBe(HANDLE_SETTING);
+      expect(statSync(path).isDirectory()).toBe(true);
+      expect(readdirSync(path)).toEqual([]);
+    });
+  });
+
+  describe('a symbolic link at the handle key path', () => {
+    test.each(
+      PROFILES,
+    )('a link that points at nothing is refused by %s, and nothing is written through it or beside it', (profile) => {
+      if (!POSIX) return;
+      const target = join(hdir, 'nowhere.json');
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      symlinkSync(target, path);
+      for (const generateIfMissing of [false, true]) {
+        const error = handleRefusalOf(() =>
+          readHandleKeys(handleSource(profile, path, generateIfMissing)),
+        );
+        expectCleanHandleRefusal(error, []);
+        expect(lstatSync(path).isSymbolicLink()).toBe(true);
+        expect(existsSync(target)).toBe(false);
+        expect(readdirSync(hdir)).toEqual([HANDLE_KEY_FILE_NAME]);
+      }
+    });
+
+    test.each(
+      PROFILES,
+    )('a link to a valid handle key file loads under %s as that file does, leaving both as they are', (profile) => {
+      if (!POSIX) return;
+      const a = generateHandleKey();
+      const target = join(hdir, 'real.json');
+      writeKeyFile(target, handleFile([a], profile));
+      const bytes = readFileSync(target);
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      symlinkSync(target, path);
+      expect(readHandleKeys(handleSource(profile, path))).toEqual({ keys: [a] });
+      expect(lstatSync(path).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target).equals(bytes)).toBe(true);
+      expect(readdirSync(hdir).sort()).toEqual([HANDLE_KEY_FILE_NAME, 'real.json'].sort());
     });
   });
 });

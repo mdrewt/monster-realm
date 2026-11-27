@@ -1,10 +1,18 @@
 import { createPrivateKey, type KeyObject, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createLocalJWKSet, jwtVerify, SignJWT } from 'jose';
+import { SignJWT } from 'jose';
 import { accountClaims, BASE_GAME_ENTITLEMENT, ENTITLEMENT_CLAIM } from './claims.ts';
 import type { Account } from './interactions/router.ts';
 import type { AttestationKeys, SigningKeys } from './keys.ts';
 import { createRateLimiter } from './rateLimit.ts';
+import {
+  createIdTokenCheck,
+  errorClass,
+  isVisibleAscii,
+  mediaType,
+  readBody,
+  sendJson,
+} from './worldTicket.ts';
 
 export const ATTEST_PATH = '/attest';
 export const ATTESTATION_TTL_SECONDS = 300;
@@ -13,8 +21,6 @@ export const ATTESTATION_LIMIT = 20;
 export const ATTESTATION_WINDOW_SECONDS = 3600;
 export const MAX_WORLD_LENGTH = 512;
 export const MAX_NONCE_LENGTH = 128;
-/** An account's subject is what a log line names: bounded, with no space or line break. */
-const MAX_SUBJECT_LENGTH = 255;
 export const MAX_ATTEST_BODY_BYTES = 1024;
 
 type AttestationClaims = {
@@ -82,11 +88,7 @@ const ANSWER_HEADERS = {
 /** On an answer sent while the request's body is unread: the connection is not reused. */
 const UNREAD = { connection: 'close' } as const;
 
-const BEARER = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i;
 const JSON_TYPE = 'application/json';
-// A subject, a world's name and a nonce are opaque here: visible ASCII and bounded, so the
-// attestation and the log line are too.
-const VISIBLE_ASCII = /^[\x21-\x7e]+$/;
 
 /**
  * The handler of `POST /attest`: a bearer ID token of this issuer and `{ world, nonce }` in, an
@@ -115,48 +117,12 @@ export function createAttestRoute(
   const { issuer, log } = options;
   const host = new URL(issuer).host;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
-  const loginKeys = createLocalJWKSet({
-    keys: options.loginKeys.keys.map(({ kty, crv, alg, use, kid, x, y }) => ({
-      kty,
-      crv,
-      alg,
-      use,
-      kid,
-      x,
-      y,
-    })),
-  });
+  const bearer = createIdTokenCheck({ issuer, loginKeys: options.loginKeys, now });
   const limiter = createRateLimiter({
     limit: ATTESTATION_LIMIT,
     windowSeconds: ATTESTATION_WINDOW_SECONDS,
     now,
   });
-
-  /** The subject of a valid bearer token and whether it carries the entitlement, or undefined. */
-  const bearer = async (
-    authorization: string | undefined,
-  ): Promise<{ readonly sub: string; readonly entitled: boolean } | undefined> => {
-    const token = BEARER.exec(authorization ?? '')?.[1];
-    if (token === undefined) return undefined;
-    try {
-      const { payload } = await jwtVerify(token, loginKeys, {
-        issuer,
-        algorithms: ['ES256'],
-        requiredClaims: ['exp'],
-        currentDate: new Date(now() * 1000),
-        clockTolerance: 0,
-      });
-      const { sub, aud } = payload;
-      if (!isBounded(sub, MAX_SUBJECT_LENGTH) || typeof aud !== 'string') return undefined;
-      const entitlement = payload[ENTITLEMENT_CLAIM];
-      return {
-        sub,
-        entitled: Array.isArray(entitlement) && entitlement.includes(BASE_GAME_ENTITLEMENT),
-      };
-    } catch {
-      return undefined;
-    }
-  };
 
   let signingKey: KeyObject | undefined;
   const sign = (claims: AttestationClaims): Promise<string> => {
@@ -185,7 +151,8 @@ export function createAttestRoute(
       refuse(res, 401, 'invalid_token', { 'www-authenticate': 'Bearer', ...UNREAD });
       return;
     }
-    if (!caller.entitled) {
+    const claimed = caller.claims[ENTITLEMENT_CLAIM];
+    if (!(Array.isArray(claimed) && claimed.includes(BASE_GAME_ENTITLEMENT))) {
       refuse(res, 403, 'not_entitled', UNREAD);
       return;
     }
@@ -193,7 +160,7 @@ export function createAttestRoute(
       refuse(res, 415, 'invalid_request', UNREAD);
       return;
     }
-    const body = await readBody(req);
+    const body = await readBody(req, MAX_ATTEST_BODY_BYTES);
     if (body === 'gone') return;
     if (body === 'too-large') {
       refuse(res, 413, 'invalid_request', UNREAD);
@@ -242,7 +209,7 @@ export function createAttestRoute(
       limiter.giveBack(sub);
       try {
         log(
-          `account-service: attest failed sub=${sub} at=${at} step=${step} error=${className(error)}`,
+          `account-service: attest failed sub=${sub} at=${at} step=${step} error=${errorClass(error)}`,
         );
       } catch {
         // a log that cannot be written changes nothing about the answer
@@ -263,46 +230,6 @@ export function createAttestRoute(
   };
 }
 
-function mediaType(req: IncomingMessage): string {
-  return (req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
-}
-
-/**
- * The request body as text; `'too-large'` when it is, or says it is, over the cap; `'gone'` when
- * its sender went away before the end.
- */
-function readBody(req: IncomingMessage): Promise<string | 'too-large' | 'gone'> {
-  return new Promise((resolve) => {
-    if (Number(req.headers['content-length'] ?? 0) > MAX_ATTEST_BODY_BYTES) {
-      resolve('too-large');
-      return;
-    }
-    const chunks: Buffer[] = [];
-    let size = 0;
-    const onData = (chunk: Buffer): void => {
-      size += chunk.length;
-      if (size > MAX_ATTEST_BODY_BYTES) {
-        // The rest is discarded as it arrives, so the refusal still reaches the sender.
-        req.off('data', onData);
-        req.resume();
-        resolve('too-large');
-        return;
-      }
-      chunks.push(chunk);
-    };
-    req.on('data', onData);
-    req.once('end', () => {
-      resolve(Buffer.concat(chunks).toString('utf8'));
-    });
-    req.once('error', () => {
-      resolve('gone');
-    });
-    req.once('close', () => {
-      resolve('gone');
-    });
-  });
-}
-
 /** The world and nonce a body asks for, or undefined when it is not exactly those two. */
 function parseRequest(
   body: string,
@@ -316,17 +243,12 @@ function parseRequest(
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   if (Object.keys(value).sort().join() !== 'nonce,world') return undefined;
   const { world, nonce } = value as { readonly world: unknown; readonly nonce: unknown };
-  if (!isBounded(world, MAX_WORLD_LENGTH) || !isBounded(nonce, MAX_NONCE_LENGTH)) return undefined;
+  // A world's name and a nonce are opaque here: visible ASCII and bounded, so the attestation is
+  // too.
+  if (!isVisibleAscii(world, MAX_WORLD_LENGTH) || !isVisibleAscii(nonce, MAX_NONCE_LENGTH)) {
+    return undefined;
+  }
   return { world, nonce };
-}
-
-function isBounded(value: unknown, max: number): value is string {
-  return typeof value === 'string' && value.length <= max && VISIBLE_ASCII.test(value);
-}
-
-/** An error's class name when it is one, and nothing else of it: a message may quote a request. */
-function className(error: unknown): string {
-  return error instanceof Error && /^\w{1,64}$/.test(error.name) ? error.name : 'unknown';
 }
 
 function json(
@@ -335,14 +257,7 @@ function json(
   body: object,
   headers: Readonly<Record<string, string>> = {},
 ): void {
-  const text = JSON.stringify(body);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(text),
-    ...ANSWER_HEADERS,
-    ...headers,
-  });
-  res.end(text);
+  sendJson(res, status, body, { ...ANSWER_HEADERS, ...headers });
 }
 
 function refuse(

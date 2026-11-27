@@ -21,6 +21,11 @@ and addressed to one world, that an account owns the game. A `local` or `private
 checks it with a key it holds as data and binds the account (`docs/DECISIONS.md`, "A private world
 verifies an account by a per-world attestation our account service signs").
 
+The service also answers a world that checks an account itself (`docs/refactors/account-checks.md`
+§5): `POST /ticket` gives a signed-in player a one-use ticket for one world, and `POST
+/world/check` lets that world's server redeem it, and later ask again, without a token of its
+own. No module calls them in this build.
+
 ## Design
 
 - **Provider.** [`oidc-provider`](https://github.com/panva/node-oidc-provider) 9.x carries the
@@ -97,6 +102,81 @@ verifies an account by a per-world attestation our account service signs").
     no space or line break. A refusal logs nothing, so a caller cannot write lines at will. No line holds a
     world, a nonce, a token or an error's message, and the service keeps no record of the world
     an attestation was for.
+- **World tickets.** `POST /ticket` (`src/worldTicket.ts`) takes `Authorization: Bearer <ID
+  token>` and the JSON body `{ "world": "…" }`, the name of the world the player is joining as
+  the player's own software authenticated it (`docs/local-play.md` §3, "What the attestation
+  names"), and answers `{ "ticket": "…" }`: 32 random bytes as 43 characters of base64url. The
+  service keeps the account and that name for 60 seconds under the ticket's SHA-256, and nothing
+  else of it. A ticket opens nothing by itself: it says who asked and for which world, and the
+  check that redeems it answers for the account. So one is issued whether or not the account
+  still owns the game or still exists.
+  - *The checks, in order; the first failure answers.* The token, as `/attest` checks it but with
+    no `mr_ent` needed (`401 invalid_token`). The body: `application/json`, at most 1024 bytes,
+    exactly `world`, 1 to 512 characters of visible ASCII (`415`, `413` or `400
+    invalid_request`). The account's limit (`429 rate_limited`, with `Retry-After`). A failure
+    of the service is `500 server_error`. The token is checked before any of the body is read.
+  - *Which requests.* Exactly the path `/ticket` under the issuer's `Host`, with `OPTIONS`, `405`
+    and readable-from-any-origin answers as `/attest` has them: the game client's page calls it.
+  - *One place makes a ticket:* `issue` of `createWorldTickets`. A sign-in built for a browser at
+    a friend's server issues its ticket through it.
+- **World checks.** `POST /world/check` is called by a world's server. It takes no token, and
+  nothing identifies its caller. The body is JSON, at most 16 KiB, in exactly one of two forms.
+  `world` in both is the calling world's database identity, 64 lower-case hex digits.
+  - *A ticket:* `{ "ticket": "…", "names": [ … ], "world": "…" }`, where `names` is the 1 to 16
+    names the world answers to. The ticket is spent. When it is unknown, already spent or
+    expired, or was issued for a name that is not among `names`, the answer is one fixed `403
+    ticket_refused`, and the ticket is gone whichever it was. Otherwise the answer is `{
+    "handle", "entitled", "address", "name" }`: the account's handle in that world, whether the
+    account owns the game now (read afresh), the request's source address, and the name the
+    ticket was issued for. Of two presentations of one ticket at once, at most one gets that
+    answer and the other the `403`.
+  - *A handle:* `{ "handle": "…", "world": "…" }`, a re-check of an account the world already
+    knows. The answer is `{ "handle", "entitled", "address" }`, with the handle under the current
+    key. A handle that does not open, or is another world's, answers `{ "entitled": false,
+    "address" }` and no handle: the world can tell "this is no handle of yours" from "this
+    account does not own the game".
+  - An account that is gone answers exactly as one that does not own the game, in both forms, so
+    the route tells nobody that an account was deleted. An account that cannot be read is `500
+    server_error`, never "not entitled". A ticket presented in that request is spent all the same.
+  - *The checks, in order; the first failure answers.* `POST` (`405`). The source address is
+    known (`400`). The source address's limit, counted before any of the body is read (`429`,
+    with `Retry-After`). The body (`415`, `413` or `400 invalid_request`): a malformed body
+    spends no ticket. Then the form's own answer; a handle that opens for this world passes its
+    own limit first (`429`).
+  - *Which requests.* Exactly the path `/world/check`, under the issuer's `Host` or one of its
+    two check names, `ipv4.` and `ipv6.` in front of that host (`worldCheckHosts`). A deployment
+    gives the first an `A` record alone and the second an `AAAA` record alone, so a world can ask
+    over the address family it wants `address` reported in. The check names answer nothing else
+    (`421`). No answer carries a CORS header: a page has no business here.
+  - *What a caller can learn.* Whoever redeems a ticket states the world's identity itself, so a
+    host can state another world's and receive the player's handle there; it tells that host
+    something only beside that world's own data (`docs/refactors/account-checks.md` §3.2).
+    Whoever holds a handle can ask whether its account owns the game now, and sees `429` after
+    12 answers in an hour, which an invented handle never gets. A handle's length is its
+    subject's length plus a constant.
+  - *What is logged, by both routes.* One line per ticket issued and one per ticket redeemed,
+    with the account and the time, and one per failure of the service, with the account when it
+    is known, the time, the step that failed and the error's class name. A refusal logs nothing,
+    and neither does an answered handle check, whose caller is anonymous: no caller can write
+    lines at will. No line holds a world, a name, a handle, a ticket, an address or an error's
+    message.
+- **Handles.** A handle (`src/worldHandle.ts`) is the account's subject and one world's database
+  identity, encrypted so that only the service reads them; a world keeps it in place of the
+  account. It is `<kid>.<base64url>`: the handle key's `kid`, then the tag and ciphertext of
+  AES-SIV (RFC 5297, a 64-byte key, Node's own `aes-256-siv`) over the identity's 32 bytes
+  followed by the subject. The encryption is deterministic, so one account in one world has one
+  handle under one key, another world or account has another, and the service keeps no table of
+  who joined which world. The first handle key seals; every key in the file opens, and what a
+  handle under any other key holds is answered sealed under the first. Only the one spelling the
+  service writes opens.
+- **Source address.** `address` in an answer, and the address a limit counts, is the address at
+  the other end of the request's socket. When that address is inside `MR_ACCOUNT_TRUSTED_PROXY`
+  (the reverse proxy in front), it is instead the last address in the request's
+  `X-Forwarded-For`, the one that proxy wrote; from anyone else the header is not read
+  (`createSourceAddress` in `src/rateLimit.ts`). A trusted proxy that wrote no address leaves
+  the source unknown, and the check answers `400`: the proxy's own address is never given as a
+  caller's. An address is written in one spelling: dotted IPv4, IPv6 in lower case with its
+  longest run of zeros compressed, and an IPv4-mapped IPv6 address as IPv4.
 - **Clients.** A client is a stored record: a client id and one redirect address, written by the
   admin command. Whatever else a record holds, the provider treats the client as public (no
   secret), with exactly that redirect address, the code and refresh grants and ES256 ID tokens. The
@@ -120,7 +200,18 @@ verifies an account by a per-world attestation our account service signs").
   who knows an account's email can keep it locked. An account gets at most 20 attestations in any
   hour. The count is of requests that reached it with a valid token and body: one refused because
   the account is gone or not entitled still counts, and one the service failed does not. It lives
-  in the process too, so each instance counts alone.
+  in the process too, so each instance counts alone. An account gets at most 10 tickets in any
+  minute, counted the same way. A source address gets at most 120 world checks in any minute,
+  whatever their bodies and answers; and one account in one world is checked by handle from one
+  source address at most 12 times in any hour, so a caller who harvested handles cannot use up
+  what the player's own world may ask. A limit counts an IPv6 source under its /64. A handle
+  check the service failed keeps its place in that count, so nobody can turn an outage into
+  unbounded questions about one account. Anyone can make keys in the two world-check limits, so each
+  holds a bounded number at once: 1,000,000 source addresses and 250,000 account, world and
+  source triples. Past its bound a limit refuses every key it does not already hold (`429`)
+  until old hits die, so a flood from that many sources refuses new callers for as long as it
+  lasts. These numbers are this build's own; a world that re-checks its players sizes its bursts
+  against them (`docs/refactors/account-checks.md` §5.1).
 - **Keys.** ES256 (P-256) signing keys, each with a `kid`. The first key in the file signs; the
   public half of every key is published at `/jwks`. `src/keys.ts` loads them from a JSON key file,
   `{ "profile": "<profile>", "keys": [ <private JWK>, … ] }`, marked with the profile it was made
@@ -131,6 +222,13 @@ verifies an account by a per-world attestation our account service signs").
   P-256 key is refused as an attestation key and an Ed25519 key as a login key, an attestation
   key file that repeats a login key's `kid` is refused at start, and neither set verifies the
   other's tokens. The first attestation key signs. Where each profile's key lives is under "Attestation keys" below.
+- **Handle keys.** A handle key is 64 random bytes with a `kid`, held in a handle key file of the
+  login key file's form: `{ "profile": "<profile>", "keys": [ { "kty": "oct", "kid": …, "k": … },
+  … ] }`, marked with its profile, the first key sealing. A handle key is never replaced by a
+  new one: under another key every account has another handle in every world, and a world takes
+  an account it knows for one it has never seen, with the character it keeps out of reach. So
+  only `local-dev` makes the file when it is absent; any other profile refuses to start without
+  it, and a key that has sealed handles stays in the file for as long as a world may hold one.
 - **Storage.** One SQLite file, opened with Node's built-in `node:sqlite`.
   `src/store/sqliteAdapter.ts` is the provider's storage adapter and the only module that touches
   the database. An expired record is not found. A consumed record is still found, carrying
@@ -138,7 +236,9 @@ verifies an account by a per-world attestation our account service signs").
   its grant. Expired records are deleted once a minute. A code, an access token and a refresh
   token are each stored under the SHA-256 of their value, so a copy of the database holds none
   that can be presented; accounts, clients, grants and the sign-in step's records are stored under
-  their own ids.
+  their own ids. A world ticket is stored under the SHA-256 of its text too, for its 60 seconds,
+  and is taken out by one statement that deletes the record and returns it (`take`), so no two
+  presentations are both given it.
 - **No build step.** Node runs the TypeScript sources directly (`node src/server.ts`), so the
   sources use only syntax Node can strip (`erasableSyntaxOnly` in `tsconfig.json`) and relative
   imports name the `.ts` file.
@@ -147,11 +247,11 @@ verifies an account by a per-world attestation our account service signs").
 
 `MR_ACCOUNT_PROFILE` selects one; there is no default.
 
-| Profile | Issuer | Sign-in method | Steam app | Signing keys | Attestation key | Data directory |
-|---|---|---|---|---|---|---|
-| `local-dev` | `http://localhost:4455` | `dev-password` | none, or `480` | a key file, generated on the first start | one fixed key, the same on every machine | `account-service/.data` (ignored by git) unless set |
-| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | none, or `480` | a key file the operator provides, with no access for group or others | `attestation-keys.json` beside the key file, provided by the operator under the same rules | set by the operator |
-| `production` | `MR_ACCOUNT_ISSUER` | `steam` | none, or the game's own (never `480`) | an external signer | an external signer | set by the operator |
+| Profile | Issuer | Sign-in method | Steam app | Signing keys | Attestation key | Handle keys | Data directory |
+|---|---|---|---|---|---|---|---|
+| `local-dev` | `http://localhost:4455` | `dev-password` | none, or `480` | a key file, generated on the first start | one fixed key, the same on every machine | `handle-keys.json` beside the key file, generated on the first start | `account-service/.data` (ignored by git) unless set |
+| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | none, or `480` | a key file the operator provides, with no access for group or others | `attestation-keys.json` beside the key file, provided by the operator under the same rules | `handle-keys.json` beside the key file, provided by the operator under the same rules | set by the operator |
+| `production` | `MR_ACCOUNT_ISSUER` | `steam` | none, or the game's own (never `480`) | an external signer | an external signer | the file `MR_ACCOUNT_HANDLE_KEY_FILE` names | set by the operator |
 
 The `production` profile loads and checks its settings and then refuses to start: this build holds
 no external signer, and no `steam` sign-in step. Each dev issuer has its own keys.
@@ -336,6 +436,8 @@ as written.
 | `MR_ACCOUNT_SIGN_IN` | The sign-in method. Each profile accepts only its own (table above). |
 | `MR_ACCOUNT_DATA_DIR` | The directory that holds `account.sqlite`. An absolute, normalised path. Required by `hosted-dev` and `production`. |
 | `MR_ACCOUNT_KEY_FILE` | The key file; by default `keys.json` in the data directory. An absolute, normalised path. Refused by `production`. |
+| `MR_ACCOUNT_HANDLE_KEY_FILE` | The handle key file; on a dev profile, by default `handle-keys.json` in the key file's directory. An absolute, normalised path. Required by `production`. |
+| `MR_ACCOUNT_TRUSTED_PROXY` | The reverse proxy in front: a comma-separated list, with no space, of 1 to 16 IP addresses and CIDR blocks. A request from inside one has the source address the proxy wrote (see Source address). Unset: no proxy is trusted. |
 | `MR_ACCOUNT_HOST` | The address to listen on: an IP address or `localhost`. Default `127.0.0.1`. |
 | `MR_ACCOUNT_PORT` | The port to listen on, 0 to 65535 (0 lets the system choose). Default 4455. |
 | `MR_STEAM_APP_ID` | The Steam app the profile checks players against. A dev profile takes exactly `480`; `production` takes the game's app id, a decimal number from 1 to 4294967295 that is not `480`. Unset: Steam is not configured. |
@@ -357,6 +459,14 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   of those rules of form, holds anything but Ed25519 private keys with distinct `kid`s whose `x`
   is the public half of their `d`, repeats a login key's `kid`, or holds the `local-dev`
   attestation key (the refusal names the file);
+- `production` has no `MR_ACCOUNT_HANDLE_KEY_FILE`, or names a path with no file; `hosted-dev`
+  has no handle key file; `MR_ACCOUNT_HANDLE_KEY_FILE` names the key file or the database; the
+  handle key path is a link that points at nothing; or a handle key file breaks any of the key
+  file's rules of form or holds anything but 64-byte `oct` keys with distinct `kid`s and
+  distinct bytes (the refusal names `MR_ACCOUNT_HANDLE_KEY_FILE`);
+- `MR_ACCOUNT_TRUSTED_PROXY` holds a space, an empty entry, a name, an address with a zone, an
+  IPv4-mapped IPv6 address or block (an IPv4 proxy is written as IPv4), a prefix length out of
+  range or more than 16 entries;
 - any other name beginning `MR_ACCOUNT_` or `MR_STEAM_`, in any letter case and with or without a
   space around it, is set: a misspelt setting never falls back to a default, and a Steam key
   under another spelling is never taken for no key.
@@ -397,6 +507,17 @@ written.
     -H "Authorization: Bearer $ID_TOKEN" -H 'Content-Type: application/json' \
     -d '{"world":"spki:<fingerprint>/<database>","nonce":"<the nonce that world issued>"}'
   ```
+- A ticket for a world, given an ID token, then that world's check and its later re-check:
+
+  ```sh
+  curl -sS http://localhost:4455/ticket \
+    -H "Authorization: Bearer $ID_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"world":"spki:<fingerprint>/<database>"}'
+  curl -sS http://localhost:4455/world/check -H 'Content-Type: application/json' \
+    -d '{"ticket":"<the ticket>","names":["spki:<fingerprint>/<database>"],"world":"<64 hex digits>"}'
+  curl -sS http://localhost:4455/world/check -H 'Content-Type: application/json' \
+    -d '{"handle":"<the handle answered>","world":"<the same 64 hex digits>"}'
+  ```
 - `just account-test` runs the package's tests and `just account-typecheck` its typecheck. Both are
   part of `just ci` and of the `account-service` job in `.github/workflows/ci.yml`. `just lint`
   lints the package with the rest of the tree.
@@ -420,6 +541,8 @@ commits it. No other input is recorded.
 | The Steam app id and a publisher Web API key | the operator; the key goes only into the production deployment's secret store, which hands it to the service as `MR_STEAM_PUBLISHER_KEY` | the app id (never the key) |
 | The production host and issuer domain | the operator | the issuer URL every release module trusts |
 | The `hosted-dev` attestation key | the operator makes it and keeps the private half on the host | its public half, in `publishedAttestationKeys()` and the generated list |
+| The `hosted-dev` handle key | the operator makes it on the host and backs it up with the login key | that it exists (never the key) |
+| The two check names of each hosted issuer | the operator gives `ipv4.<issuer host>` an `A` record alone and `ipv6.<issuer host>` an `AAAA` record alone, both to the host that runs the service | the names and the date |
 | The production key service | the operator, with the production host | that it signs with Ed25519, or that it cannot |
 
 ## Runbook
@@ -432,8 +555,9 @@ section holds the rules those procedures follow.
 
 `just account-dev` runs `local-dev` from the checkout; `docker compose --profile <profile> up -d`
 in `ops/auth/` runs the image. A `hosted-dev` instance needs `MR_ACCOUNT_DATA_DIR`, a key file
-marked `hosted-dev` and `attestation-keys.json` beside it, marked the same; the service never
-writes either (the runbook makes both in the keys volume).
+marked `hosted-dev`, and `attestation-keys.json` and `handle-keys.json` beside it, marked the
+same; the service never writes any of them (the runbook makes all three in the keys volume). The
+recipe sets `MR_ACCOUNT_TRUSTED_PROXY` to the ranges its Caddy connects from.
 
 ### Admin accounts
 
@@ -474,10 +598,18 @@ its public half to `publishedAttestationKeys()` and regenerate the list, ship mo
 it, then move the key to the front of the file and restart. A key leaves the published list once
 no world should accept what it signed.
 
+The handle key file is an ordered list too: its first key seals and every key opens. A new first
+key changes no account's standing, because a world that presents a handle under an older key is
+answered with the new one and stores it. A key taken out of the file strands every handle still
+under it: a world that presents one is told it is no handle of ours, and the account behind it
+reaches that world's character again only if the key is put back. Keep every key that has ever
+sealed.
+
 ### Backup and restore
 
-Everything to keep is the key file, `attestation-keys.json` on `hosted-dev`, and
-`account.sqlite`. Copy the database with the service stopped, or through SQLite's own backup
+Everything to keep is the key file, the handle key file, `attestation-keys.json` on
+`hosted-dev`, and `account.sqlite`. Losing the handle key file loses every world's link between
+an account and its character, as losing the database loses the accounts. Copy the database with the service stopped, or through SQLite's own backup
 (the runbook uses `VACUUM INTO` on the running service): a plain copy of a file being written
 can be torn. The
 database holds the accounts (emails and password hashes), the clients and the refresh-token chains
@@ -488,4 +620,5 @@ undoes what changed after it (the runbook's "What a restore brings back").
 
 A module derives an account's identity from the issuer URL and the subject of its token
 (`docs/DECISIONS.md`, "Accounts, guest identity and the claim flow"), so the issuer's name moves
-with the service; the key file, the attestation key file and the database move with it.
+with the service; the key file, the attestation key file, the handle key file and the database
+move with it, and the two check names move to the new host with the issuer's.

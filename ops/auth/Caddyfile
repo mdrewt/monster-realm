@@ -1,11 +1,18 @@
 # Caddy in front of the account service (docker-compose.yml here runs it).
 #
-# MR_AUTH_SITE is the profile's issuer, so the site Caddy serves is the issuer's own origin:
-# `http://localhost:4455` serves plain HTTP on port 4455 (local-dev), and an `https://` name
-# gets an ACME certificate on ports 80 and 443 (hosted-dev, production), kept in the /data
-# volume. Caddy serves no other host name. MR_AUTH_UPSTREAM is the profile's account service.
-# The proxy passes the client's Host unchanged; the service also answers only its issuer's host,
-# removes every Forwarded and X-Forwarded-* header, and takes the scheme from its issuer.
+# MR_AUTH_SITE lists the sites Caddy serves: the issuer's own origin first, then its two check
+# names where the profile has them. `http://localhost:4455` serves plain HTTP on port 4455
+# (local-dev), and an `https://` name gets an ACME certificate on ports 80 and 443 (hosted-dev,
+# production), kept in the /data volume. Caddy serves no other host name. MR_AUTH_UPSTREAM is the
+# profile's account service.
+#
+# The proxy passes the client's Host unchanged; the service answers only its issuer's host and,
+# for POST /world/check, the two check names, and takes the scheme from its issuer. It reads one
+# thing a proxy says: the last address in X-Forwarded-For, from a proxy inside
+# MR_ACCOUNT_TRUSTED_PROXY, as the request's source address. So that header is written here as
+# the one address Caddy itself takes the request to come from, whatever a client sent in it.
 {$MR_AUTH_SITE} {
-	reverse_proxy {$MR_AUTH_UPSTREAM}
+	reverse_proxy {$MR_AUTH_UPSTREAM} {
+		header_up X-Forwarded-For {client_ip}
+	}
 }
