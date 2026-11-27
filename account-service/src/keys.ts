@@ -10,6 +10,7 @@ import {
   constants,
   fstatSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -255,13 +256,21 @@ type HandleKeyConfig = Pick<Config, 'profile' | 'keys' | 'handleKeys'>;
 
 /**
  * The keys of the profile's handle key file, or undefined when there is no file. Writes nothing.
- * A profile with no key file of its own is refused for a missing file here: nothing it loads
- * after this is a file. Every refusal is a `ConfigError`; none carries key material.
+ * Every refusal is a `ConfigError`; none carries key material.
+ *
+ * A profile whose login keys are not in a file is refused here for a missing handle key file,
+ * so that its start names this file before it names the signer it lacks. A dev profile's
+ * missing file is `createHandleKeys`'s to make or refuse, once its login keys have loaded.
  */
 export function readHandleKeys(config: HandleKeyConfig): HandleKeys | undefined {
   const file = HANDLE_KEY_FILE;
-  const text = readKeyFile(config.handleKeys.path, config.profile, file);
+  const { path } = config.handleKeys;
+  const text = readKeyFile(path, config.profile, file);
   if (text === undefined) {
+    // A link that points at nothing opens as no file, and no file can be made in its place.
+    if (lstatSync(path, { throwIfNoEntry: false }) !== undefined) {
+      throw refusal(file, `${file.name} cannot be opened`);
+    }
     if (config.keys.kind === 'external') throw missingHandleKeyFile(config.profile);
     return undefined;
   }

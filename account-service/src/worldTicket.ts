@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createLocalJWKSet, jwtVerify } from 'jose';
-import { BASE_GAME_ENTITLEMENT, ENTITLEMENT_CLAIM } from './claims.ts';
+import { createLocalJWKSet, type JWTPayload, jwtVerify } from 'jose';
 import type { Account } from './interactions/router.ts';
 import type { SigningKeys } from './keys.ts';
 import { addressLimitKey, createRateLimiter, type RateLimiter } from './rateLimit.ts';
@@ -36,9 +35,13 @@ const TICKET_BYTES = 32;
 const TICKET_MODEL = 'WorldTicket';
 /**
  * How many keys each limit of the world check holds at once. Whoever calls that route chooses its
- * keys, so past this many a new one is refused until an old one's hits die.
+ * keys, so memory needs a bound; past it a new key is refused until an old one's hits die, which
+ * refuses every caller the limit has not seen. Each bound is therefore far above what honest
+ * worlds reach: a source address's hits live a minute, so the first fills only under about
+ * 17,000 new addresses a second; a pair's hits live an hour, and each needs a handle that opens.
  */
-const MAX_LIMIT_KEYS = 100_000;
+const MAX_ADDRESS_LIMIT_KEYS = 1_000_000;
+const MAX_HANDLE_LIMIT_KEYS = 250_000;
 
 /** A ticket's holder: the account it was issued to and the world's name it was issued for. */
 export interface TicketRecord {
@@ -91,10 +94,10 @@ export function worldCheckHosts(issuer: string): readonly string[] {
   return [host, `ipv4.${host}`, `ipv6.${host}`];
 }
 
-/** Who a valid bearer ID token names, and whether it carries the entitlement. */
+/** Who a valid bearer ID token names, and the claims it carries. */
 export interface IdTokenHolder {
   readonly sub: string;
-  readonly entitled: boolean;
+  readonly claims: JWTPayload;
 }
 
 const BEARER = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i;
@@ -134,11 +137,7 @@ export function createIdTokenCheck(options: {
       });
       const { sub, aud } = payload;
       if (!isVisibleAscii(sub, MAX_SUBJECT_LENGTH) || typeof aud !== 'string') return undefined;
-      const entitlement = payload[ENTITLEMENT_CLAIM];
-      return {
-        sub,
-        entitled: Array.isArray(entitlement) && entitlement.includes(BASE_GAME_ENTITLEMENT),
-      };
+      return { sub, claims: payload };
     } catch {
       return undefined;
     }
@@ -252,13 +251,13 @@ export function createWorldRoutes(
     limit: WORLD_CHECK_ADDRESS_LIMIT,
     windowSeconds: WORLD_CHECK_ADDRESS_WINDOW_SECONDS,
     now,
-    maxKeys: MAX_LIMIT_KEYS,
+    maxKeys: MAX_ADDRESS_LIMIT_KEYS,
   });
   const handleLimit = createRateLimiter({
     limit: WORLD_CHECK_HANDLE_LIMIT,
     windowSeconds: WORLD_CHECK_HANDLE_WINDOW_SECONDS,
     now,
-    maxKeys: MAX_LIMIT_KEYS,
+    maxKeys: MAX_HANDLE_LIMIT_KEYS,
   });
 
   const time = (): string => new Date(now() * 1000).toISOString();
@@ -386,6 +385,7 @@ export function createWorldRoutes(
         sub = spent.account;
         step = 'account';
         const entitled = (await options.account(sub))?.entitled === true;
+        step = 'seal';
         const handle = handles.seal(sub, asked.world);
         step = 'log';
         log(`account-service: world-check sub=${sub} at=${at}`);
@@ -407,6 +407,7 @@ export function createWorldRoutes(
       }
       step = 'account';
       const entitled = (await options.account(sub))?.entitled === true;
+      step = 'seal';
       answer(200, { handle: handles.seal(sub, asked.world), entitled, address });
     } catch (error) {
       // A failed check keeps its place in the pair's count: while the account cannot be read, a

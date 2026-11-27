@@ -36,9 +36,9 @@ Commands marked **destructive** stop the service or replace data. Read the whole
 - **The source address.** Caddy writes the address it takes a request to come from into
   `X-Forwarded-For`, replacing whatever the client sent there. The account container believes
   that header only from the private ranges a compose network is made from
-  (`MR_ACCOUNT_TRUSTED_PROXY` in `docker-compose.yml`), which only its Caddy and this host are
-  inside. The service reports that address to a world as the world's own, and counts its limits
-  by it.
+  (`MR_ACCOUNT_TRUSTED_PROXY` in `docker-compose.yml`). Nothing publishes the account service's
+  port, so only this project's containers and this host can reach it from inside them. The
+  service reports that address to a world as the world's own, and counts its limits by it.
 - **One public profile per host.** `hosted-dev` and `production` both take ports 80 and 443.
 - **Refusals.** A container that lacks its profile's settings or keys exits 1 with one line,
   `account-service: refusing to start: <setting>: <problem>`, and `restart: unless-stopped`
@@ -137,7 +137,8 @@ at `/jwks`. A module's host caches the key set (SpacetimeDB 2.11.0 refreshes it 
 drops it after 7,200 s), so a key is published before it signs and stays published until nothing
 it signed is still in use. Each step edits the file in place and restarts the account container.
 A restart ends the sign-ins in progress (the player starts again from the game) and clears the
-in-process limits: password lockouts, the sign-in cap and attestation counts.
+in-process limits: password lockouts, the sign-in cap, attestation and ticket counts, and the
+world-check limits.
 
 ```sh
 P=hosted-dev   # or local-dev
@@ -147,6 +148,7 @@ rotate() {     # rotate <keys.json|attestation-keys.json|handle-keys.json> publi
     const [name, step, kid] = process.argv.slice(1);
     const make = { "keys.json": "generateSigningKey", "attestation-keys.json": "generateAttestationKey", "handle-keys.json": "generateHandleKey" }[name];
     if (make === undefined) throw new Error("which key file?");
+    if (name === "handle-keys.json" && step === "retire") throw new Error("a handle key is never retired");
     const file = "/var/lib/account-service/keys/" + name;
     import("/app/src/keys.ts").then((k) => {
       const set = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -188,9 +190,10 @@ before the key is promoted.
 `handle-keys.json` rotates with the first two steps and no wait: `rotate handle-keys.json
 publish`, then `rotate handle-keys.json promote <new kid>`. Only the service reads a handle, so
 nothing has to learn the new key, and each world's stored handles are replaced as the world
-re-checks them. **Do not retire a handle key.** A world that still holds a handle under it is
-told the handle is not ours, and that account cannot reach its character there until the key is
-back in the file. Back up the keys volume before and after.
+re-checks them (`published=` lists the keys that open). **A handle key is never retired**, and
+`rotate` refuses to: a world that still holds a handle under a key taken out is told the handle
+is not ours, and that account cannot reach its character there until the key is back in the
+file. Back up the keys volume before and after.
 
 ## 5. Backup and restore
 
@@ -245,7 +248,8 @@ docker compose --profile "$P" up -d
 
 Then check: `/jwks` lists the same `kid`s as before, an account signs in, a module still
 derives the same `Identity` for it (the issuer URL is unchanged), and a handle a world already
-holds is answered back unchanged by `POST /world/check`.
+holds is answered back by `POST /world/check`, unchanged when the first handle key is the one
+that sealed it.
 
 ### Drill record
 

@@ -19,8 +19,9 @@
 name: mr-auth
 
 # Where a request to an account service may come from and be believed about its source address
-# (MR_ACCOUNT_TRUSTED_PROXY): the private ranges docker makes a compose network from. Only the
-# profile's Caddy and this host are inside them, since no account service publishes a port.
+# (MR_ACCOUNT_TRUSTED_PROXY): the private ranges docker makes a compose network from. No account
+# service publishes a port, so only this project's containers and this host reach one from
+# inside them.
 x-trusted-proxy: &trusted-proxy "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
 
 x-account: &account

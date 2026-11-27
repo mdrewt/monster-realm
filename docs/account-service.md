@@ -128,7 +128,8 @@ own. No module calls them in this build.
     ticket_refused`, and the ticket is gone whichever it was. Otherwise the answer is `{
     "handle", "entitled", "address", "name" }`: the account's handle in that world, whether the
     account owns the game now (read afresh), the request's source address, and the name the
-    ticket was issued for. Of two presentations of one ticket at once, one is answered.
+    ticket was issued for. Of two presentations of one ticket at once, at most one gets that
+    answer and the other the `403`.
   - *A handle:* `{ "handle": "…", "world": "…" }`, a re-check of an account the world already
     knows. The answer is `{ "handle", "entitled", "address" }`, with the handle under the current
     key. A handle that does not open, or is another world's, answers `{ "entitled": false,
@@ -203,10 +204,14 @@ own. No module calls them in this build.
   minute, counted the same way. A source address gets at most 120 world checks in any minute,
   whatever their bodies and answers; and one account in one world is checked by handle from one
   source address at most 12 times in any hour, so a caller who harvested handles cannot use up
-  what the player's own world may ask. A limit counts an IPv6 source under its /64. Each of the
-  two world-check limits holds at most 100,000 keys at once and refuses a new one past that,
-  since anyone can make keys there. These numbers are this build's own; a world that re-checks
-  its players sizes its bursts against them (`docs/refactors/account-checks.md` §5.1).
+  what the player's own world may ask. A limit counts an IPv6 source under its /64. A handle
+  check the service failed keeps its place in that count, so an outage cannot be used to ask
+  about one account without bound. Anyone can make keys in the two world-check limits, so each
+  holds a bounded number at once: 1,000,000 source addresses and 250,000 account, world and
+  source triples. Past its bound a limit refuses every key it does not already hold (`429`)
+  until old hits die, so a flood from that many sources refuses new callers for as long as it
+  lasts. These numbers are this build's own; a world that re-checks its players sizes its bursts
+  against them (`docs/refactors/account-checks.md` §5.1).
 - **Keys.** ES256 (P-256) signing keys, each with a `kid`. The first key in the file signs; the
   public half of every key is published at `/jwks`. `src/keys.ts` loads them from a JSON key file,
   `{ "profile": "<profile>", "keys": [ <private JWK>, … ] }`, marked with the profile it was made
@@ -455,11 +460,13 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   is the public half of their `d`, repeats a login key's `kid`, or holds the `local-dev`
   attestation key (the refusal names the file);
 - `production` has no `MR_ACCOUNT_HANDLE_KEY_FILE`, or names a path with no file; `hosted-dev`
-  has no handle key file; or a handle key file breaks any of the key file's rules of form or
-  holds anything but 64-byte `oct` keys with distinct `kid`s and distinct bytes (the refusal
-  names `MR_ACCOUNT_HANDLE_KEY_FILE`);
-- `MR_ACCOUNT_TRUSTED_PROXY` holds a space, an empty entry, a name, an address with a zone, a
-  prefix length out of range or more than 16 entries;
+  has no handle key file; `MR_ACCOUNT_HANDLE_KEY_FILE` names the key file or the database; the
+  handle key path is a link that points at nothing; or a handle key file breaks any of the key
+  file's rules of form or holds anything but 64-byte `oct` keys with distinct `kid`s and
+  distinct bytes (the refusal names `MR_ACCOUNT_HANDLE_KEY_FILE`);
+- `MR_ACCOUNT_TRUSTED_PROXY` holds a space, an empty entry, a name, an address with a zone, an
+  IPv4-mapped IPv6 address or block (an IPv4 proxy is written as IPv4), a prefix length out of
+  range or more than 16 entries;
 - any other name beginning `MR_ACCOUNT_` or `MR_STEAM_`, in any letter case and with or without a
   space around it, is set: a misspelt setting never falls back to a default, and a Steam key
   under another spelling is never taken for no key.

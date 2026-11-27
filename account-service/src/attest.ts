@@ -1,7 +1,7 @@
 import { createPrivateKey, type KeyObject, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { SignJWT } from 'jose';
-import { accountClaims, ENTITLEMENT_CLAIM } from './claims.ts';
+import { accountClaims, BASE_GAME_ENTITLEMENT, ENTITLEMENT_CLAIM } from './claims.ts';
 import type { Account } from './interactions/router.ts';
 import type { AttestationKeys, SigningKeys } from './keys.ts';
 import { createRateLimiter } from './rateLimit.ts';
@@ -151,7 +151,8 @@ export function createAttestRoute(
       refuse(res, 401, 'invalid_token', { 'www-authenticate': 'Bearer', ...UNREAD });
       return;
     }
-    if (!caller.entitled) {
+    const claimed = caller.claims[ENTITLEMENT_CLAIM];
+    if (!(Array.isArray(claimed) && claimed.includes(BASE_GAME_ENTITLEMENT))) {
       refuse(res, 403, 'not_entitled', UNREAD);
       return;
     }

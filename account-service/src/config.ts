@@ -144,7 +144,8 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
     const issuer = productionIssuer(set);
     const signIn = signInMethod(set, profile, 'steam');
     // The profile has no key file to keep one beside, and none is ever made for it.
-    const handleKeyFile = pathSetting(set, HANDLE_KEY_FILE_SETTING);
+    const databasePath = join(dataDir, 'account.sqlite');
+    const handleKeyFile = handleKeyFileSetting(set, [databasePath]);
     if (handleKeyFile === undefined) {
       throw new ConfigError(
         HANDLE_KEY_FILE_SETTING,
@@ -156,7 +157,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
       issuer,
       listen,
       dataDir,
-      databasePath: join(dataDir, 'account.sqlite'),
+      databasePath,
       keys: { kind: 'external' },
       signIn,
       ...steam,
@@ -177,22 +178,43 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
       ? LOCAL_DEV_DATA_DIR
       : requiredDataDir(set, profile);
   const keyFile = pathSetting(set, 'MR_ACCOUNT_KEY_FILE') ?? join(dataDir, 'keys.json');
+  const databasePath = join(dataDir, 'account.sqlite');
   return {
     profile,
     issuer: profile === 'local-dev' ? LOCAL_DEV_ISSUER : HOSTED_DEV_ISSUER,
     listen,
     dataDir,
-    databasePath: join(dataDir, 'account.sqlite'),
+    databasePath,
     keys: { kind: 'file', path: keyFile, generateIfMissing: profile === 'local-dev' },
     signIn: signInMethod(set, profile, 'dev-password'),
     ...steam,
     handleKeys: {
       path:
-        pathSetting(set, HANDLE_KEY_FILE_SETTING) ?? join(dirname(keyFile), HANDLE_KEY_FILE_NAME),
+        handleKeyFileSetting(set, [keyFile, databasePath]) ??
+        join(dirname(keyFile), HANDLE_KEY_FILE_NAME),
       generateIfMissing: profile === 'local-dev',
     },
     trustedProxies: trustedProxies(set),
   };
+}
+
+/**
+ * The handle key file a profile is given, or undefined when it is given none. `others` are the
+ * files the service keeps at paths of their own: a handle key file at one of them would be read
+ * as that file, or written over it.
+ */
+function handleKeyFileSetting(
+  set: ReadonlyMap<string, string>,
+  others: readonly string[],
+): string | undefined {
+  const path = pathSetting(set, HANDLE_KEY_FILE_SETTING);
+  if (path !== undefined && others.includes(path)) {
+    throw new ConfigError(
+      HANDLE_KEY_FILE_SETTING,
+      'must be a file of its own, not the key file or the database',
+    );
+  }
+  return path;
 }
 
 /**
@@ -221,6 +243,14 @@ function trustedProxies(set: ReadonlyMap<string, string>): AddressBlock[] {
       throw new ConfigError(
         TRUSTED_PROXY_SETTING,
         'must be a comma-separated list of IP addresses and CIDR blocks, with no space',
+      );
+    }
+    // A request from an IPv4 address is matched as IPv4 however its socket spells it, so an
+    // IPv4-mapped block would match nothing and its proxy would pass for a caller.
+    if (version === 6 && new URL(`http://[${address}]/`).hostname.startsWith('[::ffff:')) {
+      throw new ConfigError(
+        TRUSTED_PROXY_SETTING,
+        'an IPv4 proxy is written as an IPv4 address or block, not as an IPv4-mapped IPv6 one',
       );
     }
     return { address, prefix, family: version === 4 ? 'ipv4' : 'ipv6' };
