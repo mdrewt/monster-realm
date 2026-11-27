@@ -842,6 +842,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         };
         let next_state = apply_move(&st, MoveInput::Step(dir), map, now);
         apply_state(&mut ch, &next_state);
+        // PROTOTYPE lpw-26 C: an NPC's step is written at rest. The client draws a remote
+        // whose row says Idle on a tile it has not reached yet as walking, so the walk is
+        // still seen, and no later tick has to write the row again to settle it.
+        ch.action = ActionState::Idle;
         // apply_state writes ONLY tile_x/tile_y/facing/action/move_started_at, never
         // zone_id: an NPC stays in its home zone. The wander step resolves no warp,
         // so npc.zone_id and character.zone_id stay equal.
