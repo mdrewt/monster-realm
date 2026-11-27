@@ -166,6 +166,24 @@ fn next_npc_due_tick(ctx: &ReducerContext, zone: u32, tick: u64) -> Option<u64> 
         .min()
 }
 
+/// PROTOTYPE lpw-26 fault injection: while the clock is before `until_ms`, `movement_tick` panics.
+#[spacetimedb::table(accessor = lpw26_fault)]
+pub struct Lpw26Fault {
+    #[primary_key]
+    pub id: u8,
+    pub until_ms: i64,
+}
+
+/// PROTOTYPE lpw-26 fault injection: make every `movement_tick` of the next `ms` milliseconds fail.
+#[spacetimedb::reducer]
+pub fn lpw26_fail_for(ctx: &ReducerContext, ms: i64) {
+    ctx.db.lpw26_fault().id().delete(0);
+    ctx.db.lpw26_fault().insert(Lpw26Fault {
+        id: 0,
+        until_ms: now_ms(ctx) + ms,
+    });
+}
+
 /// Is this character a player's? The `player` row is the one fact that separates
 /// a player's character from an NPC's.
 fn is_player_character(ctx: &ReducerContext, entity_id: u64) -> bool {
@@ -635,6 +653,12 @@ static WILD_START_ERR_LIMITER: RateLimiter = RateLimiter::new();
 pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
     if ctx.sender() != ctx.database_identity() {
         return Err("movement_tick is scheduler-only".to_string());
+    }
+    // PROTOTYPE lpw-26 fault injection: the tick's transaction fails while the fault is set.
+    if let Some(f) = ctx.db.lpw26_fault().id().find(0) {
+        if now_ms(ctx) < f.until_ms {
+            panic!("lpw-26 fault injection");
+        }
     }
     let zone = sched.zone_id;
     // Snapshot BEFORE mutating (never mutate the table mid-iteration): each
