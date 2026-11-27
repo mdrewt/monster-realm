@@ -414,16 +414,20 @@ it.
 **Decided, not built: an NPC's step is written once, and the interval row stays (lpw-26).** The
 wander step writes the NPC's row as `Walking` and the next tick writes it again as `Idle`. zt-1
 writes it once, at rest (`Idle` on the new tile), through one game-core rule; the client already
-draws a row that says `Idle` on a tile the remote has not reached as walking. Nothing else about
-the tick changes. Why: on SpacetimeDB 2.16.1 a transaction that writes no row adds nothing to the
-commit log and sends nothing to a client, so the 1.26 MiB an hour an idle player costs is the
-wandering NPC's row, written twice a step, and writing it once takes it to 0.62. What the empty
-ticks cost is 0.14 % of one hardware thread for each zone with a player at rest. Removing them is
-designed and measured (design D of `docs/refactors/idle-tick.md`: the zone holds its interval row
-only while a character in it has work, and NPC wander has an interval row of its own) and is built
-only on the operator's word, as zt-2: it adds a table, a reducer and a row lifecycle, and its
-opening one-shot is a tick that, when its transaction fails, leaves the zone waiting for the next
-key press. Ruled out under either: a one-shot row for every tick (the host deletes each one in a
+draws a row that says `Idle` on a tile the remote has not reached as walking. Under reduced motion
+the NPC's step is then drawn without the walking frame it shows today, a default the operator may
+overrule. Nothing else about the tick changes. Why: the operator asked for the ticks that move
+nothing to be gone, for disk, bandwidth and reducer-thread reasons. On SpacetimeDB 2.16.1 a
+transaction that writes no row adds nothing to the commit log and sends nothing to a client, so
+the 1.26 MiB an hour an idle player costs is the wandering NPC's row, written twice a step, and
+writing it once takes it to 0.62. What the empty ticks do cost is 0.14 % of one hardware thread
+for each zone with a player at rest. Removing them is designed and measured (design D of
+`docs/refactors/idle-tick.md`: the zone holds its interval row only while a character in it has
+work, and NPC wander has an interval row of its own) and waits on the operator's word, as zt-2: it
+adds a table, a reducer and a row lifecycle, and its opening one-shot is a tick that, when its
+transaction fails, leaves the zone waiting for the next key press. Keeping the empty ticks is a
+default the operator may overrule; zt-2, if built, rewrites this entry, the rule against a second
+schedule row for a zone included. Ruled out under either: a one-shot row for every tick (the host deletes each one in a
 transaction of its own and the next has to be inserted, which takes the idle commit log beside an
 NPC from 1.26 to 1.84 MiB an hour and adds 82 bytes to every tick of a walk, and every failed tick
 strands its zone); a slower interval for a quiet zone (it still ticks, and swapping rows costs
@@ -433,8 +437,9 @@ merged. The measurements, the four prototypes and a judge's scores are in
 `docs/refactors/idle-tick.md`.
 
 **Why.** The same module runs on a player's own machine and on the official server (see "One game,
-three ways to play"). A tick for every zone at 5 Hz costs reducer-thread time, wake-ups and
-commit-log writes in proportion to the number of zones, with nobody there to see the result. Resetting
+three ways to play"). A tick for every zone at 5 Hz costs reducer-thread time and wake-ups in
+proportion to the number of zones, and a commit-log write whenever it moves an NPC, with nobody
+there to see the result. Resetting
 on the way out, instead of catching up on the way in, means nobody in the zone renders it, so the jump
 home is never seen, and the next player always finds the zone in a known state with nothing to wait
 for. The reset is a one-off write of at most one row per NPC that differs; clients hold `character`

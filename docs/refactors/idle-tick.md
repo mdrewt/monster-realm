@@ -2,7 +2,7 @@
 
 The design record for lpw-26 (harness spec `M-local-play.spec.md`). It decides what becomes of the
 ticks a zone runs with nothing to do, and of NPC wander. None of it is built; section 7 names the
-slices that build it. Every number here was measured on SpacetimeDB 2.16.1, the pinned host, on
+slices that build it. Every number measured here is from SpacetimeDB 2.16.1, the pinned host, on
 2026-11-27 (UTC), on the machine and by the method of `docs/local-play.md` §7. Section 8 says how
 to repeat the measurements and what was not measured.
 
@@ -10,7 +10,7 @@ to repeat the measurements and what was not measured.
 
 - A transaction that writes no row appends nothing to the commit log and sends nothing to a client.
   In a zone with no NPC, 8,999 `movement_tick` calls in 30 minutes grew the log by 0 bytes.
-- The 1.24 MiB an hour an idle player costs (`docs/local-play.md` §4; 1.256 on 2.16.1) is the rows
+- The 1.24 MiB an hour an idle player costs (`docs/local-play.md` §4; 1.26 on 2.16.1) is the rows
   of the one NPC that wanders, written twice for each step it takes.
 - What an empty tick does cost is processor time: 0.14 % of one hardware thread for a zone with a
   player standing still in it, of which the module's own 45 µs a tick is 0.02 %.
@@ -19,9 +19,9 @@ to repeat the measurements and what was not measured.
   free becomes two logged transactions.
 
 **The choice.** C: the interval row stays as it is, and an NPC's step is written once, at rest. It
-takes off the whole of what an idle player costs the commit log (1.256 to 0.624 MiB an hour beside
-the NPC), halves what that player's client is sent, and changes no schedule row, no player path
-and nothing about how a failed tick recovers. A judge scored it 87 of 100, today 81, D 69, B 60
+halves what an idle player costs the commit log beside the NPC (1.26 to 0.62 MiB an hour) and what
+that player's client is sent, and changes no schedule row, no player path and nothing about how a
+failed tick recovers. A judge scored it 87 of 100, today 81, D 69, B 60
 and A 43 (section 5).
 
 C leaves the empty ticks running. The operator asked for them gone for disk, bandwidth and
@@ -56,8 +56,8 @@ state depends on a tick having run"). While a player is in the zone, every tick:
    `npc_decide`, unless the NPC is in a live conversation; the next tick sets the NPC's `action`
    back to `Idle`.
 
-Only step 1's drain, step 5 and the settling to `Idle` write a row. A tick in which nobody has
-queued input and no NPC is due writes none.
+Only a drain (with the warp or the battle it sets off), step 5 and the settling to `Idle` write a
+row. A tick in which nobody has queued input and no NPC is due writes none.
 
 **What the commit log holds for one transaction.** The log was read record by record
 (`replicas/1/clog/*.stdb.log`). A record is 26 bytes of framing, one flags byte, and, for a
@@ -114,7 +114,7 @@ load_test_zones`).
 | A, one-shot | The row is a one-shot at a multiple of `STEP_MS` on the server clock. Every writer of a `move_intent` row arms it. A tick arms the next one for the next tick when a character has work, else for the tick an NPC's next step comes due on (its own copy of `npc_step_due`'s arithmetic), else not at all. | `proto/lpw-26-a-oneshot` at `38cae902` | `6534873e…24d13a` |
 | B, slow interval | The interval row stays. A tick that finds no player-side work in a zone with no NPC that wanders replaces it with a row of five steps; a `move_intent` write puts the one-step row back. | `proto/lpw-26-b-slow-interval` at `05b9f63f` | `57ec98e8…156f28` |
 | C, smaller writes | The interval row stays as it is today. An NPC's step is written once, at rest (`action` `Idle` on the new tile), so no later tick settles it. | `proto/lpw-26-c-smaller-writes` at `43c1d276` | `9cec0b8f…19d155` |
-| D, interval while there is work | The zone holds an interval row only while it has work. A `move_intent` write to a zone with no row arms a one-shot at the next multiple of `STEP_MS`; that tick inserts the interval row; an interval tick deletes its own row once the zone has no work and no player's character has been touched for five steps. NPC wander has its own interval row and reducer, at the wander cadence: `npc_step_due` is no longer asked, every NPC of the zone steps on every beat, and each step is written at rest. The paths that put a character into a zone arm the wander row and no longer the movement row, the tick no longer asks whether a player is in its zone, and it deletes its row when the zone's map fails to load. | `proto/lpw-26-d-work-interval` at `49f9d2b1` | `ffdc1df7…6bc805` |
+| D, interval while there is work | The zone holds an interval row only while it has work. A `move_intent` write to a zone with no row arms a one-shot at the next multiple of `STEP_MS` (the opening one-shot); that tick inserts the interval row; an interval tick deletes its own row once the zone has no work and no player's character has been touched for five steps (a second of rest). A burst of work is the time from an opening one-shot to that deletion. NPC wander has its own interval row and reducer, at the wander cadence, one beat a second: `npc_step_due` is no longer asked, every NPC of the zone steps on every beat, and each step is written at rest. The paths that put a character into a zone arm the wander row and no longer the movement row, the tick no longer asks whether a player is in its zone, and it deletes its row when the zone's map fails to load. | `proto/lpw-26-d-work-interval` at `49f9d2b1` | `ffdc1df7…6bc805` |
 
 "Work" is the same in A and D: a character whose row still shows a step (`action` is not
 `Idle`), a private queue or sequence number the row does not publish yet, or an undrained input
@@ -125,9 +125,10 @@ start), which costs each intent write a read of the caller's `character` row for
 scan of the schedule table.
 
 **C's and D's NPC write.** The client already draws a remote whose row says `Idle` on a tile it
-has not reached as walking, because the server writes `Idle` between the steps of a player's walk
-today. Section 6.1 gives what a client is sent, what no test covers yet and what reduced motion
-draws.
+has not reached as walking. It does so because the server writes a same-tile `Idle` row between
+two steps of a walk whenever the walker's next input reaches it after the tick, which a real round
+trip brings about and the probes here, on loopback, never did (section 4). Section 6.1 gives what
+a client is sent, what no test covers yet and what reduced motion draws.
 
 **NPC wander derived from the clock** was not prototyped. It writes no row at all, so on the server
 its numbers are those of the zone with no NPC below. It is not chosen: the client would have to
@@ -135,7 +136,7 @@ compute every NPC's tile from a server clock it does not estimate today, through
 the wander rule; an NPC held by a conversation is no longer a function of the clock alone; and
 every reader of an NPC's tile (talk range, the conversation's liveness) would derive it too. An
 NPC's position between two players' visits is ambient state, which the decision record already
-resets instead of replaying. Under C wander costs 0.624 MiB an hour for a player beside the one
+resets instead of replaying. Under C wander costs 0.62 MiB an hour for a player beside the one
 NPC that wanders (section 3). If that is ever worth removing, this is the change that removes it.
 
 **D without the one-shot (D′)** was measured for step timing and the press wait only (the same
@@ -252,7 +253,10 @@ The probes are scripted clients on the host's WebSocket protocol, on hosts pinne
 The walker sends as the game client does: one `Step` in flight, the next sent up to one 60 Hz
 frame (0 to 16.7 ms) after the row that acknowledges the one before. A second client subscribes to
 the zone and stamps every row it is sent. Today ran beside each alternative, at the same time, on
-a host of its own.
+a host of its own. `docs/send-pipeline-depth.md` measured the game client in a browser on 2.11.0 (a
+median of 200.1 ms, 202.2 at the 90th percentile, a largest interval of 227); scripted clients on
+2.16.1 cannot be set beside that, so today is measured again here and each alternative is compared
+with it.
 
 **Step timing.** An interval is the time between two consecutive position changes of the walker
 as the watcher receives them. A late step is one 1.5 × `STEP_MS` or more after the step before,
@@ -343,9 +347,11 @@ The first interval of each walk, apart from the rest:
 - **C's step timing is today's.** In the four paired runs the two medians and 90th percentiles
   are equal (200.0 and 200.6 ms in both zones), the 99th is equal or lower (201.2 and 201.2; 201.0
   against 201.2), the largest interval is no larger (202.5 against 202.8; 202.2 and 202.2), and
-  the standard deviations are 0.49 against 0.48 and 0.45 against 0.47. C's smallest interval
-  without NPCs is 0.5 ms under today's (198.2 against 198.7). C changes no line a player's step
-  runs through, so what separates the two is the run.
+  the standard deviations are 0.49 against 0.48 and 0.45 against 0.47. Without NPCs C is the
+  wider by 0.01 ms of standard deviation and 0.2 ms of span (198.2 to 202.5 against 198.7 to
+  202.8). Today's own two sets of runs differ by more than that: 0.57 against 0.48 of standard
+  deviation, and a largest interval of 206.3 against 202.8. C changes no line a player's step runs
+  through, and its timing is inside the spread of today's own runs.
 - **No alternative that was timed adds a late step** or puts an `Idle` row between two steps of a
   walk: A, C, D and D without the one-shot. B was not timed. By the scheduler, its one-step row
   first fires a step after the intent write that puts it back, so a press in a quiet zone without
@@ -382,9 +388,9 @@ with nothing queued. The watcher's time from the walker's last step to that row:
 | with NPCs | D without the one-shot, run 1 | 30 | 200.1 | 200.7 | 203.3 |
 | with NPCs | A, run 1 | 30 | 200.1 | 200.6 | 201.8 |
 
-Under C the row arrives 200.0 ms after the last step at the median in both zones, against 199.9
-for today in the same runs, and never later than 201.8 against today's 202.3. The two sets of
-today's own runs differ by as much.
+Under C the row arrives 200.0 ms after the last step at the median in both zones, 0.1 ms after
+today's 199.9 in the same runs, and never later than 201.8 against today's 202.3. Today's own two
+sets of runs differ by the same 0.1 ms (200.0 and 199.9 without NPCs).
 
 **A press from rest.** One `Face` sent to a zone at rest, 150 times a run, 1.3 to 1.7 seconds
 apart: the time from the send to the row that acknowledges it.
@@ -434,11 +440,12 @@ walk from rest in the load zone, every record of the commit log:
 | The tick that deletes the interval row, a second after the last step | 0 | 1 × 129 | 0 |
 | The whole walk | 5,899 | 6,136 | 6,943 |
 
-The first `enqueue_move` of this walk is 509 bytes because it also accrues the party's quality
-time, which a move does once per cooldown and which writes the monster's rows. Under D a walk costs 237 bytes more than today, once, however long it is: two
-inserts of 26, the host's delete of 56, and 129 for the tick that deletes the interval row, which
-today is an empty tick. A second walk that starts within a second of the first adds nothing: the
-interval row is still there. Under A every tick of the walk carries 82 more.
+The first `enqueue_move` of this walk is 509 bytes because it also accrues the party's quality time,
+which a move does once per cooldown and which writes the monster's rows. Under D a walk costs 237
+bytes more than today, once, however long it is: two inserts of 26, the host's delete of 56, and 129
+for the tick that deletes the interval row, which today is an empty tick. A second walk that starts
+within a second of the first adds nothing: the interval row is still there. Under A every tick of
+the walk carries 82 more.
 
 Arming also adds reads to every intent write: the caller's `character` row, for its zone, and a
 scan of the schedule table. `enqueue_move` took 123.4 µs inside the module under D against 111.4
@@ -479,8 +486,10 @@ the tick's own branch.
 
 ## 5. Scores
 
-A `judge` scored six alternatives from sections 1 to 4, without the choice above or sections 6 and
-7: today, A, B, C, D, and D without the opening one-shot (D′). The rubric was fixed before
+A `judge` scored six alternatives: today, A, B, C, D, and D without the opening one-shot (D′). It
+was given sections 1 to 4 without the choice above and without sections 6 and 7; it also saw one
+line of a draft of the decision entry, which favoured D. C had not been timed when it scored; C's
+timing is now in section 4, inside the spread of today's own runs. The rubric was fixed before
 scoring. Six criteria, 100 points:
 
 1. (20) The smoothness contract holds as recorded: step timing, the row that ends a walk, the wait
@@ -510,8 +519,8 @@ not scored.
 
 The judge's reasons:
 
-- **C (87, first).** A change of a few lines that halves the standing log beside the NPC (0.624
-  against 1.256) and the bytes sent, takes 3 % off one walker's there, and leaves player paths,
+- **C (87, first).** A change of a few lines that halves the standing log beside the NPC (0.62
+  against 1.26) and the bytes sent, takes 3 % off one walker's there, and leaves player paths,
   schedule rows and failure behaviour as they are. It removes none of the empty ticks, which is
   all it loses to D (criterion 3). Its one visible change, an NPC's step arriving as `Idle`,
   shows only under reduced motion.
@@ -533,18 +542,16 @@ The judge's reasons:
 
 **What would overturn the result.**
 
-- The operator rules that the empty ticks must go, as a requirement and not a weighed cost. C and
-  today are then out and D wins on the tie-break. The judge names one change worth measuring
+- The operator rules that the empty ticks must go, as a requirement and not a weighed cost. C, B
+  and today are then out and D wins on the tie-break. The judge names one change worth measuring
   first: the intent write also inserts the interval row, which the opening tick replaces, so a
   failed opening tick is followed by an interval tick one step after the input (section 6.3).
 - The operator accepts a whole step's wait for a press from rest. D′ then passes D.
 - The operator refuses an NPC's step arriving as `Idle` because of what reduced motion then
   draws. C cannot ship and today stands.
 
-The judge saw one line of the author's draft of the decision entry, which favoured D, before it
-scored; its result went the other way. Its check of sections 1 to 4 against the raw cells, the
-prototype diffs and the scheduler's source found twelve statements false, unsupported or stated
-more strongly than their data allows. The sections above state the corrected facts:
+The judge also checked sections 1 to 4 against the raw cells, the prototype diffs and the
+scheduler's source. The sections above state the facts as it found them, on these matters:
 
 - which alternatives were timed: C is, B is not;
 - the 200.1 ms median of `docs/send-pipeline-depth.md`, measured in a browser, which these probes
@@ -568,11 +575,11 @@ nothing to settle. The interval row, the tick's cadence, `npc_step_due`, every p
 every schedule row stay as they are.
 
 What a client is sent changes with it. A watcher of zone 0 was sent 38 rows for the NPC in 25
-seconds today, 19 steps as `Walking` and 19 same-tile rows as `Idle`; under C it was sent 20, each
-a step as `Idle`. The client's remote arm draws a row that says `Idle` on a tile the remote has
-not reached as walking (`client/src/render/renderResolver.ts`), because the server already writes
-`Idle` between the steps of a player's walk, so the slide and its walking frames are drawn as
-today. Two things follow for zt-1:
+seconds today, 19 steps as `Walking` and 19 same-tile rows as `Idle`; under C it was sent 20, each a
+step as `Idle`. The client's remote arm draws a row that says `Idle` on a tile the remote has not
+reached as walking (`client/src/render/renderResolver.ts`), as it must for a player whose next input
+reaches the server after the tick, so the slide and its walking frames are drawn as today. Two
+things follow for zt-1:
 
 - No test feeds the client a step that arrives as `Idle`: `renderResolver.test.ts` (np-a.7) feeds
   `Walking` steps followed by a same-tile `Idle` row. zt-1 adds that test.
@@ -587,10 +594,10 @@ today. Two things follow for zt-1:
 | **Draining one input per character per tick** | As today. | Unchanged, in `movement_tick`. An accepted input has a tick within one `STEP_MS`: the opening one-shot when the zone held no row, else the interval row's next tick. Within a zone no character drains twice within `STEP_MS`: ticks of one row are a step apart, the interval row's first tick is a step after the one-shot's, and a new one-shot is armed only when the interval row is gone, which is a second after the last input was applied. Across a warp the one-shot's second bound holds the pace: the step after a warp into a zone with no row is never less than a full step after the warp, as today. A character that warps into a zone already ticking drains on that zone's next tick, whatever its phase, as today. |
 | **NPC wander** | On the tick, as today: one tick in five for each NPC, through `npc_step_due` and `npc_decide`. The step is written at rest through one game-core rule, so the tick after it writes no row for the NPC. | `npc_wander_tick`, once a second per zone, on the wander row. Each NPC of the zone that is not held by a conversation takes its `npc_decide` step. The cadence is the row's interval, so `npc_step_due` and its per-NPC phase go: the NPCs of one zone step on the same beat, in one transaction. The step is written at rest, through one game-core rule, so the row is written once per step. |
 | **Releasing an NPC from a conversation that ended** | As today. | The wander beat computes which conversations are live exactly as the tick does (`conversation_is_live`: the owner in the zone and within talk range), and skips those NPCs. An NPC whose conversation ended steps on the next beat, within a second, as today. No row is written to release it. |
-| **The drain lock while a battle holds a queue** | As today: the lock releases itself on the tick after the battle ends. | The tick still skips the drain and leaves the queue as it is. What changes: the lock no longer releases itself when the battle ends. A held queue is not work, so the tick publishes it once and the interval row goes after its second of rest, and nothing arms a tick at the battle's end. A held input would drain on the first tick after the battle, which the owner's next intent write arms, ahead of that write's input. No input is held today: both places that insert a `battle` row empty each battler's queue with `drop_queued_moves` as their last step, and the intake reducers refuse input during a battle. zt-2 pins that with a test over every `battle` insert. |
+| **The drain lock while a battle holds a queue** | As today: the lock releases itself on the tick after the battle ends. | The tick still skips the drain and leaves the queue as it is. What changes: the lock no longer releases itself when the battle ends. A held queue is not work, so the tick publishes it once and the interval row goes a second after the last input was applied, and nothing arms a tick at the battle's end. A held input would drain on the first tick after the battle, which the owner's next intent write arms, ahead of that write's input. No input is held today: both places that insert a `battle` row empty each battler's queue with `drop_queued_moves` as their last step, and the intake reducers refuse input during a battle. zt-2 pins that with a test over every `battle` insert. |
 | **The grass trigger** | As today. | Unchanged: it runs in the tick that drains the step onto tall grass. The battle it starts empties the walker's queue through `drop_queued_moves`, an intent write; the tick is running, so the zone holds a row, and the tick's own check at its end sees the unpublished queue and keeps the interval row for the tick that publishes it. |
 | **Warps** | As today: the warp arms the tick of the zone the character arrives in. | Unchanged: resolved in the tick that drains the step onto the warp tile. The character arrives `Idle` with its queue cleared and published in that write, so the zone it arrives in has no work and gets no movement row; `arm_zone_wander` arms its wander row. The zone it left keeps its rows for as long as it has work or a player. |
-| **Publishing the standing row and settling it to `Idle`** | As today for a player's character. An NPC's row is written at rest and is never settled. | Unchanged code (`publish_standing`), and a tick always runs when one is owed: every intent write arms a tick, so an accepted input is published within one `STEP_MS` as today; and a drained step leaves the row `Walking`, which is work, so the next interval tick drains the next input or writes `Idle`. The row that ends a walk reaches a watcher 200.0 ms after the last step, as it does today (section 4). |
+| **Publishing the standing row and settling it to `Idle`** | As today for a player's character. An NPC's row is written at rest and is not settled after a step. | Unchanged code (`publish_standing`), and a tick always runs when one is owed: every intent write arms a tick, so an accepted input is published within one `STEP_MS` as today; and a drained step leaves the row `Walking`, which is work, so the next interval tick drains the next input or writes `Idle`. The row that ends a walk reaches a watcher 200.0 ms after the last step, as it does today (section 4). |
 | **The disarm when the last player leaves** | As today: the tick that finds no player's character deletes its row. | Each interval row is removed by its own tick, as today, never by the paths that remove a character. The movement interval row goes at its next tick: a zone with no player's character has no work and nothing to wait a second for (193 ms after a disconnect, section 4). The wander row goes at its next beat, within a second. A zone with no NPC that wanders and no work holds no row at all. |
 | **The NPC reset when the last player leaves** | As today, in that same tick. | The wander beat that finds no player's character sends the zone's NPCs home before it deletes its row: within a second of the last player leaving, where today it is within a step. `ensure_zone_schedules` also sends home the NPCs of every zone with no player's character, so a zone that lost its player while it had no wander row (the time between a publish and `sync_content`) is back in its authored state after `sync_content`. |
 | **Recovery after a tick whose transaction failed** | As today: the interval row outlives the failure and its next tick runs (594 and 568 ms, section 4). | Interval ticks and wander beats recover as today: the row outlives the failure and its next tick runs (a 500 ms fault mid-walk cost the same 568 ms as today, section 4). The opening one-shot does not: the host deletes it whether or not the tick committed, and the interval row it inserted is rolled back, so the zone has work and no row until the next `move_intent` write arms another one-shot (measured: the input stood unanswered until the next press, then both drained in order). `ensure_zone_schedules` arms a one-shot for every zone with a player in it, so `sync_content` also restarts it. Nothing is lost while it waits. |
@@ -643,8 +650,8 @@ any character in it does.
 the interval row as well as the one-shot, and the opening tick replaces that interval row with
 one anchored at its own time. If the opening tick fails, its replacement is rolled back and the
 row the intent write inserted fires one step after the input, so the zone does not wait for
-another press. It costs one more insert of 26 bytes per burst. zt-2 measures it before it builds
-the one-shot.
+another press. It costs one more insert of 26 bytes per burst. It is not part of D as sections
+6.2 and 6.3 describe it; zt-2 measures it and takes it if it does what is said here.
 
 ### 6.4 What stays as recorded under either
 
@@ -654,12 +661,15 @@ the one-shot.
 - An empty zone still does no work, and no state depends on a tick having run: the wander counter
   is still the server clock, and whether a zone's interval row is there is derived from rows
   (`action`, the two queues, `move_started_at_ms`), never counted.
-- The client's code does not change. Prediction, the held-key rules and remote interpolation read
-  the same rows at the same times; an NPC's step arrives as one row where it was two.
+- The client's code does not change. Under C prediction, the held-key rules and remote
+  interpolation read the same rows at the same times, and an NPC's step arrives as one row where
+  it was two. Under D an NPC's step also arrives on its zone's beat, where today each NPC has a
+  phase of its own.
 
 ### 6.5 What is the operator's to decide
 
-Each has a default, which this record takes; the operator may overrule any of them.
+Each has a default, which this record takes; the operator may overrule any of them
+(monster-realm#888).
 
 1. **Whether the empty ticks go at all.** Default: no; build C and stop. The operator's three
    reasons were disk, bandwidth and the reducer thread. An empty tick costs no disk and no
@@ -676,7 +686,8 @@ Each has a default, which this record takes; the operator may overrule any of th
    and a burst costs 82 bytes less. By the client's send rule a held key sends its next step only
    after the row that answers the press, so a hold of under about 200 ms from rest would move one
    tile where it usually moves two today (the hold table of `docs/send-pipeline-depth.md`); that
-   was not run.
+   was not run. The change the judge names (section 6.3) would keep the one-shot and take away its
+   failed tick; it is not measured.
 4. **If D is built, its second of rest and its single beat.** A shorter rest saves up to four
    empty ticks per stop, which cost no commit log; a longer one keeps more presses off the
    one-shot. Only zone 0 has an NPC that wanders, and it has one; a second in the same zone would
@@ -690,14 +701,19 @@ File lists were read at `26e1e085` and are read again when a slice is sectioned.
 1. **zt-1: an NPC's step is written once, at rest (C).** After lpw-26. No schema change, no new
    row, no new reducer.
    - A game-core rule returns an NPC's step at rest, and the wander block of `movement_tick` writes
-     what it returns.
-   - Touches: `game-core/src/npc/rules.rs`, `server-module/src/movement.rs`,
-     `client/src/render/renderResolver.test.ts`, `docs/DECISIONS.md`, and `docs/local-play.md` §4
-     and §6, whose idle-player rows it measures again.
+     what it returns. The rule goes below line 61 of `game-core/src/npc/rules.rs`, which
+     `.cargo/mutants.toml` pins by line.
+   - Touches: `game-core/src/npc/rules.rs` and its `rules_tests.rs`,
+     `server-module/src/movement.rs` and its `movement_tests.rs`,
+     `client/src/render/renderResolver.test.ts`, `docs/DECISIONS.md`, this file, and
+     `docs/local-play.md` §4, §6 and §7, whose idle-player rows it measures again.
    - Holds: a wander step writes the NPC's row once, `Idle` on the new tile, and no later tick
-     writes it to settle it; the client draws a step that arrives as `Idle` as a walk until the
-     NPC is on its tile; an idle player beside the NPC costs 0.62 MiB of commit log an hour where
-     it costs 1.26, by §7's method.
+     writes it to settle it; the tick's settling branch for a character with no intent row stays
+     (a session that pre-dates `move_intent`, and an NPC a publish catches `Walking`); the client
+     draws a step that arrives as `Idle` as a walk until the NPC is on its tile; an idle player
+     beside the NPC costs 0.62 MiB of commit log an hour where it costs 1.26, by the method of
+     `docs/local-play.md` §7; and that document's §4 no longer says that each tick commits a
+     transaction of about 72 bytes.
 2. **zt-2: the empty ticks go (D).** After zt-1, and only on the operator's answer to question 1
    of section 6.5.
    - Adds the private scheduled table `npc_wander_schedule` and the scheduler-only reducer
@@ -722,7 +738,8 @@ File lists were read at `26e1e085` and are read again when a slice is sectioned.
      `sim-harness/src/bin/mr_load_driver.rs` and `ops/observability` (the scheduled-function rules
      name their functions, and a zone at rest reports no `movement_tick` latency, which the
      driver's breaking-point reading and the dashboard must take as healthy), `ARCHITECTURE.md`,
-     `docs/DECISIONS.md`, `docs/runbooks/playtest-ops.md`, and `docs/local-play.md` §4 and §6.
+     `docs/DECISIONS.md`, `docs/runbooks/playtest-ops.md`, `docs/local-play.md` §4 and §6,
+     `docs/spacetimedb-2.16.md` and this file.
    - Holds: a zone whose players have been at rest for more than a second runs no
      `movement_tick`; an accepted input is drained or published within one `STEP_MS`; within a
      zone no character drains twice within `STEP_MS`, and the step after a warp into a zone with
@@ -784,7 +801,7 @@ prototype plus a reducer that makes `movement_tick` panic for a number of millis
   the NPC reset in `ensure_zone_schedules`. The prototype's tick also deletes its row on a map
   that fails to load, which no run exercised.
 - B for step timing, and D without the one-shot for anything but step timing and the press wait.
-- The change section 6.3 takes from the judge: the interval row inserted with the one-shot.
+- The change section 6.3 names from the judge: the interval row inserted with the one-shot.
 - More than one run per cell, windows longer than 30 minutes, more than eight players, more than
   one zone with players in it, and any load but standing and walking.
 - Whether inserting the interval row before the drain, not after it, shortens the first interval
