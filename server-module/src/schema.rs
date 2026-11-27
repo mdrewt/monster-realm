@@ -1941,8 +1941,9 @@ pub struct WorldAccess {
 }
 
 /// An identity the host's rule admitted, and when. PRIVATE: who may join a world is the host's
-/// to know. Written only by `access.rs`; erased by the deletion cascade and, for the guest
-/// identity it retires, by a guest claim.
+/// to know. Written only by `access.rs`; erased by the deletion cascade, by a guest claim for
+/// the guest identity it retires, and with a binding the build counts by that identity's
+/// unbind or the owner's drop.
 #[spacetimedb::table(accessor = world_admission)]
 pub struct WorldAdmission {
     #[primary_key]
@@ -1988,7 +1989,9 @@ fn my_world_binding(ctx: &spacetimedb::ViewContext) -> Option<WorldBinding> {
 
 /// The one outstanding bind nonce of an identity: 32 lowercase hex characters the world chose,
 /// good until `expires_at_ms`. PRIVATE; an identity reads its own row through `my_bind_nonce`.
-/// Written only by `world_binding.rs`; erased with the identity's binding.
+/// Written only by `world_binding.rs`: spent by a bind, deleted with the binding by an unbind
+/// or the owner's drop, erased by the deletion cascade and by a guest claim for the guest
+/// identity it retires, and swept once expired by a later nonce request.
 #[spacetimedb::table(accessor = world_bind_nonce)]
 pub struct WorldBindNonce {
     #[primary_key]
@@ -2015,7 +2018,8 @@ pub struct WorldName {
 /// An account the host lets in under the `Allowlist` rule. PRIVATE. Written only by
 /// `world_binding.rs`: the owner's `set_world_allowlist` replaces the list, a change to
 /// `Allowlist` and a bind of the owner's identity under it add to it, and the deletion cascade
-/// takes the deleted identity's bound account off it.
+/// takes the deleted identity's bound account off it unless another binding the build counts
+/// carries that account.
 #[spacetimedb::table(accessor = world_allowlist)]
 pub struct WorldAllowlist {
     #[primary_key]
@@ -2415,7 +2419,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "world_allowlist",
         policy: DeletionPolicy::NotOwned,
-        basis: "the account subjects the host lets in: the host's own list, no Identity column; the cascade deletes the row holding the account of the deleted identity's binding unless another binding the build counts carries that account, and a row no binding of the deleted identity names stays until the owner removes it",
+        basis: "the account subjects the host lets in: the host's own list, no Identity column; the cascade deletes the row holding the account of the deleted identity's binding unless another binding the build counts carries that account, and a row no binding of the deleted identity names stays until the owner removes it; a guest claim does not write it",
         exportable: false,
     },
     DataLifecycleEntry {

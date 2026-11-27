@@ -1519,7 +1519,7 @@ pub fn account_deletion_reaper(
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::access::erase_admission(ctx, args.account_identity);
     // Before the binding goes: it is the only record of the account to take off the list.
-    crate::world_binding::delist_account_of(ctx, &BUILD_PROFILE, args.account_identity);
+    crate::world_binding::delist_account_of(ctx, args.account_identity);
     crate::world_binding::erase_world_binding(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);

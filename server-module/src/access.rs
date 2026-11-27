@@ -36,7 +36,8 @@
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access` and `world_admission`, and deletes
 //! `world_admission_attempt` rows (an identity's, when it is admitted or erased); an unbind and
-//! the owner's drop of a binding delete an admission row through [`withdraw_admission`]. It reads `config` for the owner,
+//! the owner's drop of a binding delete an admission row through [`withdraw_admission`]. It
+//! reads `config` for the owner,
 //! reads a binding and the host's list and adds to that list through `crate::world_binding`, and,
 //! when the rule changes, reads the live sessions through `crate::live_session_identities`.
 

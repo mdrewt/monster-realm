@@ -1000,7 +1000,7 @@ identity calls `complete_guest_claim`, which runs every caller-state guard befor
 looks up the code, then re-keys the guest's persistent game data onto the account
 (`rekey_all`: monsters, inventory, quests, wallet, profile and the rest; the retired guest keeps
 a dialogue-state tombstone, see "The starter is a once-per-identity grant recorded by a marker;
-ownership is never the test"), purges the guest's export bundles, erases the guest's world rows (admission, wrong-password record, binding and bind nonce; none is moved, and a retired guest identity that reconnects is a new guest), erases the guest's finished battles as the deletion
+ownership is never the test"), purges the guest's export bundles, erases the guest's world rows (admission, wrong-password record, binding and bind nonce; none is moved, so a retired guest identity that reconnects holds no world row), erases the guest's finished battles as the deletion
 cascade erases its subject's (`schema::erase_tactical_rows`, then
 `battle::anonymize_battles`: the per-battle tactical rows go, and the guest's side of
 each `battle` and `battle_summary` row becomes the tombstone identity), and consumes
@@ -2777,8 +2777,8 @@ is the owner's relayed nonce request and bind. Admission rows are written only b
 reducer `set_world_access`, which takes the joiners' identities, and deleted by a player's
 own unbind of a binding the build counts, by the owner's `drop_world_binding` of one, and by the
 deletion cascade and a guest claim (for the retired guest). A retired guest identity that reconnects
-is a new guest: in a `Password` or `Allowlist` world it is refused until the owner admits it again,
-and it may bind again.
+holds no world row: in a `Password` or `Allowlist` world it is refused until the owner admits it
+or relays a bind for it.
 
 The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
 already let in. When the rule changes to `Allowlist`, `set_world_access` adds the account of every
@@ -2796,8 +2796,11 @@ deleted identity's binding (read from its own row, whatever key signed it) off t
 another identity's binding that the build counts carries the same account, byte for byte; an
 identity with no binding takes nothing off, and a row the host typed that equals the account goes
 too, because it names the same person (`world_binding::delist_account_of`, called by
-`accounts::account_deletion_reaper` before the binding's erase). A guest claim does not delist: the
-person continues as the claimed account.
+`accounts::account_deletion_reaper` before the binding's erase). The binding is the only record
+of the account, so an identity whose binding is already gone takes nothing off: a player who
+unbinds, or whose binding the owner drops, before the account's deletion leaves the account
+listed. A guest claim does not write the list either, and the claimed account holds no binding
+of the guest's, so the guest's account stays listed until the host removes it.
 
 The module declares no HTTP handler, no HTTP route and no row filter: a check of the generated
 module definition refuses each, on the default build (`just module-definition`, in `just ci`) and
@@ -2826,11 +2829,15 @@ who gave the password. Turning the list on must not
 lock out the people playing, the host first: a host may play as a second identity bound to the
 same account as the owner's, so the list keeps an account, not an identity. The bindings and
 admission rows already say who the rule let in, so the list is made from them with no new table.
-The table keeps a row for every identity that ever bound, and a change to `Allowlist` lists the
-account of every counted binding the rule in force admitted, so a guest's binding left under its
-retired identity would be counted by a later change; the claim erases it. With more than 256
+Nothing bounds `world_binding`: a row stays until its identity unbinds, the owner drops it, a
+claim retires its identity or its account is deleted. A change to `Allowlist` lists the account
+of every counted binding the rule in force admitted, so a guest's binding left under its retired
+identity would be counted by a later change; the claim erases it. With more than 256
 distinct bound accounts the change to `Allowlist` is refused, and `drop_world_binding` is the
-owner's reducer for bringing them under the bound. The deletion cascade's delisting is a default taken while the
+owner's reducer for bringing them under the bound; a drop of a binding the build counts takes that
+identity's admission row with it under every rule, as its own unbind does, so the owner admits
+again a player it means to keep. An account subject identifies a person, and an account's deletion
+erases what identifies its player, so the cascade delists it. That is a default taken while the
 operator's decision is open (<https://github.com/mdrewt/monster-realm/issues/886>): the alternative
 not taken is to keep the entry as host-owned data and document the retention. It is reversible: one
 call in the cascade and one function.
@@ -2850,8 +2857,8 @@ removal: `Open` lists
 every trusted binding again, anyone's who bound meanwhile included, and `Password` lists whoever
 holds an admission row, which a rule change gives each connected identity, so the host reads the
 list after changing back. A listed account stays listed after its player's binding is erased by an
-unbind, a drop or a guest claim, until the host removes it (an account's deletion delists it, as
-above); an identity that unbound while the rule was `Open` and is still connected when
+unbind, a drop or a guest claim, until the host removes it (a later deletion of that identity's
+account takes nothing off: the binding it would read is gone); an identity that unbound while the rule was `Open` and is still connected when
 it changes back gets an admission row from the change, as every connection `Open` admitted does.
 Anyone may bind in an `Open` world, so more than 256 accounts can bind there
 and the change to `Allowlist` is then refused; the host changes to `Password` first (which lists

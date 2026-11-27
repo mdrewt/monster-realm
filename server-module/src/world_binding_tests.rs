@@ -5952,6 +5952,52 @@ mod drop_binding {
         );
     }
 
+    /// Under `Open` and under `Password`, [`alice`] holds a dev-key binding, a nonce and an
+    /// admission row, and the bystander holds an admission row. The owner's drop takes her
+    /// binding, nonce and admission row; the owner's and the bystander's rows stay, with no
+    /// write call outside the three tables.
+    ///
+    /// kills: the admission withdrawn only when the rule in force is `Allowlist`.
+    #[test]
+    fn under_open_and_password_a_counted_bindings_admission_goes_with_the_drop_wr261127a_5() {
+        for (rule, label) in [
+            (WorldAccessRule::Open, "under Open"),
+            (WorldAccessRule::Password, "under Password"),
+        ] {
+            let fx = fixture();
+            let (w, attempts) = drop_world(&fx, rule);
+            w.binding.seed(&alice_bound(dev_kid()));
+            w.admission.seed(&admission_row(alice()));
+            assert!(
+                admitted(&w).contains(&alice().to_byte_array()),
+                "{label}: fixture: alice holds an admission row"
+            );
+            assert_drops(
+                &fx,
+                &w,
+                &attempts,
+                alice(),
+                &BINDING_NONCE_AND_ADMISSION,
+                label,
+            );
+            assert_eq!(
+                bindings(&w),
+                sorted(vec![bob_binding(), owner_binding()]),
+                "{label}: alice's binding is gone; the owner's and the bystander's stay"
+            );
+            assert_eq!(
+                nonces(&w),
+                sorted(vec![bob_nonce(), owner_nonce()]),
+                "{label}: alice's nonce is gone; the owner's and the bystander's stay"
+            );
+            assert_eq!(
+                admitted(&w),
+                sorted(vec![bob().to_byte_array(), owner().to_byte_array()]),
+                "{label}: alice's admission row is gone; the owner's and the bystander's stay"
+            );
+        }
+    }
+
     /// Under `Password`, a binding under a key the build does not hold is dropped too, with
     /// its nonce; the identity's admission row stays, with no write call on
     /// `world_admission`, and still admits it.

@@ -13041,6 +13041,39 @@ mod acct_nh {
             );
         }
 
+        /// Beside the retired guest, bound to [`GUEST_SUB`] under the dev key, another
+        /// identity holds an admission, a wrong-password record, a dev-key binding to the
+        /// same [`GUEST_SUB`] and a nonce. The claim answers `Ok`, leaves the guest none of
+        /// the four rows, and leaves the other identity's four rows byte for byte.
+        ///
+        /// kills: a claim that erases every binding carrying the guest's subject.
+        #[test]
+        fn the_claim_leaves_another_identity_bound_to_the_guests_subject_wr261127a_1() {
+            let fx = fixture();
+            let w = world(&fx);
+            let _list = listing(&fx);
+            let (g, c, s) = (id(0xC1), id(0xC2), id(0xC3));
+            seed_world_rows(&w, g, GUEST_SUB, dev_kid(), 8);
+            seed_world_rows(&w, s, GUEST_SUB, dev_kid(), 9);
+            let other_before = world_rows_of(&w, s);
+            assert!(
+                other_before.iter().all(|(_, rows)| rows.len() == 1),
+                "fixture: the other identity holds one row of each world table"
+            );
+
+            assert_eq!(claim_guest(&fx, &w, g, c), Ok(()), "the claim completes");
+            assert_eq!(
+                world_rows_of(&w, g),
+                no_world_rows(),
+                "the retired guest holds no admission, attempt, binding or nonce row"
+            );
+            assert_eq!(
+                world_rows_of(&w, s),
+                other_before,
+                "the other identity bound to the guest's subject keeps all four rows"
+            );
+        }
+
         // --- the claim, then the owner's switch to `Allowlist` ------------------------
 
         /// The owner switches the world from `Open` to `Allowlist`.
@@ -13238,6 +13271,67 @@ mod acct_nh {
                 fx.writes_to("world_allowlist"),
                 0,
                 "no write call on the list"
+            );
+        }
+
+        /// Three other identities are bound to the deleted identity's subject: one under the
+        /// dev key, the two others under a key the build does not hold, one of them sorting
+        /// below the counted one and one above it, both seeded around it. The one counted
+        /// carrier keeps the subject listed: the list stays byte for byte, with no write call.
+        ///
+        /// kills: a delist decided from the first other binding found rather than from any.
+        #[test]
+        fn a_counted_carrier_among_uncounted_ones_keeps_the_subject_listed_wr261127a_4() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (low, counted, high, v) = (id(0x10), id(0x50), id(0x90), id(0x70));
+            bind(&w, low, OWN_SUB, RETIRED_KID);
+            bind(&w, counted, OWN_SUB, dev_kid());
+            bind(&w, high, OWN_SUB, RETIRED_KID);
+            bind(&w, v, OWN_SUB, dev_kid());
+            enlist(&list, &[OWN_SUB, KEPT_SUB]);
+            let before = encs(&list.rows());
+            cascade(&fx, &w, v);
+            assert_eq!(listed(&list), subjects(&[OWN_SUB, KEPT_SUB]));
+            assert_eq!(encs(&list.rows()), before, "the list stays byte for byte");
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
+        }
+
+        /// The deleted identity is bound under the dev key to a subject spelled with upper-case
+        /// letters. The list holds it, its all-lower-case twin, a longer spelling another
+        /// identity is bound to under the dev key, and an unrelated row. The cascade removes
+        /// exactly the deleted identity's spelling; every other row stays, and so does the
+        /// other identity's binding.
+        ///
+        /// kills: the subject lower-cased before the list lookup or delete; a carrier matched
+        /// by prefix rather than by equality.
+        #[test]
+        fn a_mixed_case_subject_is_removed_exactly_not_kept_by_a_longer_one_wr261127a_3() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (v, longer) = (id(0xFC), id(0xFD));
+            let mixed = "Dev:Cascade-Mixed";
+            let lower = "dev:cascade-mixed";
+            let extended = "Dev:Cascade-Mixed1";
+            bind(&w, v, mixed, dev_kid());
+            bind(&w, longer, extended, dev_kid());
+            enlist(&list, &[mixed, lower, extended, KEPT_SUB]);
+            cascade(&fx, &w, v);
+            assert_eq!(
+                listed(&list),
+                subjects(&[lower, extended, KEPT_SUB]),
+                "only the deleted identity's exact spelling is gone"
+            );
+            assert_eq!(
+                world_rows_of(&w, longer)[2].1.len(),
+                1,
+                "the longer spelling's binding stays"
             );
         }
     }
