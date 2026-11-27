@@ -37,8 +37,8 @@ const NOTICES = {
 /**
  * The email and password form of the dev sign-in. `action` is the path the form posts to. With
  * `steam`, Steam's login address for this sign-in, the page also offers the Steam sign-in as one
- * link to it. Those two are all a caller supplies, so the page never carries an email or a
- * password back.
+ * link to it. A caller supplies those two and names a notice, so the page never carries an email
+ * or a password back.
  */
 export function signInPage(options: {
   readonly action: string;

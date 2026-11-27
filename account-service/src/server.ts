@@ -77,15 +77,20 @@ export async function startServer(
   let server: Server;
   try {
     // One entitlement source decides a Steam player, however they sign in.
-    const entitlement =
-      steam === undefined ? undefined : steamEntitlement(config.profile, store.adapter, steam);
+    const steamChecks =
+      steam === undefined
+        ? undefined
+        : {
+            authenticateTicket: steam.authenticateTicket,
+            entitlement: steamEntitlement(config.profile, store.adapter, steam),
+          };
     const signIn = signInStepFor(
       config,
       store.adapter,
-      entitlement === undefined
+      steamChecks === undefined
         ? undefined
         : {
-            entitlement,
+            entitlement: steamChecks.entitlement,
             log,
             endpoint:
               options.steamBaseUrl === undefined
@@ -99,10 +104,7 @@ export async function startServer(
       keys,
       adapter: store.adapter,
       signIn,
-      steamTicket:
-        steam === undefined || entitlement === undefined
-          ? undefined
-          : { authenticateTicket: steam.authenticateTicket, entitlement, sourceAddress, log },
+      steamTicket: steamChecks === undefined ? undefined : { ...steamChecks, sourceAddress, log },
     });
     // Without a sign-in step nothing is issued, an attestation included.
     const attest =

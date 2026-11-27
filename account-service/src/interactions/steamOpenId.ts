@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Adapter } from 'oidc-provider';
 import {
   parseSteamId,
@@ -21,7 +21,9 @@ const IDENTIFIER_SELECT = `${OPENID_NS}/identifier_select`;
 const OPENID_PREFIX = 'openid.';
 const CLAIMED_ID = /^https:\/\/steamcommunity\.com\/openid\/id\/([0-9]{17})$/;
 /** A UTC time to the second, then up to 235 visible ASCII characters: 255 in all, as OpenID bounds it. */
-const NONCE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z[\x21-\x7e]{0,235}$/;
+const NONCE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z[\x21-\x7e]{0,235}$/;
+/** `YYYY-MM-DDTHH:MM:SSZ`. */
+const NONCE_STAMP_LENGTH = 20;
 /** What a reply's `openid.signed` must list: every field this step reads, so Steam vouches for each. */
 const SIGNED_FIELDS = [
   'op_endpoint',
@@ -42,8 +44,8 @@ type CheckFailure = Exclude<SteamFailure, 'unconfigured'>;
 interface ReadReply {
   readonly steamId: SteamId;
   readonly nonce: string;
-  /** How long the nonce is remembered: until its time is more than the window old. */
-  readonly rememberSeconds: number;
+  /** The seconds from now until the window stops admitting the nonce. */
+  readonly admittedSeconds: number;
   /** The body of the question to Steam: is this reply yours? */
   readonly question: URLSearchParams;
 }
@@ -70,7 +72,8 @@ interface ReadReply {
  *    each field it lists, one value per name. One request with a timeout over the whole exchange,
  *    never retried, no redirect followed, a capped read.
  * 9. The nonce has not been seen within its window. It is recorded once Steam has vouched for the
- *    reply, so nothing a caller makes up is stored and an outage of Steam's spends no reply.
+ *    reply, so nothing a caller makes up is stored and an outage of Steam's spends no reply. The
+ *    record outlives the window by the longest Steam may take to answer.
  * 10. The entitlement source decides about the SteamID the claimed id names.
  *
  * A reply that fails a check of 1 to 7 sends nothing to Steam. Every failed check, Steam's "no"
@@ -112,6 +115,9 @@ export function steamOpenIdStep(options: {
     options.endpoint === undefined ? STEAM_OPENID_ENDPOINT : checkedEndpoint(options.endpoint);
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const timeoutMs = options.timeoutMs ?? STEAM_API_TIMEOUT_MS;
+  // A replay the window admits in its last second is looked up only once Steam has answered, up
+  // to the timeout later, so a nonce's record lives that much past the window.
+  const answerSeconds = Math.ceil(timeoutMs / 1000);
   const nonces = options.adapter(NONCE_MODEL);
   const recording = new Set<string>();
 
@@ -185,7 +191,7 @@ export function steamOpenIdStep(options: {
       if (read === undefined) return { kind: 'refused' };
       const vouched = await vouchedFor(read.question);
       if (vouched === undefined) return { kind: 'unavailable' };
-      if (!vouched || !(await firstSeen(read.nonce, read.rememberSeconds))) {
+      if (!vouched || !(await firstSeen(read.nonce, read.admittedSeconds + answerSeconds))) {
         return { kind: 'refused' };
       }
       const decision = await entitlement(read.steamId);
@@ -251,7 +257,7 @@ function readReply(
   if (fields.get('ns') !== OPENID_NS || fields.get('mode') !== 'id_res') return undefined;
 
   const states = reply.getAll('state');
-  if (states.length !== 1 || !sameText(states[0] ?? '', expected.state)) return undefined;
+  if (states.length !== 1 || states[0] !== expected.state) return undefined;
   if (fields.get('op_endpoint') !== endpoint) return undefined;
   if (fields.get('return_to') !== expected.returnTo) return undefined;
 
@@ -288,45 +294,24 @@ function readReply(
   return {
     steamId,
     nonce,
-    // The store finds a record while its expiry is later than the clock, so the extra second
-    // keeps the record through the last second the window admits the nonce.
-    rememberSeconds: time + STEAM_NONCE_WINDOW_SECONDS + 1 - now,
+    // The window admits the nonce through the second `time + window`, and the store finds a
+    // record while its expiry is later than the clock: hence the one second more.
+    admittedSeconds: time + STEAM_NONCE_WINDOW_SECONDS + 1 - now,
     question,
   };
 }
 
-/** Whether two texts are the same, in time that does not depend on where they differ. */
-function sameText(given: string, expected: string): boolean {
-  const a = Buffer.from(given, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
 /** The epoch second a nonce is stamped with, or undefined for a nonce that is not one. */
 function nonceTime(nonce: string): number | undefined {
-  const match = NONCE.exec(nonce);
-  if (match === null) return undefined;
-  const [year, month, day, hour, minute, second] = match.slice(1).map(Number) as [
-    number,
-    number,
-    number,
-    number,
-    number,
-    number,
-  ];
-  const at = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-  // `Date.UTC` carries an impossible part over (February 30th, hour 25); such a time is not one.
-  if (
-    at.getUTCFullYear() !== year ||
-    at.getUTCMonth() !== month - 1 ||
-    at.getUTCDate() !== day ||
-    at.getUTCHours() !== hour ||
-    at.getUTCMinutes() !== minute ||
-    at.getUTCSeconds() !== second
-  ) {
+  if (!NONCE.test(nonce)) return undefined;
+  const stamp = nonce.slice(0, NONCE_STAMP_LENGTH);
+  const at = Date.parse(stamp);
+  // The parser carries some impossible times over (February 30th, hour 24): a stamp that does
+  // not read back as it is written is not a time.
+  if (Number.isNaN(at) || new Date(at).toISOString() !== `${stamp.slice(0, -1)}.000Z`) {
     return undefined;
   }
-  return at.getTime() / 1000;
+  return at / 1000;
 }
 
 /**

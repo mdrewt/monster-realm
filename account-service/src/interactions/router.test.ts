@@ -1899,3 +1899,98 @@ describe('one decision per sign-in at a time', () => {
     expect(w.steam.completions).toHaveLength(1);
   });
 });
+
+// A knob on the store: once armed, the next read of an Interaction record reads the store, then
+// waits for `release` before it answers with what it read. It disarms itself at that read.
+interface ReadHold {
+  armed: boolean;
+  /** Settled once the held read has read the store. */
+  readonly reached: Deferred<void>;
+  readonly release: Deferred<void>;
+}
+
+function readHold(): ReadHold {
+  return { armed: false, reached: deferred<void>(), release: deferred<void>() };
+}
+
+function holding(base: (model: string) => Adapter, hold: ReadHold): (model: string) => Adapter {
+  return (model) => {
+    const inner = base(model);
+    if (model !== 'Interaction') return inner;
+    return {
+      upsert: (id, payload, expiresIn) => inner.upsert(id, payload, expiresIn),
+      async find(id) {
+        const found = await inner.find(id);
+        if (hold.armed) {
+          hold.armed = false;
+          hold.reached.resolve();
+          await hold.release.promise;
+        }
+        return found;
+      },
+      findByUid: (uid) => inner.findByUid(uid),
+      findByUserCode: (userCode) => inner.findByUserCode(userCode),
+      consume: (id) => inner.consume(id),
+      destroy: (id) => inner.destroy(id),
+      revokeByGrantId: (grantId) => inner.revokeByGrantId(grantId),
+    };
+  };
+}
+
+/** As `steamWorld`, with the store's Interaction reads behind `hold`. */
+async function heldSteamWorld(kind: SteamKind, hold: ReadHold): Promise<SteamWorld> {
+  const store = await freshStore();
+  const writes: Writes = { count: 0, upserts: [] };
+  const finds: Finds = { interactions: 0, waiters: [] };
+  const password = stubStep();
+  const steam = fakeSteam();
+  const both: PasswordAndSteamStep = {
+    kind: 'password-and-steam',
+    password,
+    steam,
+    account: (sub) => (sub.startsWith('steam:') ? steam.account(sub) : password.account(sub)),
+  };
+  const { handler } = createAccountProvider({
+    issuer: ISSUER,
+    keys: { keys: [generateSigningKey()] },
+    adapter: watched(holding(counting(store.adapter, finds), hold), writes),
+    signIn: kind === 'steam' ? steam : both,
+  });
+  return { port: await listenOn(handler), step: password, writes, kind, steam, store, finds };
+}
+
+describe('a second load that read the sign-in before the first decision finished', () => {
+  test.each(
+    STEAM_KINDS,
+  )('with a %s step, deciding only after the first result is stored, gets the same 303 without asking the step, and the resume gives a code acs-10.1', async (kind) => {
+    const hold = readHold();
+    const w = await heldSteamWorld(kind, hold);
+    const jar = newJar();
+    const started = await beginSteam(w, jar);
+    const { steamState } = await lookUp(w, jar, started);
+    w.steam.accounts.set(STEAM_SUB, { sub: STEAM_SUB, entitled: true });
+    const decision = deferred<SteamSignInOutcome>();
+    w.steam.script.push(decision.promise, { kind: 'refused' });
+    const target = callbackOf(started, steamReply(steamState));
+
+    const first = call(w, jar, 'GET', target);
+    await w.steam.completed(1);
+    hold.armed = true;
+    const second = call(w, jar, 'GET', target);
+    await hold.reached.promise;
+    decision.resolve({ kind: 'signed-in', sub: STEAM_SUB });
+    const one = await first;
+    expect(one.status, one.body).toBe(303);
+    expect(one.headers.location).toBe(`${ISSUER}/auth/${started.uid}`);
+    hold.release.resolve();
+    const two = await second;
+
+    expect(two.status, two.body).toBe(303);
+    expect(two.headers.location).toBe(one.headers.location);
+    expect(w.steam.completions).toHaveLength(1);
+    expect(await interactionRecord(w, started.uid)).toBeDefined();
+    expect(grantIds(w)).toHaveLength(1);
+    const tokens = await redeemed(w, started, await resumedCode(w, jar, started));
+    expect(payloadOf(tokens.id_token).sub).toBe(STEAM_SUB);
+  });
+});

@@ -169,8 +169,6 @@ export function createInteractionRouter(options: {
 }): (req: IncomingMessage, res: ServerResponse, uid: string) => Promise<void> {
   const { provider, signIn } = options;
   const origin = new URL(options.issuer).origin;
-  const password =
-    signIn.kind === 'password' ? signIn : signIn.kind === 'steam' ? undefined : signIn.password;
   const steam =
     signIn.kind === 'steam' ? signIn : signIn.kind === 'password' ? undefined : signIn.steam;
   const stateKey = randomBytes(32);
@@ -201,18 +199,28 @@ export function createInteractionRouter(options: {
     );
   };
 
-  type LiveSignIn = NonNullable<Awaited<ReturnType<typeof liveSignIn>>>;
-
+  /**
+   * Decides one reply for the sign-in `uid`. The sign-in's record is read here, inside the one
+   * decision in flight for it: the request that starts a decision read its own copy before it had
+   * the decision to itself, and a reply decided in between may have signed in or ended the
+   * sign-in.
+   */
   const decideSteamReply = async (
     step: SteamStep,
     req: IncomingMessage,
     res: ServerResponse,
-    interaction: LiveSignIn,
+    uid: string,
     reply: URLSearchParams,
   ): Promise<Answer> => {
+    const interaction = await provider.Interaction.find(uid);
+    if (interaction === undefined) return { kind: 'page', status: 400, html: endedPage() };
+    if (interaction.result?.login !== undefined) {
+      // A second load of a reply that has signed in: the same way on.
+      return { kind: 'redirect', location: interaction.returnTo };
+    }
     // The second the reply's check starts is the session's login time, as for a password.
     const checkedAt = Math.floor(Date.now() / 1000);
-    const outcome = await step.complete(reply, expectedOf(interaction.uid));
+    const outcome = await step.complete(reply, expectedOf(uid));
     switch (outcome.kind) {
       case 'signed-in':
         return {
@@ -250,43 +258,49 @@ export function createInteractionRouter(options: {
       text(res, 405, 'this address takes GET', { allow: 'GET' });
       return;
     }
-    const interaction = await liveSignIn(provider, req, res, uid);
-    if (interaction === undefined) {
+    // Only the browser that holds the sign-in's cookies is given a decision, its own or one in flight.
+    if ((await liveSignIn(provider, req, res, uid)) === undefined) {
       page(res, 400, endedPage());
       return;
     }
-    if (interaction.result?.login !== undefined) {
-      // A second load of a reply that has signed in: the same way on.
-      redirect(res, interaction.returnTo);
-      return;
-    }
-    let decision = deciding.get(interaction.uid);
+    let decision = deciding.get(uid);
     if (decision === undefined) {
-      decision = decideSteamReply(steam, req, res, interaction, new URLSearchParams(query)).finally(
-        () => {
-          deciding.delete(interaction.uid);
-        },
-      );
-      deciding.set(interaction.uid, decision);
+      decision = decideSteamReply(steam, req, res, uid, new URLSearchParams(query)).finally(() => {
+        deciding.delete(uid);
+      });
+      deciding.set(uid, decision);
     }
     const decided = await decision;
     if (decided.kind === 'redirect') redirect(res, decided.location);
     else page(res, decided.status, decided.html);
   };
 
-  const answer = async (req: IncomingMessage, res: ServerResponse, uid: string): Promise<void> => {
-    const target = req.url ?? '';
-    const mark = target.indexOf('?');
-    if ((mark === -1 ? target : target.slice(0, mark)) === steamReplyPath(uid)) {
-      await answerSteamReply(req, res, uid, mark === -1 ? '' : target.slice(mark + 1));
+  /** The step's page when Steam is the only step: the way to Steam. */
+  const answerSteamOnly = async (
+    step: SteamStep,
+    req: IncomingMessage,
+    res: ServerResponse,
+    uid: string,
+  ): Promise<void> => {
+    if (req.method !== 'GET') {
+      text(res, 405, 'this address takes GET', { allow: 'GET' });
       return;
     }
-    if (password === undefined) {
-      if (req.method !== 'GET') {
-        text(res, 405, 'this address takes GET', { allow: 'GET' });
-        return;
-      }
-    } else if (req.method !== 'GET' && req.method !== 'POST') {
+    if ((await liveSignIn(provider, req, res, uid)) === undefined) {
+      page(res, 400, endedPage());
+      return;
+    }
+    redirect(res, step.loginUrl(expectedOf(uid).returnTo));
+  };
+
+  /** The step's page with a password step: the form, and what a post of it gets. */
+  const answerForm = async (
+    password: PasswordStep,
+    req: IncomingMessage,
+    res: ServerResponse,
+    uid: string,
+  ): Promise<void> => {
+    if (req.method !== 'GET' && req.method !== 'POST') {
       text(res, 405, 'this address takes GET and POST', { allow: 'GET, POST' });
       return;
     }
@@ -306,15 +320,12 @@ export function createInteractionRouter(options: {
       page(res, 400, endedPage());
       return;
     }
-    const steamUrl = (): string | undefined =>
-      steam?.loginUrl(expectedOf(interaction.uid).returnTo);
-    if (password === undefined) {
-      // Steam is the only step, and `steam` is defined whenever `password` is not.
-      redirect(res, String(steamUrl()));
-      return;
-    }
     const form = (notice?: 'refused' | 'locked' | 'busy'): string =>
-      signInPage({ action: interactionPath(interaction.uid), steam: steamUrl(), notice });
+      signInPage({
+        action: interactionPath(interaction.uid),
+        steam: steam?.loginUrl(expectedOf(interaction.uid).returnTo),
+        notice,
+      });
     if (req.method === 'GET') {
       page(res, 200, form());
       return;
@@ -370,6 +381,18 @@ export function createInteractionRouter(options: {
       case 'busy':
         page(res, 503, form('busy'));
         return;
+    }
+  };
+
+  const answer = async (req: IncomingMessage, res: ServerResponse, uid: string): Promise<void> => {
+    const target = req.url ?? '';
+    const mark = target.indexOf('?');
+    if ((mark === -1 ? target : target.slice(0, mark)) === steamReplyPath(uid)) {
+      await answerSteamReply(req, res, uid, mark === -1 ? '' : target.slice(mark + 1));
+    } else if (signIn.kind === 'steam') {
+      await answerSteamOnly(signIn, req, res, uid);
+    } else {
+      await answerForm(signIn.kind === 'password' ? signIn : signIn.password, req, res, uid);
     }
   };
 

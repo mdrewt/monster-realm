@@ -95,6 +95,8 @@ let lines: string[];
 let extraStubs: SteamStub[];
 let decision: (steamId: SteamId) => Promise<SteamEntitlement>;
 let storeFault: { readonly on: 'upsert' | 'find'; readonly error: Error } | undefined;
+/** Runs around each read of the SteamNonce model: `before` ahead of the inner read, `after` once it answered. */
+let nonceRead: { readonly before?: () => void; readonly after?: () => Promise<void> } | undefined;
 
 function adapter(model: string): Adapter {
   const inner = store.adapter(model);
@@ -107,7 +109,11 @@ function adapter(model: string): Adapter {
     },
     async find(id) {
       if (storeFault?.on === 'find') throw storeFault.error;
-      return inner.find(id);
+      const around = model === 'SteamNonce' ? nonceRead : undefined;
+      around?.before?.();
+      const found = await inner.find(id);
+      await around?.after?.();
+      return found;
     },
   };
 }
@@ -1627,5 +1633,46 @@ describe('a dev profile', () => {
       sub: `steam:${PLAYER}`,
       entitled: false,
     });
+  });
+});
+
+describe('a store that answers late', () => {
+  afterEach(() => {
+    nonceRead = undefined;
+  });
+
+  test('of five parallel completions of one reply over a slow store exactly one signs in acs-10.2', async () => {
+    nonceRead = {
+      after: () =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, 30);
+        }),
+    };
+    const step = makeStep();
+    const reply = replyFor(step);
+    const outcomes = await Promise.all(
+      Array.from({ length: 5 }, () => step.complete(new URLSearchParams(reply), EXPECTED)),
+    );
+    expect(outcomes.filter((outcome) => outcome.kind === 'signed-in')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.kind === 'refused')).toHaveLength(4);
+    expect(nonceWrites()).toHaveLength(1);
+    expect(asked).toEqual([PLAYER]);
+  });
+
+  test.each([
+    ['a second', 301],
+    ['the default allowance of 5 seconds', 305],
+  ])('a replay admitted in the last second is refused when Steam answers %s later acs-10.2', async (_name, readAt) => {
+    const step = makeStep();
+    const reply = replyFor(step);
+    expect((await step.complete(reply, EXPECTED)).kind).toBe('signed-in');
+    vi.setSystemTime(T0 + 300_000);
+    nonceRead = {
+      before: () => {
+        vi.setSystemTime(T0 + readAt * 1000);
+      },
+    };
+    expect(await step.complete(reply, EXPECTED)).toEqual({ kind: 'refused' });
+    expect(asked).toEqual([PLAYER]);
   });
 });
