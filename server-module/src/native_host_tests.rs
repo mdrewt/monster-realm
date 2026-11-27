@@ -3491,16 +3491,42 @@ mod procedure_tests {
             .scannable()
     }
 
+    /// A second scratch table of bare `u64` rows, for transactions that write two tables.
+    const OTHER: &str = "nh_proc_other";
+
+    fn other_rows(fx: &Fixture) -> Handle<'_, u64, u64> {
+        fx.table_keyed::<u64, u64>(OTHER, "id", |r| *r)
+            .writable()
+            .scannable()
+    }
+
+    /// An identity whose 32 bytes all differ: `first`, `first + 1`, ... `first + 31`.
+    fn distinct_identity(first: u8) -> Identity {
+        Identity::from_byte_array(std::array::from_fn(|i| {
+            first.wrapping_add(u8::try_from(i).expect("an identity byte index fits a u8"))
+        }))
+    }
+
     /// Inserts `n` into the scratch table through the insert syscall.
     fn insert(n: u64) {
-        let table = sys::table_id_from_name(TABLE).expect("the scratch table resolves");
+        insert_into(TABLE, n);
+    }
+
+    /// Inserts `n` into the table named `name` through the insert syscall.
+    fn insert_into(name: &str, n: u64) {
+        let table = sys::table_id_from_name(name).expect("the scratch table resolves");
         let mut row = bsatn::to_vec(&n).expect("a u64 row encodes");
         sys::datastore_insert_bsatn(table, &mut row).expect("the insert succeeds");
     }
 
     /// Deletes every row equal to `n`; returns how many went.
     fn delete(n: u64) -> u32 {
-        let table = sys::table_id_from_name(TABLE).expect("the scratch table resolves");
+        delete_from(TABLE, n)
+    }
+
+    /// Deletes every row equal to `n` from the table named `name`; returns how many went.
+    fn delete_from(name: &str, n: u64) -> u32 {
+        let table = sys::table_id_from_name(name).expect("the scratch table resolves");
         let relation = bsatn::to_vec(&vec![n]).expect("the relation encodes");
         sys::datastore_delete_all_by_eq_bsatn(table, &relation).expect("the delete succeeds")
     }
@@ -3513,7 +3539,12 @@ mod procedure_tests {
 
     /// Every row of the scratch table, in store order, through a full-table scan.
     fn scan() -> Vec<u64> {
-        let table = sys::table_id_from_name(TABLE).expect("the scratch table resolves");
+        scan_of(TABLE)
+    }
+
+    /// Every row of the table named `name`, in store order, through a full-table scan.
+    fn scan_of(name: &str) -> Vec<u64> {
+        let table = sys::table_id_from_name(name).expect("the scratch table resolves");
         let mut iter = sys::datastore_table_scan_bsatn(table).expect("the scan opens");
         let mut buf = Vec::new();
         while !iter.is_exhausted() {
@@ -4036,7 +4067,6 @@ mod procedure_tests {
             });
         assert_eq!(sender, me(), "the sender is the chosen identity");
         assert_eq!(module, Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY));
-        assert_ne!(sender, module, "a client sender is not the database");
         assert!(connection.is_none(), "a procedure run has no connection id");
         assert_eq!(stamp, at(), "the procedure's timestamp is the chosen time");
         assert_eq!(
@@ -4100,6 +4130,16 @@ mod procedure_tests {
             vec![77],
             "the closure ran: the row it seeded before panicking is in the store"
         );
+        assert_eq!(
+            http.requests(),
+            &[SentRequest {
+                method: "GET".to_string(),
+                url: "https://accounts.invalid/wait".to_string(),
+                body: Vec::new(),
+                timeout: None,
+            }][..],
+            "the request whose wait panicked is recorded"
+        );
         let mut again = HttpQueue::new();
         again.push(HttpAnswer::status(200, "next"));
         let later = fx.run_procedure(Caller::Sender(me()), at(), &mut again, |ctx| {
@@ -4110,6 +4150,263 @@ mod procedure_tests {
             later,
             (Ok((200, b"next".to_vec())), vec![77]),
             "a following run on the same fixture gets its answer and reads the store normally"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_while_waiting_wins_over_the_body_panic_it_causes() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, "unused").while_waiting(|| {
+            panic!("the wait's check failed before the body's");
+        }));
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| -> u32 {
+                let reply = ctx.http.get("https://accounts.invalid/wait-then-panic");
+                panic!("the body panics on its reply, ok = {}", reply.is_ok())
+            })
+        }));
+        let text = panic_text(caught.expect_err("the run fails"));
+        assert_eq!(
+            text, "the wait's check failed before the body's",
+            "the closure's panic reaches the test ahead of the body's own"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| r.url.clone())
+                .collect::<Vec<_>>(),
+            vec!["https://accounts.invalid/wait-then-panic".to_string()],
+            "the request whose wait panicked is recorded"
+        );
+    }
+
+    #[test]
+    fn run_procedure_hands_over_every_byte_of_the_sender_and_the_database_identity() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let client = distinct_identity(1);
+        let module = distinct_identity(101);
+        fx.set_database_identity(module);
+        let ids = |ctx: &mut ProcedureContext| {
+            (
+                ctx.sender().to_byte_array(),
+                ctx.database_identity().to_byte_array(),
+            )
+        };
+        assert_eq!(
+            fx.run_procedure(Caller::Sender(client), at(), &mut http, ids),
+            (client.to_byte_array(), module.to_byte_array()),
+            "a client sender and the module identity arrive byte for byte"
+        );
+        assert_eq!(
+            fx.run_procedure(Caller::Database, at(), &mut http, ids),
+            (module.to_byte_array(), module.to_byte_array()),
+            "the database sender is the module identity byte for byte"
+        );
+    }
+
+    #[test]
+    fn a_large_body_travels_both_ways_byte_for_byte_lpw41_1() {
+        let fx = fixture();
+        let big: Vec<u8> = (0u32..200_000)
+            .map(|i| ((i % 251) ^ (i / 251)).to_le_bytes()[0])
+            .collect();
+        let mut http = HttpQueue::new();
+        http.push(HttpAnswer::status(200, big.clone()));
+        let got = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            outcome(ctx.http.send(build(
+                "POST",
+                "https://accounts.invalid/upload",
+                big.clone(),
+                None,
+            )))
+        });
+        let (status, body) = got.expect("the large answer arrived");
+        assert_eq!(status, 200, "the large answer's status arrived");
+        assert_eq!(body.len(), big.len(), "the whole answer body arrived");
+        assert!(
+            body == big,
+            "the answer body arrived exactly; the first differing byte is at {:?}",
+            body.iter().zip(&big).position(|(a, b)| a != b)
+        );
+        let sent = &http.requests()[0].body;
+        assert_eq!(sent.len(), big.len(), "the whole request body is recorded");
+        assert!(
+            *sent == big,
+            "the request body is recorded exactly; the first differing byte is at {:?}",
+            sent.iter().zip(&big).position(|(a, b)| a != b)
+        );
+    }
+
+    #[test]
+    fn every_method_is_recorded_exactly_as_spelled_lpw41_1() {
+        const METHODS: [&str; 8] = [
+            "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "PURGE",
+        ];
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        for method in METHODS {
+            http.push(HttpAnswer::status(200, method));
+        }
+        let got = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            METHODS
+                .iter()
+                .map(|method| {
+                    let url = format!("https://accounts.invalid/{method}");
+                    outcome(ctx.http.send(build(method, &url, Vec::new(), None)))
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            got,
+            METHODS
+                .iter()
+                .map(|method| Ok((200, method.as_bytes().to_vec())))
+                .collect::<Vec<Outcome>>(),
+            "each request got its own answer, in order"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| (r.method.clone(), r.url.clone()))
+                .collect::<Vec<_>>(),
+            METHODS
+                .iter()
+                .map(|method| (
+                    method.to_string(),
+                    format!("https://accounts.invalid/{method}")
+                ))
+                .collect::<Vec<_>>(),
+            "each request's method is recorded exactly as spelled"
+        );
+    }
+
+    #[test]
+    fn two_unanswered_requests_fail_the_run_naming_the_first_lpw41_2() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let first_seen: RefCell<Option<String>> = RefCell::new(None);
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let first = outcome(ctx.http.send(build(
+                    "POST",
+                    "https://accounts.invalid/first-unanswered",
+                    b"1".to_vec(),
+                    None,
+                )));
+                *first_seen.borrow_mut() = first.err();
+                let second = outcome(ctx.http.send(build(
+                    "PUT",
+                    "https://accounts.invalid/second-unanswered",
+                    b"2".to_vec(),
+                    None,
+                )));
+                second.is_ok()
+            })
+        }));
+        let text = panic_text(caught.expect_err("unanswered requests fail the run"));
+        assert!(
+            text.contains(
+                "the procedure sent `POST https://accounts.invalid/first-unanswered` with no stubbed HTTP answer left"
+            ),
+            "the failure names the first unanswered request: {text}"
+        );
+        let first = first_seen
+            .into_inner()
+            .expect("the first unanswered request got an Err");
+        assert!(
+            first.contains("no stubbed HTTP answer left"),
+            "the first unanswered request's Err says no answer is left: {first}"
+        );
+        assert_eq!(
+            http.requests()
+                .iter()
+                .map(|r| (r.method.clone(), r.url.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "POST".to_string(),
+                    "https://accounts.invalid/first-unanswered".to_string()
+                ),
+                (
+                    "PUT".to_string(),
+                    "https://accounts.invalid/second-unanswered".to_string()
+                ),
+            ],
+            "both unanswered requests are recorded, in order"
+        );
+    }
+
+    #[test]
+    fn a_retry_loop_against_an_empty_queue_ends_at_its_second_request_lpw41_2() {
+        let fx = fixture();
+        let mut http = HttpQueue::new();
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+                let mut tries = 0u32;
+                while tries < 1_000 && ctx.http.get("https://accounts.invalid/retry").is_err() {
+                    tries += 1;
+                }
+                tries
+            })
+        }));
+        let text = panic_text(caught.expect_err("the retry loop's run fails"));
+        assert!(
+            text.contains(
+                "the procedure sent `GET https://accounts.invalid/retry` with no stubbed HTTP answer left"
+            ),
+            "the failure names the unanswered request: {text}"
+        );
+        assert_eq!(
+            http.requests().len(),
+            2,
+            "the second unanswered request stops the procedure"
+        );
+    }
+
+    #[test]
+    fn an_aborted_transaction_restores_every_table_it_wrote_lpw41_3() {
+        let fx = fixture();
+        let rows = proc_rows(&fx);
+        let other = other_rows(&fx);
+        rows.seed(&1);
+        rows.seed(&2);
+        other.seed(&50);
+        let mut http = HttpQueue::new();
+        let (aborted, next) = fx.run_procedure(Caller::Sender(me()), at(), &mut http, |ctx| {
+            ctx.with_tx(|_tx| {
+                insert_into(TABLE, 3);
+                insert_into(OTHER, 51);
+            });
+            let aborted = ctx.try_with_tx(|_tx| -> Result<(), (Vec<u64>, u32, Vec<u64>)> {
+                insert_into(TABLE, 4);
+                let removed = delete_from(OTHER, 50);
+                insert_into(OTHER, 52);
+                Err((scan_of(TABLE), removed, scan_of(OTHER)))
+            });
+            let next = ctx.with_tx(|_tx| (scan_of(TABLE), scan_of(OTHER)));
+            (aborted, next)
+        });
+        assert_eq!(
+            aborted,
+            Err((vec![1, 2, 3, 4], 1, vec![51, 52])),
+            "the body ran: it wrote both tables and its Err came back"
+        );
+        assert_eq!(
+            next,
+            (vec![1, 2, 3], vec![50, 51]),
+            "the next transaction sees both tables as the aborted one found them"
+        );
+        assert_eq!(
+            rows.rows(),
+            vec![1, 2, 3],
+            "the first table is back exactly"
+        );
+        assert_eq!(
+            other.rows(),
+            vec![50, 51],
+            "the second table is back exactly, its deleted row included"
         );
     }
 }
