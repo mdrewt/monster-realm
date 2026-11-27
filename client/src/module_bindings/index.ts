@@ -70,6 +70,7 @@ import RequestBindNonceForReducer from "./request_bind_nonce_for_reducer";
 import RequestDataExportReducer from "./request_data_export_reducer";
 import RespondTradeReducer from "./respond_trade_reducer";
 import SellReducer from "./sell_reducer";
+import SetHostIdentityReducer from "./set_host_identity_reducer";
 import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
@@ -553,6 +554,7 @@ const reducersSchema = __reducers(
   __reducerSchema("request_data_export", RequestDataExportReducer),
   __reducerSchema("respond_trade", RespondTradeReducer),
   __reducerSchema("sell", SellReducer),
+  __reducerSchema("set_host_identity", SetHostIdentityReducer),
   __reducerSchema("set_move", SetMoveReducer),
   __reducerSchema("set_nickname", SetNicknameReducer),
   __reducerSchema("set_party_slot", SetPartySlotReducer),
