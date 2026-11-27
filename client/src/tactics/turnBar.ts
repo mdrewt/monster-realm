@@ -3,14 +3,17 @@
 // READY chips only, the round counter and the "Surge in N" / "Retreat at N" badges.
 //
 // `turnBarVM` is pure and does no game-rule arithmetic: the next round's order arrives as an input
-// (`nextInitiative`) and the badge thresholds are display constants, not rules. `renderTurnBar`
-// takes NO selection, so selecting a unit can never recentre the bar: it writes chips into one
-// host element that is the same node on every render and never touches scroll or focus.
+// (`nextInitiative`), and each badge shows a display-constant lead (`SURGE_LEAD`, `RETREAT_LEAD`)
+// ahead of the tuning round it warns about, read from the input. `renderTurnBar` takes NO
+// selection, so selecting a unit can never recentre the bar: it writes chips into one host element
+// that is the same node on every render and never touches scroll or focus.
 import type { TacticalUnit } from './boardModel';
 import * as s from './strings';
 
-export const SURGE_BADGE_FROM_ROUND = 7;
-export const RETREAT_BADGE_FROM_ROUND = 25;
+/** Rounds before the surge start that the PvP lead-in badge appears. */
+export const SURGE_LEAD = 2;
+/** Rounds before the wild round cap that the retreat badge appears. */
+export const RETREAT_LEAD = 5;
 export interface TurnChipVM {
   readonly unitId: number;
   readonly speciesName: string;
@@ -42,12 +45,12 @@ export interface TurnBarInput {
 }
 
 function badgeFor(input: TurnBarInput): TurnBadge {
-  if (input.kind === 'pvp' && input.round >= SURGE_BADGE_FROM_ROUND) {
+  if (input.kind === 'pvp' && input.round >= input.surgeStartRound - SURGE_LEAD) {
     return input.round < input.surgeStartRound
       ? { kind: 'surgeIn', n: input.surgeStartRound - input.round }
       : { kind: 'surgeActive' };
   }
-  if (input.kind === 'wild' && input.round >= RETREAT_BADGE_FROM_ROUND) {
+  if (input.kind === 'wild' && input.round >= input.wildRoundCap - RETREAT_LEAD) {
     return { kind: 'retreatAt', round: input.wildRoundCap };
   }
   return null;

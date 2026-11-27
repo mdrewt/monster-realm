@@ -1075,6 +1075,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // player's display name, {tag} the tag already formatted.
   // playerTag.ts (taggedName)
   'identity.taggedName': (p) => `${p.name} ${p.tag}`,
+  // @desc: Stand-in for the current name in the Name section of the Profile screen when the player
+  // has never named themselves. Short: it sits where the name would be.
+  // renameModel.ts (buildRenameViewModel)
+  'rename.unnamed': '(sans nom)',
   // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72

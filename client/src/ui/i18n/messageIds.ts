@@ -339,6 +339,8 @@ export type MessageId =
   // identity.* : a player's tag and the name-with-tag join (playerTag.ts).
   | 'identity.tag'
   | 'identity.taggedName'
+  // rename.* : the Profile Name section's empty-name stand-in (renameModel.ts).
+  | 'rename.unnamed'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
   // Claim.* : the guest-claim overlay — four button labels (claimView.ts); its titles, bodies,

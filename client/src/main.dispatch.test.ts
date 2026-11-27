@@ -6170,7 +6170,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
       turnIdx: 0,
       turnState: { kind: 'Waiting', unitId: 11 },
       tiePrioritySide: 'B',
-      round: 26,
+      round: 32,
     });
     opts.store.reconcileBattleUnitsFromView(bUnits);
     opts.store.reconcileBattleEventsFromView([0, 1, 2].map((seq) => bt12bEvent(B, seq)));
@@ -6193,7 +6193,9 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     ).toEqual(['11']);
     expect(
       shell.querySelector('.tactics-turnbar-badge')?.textContent,
-      'round 26 of a wild battle: the retreat badge at the TUNING`s round cap (37)',
+      // wr261127-b (named intentional change): the badge shows from the tuning's cap (37) minus the
+      // retreat lead, so round 32 is the first round it names the cap.
+      'wild round 32 (cap 37 - lead): the retreat badge names the TUNING`s cap (37)',
     ).toBe(i18n.tf('tactics.turnbar.retreatAt', { round: 37 }));
     expect(
       bt12bIdsOf(shell, '.tactics-turnbar .tactics-chip--ghost'),
@@ -6394,7 +6396,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
         turnIdx: 0,
         turnState: { kind: 'Waiting', unitId: 61 },
         tiePrioritySide: 'B',
-        round: 8,
+        round: 9,
       }),
     ]);
     server(at());
@@ -6405,8 +6407,10 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     ]);
     expect(
       shell.querySelector('.tactics-turnbar-badge')?.textContent,
-      'Practice runs the PvP ruleset: Surge in (11 - 8) at round 8',
-    ).toBe(i18n.tf('tactics.turnbar.surgeIn', { n: 3 }));
+      // wr261127-b (named intentional change): the lead-in shows from the tuning's surge start (11)
+      // minus the surge lead, so round 9 is its first round and counts 2 to the tuning's round.
+      'Practice runs the PvP ruleset: Surge in (11 - 9) at round 9',
+    ).toBe(i18n.tf('tactics.turnbar.surgeIn', { n: 2 }));
     H.calls = [];
     press('KeyM', at());
     await flush();

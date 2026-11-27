@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 // tactics/turnBar.test.ts — bt-10 RED tests for the turn-order bar (BT10.3): the frozen order with
 // the current unit highlighted and acted units dimmed, KO'd chips dropped, the next round ghosted,
-// a lock on OWN READY chips only, the round counter, the "Surge in N" (PvP round 7+) and
-// "Retreat at N" (wild round 25+) badges, and the bar NEVER recentring on selection.
+// a lock on OWN READY chips only, the round counter, the "Surge in N" (PvP, from the surge start
+// minus the surge lead) and "Retreat at N" (wild, from the cap minus the retreat lead) badges, and
+// the bar NEVER recentring on selection.
 //
 // SOURCE OF TRUTH: spec `### bt-10` BT10.3, the plan's API freeze (turnBar.ts stub) and REV 2 A5
 // (turnIdx indexes the RAW initiative; classify first, then drop). turnBarVM is pure; the DOM tests
@@ -23,9 +24,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CATALOG_EN } from '../ui/i18n/catalog.en';
 import type { TacticalUnit } from './boardModel';
 import {
-  RETREAT_BADGE_FROM_ROUND,
+  RETREAT_LEAD,
   renderTurnBar,
-  SURGE_BADGE_FROM_ROUND,
+  SURGE_LEAD,
   type TurnBadge,
   type TurnBarInput,
   type TurnBarVM,
@@ -274,15 +275,16 @@ describe('turnBarVM: the chips (BT10.3, A5)', () => {
     ).toEqual([6]);
   });
 
-  it('BT10-3-BAR-BADGE: the surge badge is PvP only (in N rounds, then active from the start round), the retreat badge is wild only from round 25 and names the cap, and neither appears before its round', () => {
+  it('BT10-3-BAR-BADGE: the surge badge is PvP only (in N rounds, then active from the start round), the retreat badge is wild only, shows from the cap minus the retreat lead and names the cap, and neither appears before its round', () => {
+    // wr261127-b (named intentional change): the badge rounds are leads relative to the tuning
+    // (surge start 9 shows from round 7, wild cap 30 shows from round 25); the absolute-threshold
+    // pins are replaced by the tuning-relative tests below.
     // WRONG IMPL KILLED: the thresholds off by one (round 6 already showing, round 7 not); the
-    // retreat cap hard-coded to 30 (the fixture's cap is 31); a wild battle showing a surge
-    // badge or a PvP battle a retreat badge; surgeIn counting from the wrong end; surge-active
-    // flipping one round early or late; the badge appearing on wild round 24.
-    expect(SURGE_BADGE_FROM_ROUND, 'surge badge threshold').toBe(7);
-    expect(RETREAT_BADGE_FROM_ROUND, 'retreat badge threshold').toBe(25);
+    // retreat cap hard-coded to the default 30 (the cap-40 sub-case kills it); a wild battle
+    // showing a surge badge or a PvP battle a retreat badge; surgeIn counting from the wrong end;
+    // surge-active flipping one round early or late; the badge appearing on wild round 24.
     const badge = (kind: 'wild' | 'pvp', round: number): TurnBadge =>
-      turnBarVM(input({ kind, round, surgeStartRound: 9, wildRoundCap: 31 })).badge;
+      turnBarVM(input({ kind, round, surgeStartRound: 9, wildRoundCap: 30 })).badge;
 
     expect(badge('pvp', 1), 'pvp r1').toBeNull();
     expect(badge('pvp', 6), 'pvp r6').toBeNull();
@@ -299,20 +301,102 @@ describe('turnBarVM: the chips (BT10.3, A5)', () => {
     expect(badge('wild', 7), 'wild r7 never surges').toBeNull();
     expect(badge('wild', 12), 'wild r12 never surges').toBeNull();
     expect(badge('wild', 24), 'wild r24').toBeNull();
-    expect(badge('wild', 25), 'wild r25: retreat at the cap (31)').toEqual({
+    expect(badge('wild', 25), 'wild r25: retreat at the cap (30)').toEqual({
       kind: 'retreatAt',
-      round: 31,
+      round: 30,
     });
-    expect(badge('wild', 30), 'wild r30').toEqual({ kind: 'retreatAt', round: 31 });
-    expect(badge('wild', 31), 'wild r31').toEqual({ kind: 'retreatAt', round: 31 });
+    expect(badge('wild', 29), 'wild r29').toEqual({ kind: 'retreatAt', round: 30 });
+    expect(badge('wild', 30), 'wild r30').toEqual({ kind: 'retreatAt', round: 30 });
 
-    const otherStart = turnBarVM(input({ kind: 'pvp', round: 7, surgeStartRound: 12 }));
+    const otherStart = turnBarVM(input({ kind: 'pvp', round: 10, surgeStartRound: 12 }));
     expect(otherStart.badge, 'surgeIn counts to the supplied start round').toEqual({
       kind: 'surgeIn',
-      n: 5,
+      n: 2,
     });
-    const otherCap = turnBarVM(input({ kind: 'wild', round: 26, wildRoundCap: 40 }));
+    const otherCap = turnBarVM(input({ kind: 'wild', round: 35, wildRoundCap: 40 }));
     expect(otherCap.badge, 'the cap is the supplied one').toEqual({ kind: 'retreatAt', round: 40 });
+  });
+
+  it('BT10-3-BAR-BADGE-TUNING-RELATIVE: the badge rounds are leads relative to the tuning input — surge start 5 and wild cap 20 show the surge lead-in from round 3, the active badge from round 5 and the retreat badge from round 15 [wr261127-b.2]', () => {
+    // WRONG IMPL KILLED: absolute thresholds 7 / 25 (round 3 and round 15 stay null, an absolute-7
+    // impl shows nothing at round 6 of the start-5 pair); the lead applied off by one (surgeIn from round 2 or 4, retreat from round 14 or 16);
+    // surgeIn counted from the wrong end (n = round - start); a wild battle showing a surge
+    // badge or a PvP battle a retreat badge.
+    const badge = (kind: 'wild' | 'pvp', round: number): TurnBadge =>
+      turnBarVM(input({ kind, round, surgeStartRound: 5, wildRoundCap: 20 })).badge;
+
+    expect(badge('pvp', 1), 'pvp r1').toBeNull();
+    expect(badge('pvp', 2), 'pvp r2').toBeNull();
+    expect(badge('pvp', 3), 'pvp r3: surge in 2').toEqual({ kind: 'surgeIn', n: 2 });
+    expect(badge('pvp', 4), 'pvp r4: surge in 1').toEqual({ kind: 'surgeIn', n: 1 });
+    expect(badge('pvp', 5), 'pvp r5: surge active').toEqual({ kind: 'surgeActive' });
+    expect(badge('pvp', 6), 'pvp r6: surge active').toEqual({ kind: 'surgeActive' });
+    expect(badge('pvp', 20), 'pvp r20 never retreats').toEqual({ kind: 'surgeActive' });
+    expect(badge('pvp', 40), 'pvp r40').toEqual({ kind: 'surgeActive' });
+
+    for (const r of [1, 3, 5, 14]) expect(badge('wild', r), `wild r${r}`).toBeNull();
+    for (const r of [15, 19, 20]) {
+      expect(badge('wild', r), `wild r${r}: retreat at 20`).toEqual({
+        kind: 'retreatAt',
+        round: 20,
+      });
+    }
+
+    // A pair below both absolute thresholds (7 and 25) and above the leads.
+    const low = (kind: 'wild' | 'pvp', round: number): TurnBadge =>
+      turnBarVM(input({ kind, round, surgeStartRound: 4, wildRoundCap: 12 })).badge;
+    expect(low('pvp', 1), 'start 4 pvp r1').toBeNull();
+    expect(low('pvp', 2), 'start 4 pvp r2').toEqual({ kind: 'surgeIn', n: 2 });
+    expect(low('pvp', 3), 'start 4 pvp r3').toEqual({ kind: 'surgeIn', n: 1 });
+    expect(low('pvp', 4), 'start 4 pvp r4').toEqual({ kind: 'surgeActive' });
+    expect(low('wild', 6), 'cap 12 wild r6').toBeNull();
+    expect(low('wild', 7), 'cap 12 wild r7').toEqual({ kind: 'retreatAt', round: 12 });
+    expect(low('wild', 12), 'cap 12 wild r12').toEqual({ kind: 'retreatAt', round: 12 });
+  });
+
+  it('BT10-3-BAR-BADGE-TUNING-RELATIVE-2: surge start 9 and wild cap 30 show the lead-in from round 7 and the retreat badge from round 25 [wr261127-b.3]', () => {
+    // WRONG IMPL KILLED: a lead hard-coded for the default tuning only (a different start or cap
+    // moves nothing); the lead applied off by one; the retreat badge naming the start round or a
+    // default cap instead of the supplied cap.
+    const badge = (kind: 'wild' | 'pvp', round: number): TurnBadge =>
+      turnBarVM(input({ kind, round, surgeStartRound: 9, wildRoundCap: 30 })).badge;
+
+    expect(badge('pvp', 6), 'pvp r6').toBeNull();
+    expect(badge('pvp', 7), 'pvp r7').toEqual({ kind: 'surgeIn', n: 2 });
+    expect(badge('pvp', 8), 'pvp r8').toEqual({ kind: 'surgeIn', n: 1 });
+    expect(badge('pvp', 9), 'pvp r9').toEqual({ kind: 'surgeActive' });
+    expect(badge('wild', 24), 'wild r24').toBeNull();
+    expect(badge('wild', 25), 'wild r25').toEqual({ kind: 'retreatAt', round: 30 });
+  });
+
+  it('BT10-3-BAR-BADGE-LEAD-CLAMP: a surge start at or below the surge lead shows a PvP battle a surge badge from its first round, a wild cap at or below the retreat lead shows the retreat badge from round 1, and the lead constants are 2 and 5 [wr261127-b.4]', () => {
+    // WRONG IMPL KILLED: a lead that is not 2 (surge) or 5 (retreat); a negative or zero threshold
+    // that hides the badge on round 1; surgeIn counted past the start (n of 0 or below); the
+    // active badge delayed past the start round; a start of 1 or 0 showing no badge on round 1;
+    // a wild cap of 5 or below hiding the retreat badge on round 1; a retreat window one round
+    // wide at cap 6 or 7; a lead applied by a clamp that breaks a large start.
+    expect(SURGE_LEAD, 'surge lead').toBe(2);
+    expect(RETREAT_LEAD, 'retreat lead').toBe(5);
+    const badge = (round: number, surgeStartRound: number): TurnBadge =>
+      turnBarVM(input({ kind: 'pvp', round, surgeStartRound })).badge;
+
+    expect(badge(1, 2), 'start 2 r1').toEqual({ kind: 'surgeIn', n: 1 });
+    expect(badge(2, 2), 'start 2 r2').toEqual({ kind: 'surgeActive' });
+    expect(badge(1, 1), 'start 1 r1').toEqual({ kind: 'surgeActive' });
+    expect(badge(1, 0), 'start 0 r1').toEqual({ kind: 'surgeActive' });
+    expect(badge(997, 1000), 'start 1000 r997').toBeNull();
+    expect(badge(998, 1000), 'start 1000 r998').toEqual({ kind: 'surgeIn', n: 2 });
+
+    const wild = (round: number, wildRoundCap: number): TurnBadge =>
+      turnBarVM(input({ kind: 'wild', round, wildRoundCap })).badge;
+    expect(wild(1, 5), 'cap 5 r1').toEqual({ kind: 'retreatAt', round: 5 });
+    expect(wild(1, 3), 'cap 3 r1').toEqual({ kind: 'retreatAt', round: 3 });
+    expect(wild(1, 6), 'cap 6 r1: first round of the lead window').toEqual({
+      kind: 'retreatAt',
+      round: 6,
+    });
+    expect(wild(1, 7), 'cap 7 r1').toBeNull();
+    expect(wild(2, 7), 'cap 7 r2').toEqual({ kind: 'retreatAt', round: 7 });
   });
 });
 

@@ -105,6 +105,8 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
 import { buildRenameViewModel } from './renameModel';
@@ -399,18 +401,47 @@ describe('RenameView render(): disabled/enabled state and textContent', () => {
     expect(currentEl.textContent).toBe('Aria');
   });
 
-  it('BITES: render() with displayCurrentName:"(unnamed)" sets textContent literally — kills impl that strips parens', () => {
-    // D6: the model produces "(unnamed)" for an empty currentName; the view renders it verbatim.
+  it('BITES: render() with the catalog rename.unnamed as displayCurrentName sets textContent literally — kills impl that strips parens', () => {
+    // wr261127-b (named intentional change): the model's stand-in for an empty name is the
+    // catalog's `rename.unnamed`; the view renders whatever string it is given verbatim.
     const view = new RenameView({ onSubmit: async () => {} });
+    const stand = CATALOG_EN['rename.unnamed'];
     const vm: RenameViewModel = {
-      displayCurrentName: '(unnamed)',
+      displayCurrentName: stand,
       displayTag: null,
       trimmedDraft: '',
       canSubmit: false,
     };
     view.render(vm);
     const currentEl = document.getElementById('rename-current')!;
-    expect(currentEl.textContent).toBe('(unnamed)');
+    expect(currentEl.textContent).toBe(stand);
+    expect(currentEl.textContent, 'parens kept').toContain('(');
+  });
+
+  describe('the empty-name stand-in under each locale', () => {
+    afterEach(() => {
+      setLocale('en');
+    });
+
+    it('an empty name opens the overlay with the active catalog rename.unnamed in #rename-current: English under en, French under fr [wr261127-b.1]', () => {
+      // WRONG IMPL KILLED: the English literal painted under fr; the stand-in resolved once at
+      // module load; a view that ignores displayCurrentName; the French string painted under en.
+      const view = new RenameView({ onSubmit: async () => {} });
+      const currentEl = document.getElementById('rename-current') as HTMLElement;
+
+      setLocale('en');
+      view.render(buildRenameViewModel('', 0, ''));
+      const enText = currentEl.textContent;
+      expect(enText).toBe(CATALOG_EN['rename.unnamed']);
+      expect(enText).toBe('(unnamed)');
+
+      setLocale('fr');
+      view.render(buildRenameViewModel('', 0, ''));
+      const frText = currentEl.textContent;
+      expect(frText).toBe(CATALOG_FR['rename.unnamed']);
+      expect(frText).toBe('(sans nom)');
+      expect(frText).not.toBe(enText);
+    });
   });
 });
 

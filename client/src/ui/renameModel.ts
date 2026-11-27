@@ -1,6 +1,7 @@
 // ui/renameModel.ts — pure view model for the profile-rename overlay.
 //
-// No DOM, no SDK, no side-effects (the tag goes through the i18n resolver, as `formatTag` does).
+// No DOM, no SDK, no side-effects (the empty-name stand-in and the tag go through the i18n
+// resolver, the tag via `formatTag`).
 // Never throws on any input: it is built from keydown and input handlers and from a store batch
 // listener (main.ts), where a throw would starve sibling batch listeners (store.ts one-way flow).
 //
@@ -10,6 +11,7 @@
 // returns through the awaited reducer promise. Re-implementing those rules would create
 // a SECOND SSOT that silently diverges when the server constant changes — the exact
 // anti-pattern renameModel.test.ts locks out by omitting length/charset assertions.
+import { t } from './i18n/resolver';
 import { formatTag } from './playerTag';
 
 /** The rename overlay's render state — display label, the player's own tag, the trimmed draft
@@ -26,9 +28,9 @@ export interface RenameViewModel {
  * Build the rename view model.
  * - `trimmedDraft`  = `draft.trim()` (strips ALL leading/trailing whitespace, incl. tabs).
  * - `canSubmit`     = the trimmed draft is non-empty (trim-THEN-check, not raw-then-trim).
- * - `displayCurrentName` = the current name, or `'(unnamed)'` when it is the EMPTY string
- *   (D6: `store.player(identity)?.name` is `''` for a never-named player). Only the exact
- *   empty string triggers the fallback — a whitespace-only stored name passes through
+ * - `displayCurrentName` = the current name, or the active catalog's `rename.unnamed` when it is
+ *   the EMPTY string (D6: `store.player(identity)?.name` is `''` for a never-named player). Only
+ *   the exact empty string triggers the fallback — a whitespace-only stored name passes through
  *   verbatim (the server is the SSOT on what a valid stored name is).
  * - `displayTag`    = `formatTag(discriminator)`: null for 0 (no tag) or any value that is not a
  *   positive whole number. A rename keeps the minted discriminator, so it keeps the tag.
@@ -40,7 +42,7 @@ export function buildRenameViewModel(
 ): RenameViewModel {
   const trimmedDraft = draft.trim();
   return {
-    displayCurrentName: currentName !== '' ? currentName : '(unnamed)',
+    displayCurrentName: currentName !== '' ? currentName : t('rename.unnamed'),
     displayTag: formatTag(discriminator),
     trimmedDraft,
     canSubmit: trimmedDraft !== '',
