@@ -87,11 +87,12 @@ and floors any non-immune hit at 1 again.
 
 **Tactical engine.** `tactics::queue::TacticalBattle` is the submit gate and the
 executor. At pop, `validate_at_pop` checks each entry; the first that fails and every
-later one are wasted and reported once as `PlanHalted{unit, idx, reason_kind}`, and
-control returns live (`Waiting(U)`) to a player-owned conscious unit with at least
-`min_action_cost` AP (the cheapest of `light_cost`, `move_stride_cost` and `item_cost`,
-2 at the design's numbers), else the turn ends committed. A live submit whose first
-entry fails is refused as `SubmitError::InvalidNow`. The idle clock (`tactics::clock`)
+later one are wasted and reported once as `PlanHalted{unit, idx, reason_kind}`,
+and control returns live (`Waiting(U)`) to a player-owned conscious unit with at
+least `min_action_cost` AP (the cheapest of `light_cost`, `move_stride_cost` and
+`item_cost`, 2 at the design's numbers), else the turn ends committed; the floor
+bounds a unit-turn to 3 windows (6 → 4 → 2). A live submit whose first entry
+fails is refused as `SubmitError::InvalidNow`. The idle clock (`tactics::clock`)
 keeps its windows and strike counts per side, so in Practice one player holds both;
 a PvP-ruleset window is `pvp_window_ms` (30 s, `game-core/content/tactics_tuning.ron`)
 and the `autopass_forfeit`-th (4th) auto-pass forfeits. A submit that lands after its
@@ -102,7 +103,7 @@ Item/Recruit/Flee resolution only through the `Hooks` trait (`plan_ai`, `item_co
 `resolve_delegated` may return only `RecruitResult`, `Awards` and `Status` payloads, and
 the terminal sweep (`outcome::settle`) decides the outcome after it.
 
-The carried conventions: only side A of a wild battle is player-owned
+The tactical conventions: only side A of a wild battle is player-owned
 (`queue::is_player_owned`) and it holds round-1 tie priority
 (`initiative::round1_priority`); the round-1 PvP priority coin and the
 adjudication coin (`outcome::adjudicate`) read `splitmix64(..) & 1` with 0
@@ -121,13 +122,14 @@ seed or RNG parameter, and `ai_tests.rs` pins its signature as a `fn` pointer
 type. `View::of` builds the private `View` (no `seed`, `action_seq` or budget
 field) that every stance helper reads, and `admissible` costs each candidate from
 `TurnBudget::fresh(t)` through `plan_cost`, which folds the gate's `spend`. The executor
-hands `Hooks::plan_ai` the `public_view` (`seed` and `action_seq` zeroed), halts anything
-but `Move`/`Skill`/`EndTurn` as `BadShape`, and runs every entry, the trailing `EndTurn`
-included, through `validate_at_pop` (`queue.rs` `start_turn`, `execute`). The planner
-calls the gate's own `find_path`, `target_set`, `disengage_taxed`, `stride_points` and
-`validate_unit`. The `View`'s units are `&TacticalUnit`, so `budget` stays reachable: the
-seed- and budget-blindness tests and the executor proptest (no `PlanHalted` on generated
-battles) in `ai_tests.rs` catch a regression.
+hands `Hooks::plan_ai` the `public_view` (`seed` and `action_seq` zeroed), halts
+anything but `Move`/`Skill`/`EndTurn` as `BadShape`, and runs every entry, the trailing
+`EndTurn` included, through `validate_at_pop` (`queue.rs` `start_turn`, `execute`). The
+planner calls `movement::path_costs` (the Dijkstra behind the gate's `find_path`),
+`target_set`, `disengage_taxed`, `stride_points` and `validate_unit`. The `View`'s units
+are `&TacticalUnit`, so `budget` stays reachable: the seed- and budget-blindness tests
+and the executor proptest (no `PlanHalted` on generated battles) in `ai_tests.rs` catch
+a regression.
 
 ## Content pipeline
 
@@ -405,23 +407,23 @@ writes it again.
   deletes it. `propose_trade`, `respond_trade` and `confirm_trade` pass the admission
   check and return one fixed error. The client neither subscribes to the table nor sends
   `cancel_trade`: the disconnect sweep and the reaper are a remaining row's way out.
-- **Trade sessions.** `open_trade_session` opens a blank private `trade_session` row
-  with a player within interact range (one per pair, at most four opened per player,
-  one-hour TTL). Each side replaces only its own offer with `set_trade_offer`; every
-  accepted edit advances the row's revision and clears both confirms.
-  `confirm_trade_session` names the revision it reviewed; the confirm that completes
-  the pair re-checks both sides on live rows and executes the swap in the same call
-  (monsters arrive in the receiver's lowest free party slots, then Storage). A side's
-  assets are locked only while that side is confirmed; an offered monster that is
-  boxed, faints or changes owner deletes the session at the monster write
-  (`monster_mgmt::update_monster_synced`), and so do a disconnect and a cancel. The
-  two participants read the row through `my_trade_session`; the client
-  does not subscribe to it. The open cap is `MAX_OPEN_TRADE_SESSIONS`
-  and counts only the sessions the player opened (`check_session_open`,
-  `game-core/src/trading/session.rs`). A confirm runs `side_check` (both offers
-  non-empty, the side keeps a monster) and first compares each offered monster with
-  its private `trade_session_snapshot` row; arrivals take `arrival_slots`. The swap
-  is `trading_session::apply_swap`, called when the last confirm lands. It resets
+- **Trade sessions.** `open_trade_session` opens a blank private `trade_session` row with
+  a player within interact range (one per pair, at most four opened per player, one-hour
+  TTL). Each side replaces only its own offer with `set_trade_offer`; every accepted
+  edit advances the row's revision and clears both confirms. `confirm_trade_session`
+  names the revision it reviewed; the confirm that completes the pair re-checks both
+  sides on live rows and executes the swap in the same call (monsters arrive in the
+  receiver's lowest free party slots, then Storage). A side's assets are locked only
+  while that side is confirmed; an offered monster that is boxed, faints or changes owner
+  deletes the session at the monster write (`monster_mgmt::update_monster_synced`),
+  and so do a disconnect and a cancel. The two participants read the row through
+  `my_trade_session`; the client does not subscribe to it. The open cap is
+  `MAX_OPEN_TRADE_SESSIONS` and counts only the sessions the player opened
+  (`check_session_open`, `game-core/src/trading/session.rs`). A confirm runs
+  `side_check` (eligibility, receipt headroom, both offers non-empty, the side
+  keeps a monster) and first compares each offered monster with its private
+  `trade_session_snapshot` row; arrivals take `arrival_slots`. The swap is
+  `trading_session::apply_swap`, called when the last confirm lands. It resets
   each transferred monster's seven bond columns (`trust_favorable_count`,
   `trust_unfavorable_count`, `trust_favorable_battle_day_epoch`,
   `quality_time_ticks_total`, `quality_time_accum_ms`, `quality_time_window_ms`,
@@ -430,16 +432,18 @@ writes it again.
   Quality-Time tiers re-derived and the evolution `tier` copied forward. The guest-claim
   re-key (`monster_mgmt::rekey_monsters`) does not reset the bond.
 - **Raising and economy.** Care, training, essence and healing live in `raising`;
-  every balance change goes through `economy::grant_currency`/`spend_currency`, and
-  every inventory insert through `inventory::grant_item`, which keeps one stack per
-  owner and item. The wallet is the private `player_wallet` (`u64`, `MAX_BALANCE` in
-  `game-core/src/currency.rs`); a stack caps at `MAX_ITEM_STACK` (`trading/rules.rs`),
-  and a swap applies its debits before its credits (`SwapPlan::ordered_steps`). The
-  escrow wrappers in `guards.rs` count a confirmed session side and any `trade_offer`
-  row still in its table. The client keeps currency a `bigint` from the store row
-  to the reducer argument (`client/src/ui/tradeSessionModel.ts`). `heal_party`
-  (`raising.rs`) charges a heal location's `cost_currency` and its cost item; the
-  shipped `game-core/content/heal_locations/` name neither. Each knocked-out wild
+  every payment and charge goes through `economy::grant_currency`/`spend_currency`
+  (the guest-claim re-key, `economy::rekey_wallet`, and account erasure write the
+  wallet row directly), and every inventory insert through `inventory::grant_item`,
+  which keeps one stack per owner and item. The wallet is the private
+  `player_wallet` (`u64`, `MAX_BALANCE` in `game-core/src/currency.rs`); a
+  stack caps at `MAX_ITEM_STACK` (`trading/rules.rs`), and a swap applies its
+  debits before its credits (`SwapPlan::ordered_steps`). The escrow wrappers in
+  `guards.rs` count a confirmed session side and any `trade_offer` row still in its
+  table. The client keeps currency a `bigint` from the store row to the reducer
+  argument (`client/src/ui/tradeSessionModel.ts`). `heal_party` (`raising.rs`)
+  charges a heal location's `cost_currency` and its cost item; the shipped
+  `game-core/content/heal_locations/` name neither. Each credited knockout of a wild
   pays `battle_currency_reward` (`BATTLE_CURRENCY_BST_DIVISOR`, `currency.rs`);
   the one shipped quest's `reward.currency` (`game-core/content/quests/`)
   is credited once. A wild pack is clamped to the party's conscious monsters
@@ -610,7 +614,8 @@ on every terminal path alike, through the carried per-monster credit
 (`battle::credit_monster`) over the whole conscious party, so the win-only trust-favorable
 credit, Quality Time and the evolution check keep their carried scope; the currency goes to
 the wallet; one `Awards` line per paid monster (ascending unit) plus one `unit 0` line for
-the currency is appended after `BattleEnd`. The faint penalty (`battle::apply_faint_penalties`) and the
+the currency is appended after `BattleEnd`. The faint penalty
+(`battle::apply_faint_penalties`) and the
 prior-terminal sweep run from the same place, so a recruit success penalises and sweeps like
 every other end. `battle_summary` is one row per battle: inserted at the Active start (an insert
 that takes the table over its cap arms `summary_reaper`),
