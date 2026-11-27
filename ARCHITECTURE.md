@@ -287,10 +287,10 @@ character that does not face the direction turns to it on the same tile, `Idle`,
 `move_started_at` stamped, and one that already faces it gets exactly the `Step` result, from the
 match arm the two share. `Face` is the last `MoveInput` variant, after `Jump`; game-core's flat-code
 helper `apply_move_coded` carries only `Step` and `Jump`, so `Face` crosses the wasm boundary on the
-serde path. A step onto a warp tile moves the character to the warp's destination in the same
-tick, `Idle` and with its queue cleared. The warp is skipped for a character whose player is in an
-ongoing battle and for a mover with no player row (`skip_warp` defaults to `true`), so an NPC stays
-in its home zone. The tick is the only writer of
+serde path. A move that lands on a warp tile moves the character to the warp's destination in the
+same tick, `Idle` and with its queue cleared. The warp is skipped for a character whose player is in
+an ongoing battle and for a mover with no player row (`skip_warp` defaults to `true`), and the NPC
+wander step resolves no warp, so an NPC stays in its home zone. The tick is the only writer of
 `character.move_queue` and `character.acked_seq` in every build but the load-test one, where
 `dev_place_in_load_zone` also writes them as the warp arm does. The tick copies the private
 queue and seq onto the character row (`movement::publish_intent`) in the same update that
@@ -748,12 +748,15 @@ directions. A press sends `Face` at once: a turn in place for a character that f
 another way, a step for one that already faces the direction. The frame loop continues
 a hold with `Step` in the active direction only after it has been held 150 ms
 (`HOLD_COMMIT_MS`), only when the predictor has no outstanding steps and no sent input is still
-owed, and only while `movementEnabled` (`ui/contextStack.ts`: the world base with no frame above
-it and the session gate open). A hold from another facing therefore turns, waits for the row that
-drains the `Face`, then walks. Every push of a non-base frame clears the held set. The keyboard
-source drops OS key-repeat (`e.repeat`), and the router (`input/router.ts`) counts each D-pad
-button's holders across physical keys and synthesizes menu auto-repeat on an injected clock
-(`REPEAT_DELAY_MS` 350, then every `REPEAT_PERIOD_MS` 100); a repeat clamps at a list end. A zone
+owed, and only while `movementGate()` in `main.ts` passes: `movementEnabled` (`ui/contextStack.ts`:
+the world base with no frame above it and the session gate open) and no world sheet open. The
+reconcile listener re-sends the held direction behind the same checks after a server correction.
+A hold from another facing therefore turns, waits for the row that drains the `Face`, then walks.
+Every push of a frame, and every change of base kind, clears the held set. The keyboard source
+drops OS key-repeat (`e.repeat`), and the router (`input/router.ts`) counts each D-pad button's
+holders across physical keys and synthesizes menu auto-repeat on an injected clock
+(`REPEAT_DELAY_MS` 350, then every `REPEAT_PERIOD_MS` 100); a repeated step clamps at a list end
+where a fresh one wraps (`stepAxis` in `ui/nav.ts`). A zone
 warp (`switchZone` in `main.ts`) rebuilds prediction state but keeps the held stack; a reconnect
 (`resetPredictionState`) clears it. The rebuilt predictor has forgotten an
 input that was on the wire at the warp, so `prediction/owedInputs.ts` counts sent
@@ -770,8 +773,8 @@ it or its reducer call rejects, and a reconnect clears the set.
 - `interpolation.ts` renders remote characters in the past between buffered
   snapshots, with an adaptive delay, holding at the newest snapshot. The delay is per character,
   from the store's jitter estimate, which ignores intervals longer than `JITTER_IDLE_GAP_STEPS`
-  (3) steps, and is clamped between `INTERP_MIN_DELAY_STEPS` (0.5) and `INTERP_MAX_DELAY_STEPS`
-  (2.5) steps (`render/config.ts`). A remote on a
+  (3, `shared/interpConfig.ts`) steps, and is clamped between `INTERP_MIN_DELAY_STEPS` (0.5) and
+  `INTERP_MAX_DELAY_STEPS` (2.5) steps (`render/config.ts`). A remote on a
   straight walk is the exception: it is continued at most half a tile past its newest
   tile, at the walk's own cadence. A gap of up to three steps between two steps of a walking
   remote is crossed at the walk's pace, not held and then slid. The file also has the slew that
@@ -785,8 +788,9 @@ it or its reducer call rejects, and a reconnect clears the set.
   walkability in every frame.
 - `map.ts` parses the tile map once from the wasm `zone_map()` value; `camera.ts`
   follows the player and centres maps smaller than the viewport; `viewport.ts` picks
-  an integer device scale from `TARGET_VISIBLE_TILES` (11), held between `MIN_VISIBLE_TILES` (7)
-  and `MAX_VISIBLE_TILES` (16) (`render/config.ts`), and its `appInitOptions` runs Pixi at
+  an integer device scale aimed at `TARGET_VISIBLE_TILES` (11) on the shorter axis, never more
+  than `MAX_VISIBLE_TILES` (16) and at least `MIN_VISIBLE_TILES` (7) where the viewport allows
+  (`render/config.ts`), and its `appInitOptions` runs Pixi at
   `resolution` = `devicePixelRatio` with `autoDensity`; `viewRegistry.ts` pools one sprite per
   entity and tears it down on despawn.
 - `world.ts`, `characterView.ts`, `atlasAssets.ts` and `placeholderAssets.ts` are the
@@ -823,8 +827,8 @@ draw order (`client/src/render/world.ts:296-299`): terrain (`#bg`), ground decor
 `world.ts:302`). The world container is the stage's only child; the UI is DOM, outside
 the canvas.
 - Terrain (`#drawMap`, `world.ts:461`): `planChunks` bakes static tiles into
-  nearest-sampled chunk textures at resolution 1 (`world.ts:489`, with
-  `CHUNK_TEXTURE_OPTIONS` from `render/terrainLayout.ts`), which the integer device scale
+  nearest-sampled chunk textures at resolution 1 (`world.ts:489`; the chunk cache in
+  `render/terrainLayout.ts` bakes with its `CHUNK_TEXTURE_OPTIONS`), which the integer device scale
   upsamples, so a device-scale change re-bakes nothing; a WebGL context restore re-bakes them.
   Animated water stays as per-tile sprites whose texture changes only when the frame index
   changes. The bake runs before the drawn terrain is torn down, so a failed bake leaves the previous

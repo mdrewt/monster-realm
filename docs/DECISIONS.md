@@ -540,13 +540,13 @@ reconciliation".
 
 **Decision.** Movement is driven by virtual D-pad edges, counted per button across physical keys,
 so releasing one key does not stop another held for the same direction. OS key-repeat drives
-neither movement nor menus; a menu repeats on an injected clock instead. A press sends one `Face`
-at once: a turn for a character facing another way, a step for one already facing the direction. A
-release sends nothing. A hold continues with `Step`, which the frame loop sends only after the key
-has been held for the commit threshold (150 ms), only when the predictor has no outstanding steps
-and no sent input is still owed, and only while the world has no frame above it and the session
-gate is open; a tap only turns. Every push of a frame over the world clears the held set. A zone
-warp keeps the held set across the prediction reset; a reconnect does not.
+neither movement nor menus; a menu repeats on an injected clock instead. A press sends one
+`Face` at once; a release sends nothing. A hold continues with `Step`, which the frame loop, or
+the reconcile after a server correction, sends only after the key has been held for the commit
+threshold (150 ms), only when the predictor has no outstanding steps and no sent input is still
+owed, and only while the world base takes input (no frame or sheet above it, the session gate
+open); a tap only turns. Every push of a frame, and every change of base, clears the held set. A
+zone warp keeps the held set across the prediction reset; a reconnect does not.
 
 **Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a tap
 (one input) from a hold (a walk), and waiting for outstanding steps stops the client queueing
@@ -644,8 +644,7 @@ cap is also the backward correction a stop can show.
 the window, or toward a tile that is not walkable; continuing from a single step (a tap, an NPC's
 wander); appending a same-tile row to the snapshot ring; a single global interpolation delay.
 
-The interpolation core, the resolver's two arms and the store's snapshots: `ARCHITECTURE.md`
-"Rendering".
+The interpolation core and the resolver's two arms: `ARCHITECTURE.md` "Rendering".
 
 ## Integer pixel scaling
 
@@ -659,7 +658,7 @@ re-bakes.
 
 **Why.** Non-integer scaling blurs or shimmers pixel art. A chunk baked at the device scale costs
 the scale squared times one baked at resolution 1, which costs 4 KB per tile: 36 times as much at
-device scale 6, the scale a 4K display gets.
+device scale 6, the scale a full-screen 4K window gets.
 
 **Rules out.** Fractional device scales; fitting the map by stretching; baking terrain at the
 device scale, or re-baking it when the device scale changes.
