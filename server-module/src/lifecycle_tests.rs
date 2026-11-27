@@ -816,7 +816,8 @@ mod recheck_arming {
     }
 
     /// What `on_connect` reads and writes on an `Open` world: the session table, the
-    /// account rows (read) and the re-check table (written, its key drawn from a sequence).
+    /// account rows (read, and stamped when a re-check is armed) and the re-check table
+    /// (written, its key drawn from a sequence).
     fn tables(fx: &Fixture) -> T<'_> {
         let _ = fx
             .table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
@@ -829,7 +830,8 @@ mod recheck_arming {
             .writable();
         let _ = fx
             .table_keyed::<WorldAccount, String>("world_account", "handle", |r| r.handle.clone())
-            .unique();
+            .unique()
+            .writable();
         let _ = fx
             .table_keyed::<RecheckSchedule, u64>("recheck_schedule", "scheduled_id", |r| {
                 r.scheduled_id
@@ -838,7 +840,8 @@ mod recheck_arming {
         T {
             accounts: fx
                 .table::<WorldAccount>("world_account", "identity", |r| r.identity)
-                .unique(),
+                .unique()
+                .writable(),
             rechecks: fx
                 .table::<RecheckSchedule>("recheck_schedule", "identity", |r| r.identity)
                 .unique()
@@ -884,20 +887,165 @@ mod recheck_arming {
         out
     }
 
+    /// `who`'s `world_account` row as `(handle, identity bytes, entitled, checked_at_ms,
+    /// is_host)`, if it holds one.
+    fn account_of(t: &T<'_>, who: Identity) -> Option<(String, [u8; 32], bool, i64, bool)> {
+        t.accounts
+            .rows()
+            .into_iter()
+            .find(|r| r.identity == who)
+            .map(|r| {
+                (
+                    r.handle,
+                    r.identity.to_byte_array(),
+                    r.entitled,
+                    r.checked_at_ms,
+                    r.is_host,
+                )
+            })
+    }
+
     /// A row checked exactly ten minutes (600 000 ms) before the connection arms one
-    /// re-check, firing at once, for the connecting identity; a neighbour whose row is as
-    /// old but who does not connect gets none.
+    /// re-check, firing at once, for the connecting identity, and stamps that row's
+    /// `checked_at_ms` with the connection time, every other field as it is; a neighbour
+    /// whose row is as old but who does not connect gets no re-check and keeps its row.
     ///
     /// kills: no arming at connect; a strict `>` on the age; a re-check armed for every
-    /// stale row; a fire time other than the connection's.
+    /// stale row; a fire time other than the connection's; arming with no stamp; a stamp
+    /// other than the connection time; a stamp that rewrites another field or another
+    /// identity's row.
     #[test]
     fn a_connection_arms_one_recheck_for_a_row_checked_ten_minutes_ago_lpw23_5() {
         let fx = fixture();
         let t = tables(&fx);
         checked(&t, alice(), "k1.AbCdEf0123456789-_", NOW - 600_000);
         checked(&t, bob(), "k1.ZyXwVu9876543210_-", NOW - 600_000);
+        let bob_before = account_of(&t, bob());
         connect(&fx, alice(), 0xC0_0001, NOW);
         assert_eq!(armed(&t), vec![(alice().to_byte_array(), NOW)]);
+        assert_eq!(
+            account_of(&t, alice()),
+            Some((
+                "k1.AbCdEf0123456789-_".to_string(),
+                alice().to_byte_array(),
+                true,
+                NOW,
+                false
+            )),
+            "the connecting identity's row is stamped with the connection time"
+        );
+        assert_eq!(
+            account_of(&t, bob()),
+            bob_before,
+            "the neighbour's row is untouched"
+        );
+        assert_eq!(t.accounts.rows().len(), 2, "no row added or removed");
+    }
+
+    /// A row checked ten minutes ago is armed and stamped by a first connection. The host
+    /// then spends the armed row and the run stores nothing. A connection 1 ms after the
+    /// first, and one 9 minutes 59 seconds after it, arm nothing and write nothing; a
+    /// connection exactly ten minutes after the first arms again, firing at that time.
+    ///
+    /// kills: arming with no stamp (a client reconnecting in a loop would have the world
+    /// send a request at each connection); the age measured from the row's earlier check
+    /// rather than the stamp; a bound other than ten minutes from the stamp.
+    #[test]
+    fn a_spent_recheck_with_no_answer_arms_nothing_for_ten_minutes_after_the_stamp_lpw23_5() {
+        let fx = fixture();
+        let t = tables(&fx);
+        checked(&t, alice(), "k1.AbCdEf0123456789-_", NOW - 600_000);
+        connect(&fx, alice(), 0xC0_0001, NOW);
+        assert_eq!(
+            armed(&t),
+            vec![(alice().to_byte_array(), NOW)],
+            "the first arms"
+        );
+        assert_eq!(
+            t.rechecks.remove(alice()),
+            1,
+            "the host spends the armed row"
+        );
+        let stamped = account_of(&t, alice());
+        assert_eq!(
+            stamped.as_ref().map(|r| r.3),
+            Some(NOW),
+            "fixture: the first connection stamps the row"
+        );
+        for (conn, later) in [(0xC0_0002_u128, 1_i64), (0xC0_0003, 599_000)] {
+            fx.reset_writes();
+            connect(&fx, alice(), conn, NOW + later);
+            assert_eq!(
+                armed(&t),
+                Vec::new(),
+                "{later} ms after the first: nothing armed"
+            );
+            assert_eq!(
+                fx.writes_to("recheck_schedule"),
+                0,
+                "{later} ms after the first: no write on the re-checks"
+            );
+            assert_eq!(
+                fx.writes_to("world_account"),
+                0,
+                "{later} ms after the first: no write on the accounts"
+            );
+            assert_eq!(
+                account_of(&t, alice()),
+                stamped,
+                "{later} ms: the row stays"
+            );
+        }
+        connect(&fx, alice(), 0xC0_0004, NOW + 600_000);
+        assert_eq!(
+            armed(&t),
+            vec![(alice().to_byte_array(), NOW + 600_000)],
+            "ten minutes after the first: armed again"
+        );
+        assert_eq!(
+            account_of(&t, alice()).map(|r| r.3),
+            Some(NOW + 600_000),
+            "and stamped again"
+        );
+    }
+
+    /// An identity whose account is pending deletion, holding a row checked an hour ago,
+    /// arms nothing and writes nothing on connect; a neighbour whose account is active and
+    /// whose row is as old is armed on its own connection.
+    ///
+    /// kills: arming without reading the account's deletion state; a world request made
+    /// about an identity that is being erased.
+    #[test]
+    fn a_connection_whose_account_is_pending_deletion_arms_nothing_lpw23_5() {
+        let fx = fixture();
+        let t = tables(&fx);
+        let accounts = fx
+            .table::<crate::schema::Account>("account", "identity", |r| r.identity)
+            .unique();
+        accounts.seed(&crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(alice(), String::new(), 0),
+            1,
+        ));
+        accounts.seed(&crate::accounts::new_account_row(bob(), String::new(), 0));
+        checked(&t, alice(), "k1.AbCdEf0123456789-_", NOW - 3_600_000);
+        checked(&t, bob(), "k1.ZyXwVu9876543210_-", NOW - 3_600_000);
+        let alice_before = account_of(&t, alice());
+        fx.reset_writes();
+        connect(&fx, alice(), 0xC0_0001, NOW);
+        assert_eq!(armed(&t), Vec::new(), "nothing armed");
+        assert_eq!(
+            fx.writes_to("recheck_schedule"),
+            0,
+            "no write on the re-checks"
+        );
+        assert_eq!(fx.writes_to("world_account"), 0, "no write on the accounts");
+        assert_eq!(account_of(&t, alice()), alice_before, "the row stays");
+        connect(&fx, bob(), 0xC0_0002, NOW);
+        assert_eq!(
+            armed(&t),
+            vec![(bob().to_byte_array(), NOW)],
+            "control: the active neighbour is armed"
+        );
     }
 
     /// A row checked 9 minutes 59 seconds (599 000 ms) before the connection arms nothing.

@@ -2597,6 +2597,45 @@ mod binding_build {
         assert!(!binds_nothing(&profile_with(DEV_ATTESTATION_KEYS, true)));
     }
 
+    /// Over the six profiles, `official`, `conflict` and `default` keep no account, and
+    /// `world`, `test` and `dev-enforcing` do. `world` is the case that matters: it names an
+    /// account service, so an unbind and a drop run there whatever keys it holds.
+    ///
+    /// kills: `keeps_no_account` decided from the attestation keys alone; decided from the
+    /// account service alone; keyed on the profile's name.
+    #[test]
+    fn a_build_keeps_no_account_only_with_no_key_and_no_account_service_lpw23_10() {
+        let cases: [(u8, &str, bool); 6] = [
+            (1, "official", true),
+            (3, "conflict", true),
+            (0, "default", true),
+            (2, "world", false),
+            (8, "test", false),
+            (4, "dev-enforcing", false),
+        ];
+        for (bits, name, want) in cases {
+            let profile = build_profile(features(bits));
+            assert_eq!(profile.name, name, "fixture: {bits:06b} builds `{name}`");
+            assert_eq!(
+                super::super::keeps_no_account(&profile),
+                want,
+                "`{name}`: keeps no account"
+            );
+        }
+        let service_only = BuildProfile {
+            world_check_url: Some("https://example.invalid/world/check"),
+            ..profile_with(&[], true)
+        };
+        assert!(
+            !super::super::keeps_no_account(&service_only),
+            "a profile with no key that names an account service keeps an account"
+        );
+        assert!(
+            super::super::keeps_no_account(&profile_with(&[], true)),
+            "a profile with no key and no account service keeps none"
+        );
+    }
+
     /// `entitled` for a caller with no login token on the enforcing dev build: an entitled
     /// attestation binding under the build's own key entitles nobody, and the identity's
     /// entitled `world_account` row does. The binding stays where it was.
@@ -3326,7 +3365,8 @@ mod acs6_enforcing_bound {
 }
 
 // =====================================================================================
-// The dev-enforcing build: an identity that unbinds is refused the join until it binds again.
+// The dev-enforcing build: an identity that unbinds loses its checked account and is refused
+// the join.
 // =====================================================================================
 
 #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]

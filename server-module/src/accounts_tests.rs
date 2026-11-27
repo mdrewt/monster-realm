@@ -13263,28 +13263,19 @@ mod acct_nh {
             );
         }
 
-        /// Another identity is bound to the same subject under the dev key: the cascade leaves
-        /// every list row unchanged, with no write call on the list, and the other binding
-        /// stays.
+        /// Another identity holds an attestation binding to the same subject under the dev
+        /// key: the cascade of the deleted identity leaves that other binding in place.
         ///
-        /// kills: a delist with no check for another counted carrier; a delete call issued
-        /// for a subject that is kept.
+        /// kills: a binding erase keyed on the subject rather than the identity.
         #[test]
-        fn another_counted_binding_keeps_the_subject_listed_with_no_write_wr261127a_4() {
+        fn the_cascade_leaves_another_identitys_binding_to_the_same_subject_wr261127a_4() {
             let fx = fixture();
             let w = world(&fx);
-            let list = listing(&fx);
+            let _list = listing(&fx);
             let (v, twin) = (id(0xF7), id(0xF8));
             bind(&w, v, OWN_SUB, dev_kid());
             bind(&w, twin, OWN_SUB, dev_kid());
-            enlist(&list, &[OWN_SUB, KEPT_SUB]);
             cascade(&fx, &w, v);
-            assert_eq!(listed(&list), subjects(&[OWN_SUB, KEPT_SUB]));
-            assert_eq!(
-                fx.writes_to("world_allowlist"),
-                0,
-                "no write call on the list"
-            );
             assert_eq!(
                 world_rows_of(&w, twin)[2].1.len(),
                 1,
@@ -13313,16 +13304,17 @@ mod acct_nh {
             );
         }
 
-        /// The deleted identity is bound to a subject the list does not hold: the list is left
-        /// unchanged, with no write call.
+        /// The deleted identity holds a checked account, and a binding, under a handle the
+        /// list does not hold: the list is left unchanged, with no write call.
         ///
-        /// kills: a delete call on the list for a subject that is not listed.
+        /// kills: a delete call on the list for a handle that is not listed.
         #[test]
         fn a_subject_that_is_not_listed_makes_no_write_on_the_list_wr261127a_4() {
             let fx = fixture();
             let w = world(&fx);
             let list = listing(&fx);
             let v = id(0xFB);
+            checked(&w, v, OWN_SUB, 31);
             bind(&w, v, OWN_SUB, dev_kid());
             enlist(&list, &[KEPT_SUB]);
             cascade(&fx, &w, v);

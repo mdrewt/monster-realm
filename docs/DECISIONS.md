@@ -1495,7 +1495,7 @@ page later, or re-running the check on a timer. Serving a client bundle before t
 is published and synced: a client newer than the server it reaches is refused, correctly, and stays
 refused until reload. Reading the check as access control: the server turns nobody away by protocol.
 
-## Observability: the module never times itself or calls out
+## Observability: the module never times itself or sends a signal out
 
 **Decision.** Server signals come from the SpacetimeDB host: `/v1/metrics` for
 Prometheus and the module's log files for Alloy→Loki. New server log lines go through
@@ -2449,14 +2449,19 @@ same at every check, and not a credential.
   ticket)`; the relay counts in the budget and is never refused by it. A handle another identity
   holds is refused, and so is a second account for an identity that holds one (it unbinds first).
 - **Each later connection.** The connect reducer arms one one-shot `recheck_schedule` row for an
-  identity whose row was last checked 10 minutes ago or more and that has none armed. The host runs
+  identity whose row was last checked 10 minutes ago or more, that has none armed and whose
+  account is not pending deletion, and stamps the row's `checked_at_ms` as it arms: the world asks
+  about one identity at most once in 10 minutes, however often it connects and whatever the run
+  does. `checked_at_ms` is therefore when the world last asked, not when it was last answered.
+  The host runs
   `recheck_account` from it (any other caller is refused before anything is sent), which presents
   the stored handle and stores the answer: a handle the service does not know is stored as not
   entitled; a handle under the service's newer key replaces the old one in `world_account` and in
   `world_allowlist` in the same transaction; a newer handle another identity already holds leaves
   the row's handle and stores the standing on it. The connection is admitted and entitled by the
-  stored row the whole time, and a row never expires. A run with no answer changes nothing, the
-  host spends the one-shot row whatever the run did, and the next connection asks again.
+  stored row the whole time, and a row never expires. A run with no answer leaves whether the
+  account owns the game unchanged, the host spends the one-shot row whatever the run did, and the
+  first connection 10 minutes after the arming asks again.
 - **Deciding after a wait.** Other transactions run while a request waits, and a transaction's body
   may run twice. The transaction that stores an answer reads again every row it decides on (the
   admission or the ownership, the deletion state, the world's names, who holds the handle), and a
@@ -2489,7 +2494,7 @@ same at every check, and not a credential.
   surface is pinned by `evals/client-surface-privacy.eval.mjs`, and the wire contract records each
   procedure's arguments and return type.
 
-The attestation binding this replaces is still compiled (`server-module/src/world_binding.rs`: the
+The attestation binding is compiled beside it (`server-module/src/world_binding.rs`: the
 tables `world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers
 and the verifier). It records a binding that nothing reads: it entitles and admits nobody. lpw-33
 removes it and acs-15 removes `POST /attest`. Not built: the character that follows the account
@@ -2508,8 +2513,11 @@ A world that asks for itself re-checks a client that never asks, which a credent
 fetches cannot; no key or verifier has to sit in a build; and a reader of a world's data finds
 handles, not account subjects. The stored status admits while a request waits because a module
 cannot hold a connection open or close one: a check that had to land first would turn an outage of
-our service into an outage of every world. The budget bounds what free identities in an `Open`
-world can make a world send; the relay is outside its refusal so the host can always check in
+our service into an outage of every world. Arming stamps the row because the host spends the
+one-shot row before the run ends and a failed run stores nothing: without the stamp a client
+that reconnects in a loop has the world send a request at every connection, past the service's
+limit for the world's address, and every other player's check then fails. The budget bounds what
+free identities in an `Open` world can make a world send; the relay is outside its refusal so the host can always check in
 whoever it chooses, its own player included. The unbind and the drop take the admission row
 because, while an identity holds a `world_account` row, `Allowlist` governs it by its handle alone
 and leaves the admission row unread, and every rule change keeps that row: erasing the account row
@@ -2522,7 +2530,8 @@ addresses, and the module reaches only the account service the build names.
 **Rules out.** Sending an account token to a world we do not operate (see "A target's kind gates
 telemetry and account sign-in"); a third-party provider as the party a world asks; storing an
 account's subject in a world; a ticket or a handle in a log line; refusing a known identity while
-the service cannot be reached; running a failed re-check again within the connection that armed it;
+the service cannot be reached; running a failed re-check again within the connection that armed
+it, or arming one for an identity at every connection;
 storing an answer without reading again the rows it was decided on; refusing the owner's relay by
 the budget; an admission check on the unbind (a removed player could not erase the link); keeping
 the admission row through an unbind or a drop. Defaults the operator may overrule (asked on
@@ -2694,20 +2703,22 @@ Proved by `mod binding_build` and `mod official_build` in `server-module/src/wor
 --workspace --no-default-features --features monster-realm-module/official -E
 'package(monster-realm-module) & test(/official_build/)'`). `docs/local-play.md` §3, fork (b).
 
-**Why.** An attestation is the only account credential a private host ever sees, and the same
-module source runs on every server, so the official server must be unable to take one as a reducer
-argument. A binding is also checked once and kept: accepted there, it would let an account outlive
-a refund or a ban that a login token, reissued within the hour, would catch. The refusal is what
-the compiled module holds. No row, call or publish option reaches it, a fresh or restored database
-is closed, and a binding row that reaches an official database admits nobody. With disjoint lists
-each release build has exactly one way to be entitled.
+**Why.** A ticket and an attestation are the only account credentials a private host ever sees,
+and the same module source runs on every server, so the official server must be unable to take
+either as an argument. A `world_account` row also admits by its stored status however old:
+accepted there, it would let an account outlive a refund or a ban that a login token, reissued
+within the hour, would catch. The refusal is what the compiled module holds. No row, call or
+publish option reaches it, a fresh or restored database is closed, and a `world_account` or
+binding row that reaches an official database admits nobody. With disjoint lists each release
+build has exactly one way to be entitled.
 
 **Rules out.** A row or flag that marks a database official (its owner controls it, and a fresh
 database starts without it); relying on the world-name check and the attestation route alone; a
 database identity compiled into the module; one release build that holds both lists; an
-`entitled(ctx, profile)` that reads a binding on the official build. Accepted limit: a `world` artefact
-published to the official database would accept bindings, so the official deploy publishes only an
-artefact whose recorded profile is `official`, and writes no world name.
+`entitled(ctx, profile)` that reads a `world_account` row on the official build. Accepted limit: a
+`world` artefact published to the official database would check accounts and entitle by their
+rows, so the official deploy publishes only an artefact whose recorded profile is `official`, and
+writes no world name.
 
 ## Private servers carry their own encryption: a real certificate for a domain, a pinned self-signed one otherwise; plaintext only on loopback
 
@@ -2828,18 +2839,18 @@ changes. An unadmitted identity can call nothing but its own unbind, so it canno
 admission, and the owner has to
 relay the door: the host gate (designed, not built), holding the owner credential, admits a joiner
 who gave the password. Turning the list on must not
-lock out the people playing, the host first: a host may play as a second identity bound to the
-same account as the owner's, so the list keeps an account, not an identity. The bindings and
-admission rows already say who the rule let in, so the list is made from them with no new table.
-Nothing bounds `world_binding`: a row stays until its identity unbinds, the owner drops it, a
-claim retires its identity or its account is deleted. A change to `Allowlist` lists the account
-of every counted binding the rule in force admitted, so a guest's binding left under its retired
-identity would be counted by a later change; the claim erases it. With more than 256
-distinct bound accounts the change to `Allowlist` is refused, and `drop_world_binding` is the
-owner's reducer for bringing them under the bound; a drop of a binding the build counts takes that
+lock out the people playing, the host first, so the list keeps an account's handle, not an
+identity: the handle is the same whichever identity the account plays under. The `world_account`
+and admission rows already say who the rule let in, so the list is made from them with no new
+table. Nothing bounds `world_account`: a row stays until its identity unbinds, the owner drops
+it, a claim retires its identity or its account is deleted. A change to `Allowlist` lists the
+handle of every row whose identity the rule in force admitted, so a guest's row left under its
+retired identity would be listed by a later change; the claim erases it. With more than 256
+such handles the change to `Allowlist` is refused, and `drop_world_binding` is the owner's
+reducer for bringing them under the bound; a drop that erases a `world_account` row takes that
 identity's admission row with it under every rule, as its own unbind does, so the owner admits
-again a player it means to keep. An account subject identifies a person, and an account's deletion
-erases what identifies its player, so the cascade delists it. That is a default taken while the
+again a player it means to keep. A handle stands for one person's account in this world, and an
+account's deletion erases what identifies its player, so the cascade delists it. That is a default taken while the
 operator's decision is open (<https://github.com/mdrewt/monster-realm/issues/886>): the alternative
 not taken is to keep the entry as host-owned data and document the retention. It is reversible: one
 call in the cascade and one function.
@@ -2850,23 +2861,24 @@ admission table with no filter of its own, the feature is `unstable`, and it put
 every subscription query; moving the public tables behind per-sender views (see "World rows are
 subscribed by zone"); a count of wrong attempts in the module; an HTTP handler in the module (the host serves handlers without the connect
 reducer); treating a refusal at connect as closing what is already open; trimming a list to fit
-its bound; adding accounts on a call that sets `Allowlist` over `Allowlist`; keeping the owner's
-account under a rule that does not read the list (a bind would be refused for a rule that is not in
-force, and the next change to `Allowlist` lists the account anyway). Accepted limits: on a host
+its bound; adding handles on a call that sets `Allowlist` over `Allowlist`; keeping the owner's
+handle under a rule that does not read the list (a check would be refused for a rule that is not in
+force, and the next change to `Allowlist` lists the handle anyway). Accepted limits: on a host
 with no gate a removed identity keeps reading what it subscribed to until it disconnects, and a
 joiner is admitted there only by the owner's own call. Leaving `Allowlist` and returning undoes a
 removal: `Open` lists
-every trusted binding again, anyone's who bound meanwhile included, and `Password` lists whoever
-holds an admission row, which a rule change gives each connected identity, so the host reads the
-list after changing back. A listed account stays listed after its player's binding is erased by an
-unbind, a drop or a guest claim, until the host removes it (a later deletion of that identity's
-account takes nothing off: the binding it would read is gone); an identity that unbound while the rule was `Open` and is still connected when
-it changes back gets an admission row from the change, as every connection `Open` admitted does.
-Anyone may bind in an `Open` world, so more than 256 accounts can bind there
-and the change to `Allowlist` is then refused; the host changes to `Password` first (which lists
-only the identities holding an admission row), then drops bindings with `drop_world_binding`, or
-deletes binding rows as the database owner. Under `Open` a dropped identity can bind again at once,
-which is why the change to `Password` comes first.
+every checked account's handle again, anyone's who checked in meanwhile included, and `Password`
+lists whoever holds an admission row, which a rule change gives each connected identity, so the
+host reads the list after changing back. A listed handle stays listed after its player's row is
+erased by an unbind, a drop or a guest claim, until the host removes it (a later deletion of that
+identity's account takes nothing off: the row it would read is gone); an identity that unbound
+while the rule was `Open` and is still connected when it changes back gets an admission row from
+the change, as every connection `Open` admitted does. Anyone with an account may check in to an
+`Open` world, so more than 256 accounts can hold a row there and the change to `Allowlist` is then
+refused; the host changes to `Password` first (which lists only the identities holding an
+admission row), then drops rows with `drop_world_binding`, or deletes them as the database owner.
+Under `Open` a dropped identity can check in again at once, which is why the change to `Password`
+comes first.
 
 ## The gate checks a world's password; the module never receives one
 

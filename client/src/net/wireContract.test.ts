@@ -805,7 +805,7 @@ describe('procedures in an entry', () => {
     expect(Object.keys(entryWith().clientToServer).sort()).toEqual(['reducers', 'types']);
   });
 
-  it('files a named type reached only from a procedure under client to server [lpw-23]', () => {
+  it('files a named type reached from a procedure return under server to client and one reached only from a procedure argument under client to server [lpw-23]', () => {
     const Ticket = t.object('Ticket', { code: t.string() });
     const Verdict = t.enum('Verdict', { Entitled: t.unit(), Refused: t.string() });
     const entry = entryWith(procedureSchema('redeem', { ticket: Ticket }, Verdict));
@@ -816,13 +816,44 @@ describe('procedures in an entry', () => {
       MoveInput: { fields: ['dx: i32', 'dy: i32'] },
       Emote: { variants: ['Wave: ()', 'Bow: ()'] },
       Ticket: { fields: ['code: string'] },
-      Verdict: { variants: ['Entitled: ()', 'Refused: string'] },
     });
-    expect(Object.keys(entry.serverToClient.types).sort()).toEqual(['Direction', 'Tile']);
+    expect(Object.keys(entry.serverToClient.types).sort()).toEqual([
+      'Direction',
+      'Tile',
+      'Verdict',
+    ]);
+    expect(entry.serverToClient.types.Verdict).toEqual({
+      variants: ['Entitled: ()', 'Refused: string'],
+    });
     // A type a column reaches stays server to client when a procedure reaches it too.
     const facing = entryWith(procedureSchema('turn', { facing: directionEnum() }, t.unit()));
     expect(Object.keys(facing.serverToClient.types).sort()).toEqual(['Direction', 'Tile']);
     expect(facing.clientToServer.types).not.toHaveProperty('Direction');
+  });
+
+  it('a variant appended to an enum a procedure returns breaks the older entry; one appended to an enum only a procedure argument reaches breaks nothing [lpw-23]', () => {
+    const verdict = (more: boolean): AnyTypeBuilder =>
+      more
+        ? t.enum('Verdict', { Entitled: t.unit(), Refused: t.string(), Pending: t.unit() })
+        : t.enum('Verdict', { Entitled: t.unit(), Refused: t.string() });
+    const plea = (more: boolean): AnyTypeBuilder =>
+      more
+        ? t.enum('Plea', { Check: t.unit(), Recheck: t.unit(), Relay: t.unit() })
+        : t.enum('Plea', { Check: t.unit(), Recheck: t.unit() });
+    const redeem = (moreVerdicts: boolean, morePleas: boolean) =>
+      procedureSchema('redeem', { plea: plea(morePleas) }, verdict(moreVerdicts));
+    const older = entryWith(redeem(false, false));
+    expect(older.clientToServer.types).toHaveProperty('Plea');
+    expect(older.serverToClient.types).toHaveProperty('Verdict');
+
+    const returnGrew = entryWith(redeem(true, false));
+    expect(check({ 4: older, 5: returnGrew }, returnGrew, 5, 4)).toEqual([
+      broken(4, 'serverToClient.types.Verdict'),
+    ]);
+    expect(check({ 4: older, 5: returnGrew }, returnGrew, 5, 5), 'entry 4 retired').toEqual([]);
+
+    const argumentGrew = entryWith(redeem(false, true));
+    expect(check({ 4: older, 5: argumentGrew }, argumentGrew, 5, 4)).toEqual([]);
   });
 
   it('keeps an older entry while every procedure it records exists with the same arguments and return [lpw-23]', () => {
