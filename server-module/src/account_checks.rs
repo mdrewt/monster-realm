@@ -31,9 +31,10 @@
 //! ([`set_host_identity`]), which marks that identity's row and arms one row of
 //! `host_check_schedule`. The row ticks [`host_account_check`] every
 //! [`HOST_CHECK_INTERVAL_MS`], and a tick asks about the marked row's handle, and no other,
-//! once the last success is [`HOST_CHECK_MIN_AGE_MS`] old. A world nobody reconnects to so
-//! learns within about a day whether its host's account owns the game, and what address it is
-//! reached at. A tick that gets no answer writes nothing and the next one asks again.
+//! once the last success is [`HOST_CHECK_MIN_AGE_MS`] old, and never while the marked account
+//! is pending deletion. A world nobody reconnects to so learns within about a day whether its
+//! host's account owns the game, and what address it is reached at. A tick that gets no answer
+//! writes nothing and the next one asks again.
 //!
 //! The world's address: every answer reports the address the service saw the request leave
 //! from, and the world stores it in `world_egress`, one row per address family. A world asks
@@ -93,6 +94,8 @@ pub(crate) const REJECT_BUILD_CHECKS_NOTHING: &str = "this server checks no acco
 pub(crate) const REJECT_TICKET_MALFORMED: &str = "a ticket is 43 base64url characters";
 pub(crate) const REJECT_CHECK_BUDGET: &str =
     "too many account checks this minute; try again shortly";
+/// The world presents no name in a redeem: it has none, or each one it has is an `ip:` name the
+/// address rule withholds ([`name_presented`]).
 pub(crate) const REJECT_WORLD_UNNAMED: &str = "this world has no name to check an account under";
 /// The service answered `403`: the ticket is unknown, spent or expired, or names another world.
 /// Also the refusal of an answer whose name this world does not present when it lands.
@@ -468,8 +471,9 @@ pub(crate) fn admitted_handles(
     handles
 }
 
-/// The address family this world asks the account service over ([`asked_family`]).
-fn family_asked(tx: &ReducerContext) -> Option<u8> {
+/// The address family this world asks the account service over ([`asked_family`]), from its
+/// names as the transaction `tx` reads them.
+fn family_world_asks(tx: &ReducerContext) -> Option<u8> {
     asked_family(&crate::world_binding::world_names(tx))
 }
 
@@ -926,14 +930,17 @@ pub(crate) fn mark_host(
 /// row with no success yet. Called by `world_binding::set_world_names`.
 pub(crate) fn names_changed(ctx: &ReducerContext) {
     let armed: Vec<HostCheckSchedule> = ctx.db.host_check_schedule().iter().collect();
-    let asks_next = match armed.as_slice() {
-        [] => return,
-        [row] => row.last_success_ms.is_none(),
-        _ => false,
-    };
-    if !asks_next {
-        replace_host_schedule(ctx, armed.into_iter().map(|row| row.scheduled_id), None);
+    let nothing_to_reset = matches!(
+        armed.as_slice(),
+        [] | [HostCheckSchedule {
+            last_success_ms: None,
+            ..
+        }]
+    );
+    if nothing_to_reset {
+        return;
     }
+    replace_host_schedule(ctx, armed.into_iter().map(|row| row.scheduled_id), None);
 }
 
 /// What a tick of the host's own check read before it asked: the schedule row that fired and
@@ -948,7 +955,8 @@ struct HostCheck {
 
 /// The check a tick of the schedule row `scheduled_id` makes at this transaction's time. None,
 /// and the tick sends nothing, when `host_check_schedule` holds no row under that id, when the
-/// row is not due ([`host_check_due`], judged on the stored row), and when no row is marked.
+/// row is not due ([`host_check_due`], judged on the stored row), when no row is marked, and when
+/// the marked identity's account is pending deletion.
 fn due_host_check(tx: &ReducerContext, scheduled_id: u64) -> Option<HostCheck> {
     let fired = tx
         .db
@@ -959,30 +967,38 @@ fn due_host_check(tx: &ReducerContext, scheduled_id: u64) -> Option<HostCheck> {
         return None;
     }
     let asked = tx.db.world_account().iter().find(|row| row.is_host)?;
+    if crate::accounts::is_pending_deletion(tx, asked.identity) {
+        return None;
+    }
     Some(HostCheck {
         scheduled_id,
         last_success_ms: fired.last_success_ms,
         asked,
-        family: family_asked(tx),
+        family: family_world_asks(tx),
     })
 }
 
 /// The transaction that stores the answer to the host's own check: the address it reports, and
-/// its status as a re-check stores it ([`row_asked_about`], [`store_status`]). The success is
-/// stamped, the fired row replaced by one that holds this transaction's time, only when the
-/// status was stored on a row that is still marked and the fired row still holds the success it
-/// held when the tick read it, each judged on the rows as this transaction first reads them. A
-/// change of host or of the world's names during the wait has put a row with no success in its
-/// place, and that row stands: the next tick asks again.
+/// its status as a re-check stores it ([`row_asked_about`], [`store_status`]), except on a row
+/// whose identity's account is pending deletion, which is left alone. The success is stamped, the
+/// fired row replaced by one that holds this transaction's time, only when the status was stored
+/// on a row that is still marked, the fired row still holds the success it held when the tick
+/// read it, and the world still asks over the address family the request went over, each judged
+/// on the rows as this transaction first reads them. After a change of host during the wait, or
+/// a change of the world's names that reset the check or changed the family asked, the schedule
+/// row holds no success and stands: the next tick asks again.
 fn store_host_check(tx: &ReducerContext, check: &HostCheck, answer: &HandleAnswer) {
-    let row = row_asked_about(tx, &check.asked);
+    let row = row_asked_about(tx, &check.asked)
+        .filter(|row| !crate::accounts::is_pending_deletion(tx, row.identity));
     let fired_unchanged = tx
         .db
         .host_check_schedule()
         .scheduled_id()
         .find(check.scheduled_id)
         .is_some_and(|fired| fired.last_success_ms == check.last_success_ms);
-    let stamps = fired_unchanged && row.as_ref().is_some_and(|row| row.is_host);
+    let stamps = fired_unchanged
+        && family_world_asks(tx) == check.family
+        && row.as_ref().is_some_and(|row| row.is_host);
     if let Some(address) = reported_address(answer.address.as_ref()) {
         store_egress(tx, address);
     }
@@ -1136,7 +1152,7 @@ pub(crate) fn recheck_account_under(
         return refuse(PROCEDURE, ctx.sender(), REJECT_NOT_DATABASE);
     }
     let read =
-        ctx.with_tx(|tx| account_of(tx, row.identity).map(|asked| (asked, family_asked(tx))));
+        ctx.with_tx(|tx| account_of(tx, row.identity).map(|asked| (asked, family_world_asks(tx))));
     let Some((asked, family)) = read else {
         return Ok(());
     };
@@ -1206,8 +1222,9 @@ pub fn check_account_for(
 }
 
 /// Ask the account service again about the account `row.identity` holds, and store the answer.
-/// Run by the host from a `recheck_schedule` row; any other caller is refused with
-/// [`REJECT_NOT_DATABASE`] before anything is sent.
+/// Run by the host from a `recheck_schedule` row; any other caller is refused before anything
+/// is sent ([`REJECT_NOT_DATABASE`], after a build that names no account service has answered
+/// [`REJECT_BUILD_CHECKS_NOTHING`]).
 #[spacetimedb::procedure]
 pub fn recheck_account(ctx: &mut ProcedureContext, row: RecheckSchedule) -> Result<(), String> {
     recheck_account_under(ctx, &BUILD_PROFILE, row)
@@ -1216,10 +1233,11 @@ pub fn recheck_account(ctx: &mut ProcedureContext, row: RecheckSchedule) -> Resu
 /// The host's own check: ask the account service about the account the marked row holds, and
 /// store the answer and, when it lands on that row, the time of the success. Run by the host
 /// from the `host_check_schedule` row every [`HOST_CHECK_INTERVAL_MS`]; any other caller is
-/// refused with [`REJECT_NOT_DATABASE`] before anything is read or sent. A tick sends nothing
-/// while the last success is under [`HOST_CHECK_MIN_AGE_MS`] old or no row is marked, and one
-/// that gets no answer writes nothing, so the next tick asks again. It asks about the marked
-/// row's handle and no other.
+/// refused before anything is read or sent ([`REJECT_NOT_DATABASE`], after a build that names no
+/// account service has answered [`REJECT_BUILD_CHECKS_NOTHING`]). A tick sends nothing while the
+/// last success is under [`HOST_CHECK_MIN_AGE_MS`] old, no row is marked, or the marked account
+/// is pending deletion, and one that gets no answer writes nothing, so the next tick asks again.
+/// It asks about the marked row's handle and no other.
 #[spacetimedb::procedure]
 pub fn host_account_check(
     ctx: &mut ProcedureContext,
