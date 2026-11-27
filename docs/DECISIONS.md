@@ -548,20 +548,20 @@ and no sent input is still owed, and only while the world has no frame above it 
 gate is open; a tap only turns. Every push of a frame over the world clears the held set. A zone
 warp keeps the held set across the prediction reset; a reconnect does not.
 
-**Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a tap (one
-input) from a hold (a walk), and waiting for outstanding steps stops the client queueing moves
-faster than the server drains them. One step in flight is also the measured choice over two
-(`docs/send-pipeline-depth.md`). Against a local server a second gives a watcher nothing, since
-a step already lands on every tick. It multiplies teleports of the own avatar unless only the
-frame loop sends it, and either way it fills the server's queue, which then refuses a press made
-mid-walk, and adds a tile to every committed hold. One step costs only a player whose delay each
-way nears half the step interval: steps miss ticks and the walk drops toward half speed. The
-continuation sends `Step`, which turns and moves in one input, so a walk that falls back to a
-second held key or resumes after a server correction does not stop for a turn slot. Keeping the set
-across a warp lets a player walk through a door without re-pressing. A walk that resumes behind
-a closing menu is a step the player did not ask for, and stale hold stamps would skip the commit
-threshold. A step sent and then cancelled on keyup would take back steps the predictor has already
-drawn, pulling the own avatar backward.
+**Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a tap
+(one input) from a hold (a walk), and waiting for outstanding steps stops the client queueing
+moves faster than the server drains them. One step in flight is also the measured choice over
+two (`docs/send-pipeline-depth.md`). Against a local server a second gives a watcher nothing,
+since a step already lands on every tick. It multiplies teleports of the own avatar unless only
+the frame loop sends it, and either way it fills the server's queue, which then refuses a press
+made mid-walk, and adds a tile to every committed hold. The cost of one step falls on a player
+whose delay each way nears half the step interval: steps miss ticks and the walk drops toward half
+speed. The continuation sends `Step`, which turns and moves in one input, so a walk that falls back
+to a second held key or resumes after a server correction does not stop for a turn slot. Keeping
+the set across a warp lets a player walk through a door without re-pressing. A walk that resumes
+behind a closing menu is a step the player did not ask for, and stale hold stamps would skip the
+commit threshold. A step sent and then cancelled on keyup would take back steps the predictor has
+already drawn, pulling the own avatar backward.
 
 **Rules out.** Repeat-driven movement or menus; continuation steps while earlier ones are in
 flight; a step cancelled on keyup (`clear_queue` or `set_move` on release); resuming a held walk
