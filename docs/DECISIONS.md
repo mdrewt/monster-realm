@@ -2761,10 +2761,10 @@ accepting an attestation under its old address's name until its certificate expi
 most for an address, the certificate's life for a domain name), and a ticket under a `dns:` name
 as long. A ticket under an `ip:` name it refuses once the account service reports the world
 another address, or, after a first report, none for 25 hours (see "A private world checks an
-account itself: a one-use ticket at first contact, then the account's handle"). A browser that
-loaded an earlier server's page at the same address and port may still run what that page left
-there. A name issued for the server's key, under a DNS zone we would operate, closes both and was
-weighed and not chosen (R-lpw-19-CHANGEDHANDS).
+account itself: a one-use ticket at first contact, then the account's handle"). A browser
+that loaded an earlier server's page at the same address and port may still run what that page
+left there. A name issued for the server's key, under a DNS zone we would operate, closes both and
+was weighed and not chosen (R-lpw-19-CHANGEDHANDS).
 
 ## A browser binds a friends server by a sign-in on the account service's own origin; the attestation names the address the browser is sent back to
 
