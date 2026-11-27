@@ -65,8 +65,9 @@ only `server-module` turns on its `spacetimedb` feature.
 | `content` | Parsing, loading and validation of every content registry. |
 
 Rules take their inputs explicitly. Time arrives as `Millis`; randomness arrives as a
-seed or as pre-rolled values (individuality seeds; `combat`'s `TurnVariance` and
-`StatusVariance`, which no shipped caller uses). On the server, `now_ms`
+seed or as pre-rolled values (individuality seeds; `StatusVariance`, which the tactical
+upkeep fills from the battle's roll stream; `combat`'s `TurnVariance`, which no shipped
+caller uses). On the server, `now_ms`
 (`server-module/src/marshal.rs`) turns `ctx.timestamp` into the milliseconds a rule
 takes as `Millis`, and seeds are drawn from `ctx.random()`. A tactical battle keeps its seed in
 the private `battle_secret` row and draws each target's accuracy and variance rolls

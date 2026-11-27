@@ -163,10 +163,10 @@ The embed, validate, seed and version steps: `ARCHITECTURE.md` "Content pipeline
 **Decision.** A value the tactical engine reads about a skill, a species, a battle item or a zone's
 wild encounters is a field of that row, and RON must spell it for every skill, species and encounter
 table. Battle maps and the tactical tuning stay registries of their own. No content table has a
-column for a tactical field. One `game-core` gate checks tactical content: CI runs it as ordinary tests and the content
-sync runs it before any write. This is the target. The code still holds four registries of tactical
-fields keyed by another row's id, and `docs/refactors/tactics-content.md` gives each field's home and
-lists the slices that move each registry, in order.
+column for a tactical field. One `game-core` gate checks tactical content: CI runs it as ordinary
+tests and the content sync runs it before any write. This is the target. The code still holds four
+registries of tactical fields keyed by another row's id, and `docs/refactors/tactics-content.md`
+gives each field's home and lists the slices that move each registry, in order.
 
 **Why.** A skill's power and its reach are one balance decision, and the engine reads them together.
 Kept as two entries that must agree by id, they let an author change one and forget the other, and
