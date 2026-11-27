@@ -148,7 +148,7 @@ rotate() {     # rotate <keys.json|attestation-keys.json|handle-keys.json> publi
     const [name, step, kid] = process.argv.slice(1);
     const make = { "keys.json": "generateSigningKey", "attestation-keys.json": "generateAttestationKey", "handle-keys.json": "generateHandleKey" }[name];
     if (make === undefined) throw new Error("which key file?");
-    if (name === "handle-keys.json" && step === "retire") throw new Error("a handle key is never retired");
+    if (name === "handle-keys.json" && step === "retire") throw new Error("a handle key stays in its file");
     const file = "/var/lib/account-service/keys/" + name;
     import("/app/src/keys.ts").then((k) => {
       const set = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -190,10 +190,10 @@ before the key is promoted.
 `handle-keys.json` rotates with the first two steps and no wait: `rotate handle-keys.json
 publish`, then `rotate handle-keys.json promote <new kid>`. Only the service reads a handle, so
 nothing has to learn the new key, and each world's stored handles are replaced as the world
-re-checks them (`published=` lists the keys that open). **A handle key is never retired**, and
-`rotate` refuses to: a world that still holds a handle under a key taken out is told the handle
-is not ours, and that account cannot reach its character there until the key is back in the
-file. Back up the keys volume before and after.
+re-checks them (`published=` lists the keys that open). **Never take a handle key out of its
+file**; `rotate` refuses the `retire` step there. A world that still holds a handle under a key
+taken out is told the handle is not ours, and that account cannot reach its character there until
+the key is back in the file. Back up the keys volume before and after.
 
 ## 5. Backup and restore
 
