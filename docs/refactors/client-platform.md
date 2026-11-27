@@ -28,10 +28,11 @@ takes a `host` parameter and reads `sessionStorage` from it is a call site of st
 (`createFrame(document, …)`) 21, `createTextNode` 1. The other six are the root element (its
 `lang`, `dir` and text size) and the visibility registration. A browser tab, Electron's Chromium
 and Tauri's webviews all provide the DOM, so the tree is not part of the seam. Neither are
-`console` (50), `performance.now` (23, in 6 files), the four timer functions (17), `Date` (8),
-`Intl` (6), `ResizeObserver` (8, the context-sheet placement in four views), `queueMicrotask`
-(1), the `URL` parser (in 2 files) and `getComputedStyle` (1): each is the same web API in all
-three hosts and no host is known to need a different one.
+`console` (50), `performance.now` (23, in 6 files), the four timer functions (17 mentions, type
+positions included), `Date` (8), `Intl` (6), `ResizeObserver` (8, the context-sheet placement in
+four views), `queueMicrotask` (1), the `URL` parser (in 2 files) and `getComputedStyle` (1, and
+once more through an element's own window): each is the same web API in all three hosts and no
+host is known to need a different one.
 
 ### 1.2 Call sites
 
@@ -44,10 +45,10 @@ owns it.
 | `client/src/shell/config.ts` | module scope (`URI`, `DB`, `TARGET_KIND`) | `globalThis` handed to `readShellDocument`; `import.meta.env` (`DEV`) | shell document |
 | `client/src/net/shellDocument.ts` | `readShellDocument`, `renderShellConfigScript` | the own property `__MR_SHELL_CONFIG__` of the injected host; the script text writes `globalThis` | shell document |
 | `client/src/shell/config.ts` | `DEV_LOG_LEVEL` | `import.meta.env` (`VITE_MR_DEVLOG`, `DEV`) | build configuration |
-| `client/src/net/buildInfo.ts` | `BUILD_INFO` | `import.meta.env` (`DEV`) | build configuration |
+| `client/src/net/buildInfo.ts` | `BUILD_INFO` | `import.meta.env` (`DEV`); the bare globals `__MR_BUILD_SHA__` and `__MR_BUILD_TIME__` the build defines | build configuration |
 | `client/src/main.ts` | `TELEMETRY_CONFIG`, `OIDC_ISSUER`, `SIGN_IN_OFFER`, `main` | `import.meta.env` (`VITE_MR_OTLP_ENDPOINT`, `VITE_MR_OTLP_INTERVAL_MS`, `VITE_MR_OIDC_ISSUER`, `VITE_MR_OIDC_PROVIDER_NAME`, `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`, `DEV`) | build configuration |
 | `client/src/input/bindingStore.ts` | `browserStorage` | `window.` (`window.localStorage`); its three callers in `client/src/shell/inputState.ts` (`bindings`, `padBindings`, `applyTables`) and three in `client/src/main.ts` (`textStep`, `main` twice) take the handle it returns | device storage |
-| `client/src/net/authToken.ts` | `TokenStorageHost`, `createAuthTokenGate`, `readAuthKind`, `writeAuthKind` | `localStorage`, `sessionStorage` of the injected host | credential storage |
+| `client/src/net/authToken.ts` | `TokenStorageHost`, `storageMethod`, `createAuthTokenGate`, `readAuthKind`, `writeAuthKind` | `localStorage`, `sessionStorage` of the injected host | credential storage |
 | `client/src/net/claimCode.ts` | `ClaimCodeHost`, `storageMethod`, `drawRandomBytes` | `sessionStorage`, `readonly crypto?` of the injected host | credential storage |
 | `client/src/net/oidc.ts` | `OidcHost`, `storageMethod`, `drawRandomBytes`, `computeChallenge`, `createOidcClient` | `sessionStorage`, `readonly crypto?`, `readonly fetch?`, `readonly location?`, `readonly history?` of the injected host | sign-in navigation |
 | `client/src/net/connection.ts` | `connect` | `globalThis` handed as the host at ten call sites (`createAuthTokenGate`, `createOidcClient`, `writeAuthKind`, `wasEverAuthenticated` twice, `claimCode.hasUnconsumed` twice, `.read`, `.mint`, `.clear`) | credential storage |
@@ -62,6 +63,7 @@ owns it.
 | `client/src/main.ts` | module scope | `window.` (`blur`), `visibilitychange`, `document.visibilityState`: both release held input | visibility and page life |
 | `client/src/net/connection.ts` | `connect` | `window.` (`pagehide`, `pageshow`) | visibility and page life |
 | `client/src/render/motionPreference.ts` | `MatchMediaHost`, `motionPreferenceFromWindow` | `matchMedia` of the injected host, `window` by default | motion preference |
+| `client/src/shell/screenContext.ts` | `motionPreference` | calls `motionPreferenceFromWindow` with its default host, once at import | motion preference |
 | `client/src/main.ts` | module scope | `window.` (`keydown` in the capture phase, `keydown`, `keyup`) | keyboard |
 | `client/src/shell/inputState.ts` | `pad` | `navigator.` (`getGamepads`), read at each poll | gamepad |
 | `client/src/input/pointerSource.ts` | `BROWSER_CLOCK` | `window.` (`setTimeout`, `clearTimeout`); pointer events on the game-screen element | pointer |
@@ -70,9 +72,11 @@ owns it.
 | `client/src/main.ts` | module scope | `window.` (`error`, `unhandledrejection`) | error capture |
 | `client/src/main.ts` | `main` | `requestAnimationFrame` | frame clock |
 | `client/src/main.ts` | module scope | `window.` (`__game`, `__mrTrade`, `__mrPvp`, `__mrTactics` under `import.meta.env` `DEV`; `__mrBuild`) | debug hooks |
-| `client/src/net/connection.ts` | `connect` (`build`) | the SDK's WebSocket, opened by `DbConnection.builder().withUri(…)` to the target's address | network |
-| `client/src/observability/telemetry.ts` | `loadOtelSdk` | the metrics exporter's HTTP request to the build's endpoint, made only toward an `official` or `test` target | network |
-| `client/src/render/world.ts` | `WorldRenderer` | Pixi's `Assets.load` of the art atlases, from the page's own origin | network |
+| `client/src/net/connection.ts` | `connect` (`build`) | the SDK's WebSocket, opened by `DbConnection.builder().withUri(…)` to the target's address | network and page policy |
+| `client/src/observability/telemetry.ts` | `loadOtelSdk` | the metrics exporter's HTTP request to the build's endpoint, made only toward an `official` or `test` target | network and page policy |
+| `client/src/render/world.ts` | `WorldRenderer` | Pixi's `Assets.load` of the art atlases, from the page's own origin | network and page policy |
+| `client/src/shell/config.ts` | module scope (`STEP_MS`, `PROTOCOL_VERSION`) | the wasm package, compiled when the module is imported | network and page policy |
+| `client/src/render/world.ts` | `WorldRenderer` (`init`) | the GPU context Pixi's `Application.init` creates on its canvas, and its `webglcontextrestored` event | rendering |
 
 No file reads or requests fullscreen, and no file calls Steam; the store entry above is the only
 Steam-related reach. The wasm module and the bundle's own chunks load from the page's origin like
@@ -80,32 +84,34 @@ the art.
 
 ### 1.3 Concerns, their ports and what each adapter provides
 
-A port is cut only where a second host is known to need one (1.5). Every other concern keeps the
-owner it has: an injected structural type the real global satisfies, or a registration the
-composition root makes. The Electron and Tauri columns say what that shell's adapter provides;
-"same web API" means the shell provides nothing of its own and the browser code runs. A claim
+Every concern has one owner. The owner is a port, a module under `client/src/platform/`, only
+where a second host is known to need one (1.5). Every other concern keeps the owner it has: an
+injected structural type the real global satisfies, or the module that registers the DOM event.
+The Electron and Tauri columns say what that shell's adapter provides; "same web API" means the
+shell provides nothing of its own and the browser code runs. A claim
 about a shell comes from its documentation unless it says "unverified"; none was run here.
 
-| Concern | Port (owner) | Browser | Electron | Tauri |
+| Concern | Owner | Browser | Electron | Tauri |
 |---|---|---|---|---|
 | shell document | `readShellDocument` in `client/src/net/shellDocument.ts`, called once by `client/src/shell/config.ts` | the classic script `/shell-config.js` sets the page global | the preload sets it with `contextBridge.exposeInMainWorld` (measured, `docs/local-play.md` section 2) | an initialization script sets it before the document is parsed (documented, not run) |
-| build configuration | none: `import.meta.env` is fixed when the bundle is built, and one bundle serves every host | the build's values | the same bundle, so the same values | the same bundle, so the same values |
+| build configuration | the build, no port: `import.meta.env` and the two build globals are fixed when the bundle is built, and one bundle serves every host | the build's values | the same bundle, so the same values | the same bundle, so the same values |
 | device storage | `StorageLike` in `client/src/input/bindingStore.ts`, resolved by `browserStorage` | `window.localStorage` | same web API; the shell registers its page scheme as standard so Web Storage is enabled | same web API; persistence across launches under `tauri://localhost` is unverified |
 | credential storage | `TokenStorageHost` (`client/src/net/authToken.ts`), `ClaimCodeHost` (`client/src/net/claimCode.ts`) | `sessionStorage` and `localStorage` of `globalThis`, by target kind | same web API | same web API |
 | sign-in navigation | `OidcHost` in `client/src/net/oidc.ts`; the credential port of 1.4 replaces it under a shell | `location.assign` to the issuer, the return leg read from `location` and cleaned with `history.replaceState` | nothing: the shell refuses navigation off its origin and hands a credential instead (1.4) | nothing: the same |
 | hand-off | `client/src/platform/handoff.ts` (extraction 1): `openExternal`, `saveFile` | `window.open(url, '_blank', 'noopener')`; a blob URL on a hidden `<a download>` | the bridge's `openExternal` (the system browser or the Steam overlay's store page) and `saveFile` (a save dialog, then a write); where the shell supplies neither, `window.open` and the blob download run and its own handlers decide (`setWindowOpenHandler`, `will-download`) | the bridge's `openExternal` (the opener plugin or the overlay) and `saveFile` (a save dialog, then a write); a blob download is reported to fail under WKWebView, so `saveFile` is required there |
 | window size | `ResizeWindow` in `client/src/render/resizeWiring.ts` | `window` | same web API | same web API |
-| visibility and page life | none: `main.ts` and `connect` register the DOM events | `blur`, `visibilitychange`, `pagehide`, `pageshow` | same web API, unverified; the overlay signal of 1.4 is separate | same web API, unverified |
+| visibility and page life | `main.ts` (`blur`, `visibilitychange`) and `connect` in `client/src/net/connection.ts` (`pagehide`, `pageshow`) register the DOM events; no port | `blur`, `visibilitychange`, `pagehide`, `pageshow` | same web API, unverified; the overlay signal of 1.4 is separate | same web API, unverified |
 | motion preference | `MatchMediaHost` in `client/src/render/motionPreference.ts` | `window.matchMedia` | same web API | same web API |
 | keyboard | `KeyEventLike` in `client/src/input/keyboardSource.ts`; `main.ts` registers the DOM events | `keydown`, `keyup` on `window` | same web API | same web API |
-| gamepad | `getPads` of `GamepadSource` in `client/src/input/gamepadSource.ts` | `navigator.getGamepads` | same web API (Chromium) | same web API; WebKitGTK builds it only with libmanette and WKWebView is reported to return an empty list, so a shell may hand in another read function |
-| pointer | `PointerClock` and `PointerDeps` in `client/src/input/pointerSource.ts` | DOM pointer events, `window.setTimeout` | same web API | same web API |
-| locale | none: `main.ts` reads the `locale` query parameter first, then `navigator.languages` | the page URL and the browser's languages | the shell adds `?locale=` to the URL it loads when Steam's language differs | the same |
+| gamepad | `getPads` of `GamepadSource` in `client/src/input/gamepadSource.ts`, bound in `client/src/shell/inputState.ts` | `navigator.getGamepads` | same web API (Chromium) | same web API where the webview has it: WebKitGTK builds it only with libmanette and WKWebView is reported to return an empty list (1.4, the pad the Gamepad API does not show) |
+| pointer | `PointerClock` in `client/src/input/pointerSource.ts`; the source registers its own DOM events | DOM pointer events, `window.setTimeout` | same web API | same web API |
+| locale | `main.ts`, no port: it reads the `locale` query parameter first, then `navigator.languages` | the page URL and the browser's languages | the shell adds `?locale=` to the URL it loads when Steam's language differs | the same |
 | device hints | `DeviceHints` in `client/src/observability/deviceClass.ts` | `navigator.userAgent`, `navigator.maxTouchPoints` | same web API | same web API |
-| error capture | none: `main.ts` registers the DOM events | `error`, `unhandledrejection` on `window` | same web API | same web API |
-| frame clock | none | `requestAnimationFrame` | same web API | same web API |
-| debug hooks | none: assignments in `main.ts`, the four hooks only in a development build | properties of `window` | same web API | same web API |
-| network | none: the SDK, the exporter and Pixi open their own connections | the page's origin and the configured addresses | the app protocol serves the bundle and its art; the shell's content security policy names the world's server in `connect-src` | the same, through Tauri's protocol and its content security policy |
+| error capture | `main.ts` registers the DOM events; no port | `error`, `unhandledrejection` on `window` | same web API | same web API |
+| frame clock | `main.ts` (`main`); no port | `requestAnimationFrame` | same web API | same web API |
+| debug hooks | `main.ts`, no port: the four hooks are assigned only in a development build | properties of `window` | same web API | same web API |
+| network and page policy | the SDK, the exporter, Pixi and the wasm loader, which open their own connections; no port | the page's origin and the configured addresses, with no content security policy | the app protocol serves the bundle, its art and the wasm module; the shell's content security policy must name the world's server in `connect-src` and allow wasm compilation, the `style` attributes of `index.html` and, while a download uses one, `blob:` addresses (unverified against a strict policy) | the same, through Tauri's protocol and its content security policy |
+| rendering | `WorldRenderer` in `client/src/render/world.ts`, through Pixi; no port | the browser's WebGL or WebGPU | Chromium's; the Steam overlay may need GPU flags, which the overlay probe measures | the webview's: a WebKit build drew the client with WebGL2 and no `navigator.gpu` (`docs/local-play.md` section 2) |
 
 ### 1.4 Ports with no call site today
 
@@ -118,7 +124,7 @@ browser adapter as its default.
 | a credential the shell supplies | M-account-service acs-12: one more `ConnectCredential` source for `connect` | none: the OIDC flow | the bridge hands an ID token; the Steam ticket stays in the main process (`auth.getAuthTicketForWebApi`) | the bridge hands an ID token (`User::authentication_session_ticket_for_webapi` in the Rust process) |
 | achievements | M-steam-features | a no-op | `achievement.activate(name)` behind a bridge function | `UserStats::achievement(name)` and `store_stats` behind a bridge function |
 | the overlay opened | the Steamworks slice, if lpw-10 shows held input survives the overlay | none | `steamworks.js` exposes no such callback (unverified whether `blur` fires) | `GameOverlayActivated { active }` in the Rust crate |
-| Steam Input | the Steamworks slice | none | by default Steam presents the controller as an Xbox pad, which the gamepad concern reads if the webview's Gamepad API sees it (unverified); else a read function over `input.getDigitalAction` | the same, over `Input::get_digital_action_data` |
+| a pad the Gamepad API does not show (Steam Input, or a webview without the API) | the Steamworks slice, which makes `getPads` in `client/src/shell/inputState.ts` take a read function from the bridge | none: `navigator.getGamepads` | by default Steam presents the controller as an Xbox pad, which the gamepad concern reads if the webview's Gamepad API sees it (unverified); else a read function over `input.getDigitalAction` | the same, over `Input::get_digital_action_data` |
 | fullscreen | whichever slice adds a fullscreen control | `requestFullscreen` | `BrowserWindow.setFullScreen` | the window's `setFullscreen` (unverified) |
 
 ### 1.5 The shape: ports where a second host needs one, one bundle, a run-time bridge
@@ -131,34 +137,46 @@ browser adapter as its default.
   writes a file the client generated. A second host needs both: the desktop shell as specified
   refuses `window.open` (M-local-play lpw-11.2), and a blob download is not known to work in
   every webview.
-- **Every other concern keeps its owner.** Nine structural host types exist and each is satisfied
-  by the real global and by a small fake: `TokenStorageHost`, `ClaimCodeHost`, `OidcHost`,
-  `StorageLike`, `PadLike` with `getPads`, `KeyEventLike`, `PointerClock`, `MatchMediaHost` and
-  `ResizeWindow`. They are the port of their concern. `globalThis`, `window` and `navigator` are
-  handed to them at the composition points.
+- **Every other concern keeps its owner.** Ten structural types exist and each is satisfied by
+  the real global and by a small fake: `TokenStorageHost`, `ClaimCodeHost`, `OidcHost`,
+  `StorageLike`, `PadLike` with `getPads`, `KeyEventLike`, `PointerClock`, `MatchMediaHost`,
+  `ResizeWindow` and `DeviceHints`. Each is the owner of its concern. `globalThis`, `window` and
+  `navigator` are handed to them at the composition points.
 - **A shell supplies a port's function through one page global, the shell bridge.** It is set
   before the client module runs, by the hook that sets the shell document (an Electron preload,
   a Tauri initialization script), and holds only functions, one per port verb the shell
-  overrides. The client reads it once, as an own property, the way `readShellDocument` reads the
-  shell document; a verb the bridge does not hold runs the browser code. Both shells implement
-  the same bridge, so one bundle runs in a tab, in Electron and in Tauri. Proposed name:
+  overrides. It is an own property of the page global that the page cannot write or
+  reconfigure, as the shell document is. The client reads it once, the way `readShellDocument`
+  reads the shell document; a verb the bridge does not hold runs the browser code. Both shells
+  implement the same bridge, so one bundle runs in a tab, in Electron and in Tauri. Proposed name:
   `__MR_SHELL_HOST__`, read by `readShellHost` beside the ports.
 - **The bridge reader is not part of this refactor.** A page global the client honours is new
   behaviour a caller can observe, so it is a feature: the first slice that has a shell to supply
   a function builds it (lpw-11 for `openExternal` and `saveFile`, acs-12 for the credential).
   Until then `handoff.ts` holds one implementation per verb and the browser build behaves as it
-  does today.
+  does today. The bug bundle joins `saveFile` through finding F3; until that lands it saves
+  through the blob download in every host.
 - **Rules for any shell's bridge.** A bridge function validates in the shell's own process and
   trusts nothing the page sends: `openExternal` takes only an address on the shell's allow-list;
   `saveFile` writes only where the player picks in a dialog. `saveFile` is given the personal-data
   export: a shell never logs it and never sends it anywhere but the chosen file. No Steamworks
   or Node object crosses the bridge, only strings and plain data.
+- **What this asks of the shell's specification.** The Electron shell is specified (M-local-play
+  lpw-11) with a preload that exposes the shell document "and nothing else" and with "no IPC
+  channel to the page" (lpw-11.3); the Steam sign-in (M-account-service acs-12) already hands the
+  page a token through a preload hook. A bridge needs that text to allow the bridge's named
+  functions. Whether a shell's page may call into the shell at all is a question of the shell's
+  security posture, which is the operator's: the bridge is this plan's default, and the operator
+  may overrule it. Nothing in section 4 waits on the answer. If the answer is no, the ports
+  stand, their browser code runs under the shell, and the shell handles `window.open` and the
+  download in its own process; lpw-11.2's refusal of `window.open` then becomes "an address on
+  the allow-list goes to the system browser, every other is refused".
 
 ### 1.6 Shapes judged
 
 A judge scored four shapes from one dossier of the facts above, 0 to 10 per criterion, on a
-rubric and tie-break fixed beforehand (weights in brackets; the tie-break was the first
-criterion, then the second, then the unweighted total, for totals within 3 points).
+rubric and tie-break fixed beforehand (the tie-break, for totals within 3 points, was the first
+criterion, then the second, then the unweighted total).
 
 - **A, one host object injected at boot:** one `Host` interface with a member per concern, a
   browser implementation, and a shell laying its members over it.
@@ -200,19 +218,23 @@ this per verb, for example a bridge for the file save and its own handler for li
 - How a Tauri initialization script reaches `invoke` without turning on `withGlobalTauri`, which
   exposes the whole Tauri API to the page.
 - Whether a pad under Steam Input reaches a webview's Gamepad API.
+- Whether the page loads under a strict content security policy: wasm compilation, the `style`
+  attributes of `index.html` and `blob:` addresses each need an allowance.
 
 The overlay probe (lpw-10) and the shell slices measure these; none changes an extraction below.
 
 ## 2. The rest of `docs/refactors/client-shell.md`
 
-### 2.1 What the code holds that the plan does not
+### 2.1 The twelve extraction lines against `main.ts`
 
-At `ce7f0000` `client-shell.md` lists extractions 7 to 18, one numbered line each. `main.ts`
-holds 257 top-level declarations; the twelve lines name 213 symbols, of which 208 are declared in
-`main.ts`.
+The starting point is the list `client-shell.md` holds at `ce7f0000`: twelve numbered lines,
+extractions 7 to 18, each naming a module under `client/src/shell/` and the symbols it takes.
+Measured against `main.ts` at that commit, which holds 257 top-level declarations: the twelve
+lines name 213 symbols, and 208 of them are declared in `main.ts`.
 
-- **Five named symbols are not in `main.ts`:** `openPropose` (line 12) and `TRADE_ANSWER`,
-  `TRADE_SETTLE`, `TRADE_CANCEL`, `TRADE_PROPOSE` (line 16).
+- **Five named symbols are not declared in `main.ts`:** `openPropose` (extraction 12) and
+  `TRADE_ANSWER`, `TRADE_SETTLE`, `TRADE_CANCEL`, `TRADE_PROPOSE` (extraction 16). Section 4
+  leaves them out.
 - **42 declarations are named by no line and are not in "What `main.ts` keeps".** Section 4
   gives 41 of them an owner: the sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE`,
   `SIGN_IN_OFFER`, `ACCOUNT_REQUIRED`); the trade editor (`openedTradeSessions`,
@@ -225,14 +247,14 @@ holds 257 top-level declarations; the twelve lines name 213 symbols, of which 20
   `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps`, `worldIsBare`, `ownNameModel`,
   `evolutionNoticeOk`, `MrSessionOffer`, `mrSessionOffer`. `protocolMismatchLine` stays in
   `main.ts` beside the `connect` callback that calls it.
-- **Three batch listeners are missing from "Registration order":** the Name section's repaint,
-  the sign-in gate's lowering and the server-clock feed after `refreshBattle`. The one it calls
-  "refreshes the trade panel" is the trade-session follower. `client-shell.md` lists all four in
-  place as of this plan.
-- **Three call cycles cross the map.** `applyMenuStep` and `showSignInGate` (menu) call
-  `dispatch` and `applyStack`; `runInteract` (interact) calls `dispatch`; `closeTradeEditor`
-  (screens) calls `dispatch`. `commands.ts` is above all three in the map and imports them.
-  The plan's one port for this, the battle port, serves `battleFrame.ts` alone.
+- **`main.ts` registers 23 batch listeners.** Three have no place in that list's registration
+  order: the Name section's repaint, the sign-in gate's lowering and the server-clock feed after
+  `refreshBattle`; and the listener it names for the trade panel follows the trade sessions.
+  `client-shell.md`'s "Registration order" lists all 23 in the order `main.ts` registers them.
+- **Three call cycles cross the module map.** `applyMenuStep` calls `dispatch` and
+  `showSignInGate` calls `applyStack` (both menu); `runInteract` (interact) calls `dispatch`;
+  `closeTradeEditor` (screens) calls `dispatch`. `commands.ts` sits above all three in the map
+  and imports them. The battle port serves `battleFrame.ts` alone.
 - **One lower module writes a higher one's bindings.** `holdResultsForPlayback` (battle frame)
   assigns `outcomeShownAtMs` and `autoContinuedAtMs`, which `frames.ts` owns.
 
@@ -249,30 +271,31 @@ while every caller is still in `main.ts`, so the moves after it are moves.
 
 ### 2.3 Disposition of extractions 7 to 18
 
-Each of the twelve lines is carried into section 4, which is the one list;
-`client-shell.md` keeps its rules, module map, ports, pumps and owner tables and points here. "Kept" means the
-same module takes the same responsibility, with the symbols section 4 lists. None is superseded
-and none is dropped.
+Each of the twelve is carried into section 4, which is the one list; `client-shell.md` keeps its
+rules, module map, ports, pumps and owner tables and points here. The numbers in the first
+column are the list's at `ce7f0000`, not the rows of the module map. "Kept" means the same
+module takes the same responsibility, with the symbols section 4 lists. None is superseded and
+none is dropped.
 
 | Extraction | Module | Disposition | Section 4 |
 |---|---|---|---|
 | 7 | `shell/notices.ts` | kept; takes `openedTradeSessions` as well | 4 |
-| 8 | `shell/battleFrame.ts` | kept; takes the battle playback symbols; its port shrinks to the stack reads and the outcome edge | 5 |
+| 8 | `shell/battleFrame.ts` | kept; takes the battle playback symbols; its port carries the stack reads and the outcome edge, and the command port the rest | 5 |
 | 9 | `shell/frames.ts` | kept; takes `worldIsBare` | 6 |
 | 10 | `shell/movement.ts` | kept; takes `owed`, `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps` | 7 |
-| 11 | `shell/account.ts` | kept; takes `ownNameModel` and the Name repaint; its export download calls `saveFile` | 8 |
-| 12 | `shell/screens.ts` | kept; `openPropose` is gone and the trade editor symbols join | 9 |
+| 11 | `shell/account.ts` | kept; takes `SIGN_IN_OFFER`, `ownNameModel` and the Name repaint; its export download calls `saveFile` | 8 |
+| 12 | `shell/screens.ts` | kept; takes the trade editor symbols | 9 |
 | 13 | `shell/menu.ts` | kept; takes the sign-in gate; a plain move once the command port exists | 10 |
 | 14 | `shell/interact.ts` | kept; `evolutionNoticeOk` goes to `shell/views.ts` as a mount in the same slice | 11 |
 | 15 | `shell/bugReport.ts` | kept | 12 |
-| 16 | `shell/commands.ts` | kept; the four `TRADE_*` names are gone | 13 |
+| 16 | `shell/commands.ts` | kept | 13 |
 | 17 | `shell/input.ts` | kept; takes the pad poll | 14 |
 | 18 | `shell/devHooks.ts` | kept; takes `MrSessionOffer`, `mrSessionOffer` | 15 |
 
 All twelve keep their relative order. They are reordered only against the new work: extractions
 1 to 3 of section 4 land first, because 1 gives `account.ts` and `menu.ts` the hand-off port
-their moved code calls, 2 gives `account.ts`, `menu.ts`, `commands.ts` and `input.ts` the
-constants they read, and 3 removes the cycles.
+their moved code calls, 2 gives `account.ts` the issuer its sign-in offer is built from, and 3
+removes the cycles.
 
 ## 3. Duplication and structure across `client/src/`
 
@@ -290,7 +313,7 @@ finding below was checked against the code again before it was written down.
 
 | # | What repeats or sits in the wrong place | Where | Outcome |
 |---|---|---|---|
-| D1 | `ensureElement` and `frameAnchor`, identical in four views | `ui/claimView.ts`, `ui/controlsView.ts`, `ui/privacyView.ts`, `ui/sessionView.ts` | extraction 16: `ui/domParts.ts` |
+| D1 | `ensureElement` and `frameAnchor`, identical in four views (a fifth `ensureElement`, in `ui/evolutionNotice.ts`, is a different function) | `ui/claimView.ts`, `ui/controlsView.ts`, `ui/privacyView.ts`, `ui/sessionView.ts` | extraction 16: `ui/domParts.ts` |
 | D2 | three SDK row shapes declared twice | `net/connection.ts` (`SdkConversationRow`, `SdkHealRow`, `SdkNpcRow` inside `wireTables`), `net/rowConvert.ts` (`SdkPlayerConversation`, `SdkHealLocationRow`, `SdkNpcRow`) | extraction 17: `rowConvert.ts` exports its three; `connection.ts` imports them |
 | D3 | narrowing an injected host to one storage method, drawing random bytes, hex encoding, the `prefix\|uri\|db` key | `net/authToken.ts`, `net/claimCode.ts`, `net/oidc.ts` (`storageMethod` three times, `drawRandomBytes` twice, `toLowerHex` and `toHex`) | extraction 18: `net/hostAccess.ts`; each caller keeps its own failure direction |
 | D4 | the keep-set reconcile loop written five times beside a generic one | `net/store.ts` (monsters, battles, trade sessions, inventory, export chunks; `#reconcileKeyed`) | extraction 19: `#reconcileKeyed` takes the equality as a parameter |
@@ -333,13 +356,13 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
 | 1 | hand-off port | interface | hard | `client/src/platform/handoff.ts` | `client/src/main.exportTransport.test.ts`, `client/src/main.menu.test.ts`, `client/src/main.signInGate.test.ts` | none added, none removed |
-| 2 | sign-in constants | move | routine | nothing | `client/src/shell/config.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.targetKindGate.test.ts`, `client/src/main.claimCode.test.ts` | none added, none removed |
+| 2 | sign-in constants | move | routine | nothing | `client/src/shell/config.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.targetKindGate.test.ts` | none added, none removed |
 | 3 | command port | interface | hard | `client/src/shell/commandPort.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.menu.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.social.test.ts` | none added, none removed |
 | 4 | notices | interface | hard | `client/src/shell/notices.ts` | `client/src/main.notices.test.ts`, `client/src/main.noticesRt.test.ts`, `client/src/main.reconnectStack.test.ts` | none added, none removed |
 | 5 | battle frame | interface | hard | `client/src/shell/battleFrame.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.battle-reseed.test.ts`, `client/src/tactics/tacticsBattle.test.ts`, `client/src/tactics/deployPanel.test.ts`, `client/src/tactics/results.test.ts` | none added, none removed |
 | 6 | frames | interface | hard | `client/src/shell/frames.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.reconnectStack.test.ts`, `client/src/main.a11yFocus.test.ts` | none added, none removed |
 | 7 | movement | interface | hard | `client/src/shell/movement.ts` | `client/src/main.input.test.ts`, `client/src/main.zoneCue.test.ts`, `client/src/main.worldReveal.test.ts`, `client/src/net/switchZoneAtomicity.test.ts` | none added, none removed |
-| 8 | account | interface | hard | `client/src/shell/account.ts` | `client/src/main.claimCode.test.ts`, `client/src/main.privacyWiring.test.ts`, `client/src/main.privacyCountdown.test.ts`, `client/src/main.exportTransport.test.ts` | none added, none removed |
+| 8 | account | interface | hard | `client/src/shell/account.ts` | `client/src/main.claimCode.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.privacyWiring.test.ts`, `client/src/main.privacyCountdown.test.ts`, `client/src/main.exportTransport.test.ts` | none added, none removed |
 | 9 | screens | interface | hard | `client/src/shell/screens.ts` | `client/src/main.social.test.ts`, `client/src/main.shopBalance.test.ts`, `client/src/main.dialogueDismiss.test.ts`, `client/src/main.controls.test.ts`, `client/src/main.help.test.ts` | none added, none removed |
 | 10 | menu | move | routine | `client/src/shell/menu.ts` | `client/src/main.menu.test.ts`, `client/src/main.signInGate.test.ts` | none added, none removed |
 | 11 | interact | interface | hard | `client/src/shell/interact.ts` | `client/src/main.chips.test.ts`, `client/src/main.dispatch.test.ts`, `client/src/main.input.test.ts`, `client/src/main.hintBar.test.ts` | none added, none removed |
@@ -353,38 +376,50 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 | 19 | store reconcile | interface | hard | nothing | `client/src/net/store.test.ts`, `client/src/net/viewReconcile.test.ts` | none added, none removed |
 | 20 | table registrations | interface | hard | nothing | `client/src/net/connection.runtime.test.ts`, `client/src/net/connection.test.ts`, `client/src/net/viewDelete.test.ts` | none added, none removed |
 | 21 | battle panel parts | interface | hard | `client/src/tactics/panelParts.ts` | `client/src/tactics/deployPanel.test.ts`, `client/src/tactics/results.test.ts`, `client/src/tactics/tacticsBattle.test.ts`, `client/src/tactics/hud.test.ts`, `client/src/tactics/clock.test.ts`, `client/src/tactics/strings.test.ts` | none added, none removed |
-| 22 | tactics store map | move | routine | `client/src/tactics/storeMap.ts` | `client/src/tactics/wasm.test.ts`, `client/src/tactics/golden.parity.test.ts`, `client/src/tactics/forecast.parity.test.ts` | none added, none removed |
+| 22 | tactics store map | move | routine | `client/src/tactics/storeMap.ts` | `client/src/tactics/wasm.test.ts`, `client/src/net/rowConvert.test.ts` | none added, none removed |
 
-What each row takes. Every row that moves code out of `main.ts` also has `client/src/main.ts`,
-the `client/src/main.*.test.ts` family, `client/test-util/mainBootHarness.ts`, this file,
-`docs/refactors/client-shell.md` and `ARCHITECTURE.md` in its `touches:`; the pins it re-points
-are the rows of `client-shell.md`'s "Tests and docs that follow the code". A row that moves boot
-wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as well.
+What each row takes. **The shell set** is the `touches:` every row that moves code out of
+`main.ts` has: `client/src/main.ts`; the destination module and its sibling test
+(`client/src/shell/<module>.ts`, `client/src/shell/<module>.test.ts`); the
+`client/src/main.*.test.ts` family; `client/test-util/mainBootHarness.ts`;
+`client/src/ui/i18n/catalogParity.test.ts`, whose roster of files that import the catalog
+resolver gains the module when it resolves a string; this file;
+`docs/refactors/client-shell.md`; and `ARCHITECTURE.md`. A row names what it touches beside that
+set. A row that moves boot wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as
+well.
 
-1. `client/src/platform/handoff.ts` is created with `openExternal(url)`, which holds
-   `applyMenuStep`'s `window.open(url, '_blank', 'noopener')`, and `saveFile(file)`, which holds
-   `downloadExportBundle`'s steps from the `Blob` to the `finally` that removes the anchor and
-   revokes the URL, and rethrows what they throw. `applyMenuStep` and `downloadExportBundle`
-   call them; the export keeps its own `catch` (the static console line and the blocked-download
-   message) and its completeness guard. On a failure the anchor and the URL are released before
-   that `catch` runs, where today they are released after it; no player-visible step and no
-   assertion depends on that order. `downloadBugBundle` is not touched (finding F3). Touches
-   beside the common set: none. Pins: none; the whole-tree i18n scans cover the new file.
-2. `client/src/shell/config.ts` takes `OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE`,
-   `SIGN_IN_OFFER` and `ACCOUNT_REQUIRED`. They are constants with no writer, resolved from
-   `TARGET_KIND` and the build's OIDC values through `signInOffer`, which resolves no catalog
-   string. `TELEMETRY_CONFIG` and the locale block stay in `main.ts`.
-3. `client/src/shell/commandPort.ts` is created (2.2). `main.ts` installs it beside the hint
-   host. `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`,
-   `popOverBattleBeforeSwitch`, `runInteract`, `applyMenuStep`, `showSignInGate` and
-   `closeTradeEditor` call `dispatch` and `applyStack` through it. The decision entry "Code
-   leaves `client/src/main.ts` into owner modules" names its ports; this slice adds this one
-   there.
+1. `client/src/platform/handoff.ts` is created with two functions. `openExternal(url)` holds
+   `applyMenuStep`'s `window.open(url, '_blank', 'noopener')`. `saveFile(file, onBlocked)` takes
+   the file (its name, its MIME type and its text) and what to do when the host blocks the save;
+   it holds `downloadExportBundle`'s steps from the `Blob` to the click, runs `onBlocked` where
+   the `catch` runs today, and removes the anchor and revokes the URL in its `finally`, so the
+   order of those steps is today's. `applyMenuStep` and `downloadExportBundle` call them; the
+   export keeps its completeness guard and passes its static console line and its blocked-download
+   message as `onBlocked`. `downloadBugBundle` is not touched (finding F3). Touches:
+   `client/src/platform/handoff.ts`, `client/src/platform/handoff.test.ts`, `client/src/main.ts`,
+   the `client/src/main.*.test.ts` family, this file and `ARCHITECTURE.md`. Pins: none; the
+   whole-tree i18n scans cover the new file.
+2. `client/src/shell/config.ts` takes `OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE` and
+   `ACCOUNT_REQUIRED`. They are constants with no writer, resolved from `TARGET_KIND` and one
+   build value, and they import nothing new into `config.ts`. `SIGN_IN_OFFER` goes with row 8;
+   `TELEMETRY_CONFIG` and the locale block stay in `main.ts`. Touches: `client/src/main.ts`,
+   `client/src/shell/config.ts`, `client/src/shell/config.test.ts`, the
+   `client/src/main.*.test.ts` family, this file, `docs/refactors/client-shell.md` and
+   `ARCHITECTURE.md`.
+3. `client/src/shell/commandPort.ts` is created (2.2). `main.ts` installs it beside the hint host.
+   `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and
+   `closeTradeEditor` call `dispatch` through it, and `popOverBattleBeforeSwitch` and
+   `showSignInGate` call `applyStack` through it. Touches: `client/src/main.ts`,
+   `client/src/shell/commandPort.ts`, `client/src/shell/commandPort.test.ts`, the
+   `client/src/main.*.test.ts` family, `client/test-util/mainBootHarness.ts`, this file,
+   `docs/refactors/client-shell.md`, `ARCHITECTURE.md` and `docs/DECISIONS.md`, whose entry "Code
+   leaves `client/src/main.ts` into owner modules" names the ports and gains this one.
 4. `client/src/shell/notices.ts` takes `dismissedRequests`, `announcedRequests`,
    `answeredRequests`, `noticeInput`, `livePending`, `requestLine`, `releaseAnswered` and
    `openedTradeSessions`. Interface: `dispatch`, `worldPort`, `openTradeEditor`,
-   `resetTradeSessionState`, the trade-session listener and `main` mutate the four sets, so each
-   mutation becomes an owner function.
+   `resetTradeSessionState`, the listener that announces a new request, the listener that follows
+   the trade sessions and the `connect` callbacks in `main` mutate the four sets, so each mutation
+   becomes an owner function.
 5. `client/src/shell/battleFrame.ts` takes `battleViews`, `battleFrameShown`,
    `hideAllBattleViews`, `activeBattleView`, `tacticalOwnsStart`, `battleHint`, `tacticsRules`,
    `tuningOf`, `refreshBattle`, `popOverBattleBeforeSwitch`, `ownMonsterName`, `tacticsMapFacts`,
@@ -405,50 +440,62 @@ wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as well.
    `menuPlace`, `reconcileStack`, `movementGate`, `worldBaseLive`, `openFrame`, `openSeated`,
    `topSocialFrame`, `syncedTop`, `closeLeftFocusAdrift`, `judgeCloseFocus`, `inHiddenSubtree`,
    `focusInsideHiddenSubtree`, `focusAdrift`, `lastCareTickAtMs`, `CARE_READINESS_TICK_MS` and
-   `worldIsBare`. Interface: `main` sweeps `contextStack` on reconnect and writes
-   `autoContinuedAtMs` and `lastCareTickAtMs` in the frame loop; the battle frame clears
-   `outcomeShownAtMs` and `autoContinuedAtMs` through its port.
+   `worldIsBare`. Touches beside the shell set: the two source needles of
+   `client/src/main.dispatch.test.ts` that follow `movementGate` and the mirrored tables, and
+   `docs/DECISIONS.md`, whose "Context stack ownership" entry names `main.ts` as their home.
+   Interface: `main` sweeps `contextStack` on reconnect and writes `autoContinuedAtMs` and
+   `lastCareTickAtMs` in the frame loop; the battle frame clears `outcomeShownAtMs` and
+   `autoContinuedAtMs` through its port.
 7. `client/src/shell/movement.ts` takes `rawMap`, `applyMove`, `predictor`, `resolver`,
    `renderer`, `telemetry`, `frameWindow`, `lastCamX`, `lastCamY`, `sawFractionalOwnMotion`,
    `resetPredictionState`, `zoneSyncFailureCount`, `switchZone`, `reconcileFromStore`,
    `lastSentSeq`, `MOVE_REJECT_POLICY`, `moveRejectLimit`, `moveSendCount`, `moveRejectCount`,
    `noteMoveRejection`, `sendIntent`, `step`, `jump`, `owed`, `lastRendered`, `worldRevealed`,
    `zoneWarpsById` and `zoneWarps`. Interface: `main` mounts `renderer` and `telemetry`, writes
-   the camera hold, the motion latch, `frameWindow` and `lastRendered` in the frame loop, sets
-   `worldRevealed` from the scope callback and clears `owed` on reconnect; `snapshot` sets
-   `rawMap`.
+   the camera hold, the motion latch, `frameWindow` and `lastRendered` in the frame loop and sets
+   `worldRevealed` from the scope callback; `snapshot` sets `rawMap`. `owed` is an object used
+   through its own methods, so `main` goes on calling its `clear` on reconnect.
 8. `client/src/shell/account.ts` takes `claimModelState`, `sessionModelState`,
    `privacyModelState`, `lastPrivacyCountdown`, `livePrivacyCountdown`, `lastPrivacyStatusLabel`,
    `exportAssembly`, `renderSession`, `applySession`, `renderClaim`, `applyClaim`,
    `renderPrivacy`, `downloadExportBundle`, `applyPrivacy`, `sendPrivacy`, `profileOpen`,
-   `showProfile`, `openProfile` and `ownNameModel`. It also takes the body of the listener that
-   recomputes the export assembly and of the one that repaints the Name section. Interface: `main`
-   writes `claimModelState`, `lastPrivacyCountdown`, `livePrivacyCountdown` and `exportAssembly`.
+   `showProfile`, `openProfile` and `ownNameModel` and `SIGN_IN_OFFER`. It also takes the body of
+   the listener that recomputes the export assembly and of the one that repaints the Name section.
+   `SIGN_IN_OFFER` is built by `signInOffer` of `client/src/ui/claimModel.ts`, a module that
+   imports the catalog resolver, so it belongs here and not in `shell/config.ts`; `menu.ts` and
+   `commands.ts` read it from this module. Interface: `main` writes `claimModelState`,
+   `lastPrivacyCountdown`, `livePrivacyCountdown` and `exportAssembly`. Touches beside the shell
+   set: `client/src/net/connection.test.ts`, whose needle for `applyClaim` follows it.
 9. `client/src/shell/screens.ts` takes `shopOpen`, `questAckBaseline`, `openQuestLog`,
    `socialChrome`, `showSocialPanel`, `hidePanel`, `socialOpen`, `socialFrameView`, `openSocial`,
    `openHelp`, `openControls`, `refreshBox`, `refreshRaising`, `stepShopOpen`, `sendDismiss`,
    `openPendingShop`, `toastControls`, `pendingTradeOpen`, `TRADE_OPEN_WAIT_MS`,
    `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`, `closeTradeEditor` and
    `tradeOpenExpired`. It also takes the bodies of the listeners that refresh a screen and of the
-   trade-session listener. Interface: `main` resets `questAckBaseline`; `dispatch` writes
-   `pendingTradeOpen`.
+   trade-session listener. Interface: `main` resets `questAckBaseline`; `dispatch` sets
+   `pendingTradeOpen` when it sends the open and clears it when the open is refused.
 10. `client/src/shell/menu.ts` takes `menuState`, `menuBadged`, `renderMenu`, `openMenu`,
     `profileSectionOf`, `socialTabOf`, `openMenuTarget`, `applyMenuStep`, `handleMenuPointer`,
     `signInGate`, `saidGateLine`, `signInGateView`, `showSignInGate`, `lowerSignInGate`,
     `applySignInGate` and `holdSignInGate`. It also takes the bodies of the listeners that follow
-    the request badge and lower the gate. Move: every writer of `menuState`, `signInGate` and
-    `saidGateLine` is among them.
+    the request badge and lower the gate. Move: every writer of `menuState`, `menuBadged`,
+    `signInGate` and `saidGateLine` is among them. Touches beside the shell set:
+    `client/src/ui/screens/mainMenuScreen.test.ts`, whose source scan follows `menuState`.
 11. `client/src/shell/interact.ts` takes `interactCandidatesFn`, `lastInteractErrorMessage`,
     `reportInteractError`, `interactBatch`, `interactMemo`, `worldCandidates`, `facedChip`,
     `hintChips`, `runInteract`, `worldPort`, `interactVerb`, `sizeRowLabel`, `closeRowLabel`,
     `requestRowLabel`, `interactName`, `interactKeycap`, `interactChipText`, `ownPartyIds` and
     `eligibleChallengeIds`. It also takes the body of the listener that counts the batch.
     Interface: `evolutionNoticeOk`, which `worldPort` reads and `main()` assigns at boot, becomes
-    a handle of `client/src/shell/views.ts` mounted through `mountViews`.
-12. `client/src/shell/bugReport.ts` takes `projectKeyStore` and `downloadBugBundle`. Move.
+    a handle of `client/src/shell/views.ts` mounted through `mountViews`. Touches beside the shell
+    set: `client/src/shell/views.ts` and `client/src/shell/views.test.ts`.
+12. `client/src/shell/bugReport.ts` takes `projectKeyStore` and `downloadBugBundle`. Move: neither
+    writes a binding; it follows row 7, which owns the `rawMap` it reads.
 13. `client/src/shell/commands.ts` takes `DONE`, `careInFlight`, `ActionKinds`, `actionFeedback`,
     `SHOP_BUY`, `SHOP_SELL`, `RENAME`, `dispatch`, `refusedShopQty`, `refusedInBattle`,
-    `applyStack`, `closeFrame` and `endedLine`. Interface: `main` clears `careInFlight`.
+    `applyStack`, `closeFrame` and `endedLine`. Interface: `main` clears `careInFlight`. Touches
+    beside the shell set: `docs/DECISIONS.md`, whose "Four message channels" entry names `main.ts`
+    for the senders this row moves.
 14. `client/src/shell/input.ts` takes `routeCtx`, `applyRouterEffect`, `routeEdge`, `runAccel`,
     `openAccelPath`, `controlsCapture`, `endControlsCapture`, `captureControlsKey`,
     `cancelControlsCapture`, `pointerSource`, `paintWorldPrompt`, `pointerPress`, `pointerTop`,
@@ -459,36 +506,49 @@ wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as well.
     and `worldCanvasEl`.
 15. `client/src/shell/devHooks.ts` takes `snapshot`, `mrTradeHook`, `mrPvpHook`, `mrTacticsHook`,
     `rowProbeState`, `MrSessionOffer` and `mrSessionOffer`. Move; the gated `window` assignments
-    stay in `main.ts`.
+    stay in `main.ts`, and it follows row 7, which gives `snapshot` its zone setter.
 16. `client/src/ui/domParts.ts` is created and takes `ensureElement` and `frameAnchor` from
-    `client/src/ui/claimView.ts`, `client/src/ui/controlsView.ts`,
-    `client/src/ui/privacyView.ts` and `client/src/ui/sessionView.ts`, whose four copies are
-    identical. Touches: those five files and the four views' tests.
+    `client/src/ui/claimView.ts`, `client/src/ui/controlsView.ts`, `client/src/ui/privacyView.ts`
+    and `client/src/ui/sessionView.ts`, whose four copies are identical. The `ensureElement` of
+    `client/src/ui/evolutionNotice.ts` is another function (a required parent, no hidden start)
+    and stays. Touches: those five files, `client/src/ui/domParts.test.ts` and the four views'
+    tests.
 17. `client/src/net/rowConvert.ts` exports `SdkPlayerConversation`, `SdkHealLocationRow` and
-    `SdkNpcRow`; `client/src/net/connection.ts` imports them in place of the three types
-    `wireTables` declares with the same fields. Types only. Touches: those two files.
+    `SdkNpcRow`; `client/src/net/connection.ts` imports them and its three declarations of the
+    same fields inside `wireTables` are deleted. Types only: nothing changes at run time. Touches:
+    those two files.
 18. `client/src/net/hostAccess.ts` is created with the storage narrowing, the random-byte draw,
     the hex encoder and the target key; `client/src/net/authToken.ts`,
-    `client/src/net/claimCode.ts` and `client/src/net/oidc.ts` call it. Each keeps its own
-    `try` and its own answer on failure (anonymous, no code, a transient error). Touches: those
-    four files and their three tests, which fake the host and need no edit.
+    `client/src/net/claimCode.ts` and `client/src/net/oidc.ts` call it. The header of
+    `claimCode.ts` gives a reason for keeping its own copy: a shared helper would be a seam
+    between modules that fail in different directions. The helper here holds no state and returns
+    a bound method or nothing, and each caller keeps its own `try` and its own answer on failure
+    (anonymous, no code, a transient error), so that reason does not apply to it; the three
+    headers are rewritten to say so. Touches: those four files and
+    `client/src/net/hostAccess.test.ts`. The three existing tests fake the host and run unedited.
 19. `client/src/net/store.ts`: `#reconcileKeyed` takes the equality function; the five
     hand-written loops call it with the equality each uses (shallow for monsters, inventory and
     export chunks, deep for battles and trade sessions). Touches: that file.
-20. `client/src/net/connection.ts`: the twelve tables `wireTables` registers with one insert,
-    one update and one delete go through one local helper, in the same order. The conversation,
-    wallet and account views keep their own handlers. `client/vite.config.ts` names this file in
-    its coverage list; the file does not move.
+20. `client/src/net/connection.ts`: the twelve tables `wireTables` registers with one insert, one
+    update and one delete go through one local helper, in the same order. The conversation, wallet
+    and account views keep their own handlers. Touches: that file. `client/vite.config.ts` names
+    it in its coverage list by path, and the file does not move.
 21. `client/src/tactics/panelParts.ts` is created with one element helper, the battle root and
     title, and the countdown line; `client/src/tactics/clock.ts`, `client/src/tactics/hud.ts`,
     `client/src/tactics/deployPanel.ts`, `client/src/tactics/results.ts` and
-    `client/src/tactics/tacticsBattle.ts` use it. The root's class list, the title's
-    `data-testid` and its `tabindex` are the ones the end-to-end selectors and
-    `client/src/ui/overlayRegistry.ts` name. Pin: `client/src/tactics/strings.test.ts` reads
-    every tactics file and must pass over the new one unedited.
+    `client/src/tactics/tacticsBattle.ts` use it. The root's class list, the title's `data-testid`
+    and its `tabindex` are the ones the end-to-end selectors and
+    `client/src/ui/overlayRegistry.ts` name. Touches: those six files and
+    `client/src/tactics/panelParts.test.ts`. Pin: `client/src/tactics/strings.test.ts` reads every
+    tactics file and must pass over the new one unedited.
 22. `client/src/tactics/storeMap.ts` is created and takes `shellKind`, `activeUnitOf`,
-    `statusTagOf`, `intentKind`, `overlaySets` and `unitRowOf` from `client/src/tactics/wasm.ts`.
-    The three covering tests import them by name and are re-pointed.
+    `statusTagOf`, `intentKind`, `overlaySets` and `unitRowOf` from `client/src/tactics/wasm.ts`,
+    with `copyTiles`, the private helper only `overlaySets` calls. Their importers are re-pointed:
+    `client/src/main.ts` (`shellKind`, `activeUnitOf`, `statusTagOf`; after rows 5 and 15 those
+    imports sit in `client/src/shell/battleFrame.ts` and `client/src/shell/devHooks.ts`),
+    `client/src/net/rowConvert.ts` (`unitRowOf`), `client/src/tactics/tacticsBattle.ts`
+    (`overlaySets`), `client/src/tactics/wasm.test.ts` and `client/src/net/rowConvert.test.ts`.
+    Touches: those files and the two it moves between.
 
 ## 5. Findings for follow-up
 

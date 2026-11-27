@@ -451,8 +451,8 @@ client takes from its host, so that one bundle runs in a browser tab and in a de
 such capability has one owner, listed there by call site. Most are web APIs every host provides,
 reached through a narrow type the real global satisfies or a DOM listener `main.ts` registers; a
 capability a second host must provide differently gets a port under `client/src/platform/`, whose
-default is the browser's code. No port module exists yet. `shell/config.ts` holds the values
-fixed for the session,
+default is the browser's code; the plan's first extraction creates the first of them.
+`shell/config.ts` holds the values fixed for the session,
 set at import: the connection target (`URI`, `DB`, `TARGET_KIND`, resolved from the shell
 document on the page global; a production build throws at import when the document is missing
 or refused), the dev-log level and its send and fate

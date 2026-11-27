@@ -2309,30 +2309,29 @@ draw, this entry is rewritten, not worked around.
 **Decision.** A capability the client takes from whatever hosts its page (a browser tab, or a desktop
 shell) has one owner in the client. Where a second host must provide it differently, the owner is a
 port: a module under `client/src/platform/` that exports plain functions and holds the browser's code as
-the default. Where every host provides the same web API, the owner stays what it is, a narrow structural
-type the real global satisfies (the storage hosts, the pad read, the key event, the media query, the
-window size) or a DOM registration `main.ts` makes. A shell supplies a port's function through one page
+the default. Where every host provides the same web API, the owner stays a narrow structural type the
+real global satisfies (the storage hosts, the pad read, the key event, the media query, the window size)
+or a DOM registration `main.ts` or `connect` makes. A shell supplies a port's function through one page
 global, the shell bridge, set before the client module runs by the hook that sets the shell document; it
-holds functions only, and a verb it does not hold runs the browser's code. Both shells implement the
-same bridge, so one bundle runs in a tab, in Electron and in Tauri. The first port is the hand-off to the
-operating system (open an address outside the game, save a file the client made). The plan, the call
-sites and the judge's scores are in `docs/refactors/client-platform.md`.
+holds functions only, and a verb it does not hold runs the browser's code. Every shell implements the
+same bridge, so one bundle runs in a tab, in Electron and in Tauri. The first port is the hand-off to
+the operating system: open an address outside the game, save a file the client made. The call sites,
+the plan and the judge's scores are in `docs/refactors/client-platform.md`.
 
-**Why.** The shell is not chosen: it waits on whether Steam's overlay draws over each one, and that
-comparison needs the same bundle under both. A desktop shell refuses `window.open` and navigation off its
-own origin, a blob download is not known to work in every webview, and Steam's calls have no web API at
-all, so some capabilities cannot be reached through the web platform alone. Most can: storage, input,
-size and visibility are the same API in all three hosts, and a wrapper around them would have one
-implementation and nothing to adapt.
+**Why.** The recorded shell is Electron, and that choice rests on an overlay nobody has measured: the
+measurement runs a Tauri window beside it with the same bundle and may reverse the choice. A desktop
+shell refuses `window.open` and navigation off its own origin, a blob download is not known to work in
+every webview, and Steam's calls have no web API, so some capabilities cannot be reached through the web
+platform alone. Storage, input, size and visibility are the same API in all three hosts: a wrapper
+around them would have one implementation and nothing to adapt.
 
-**Rules out.** One host object carrying every concern (most of its members would have no second
-implementation, and it takes listener registration out of the composition root); choosing the adapter at
-build time (one bundle per shell, and shell code inside the client tree); leaving every capability to the
-shell's own handling of web APIs (no route for a call with no web API, or for a webview that lacks one);
-a port for a concern no second host needs; a bridge that hands the page an object of the shell's
-(a Steamworks or Node handle), or a bridge function that acts on what the page sends without checking it
-in the shell's own process. A shell that may expose no function to its page still fits: it supplies no
-bridge, the browser's code runs, and the shell handles those web APIs itself.
+**Rules out.** One host object carrying every concern; choosing the adapter at build time (one bundle
+per shell, and shell code in the client tree); leaving everything to the shell's own handling of web
+APIs (no route for a call with no web API); a port for a concern no second host needs; a bridge that
+hands the page an object of the shell's, or a bridge function that acts on what the page sends without
+checking it in the shell's own process. Whether a shell's page may call into the shell at all is that
+shell's security posture: the bridge is the default, one the operator may overrule, and a shell that
+exposes none still fits, because the browser's code runs and the shell handles those web APIs itself.
 
 ## Local-play budgets are measured medians with stated headroom, on one machine profile
 

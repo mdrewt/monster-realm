@@ -19,7 +19,8 @@ extractions still to make, with the symbols each takes, are section 4 of
 2. **Shared collections follow the same rule.** A `Set` or `Map` that more than one module
    mutates is exported as `ReadonlySet` or `ReadonlyMap`, and each mutation is an owner function.
    An object with methods of its own (`held`, `inputRouter`, `screenHost`, the two rings, the
-   live region, the predictor) is used through those methods by any module that imports it.
+   live region, the predictor, `owed`, `serverClock`) is used through those methods by any module
+   that imports it.
 3. **A live binding is never copied at module scope.** `const id = identity` outside a function
    freezes the value. Inside a function, an import does not narrow after its mount the way a
    local `let` narrows after an assignment, so `main()` builds into a local any instance it uses
@@ -248,7 +249,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `boundMonstersTab` | `screenContext.ts` | none | `openMenuTarget`: event; `onReconnect`: reset |
 | `boundTradeSessionId` | `screenContext.ts` | `screens` | `openTradeEditor`: event; `resetTradeSessionState`, on a join and on a reconnect: reset; the batch listener that drops a closed session: event |
 | `shopOpen` | `screens.ts` | `commands` | none |
-| `pendingTradeOpen` | `screens.ts` | `interact`, `commands` | `dispatch` sending the open: event |
+| `pendingTradeOpen` | `screens.ts` | `interact`, `commands` | `dispatch` sending the open, and the open refused: event |
 | `knownSessionIds` | `screens.ts` | none | none |
 | `questAckBaseline` | `screens.ts` | none | `onReconnect`: reset |
 | `menuState` | `menu.ts` | `input`, `devHooks` | none |
@@ -274,9 +275,9 @@ The movement latches are written where the event happens and read only by `snaps
 | Collection | Owner | Mutated from outside the owner by |
 |---|---|---|
 | `navHeldCodes` | `inputState.ts` | nothing: `noteNavHeld`, `releaseNavHeld` and `releaseAllInput` are its writers |
-| `dismissedRequests` | `notices.ts` | `worldPort`, `onReady`, `onReconnect` |
-| `announcedRequests` | `notices.ts` | the batch listener that announces a new request, `onReady`, `onReconnect` |
-| `answeredRequests` | `notices.ts` | `dispatch`, `onReady`, `onReconnect` |
+| `dismissedRequests` | `notices.ts` | `worldPort`, the batch listener that follows the trade sessions, `onReady`, `onReconnect` |
+| `announcedRequests` | `notices.ts` | the batch listener that announces a new request, the one that follows the trade sessions, `onReady`, `onReconnect` |
+| `answeredRequests` | `notices.ts` | `dispatch`, the batch listener that follows the trade sessions, `onReady`, `onReconnect` |
 | `careInFlight` | `commands.ts` | `onReconnect` |
 | `openedTradeSessions` | `notices.ts` | `openTradeEditor`, `resetTradeSessionState`, the batch listener that follows the trade sessions |
 | `zoneWarpsById` | `movement.ts` | nothing: `zoneWarps` is its one writer |
@@ -304,7 +305,7 @@ function takes over.
 | `movement.ts` | `stepWorldFrame` | the frame loop's world step |
 | `movement.ts` | `setRawMapZoneForTest` | the body of the test-only zone setter of that name, which `snapshot` goes on exposing |
 | `movement.ts` | `revealWorldAfterScopeEdge` | the `worldRevealed` assignment in the scope callback |
-| `screens.ts` | `notePendingTradeOpen` | the `pendingTradeOpen` assignment in `dispatch` |
+| `screens.ts` | `notePendingTradeOpen`, `dropPendingTradeOpen` | the two `pendingTradeOpen` assignments in `dispatch`: set when the open is sent, cleared when it is refused |
 | `account.ts` | `cancelArmedDecline` | the claim view's dismissed handler |
 | `account.ts` | `pumpPrivacyCountdown`, `forgetPrivacyCountdown`, `dropExportAssembly` | the frame loop's privacy step and the two resets in `onReconnect` |
 | `screens.ts` | `resetQuestAck` | the baseline reset in `onReconnect` |
