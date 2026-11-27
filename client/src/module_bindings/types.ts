@@ -1106,6 +1106,13 @@ export const QueuedAction = __t.enum("QueuedAction", {
 });
 export type QueuedAction = __Infer<typeof QueuedAction>;
 
+export const RecheckSchedule = __t.object("RecheckSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  identity: __t.identity(),
+});
+export type RecheckSchedule = __Infer<typeof RecheckSchedule>;
+
 export const RecruitAction = __t.object("RecruitAction", {
   target: __t.u32(),
   bait: __t.option(__t.u32()),
@@ -1502,6 +1509,15 @@ export const WorldAccessRule = __t.enum("WorldAccessRule", {
 });
 export type WorldAccessRule = __Infer<typeof WorldAccessRule>;
 
+export const WorldAccount = __t.object("WorldAccount", {
+  handle: __t.string(),
+  identity: __t.identity(),
+  entitled: __t.bool(),
+  checkedAtMs: __t.i64(),
+  isHost: __t.bool(),
+});
+export type WorldAccount = __Infer<typeof WorldAccount>;
+
 export const WorldAdmission = __t.object("WorldAdmission", {
   identity: __t.identity(),
   admittedAtMs: __t.i64(),
@@ -1535,6 +1551,13 @@ export const WorldBinding = __t.object("WorldBinding", {
   keyId: __t.string(),
 });
 export type WorldBinding = __Infer<typeof WorldBinding>;
+
+export const WorldCheckBudget = __t.object("WorldCheckBudget", {
+  id: __t.u32(),
+  minuteStartMs: __t.i64(),
+  redeems: __t.u32(),
+});
+export type WorldCheckBudget = __Infer<typeof WorldCheckBudget>;
 
 export const WorldName = __t.object("WorldName", {
   name: __t.string(),

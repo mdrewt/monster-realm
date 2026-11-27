@@ -8,11 +8,11 @@
 //! `schema::rekey_formation`), `privacy::purge_export_bundles`, and the
 //! `erase_*` / `anonymize_*` cascade family the deletion reaper delegates to
 //! (the tactical tables' `schema::erase_tactical_rows` included). The guest
-//! claim delegates to four of that family, `access::erase_admission`,
-//! `world_binding::erase_world_binding`, `schema::erase_tactical_rows` and
-//! `battle::anonymize_battles`, for the guest identity it retires. The reaper
-//! also calls `world_binding::delist_account_of`, which takes the deleted
-//! identity's bound account off the host's list. Bare reads of
+//! claim delegates to five of that family, `access::erase_admission`,
+//! `world_binding::erase_world_binding`, `account_checks::erase_world_account`,
+//! `schema::erase_tactical_rows` and `battle::anonymize_battles`, for the guest
+//! identity it retires. The reaper also calls `world_binding::delist_account_of`,
+//! which takes the deleted identity's handle off the host's list. Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read
 //! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
@@ -84,6 +84,16 @@ const LOCAL_DEV_ATTESTATION_KEY: AttestationKey = AttestationKey {
 /// which publishes no key. No release build holds them.
 pub(crate) const DEV_ATTESTATION_KEYS: &[AttestationKey] = &[LOCAL_DEV_ATTESTATION_KEY];
 
+/// Where a `world` build asks about an account: `POST /world/check` on the production account
+/// service. The same fail-closed placeholder as [`PRODUCTION_LOGIN_ISSUERS`], under the same
+/// sequencing gate: no request to it is answered, so a `world` build entitles nobody.
+pub(crate) const PRODUCTION_WORLD_CHECK_URL: &str =
+    "https://auth.monster-realm.invalid/world/check";
+/// Where a dev build asks: `POST /world/check` on the `hosted-dev` account service. The host
+/// refuses a request to a loopback address, so `local-dev` cannot be asked.
+pub(crate) const DEV_WORLD_CHECK_URL: &str =
+    "https://auth.monster-realm.spookyowltech.com/world/check";
+
 /// The cargo features a build names: the build input for ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuildFeatures {
@@ -96,7 +106,9 @@ pub(crate) struct BuildFeatures {
 }
 
 /// What a build does about ownership. `name` is one of `official`, `world`, `conflict` (both
-/// release features), `test`, `dev-enforcing` and `default` (no feature).
+/// release features), `test`, `dev-enforcing` and `default` (no feature). The artefact's
+/// `mr_build_profile` section carries the name, the two flags and the login issuers, and
+/// nothing else of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuildProfile {
     pub(crate) name: &'static str,
@@ -109,15 +121,19 @@ pub(crate) struct BuildProfile {
     /// The keys whose world attestations bind an identity here. A build with none binds
     /// nothing and reads no binding.
     pub(crate) attestation_keys: &'static [AttestationKey],
+    /// The account service's `POST /world/check` a world of this build asks about an account.
+    /// A build with none checks no account.
+    pub(crate) world_check_url: Option<&'static str>,
 }
 
 /// The profile of a feature set (`docs/local-play.md` §3, "The build input"). A release
 /// feature wins over a dev feature: a build that names `official` or `world` enforces and
 /// trusts no dev issuer and no dev attestation key whatever else it names, and one that names
-/// both trusts nothing. `official` holds the production login issuer and no attestation key,
-/// `world` the production attestation keys and no login issuer. Otherwise a build enforces
-/// unless it names `open_join`, and trusts the dev issuers and holds the dev attestation keys
-/// when it names `dev_issuers`. Cargo's own implications (`load_test_zones` and `dev_reducers` name
+/// both trusts nothing. `official` holds the production login issuer, no attestation key and
+/// no account service to ask; `world` the production attestation keys and account service and
+/// no login issuer. Otherwise a build enforces unless it names `open_join`, and trusts the dev
+/// issuers, holds the dev attestation keys and asks the dev account service when it names
+/// `dev_issuers`. Cargo's own implications (`load_test_zones` and `dev_reducers` name
 /// `open_join`, which names `dev_issuers`) are applied here too, so a feature handed to the
 /// compiler from outside cargo yields no other profile.
 pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
@@ -129,20 +145,34 @@ pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
         bool,
         &'static [&'static str],
         &'static [AttestationKey],
+        Option<&'static str>,
     );
-    let (name, enforces_ownership, login_issuers, attestation_keys): Row =
+    let (name, enforces_ownership, login_issuers, attestation_keys, world_check_url): Row =
         match (features.official, features.world) {
-            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS, &[]),
-            (false, true) => ("world", true, &[], PRODUCTION_ATTESTATION_KEYS),
-            (true, true) => ("conflict", true, &[], &[]),
-            (false, false) if open_join => ("test", false, DEV_LOGIN_ISSUERS, DEV_ATTESTATION_KEYS),
+            (true, false) => ("official", true, PRODUCTION_LOGIN_ISSUERS, &[], None),
+            (false, true) => (
+                "world",
+                true,
+                &[],
+                PRODUCTION_ATTESTATION_KEYS,
+                Some(PRODUCTION_WORLD_CHECK_URL),
+            ),
+            (true, true) => ("conflict", true, &[], &[], None),
+            (false, false) if open_join => (
+                "test",
+                false,
+                DEV_LOGIN_ISSUERS,
+                DEV_ATTESTATION_KEYS,
+                Some(DEV_WORLD_CHECK_URL),
+            ),
             (false, false) if dev_issuers => (
                 "dev-enforcing",
                 true,
                 DEV_LOGIN_ISSUERS,
                 DEV_ATTESTATION_KEYS,
+                Some(DEV_WORLD_CHECK_URL),
             ),
-            (false, false) => ("default", true, &[], &[]),
+            (false, false) => ("default", true, &[], &[], None),
         };
     BuildProfile {
         name,
@@ -150,6 +180,7 @@ pub(crate) const fn build_profile(features: BuildFeatures) -> BuildProfile {
         login_issuers,
         dev_reducers,
         attestation_keys,
+        world_check_url,
     }
 }
 
@@ -986,21 +1017,23 @@ fn token_entitles(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
 }
 
 /// Whether the caller may play under `profile`. A build that does not enforce ownership
-/// entitles everyone and reads neither the token nor a binding. An enforcing build entitles a
-/// connection whose token entitles it, and one whose identity holds a world binding the build
-/// counts that carried the base game (`world_binding::bound_entitled`). A profile with no
-/// attestation key reads no binding, so the official build has the token as its one way in
-/// and a world build the binding.
+/// entitles everyone and reads neither the token nor a row. An enforcing build entitles a
+/// connection whose token entitles it, and one whose identity holds a `world_account` row that
+/// says its account owns the game (`account_checks::account_entitled`), however long ago the
+/// account service said so. A profile that names no account service reads no row, so the
+/// official build has the token as its one way in and a world build the row. An attestation
+/// binding entitles nobody.
 pub(crate) fn entitled(ctx: &ReducerContext, profile: &BuildProfile) -> bool {
     if !profile.enforces_ownership {
         return true;
     }
-    token_entitles(ctx, profile) || crate::world_binding::bound_entitled(ctx, profile, ctx.sender())
+    token_entitles(ctx, profile)
+        || crate::account_checks::account_entitled(ctx, profile, ctx.sender())
 }
 
 /// Refuses a caller who is not entitled under `profile` with `ERR_OWNERSHIP_REQUIRED`. Writes
-/// nothing; the one table it reads is `world_binding`, and only when the token does not
-/// entitle the caller and the profile holds an attestation key.
+/// nothing; the one table it reads is `world_account`, and only when the token does not
+/// entitle the caller and the profile names an account service.
 pub(crate) fn require_entitled(
     ctx: &ReducerContext,
     profile: &BuildProfile,
@@ -1193,11 +1226,12 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
     // The guest's world rows are not re-keyed either: its admission, its
-    // wrong-password record, its binding and its bind nonce go with the identity,
-    // so a later change to `Allowlist` does not list the account of a guest that
-    // is gone. The host's list is not written here.
+    // wrong-password record, its binding, its bind nonce and its checked account go
+    // with the identity, so a later change to `Allowlist` does not list the handle
+    // of a guest that is gone. The host's list is not written here.
     crate::access::erase_admission(ctx, guest);
     crate::world_binding::erase_world_binding(ctx, guest);
+    crate::account_checks::erase_world_account(ctx, guest);
     // The guest's finished battles are not re-keyed (why: docs/DECISIONS.md,
     // "Accounts, guest identity and the claim flow"). The claim erases them as
     // the deletion cascade erases its subject's: the per-battle tactical rows
@@ -1468,8 +1502,8 @@ pub struct AccountDeletionReaperSchedule {
 /// below yanks rows out from under a live battle/trade resolution; 6b the
 /// delegated ERASE sweeps in manifest order (write isolation: every
 /// foreign-table write lives in its owning module, the `rekey_all`
-/// precedent), including the export-bundle purge, and, ahead of the world
-/// binding's erase, the removal of the subject's bound account from the
+/// precedent), including the export-bundle purge, and, ahead of the erase of
+/// the subject's checked account, the removal of its handle from the
 /// host's allowlist (`world_binding::delist_account_of`); 6d `character` strictly
 /// before 6c's player display-name tombstone (the spec's order pin — the join
 /// key is the live `player` row); the battle anonymize sweeps its own
@@ -1518,9 +1552,11 @@ pub fn account_deletion_reaper(
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::access::erase_admission(ctx, args.account_identity);
-    // Before the binding goes: it is the only record of the account to take off the list.
+    // Before the checked account goes: its row is the only record of the handle to take
+    // off the list.
     crate::world_binding::delist_account_of(ctx, args.account_identity);
     crate::world_binding::erase_world_binding(ctx, args.account_identity);
+    crate::account_checks::erase_world_account(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);

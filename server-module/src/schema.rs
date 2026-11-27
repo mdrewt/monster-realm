@@ -2243,6 +2243,18 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         basis: "an identity and the one bind nonce the world chose for it, good for five minutes, deleted outright at cascade time; not exported: it is spent or expired within minutes",
         exportable: false,
     },
+    DataLifecycleEntry {
+        table: "world_account",
+        policy: DeletionPolicy::Erase,
+        basis: "the handle of the account an identity plays under in this world and whether it owns the game, deleted outright at cascade time; a guest claim deletes the retired guest's row and moves none; the identity's own unbind and the owner's drop delete it too; exported as what the world holds about the player's account",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "recheck_schedule",
+        policy: DeletionPolicy::Erase,
+        basis: "names an identity whose account is about to be asked about again: a one-shot row the host spends at its one run, deleted with the identity's world_account row; not exported: it lives for moments",
+        exportable: false,
+    },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---
     DataLifecycleEntry {
         table: "player",
@@ -2414,6 +2426,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "world_name",
         policy: DeletionPolicy::NotOwned,
         basis: "the names this world answers to in an attestation: no Identity column, written only by the module owner",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "world_check_budget",
+        policy: DeletionPolicy::NotOwned,
+        basis: "one row counting the ticket redeems this world sent in the current minute: no Identity column, not player data",
         exportable: false,
     },
     DataLifecycleEntry {

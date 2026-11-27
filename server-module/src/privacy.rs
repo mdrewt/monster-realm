@@ -38,6 +38,7 @@
 //! and no other quote byte anywhere. Every constant string is `stringify!` and
 //! the quote is the `JSON_QUOTE` unicode-escape char constant.
 
+use crate::account_checks::WorldAccount;
 use crate::marshal::now_ms;
 use crate::playtest::{playtest_event, PlaytestEvent};
 use crate::schema::{
@@ -1023,6 +1024,31 @@ fn json_player_handle(row: &PlayerHandle) -> String {
     out
 }
 
+fn json_world_account(row: &WorldAccount) -> String {
+    let WorldAccount {
+        handle,
+        identity,
+        entitled,
+        checked_at_ms,
+        is_host,
+    } = row;
+    let mut out = String::new();
+    let mut first = true;
+    out.push('{');
+    json_field_into(&mut out, &mut first, stringify!(handle));
+    json_str_into(&mut out, handle);
+    json_field_into(&mut out, &mut first, stringify!(identity));
+    json_identity_into(&mut out, *identity);
+    json_field_into(&mut out, &mut first, stringify!(entitled));
+    json_bool_into(&mut out, *entitled);
+    json_field_into(&mut out, &mut first, stringify!(checked_at_ms));
+    json_i64_into(&mut out, *checked_at_ms);
+    json_field_into(&mut out, &mut first, stringify!(is_host));
+    json_bool_into(&mut out, *is_host);
+    out.push('}');
+    out
+}
+
 fn json_profile(row: &Profile) -> String {
     let Profile {
         identity,
@@ -1489,6 +1515,7 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(battle_action), rows_battle_action),
     (stringify!(player_formation), rows_player_formation),
     (stringify!(player_handle), rows_player_handle),
+    (stringify!(world_account), rows_world_account),
     (stringify!(player), rows_player),
     (stringify!(profile), rows_profile),
     (stringify!(account), rows_account),
@@ -1708,6 +1735,14 @@ fn rows_player_handle(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
     let mut rows = Vec::new();
     if let Some(row) = ctx.db.player_handle().owner_identity().find(owner) {
         rows.push(json_player_handle(&row));
+    }
+    Ok(rows)
+}
+
+fn rows_world_account(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let mut rows = Vec::new();
+    if let Some(row) = crate::account_checks::account_of(ctx, owner) {
+        rows.push(json_world_account(&row));
     }
     Ok(rows)
 }
@@ -1981,7 +2016,7 @@ pub(crate) const EXPORT_REAP_MAX_READ_PER_TICK: usize = 256;
 // most this many stamps — and a stamp is exactly one
 // bundle minted since then, because the write site refuses a stamp a live row
 // already carries. Sixteen
-// minimum-size bundles (20 chunks, one per exportable table) is 320 rows, more
+// minimum-size bundles (21 chunks, one per exportable table) is 336 rows, more
 // than the 256-row read window: a window in ascending stamp order holds at most
 // twelve whole bundles and one straddler, so over bundles this module writes
 // the read window binds first and this cap bounds a window of shorter stamps.

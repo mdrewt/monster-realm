@@ -5,11 +5,12 @@ Everything here is configuration: no game code, reducers or schema, and no
 module-owner credential. Backup, retention and posture checks are in
 [`../../docs/runbooks/observability-dr.md`](../../docs/runbooks/observability-dr.md).
 
-## Rule: the module never times itself or calls out
+## Rule: the module never times itself or sends a signal out
 
 Every server-side signal comes from the SpacetimeDB **host**. The host serves
 `/v1/metrics` over HTTP and writes module logs to rotated files that agents tail
-read-only. The module has no exporter reducer, polling loop or outbound call.
+read-only. The module has no exporter reducer or polling loop, and its only outbound
+requests are its account checks, which carry no signal.
 OpenTelemetry spans and metrics come only from the browser client.
 
 ## Topology

@@ -104,9 +104,12 @@ export function findForbiddenReducers(reducerNames, forbidden) {
 //
 // Parses what `spacetimedb-standalone extract-schema <wasm>` prints, one JSON object
 // `{"V10":{"sections":[{"<Kind>": <payload>}, …]}}`, and returns one line for each HTTP handler,
-// HTTP route and row filter it declares, at any submodule depth, and for each section kind this
-// check does not know. The host serves a module's HTTP handlers without authentication and
-// without the connect reducer, so the module declares none, and no row filter either.
+// HTTP route and row filter it declares, for each procedure that is not one of
+// ALLOWED_PROCEDURES, for each schedule that is not a pair of ALLOWED_SCHEDULES, at any
+// submodule depth, and for each section kind this check does not know. The host serves a
+// module's HTTP handlers without authentication and without the connect reducer, so the module
+// declares none, and no row filter either. A procedure can send HTTP requests and a schedule
+// runs code with no caller, so each is one this list names or the definition is refused.
 // `just module-definition` applies it to the default build and `just release-module` to each
 // artefact it makes.
 //
@@ -114,6 +117,31 @@ export function findForbiddenReducers(reducerNames, forbidden) {
 // object of one kind, a checked section whose payload is not an array, a submodule without a
 // namespace or sections, or a definition with no reducer (a module always has one, so none
 // means the extraction did not work).
+
+// The procedures the module declares, all in server-module/src/account_checks.rs: a world's
+// own checks of a player's account against the account service.
+export const ALLOWED_PROCEDURES = ['check_account', 'check_account_for', 'recheck_account'];
+
+// Every scheduled table of the module and the function it runs. A new schedule joins this list
+// in the change that adds it.
+export const ALLOWED_SCHEDULES = {
+  guest_claim_reaper_schedule: 'guest_claim_reaper',
+  account_deletion_reaper_schedule: 'account_deletion_reaper',
+  trade_session_reaper_schedule: 'trade_session_reaper',
+  playtest_reaper_schedule: 'playtest_reaper',
+  export_bundle_reaper_schedule: 'export_bundle_reaper',
+  battle_summary_reaper_schedule: 'battle_summary_reaper',
+  tactical_deadline_sched: 'tactical_deadline_fire',
+  tactical_advance_sched: 'tactical_advance',
+  battle_gc_sched: 'battle_gc',
+  movement_tick_schedule: 'movement_tick',
+  mr_heartbeat_schedule: 'mr_heartbeat',
+  pvp_deadline_schedule: 'pvp_deadline_reaper',
+  battle_challenge_reaper_schedule: 'battle_challenge_reaper',
+  trade_offer_reaper_schedule: 'trade_offer_reaper',
+  recheck_schedule: 'recheck_account',
+};
+
 const KNOWN_SECTION_KINDS = [
   'Typespace',
   'Types',
@@ -169,6 +197,22 @@ function sectionViolations(sections, prefix) {
     } else if (kind === 'RowLevelSecurity') {
       for (const f of arrayPayload(kind, payload)) {
         found.push(`${prefix}row filter \`${f?.sql}\``);
+      }
+    } else if (kind === 'Procedures') {
+      for (const p of arrayPayload(kind, payload)) {
+        if (!ALLOWED_PROCEDURES.includes(p?.source_name)) {
+          found.push(`${prefix}procedure \`${p?.source_name}\``);
+        }
+      }
+    } else if (kind === 'Schedules') {
+      for (const s of arrayPayload(kind, payload)) {
+        const allowed =
+          typeof s?.table_name === 'string' &&
+          Object.hasOwn(ALLOWED_SCHEDULES, s.table_name) &&
+          ALLOWED_SCHEDULES[s.table_name] === s?.function_name;
+        if (!allowed) {
+          found.push(`${prefix}schedule \`${s?.table_name}\` to \`${s?.function_name}\``);
+        }
       }
     } else if (kind === 'Submodules') {
       for (const sub of arrayPayload(kind, payload)) {

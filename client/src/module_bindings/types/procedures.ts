@@ -6,5 +6,11 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all procedure arg schemas
+import * as CheckAccountProcedure from "../check_account_procedure";
+import * as CheckAccountForProcedure from "../check_account_for_procedure";
 
+export type CheckAccountArgs = __Infer<typeof CheckAccountProcedure.params>;
+export type CheckAccountResult = __Infer<typeof CheckAccountProcedure.returnType>;
+export type CheckAccountForArgs = __Infer<typeof CheckAccountForProcedure.params>;
+export type CheckAccountForResult = __Infer<typeof CheckAccountForProcedure.returnType>;
 

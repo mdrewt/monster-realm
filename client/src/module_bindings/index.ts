@@ -86,6 +86,8 @@ import TrainReducer from "./train_reducer";
 import UnbindWorldAccountReducer from "./unbind_world_account_reducer";
 
 // Import all procedure arg schemas
+import * as CheckAccountProcedure from "./check_account_procedure";
+import * as CheckAccountForProcedure from "./check_account_for_procedure";
 
 // Import all table schema definitions
 import BattleChallengeRow from "./battle_challenge_table";
@@ -114,6 +116,7 @@ import MyPlayerQuestRow from "./my_player_quest_table";
 import MyTacticalBattleRow from "./my_tactical_battle_table";
 import MyTradeSessionRow from "./my_trade_session_table";
 import MyWalletRow from "./my_wallet_table";
+import MyWorldAccountRow from "./my_world_account_table";
 import MyWorldBindingRow from "./my_world_binding_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
@@ -488,6 +491,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyWalletRow),
+  myWorldAccount: __table({
+    name: 'my_world_account',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyWorldAccountRow),
   myWorldBinding: __table({
     name: 'my_world_binding',
     indexes: [
@@ -553,6 +563,8 @@ const reducersSchema = __reducers(
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */
 const proceduresSchema = __procedures(
+  __procedureSchema("check_account", CheckAccountProcedure.params, CheckAccountProcedure.returnType),
+  __procedureSchema("check_account_for", CheckAccountForProcedure.params, CheckAccountForProcedure.returnType),
 );
 
 type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "tables"> & {
@@ -619,6 +631,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_trade_session": Omit<typeof tablesSchema.schemaType.tables["myTradeSession"], "accessorName"> & { readonly accessorName: "my_trade_session" };
     /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
     readonly "my_wallet": Omit<typeof tablesSchema.schemaType.tables["myWallet"], "accessorName"> & { readonly accessorName: "my_wallet" };
+    /** @deprecated Use `myWorldAccount` instead. This alias will be removed in the next major version. */
+    readonly "my_world_account": Omit<typeof tablesSchema.schemaType.tables["myWorldAccount"], "accessorName"> & { readonly accessorName: "my_world_account" };
     /** @deprecated Use `myWorldBinding` instead. This alias will be removed in the next major version. */
     readonly "my_world_binding": Omit<typeof tablesSchema.schemaType.tables["myWorldBinding"], "accessorName"> & { readonly accessorName: "my_world_binding" };
   };
@@ -670,6 +684,7 @@ const tableAccessorAliases = {
   "my_tactical_battle": "myTacticalBattle",
   "my_trade_session": "myTradeSession",
   "my_wallet": "myWallet",
+  "my_world_account": "myWorldAccount",
   "my_world_binding": "myWorldBinding",
 } as const;
 
@@ -755,6 +770,8 @@ export type Tables = __TablesBase & {
   readonly "my_trade_session": __TablesBase["myTradeSession"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __TablesBase["myWallet"];
+  /** @deprecated Use `myWorldAccount` instead. This alias will be removed in the next major version. */
+  readonly "my_world_account": __TablesBase["myWorldAccount"];
   /** @deprecated Use `myWorldBinding` instead. This alias will be removed in the next major version. */
   readonly "my_world_binding": __TablesBase["myWorldBinding"];
 };
