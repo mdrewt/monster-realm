@@ -4848,13 +4848,15 @@ describe('TacticsBattle: Forfeit and the Surge badge (bt-15 B, BT15.3 / BT15.5)'
     expect(selectedRowId(p.root), 'Down from Submit: Forfeit').toBe('forfeit');
   });
 
-  it('the shell wires the turn bar`s Surge badge for a player battle: "Surge in N" from round 7 counted to the VM`s Surge round, "Surge!" from it, nothing before round 7 and nothing for a wild battle at round 7 [BT15-3]', () => {
+  it('the shell wires the turn bar`s Surge badge for a player battle: "Surge in N" from two rounds before the VM`s Surge round (round 7 of the default 9) counted to that round, "Surge!" from it, nothing before and nothing for a wild battle at round 7 [BT15-3]', () => {
     // WRONG IMPL KILLED: the shell passing kind 'wild' (or no kind) to the bar for a PvP battle (no
     // badge); the Surge round hard-coded to the design's 9 instead of the VM's (11 below); the
     // badge shown from round 1. (Practice runs the PvP ruleset and reaches the shell as kind 'pvp':
     // the BOOT case BT12-1-BOOT-ACTIVE-SHELL pins that mapping; this case pins the shell's wiring.)
-    // NOTE: turnBar.ts already ships the rule (BT10-3-BAR-BADGE); this is the BT15.3 shell-level
-    // wiring case, expected to pass on the current tree.
+    // NOTE: turnBar.ts ships the rule (BT10-3-BAR-BADGE: the lead-in shows from the VM's Surge
+    // round minus the surge lead); this is the BT15.3 shell-level wiring case.
+    // wr261127-b (named intentional change): the custom-start row renders round 9 of Surge round 11
+    // (two before it), the lead-in counting 2.
     const badge = (vm: TacticsBattleVM): string => {
       const k = make();
       k.shell.render(vm);
@@ -4870,9 +4872,9 @@ describe('TacticsBattle: Forfeit and the Surge badge (bt-15 B, BT15.3 / BT15.5)'
       en('tactics.turnbar.surgeActive'),
     );
     expect(
-      badge(tacVm('pvp', { round: 7, surgeStartRound: 11 })),
-      'the VM`s Surge round 11: Surge in 4',
-    ).toBe(en('tactics.turnbar.surgeIn', { n: 4 }));
+      badge(tacVm('pvp', { round: 9, surgeStartRound: 11 })),
+      'the VM`s Surge round 11 at round 9: Surge in 2',
+    ).toBe(en('tactics.turnbar.surgeIn', { n: 2 }));
     expect(badge(tacVm('pvp', { round: 6 })), 'round 6: no badge yet').toBe('');
     expect(badge(tacVm('wild', { round: 7 })), 'a wild battle at round 7: no badge').toBe('');
   });

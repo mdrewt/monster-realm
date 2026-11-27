@@ -857,6 +857,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/pvpView.ts',
       'ui/questLogView.ts',
       'ui/raisingView.ts',
+      // wr261127-b (named intentional change): the rename model resolves the empty-name stand-in
+      // (`rename.unnamed`).
+      'ui/renameModel.ts',
       'ui/renameView.ts',
       'ui/screens/mainMenuScreen.ts',
       'ui/sessionModel.ts',

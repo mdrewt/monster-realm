@@ -16,6 +16,9 @@
 //   changes. The absence of those tests is intentional and load-bearing.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
 import { formatTag } from './playerTag';
 import { buildRenameViewModel } from './renameModel';
 
@@ -25,6 +28,7 @@ vi.mock('./playerTag', { spy: true });
 
 afterEach(() => {
   vi.mocked(formatTag).mockClear();
+  setLocale('en');
 });
 
 // ---------------------------------------------------------------------------
@@ -94,8 +98,10 @@ describe('buildRenameViewModel D6: empty currentName → displayCurrentName "(un
     // D6: store.player(identity)?.name can be '' for a never-named player.
     // The overlay must show '(unnamed)' as a placeholder, not a blank label.
     // WRONG IMPL KILLED: `displayCurrentName: currentName` (passes '' through).
+    // wr261127-b (named intentional change): the stand-in is the active catalog's `rename.unnamed`
+    // (English under the default locale), not a literal in the model.
     const vm = buildRenameViewModel('', 0, 'SomeDraft');
-    expect(vm.displayCurrentName).toBe('(unnamed)');
+    expect(vm.displayCurrentName).toBe(CATALOG_EN['rename.unnamed']);
     // canSubmit is true — the empty currentName does not block submission
     expect(vm.canSubmit).toBe(true);
     expect(vm.trimmedDraft).toBe('SomeDraft');
@@ -173,8 +179,29 @@ describe('buildRenameViewModel displayTag', () => {
     expect(vm.displayCurrentName).toBe('Aria');
     expect(vm.trimmedDraft).toBe('x');
     expect(vm.canSubmit).toBe(true);
-    expect(buildRenameViewModel('', 0, '').displayCurrentName).toBe('(unnamed)');
+    expect(buildRenameViewModel('', 0, '').displayCurrentName).toBe(CATALOG_EN['rename.unnamed']);
     expect(buildRenameViewModel('', 0, '').displayTag).toBeNull();
+  });
+});
+
+describe('buildRenameViewModel empty-name stand-in follows the active locale', () => {
+  it('an empty name reads the active catalog rename.unnamed: English under en, French under fr [wr261127-b.1]', () => {
+    // WRONG IMPL KILLED: the English literal returned under fr; the stand-in resolved once at
+    // module load (a locale switch after import changes nothing); the French string returned under
+    // en; a stand-in that is not the catalog value.
+    setLocale('en');
+    const enName = buildRenameViewModel('', 0, '').displayCurrentName;
+    expect(enName).toBe(CATALOG_EN['rename.unnamed']);
+    expect(enName).toBe('(unnamed)');
+
+    setLocale('fr');
+    const frName = buildRenameViewModel('', 0, '').displayCurrentName;
+    expect(frName).toBe(CATALOG_FR['rename.unnamed']);
+    expect(frName).toBe('(sans nom)');
+    expect(frName).not.toBe(enName);
+
+    setLocale('en');
+    expect(buildRenameViewModel('', 0, '').displayCurrentName).toBe('(unnamed)');
   });
 });
 
