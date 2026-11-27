@@ -7,7 +7,9 @@ profile per service profile. Every command below runs from `ops/auth/`.
 
 Losing the service's database or its keys is worse than losing a game database: a module
 derives each account's `Identity` from the issuer and the token's subject, so a lost database
-orphans every account, and a lost login key leaves no key that signs what modules expect.
+orphans every account, and a lost login key leaves no key that signs what modules expect. A lost
+handle key leaves every friends and single-player world unable to tell which account a character
+belongs to.
 
 Commands marked **destructive** stop the service or replace data. Read the whole section first.
 
@@ -25,9 +27,18 @@ Commands marked **destructive** stop the service or replace data. Read the whole
   `/var/lib/account-service/keys/`) and a 64 MiB `/tmp`. No port of its own is published.
 - **Caddy** (`caddy-<profile>`) is the only way in. It serves the profile's issuer origin: plain
   HTTP on port 4455 for `local-dev`, and for the other two an ACME certificate for the issuer's
-  host name, kept in its `/data` volume. It serves no other host name, passes the client's `Host`
-  on, and proxies to its own profile's account service; the service also answers only its
-  issuer's host (`421` otherwise).
+  host name, kept in its `/data` volume. On the dev profiles it also serves the issuer's two
+  check names, `ipv4.` and `ipv6.` in front of the issuer's host, each with its own certificate
+  on `hosted-dev`; a world's server asks `POST /world/check` there. It serves no other host name,
+  passes the client's `Host` on, and proxies to its own profile's account service; the service
+  also answers only its issuer's host, and that one route under the check names (`421`
+  otherwise).
+- **The source address.** Caddy writes the address it takes a request to come from into
+  `X-Forwarded-For`, replacing whatever the client sent there. The account container believes
+  that header only from the private ranges a compose network is made from
+  (`MR_ACCOUNT_TRUSTED_PROXY` in `docker-compose.yml`), which only its Caddy and this host are
+  inside. The service reports that address to a world as the world's own, and counts its limits
+  by it.
 - **One public profile per host.** `hosted-dev` and `production` both take ports 80 and 443.
 - **Refusals.** A container that lacks its profile's settings or keys exits 1 with one line,
   `account-service: refusing to start: <setting>: <problem>`, and `restart: unless-stopped`
@@ -50,9 +61,21 @@ curl -fsS http://localhost:4455/.well-known/openid-configuration
 `MR_AUTH_LOCAL_PORT` (in `.env`, default 4455) moves only the host side of the published port.
 The issuer stays `http://localhost:4455`, so a browser or a game client needs the default.
 
-**`hosted-dev`.** Point `auth.monster-realm.spookyowltech.com` at the host and open ports 80 and
-443 first: Caddy asks for the certificate at its first start. The service never writes a
-`hosted-dev` key file, so make both key files in the volume once, before the first start:
+**`hosted-dev`.** Point three names at the host and open ports 80 and 443 first: Caddy asks for
+their certificates at its first start.
+
+| Name | Records |
+|---|---|
+| `auth.monster-realm.spookyowltech.com` | `A`, and `AAAA` when the host has an IPv6 address |
+| `ipv4.auth.monster-realm.spookyowltech.com` | `A` only |
+| `ipv6.auth.monster-realm.spookyowltech.com` | `AAAA` only |
+
+A world asks the check name of the address family it listens on, so the service sees, and tells
+it, the address of that family its requests leave from. A host with no IPv6 address leaves the
+`ipv6.` name without a record; Caddy keeps retrying that one certificate and serves the rest.
+
+The service never writes a `hosted-dev` key file, so make all three key files in the volume
+once, before the first start:
 
 ```sh
 docker compose --profile hosted-dev build
@@ -65,6 +88,7 @@ docker compose --profile hosted-dev run --rm -T --no-deps --entrypoint node acco
     write("keys.json", k.generateSigningKey());
     const attest = k.generateAttestationKey();
     write("attestation-keys.json", attest);
+    write("handle-keys.json", k.generateHandleKey());
     console.log(JSON.stringify(k.publicAttestationKey(attest)));
   });'
 docker compose --profile hosted-dev up -d
@@ -74,6 +98,21 @@ curl -fsS https://auth.monster-realm.spookyowltech.com/.well-known/openid-config
 The command prints the attestation key's public half; a world accepts attestations from it only
 once it is in `publishedAttestationKeys()` and a module built with it ships
 (`docs/account-service.md`, "Attestation keys"). `flag: "wx"` refuses to overwrite a key file.
+Back up the keys volume now (section 5): `handle-keys.json` can never be made again.
+
+Then check, from another machine, that the service sees where a request comes from. The answer's
+`address` must be that machine's own public address, of the family the name stands for:
+
+```sh
+curl -sS https://ipv4.auth.monster-realm.spookyowltech.com/world/check \
+  -H 'Content-Type: application/json' \
+  -d '{"handle":"none.none","world":"0000000000000000000000000000000000000000000000000000000000000000"}'
+```
+
+An `address` in a private range means the proxy or docker is hiding the caller: every world then
+shares one limit, and no world can confirm its own address. Docker passes a caller's IPv4 address
+through a published port, and passes an IPv6 address only on a network with IPv6 enabled; without
+that, leave the `ipv6.` name without a record.
 
 ## 3. Admin accounts
 
@@ -102,19 +141,20 @@ in-process limits: password lockouts, the sign-in cap and attestation counts.
 
 ```sh
 P=hosted-dev   # or local-dev
-rotate() {     # rotate <keys.json|attestation-keys.json> publish | promote <kid> | retire <kid>
+rotate() {     # rotate <keys.json|attestation-keys.json|handle-keys.json> publish | promote <kid> | retire <kid>
   docker compose --profile "$P" exec -T "account-$P" node -e '
     const fs = require("node:fs");
     const [name, step, kid] = process.argv.slice(1);
-    if (name !== "keys.json" && name !== "attestation-keys.json") throw new Error("which key file?");
+    const make = { "keys.json": "generateSigningKey", "attestation-keys.json": "generateAttestationKey", "handle-keys.json": "generateHandleKey" }[name];
+    if (make === undefined) throw new Error("which key file?");
     const file = "/var/lib/account-service/keys/" + name;
     import("/app/src/keys.ts").then((k) => {
       const set = JSON.parse(fs.readFileSync(file, "utf8"));
       const at = set.keys.findIndex((key) => key.kid === kid);
       if (step === "publish") {
-        const key = name === "keys.json" ? k.generateSigningKey() : k.generateAttestationKey();
+        const key = k[make]();
         set.keys.push(key);
-        if (name !== "keys.json") console.log("public=" + JSON.stringify(k.publicAttestationKey(key)));
+        if (name === "attestation-keys.json") console.log("public=" + JSON.stringify(k.publicAttestationKey(key)));
       } else if (step === "promote" && at > 0) set.keys.unshift(...set.keys.splice(at, 1));
       else if (step === "retire" && at > 0) set.keys.splice(at, 1);
       else throw new Error("publish, promote <kid> or retire <kid>, where the kid is listed and does not sign");
@@ -145,12 +185,19 @@ attestation-keys.json publish` prints the new key's public half, which goes into
 `publishedAttestationKeys()` and ships in modules (`docs/account-service.md`, "Attestation keys")
 before the key is promoted.
 
+`handle-keys.json` rotates with the first two steps and no wait: `rotate handle-keys.json
+publish`, then `rotate handle-keys.json promote <new kid>`. Only the service reads a handle, so
+nothing has to learn the new key, and each world's stored handles are replaced as the world
+re-checks them. **Do not retire a handle key.** A world that still holds a handle under it is
+told the handle is not ours, and that account cannot reach its character there until the key is
+back in the file. Back up the keys volume before and after.
+
 ## 5. Backup and restore
 
 What to keep: the database (accounts, clients and refresh-token chains, the chains as digests) and
-the key files. The database is the routine backup; the keys hold a key that can sign for any
-player, so they go to a narrowly scoped secret store, not into the routine sweep, and are taken
-again after every key change.
+the key files, `handle-keys.json` among them. The database is the routine backup; the keys hold a
+key that can sign for any player and the key that reads every handle, so they go to a narrowly
+scoped secret store, not into the routine sweep, and are taken again after every key change.
 
 **Back up, while the service runs.** SQLite's `VACUUM INTO` writes a consistent copy of a database
 in use; a plain copy of the file can be torn. The copy is made in the database volume, streamed
@@ -196,8 +243,9 @@ docker compose --profile "$P" run --rm -T --no-deps --entrypoint sh "account-$P"
 docker compose --profile "$P" up -d
 ```
 
-Then check: `/jwks` lists the same `kid`s as before, an account signs in, and a module still
-derives the same `Identity` for it (the issuer URL is unchanged).
+Then check: `/jwks` lists the same `kid`s as before, an account signs in, a module still
+derives the same `Identity` for it (the issuer URL is unchanged), and a handle a world already
+holds is answered back unchanged by `POST /world/check`.
 
 ### Drill record
 
@@ -223,9 +271,12 @@ points there.
 4. On the new host, check out the same commit and copy `B` there. Run section 5's restore, but in
    place of its last line start only the service: `docker compose --profile "$P" up -d
    "account-$P"`.
-5. Point the issuer's DNS name at the new host, open ports 80 and 443, and wait for the record to
-   resolve to it. Then `docker compose --profile "$P" up -d`: Caddy obtains the certificate.
-6. Check discovery and `/jwks` at the issuer URL and sign in with a test account.
+5. Point the issuer's DNS name and its two check names at the new host, open ports 80 and 443,
+   and wait for the records to resolve to it. Then `docker compose --profile "$P" up -d`: Caddy
+   obtains the certificates.
+6. Check discovery and `/jwks` at the issuer URL, sign in with a test account, and run section 2's
+   source-address check: every world's stored address is the old host's view of it until its next
+   check.
 
 Keep the old host's volumes until the new host has served sign-ins; then delete them with
 `down -v`.
