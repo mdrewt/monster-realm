@@ -749,13 +749,13 @@ another way, a step for one that already faces the direction. The frame loop con
 a hold with `Step` in the active direction only after it has been held 150 ms
 (`HOLD_COMMIT_MS`), only when the predictor has no outstanding steps and no sent input is still
 owed, and only while `movementGate()` in `main.ts` passes: `movementEnabled` (`ui/contextStack.ts`:
-the world base with no frame above it and the session gate open) and no world sheet open. The
+the world base with no frame above it and the session gate open) and no world sheet open. A hold
+from another facing therefore turns, waits for the row that drains the `Face`, then walks. The
 reconcile listener re-sends the held direction behind the same checks after a server correction.
-A hold from another facing therefore turns, waits for the row that drains the `Face`, then walks.
 Every push of a frame, and every change of base kind, clears the held set. The keyboard source
 drops OS key-repeat (`e.repeat`), and the router (`input/router.ts`) counts each D-pad button's
 holders across physical keys and synthesizes menu auto-repeat on an injected clock
-(`REPEAT_DELAY_MS` 350, then every `REPEAT_PERIOD_MS` 100); a repeated step clamps at a list end
+(`REPEAT_DELAY_MS` 350, then every `REPEAT_PERIOD_MS` 100); a repeated step clamps at an end
 where a fresh one wraps (`stepAxis` in `ui/nav.ts`). A zone
 warp (`switchZone` in `main.ts`) rebuilds prediction state but keeps the held stack; a reconnect
 (`resetPredictionState`) clears it. The rebuilt predictor has forgotten an

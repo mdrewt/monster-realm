@@ -545,8 +545,8 @@ neither movement nor menus; a menu repeats on an injected clock instead. A press
 the reconcile after a server correction, sends only after the key has been held for the commit
 threshold (150 ms), only when the predictor has no outstanding steps and no sent input is still
 owed, and only while the world base takes input (no frame or sheet above it, the session gate
-open); a tap only turns. Every push of a frame, and every change of base, clears the held set. A
-zone warp keeps the held set across the prediction reset; a reconnect does not.
+open); a tap only turns. Every push of a frame, and every change of base kind, clears the held
+set. A zone warp keeps the held set across the prediction reset; a reconnect does not.
 
 **Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a tap
 (one input) from a hold (a walk), and waiting for outstanding steps stops the client queueing
