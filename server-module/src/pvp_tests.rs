@@ -4,7 +4,7 @@
 //! The pure ranked-gate predicates are tested directly; every
 //! reducer, reaper and settlement path runs SHIPPED under the in-memory native
 //! host (`native_host_tests`) in the suite at the bottom of this file.
-//! battle_action and the schedule tables being private is the generated-bindings
+//! The schedule tables being private is the generated-bindings
 //! surface (evals/client-surface-privacy.eval.mjs).
 
 // ---------------------------------------------------------------------------
@@ -247,17 +247,17 @@ fn ea_ra_06b_issuers_configured_matrix() {
 // Every reducer runs through `Fixture::run_as(_at)` with a real sender, against the
 // tables it reads through their real indexes. HOST LIMIT: no transaction rollback,
 // so every refusal is asserted as refusal BEFORE any write (the whole PvP store
-// byte-identical). battle_action / schedule-table privacy is the bindings surface
-// (client-surface-privacy A/B, PvpAction + BattleAction in HIDDEN_TYPES).
+// byte-identical). Schedule-table privacy is the bindings surface
+// (client-surface-privacy A/B).
 // ===========================================================================
 
 use crate::native_host_tests::{fixture as pv_fixture, Fixture as PvFixture, Handle as PvHandle};
 use crate::schema::{
-    Account as PvAccount, Battle as PvBattle, BattleAction as PvAction,
-    BattleChallenge as PvChallenge, ChallengeStatus as PvStatus, Character as PvCharacter,
-    Monster as PvMonster, MonsterPub as PvMonsterPub, Player as PvPlayer, Profile as PvProfile,
+    Account as PvAccount, Battle as PvBattle, BattleChallenge as PvChallenge,
+    ChallengeStatus as PvStatus, Character as PvCharacter, Monster as PvMonster,
+    MonsterPub as PvMonsterPub, Player as PvPlayer, Profile as PvProfile,
 };
-use game_core::{BattleOutcome as PvOutcome, PvpAction as PvPick};
+use game_core::BattleOutcome as PvOutcome;
 use spacetimedb::{Identity as PvId, ScheduleAt as PvAt, Timestamp as PvTs};
 
 const PV_T0: i64 = 1_750_000_000_000;
@@ -416,8 +416,6 @@ struct PvWorld<'a> {
     battles: PvHandle<'a, PvBattle, u64>,
     challenges: PvHandle<'a, PvChallenge, u64>,
     reapers: PvHandle<'a, super::BattleChallengeReaperSchedule, u64>,
-    deadlines: PvHandle<'a, super::PvpDeadlineSchedule, u64>,
-    actions: PvHandle<'a, PvAction, u64>,
     monsters: PvHandle<'a, PvMonster, u64>,
     pubs: PvHandle<'a, PvMonsterPub, u64>,
     profiles: PvHandle<'a, PvProfile>,
@@ -457,23 +455,6 @@ fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
         "challenge_id",
         |r| r.challenge_id,
     );
-    let deadlines = fx
-        .table_keyed::<super::PvpDeadlineSchedule, u64>(
-            "pvp_deadline_schedule",
-            "scheduled_id",
-            |r| r.scheduled_id,
-        )
-        .writable()
-        .scannable()
-        .unique()
-        .auto_inc(|r| r.scheduled_id, |r, id| r.scheduled_id = id);
-    let actions = fx
-        .table_keyed::<PvAction, u64>("battle_action", "action_id", |r| r.action_id)
-        .writable()
-        .scannable()
-        .unique()
-        .auto_inc(|r| r.action_id, |r, id| r.action_id = id);
-    let _ = fx.table_keyed::<PvAction, u64>("battle_action", "battle_id", |r| r.battle_id);
     let monsters = fx
         .table_keyed::<PvMonster, u64>("monster", "monster_id", |r| r.monster_id)
         .writable()
@@ -488,10 +469,6 @@ fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
         .unique();
     // sr-4b: a rated settle ends with the leaderboard membership rescan.
     let _ = fx.ladder();
-    let _ = fx
-        .table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
-        .writable()
-        .unique();
     let _ = fx
         .table_keyed::<crate::playtest::PlaytestEvent, u64>("playtest_event", "event_id", |r| {
             r.event_id
@@ -544,8 +521,6 @@ fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
         battles,
         challenges,
         reapers,
-        deadlines,
-        actions,
         monsters,
         pubs,
         profiles,
@@ -568,7 +543,6 @@ impl PvWorld<'_> {
             entity_id,
             name: format!("p{:02x}", who.to_byte_array()[0]),
             online,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
@@ -665,16 +639,6 @@ impl PvWorld<'_> {
             challenge_id,
         });
     }
-    fn action(&self, action_id: u64, battle_id: u64, who: PvId, turn_number: u16) {
-        self.actions.seed(&PvAction {
-            action_id,
-            battle_id,
-            player_identity: who,
-            action: PvPick::Attack { skill_id: 1 },
-            turn_number,
-            submitted_at_ms: PV_T0,
-        });
-    }
     fn battle(&self, id: u64) -> Option<PvBattle> {
         self.battles.rows().into_iter().find(|b| b.battle_id == id)
     }
@@ -693,11 +657,6 @@ impl PvWorld<'_> {
         v.sort_unstable();
         v
     }
-    fn action_ids(&self) -> Vec<u64> {
-        let mut v: Vec<u64> = self.actions.rows().iter().map(|a| a.action_id).collect();
-        v.sort_unstable();
-        v
-    }
     fn profile(&self, who: PvId) -> Option<(i32, u32, u32)> {
         self.profiles
             .rows()
@@ -712,8 +671,6 @@ impl PvWorld<'_> {
             to_vec(&self.battles.rows()).unwrap(),
             to_vec(&self.challenges.rows()).unwrap(),
             to_vec(&self.reapers.rows()).unwrap(),
-            to_vec(&self.deadlines.rows()).unwrap(),
-            to_vec(&self.actions.rows()).unwrap(),
             to_vec(&self.monsters.rows()).unwrap(),
             to_vec(&self.pubs.rows()).unwrap(),
             to_vec(&self.profiles.rows()).unwrap(),
@@ -1050,10 +1007,8 @@ fn pv_accept_snapshot(
 /// side A with the committed party, acceptor = side B), one `battle_tactical` row (Deploying,
 /// `kind: Pvp`, the challenge's format), one `battle_secret`, one clock per side on the 45 s deploy
 /// deadline, one empty unlocked `battle_deploy` row per owner and ONE deploy-window
-/// `tactical_deadline_sched` row — and NO 1v1 turn deadline (`pvp_deadline_schedule`) and no
-/// `battle_action`; it consumes the challenge and ONLY its reaper.
-/// kills: role check swapped/removed, status check removed, a 1v1 turn deadline or
-/// `battle_action` row written beside the tactical start, the challenge's format dropped or
+/// `tactical_deadline_sched` row; it consumes the challenge and ONLY its reaper.
+/// kills: role check swapped/removed, status check removed, the challenge's format dropped or
 /// clamped, challenge not deleted, disarm_challenge_reaper -> ().
 #[test]
 fn nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1() {
@@ -1270,12 +1225,6 @@ fn nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1() {
         )],
         "exactly one tactical deadline row: the deploy window"
     );
-    assert_eq!(
-        w.deadlines.rows().len(),
-        0,
-        "no 1v1 turn deadline (pvp_deadline_schedule) is armed"
-    );
-    assert_eq!(w.actions.rows().len(), 0, "no battle_action row is written");
     assert_eq!(
         w.challenge_ids(),
         vec![101, 102],
@@ -1671,147 +1620,6 @@ fn nh_battle_challenge_reaper_is_scheduler_only_and_ttl_exact() {
     );
 }
 
-/// EV-pvp-deadline-disconnect (deadline reaper): client senders refused; a missing or
-/// finished battle and a STALE schedule (battle already on a later turn) are no-ops; a
-/// both-submitted turn is left alone; otherwise the non-submitter forfeits — side B when
-/// only A submitted, and the challenger (side A) when neither did (tie-break). The
-/// forfeit commits through the settle funnel: rating applied, stale actions swept.
-/// kills: scheduler guard removed, stale-turn check removed, forfeit side inverted.
-#[test]
-fn nh_pvp_deadline_reaper_forfeits_only_the_current_non_submitter() {
-    let args = |battle_id, turn_number| super::PvpDeadlineSchedule {
-        scheduled_id: 1,
-        scheduled_at: PvAt::Time(pv_at(PV_T0)),
-        battle_id,
-        turn_number,
-    };
-    // (label, A submitted, B submitted, expected outcome)
-    let rows = [
-        (
-            "only A submitted: B forfeits",
-            true,
-            false,
-            PvOutcome::SideAWins,
-        ),
-        (
-            "neither submitted: challenger-first tie-break",
-            false,
-            false,
-            PvOutcome::SideBWins,
-        ),
-        (
-            "only B submitted: A forfeits",
-            false,
-            true,
-            PvOutcome::SideBWins,
-        ),
-        (
-            "both submitted: resolution owns the turn",
-            true,
-            true,
-            PvOutcome::Ongoing,
-        ),
-    ];
-    for (label, a_in, b_in, want) in rows {
-        let fx = pv_fixture();
-        let w = pv_world(&fx, false);
-        fx.set_database_identity(pv_module());
-        w.battles.seed(&pv_battle(
-            900,
-            pv_a(),
-            pv_b(),
-            PvOutcome::Ongoing,
-            &[30],
-            &[30],
-        ));
-        if a_in {
-            w.action(1, 900, pv_a(), 1);
-        }
-        if b_in {
-            w.action(2, 900, pv_b(), 1);
-        }
-        w.action(3, 950, pv_c(), 1); // another battle's pick: never swept
-        let before = w.snapshot();
-        for player in [pv_a(), pv_b()] {
-            assert_eq!(
-                fx.run_as(player, |ctx| super::pvp_deadline_reaper(ctx, args(900, 1))),
-                Err("pvp_deadline_reaper is scheduler-only".to_string()),
-                "{label}"
-            );
-        }
-        assert_eq!(
-            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
-                ctx,
-                args(900, 0)
-            )),
-            Ok(())
-        );
-        assert_eq!(
-            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
-                ctx,
-                args(999, 1)
-            )),
-            Ok(())
-        );
-        assert_eq!(
-            w.snapshot(),
-            before,
-            "{label}: client call, stale turn and missing battle write nothing"
-        );
-        assert_eq!(
-            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
-                ctx,
-                args(900, 1)
-            )),
-            Ok(())
-        );
-        let b = w
-            .battle(900)
-            .expect("the battle row is kept (terminal, not deleted)");
-        assert_eq!(b.state.outcome, want, "{label}");
-        if want == PvOutcome::Ongoing {
-            assert_eq!(w.snapshot(), before, "{label}: nothing written");
-            continue;
-        }
-        assert_eq!(
-            w.action_ids(),
-            vec![3],
-            "{label}: this battle's picks swept, no other"
-        );
-        let (win, lose) = if want == PvOutcome::SideAWins {
-            (pv_a(), pv_b())
-        } else {
-            (pv_b(), pv_a())
-        };
-        let (rw, rl) =
-            game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING);
-        assert_eq!(
-            w.profile(win),
-            Some((rw, 1, 0)),
-            "{label}: winner rated once"
-        );
-        assert_eq!(
-            w.profile(lose),
-            Some((rl, 0, 1)),
-            "{label}: loser rated once"
-        );
-        // A terminal battle ignores a late fire.
-        let after = w.snapshot();
-        assert_eq!(
-            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
-                ctx,
-                args(900, 1)
-            )),
-            Ok(())
-        );
-        assert_eq!(
-            w.snapshot(),
-            after,
-            "{label}: a finished battle is never settled twice"
-        );
-    }
-}
-
 /// EV-pvp-deadline-disconnect + ST-pvp_tests#settle-rating: `forfeit_on_disconnect`
 /// ends every Ongoing PvP battle of the leaver in EITHER role with the leaver losing
 /// (side A leaver -> SideBWins, side B leaver -> SideAWins), rates each result exactly
@@ -1848,7 +1656,6 @@ fn nh_forfeit_on_disconnect_settles_both_roles_and_rates_once() {
         &[30],
         &[30],
     ));
-    w.action(1, 900, pv_b(), 1);
     let ctx = fx.ctx();
     super::forfeit_on_disconnect(&ctx, pv_a());
     assert_eq!(
@@ -1865,10 +1672,6 @@ fn nh_forfeit_on_disconnect_settles_both_roles_and_rates_once() {
         w.battle(902).map(|b| b.state.outcome),
         Some(PvOutcome::Ongoing),
         "wild battles are not PvP"
-    );
-    assert!(
-        w.action_ids().is_empty(),
-        "the settled battle's stale picks are swept"
     );
     let i = game_core::INITIAL_RATING;
     let (rb, ra1) = game_core::compute_rating_update(i, i); // side-A loop first: 900
@@ -1953,9 +1756,9 @@ fn forfeit_on_disconnect_leaves_an_ongoing_wild_battle_alone_on_the_opponent_pas
 /// EV-pvp-deadline-disconnect (challenges): `cancel_challenges_on_disconnect` deletes
 /// the leaver's OUTGOING pending challenges and their reapers and keeps incoming ones
 /// (the challenger may reconnect). ST-pvp_tests#reducer-guards (erase): `erase_pvp_rows`
-/// deletes every challenge naming the owner in EITHER role plus their reapers, and every
-/// pick the owner submitted, and nothing else.
-/// kills: either writer -> (), direction swapped, disarm skipped, action filter dropped.
+/// deletes every challenge naming the owner in EITHER role plus their reapers, and nothing
+/// else.
+/// kills: either writer -> (), direction swapped, disarm skipped.
 #[test]
 fn nh_disconnect_and_erase_remove_exactly_the_owners_pvp_rows() {
     let seed = |w: &PvWorld<'_>| {
@@ -1968,8 +1771,6 @@ fn nh_disconnect_and_erase_remove_exactly_the_owners_pvp_rows() {
         for (sid, cid) in [(500, 100), (501, 101), (502, 102)] {
             w.reaper(sid, cid);
         }
-        w.action(1, 900, pv_a(), 1);
-        w.action(2, 900, pv_b(), 1);
     };
     let fx = pv_fixture();
     let w = pv_world(&fx, false);
@@ -1981,7 +1782,6 @@ fn nh_disconnect_and_erase_remove_exactly_the_owners_pvp_rows() {
         "outgoing gone, incoming kept"
     );
     assert_eq!(w.reaper_challenge_ids(), vec![101, 102]);
-    assert_eq!(w.action_ids(), vec![1, 2], "disconnect never touches picks");
 
     drop(fx);
     let fx = pv_fixture();
@@ -1994,28 +1794,6 @@ fn nh_disconnect_and_erase_remove_exactly_the_owners_pvp_rows() {
         "both roles erased, bystander kept"
     );
     assert_eq!(w.reaper_challenge_ids(), vec![102]);
-    assert_eq!(w.action_ids(), vec![2], "only the owner's picks erased");
-
-    // disarm_pvp_deadlines (the cascade's per-battle deadline sweep): exactly the
-    // named battle's deadline rows go.
-    for (sid, battle_id) in [(700, 900), (701, 900), (702, 901)] {
-        w.deadlines.seed(&super::PvpDeadlineSchedule {
-            scheduled_id: sid,
-            scheduled_at: PvAt::Time(pv_at(PV_T0)),
-            battle_id,
-            turn_number: 1,
-        });
-    }
-    super::disarm_pvp_deadlines(&fx.ctx(), 900);
-    assert_eq!(
-        w.deadlines
-            .rows()
-            .iter()
-            .map(|d| d.scheduled_id)
-            .collect::<Vec<_>>(),
-        vec![702],
-        "only battle 900's deadlines are disarmed"
-    );
 }
 
 // ===========================================================================

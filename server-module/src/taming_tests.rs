@@ -194,16 +194,14 @@ fn rb80_grant_bait_is_refused_only_while_the_caller_is_deletion_gated() {
 // deleted, so the module now holds only the `dev_reducers` test and is compiled
 // only under that feature (the default build would otherwise carry its fixture as
 // dead code). The world below is the recruit world it was written for, unchanged:
-// a battle + battle_wild row, A's party monster and a bait stack of 2.
+// a battle row, A's party monster and a bait stack of 2.
 // ===========================================================================
 #[cfg(feature = "dev_reducers")]
 mod nh {
     use crate::marshal::pub_from_monster;
     use crate::native_host_tests::{fixture, Fixture, Handle};
     use crate::playtest::PlaytestEvent;
-    use crate::schema::{
-        Battle, BattleWild, Inventory, ItemRow, Monster, MonsterPub, SpeciesRow, TradeOffer,
-    };
+    use crate::schema::{Battle, Inventory, ItemRow, Monster, MonsterPub, SpeciesRow, TradeOffer};
     use game_core::{Affinity, BattleOutcome};
     use spacetimedb::sats::bsatn::to_vec;
     use spacetimedb::Identity;
@@ -329,14 +327,13 @@ mod nh {
 
     struct World<'a> {
         battles: Handle<'a, Battle, u64>,
-        wilds: Handle<'a, BattleWild, u64>,
         monsters: Handle<'a, Monster, u64>,
         pubs: Handle<'a, MonsterPub, u64>,
         stacks: Handle<'a, Inventory>,
         events: Handle<'a, PlaytestEvent, u64>,
     }
 
-    /// A ready-to-succeed recruit: battle + battle_wild + bait stack of 2.
+    /// A ready-to-succeed recruit: battle + bait stack of 2.
     fn world(fx: &Fixture) -> World<'_> {
         let items = fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id);
         items.seed(&item(BAIT, 1000));
@@ -368,10 +365,6 @@ mod nh {
                 .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
                 .writable()
                 .unique(),
-            wilds: fx
-                .table_keyed::<BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
-                .writable()
-                .unique(),
             monsters: fx
                 .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
                 .writable()
@@ -389,12 +382,6 @@ mod nh {
                 .auto_inc(|r| r.event_id, |r, id| r.event_id = id),
         };
         w.battles.seed(&wild_battle(BattleOutcome::Ongoing));
-        w.wilds.seed(&BattleWild {
-            battle_id: BATTLE,
-            wild_species_id: WILD_SPECIES,
-            wild_level: 4,
-            individuality_seed: 0xBEEF,
-        });
         let m = party_monster(a());
         w.pubs.seed(&pub_from_monster(&m, 0));
         w.monsters.seed(&m);
@@ -422,7 +409,6 @@ mod nh {
         fn snapshot(&self) -> Vec<Vec<u8>> {
             vec![
                 to_vec(&self.battles.rows()).unwrap(),
-                to_vec(&self.wilds.rows()).unwrap(),
                 to_vec(&self.monsters.rows()).unwrap(),
                 to_vec(&self.pubs.rows()).unwrap(),
                 to_vec(&self.stacks.rows()).unwrap(),

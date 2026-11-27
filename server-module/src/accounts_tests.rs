@@ -809,11 +809,10 @@ use crate::schema::{DataLifecycleEntry, DeletionPolicy, DATA_LIFECYCLE_MANIFEST}
 /// flag is false for the same reason: a subject's export must not contain the
 /// module's own scheduler state.
 ///
-/// The five parents are pinned BY VALUE, not merely proven live: each was
+/// The parents are pinned BY VALUE, not merely proven live: each was
 /// verified against the real join column in source before being written here —
-/// `character.entity_id` -> `player.entity_id` (schema.rs), `battle_wild.
-/// battle_id` -> `battle.battle_id`, `pvp_deadline_schedule.battle_id` ->
-/// `battle`, `battle_challenge_reaper_schedule.challenge_id` ->
+/// `character.entity_id` -> `player.entity_id` (schema.rs),
+/// `battle_challenge_reaper_schedule.challenge_id` ->
 /// `battle_challenge`, `trade_offer_reaper_schedule.trade_id`
 /// -> `trade_offer`.
 ///
@@ -824,8 +823,8 @@ use crate::schema::{DataLifecycleEntry, DeletionPolicy, DATA_LIFECYCLE_MANIFEST}
 ///        global game config, because its owner_identity is a zeroed singleton
 ///        default rather than a per-row key);
 ///        a wrong `ViaJoin` parent, which a liveness-only check admits: pointing
-///        `battle_wild` at `battle_challenge` type-checks, names a live table
-///        that is not itself ViaJoin, and orphans every wild-battle seed row;
+///        `battle_wild_unit` at `battle_challenge` type-checks, names a live table
+///        that is not itself ViaJoin, and orphans every wild-battle unit row;
 ///        counting instead of comparing (a `len() == 12` check is green on any
 ///        twelve tables).
 #[test]
@@ -858,7 +857,6 @@ fn data_lifecycle_partition_matches_spec_section3() {
     // + the host's admission records, an identity's world binding and its bind nonce
     // + an identity's checked account and its armed re-check.
     let expected_erase = [
-        "battle_action",
         "battle_challenge",
         "battle_clock",
         "battle_deploy",
@@ -890,10 +888,10 @@ fn data_lifecycle_partition_matches_spec_section3() {
     ];
     assert_eq!(
         erase, expected_erase,
-        "T2 / spec §3 ERASE: the row-deleted set is wrong. Spec §3 names exactly twelve \
-         (monster, monster_pub, inventory, player_dialogue_state, player_quest, \
-         player_conversation, heal_cooldown, the wallet, playtest_event, trade_offer, \
-         battle_challenge, battle_action), this slice adds `export_bundle` — a snapshot of \
+        "T2 / spec §3 ERASE: the row-deleted set is wrong. Spec §3 names \
+         monster, monster_pub, inventory, player_dialogue_state, player_quest, \
+         player_conversation, heal_cooldown, the wallet, playtest_event, trade_offer and \
+         battle_challenge, this slice adds `export_bundle` — a snapshot of \
          personal data is itself personal data — rb-73 adds `player_session` (ADR-0245 \
          D1), 20r-d adds `pending_evolution_notice` (ADR-0254 D2) and bt-7 adds the five \
          tactical tables that carry the identity themselves (battle_unit, battle_queue, \
@@ -905,7 +903,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
          passwords given for an identity), and `world_binding` and `world_bind_nonce` \
          (the account an identity of this world is bound to, and its outstanding bind \
          nonce), and `world_account` and `recheck_schedule` (the account a world checked \
-         for an identity, and its armed re-check): twenty-nine in all. A table moved OUT of \
+         for an identity, and its armed re-check): twenty-eight in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
@@ -938,11 +936,9 @@ fn data_lifecycle_partition_matches_spec_section3() {
         ("battle_gc_sched", "battle"),
         ("battle_secret", "battle"),
         ("battle_tactical", "battle"),
-        ("battle_wild", "battle"),
         ("battle_wild_unit", "battle"),
         ("character", "player"),
         ("move_intent", "player"),
-        ("pvp_deadline_schedule", "battle"),
         ("tactical_advance_sched", "battle"),
         ("tactical_deadline_sched", "battle"),
         ("trade_offer_reaper_schedule", "trade_offer"),
@@ -951,13 +947,12 @@ fn data_lifecycle_partition_matches_spec_section3() {
     ];
     assert_eq!(
         join_only, expected_join_only,
-        "T2 / spec §3 JOIN-ONLY: the fifteen structurally-invisible tables and their OWNING \
+        "T2 / spec §3 JOIN-ONLY: the thirteen structurally-invisible tables and their OWNING \
          PARENTS are pinned by value. These tables carry no Identity column, so \
          findIdentityColumns cannot see them and nothing else in the repo can re-derive the \
          parent. Each parent here was checked against the real join column: \
          character.entity_id -> player.entity_id, move_intent.entity_id -> \
-         player.entity_id, battle_wild.battle_id -> battle, \
-         pvp_deadline_schedule.battle_id -> battle, \
+         player.entity_id, \
          battle_challenge_reaper_schedule.challenge_id -> battle_challenge, \
          trade_offer_reaper_schedule.trade_id -> trade_offer, and bt-7's four tactical \
          join tables (battle_tactical, battle_secret, battle_wild_unit, battle_event), each \
@@ -1024,7 +1019,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
 /// so those rows survive the deletion silently.
 ///
 /// Kills: a `ViaJoin("batle")` typo (a parent no entry names);
-///        `character` -> `battle_wild` (both join-only: a chain whose head never
+///        `character` -> `battle_wild_unit` (both join-only: a chain whose head never
 ///        runs);
 ///        a self-referential `ViaJoin` naming the entry's own table.
 #[test]
@@ -1039,12 +1034,12 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
     }
     assert_eq!(
         pairs.len(),
-        15,
-        "T3 non-vacuity: spec §3 names five JOIN-ONLY tables, bt-7 adds four (the tactical \
-         join tables) and bt-8 three (the tactical schedule tables), all swept via `battle`, \
-         the two trade-session children (snapshot and reaper schedule) are swept via \
-         `trade_session`, and `move_intent` is swept via `player` beside `character`, so \
-         this scan must have fifteen parents to check. Zero ViaJoin \
+        13,
+        "T3 non-vacuity: `character` and `move_intent` are swept via `player`, the battle \
+         challenge and trade offer reaper schedules via their parents, bt-7's four tactical \
+         join tables and bt-8's three tactical schedule tables via `battle`, and the two \
+         trade-session children (snapshot and reaper schedule) via `trade_session`, so \
+         this scan must have thirteen parents to check. Zero ViaJoin \
          entries would make every clause below vacuously true."
     );
 
@@ -1096,26 +1091,24 @@ fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
 
-/// the `exportable == true` set equals EXACTLY the twenty-one tables the export
+/// the `exportable == true` set equals EXACTLY the twenty tables the export
 /// scope admits — set equality, BOTH directions.
 ///
-/// a negative-only spot check ("battle_wild is false, guest_claim is false") is
+/// a negative-only spot check ("guest_claim is false, export_bundle is false") is
 /// satisfied by an ALL-FALSE manifest, which ships a dead export feature — spec
 /// §5's walk filters on `exportable: true`, so an all-false manifest produces an
 /// empty bundle for every subject-access request while every gate stays green.
 /// Set equality in both directions is the only shape that rejects an over-broad
 /// AND an empty export scope.
 ///
-/// The twenty-one are fifteen ERASE tables (`player_handle`, `player_formation`
+/// The twenty are fourteen ERASE tables (`player_handle`, `player_formation`
 /// and `world_account` among them) + five ANONYMIZE tables (`battle_summary` among
-/// them) + `character`: 15 + 5 + 1 = 21. The `false` side includes the three the spec
+/// them) + `character`: 14 + 5 + 1 = 20. The `false` side includes two the spec
 /// calls out by name:
-/// `battle_wild` (the raw RNG individuality seed, a must-never-leak),
 /// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
 /// own output — including it makes the walk self-feeding).
 ///
-/// Kills: flipping `battle_wild` to true (leaks
-///        the seed a literal "dump every matched row" export would carry);
+/// Kills: flipping `guest_claim` to true;
 ///        flipping `export_bundle` to true; adding a NOT-OWNED registry table to
 ///        the export (global game content is not the requester's personal data).
 #[test]
@@ -1133,7 +1126,6 @@ fn data_lifecycle_export_scope_structurally_narrower() {
     let expected_exportable = [
         "account",
         "battle",
-        "battle_action",
         "battle_challenge",
         "battle_summary",
         "character",
@@ -1155,11 +1147,11 @@ fn data_lifecycle_export_scope_structurally_narrower() {
     ];
     assert_eq!(
         exportable, expected_exportable,
-        "T4 / spec §5: the exportable set is wrong. It must be EXACTLY the twelve ERASE \
-         tables + the four ANONYMIZE tables + `character` + `player_handle` (the owner's \
+        "T4 / spec §5: the exportable set is wrong. It must be EXACTLY the eleven spec §3 \
+         ERASE tables + the four ANONYMIZE tables + `character` + `player_handle` (the owner's \
          own discriminator) + `battle_summary` (the caller's side of each battle summary) \
          + `player_formation` (the caller's saved deploy order) + `world_account` (what \
-         the world holds about the caller's account): twenty-one. Both \
+         the world holds about the caller's account): twenty. Both \
          directions matter: an \
          all-false manifest passes every negative spot check and ships an export feature \
          that returns an empty bundle for every request (§5's walk filters on \
@@ -1167,13 +1159,12 @@ fn data_lifecycle_export_scope_structurally_narrower() {
          a must-never-leak seed or global content the requester does not own."
     );
 
-    for banned in ["battle_wild", "guest_claim", "export_bundle"] {
+    for banned in ["guest_claim", "export_bundle"] {
         assert!(
             !exportable.contains(&banned),
             "T4 / spec §5: `{banned}` must carry `exportable: false`. Export scope is a \
              THIRD, orthogonal axis and must be structurally NARROWER than deletion scope: \
-             battle_wild carries the raw RNG individuality seed, guest_claim carries a live \
-             secret, and export_bundle is the export's own output."
+             guest_claim carries a live secret, and export_bundle is the export's own output."
         );
     }
 }
@@ -2922,10 +2913,6 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::Battle as SpacetimeType>::make_type(&mut ts),
         ),
         (
-            "battle_action",
-            <crate::schema::BattleAction as SpacetimeType>::make_type(&mut ts),
-        ),
-        (
             "battle_challenge",
             <crate::schema::BattleChallenge as SpacetimeType>::make_type(&mut ts),
         ),
@@ -2974,10 +2961,6 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
         (
             "battle_unit",
             <crate::schema::BattleUnit as SpacetimeType>::make_type(&mut ts),
-        ),
-        (
-            "battle_wild",
-            <crate::schema::BattleWild as SpacetimeType>::make_type(&mut ts),
         ),
         (
             "battle_wild_unit",
@@ -3116,10 +3099,6 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::Profile as SpacetimeType>::make_type(&mut ts),
         ),
         (
-            "pvp_deadline_schedule",
-            <crate::pvp::PvpDeadlineSchedule as SpacetimeType>::make_type(&mut ts),
-        ),
-        (
             "shop_item_row",
             <crate::schema::ShopItemRow as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3248,7 +3227,7 @@ fn m22s6_identity_column_count(accessor: &str, ty: &AlgebraicType) -> usize {
 
 /// the S6 row-type registry and `DATA_LIFECYCLE_MANIFEST`
 /// name the SAME set of tables, with no duplicates on either side, the census
-/// pinned at 41, and a non-vacuity floor on how many of the 41 are identity-bearing.
+/// pinned at 72, and a non-vacuity floor on how many of the 72 are identity-bearing.
 ///
 /// This is DISTINCT from `data_lifecycle_manifest_totality_bidirectional`,
 /// which proves every LIVE TABLE has a manifest entry by scanning table-attribute
@@ -3309,10 +3288,10 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 75,
+        registry_len, 72,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 75 (29 ERASE + 6 ANONYMIZE + 15 JOIN-ONLY + 25 NOT-OWNED) — \
-         40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
+         manifest carries exactly 72 (28 ERASE + 6 ANONYMIZE + 13 JOIN-ONLY + 25 NOT-OWNED) — \
+         37 base tables, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
          trade-session tables (`trade_session`, `trade_session_snapshot`, \
@@ -3335,9 +3314,9 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 39,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 75 registered row types \
-         carry an Identity column at some depth; exactly 39 is the live count (the 35 \
+        identity_bearing, 38,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 72 registered row types \
+         carry an Identity column at some depth; exactly 38 is the live count (the 34 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
          exceptions R3 below names). `world_account` and `recheck_schedule` add one each \
          (their `identity` columns, the keys their Erase classification rests on); \
@@ -3346,7 +3325,7 @@ fn m22s6_table_row_registry_matches_manifest() {
          account subject, each a string key). \
          lpw-9's `world_admission` and `world_admission_attempt` \
          add one each (their `identity` keys); `world_access` adds none (one global row of a \
-         rule, a salt and a hash). sr-4b's `leaderboard_top` adds one (its `identity` key). \
+         rule). sr-4b's `leaderboard_top` adds one (its `identity` key). \
          `player_handle` adds one (its `owner_identity` key). \
          `last_position` adds one (its `owner_identity` key). \
          `trade_session` adds one (its `opener` and `partner` \
@@ -3436,9 +3415,9 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 35,
+        population, 34,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 35 (29 ERASE + 6 ANONYMIZE — the Erase `world_account` \
+         the live partition is exactly 34 (28 ERASE + 6 ANONYMIZE — the Erase `world_account` \
          (each identity's checked account) and `recheck_schedule` (each identity's armed \
          re-check), the Erase `world_binding` and `world_bind_nonce`, lpw-9's Erase \
          `world_admission` and `world_admission_attempt`, rb-73's `player_session`, \
@@ -3516,9 +3495,9 @@ fn m22s6_via_join_tables_carry_no_identity_column() {
         );
     }
     assert_eq!(
-        population, 15,
+        population, 13,
         "[m22s6/x2-population] {population} manifest entries are classified ViaJoin; the live \
-         set is exactly 15 (character, move_intent, battle_wild, pvp_deadline_schedule, \
+         set is exactly 13 (character, move_intent, \
          battle_challenge_reaper_schedule, trade_offer_reaper_schedule, bt-7's \
          battle_tactical, battle_secret, battle_wild_unit, battle_event, bt-8's \
          tactical_deadline_sched, tactical_advance_sched, battle_gc_sched, and the two \
@@ -4359,7 +4338,6 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
         entity_id: ENTITY_ID,
         name: "rb72-subject".to_string(),
         online: true,
-        last_input_seq: 0,
         discriminator: 0,
         lead_level: 0,
     });
@@ -5135,7 +5113,6 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
         [
             "account",
             "battle",
-            "battle_action",
             "battle_challenge",
             "battle_summary",
             "character",
@@ -5155,14 +5132,14 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
             "trade_offer",
             "world_account",
         ],
-        "[bt7/export-set] the exportable set must be EXACTLY the nineteen non-tactical \
+        "[bt7/export-set] the exportable set must be EXACTLY the eighteen non-tactical \
          exportable tables (`world_account` among them) plus `battle_summary` and \
-         `player_formation`: 19 + 2 = 21"
+         `player_formation`: 18 + 2 = 20"
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        75,
-        "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
+        72,
+        "[bt7/manifest-census] 40 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
          schedule tables plus the three trade-session tables plus move_intent plus last_position \
          plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top plus \
          module_info plus lpw-9's world_access, world_admission and world_admission_attempt \
@@ -5202,10 +5179,10 @@ mod acct_nh {
     use crate::privacy::ExportBundleReaperSchedule;
     use crate::pvp::BattleChallengeReaperSchedule;
     use crate::schema::{
-        Account, BattleAction, BattleChallenge, BattleClock, BattleDeploy, BattleEvent,
-        BattleQueue, BattleSecret, BattleSummary, BattleTactical, BattleUnit, BattleWildUnit,
-        ChallengeStatus, Character, DeletionPolicy, DeployPick, EvolutionRevealRow, ExportBundle,
-        GuestClaim, HealCooldown, Inventory, LastPosition, Monster, MonsterPub, MoveClassRow,
+        Account, BattleChallenge, BattleClock, BattleDeploy, BattleEvent, BattleQueue,
+        BattleSecret, BattleSummary, BattleTactical, BattleUnit, BattleWildUnit, ChallengeStatus,
+        Character, DeletionPolicy, DeployPick, EvolutionRevealRow, ExportBundle, GuestClaim,
+        HealCooldown, Inventory, LastPosition, Monster, MonsterPub, MoveClassRow,
         PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
         PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerSession, PlayerWallet, Profile,
         SideRow, StanceRow, TradeOffer, TradeSession, TradeSessionSnapshot, WorldAdmission,
@@ -5326,7 +5303,6 @@ mod acct_nh {
         trade_reaper: Handle<'a, TradeOfferReaperSchedule, u64>,
         challenge: Handle<'a, BattleChallenge>,
         challenge_reaper: Handle<'a, BattleChallengeReaperSchedule, u64>,
-        action: Handle<'a, BattleAction, u64>,
         playtest: Handle<'a, PlaytestEvent, u64>,
         export: Handle<'a, ExportBundle>,
         export_reaper: Handle<'a, ExportBundleReaperSchedule, u64>,
@@ -5370,8 +5346,7 @@ mod acct_nh {
     /// paths read or write through, opens writes on each table (post-state
     /// assertions, not the write wall, are this suite's oracle) and opens full
     /// scans ONLY where the shipped code scans (`playtest_event`,
-    /// `battle_action`, the `export_bundle` count, the export reaper singleton,
-    /// `pvp_deadline_schedule` for `pvp::disarm_pvp_deadlines`, `battle_unit`
+    /// the `export_bundle` count, the export reaper singleton, `battle_unit`
     /// for the tactical cascade's `owner == Some(..)` scan — a sum type carries
     /// no index — and, through `Fixture::ladder`, `profile` and `leaderboard_top`
     /// for the membership rescan that ends every `profile` write).
@@ -5380,10 +5355,9 @@ mod acct_nh {
     /// unconditionally — the participant / owner views read through them, and
     /// the tactical cascade step deletes / updates through them (an
     /// index-point delete or an update through an index no fixture registered
-    /// ABORTS the whole test process, D5). `battle.battle_id`, `battle_wild`'s
-    /// key and `pvp_deadline_schedule` are registered too, because
-    /// `battle::anonymize_battles` deletes / updates / scans through them for
-    /// every battle row the cascade subject is a side of.
+    /// ABORTS the whole test process, D5). `battle.battle_id` is registered too,
+    /// because `battle::anonymize_battles` updates through it for every battle row
+    /// the cascade subject is a side of.
     fn world(fx: &Fixture) -> W<'_> {
         // Secondary indexes first (registration is per fixture, not per handle).
         let _ = fx
@@ -5440,20 +5414,9 @@ mod acct_nh {
             .writable()
             .scannable()
             .unique();
-        // bt-7: the anchor's key, its wild sidecar and the deadline schedule
-        // (`battle::anonymize_battles` reaches all three per battle row).
+        // bt-7: the anchor's key (`battle::anonymize_battles` reaches it per battle row).
         let _ =
             fx.table_keyed::<crate::schema::Battle, u64>("battle", "battle_id", |r| r.battle_id);
-        let _ = fx.table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| {
-            r.battle_id
-        });
-        let _ = fx
-            .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
-                "pvp_deadline_schedule",
-                "scheduled_id",
-                |r| r.scheduled_id,
-            )
-            .scannable();
         // bt-7: every secondary index of the tactical tables (the `battle_id`
         // btree / key of each is the W handle below).
         let _ = fx.table_keyed::<BattleTactical, u32>("battle_tactical", "map_id", |r| r.map_id);
@@ -5642,10 +5605,6 @@ mod acct_nh {
                     |r| r.challenge_id,
                 )
                 .writable(),
-            action: fx
-                .table_keyed::<BattleAction, u64>("battle_action", "action_id", |r| r.action_id)
-                .writable()
-                .scannable(),
             playtest: fx
                 .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
                 .writable()
@@ -5833,7 +5792,6 @@ mod acct_nh {
             entity_id,
             name: name.to_string(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         }
@@ -6523,16 +6481,6 @@ mod acct_nh {
                         .rows()
                         .into_iter()
                         .filter(|r| r.challenger == who || r.target == who)
-                        .collect::<Vec<_>>(),
-                ),
-            ),
-            (
-                "battle_action",
-                encs(
-                    &w.action
-                        .rows()
-                        .into_iter()
-                        .filter(|r| r.player_identity == who)
                         .collect::<Vec<_>>(),
                 ),
             ),
@@ -8190,12 +8138,11 @@ mod acct_nh {
         // retired guest's rows of all four tables and leaves the claimer's. A
         // checked account and its armed re-check belong to the identity the
         // world checked: the claim erases the retired guest's and moves none.
-        const NOT_REKEYED: [&str; 22] = [
+        const NOT_REKEYED: [&str; 21] = [
             "player",
             "player_conversation",
             "player_session",
             "battle",
-            "battle_action",
             "trade_offer",
             "battle_challenge",
             "playtest_event",
@@ -8909,14 +8856,6 @@ mod acct_nh {
             hp_permille: 500,
             bait_item_id: 0,
             success: true,
-        });
-        w.action.seed(&BattleAction {
-            action_id: 800 + k,
-            battle_id: 99,
-            player_identity: who,
-            action: game_core::PvpAction::Attack { skill_id: 3 },
-            turn_number: 1,
-            submitted_at_ms: 1,
         });
         // An offer the subject made (with its armed reaper) and a challenge in
         // each role, one of them no longer pending.
@@ -9792,13 +9731,11 @@ mod acct_nh {
             );
         }
         let mut covered: Vec<&str> = cases.iter().map(|(t, _, _)| *t).collect();
-        covered.push("battle_action");
         covered.sort_unstable();
         assert_eq!(
             covered,
             exportable_tables(),
-            "every exportable table is checked here (battle_action is covered by \
-             its own-row predicate tests)"
+            "every exportable table is checked here"
         );
     }
 
@@ -10393,8 +10330,8 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            75,
-            "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
+            72,
+            "[bt7/manifest-totality-census] 40 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
              plus last_position plus player_handle plus battle_summary_reaper_schedule plus \
              leaderboard_top plus module_info plus lpw-9's world_access, world_admission and \
@@ -15027,7 +14964,6 @@ mod acs6_door {
                 entity_id: 1,
                 name: "Ada".to_string(),
                 online: true,
-                last_input_seq: 0,
                 discriminator: 3,
                 lead_level: 0,
             });
@@ -15049,8 +14985,6 @@ mod acs6_door {
             .seed(&WorldAccess {
                 id: 0,
                 rule: WorldAccessRule::Open,
-                password_salt: Vec::new(),
-                password_hash: Vec::new(),
             });
         fx.table::<PlayerHandle>("player_handle", "owner_identity", |r| r.owner_identity)
             .writable()

@@ -529,14 +529,12 @@ fn m22s3b_deleted_name_rows() {
         entity_id: 4_242,
         name: "Ash".to_string(),
         online: true,
-        last_input_seq: 909,
         discriminator: 0,
         lead_level: 0,
     };
     let identity = before_player.identity;
     let entity_id = before_player.entity_id;
     let online = before_player.online;
-    let last_input_seq = before_player.last_input_seq;
     let after_player = super::player_with_deleted_name(before_player);
 
     assert_eq!(
@@ -564,11 +562,6 @@ fn m22s3b_deleted_name_rows() {
         "[m22s3b/player-online] `online` is presence state, not PII, and must survive: the \
          cascade can fire against a CONNECTED session, and rewriting its presence flag would \
          desynchronise that session's own client from the server."
-    );
-    assert_eq!(
-        after_player.last_input_seq, last_input_seq,
-        "[m22s3b/player-seq] `last_input_seq` is the movement reconciliation ack and must \
-         survive — rewinding it would replay or drop the connected session's inputs."
     );
 
     // --- profile ------------------------------------------------------------
@@ -759,7 +752,6 @@ fn rk_world(fx: &RkFixture) -> RkWorld<'_> {
             entity_id: u64::from(who.to_byte_array()[0]),
             name: name.to_string(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
@@ -1080,7 +1072,6 @@ fn a_rename_leaves_the_handle_and_the_player_discriminator_unchanged_ih1_4() {
         entity_id: u64::from(rk_a().to_byte_array()[0]),
         name: "Alice".to_string(),
         online: true,
-        last_input_seq: 0,
         discriminator: 4_207,
         lead_level: 13,
     });
@@ -1134,11 +1125,11 @@ fn a_rename_leaves_the_handle_and_the_player_discriminator_unchanged_ih1_4() {
 
 /// `player_with_deleted_name` over a row with discriminator 4207 and lead level 13:
 /// both come back 0, the name is the game-core deletion tombstone, and `identity`,
-/// `entity_id`, `online` and `last_input_seq` are unchanged.
+/// `entity_id` and `online` are unchanged.
 ///
 /// kills: a tombstone that leaves the tag or the lead level on the surviving row (the
 /// row stays linkable to a tag seen elsewhere); a zeroing that also clobbers the
-/// presence or reconciliation columns.
+/// presence column.
 #[test]
 fn the_deletion_tombstone_zeroes_the_discriminator_and_the_lead_level_ih1_7() {
     let before = RkPlayer {
@@ -1146,7 +1137,6 @@ fn the_deletion_tombstone_zeroes_the_discriminator_and_the_lead_level_ih1_7() {
         entity_id: 4_243,
         name: "Ash".to_string(),
         online: true,
-        last_input_seq: 910,
         discriminator: 4_207,
         lead_level: 13,
     };
@@ -1164,7 +1154,6 @@ fn the_deletion_tombstone_zeroes_the_discriminator_and_the_lead_level_ih1_7() {
     assert_eq!(after.identity, identity, "the primary key survives");
     assert_eq!(after.entity_id, 4_243, "the entity id survives");
     assert!(after.online, "the presence flag survives");
-    assert_eq!(after.last_input_seq, 910, "the input ack survives");
 }
 
 // ===========================================================================

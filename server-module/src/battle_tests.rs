@@ -532,7 +532,7 @@ fn m22s3b_assert_mechanical_fields_intact(
         after.battle_id, before.battle_id,
         "[m22s3b/battle-pk] {label}: the PRIMARY KEY must not move. The anonymize is a \
          PK-keyed update of a SURVIVING row (spec §3), not a delete-and-reinsert: a new \
-         battle_id orphans `battle_wild` and every `battle_action` keyed to the old one, and \
+         battle_id orphans every per-battle row keyed to the old one, and \
          the surviving opponent's `my_battle` subscription sees the terminal row vanish."
     );
     assert_eq!(
@@ -1162,7 +1162,7 @@ fn rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity() {
                          this matrix existed. A row left Ongoing survives the cascade \
                          settleable by the erased identity — its wallet and \
                          evolution-notice rows re-minted by a PvP action, or the win and \
-                         a ranking profile handed to it by the kept deadline reaper."
+                         a ranking profile handed to it."
                     );
                     rb129_assert_row(&label, why_matrix, &before, &after, *want);
                 }
@@ -1327,8 +1327,7 @@ fn rb129_forced_terminal_leaves_settled_and_bystander_rows_untouched() {
 /// or the earlier tombstone) where it was, and carries the forced row's whole
 /// battle state through the swap. That is the EARS postcondition: with no
 /// Ongoing row naming the erased identity, the PvP action reducer's participant
-/// and Ongoing guards both refuse it, the deadline reaper finds nothing live,
-/// and the survivor's own ongoing-battle test reads false.
+/// and Ongoing guards both refuse it, and the survivor's own ongoing-battle test reads false.
 ///
 /// THE ORDER IS LOAD-BEARING, proven rather than asserted: composed the other
 /// way round, the swap runs first, the row stops naming the erased identity,
@@ -1868,7 +1867,7 @@ fn rb129_forced_terminal_property_over_random_rows() {
 
 use crate::native_host_tests::{fixture, Fixture, Handle};
 use crate::schema::{
-    Battle, BattleWild, Inventory, Monster, MonsterPub, Player, PlayerWallet, SkillRow, SpeciesRow,
+    Battle, Inventory, Monster, MonsterPub, Player, PlayerWallet, SkillRow, SpeciesRow,
 };
 use game_core::BattleOutcome;
 use spacetimedb::{Identity, Timestamp};
@@ -1999,7 +1998,6 @@ fn bn_battle(
 /// writable (a write reached on a refusal path shows in [`BnWorld::snapshot`]).
 struct BnWorld<'a> {
     battles: Handle<'a, Battle, u64>,
-    wild: Handle<'a, BattleWild, u64>,
     monsters: Handle<'a, Monster, u64>,
     pubs: Handle<'a, MonsterPub, u64>,
     stacks: Handle<'a, Inventory>,
@@ -2082,10 +2080,6 @@ fn bn_world(fx: &Fixture) -> BnWorld<'_> {
         .auto_inc(|r| r.battle_id, |r, id| r.battle_id = id);
     let _ = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
     let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
-    let wild = fx
-        .table_keyed::<BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
-        .writable()
-        .unique();
     let monsters = fx
         .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
         .writable()
@@ -2154,7 +2148,6 @@ fn bn_world(fx: &Fixture) -> BnWorld<'_> {
         .auto_inc(|r| r.event_id, |r, id| r.event_id = id);
     BnWorld {
         battles,
-        wild,
         monsters,
         pubs,
         stacks,
@@ -2169,14 +2162,6 @@ impl BnWorld<'_> {
         let m = bn_monster(id, owner, party_slot);
         self.pubs.seed(&crate::marshal::pub_from_monster(&m, 2));
         self.monsters.seed(&m);
-    }
-    fn wild_row(&self, battle_id: u64) {
-        self.wild.seed(&BattleWild {
-            battle_id,
-            wild_species_id: 2,
-            wild_level: 7,
-            individuality_seed: 0xC0FFEE,
-        });
     }
     fn battle(&self, id: u64) -> Option<Battle> {
         self.battles.rows().into_iter().find(|b| b.battle_id == id)
@@ -2201,7 +2186,6 @@ impl BnWorld<'_> {
         use spacetimedb::sats::bsatn::to_vec;
         vec![
             to_vec(&self.battles.rows()).unwrap(),
-            to_vec(&self.wild.rows()).unwrap(),
             to_vec(&self.monsters.rows()).unwrap(),
             to_vec(&self.pubs.rows()).unwrap(),
             to_vec(&self.stacks.rows()).unwrap(),
@@ -2276,7 +2260,6 @@ fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
             entity_id: 5,
             name: String::new(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
@@ -2389,7 +2372,6 @@ fn bn_write_back_gcs_old_terminal_battles() {
         &[],
         BattleOutcome::Ongoing,
     ));
-    w.wild_row(BN_BATTLE);
     let fled = bn_battle(
         bn_a(),
         crate::WILD_IDENTITY,
@@ -2399,10 +2381,6 @@ fn bn_write_back_gcs_old_terminal_battles() {
     );
     let ctx = fx.ctx_at(bn_at(BN_T0));
     assert_eq!(super::write_back_battle_results(&ctx, &fled), Ok(()));
-    assert!(
-        w.wild.rows().is_empty(),
-        "the finishing battle's battle_wild row is GC'd"
-    );
     let mut ids: Vec<u64> = w.battles.rows().iter().map(|b| b.battle_id).collect();
     ids.sort_unstable();
     assert_eq!(
@@ -2645,7 +2623,7 @@ fn bn_faint_penalty_is_wild_only_and_saturating() {
 /// loser species or an unparseable loser level ends the credit pass with Ok and HP
 /// still written; an unparseable WINNER level still pays currency; a missing
 /// projection is a loud Err — and the surviving log-and-continue caller,
-/// `resolve_wild_battle_on_disconnect`, still deletes the `battle` and `battle_wild` rows when
+/// `resolve_wild_battle_on_disconnect`, still deletes the `battle` row when
 /// that write-back Errs (the player is never soft-locked) and logs the Err once as
 /// `wild_disconnect_writeback_err`.
 ///
@@ -2741,25 +2719,15 @@ fn bn_write_back_log_and_continue_paths() {
         Err("monster_pub row missing for monster 11".to_string())
     );
     // The disconnect resolver meets the same Err on the stored (Ongoing) battle.
-    w.wild_row(BN_BATTLE);
     assert_eq!(
         w.battle(BN_BATTLE).map(|b| b.state.outcome),
         Some(BattleOutcome::Ongoing),
         "PRECONDITION: the caller's wild battle is still Ongoing in the store"
     );
-    assert_eq!(
-        w.wild.rows().len(),
-        1,
-        "PRECONDITION: its battle_wild row exists"
-    );
     super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
     assert!(
         w.battle(BN_BATTLE).is_none(),
         "log-and-continue: the battle row is deleted although the write-back Erred"
-    );
-    assert!(
-        w.wild.rows().is_empty(),
-        "log-and-continue: the battle_wild row is deleted although the write-back Erred"
     );
     let logged: Vec<String> = BN_LOGS
         .0
@@ -2816,7 +2784,7 @@ fn bn_write_back_refuses_an_ownership_change() {
 }
 
 /// ST-battle_tests#reducer-guards (disconnect clause): resolving a disconnect deletes
-/// ONLY the caller's ongoing WILD battle and its battle_wild row, writing HP back;
+/// ONLY the caller's ongoing WILD battle, writing HP back;
 /// the caller's PvP battle, a terminal row and another player's wild battle stay.
 #[test]
 fn bn_disconnect_resolves_only_the_callers_ongoing_wild_battle() {
@@ -2832,7 +2800,6 @@ fn bn_disconnect_resolves_only_the_callers_ongoing_wild_battle() {
     );
     mine.state.side_a.team[0].current_hp = 17;
     w.battles.seed(&mine);
-    w.wild_row(BN_BATTLE);
     for (id, player, opp, outcome) in [
         (1, bn_a(), bn_b(), BattleOutcome::Ongoing),
         (2, bn_c(), crate::WILD_IDENTITY, BattleOutcome::Ongoing),
@@ -2842,7 +2809,6 @@ fn bn_disconnect_resolves_only_the_callers_ongoing_wild_battle() {
         b.battle_id = id;
         w.battles.seed(&b);
     }
-    w.wild_row(2);
     let ctx = fx.ctx_at(bn_at(BN_T0));
     super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
     let mut ids: Vec<u64> = w.battles.rows().iter().map(|b| b.battle_id).collect();
@@ -2851,14 +2817,6 @@ fn bn_disconnect_resolves_only_the_callers_ongoing_wild_battle() {
         ids,
         vec![1, 2, 3],
         "only the caller's ongoing wild battle goes"
-    );
-    assert_eq!(
-        w.wild
-            .rows()
-            .iter()
-            .map(|r| r.battle_id)
-            .collect::<Vec<_>>(),
-        vec![2]
     );
     assert_eq!(
         w.mon(11).current_hp,
@@ -2874,14 +2832,6 @@ fn bn_disconnect_resolves_only_the_callers_ongoing_wild_battle() {
 fn bn_anonymize_battles_scrubs_both_roles() {
     let fx = fixture();
     let w = bn_world(&fx);
-    let _ = fx
-        .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
-            "pvp_deadline_schedule",
-            "scheduled_id",
-            |r| r.scheduled_id,
-        )
-        .writable()
-        .scannable();
     for (id, player, opp, outcome) in [
         (1, bn_a(), crate::WILD_IDENTITY, BattleOutcome::Fled),
         (2, bn_b(), bn_a(), BattleOutcome::Fled),
@@ -3106,14 +3056,6 @@ fn bn_anonymize_logs_only_the_battles_it_forced_terminal() {
     log::set_max_level(log::LevelFilter::Info);
     let fx = fixture();
     let w = bn_world(&fx);
-    let _ = fx
-        .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
-            "pvp_deadline_schedule",
-            "scheduled_id",
-            |r| r.scheduled_id,
-        )
-        .writable()
-        .scannable();
     for (id, outcome) in [(41, BattleOutcome::Fled), (42, BattleOutcome::Ongoing)] {
         let mut b = bn_battle(bn_b(), bn_a(), &[], &[], outcome);
         b.battle_id = id;
@@ -3167,7 +3109,6 @@ fn bn_disconnect_auto_flee_pays_nothing_bt17_2() {
     );
     mine.state.side_a.team[0].current_hp = 17;
     w.battles.seed(&mine);
-    w.wild_row(BN_BATTLE);
     let before = w.mon(11);
     let ctx = fx.ctx_at(bn_at(BN_T0));
     super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
@@ -3221,7 +3162,6 @@ fn ih2_bn_player(who: Identity, lead_level: u8) -> Player {
         entity_id: 1,
         name: "Ada".to_string(),
         online: true,
-        last_input_seq: 0,
         discriminator: 7,
         lead_level,
     }

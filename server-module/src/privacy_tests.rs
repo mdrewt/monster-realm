@@ -213,14 +213,14 @@ fn rb22p_dq() -> char {
 use crate::playtest::{PlaytestEvent, PLAYTEST_EVENT_CAP};
 use crate::schema::PlayerWallet as M22s4WalletRow;
 use crate::schema::{
-    Account, AccountStatus, Battle, BattleAction, BattleChallenge, ChallengeStatus, Character,
+    Account, AccountStatus, Battle, BattleChallenge, ChallengeStatus, Character,
     DataLifecycleEntry, DeletionPolicy, HealCooldown, Inventory, Monster, MonsterPub, Player,
     PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow, Profile, TradeOffer,
     DATA_LIFECYCLE_MANIFEST,
 };
 use game_core::{
     ActionState, Affinity, BattleMonster, BattleOutcome, BattleSide, BattleState, Direction,
-    MonsterCard, MoveInput, NatureKind, PvpAction, StatBlock, TradeItem, TradeStatus, TrustTier,
+    MonsterCard, MoveInput, NatureKind, StatBlock, TradeItem, TradeStatus, TrustTier,
 };
 use proptest::prelude::*;
 use spacetimedb::Identity;
@@ -861,103 +861,6 @@ fn m22s4_idx(hay: &str, needle: &str, what: &str) -> usize {
     })
 }
 
-/// The squashed, scoped body of one `rows_<table>` shell reader, with its
-/// signature pinned first so a renamed or re-shaped reader reds LOUD.
-///
-/// SIGNATURE NORMALIZATION (the rustfmt vertical-wrap twin). The one-line
-/// spelling of the longest reader name is 101 characters, one past rustfmt's
-/// max_width, so rustfmt MUST break its parameter list across lines — and its
-/// vertical argument form appends a trailing comma, which squashes to
-/// `owner:Identity,)`. The escape hatch is not available either: a
-/// rustfmt-skip attribute is banned crate-wide, because skipping the formatter
-/// defeats fmt-as-normalizer, which every squashed scan in this crate relies
-/// on. So the comma is NOT a stylistic choice the implementer can make either
-/// way — for that one reader it is mandatory. This helper therefore drops ONE
-/// comma sitting immediately before the parameter list's closing paren before
-/// comparing. The two spellings are the same Rust: parameter NAMES, TYPES,
-/// ARITY and the RETURN TYPE all stay pinned exactly, so nothing this pin
-/// exists to protect is loosened — a second parameter still reds, because it
-/// changes the text between the parens, not the comma before them.
-fn m22s4_rows_body(squashed: &str, table: &str) -> String {
-    let needle = format!("fnrows_{table}(");
-    let n = rb22p_count(squashed, &needle);
-    assert_eq!(
-        n, 1,
-        "m22s4 [rows/scope]: privacy.rs must declare `{needle}` exactly once; found {n}. Zero is \
-         the intended RED before the implementer lands the shell reader; two makes every clause \
-         below read whichever one the extractor reaches first."
-    );
-
-    let sig = extract_squashed_fn_sig(squashed, &needle)
-        .unwrap_or_else(|| panic!("m22s4 [rows/sig]: `{needle}` has no opening brace."));
-
-    // Walk from the parameter list's opening paren to its matching close. The
-    // walk is depth-counted rather than a search for the last paren, so a
-    // parenthesised TYPE in some future parameter cannot move the target.
-    let bytes = sig.as_bytes();
-    let open = sig
-        .find('(')
-        .unwrap_or_else(|| panic!("m22s4 [rows/sig]: `{needle}` has no parameter list."));
-    let mut depth = 0usize;
-    let mut found: Option<usize> = None;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    found = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    let close = found.unwrap_or_else(|| {
-        panic!(
-            "m22s4 [rows/sig]: the parameter list of `{needle}` is not paren-balanced, so the \
-             normalization below would read an arbitrary span. Refusing to classify is the safe \
-             direction."
-        )
-    });
-    let normalized: String = if close > 0 && bytes[close - 1] == b',' {
-        let mut out = String::with_capacity(sig.len() - 1);
-        out.push_str(&sig[..close - 1]);
-        out.push_str(&sig[close..]);
-        out
-    } else {
-        sig.to_string()
-    };
-
-    let expected =
-        format!("fnrows_{table}(ctx:&ReducerContext,owner:Identity)->Result<Vec<String>,String>");
-    assert_eq!(
-        normalized, expected,
-        "m22s4 [rows/sig]: the `{table}` shell reader must carry the frozen signature. The \
-         context is named `ctx` (every alias ban in this module keys on that name) and the \
-         subject arrives as `owner: Identity` — a reader that takes any OTHER identity-typed \
-         parameter, or none, is a caller-chosen-owner read of a private table. The comparison \
-         is made after dropping ONE comma sitting immediately before the parameter list's \
-         closing paren: that trailing-comma twin is ACCEPTED because rustfmt wraps any \
-         signature past its max_width and its vertical argument form emits the comma, while a \
-         rustfmt-skip attribute is banned crate-wide (skipping the formatter defeats \
-         fmt-as-normalizer, which every squashed scan here depends on) — so for the longest \
-         reader name no fmt-canonical spelling can avoid it. Only the comma is normalized; \
-         parameter names, types, arity and the return type are still pinned exactly."
-    );
-
-    let body = extract_squashed_fn_body(squashed, &needle)
-        .unwrap_or_else(|| panic!("m22s4 [rows/scope]: `{needle}` body is not brace-balanced."));
-    assert!(
-        !body.is_empty(),
-        "m22s4 [rows/vacuity]: `{needle}` has an EMPTY body, so every own-rows clause about it \
-         would pass over nothing."
-    );
-    body.to_string()
-}
-
 /// The exportable:true table names, read off the LIVE manifest.
 fn m22s4_manifest_exportable() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -1055,20 +958,6 @@ fn m22s4_party_ids_json() -> String {
 /// The opponent list.
 fn m22s4_opponent_ids_json() -> String {
     m22s4_arr(&[m22s4_quoted_num(3)])
-}
-
-/// A battle_action row for the own-rows fixtures. Both fixtures share ONE
-/// battle_id on purpose: a predicate keyed on battle_id instead of on the
-/// submitting identity returns true for BOTH rows and is killed here.
-fn m22s4_action_row(action_id: u64, who: Identity) -> BattleAction {
-    BattleAction {
-        action_id,
-        battle_id: 99,
-        player_identity: who,
-        action: PvpAction::Attack { skill_id: 3 },
-        turn_number: 7,
-        submitted_at_ms: 45,
-    }
 }
 
 /// A playtest_event row for the own-rows fixtures. Same shared-battle_id trap.
@@ -1650,42 +1539,12 @@ fn m22s4_serializer_per_table_shape() {
          BARE u8 — the subject's own challenge row states the party-size format it opened."
     );
 
-    // --- battle_action (nested payload enum) --------------------------------
-    let action = BattleAction {
-        action_id: 13,
-        battle_id: 44,
-        player_identity: owner,
-        action: PvpAction::Swap { team_index: 2 },
-        turn_number: 7,
-        submitted_at_ms: 45,
-    };
-    let out_action = super::json_battle_action(&action);
-    assert_eq!(
-        out_action,
-        m22s4_obj(&[
-            ("action_id", m22s4_quoted_num(13)),
-            ("battle_id", m22s4_quoted_num(44)),
-            ("player_identity", m22s4_qid(owner)),
-            (
-                "action",
-                m22s4_obj(&[("kind", m22s4_qtxt("Swap")), ("team_index", m22s4_bare(2)),]),
-            ),
-            ("turn_number", m22s4_bare(7)),
-            ("submitted_at_ms", m22s4_quoted_num(45)),
-        ]),
-        "m22s4 [X1/battle_action]: a payload-carrying enum is a TAGGED OBJECT — a kind \
-         discriminator plus the variant's own fields — not a bare variant name, which would \
-         silently drop team_index, the entire content of the action. The fixture picks the \
-         SECOND variant."
-    );
-
     // --- player -------------------------------------------------------------
     let player = Player {
         identity: owner,
         entity_id: 21,
         name: nasty.clone(),
         online: true,
-        last_input_seq: 9_007_199_254_740_993,
         discriminator: 3_000_000_001,
         lead_level: 200,
     };
@@ -1697,14 +1556,12 @@ fn m22s4_serializer_per_table_shape() {
             ("entity_id", m22s4_quoted_num(21)),
             ("name", nasty_json.clone()),
             ("online", m22s4_bool(true)),
-            ("last_input_seq", m22s4_quoted_num(9_007_199_254_740_993)),
             ("discriminator", m22s4_bare(3_000_000_001)),
             ("lead_level", m22s4_bare(200)),
         ]),
-        "m22s4 [X1/player]: last_input_seq is u64 and the fixture sits one above 2^53 — a bare \
-         number here loses the low bit in the client assembler. The appended discriminator (u32) \
-         and lead_level (u8) are EXPORTED, last, as BARE numbers; the fixture values sit above \
-         the i32 and i8 ceilings, so a signed narrowing renders a negative number."
+        "m22s4 [X1/player]: entity_id is u64 and renders QUOTED. The appended discriminator \
+         (u32) and lead_level (u8) are EXPORTED, last, as BARE numbers; the fixture values sit \
+         above the i32 and i8 ceilings, so a signed narrowing renders a negative number."
     );
 
     // --- player_handle (the minted discriminator) ---------------------------
@@ -1856,7 +1713,6 @@ fn m22s4_serializer_per_table_shape() {
         ("playtest_event", &out_playtest),
         ("trade_offer", &out_trade),
         ("battle_challenge", &out_challenge),
-        ("battle_action", &out_action),
         ("player_handle", &out_handle),
         ("player", &out_player),
         ("profile", &out_profile),
@@ -2140,11 +1996,11 @@ fn m22s4_exporter_set_equals_manifest_both_directions() {
     let manifest_order = m22s4_manifest_exportable();
     assert_eq!(
         manifest_order.len(),
-        21,
+        20,
         "m22s4 [X2/floor]: DATA_LIFECYCLE_MANIFEST carries {} exportable entries; the spec's \
-         export scope is exactly TWENTY-ONE: fifteen erase tables (player_handle, \
+         export scope is exactly TWENTY: fourteen erase tables (player_handle, \
          player_formation and world_account among them) plus five anonymize tables \
-         (battle_summary among them) plus character, 15 + 5 + 1. If that number legitimately \
+         (battle_summary among them) plus character, 14 + 5 + 1. If that number legitimately \
          changed, the registry and this floor move together, in one reviewed diff.",
         manifest_order.len()
     );
@@ -2152,9 +2008,9 @@ fn m22s4_exporter_set_equals_manifest_both_directions() {
     let registry: Vec<String> = super::EXPORTERS.iter().map(|e| e.0.to_string()).collect();
     assert_eq!(
         registry.len(),
-        21,
+        20,
         "m22s4 [X2/floor]: the exporter registry carries {} entries; the manifest's exportable \
-         set is 21.",
+         set is 20.",
         registry.len()
     );
 
@@ -2570,63 +2426,8 @@ proptest! {
     }
 }
 
-/// PRV1-11 / X5 (behavioural): the per-turn secret action's own-row predicate
-/// answers on IDENTITY, not on the battle.
-///
-/// TWO ROWS, ONE battle id. That is the whole point: a leaked pending PvP pick
-/// is a competitively decisive exploit, and the shape that leaks it is a
-/// predicate written against the row's battle rather than its submitter — which
-/// a single-row fixture cannot distinguish.
-///
-/// Kills: a predicate keyed on battle_id (true for BOTH rows here);
-///        a predicate that ignores its identity argument (true for both);
-///        an inverted comparison (false for both);
-///        a predicate keyed on action_id or turn_number.
-#[test]
-fn m22s4_battle_action_own_predicate() {
-    let a = m22s4_id_a();
-    let b = m22s4_id_b();
-    let c = m22s4_id_c();
-    let mine = m22s4_action_row(1, a);
-    let theirs = m22s4_action_row(2, b);
-
-    assert_eq!(
-        mine.battle_id, theirs.battle_id,
-        "m22s4 [X5/action-vacuity]: the two fixtures must share one battle id, or a predicate \
-         keyed on the battle would be indistinguishable from a correct one."
-    );
-
-    assert!(
-        super::battle_action_is_own(&mine, a),
-        "m22s4 [X5/action]: the submitter's own row IS their own."
-    );
-    assert!(
-        !super::battle_action_is_own(&theirs, a),
-        "m22s4 [X5/action]: the COUNTERPARTY's row in the SAME battle is NOT the subject's. A \
-         predicate keyed on battle_id returns true here and hands a live opponent's pending pick \
-         to the other player."
-    );
-    assert!(
-        super::battle_action_is_own(&theirs, b),
-        "m22s4 [X5/action]: the predicate must answer true for the OTHER identity's own row too, \
-         so a constant-false implementation fails."
-    );
-    assert!(
-        !super::battle_action_is_own(&mine, b),
-        "m22s4 [X5/action]: mirror image of the leak case."
-    );
-    assert!(
-        !super::battle_action_is_own(&mine, c),
-        "m22s4 [X5/action]: a third party who submitted nothing owns neither row."
-    );
-    assert!(
-        !super::battle_action_is_own(&theirs, c),
-        "m22s4 [X5/action]: a third party who submitted nothing owns neither row."
-    );
-}
-
 /// PRV1-11 / X5 (behavioural): the telemetry table's own-row predicate answers
-/// on IDENTITY, not on the battle. Same two-row, one-battle trap as above.
+/// on IDENTITY, not on the battle: two rows, one battle id.
 ///
 /// Kills: a predicate keyed on battle_id, event_id, kind or created_at_ms;
 ///        a predicate that ignores its identity argument;
@@ -2913,79 +2714,6 @@ fn m22s4_battle_state_blob_is_never_emitted() {
         "m22s4 [X6/state-arity]: the battle payload must carry EXACTLY six key/value pairs (the \
          seven columns minus the omitted state). A seventh key is either the state creeping back \
          or an unreviewed addition to a durable artifact. Payload: {out:?}"
-    );
-}
-
-/// X6: the per-turn secret action table needs no redaction because the own-rows
-/// filter already makes one structurally impossible — asserted, not assumed.
-///
-/// The redaction is VACUOUS BY CONSTRUCTION and that is a claim with teeth: it
-/// holds only while the own-rows predicate is the SOLE bound on the scan and
-/// every surviving row belongs to the subject. Both halves are checked here,
-/// behaviourally and structurally.
-///
-/// Kills: a serializer that nulls the submitter's OWN identity (over-redaction
-///        that silently empties the subject's own export);
-///        a reader that serializes before it filters, so a foreign row is
-///        rendered (and could be logged or partially emitted) on the way;
-///        a second, unfiltered read path into the same table.
-#[test]
-fn m22s4_battle_action_own_rows_only() {
-    let a = m22s4_id_a();
-    let b = m22s4_id_b();
-    let mine = m22s4_action_row(1, a);
-    let theirs = m22s4_action_row(2, b);
-
-    // --- behavioural: the filter is what makes the redaction vacuous -------
-    let kept: Vec<&BattleAction> = [&mine, &theirs]
-        .into_iter()
-        .filter(|row| super::battle_action_is_own(row, a))
-        .collect();
-    assert_eq!(
-        kept.len(),
-        1,
-        "m22s4 [X6/action-filter]: of two rows in one battle, exactly ONE is the subject's."
-    );
-    assert_eq!(
-        kept[0].action_id, 1,
-        "m22s4 [X6/action-filter]: the surviving row must be the subject's own."
-    );
-
-    let out = super::json_battle_action(kept[0]);
-    assert!(
-        out.contains(&a.to_string()),
-        "m22s4 [X6/action-no-redaction]: the subject's OWN identity must be emitted unredacted. \
-         The redaction is vacuous because no counterparty row is ever in the result set — not \
-         because the column is blanked. Nulling it here would empty the subject's own export."
-    );
-    assert!(
-        !out.contains(&b.to_string()),
-        "m22s4 [X6/action-no-redaction]: no other identity may appear in the payload."
-    );
-    assert_eq!(
-        rb22p_count(&out, "null"),
-        0,
-        "m22s4 [X6/action-no-redaction]: this table has no nullable column and needs no \
-         redaction; a null in the payload means something was blanked that should not have been."
-    );
-
-    // --- structural: the scan is bounded BEFORE anything is serialized -----
-    let squashed = stripped_for_scan(PRIVACY_RS);
-    let body = m22s4_rows_body(&squashed, "battle_action");
-    let pred_at = m22s4_idx(&body, "battle_action_is_own(", "the own-row predicate call");
-    let ser_at = m22s4_idx(&body, "json_battle_action(", "the row serializer call");
-    assert!(
-        pred_at < ser_at,
-        "m22s4 [X6/action-order]: the reader serializes rows BEFORE narrowing them to the \
-         subject's own. The own-rows filter is the only thing standing between an unindexed scan \
-         of a must-never-leak table and every player's pending pick, so it must bound the scan, \
-         not post-process its output."
-    );
-    assert_eq!(
-        rb22p_count(&body, ".iter()"),
-        1,
-        "m22s4 [X6/action-order]: exactly one scan; a second read path into this table would be \
-         unbounded by the clause above."
     );
 }
 
@@ -7921,22 +7649,22 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// — which the population clause below reports BEFORE the tick runs at all.
 ///
 /// THE ARITHMETIC, derived from the shipped constants and never transcribed:
-/// the minimum bundle is one chunk per exportable table, twenty-one (fifteen
+/// the minimum bundle is one chunk per exportable table, twenty (fourteen
 /// erase tables plus five anonymize tables plus character), so
-/// eighteen minimum-size bundles of twenty-one chunks are 18 x 21 = 378 rows and
+/// eighteen minimum-size bundles of twenty chunks are 18 x 20 = 360 rows and
 /// the 256-row read window BINDS; that window in ascending stamp order covers
-/// twelve whole bundles (12 x 21 = 252 rows) and 256 - 252 = 4 rows of the
-/// thirteenth, so it touches ceil(256 / 21) = THIRTEEN distinct stamps, three
+/// twelve whole bundles (12 x 20 = 240 rows) and 256 - 240 = 16 rows of the
+/// thirteenth, so it touches ceil(256 / 20) = THIRTEEN distinct stamps, three
 /// below the write cap of sixteen; each is deleted whole, tail beyond the
-/// window included, so 13 x 21 = 273 rows go (more than the 256 read) and the
-/// 18 - 13 = five newest bundles (5 x 21 = 105 rows) survive intact. Under the
-/// status-quo shared stamp the same tick plans ONE stamp and reaps all 378 rows
+/// window included, so 13 x 20 = 260 rows go (more than the 256 read) and the
+/// 18 - 13 = five newest bundles (5 x 20 = 100 rows) survive intact. Under the
+/// status-quo shared stamp the same tick plans ONE stamp and reaps all 360 rows
 /// in one transaction — the unbounded delete unit, and the abort-loop hazard
 /// that silently retains expired personal data past the seven-day ceiling.
 ///
-/// WHAT THIS TEST DOES NOT SHOW. With a twenty-one-chunk minimum bundle the
+/// WHAT THIS TEST DOES NOT SHOW. With a twenty-chunk minimum bundle the
 /// read window binds BEFORE the stamp cap: sixteen minimum bundles are
-/// 16 x 21 = 336 rows, more than the 256 a tick reads, so a population of
+/// 16 x 20 = 320 rows, more than the 256 a tick reads, so a population of
 /// minimum-size minted bundles can never put a seventeenth stamp in the
 /// window (it holds at most thirteen). The stamp
 /// cap binding is proven by `rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps`
@@ -7953,8 +7681,8 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
 /// Kills: the status-quo body (the population clause, before the tick); a mint
 /// that reuses a live stamp under any spelling (same clause); a tick that
 /// stopped at the window's edge (reaped 256 rather than 260); the read cap
-/// dropped (read 378, due 18, planned 16 at the stamp cap, reaped
-/// 16 x 21 = 336); a `due` count that is not the
+/// dropped (read 360, due 18, planned 16 at the stamp cap, reaped
+/// 16 x 20 = 320); a `due` count that is not the
 /// window's distinct expired stamps; a survivor set of the right SIZE but the
 /// wrong IDENTITY, which every count clause here is blind to (the triple
 /// comparison); numbers moved to match the code rather than re-derived (the
@@ -7978,17 +7706,17 @@ fn rb111_one_tick_reaps_thirteen_whole_bundles_from_a_same_millisecond_burst() {
     // so it is re-derived from the spec rather than quietly followed.
     assert_eq!(
         (read_cap, stamp_cap, min_bundle, window),
-        (256usize, 16usize, 21usize, 16usize),
+        (256usize, 16usize, 20usize, 16usize),
         "[rb111/bound-attribution]: the shipped read cap, stamp cap, minimum bundle and probe \
          window read ({read_cap}, {stamp_cap}, {min_bundle}, {window}); this population is \
-         sized against (256, 16, 21, 16) — 18 bundles of 21 chunks is 378 rows, which makes the \
+         sized against (256, 16, 20, 16) — 18 bundles of 20 chunks is 360 rows, which makes the \
          256-row read window BIND and leaves the window touching exactly 13 distinct stamps, \
          three below the stamp cap. Re-derive every number in this test from the spec before \
          touching anything else."
     );
     // The stamps a full ascending read window touches when every bundle is
-    // `min_bundle` rows: ceil(256 / 21) = 13 (twelve whole bundles, 252 rows,
-    // and four rows of a thirteenth).
+    // `min_bundle` rows: ceil(256 / 20) = 13 (twelve whole bundles, 240 rows,
+    // and sixteen rows of a thirteenth).
     let touched = read_cap.div_ceil(min_bundle);
     assert!(
         touched < stamp_cap && touched < bundles,
@@ -8585,8 +8313,8 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
 ///     is 208 rows plus 48 of the sixty-row bundle: SEVENTEEN stamps, the same
 ///     sixteen planned, the same 208 reaped.
 ///   - B, rb-109's oversized population: twenty expired bundles of seventeen
-///     rows and six live. Seventeen rows is 21 - 17 = four rows short of the
-///     shipped minimum bundle of twenty-one (one chunk per exportable table). The
+///     rows and six live. Seventeen rows is 20 - 17 = three rows short of the
+///     shipped minimum bundle of twenty (one chunk per exportable table). The
 ///     window is fifteen whole bundles (15 x 17 = 255 rows) and one row of a
 ///     sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
 ///   - C, the rb-87 residual's own case: twenty expired bundles of FIVE rows and
@@ -8614,14 +8342,14 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
 
     assert_eq!(
         (read_cap, stamp_cap, min_bundle),
-        (256usize, 16usize, 21usize),
+        (256usize, 16usize, 20usize),
         "[rb115/tick-sizing]: the shipped read cap, stamp cap and minimum bundle read \
          ({read_cap}, {stamp_cap}, {min_bundle}); the four populations below are sized against \
-         (256, 16, 21) — thirteen- and five-row bundles are SHORT stamps against a twenty-one-row \
+         (256, 16, 20) — thirteen- and five-row bundles are SHORT stamps against a twenty-row \
          minimum, which is what lets the cap bind at all on an ascending read (sixteen bundles \
-         of twenty-one rows are 16 x 21 = 336, past the 256-row window, so a window of \
-         minimum-size bundles holds at most ceil(256 / 21) = thirteen stamps), and B's \
-         seventeen-row bundles are four rows short of that minimum. The four populations are \
+         of twenty rows are 16 x 20 = 320, past the 256-row window, so a window of \
+         minimum-size bundles holds at most ceil(256 / 20) = thirteen stamps), and B's \
+         seventeen-row bundles are three rows short of that minimum. The four populations are \
          hand-sized, so none of \
          their tuples moves with the \
          minimum; a value that moves makes every tuple below a different, still \
@@ -8681,7 +8409,7 @@ fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
          holds exactly SIXTEEN stamps, all of them planned, each deleted whole with its tail. \
          `due` equal to `planned` here is not a coincidence: a full window over bundles of \
          seventeen rows or more holds at most sixteen stamps, so a well-formed tick over bundles \
-         this module writes (twenty-one rows or more) reports it, which is why the new field is a \
+         this module writes (twenty rows or more) reports it, which is why the new field is a \
          tripwire and not a backlog signal."
     );
     let b_expired_left = b_left.iter().filter(|stamp| **stamp <= cutoff).count();
@@ -8776,7 +8504,6 @@ fn the_player_handle_and_the_player_tag_columns_serialize_into_the_export_ih1_8(
         entity_id: 31,
         name: "Ada".to_string(),
         online: false,
-        last_input_seq: 5,
         discriminator: 77_777,
         lead_level: 42,
     };
@@ -8787,7 +8514,6 @@ fn the_player_handle_and_the_player_tag_columns_serialize_into_the_export_ih1_8(
             ("entity_id", m22s4_quoted_num(31)),
             ("name", m22s4_qtxt("Ada")),
             ("online", m22s4_bool(false)),
-            ("last_input_seq", m22s4_quoted_num(5)),
             ("discriminator", m22s4_bare(77_777)),
             ("lead_level", m22s4_bare(42)),
         ]),
@@ -8796,8 +8522,8 @@ fn the_player_handle_and_the_player_tag_columns_serialize_into_the_export_ih1_8(
 }
 
 /// The tables `request_data_export` reaches on the native host: `player` and
-/// `player_handle` read by owner, `playtest_event` and `battle_action` scanned
-/// (their own-row predicates read every row), `export_bundle` written, scanned
+/// `player_handle` read by owner, `playtest_event` scanned
+/// (its own-row predicate reads every row), `export_bundle` written, scanned
 /// (the admission count) and read by owner, chunk id and creation stamp, and
 /// the reaper's schedule table written and scanned. Every other exportable
 /// table is read through an index no fixture registered, so it yields nothing.
@@ -8814,9 +8540,6 @@ fn ih1_export_world(fx: &crate::native_host_tests::Fixture) -> Ih1Export<'_> {
         });
     let _ = fx
         .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
-        .scannable();
-    let _ = fx
-        .table_keyed::<BattleAction, u64>("battle_action", "action_id", |r| r.action_id)
         .scannable();
     let _ = fx.table_keyed::<crate::schema::ExportBundle, u64>("export_bundle", "chunk_id", |r| {
         r.chunk_id
@@ -8856,7 +8579,6 @@ impl Ih1Export<'_> {
             entity_id,
             name: "Ada".to_string(),
             online: true,
-            last_input_seq: 0,
             discriminator,
             lead_level,
         });
@@ -8880,7 +8602,6 @@ fn ih1_player_json(who: Identity, entity_id: u64, discriminator: u32, lead_level
         ("entity_id", m22s4_quoted_num(i128::from(entity_id))),
         ("name", m22s4_qtxt("Ada")),
         ("online", m22s4_bool(true)),
-        ("last_input_seq", m22s4_quoted_num(0)),
         ("discriminator", m22s4_bare(i128::from(discriminator))),
         ("lead_level", m22s4_bare(i128::from(lead_level))),
     ])

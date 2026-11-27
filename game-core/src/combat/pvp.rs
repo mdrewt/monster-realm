@@ -56,20 +56,6 @@ pub fn is_challenge_stale(created_at_ms: i64, now_ms: i64) -> bool {
 mod pvp_tests {
     use super::*;
 
-    // --- PvpAction::into_turn_choice ------------------------------------------
-
-    #[test]
-    fn attack_maps_to_turn_choice_attack() {
-        let a = PvpAction::Attack { skill_id: 7 };
-        assert_eq!(a.into_turn_choice(), TurnChoice::Attack { skill_id: 7 });
-    }
-
-    #[test]
-    fn swap_maps_to_turn_choice_swap() {
-        let a = PvpAction::Swap { team_index: 2 };
-        assert_eq!(a.into_turn_choice(), TurnChoice::Swap { team_index: 2 });
-    }
-
     // --- pvp_forfeit_outcome --------------------------------------------------
 
     #[test]
@@ -82,46 +68,6 @@ mod pvp_tests {
         assert_eq!(pvp_forfeit_outcome(SideId::SideB), BattleOutcome::SideAWins);
     }
 
-    // --- pvp_deadline_forfeit_side --------------------------------------------
-
-    #[test]
-    fn a_not_submitted_forfeits_a() {
-        assert_eq!(
-            pvp_deadline_forfeit_side(false, true),
-            SideId::SideA,
-            "a did not submit → a forfeits"
-        );
-    }
-
-    #[test]
-    fn b_not_submitted_forfeits_b() {
-        assert_eq!(
-            pvp_deadline_forfeit_side(true, false),
-            SideId::SideB,
-            "b did not submit → b forfeits"
-        );
-    }
-
-    #[test]
-    fn neither_submitted_forfeits_a_challenger_first() {
-        assert_eq!(
-            pvp_deadline_forfeit_side(false, false),
-            SideId::SideA,
-            "neither submitted → challenger (side A) forfeits (tie-break)"
-        );
-    }
-
-    // proof-of-teeth: the function must NOT always return SideA
-    #[test]
-    fn teeth_b_not_submitted_does_not_return_side_a() {
-        let result = pvp_deadline_forfeit_side(true, false);
-        assert_ne!(
-            result,
-            SideId::SideA,
-            "TEETH: when only B hasn't submitted, must forfeit B not A"
-        );
-    }
-
     // proof-of-teeth: pvp_forfeit_outcome must be anti-symmetric
     #[test]
     fn teeth_forfeit_outcome_anti_symmetric() {
@@ -130,44 +76,6 @@ mod pvp_tests {
         assert_ne!(
             a_result, b_result,
             "TEETH: forfeiting A and forfeiting B must produce different outcomes"
-        );
-    }
-
-    // -------------------------------------------------------------------------
-    // pvp_deadline_forfeit_side ignores b_submitted parameter.
-    //
-    // Finding: the implementation signature is `(a_submitted: bool, _b_submitted: bool)`
-    // — the `_` prefix marks the second parameter intentionally unused. The body
-    // decides purely based on `a_submitted`:
-    //   if !a_submitted → SideA
-    //   else             → SideB
-    //
-    // This works correctly for the three documented cases (A-not-submitted,
-    // B-not-submitted, neither-submitted) because the caller guarantees the
-    // both-submitted case never reaches the reaper. HOWEVER, the function will
-    // silently return SideB for `(true, true)` instead of signalling an error,
-    // and any future call site that passes `b_submitted` expecting it to be read
-    // will silently get wrong results.
-    //
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn rt_m16_06_both_submitted_returns_side_a_safe_noop() {
-        // (true, true) — both submitted (caller-invariant violation) → SideA safe no-op.
-        // (true, false) — only A submitted → SideB forfeits.
-        // The results must differ: the function reads b_submitted.
-        let both_submitted = pvp_deadline_forfeit_side(true, true);
-        let only_a_submitted = pvp_deadline_forfeit_side(true, false);
-        assert_ne!(
-            both_submitted, only_a_submitted,
-            "RT-M16-06: pvp_deadline_forfeit_side must read b_submitted — \
-             (true, true) must return SideA (safe no-op) while (true, false) \
-             returns SideB. If they are equal, b_submitted is being ignored."
-        );
-        assert_eq!(
-            both_submitted,
-            SideId::SideA,
-            "RT-M16-06: (true, true) must return SideA as the safe no-op sentinel"
         );
     }
 }

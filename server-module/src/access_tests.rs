@@ -6,8 +6,9 @@
 //! owner's admit list), `allowlist` (an `Allowlist` world admits a bound identity by its
 //! account and an unbound one by its admission row), `allowlist_seed` (a switch to
 //! `Allowlist` lists the accounts the rule in force admitted), `password_rule` (the owner's
-//! `Password` rule stores no salt and no hash), `legacy_password` (a salt and hash an earlier
-//! module stored admit nobody and go at the owner's next call) and `admitted_outright` (on a
+//! `Password` rule stores the rule alone), `stored_password` (a stored `Password` row admits
+//! only the owner and the admitted, and the owner's next call carries nobody over) and
+//! `admitted_outright` (on a
 //! `Password` world the owner set, the identities the owner named get in and nobody else).
 //!
 //! The host models no rollback, so every refusal here is asserted to write nothing at all.
@@ -23,22 +24,6 @@ use crate::schema::{
 };
 use spacetimedb::sats::bsatn;
 use spacetimedb::{ConnectionId, Identity, ReducerContext, Serialize, Timestamp};
-
-// --- a salt and hash as an earlier module stored them -------------------------
-//
-// A real Argon2id v1.3 hash (m = 19456 KiB, t = 2, p = 1, 32-byte tag) under a 16-byte salt,
-// computed by an independent implementation (OpenSSL through Node's `crypto.argon2Sync`): the
-// shape of the `world_access` row an earlier module wrote for a `Password` world.
-
-const KAT_SALT: &[u8; 16] = b"0123456789abcdef";
-const KAT_HASH_HEX: &str = "ae4d8c8b713876044c8347c76986a9b5655944aaacfffe9bea4dff9e7b6a1899";
-
-fn unhex(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("a known answer is hex"))
-        .collect()
-}
 
 // --- fixture vocabulary ------------------------------------------------------
 
@@ -154,33 +139,23 @@ fn seed_owner(w: &W<'_>, who: Identity) {
     });
 }
 
-/// A `Password` row holding [`KAT_SALT`] and the Argon2id hash under it, as an earlier module
-/// stored it.
+/// A `Password` row.
 fn password_row() -> WorldAccess {
     WorldAccess {
         id: 0,
         rule: WorldAccessRule::Password,
-        password_salt: KAT_SALT.to_vec(),
-        password_hash: unhex(KAT_HASH_HEX),
     }
 }
 
-/// The row the owner's `set_world_access` stores for `rule`: no salt and no hash.
+/// The row the owner's `set_world_access` stores for `rule`.
 fn stored_row(rule: WorldAccessRule) -> WorldAccess {
-    WorldAccess {
-        id: 0,
-        rule,
-        password_salt: Vec::new(),
-        password_hash: Vec::new(),
-    }
+    WorldAccess { id: 0, rule }
 }
 
 fn open_row() -> WorldAccess {
     WorldAccess {
         id: 0,
         rule: WorldAccessRule::Open,
-        password_salt: Vec::new(),
-        password_hash: Vec::new(),
     }
 }
 
@@ -332,10 +307,9 @@ fn access_row(w: &W<'_>) -> Vec<u8> {
 mod open_by_default {
     use super::*;
 
-    /// No row is `Open`; a row's rule is the row's own, whatever its salt and hash hold.
+    /// No row is `Open`; a row's rule is the row's own.
     ///
-    /// kills: `effective_rule` answering a constant; a `Password` row read as `Open` because
-    /// its salt or hash is empty.
+    /// kills: `effective_rule` answering a constant.
     #[test]
     fn a_world_with_no_access_row_is_open_and_a_row_keeps_its_own_rule() {
         assert_eq!(effective_rule(None), WorldAccessRule::Open);
@@ -343,16 +317,6 @@ mod open_by_default {
         assert_eq!(
             effective_rule(Some(&password_row())),
             WorldAccessRule::Password
-        );
-        let bare = WorldAccess {
-            password_salt: Vec::new(),
-            password_hash: Vec::new(),
-            ..password_row()
-        };
-        assert_eq!(
-            effective_rule(Some(&bare)),
-            WorldAccessRule::Password,
-            "the rule column decides the rule, not the presence of a hash"
         );
     }
 
@@ -942,8 +906,6 @@ mod allowlist {
         WorldAccess {
             id: 0,
             rule: WorldAccessRule::Allowlist,
-            password_salt: Vec::new(),
-            password_hash: Vec::new(),
         }
     }
 
@@ -1293,13 +1255,12 @@ mod allowlist {
 
     // --- setting the rule ------------------------------------------------------------
 
-    /// `Allowlist` stores the rule with an empty salt and hash, over no row and over a stored
-    /// salt and hash, which it clears; `effective_rule` reads the stored row as `Allowlist`,
-    /// and the rule is in force.
+    /// `Allowlist` stores the rule, over no row and over a stored `Password` row, which it
+    /// replaces; `effective_rule` reads the stored row as `Allowlist`, and the rule is in force.
     ///
-    /// kills: a stored salt or hash kept; a stored `Allowlist` row read as another rule.
+    /// kills: a stored `Password` row kept; a stored `Allowlist` row read as another rule.
     #[test]
-    fn allowlist_is_stored_with_an_empty_salt_and_hash() {
+    fn allowlist_is_stored_as_the_rule_alone() {
         let fx = fixture();
         let a = tables(&fx);
         seed_owner(&a.w, owner());
@@ -1321,7 +1282,7 @@ mod allowlist {
         assert_eq!(
             access_row(&a.w),
             enc(&allowlist_row()),
-            "the stored salt and hash are cleared"
+            "the stored Password row is replaced"
         );
     }
 
@@ -1637,8 +1598,6 @@ mod allowlist_seed {
         WorldAccess {
             id: 0,
             rule: WorldAccessRule::Allowlist,
-            password_salt: Vec::new(),
-            password_hash: Vec::new(),
         }
     }
 
@@ -2465,8 +2424,8 @@ mod allowlist_seed {
 }
 
 // =====================================================================================
-// The owner's `Password` rule is stored with no salt and no hash, and admits only the owner
-// and the identities holding an admission row.
+// The owner's `Password` rule is stored as the rule alone, and admits only the owner and the
+// identities holding an admission row.
 // =====================================================================================
 
 mod password_rule {
@@ -2484,13 +2443,12 @@ mod password_rule {
 
     /// From no row, from an `Open` row and from an `Allowlist` row, the owner's
     /// `set_world_access(Password, [])` is `Ok` and leaves exactly one row, equal byte for
-    /// byte to `{0, Password, [], []}`.
+    /// byte to `{0, Password}`.
     ///
-    /// kills: `Password` refused for want of a stored or a new password; a salt or a hash
-    /// written (random bytes, a hash of anything); a second row; a row under another id or
-    /// another rule.
+    /// kills: `Password` refused for want of a stored or a new password; a second row; a row
+    /// under another id or another rule.
     #[test]
-    fn the_owners_password_rule_is_stored_with_no_salt_and_no_hash_lpw20_1() {
+    fn the_owners_password_rule_is_stored_as_the_rule_alone_lpw20_1() {
         for prior in prior_rows() {
             let fx = fixture();
             let w = world(&fx);
@@ -2583,11 +2541,11 @@ mod password_rule {
 }
 
 // =====================================================================================
-// A salt and hash an earlier module stored admit nobody, and the owner's next
-// `set_world_access` clears them, whatever rule it sets.
+// A stored `Password` row admits only the owner and the admitted, and the owner's next
+// `set_world_access` over it carries nobody over, whatever rule it sets.
 // =====================================================================================
 
-mod legacy_password {
+mod stored_password {
     use super::*;
     use crate::schema::{WorldAllowlist, WorldBinding};
 
@@ -2631,22 +2589,22 @@ mod legacy_password {
         w
     }
 
-    /// [`world_holding`] a `Password` row with [`KAT_SALT`] and its Argon2id hash.
-    fn legacy_world(fx: &Fixture) -> W<'_> {
+    /// [`world_holding`] a `Password` row.
+    fn stored_password_world(fx: &Fixture) -> W<'_> {
         world_holding(fx, &password_row())
     }
 
-    /// Before the owner's next call, the legacy salt and hash let nobody in: the connected
-    /// stranger is refused by the admission check and at connect, anonymous and signed in,
-    /// with no write; the admitted identity and the owner pass and connect.
+    /// Before the owner's next call, a stored `Password` row lets in only the owner and the
+    /// admitted: the connected stranger is refused by the admission check and at connect,
+    /// anonymous and signed in, with no write; the admitted identity and the owner pass and
+    /// connect.
     ///
-    /// kills: an admission granted by the stored salt and hash (any identity let in while
-    /// they exist); a connected stranger let in because it is connected; the owner or an
-    /// admission row ignored on a world that holds a hash.
+    /// kills: a connected stranger let in because it is connected; the owner or an admission
+    /// row ignored on a stored `Password` row.
     #[test]
-    fn a_legacy_salt_and_hash_admit_nobody_lpw20_2() {
+    fn a_stored_password_row_admits_no_connected_stranger_lpw20_2() {
         let fx = fixture();
-        let w = legacy_world(&fx);
+        let w = stored_password_world(&fx);
         let before = footprint(&fx, &w);
         assert_eq!(
             passes(&fx, stranger(), T0),
@@ -2684,17 +2642,17 @@ mod legacy_password {
         );
     }
 
-    /// The owner's next `set_world_access(Password, [])` on a legacy world is `Ok` and stores
-    /// `{0, Password, [], []}`. The unchanged rule carries nobody over: the connected
+    /// The owner's next `set_world_access(Password, [])` on a stored `Password` row is `Ok`
+    /// and stores `{0, Password}`. The unchanged rule carries nobody over: the connected
     /// stranger holds no admission row and is still refused, and the admitted identity's row
     /// keeps its time.
     ///
-    /// kills: the stored salt and hash kept when the rule does not change; the connected
-    /// stranger admitted by an unchanged rule; an admission row re-stamped or dropped.
+    /// kills: the connected stranger admitted by an unchanged rule; an admission row
+    /// re-stamped or dropped.
     #[test]
-    fn the_owners_next_password_call_clears_a_legacy_salt_and_hash_lpw20_2() {
+    fn the_owners_next_password_call_over_a_stored_password_row_carries_nobody_over_lpw20_2() {
         let fx = fixture();
-        let w = legacy_world(&fx);
+        let w = stored_password_world(&fx);
         assert_eq!(
             set_access(&fx, owner(), WorldAccessRule::Password, Vec::new(), T0),
             Ok(())
@@ -2702,7 +2660,7 @@ mod legacy_password {
         assert_eq!(
             access_row(&w),
             enc(&stored_row(WorldAccessRule::Password)),
-            "the salt and hash are gone"
+            "the row holds the rule alone"
         );
         assert_eq!(
             admissions(&w),
@@ -2722,17 +2680,17 @@ mod legacy_password {
         assert_eq!(passes(&fx, admitted(), T0 + 1), Ok(()));
     }
 
-    /// The owner's next call setting `Open`, and on a fresh legacy world `Allowlist`, is `Ok`
-    /// and stores `{0, <rule>, [], []}`; the admitted identity's row keeps its time and the
-    /// connected stranger, whom the legacy rule refused, gets none.
+    /// The owner's next call setting `Open`, and on a fresh stored `Password` row
+    /// `Allowlist`, is `Ok` and stores `{0, <rule>}`; the admitted identity's row keeps its
+    /// time and the connected stranger, whom the stored rule refused, gets none.
     ///
-    /// kills: the salt and hash kept by a change of rule; a carry-over that admits the
+    /// kills: the `Password` row kept by a change of rule; a carry-over that admits the
     /// stranger the rule in force refused.
     #[test]
-    fn the_owners_next_open_or_allowlist_call_clears_a_legacy_salt_and_hash_lpw20_2() {
+    fn the_owners_open_or_allowlist_call_over_a_stored_password_row_keeps_admissions_lpw20_2() {
         for rule in [WorldAccessRule::Open, WorldAccessRule::Allowlist] {
             let fx = fixture();
-            let w = legacy_world(&fx);
+            let w = stored_password_world(&fx);
             assert_eq!(
                 set_access(&fx, owner(), rule, Vec::new(), T0),
                 Ok(()),
@@ -2741,39 +2699,12 @@ mod legacy_password {
             assert_eq!(
                 access_row(&w),
                 enc(&stored_row(rule)),
-                "{rule:?}: the salt and hash are gone"
+                "{rule:?}: the row holds the new rule alone"
             );
             assert_eq!(
                 admissions(&w),
                 vec![(admitted().to_byte_array(), ADMITTED_AT)],
                 "{rule:?}: the admitted identity keeps its row and its time"
-            );
-        }
-    }
-
-    /// An `Open` row and an `Allowlist` row forged to hold the legacy salt and hash: the
-    /// owner's next call with the same rule is `Ok` and stores both empty.
-    ///
-    /// kills: the stored salt and hash carried forward whenever the rule does not change; a
-    /// clear made only for `Password`.
-    #[test]
-    fn a_salt_and_hash_on_an_open_or_allowlist_row_go_at_the_owners_next_call_lpw20_2() {
-        for rule in [WorldAccessRule::Open, WorldAccessRule::Allowlist] {
-            let fx = fixture();
-            let forged = WorldAccess {
-                rule,
-                ..password_row()
-            };
-            let w = world_holding(&fx, &forged);
-            assert_eq!(
-                set_access(&fx, owner(), rule, Vec::new(), T0),
-                Ok(()),
-                "{rule:?}"
-            );
-            assert_eq!(
-                access_row(&w),
-                enc(&stored_row(rule)),
-                "{rule:?}: the salt and hash are gone"
             );
         }
     }
@@ -2814,12 +2745,11 @@ mod admitted_outright {
     /// with that call's time, passes the admission check and connects, its session recorded.
     /// One named in a later call that leaves the rule `Password` does the same, signed in
     /// and provisioned, stamped with the later call's time; the first keeps its time, nobody
-    /// else holds a row, and the stored row stays `{0, Password, [], []}`.
+    /// else holds a row, and the stored row stays `{0, Password}`.
     ///
     /// kills: `Password` refused for want of a password; the admit list ignored under
     /// `Password`, at the change or with the rule unchanged; an admission stamped with
-    /// another time, or re-stamped; the owner given a row; a later call that writes a salt
-    /// or a hash.
+    /// another time, or re-stamped; the owner given a row.
     #[test]
     fn an_identity_the_owner_admits_outright_connects_and_passes_lpw20_3() {
         let fx = fixture();

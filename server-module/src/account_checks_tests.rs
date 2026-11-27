@@ -259,17 +259,7 @@ fn owned_world(fx: &Fixture) -> W<'_> {
 }
 
 fn rule_row(rule: WorldAccessRule) -> WorldAccess {
-    let (password_salt, password_hash) = if rule == WorldAccessRule::Password {
-        (vec![1; 16], vec![2; 32])
-    } else {
-        (Vec::new(), Vec::new())
-    };
-    WorldAccess {
-        id: 0,
-        rule,
-        password_salt,
-        password_hash,
-    }
+    WorldAccess { id: 0, rule }
 }
 
 fn admission_row(who: Identity) -> WorldAdmission {

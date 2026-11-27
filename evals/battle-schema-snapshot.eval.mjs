@@ -511,6 +511,21 @@ function selfTeeth() {
       return got.length === 1 && got[0].includes('lpw-32');
     },
   );
+  // An undeclared marker is a violation on its own, with every entry unchanged.
+  for (const marker of UNDECLARED) {
+    for (const [side, prev] of [
+      ['an unmarked merge-base', PREV],
+      ['a merge-base marked lpw-32', marked(PREV)],
+    ]) {
+      check(
+        `the undeclared marker ${JSON.stringify(marker)} over ${side} with nothing else changed has exactly one violation, naming it`,
+        () => {
+          const got = merge(prev, marked(PREV, marker));
+          return got.length === 1 && (marker === '' || got[0].includes(marker));
+        },
+      );
+    }
+  }
 
   check('splitConsolidation returns a string marker and the entries without the key', () => {
     const { marker, entries } = splitConsolidation(

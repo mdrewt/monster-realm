@@ -1259,7 +1259,6 @@ fn rb128_seed_player(fx: &crate::native_host_tests::Fixture, me: spacetimedb::Id
         entity_id: 7,
         name: String::new(),
         online: true,
-        last_input_seq: 0,
         discriminator: 0,
         lead_level: 0,
     });
@@ -2392,7 +2391,6 @@ fn enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b() {
         entity_id: 7,
         name: String::new(),
         online: true,
-        last_input_seq: 0,
         discriminator: 0,
         lead_level: 0,
     });
@@ -3296,7 +3294,6 @@ fn ts6b2_player(who: spacetimedb::Identity, entity_id: u64) -> crate::schema::Pl
         entity_id,
         name: String::new(),
         online: true,
-        last_input_seq: 0,
         discriminator: 0,
         lead_level: 0,
     }

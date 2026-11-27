@@ -1065,7 +1065,6 @@ impl S2World<'_> {
             entity_id: entity_of(who),
             name: String::new(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level,
         });

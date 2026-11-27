@@ -186,7 +186,6 @@ fn rb46_seed_player(fx: &crate::native_host_tests::Fixture, me: Identity) {
         entity_id: 7,
         name: String::new(),
         online: true,
-        last_input_seq: 0,
         discriminator: 0,
         lead_level: 0,
     });
@@ -737,7 +736,6 @@ fn ec_bare_world(fx: &EcFixture) -> EcWorld<'_> {
             entity_id: ec_entity(who),
             name: String::new(),
             online: true,
-            last_input_seq: 0,
             discriminator: 0,
             lead_level: 0,
         });
