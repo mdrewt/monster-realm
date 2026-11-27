@@ -121,9 +121,9 @@ browser adapter as its default.
 
 | Concern | First call site comes from | Browser | Electron | Tauri |
 |---|---|---|---|---|
-| a credential the shell supplies | M-account-service acs-12: one more `ConnectCredential` source for `connect` | none: the OIDC flow | the bridge hands an ID token; the Steam ticket stays in the main process (`auth.getAuthTicketForWebApi`) | the bridge hands an ID token (`User::authentication_session_ticket_for_webapi` in the Rust process) |
+| a credential the shell supplies | the Steam sign-in slice of M-account-service: one more `ConnectCredential` source for `connect` | none: the OIDC flow | the bridge hands an ID token; the Steam ticket stays in the main process (`auth.getAuthTicketForWebApi`) | the bridge hands an ID token (`User::authentication_session_ticket_for_webapi` in the Rust process) |
 | achievements | M-steam-features | a no-op | `achievement.activate(name)` behind a bridge function | `UserStats::achievement(name)` and `store_stats` behind a bridge function |
-| the overlay opened | the Steamworks slice, if lpw-10 shows held input survives the overlay | none | `steamworks.js` exposes no such callback (unverified whether `blur` fires) | `GameOverlayActivated { active }` in the Rust crate |
+| the overlay opened | the Steamworks slice, if the overlay probe shows held input survives the overlay | none | `steamworks.js` exposes no such callback (unverified whether `blur` fires) | `GameOverlayActivated { active }` in the Rust crate |
 | a pad the Gamepad API does not show (Steam Input, or a webview without the API) | the Steamworks slice, which makes `getPads` in `client/src/shell/inputState.ts` take a read function from the bridge | none: `navigator.getGamepads` | by default Steam presents the controller as an Xbox pad, which the gamepad concern reads if the webview's Gamepad API sees it (unverified); else a read function over `input.getDigitalAction` | the same, over `Input::get_digital_action_data` |
 | fullscreen | whichever slice adds a fullscreen control | `requestFullscreen` | `BrowserWindow.setFullScreen` | the window's `setFullscreen` (unverified) |
 
@@ -135,8 +135,8 @@ browser adapter as its default.
 - **One port exists after this plan: `platform/handoff.ts`**, for what the client hands to the
   host's operating system. `openExternal(url)` opens an address outside the game; `saveFile`
   writes a file the client generated. A second host needs both: the desktop shell as specified
-  refuses `window.open` (M-local-play lpw-11.2), and a blob download is not known to work in
-  every webview.
+  refuses `window.open` (the Electron shell slice of M-local-play), and a blob download is not
+  known to work in every webview.
 - **Every other concern keeps its owner.** Ten structural types exist and each is satisfied by
   the real global and by a small fake: `TokenStorageHost`, `ClaimCodeHost`, `OidcHost`,
   `StorageLike`, `PadLike` with `getPads`, `KeyEventLike`, `PointerClock`, `MatchMediaHost`,
@@ -152,7 +152,8 @@ browser adapter as its default.
   `__MR_SHELL_HOST__`, read by `readShellHost` beside the ports.
 - **The bridge reader is not part of this refactor.** A page global the client honours is new
   behaviour a caller can observe, so it is a feature: the first slice that has a shell to supply
-  a function builds it (lpw-11 for `openExternal` and `saveFile`, acs-12 for the credential).
+  a function builds it (the Electron shell slice for `openExternal` and `saveFile`, the Steam
+  sign-in slice for the credential).
   Until then `handoff.ts` holds one implementation per verb and the browser build behaves as it
   does today. The bug bundle joins `saveFile` through finding F3; until that lands it saves
   through the blob download in every host.
@@ -161,16 +162,16 @@ browser adapter as its default.
   `saveFile` writes only where the player picks in a dialog. `saveFile` is given the personal-data
   export: a shell never logs it and never sends it anywhere but the chosen file. No Steamworks
   or Node object crosses the bridge, only strings and plain data.
-- **What this asks of the shell's specification.** The Electron shell is specified (M-local-play
-  lpw-11) with a preload that exposes the shell document "and nothing else" and with "no IPC
-  channel to the page" (lpw-11.3); the Steam sign-in (M-account-service acs-12) already hands the
-  page a token through a preload hook. A bridge needs that text to allow the bridge's named
-  functions. Whether a shell's page may call into the shell at all is a question of the shell's
-  security posture, which is the operator's: the bridge is this plan's default, and the operator
-  may overrule it. Nothing in section 4 waits on the answer. If the answer is no, the ports
-  stand, their browser code runs under the shell, and the shell handles `window.open` and the
-  download in its own process; lpw-11.2's refusal of `window.open` then becomes "an address on
-  the allow-list goes to the system browser, every other is refused".
+- **What this asks of the shell's specification.** The Electron shell is specified, in
+  M-local-play, with a preload that exposes the shell document "and nothing else" and with "no IPC
+  channel to the page"; the Steam sign-in, in M-account-service, already hands the page a token
+  through a preload hook. A bridge needs that text to allow the bridge's named functions. Whether
+  a shell's page may call into the shell at all is a question of the shell's security posture,
+  which is the operator's: the bridge is this plan's default, and the operator may overrule it.
+  Nothing in section 4 waits on the answer. If the answer is no, the ports stand, their browser
+  code runs under the shell, and the shell handles `window.open` and the download in its own
+  process; the shell's refusal of `window.open` then becomes "an address on the allow-list goes to
+  the system browser, every other is refused".
 
 ### 1.6 Shapes judged
 
@@ -202,8 +203,8 @@ one bundle per shell, which the overlay probe's "the same bundle in both shells"
 faking a port needs a module mock; D adds no port for the Steam calls and leaves a webview that
 cannot download a blob with no answer.
 
-The judge named what would reverse the result. If M-local-play lpw-11.3 ("no IPC channel to the
-page") stands as written, the bridge is not allowed, C scores 107, level with D, and D wins the
+The judge named what would reverse the result. If the shell's specified rule, "no IPC channel to
+the page", stands as written, the bridge is not allowed, C scores 107, level with D, and D wins the
 tie-break. That reversal does not change section 4: `handoff.ts` defaults to the web APIs, so a
 shell that supplies no bridge function handles `window.open` and the download in its own
 process, which is D's mechanism behind C's port. The judge also noted that a shell may choose
@@ -221,7 +222,7 @@ this per verb, for example a bridge for the file save and its own handler for li
 - Whether the page loads under a strict content security policy: wasm compilation, the `style`
   attributes of `index.html` and `blob:` addresses each need an allowance.
 
-The overlay probe (lpw-10) and the shell slices measure these; none changes an extraction below.
+The overlay probe and the shell slices measure these; none changes an extraction below.
 
 ## 2. The rest of `docs/refactors/client-shell.md`
 
@@ -321,7 +322,7 @@ finding below was checked against the code again before it was written down.
 | D6 | the battle panels' element helper (four copies), root and title (three), countdown line (two) | `tactics/clock.ts`, `tactics/hud.ts`, `tactics/deployPanel.ts`, `tactics/results.ts`, `tactics/tacticsBattle.ts` | extraction 21: `tactics/panelParts.ts` |
 | D7 | store-to-view-model mappers in the wasm port's file | `tactics/wasm.ts` (`shellKind`, `activeUnitOf`, `statusTagOf`, `intentKind`, `overlaySets`, `unitRowOf`) | extraction 22: `tactics/storeMap.ts` |
 | D8 | the Blob, object URL and hidden anchor of a download, twice | `main.ts` (`downloadExportBundle`, `downloadBugBundle`) | extraction 1 takes the export's steps as `saveFile`; the bug bundle differs in its cleanup on a failure and joins through finding F3 |
-| D9 | `globalThis` handed as the host at ten call sites | `net/connection.ts` (`connect`) | not worth moving: one local alias saves ten identical words and changes no dependency; `connect` takes a host option when a shell supplies a credential (acs-12) |
+| D9 | `globalThis` handed as the host at ten call sites | `net/connection.ts` (`connect`) | not worth moving: one local alias saves ten identical words and changes no dependency; `connect` takes a host option when a shell supplies a credential |
 | D10 | "if the view is open, refresh it" batch listeners with the same inner `try` | `main.ts` (quest log, heal, shop, leaderboard, challenges) | not worth moving: extraction 9 moves them whole; their guards and log tags differ, and a helper saves under thirty lines |
 | D11 | SDK row and store row types mirror each other | `net/rowConvert.ts`, `net/store.ts`, `ui/exportAssembly.ts` | not worth moving: they are the two sides of the conversion boundary and differ at identity, enums and essence |
 | D12 | a store row rebuilt into an SDK shape so `convert` can unwrap it | `main.ts` (`reconcileFromStore`), `convert/convert.ts` | not worth moving until `shell/movement.ts` exists: eight lines, and the fix is a store-shaped overload in `convert/` |
