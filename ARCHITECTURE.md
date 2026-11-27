@@ -197,11 +197,22 @@ Supporting modules have no reducers: `schema` (tables, views, the data-lifecycle
 manifest), `guards` (shared validation), `marshal` (row ⇄ `game-core` conversion,
 `now_ms`), `inventory` (the single `grant_item` insert path), `content`,
 `content_cache` and `module_info` (`ensure_module_info`, the only writer of the `module_info`
-row).
+row). Most checks more than one module needs are in `guards.rs`: `require_owner`,
+`is_in_ongoing_battle`, `require_not_deleting` and the battle-input validators; the
+admission check is `access::require_admitted`, and the item and currency headroom rules are
+game-core's (`trading/rules.rs`). A module
+writes another module's table only through a helper that module owns: `accounts::rekey_all`,
+for example, calls each owner's `rekey_*` helper.
 
 A reducer checks `ctx.sender()` and the request, calls `game-core`, and writes. It
 returns `Err` to refuse, which rolls back the whole transaction, and logs the refusal
-as a JSON line through `guards::log_reject`. Scheduled reducers first check
+as a JSON line through `guards::log_reject`. Some of the refusals: an enqueue onto a full
+move queue returns `Err("queue full")`; `guards::authorize_move` refuses an input seq at or
+below `move_intent.last_input_seq`; `check_party_size` refuses an oversized party instead of
+truncating it; `tactics::submit_queue` refuses an act for a unit that cannot act, a fainted
+one included; and a purchase, a sale, a dialogue grant or a trade that would take the receiver
+past `MAX_ITEM_STACK` or `MAX_BALANCE` is refused before anything moves (`check_item_headroom`,
+`check_currency_headroom`, and `check_headroom` for a trade session). Scheduled reducers first check
 `ctx.sender() == ctx.database_identity()`, so clients cannot call them.
 
 ### Lifecycle
@@ -228,12 +239,28 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
   the conversation, character and player rows. As it deletes the character it saves
   the character's zone, tile and facing in the private `last_position` table
   (`movement::save_last_position`).
+- Schedules. In a world with nobody connected the one schedule that keeps running is the
+  60 s `mr_heartbeat`, which writes no row. Every reaper is a one-shot armed when something is
+  owed. One that serves an entity (a trade offer, a challenge, an account deletion) has a row
+  per entity at its deadline. `playtest_reaper` and `export_bundle_reaper` bound a table by age
+  and have at most one row for the whole table, at the oldest row's expiry: the insert arms
+  it, the reaper re-arms it from the rows it leaves, and an empty table has none. Each has a
+  fixed delay (300 s and 3600 s), and a run arms its next run no sooner than that delay from
+  now, so it runs at most once per delay; work owed at once (a table over its cap, a backlog
+  one run could not finish) waits that delay too. `battle_summary_reaper` bounds its table by
+  row count in the same shape (see "Schema and privacy model"). The runtime consumes a
+  one-shot row even when its reducer's transaction fails, and the re-arm rolls back with that
+  transaction, so a failed run leaves nothing armed until the next write to the table (a
+  recruit attempt for `playtest_event`; an export request or a purge for `export_bundle`),
+  `init` or `sync_content` re-arms it from the table's true oldest row.
+  `docs/runbooks/observability-dr.md` says how to see that state.
 
 ### Movement
 
 Movement is paced by the server, per zone. A client sends intent (`enqueue_move`,
 `set_move`, `clear_queue`) tagged with a strictly increasing `seq`. The intent lives
-in the private `move_intent` table, one row per player character: the undrained queue
+in the private `move_intent` table, one row per player character keyed by
+`character.entity_id`: the undrained queue
 (capped at `MOVE_QUEUE_CAP`) and `last_input_seq`. `guards::authorize_move` rejects a
 seq at or below that value, and the reducer then writes the queue and the new seq in
 one `move_intent` update. An accepted input reads the caller's `player` row for its
@@ -245,8 +272,9 @@ while a player's character is in it. `movement::arm_zone_tick` inserts the row w
 player enters (`join_game` for the zone it starts in, the tick's warp arm, and in the
 load-test build `dev_place_in_load_zone`) and never adds a second row for a zone. The tick that finds no player's character in its zone puts each of the zone's
 NPCs back on its home tile, Idle, writing only the rows that differ, and deletes the
-zone's row, so leaving, warping out, disconnecting and timing out all disarm the zone
-through that one path and a world with nobody connected runs no `movement_tick`. A
+zone's row, so leaving, warping out, disconnecting, timing out and account deletion all disarm the zone
+through that one path and a world with nobody connected runs no `movement_tick`. An
+NPC's facing is left as it was: it has no authored default. A
 player in a battle is still in their zone. NPC wander reads a tick counter that is the
 server clock divided by `STEP_MS`, not a count of ticks that ran, so a zone that
 empties and is entered again continues from the clock. After a republish, zones that
@@ -261,15 +289,30 @@ queue and seq onto the character row (`movement::publish_intent`) in the same up
 carries the position, and writes the row only when something changed. The owner therefore
 receives the acknowledgement and what is left of the queue together with the position,
 up to one tick after the input was accepted, and every other client receives one
-`character` update per step. A character whose player is in a battle drains nothing
-(its queue is published once and stays intact), and `enqueue_move`/`set_move` reject
-new moves during a battle. Quality-Time accrues in `enqueue_move`.
+`character` update per step. A battle start empties each battler's private queue and keeps
+its seq (`movement::drop_queued_moves`, from `tactics::start_wild_tactical` and
+`tactics::start_pvp_tactical`), writing no public row; the next tick publishes the empty
+queue. A character whose player is in a battle drains nothing, and `enqueue_move`/`set_move`
+reject new moves during a battle. Quality-Time accrues in `enqueue_move`.
 
 `join_game` puts the character where the account's last one stood: it consumes the
 identity's `last_position` row (`movement::take_start`) and uses it when the saved zone
-still has a map and the tile is walkable in it, and otherwise, or with no row, starts
-the character on the zone 0 spawn. It arms the zone the character starts in. Nothing
-writes `last_position` while a character exists, so a step costs no extra write.
+still has a map and the tile is walkable in it (`game_core::can_resume_at`), and
+otherwise, or with no row, starts the character on the zone 0 spawn (`game_core::spawn`)
+facing South; the row is consumed either way. It arms the zone the character starts in.
+Nothing writes `last_position` while a character exists, so a step costs no extra write. A
+disconnect while another connection of the identity is live saves nothing, and what a
+battle, a trade or a conversation does on a disconnect moves no character: the position
+saved after a wild battle's auto-flee is the grass tile, and after a PvP forfeit the tile
+the character stood on. `last_position` is `Erase` in `DATA_LIFECYCLE_MANIFEST`: the
+deletion cascade deletes the row (`movement::erase_last_position`), and during the grace
+period `join_game` is refused before it reads the row, so a cancelled deletion resumes like
+any other account. A guest claim re-keys the row onto the claiming account
+(`movement::rekey_last_position`), and the row counts as game data for the claim's
+destination-is-empty guard, so the claimed account's first join puts it where the guest
+stood. `request_data_export` also accepts an account that has not
+joined on any connection; that export omits the saved position, which the next export made
+from inside the game carries in its `character` row.
 
 `join_game` creates the `move_intent` row with the character; the last disconnect and
 the account-deletion cascade delete it with the character. A character with no intent
@@ -368,12 +411,43 @@ body is the whole security boundary.
   the table directly.
 - **`battle`.** Only the two participants see a battle, through `my_battle`. A
   practice battle (same identity on both sides) appears once. `BattleState` carries
-  derived stats only, never genes.
+  derived stats only, never genes. The anchor holds both rosters from the PvP start
+  (`tactics::start_pvp_tactical`), because the settlement writes HP back from those teams,
+  matched to the monster-id lists by position (`battle::write_back_party_hp`,
+  `pvp::write_back_party_hp_pvp_side_b`). While a PvP battle between two players is
+  Deploying, `my_battle` returns each participant the anchor with the other side's team
+  empty and its active index 0; the monster-id list stays. From the reveal on, for a wild or
+  Practice battle, and for a PvP battle closed while still Deploying, the anchor is returned
+  as stored.
 - **Tactical tables.** The participant views join through `battle`'s identity
   indexes, so a stranger gets nothing; the queue and deploy staging are owner-only,
   and `battle_unit` carries no queue or ready field (`docs/DECISIONS.md`, "Tactical
   battle privacy is structural"). `battle_secret`, `battle_wild_unit` and
-  `battle_summary` have no client read path.
+  `battle_summary` have no client read path. Deploy is reveal-by-copy: each side's picks
+  go to its own owner-only `battle_deploy` row (`locked`, written in `tactics::stage_pvp`).
+  The second lock, or the auto-fill when the 45 s window closes (`tactics::expire_pvp_deploy`,
+  `pvp_deploy_ms` in `game-core/src/tactics/tuning.rs`), calls `tactics::materialize`, which
+  copies both stagings into `battle_unit` rows and flips the phase in one transaction, so no
+  unit row exists before both lock and the only participant-visible deploy fact is the phase
+  flip. `battle_clock` holds one row per side (a Practice
+  battle's two name one player), and both participants read both. `tactics::store` writes a
+  row only when it moved, so a pre-queue or a cancel leaves nothing participant-visible.
+  Forfeit is its own client-confirmed reducer (`tactics::forfeit`), not a queue entry, and
+  costs 0 AP. Game-core's non-wire enums (`Side`, `MoveClass`, `Stance`, `Entry`) are stored
+  through schema-local `SpacetimeType` twins (`SideRow`, `MoveClassRow`, `StanceRow`,
+  `BudgetLastEntry`), never as integer codes.
+- **Leaderboard.** `ranking.rs` is the only writer of `profile`, and its three writers
+  (`apply_pvp_rating`, `rekey_profile`, `anonymize_display_names`) end their profile writes
+  with `refresh_leaderboard_top`, which `init` and `sync_content` also call. The rescan
+  deletes only the members that left and inserts only those that entered, so an unchanged
+  membership writes nothing. A publish over existing data runs no `init`, so the table fills
+  at the deploy's owner `sync_content` call or the first rated settle, and until then a client
+  sees only its own row. The client subscribes
+  `SELECT profile.* FROM profile JOIN leaderboard_top ON profile.identity = leaderboard_top.identity`
+  and its own row by identity. A member that leaves the top 100 arrives as a profile delete;
+  the SDK counts a row once per query that holds it, so the own row survives leaving the top
+  100. `ui/leaderboardModel.ts` ranks the rows held and marks the caller's own row `100+`
+  when it is not a member.
 - **Accepted exposures.** `trade_offer` is public, so the amounts in a row still
   draining from it reveal a lower bound on the offering player's balance; no reducer
   adds rows. The display cards in an offer carry public-projection fields only.
@@ -383,14 +457,31 @@ body is the whole security boundary.
   definition's table set, so a table missing from it or listed but gone fails. The tactical tables are swept by `schema::erase_tactical_rows` (by
   `battle_id`, before the `battle` anchor is tombstoned — the three tactical schedule
   tables included). Of them only `battle_summary` and `player_formation` are exportable: the
-  export carries the caller's formation and every summary naming them, the other side's
-  identity, idle time and damage as null, as for `battle`. A finished tactical battle's event, unit,
+  export carries the caller's formation and every summary naming them on either side,
+  `Ongoing` rows included, with the other side's identity, idle time and damage as null, as
+  for `battle`; a practice row names the player on both sides and is exported whole, and the
+  whole-battle columns are exported as they stand. `erase_tactical_rows` collects the battle
+  ids from every row that still names the identity (the `battle` anchor chain, the clock,
+  queue, deploy and summary identity columns, and a scan of `battle_unit`), sweeps each
+  battle's per-battle rows before `battle::anonymize_battles` tombstones the anchor, and
+  leaves `battle_summary` with the deleting side swapped to the tombstone identity. The
+  other participant's rows of a shared battle go with it: the anchor is forced terminal for
+  both sides and the transcript is due for GC. A guest claim runs the same two steps for the
+  guest identity it retires; there every anchor is already terminal, because the claim
+  refuses while either identity is in an ongoing battle. A finished tactical battle's event, unit,
   queue, clock, secret, wild-unit and staging rows are deleted 24 h later by the
   scheduled `battle_gc`; `battle_tactical`, `battle_summary` and the anchor survive. A
   player's PRIOR terminal anchors are swept at every tactical battle end with
   their tactical rows; only their `battle_summary` rows survive, finalised. `battle_summary`
-  itself keeps its newest 100,000 rows: `summary_reaper` deletes older ones whose battle has no
-  `battle` or `battle_tactical` row left.
+  itself keeps its newest 100,000 rows (`BATTLE_SUMMARY_CAP`): `summary_reaper` deletes older
+  ones whose battle has no `battle` or `battle_tactical` row left. `tactics_settle`'s one
+  summary insert reads the row count and, over the cap with no run armed, arms one run 300 s
+  out; at or below the cap it writes nothing. A run deletes the lowest ids down to the cap, at
+  most 8,192, skipping held rows (a live battle, a finished battle whose anchor is kept until
+  its player's next battle, an erased account's tombstoned last battle), and re-arms 300 s out
+  only when it stopped at that limit with the table still over the cap. A run that walked
+  every row and is still over the cap left only held rows and arms nothing; the next insert
+  over the cap arms the next run.
 
 **Tactical battles (`tactics.rs` + `tactics_settle.rs`, M-battle-tactics bt-8/bt-9).** The server is a shell over
 `game_core::tactics::queue::TacticalBattle`: a reducer hydrates the bt-7 rows into the
@@ -409,7 +500,11 @@ while that monster still belongs to the unit's owner, and a tactical row whose a
 already terminal closes with no HP write at all — the scheduled reducers never leave a
 tactical battle `Ongoing`. Every close goes
 through one `finish`, idempotent against the stored row, which hands `tactics_settle::settle`
-the close kind. Settlement (design §7): the reward ledger is a fold of the persisted
+the close kind. Forfeit, disconnect, the fourth auto-pass, Surge and adjudication all reach
+`finish` as `Close::Settled`; a PvP battle settles through `pvp::settle_pvp_battle` in
+`SideAWriteBack::HpOnly` mode, the one caller of `ranking::apply_pvp_rating`, and for a PvP
+battle the settlement pays essence to both sides, with no XP and no currency. A Practice battle
+is neither rated nor paid. Settlement (design §7): the reward ledger is a fold of the persisted
 transcript — each `Ko` is credited through `game_core::tactics::rewards::on_unit_defeated` to
 the attacker of the last opposite-side hit on the victim, against the board as it stood at
 that moment (the final board with the units not yet fallen restored: consciousness is
