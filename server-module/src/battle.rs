@@ -14,7 +14,7 @@ use crate::marshal::{loser_base_stat_total, now_ms, write_back_hp};
 use crate::monster_mgmt::update_monster_synced;
 use crate::movement::RateLimiter;
 use crate::raising::{accrue_quality_time, grant_essence};
-use crate::schema::{battle, battle_wild, monster, player, species_row, Battle, Player};
+use crate::schema::{battle, monster, player, species_row, Battle, Player};
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
@@ -416,16 +416,12 @@ pub(crate) fn write_back_battle_results(
         battle.party_monster_ids.len(),
     )?;
 
-    // Both GC steps run BEFORE the fallible `write_back_party_hp`: PvE callers log-and-commit
-    // instead of aborting, so a persistent invariant violation would otherwise leak one orphaned
-    // `battle_wild` row and one permanently-retained terminal `battle` row per battle, unbounded,
-    // still delivered to its participants via the `my_battle` view. Both are pure GC of OTHER
-    // rows. `check_team_coupling` stays first — irreversible deletes must not run on behalf of a
-    // battle whose invariant is already violated.
-
-    // GC the private wild-individuality row on ANY terminal outcome (no-op for PvP battles with
-    // no `battle_wild` row).
-    ctx.db.battle_wild().battle_id().delete(battle.battle_id);
+    // The sweep runs BEFORE the fallible `write_back_party_hp`: PvE callers log-and-commit
+    // instead of aborting, so a persistent invariant violation would otherwise leak one
+    // permanently-retained terminal `battle` row per battle, unbounded, still delivered to its
+    // participants via the `my_battle` view. It is pure GC of OTHER rows. `check_team_coupling`
+    // stays first — irreversible deletes must not run on behalf of a battle whose invariant is
+    // already violated.
 
     // Ordering invariant: the current battle's DB row is still Ongoing at this call site — every
     // mutating caller (`pvp::settle_pvp_battle`) calls update() AFTER this returns, and the disconnect caller
@@ -434,7 +430,7 @@ pub(crate) fn write_back_battle_results(
     sweep_prior_terminals(ctx, battle, None);
 
     // Write back HP for player's team (HP-only; the credits below are separate). The first
-    // fallible statement whose Err would otherwise skip the GC above.
+    // fallible statement whose Err would otherwise skip the sweep above.
     write_back_party_hp(ctx, battle)?;
 
     // Faint penalties: WILD battles only, per fainted party member, on ANY outcome — its own
@@ -552,15 +548,15 @@ pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
 /// Resolve the disconnecting caller's Ongoing WILD battle.
 ///
 /// `pvp::forfeit_on_disconnect` deliberately excludes WILD battles and no
-/// scheduled reaper covers the wild `battle`/`battle_wild` row class, so a
-/// mid-wild-battle disconnect would otherwise leave an `Ongoing` `battle` row +
-/// its private `battle_wild` sidecar forever — soft-locking the returning player
+/// scheduled reaper covers the wild `battle` row class, so a
+/// mid-wild-battle disconnect would otherwise leave an `Ongoing` `battle` row
+/// forever — soft-locking the returning player
 /// out of any new battle (`is_in_ongoing_battle`'s player arm has no WILD
 /// exclusion, so any lingering `Ongoing` row blocks `tactics::start_wild_tactical`).
 ///
 /// Resolution = **auto-flee**: the flee write-back this path owns
 /// (`write_back_battle_results` — persists damaged HP clamped to `stat_hp`, no XP
-/// on `Fled`, GCs the `battle_wild` sidecar), then DELETE the `battle` row. We do
+/// on `Fled`), then DELETE the `battle` row. We do
 /// NOT `update()` it to `Fled`: a disconnected client has no subscription to
 /// observe a terminal frame, and a lingering row is a stale-overlay hazard on
 /// reconnect. Persisting damage (not a pre-battle-HP restore) keeps disconnect ≈
@@ -602,23 +598,16 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
 
         // Auto-flee: non-decisive terminal (no XP — outcome != SideAWins).
         battle.state.outcome = BattleOutcome::Fled;
-        // The flee write-back: persists HP and GCs the `battle_wild` sidecar
-        // at its own delete. Log-and-continue — an Err (e.g. team-coupling) must
-        // NOT leave the `Ongoing` row alive (that re-creates the soft-lock); the
-        // deletes below run regardless.
+        // The flee write-back: persists HP. Log-and-continue — an Err (e.g.
+        // team-coupling) must NOT leave the `Ongoing` row alive (that re-creates
+        // the soft-lock); the delete below runs regardless.
         if let Err(e) = write_back_battle_results(ctx, &battle) {
             let escaped = crate::guards::json_escape(&e);
             log::error!(
                 "{{\"evt\":\"wild_disconnect_writeback_err\",\"battle_id\":{id},\"reason\":\"{escaped}\"}}"
             );
         }
-        // Belt-and-suspenders: explicitly delete the private
-        // `battle_wild` sidecar. helper's own delete is hoisted
-        // above the fallible HP write, so only a `check_team_coupling` Err can skip
-        // it — this stays as depth-of-defence, idempotent either way. Then delete
-        // the main `battle` row.
-        // Both deletes idempotent.
-        ctx.db.battle_wild().battle_id().delete(id);
+        // Idempotent.
         ctx.db.battle().battle_id().delete(id);
     }
 }
@@ -691,10 +680,8 @@ pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> 
     b
 }
 
-/// for EVERY battle naming `owner` on either side, sweep the row's
-/// `battle_wild` sidecar and its `pvp_deadline_schedule` rows FIRST (after the
-/// identity swap the join key no longer names the owner, so a later pass has
-/// no route back), then FORCE a still-`Ongoing` row terminal against the
+/// for EVERY battle naming `owner` on either side, FORCE a still-`Ongoing` row
+/// terminal against the
 /// erased side through the pure `battle_with_forced_terminal` seam, then swap
 /// the owner's side(s) to `crate::TOMBSTONE_IDENTITY` via the pure
 /// `battle_with_tombstoned_party` seam. The force runs BEFORE the swap because
@@ -703,13 +690,11 @@ pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> 
 /// first already matched — the `my_battle` dedup idiom, so a practice battle
 /// is visited once.
 ///
-/// Disarming the deadline is correct for every row, live ones included: each
-/// row is terminal by the end of this same transaction, so no deadline is left
-/// with anything to settle. An `Ongoing` row reaching this step means the 6a
+/// An `Ongoing` row reaching this step means the 6a
 /// resolver left it live; forcing it closes the channels through which an
 /// erased identity could later settle it or be handed its win. The
 /// forced outcome is a degraded settlement — no rating, HP, XP, currency or
-/// evolution write-back, and no `battle_action` sweep. A forced row emits one
+/// evolution write-back. A forced row emits one
 /// `deletion_cascade_forced_battle_terminal` line carrying only the battle id:
 /// it marks a 6a-resolver gap to investigate, and the cascade line carries the
 /// subject.
@@ -729,8 +714,6 @@ pub(crate) fn anonymize_battles(ctx: &ReducerContext, owner: Identity) {
     );
     for b in rows {
         let id = b.battle_id;
-        ctx.db.battle_wild().battle_id().delete(id);
-        crate::pvp::disarm_pvp_deadlines(ctx, id);
         let was = b.state.outcome;
         let forced = battle_with_forced_terminal(b, owner);
         if forced.state.outcome != was {

@@ -15,7 +15,6 @@ export default __t.row({
   entityId: __t.u64().name("entity_id"),
   name: __t.string(),
   online: __t.bool(),
-  lastInputSeq: __t.u64().name("last_input_seq"),
   discriminator: __t.u32(),
   leadLevel: __t.u8().name("lead_level"),
 });

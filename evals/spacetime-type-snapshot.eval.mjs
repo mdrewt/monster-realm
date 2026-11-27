@@ -7,11 +7,14 @@
 //     (regenerate: `node evals/spacetime-type-snapshot.eval.mjs --write`).
 //  2. APPEND-ONLY — against the baseline at merge-base(HEAD, origin/master):
 //     no type removed, no struct<->enum flip, and the committed fields /
-//     variants must stay a positional prefix (tail-append only).
+//     variants must stay a positional prefix (tail-append only). A declared
+//     consolidation skips this layer, by the marker rule of
+//     battle-schema-snapshot.eval.mjs; `--write` never writes the marker.
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  consolidationOf,
   itemAt,
   matchClose,
   mergeBaseViolations,
@@ -249,27 +252,45 @@ function selfTeeth() {
 
 const parseTree = () => parseSpacetimeTypes(readRustTree('server-module/src', 'game-core/src'));
 
+// Every failure of the eval for one parsed source, working baseline and merge-base baseline
+// (null when git cannot read it).
+export function typeSnapshotFailures({ parsed, baseline, prev }) {
+  const { entries } = splitConsolidation(baseline);
+  const failures = [];
+  for (const t of new Set([...Object.keys(parsed), ...Object.keys(entries)])) {
+    if (JSON.stringify(parsed[t]) !== JSON.stringify(entries[t]))
+      failures.push(`[drift] '${t}' differs from ${BASELINE}`);
+  }
+  if (prev === null)
+    failures.push('[append-only] cannot resolve the committed baseline (git fetch origin master)');
+  else
+    failures.push(
+      ...mergeBaseViolations(prev, baseline, appendOnlyViolations).map((v) =>
+        v.startsWith('[') ? v : `[append-only] ${v}`,
+      ),
+    );
+  return failures;
+}
+
 export default async function spacetimeTypeSnapshotEval() {
   const name = 'spacetime-type-snapshot (SpacetimeType field/variant order freeze)';
   const teeth = selfTeeth();
   if (teeth.length) return { name, pass: false, detail: `self-teeth failed: ${teeth.join(', ')}` };
   const parsed = parseTree();
   const baseline = JSON.parse(readFileSync(BASELINE, 'utf8'));
-  const failures = [];
-  for (const t of new Set([...Object.keys(parsed), ...Object.keys(baseline)])) {
-    if (JSON.stringify(parsed[t]) !== JSON.stringify(baseline[t]))
-      failures.push(`[drift] '${t}' differs from ${BASELINE}`);
-  }
   const prev = prevBaseline(BASELINE);
-  if (prev === null)
-    failures.push('[append-only] cannot resolve the committed baseline (git fetch origin master)');
-  else failures.push(...appendOnlyViolations(prev, baseline).map((v) => `[append-only] ${v}`));
+  const failures = typeSnapshotFailures({ parsed, baseline, prev });
+  const consolidation = prev === null ? null : consolidationOf(prev, baseline);
+  const layerTwo =
+    consolidation === null
+      ? 'append-only vs merge-base holds'
+      : `the merge-base comparison is skipped for the declared consolidation '${consolidation}'`;
   return {
     name,
     pass: failures.length === 0,
     detail: failures.length
       ? failures.join('; ')
-      : `${Object.keys(parsed).length} types match the baseline; append-only vs merge-base holds (teeth verified)`,
+      : `${Object.keys(parsed).length} types match the baseline; ${layerTwo} (teeth verified)`,
   };
 }
 

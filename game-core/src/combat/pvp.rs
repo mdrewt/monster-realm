@@ -1,46 +1,11 @@
 //! Pure PvP orchestration rules.
 //!
 //! All logic here is deterministic and I/O-free — only the imperative shell
-//! in `server-module/src/pvp.rs` touches tables or the scheduler. The server
-//! calls `resolve_full_turn` (already symmetric) once it has both players'
-//! `PvpAction` choices; these helpers determine forfeit outcomes and deadline
-//! tie-breaks so those rules live exactly once in the functional core.
+//! in `server-module/src/pvp.rs` touches tables or the scheduler. These helpers
+//! decide a forfeit's outcome and a challenge's staleness, so those rules live
+//! exactly once in the functional core.
 
-use crate::combat::types::{BattleOutcome, SideId, TurnChoice};
-
-// ===========================================================================
-// PvpAction — the client-submitted choice (converts to TurnChoice)
-// ===========================================================================
-
-/// A PvP player action submitted to the server via `submit_pvp_action`.
-///
-/// Intentionally a strict subset of `TurnChoice` — `Pass` is server-generated
-/// (e.g. when a status effect blocks the intended action) and is NEVER a valid
-/// client submission.  Convert to `TurnChoice` via `into_turn_choice` before
-/// passing to `resolve_full_turn`.
-///
-/// `SpacetimeType` is cfg-gated: the type is stored in the private `battle_action`
-/// table (must-never-leak: hidden battle intent).  Outside the server module the
-/// type is pure data for tests and the rule functions below.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
-pub enum PvpAction {
-    /// Use a skill from the active monster's moveset.
-    Attack { skill_id: u32 },
-    /// Swap the active monster to a team-index slot.
-    Swap { team_index: u32 },
-}
-
-impl PvpAction {
-    /// Convert to the `TurnChoice` accepted by `resolve_full_turn`.
-    #[must_use]
-    pub fn into_turn_choice(self) -> TurnChoice {
-        match self {
-            PvpAction::Attack { skill_id } => TurnChoice::Attack { skill_id },
-            PvpAction::Swap { team_index } => TurnChoice::Swap { team_index },
-        }
-    }
-}
+use crate::combat::types::{BattleOutcome, SideId};
 
 // ===========================================================================
 // Forfeit rules — pure, no I/O
@@ -57,33 +22,6 @@ pub fn pvp_forfeit_outcome(forfeited_side: SideId) -> BattleOutcome {
     match forfeited_side {
         SideId::SideA => BattleOutcome::SideBWins,
         SideId::SideB => BattleOutcome::SideAWins,
-    }
-}
-
-/// Determine which side should forfeit when the turn deadline fires.
-///
-/// Rules:
-/// - `a_submitted` false  → side A forfeits (hasn't acted).
-/// - `b_submitted` false  → side B forfeits (hasn't acted).
-/// - Both false           → side A forfeits (challenger gets the tie-break
-///   disadvantage so there is no incentive to not submit first).
-///
-/// Both true is not a valid input — the deadline should never fire when both
-/// have already submitted (the resolution happens inline when the second pick
-/// lands).  The caller is responsible for this invariant; passing `true, true`
-/// returns `SideA` as a safe no-op (the reaper will find the battle already
-/// terminal and exit cleanly).
-#[must_use]
-pub fn pvp_deadline_forfeit_side(a_submitted: bool, b_submitted: bool) -> SideId {
-    if !a_submitted {
-        SideId::SideA
-    } else if !b_submitted {
-        SideId::SideB
-    } else {
-        // Both submitted: the caller should have resolved inline; reaching here
-        // is a caller-invariant violation. Return SideA as a safe no-op — the
-        // reaper will find the battle already terminal and exit cleanly.
-        SideId::SideA
     }
 }
 

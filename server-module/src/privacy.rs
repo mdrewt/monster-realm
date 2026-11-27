@@ -42,20 +42,20 @@ use crate::account_checks::WorldAccount;
 use crate::marshal::now_ms;
 use crate::playtest::{playtest_event, PlaytestEvent};
 use crate::schema::{
-    account, battle, battle_action, battle_challenge, battle_summary, character, export_bundle,
+    account, battle, battle_challenge, battle_summary, character, export_bundle,
     export_bundle__view, heal_cooldown, inventory, monster, monster_pub, player,
     player_conversation, player_dialogue_state, player_formation, player_handle, player_quest,
-    player_wallet, profile, trade_offer, Account, AccountStatus, Battle, BattleAction,
-    BattleChallenge, BattleSummary, ChallengeStatus, Character, DataLifecycleEntry, ExportBundle,
-    HealCooldown, Inventory, Monster, MonsterPub, Player, PlayerConversation,
-    PlayerDialogueStateRow, PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerWallet, Profile,
-    TradeOffer, DATA_LIFECYCLE_MANIFEST,
+    player_wallet, profile, trade_offer, Account, AccountStatus, Battle, BattleChallenge,
+    BattleSummary, ChallengeStatus, Character, DataLifecycleEntry, ExportBundle, HealCooldown,
+    Inventory, Monster, MonsterPub, Player, PlayerConversation, PlayerDialogueStateRow,
+    PlayerFormation, PlayerHandle, PlayerQuestRow, PlayerWallet, Profile, TradeOffer,
+    DATA_LIFECYCLE_MANIFEST,
 };
 use game_core::tactics::events::EndHow;
 use game_core::tactics::tuning::BattleKind;
 use game_core::{
-    ActionState, BattleOutcome, Direction, MonsterCard, MoveInput, NatureKind, PvpAction,
-    TradeItem, TradeStatus, TrustTier, EXPORT_CHUNK_ROWS,
+    ActionState, BattleOutcome, Direction, MonsterCard, MoveInput, NatureKind, TradeItem,
+    TradeStatus, TrustTier, EXPORT_CHUNK_ROWS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -426,26 +426,6 @@ fn json_move_input_into(out: &mut String, v: &MoveInput) {
             json_str_into(out, stringify!(Face));
             json_field_into(out, &mut first, stringify!(direction));
             json_direction_into(out, direction);
-        }
-    }
-    out.push('}');
-}
-
-fn json_pvp_action_into(out: &mut String, v: &PvpAction) {
-    out.push('{');
-    let mut first = true;
-    match v {
-        PvpAction::Attack { skill_id } => {
-            json_field_into(out, &mut first, stringify!(kind));
-            json_str_into(out, stringify!(Attack));
-            json_field_into(out, &mut first, stringify!(skill_id));
-            json_u32_into(out, *skill_id);
-        }
-        PvpAction::Swap { team_index } => {
-            json_field_into(out, &mut first, stringify!(kind));
-            json_str_into(out, stringify!(Swap));
-            json_field_into(out, &mut first, stringify!(team_index));
-            json_u32_into(out, *team_index);
         }
     }
     out.push('}');
@@ -946,44 +926,12 @@ fn json_battle_challenge(row: &BattleChallenge) -> String {
     out
 }
 
-// battle_action redaction is vacuous BY CONSTRUCTION and documented as such:
-// the own-rows predicate admits only rows the requester submitted, so no
-// counterparty row is ever in the serializer's input set.
-fn json_battle_action(row: &BattleAction) -> String {
-    let BattleAction {
-        action_id,
-        battle_id,
-        player_identity,
-        action,
-        turn_number,
-        submitted_at_ms,
-    } = row;
-    let mut out = String::new();
-    let mut first = true;
-    out.push('{');
-    json_field_into(&mut out, &mut first, stringify!(action_id));
-    json_u64_into(&mut out, *action_id);
-    json_field_into(&mut out, &mut first, stringify!(battle_id));
-    json_u64_into(&mut out, *battle_id);
-    json_field_into(&mut out, &mut first, stringify!(player_identity));
-    json_identity_into(&mut out, *player_identity);
-    json_field_into(&mut out, &mut first, stringify!(action));
-    json_pvp_action_into(&mut out, action);
-    json_field_into(&mut out, &mut first, stringify!(turn_number));
-    json_u16_into(&mut out, *turn_number);
-    json_field_into(&mut out, &mut first, stringify!(submitted_at_ms));
-    json_i64_into(&mut out, *submitted_at_ms);
-    out.push('}');
-    out
-}
-
 fn json_player(row: &Player) -> String {
     let Player {
         identity,
         entity_id,
         name,
         online,
-        last_input_seq,
         discriminator,
         lead_level,
     } = row;
@@ -998,8 +946,6 @@ fn json_player(row: &Player) -> String {
     json_str_into(&mut out, name);
     json_field_into(&mut out, &mut first, stringify!(online));
     json_bool_into(&mut out, *online);
-    json_field_into(&mut out, &mut first, stringify!(last_input_seq));
-    json_u64_into(&mut out, *last_input_seq);
     json_field_into(&mut out, &mut first, stringify!(discriminator));
     json_u32_into(&mut out, *discriminator);
     json_field_into(&mut out, &mut first, stringify!(lead_level));
@@ -1352,12 +1298,8 @@ fn json_player_formation(row: &PlayerFormation) -> String {
     out
 }
 
-// Own-row predicates for the two unindexed scans.
+// Own-row predicate for the unindexed scan.
 // Pure so the leak surface gets a behavioral proof, not only a scan.
-fn battle_action_is_own(row: &BattleAction, me: Identity) -> bool {
-    row.player_identity == me
-}
-
 fn playtest_event_is_own(row: &PlaytestEvent, me: Identity) -> bool {
     row.identity == me
 }
@@ -1512,7 +1454,6 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(playtest_event), rows_playtest_event),
     (stringify!(trade_offer), rows_trade_offer),
     (stringify!(battle_challenge), rows_battle_challenge),
-    (stringify!(battle_action), rows_battle_action),
     (stringify!(player_formation), rows_player_formation),
     (stringify!(player_handle), rows_player_handle),
     (stringify!(world_account), rows_world_account),
@@ -1586,8 +1527,8 @@ const _: () = assert!(exporters_cover_manifest(DATA_LIFECYCLE_MANIFEST, EXPORTER
 // ===========================================================================
 // Shell readers: one per exportable table, every read keyed on the passed
 // owner (derived from ctx.sender() by the reducer — the sole identity source).
-// Index-backed except battle_action and playtest_event, which have no identity
-// index and take a bounded full scan narrowed IMMEDIATELY by the pure own-row
+// Index-backed except playtest_event, which has no identity
+// index and takes a bounded full scan narrowed IMMEDIATELY by the pure own-row
 // predicate. The four two-sided tables (trade_offer, battle_challenge, battle,
 // battle_summary) dedup with the my_battle chain idiom — the trailing exclusion is dedup by construction, so a practice
 // battle arrives exactly once (never a self-comparison of the two columns,
@@ -1710,16 +1651,6 @@ fn rows_battle_challenge(ctx: &ReducerContext, owner: Identity) -> Result<Vec<St
                 .filter(|c| c.challenger != owner),
         )
         .map(|row| json_battle_challenge(&row))
-        .collect())
-}
-
-fn rows_battle_action(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
-    Ok(ctx
-        .db
-        .battle_action()
-        .iter()
-        .filter(|row| battle_action_is_own(row, owner))
-        .map(|row| json_battle_action(&row))
         .collect())
 }
 

@@ -133,7 +133,7 @@ export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
 export const TOMBSTONE_IDENTITY_HEX_E2E =
   '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
-// THE 65-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// THE 62-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
 // the tables this rig seeds and follows through the cascade and the export. It
 // leaves out the world's access, name, list and attestation tables,
@@ -143,19 +143,18 @@ export const TOMBSTONE_IDENTITY_HEX_E2E =
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:1|battle_summary_reaper_schedule:NotOwned::0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|last_position:Erase:owner_identity:0|leaderboard_top:Anonymize:identity:0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|move_intent:ViaJoin(player)::0|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:1|player_handle:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|world_account:Erase:identity:1|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:1|battle_summary_reaper_schedule:NotOwned::0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|last_position:Erase:owner_identity:0|leaderboard_top:Anonymize:identity:0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|move_intent:ViaJoin(player)::0|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:1|player_handle:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|world_account:Erase:identity:1|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED (red-team MEDIUM-8): the
 // cap moves only for a table no reducer writes (a drained table, which no
 // scenario can give a row); any other owned table that newly reads zero rows is
 // a seeding regression, fixed in the scenario and never by an allowlist entry.
-// The list holds eight tables: five that no live path writes (`battle_action`,
-// `pvp_deadline_schedule` and `battle_wild`, retired in place by the tactical
-// cutover; `trade_offer` and `trade_offer_reaper_schedule`, drained tables: the
-// three offer reducers refuse every call and write nothing), and three whose
-// rows are swept or consumed before the snapshot (`battle_queue`,
-// `battle_deploy`, `tactical_advance_sched`).
+// The list holds five tables: two that no live path writes (`trade_offer` and
+// `trade_offer_reaper_schedule`, drained tables: the three offer reducers refuse
+// every call and write nothing), and three whose rows are swept or consumed
+// before the snapshot (`battle_queue`, `battle_deploy`,
+// `tactical_advance_sched`).
 // Every other owned table is written ORGANICALLY by the S9 scenario and must
 // carry rows: A's first `join_game` mints A's `player_handle` row, grants the
 // starter kit and writes A's `player_dialogue_state` row (the starter marker
@@ -173,14 +172,6 @@ export const M22S9_MANIFEST_TRANSCRIPTION =
 // `trade_session_reaper_schedule` row.
 export const S9_VACUITY_ALLOWLIST = [
   [
-    'battle_action',
-    'no live writer since the bt-16 cutover: accept_challenge opens a tactical battle and the 1v1 submit_pvp_action refuses a tactical anchor; retired in place (bt-17 retires the table)',
-  ],
-  [
-    'pvp_deadline_schedule',
-    'no live writer since the bt-16 cutover: accept_challenge opens a tactical battle (its deploy window is the tactical deadline) and arms no 1v1 turn deadline; retired in place (bt-17 retires the table)',
-  ],
-  [
     'battle_queue',
     'a READY row lives only between a pre-queue and the unit`s own turn; the S9 wild battle waits on A`s live turn and nothing pre-queues, so no row stands at the snapshot',
   ],
@@ -193,10 +184,6 @@ export const S9_VACUITY_ALLOWLIST = [
     'ScheduleAt is not DML-expressible, and the row is consumed by its own zero-delay fire inside the chain, so no snapshot can observe one',
   ],
   [
-    'battle_wild',
-    'retired in place by the bt-16 cutover: no live path writes it (the grass trigger opens a tactical battle); bt-17 retires the table',
-  ],
-  [
     'trade_offer',
     'no reducer writes it: propose_trade, respond_trade and confirm_trade refuse every call and write nothing, and the row cannot be seeded because its offer and card columns are Vecs, which 2.8.1 SQL DML cannot express; the deletion sweep of offers naming the account in either column is proven natively by nh_trade_every_offer_deletion_site_disarms_its_reaper (server-module/src/trading_tests.rs), and this eval proves session erasure on a real host (trade_session)',
   ],
@@ -205,7 +192,7 @@ export const S9_VACUITY_ALLOWLIST = [
     'drain-only: no reducer arms a row (propose_trade refuses every call), and ScheduleAt is not DML-expressible, so no row exists to sweep; the disarm on deletion is proven natively by nh_trade_every_offer_deletion_site_disarms_its_reaper, and this eval proves schedule erasure on a real host on trade_session_reaper_schedule',
   ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 8;
+export const S9_VACUITY_ALLOWLIST_CAP = 5;
 // Erase-policy identity columns that are `Option<Identity>` (a sum type): the
 // snapshot counts them by battle reachability, never by an identity WHERE.
 export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
@@ -1331,7 +1318,7 @@ export function checkExportAssembly(chunks, expected) {
           c.i +
           ' (' +
           c.t +
-          ') carries a `seed` field — the battle_wild individuality seed must never be exportable',
+          ') carries a `seed` field — a wild individuality seed must never be exportable',
       };
     }
   }
@@ -1424,9 +1411,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 65) {
+  if (!Array.isArray(entries) || entries.length !== 62) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 65',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 62',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -3011,9 +2998,6 @@ async function runLivePhase() {
           o: identityCellHex(b1[0].opponent_identity),
         };
       }
-      // Diagnostic dump both phases: the deadline table is tiny and its
-      // scheduled_id/turn_number decide any [s9/viajoin-live] forensics.
-      await sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
       viaJoin.character =
         refs.entityId === null
           ? 0
@@ -3024,16 +3008,6 @@ async function runLivePhase() {
         refs.entityId === null
           ? 0
           : await cnt('SELECT COUNT(*) AS n FROM move_intent WHERE entity_id = ' + refs.entityId);
-      viaJoin.battle_wild = await cnt(
-        'SELECT COUNT(*) AS n FROM battle_wild WHERE battle_id = ' + refs.wildId,
-      );
-      viaJoin.pvp_deadline_schedule =
-        (await cnt(
-          'SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.wildId,
-        )) +
-        (await cnt(
-          'SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.battle1Id,
-        ));
       for (const t of [
         'battle_tactical',
         'battle_secret',
@@ -3183,8 +3157,7 @@ async function runLivePhase() {
         } else {
           snap.battle1 = { present: false };
         }
-        // Diagnostic dumps (cheap; land in s9Sql for failure forensics).
-        await sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
+        // Diagnostic dump (cheap; lands in s9Sql for failure forensics).
         await sqlJsonRows('SELECT battle_id, player_identity, opponent_identity FROM battle');
         const dAcct = await sqlJsonRows(
           'SELECT status, terminal_at_ms FROM account WHERE identity = ' + refs.dHex,

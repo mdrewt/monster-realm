@@ -46,11 +46,8 @@ pub struct Character {
     pub acked_seq: u64,
 }
 
-/// Links a connection identity to its character. `last_input_seq` is retired:
-/// `join_game` writes 0 and nothing writes it again (the seq guard is
-/// `move_intent.last_input_seq`). The column stays because schema changes are
-/// additive; `seed_intent` reads it once for a session that pre-dates
-/// `move_intent`.
+/// Links a connection identity to its character. The move-seq guard is not here:
+/// it is `move_intent.last_input_seq`.
 ///
 /// `discriminator` is the public copy of the identity's `player_handle` value,
 /// written by `join_game`; 0 means no tag (a row that pre-dates the column, or
@@ -66,7 +63,6 @@ pub struct Player {
     pub entity_id: u64,
     pub name: String,
     pub online: bool,
-    pub last_input_seq: u64,
     #[default(0u32)]
     pub discriminator: u32,
     #[default(0u8)]
@@ -579,21 +575,6 @@ fn as_seen_by_side(mut row: Battle, own: SideRow, tactical: Option<&BattleTactic
         }
     }
     row
-}
-
-/// PRIVATE wild-individuality side-table. Keyed 1:1 by
-/// `battle_id`. Stores the splitmix32 `individuality_seed` that M8d re-feeds to
-/// `roll_individuality` to rebuild the EXACT wild that was fought. NO `public`:
-/// the raw RNG-derived seed must never reach any client (no projection, no RLS
-/// filter, no generated accessor — mirrors the private `encounter` table).
-/// M8c only WRITES this row; M8d reads/clears it.
-#[spacetimedb::table(accessor = battle_wild)]
-pub struct BattleWild {
-    #[primary_key]
-    pub battle_id: u64,
-    pub wild_species_id: u32,
-    pub wild_level: u8,
-    pub individuality_seed: u32,
 }
 
 /// PRIVATE player item inventory (no `public`): item counts are owner-private
@@ -1224,35 +1205,6 @@ pub struct BattleChallenge {
     pub format: u8,
 }
 
-/// PRIVATE per-turn secret action submitted by one PvP player.
-///
-/// MUST-NEVER-LEAK: a leaked pending pick is a
-/// competitively decisive exploit (opponent adapts their choice). No `public`,
-/// no separate view, no RLS projection. The table is invisible to all clients; they
-/// discover that a turn resolved by watching `battle.state.turn_number`
-/// increment via the `my_battle` view onto the now-private `battle` table.
-///
-/// Two rows exist per turn (one per side); both are deleted atomically when
-/// `resolve_pvp_turn_if_ready` fires in the same transaction.
-#[spacetimedb::table(accessor = battle_action)]
-pub struct BattleAction {
-    #[primary_key]
-    #[auto_inc]
-    pub action_id: u64,
-    /// Links this action to the ongoing PvP battle.
-    #[index(btree)]
-    pub battle_id: u64,
-    /// The submitting player (player_identity = side A; opponent_identity = side B).
-    pub player_identity: Identity,
-    /// The chosen action (Attack or Swap — never Pass, which is server-generated).
-    pub action: game_core::PvpAction,
-    /// Turn this action applies to; must match `battle.state.turn_number` at
-    /// submission time (double-submit / stale-action defense-in-depth).
-    pub turn_number: u16,
-    /// Server clock at submission (ms).  Informational; not used for resolution.
-    pub submitted_at_ms: i64,
-}
-
 // --- tactical battles (M-battle-tactics, bt-7) ----
 //
 // Ten PRIVATE tables and seven views. The `battle` row stays the anchor (its
@@ -1461,8 +1413,8 @@ pub struct BattleClock {
 }
 
 /// PRIVATE battle seed (design §8.1 `battle_secret`): the RNG seed and the
-/// roll counter. NO view, ever — the `battle_wild` doctrine: a client that
-/// could read the seed could replay every roll.
+/// roll counter. NO view, ever: a client that could read the seed could replay
+/// every roll.
 #[derive(Clone, PartialEq)]
 #[spacetimedb::table(accessor = battle_secret)]
 pub struct BattleSecret {
@@ -1474,8 +1426,8 @@ pub struct BattleSecret {
 
 /// PRIVATE wild individuality (design §8.1 `battle_wild_unit`): one row per
 /// wild of a multi-wild encounter, carrying the splitmix seed recruit rebuilds
-/// the exact wild from. NO view (the `battle_wild` doctrine). Synthetic key:
-/// the natural key `(battle_id, wild_index)` is a pair.
+/// the exact wild from. NO view: the raw seed must never reach a client. Synthetic
+/// key: the natural key `(battle_id, wild_index)` is a pair.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = battle_wild_unit)]
 pub struct BattleWildUnit {
@@ -1928,16 +1880,13 @@ pub enum WorldAccessRule {
 }
 
 /// The world's access rule: one row, `id` always 0, written only by the owner's
-/// `set_world_access`. A world with no row is `Open`. PRIVATE: `password_salt` and
-/// `password_hash` are the Argon2id salt and hash of the host's password, both empty unless
-/// `rule` is `Password`.
+/// `set_world_access`. A world with no row is `Open`. PRIVATE: how a world admits its players
+/// is the host's to know. The module holds no password and nothing derived from one.
 #[spacetimedb::table(accessor = world_access)]
 pub struct WorldAccess {
     #[primary_key]
     pub id: u32,
     pub rule: WorldAccessRule,
-    pub password_salt: Vec<u8>,
-    pub password_hash: Vec<u8>,
 }
 
 /// An identity the host's rule admitted, and when. PRIVATE: who may join a world is the host's
@@ -1951,11 +1900,10 @@ pub struct WorldAdmission {
     pub admitted_at_ms: i64,
 }
 
-/// The wrong passwords the door was given for an identity that is not admitted: the time of
-/// each, in the order given, never more than `access::ADMIT_MAX_WRONG_ATTEMPTS`.
-/// `last_wrong_at_ms` repeats the latest of them so the sweep of stale rows can range over an
-/// index. PRIVATE. Written only by `access.rs`; erased by the deletion cascade and, for the
-/// guest identity it retires, by a guest claim.
+/// Times of wrong passwords recorded for an identity that is not admitted. No reducer writes a
+/// row: the module takes no password. PRIVATE. `access.rs` deletes an identity's row when it
+/// admits that identity; the deletion cascade erases it, and so does a guest claim for the guest
+/// identity it retires.
 #[spacetimedb::table(accessor = world_admission_attempt)]
 pub struct WorldAdmissionAttempt {
     #[primary_key]
@@ -2159,12 +2107,6 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         exportable: true,
     },
     DataLifecycleEntry {
-        table: "battle_action",
-        policy: DeletionPolicy::Erase,
-        basis: "transient per-turn action state keyed to a battle, deleted outright",
-        exportable: true,
-    },
-    DataLifecycleEntry {
         table: "export_bundle",
         policy: DeletionPolicy::Erase,
         basis: "an export snapshot is itself personal data: swept at cascade time in \
@@ -2228,7 +2170,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "world_admission_attempt",
         policy: DeletionPolicy::Erase,
-        basis: "names an identity and the times of the wrong passwords given for it, deleted outright at cascade time; a time stops counting after ten minutes and the next door call that writes removes a row none of whose times count; not exported",
+        basis: "names an identity and the times of wrong passwords recorded for it, deleted outright at cascade time; no reducer writes a row; not exported",
         exportable: false,
     },
     DataLifecycleEntry {
@@ -2321,20 +2263,6 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         exportable: false,
     },
     DataLifecycleEntry {
-        table: "battle_wild",
-        policy: DeletionPolicy::ViaJoin("battle"),
-        basis: "no Identity column; carries the raw RNG individuality seed (must never \
-                leak) and is swept via its owning battle row",
-        exportable: false,
-    },
-    DataLifecycleEntry {
-        table: "pvp_deadline_schedule",
-        policy: DeletionPolicy::ViaJoin("battle"),
-        basis: "no Identity column; per-battle deadline schedule swept via its owning \
-                battle row",
-        exportable: false,
-    },
-    DataLifecycleEntry {
         table: "battle_challenge_reaper_schedule",
         policy: DeletionPolicy::ViaJoin("battle_challenge"),
         basis: "no Identity column; per-challenge TTL schedule swept via its owning \
@@ -2419,7 +2347,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "world_access",
         policy: DeletionPolicy::NotOwned,
-        basis: "the host's access rule and password hash: one row with no Identity column, written only by the module owner",
+        basis: "the host's access rule: one row with no Identity column, written only by the module owner",
         exportable: false,
     },
     DataLifecycleEntry {

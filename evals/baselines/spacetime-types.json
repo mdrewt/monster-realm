@@ -1,4 +1,5 @@
 {
+  "consolidation": "lpw-32",
   "EncounterEntryRow": {
     "kind": "struct",
     "fields": [
@@ -78,13 +79,6 @@
       "Paralysis",
       "Sleep",
       "Freeze"
-    ]
-  },
-  "PvpAction": {
-    "kind": "enum",
-    "variants": [
-      "Attack",
-      "Swap"
     ]
   },
   "StatusEffect": {

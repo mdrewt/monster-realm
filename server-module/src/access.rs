@@ -32,8 +32,7 @@
 //! No reducer of this module takes a password or a value derived from one, because the host's
 //! commit log keeps every committed call's arguments in the clear. A `Password` world's password
 //! is checked by the host gate (`docs/local-play.md` §3), which admits a joiner who gives it
-//! through the owner's [`set_world_access`]; `world_access` holds the rule with an empty salt and
-//! hash, and the module reads neither.
+//! through the owner's [`set_world_access`]; `world_access` holds the rule and nothing else.
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access` and `world_admission`, and deletes
 //! `world_admission_attempt` rows (an identity's, when it is admitted or erased); an unbind and
@@ -194,9 +193,7 @@ pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
 
 /// Set the world's access rule and admit identities outright. Owner-only.
 ///
-/// The rule is stored with an empty salt and hash under every rule, so a salt and hash an earlier
-/// module stored go at the owner's next call. `Password` admits the owner and the identities
-/// holding an admission row, and nothing else. When the rule changes to one that is not `Open`,
+/// `Password` admits the owner and the identities holding an admission row, and nothing else. When the rule changes to one that is not `Open`,
 /// every identity with a live connection that the rule in force before the call admitted gets an
 /// admission row, so a connection that rule let in stays admitted and one it refused (a
 /// delisted account, a removed admission) is not let back in. Each identity in `admit` gets an
@@ -238,8 +235,6 @@ pub fn set_world_access(
     let row = WorldAccess {
         id: WORLD_ACCESS_ROW,
         rule,
-        password_salt: Vec::new(),
-        password_hash: Vec::new(),
     };
     if stored.is_some() {
         ctx.db.world_access().id().update(row);

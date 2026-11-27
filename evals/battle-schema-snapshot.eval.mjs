@@ -18,6 +18,11 @@
 //     tail with #[default(..)], and defaulted columns must stay a suffix.
 //     A table-level "manual_migration": "ADR-nnnn ..." note (a delete-data
 //     migration) exempts that table from layer 2.
+//     A consolidation (a declared break shipped with a wipe of every database)
+//     skips layer 2 for the whole file: the working baseline carries a top-level
+//     "consolidation" key holding one of DECLARED_CONSOLIDATIONS that the
+//     merge-base copy lacks. `--write` never writes the key, so the slice that
+//     consolidates adds it by hand and the next schema change drops it.
 //
 // Plus the zoning rule: a non-scheduled table carrying zone_id or
 // map_id (or tile_x/tile_y) must have that zone field as its pk or indexed, so
@@ -236,6 +241,42 @@ export function appendOnlyViolations(prev, next) {
       v('#[default] columns are not a tail suffix');
   }
   return out;
+}
+
+// The slices whose spec declares a consolidation, each by its exact id.
+export const DECLARED_CONSOLIDATIONS = ['lpw-32'];
+
+// A baseline file's marker and its entries. A string under the key is the marker and leaves the
+// entries; any other value stays an entry, which the drift layer reports.
+export function splitConsolidation(baseline) {
+  const { consolidation: marker, ...entries } = baseline;
+  return typeof marker === 'string' ? { marker, entries } : { marker: null, entries: baseline };
+}
+
+// The declared consolidation `next` names and `prev` does not, else null.
+export function consolidationOf(prev, next) {
+  const marker = splitConsolidation(next).marker;
+  const declared = marker !== null && DECLARED_CONSOLIDATIONS.includes(marker);
+  return declared && marker !== splitConsolidation(prev).marker ? marker : null;
+}
+
+// Layer 2 for a whole baseline file: nothing for a consolidation, else `appendOnly` over the two
+// files' entries. A marker that names no declared consolidation is a violation and skips
+// nothing; so is a declared one the merge-base copy already holds once the entries differ.
+export function mergeBaseViolations(prev, next, appendOnly) {
+  if (consolidationOf(prev, next) !== null) return [];
+  const p = splitConsolidation(prev);
+  const n = splitConsolidation(next);
+  const out = [];
+  if (n.marker !== null && !DECLARED_CONSOLIDATIONS.includes(n.marker))
+    out.push(
+      `[consolidation] marker '${n.marker}' names no declared consolidation (declared: ${DECLARED_CONSOLIDATIONS.join(', ')})`,
+    );
+  else if (n.marker !== null && JSON.stringify(p.entries) !== JSON.stringify(n.entries))
+    out.push(
+      `[consolidation] marker '${n.marker}' is the merge-base baseline's own: the first schema change after a consolidation removes it`,
+    );
+  return [...out, ...appendOnly(p.entries, n.entries)];
 }
 
 export function zoningViolations(tables) {
@@ -555,6 +596,19 @@ function selfTeeth() {
   return bad;
 }
 
+// Every failure of the eval for one parsed source, working baseline and merge-base baseline
+// (null when git cannot read it).
+export function snapshotFailures({ parsed, baseline, prev }) {
+  const failures = [
+    ...driftViolations(parsed, splitConsolidation(baseline).entries),
+    ...zoningViolations(parsed),
+  ];
+  if (prev === null)
+    failures.push('[append-only] cannot resolve the committed baseline (git fetch origin master)');
+  else failures.push(...mergeBaseViolations(prev, baseline, appendOnlyViolations));
+  return failures;
+}
+
 export default async function battleSchemaSnapshotEval() {
   const name = 'battle-schema-snapshot (table migration freeze + zoning)';
   const teeth = selfTeeth();
@@ -562,16 +616,18 @@ export default async function battleSchemaSnapshotEval() {
   const parsed = parseTables(readRustTree('server-module/src'));
   const baseline = JSON.parse(readFileSync(BASELINE, 'utf8'));
   const prev = prevBaseline(BASELINE);
-  const failures = [...driftViolations(parsed, baseline), ...zoningViolations(parsed)];
-  if (prev === null)
-    failures.push('[append-only] cannot resolve the committed baseline (git fetch origin master)');
-  else failures.push(...appendOnlyViolations(prev, baseline));
+  const failures = snapshotFailures({ parsed, baseline, prev });
+  const consolidation = prev === null ? null : consolidationOf(prev, baseline);
+  const layerTwo =
+    consolidation === null
+      ? 'append-only vs merge-base and zoning hold'
+      : `zoning holds; the merge-base comparison is skipped for the declared consolidation '${consolidation}'`;
   return {
     name,
     pass: failures.length === 0,
     detail: failures.length
       ? `${failures.join('; ')} — regenerate with --write only for a legal change`
-      : `${Object.keys(parsed).length} tables match the baseline; append-only vs merge-base and zoning hold (teeth verified)`,
+      : `${Object.keys(parsed).length} tables match the baseline; ${layerTwo} (teeth verified)`,
   };
 }
 

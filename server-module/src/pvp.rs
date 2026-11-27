@@ -1,34 +1,27 @@
 //! `pvp` — server-module domain submodule.
 //!
 //! PvP orchestration: the challenge handshake (the accept opens a TACTICAL battle), the
-//! challenge TTL reaper and forfeit-on-disconnect. The 1v1 secret-pick path (the submit, the
-//! both-submit resolution and the turn-deadline arming) is deleted since bt-17; the scheduled
-//! `pvp_deadline_reaper` stays (scheduled-ness is fixed at first publish) and consumes rows
-//! nothing arms.
+//! challenge TTL reaper and forfeit-on-disconnect.
 //! Challenge liveness: a scheduled TTL reaper deletes Pending challenges older
 //! than `CHALLENGE_TTL_MS`; every challenge-deletion path
 //! disarms its schedule row.
 //!
 //! Design invariants:
-//! - `battle_action` is PRIVATE (must-never-leak). Clients detect turn resolution
-//!   by watching `battle.state.turn_number` increment on their own rows of the
-//!   participant-scoped `my_battle` view (`battle` itself is private).
-//! - Accepting a challenge opens a TACTICAL battle through `tactics::start_pvp_tactical`
-//!   (bt-16: the one live PvP path; the 1v1 start is deleted).
+//! - Accepting a challenge opens a TACTICAL battle through `tactics::start_pvp_tactical`,
+//!   the one live PvP start. `battle` is private; participants read it through the
+//!   participant-scoped `my_battle` view.
 //! - Forfeit maps to the existing `SideAWins`/`SideBWins` outcomes; no new
 //!   `BattleOutcome` variant is added (BSATN stability).
-//! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
-//!   `scheduled(pvp_deadline_reaper)` cohabitation rule.
 //! - `settle_pvp_battle` is the single decisive-commit funnel: every terminal
-//!   PvP outcome (the deadline forfeit of a legacy anchor, the disconnect forfeit) commits
+//!   PvP outcome (the disconnect forfeit of a 1v1 anchor) commits
 //!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`. A
-//!   TACTICAL PvP battle (bt-14: forfeit, disconnect, the 4th auto-pass, Surge,
+//!   TACTICAL PvP battle (forfeit, disconnect, the 4th auto-pass, Surge,
 //!   adjudication) commits through it too, from `tactics::finish`, in
 //!   `SideAWriteBack::HpOnly` mode — HP only; the tactical settlement pays.
 //!   One named exception: the deletion cascade's forced-terminal fallback
 //!   (`battle::anonymize_battles`) commits `SideAWins`/`SideBWins`
 //!   outside this funnel, without rating, HP, XP, currency or evolution
-//!   write-back and without the `battle_action` sweep.
+//!   write-back.
 
 use crate::battle::{write_back_battle_results, write_back_party_hp};
 use crate::guards::{
@@ -39,14 +32,11 @@ use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, battle_tactical, monster, player, player_conversation,
-    Battle, BattleAction, BattleChallenge, ChallengeStatus,
+    battle, battle_challenge, battle_tactical, monster, player, player_conversation, Battle,
+    BattleChallenge, ChallengeStatus,
 };
 use crate::WILD_IDENTITY;
-use game_core::{
-    is_challenge_stale, pvp_deadline_forfeit_side, pvp_forfeit_outcome, BattleOutcome, SideId,
-    CHALLENGE_TTL_MS,
-};
+use game_core::{is_challenge_stale, pvp_forfeit_outcome, BattleOutcome, SideId, CHALLENGE_TTL_MS};
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
 // ===========================================================================
@@ -109,29 +99,6 @@ fn ranked_account_gate(
         return Err(ERR_RANKED_OPPONENT_NEEDS_ACCOUNT);
     }
     Ok(())
-}
-
-// ===========================================================================
-// Scheduled table (colocated with its reducer)
-// ===========================================================================
-
-/// One-shot reaper schedule for the retired 1v1 turn deadline. Never armed since bt-17
-/// (the arming path is deleted); the table and its reducer stay because scheduled-ness is
-/// fixed at first publish. PRIVATE (no `public`) — scheduling information is not client-facing.
-/// Colocated with `pvp_deadline_reaper` so the `scheduled(...)` attribute
-/// reference resolves within this module (mirrors `movement_tick_schedule`
-/// in movement.rs).
-#[spacetimedb::table(accessor = pvp_deadline_schedule, scheduled(pvp_deadline_reaper))]
-pub struct PvpDeadlineSchedule {
-    #[primary_key]
-    #[auto_inc]
-    pub scheduled_id: u64,
-    pub scheduled_at: ScheduleAt,
-    /// The PvP battle this schedule guards.
-    pub battle_id: u64,
-    /// The turn this schedule was issued for. Used by the reaper to detect
-    /// stale schedules (issued for turn N, battle is now on turn N+1 → no-op).
-    pub turn_number: u16,
 }
 
 // ===========================================================================
@@ -256,13 +223,13 @@ pub(crate) enum SideAWriteBack {
 }
 
 /// Settle a PvP battle that has reached a terminal outcome — the ONE funnel
-/// through which every decisive PvP result (the deadline forfeit of a legacy
-/// anchor, the disconnect forfeit, the tactical finish) commits. Sole caller of
+/// through which every decisive PvP result (the disconnect forfeit of a 1v1
+/// anchor, the tactical finish) commits. Sole caller of
 /// `ranking::apply_pvp_rating`, which makes rating application exactly-once
 /// by construction. One named exception: the deletion cascade's forced-terminal
 /// fallback (`battle::anonymize_battles`) commits
 /// `SideAWins`/`SideBWins` outside this funnel, without rating, HP, XP, currency
-/// or evolution write-back and without the `battle_action` sweep.
+/// or evolution write-back.
 ///
 /// Invariant commit order:
 /// - `write_back_battle_results` runs while the battle row is still Ongoing in
@@ -274,7 +241,6 @@ pub(crate) enum SideAWriteBack {
 ///   Write-backs use log-and-continue.
 /// - The rating rides the just-committed outcome and is
 ///   infallible by construction — no error posture needed.
-/// - The stale `battle_action` sweep runs last (hoisted from the forfeit path).
 pub(crate) fn settle_pvp_battle(
     ctx: &ReducerContext,
     battle: Battle,
@@ -322,15 +288,6 @@ pub(crate) fn settle_pvp_battle(
         }
     };
 
-    // Sweep any stale battle_action rows for this battle (collect-then-mutate). No-op on the
-    // resolve path (the turn's actions were deleted before resolution) and for a tactical anchor
-    // (which never holds one).
-    let stale_actions = ctx.db.battle_action().battle_id().filter(battle_id);
-    let stale_actions: Vec<BattleAction> = stale_actions.collect();
-    for action in stale_actions {
-        ctx.db.battle_action().delete(action);
-    }
-
     Ok(side_a_ok && side_b_ok)
 }
 
@@ -372,7 +329,7 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
 /// `on_disconnect` (before the player row is deleted) and the deletion
 /// cascade's step 6a (before the 6b erasures). An `apply_pvp_forfeit` Err is
 /// logged and the loop continues, with no retry here: on a plain disconnect the
-/// row waits for the next disconnect pass (nothing arms a deadline since bt-17); on the cascade path step 6c
+/// row waits for the next disconnect pass; on the cascade path step 6c
 /// (`battle::anonymize_battles`) forces any surviving `Ongoing` row terminal.
 pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
     /// An Ongoing 1v1 PvP anchor. A tactical anchor (bt-14) is
@@ -462,9 +419,7 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
 /// delete every `battle_challenge` naming `owner` on EITHER side — challenger
 /// AND target, any status (contrast `cancel_challenges_on_disconnect` above,
 /// outgoing pending only) — disarming each challenge's TTL schedule row (the
-/// JOIN_ONLY sweep riding its parent), then every `battle_action` the owner
-/// submitted (per-turn secret picks; the identity column is unindexed, so
-/// this is one of the cascade's two accepted linear scans). Called only from
+/// JOIN_ONLY sweep riding its parent). Called only from
 /// `accounts::account_deletion_reaper`.
 pub(crate) fn erase_pvp_rows(ctx: &ReducerContext, owner: Identity) {
     let mut challenge_ids: Vec<u64> = ctx
@@ -484,35 +439,6 @@ pub(crate) fn erase_pvp_rows(ctx: &ReducerContext, owner: Identity) {
     for id in challenge_ids {
         disarm_challenge_reaper(ctx, id);
         ctx.db.battle_challenge().challenge_id().delete(id);
-    }
-    let action_ids: Vec<u64> = ctx
-        .db
-        .battle_action()
-        .iter()
-        .filter(|a| a.player_identity == owner)
-        .map(|a| a.action_id)
-        .collect();
-    for id in action_ids {
-        ctx.db.battle_action().action_id().delete(id);
-    }
-}
-
-/// delete every `pvp_deadline_schedule` row guarding
-/// `battle_id`. Lives HERE because pvp.rs is the only module touching that table (the
-/// delegation doctrine's ownership rule; nothing inserts into it since bt-17); called per battle row from
-/// `battle::anonymize_battles`, BEFORE that row's identity swap (after the
-/// swap the join can no longer find it). The column is unindexed — a linear
-/// scan over a table that holds no new rows since bt-17.
-pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
-    let ids: Vec<u64> = ctx
-        .db
-        .pvp_deadline_schedule()
-        .iter()
-        .filter(|s| s.battle_id == battle_id)
-        .map(|s| s.scheduled_id)
-        .collect();
-    for id in ids {
-        ctx.db.pvp_deadline_schedule().scheduled_id().delete(id);
     }
 }
 
@@ -939,7 +865,7 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
 /// `CHALLENGE_TTL_MS`.
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
-/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `pvp_deadline_reaper`).
+/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `movement_tick`).
 /// Staleness is re-checked via `is_challenge_stale` so an early
 /// fire or clock skew never reaps a fresh challenge. No status re-check:
 /// non-Pending rows never persist, so the existence check is
@@ -975,70 +901,6 @@ pub fn battle_challenge_reaper(
         .challenge_id()
         .delete(args.challenge_id);
     Ok(())
-}
-
-/// Scheduled reaper: forfeit the non-submitting side when the 1v1 turn deadline fires.
-/// Never armed since bt-17 (no path inserts a `pvp_deadline_schedule` row); kept because a
-/// table's scheduled-ness is fixed at first publish.
-///
-/// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
-/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `movement_tick` at
-/// movement.rs:156).
-#[spacetimedb::reducer]
-pub fn pvp_deadline_reaper(ctx: &ReducerContext, args: PvpDeadlineSchedule) -> Result<(), String> {
-    // Scheduler-only guard (mirrors movement_tick).
-    if ctx.sender() != ctx.database_identity() {
-        return Err("pvp_deadline_reaper is scheduler-only".to_string());
-    }
-
-    let battle_id = args.battle_id;
-    let scheduled_turn = args.turn_number;
-
-    // Load the battle; exit cleanly if it's gone or already resolved.
-    let battle = match ctx.db.battle().battle_id().find(battle_id) {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-    if battle.state.outcome != BattleOutcome::Ongoing {
-        return Ok(());
-    }
-
-    // Stale-schedule check: if the battle has already advanced past the turn this
-    // reaper was issued for, it means both sides submitted in time and the turn
-    // resolved normally. No action needed.
-    if battle.state.turn_number != scheduled_turn {
-        return Ok(());
-    }
-
-    // Determine which sides have submitted for the current turn.
-    let a_submitted = ctx
-        .db
-        .battle_action()
-        .battle_id()
-        .filter(battle_id)
-        .any(|a| a.player_identity == battle.player_identity && a.turn_number == scheduled_turn);
-    let b_submitted = ctx
-        .db
-        .battle_action()
-        .battle_id()
-        .filter(battle_id)
-        .any(|a| a.player_identity == battle.opponent_identity && a.turn_number == scheduled_turn);
-
-    // Both submitted: resolution is in-flight; this is a no-op safe path
-    // (unreachable: the 1v1 resolution ran in the same txn as the second submit,
-    // before the deadline fired).
-    if a_submitted && b_submitted {
-        return Ok(());
-    }
-
-    // Apply challenger-first tie-break.
-    let forfeited_side = pvp_deadline_forfeit_side(a_submitted, b_submitted);
-
-    log::info!(
-        "{{\"evt\":\"pvp_deadline_forfeit\",\"battle_id\":{battle_id},\"turn\":{scheduled_turn},\"forfeited_side\":\"{forfeited_side:?}\"}}"
-    );
-
-    apply_pvp_forfeit(ctx, battle, forfeited_side)
 }
 
 // pvp.rs is a file-module (declared `mod pvp;` in `lib.rs`), so a plain

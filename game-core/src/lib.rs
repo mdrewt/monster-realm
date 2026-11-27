@@ -43,11 +43,11 @@ pub use accounts::{
 pub use combat::{
     accuracy_check, apply_ability_modifiers, apply_entry_ability, apply_post_turn_effects,
     apply_pre_turn_effects, apply_xp_gain, base_stat_total, battle_xp_reward, calc_damage,
-    is_challenge_stale, pick_best_skill, practice_xp_reward, pvp_deadline_forfeit_side,
-    pvp_forfeit_outcome, resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn,
-    tick_status, AbilityEffect, AbilityStore, BattleEvent, BattleMonster, BattleOutcome,
-    BattleSide, BattleState, BattleStatusStore, Effectiveness, PvpAction, SideId, StatusEffect,
-    StatusKind, StatusVariance, TurnChoice, TurnVariance, TypeChart, CHALLENGE_TTL_MS,
+    is_challenge_stale, pick_best_skill, practice_xp_reward, pvp_forfeit_outcome,
+    resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn, tick_status,
+    AbilityEffect, AbilityStore, BattleEvent, BattleMonster, BattleOutcome, BattleSide,
+    BattleState, BattleStatusStore, Effectiveness, SideId, StatusEffect, StatusKind,
+    StatusVariance, TurnChoice, TurnVariance, TypeChart, CHALLENGE_TTL_MS,
 };
 pub use content::{
     is_system_flag, load_abilities, load_dialogue_trees, load_encounters, load_evolution_paths,
@@ -119,12 +119,12 @@ pub use world::{
 /// records the new number's entry (`client/src/net/wireContract.test.ts` fails the client test run
 /// until both are done). The module records it in `module_info.protocol`, and `client-wasm`
 /// exports it as `protocol_version()`.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 /// The oldest client protocol a server of this build still speaks to, recorded in
 /// `module_info.min_client_protocol`; `client-wasm` exports it as `min_client_protocol()`. It
 /// rises above every entry of `client/src/net/wireContract.json` that the current bindings break
 /// (the wire-contract test names them), and only then, and it never exceeds [`PROTOCOL_VERSION`].
-pub const MIN_CLIENT_PROTOCOL: u32 = 4;
+pub const MIN_CLIENT_PROTOCOL: u32 = 7;
 
 /// a pure, deterministic state transition over an
 /// explicit seed (splitmix64-style mix). Identical `(state, input, seed)`

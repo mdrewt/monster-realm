@@ -94,18 +94,6 @@ export const Battle = __t.object("Battle", {
 });
 export type Battle = __Infer<typeof Battle>;
 
-export const BattleAction = __t.object("BattleAction", {
-  actionId: __t.u64(),
-  battleId: __t.u64(),
-  playerIdentity: __t.identity(),
-  get action() {
-    return PvpAction;
-  },
-  turnNumber: __t.u16(),
-  submittedAtMs: __t.i64(),
-});
-export type BattleAction = __Infer<typeof BattleAction>;
-
 export const BattleChallenge = __t.object("BattleChallenge", {
   challengeId: __t.u64(),
   challenger: __t.identity(),
@@ -379,14 +367,6 @@ export const BattleUnit = __t.object("BattleUnit", {
   },
 });
 export type BattleUnit = __Infer<typeof BattleUnit>;
-
-export const BattleWild = __t.object("BattleWild", {
-  battleId: __t.u64(),
-  wildSpeciesId: __t.u32(),
-  wildLevel: __t.u8(),
-  individualitySeed: __t.u32(),
-});
-export type BattleWild = __Infer<typeof BattleWild>;
 
 export const BattleWildUnit = __t.object("BattleWildUnit", {
   wildUnitId: __t.u64(),
@@ -987,7 +967,6 @@ export const Player = __t.object("Player", {
   entityId: __t.u64(),
   name: __t.string(),
   online: __t.bool(),
-  lastInputSeq: __t.u64(),
   discriminator: __t.u32(),
   leadLevel: __t.u8(),
 });
@@ -1066,21 +1045,6 @@ export const Profile = __t.object("Profile", {
   losses: __t.u32(),
 });
 export type Profile = __Infer<typeof Profile>;
-
-// The tagged union or sum type for the algebraic type `PvpAction`.
-export const PvpAction = __t.enum("PvpAction", {
-  Attack: __t.u32(),
-  Swap: __t.u32(),
-});
-export type PvpAction = __Infer<typeof PvpAction>;
-
-export const PvpDeadlineSchedule = __t.object("PvpDeadlineSchedule", {
-  scheduledId: __t.u64(),
-  scheduledAt: __t.scheduleAt(),
-  battleId: __t.u64(),
-  turnNumber: __t.u16(),
-});
-export type PvpDeadlineSchedule = __Infer<typeof PvpDeadlineSchedule>;
 
 export const QueueVoidedEvent = __t.object("QueueVoidedEvent", {
   unit: __t.u32(),
@@ -1496,8 +1460,6 @@ export const WorldAccess = __t.object("WorldAccess", {
   get rule() {
     return WorldAccessRule;
   },
-  passwordSalt: __t.byteArray(),
-  passwordHash: __t.byteArray(),
 });
 export type WorldAccess = __Infer<typeof WorldAccess>;
 

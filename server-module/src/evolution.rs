@@ -123,9 +123,10 @@ pub(crate) fn apply_evolution(
     };
     // Capture the owner BEFORE the write-back below moves
     // `m`. It is the MONSTER's owner and never the caller: this helper is
-    // reachable from pvp_deadline_reaper -> apply_pvp_forfeit ->
-    // settle_pvp_battle -> write_back_battle_results, where the caller is the
-    // SCHEDULER identity, which owns no monsters and could never ack the queue.
+    // reachable from account_deletion_reaper -> forfeit_on_disconnect ->
+    // apply_pvp_forfeit -> settle_pvp_battle -> write_back_battle_results, where
+    // the caller is the SCHEDULER identity, which owns no monsters and could never
+    // ack the queue.
     let owner = m.owner_identity;
     let instance = monster_to_instance(&m)?;
 
@@ -218,10 +219,10 @@ pub(crate) fn apply_evolution(
 /// the intent reducers (care / train / essence_train / consume_crystalized_
 /// essence / enqueue_move) and from the battle write-back — never DIRECTLY
 /// from a scheduled reducer's own body. It stays
-/// transitively reachable via pvp_deadline_reaper -> apply_pvp_forfeit ->
-/// settle_pvp_battle -> write_back_battle_results, where the only gate value
-/// that can have changed is level/XP from the pre-existing forfeit settlement
-/// — harmless, and the credits at that site are wild-gated anyway.
+/// transitively reachable via account_deletion_reaper -> forfeit_on_disconnect ->
+/// apply_pvp_forfeit -> settle_pvp_battle -> write_back_battle_results, where
+/// the only gate value that can have changed is level/XP from the forfeit
+/// settlement — harmless, and the credits at that site are wild-gated anyway.
 ///
 /// Each iteration: FRESH monster read, the DB `evolution_path` rows for the
 /// CURRENT species (the same source `evolve()` read — never
