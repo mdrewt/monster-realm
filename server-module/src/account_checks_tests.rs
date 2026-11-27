@@ -364,7 +364,10 @@ fn ok_answer<'q>(body: String) -> HttpAnswer<'q> {
 }
 
 /// A stubbed outcome: a status and body, or the text of a transport error.
-fn answer_of<'q>(outcome: &Result<(u16, String), String>) -> HttpAnswer<'q> {
+type Stubbed = Result<(u16, String), String>;
+
+/// The stubbed answer for `outcome`.
+fn answer_of<'q>(outcome: &Stubbed) -> HttpAnswer<'q> {
     match outcome {
         Ok((code, body)) => HttpAnswer::status(*code, body.clone()),
         Err(text) => HttpAnswer::error(text.clone()),
@@ -1024,7 +1027,6 @@ mod ticket_and_budget {
             "the 30th"
         );
         assert_eq!(budget(&w), vec![(0, T0, 30)]);
-        drop(w);
         drop(fx);
 
         let fx = fixture();
@@ -1077,9 +1079,9 @@ mod ticket_and_budget {
 mod bad_answers {
     use super::*;
 
-    fn cases() -> Vec<(&'static str, Result<(u16, String), String>, &'static str)> {
+    fn cases() -> Vec<(&'static str, Stubbed, &'static str)> {
         let good = |handle: &str| ticket_answer(handle, true, WORLD_NAME);
-        let raw = |text: &str| -> Result<(u16, String), String> { Ok((200, text.to_string())) };
+        let raw = |text: &str| -> Stubbed { Ok((200, text.to_string())) };
         let over_long = format!("k1.{}", "a".repeat(1022));
         let non_ascii = format!("k1.{}", char::from_u32(0xE9).expect("a letter"));
         vec![
@@ -1341,7 +1343,6 @@ mod during_the_wait {
             "a name removed"
         );
         assert!(accounts(&w).iter().all(|r| r.1 != alice().to_byte_array()));
-        drop(w);
         drop(fx);
 
         let fx = fixture();
@@ -1576,7 +1577,7 @@ mod recheck {
     /// kills: a failure stored as not entitled; the schedule re-armed by the run.
     #[test]
     fn a_failed_recheck_leaves_the_status_and_arms_nothing_lpw23_5() {
-        let failures: Vec<(&str, Result<(u16, String), String>)> = vec![
+        let failures: Vec<(&str, Stubbed)> = vec![
             (
                 "a transport error",
                 Err("the request timed out".to_string()),

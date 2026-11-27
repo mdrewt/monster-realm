@@ -1515,13 +1515,13 @@ const EXPORTERS: &[(&str, ExportRows)] = &[
     (stringify!(battle_action), rows_battle_action),
     (stringify!(player_formation), rows_player_formation),
     (stringify!(player_handle), rows_player_handle),
+    (stringify!(world_account), rows_world_account),
     (stringify!(player), rows_player),
     (stringify!(profile), rows_profile),
     (stringify!(account), rows_account),
     (stringify!(battle), rows_battle),
     (stringify!(battle_summary), rows_battle_summary),
     (stringify!(character), rows_character),
-    (stringify!(world_account), rows_world_account),
 ];
 
 // Length-first equality rejects a strict prefix in both argument orders
@@ -1739,6 +1739,14 @@ fn rows_player_handle(ctx: &ReducerContext, owner: Identity) -> Result<Vec<Strin
     Ok(rows)
 }
 
+fn rows_world_account(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
+    let mut rows = Vec::new();
+    if let Some(row) = crate::account_checks::account_of(ctx, owner) {
+        rows.push(json_world_account(&row));
+    }
+    Ok(rows)
+}
+
 fn rows_player(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
     let mut rows = Vec::new();
     if let Some(row) = ctx.db.player().identity().find(owner) {
@@ -1805,14 +1813,6 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
         if let Some(row) = ctx.db.character().entity_id().find(p.entity_id) {
             rows.push(json_character(&row));
         }
-    }
-    Ok(rows)
-}
-
-fn rows_world_account(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
-    let mut rows = Vec::new();
-    if let Some(row) = crate::account_checks::account_of(ctx, owner) {
-        rows.push(json_world_account(&row));
     }
     Ok(rows)
 }

@@ -3328,6 +3328,21 @@ mod reducer_arguments {
             "a dev-build reducer is in the generated bindings: {dev:?}"
         );
 
+        // A scheduled table may run a procedure (the census gives it a procedure verdict and
+        // pins it on its own); the reducers here are held against the scheduled functions that
+        // are not procedures.
+        let report = super::census::census(
+            &super::census::real_sources().expect("real_sources must read the crate"),
+            &super::census::classified_tables(),
+            game_core::STATE_TRANSITION_OWNERS,
+        )
+        .expect("the real corpus must census cleanly");
+        let procedures =
+            report.names_with(|v| matches!(v, super::census::Verdict::Procedure { .. }));
+        assert!(
+            procedures.contains("recheck_account"),
+            "fixture: the census reads the scheduled procedure as a procedure"
+        );
         let fx = fixture();
         let native = fx.module_def();
         let scheduled: BTreeSet<String> = native
@@ -3336,6 +3351,7 @@ mod reducer_arguments {
                 section
                     .iter()
                     .map(|s| s.function_name.to_string())
+                    .filter(|name| !procedures.contains(name.as_str()))
                     .collect()
             })
             .unwrap_or_default();
@@ -3343,7 +3359,7 @@ mod reducer_arguments {
             names_of(&declared, SCHEDULED),
             scheduled,
             "the scheduled reducers the census describes (left) against the functions the \
-             module's scheduled tables name (right)"
+             module's scheduled tables name that are not procedures (right)"
         );
 
         let def = declared.module.finish();

@@ -329,7 +329,8 @@ fn redeem_gates(tx: &ReducerContext, who: Identity, relayed: bool) -> Result<(),
 }
 
 /// The transaction before a redeem is sent: the gates, then the names the world presents,
-/// then the budget, charged last so a refusal spends none of it.
+/// then the budget. A refusal aborts the transaction, so it spends none of the budget; the
+/// gates are judged first, so a caller the world refuses is told so whatever the budget holds.
 fn prepare_redeem(
     tx: &ReducerContext,
     who: Identity,
