@@ -8996,14 +8996,124 @@ mod acct_nh {
         );
     }
 
-    /// `erase_world_account` deletes the identity's `world_move` row and answers whether a
-    /// `world_account` row went: `false` for an identity holding a `world_move` row and no
-    /// account row, `true` for one holding both (both rows go). A third identity's rows stay.
+    /// A signed-in account whose character plays under another identity (it holds a
+    /// `world_move` row) is refused `complete_guest_claim` with the moved-character reason, for
+    /// a live code, an unknown code and a malformed code alike, and nothing changes; without
+    /// the `world_move` row the same claim succeeds.
     ///
-    /// kills: the `world_move` delete dropped; the answer taken from the `world_move` delete;
-    /// a delete keyed on another identity.
+    /// kills: the guard missing (the caller takes the guest's character and can then neither
+    /// join nor check in); the guard placed after the code checks (a malformed or unknown code
+    /// answers differently from a live one: a code oracle); a guard keyed on anything but the
+    /// caller's own row; a refusal that writes.
     #[test]
-    fn erase_world_account_deletes_the_world_move_row_and_answers_for_the_account_row_lpw42_6() {
+    fn a_guest_claim_by_a_caller_whose_character_moved_is_refused_before_the_code_lpw42_3() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (g, c) = (id(0xBA), id(0xBB));
+        let live = code('5');
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                live.clone()
+            )),
+            Ok(()),
+            "the guest starts a claim"
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest leaves");
+        seed_rekey_rows(&w, g, 6);
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+        w.world_move.seed(&crate::account_checks::WorldMove {
+            identity: c,
+            moved_at_ms: T0 - 2_000,
+        });
+        let snapshot = |w: &W<'_>| {
+            (
+                encs(&w.claim.rows()),
+                encs(&w.claim_reaper.rows()),
+                owned_by(w, g),
+                owned_by(w, c),
+                encs(&w.world_move.rows()),
+            )
+        };
+        let before = snapshot(&w);
+        let claim = |k: &str, ms: i64| {
+            signed_in(&fx, c, ms, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, k.to_string())
+            })
+        };
+        fx.reset_writes();
+
+        for (label, k) in [
+            ("a live code", live.clone()),
+            ("an unknown code", code('d')),
+            ("a malformed code", "not-a-code".to_string()),
+        ] {
+            assert_eq!(
+                claim(&k, T0 + 10),
+                Err(crate::account_checks::REJECT_CHARACTER_MOVED.to_string()),
+                "{label}: the moved-character refusal, before the code is read"
+            );
+        }
+        assert_eq!(
+            crate::account_checks::REJECT_CHARACTER_MOVED,
+            "this character is playing on another client; sign in again to play here"
+        );
+        assert_eq!(snapshot(&w), before, "a refused claim changes nothing");
+        for table in [
+            "account",
+            "guest_claim",
+            "guest_claim_reaper_schedule",
+            "player",
+            "monster",
+            "monster_pub",
+            "pending_evolution_notice",
+            "inventory",
+            "player_quest",
+            "player_dialogue_state",
+            "heal_cooldown",
+            "last_position",
+            "player_wallet",
+            "profile",
+            "leaderboard_top",
+            "player_formation",
+            "player_handle",
+            "export_bundle",
+            "world_account",
+            "recheck_schedule",
+            "world_move",
+        ] {
+            assert_eq!(
+                fx.writes_to(table),
+                0,
+                "a refused claim writes no `{table}` row"
+            );
+        }
+
+        assert_eq!(w.world_move.remove(c), 1, "the caller checks in again");
+        assert_eq!(
+            claim(&live, T0 + 20),
+            Ok(()),
+            "without the world_move row the same claim succeeds"
+        );
+        assert!(
+            w.claim.rows().is_empty(),
+            "the successful claim consumes the code"
+        );
+    }
+
+    /// `erase_world_account` deletes the identity's account row and answers whether one went
+    /// (`false` for an identity holding a `world_move` row and no account row, `true` for one
+    /// holding both), and leaves every `world_move` row byte-equal: an unbind or the owner's drop,
+    /// which reach only this helper, never clear the record that a character moved away. A third
+    /// identity's account row stays.
+    ///
+    /// kills: a `world_move` delete folded into `erase_world_account` (an unbind would let a
+    /// moved-away identity join again and be granted a second starter); the answer taken from
+    /// anything but the account row; an account delete keyed on another identity.
+    #[test]
+    fn erase_world_account_leaves_every_world_move_row_and_answers_for_the_account_row_lpw42_6() {
         let fx = fixture();
         let w = world(&fx);
         let (moved_only, both, other) = (id(0x9E), id(0xB3), id(0xB4));
@@ -9029,26 +9139,74 @@ mod acct_nh {
             })
         };
 
+        let moves_before = encs(&w.world_move.rows());
+        fx.reset_writes();
+
         assert!(
             !erase(moved_only),
             "no world_account row went, so the answer is false"
-        );
-        assert_eq!(
-            encs(&w.world_move.rows()),
-            encs(&[move_of(both, T0 - 2), move_of(other, T0 - 3)]),
-            "the identity's world_move row is deleted"
         );
         assert!(
             erase(both),
             "a world_account row went, so the answer is true"
         );
         assert_eq!(
-            (encs(&w.world_move.rows()), encs(&w.world_account.rows())),
-            (
-                encs(&[move_of(other, T0 - 3)]),
-                encs(&[account_of(other, "k1.lpw42-other")])
-            ),
-            "both of its rows are deleted and the third identity's stay"
+            encs(&w.world_account.rows()),
+            encs(&[account_of(other, "k1.lpw42-other")]),
+            "the erased identity's account row goes and the third identity's stays"
+        );
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            moves_before,
+            "every world_move row is byte-equal"
+        );
+        assert_eq!(
+            fx.writes_to("world_move"),
+            0,
+            "erase_world_account writes no world_move row"
+        );
+    }
+
+    /// `erase_world_move` deletes the identity's `world_move` row and no other identity's, and
+    /// writes nothing for an identity holding none.
+    ///
+    /// kills: an empty body; a delete keyed on another identity or clearing every row; a
+    /// delete issued for an identity with no row.
+    #[test]
+    fn erase_world_move_deletes_only_that_identitys_row_lpw42_6() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (moved, other, unmoved) = (id(0xB6), id(0xB7), id(0xB8));
+        let move_of = |who: Identity, ms: i64| crate::account_checks::WorldMove {
+            identity: who,
+            moved_at_ms: ms,
+        };
+        w.world_move.seed(&move_of(moved, T0 - 11));
+        w.world_move.seed(&move_of(other, T0 - 12));
+        let erase = |who: Identity| {
+            fx.run_as(id(0xB9), |ctx| {
+                crate::account_checks::erase_world_move(ctx, who)
+            })
+        };
+
+        fx.reset_writes();
+        erase(unmoved);
+        assert_eq!(
+            fx.writes_to("world_move"),
+            0,
+            "an identity holding no world_move row costs no write"
+        );
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            encs(&[move_of(moved, T0 - 11), move_of(other, T0 - 12)]),
+            "no row goes for an identity holding none"
+        );
+
+        erase(moved);
+        assert_eq!(
+            encs(&w.world_move.rows()),
+            encs(&[move_of(other, T0 - 12)]),
+            "the identity's row goes and the other identity's stays"
         );
     }
 

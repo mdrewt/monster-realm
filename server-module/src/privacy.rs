@@ -74,6 +74,9 @@ use std::time::Duration;
 /// owns any observation of the purge: `complete_guest_claim`,
 /// the deletion cascade and `request_data_export` each
 /// bind this count and publish it through `observability::mr_log`.
+/// `accounts::move_character` purges the bundles of the identity a character
+/// leaves and publishes nothing: it runs in a procedure's transaction, whose
+/// body logs nothing.
 pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usize {
     let ids: Vec<u64> = ctx
         .db

@@ -226,10 +226,10 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     // Ownership: an enforcing build lets only an entitled caller join. It reads the caller's
     // token and, when the token does not entitle it, the caller's checked account.
     crate::accounts::require_entitled(ctx, &crate::accounts::BUILD_PROFILE, "join_game")?;
-    // A caller whose character plays under another identity checks its account in first.
-    crate::account_checks::require_not_moved(ctx, "join_game")?;
     // Deletion gate: before every other table read and every write.
     crate::guards::require_not_deleting(ctx, "join_game")?;
+    // A caller whose character plays under another identity checks its account in first.
+    crate::account_checks::require_not_moved(ctx, "join_game")?;
     join_with_kit(ctx, name, crate::content_cache::cached_starter_kit())
 }
 

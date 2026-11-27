@@ -1379,9 +1379,9 @@ check is answered with a handle another identity holds, the transaction that sto
 moves the character to the identity the ticket was redeemed for, and the identity it left reads
 its `world_move` row through `my_world_move`.
 
-The cost of one move is measured as datastore row writes on the native test host
-(`server-module/src/account_checks_tests.rs`,
-`the_cost_of_one_move_for_a_collection_of_100_monsters_lpw42_1`, which pins every figure below).
+The cost of one move is measured as datastore write calls on the native test host, which counts
+an update, an insert and a delete as one each, a delete of an absent row included (the cost test
+in `mod character_move` of `server-module/src/account_checks_tests.rs` pins every figure below).
 The source holds 100 monsters, five times the 20 species the content defines; the 5 item stacks
 the content allows; the 1 quest; one row in every single-row table; two pending challenges; one
 export chunk; and an armed re-check. It is not in the game, so its saved position moves.
@@ -1402,11 +1402,10 @@ export chunk; and an armed re-check. It is not in the game, so its saved positio
 | **Total**                                                    | **237** | two committed transactions                                |
 
 So a move costs 2 writes per monster, 1 per item stack, 1 per quest row and about 30 more whatever
-the collection holds. A source that is in the game costs 4 more: its `character`, `move_intent`
-and `player` rows are deleted, and its live position is saved for the destination (3 writes
-where the re-key of a saved position takes 2). Besides its own rows, a move reads the whole
-`profile` table once when the source holds a ladder profile (the membership rescan,
-`ranking::refresh_leaderboard_top`).
+the collection holds. A source that is in the game also has its `character`, `move_intent` and
+`player` rows deleted, and its live position saved for the destination in place of the re-key.
+Besides its own rows, a move reads the whole `profile` table once when the source holds a ladder
+profile (the membership rescan, `ranking::refresh_leaderboard_top`).
 
 Not measured: the wall-clock time of a move on a published module. The host refuses a
 procedure's request to a loopback or private address (P2 in section 2 of

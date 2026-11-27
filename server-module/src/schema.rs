@@ -2202,7 +2202,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "world_move",
         policy: DeletionPolicy::Erase,
-        basis: "names an identity a character was moved away from and when, deleted outright at cascade time and by that identity's next account check; a guest claim, the identity's own unbind and the owner's drop delete it too; exported as what the world tells that client about its character",
+        basis: "names an identity a character was moved away from and when, deleted outright at cascade time, by a guest claim for the guest identity it retires and by that identity's next account check; exported as what the world tells that client about its character",
         exportable: true,
     },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---

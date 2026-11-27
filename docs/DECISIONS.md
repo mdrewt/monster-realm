@@ -2445,8 +2445,8 @@ same at every check, and not a credential.
   switches it off") and, under `Allowlist`, `access::is_admitted`, which admits an identity that
   holds a row exactly while its handle is on the host's list (see "A world that is not open refuses
   an unadmitted identity at connect and in every reducer; the owner relays the door").
-- **Erasing it.** `unbind_world_account()` erases the caller's row with its armed re-check and its
-  `world_move` row, and the owner's `drop_world_binding(identity)` does the same for a named identity. The unbind is the one
+- **Erasing it.** `unbind_world_account()` erases the caller's row with its armed re-check, and the
+  owner's `drop_world_binding(identity)` does the same for a named identity. The unbind is the one
   reducer of the client roster the access rule does not gate, so a player whose handle the host
   took off the list can still erase the link, over a connection the connect reducer let in while
   the player was admitted. When a row goes, that identity's `world_admission` row goes with it,
@@ -2531,8 +2531,8 @@ export bundles. The handle's `world_account` row then points at the new identity
 host mark, the source's armed re-check is deleted, and private `world_move {identity,
 moved_at_ms}` records the identity the character left, which reads its own row through
 `my_world_move`. That identity's next successful check deletes the row, and until then `join_game`
-refuses it (`this character is playing on another client; sign in again to play here`), so
-checking in again with the same account moves the character back.
+and `complete_guest_claim` refuse it (`this character is playing on another client; sign in again
+to play here`), so checking in again with the same account moves the character back.
 
 - **Position.** A source that is in the game has its character's zone, tile and facing saved as
   the destination's `last_position`, and its `character`, `move_intent` and `player` rows are
@@ -2547,9 +2547,16 @@ checking in again with the same account moves the character back.
 - **What stays under the source.** Its `world_move` row; finished battles and what records them
   (`battle`, `battle_summary`, the tactical rows until their sweep, `playtest_event`); and the rows
   about that identity's own connection, admission and login (`player_session`, `world_admission`,
-  `world_binding`, `account`).
-- **Deletion and export.** `account_checks::erase_world_account` deletes an identity's
-  `world_move` row with its account row, and the data export carries the caller's own.
+  `world_admission_attempt`, `world_binding`, `world_bind_nonce`, `account`).
+- **Admission.** A move admits nobody. The source's `world_admission` row is deleted when the
+  access rule was not admitting the source before the move, which is a source under `Allowlist`
+  whose handle is off the host's list, and is kept otherwise, so the first client can connect,
+  read its `world_move` row and check in again. Under `Allowlist` a source with no admission row
+  is refused at connect once its account row is gone, and comes back through the owner's relay.
+- **Deletion and export.** The deletion cascade and a guest claim, for the guest identity it
+  retires, delete an identity's `world_move` row (`account_checks::erase_world_move`), and the
+  data export carries the caller's own. An unbind and the owner's drop leave it: the row goes only
+  by a check, the identity's own or one the owner relays, or by the cascade.
 
 Proved by `server-module/src/account_checks_tests.rs` (`mod character_move`) through the procedures
 with the service's answer stubbed, and by the tests of `accounts::move_character`,
@@ -2569,7 +2576,12 @@ counter passed the first's; because the owner's relay names an identity that is 
 whose `player` row no disconnect would remove; and because a client calls `join_game` after its
 check. The join is refused while a `world_move` row stands because a build that entitles the
 source by its token, or that does not enforce ownership, would otherwise grant it a second
-starter. An address can change hands while a world still presents its `ip:` name, and a ticket
+starter; an unbind that cleared the row would open the same way round the refusal. A guest claim
+is refused for the same caller because the claimed character would be one it can neither join
+with, while the row stands, nor replace by checking in, since it would own a character. While an
+identity holds a `world_account` row, `Allowlist` reads its handle and not its admission row, so
+an admission row left under a source whose handle the host removed would let that identity back
+in the moment its account row moved away. An address can change hands while a world still presents its `ip:` name, and a ticket
 through it would carry a character to the address's new holder. A pending deletion keeps the
 character under the identity its cascade is keyed on. One reason covers the three states of the
 other identity so the answer tells a ticket's holder nothing about it. The relay moves too: an
@@ -2580,8 +2592,10 @@ holds the database.
 row to another identity; a marker, a zeroed row or a tombstone left at the source; a second
 character for one handle; a move through an `ip:` name the world has not confirmed; a move out of
 a battle, a trade or a pending deletion; a log line inside the transaction (its body may run
-twice); a refusal reason that tells which state the other identity is in. Defaults the operator
-may overrule: `playtest_event` rows, seven-day telemetry of the source's battles, stay under the
+twice); a refusal reason that tells which state the other identity is in; an unbind or a drop that
+clears a `world_move` row; a move that leaves the source admitted where the rule was refusing it.
+Defaults the operator may overrule: a ticket is a bearer credential for its 60 s, so whoever
+redeems it first names the identity the character moves to; `playtest_event` rows, seven-day telemetry of the source's battles, stay under the
 source as finished battles do; a move has no cooldown, so two clients of one account can move a
 character back and forth at the rate the check budget allows; a `world_move` row of an identity
 that never returns is kept; and `unbind_world_account`, the owner's `drop_world_binding` and a

@@ -256,14 +256,16 @@ pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) 
 /// refuses a destination that holds a profile, so the insert cannot collide. A source with
 /// no profile costs no write and no scan.
 pub(crate) fn move_profile(ctx: &ReducerContext, from: Identity, to: Identity) {
-    for row in ctx.db.profile().identity().find(from).into_iter() {
-        ctx.db.profile().identity().delete(from);
-        ctx.db.profile().insert(Profile {
-            identity: to,
-            ..row
-        });
-        refresh_leaderboard_top(ctx);
-    }
+    let row = match ctx.db.profile().identity().find(from) {
+        Some(row) => row,
+        None => return,
+    };
+    ctx.db.profile().identity().delete(from);
+    ctx.db.profile().insert(Profile {
+        identity: to,
+        ..row
+    });
+    refresh_leaderboard_top(ctx);
 }
 
 /// True if `identity` has a `profile` row (for

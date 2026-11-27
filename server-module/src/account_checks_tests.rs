@@ -3309,6 +3309,84 @@ mod character_move {
         assert_eq!(moves(&m.c), vec![(bob().to_byte_array(), NOW)]);
     }
 
+    /// A source whose second monster has lost its `monster_pub` twin cannot be moved: the check
+    /// answers "the character could not be moved" and every registered table keeps its rows
+    /// with no write but the budget's charge (the first monster's re-key is rolled back).
+    ///
+    /// kills: the move's error swallowed (`let _ = move_character(..)`), which re-points the
+    /// handle over a half-moved character; the refusal text changed.
+    #[test]
+    fn a_move_that_fails_refuses_and_changes_nothing_lpw42_1() {
+        assert_eq!(REJECT_MOVE_FAILED, "the character could not be moved");
+        let fx = fixture();
+        let m = moving_world(&fx);
+        assert_eq!(
+            m.monster_pub.remove(SRC_MONSTERS[1]),
+            1,
+            "fixture: the second monster's twin goes"
+        );
+        let before = snapshot(&m);
+        fx.reset_writes();
+        let (got, _) = alice_checks(&fx, spki_answer());
+        assert_eq!(got, Err(REJECT_MOVE_FAILED.to_string()));
+        assert_eq!(snapshot(&m), before, "every row stays");
+        assert_eq!(
+            written(&fx, &m),
+            Vec::<(&str, u32)>::new(),
+            "no write but the budget's"
+        );
+    }
+
+    /// The world's owner checks itself in under `Allowlist` with a ticket for a handle another
+    /// identity holds and that the list lacks: the character moves to the owner, the handle's
+    /// row is the owner's, and the handle is on the list.
+    ///
+    /// kills: the owner's list step skipped when the handle is held.
+    #[test]
+    fn the_owners_own_move_under_allowlist_lists_its_handle_lpw42_1() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        m.c.access.seed(&rule_row(WorldAccessRule::Allowlist));
+        let mut http = HttpQueue::new();
+        http.push(spki_answer());
+        let got = check_as(&fx, owner(), NOW, &mut http, &test_profile(), &ticket());
+        assert_eq!(got, Ok(true));
+        assert_eq!(listed(&m.c), strings(&[HANDLE_B]), "the handle is listed");
+        assert_eq!(character_rows(&m, owner()), character_expected(owner()));
+        assert_eq!(
+            accounts(&m.c),
+            vec![view(&account_row(owner(), HANDLE_B, true, NOW, true))]
+        );
+    }
+
+    /// The same check onto a full list (256 handles, none the answered one) is refused with
+    /// the list's reason, and every registered table keeps its rows with no write but the
+    /// budget's charge.
+    ///
+    /// kills: the list bound skipped when the handle is held; the character moved before the
+    /// list refuses.
+    #[test]
+    fn the_owners_own_move_onto_a_full_allowlist_is_refused_and_changes_nothing_lpw42_1() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        m.c.access.seed(&rule_row(WorldAccessRule::Allowlist));
+        let full: Vec<String> = (0..256).map(|i| format!("k1.full{i:04}")).collect();
+        let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+        list(&m.c, &refs);
+        let before = snapshot(&m);
+        fx.reset_writes();
+        let mut http = HttpQueue::new();
+        http.push(spki_answer());
+        let got = check_as(&fx, owner(), NOW, &mut http, &test_profile(), &ticket());
+        assert_eq!(got, Err(REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS.to_string()));
+        assert_eq!(snapshot(&m), before, "every row stays");
+        assert_eq!(
+            written(&fx, &m),
+            Vec::<(&str, u32)>::new(),
+            "no write but the budget's"
+        );
+    }
+
     /// What a move does with a table that holds an identity's rows.
     #[derive(Clone, Copy, Debug)]
     enum Fate {
@@ -3521,8 +3599,11 @@ mod character_move {
     /// - `world_account`: the handle's row updated in place (1); `recheck_schedule`: the
     ///   source's armed row deleted (1); `world_check_budget`: the charge (1).
     ///
-    /// Every other registered table is written 0 times. `world_move` is not counted here (its
-    /// row is pinned by the tests above).
+    /// - `world_move`: the source's row inserted (1); the caller holds none, so nothing else
+    ///   is written to it.
+    ///
+    /// Every other registered table is written 0 times (in this `Open` world `world_admission`
+    /// among them).
     ///
     /// kills: a move that re-writes rows it need not (a second pass over the monsters, a
     /// rescan per table, a wallet row deleted and re-created); a write to a table the move
@@ -3570,7 +3651,6 @@ mod character_move {
         tables.push("world_check_budget");
         let got_writes: BTreeMap<&str, u32> = tables
             .into_iter()
-            .filter(|t| *t != "world_move")
             .map(|t| (t, fx.writes_to(t)))
             .filter(|(_, n)| *n != 0)
             .collect();
@@ -3595,6 +3675,7 @@ mod character_move {
             ("battle_challenge", 2),
             ("battle_challenge_reaper_schedule", 2),
             ("export_bundle", 1),
+            ("world_move", 1),
         ]
         .into_iter()
         .collect();
@@ -3891,6 +3972,86 @@ mod character_move {
         let (got, _) = alice_checks(&fx, spki_answer());
         assert_eq!(got, Ok(true));
         assert_eq!(character_rows(&m, alice()), character_expected(alice()));
+    }
+
+    /// Whether the rule in force lets `who` in, read as `who` at [`NOW`].
+    fn admitted(fx: &Fixture, who: Identity) -> bool {
+        fx.run_as_at(who, at(NOW), |ctx| crate::access::is_admitted(ctx, who))
+    }
+
+    fn admission_of(m: &MW<'_>, who: Identity) -> Vec<Vec<u8>> {
+        naming(m.c.admission.rows(), |r: &WorldAdmission| r.identity == who)
+    }
+
+    /// Under `Allowlist`, a source whose handle the list lacks is refused before the move
+    /// despite its `world_admission` row; the owner relays the caller's ticket, the character
+    /// moves, the source's admission row is deleted, and the source is still refused.
+    ///
+    /// kills: a move that leaves the stale admission row, which admits the source once the
+    /// handle's row is no longer its own.
+    #[test]
+    fn a_move_admits_no_source_the_list_refused_lpw42_3() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        m.c.access.seed(&rule_row(WorldAccessRule::Allowlist));
+        assert!(
+            !admission_of(&m, bob()).is_empty(),
+            "fixture: the source holds an admission row"
+        );
+        assert!(!admitted(&fx, bob()), "refused before the move");
+        let mut http = HttpQueue::new();
+        http.push(spki_answer());
+        let got = relay_as(
+            &fx,
+            owner(),
+            alice(),
+            NOW,
+            &mut http,
+            &test_profile(),
+            &ticket(),
+        );
+        assert_eq!(got, Ok(true));
+        assert_eq!(character_rows(&m, alice()), character_expected(alice()));
+        assert_eq!(
+            admission_of(&m, bob()),
+            Vec::<Vec<u8>>::new(),
+            "the source's admission row goes"
+        );
+        assert!(!admitted(&fx, bob()), "refused after the move");
+    }
+
+    /// Under `Allowlist`, a source whose handle is listed (so it is admitted) keeps its
+    /// `world_admission` row through the move, byte for byte and unwritten.
+    ///
+    /// kills: the admission row deleted whatever the rule says of the source.
+    #[test]
+    fn a_move_keeps_the_admission_of_a_source_the_list_admits_lpw42_3() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        m.c.access.seed(&rule_row(WorldAccessRule::Allowlist));
+        list(&m.c, &[HANDLE_B]);
+        assert!(admitted(&fx, bob()), "fixture: admitted before the move");
+        let before = admission_of(&m, bob());
+        assert!(
+            !before.is_empty(),
+            "fixture: the source holds an admission row"
+        );
+        fx.reset_writes();
+        let mut http = HttpQueue::new();
+        http.push(spki_answer());
+        let got = relay_as(
+            &fx,
+            owner(),
+            alice(),
+            NOW,
+            &mut http,
+            &test_profile(),
+            &ticket(),
+        );
+        assert_eq!(got, Ok(true));
+        assert_eq!(character_rows(&m, alice()), character_expected(alice()));
+        assert_eq!(admission_of(&m, bob()), before, "the admission row stays");
+        assert_eq!(fx.writes_to("world_admission"), 0, "and is not written");
     }
 
     // ---------------------------------------------------------------------------------

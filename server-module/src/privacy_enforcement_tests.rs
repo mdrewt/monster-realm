@@ -2007,8 +2007,9 @@ fn a_procedures_verdict_holds_every_classified_table_its_body_reaches_lpw23_9() 
 /// Over the real crate with every manifest table classified: the procedures are exactly
 /// `check_account`, `check_account_for` and `recheck_account`. The first two write
 /// `world_account`, `world_check_budget` and `world_allowlist`, the redeem's own `world_move`
-/// and `recheck_schedule`, and every table the character move reaches; the re-check writes
-/// exactly `world_account` and `world_allowlist`.
+/// and `recheck_schedule`, the source's withdrawn admission (`access::withdraw_admission`:
+/// `world_admission`, so a move admits nobody), and every table the character move reaches;
+/// the re-check writes exactly `world_account` and `world_allowlist`.
 ///
 /// The move's tables, per callee of `accounts::move_character`, each followed through every
 /// crate fn it calls:
@@ -2047,6 +2048,7 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
         "world_allowlist",
         "recheck_schedule",
         "world_move",
+        "world_admission",
     ] {
         assert!(
             every_table.contains(table),
@@ -2071,9 +2073,11 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
         "world_account",
         "world_allowlist",
         "world_check_budget",
-        // The redeem: the source's move record and its disarmed re-check.
+        // The redeem: the source's move record, its disarmed re-check and its withdrawn
+        // admission.
         "world_move",
         "recheck_schedule",
+        "world_admission",
         // The character move.
         "battle_challenge",
         "battle_challenge_reaper_schedule",

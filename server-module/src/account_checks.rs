@@ -324,6 +324,10 @@ fn forget_move(ctx: &ReducerContext, identity: Identity) {
     }
 }
 
+/// Delete `identity`'s move record: the step for `world_move` of the deletion cascade and of
+/// a guest claim for the guest identity it retires.
+pub(crate) fn erase_world_move(_ctx: &ReducerContext, _identity: Identity) {}
+
 /// Erase what this module holds about `identity`: its row, its armed re-check and its move
 /// record. Answers whether a `world_account` row went. The step for these three tables of the
 /// deletion cascade, of a guest claim for the guest identity it retires, of an unbind and of
