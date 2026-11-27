@@ -5600,6 +5600,26 @@ describe('connect(): the world account gate', { sequential: true }, () => {
     expect(tickets.ticket, 'checkIn() runs the first contact').toHaveBeenCalledTimes(2);
   });
 
+  it('after the automatic first contact reported unreachable and a checkIn() contact ended entitled, a rebuilt snapshot that finds neither row reports sign-in-needed, not unreachable, and asks nothing [lpw-24.1]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValueOnce({ kind: 'unreachable' });
+    const { handle, b } = await wgBoot(opts);
+    expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'unreachable' }]);
+    handle.checkIn();
+    await wgFlush();
+    expect(events, 'precondition: the checkIn() contact ended').toEqual([
+      { kind: 'unreachable' },
+      { kind: 'entitled' },
+    ]);
+    expect(b.checkAccount.mock.calls, 'precondition: one check').toEqual([[{ ticket: WG_TICKET }]]);
+    expect(b.joinGame, 'precondition: the entitled identity joined').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0);
+    expect(events.slice(2)).toEqual([{ kind: 'sign-in-needed' }]);
+    expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(2);
+    expect(b1.checkAccount).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+  });
+
   it('checkIn() answered sign-in-needed reports the event, then starts the sign-in once [lpw-24.5]', async () => {
     const { opts, tickets, events, order } = wgOpts('local');
     tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });

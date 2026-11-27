@@ -486,13 +486,12 @@ const ACCOUNT_REQUIRED = TARGET_KIND === 'official' && SIGN_IN_MODE === 'oidc';
 // signing in to the account service, and only where the build names the service for worlds:
 // WORLD_TICKET_ISSUER is the one read of that value, and the sign-in and the ticket route both
 // use it. The desktop shell's page holds no login token, so it builds no source. With no source,
-// or no name this page authenticated the server by, `connect` gets no `world`: it joins as it
-// would a server that checks nothing, and the module's answer is shown.
-const WORLD_KIND = TARGET_KIND === 'local' || TARGET_KIND === 'private';
-const WORLD_TICKET_ISSUER =
-  WORLD_KIND && !DESKTOP_SHELL
-    ? ((import.meta.env.VITE_MR_WORLD_TICKET_ISSUER as string | undefined) ?? '')
-    : '';
+// or no name this page authenticated the server by (`worldNameFor` names only a `local` or
+// `private` target), `connect` gets no `world`: it joins as it would a server that checks
+// nothing, and the module's answer is shown.
+const WORLD_TICKET_ISSUER = DESKTOP_SHELL
+  ? ''
+  : ((import.meta.env.VITE_MR_WORLD_TICKET_ISSUER as string | undefined) ?? '');
 const WORLD_NAME = worldNameFor({
   kind: TARGET_KIND,
   uri: URI,
@@ -1815,6 +1814,9 @@ let saidGateLine: string | null = null;
 const formatGateTime = (ms: number): string =>
   new Intl.DateTimeFormat(LOCALE, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms));
 
+/** Whether neither gate is up. */
+const gatesDown = (): boolean => signInGate.phase === 'hidden' && worldGate.phase === 'hidden';
+
 /** The gate's view: a world's gate when this client can ask for its account check, else the
  *  sign-in gate's. Undefined while both are down, and for a build that has nothing to offer. */
 const signInGateView = () =>
@@ -1826,7 +1828,7 @@ const signInGateView = () =>
  *  applied snapshot: `onReady` shows a gate raised ahead of it. `onReconnect` shows it again at
  *  its tail, after the sweep closed the frame and the feedback reset cleared the status line. */
 function showSignInGate(): void {
-  if ((signInGate.phase === 'hidden' && worldGate.phase === 'hidden') || identity === '') return;
+  if (gatesDown() || identity === '') return;
   const view = signInGateView();
   if (view === undefined) {
     const line =
@@ -1852,11 +1854,16 @@ function lowerSignInGate(): void {
   syncStack();
 }
 
+/** Show what the two gates say after a step: the frame comes down once neither is up. */
+function syncGateFrame(): void {
+  if (gatesDown()) lowerSignInGate();
+  else showSignInGate();
+}
+
 /** One gate event: step the model, then show what it says. */
 function applySignInGate(event: SignInGateEvent): void {
   signInGate = signInGateStep(signInGate, event);
-  if (signInGate.phase === 'hidden' && worldGate.phase === 'hidden') lowerSignInGate();
-  else showSignInGate();
+  syncGateFrame();
 }
 
 /** One event of a world's gate. A step that changes nothing (the own player row while the
@@ -1865,8 +1872,7 @@ function applyWorldGate(event: WorldGateEvent): void {
   const next = worldGateStep(worldGate, event);
   if (next === worldGate) return;
   worldGate = next;
-  if (signInGate.phase === 'hidden' && worldGate.phase === 'hidden') lowerSignInGate();
-  else showSignInGate();
+  syncGateFrame();
 }
 
 /** Start's "close every frame" while the gate is up. On the gate it is B: the gate's stays line,
