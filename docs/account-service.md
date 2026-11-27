@@ -205,8 +205,8 @@ own. No module calls them in this build.
   whatever their bodies and answers; and one account in one world is checked by handle from one
   source address at most 12 times in any hour, so a caller who harvested handles cannot use up
   what the player's own world may ask. A limit counts an IPv6 source under its /64. A handle
-  check the service failed keeps its place in that count, so an outage cannot be used to ask
-  about one account without bound. Anyone can make keys in the two world-check limits, so each
+  check the service failed keeps its place in that count, so nobody can turn an outage into
+  unbounded questions about one account. Anyone can make keys in the two world-check limits, so each
   holds a bounded number at once: 1,000,000 source addresses and 250,000 account, world and
   source triples. Past its bound a limit refuses every key it does not already hold (`429`)
   until old hits die, so a flood from that many sources refuses new callers for as long as it
