@@ -75,8 +75,10 @@ export interface SteamTicketExchangeOptions {
  *
  * A SteamID's window counts the exchanges that were decided, entitled or refused. One that Steam
  * failed to answer, or that the entitlement source threw on, is given back: an outage must not
- * lock a player out once it ends. An address's hits are never given back, so the address window
- * bounds every call to Steam a caller can cause.
+ * lock a player out once it ends. What is given back is the SteamID's newest hit, which keeps the
+ * count right; among exchanges in flight together, the hit left may be seconds older than the
+ * one decided. An address's hits are never given back, so the address window bounds every call
+ * to Steam a caller can cause.
  */
 export function createSteamTicketExchange(
   options: SteamTicketExchangeOptions,
@@ -95,15 +97,15 @@ export function createSteamTicketExchange(
     maxKeys: MAX_LIMIT_KEYS,
   });
   // A ticket's player never changes, so an entry is never wrong; the bound is for memory alone.
-  const players = new Map<string, SteamId>();
+  const steamIdOfTicket = new Map<string, SteamId>();
 
   const remember = (key: string, steamId: SteamId): void => {
-    if (players.has(key)) return;
-    if (players.size >= MAX_REMEMBERED_TICKETS) {
-      const oldest = players.keys().next();
-      if (oldest.done !== true) players.delete(oldest.value);
+    if (steamIdOfTicket.has(key)) return;
+    if (steamIdOfTicket.size >= MAX_REMEMBERED_TICKETS) {
+      const oldest = steamIdOfTicket.keys().next();
+      if (oldest.done !== true) steamIdOfTicket.delete(oldest.value);
     }
-    players.set(key, steamId);
+    steamIdOfTicket.set(key, steamId);
   };
 
   return async (ticket, address) => {
@@ -111,7 +113,7 @@ export function createSteamTicketExchange(
     if (!addressLimit.take(source)) return limited(addressLimit, source);
 
     const key = ticketKey(ticket);
-    const remembered = players.get(key);
+    const remembered = steamIdOfTicket.get(key);
     // A read, never a hit: only an exchange Steam authenticated counts against a SteamID.
     if (remembered !== undefined && steamIdLimit.retryAfter(remembered) > 0) {
       return limited(steamIdLimit, remembered);
@@ -204,7 +206,8 @@ export function createSteamTicketGrant(options: SteamTicketGrantOptions): SteamT
         STEAM_TICKET_GRANT,
         async (ctx) => {
           const ticket: unknown = ctx.oidc.params[TICKET_PARAMETER];
-          if (typeof ticket !== 'string' || ticket === '') {
+          // The provider reads an empty parameter as an absent one.
+          if (typeof ticket !== 'string') {
             throw new errors.InvalidRequest(`missing required parameter '${TICKET_PARAMETER}'`);
           }
           // Never the provider's own idea of the caller: behind a proxy that is the proxy.

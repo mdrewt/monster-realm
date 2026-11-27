@@ -1,15 +1,16 @@
 import { mkdirSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { type AddressInfo, isIPv6 } from 'node:net';
+import type { Adapter } from 'oidc-provider';
 import { createAttestRoute } from './attest.ts';
-import { type Config, ConfigError, loadConfig } from './config.ts';
+import { type Config, ConfigError, loadConfig, type Profile } from './config.ts';
 import { denyList, steamAccounts } from './denyList.ts';
 import { signInStepFor } from './interactions/router.ts';
 import { createHandleKeys, loadAttestationKeys, loadSigningKeys, readHandleKeys } from './keys.ts';
 import { createAccountProvider } from './provider.ts';
 import { createSourceAddress } from './rateLimit.ts';
-import { steamEntitlementSource } from './steam/ownership.ts';
-import { createSteamWebApi } from './steam/webApi.ts';
+import { type SteamEntitlement, type SteamId, steamEntitlementSource } from './steam/ownership.ts';
+import { createSteamWebApi, type SteamWebApi } from './steam/webApi.ts';
 import { openAccountStore } from './store/sqliteAdapter.ts';
 import { createHandleCodec } from './worldHandle.ts';
 import { createWorldRoutes, createWorldTickets } from './worldTicket.ts';
@@ -23,6 +24,23 @@ export interface RunningServer {
 }
 
 const PURGE_INTERVAL_MS = 60_000;
+
+/**
+ * How a profile decides whether a Steam player is entitled, as the running service wires it: the
+ * store's deny-list and dev flag, and Steam's ownership answer through `steam`.
+ */
+export function steamEntitlement(
+  profile: Profile,
+  adapter: (model: string) => Adapter,
+  steam: Pick<SteamWebApi, 'checkAppOwnership'>,
+): (steamId: SteamId) => Promise<SteamEntitlement> {
+  return steamEntitlementSource({
+    profile,
+    denied: denyList(adapter).has,
+    devFlag: steamAccounts(adapter).entitled,
+    checkAppOwnership: steam.checkAppOwnership,
+  });
+}
 
 /**
  * Starts the account service from an env record. A setting the service refuses rejects with its
@@ -68,12 +86,7 @@ export async function startServer(
           ? undefined
           : {
               authenticateTicket: steam.authenticateTicket,
-              entitlement: steamEntitlementSource({
-                profile: config.profile,
-                denied: denyList(store.adapter).has,
-                devFlag: steamAccounts(store.adapter).entitled,
-                checkAppOwnership: steam.checkAppOwnership,
-              }),
+              entitlement: steamEntitlement(config.profile, store.adapter, steam),
               sourceAddress,
               log,
             },
