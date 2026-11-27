@@ -155,6 +155,13 @@ fn ensure_zone_schedules(ctx: &ReducerContext) {
     for zone_id in to_add {
         crate::movement::arm_zone_tick(ctx, zone_id);
     }
+    // PROTOTYPE lpw-26 D: every occupied zone gets its wander row back.
+    let mut occupied = occupied;
+    occupied.sort_unstable();
+    occupied.dedup();
+    for zone_id in occupied {
+        crate::movement::arm_zone_wander(ctx, zone_id);
+    }
 }
 
 // --- Lifecycle reducers -----------------------------------------------------
