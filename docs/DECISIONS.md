@@ -1342,7 +1342,8 @@ database without planning a `--delete-data` republish.
 ## The crate's `unstable` feature is on; the generated definition is checked instead
 
 **Decision.** The workspace's `spacetimedb` dependency enables the crate's `unstable` feature
-(operator, 2026-11-22), and the module uses nothing it gates. At 2.16.1 the feature gates HTTP
+(operator, 2026-11-22), and the module uses nothing it gates: its procedures and their HTTP
+client (`server-module/src/account_checks.rs`) are outside the feature. At 2.16.1 the feature gates HTTP
 handlers and routes (`spacetimedb::http::{handler, router, HandlerContext}`), row filters
 (`client_visibility_filter`, `Filter`), `volatile_nonatomic_schedule_immediate!` and a unique
 column's `insert_or_update`/`try_insert_or_update`; procedures, their transactions and their HTTP
@@ -1350,7 +1351,8 @@ client are not behind it (`docs/spacetimedb-2.16.md`). What keeps a handler, a r
 filter out of the module is a check of the generated module definition, not the feature: `findDefinitionViolations` in `scripts/verify-release-reducers.mjs`
 refuses each, at any submodule depth, and any section kind it does not know, on the default build
 (`just module-definition`, in `just ci`) and on every artefact `just release-module` makes. The
-reducer census refuses every `procedure` attribute. Nothing checks the immediate-schedule call or
+same check refuses any procedure but the three account checks and any schedule but the module's
+own, and the reducer census refuses a `procedure` attribute outside `account_checks.rs`. Nothing checks the immediate-schedule call or
 `insert_or_update`, which are calls, not declarations: review keeps them out. The scheduled call is
 the one that matters to the access design. The host queues it when the call runs, so it runs even if
 the calling reducer then fails, and it runs as the database identity, so it passes every
@@ -1505,11 +1507,15 @@ node_exporter, Caddy, and a trace relay) lives in `ops/observability/`, bound to
 loopback.
 
 **Why.** Reducers cannot make outbound calls and should not read clocks, so the host
-has to be the source of timings and counters. `/v1/metrics` answers without
+has to be the source of timings and counters. The module's only outbound requests are the
+account checks' (three procedures in `server-module/src/account_checks.rs`, to the one
+account service the build names, see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"); none of them carries a signal.
+`/v1/metrics` answers without
 authentication and labels its series by database, so everything stays on loopback.
 
-**Rules out.** An exporter or polling reducer; ad-hoc `log::` formats in new code;
-exposing the stack without changing the Caddy bind address on purpose.
+**Rules out.** An exporter or polling reducer; a procedure that sends telemetry; ad-hoc
+`log::` formats in new code; exposing the stack without changing the Caddy bind address on
+purpose.
 
 ## Client UI: virtual buttons, one context stack, one overlay frame
 
@@ -2419,129 +2425,122 @@ for the whole world. The target also sets `battle_summary`'s cap and the leaderb
 **Rules out.** Sizing scale work from playtest populations, where 2–5 players hide every such cost;
 a per-input, per-batch or per-join cost that grows with stored accounts or monsters owned.
 
-## A private world verifies an account by a per-world attestation our account service signs
+## A private world checks an account itself: a one-use ticket at first contact, then the account's handle
 
 **Decision.** In a single-player or friends world the player connects under that world's own
-anonymous token and never sends an account token. To bind the world to an account, the client asks
-a small attestation route beside our account service (the sign-in broker) for a short-lived
-attestation and passes it to a reducer. The route signs with its own key and issuer name, neither of
-which the official server trusts. The attestation is a compact signed JWT with a key id (`kid`); it
-lives minutes, names one world and carries the nonce that world chose. The module verifies it with
-a verifier compiled in, against a `kid`-keyed list of accepted attestation keys that is a constant of
-the build, then records the binding; the world needs no network afterwards. A player erases their
-own binding without the host (operator, <https://github.com/mdrewt/monster-realm/issues/847>). The bind is built in
-`server-module/src/world_binding.rs`. `request_bind_nonce` gives the caller one nonce, read through
-the owner-scoped view `my_bind_nonce`: a row per identity in private `world_bind_nonce`, 16 bytes of
-`ctx.random()` XORed with the identity's first 16 bytes (two identities never share one, though
-`ctx.random()` is a function of the call's timestamp and nothing rests on its secrecy), 32 hex
-characters, good for 5 minutes and replaced by the next request; each request deletes at most 32
-expired rows. `bind_world_account(attestation)` refuses, each with its own error and no write, what
-the verifier refuses, an `exp` reached (host clock, no leeway), an `aud` that is not byte for byte a
-row of private `world_name`, no unexpired nonce for the identity, and another nonce. Otherwise it
-writes private `world_binding` `{identity, account_subject, bound_at_ms, entitled, key_id}`, which
-the identity reads through `my_world_binding`, and deletes the nonce. A row the identity holds is
-replaced: the latest attestation an identity presents wins. The deletion cascade erases `world_binding`
-and `world_bind_nonce` (`world_binding::erase_world_binding`), the data export does not include a
-binding, and a guest claim erases the retired guest's binding and nonce and moves neither to the
-claimer. A player erases their own binding with
-`unbind_world_account()`: it deletes the caller's `world_binding` row, whatever key signed it, and
-the caller's `world_bind_nonce` row, expired or not; a caller with no binding gets `Ok` with no
-write and keeps its nonce. It is the one reducer of the client roster the access rule does not
-gate, so a player whose account the host removed from the list can still erase the link, over a
-connection the connect reducer let in while the player was admitted. A build that binds nothing
-refuses it with the binding reducers' refusal before anything else, and a bound caller whose
-account is pending deletion is refused by the deletion gate (the cascade erases the binding).
-When the erased binding is one the build counts, the caller's `world_admission` row goes with it,
-under every rule: an unbind never lets in an identity whose account the owner removed. Once
-unbound, the identity gets back into a world that is not `Open` only through the owner:
-`set_world_access`'s admission list (the host gate's password door, designed and not built, admits
-through it), a relayed bind, or
-a change from `Open` while it is connected (the carry-over). Its account stays on the list. The owner
-erases another identity's binding with `drop_world_binding(identity)`, which does to that identity what
-the unbind does to its caller (the binding row whatever key signed it, the nonce row, and the admission
-row when the build counts the binding) and does not write the list. It refuses, with no write and in
-this order: a build that binds nothing; a caller that is not the owner; an identity whose account is
-pending deletion (the cascade erases that binding and reads the account to delist from it); an
-identity with no binding (`that identity holds no world binding`). The owner relays both calls for another
-identity (`request_bind_nonce_for`, `bind_world_account_for`); the self-serve forms make the
-admission check and the deletion gate, the relayed forms the owner check and the deletion gate on
-`who`. The route rate-limits binds per account and does not keep the world an attestation was
-addressed to past the request. The client's bind flow is not built; the design has the attestation
-fetched behind one source interface, beside the sign-in seam (`ConnectCredential`). The official server refuses attestation binding outright. The route issues an attestation only to an account that owns the game and puts the entitlement (`mr_ent`) in it, and every player of a single-player or friends world binds before their first `join_game` there, the world's own player included (see "Every player must own the game on Steam, for now"). The route is the account service's `POST /attest` (harness spec `M-account-service.spec.md` acs-3). Operator ruling,
-<https://github.com/mdrewt/monster-realm/issues/821>; the official server's refusal is "The
-official build holds no attestation key and a world build trusts no login issuer", what the
-attestation names is "An attestation names the server as the player's own software authenticated
-it", and the measurements behind both are `docs/local-play.md` §3; the verifier is "The attestation is signed with Ed25519 and
-checked by `ed25519-dalek` compiled into the module". Steam's own game-server authentication (`BeginAuthSession`) was weighed for friends' servers and not chosen: a browser player has no Steam ticket, so a browser that binds needs the attestation anyway ("An attestation names the server as the player's own software authenticated it" says where one can), and one mechanism serves both.
+anonymous token and never sends an account token. The world asks our account service itself whether
+the player's account owns the game, through three procedures in
+`server-module/src/account_checks.rs`, and keeps the answer in private `world_account {handle,
+identity, entitled, checked_at_ms, is_host}`, which an identity reads through `my_world_account`
+(its own row alone). A handle is what the service answers for one account in one world: opaque, the
+same at every check, and not a credential.
 
-**Decided, not built: the world checks the account itself (lpw-35).** The binding above is what
-runs until the slices below merge. It is to be replaced by a one-use join ticket that the world
-redeems at the account service through its own procedures. The client asks `POST /ticket` for a
-ticket naming the world as fork (c) names it, and calls the procedure `check_account(ticket)`. The
-procedure presents the ticket with the world's names and database identity at `POST /world/check`,
-and receives a handle and the entitlement. A handle is opaque, one per account per world, and not a
-credential. The world keys a player's character on that handle, and moves the character to
-whichever of its own identities last proved it, so one account is one character in a world
-whatever the client. After the first contact the world re-checks by handle itself:
+- **First contact.** A client whose identity the world does not know asks the account service's
+  `POST /ticket` for a one-use ticket naming the world as its own software authenticated it, and
+  calls `check_account(ticket)`. The procedure refuses a ticket that is not 43 base64url
+  characters, and refuses once the world has sent 30 ticket redeems in the current minute (the one
+  row of `world_check_budget`); neither refusal sends anything. Otherwise it presents the ticket,
+  every name the world answers to and its database identity at `POST /world/check` under a 3 s
+  timeout, and stores the answered handle and entitlement, a negative answer included, in one
+  transaction; `Ok` carries whether the account owns the game. A `403` (`the account service
+  refused the ticket`) and any other failure, a timeout included (`the account service gave no
+  answer`), refuse the call and change no `world_account` row. An identity the access rule has not
+  admitted cannot connect, so the world's owner relays its ticket through `check_account_for(who,
+  ticket)`; the relay counts in the budget and is never refused by it. A handle another identity
+  holds is refused, and so is a second account for an identity that holds one (it unbinds first).
+- **Each later connection.** The connect reducer arms one one-shot `recheck_schedule` row for an
+  identity whose row was last checked 10 minutes ago or more and that has none armed. The host runs
+  `recheck_account` from it (any other caller is refused before anything is sent), which presents
+  the stored handle and stores the answer: a handle the service does not know is stored as not
+  entitled; a handle under the service's newer key replaces the old one in `world_account` and in
+  `world_allowlist` in the same transaction; a newer handle another identity already holds leaves
+  the row's handle and stores the standing on it. The connection is admitted and entitled by the
+  stored row the whole time, and a row never expires. A run with no answer changes nothing, the
+  host spends the one-shot row whatever the run did, and the next connection asks again.
+- **Deciding after a wait.** Other transactions run while a request waits, and a transaction's body
+  may run twice. The transaction that stores an answer reads again every row it decides on (the
+  admission or the ownership, the deletion state, the world's names, who holds the handle), and a
+  re-check leaves alone a row that was unbound, checked again or replaced meanwhile, so an older
+  answer never overwrites a newer one. A refusal is logged once, outside any transaction. No log
+  line, table or return value holds a ticket, and no log line or return value holds a handle.
+- **What reads the row.** `accounts::entitled` (see "Ownership is enforced unless a dev feature
+  switches it off") and, under `Allowlist`, `access::is_admitted`, which admits an identity that
+  holds a row exactly while its handle is on the host's list (see "A world that is not open refuses
+  an unadmitted identity at connect and in every reducer; the owner relays the door").
+- **Erasing it.** `unbind_world_account()` erases the caller's row with its armed re-check, and the
+  owner's `drop_world_binding(identity)` does the same for a named identity. The unbind is the one
+  reducer of the client roster the access rule does not gate, so a player whose handle the host
+  took off the list can still erase the link, over a connection the connect reducer let in while
+  the player was admitted. When a row goes, that identity's `world_admission` row goes with it,
+  under every rule. A caller with nothing to erase gets `Ok` with no write (the drop answers `that
+  identity holds no world binding`), and an account pending deletion is refused by the deletion
+  gate. The deletion cascade takes the identity's handle off the host's list and erases the row;
+  a guest claim erases the retired guest's row and moves none; the data export carries the
+  caller's own row.
+- **Which service.** `BuildProfile::world_check_url` (see "The official build holds no attestation
+  key and a world build trusts no login issuer").
+- **What keeps the surface closed.** `findDefinitionViolations`
+  (`scripts/verify-release-reducers.mjs`) refuses a module definition that declares any procedure
+  but these three, or any schedule but the module's own, on the default build and on each release
+  artefact. The reducer census (`server-module/src/privacy_enforcement_tests.rs`) refuses a
+  `procedure` attribute outside `account_checks.rs` and pins the tables each procedure reaches:
+  `world_account`, `world_check_budget` and `world_allowlist` for the two first-contact
+  procedures, `world_account` and `world_allowlist` for the re-check. The client's procedure
+  surface is pinned by `evals/client-surface-privacy.eval.mjs`, and the wire contract records each
+  procedure's arguments and return type.
 
-- once at each connection, from a one-shot row `client_connected` arms;
-- once a day for the hosting account alone, from an interval row, which also confirms the public
-  address the world is reached at.
-
-With no answer, a known identity keeps its last stored status. No build holds an attestation key,
-and no world stores an account subject. Built by acs-14, lpw-41, lpw-23 and lpw-24. lpw-33 removes
-the binding's tables, reducers, crates and key lists, and acs-15 removes `POST /attest` and the
-attestation keys. The measurements on 2.16.1, the four
-alternatives with a judge's scores, the procedures and the slice changes are in
-`docs/refactors/account-checks.md`. The choice rests on the bundled host's `[module-http]` being on,
-which the operator decided (#874), replacing lpw-12's default `disabled`. With it off, a shell world
-checks nobody, and the attestation, which a world verifies offline, scores higher. On, it adds
-nothing a host's owner could not already do: the host refuses loopback and private addresses (P2),
-and the module reaches only the account service the build names. Why the ticket over the attestation: a world that asks for itself
-re-checks a client that never asks. No key or verifier sits in any build. And a reader of a
-world's data finds pseudonyms, not account subjects.
+The attestation binding this replaces is still compiled (`server-module/src/world_binding.rs`: the
+tables `world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers
+and the verifier). It records a binding that nothing reads: it entitles and admits nobody. lpw-33
+removes it and acs-15 removes `POST /attest`. Not built: the character that follows the account
+from one identity to another (lpw-42; until then the second identity of one account is refused), the
+host account's daily check and the rule for a world's `ip:` names (lpw-43; until then every name is
+presented), the client's half (lpw-24) and the gate that refuses a caller who is not entitled in
+every reducer (lpw-36). Proved by `server-module/src/account_checks_tests.rs` on the native test
+host, with every answer of the service stubbed. The measurements on 2.16.1, the four alternatives
+with a judge's scores and the slice changes are in `docs/refactors/account-checks.md`.
 
 **Why.** A world's host owns its database and its signing key, and every standalone host calls
 itself the issuer `localhost`, so a world cannot prove its name to a third-party provider and an
-account token given to it could be replayed against the official server. A provider such as Steam
-or a hosted OIDC service issues only ordinary sign-in tokens and cannot sign a per-world statement
-under a separate key, so the signer has to be ours. A per-world attestation that lives minutes
-needs one signature check in the module, puts no long-lived secret on the client, makes revoking an
-account's ability to bind new worlds automatic, and passes every bind through a service where abuse
-can be rate-limited and seen. A key list with `kid` lets the attestation key rotate by shipping the
-next key before the old one retires. The unbind takes the admission row because, while a binding
-the build counts exists, `Allowlist` governs the identity by its account alone and leaves the row
-unread, and every rule change keeps the row: an unbind that kept it would let back in an identity
-whose account the owner removed. The paths are an unbind after the delisting, an unbind while still
-listed followed by the delisting, and the same two with the unbind made during a stretch under
-`Password` or under `Open` (with the player offline when the rule returns to `Allowlist`). Withdrawing
-only under `Allowlist` leaves the last two open.
+account token given to it could be replayed against the official server. The ticket is spent at the
+service with the names the world answers to, so what a player gives one host opens no other world.
+A world that asks for itself re-checks a client that never asks, which a credential the client
+fetches cannot; no key or verifier has to sit in a build; and a reader of a world's data finds
+handles, not account subjects. The stored status admits while a request waits because a module
+cannot hold a connection open or close one: a check that had to land first would turn an outage of
+our service into an outage of every world. The budget bounds what free identities in an `Open`
+world can make a world send; the relay is outside its refusal so the host can always check in
+whoever it chooses, its own player included. The unbind and the drop take the admission row
+because, while an identity holds a `world_account` row, `Allowlist` governs it by its handle alone
+and leaves the admission row unread, and every rule change keeps that row: erasing the account row
+alone would let back in an identity whose handle the owner removed. The choice rests on the bundled
+host's `[module-http]` being on, which the operator decided
+(<https://github.com/mdrewt/monster-realm/issues/874>): with it off a shell world checks nobody.
+On, it adds nothing a host's owner could not already do: the host refuses loopback and private
+addresses, and the module reaches only the account service the build names.
 
 **Rules out.** Sending an account token to a world we do not operate (see "A target's kind gates
-telemetry and account sign-in"); a third-party provider as the attestation signer; signing
-attestations with the account issuer's own key or issuer name; a single compiled-in key with no key
-id; keeping a log of which world each account bound to. A holder-bound credential (a JWT carrying a
-device key in `cnf`, about a day long, with a client-signed proof per world) was weighed and not
-chosen: it would let a first bind happen on a LAN with no internet and keep who-plays-with-whom from
-our service, at the cost of a device key to store safely in every build, a second signature check in
-the bind reducer, and binds to new worlds that outlive an account's suspension until the credential
-expires. It stays the upgrade path, as a second attestation source, if either of those gains becomes
-a requirement. An admission check on the unbind (a removed player could not erase the link);
-keeping the admission row through an unbind; withdrawing it only under `Allowlist` or only for a
-caller the rule refuses at the call (each leaves one of the paths above open). Defaults the operator
-may overrule (asked on <https://github.com/mdrewt/monster-realm/issues/861>): the withdrawal writes `world_admission`, beyond the spec's "and nothing else", so an
+telemetry and account sign-in"); a third-party provider as the party a world asks; storing an
+account's subject in a world; a ticket or a handle in a log line; refusing a known identity while
+the service cannot be reached; running a failed re-check again within the connection that armed it;
+storing an answer without reading again the rows it was decided on; refusing the owner's relay by
+the budget; an admission check on the unbind (a removed player could not erase the link); keeping
+the admission row through an unbind or a drop. Defaults the operator may overrule (asked on
+<https://github.com/mdrewt/monster-realm/issues/861>): the withdrawal writes `world_admission`, so an
 unbind in a `Password` world costs the player the door, and so does an unbind under `Open` by a
 player who is offline when the rule changes to `Password`; after an unbind under `Password` or
-`Allowlist`, a player other than the owner is refused by the access check before `join_game`'s
-ownership error and cannot bind again without the owner's relay; and a removed player who has
-disconnected cannot reach the unbind, since every route runs the connect reducer first (measured at
-2.11.0, see "A world that is not open refuses an unadmitted identity at connect and in every
-reducer").
+`Allowlist`, a player other than the owner is refused by the access check and cannot check in again
+without the owner's relay; a removed player who has disconnected cannot reach the unbind, since
+every route runs the connect reducer first (see "A world that is not open refuses an unadmitted
+identity at connect and in every reducer"); the `test` and `dev-enforcing` builds name the
+`hosted-dev` account service, so a dev server's `check_account` sends real requests there; and an
+answer whose `handle` is missing is stored as not entitled whatever else it says.
 
 ## The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the module
 
-**Decision.** A world attestation (see "A private world verifies an account by a per-world
-attestation our account service signs") is signed with an Ed25519 key, and the module checks the
+**Decision.** A world attestation is what the account service's `POST /attest` signs; the binding
+the module records from one grants nothing (see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"), and
+lpw-33 removes this verifier with it. It is signed with an Ed25519 key, and the module checks the
 signature with the `ed25519-dalek` crate (3.0.0, no default features), through `verify_strict`.
 `world_binding::verify_attestation(keys, attestation)` runs these checks in order: a token over 4096
 bytes is refused before anything is decoded; three non-empty segments of strict unpadded base64url
@@ -2677,17 +2676,19 @@ published, so a `world` build binds nothing and entitles nobody) and `DEV_ATTEST
 holds the lists to the generated `account-service/attestation-public-keys.json`. On a build with no
 key the six binding reducers (`bind_world_account`, `request_bind_nonce`, the owner-relayed form
 of each, `unbind_world_account` and `drop_world_binding`) return `this server takes no world binding` as their first
-statement, before anything is decoded, read or written, and `world_binding::trusted_binding` answers `None` without reading;
-`entitled(ctx, profile)` therefore never reads a binding there. A binding records the `kid` that
-signed it and counts only while the build holds that key: a binding made under a dev key counts for
-nothing after a republish as `world`, and retiring a key retires its bindings. On the `world` build
+statement, before anything is decoded, read or written; the unbind and the drop do so only on a
+build that also names no account service to ask. A binding records the `kid` that signed it, and
+no rule reads a binding on any build. On the `world` build
 every token is an anonymous guest's. The two builds have one schema and one set of client bindings.
-Decided, not built (lpw-35, `docs/refactors/account-checks.md`): when the world's own account
-check replaces the attestation, the builds differ by the account service a world checks against
-instead of by key lists. `official` names none, and its four account-check procedures refuse as
-their first statement. `world` names the production service. The dev builds name `hosted-dev`,
-because a procedure cannot reach `local-dev` on loopback (the record's row P2). Until then the key
-lists above are what runs.
+The builds also differ by the account service a world asks about an account
+(`BuildProfile::world_check_url`, the `POST /world/check` address). `official`, `default` and
+`conflict` name none: each of the three account-check procedures answers `this server checks no
+account` as its first statement, and `entitled(ctx, profile)` reads no `world_account` row there,
+so the official build has the login token as its one way in. `world` names the production service,
+a placeholder under a reserved name that answers nothing, so a `world` build entitles nobody until
+a real address ships. `test` and `dev-enforcing` name `hosted-dev`, because the host refuses a
+procedure's request to `local-dev` on loopback (`docs/refactors/account-checks.md`, row P2). The
+artefact's `mr_build_profile` section does not carry the address.
 Proved by `mod binding_build` and `mod official_build` in `server-module/src/world_binding_tests.rs`
 (the second under the `official` build, which no run of `just ci` includes: `cargo nextest run
 --workspace --no-default-features --features monster-realm-module/official -E
@@ -2760,54 +2761,55 @@ give every server a name (weighed for browser joiners and not chosen).
 refuses, as its first statement, an identity that `access::is_admitted` does not admit
 (`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
 not owner-only opens with `access::require_admitted`, except `unbind_world_account`, which makes no
-admission check (see "A private world verifies an account by a per-world attestation our account
-service signs"); the owner-only ones are `sync_content`, `set_world_access`,
+admission check (see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"); the owner-only ones are `sync_content`, `set_world_access`,
 `set_world_names`, `set_world_allowlist`, `drop_world_binding` and the two relayed binding reducers.
-The six binding reducers answer their build's refusal before that check; it reads nothing. A world with no
+The binding reducers answer their build's refusal before that check; it reads nothing. The
+procedure `check_account` makes the admission check before it sends anything and again before it
+stores an answer, and `check_account_for` the owner check. A world with no
 `world_access` row is `Open`. Under `Password`, `is_admitted` admits the owner and an identity in
-`world_admission`. Under `Allowlist` it admits the owner; an identity with a trusted binding exactly
-while its `account_subject` is a row of private `world_allowlist` (at most 256 subjects of 1 to 255
-visible ASCII), and nothing else counts for it, so delisting refuses at the next check; and an
-identity with no trusted binding only when it holds a `world_admission` row. The list is read at
+`world_admission`. Under `Allowlist` it admits the owner; an identity that holds a `world_account`
+row exactly while that row's handle is a row of private `world_allowlist` (at most 256 handles of
+1 to 1024 visible ASCII, in the column named `account_subject`), and nothing else counts for it, so
+delisting refuses at the next check; and an identity with no such row only when it holds a
+`world_admission` row. An attestation binding is not read. The list is read at
 every check and nothing is stored from it.
 When the rule changes to one that is
 not `Open`, `set_world_access` gives an admission row to each live identity that the rule in force
 before the call admitted, and to none that rule refused. A new joiner's way in under `Allowlist`
-is the owner's relayed nonce request and bind. Admission rows are written only by the owner-only
+is the owner's relayed account check (`check_account_for`) and the listing of the handle it
+stored. Admission rows are written only by the owner-only
 reducer `set_world_access`, which takes the joiners' identities, and deleted by a player's
-own unbind of a binding the build counts, by the owner's `drop_world_binding` of one, and by the
+own unbind and the owner's `drop_world_binding` when either erases a `world_account` row, and by the
 deletion cascade and a guest claim (for the retired guest). A retired guest identity that reconnects
 holds no world row: in a `Password` or `Allowlist` world it is refused until the owner admits it
-or relays a bind for it.
+or relays a check for it.
 
 The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
-already let in. When the rule changes to `Allowlist`, `set_world_access` adds the account of every
-trusted binding whose identity the rule in force before the call admitted (under `Open` every one;
-under `Password` those holding a `world_admission` row, and the owner's), beside the accounts
-already listed; its `admit` argument adds none. While the rule is `Allowlist`, the account of the
-owner's trusted binding stays listed: `set_world_allowlist` stores it whether or not the call names
-it, and a bind of the owner's identity adds it (bound to a second account, the owner has both
-listed). The list never passes 256 accounts: a rule change that would add past that, a
-`set_world_allowlist` that would store the owner's account beside 256 others, and an owner's bind
-under `Allowlist` of an account a full list lacks are each refused with the list's too-many error
-and no write. Under `Open` and `Password` the list is kept, stored as the owner names it, and not
-read; the next change to `Allowlist` adds to it. An account's deletion takes the account of the
-deleted identity's binding (read from its own row, whatever key signed it) off the list, unless
-another identity's binding that the build counts carries the same account, byte for byte; an
-identity with no binding takes nothing off, and a row the host typed that equals the account goes
-too, because it names the same person (`world_binding::delist_account_of`, called by
-`accounts::account_deletion_reaper` before the binding's erase). The binding is the only record
-of the account, so an identity whose binding is already gone takes nothing off: a player who
-unbinds, or whose binding the owner drops, before the account's deletion leaves the account
-listed. A guest claim does not write the list either, and the claimed account holds no binding
-of the guest's, so the guest's account stays listed until the host removes it.
+already let in. When the rule changes to `Allowlist`, `set_world_access` adds the handle of every
+`world_account` row whose identity the rule in force before the call admitted (under `Open` every
+one; under `Password` those holding a `world_admission` row, and the owner's), beside the handles
+already listed; its `admit` argument adds none. While the rule is `Allowlist`, the handle of the
+owner identity's own row stays listed: `set_world_allowlist` stores it whether or not the call
+names it, and a check of the owner's identity adds it. The list never passes 256 handles: a rule
+change that would add past that, a `set_world_allowlist` that would store the owner's handle beside
+256 others, and an owner's check under `Allowlist` of a handle a full list lacks are each refused
+with the list's too-many error and no write. Under `Open` and `Password` the list is kept, stored
+as the owner names it, and not read; the next change to `Allowlist` adds to it. A re-check that the
+service answers under a newer handle puts that handle in the listed one's place. An account's
+deletion takes the handle of the deleted identity's `world_account` row off the list; an identity
+with no row takes nothing off, and a row the host typed that equals the handle goes too, because
+it names the same account (`world_binding::delist_account_of`, called by
+`accounts::account_deletion_reaper` before the row's erase). The row is the only record of the
+handle, so an identity whose row is already gone takes nothing off: a player who unbinds, or whose
+row the owner drops, before the account's deletion leaves the handle listed. A guest claim does not
+write the list either, so the retired guest's handle stays listed until the host removes it.
 
 The module declares no HTTP handler, no HTTP route and no row filter: a check of the generated
 module definition refuses each, on the default build (`just module-definition`, in `just ci`) and
 on each artefact `just release-module` makes (`scripts/verify-release-reducers.mjs`, over
 `spacetimedb-standalone extract-schema`). All three sit behind the `spacetimedb` crate's
 `unstable` feature, which the workspace enables, so that check is what keeps them out (see "The
-crate's `unstable` feature is on; the generated definition is checked instead"). The deletion-gate census refuses a `procedure` attribute. Built: the module's half (`server-module/src/access.rs`,
+crate's `unstable` feature is on; the generated definition is checked instead"). The same check and the deletion-gate census allow the three account-check procedures and no other. Built: the module's half (`server-module/src/access.rs`,
 and the list in `server-module/src/world_binding.rs`); `mod admission_roster` in
 `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster from the generated
 bindings' file names and executes every shipped reducer as an unadmitted caller on a `Password`
@@ -2906,8 +2908,8 @@ another type, where review is the defence.
 server, a friend's server and a single-player world, and in a browser as well as the desktop
 build. On the official server `join_game` admits only a connection whose token, from our account
 service, carries the entitlement claim `mr_ent: ["base-game"]`; in a single-player or friends world
-it admits only a connection bound by an attestation that carried it (see "A private world verifies
-an account by a per-world attestation our account service signs"). The account service issues the
+it admits only an identity whose `world_account` row says its account owns the game (see
+"A private world checks an account itself: a one-use ticket at first contact, then the account's handle"). The account service issues the
 claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence held by the player
 themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
 removes entitlement at the next issuance (an hour at most on the official server). A build that names the dev feature `open_join` does not enforce it, so the e2e suite and local development still join anonymously (see "Ownership is enforced unless a dev feature switches it off"). Until the operator supplies the Steam app id and publisher key (planned about two months before early access), entitlement comes from the dev issuers: each dev account carries `mr_ent` or not as an admin sets it, so the rule and its refusal are built and tested before Steam is wired in. A dev issuer checks Steam only as App ID 480, Valve's development app: a Steam player there is entitled by an admin flag on `steam:<steamid64>` that an account lacks until an admin sets it, and a dev issuer never asks Steam who owns the game and never holds the publisher key (operator, 2026-11-23). Operator ruling, 2026-11-16 ("for now, all players, including browser
@@ -2999,12 +3001,12 @@ and by `evals/account-e2e.eval.mjs`, which on a live host publishes a dev-enforc
 release-module` built (anonymous and a dev-issuer token refused, no `account` row).
 
 `accounts::entitled(ctx, profile)` entitles everyone on a build that does not enforce. An enforcing
-build entitles a connection whose login token entitles it, or whose identity holds a trusted binding
-with `entitled` true (the attestation's `mr_ent` named `base-game`; see "A private world verifies an
-account by a per-world attestation our account service signs"). `require_entitled` writes nothing,
-and reads `world_binding` only when the token does not entitle and the profile holds an attestation
-key. So on a dev-enforcing build an unbound connection, one bound without the entitlement and one
-bound under a key the build lacks are all refused by `join_game` with `ownership required`, under
+build entitles a connection whose login token entitles it, or whose identity holds a `world_account`
+row that says its account owns the game, however long ago the account service said so (see
+"A private world checks an account itself: a one-use ticket at first contact, then the account's handle"). `require_entitled` writes nothing, and reads `world_account` only when the
+token does not entitle and the profile names an account service. So on a dev-enforcing build a
+connection with no row, one whose row says the account does not own the game and one that holds
+only an attestation binding are all refused by `join_game` with `ownership required`, under
 `Open`, `Password` and `Allowlist` (`mod acs6_enforcing_bound` in
 `server-module/src/world_binding_tests.rs`; `mod open_join_unbound` holds an unbound join accepted
 under `open_join`). The `local-dev` attestation key is fixed and can be derived from this repository

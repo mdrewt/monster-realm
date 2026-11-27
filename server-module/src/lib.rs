@@ -1,7 +1,8 @@
-//! monster-realm server module (`spacetimedb` crate 2.8.1, lockstep with the 2.8.1 host).
+//! monster-realm server module (`spacetimedb` crate 2.16.1, lockstep with the 2.16.1 host).
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
-//! the ONLY writers. Reducers are THIN — validate `ctx.sender()` + legality, delegate
+//! the only writers, beside the three account-check procedures of `account_checks.rs`,
+//! which write that module's tables. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone**: clients
 //! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick
@@ -9,8 +10,8 @@
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 2.x.
 //!
 //! The former monolith is split into cohesive domain submodules.
-//! This `lib.rs` is reduced to module wiring + crate-wide constants + the three
-//! lifecycle reducers (`init` / `sync_content` / `on_disconnect`).
+//! This `lib.rs` is reduced to module wiring + crate-wide constants + the
+//! lifecycle reducers (`init` / `sync_content` / `on_connect` / `on_disconnect`).
 
 use crate::content::sync_content_inner;
 use crate::movement::movement_tick_schedule;
