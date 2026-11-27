@@ -166,7 +166,7 @@ export interface SteamTicketGrantOptions extends SteamTicketExchangeOptions {
 export interface SteamTicketGrant {
   /**
    * Reads and keeps a request's source address. The provider's handler calls it for every request
-   * before it removes the forwarding headers: after that the source can no longer be read.
+   * before it removes the forwarding headers, which are what names the source behind a proxy.
    */
   noteSource(req: IncomingMessage): void;
   /** Registers the grant at the provider's token endpoint. */
