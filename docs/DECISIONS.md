@@ -667,301 +667,275 @@ The viewport's scale choice and the chunk bake: `ARCHITECTURE.md` "Rendering".
 
 ## Evolution graph and the auto-evolve rule
 
-**Decision.** Evolution is a graph of authored edges (`game-core/content/
-evolution_paths/*.ron`, seeded into the public `evolution_path` table). Each edge
-carries a durable, never-reused `edge_id` and AND-combined requirements: minimum
-level, per-affinity essence amounts, and optional Trust, Quality-Time and Nutrition
-thresholds. Every edge advances species tier by exactly one. Eligibility is one
-shared query, `game_core::eligible_evolution_paths`. After any write that can change
-eligibility, `check_and_evolve` (`server-module/src/evolution.rs`) evolves
-automatically only when exactly one edge is eligible, and repeats against the new
-species (capped at `MAX_EVOLUTION_CHAIN_STEPS`). With zero or several eligible edges
-it does nothing, and the player chooses through the `evolve` reducer, which looks up
-the one edge matching both endpoints. Each applied evolution appends a reveal to the
-owner's private `pending_evolution_notice` row; `ack_evolution_notices` drains it.
+**Decision.** Evolution is a graph of authored edges. Each edge carries a durable, never-reused id
+and AND-combined requirements: a minimum level, per-affinity essence amounts, and optional Trust,
+Quality-Time and Nutrition thresholds. Every edge advances species tier by exactly one. One shared
+game-core query decides eligibility. After any write that can change eligibility, the server
+evolves a monster automatically only when exactly one edge is eligible, and repeats against the
+new species, up to a fixed chain cap. With zero or several eligible edges it does nothing, and
+the player chooses; the server then looks up the one edge matching both endpoints. Each applied
+evolution queues a reveal that only the owner reads.
 
-**Why.** Automatic evolution is convenient, but when a monster qualifies for two
-branches at once, picking for the player would silently close off the other branch.
-Content should keep requirements different enough that this is rare.
+**Why.** Automatic evolution is convenient, but when a monster qualifies for two branches at once,
+picking for the player would silently close off the other branch. Content should keep requirements
+different enough that this is rare.
 
-**Rules out.** First-match auto-evolution; evolving along an edge the client names
-without an endpoint check; reusing or renumbering an `edge_id`; publishing evolution
-history to other players.
+**Rules out.** First-match auto-evolution; evolving along an edge the client names without an
+endpoint check; reusing or renumbering an edge id; publishing evolution history to other players.
+
+The edge table, the query, the chain and the reveal queue: `ARCHITECTURE.md` "Battles, trades and
+the rest", Evolution.
 
 ## Recruiting a wild monster
 
-**Decision.** A successful recruit (`server-module/src/taming.rs`) rebuilds the exact
-wild individual from the private `battle_wild` seed, at full HP, ends the battle as
-`SideAWins`, deletes the `battle_wild` row, and awards no battle XP.
+**Decision.** A successful recruit rebuilds the exact wild individual from its private
+individuality seed, at full HP, and takes the wild off the board. Recruiting the last conscious
+wild wins the battle for the player, as a knockout would. A recruited wild is not a knockout, so it
+earns no battle XP.
 
-**Why.** Rebuilding from the stored seed means the monster the player caught is the
-one they fought — same IVs and nature — and keeping the seed server-side means no
-client can inspect a wild's genes before deciding to catch it.
+**Why.** Rebuilding from the stored seed means the monster the player caught is the one they fought
+— same IVs and nature — and keeping the seed server-side means no client can inspect a wild's
+genes before deciding to catch it.
 
-**Rules out.** Re-rolling the individual at catch time; exposing wild genes to the
-client.
+**Rules out.** Re-rolling the individual at catch time; exposing wild genes to the client.
+
+The seed rows and the recruit hook: `ARCHITECTURE.md` "Schema and privacy model", Tactical battles.
 
 ## Trading resets the bond, not the monster
 
-**Decision.** Every trade swap goes through `trading_session::apply_swap`
-(`server-module/src/trading_session.rs`), which `confirm_trade_session` calls when the
-last confirm lands, and it
-resets each transferred monster's seven Trust/Quality-Time columns — `trust_favorable_count`,
-`trust_unfavorable_count`, `trust_favorable_battle_day_epoch`,
-`quality_time_ticks_total`, `quality_time_accum_ms`, `quality_time_window_ms`,
-`quality_time_window_start_ms` — to `0` through game-core's `reset_bond_on_trade` over a
-`TrainerBond` value (`game-core/src/raising/rules.rs`); the shell copies the columns
-through the rule and never zeroes them itself. Level, species, nickname, IVs, EVs,
-nature, xp and the eight essence pools transfer unchanged. `monster_pub`'s derived
-`trust_tier`/`quality_time_tier` re-derive from the reset counters (Neutral / 0) while
-the evolution `tier` copies forward. The guest-claim identity re-key
-(`monster_mgmt::rekey_monsters`) is the same trainer under a new identity and does not
-reset the bond.
+**Decision.** A trade resets each transferred monster's seven Trust and Quality-Time counters to
+`0`, through one game-core rule that the server copies the columns through; the server never zeroes
+them itself. Level, species, nickname, IVs, EVs, nature, XP and the eight essence pools transfer
+unchanged. The public Trust and Quality-Time tiers re-derive from the reset counters (Neutral and
+0), while the evolution tier carries over. The guest-claim identity re-key is the same trainer
+under a new identity and does not reset the bond.
 
-**Why.** Trust and Quality-Time measure the relationship with the current trainer;
-essence is the monster's own. Unfavorable trust resets with the rest — a faint
-history is also a relationship with the old trainer — so a round trip through a
-second account clears a Hostile tier; that is the accepted price of the rule. See
-<https://github.com/mdrewt/monster-realm/issues/479>.
+**Why.** Trust and Quality-Time measure the relationship with the current trainer; essence is the
+monster's own. Unfavorable trust resets with the rest — a faint history is also a relationship
+with the old trainer — so a round trip through a second account clears a Hostile tier; that is
+the accepted price of the rule. See <https://github.com/mdrewt/monster-realm/issues/479>.
 
-**Rules out.** Halving or otherwise taxing essence on trade; carrying the bond across
-owners; re-implementing the zeroing in the reducer or in TypeScript; resetting on the
-guest-claim re-key.
+**Rules out.** Halving or otherwise taxing essence on trade; carrying the bond across owners;
+re-implementing the zeroing in the reducer or in TypeScript; resetting on the guest-claim re-key.
+
+The swap, the seven columns and the rule: `ARCHITECTURE.md` "Battles, trades and the rest", Trade
+sessions.
 
 ## Trade sessions open face to face, one per pair, and are never one-sided
 
-**Decision.** A trade is a `trade_session` that two players open face to face (`open_trade_session`,
-range-checked as "Interaction target: the tile in front, then your own tile" says) and then edit,
-confirm or cancel from Social › Trades. Each side offers any mix of monsters, items and currency.
-Two players share at most one session, whichever of them opened it, and a player may have at most
-`MAX_OPEN_TRADE_SESSIONS` (4) sessions they opened; sessions others opened with them never count
-(`check_session_open`, `game-core/src/trading/session.rs`). A confirmed side cannot edit (cancelling
-is the way out), and a confirm names the session revision it reviewed: every accepted edit advances
-the revision and clears both confirms. A confirm is refused when either offer is empty or when the
-side would own no monster afterwards (`side_check`), and no other soft-lock check exists. A received
-monster takes the receiver's lowest free party slot, else Storage (`arrival_slots`); the receiver's
-party size never refuses a trade.
+**Decision.** A trade is a session that two players open face to face, the partner on the tile in
+front or on the opener's own tile, and then edit, confirm or cancel from Social › Trades. Each
+side offers any mix of monsters, items and currency. Two players share at most one session,
+whichever of them opened it, and a player may have at most four sessions they opened; sessions
+others opened with them never count. A confirmed side cannot edit (cancelling is the way out), and
+a confirm names the session revision it reviewed: every accepted edit advances the revision and
+clears both confirms. A confirm is refused when either offer is empty or when the side would own
+no monster afterwards, and no other soft-lock check exists. A received monster takes the receiver's
+lowest free party slot, else Storage; the receiver's party size never refuses a trade.
 
 **Why.** The operator's trade-scope ruling (monster-realm #585): all three asset classes,
 face-to-face initiation, one active trade per pair, no one-sided gifts, simple soft-lock guards
-("90% of cases with 0 false positives" beats a frustrating 95%), arrival in the party else Storage.
-Counting only the sessions a player opened stops sockpuppets from locking someone out of trading,
-and never reading the partner's count keeps the cap from answering questions about them. The
-revision makes "each side confirms what it saw" hold under concurrent edits.
+("90% of cases with 0 false positives" beats a frustrating 95%), arrival in the party else
+Storage. Counting only the sessions a player opened stops sockpuppets from locking someone out
+of trading, and never reading the partner's count keeps the cap from answering questions about
+them. The revision makes "each side confirms what it saw" hold under concurrent edits.
 
-**Rules out.** Opening a trade remotely; two sessions between the same players; a cap that counts
-sessions others opened or reads the partner's count; gifts; soft-lock heuristics beyond the
-last-monster count; refusing a trade because the receiver's party is full; a separate execute
+**Rules out.** Opening a trade remotely; two sessions between the same players; a cap that
+counts sessions others opened or reads the partner's count; gifts; soft-lock heuristics beyond
+the last-monster count; refusing a trade because the receiver's party is full; a separate execute
 reducer; a confirm that names no revision.
+
+The session row, the open cap and the side and arrival rules: `ARCHITECTURE.md` "Battles, trades
+and the rest", Trade sessions.
 
 ## Economy: bounded balances, headroom before transfer
 
-**Decision.** Currency is a private `player_wallet` (`u64` balance, `MAX_BALANCE`
-999 999 999 in `game-core/src/currency.rs`); every balance change goes through
-`economy::grant_currency`/`spend_currency`. Item stacks cap at `MAX_ITEM_STACK`
-(9999). The confirm that executes a trade session checks receiver headroom first, and
-the swap applies debits before credits (`SwapPlan::ordered_steps`), so a trade either
-happens completely or not at all. Escrow is a guard, not a hold: a guarded asset cannot
-be spent, sold or evolved. A trade session (`trade_session`, `trading_session.rs`) locks
-at confirm: a side's monsters, items and currency are guarded only while that side is
-confirmed. The `guards.rs` wrappers every other reducer calls count a confirmed session
-side and any `trade_offer` row still in its table; that table is drain-only
-(`propose_trade`, `respond_trade` and `confirm_trade` return one fixed error and read
-nothing, so no reducer names another player's assets).
-An unconfirmed side locks nothing beyond exclusivity (a monster sits in one trade at a
-time), so each confirm first compares every offered monster with its private review
-snapshot (`trade_session_snapshot`) and, on a difference, refreshes it and clears both
-confirms instead of confirming; the confirm that completes the pair re-runs the full
-side check for BOTH sides on live rows before anything moves. A failure on the other
-side clears that side's confirm and tells the caller nothing more. A write that boxes,
-faints or re-owns an offered monster deletes the session. Each side names only its
-own assets: no trade reducer acts on an argument naming the other player's. The client
-carries currency as `bigint` from the store row to the reducer argument
-(`client/src/ui/tradeSessionModel.ts`).
+**Decision.** Currency is a private `u64` balance capped at 999 999 999, and every balance change
+goes through one grant and one spend helper. Item stacks cap at 9999. The confirm that executes
+a trade session checks receiver headroom first, and the swap applies debits before credits, so
+a trade either happens completely or not at all. Escrow is a guard, not a hold: a guarded asset
+cannot be spent, sold or evolved. A trade session locks at confirm: a side's monsters, items and
+currency are guarded only while that side is confirmed. The shared guards count a confirmed session
+side and any legacy offer row still in its table; that table is drain-only, and its reducers refuse
+every call without reading a trade or asset row, so no reducer names another player's assets. An
+unconfirmed side locks nothing beyond exclusivity (a monster sits in one trade at a time), so each
+confirm first compares every offered monster with its private review snapshot and, on a difference,
+refreshes it and clears both confirms instead of confirming; the confirm that completes the pair
+re-runs the full side check for BOTH sides on live rows before anything moves. A failure on the
+other side clears that side's confirm and tells the caller nothing more. Each side names only its
+own assets: no trade reducer acts on an argument naming the other player's. The client carries
+currency as `bigint` from the store row to the reducer argument.
 
-**Why.** Reducers run serially, so check-then-write in one reducer is atomic, and
-escrow rows would just be a second source of truth. `u64` balances exceed
-JavaScript's safe integers, so `Number()` parsing would corrupt large amounts.
+**Why.** Reducers run serially, so check-then-write in one reducer is atomic, and escrow rows would
+just be a second source of truth. `u64` balances exceed JavaScript's safe integers, so `Number()`
+parsing would corrupt large amounts.
 
 **Rules out.** Physical escrow rows; credit-then-debit ordering; parsing currency with
 `Number`/`parseInt`.
 
+The wallet, the caps, the swap order, the guards and the snapshot: `ARCHITECTURE.md` "Battles,
+trades and the rest", Trading, Trade sessions, and Raising and economy.
+
 ## Healing is free, and quests are the recruit loop's faucet
 
-**Decision.** Every shipped heal location charges nothing: no currency cost, no cost item,
-no cost quantity (`game-core/content/heal_locations/`). `heal_party`
-(`server-module/src/raising.rs`) charges whatever a heal location names, so the price is
-data and the shipped data names none. A successful recruit pays no currency; wilds
-knocked out earlier in the same battle still pay `battle_currency_reward`
-(`game-core/src/currency.rs`), so a battle against a lone wild that ends in a recruit
-pays nothing. Quest rewards are the faucet for recruit-heavy play: one quest ships
-(quest_001), its `reward.currency` is content (`game-core/content/quests/`), and the
-server credits exactly what the content names, once. `docs/economy-tuning.md` holds the
-reasoning, says where each number lives, and names the test over the shipped content
-(`game-core/tests/pt_d3_tuning.rs`) that fails when a retune breaks a relation. Shop prices,
-the sell price's fraction of the buy price and `BATTLE_CURRENCY_BST_DIVISOR` are not the lever
-for recruit-heavy play; the quest reward is. With a full party, recruit-heavy play in zone 0
-buys a Lure Berry within a fixed battle budget, a test over the shipped content
-(`recruit_heavy_zone0_battles_buy_a_lure_berry_within_the_battle_budget`).
+**Decision.** Every shipped heal location charges nothing: no currency cost, no cost item, no
+cost quantity. The heal charges whatever a heal location names, so the price is data and the
+shipped data names none. A successful recruit pays no currency; wilds knocked out earlier in the
+same battle still pay their battle reward, so a battle against a lone wild that ends in a recruit
+pays nothing. Quest rewards are the faucet for recruit-heavy play: one quest ships, its currency
+reward is content, and the server credits exactly what the content names, once. Shop prices,
+the sell price's fraction of the buy price and the battle reward's divisor are not the lever for
+recruit-heavy play; the quest reward is. With a full party, recruit-heavy play in zone 0 buys a
+Lure Berry within a fixed battle budget. `docs/economy-tuning.md` holds the reasoning and says
+where each number lives.
 
 **Why.** The economy is not a major part of the game (operator's balance stance): items,
-prices and rewards are tuned as for a single-player game, and every number must feel fair
-to one player with nobody to trade with. A heal charge is then a sink against one
-player's faucet and it taxes losing. A recruit pays nothing because the monster is the
-reward (operator ruling, <https://github.com/mdrewt/monster-realm/issues/587>), so a
-player who mostly recruits has less battle income than one who mostly fights; a quest
-pays for play that is not knocking wilds out. A wild pack is clamped to the conscious
-monsters in the party (`effective_pack`, `game-core/src/tactics/encounter.rs`), so a
-small party earns less from recruit-heavy play and a one-monster party meets only lone
-wilds. No mechanic consumes a monster (there is no monster sink).
+prices and rewards are tuned as for a single-player game, and every number must feel fair to
+one player with nobody to trade with. A heal charge is then a sink against one player's faucet
+and it taxes losing. A recruit pays nothing because the monster is the reward (operator ruling,
+<https://github.com/mdrewt/monster-realm/issues/587>), so a player who mostly recruits has less
+battle income than one who mostly fights; a quest pays for play that is not knocking wilds out. A
+wild pack is clamped to the conscious monsters in the party, so a small party earns less from
+recruit-heavy play and a one-monster party meets only lone wilds. No mechanic consumes a monster
+(there is no monster sink).
 
-**Rules out.** Charging currency or an item to heal as a currency sink; paying currency
-for a successful recruit; restating prices, rewards or battle budgets in prose docs; raising
-battle payouts or cutting shop prices to fund recruit-heavy play. A heal charge, a recruit payout or a monster sink changes the reasoning: it changes the
-tests, the worksheet and this entry together.
+**Rules out.** Charging currency or an item to heal as a currency sink; paying currency for a
+successful recruit; restating prices, rewards or battle budgets in prose docs; raising battle
+payouts or cutting shop prices to fund recruit-heavy play. A heal charge, a recruit payout or a
+monster sink changes the reasoning, so it changes the worksheet and this entry together.
+
+Where each number lives and what checks the relations: `ARCHITECTURE.md` "Battles, trades and the
+rest", Raising and economy.
 
 ## Battle lifecycle and PvP
 
-**Decision.** The battle table is private; participants read it through `my_battle`.
-A battle starts with the first conscious monster as lead (`BattleSide::with_lead`).
-One predicate, `guards::is_in_ongoing_battle`, checks both roles and is used
-everywhere a battle must block something: movement (a drain-time lock in
-`movement_tick`, plus `enqueue_move`/`set_move` rejecting mid-battle), trading,
-evolution, guest claims. A battle start (`tactics::start_wild_tactical`,
-`tactics::start_pvp_tactical`) also empties each battler's private `move_intent.queue`
-through `movement::drop_queued_moves`, keeping the seq guard, so a step queued before a
-battle never runs after it. Accepting a challenge opens a TACTICAL battle
-(`tactics::start_pvp_tactical`): secret queue rows under the 30 s per-unit clock, forfeit on
-the fourth auto-pass or the last connection closing (see "Tactical battle privacy is
-structural"); the 1v1 `battle_action` rows and the 60 s `pvp_deadline_reaper` are never
-written or armed by a live path since the cutover. Challenges expire after
-`CHALLENGE_TTL_MS` (120 s). Only battles between two distinct real players change
-`profile` rating (`guards::is_ranked_pvp`, Elo from `INITIAL_RATING` 1000 with no
-floor). When an identity's last connection closes, its live trades, PvP battles, wild
-battles and challenges are resolved (`resolve_all_live_interactions` in
-`server-module/src/lib.rs`). Ranked PvP requires both players to hold an account, but
-this is inactive until a real OIDC issuer is configured (`pvp.rs`
-`ranked_account_gate`).
+**Decision.** The battle table is private; participants read it through an owner-scoped
+view. Everything a battle must block checks both battle roles through the shared guards: a
+per-player predicate (movement, guest claims and the other player actions), or, for evolution
+and a trade side, a per-monster one. Movement is blocked twice: the movement tick drains nothing
+for a player in a battle, and new moves are refused mid-battle. A battle start also empties each
+battler's private move queue on the server, keeping the sequence guard, so a step queued before a
+battle never runs after it. Accepting a challenge opens a tactical battle: secret queue rows under
+a 30 s per-unit clock, forfeit on the fourth auto-pass or the last connection closing. Challenges
+expire after 120 s. Only battles between two distinct real players change the public rating (Elo
+from 1000, no floor). When an identity's last connection closes, its live trades, PvP battles, wild
+battles and challenges are resolved. Ranked PvP requires both players to hold an account, but this
+is inactive until a real OIDC issuer is configured.
 
-**Why.** Every blocking rule reads the same predicate, so PvE and PvP cannot drift
-apart. Disconnect handling keys on the *last* connection (the private
-`player_session` table), so a second tab or an overlapping reconnect cannot forfeit
-the player's battle. The server drops the queue itself because a stale or hostile client
-would not send `clear_queue`; the drain lock alone only postpones the queued steps until
-the battle ends.
+**Why.** Every blocking rule reads the same guards, so PvE and PvP cannot drift apart. Disconnect
+handling keys on the *last* connection, so a second tab or an overlapping reconnect cannot forfeit
+the player's battle. The server drops the queue itself because a stale or hostile client would not
+send `clear_queue`; the drain lock alone only postpones the queued steps until the battle ends.
 
-**Rules out.** Per-call-site battle checks; forfeiting on any single socket close;
-rating practice or wild battles; relying on a client-sent `clear_queue` to end pre-battle
-movement.
+**Rules out.** Per-call-site battle checks; forfeiting on any single socket close; rating practice
+or wild battles; relying on a client-sent `clear_queue` to end pre-battle movement.
+
+The guards, the disconnect sweep and the retired 1v1 rows: `ARCHITECTURE.md` "Battles, trades and
+the rest", PvP.
 
 ## Queued actions halt-and-return; the idle clock resets on every accepted submit
 
-**Decision.** At pop (`game-core/src/tactics/queue.rs`), the first entry failing
-`validate_at_pop` and every later one are wasted: never executed, no AP charged, never
-retried, visible only as `PlanHalted{unit, idx, reason_kind}`. Control returns live
-(`Waiting(U)`) to a player-owned conscious unit with at least `min_action_cost` (2) AP, else
-the turn ends committed. The idle clock (`tactics/clock.rs`) runs only while the battle waits
-on a player's unit; each accepted submit for it closes the window, and re-entering `Waiting`
-opens a fresh full one after the capped presentation pad. A live submit whose first entry
-fails is refused (`InvalidNow`) and changes nothing, clock included. The AP floor bounds a
-unit-turn to 3 windows (6 → 4 → 2). PvP-ruleset expiry auto-passes without Guard and the 4th
-strike against one side forfeits; wild expiry auto-flees. The planner, inventory, recruit headroom
-and Item/Recruit/Flee resolution reach the executor only through the `Hooks` trait; a hook
-may add only `RecruitResult`, `Awards` and `Status` events and never decides the outcome (the
-terminal sweep does; a flee is `Fled` whatever the hook did). Clocks and strike counts are
-kept per side, so in Practice one player holds both. A submit that lands after its deadline
-but before the fire commits is accepted; the fire then finds the window closed and is a no-op.
+**Decision.** At pop, the first queued entry that fails its pop-time check and every later one
+are wasted: never executed, no AP charged, never retried, visible only as a `PlanHalted` event
+naming the unit, the index and the failure kind. Control returns live to a player-owned conscious
+unit with at least the cheapest action's AP (2), else the turn ends committed. The idle clock runs
+only while the battle waits on a player's unit; each accepted submit for it closes the window, and
+re-entering the wait opens a fresh full one after the capped presentation pad. A live submit whose
+first entry fails is refused and changes nothing, clock included. The AP floor bounds a unit-turn
+to 3 windows (6 → 4 → 2). PvP-ruleset expiry auto-passes without Guard and the 4th strike
+against one side forfeits; wild expiry auto-flees. The planner, inventory, recruit headroom and
+Item/Recruit/Flee resolution reach the executor only through one hooks trait; a hook may add only
+recruit, award and status events and never decides the outcome (the terminal sweep does; a flee is
+`Fled` whatever the hook did).
 
 **Why.** Paying AP for a non-event reads as economy theft, the most-resented pattern in the
 reception corpus; halting means nothing executes from a board the plan did not assume. The
 clock takes the "resets the moment they submit" ruling (D583.2) literally; refusing a submit
-that executes nothing stops zero-cost resubmits refilling the clock forever. The executor
-knows no inventory, recruit or planner rule: each arrives through a hook the server implements
-over game-core, so the turn order and the AP accounting stay in one place.
+that executes nothing stops zero-cost resubmits refilling the clock forever. The executor knows
+no inventory, recruit or planner rule: each arrives through a hook the server implements over
+game-core, so the turn order and the AP accounting stay in one place.
 
 **Rules out.** Charging the first invalid entry's nominal AP (design §12 Q2's alternative); a
-cumulative per-unit-turn clock (§12 Q1's); skipping past an invalid entry (conditional
-scripting); trusting a client-sent tile (a Skill re-aims at its bound unit, a Move re-paths);
-wiring a rule into the executor except through `Hooks`. Accepted reveals: `reason_kind` names
-the failure kind of the first discarded entry, and `QueueVoided` shows that a plan existed.
+cumulative per-unit-turn clock (§12 Q1's); skipping past an invalid entry (conditional scripting);
+trusting a client-sent tile (a Skill re-aims at its bound unit, a Move re-paths); wiring a rule
+into the executor except through the hooks. Accepted reveals: the halt's failure kind names why the
+first discarded entry failed, and `QueueVoided` shows that a plan existed.
+
+The gate, the clock and the hooks: `ARCHITECTURE.md` "game-core: the rule layer", Tactical engine.
 
 ## Tactical settlement derives the reward ledger from the transcript
 
-**Decision.** A tactical battle's rewards (design §7) are settled once, at its finish, by
-`server-module/src/tactics_settle.rs`: the persisted `battle_event` transcript is folded into
-game-core's `rewards::on_unit_defeated` — each `Ko` credited to the attacker of the last
-opposite-side hit on the victim, against the final board with the units not yet fallen restored —
-and `rewards::pay` is applied through the 1v1 funnel's own per-monster credit
-(`battle::credit_monster`) over the whole conscious party, with one `Awards` line per paid monster
-(ascending unit) and one `unit 0` line for the player's currency appended after `BattleEnd`. The
-win-only credits (daily trust-favorable, Quality Time, the evolution check) need a defeated wild,
-so a recruit-only win pays nothing. `battle_summary` is one row per battle, inserted at the Active
-start (`outcome == Ongoing` until finished) and accumulated every step. No 1v1 reducer exists to act
-on an anchor since bt-17: one anchor, one payout path.
+**Decision.** A tactical battle's rewards (design §7) are settled once, at its finish, by folding
+the persisted battle-event transcript into game-core's reward rules: each knockout is credited
+to the attacker of the last opposite-side hit on the victim, against the final board with the
+units not yet fallen restored. The payout goes through the same per-monster credit as every
+other battle reward, over the whole conscious party, and is shown as award lines appended after
+the battle's end. The win-only credits (daily trust-favorable, Quality Time, the evolution check)
+need a defeated wild, so a recruit-only win pays nothing. The battle summary is one row per battle,
+inserted when play starts and accumulated every step. One anchor, one payout path.
 
 **Why.** Nothing in game-core calls the KO hook, and the shell sees the board only between
 transactions, so the KO moment is observable only through the transcript; consciousness is
-monotone in P1 (no heal or revive), which makes the reconstruction exact. Reusing the 1v1 credit
-keeps one write-back funnel and the carried trust/Quality-Time scope. The summary's
+monotone in P1 (no heal or revive), which makes the reconstruction exact. Reusing the per-monster
+credit keeps one write-back funnel and the carried trust/Quality-Time scope. The summary's
 windows-per-unit-turn and pre-queued/live counts are not derivable from events, so they accumulate
-per step. One anchor, one payout path: a 1v1 turn on a tactical anchor would pay twice.
+per step. A 1v1 turn on a tactical anchor would pay twice.
 
-**Rules out.** A second ledger store or a per-KO reward write mid-battle; recomputing the killer or
-the split on the client (bt-12 renders the `Awards` lines as they are); a `check_headroom` for
-recruits (no monster-storage rule exists; the predicate is "the unit has an owner"); paying the win
-credits on a recruit-only win. Moving the fold and the attribution into game-core
-(`tactics::rewards`) is R-bt-9-LEDGERHOME, due with the first slice that adds a heal or revive.
+**Rules out.** A second ledger store or a per-KO reward write mid-battle; recomputing the killer
+or the split on the client (it renders the award lines as they are); a headroom check for recruits
+(no monster-storage rule exists; the predicate is "the unit has an owner"); paying the win credits
+on a recruit-only win. Moving the fold and the attribution into game-core's reward rules is
+R-bt-9-LEDGERHOME, due with the first slice that adds a heal or revive.
+
+The fold, the credit and the summary row: `ARCHITECTURE.md` "Schema and privacy model", Tactical
+battles.
 
 ## Tactical rule conventions carried from bt-2
 
-**Decision.** In a wild battle side A is the player: only it is player-owned
-(`queue::is_player_owned`) and it holds round-1 tie priority (`initiative::round1_priority`).
-Both coins, the round-1 PvP priority coin and the adjudication coin (`outcome::adjudicate`),
-read `splitmix64(..) & 1` with 0 → A. Practice runs the PvP ruleset through the one mapping,
-`BattleKind::uses_pvp_rules` (`tactics/tuning.rs`). A wild mutual wipe is `SideBWins` by
-`FixedOrder` (ADR-0156 R5 as carried; `outcome::check_battle_end`). Every target of an attack
-draws an accuracy then a variance roll, hit or miss (`resolve::draw_rolls`). Flank is judged on
-the board captured before the attack (`resolve::resolve_attack`). Freeze thaw rolls come off the
-one `splitmix64(seed ^ action_seq)` stream (`resolve::draw`, `upkeep::run_upkeep`). The wild
-round cap fires on `round >= wild_round_cap`. First-Stand clears when it saves the unit, as
-well as at its first TurnStart.
+**Decision.** In a wild battle side A is the player: only it is player-owned and it holds round-1
+tie priority. Both coins, the round-1 PvP priority coin and the adjudication coin, read the low bit
+of a `splitmix64` draw, with 0 → A. Practice runs the PvP ruleset through one mapping from the
+battle kind. A wild mutual wipe is a loss for the player, by fixed order. Every target of an attack
+draws an accuracy then a variance roll, hit or miss. Flank is judged on the board captured before
+the attack. Freeze thaw rolls come off the battle's one roll stream. The wild round cap fires on
+`round >= cap`. First-Stand clears when it saves the unit, as well as at its first TurnStart.
 
-**Why.** Each looks arbitrary in the code and is easy to flip, but the executor and its tests
-build on them (`is_player_owned` decides who may use an item, recruit, flee or run a clock).
-Every roll comes off one `action_seq` counter, so one added or skipped draw moves every later
-roll of the battle; the golden fixture (`game-core/tests/fixtures/tactics_golden.json`) pins
-`draw_rolls` natively and in wasm.
+**Why.** Each looks arbitrary in the code and is easy to flip, but the executor builds on them (who
+is player-owned decides who may use an item, recruit, flee or run a clock). Every roll comes off
+one counter, so one added or skipped draw moves every later roll of the battle.
 
-**Rules out.** A round-1 coin in a wild battle; matching on `BattleKind::Pvp`, which runs
-Practice as PvE; adjudicating a wild mutual wipe, or a draw outcome (`BattleOutcome` gains no
+**Rules out.** A round-1 coin in a wild battle; matching on the PvP battle kind alone, which runs
+Practice as PvE; adjudicating a wild mutual wipe, or a draw outcome (the outcome type gains no
 variant); one roll shared by an attack's targets, or no variance draw on a miss; flank re-read
-after an earlier KO in the same AoE; a second RNG stream for status rolls; `round ==
-wild_round_cap` (the spec's wording); a First-Stand that survives its own save.
+after an earlier KO in the same AoE; a second RNG stream for status rolls; `round == cap` (the
+spec's wording); a First-Stand that survives its own save.
+
+Where each convention lives: `ARCHITECTURE.md` "game-core: the rule layer", Tactical engine.
 
 ## Wild AI plans are a pure function of the public board
 
-**Decision.** `tactics::ai::plan(state, unit, stance, spawn, t)` takes no RNG or seed parameter;
-`ai_tests.rs` pins the signature as a `fn` pointer type. `View::of` builds a private `View` with
-no `seed`, `action_seq` or budget field, every stance helper reads only it, and `admissible`
-costs every candidate plan from `TurnBudget::fresh(t)`, never `actor.budget`. The executor hands
-`Hooks::plan_ai` the `public_view` (`seed`, `action_seq` zeroed), halts anything but
-`Move`/`Skill`/`EndTurn` as `BadShape`, and runs every entry, the trailing `EndTurn` included,
-through `validate_at_pop` like a player plan (`queue.rs` `start_turn`, `execute`). The planner
-therefore calls the gate's own functions (`find_path`, `target_set`, `disengage_taxed`,
-`stride_points`, `validate_unit`; `plan_cost` folds the gate's `spend`) and restates no rule. A
-stance that needs randomness must move it into server-pushed `battle_event`s. The compile shape
-forbids the parameter and the View keeps `seed`/`action_seq` out by structure; its units are
-`&TacticalUnit`, so `budget` stays reachable, and the seed/budget-blindness tests and the
-executor proptest (no `PlanHalted` on generated battles) are what catch a regression.
+**Decision.** The wild planner takes no RNG or seed parameter. It reads a private view of the
+board with no seed, roll counter or budget field, and costs every candidate plan from a fresh turn
+budget, never the unit's stored one. The executor hands it the public view (seed and roll counter
+zeroed), halts any entry but Move, Skill or EndTurn as a bad shape, and runs every entry, the
+trailing EndTurn included, through the same pop-time check as a player plan. The planner therefore
+calls the gate's own path, target, disengage, stride and validity functions and restates no rule. A
+stance that needs randomness must move it into server-pushed battle events. The planner's signature
+forbids the parameter and the view keeps the seed and roll counter out by structure; the view's
+units still expose a budget, so tests are what catch a regression there.
 
 **Why.** Design §4.2 has the client compute each intent chip with the same wasm `plan` on the
 shared provisional board, so chips and forecasts never contradict each other. That board has no
-seed and shows stored budgets, while the server plans just after `turn_start` refreshes the
-wild's; reading neither keeps chip and execution equal on an unchanged board. A refused entry
-ends the wild's turn at `PlanHalted` (the `Hooks` seam: "Queued actions halt-and-return…").
+seed and shows stored budgets, while the server plans just after `turn_start` refreshes the wild's;
+reading neither keeps chip and execution equal on an unchanged board. A refused entry ends the
+wild's turn at `PlanHalted`, as it would a player's.
 
-**Rules out.** A seed or RNG parameter; reading `state.seed`, `action_seq` or `actor.budget`;
-a hidden PRNG; a TypeScript planner; range, cost or stride math re-implemented in the planner.
+**Rules out.** A seed or RNG parameter; reading the seed, the roll counter or the unit's stored
+budget; a hidden PRNG; a TypeScript planner; range, cost or stride math re-implemented in the
+planner.
+
+The planner's inputs and the checks that hold them: `ARCHITECTURE.md` "game-core: the rule layer",
+Tactical engine.
 
 ## Accounts, guest identity and the claim flow
 

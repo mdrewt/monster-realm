@@ -85,6 +85,50 @@ numerator/denominator, and a floor of 1. The tactical pipeline
 (`tactics::resolve::damage_pipeline`) passes no weather, then applies flank and Guard
 and floors any non-immune hit at 1 again.
 
+**Tactical engine.** `tactics::queue::TacticalBattle` is the submit gate and the
+executor. At pop, `validate_at_pop` checks each entry; the first that fails and every
+later one are wasted and reported once as `PlanHalted{unit, idx, reason_kind}`, and
+control returns live (`Waiting(U)`) to a player-owned conscious unit with at least
+`min_action_cost` AP (the cheapest of `light_cost`, `move_stride_cost` and `item_cost`,
+2 at the design's numbers), else the turn ends committed. A live submit whose first
+entry fails is refused as `SubmitError::InvalidNow`. The idle clock (`tactics::clock`)
+keeps its windows and strike counts per side, so in Practice one player holds both;
+a PvP-ruleset window is `pvp_window_ms` (30 s, `game-core/content/tactics_tuning.ron`)
+and the `autopass_forfeit`-th (4th) auto-pass forfeits. A submit that lands after its
+deadline but before the fire commits is accepted; the fire then finds the window closed
+and is a no-op. The executor reaches the planner, inventory, recruit headroom and the
+Item/Recruit/Flee resolution only through the `Hooks` trait (`plan_ai`, `item_count`,
+`take_item`, `recruit_headroom`, `validate_delegated`, `resolve_delegated`);
+`resolve_delegated` may return only `RecruitResult`, `Awards` and `Status` payloads, and
+the terminal sweep (`outcome::settle`) decides the outcome after it.
+
+The carried conventions: only side A of a wild battle is player-owned
+(`queue::is_player_owned`) and it holds round-1 tie priority
+(`initiative::round1_priority`); the round-1 PvP priority coin and the
+adjudication coin (`outcome::adjudicate`) read `splitmix64(..) & 1` with 0
+→ A; `BattleKind::uses_pvp_rules` (`tactics/tuning.rs`) is the one mapping
+that gives Practice the PvP ruleset; `outcome::check_battle_end` makes a wild
+mutual wipe `SideBWins` by `FixedOrder`; `resolve::draw_rolls` draws an accuracy
+then a variance roll for every target; `resolve::resolve_attack` judges flank
+on the board captured before the attack; freeze thaw rolls come off the same
+`splitmix64(seed ^ action_seq)` stream (`resolve::draw`, `upkeep::run_upkeep`); the
+wild round cap fires on `round >= wild_round_cap` (`upkeep.rs`). The shared fixture
+`game-core/tests/fixtures/tactics_golden.json` pins `draw_rolls` natively and through the
+`tactics_golden` wasm export.
+
+The wild planner `tactics::ai::plan(state, unit, stance, spawn, t)` takes no
+seed or RNG parameter, and `ai_tests.rs` pins its signature as a `fn` pointer
+type. `View::of` builds the private `View` (no `seed`, `action_seq` or budget
+field) that every stance helper reads, and `admissible` costs each candidate from
+`TurnBudget::fresh(t)` through `plan_cost`, which folds the gate's `spend`. The executor
+hands `Hooks::plan_ai` the `public_view` (`seed` and `action_seq` zeroed), halts anything
+but `Move`/`Skill`/`EndTurn` as `BadShape`, and runs every entry, the trailing `EndTurn`
+included, through `validate_at_pop` (`queue.rs` `start_turn`, `execute`). The planner
+calls the gate's own `find_path`, `target_set`, `disengage_taxed`, `stride_points` and
+`validate_unit`. The `View`'s units are `&TacticalUnit`, so `budget` stays reachable: the
+seed- and budget-blindness tests and the executor proptest (no `PlanHalted` on generated
+battles) in `ai_tests.rs` catch a regression.
+
 ## Content pipeline
 
 Content is data, not code. Each registry is a directory under `game-core/content/`
@@ -333,24 +377,34 @@ writes it again.
 
 ### Battles, trades and the rest
 
-- **PvE.** A grass encounter opens a tactical wild battle (`tactics::start_wild_tactical`)
-  and stores each wild's individuality seed in the private `battle_wild_unit` table; the
-  battle's own seed lives in `battle_secret`. Turns resolve in `game-core`'s tactical
-  engine from the stored seed. A recruit rebuilds the exact individual from the wild's
-  seed. After a battle ends, only the latest finished battle per player is kept. The 1v1
-  tables (`battle_wild`, `battle_action`, `pvp_deadline_schedule`) are retired in place
-  since bt-17 — never dropped; no new rows (the settle and erase sweeps still delete from them).
-- **PvP.** Challenges are public rows with a 120 s TTL. Accepting one opens a tactical
-  battle (`tactics::start_pvp_tactical`) whose deploy picks are revealed by copy; the
-  tactical clocks and auto-pass rules end a stalled battle. Ranked results update the
-  public `profile` table, and `ranking.rs` then rescans it into `leaderboard_top`, the
-  identities of the top 100.
-- **Trading.** Trades run through trade sessions (next item). The public
-  `trade_offer` table is drain-only: no reducer inserts a row. A row still in it keeps
-  its assets guarded (they cannot be spent, sold or evolved) until `cancel_trade`, a
-  disconnect, account deletion or the one-hour TTL reaper (`TRADE_OFFER_TTL_MS`)
-  deletes it. The client neither subscribes to the table nor sends `cancel_trade`: the
-  disconnect sweep and the reaper are a remaining row's way out.
+- **PvE.** A grass encounter opens a tactical wild battle
+  (`tactics::start_wild_tactical`) and stores each wild's individuality seed
+  in the private `battle_wild_unit` table; the battle's own seed lives in
+  `battle_secret`. Turns resolve in `game-core`'s tactical engine from the stored
+  seed. A recruit rebuilds the exact individual from the wild's seed at full HP,
+  into the box (`taming::insert_recruited`, `PARTY_SLOT_NONE`); the recruited wild
+  becomes `Recruited`, leaves the board and the initiative, and is never a `Ko`,
+  so the settlement credits no XP for it. After a battle ends, only the latest
+  finished battle per player is kept. The 1v1 tables (`battle_wild`, `battle_action`,
+  `pvp_deadline_schedule`) are retired in place since bt-17 — never dropped; no new
+  rows (the settle and erase sweeps still delete from them).
+- **PvP.** The `battle` table is private; participants read it through
+  `my_battle`. The battle checks are `guards::is_in_ongoing_battle` (the player,
+  in either role) and `guards::reject_if_in_battle` (the monster, in either party),
+  which `evolve` and the trade-session side check use. Challenges are public rows
+  with a 120 s TTL (`CHALLENGE_TTL_MS`). Accepting one opens a tactical battle
+  (`tactics::start_pvp_tactical`) whose deploy picks are revealed by copy; the tactical
+  clocks and auto-pass rules end a stalled battle. Only a battle between two distinct
+  real players is ranked (`guards::is_ranked_pvp`): Elo from `INITIAL_RATING` 1000,
+  with no floor. Ranked results update the public `profile` table, and `ranking.rs` then
+  rescans it into `leaderboard_top`, the identities of the top 100.
+- **Trading.** Trades run through trade sessions (next item). The public `trade_offer`
+  table is drain-only: no reducer inserts a row. A row still in it keeps its
+  assets guarded (they cannot be spent, sold or evolved) until `cancel_trade`,
+  a disconnect, account deletion or the one-hour TTL reaper (`TRADE_OFFER_TTL_MS`)
+  deletes it. `propose_trade`, `respond_trade` and `confirm_trade` pass the admission
+  check and return one fixed error. The client neither subscribes to the table nor sends
+  `cancel_trade`: the disconnect sweep and the reaper are a remaining row's way out.
 - **Trade sessions.** `open_trade_session` opens a blank private `trade_session` row
   with a player within interact range (one per pair, at most four opened per player,
   one-hour TTL). Each side replaces only its own offer with `set_trade_offer`; every
@@ -361,15 +415,49 @@ writes it again.
   assets are locked only while that side is confirmed; an offered monster that is
   boxed, faints or changes owner deletes the session at the monster write
   (`monster_mgmt::update_monster_synced`), and so do a disconnect and a cancel. The
-  two participants read the row through `my_trade_session`; the client does not
-  subscribe to it.
+  two participants read the row through `my_trade_session`; the client
+  does not subscribe to it. The open cap is `MAX_OPEN_TRADE_SESSIONS`
+  and counts only the sessions the player opened (`check_session_open`,
+  `game-core/src/trading/session.rs`). A confirm runs `side_check` (both offers
+  non-empty, the side keeps a monster) and first compares each offered monster with
+  its private `trade_session_snapshot` row; arrivals take `arrival_slots`. The swap
+  is `trading_session::apply_swap`, called when the last confirm lands. It resets
+  each transferred monster's seven bond columns (`trust_favorable_count`,
+  `trust_unfavorable_count`, `trust_favorable_battle_day_epoch`,
+  `quality_time_ticks_total`, `quality_time_accum_ms`, `quality_time_window_ms`,
+  `quality_time_window_start_ms`) through game-core's `reset_bond_on_trade` over a
+  `TrainerBond` (`raising/rules.rs`), then rewrites `monster_pub` with the trust and
+  Quality-Time tiers re-derived and the evolution `tier` copied forward. The guest-claim
+  re-key (`monster_mgmt::rekey_monsters`) does not reset the bond.
 - **Raising and economy.** Care, training, essence and healing live in `raising`;
   every balance change goes through `economy::grant_currency`/`spend_currency`, and
   every inventory insert through `inventory::grant_item`, which keeps one stack per
-  owner and item.
-- **Evolution.** See the evolution entry in `docs/DECISIONS.md`: authored edges in the
-  public `evolution_path` table, one shared eligibility query, and automatic evolution
-  only when exactly one edge qualifies.
+  owner and item. The wallet is the private `player_wallet` (`u64`, `MAX_BALANCE` in
+  `game-core/src/currency.rs`); a stack caps at `MAX_ITEM_STACK` (`trading/rules.rs`),
+  and a swap applies its debits before its credits (`SwapPlan::ordered_steps`). The
+  escrow wrappers in `guards.rs` count a confirmed session side and any `trade_offer`
+  row still in its table. The client keeps currency a `bigint` from the store row
+  to the reducer argument (`client/src/ui/tradeSessionModel.ts`). `heal_party`
+  (`raising.rs`) charges a heal location's `cost_currency` and its cost item; the
+  shipped `game-core/content/heal_locations/` name neither. Each knocked-out wild
+  pays `battle_currency_reward` (`BATTLE_CURRENCY_BST_DIVISOR`, `currency.rs`);
+  the one shipped quest's `reward.currency` (`game-core/content/quests/`)
+  is credited once. A wild pack is clamped to the party's conscious monsters
+  (`effective_pack`, `tactics/encounter.rs`). `docs/economy-tuning.md`
+  is the worksheet, and `game-core/tests/pt_d3_tuning.rs` holds
+  its relations as tests over the shipped content, among them
+  `recruit_heavy_zone0_battles_buy_a_lure_berry_within_the_battle_budget`.
+- **Evolution.** Edges are authored in `game-core/content/evolution_paths/*.ron`
+  and seeded into the public `evolution_path` table. The content lints hold each
+  `edge_id` unique (R12) and each edge's tier step at exactly one (R5). Eligibility is
+  `game_core::eligible_evolution_paths`. After a write that can change eligibility,
+  `check_and_evolve` (`evolution.rs`) re-reads the monster, applies the one eligible
+  edge when there is exactly one, and repeats against the new species, at most
+  `MAX_EVOLUTION_CHAIN_STEPS` times. The `evolve` reducer takes the one edge matching
+  both endpoints, then calls `check_and_evolve`. Each applied evolution appends
+  a reveal to the owner's private `pending_evolution_notice` row, read through
+  `my_pending_evolution_notices`; `ack_evolution_notices` drains an acknowledged
+  prefix. See the evolution entry in `docs/DECISIONS.md`.
 
 ### Working with SpacetimeDB
 
