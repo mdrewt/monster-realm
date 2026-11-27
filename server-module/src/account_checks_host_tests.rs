@@ -709,6 +709,27 @@ mod marking {
         assert_eq!(fx.writes_to("host_check_schedule"), 0, "no schedule write");
     }
 
+    /// Marking the lone marked row over exactly one schedule row changes nothing: no account
+    /// row and no schedule row is written.
+    ///
+    /// kills: the marked row rewritten on every call; an unmarked bystander rewritten.
+    #[test]
+    fn remarking_the_lone_marked_row_writes_no_row_lpw43_1() {
+        let fx = fixture();
+        let w = host_world(&fx);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, true, LONG_AGO, true));
+        w.accounts
+            .seed(&account_row(bob(), HANDLE_B, false, LONG_AGO, false));
+        w.sched.seed(&sched_row(100, Some(NOW - 1_000)));
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+        assert_eq!(mark_as(&fx, &test_profile(), alice()), Ok(()));
+        assert_eq!(fx.writes_to("world_account"), 0, "no account write");
+        assert_eq!(fx.writes_to("host_check_schedule"), 0, "no schedule write");
+        assert_eq!(footprint(&fx, &w), before, "nothing changes");
+    }
+
     /// Marking the already marked row over two schedule rows leaves one unstamped row.
     ///
     /// kills: "already marked" judged alone; one of two rows deleted.
@@ -808,6 +829,48 @@ mod marking {
         );
         assert_eq!(footprint(&fx, &w), before, "nothing changes");
         assert_owner_call_passes_the_gates(&fx, &w, alice());
+    }
+
+    /// A caller that is not the owner naming itself, its own row unmarked, is refused as not
+    /// the owner and nothing is written; the owner's same call passes.
+    ///
+    /// kills: the owner gate widened to admit a caller naming itself.
+    #[test]
+    fn a_non_owner_naming_itself_is_refused_and_nothing_is_written_lpw43_1() {
+        let fx = fixture();
+        let w = host_world(&fx);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, true, LONG_AGO, true));
+        w.accounts
+            .seed(&account_row(carol(), HANDLE_C, true, LONG_AGO, false));
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+        assert_eq!(
+            set_host_as(&fx, carol(), carol()),
+            Err("caller is not the world owner".to_string())
+        );
+        assert_eq!(footprint(&fx, &w), before, "nothing changes");
+        assert_owner_call_passes_the_gates(&fx, &w, carol());
+    }
+
+    /// A caller that is not the owner naming itself while it holds no row is refused as not the
+    /// owner, not as an identity with no row, and nothing is written.
+    ///
+    /// kills: the owner gate widened to admit a caller naming itself.
+    #[test]
+    fn a_non_owner_with_no_row_naming_itself_gets_the_owner_refusal_lpw43_1() {
+        let fx = fixture();
+        let w = host_world(&fx);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, true, LONG_AGO, true));
+        w.sched.seed(&sched_row(100, Some(NOW - HOUR)));
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+        assert_eq!(
+            set_host_as(&fx, carol(), carol()),
+            Err("caller is not the world owner".to_string())
+        );
+        assert_eq!(footprint(&fx, &w), before, "nothing changes");
     }
 
     /// A stranger naming an identity pending deletion is told it is not the owner: the owner
@@ -1031,6 +1094,27 @@ mod ticking {
         );
     }
 
+    /// An answer that names no handle is a success: the fired row is replaced by one stamped
+    /// with the tick's time, and the tick an hour later sends nothing.
+    ///
+    /// kills: the success stamped only when the answer names a handle.
+    #[test]
+    fn an_answer_naming_no_handle_is_a_success_and_is_stamped_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world(&fx, None);
+        let (got, _) = fire(&fx, &w, NOW, Some(ok(unknown_handle_answer(true))));
+        assert_eq!(got, Ok(()));
+        assert!(
+            accounts(&w).contains(&row_view(alice(), HANDLE_A, false, NOW, true)),
+            "{:?}",
+            accounts(&w)
+        );
+        assert_one_new_row(&w, &[100], Some(NOW));
+        let (got, sent) = fire(&fx, &w, NOW + HOUR, None);
+        assert_eq!(got, Ok(()));
+        assert!(sent.is_empty(), "no request an hour later: {sent:?}");
+    }
+
     /// A success replaces the fired row by one hourly row stamped with the tick's time, from
     /// no success and from a success 23 h old.
     ///
@@ -1092,6 +1176,31 @@ mod ticking {
         let (got, sent) = fire(&fx, &w, NOW, Some(ok(handle_answer(HANDLE_A, true))));
         assert_eq!(got, Ok(()));
         assert_eq!(sent.len(), 1, "a marked row is asked about");
+    }
+
+    /// While the marked row's account is pending deletion a due tick sends nothing and writes
+    /// nothing; with that deletion gone, and a bystander's account pending deletion instead,
+    /// the same tick asks about the marked handle.
+    ///
+    /// kills: no deletion gate on the tick; the gate judged on another identity or on any
+    /// account pending deletion.
+    #[test]
+    fn a_tick_sends_nothing_while_the_marked_account_is_pending_deletion_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world(&fx, None);
+        w.account.seed(&deleting_account(alice()));
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+        let (got, sent) = fire(&fx, &w, NOW, None);
+        assert_eq!(got, Ok(()));
+        assert!(sent.is_empty(), "no request: {sent:?}");
+        assert_eq!(footprint(&fx, &w), before, "nothing changes");
+        assert_eq!(w.account.remove(alice()), 1, "fixture: the deletion goes");
+        w.account.seed(&deleting_account(bob()));
+        let (got, sent) = fire(&fx, &w, NOW, Some(ok(handle_answer(HANDLE_A, true))));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the marked row is asked about");
+        assert_handle_request(&sent[0], DEV_URL, HANDLE_A);
     }
 
     /// A tick whose row `host_check_schedule` does not hold sends nothing and writes nothing;
@@ -1583,6 +1692,207 @@ mod during_the_wait {
             before,
             "the fired row stays unstamped"
         );
+    }
+
+    /// [`marked_world`] named `names`, its schedule row 100 holding no success.
+    fn marked_world_named<'a>(fx: &'a Fixture, names: &[&str]) -> W<'a> {
+        let w = named_world(fx, names);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, false, LONG_AGO, true));
+        w.accounts
+            .seed(&account_row(bob(), HANDLE_B, true, LONG_AGO, false));
+        w.sched.seed(&sched_row(100, None));
+        w
+    }
+
+    /// The fired row 100, unstamped and untouched by the tick.
+    fn assert_row_100_unstamped_and_unwritten(fx: &Fixture, w: &W<'_>) {
+        assert_eq!(
+            schedule(w),
+            vec![(100, hourly(), None)],
+            "the fired row stays unstamped"
+        );
+        assert_eq!(fx.writes_to("host_check_schedule"), 0, "no schedule write");
+    }
+
+    /// The marked account's deletion is requested during the wait: the answer's address is
+    /// stored, and neither its status nor the success is.
+    ///
+    /// kills: the status stored on an account pending deletion; the success stamped for it;
+    /// the address dropped with the status.
+    #[test]
+    fn a_deletion_requested_during_the_wait_stores_the_address_alone_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world(&fx, None);
+        let seeded = accounts(&w);
+        let answer = ok(handle_answer(HANDLE_A, true)).while_waiting(|| {
+            w.account.seed(&deleting_account(alice()));
+        });
+        fx.reset_writes();
+        let (got, sent) = fire(&fx, &w, NOW, Some(answer));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the tick asks");
+        assert_eq!(egress(&w), vec![(4, "203.0.113.9".to_string(), NOW)]);
+        assert_eq!(accounts(&w), seeded, "the account rows stay");
+        assert_eq!(fx.writes_to("world_account"), 0, "no account write");
+        assert!(listed(&w).is_empty(), "no list entry: {:?}", listed(&w));
+        assert_eq!(fx.writes_to("world_allowlist"), 0, "no list write");
+        assert_row_100_unstamped_and_unwritten(&fx, &w);
+    }
+
+    /// The marked account's deletion is requested during the wait and the answer names a newer
+    /// handle: neither the account row nor the host's list is written, and nothing is stamped.
+    ///
+    /// kills: the newer handle moved onto an account pending deletion.
+    #[test]
+    fn a_deletion_requested_during_the_wait_writes_no_newer_handle_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world(&fx, None);
+        w.allow.seed(&WorldAllowlist {
+            account_subject: HANDLE_A.to_string(),
+        });
+        let seeded = accounts(&w);
+        let answer = ok(handle_answer(HANDLE_A2, true)).while_waiting(|| {
+            w.account.seed(&deleting_account(alice()));
+        });
+        fx.reset_writes();
+        let (got, _) = fire(&fx, &w, NOW, Some(answer));
+        assert_eq!(got, Ok(()));
+        assert_eq!(accounts(&w), seeded, "the account rows stay");
+        assert_eq!(fx.writes_to("world_account"), 0, "no account write");
+        assert_eq!(listed(&w), strings(&[HANDLE_A]), "the list stays");
+        assert_eq!(fx.writes_to("world_allowlist"), 0, "no list write");
+        assert_row_100_unstamped_and_unwritten(&fx, &w);
+    }
+
+    /// A world asking at the profile's own URL gains an IPv4 `ip:` name during the wait: the
+    /// status and the address are stored, the unstamped row stays unstamped, and the next tick
+    /// asks over IPv4.
+    ///
+    /// kills: the success stamped for an answer sent over another family than the one the
+    /// world asks over when the answer lands; the family judged on the first transaction's read.
+    #[test]
+    fn a_names_change_that_makes_the_world_ask_over_ipv4_stamps_nothing_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world(&fx, None);
+        let answer = ok(handle_answer(HANDLE_A, true)).while_waiting(|| {
+            w.names.seed(&WorldName {
+                name: IP4_NAME.to_string(),
+            });
+            names_changed(&fx.ctx_at(at(NOW)));
+        });
+        fx.reset_writes();
+        let (got, sent) = fire(&fx, &w, NOW, Some(answer));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the tick asks");
+        assert_handle_request(&sent[0], DEV_URL, HANDLE_A);
+        assert_eq!(
+            accounts(&w),
+            sorted(vec![
+                row_view(alice(), HANDLE_A, true, NOW, true),
+                row_view(bob(), HANDLE_B, true, LONG_AGO, false),
+            ]),
+            "the status is stored"
+        );
+        assert_eq!(egress(&w), vec![(4, ADDRESS4.to_string(), NOW)]);
+        assert_row_100_unstamped_and_unwritten(&fx, &w);
+        let (got, sent) = fire(&fx, &w, NOW + HOUR, Some(ok(handle_answer(HANDLE_A, true))));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the next tick asks");
+        assert_eq!(
+            sent[0].url,
+            "https://ipv4.auth.monster-realm.spookyowltech.com/world/check"
+        );
+    }
+
+    /// A world asking over IPv4 loses its IPv4 `ip:` name during the wait: the status is
+    /// stored, the unstamped row stays unstamped, and the next tick asks at the profile's own
+    /// URL.
+    ///
+    /// kills: the success stamped for an answer sent over another family than the one the
+    /// world asks over when the answer lands.
+    #[test]
+    fn a_names_change_that_stops_the_world_asking_over_ipv4_stamps_nothing_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world_named(&fx, &[WORLD_NAME, IP4_NAME]);
+        let answer = ok(handle_answer(HANDLE_A, true)).while_waiting(|| {
+            assert_eq!(
+                w.names.remove(IP4_NAME.to_string()),
+                1,
+                "the wait drops the name"
+            );
+            names_changed(&fx.ctx_at(at(NOW)));
+        });
+        fx.reset_writes();
+        let (got, sent) = fire(&fx, &w, NOW, Some(answer));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the tick asks");
+        assert_handle_request(
+            &sent[0],
+            "https://ipv4.auth.monster-realm.spookyowltech.com/world/check",
+            HANDLE_A,
+        );
+        assert!(
+            accounts(&w).contains(&row_view(alice(), HANDLE_A, true, NOW, true)),
+            "the status is stored: {:?}",
+            accounts(&w)
+        );
+        assert_row_100_unstamped_and_unwritten(&fx, &w);
+        let (got, sent) = fire(&fx, &w, NOW + HOUR, Some(ok(handle_answer(HANDLE_A, true))));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the next tick asks");
+        assert_eq!(sent[0].url, DEV_URL);
+    }
+
+    /// A second name that is no `ip:` name added during the wait keeps the family asked, so
+    /// the success is stamped.
+    ///
+    /// kills: any names change during the wait taken to forbid the stamp.
+    #[test]
+    fn a_names_change_that_keeps_the_family_asked_stamps_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world(&fx, None);
+        let answer = ok(handle_answer(HANDLE_A, true)).while_waiting(|| {
+            w.names.seed(&WorldName {
+                name: "dns:realm-one.example.net".to_string(),
+            });
+            names_changed(&fx.ctx_at(at(NOW)));
+        });
+        let (got, sent) = fire(&fx, &w, NOW, Some(answer));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the tick asks");
+        assert_handle_request(&sent[0], DEV_URL, HANDLE_A);
+        assert_one_new_row(&w, &[100], Some(NOW));
+    }
+
+    /// An IPv4 `ip:` name replaced during the wait by another IPv4 `ip:` name keeps the family
+    /// asked, so the success is stamped.
+    ///
+    /// kills: the stamp tied to the names themselves rather than the family they ask over.
+    #[test]
+    fn an_ipv4_name_replaced_by_another_ipv4_name_during_the_wait_stamps_lpw43_2() {
+        let fx = fixture();
+        let w = marked_world_named(&fx, &[IP4_NAME]);
+        let answer = ok(answer_from(HANDLE_A, true, OTHER4)).while_waiting(|| {
+            assert_eq!(
+                w.names.remove(IP4_NAME.to_string()),
+                1,
+                "the wait drops the name"
+            );
+            w.names.seed(&WorldName {
+                name: "ip:198.51.100.7:3000".to_string(),
+            });
+            names_changed(&fx.ctx_at(at(NOW)));
+        });
+        let (got, sent) = fire(&fx, &w, NOW, Some(answer));
+        assert_eq!(got, Ok(()));
+        assert_eq!(sent.len(), 1, "the tick asks");
+        assert_handle_request(
+            &sent[0],
+            "https://ipv4.auth.monster-realm.spookyowltech.com/world/check",
+            HANDLE_A,
+        );
+        assert_one_new_row(&w, &[100], Some(NOW));
     }
 }
 

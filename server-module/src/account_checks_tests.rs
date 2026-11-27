@@ -4630,6 +4630,44 @@ mod egress_rules {
         }
     }
 
+    /// An answer reporting the address its family's row holds, confirmed 5 h before the call,
+    /// restamps that row with the call's time and keeps its address.
+    ///
+    /// kills: a stored row left as it is when the reported address is the one it holds.
+    #[test]
+    fn an_answer_reporting_the_stored_address_restamps_its_row_lpw43_5() {
+        let rows = [egress_row(4, ADDRESS, NOW - 18_000_000)];
+        for path in PATHS {
+            let a = after(path, &rows, Some(json!(ADDRESS)));
+            assert_eq!(a.got, Ok(()), "{path:?}");
+            assert!(a.answer_stored, "{path:?}: the answer is stored");
+            assert_eq!(a.egress, vec![(4, ADDRESS.to_string(), NOW)], "{path:?}");
+        }
+    }
+
+    /// An answer whose `address` member is absent or `null` leaves the row of the family the
+    /// world asks over as it is, with no write to `world_egress`, and stores the rest of the
+    /// answer.
+    ///
+    /// kills: the asked family's row deleted or restamped by an answer that reports no address.
+    #[test]
+    fn an_answer_with_no_address_leaves_the_asked_familys_row_alone_lpw43_5() {
+        let seeded = egress_row(4, ADDRESS, NOW - 18_000_000);
+        for path in PATHS {
+            for (label, address) in [("absent", None), ("null", Some(Value::Null))] {
+                let a = after(path, std::slice::from_ref(&seeded), address);
+                assert_eq!(a.got, Ok(()), "{path:?}, {label}");
+                assert!(a.answer_stored, "{path:?}, {label}: the answer is stored");
+                assert_eq!(
+                    a.egress,
+                    vec![(4, ADDRESS.to_string(), NOW - 18_000_000)],
+                    "{path:?}, {label}: the asked family's row stays"
+                );
+                assert_eq!(a.egress_writes, 0, "{path:?}, {label}: no address written");
+            }
+        }
+    }
+
     /// An `address` member of another JSON type makes the body no answer: refused with
     /// [`REJECT_CHECK_UNANSWERED`], no account row written and no address stored.
     ///
@@ -4741,6 +4779,58 @@ mod egress_rules {
         assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
     }
 
+    /// The owner's relay for [`alice`], answered with a usable address, stores the row for her
+    /// and the address for its family at the call's time.
+    ///
+    /// kills: the address stored only on a caller's own `check_account`.
+    #[test]
+    fn the_owners_relay_stores_the_answers_address_lpw43_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        let mut http = HttpQueue::new();
+        http.push(ok_answer(ticket_answer(HANDLE_A, true, WORLD_NAME)));
+        let got = relay_as(
+            &fx,
+            owner(),
+            alice(),
+            NOW,
+            &mut http,
+            &test_profile(),
+            &ticket(),
+        );
+        assert_eq!(got, Ok(true));
+        assert!(accounts(&w).contains(&view(&account_row(alice(), HANDLE_A, true, NOW, false))));
+        assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
+    }
+
+    /// The owner's relay refused when it lands (`who` holds another handle) has still stored
+    /// the answer's address, and the account rows stay.
+    ///
+    /// kills: the relay's address stored in the transaction that stores the account row, so
+    /// the refusal rolls it back; the address stored only on a caller's own `check_account`.
+    #[test]
+    fn a_relay_refused_after_its_answer_has_stored_the_address_lpw43_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.accounts
+            .seed(&account_row(alice(), HANDLE_A, true, T0 - 1_000, false));
+        let before = accounts(&w);
+        let mut http = HttpQueue::new();
+        http.push(ok_answer(ticket_answer(HANDLE_A2, true, WORLD_NAME)));
+        let got = relay_as(
+            &fx,
+            owner(),
+            alice(),
+            NOW,
+            &mut http,
+            &test_profile(),
+            &ticket(),
+        );
+        assert_eq!(got, Err(REJECT_IDENTITY_HOLDS_ANOTHER.to_string()));
+        assert_eq!(accounts(&w), before, "the account rows stay");
+        assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
+    }
+
     /// A re-check whose row is checked again while it waits leaves the newer row alone and
     /// still stores the answer's address.
     ///
@@ -4780,6 +4870,40 @@ mod egress_rules {
                 false
             ))),
             "the newer row stays: {:?}",
+            accounts(&w)
+        );
+        assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
+    }
+
+    /// A re-check answered with no handle stores the row not entitled and stores the answer's
+    /// address for its family at the run's time.
+    ///
+    /// kills: the address stored only when the answer names a handle.
+    #[test]
+    fn a_recheck_answered_with_no_handle_stores_the_address_lpw43_5() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.accounts.seed(&account_row(
+            alice(),
+            HANDLE_A,
+            true,
+            T0 - 86_400_000,
+            false,
+        ));
+        let mut http = HttpQueue::new();
+        http.push(ok_answer(unknown_handle_answer(false)));
+        let got = recheck_as(
+            &fx,
+            Caller::Database,
+            NOW,
+            &mut http,
+            &test_profile(),
+            recheck_of(alice(), 1),
+        );
+        assert_eq!(got, Ok(()));
+        assert!(
+            accounts(&w).contains(&view(&account_row(alice(), HANDLE_A, false, NOW, false))),
+            "{:?}",
             accounts(&w)
         );
         assert_eq!(egress(&w), vec![(4, ADDRESS.to_string(), NOW)]);
@@ -4891,6 +5015,30 @@ mod egress_rules {
                 &[egress_row(4, ADDRESS, NOW + 1)]
             ),
             (strings(&[WORLD_NAME, DNS]), DEV_V4.to_string())
+        );
+    }
+
+    /// kills: a family-6 row judged stale by a bound below 25 h.
+    #[test]
+    fn an_ipv6_ip_name_confirmed_25_hours_less_1_ms_ago_is_presented_lpw43_5() {
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, IP6_NAME],
+                &[egress_row(6, IP6, NOW - 89_999_999)]
+            ),
+            (strings(&[WORLD_NAME, IP6_NAME]), DEV_V6.to_string())
+        );
+    }
+
+    /// kills: freshness judged for family 4 only; a family-6 bound above 25 h; `<=` for `<`.
+    #[test]
+    fn an_ipv6_ip_name_confirmed_exactly_25_hours_ago_is_not_presented_lpw43_5() {
+        assert_eq!(
+            presented(
+                &[WORLD_NAME, IP6_NAME],
+                &[egress_row(6, IP6, NOW - 90_000_000)]
+            ),
+            (strings(&[WORLD_NAME]), DEV_V6.to_string())
         );
     }
 
@@ -5091,6 +5239,24 @@ mod ip_move {
     const DNS: &str = "dns:realm-one.example.net";
     /// An IPv4 address [`IP_NAME`] does not carry.
     const OTHER_ADDRESS: &str = "198.51.100.7";
+    /// An `ip:` name carrying the IPv6 address [`IP6`].
+    const IP6_NAME: &str = "ip:[2606:4700:4700::1111]:8443/world-1";
+    /// The address [`IP6_NAME`] carries, as std prints it.
+    const IP6: &str = "2606:4700:4700::1111";
+    /// The dev service's check name for IPv6.
+    const DEV_V6: &str = "https://ipv6.auth.monster-realm.spookyowltech.com/world/check";
+
+    /// The world of `m` named `names` in place of its own two names.
+    fn rename(m: &MW<'_>, names: &[&str]) {
+        for name in [WORLD_NAME, IP_NAME] {
+            assert_eq!(m.c.names.remove(name.to_string()), 1, "fixture: {name}");
+        }
+        for name in names {
+            m.c.names.seed(&WorldName {
+                name: (*name).to_string(),
+            });
+        }
+    }
 
     /// Bob's character is alice's: the handle's row points at her, bob holds a `world_move`
     /// row at the check's time, and every character row is under her.
@@ -5239,5 +5405,57 @@ mod ip_move {
                 "{name}: the reported address"
             );
         }
+    }
+
+    /// A world whose one name is an IPv6 `ip:` name asks at the `ipv6.` check name, and the
+    /// answer reporting that name's own address confirms it: the character moves to the caller
+    /// and the address is stored for family 6.
+    ///
+    /// kills: `ip_name_confirmed` true only for an IPv4 address; the IPv6 name judged before
+    /// the answer's address is stored.
+    #[test]
+    fn an_ipv6_ip_name_alone_the_answer_confirms_moves_the_character_lpw43_6() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        rename(&m, &[IP6_NAME]);
+        let (got, sent) = alice_checks(
+            &fx,
+            ok_answer(ticket_answer_with(
+                HANDLE_B,
+                true,
+                IP6_NAME,
+                Some(json!(IP6)),
+            )),
+        );
+        assert_eq!(sent.len(), 1, "one request");
+        assert_first_contact(&sent[0], DEV_V6, &ticket(), &[IP6_NAME]);
+        assert_eq!(got, Ok(true));
+        assert_moved_to_alice(&m, "an IPv6 name alone");
+        assert_eq!(egress(&m.c), vec![(6, IP6.to_string(), NOW)]);
+    }
+
+    /// Beside a `spki:` name, a ticket answered under the IPv6 `ip:` name with that name's own
+    /// address moves the character to the caller.
+    ///
+    /// kills: `ip_name_confirmed` true only for an IPv4 address.
+    #[test]
+    fn an_ipv6_ip_name_beside_a_spki_name_the_answer_confirms_moves_the_character_lpw43_6() {
+        let fx = fixture();
+        let m = moving_world(&fx);
+        rename(&m, &[WORLD_NAME, IP6_NAME]);
+        let (got, sent) = alice_checks(
+            &fx,
+            ok_answer(ticket_answer_with(
+                HANDLE_B,
+                true,
+                IP6_NAME,
+                Some(json!(IP6)),
+            )),
+        );
+        assert_eq!(sent.len(), 1, "one request");
+        assert_first_contact(&sent[0], DEV_V6, &ticket(), &[WORLD_NAME, IP6_NAME]);
+        assert_eq!(got, Ok(true));
+        assert_moved_to_alice(&m, "an IPv6 name beside a spki: name");
+        assert_eq!(egress(&m.c), vec![(6, IP6.to_string(), NOW)]);
     }
 }
