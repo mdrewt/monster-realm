@@ -11,6 +11,11 @@ email and a password, through authorization code with PKCE, and the game client 
 a refresh token. Accounts and clients are made by an admin command; there is no sign-up and no reset
 mail. The `production` profile has no sign-in step in this build.
 
+The service also holds the Steam checks the Steam sign-ins will call (section "Steam"): asking
+Steam whose ticket a ticket is and what licence a player holds, the rule that turns that licence
+into "owns the game", our own deny-list, and the settings that say which Steam app a profile
+checks. No sign-in step calls them in this build, so a running service never reaches Steam.
+
 The service also signs world attestations at `POST /attest`: a statement, good for five minutes
 and addressed to one world, that an account owns the game. A `local` or `private` world's module
 checks it with a key it holds as data and binds the account (`docs/DECISIONS.md`, "A private world
@@ -142,11 +147,11 @@ verifies an account by a per-world attestation our account service signs").
 
 `MR_ACCOUNT_PROFILE` selects one; there is no default.
 
-| Profile | Issuer | Sign-in method | Signing keys | Attestation key | Data directory |
-|---|---|---|---|---|---|
-| `local-dev` | `http://localhost:4455` | `dev-password` | a key file, generated on the first start | one fixed key, the same on every machine | `account-service/.data` (ignored by git) unless set |
-| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | a key file the operator provides, with no access for group or others | `attestation-keys.json` beside the key file, provided by the operator under the same rules | set by the operator |
-| `production` | `MR_ACCOUNT_ISSUER` | `steam` | an external signer | an external signer | set by the operator |
+| Profile | Issuer | Sign-in method | Steam app | Signing keys | Attestation key | Data directory |
+|---|---|---|---|---|---|---|
+| `local-dev` | `http://localhost:4455` | `dev-password` | none, or `480` | a key file, generated on the first start | one fixed key, the same on every machine | `account-service/.data` (ignored by git) unless set |
+| `hosted-dev` | `https://auth.monster-realm.spookyowltech.com` | `dev-password` | none, or `480` | a key file the operator provides, with no access for group or others | `attestation-keys.json` beside the key file, provided by the operator under the same rules | set by the operator |
+| `production` | `MR_ACCOUNT_ISSUER` | `steam` | none, or the game's own (never `480`) | an external signer | an external signer | set by the operator |
 
 The `production` profile loads and checks its settings and then refuses to start: this build holds
 no external signer, and no `steam` sign-in step. Each dev issuer has its own keys.
@@ -191,6 +196,134 @@ world accepts until its public half is in a build.
   "The attestation is signed with Ed25519 and checked by `ed25519-dalek` compiled into the
   module").
 
+## Steam
+
+Every player must own the game on Steam (`docs/DECISIONS.md`, "Every player must own the game on
+Steam, for now"). This section is what the service can ask Steam and how it decides; the sign-in
+steps that use it are not in this build.
+
+- **Which app.** `MR_STEAM_APP_ID` configures Steam for a profile: the loaded configuration then
+  carries `steam: { appId }`, and a dev profile keeps its password sign-in beside it. A dev
+  profile takes only `480`, Valve's development app (Spacewar), which every Steam account can
+  run: it proves a Steam sign-in and never ownership of the game, and a dev deployment can never
+  act for the game's own app. `production` takes the game's own app id and never `480`.
+- **Keys.** `src/steam/webApi.ts` is the only reader of a Steam key, and reads it from the
+  environment as an own entry: the publisher key (`MR_STEAM_PUBLISHER_KEY`) on `production`, the
+  optional ordinary Web API key (`MR_STEAM_WEB_API_KEY`) on a dev profile. The loaded
+  configuration holds no key. A key is 1 to 256 characters of visible ASCII. The client refuses to
+  be built without `MR_STEAM_APP_ID`, on `production` without the publisher key, and for an app
+  that is not the profile's (anything but `480` on a dev profile, `480` on `production`); loading
+  the configuration alone requires no Steam setting.
+- **The client.** `createSteamWebApi` makes one client for the profile: the partner host
+  `https://partner.steam-api.com` with the publisher key on `production`, the public host
+  `https://api.steampowered.com` with the ordinary key on a dev profile. The key travels in the
+  `x-webapi-key` request header and in no request target. Each call is one `GET` with a
+  five-second limit on the whole exchange and is never retried. A refusal would not change, and
+  the partner host rate-limits an address that keeps sending refused requests; a failure of
+  Steam's is the player's to retry by signing in again, so an outage costs this address one
+  request per attempt. A redirect is not followed, because the followed request would carry the
+  key to another host. At most 64 KiB of an answer
+  is read. Anything that subscribes to Node's `undici` diagnostics channel sees request headers,
+  the key among them.
+- **`authenticateTicket(ticket, identity)`** asks
+  `ISteamUserAuth/AuthenticateUserTicket/v1/?appid=…&ticket=…&identity=…`. The ticket is the hex
+  of what `GetAuthTicketForWebApi(identity)` returned, at most 2560 bytes; anything else is
+  rejected without a request. The identity is 1 to 128 letters, digits, dots, underscores, colons
+  and hyphens, and is always sent: Steam authenticates a ticket made for any identity when the
+  parameter is absent, and App ID 480 is shared by every developer. A call with any other
+  identity is a fault of the caller's and rejects with a `TypeError`, sending nothing. The answer is one of:
+  `authenticated` with the SteamID; `rejected` (Steam answered with an `error` member: not a
+  valid ticket, made for another identity or for another app); `failed`. A ticket authenticates
+  again for as long as it lives, so whoever captures one can present it.
+- **`checkAppOwnership(steamId)`** asks `ISteamUser/CheckAppOwnership/v4/?appid=…&steamid=…`. Only
+  `production` can: on a dev profile it sends nothing and answers `failed`, because only the
+  publisher key of the app itself may ask. The answer is `answered` with the four members the
+  rule reads, or `failed`. An answer whose `result` is anything but `OK` says nothing and is
+  `failed`. Otherwise an answer whose `ownsapp` is `false` is reported as one fixed "does not own
+  it" value whatever else it holds, and an answer whose `ownsapp` is `true` needs boolean
+  `permanent` and `sitelicense` and a digit-string `ownersteamid`.
+- **Failures.** `failed` carries a `SteamApiError` with a reason: `timeout`, `unreachable`,
+  `status` (with the status number), `malformed` (a `200` whose body is not the expected JSON) or
+  `unconfigured` (this profile has no key for the call; nothing was sent). The error holds
+  nothing Steam sent but the status number: its message is fixed by the reason and it has no
+  cause. One line is logged per failed exchange, naming the call, the reason and the status
+  number; a success, a rejected ticket and `unconfigured` log nothing, so a caller cannot write
+  lines at will. No line holds a key, a ticket, a request target or anything of Steam's answer
+  but the status number.
+- **The rule.** `entitled(ownership, steamId)` in `src/steam/ownership.ts`: a player owns the game
+  only with `ownsapp` true, `permanent` true, `sitelicense` false and `ownersteamid` equal to
+  their own SteamID. A Family Sharing borrower, a free weekend and a PC café do not count.
+- **The decision.** `steamEntitlementSource` decides one player for one profile. Our own
+  deny-list is read first on every profile: a denied SteamID is not entitled whatever Steam or a
+  flag says, and is asked about nowhere else. After it, a dev profile reads only the admin flag
+  on `steam:<steamid64>` (an account with no flag is not entitled) and never asks Steam;
+  `production` asks Steam, applies the rule, and never reads a flag. The answer is entitled, or
+  not entitled with a reason: `denied`, `not-owned`, or `unavailable` when Steam failed to
+  answer, which carries the client's error. All three mean no token; `unavailable` says nothing
+  was learnt about what the player owns. A ban reaches a player at their next issuance: one that
+  lands while a decision is waiting on Steam does not change that decision.
+- **Records.** `src/denyList.ts` keeps both things the store holds about a SteamID, each a record
+  under the SteamID with no expiry: the deny-list (`denyList`) and the dev flag
+  (`steamAccounts`). Only the admin command writes them.
+- **SteamIDs.** A SteamID is the 17 digits of a SteamID64, and a Steam player's subject is
+  `steam:<steamid64>`; `parseSteamId`, `steamSubject` and `steamIdOfSubject` are the one place
+  that form is written and read.
+
+### What Steam answers
+
+Valve documents both calls on the partner site (`partner.steamgames.com/doc/webapi/ISteamUserAuth`
+and `/ISteamUser`, `/doc/webapi_overview/auth` for keys, `/doc/webapi_overview/responses` for
+status codes), read on 2026-11-26:
+
+- `AuthenticateUserTicket` v1 takes `key`, `appid`, `ticket` and `identity` ("only tickets created
+  with that parameter will successfully authenticate"), needs a publisher key on the partner
+  host, and is "also available for games servers via the `https://api.steampowered.com/` domain
+  using a Web API user authentication key", rate limited. It returns "the user's 64-bit SteamID
+  if the user's ticket is valid". No response or error body is documented.
+- `CheckAppOwnership` v4 takes `key`, `steamid` and `appid`, and needs the publisher key that owns
+  the app. Its documented response fields are `ownsapp`, `permanent` ("not true for ownership via
+  Family Sharing, free weekends or PC Café program"), `timestamp`, `timeexpires`, `ownersteamid`
+  ("the true owner if user is accessing this app via Family Sharing; otherwise … the same steamID
+  passed in"), `sitelicense` and `usercanceled`. The service reads `ownsapp`, `permanent`,
+  `sitelicense` and `ownersteamid`. The object that wraps them (`appownership`) and its `result`
+  member are not in the documentation: the service expects them as the API is known to answer,
+  and fails closed (nobody entitled) if production's first live answer differs.
+- The key "can be provided either as a standard parameter or by setting the 'x-webapi-key'
+  request header value". A `401` or `403` means "access is denied, retrying will not help", and
+  on the partner host a `403` brings "strict rate limits for the connecting IP".
+
+A live `AuthenticateUserTicket` run on 2026-11-26, as App ID 480 on the public host with the
+operator's ordinary Web API key and a ticket of 234 bytes from
+`GetAuthTicketForWebApi("monster-realm-account")` (steamworks.js 0.4.0 beside the Steam client on
+the operator's Windows host):
+
+| Request | Steam answers |
+|---|---|
+| key in `x-webapi-key`, the ticket's identity | `200`, `{"response":{"params":{"result":"OK","steamid":"<17 digits>","ownersteamid":"<17 digits>","vacbanned":false,"publisherbanned":false}}}` |
+| key as the `key` parameter | the same |
+| the same ticket a second time | the same |
+| another `identity` | `200`, `{"response":{"error":{"errorcode":105,"errordesc":"Identity parameter did not match"}}}` |
+| no `identity` parameter | `200`, authenticated |
+| a hex ticket Steam never issued, or one that is not hex | `200`, `{"response":{"error":{"errorcode":3,"errordesc":"Invalid parameter"}}}` |
+| another `appid` | `200`, `{"response":{"error":{"errorcode":102,"errordesc":"Ticket for other app"}}}` |
+| no key | `400`, an HTML page |
+
+Through the service's own client on `local-dev` (`createSteamWebApi`, default origin) such a
+ticket is `authenticated`, written in lower or upper case; another identity and an unknown ticket
+are `rejected`,
+`checkAppOwnership` is `unconfigured` with nothing sent, and nothing is logged. `vacbanned` and
+`publisherbanned` are not read. `CheckAppOwnership` has no live answer yet: only the publisher key
+of the game's own app may call it.
+
+### The Steam fake
+
+`account-service/test-util/steamStub.ts` is a local fake of the two calls, answering with the
+shapes above; every test that needs Steam uses it, and no test reaches Steam. It serves only the
+two exact paths, takes one key, issues tickets bound to a SteamID and an identity, answers
+ownership per SteamID, records every request, and can be told to answer the next request with any
+status, any body, a redirect, nothing at all, a body that never ends or a closed connection. It
+does not fake Steam's OpenID sign-in.
+
 ## Settings
 
 A setting that is unset or empty takes its default, if it has one. A set value is taken exactly
@@ -205,13 +338,18 @@ as written.
 | `MR_ACCOUNT_KEY_FILE` | The key file; by default `keys.json` in the data directory. An absolute, normalised path. Refused by `production`. |
 | `MR_ACCOUNT_HOST` | The address to listen on: an IP address or `localhost`. Default `127.0.0.1`. |
 | `MR_ACCOUNT_PORT` | The port to listen on, 0 to 65535 (0 lets the system choose). Default 4455. |
+| `MR_STEAM_APP_ID` | The Steam app the profile checks players against. A dev profile takes exactly `480`; `production` takes the game's app id, a decimal number from 1 to 4294967295 that is not `480`. Unset: Steam is not configured. |
+| `MR_STEAM_WEB_API_KEY` | A dev profile's ordinary Steam Web API key, for checking a real ticket under App ID 480. Optional, and taken only with `MR_STEAM_APP_ID`. Refused by `production`. |
+| `MR_STEAM_PUBLISHER_KEY` | The publisher Web API key of the game's app. `production` only; refused by the dev profiles. |
 
 The service refuses to start, naming the setting on stderr and exiting 1, when:
 
 - `production` is given the dev sign-in method, a key file, an `http:` issuer, or an issuer on a dev
   issuer's host;
-- a dev profile is given `MR_ACCOUNT_ISSUER`, or any setting whose name matches `MR_STEAM_*KEY*`
-  (the Steam publisher key is `MR_STEAM_PUBLISHER_KEY`);
+- a dev profile is given `MR_ACCOUNT_ISSUER`, `MR_STEAM_PUBLISHER_KEY`, an `MR_STEAM_APP_ID` that
+  is not exactly `480`, or `MR_STEAM_WEB_API_KEY` without `MR_STEAM_APP_ID`;
+- `production` is given `MR_STEAM_WEB_API_KEY`, or an `MR_STEAM_APP_ID` that is `480` or not an
+  app id;
 - a key file is missing (except on `local-dev`), not a regular file, larger than 64 KiB,
   malformed, marked for another profile, holds anything but P-256 private keys with distinct
   `kid`s, or, on `hosted-dev`, grants group or others any access;
@@ -219,8 +357,9 @@ The service refuses to start, naming the setting on stderr and exiting 1, when:
   of those rules of form, holds anything but Ed25519 private keys with distinct `kid`s whose `x`
   is the public half of their `d`, repeats a login key's `kid`, or holds the `local-dev`
   attestation key (the refusal names the file);
-- any other name beginning `MR_ACCOUNT_`, in any letter case, is set: a misspelt setting never
-  falls back to a default.
+- any other name beginning `MR_ACCOUNT_` or `MR_STEAM_`, in any letter case and with or without a
+  space around it, is set: a misspelt setting never falls back to a default, and a Steam key
+  under another spelling is never taken for no key.
 
 A refusal never repeats a setting's value. A refused configuration or key file leaves nothing
 written.
@@ -245,6 +384,12 @@ written.
   A sign-in needs both: the game client's id with the exact address it returns to (the dev client
   is served at `http://localhost:5290/`), and an account. Each command prints `name=value` lines;
   `create-account` prints the account's generated `password=` once.
+- A Steam account's entitlement on a dev profile, and a ban:
+
+  ```sh
+  MR_ACCOUNT_PROFILE=local-dev node src/admin/cli.ts set-entitlement steam:<steamid64> entitled
+  MR_ACCOUNT_PROFILE=local-dev node src/admin/cli.ts deny steam:<steamid64>
+  ```
 - An attestation, given an ID token from a sign-in:
 
   ```sh
@@ -263,12 +408,16 @@ written.
 
 ## Operator inputs
 
-None is recorded.
+Recorded: the dev profiles' ordinary Steam Web API key exists, registered for `localhost`. It is
+kept with `MR_STEAM_APP_ID=480` in `~/.config/monster-realm/steam-dev.env` on the operator's
+machine (mode 600, outside every repository); a run sources that file and never prints, copies or
+commits it. No other input is recorded.
 
 | Input | Who supplies it | Recorded here as |
 |---|---|---|
 | The host behind `auth.monster-realm.spookyowltech.com` | the operator points the name at a host that runs the service | the host and the date |
-| The Steam app id and a publisher Web API key | the operator; the key goes only into the production deployment's secret store | the app id (never the key) |
+| An ordinary Steam Web API key for the dev profiles | the operator; it stays in a file outside every repository | that it exists (never the key) |
+| The Steam app id and a publisher Web API key | the operator; the key goes only into the production deployment's secret store, which hands it to the service as `MR_STEAM_PUBLISHER_KEY` | the app id (never the key) |
 | The production host and issuer domain | the operator | the issuer URL every release module trusts |
 | The `hosted-dev` attestation key | the operator makes it and keeps the private half on the host | its public half, in `publishedAttestationKeys()` and the generated list |
 | The production key service | the operator, with the production host | that it signs with Ed25519, or that it cannot |
@@ -297,7 +446,15 @@ request, and exits 2 with its usage for anything that is not a command.
 | `create-account <email> [--not-entitled]` | Makes an account, entitled unless the flag is given, and prints its generated password. Refuses an email that has an account. |
 | `reset-password <email>` | Replaces the password with a new generated one and prints it. The account's subject and flag stay. |
 | `set-entitlement <email> entitled\|not-entitled` | Sets whether the account owns the game. Clearing it takes effect at the account's next sign-in, code exchange or refresh, which is refused and revokes that chain; an ID token already issued lasts until its `exp`, an hour at most. |
+| `set-entitlement steam:<steamid64> entitled\|not-entitled` | Sets a Steam account's dev flag, the only thing that entitles a Steam player on a dev profile. The account needs no sign-in first, and one with no flag is not entitled. Prints `sub=` and `entitled=`. |
+| `deny steam:<steamid64>` | Puts the SteamID on the deny-list: not entitled, whatever its flag or Steam says. Prints `sub=` and `denied=true`. |
+| `allow steam:<steamid64>` | Takes it off the deny-list; its flag is as it stood. Prints `sub=` and `denied=false`. |
 | `set-client <client-id> <redirect-uri>` | Registers a client, or replaces its redirect address. The address is `https:`, or `http:` on `localhost`, `127.0.0.1` or `[::1]`, written in its canonical form (`http://localhost:5290/`, with the slash), with no user, password or fragment. |
+
+A Steam account is written `steam:` and the 17 digits of its SteamID. Anything else that begins
+`steam:`, and for `deny` and `allow` any other target at all, is refused after the `production`
+check and before the command loads its configuration or touches the disk. The deny-list has no
+other writer, and the command refuses `production`, so no SteamID can be denied there.
 
 A password is printed once and stored nowhere: hand it over, or reset it. A reset does not end the
 account's existing sign-ins; their refresh tokens work until the chain ends. A locked email gets
