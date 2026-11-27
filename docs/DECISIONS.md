@@ -1478,7 +1478,7 @@ loopback.
 
 **Why.** Reducers cannot make outbound calls and should not read clocks, so the host
 has to be the source of timings and counters. The module's only outbound requests are the
-account checks' (three procedures in `server-module/src/account_checks.rs`, to the one
+account checks' (four procedures in `server-module/src/account_checks.rs`, to the one
 account service the build names, see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"); none of them carries a signal.
 `/v1/metrics` answers without
 authentication and labels its series by database, so everything stays on loopback.
@@ -2409,11 +2409,12 @@ same at every check, and not a credential.
 - **First contact.** A client whose identity the world does not know asks the account service's
   `POST /ticket` for a one-use ticket naming the world as its own software authenticated it, and
   calls `check_account(ticket)`. The procedure refuses a ticket that is not 43 base64url
-  characters, and refuses once the world has sent 30 ticket redeems in the current minute (the one
-  row of `world_check_budget`); neither refusal sends anything. Otherwise it presents the ticket,
-  every name the world answers to and its database identity at `POST /world/check` under a 3 s
-  timeout, and stores the answered handle and entitlement, a negative answer included, in one
-  transaction; `Ok` carries whether the account owns the game. A `403` (`the account service
+  characters, a world that presents no name (see "The world's address" below), and a caller once
+  the world has sent 30 ticket redeems in the current minute (the one row of
+  `world_check_budget`); none of the three sends anything. Otherwise it presents the ticket, the
+  names the world presents and its database identity at `POST /world/check` under a 3 s timeout,
+  and stores the answered handle and entitlement, a negative answer included, in one transaction;
+  `Ok` carries whether the account owns the game. A `403` (`the account service
   refused the ticket`) and any other failure, a timeout included (`the account service gave no
   answer`), refuse the call and change no `world_account` row. An identity the access rule has not
   admitted cannot connect, so the world's owner relays its ticket through `check_account_for(who,
@@ -2436,20 +2437,23 @@ same at every check, and not a credential.
   account owns the game unchanged, the host spends the one-shot row whatever the run did, and the
   first connection 10 minutes after the arming asks again.
 - **The host's own check.** The owner names the identity the host plays as with
-  `set_host_identity(who)`: it marks that identity's row (`is_host`), clears the mark on every
-  other row and arms one row of private `host_check_schedule {scheduled_id, scheduled_at,
+  `set_host_identity(who)`: it marks that identity's row (`is_host`), clears the mark on every other
+  row and arms one row of private `host_check_schedule {scheduled_id, scheduled_at,
   last_success_ms}`, which ticks `host_account_check` every hour. Refused with no write: a caller
   that is not the owner, an identity whose account is pending deletion, a build that names no
-  account service, and an identity that holds no row (`that identity holds no account here`). A
-  tick asks about the marked row's handle, and no other, when the row holds no success or one 23
-  hours old or more; otherwise, and while no row is marked, it sends nothing. Any caller but the
-  database is refused before anything is read. The answer is stored as a re-check stores it, and
-  the success is stamped only when the answer landed on the row asked about, still marked, and the
-  schedule row still holds what the tick read. A tick that gets no answer writes nothing, so the
-  next one asks again. Naming another identity, and a `set_world_names` call that changes the set
-  of names, leave the schedule row with no success, so the next tick asks. The schedule row is
-  never updated: every change deletes it and inserts another. The mark stays on its row through a
-  newer handle and a move, until another identity is named or the row is erased.
+  account service, and an identity that holds no row (`that identity holds no account here`). A tick
+  asks about the marked row's handle, and no other, when the schedule row holds no success, one 23
+  hours old or more, or one stamped after the tick's own time; otherwise, and while no row is marked
+  or the marked account is pending deletion, it sends nothing. Any caller but the database is
+  refused before anything is read. The answer is stored as a re-check stores it, and the success is
+  stamped only when the answer landed on the row asked about, still marked, the schedule row still
+  holds what the tick read, and the world still asks over the address family the request went over.
+  An answer about an account that entered deletion during the wait stores its address alone. A tick
+  that gets no answer writes nothing, so the next one asks again. Naming another identity, and a
+  `set_world_names` call that changes the set of names, leave the schedule row with no success, so
+  the next tick asks. The schedule row is never updated: every change deletes it and inserts
+  another. The mark stays on its row through a newer handle and a move, until another identity is
+  named or the row is erased.
 - **The world's address.** Every answer reports the address the service saw the request leave
   from, and the world stores it in private `world_egress {family, address, confirmed_at_ms}`, one
   row for IPv4 and one for IPv6. A re-check and the host's check store it in the transaction that
@@ -2544,7 +2548,12 @@ the world learns its address from the party it already asks and calls no other. 
 reports one family, so the world asks over the family its `ip:` names are in: a dual-stack host's
 requests could otherwise leave over IPv6 and its IPv4 name would never be confirmed. The redeem
 stores the address apart from the account because a refusal aborts the storing transaction, and
-the answer that shows a name to be another's is the one refused. The choice rests on the bundled
+the answer that shows a name to be another's is the one refused. A stored address stamped after a
+transaction's own time vouches for nothing, so a clock that steps back fails closed; the pinned
+host takes each transaction's time as it opens, a procedure's included (read in its source), so
+no order of honest transactions produces such a row. The host's check sends nothing for an
+account pending deletion for the reason a connection arms no re-check for one: the cascade is
+about to erase the row. The choice rests on the bundled
 host's `[module-http]` being on, which the operator decided
 (<https://github.com/mdrewt/monster-realm/issues/874>): with it off a shell world checks nobody.
 On, it adds nothing a host's owner could not already do: the host refuses loopback and private
@@ -2751,11 +2760,11 @@ answers there when the player binds, and nothing about before or after. A world 
 accepting an attestation under its old address's name until its certificate expires (160 hours at
 most for an address, the certificate's life for a domain name), and a ticket under a `dns:` name
 as long. A ticket under an `ip:` name it refuses once the account service reports the world
-another address, or none for 25 hours (see "A private world checks an account itself: a one-use
-ticket at first contact, then the account's handle"). A browser that loaded an earlier server's
-page at the same address and port may still run what that page left there. A name issued for the
-server's key, under a DNS zone we would operate, closes both and was weighed and not chosen
-(R-lpw-19-CHANGEDHANDS).
+another address, or, after a first report, none for 25 hours (see "A private world checks an
+account itself: a one-use ticket at first contact, then the account's handle"). A browser that
+loaded an earlier server's page at the same address and port may still run what that page left
+there. A name issued for the server's key, under a DNS zone we would operate, closes both and was
+weighed and not chosen (R-lpw-19-CHANGEDHANDS).
 
 ## A browser binds a friends server by a sign-in on the account service's own origin; the attestation names the address the browser is sent back to
 
