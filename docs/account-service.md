@@ -9,14 +9,18 @@ is the only player sign-in" and "Every player must own the game on Steam, for no
 The service serves discovery and its key set. On the two dev profiles a player signs in with an
 email and a password, through authorization code with PKCE, and the game client gets an ID token and
 a refresh token. Accounts and clients are made by an admin command; there is no sign-up and no reset
-mail. The `production` profile has no sign-in step in this build.
+mail. The `production` profile signs in through Steam alone, when Steam is configured for it; that
+profile does not start in this build (Profiles).
 
-With Steam configured for a profile (`MR_STEAM_APP_ID`), the token endpoint also takes a Steam
-ticket: a desktop client exchanges the ticket its Steam client made for an ID token, with no
-browser and no password (Design, "Steam ticket sign-in"). The checks behind it are in section
-"Steam": asking Steam whose ticket a ticket is and what licence a player holds, the rule that
-turns that licence into "owns the game", our own deny-list, and the settings that say which Steam
-app a profile checks. A service with no Steam setting never reaches Steam.
+With Steam configured for a profile (`MR_STEAM_APP_ID`), a player signs in with Steam in two ways.
+In a browser, the sign-in step sends them to Steam's own sign-in and checks what Steam sends back
+(Design, "Steam browser sign-in"): the only step on `production`, and offered beside the password
+form on a dev profile. On the desktop, the token endpoint takes a Steam ticket: a desktop client
+exchanges the ticket its Steam client made for an ID token, with no browser and no password
+(Design, "Steam ticket sign-in"). The checks behind both are in section "Steam": asking Steam
+whose ticket a ticket is and what licence a player holds, the rule that turns that licence into
+"owns the game", our own deny-list, and the settings that say which Steam app a profile checks. A
+service with no Steam setting never reaches Steam.
 
 The service also signs world attestations at `POST /attest`: a statement, good for five minutes
 and addressed to one world, that an account owns the game. A `local` or `private` world's module
@@ -50,8 +54,10 @@ address. No client asks for a ticket yet.
 - **Sign-in.** An authorization request (`/auth`) for a registered client redirects the browser to
   `/interaction/<uid>`, the sign-in step, answered by `src/interactions/router.ts`. The profile's
   sign-in method decides the step: `dev-password` shows the email and password form
-  (`src/interactions/devPassword.ts`, pages in `src/interactions/pages.ts`); `steam` has no step in
-  this build. A right password for an entitled account sends the browser on to the client's
+  (`src/interactions/devPassword.ts`, pages in `src/interactions/pages.ts`); `steam` sends the
+  browser to Steam when Steam is configured (Steam browser sign-in, below) and has no step
+  without it, and a `dev-password` profile with Steam configured shows the form with one link to
+  that same Steam step. A right password for an entitled account sends the browser on to the client's
   redirect address with a code. A right password for an account that is not entitled gets the
   not-owned page and no code; the page says nothing about the account. A wrong email and a wrong
   password get the same answer, after the same hashing work. The form is tied to its authorization
@@ -64,7 +70,7 @@ address. No client asks for a ticket yet.
   are signed with a key made at each start, so a restart ends the sign-ins in progress (the player
   starts again from the game) and nothing else.
 - **Tokens.** The claims are named in `src/claims.ts`. An ID token carries `iss`, `sub`
-  (`dev:<uuid>` for a dev account), `aud` (the client id), `mr_ent: ["base-game"]`, `iat` and
+  (`dev:<uuid>` for a dev account, `steam:<steamid64>` for a Steam player), `aud` (the client id), `mr_ent: ["base-game"]`, `iat` and
   `exp`, one hour later; a request that sends `nonce`, or `max_age` or `prompt=login`, also gets
   `nonce` or `auth_time` back, as OpenID Connect requires. A code is exchanged once, within 60
   seconds, with its PKCE verifier; a second exchange revokes everything that sign-in issued. Every
@@ -72,7 +78,12 @@ address. No client asks for a ticket yet.
   A chain ends 30 days after its sign-in: a new refresh token inherits what its predecessor had
   left. The account is read again at every exchange and refresh: when it is gone or not
   entitled the request is refused and the chain revoked, so only an entitled account is ever
-  issued a token. An ID token already issued stays valid until its `exp`.
+  issued a token. A dev account is read from its record; a Steam player's account is the
+  profile's entitlement decision (section "Steam", "The decision"), asked each time, and when
+  Steam gives no answer the request fails with `500` and nothing is revoked. A code or refresh
+  token whose sign-in is earlier than the account's last password reset is refused the same way.
+  A Steam player has no password here, so nothing resets: what ends their chain is that decision,
+  the reuse of a spent token, or its 30 days. An ID token already issued stays valid until its `exp`.
 - **Steam ticket sign-in.** With `MR_STEAM_APP_ID` set, the token endpoint takes the grant
   `urn:monster-realm:steam-ticket` (`src/grants/steamTicket.ts`): `POST /token` as
   `application/x-www-form-urlencoded` with `grant_type`, `client_id` and `steam_ticket`, the hex
@@ -110,6 +121,51 @@ address. No client asks for a ticket yet.
     refusal logs nothing, and no line holds a ticket, an address or an error's message.
   - *What it does not stop.* A ticket authenticates for as long as it lives, so whoever captures
     one can sign in as its player until then; the limit per SteamID bounds how often.
+- **Steam browser sign-in.** With Steam configured, the sign-in step offers Steam's OpenID 2.0
+  sign-in (`src/interactions/steamOpenId.ts`, routed by `src/interactions/router.ts`). OpenID
+  names no app: whether the player owns the game is the entitlement source's to say.
+  - *Out.* The browser is sent to `https://steamcommunity.com/openid/login` with `openid.mode`
+    `checkid_setup`, `openid.realm` the issuer's origin and `openid.return_to` exactly
+    `<issuer>/interaction/<uid>/steam?state=<state>`. On `production` the step's page is that
+    redirect (`303`); on a dev profile it is the password form with one link to it. The state is
+    an HMAC-SHA256 of the sign-in's uid under a key made at each start, so nothing is stored for
+    it and a restart ends it with the cookies.
+  - *Back.* Steam sends the browser to that address with its reply. The request is tied to its
+    sign-in by the same signed cookie as the form. The reply is checked in this order, and one
+    that fails any check sends Steam nothing more and signs nobody in: no `openid.` parameter is
+    given twice, the namespace is OpenID 2.0 and the mode `id_res`; the one `state` is the
+    sign-in's; `openid.op_endpoint` is Steam's address above; `openid.return_to` is the address
+    this sign-in was sent out with; `openid.claimed_id` is
+    `https://steamcommunity.com/openid/id/<17 digits>` and `openid.identity` equals it;
+    `openid.signed` lists `op_endpoint`, `claimed_id`, `identity`, `return_to`, `response_nonce`
+    and `assoc_handle`, each of its names once and each a parameter of the reply, and there is a
+    signature; the nonce is a UTC second and a suffix, within 300 seconds of this service's clock. Then Steam is asked
+    whether the reply is its own: one `POST` of `openid.mode=check_authentication` with the
+    signature, the signed list and each field it lists, to Steam's address above and never to one
+    the reply names, with a five-second timeout, no retry, no redirect followed and at most
+    64 KiB read. Only `200` with OpenID's key-value lines, the 2.0 namespace and `is_valid:true`
+    counts as yes. Last, the nonce must not have been seen: it is recorded (under its SHA-256,
+    until the window stops admitting it plus the timeout) once Steam has said yes, so nothing a
+    caller makes up is stored.
+  - *The answers.* The entitlement source then decides about the SteamID in the claimed id. An
+    entitled player goes on to the client's redirect address with a code, as `steam:<steamid64>`,
+    and from there everything is as for a password sign-in. One who is not entitled gets the
+    not-owned page (`403`), and the sign-in stays open. A reply that fails a check, Steam's "no"
+    and a nonce seen before get the ended page (`400`), and Steam giving no answer, to the check
+    or about ownership, gets a page saying so (`503`): both end the sign-in, and no answer says
+    which check failed. A second load of a reply that signed in goes the same way on.
+  - *What bounds it.* One reply is decided per sign-in at a time, and replies that arrive
+    meanwhile get that decision's answer. With a refused or unanswered reply ending the sign-in,
+    one sign-in started can cause at most one question to Steam that does not end in a valid
+    reply, and sign-ins started are capped (Limits). There is no limit per network address, and
+    a made-up reply from the browser that holds a sign-in ends that sign-in.
+  - *What is logged.* One line per exchange with Steam that failed, with the reason (`timeout`,
+    `unreachable`, `status` and its number, or `malformed`). A refusal and a sign-in log nothing,
+    and no line holds anything of the reply or of the body of Steam's answer.
+  - *Steam's answers.* Steam answers a reply it does not vouch for with `200`, `text/plain` and
+    two lines: the namespace and `is_valid:false`. Its answer to a reply it does vouch for is
+    read here as OpenID 2.0 states it; every test of this sign-in runs against a fake of Steam,
+    and none signs in through Steam itself.
 - **Attestations.** `POST /attest` (`src/attest.ts`) takes `Authorization: Bearer <ID token>` and
   the JSON body `{ "world": "…", "nonce": "…" }`, and answers `{ "attestation": "<JWT>" }`. The
   attestation is a compact JWT with the header `{ "alg": "Ed25519", "kid": … }` and exactly eight
@@ -297,7 +353,7 @@ address. No client asks for a ticket yet.
 | `production` | `MR_ACCOUNT_ISSUER` | `steam` | none, or the game's own (never `480`) | an external signer | an external signer | the file `MR_ACCOUNT_HANDLE_KEY_FILE` names | set by the operator |
 
 The `production` profile loads and checks its settings and then refuses to start: this build holds
-no external signer, and no `steam` sign-in step. Each dev issuer has its own keys.
+no external signer. Each dev issuer has its own keys.
 
 ## Attestation keys
 
@@ -343,7 +399,7 @@ world accepts until its public half is in a build.
 
 Every player must own the game on Steam (`docs/DECISIONS.md`, "Every player must own the game on
 Steam, for now"). This section is what the service can ask Steam and how it decides. The Steam
-ticket sign-in (Design) uses it; the browser's Steam sign-in is not in this build.
+ticket sign-in and the Steam browser sign-in (Design) both use it.
 
 - **Which app.** `MR_STEAM_APP_ID` configures Steam for a profile: the loaded configuration then
   carries `steam: { appId }`, and a dev profile keeps its password sign-in beside it. A dev
@@ -359,7 +415,9 @@ ticket sign-in (Design) uses it; the browser's Steam sign-in is not in this buil
   the configuration alone requires no Steam setting. The service builds the client when it
   starts with `MR_STEAM_APP_ID` set, so what the client refuses refuses the start. A dev profile
   with `480` and no key starts and offers the Steam ticket sign-in, which then answers `503` to
-  every well-formed ticket and sends Steam nothing.
+  every well-formed ticket and sends Steam nothing. Steam's OpenID exchange carries no key: on a
+  dev profile the browser sign-in needs none, and on `production` the ownership check after it
+  uses the publisher key.
 - **The client.** `createSteamWebApi` makes one client for the profile: the partner host
   `https://partner.steam-api.com` with the publisher key on `production`, the public host
   `https://api.steampowered.com` with the ordinary key on a dev profile. The key travels in the
@@ -552,6 +610,9 @@ nothing written.
     -d grant_type=urn:monster-realm:steam-ticket -d client_id=monster-realm -d steam_ticket=<hex>
   ```
 
+- The Steam browser sign-in on a dev profile needs `MR_STEAM_APP_ID=480` in the service's
+  environment, no key, and the Steam account's flag set (below). The sign-in page then holds a
+  "Sign in through Steam" link under the form.
 - A Steam account's entitlement on a dev profile, and a ban:
 
   ```sh
@@ -638,8 +699,9 @@ A Steam account is written `steam:` and the 17 digits of its SteamID. Anything e
 check and before the command loads its configuration or touches the disk. The deny-list has no
 other writer, and the command refuses `production`, so no SteamID can be denied there.
 
-A password is printed once and stored nowhere: hand it over, or reset it. A reset does not end the
-account's existing sign-ins; their refresh tokens work until the chain ends. A locked email gets
+A password is printed once and stored nowhere: hand it over, or reset it. A reset ends the
+account's existing sign-ins: a code or refresh token from a sign-in in an earlier second is
+refused and its chain revoked. A locked email gets
 one attempt back as each of its failures turns ten minutes old, and all of them at a restart. Run one command at a time against an
 account: two writing the same account at the same instant can overwrite each other.
 

@@ -24,6 +24,7 @@ import { type SteamStub, startSteamStub } from '../test-util/steamStub.ts';
 import { ID_TOKEN_CLAIMS } from './claims.ts';
 import { ConfigError, HOSTED_DEV_ISSUER } from './config.ts';
 import { denyList, steamAccounts } from './denyList.ts';
+import { notOwnedPage, signInPage } from './interactions/pages.ts';
 import {
   ATTESTATION_KEY_FILE_NAME,
   generateAttestationKey,
@@ -2370,5 +2371,403 @@ describe('the entitlement decision startServer wires for the grant', () => {
     await rig.deny.add(ENTITLED_PLAYER);
     expect(await rig.decide(ENTITLED_PLAYER)).toEqual({ entitled: false, reason: 'denied' });
     expect(ownershipAsks(rig)).toEqual([]);
+  });
+});
+
+// ---- the browser's Steam sign-in, served by startServer ----
+
+const OPENID_NS = 'http://specs.openid.net/auth/2.0';
+const IDENTIFIER_SELECT = 'http://specs.openid.net/auth/2.0/identifier_select';
+const LOCAL_ORIGIN = 'http://localhost:4455';
+const OPENID_LOGIN_PATH = '/openid/login';
+const STEAM_STATE = /^[A-Za-z0-9_-]{43}$/;
+const LOGIN_PARAMETERS = [
+  'openid.claimed_id',
+  'openid.identity',
+  'openid.mode',
+  'openid.ns',
+  'openid.realm',
+  'openid.return_to',
+];
+
+interface BrowserSignIn {
+  readonly browse: ReturnType<typeof flowBrowser>;
+  readonly verifier: string;
+  /** `/interaction/<uid>`. */
+  readonly path: string;
+  readonly uid: string;
+  /** The answer to the first GET of the step's page. */
+  readonly page: FlowReply;
+}
+
+/** An authorization request with PKCE from a fresh browser, and a GET of its step's page. */
+async function openBrowserSignIn(port: number): Promise<BrowserSignIn> {
+  const browse = flowBrowser(port);
+  const verifier = randomBytes(32).toString('base64url');
+  const query = new URLSearchParams({
+    response_type: 'code',
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    scope: 'openid',
+    state: 'steam-browser',
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+    code_challenge_method: 'S256',
+  });
+  const started = await browse('GET', `/auth?${query}`);
+  expect(started.status, started.body).toBe(303);
+  const path = new URL(String(started.headers.location), LOCAL_ORIGIN).pathname;
+  const match = /^\/interaction\/([A-Za-z0-9_-]+)$/.exec(path);
+  expect(match, path).not.toBeNull();
+  const page = await browse('GET', path);
+  return { browse, verifier, path, uid: match![1]!, page };
+}
+
+function htmlUnescaped(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(/&#(\d+);/g, (_match, decimal: string) => String.fromCodePoint(Number(decimal)))
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** The `href` of every `<a` element of a page, HTML-unescaped. */
+function linksOf(html: string): string[] {
+  return (html.match(/<a\b[^>]*>/gi) ?? []).map((tag) => {
+    const href = /\shref\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
+    expect(href, tag).not.toBeNull();
+    return htmlUnescaped(href![1] ?? href![2] ?? '');
+  });
+}
+
+/** The one link of a `200` step page. */
+function steamLinkOf(page: FlowReply): string {
+  expect(page.status, page.body).toBe(200);
+  const links = linksOf(page.body);
+  expect(links).toHaveLength(1);
+  return links[0]!;
+}
+
+/** Steam's reply for `steamId` to the page's link, loaded at the callback in the same browser. */
+async function steamCallback(
+  local: SteamLocal,
+  signIn: BrowserSignIn,
+  steamId: string,
+): Promise<FlowReply> {
+  const reply = new URL(local.stub.openIdReply(steamLinkOf(signIn.page), steamId));
+  expect(reply.origin).toBe(LOCAL_ORIGIN);
+  return signIn.browse('GET', `${reply.pathname}${reply.search}`);
+}
+
+/** From a `303` to the resume: the resume, its code and the code's exchange; the token answer. */
+async function browserTokens(
+  port: number,
+  signIn: BrowserSignIn,
+  toResume: FlowReply,
+): Promise<Record<string, unknown>> {
+  expect(toResume.status, toResume.body).toBe(303);
+  expect(toResume.headers.location).toBe(`${LOCAL_ORIGIN}/auth/${signIn.uid}`);
+  const back = await signIn.browse('GET', `/auth/${signIn.uid}`);
+  expect(back.status, back.body).toBe(303);
+  const redirect = new URL(String(back.headers.location));
+  expect(`${redirect.origin}${redirect.pathname}`).toBe(REDIRECT_URI);
+  expect(redirect.searchParams.get('state')).toBe('steam-browser');
+  const code = redirect.searchParams.get('code');
+  expect(code).toEqual(expect.any(String));
+  const exchanged = await flowSend(
+    port,
+    'POST',
+    '/token',
+    { host: LOCAL_HOST_HEADER, 'content-type': 'application/x-www-form-urlencoded' },
+    new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code!,
+      code_verifier: signIn.verifier,
+      client_id: CLIENT_ID,
+      redirect_uri: REDIRECT_URI,
+    }).toString(),
+  );
+  expect(exchanged.status, exchanged.body).toBe(200);
+  const tokens = bodyOf(exchanged);
+  expect(tokens.id_token).toEqual(expect.any(String));
+  expect(tokens.refresh_token).toEqual(expect.any(String));
+  return tokens;
+}
+
+/** A whole browser sign-in through Steam for `steamId`; the token answer. */
+async function steamBrowserTokens(
+  local: SteamLocal,
+  steamId: string,
+): Promise<Record<string, unknown>> {
+  const signIn = await openBrowserSignIn(local.port);
+  return browserTokens(local.port, signIn, await steamCallback(local, signIn, steamId));
+}
+
+function refreshWith(port: number, refreshToken: unknown): Promise<FlowReply> {
+  return flowSend(
+    port,
+    'POST',
+    '/token',
+    { host: LOCAL_HOST_HEADER, 'content-type': 'application/x-www-form-urlencoded' },
+    new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: String(refreshToken),
+      client_id: CLIENT_ID,
+    }).toString(),
+  );
+}
+
+function expectRefreshRefused(reply: FlowReply, name = ''): void {
+  expect(reply.status, `${name} ${reply.body}`).toBe(400);
+  const json = bodyOf(reply);
+  expect(json.error, name).toBe('invalid_grant');
+  expect(json, name).not.toHaveProperty('id_token');
+  expect(json, name).not.toHaveProperty('refresh_token');
+}
+
+function requestsTo(stub: SteamStub, path: string): SteamStub['requests'] {
+  return stub.requests.filter((sent) => sent.path === path);
+}
+
+/** A local-dev server with no Steam setting, and the client made by the admin command. */
+async function localWithoutSteam(): Promise<number> {
+  const dataDir = join(root, 'data');
+  await admin({ MR_ACCOUNT_PROFILE: 'local-dev', MR_ACCOUNT_DATA_DIR: dataDir }, [
+    'set-client',
+    CLIENT_ID,
+    REDIRECT_URI,
+  ]);
+  return portOf((await start(localEnv(dataDir))).url);
+}
+
+describe('the browser Steam sign-in served by startServer', () => {
+  test('without MR_STEAM_APP_ID the step page is exactly the password form alone, with no link acs-10.5', async () => {
+    const port = await localWithoutSteam();
+    const signIn = await openBrowserSignIn(port);
+    expect(signIn.page.status).toBe(200);
+    expect(signIn.page.body).toBe(signInPage({ action: signIn.path }));
+    expect(linksOf(signIn.page.body)).toEqual([]);
+  });
+
+  test('without MR_STEAM_APP_ID the Steam callback of a live sign-in is 404 acs-10.5', async () => {
+    const port = await localWithoutSteam();
+    const signIn = await openBrowserSignIn(port);
+    const reply = await signIn.browse('GET', `${signIn.path}/steam?state=x&openid.mode=id_res`);
+    expect(reply.status).toBe(404);
+  });
+
+  test("with MR_STEAM_APP_ID 480 the step page is the password form with exactly one link, to the stub's Steam login address for our callback and our realm acs-10.5", async () => {
+    const local = await steamLocal();
+    const signIn = await openBrowserSignIn(local.port);
+    expect(signIn.page.status).toBe(200);
+    expect(String(signIn.page.headers['content-type'])).toMatch(/^text\/html/);
+    expect(signIn.page.body).toContain(`action="${signIn.path}"`);
+    expect(signIn.page.body).toContain('name="email"');
+    expect(signIn.page.body).toContain('name="password"');
+    const link = new URL(steamLinkOf(signIn.page));
+    expect(`${link.origin}${link.pathname}`).toBe(local.stub.openIdEndpoint);
+    expect([...link.searchParams.keys()].sort()).toEqual(LOGIN_PARAMETERS);
+    expect(link.searchParams.get('openid.ns')).toBe(OPENID_NS);
+    expect(link.searchParams.get('openid.mode')).toBe('checkid_setup');
+    expect(link.searchParams.get('openid.identity')).toBe(IDENTIFIER_SELECT);
+    expect(link.searchParams.get('openid.claimed_id')).toBe(IDENTIFIER_SELECT);
+    expect(link.searchParams.get('openid.realm')).toBe(LOCAL_ORIGIN);
+    const returnTo = link.searchParams.get('openid.return_to') ?? '';
+    const prefix = `${LOCAL_ORIGIN}/interaction/${signIn.uid}/steam?state=`;
+    expect(returnTo.slice(0, prefix.length)).toBe(prefix);
+    expect(returnTo.slice(prefix.length)).toMatch(STEAM_STATE);
+    expect(local.stub.requests).toEqual([]);
+  });
+
+  test('with MR_STEAM_APP_ID 480 the password sign-in beside the link still completes for its account acs-10.5', async () => {
+    const local = await steamLocal();
+    const email = 'beside.steam@example.com';
+    const made = await admin(local.adminEnv, ['create-account', email]);
+    const signIn = await openBrowserSignIn(local.port);
+    expect(linksOf(signIn.page.body)).toHaveLength(1);
+    const posted = await signIn.browse(
+      'POST',
+      signIn.path,
+      { origin: LOCAL_ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+      new URLSearchParams({ email, password: made.get('password')! }).toString(),
+    );
+    const tokens = await browserTokens(local.port, signIn, posted);
+    expect(claimsOf(String(tokens.id_token)).sub).toBe(made.get('sub'));
+    expect(local.stub.requests).toEqual([]);
+  });
+
+  test('a SteamID the admin command entitled signs in through the browser to an ID token that verifies under /jwks, with exactly the named claims and sub steam:<id> acs-10.1', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000301';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const tokens = await steamBrowserTokens(local, steamId);
+    const served = await getJson(local.port, '/jwks', LOCAL_HOST_HEADER);
+    expect(served.status).toBe(200);
+    const verified = await jwtVerify(
+      String(tokens.id_token),
+      createLocalJWKSet(served.json as unknown as JSONWebKeySet),
+      { issuer: 'http://localhost:4455', audience: CLIENT_ID, algorithms: ['ES256'] },
+    );
+    expect(Object.keys(verified.payload).sort()).toEqual([...ID_TOKEN_CLAIMS].sort());
+    expect(verified.payload.sub).toBe('steam:76561198000000301');
+    expect(verified.payload.mr_ent).toEqual(['base-game']);
+    expect(verified.payload.exp! - verified.payload.iat!).toBe(3600);
+  });
+
+  test('a browser sign-in sends Steam one check_authentication and never asks it about ownership or a ticket acs-10.5', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000302';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    local.stub.setOwnership(steamId, {
+      ownsapp: true,
+      permanent: true,
+      sitelicense: false,
+      ownersteamid: steamId,
+    });
+    await steamBrowserTokens(local, steamId);
+    const checks = requestsTo(local.stub, OPENID_LOGIN_PATH);
+    expect(checks).toHaveLength(1);
+    expect(checks[0]!.method).toBe('POST');
+    expect(local.stub.requests).toHaveLength(1);
+  });
+
+  test('the same SteamID gets ID tokens with the same sub through the ticket grant and through the browser acs-10.4', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000303';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const browser = claimsOf(String((await steamBrowserTokens(local, steamId)).id_token));
+    const ticket = claimsOf(
+      issuedIn(await exchange(local.port, local.stub.issueTicket(steamId, STEAM_IDENTITY))),
+    );
+    expect(browser.sub).toBe('steam:76561198000000303');
+    expect(ticket.sub).toBe(browser.sub);
+  });
+
+  test('a SteamID with no flag gets the not-owned page and no code, though Steam reports it owns the game, and Steam is never asked about ownership acs-10.5', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000304';
+    local.stub.setOwnership(steamId, {
+      ownsapp: true,
+      permanent: true,
+      sitelicense: false,
+      ownersteamid: steamId,
+    });
+    const signIn = await openBrowserSignIn(local.port);
+    const callback = await steamCallback(local, signIn, steamId);
+    expect(callback.status, callback.body).toBe(403);
+    expect(callback.body).toBe(notOwnedPage());
+    const resumed = await signIn.browse('GET', `/auth/${signIn.uid}`);
+    const location = resumed.headers.location;
+    if (location !== undefined) {
+      expect(new URL(String(location), LOCAL_ORIGIN).searchParams.has('code')).toBe(false);
+    }
+    expect(requestsTo(local.stub, OPENID_LOGIN_PATH)).toHaveLength(1);
+    expect(requestsTo(local.stub, OWNERSHIP_PATH)).toEqual([]);
+  });
+
+  const NOT_ENTITLED: ReadonlyArray<
+    readonly [string, (adminEnv: Env, steamId: string) => Promise<unknown>]
+  > = [
+    [
+      'a SteamID flagged not-entitled',
+      (adminEnv, steamId) => setSteamEntitlement(adminEnv, steamId, 'not-entitled'),
+    ],
+    [
+      'an entitled SteamID on the deny-list',
+      async (adminEnv, steamId) => {
+        await setSteamEntitlement(adminEnv, steamId, 'entitled');
+        await admin(adminEnv, ['deny', `steam:${steamId}`]);
+      },
+    ],
+  ];
+
+  test.each(
+    NOT_ENTITLED,
+  )('%s gets the not-owned page, and the resume gives no code acs-10.3', async (_name, setUp) => {
+    const local = await steamLocal();
+    const steamId = '76561198000000305';
+    await setUp(local.adminEnv, steamId);
+    const signIn = await openBrowserSignIn(local.port);
+    const callback = await steamCallback(local, signIn, steamId);
+    expect(callback.status, callback.body).toBe(403);
+    expect(callback.body).toBe(notOwnedPage());
+    const resumed = await signIn.browse('GET', `/auth/${signIn.uid}`);
+    const location = resumed.headers.location;
+    if (location !== undefined) {
+      expect(new URL(String(location), LOCAL_ORIGIN).searchParams.has('code')).toBe(false);
+    }
+  });
+
+  const REVOCATIONS: ReadonlyArray<
+    readonly [
+      string,
+      string,
+      (adminEnv: Env, steamId: string) => Promise<unknown>,
+      (adminEnv: Env, steamId: string) => Promise<unknown>,
+    ]
+  > = [
+    [
+      'set-entitlement not-entitled',
+      'set-entitlement entitled',
+      (adminEnv, steamId) => setSteamEntitlement(adminEnv, steamId, 'not-entitled'),
+      (adminEnv, steamId) => setSteamEntitlement(adminEnv, steamId, 'entitled'),
+    ],
+    [
+      'deny',
+      'allow',
+      (adminEnv, steamId) => admin(adminEnv, ['deny', `steam:${steamId}`]),
+      (adminEnv, steamId) => admin(adminEnv, ['allow', `steam:${steamId}`]),
+    ],
+  ];
+
+  test.each(
+    REVOCATIONS,
+  )('after a browser sign-in, %s makes the next refresh fail, and %s after it revives nothing of that chain acs-10.3', async (_revokeName, _restoreName, revoke, restore) => {
+    const local = await steamLocal();
+    const steamId = '76561198000000306';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const tokens = await steamBrowserTokens(local, steamId);
+    const rotated = await refreshWith(local.port, tokens.refresh_token);
+    expect(rotated.status, rotated.body).toBe(200);
+    const next = bodyOf(rotated);
+    expect(claimsOf(String(next.id_token)).sub).toBe('steam:76561198000000306');
+    expect(next.refresh_token).toEqual(expect.any(String));
+
+    await revoke(local.adminEnv, steamId);
+    expectRefreshRefused(await refreshWith(local.port, next.refresh_token), 'revoked');
+    await restore(local.adminEnv, steamId);
+    expectRefreshRefused(await refreshWith(local.port, next.refresh_token), 'restored');
+    expectRefreshRefused(await refreshWith(local.port, tokens.refresh_token), 'spent');
+  });
+
+  test('MR_STEAM_APP_ID 480 with no Web API key still signs an entitled SteamID in through the browser', async () => {
+    const dataDir = join(root, 'steam');
+    const adminEnv: Env = { MR_ACCOUNT_PROFILE: 'local-dev', MR_ACCOUNT_DATA_DIR: dataDir };
+    await admin(adminEnv, ['set-client', CLIENT_ID, REDIRECT_URI]);
+    const steamId = '76561198000000307';
+    await setSteamEntitlement(adminEnv, steamId, 'entitled');
+    const stub = await steamStub();
+    const server = await startWithSteam({ ...localEnv(dataDir), MR_STEAM_APP_ID: '480' }, stub);
+    const local: SteamLocal = { stub, port: portOf(server.url), adminEnv };
+    const tokens = await steamBrowserTokens(local, steamId);
+    expect(claimsOf(String(tokens.id_token)).sub).toBe('steam:76561198000000307');
+  });
+
+  test("a browser Steam sign-in's ID token gets an attestation and a world ticket for its steam: sub, and the attestation stops once the flag is cleared", async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000308';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const idToken = String((await steamBrowserTokens(local, steamId)).id_token);
+    const body = JSON.stringify({ world: WORLD, nonce: NONCE });
+    const attestation = attestationIn(await postAttest(local.port, idToken, body));
+    expect(claimsOf(attestation).sub).toBe('steam:76561198000000308');
+    const ticket = await ticketFor(local.port, idToken);
+    expect(redeemedIn(await redeemTicket(local.port, ticket)).entitled).toBe(true);
+    await setSteamEntitlement(local.adminEnv, steamId, 'not-entitled');
+    const refused = await postAttest(local.port, idToken, body);
+    expect(refused.status).toBe(403);
   });
 });
