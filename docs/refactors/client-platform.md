@@ -8,9 +8,9 @@ lists, and the duplication found across `client/src/`. Section 4 is the one orde
 extractions, each one slice. The decision and what it rules out are in `docs/DECISIONS.md`
 ("The client reaches its host through ports cut where a second host needs one").
 
-Everything here is measured at commit `ce7f0000`. "Non-test file" means a `.ts` file under
+Everything here is measured at commit `192b8b3d`. "Non-test file" means a `.ts` file under
 `client/src` that is not a `*.test.ts`, not a `*.d.ts` and not under `module_bindings/`: 198
-files, about 51,000 lines.
+files, about 51,700 lines.
 
 ## 1. The host seam
 
@@ -229,7 +229,7 @@ The overlay probe and the shell slices measure these; none changes an extraction
 
 ### 2.1 The twelve extraction lines against `main.ts`
 
-The starting point is the list `client-shell.md` holds at `ce7f0000`: twelve numbered lines,
+The starting point is the list `client-shell.md` holds at `192b8b3d`: twelve numbered lines,
 extractions 7 to 18, each naming a module under `client/src/shell/` and the symbols it takes.
 Measured against `main.ts` at that commit, which holds 257 top-level declarations: the twelve
 lines name 213 symbols, and 208 of them are declared in `main.ts`.
@@ -275,7 +275,7 @@ while every caller is still in `main.ts`, so the moves after it are moves.
 
 Each of the twelve is carried into section 4, which is the one list; `client-shell.md` keeps its
 rules, module map, ports, pumps and owner tables and points here. The numbers in the first
-column are the list's at `ce7f0000`, not the rows of the module map. "Kept" means the same
+column are the list's at `192b8b3d`, not the rows of the module map. "Kept" means the same
 module takes the same responsibility, with the symbols section 4 lists. None is superseded and
 none is dropped.
 
@@ -353,7 +353,7 @@ a signature, a port or an owner function and is `tier: hard`. No row does both. 
 feature and removes none: behaviour, public signatures outside the named symbols, registration
 order and every asserted value stay as they are, and a defect met on the way is reported, never
 fixed in the slice. The slice for a row deletes that row. The symbol lists are measured at
-`ce7f0000`; the section written for a slice measures them again at its base.
+`192b8b3d`; the section written for a slice measures them again at its base.
 
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
