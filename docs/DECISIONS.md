@@ -170,9 +170,9 @@ zone's wild encounters is a field of that row: `SkillDef.tactics` (tier and geom
 `ItemDef.battle_use` (reach and target filter), and `EncounterTable.pack_weights` and
 `battle_map_pool`. RON must spell them for every skill, species and encounter table.
 `battle_maps/` and `tactics_tuning.ron` stay registries of their own. No tactical field has a
-table column. `validate_tactics_content` is the one content gate: CI runs it as ordinary tests
-and `sync_content` runs it in its validate phase, before any write. This is the target. The
-code still holds four registries that only add fields to another registry's rows
+table column. `validate_tactics_content` is the gate for tactical content: CI runs it as
+ordinary tests and `sync_content` runs it in its validate phase, before any write. This is the
+target. The code still holds four registries of tactical fields keyed by another row's id
 (`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`), and
 `docs/refactors/tactics-content.md` lists the slices that move each, in order.
 
@@ -183,11 +183,10 @@ with itself, and a lever left out is a parse error at that row. Nothing a player
 on keeping the halves apart: the tactical data reaches the client inside the wasm module either
 way, and neither layout puts it in a table.
 
-**Rules out.** A registry that exists only to add fields to the rows of another; a tactical
-field RON may omit for a skill, a species or an encounter table; a default entry for a row that
-has none; a second copy of the lints in the server; a column on a content table for a field only
-the engine reads; a made-up tactical value in a content struct built from a table row (a rule
-that reads two values of a struct takes the two values).
+**Rules out.** A registry of tactical fields keyed by the id of the row they describe; a
+tactical field RON may omit for a skill, a species or an encounter table; a second copy of the
+lints in the server; a column on a content table for a field only the engine reads; a made-up
+tactical value in a content struct built from a table row (a rule takes the values it reads).
 
 ## Server authority: thin reducers in domain modules
 

@@ -146,9 +146,10 @@ table leaves the content keeps its row, the trigger keeps firing there, and
   write phase once: it writes the species, skill, item, shop, encounter, type-chart and
   evolution rows again, a `zone_def` row only where it differs, and re-derives every `monster`
   and `monster_pub` row from the species' base stats. A tactical battle in progress is closed
-  at its next load after the publish, as fled and with its rewards forfeited
-  (`tactics.rs::load` refuses a battle stamped with another content version). Every content
-  edit costs this, once per publish however many rises the publish carries.
+  at its next load after the publish (`tactics.rs::load` refuses a battle stamped with another
+  content version): as fled, with each unit's HP written back, the faint penalty applied and
+  no reward paid. Every content edit costs this, once per publish however many rises the
+  publish carries.
 
 ## 2. The alternatives
 
@@ -162,7 +163,7 @@ table leaves the content keeps its row, the trigger keeps firing there, and
   the item pair: an item's reach is present exactly when its `cure_status` is, and that stays a
   check. RON must spell the tactical fields of a skill, a species and a zone, so a row without
   them does not parse. The production sites that build a struct from a table row cannot fill a
-  field the table has no column for. The rules they call read two values of the struct each
+  field the table has no column for. The rules they call read one or two values of the struct
   (section 1.4), so those rules take the values and the sites pass them from the row as they
   do today; no reducer changes which data it reads, and no placeholder is written.
 - **B — a test-only `Default`, the registries kept.** Each carried struct gets an
@@ -203,12 +204,12 @@ zone's encounter table from the same embedded registry in the same call.
   table" and "the content failed to load" with the same error type.
 - **Z3 — `EncounterTable`, with the trigger and its table as they are.** Both fields join
   `EncounterTable`, as in Z2, and the load-test hook goes. The grass trigger keeps reading the
-  private `encounter` row. `resolve_encounter` and `roll_encounter` read only a table's rate and
-  entries, so they take those two values, and the server builds no `EncounterTable` from the
-  row. The `encounter` table keeps its three columns and its one reader; no schema, binding or
-  baseline changes, now or at lpw-33, and every test keeps the row it seeds. The trigger and the
-  start keep reading two sources, and the stale row of section 1.4 stays until `sync_content`
-  removes such rows.
+  private `encounter` row. `resolve_encounter` reads only a table's rate and entries and
+  `roll_encounter` only its entries, so each takes what it reads, and the server builds no
+  `EncounterTable` from the row. The `encounter` table keeps its three columns and its one
+  reader; no schema, binding or baseline changes, now or at lpw-33, and every test keeps the row
+  it seeds. The trigger and the start keep reading two sources, and the stale row of section 1.4
+  stays until `sync_content` removes such rows.
 
 ## 3. The judge's scores
 
@@ -254,10 +255,11 @@ new facts against the code and scored again; the tables are the second scoring.
 | Total | | 81.5 | 66.5 | 70 |
 
 - **A (81.5, first).** A skill or a species is authored in one row. A missing field is a parse
-  error that names the file. Four sidecar types, the join's "two sides disagree" variants,
-  `cover`, the ten-field registry struct, four cache statics and a load-test hook go, and no
-  reducer changes what it reads. Its cost to a running world is that of any content edit: a
-  reseed with the same values and the close of battles in progress, once per publish. It loses
+  error that names the file. The four id keys, `TacticsZoneDef`, the join's "two sides
+  disagree" variants, `cover`, four fields of the registry struct, four cache statics and a
+  load-test hook go, and no reducer changes what it reads. Its cost to a running world is that
+  of any content edit: a reseed with the same values and the close of battles in progress
+  (section 1.5), once per publish. It loses
   points for the item check that stays, the two dormant species levers, and the several slices
   on the way. In the first scoring A had 79.5, with criterion 2 at 8.
 - **B (66.5).** It has no effect on the product. A `Default` compiled into every build allows a
@@ -324,8 +326,8 @@ fallible (`Level::new`), so the tick keeps its `encounter_table_error` path.
 ## 4. The chosen design
 
 A, with Z3. The tactical fields become part of the rows they describe, a wild battle's pack
-weights and map pool become part of the zone's encounter table, and a rule that reads two
-values of a content struct takes those two values.
+weights and map pool become part of the zone's encounter table, and a rule that reads one or
+two values of a content struct takes those values.
 
 ### 4.1 One place where a test builds a row
 
@@ -412,10 +414,10 @@ does not name, and a content retune could change its result.
 | `skill_row` | No column added, removed or re-typed. |
 | `item_row` | No column added, removed or re-typed. `cure_status` stays a field of `ItemDef` and a column. |
 | `zone_def` | No column added, removed or re-typed. `ZoneDef` does not change. |
-| `encounter` | No column added, removed or re-typed. It keeps its reader. lpw-33 takes no change to it from this design. |
+| `encounter` | No column added, removed or re-typed. It keeps its reader. lpw-33 takes no change to it from this design, so the spec's clause that lpw-33 takes the fold's `encounter` change has nothing to take. |
 | Generated bindings, `PROTOCOL_VERSION`, `MIN_CLIENT_PROTOCOL`, the schema baselines | Unchanged. No table, view, reducer or `SpacetimeType` changes. |
 | `client-wasm` exports | None of the 37 changes its name, its arguments or the shape of its result. `load_tactics_content` calls `build_kits(&species, &skills)` and stops loading two registries. The module's bytes change with the content it embeds. |
-| `game-core` rules | `evolve`, `build_monster` and `roll_starter` take a species id and its base stats where they take a `&Species`. `resolve_encounter` and `roll_encounter` take an encounter rate and a slice of entries where they take a `&EncounterTable`. Each returns what it returns today for the same values. |
+| `game-core` rules | `evolve`, `build_monster` and `roll_starter` take a species id and its base stats where they take a `&Species`. `resolve_encounter` takes an encounter rate and a slice of entries, and `roll_encounter` the slice of entries, where they take a `&EncounterTable`. Each returns what it returns today for the same values. |
 | `game-core` content API | `build_kits` takes two slices. `TacticsRegistries` holds `species`, `skills`, `items`, `encounters`, `battle_maps` and `tuning`. `load_tactics_skills`, `load_tactics_species`, `load_tactics_items`, `load_tactics_zones`, `TacticsZoneDef`, `cover` and ten variants of `TacticsContentError` go: the nine "two sides disagree" variants for skills, species and zones, and `DuplicateItemEntry`. |
 | `game-core/build.rs` | Its registry list goes from eighteen directories to fourteen, one in each of lines 5 to 8. |
 | `server-module/src/content_cache.rs` | The four statics and four accessors of section 1.1 go, one pair in each of lines 5 to 8. |
@@ -470,15 +472,16 @@ it leaves; line 8 deletes this file.
 | 2 | tc-2 | nothing | refactor |
 | 3 | tc-3 | tc-2 | refactor |
 | 4 | tc-4 | tc-1, tc-3 | refactor |
-| 5 | tc-5 | tc-1 | refactor |
-| 6 | tc-6 | tc-4, tc-5 | refactor |
+| 5 | tc-5 | tc-4 | refactor |
+| 6 | tc-6 | tc-5 | refactor |
 | 7 | tc-7 | tc-6 | refactor |
 | 8 | tc-8 | tc-7 | refactor |
 
-Lines 2 and 3 share files (`server-module/src/marshal.rs`, `movement.rs`, `tactics.rs`,
-`game-core/benches/hot_paths.rs`, `game-core/tests/pt_d3_tuning.rs`), and lines 5 to 8 all edit
-`CONTENT_VERSION`, `build.rs`, `tactics/content.rs` and the two `TacticsRegistries` call sites,
-so the table orders them.
+Lines 1 and 2 share no file and can be built together. From line 2 on each line edits files
+the next one edits (`server-module/src/marshal.rs`, `movement.rs`, `tactics.rs` and its tests,
+`game-core/benches/hot_paths.rs`, `game-core/tests/pt_d3_tuning.rs`; then `CONTENT_VERSION`,
+`build.rs`, `tactics/content.rs`, `load_test_zones_tests.rs` and the two `TacticsRegistries`
+call sites), so the table orders them one after another.
 
 1. **tc-1 — a test builds a skill in one place.** Adds `game-core/src/fixtures.rs` with
    `fixtures::skill`, the `fixtures` feature in `game-core/Cargo.toml`, and the feature on a
@@ -491,12 +494,13 @@ so the table orders them.
 2. **tc-2 — the monster rules take the species id and base stats they read.** `evolve`,
    `build_monster` and `roll_starter` (section 4.3); 54 call sites in 14 files, the server's
    four in `evolution.rs`, `movement.rs` and `tactics.rs`.
-   `species_from_row` goes with its two tests, and so does the `Species` literal in
-   `join_with_kit`. A test that built a `Species` only to call one of the three passes an id and
-   a `StatBlock`.
-3. **tc-3 — the encounter rules take the rate and entries they read.** `resolve_encounter` and
-   `roll_encounter` (section 4.3); 34 call sites in 7 files, the server's two being the grass
-   trigger and the spawn roll.
+   `species_from_row` goes with its test in `marshal_tests.rs`, and so does the `Species`
+   literal in `join_with_kit`; the two tests of `evolution_tests.rs` that call it pass the row's
+   id and base stats. A test that built a `Species` only to call one of the three passes an id
+   and a `StatBlock`.
+3. **tc-3 — the encounter rules take the rate and entries they read.** `resolve_encounter`
+   takes both and `roll_encounter` the entries (section 4.3); 34 call sites in 7 files, the
+   server's two being the grass trigger and the spawn roll.
    `table_from_encounter_row` is replaced by `entries_from_encounter_row`; the `EncounterTable`
    literal in `start_wild_tactical` goes.
 4. **tc-4 — a test builds a species, an item and an encounter table in one place.** Adds
@@ -511,8 +515,10 @@ so the table orders them.
    `skill_def_of` fill `tactics`. Callers outside `game-core/src/tactics/`:
    `client-wasm/src/lib.rs` and its `tactics_tests.rs`, `game-core/benches/hot_paths.rs`,
    `game-core/tests/tactics_pacing.rs`, `server-module/src/content.rs`, `content_cache.rs` with
-   its tests, `tactics.rs`, `tactics_tests.rs` and `tactics_settle_tests.rs`, and the re-exports
-   in `game-core/src/lib.rs` and `tactics/mod.rs`. The RON texts of skills in tests gain the block. The comments that cite
+   its tests, `tactics.rs`, `tactics_tests.rs` and `tactics_settle_tests.rs`, the re-exports in
+   `game-core/src/lib.rs` and `tactics/mod.rs`, and `game-core/src/load_test_zones_tests.rs`,
+   whose `TacticsRegistries` literal compiles only with the `load_test_zones` feature, which
+   `just ci` builds. The RON texts of skills in tests gain the block. The comments that cite
    `tactics_skills/000-core.ron` by line (`client/src/tactics/wasm.test.ts`,
    `queueStrip.test.ts`) and the header of `skills/000-core.ron` are brought in line.
    `CONTENT_VERSION` rises.
@@ -520,32 +526,41 @@ so the table orders them.
    entries of `tactics_species/` move into the eight files of `species/`; `TacticsSpeciesDef`
    loses `species_id`; `build_kits` takes two slices and `TacticsRegistries` loses a field;
    `load_tactics_species`, `DuplicateSpeciesEntry`, `UnknownSpecies`, `MissingSpeciesEntry`,
-   `cached_tactics_species` and `client-wasm`'s load go. The same callers as line 5, and the
-   comments in `client/src/tactics/provisionalBoard.test.ts`. `CONTENT_VERSION` rises.
+   `cached_tactics_species` and `client-wasm`'s load go. The same callers as line 5, the
+   `load_test_zones_tests.rs` literal included, and the comments in
+   `client/src/tactics/provisionalBoard.test.ts`. `CONTENT_VERSION` rises.
 7. **tc-7 — a battle item's reach joins its row.** `ItemDef.battle_use`; the one entry of
    `tactics_items/` moves into `items/`; `TacticsItemDef` loses `item_id`;
    `load_tactics_items`, `DuplicateItemEntry` and `cached_tactics_items` go, and
-   `TacticsRegistries` loses a field. `game-core/tests/pt_d3_tuning.rs` lists the battle-usable
-   items from `items/`, and `docs/economy-tuning.md` names that directory. `CONTENT_VERSION`
-   rises.
+   `TacticsRegistries` loses a field, in `load_test_zones_tests.rs` too.
+   `game-core/tests/pt_d3_tuning.rs` lists the battle-usable items from `items/`, and
+   `docs/economy-tuning.md` names that directory. `CONTENT_VERSION` rises.
 8. **tc-8 — a zone's pack weights and battle maps join its encounter table.**
    `EncounterTable.pack_weights` and `battle_map_pool`; the two entries of `tactics_zones/` move
    into `encounters/` (zone 0's rate, weights and entries, which the recruit e2e depends on,
    stay as they are); `validate_tactics_zones` checks the encounter tables against the maps;
    `start_wild_tactical` reads the two fields from the table (section 4.4); `TacticsZoneDef`,
    `load_tactics_zones`, `DuplicateZoneEntry`, `UnknownZone`, `MissingZoneEntry`, `cover`,
-   `cached_tactics_zones`, `load_test_zones::tactics_zones!` and `generated_tactics_zones` go,
-   with the two entries of `.cargo/mutants.toml` and the manifest comments that name them.
-   `TacticsRegistries` takes the shape of section 4.3. `pt_d3_tuning.rs` reads the pack weights
-   from the encounter table. `CONTENT_VERSION` rises.
+   `cached_tactics_zones`, `load_test_zones::tactics_zones!` and `generated_tactics_zones` go.
+   In `.cargo/mutants.toml` the exclusion that names `generated_(zones|zone_maps|tactics_zones)`
+   loses its third name and the one for `generated_tactics_zones` alone goes; the manifest
+   comments and the header of `battle_maps/000-core.ron` that name the registry are brought in
+   line. `taming/types.rs` then names `tactics::encounter::PackWeights`. `TacticsRegistries`
+   takes the shape of section 4.3, at its call sites in `server-module/src/content.rs` and
+   `tactics.rs` and in `load_test_zones_tests.rs`, most of whose tests of the generated
+   tactics rows go with the rows. `content_cache_tests.rs`, `tactics_tests.rs`,
+   `tactics_settle_tests.rs` and `pt_d3_tuning.rs` read the pack weights and the pool from the
+   encounter table. `CONTENT_VERSION` rises.
 
 ## 6. What this rules out
 
-- A registry that exists only to add fields to the rows of another. A value that describes a
-  skill, a species, an item or a zone's wild encounters is a field of that row.
+- A registry of tactical fields keyed by the id of the row they describe. A value that
+  describes a skill, a species, an item or a zone's wild encounters is a field of that row.
+  An encounter table is a row of its own, not a zone's other half: a zone has one or none, and
+  it is the unit the trigger and the start read.
 - A tactical field that RON may omit for a skill, a species or an encounter table. A row
   without it does not parse, so no check has to find the gap.
-- A made-up tactical value in a content struct that production code builds. A rule that reads
-  two values of a struct takes the two values.
+- A made-up tactical value in a content struct that production code builds. A rule takes the
+  values it reads.
 - A fixture called from production code, or compiled into a release build.
 - A column on a content table for a field only the engine reads.
