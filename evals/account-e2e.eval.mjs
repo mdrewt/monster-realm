@@ -2571,7 +2571,7 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
   });
   const enforcingPublish = run(
     'spacetime',
-    ['publish', '-s', dbUrl, '--bin-path', wasm, '-y', ENFORCING_DB_NAME],
+    ['publish', '-s', dbUrl, '--bin-path', wasm, '--delete-data', '-y', ENFORCING_DB_NAME],
     { timeout: 300_000 },
   );
   if (!enforcingPublish.ok) {
@@ -2641,7 +2641,7 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
   // f. The official database.
   const officialPublish = run(
     'spacetime',
-    ['publish', '-s', dbUrl, '--bin-path', line.path, '-y', OFFICIAL_DB_NAME],
+    ['publish', '-s', dbUrl, '--bin-path', line.path, '--delete-data', '-y', OFFICIAL_DB_NAME],
     { timeout: 300_000 },
   );
   if (!officialPublish.ok) {
@@ -2750,6 +2750,9 @@ async function runLivePhase() {
       loginIssuers: [stub.iss1, HOSTED_DEV_ISSUER],
     });
 
+    // The host keeps each database's definition between runs even in memory, so every publish
+    // below deletes what an earlier run's module left: a module the automatic migration cannot
+    // reach from that one would otherwise be refused.
     stdb = spawn('spacetime', ['start', '--in-memory', '--listen-addr', '127.0.0.1:' + stdbPort], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -2764,7 +2767,7 @@ async function runLivePhase() {
     }
     const published = run(
       'spacetime',
-      ['publish', '-s', dbUrl, '--bin-path', wasm, '-y', DB_NAME],
+      ['publish', '-s', dbUrl, '--bin-path', wasm, '--delete-data', '-y', DB_NAME],
       { timeout: 300_000 },
     );
     if (!published.ok) throw new Error(`publish failed: ${published.stderr}`);
