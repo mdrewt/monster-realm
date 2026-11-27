@@ -130,11 +130,12 @@ export function createAccountProvider(options: {
     clientBasedCORS: (_ctx, origin, client) =>
       (client.redirectUris ?? []).some((uri) => new URL(uri).origin === origin),
     // The account is read afresh at every issuance. A code or refresh token of an account that is
-    // gone or not entitled is refused, and its whole chain goes with it. A step that fails
-    // to answer throws: that is an error, never "not entitled".
+    // gone or not entitled, or one issued or signed in for in an earlier second than the
+    // account's last password reset, is refused, and its whole chain goes with it. A step that
+    // fails to answer throws: that is an error, never "not entitled".
     async findAccount(_ctx, sub, token) {
       const account = await signIn?.account(sub);
-      if (account?.entitled === true) {
+      if (account?.entitled === true && postdatesReset(token, account.passwordChangedAt ?? 0)) {
         return { accountId: sub, claims: () => ({ ...accountClaims({ sub, entitled: true }) }) };
       }
       const grantId = (token as { readonly grantId?: unknown } | undefined)?.grantId;
@@ -226,6 +227,19 @@ export function createAccountProvider(options: {
     callback(req, res);
   };
   return { provider, handler };
+}
+
+/**
+ * Whether a presented code or refresh token belongs to a sign-in whose password was checked no
+ * earlier than the second `changedAt`. That second is the token's `authTime`, which is never later
+ * than its `iat` (a code is minted after its sign-in, and a rotated refresh token keeps its
+ * chain's), so a token issued in an earlier second is refused too. A lookup with no token (a
+ * sign-in being completed) passes; a token with no `authTime` does not.
+ */
+function postdatesReset(token: unknown, changedAt: number): boolean {
+  if (token === undefined) return true;
+  const { authTime } = token as { readonly authTime?: unknown };
+  return typeof authTime === 'number' && authTime >= changedAt;
 }
 
 /** Answered by this service with 503, never sent on to the client's redirect address. */

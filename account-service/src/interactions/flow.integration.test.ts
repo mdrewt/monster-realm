@@ -1232,6 +1232,160 @@ const INTERACTION_COOKIES = [
   '_interaction_resume.sig',
 ].sort();
 
+describe('a password reset ends what earlier seconds issued', () => {
+  test('refreshing a token and exchanging a code issued before the reset second are refused, their grants are gone, and another account is untouched [wr261127-c.4]', {
+    timeout: 30_000,
+  }, async () => {
+    // WRONG IMPL KILLED: no check at the token endpoints (the chain outlives the reset); a refusal
+    // that leaves the grant's records behind; a check that refuses every account's tokens.
+    freezeAt(T0);
+    const w = await world();
+    const who = await person(w);
+    const other = await person(w);
+    const chain = await signInToTokens(w, who);
+    const held = await signInToCode(w, who.email, who.password);
+    const bystander = await signInToTokens(w, other);
+    expect(
+      recordsOfGrant(w, chain.grantId).length,
+      'control: the chain has records',
+    ).toBeGreaterThan(1);
+
+    vi.setSystemTime(T0 + 1000);
+    await w.accounts.resetPassword(who.email);
+
+    expectInvalidGrant(await refresh(w, chain.tokens.refresh_token));
+    expectInvalidGrant(await exchange(w, held.code, held.verifier));
+    expect(recordsOfGrant(w, chain.grantId)).toEqual([]);
+    expect(recordsOfGrant(w, held.grantId)).toEqual([]);
+    tokensOf(await refresh(w, bystander.tokens.refresh_token));
+  });
+
+  test('a token issued 100 ms before the reset, in the second before it, is refused [wr261127-c.4]', {
+    timeout: 30_000,
+  }, async () => {
+    // WRONG IMPL KILLED: a comparison that lets a token of the second just before the reset
+    // through (a >= against the second after, or a grace window).
+    freezeAt(T0 + 900);
+    const w = await world();
+    const who = await person(w);
+    const chain = await signInToTokens(w, who);
+    vi.setSystemTime(T0 + 1000);
+    await w.accounts.resetPassword(who.email);
+    expectInvalidGrant(await refresh(w, chain.tokens.refresh_token));
+    expect(recordsOfGrant(w, chain.grantId)).toEqual([]);
+  });
+
+  test('after the reset the earlier password gets the refusal form and no code [wr261127-c.4]', {
+    timeout: 30_000,
+  }, async () => {
+    // WRONG IMPL KILLED: a reset that leaves the earlier password working at the form.
+    freezeAt(T0);
+    const w = await world();
+    const who = await person(w);
+    vi.setSystemTime(T0 + 1000);
+    await w.accounts.resetPassword(who.email);
+    const jar = newJar();
+    const started = await begin(w, jar);
+    const posted = await call(w, jar, 'POST', started.path, {
+      headers: GOOD_POST,
+      body: credentials(who.email, who.password),
+    });
+    expect(posted.status).toBe(400);
+    expect(posted.body).toBe(signInPage({ action: started.path, notice: 'refused' }));
+    expect(posted.headers.location).toBeUndefined();
+    expect(grantIds(w)).toEqual([]);
+  });
+
+  test('a code minted at a resume after the reset, for a password checked before it, does not exchange [wr261127-c.4]', {
+    timeout: 30_000,
+  }, async () => {
+    // WRONG IMPL KILLED: a check on the token's issue second alone (the resume second is after
+    // the reset, so the code passes while the password it vouches for is gone).
+    freezeAt(T0);
+    const w = await world();
+    const who = await person(w);
+    const jar = newJar();
+    const started = await begin(w, jar);
+    const posted = await call(w, jar, 'POST', started.path, {
+      headers: GOOD_POST,
+      body: credentials(who.email, who.password),
+    });
+    expect(posted.status).toBe(303);
+
+    vi.setSystemTime(T0 + 1000);
+    await w.accounts.resetPassword(who.email);
+    const resumed = await call(w, jar, 'GET', `/auth/${started.uid}`);
+    expect(resumed.status).toBe(303);
+    const back = new URL(String(resumed.headers.location), ISSUER);
+    const code = back.searchParams.get('code');
+    expect(code, 'the resume still mints a code').toEqual(expect.any(String));
+    expectInvalidGrant(await exchange(w, code as string, started.verifier));
+  });
+
+  test('a stored refresh token whose authTime is removed is refused and its grant revoked [wr261127-c.4]', {
+    timeout: 30_000,
+  }, async () => {
+    // WRONG IMPL KILLED: a missing authTime read as 0 or as current (the token passes); a
+    // refusal that leaves the grant's records behind.
+    freezeAt(T0);
+    const w = await world();
+    const who = await person(w);
+    const chain = await signInToTokens(w, who);
+    const digest = createHash('sha256').update(chain.tokens.refresh_token).digest('base64url');
+    const db = new DatabaseSync(w.dbPath);
+    try {
+      const found = db
+        .prepare("SELECT payload FROM oidc_record WHERE model = 'RefreshToken' AND id = ?")
+        .get(digest) as { payload: string } | undefined;
+      expect(found, 'control: the refresh token record is stored under its digest').toBeDefined();
+      const payload = JSON.parse(found!.payload) as Record<string, unknown>;
+      expect(payload.authTime, 'control: authTime is stored').toEqual(expect.any(Number));
+      delete payload.authTime;
+      db.prepare("UPDATE oidc_record SET payload = ? WHERE model = 'RefreshToken' AND id = ?").run(
+        JSON.stringify(payload),
+        digest,
+      );
+    } finally {
+      db.close();
+    }
+    expectInvalidGrant(await refresh(w, chain.tokens.refresh_token));
+    expect(recordsOfGrant(w, chain.grantId)).toEqual([]);
+  });
+});
+
+describe('a sign-in with the new password after a reset', () => {
+  test('in the reset second and in a later one issues codes and refresh tokens that exchange and refresh, as for an account never reset [wr261127-c.5]', {
+    timeout: 60_000,
+  }, async () => {
+    // WRONG IMPL KILLED: a > where >= is meant (the reset second's own sign-in refused); a
+    // permanent lock-out of the reset account; a rotated token refused on its second refresh;
+    // the check applied to an account whose record has no stored second.
+    freezeAt(T0);
+    const w = await world();
+    const who = await person(w);
+    const legacy = await person(w);
+
+    vi.setSystemTime(T0 + 1500);
+    const reset = await w.accounts.resetPassword(who.email);
+
+    vi.setSystemTime(T0 + 1900);
+    const sameSecond = await signInToCode(w, who.email, reset.password);
+    const first = tokensOf(await exchange(w, sameSecond.code, sameSecond.verifier));
+    const rotated = tokensOf(await refresh(w, first.refresh_token));
+    expect(rotated.refresh_token).not.toBe(first.refresh_token);
+    expectIdTokenClaims(rotated.id_token, who);
+    tokensOf(await refresh(w, rotated.refresh_token));
+
+    vi.setSystemTime(T0 + 5000);
+    const later = await signInToTokens(w, { ...who, password: reset.password });
+    const next = tokensOf(await refresh(w, later.tokens.refresh_token));
+    tokensOf(await refresh(w, next.refresh_token));
+
+    const old = await signInToTokens(w, legacy);
+    expectIdTokenClaims(tokensOf(await refresh(w, old.tokens.refresh_token)).id_token, legacy);
+  });
+});
+
 describe('only the interaction cookies, by exact name, reach the provider', () => {
   test.each([
     ['no cookie (the control)', null],
