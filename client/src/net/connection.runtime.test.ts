@@ -4745,9 +4745,6 @@ function wcFire(event: 'insert' | 'update', row: ReturnType<typeof wcRow>, build
   else cb({}, row, row);
 }
 
-/** conn0 whose `db` also answers the build's `my_account` cache. */
-const wcConn = (rec: BuildRec) => conn0(rec);
-
 interface Deferred {
   readonly promise: Promise<void>;
   resolve(): void;
@@ -4792,16 +4789,16 @@ describe('connect(): the guest claim completes on the own my_account row', {
     claimCode.mint(globalThis, URI, DB);
     writeAuthKind(globalThis, URI, DB, 'account');
     H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
-    connect(opts);
+    const handle = connect(opts);
     await settle();
     const code = claimCode.read(globalThis, URI, DB) as string;
-    return { opts, code, b: H.builds[0] };
+    return { opts, code, b: H.builds[0], handle };
   }
 
   /** Connect build `b` and apply its first snapshot over `rows` (its my_account cache). */
   async function wcApplied(b: BuildRec, rows: unknown[]) {
     b.viewRows = { my_account: rows };
-    b.onConnect?.(wcConn(b), ID, 'acct-jwt');
+    b.onConnect?.(conn0(b), ID, 'acct-jwt');
     b.onApplied?.();
     await settle();
   }
@@ -4882,7 +4879,7 @@ describe('connect(): the guest claim completes on the own my_account row', {
     // WRONG IMPL KILLED: the late send goes through the logging wrapper (a bearer secret
     // reaches the dev reducer-arg sink).
     const onSend = vi.fn();
-    const { b, code } = await wcBuilt({ ...makeOpts(), onSend } as unknown as ReturnType<
+    const { b, code, handle } = await wcBuilt({ ...makeOpts(), onSend } as unknown as ReturnType<
       typeof makeOpts
     >);
     await wcApplied(b, []);
@@ -4891,9 +4888,51 @@ describe('connect(): the guest claim completes on the own my_account row', {
     wcFire('insert', row);
     await settle();
     expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
-    expect(
-      JSON.stringify(onSend.mock.calls, (_k, v) => (typeof v === 'bigint' ? String(v) : v)),
-    ).not.toContain(code);
+    // The control: a reducer called through the live (wrapped) connection reaches the logger.
+    const live = handle.live() as unknown as {
+      reducers: { joinGame(args: { name: string }): unknown };
+    };
+    live.reducers.joinGame({ name: 'Tester' });
+    const logged = JSON.stringify(onSend.mock.calls, (_k, v) =>
+      typeof v === 'bigint' ? String(v) : v,
+    );
+    expect(logged, 'onSend is wired: the join is logged').toContain('Tester');
+    expect(logged).not.toContain(code);
+  });
+
+  it('a late send that throws synchronously leaves the claim retryable: the next own-row update sends it once, and onClaimResult reports only the answered claim [wr261127-c.1]', async () => {
+    // WRONG IMPL KILLED: the latch set before the call (the throw strands the claim for the whole
+    // connection); a throw that escapes the row callback; a result raised for the failed send.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { opts, code, b } = await wcBuilt();
+      let calls = 0;
+      b.completeGuestClaim.mockImplementation(() => {
+        calls += 1;
+        if (calls === 1) throw new Error('send failed');
+        return Promise.resolve();
+      });
+      await wcApplied(b, []);
+      const row = wcRow();
+      b.viewRows = { my_account: [row] };
+      wcFire('insert', row);
+      await settle();
+      expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+      expect(opts.onClaimResult).not.toHaveBeenCalled();
+
+      wcFire('update', row);
+      await settle();
+      expect(b.completeGuestClaim).toHaveBeenCalledTimes(2);
+      expect(b.completeGuestClaim).toHaveBeenLastCalledWith({ code });
+      expect(opts.onClaimResult).toHaveBeenCalledTimes(1);
+      expect(opts.onClaimResult).toHaveBeenCalledWith({ ok: true, message: '' });
+
+      wcFire('update', row);
+      await settle();
+      expect(b.completeGuestClaim).toHaveBeenCalledTimes(2);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it('each connection has its own latch: a rebuilt connection sends once on its own late row [wr261127-c.1]', async () => {

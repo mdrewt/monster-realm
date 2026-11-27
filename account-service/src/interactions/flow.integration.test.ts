@@ -1318,12 +1318,38 @@ describe('a password reset ends what earlier seconds issued', () => {
     expect(resumed.status).toBe(303);
     const back = new URL(String(resumed.headers.location), ISSUER);
     const code = back.searchParams.get('code');
-    if (code === null) {
-      // Refusing at the resume is as safe: no code reached the client.
-      expect(back.origin).toBe(ISSUER);
-    } else {
-      expectInvalidGrant(await exchange(w, code, started.verifier));
+    expect(code, 'the resume still mints a code').toEqual(expect.any(String));
+    expectInvalidGrant(await exchange(w, code as string, started.verifier));
+  });
+
+  test('a stored refresh token whose authTime is removed is refused and its grant revoked [wr261127-c.4]', {
+    timeout: 30_000,
+  }, async () => {
+    // WRONG IMPL KILLED: a missing authTime read as 0 or as current (the token passes); a
+    // refusal that leaves the grant's records behind.
+    freezeAt(T0);
+    const w = await world();
+    const who = await person(w);
+    const chain = await signInToTokens(w, who);
+    const digest = createHash('sha256').update(chain.tokens.refresh_token).digest('base64url');
+    const db = new DatabaseSync(w.dbPath);
+    try {
+      const found = db
+        .prepare("SELECT payload FROM oidc_record WHERE model = 'RefreshToken' AND id = ?")
+        .get(digest) as { payload: string } | undefined;
+      expect(found, 'control: the refresh token record is stored under its digest').toBeDefined();
+      const payload = JSON.parse(found!.payload) as Record<string, unknown>;
+      expect(payload.authTime, 'control: authTime is stored').toEqual(expect.any(Number));
+      delete payload.authTime;
+      db.prepare("UPDATE oidc_record SET payload = ? WHERE model = 'RefreshToken' AND id = ?").run(
+        JSON.stringify(payload),
+        digest,
+      );
+    } finally {
+      db.close();
     }
+    expectInvalidGrant(await refresh(w, chain.tokens.refresh_token));
+    expect(recordsOfGrant(w, chain.grantId)).toEqual([]);
   });
 });
 

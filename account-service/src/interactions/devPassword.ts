@@ -149,8 +149,8 @@ export function devAccounts(adapter: (model: string) => Adapter): DevAccounts {
     async resetPassword(email) {
       const password = generatePassword();
       const passwordHash = await hashPassword(password);
-      // Whole seconds, as a token's `iat` is: the provider refuses a code or refresh token issued
-      // in an earlier second.
+      // Whole seconds, as a token's `iat` and `authTime` are: the provider refuses a code or
+      // refresh token issued, or signed in for, in an earlier second.
       const passwordChangedAt = Math.floor(Date.now() / 1000);
       const account = { ...(await read(email)), passwordHash, passwordChangedAt };
       await write(account);

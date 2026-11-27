@@ -127,11 +127,12 @@ export function createInteractionRouter(options: {
       return;
     }
 
-    const outcome = await signIn.attempt(email, password);
-    // The second the password was checked becomes the session's login time, which every code and
-    // refresh token of this sign-in carries as `authTime`: a reset after this second ends them,
-    // however late the resume that mints the code.
+    // The second the password check starts becomes the session's login time, which every code and
+    // refresh token of this sign-in carries as `authTime`: a reset in a later second ends them,
+    // however late the resume that mints the code. Read before the check, so a reset that lands
+    // while the hash is computed still ends them.
     const checkedAt = Math.floor(Date.now() / 1000);
+    const outcome = await signIn.attempt(email, password);
     switch (outcome.kind) {
       case 'signed-in': {
         const grant = new provider.Grant({

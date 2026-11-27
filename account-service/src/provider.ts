@@ -230,19 +230,16 @@ export function createAccountProvider(options: {
 }
 
 /**
- * Whether a presented code or refresh token was issued, and its sign-in's password checked, no
- * earlier than the second `changedAt`. A lookup with no token (a sign-in being completed) is.
- * A token missing either second is not.
+ * Whether a presented code or refresh token belongs to a sign-in whose password was checked no
+ * earlier than the second `changedAt`. That second is the token's `authTime`, which is never later
+ * than its `iat` (a code is minted after its sign-in, and a rotated refresh token keeps its
+ * chain's), so a token issued in an earlier second is refused too. A lookup with no token (a
+ * sign-in being completed) passes; a token with no `authTime` does not.
  */
 function postdatesReset(token: unknown, changedAt: number): boolean {
   if (token === undefined) return true;
-  const { iat, authTime } = token as { readonly iat?: unknown; readonly authTime?: unknown };
-  return (
-    typeof iat === 'number' &&
-    typeof authTime === 'number' &&
-    iat >= changedAt &&
-    authTime >= changedAt
-  );
+  const { authTime } = token as { readonly authTime?: unknown };
+  return typeof authTime === 'number' && authTime >= changedAt;
 }
 
 /** Answered by this service with 503, never sent on to the client's redirect address. */

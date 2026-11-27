@@ -1052,11 +1052,12 @@ export function connect(opts: ConnectionOptions): Connection {
               } else if (!isAccount || !codeUnconsumed) {
                 attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);
               } else {
-                // AUTH-53: re-issue complete_guest_claim on THIS connection's first applied snapshot,
-                // unconditionally — a pre-drop promise never settles. onClaimPending is
-                // a UX notification fired ALONGSIDE the reducer call, never a substitute for it.
+                // AUTH-53: re-issue complete_guest_claim on THIS connection's first applied snapshot
+                // once the own account row is there — a pre-drop promise never settles. onClaimPending
+                // is a UX notification fired ALONGSIDE the reducer call, never a substitute for it.
                 // The SDK calls this before it dispatches the snapshot's row callbacks, so an own
-                // account row of this snapshot is in its cache and not yet in the store.
+                // account row of this snapshot is in the cache of `conn` (the connection `c` is) and
+                // not yet in the store.
                 const code =
                   store.ownAccount(identity) !== undefined || ownAccountCached(conn)
                     ? sendClaim(c)
