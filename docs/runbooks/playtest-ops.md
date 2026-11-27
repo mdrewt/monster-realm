@@ -64,9 +64,8 @@ the console. Publish the module and serve the matching client build together, an
 players reload.
 
 The module publishes each player's movement acknowledgement on `character.acked_seq`,
-written by `movement_tick`; `player.last_input_seq` stays 0. The served client must be a
-build that reads `character.ackedSeq`. Publishing the module alone is safe for such a
-client: `move_intent` is a private table, so adding it changes no row a client decodes.
+written by `movement_tick`. The served client must be a build that reads
+`character.ackedSeq`.
 
 A publish can fail with "Aborting because publishing would require manual migration or
 deletion of data". This happens when the database holds a schema the automatic
@@ -112,6 +111,24 @@ The browser's stored token is issued by the server, not by the database, so afte
 wipe the client reconnects as the same identity into the empty database, and
 `join_game` creates a fresh character and starter monster. For a different identity,
 close the tab.
+
+## A schema consolidation
+
+A consolidation is a module change the automatic migration refuses: it drops tables or
+columns (`docs/DECISIONS.md`, "Schema changes are additive"). Every database published
+from an earlier module has to be wiped, in one step, when the consolidation merges:
+
+1. The playtest database: `just playtest-wipe`, from a checkout of the merged commit, as
+   the identity that owns the database.
+2. A local development database: `spacetime publish --module-path server-module
+   --delete-data -y <name>` (the default name is `monster-realm`), then
+   `spacetime call <name> sync_content`. `just publish` keeps data, so on such a database
+   it stops with "publishing would require manual migration or deletion of data".
+
+Serve the client build of the same commit: the consolidation raises the oldest protocol
+the module accepts, so an older client is shown "This server runs a newer Monster Realm.
+Update the game to join." and joins nothing. The nightly republish check needs no step:
+it starts from an empty host.
 
 ## `just playtest-report`
 

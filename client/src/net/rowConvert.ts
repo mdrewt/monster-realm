@@ -64,8 +64,8 @@ import type {
 // --- SDK-boundary enum exhaustiveness --------------------------
 //
 // HANDLED_ENUM_VARIANTS is the client-side registry of every enum whose `.tag`
-// crosses the SDK→store boundary in this file (row READS only — write-direction
-// enums such as PvpAction are excluded: rowConvert never reads them from a row).
+// crosses the SDK→store boundary in this file (row READS only — an enum the client
+// only writes is excluded: rowConvert never reads one from a row).
 // It is the data half of a three-part ratchet:
 //   1. rowConvert.test.ts (T4-5 / T4-6 and the per-key mirror test) diffs this registry
 //      against the generated `__t.enum` blocks in module_bindings/types.ts — a

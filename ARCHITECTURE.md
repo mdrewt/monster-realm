@@ -229,10 +229,10 @@ writes:
 | `npc` | `talk`, `advance_dialogue`, `dismiss_dialogue` |
 | `trading` | `cancel_trade`, scheduled `trade_offer_reaper`; `propose_trade`, `respond_trade` and `confirm_trade` are retired and return one fixed error |
 | `trading_session` | `open_trade_session`, `set_trade_offer`, `confirm_trade_session`, `cancel_trade_session`, scheduled `trade_session_reaper` |
-| `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
+| `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
-| `access` | `set_world_access`, `admit` (both owner-only): the world's access rule (`Open`, `Password` or `Allowlist`), the admission list and the door; `require_admitted` opens every non-owner-only client reducer but `unbind_world_account` |
+| `access` | `set_world_access` (owner-only): the world's access rule (`Open`, `Password` or `Allowlist`) and the admission list; `require_admitted` opens every non-owner-only client reducer but `unbind_world_account` |
 | `world_binding` | `request_bind_nonce`, `bind_world_account` and their owner-relayed forms `request_bind_nonce_for`, `bind_world_account_for`; `unbind_world_account`, the one client reducer outside the owner-only set with no admission check, which erases the caller's `world_account` row with its armed re-check, its binding and its nonce, and withdraws its admission row when a `world_account` row went; owner-only `set_world_names`, `set_world_allowlist` (the list holds handles) and `drop_world_binding` (the same erasure for a named identity; does not write the list). Owns `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`, and verifies the attestation (`verify_attestation`), whose binding grants nothing; a build with no attestation key refuses the four nonce and bind reducers; `delist_account_of`, the deletion cascade's step, takes a deleted identity's handle off the list |
 | `account_checks` | procedures `check_account` (a client's one-use ticket), `check_account_for` (owner-only relay) and scheduled `recheck_account` (the database only, armed by the connect reducer): the world asks the account service the build names (`POST /world/check`, 3 s timeout) whether an account owns the game and stores the answer. Owns `world_account`, `world_check_budget` and `recheck_schedule`; `entitled` and the `Allowlist` rule read `world_account` |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
@@ -371,11 +371,9 @@ from inside the game carries in its `character` row.
 
 `join_game` creates the `move_intent` row with the character; the last disconnect and
 the account-deletion cascade delete it with the character. A character with no intent
-row is an NPC, or a session that joined before the table existed: such a session's row
-is created from its published queue and the higher of `character.acked_seq` and
-`player.last_input_seq` (`movement::seed_intent`) by its first move call or by the
-tick. `player.last_input_seq` is otherwise unused: `join_game` writes 0 and nothing
-writes it again.
+row is an NPC. Should a player character ever lack one, the row is created from its
+published queue and `character.acked_seq` (`movement::seed_intent`) by its first move
+call or by the tick.
 
 ### Battles, trades and the rest
 
@@ -387,9 +385,7 @@ writes it again.
   into the box (`taming::insert_recruited`, `PARTY_SLOT_NONE`); the recruited wild
   becomes `Recruited`, leaves the board and the initiative, and is never a `Ko`,
   so the settlement credits no XP for it. After a battle ends, only the latest
-  finished battle per player is kept. The 1v1 tables (`battle_wild`, `battle_action`,
-  `pvp_deadline_schedule`) are retired in place — never dropped; no new
-  rows (the settle and erase sweeps still delete from them).
+  finished battle per player is kept.
 - **PvP.** The `battle` table is private; participants read it through
   `my_battle`. The battle checks are `guards::is_in_ongoing_battle` (the player,
   in either role) and `guards::reject_if_in_battle` (the monster, in either party),
@@ -497,7 +493,7 @@ part of the schema:
 | Private, owner-readable | `monster_pub`, `inventory`, `player_quest`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle`, `world_binding`, `world_bind_nonce`, `world_account` | views `my_monster_pub`, `my_inventory`, `my_player_quest`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle`, `my_world_binding`, `my_bind_nonce`, `my_world_account` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
 | Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
-| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, `world_access`, `world_admission`, `world_admission_attempt`, `world_name`, `world_allowlist`, all schedule tables | none |
+| Private, server only | `monster`, `encounter`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `last_position`, `guest_claim`, `player_session`, `world_access`, `world_admission`, `world_admission_attempt`, `world_name`, `world_allowlist`, all schedule tables | none |
 
 A view takes only its context and filters on `ctx.sender()` through an index. That
 body is the whole security boundary.
@@ -627,8 +623,7 @@ level are resolved before the executor debits the bait, the roll is game-core's
 (`recruit::resolve_recruit`, the private stream), the H1/H2 `playtest_event` row is written
 with the pre-roll HP, and a success rebuilds the wild through `taming::insert_recruited`;
 `Item` entries stay refused (no game-core rule home yet). One anchor, one payout path: no
-client-callable 1v1 reducer exists since bt-17 (the scheduled `pvp_deadline_reaper` only consumes rows
-nothing arms).
+client-callable 1v1 reducer exists, and no scheduled one.
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned
