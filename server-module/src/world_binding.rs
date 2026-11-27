@@ -312,11 +312,6 @@ pub(crate) fn world_names(ctx: &ReducerContext) -> Vec<String> {
     names
 }
 
-/// Whether `name` is, byte for byte, a name of this world.
-pub(crate) fn is_world_name(ctx: &ReducerContext, name: &str) -> bool {
-    ctx.db.world_name().name().find(name.to_string()).is_some()
-}
-
 /// Whether the host listed `handle`, byte for byte. The column that holds a handle is named
 /// `account_subject`.
 pub(crate) fn on_allowlist(ctx: &ReducerContext, handle: &str) -> bool {
@@ -655,19 +650,25 @@ pub fn drop_world_binding(ctx: &ReducerContext, identity: Identity) -> Result<()
 /// Replace the names this world answers to. Owner-only. Refused with no write: more than
 /// [`MAX_WORLD_NAMES`], an entry that is not 1 to [`WORLD_NAME_MAX_BYTES`] visible ASCII
 /// characters, a repeated entry. An empty list leaves the world with no name, and a world with
-/// no name accepts no binding and checks no account.
+/// no name accepts no binding and checks no account. A call that stores another set of names
+/// than the world held has the host's own account check ask at its next tick
+/// (`account_checks::names_changed`); the same names in another order are no change.
 #[spacetimedb::reducer]
 pub fn set_world_names(ctx: &ReducerContext, names: Vec<String>) -> Result<(), String> {
     crate::access::require_world_owner(ctx, "set_world_names")?;
     if let Err(reason) = check_entries(&names, &WORLD_NAMES_RULE) {
         return reject("set_world_names", ctx.sender(), reason);
     }
-    let stored: Vec<String> = ctx.db.world_name().iter().map(|row| row.name).collect();
+    let stored: BTreeSet<String> = ctx.db.world_name().iter().map(|row| row.name).collect();
+    let changed = stored != names.iter().cloned().collect::<BTreeSet<String>>();
     for name in stored {
         ctx.db.world_name().name().delete(name);
     }
     for name in names {
         ctx.db.world_name().insert(WorldName { name });
+    }
+    if changed {
+        crate::account_checks::names_changed(ctx);
     }
     Ok(())
 }

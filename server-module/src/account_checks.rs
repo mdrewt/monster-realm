@@ -102,6 +102,12 @@ pub(crate) const EGRESS_MAX_AGE_MS: i64 = 25 * 60 * 60 * 1000;
 
 const BUDGET_ROW: u32 = 0;
 const STATUS_OK: u16 = 200;
+/// What a world name that names an address starts with.
+const IP_NAME_PREFIX: &str = "ip:";
+/// The `family` of a `world_egress` row that holds an IPv4 address, and of one that holds an
+/// IPv6 address.
+const FAMILY_V4: u8 = 4;
+const FAMILY_V6: u8 = 6;
 const STATUS_FORBIDDEN: u16 = 403;
 
 /// The account an identity of this world plays under, as the account service last answered:
@@ -234,6 +240,7 @@ struct TicketAnswer {
     handle: String,
     entitled: bool,
     name: String,
+    address: Option<String>,
 }
 
 /// What the service answers a handle. It names no handle when it does not know the one asked
@@ -242,6 +249,7 @@ struct TicketAnswer {
 struct HandleAnswer {
     handle: Option<String>,
     entitled: bool,
+    address: Option<String>,
 }
 
 /// A JSON object read into `T`. A derived reader also accepts an array, filling fields by
@@ -264,22 +272,111 @@ fn parse_answer<'a, T: Deserialize<'a>>(body: &'a [u8]) -> Option<T> {
 fn name_carries_move(name: &str, ip_confirmed: bool) -> bool {
     name.starts_with("spki:")
         || name.starts_with("dns:")
-        || (ip_confirmed && name.starts_with("ip:"))
+        || (ip_confirmed && name.starts_with(IP_NAME_PREFIX))
 }
 
-/// Whether the host's own check asks at `now_ms`, given when it last succeeded.
-fn host_check_due(_last_success_ms: Option<i64>, _now_ms: i64) -> bool {
-    false
+/// Whether the host's own check asks at `now_ms`, given when it last succeeded: with no success
+/// yet, once the last is [`HOST_CHECK_MIN_AGE_MS`] old, and when the last lies after `now_ms`,
+/// so a clock that stepped back asks again.
+fn host_check_due(last_success_ms: Option<i64>, now_ms: i64) -> bool {
+    last_success_ms
+        .is_none_or(|last| now_ms < last || now_ms.saturating_sub(last) >= HOST_CHECK_MIN_AGE_MS)
 }
 
-/// The address an `ip:` name carries.
-fn ip_name_address(_name: &str) -> Option<IpAddr> {
-    None
+/// `text` as an address, an IPv4-mapped IPv6 address read as the IPv4 address it carries. A
+/// zone, brackets or a port make `text` no address.
+fn parse_address(text: &str) -> Option<IpAddr> {
+    text.parse::<IpAddr>()
+        .ok()
+        .map(|address| address.to_canonical())
 }
 
-/// The address `url` is asked at over the address family `family` (4 or 6).
-fn check_url(url: &str, _family: Option<u8>) -> String {
-    url.to_string()
+/// The `family` a `world_egress` row holds `address` under.
+fn family_of(address: IpAddr) -> u8 {
+    if address.is_ipv4() {
+        FAMILY_V4
+    } else {
+        FAMILY_V6
+    }
+}
+
+/// The address an `ip:` name carries: after `ip:`, an IPv6 address between brackets, or an IPv4
+/// address up to the first `:` or `/`. What follows the address is not read, and an IPv4-mapped
+/// IPv6 address is the IPv4 address it carries. Every other name carries none.
+fn ip_name_address(name: &str) -> Option<IpAddr> {
+    let rest = name.strip_prefix(IP_NAME_PREFIX)?;
+    let address = match rest.strip_prefix('[') {
+        Some(bracketed) => IpAddr::V6(bracketed.split_once(']')?.0.parse().ok()?),
+        None => IpAddr::V4(rest.split([':', '/']).next()?.parse().ok()?),
+    };
+    Some(address.to_canonical())
+}
+
+/// The address family a world named `names` asks the account service over: IPv4 when an `ip:`
+/// name carries an IPv4 address, otherwise IPv6 when one carries an IPv6 address, otherwise
+/// none. The service reports the address a request left from, one family a request, so a world
+/// asks over the family its `ip:` names are in.
+fn asked_family(names: &[String]) -> Option<u8> {
+    let mut asked = None;
+    for address in names.iter().filter_map(|name| ip_name_address(name)) {
+        if address.is_ipv4() {
+            return Some(FAMILY_V4);
+        }
+        asked = Some(FAMILY_V6);
+    }
+    asked
+}
+
+/// The address `url` is asked at over the address family `family`: the service's check name for
+/// that family, `ipv4.` or `ipv6.` put in front of the host. No family, a number that is neither,
+/// and a `url` with no `://` give `url` as it is.
+fn check_url(url: &str, family: Option<u8>) -> String {
+    let label = match family {
+        Some(FAMILY_V4) => "ipv4.",
+        Some(FAMILY_V6) => "ipv6.",
+        _ => return url.to_string(),
+    };
+    match url.split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://{label}{rest}"),
+        None => url.to_string(),
+    }
+}
+
+/// Whether the stored address `row` vouches for `address` at `now_ms`: it holds that address,
+/// compared as an address, and was confirmed less than [`EGRESS_MAX_AGE_MS`] ago. A row stamped
+/// after `now_ms` vouches for nothing.
+fn egress_confirms(row: &WorldEgress, address: IpAddr, now_ms: i64) -> bool {
+    let age_ms = now_ms.saturating_sub(row.confirmed_at_ms);
+    (0..EGRESS_MAX_AGE_MS).contains(&age_ms) && parse_address(&row.address) == Some(address)
+}
+
+/// Whether the world has confirmed the `ip:` name `name` as its address at `now_ms`: the name
+/// carries an address and `stored`, the address stored for that address's family, vouches for
+/// it ([`egress_confirms`]).
+fn ip_name_confirmed(name: &str, stored: Option<&WorldEgress>, now_ms: i64) -> bool {
+    ip_name_address(name)
+        .is_some_and(|address| stored.is_some_and(|row| egress_confirms(row, address, now_ms)))
+}
+
+/// Whether a world that asks over `family` presents its name `name` in a redeem at `now_ms`,
+/// `stored` being the address stored for `family`. A name that is no `ip:` name is presented.
+/// An `ip:` name is presented when it carries an address of `family` and either no address is
+/// stored for `family` or the stored one vouches for it ([`egress_confirms`]): once the service
+/// has reported another address, or none for [`EGRESS_MAX_AGE_MS`], the name may be another
+/// host's.
+fn name_presented(
+    name: &str,
+    family: Option<u8>,
+    stored: Option<&WorldEgress>,
+    now_ms: i64,
+) -> bool {
+    if !name.starts_with(IP_NAME_PREFIX) {
+        return true;
+    }
+    ip_name_address(name).is_some_and(|address| {
+        Some(family_of(address)) == family
+            && stored.is_none_or(|row| egress_confirms(row, address, now_ms))
+    })
 }
 
 fn is_handle(text: &str) -> bool {
@@ -348,6 +445,58 @@ pub(crate) fn admitted_handles(
         .collect();
     handles.sort_unstable();
     handles
+}
+
+/// The address family this world asks the account service over ([`asked_family`]).
+fn family_asked(tx: &ReducerContext) -> Option<u8> {
+    asked_family(&crate::world_binding::world_names(tx))
+}
+
+/// What one transaction reads to judge this world's names: the names, the address family the
+/// world asks over, the address stored for that family, and the transaction's time.
+struct NameStanding {
+    names: Vec<String>,
+    family: Option<u8>,
+    stored: Option<WorldEgress>,
+    now_ms: i64,
+}
+
+/// The standing of this world's names as the transaction `tx` reads it.
+fn name_standing(tx: &ReducerContext) -> NameStanding {
+    let names = crate::world_binding::world_names(tx);
+    let family = asked_family(&names);
+    let stored = family.and_then(|family| tx.db.world_egress().family().find(family));
+    NameStanding {
+        names,
+        family,
+        stored,
+        now_ms: now_ms(tx),
+    }
+}
+
+impl NameStanding {
+    /// Whether `name` is, byte for byte, a name of this world that a redeem presents
+    /// ([`name_presented`]).
+    fn presents(&self, name: &str) -> bool {
+        self.names.iter().any(|own| own == name)
+            && name_presented(name, self.family, self.stored.as_ref(), self.now_ms)
+    }
+
+    /// The names a redeem presents, in ascending byte order.
+    fn presented(&self) -> Vec<String> {
+        self.names
+            .iter()
+            .filter(|name| name_presented(name, self.family, self.stored.as_ref(), self.now_ms))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the world has confirmed `name`, a name it presents, as its address
+    /// ([`ip_name_confirmed`]). A presented `ip:` name is of the family the world asks over, so
+    /// the address read for that family is the one that vouches for it.
+    fn confirms(&self, name: &str) -> bool {
+        ip_name_confirmed(name, self.stored.as_ref(), self.now_ms)
+    }
 }
 
 // --- Writes -----------------------------------------------------------------------------
@@ -462,21 +611,44 @@ fn redeem_gates(tx: &ReducerContext, who: Identity, relayed: bool) -> Result<(),
     crate::guards::deletion_gate(crate::accounts::is_pending_deletion(tx, who))
 }
 
-/// The transaction before a redeem is sent: the gates, then the names the world presents,
-/// then the budget. A refusal aborts the transaction, so it spends none of the budget; the
-/// gates are judged first, so a caller the world refuses is told so whatever the budget holds.
+/// The transaction before a redeem is sent: the gates, then the names the world presents
+/// ([`name_presented`]) with the address family it asks over, then the budget. A world that
+/// presents no name is refused. A refusal aborts the transaction, so it spends none of the
+/// budget; the gates are judged first, so a caller the world refuses is told so whatever the
+/// budget holds.
 fn prepare_redeem(
     tx: &ReducerContext,
     who: Identity,
     relayed: bool,
-) -> Result<Vec<String>, &'static str> {
+) -> Result<(Vec<String>, Option<u8>), &'static str> {
     redeem_gates(tx, who, relayed)?;
-    let names = crate::world_binding::world_names(tx);
+    let standing = name_standing(tx);
+    let names = standing.presented();
     if names.is_empty() {
         return Err(REJECT_WORLD_UNNAMED);
     }
     charge_budget(tx, relayed)?;
-    Ok(names)
+    Ok((names, standing.family))
+}
+
+/// Store `address`, the address the account service saw a request of this world leave from, as
+/// its family's row, stamped with the transaction's time. The other family's row is left alone.
+fn store_egress(tx: &ReducerContext, address: IpAddr) {
+    let row = WorldEgress {
+        family: family_of(address),
+        address: address.to_string(),
+        confirmed_at_ms: now_ms(tx),
+    };
+    if tx.db.world_egress().family().find(row.family).is_some() {
+        tx.db.world_egress().family().update(row);
+    } else {
+        tx.db.world_egress().insert(row);
+    }
+}
+
+/// The address an answer reports in its `address` member, when the member holds one.
+fn reported_address(address: Option<&String>) -> Option<IpAddr> {
+    address.and_then(|text| parse_address(text))
 }
 
 /// What refuses moving the character `from` owns to `who`: `who` owning a character, and, under
@@ -497,15 +669,17 @@ fn move_gates(tx: &ReducerContext, from: Identity, who: Identity) -> Result<(), 
 }
 
 /// The transaction that stores a redeemed ticket's answer for `who`, deciding from the rows as
-/// they are now. Refused with no write: a gate that fails now; an answered name this world does
-/// not answer to now; `who` holding another handle; and, when `who` is the world's owner under
-/// `Allowlist`, a full list that lacks the handle.
+/// they are now, the address the answer reported among them. Refused with no write: a gate that
+/// fails now; an answered name that is not a name this world presents now ([`name_presented`]),
+/// so an answer that shows an `ip:` name's address to be another's is not stored; `who` holding
+/// another handle; and, when `who` is the world's owner under `Allowlist`, a full list that
+/// lacks the handle.
 ///
 /// A handle another identity holds is the same account at another client, so its character
 /// moves to `who` (`accounts::move_character`) and the handle's row points at `who`, keeping its
 /// host mark. That is refused, again with no write, when the ticket's name cannot carry a move
-/// ([`name_carries_move`]; no `ip:` name is confirmed here), by [`move_gates`], and when the
-/// move itself fails. The identity the character left gets a `world_move` row and loses its
+/// ([`name_carries_move`]; an `ip:` name carries one while the stored address confirms it,
+/// [`ip_name_confirmed`]), by [`move_gates`], and when the move itself fails. The identity the character left gets a `world_move` row and loses its
 /// armed re-check, and its admission row too when the access rule was refusing it, so the move
 /// admits nobody. A holder that owns no character is re-pointed the same way.
 ///
@@ -518,7 +692,8 @@ fn store_redeem(
     answer: &TicketAnswer,
 ) -> Result<bool, &'static str> {
     redeem_gates(tx, who, relayed)?;
-    if !crate::world_binding::is_world_name(tx, &answer.name) {
+    let standing = name_standing(tx);
+    if !standing.presents(&answer.name) {
         return Err(REJECT_TICKET_REFUSED);
     }
     let held = tx
@@ -527,7 +702,7 @@ fn store_redeem(
         .handle()
         .find(answer.handle.clone())
         .filter(|row| row.identity != who);
-    if held.is_some() && !name_carries_move(&answer.name, false) {
+    if held.is_some() && !name_carries_move(&answer.name, standing.confirms(&answer.name)) {
         return Err(REJECT_HANDLE_HELD);
     }
     let own = account_of(tx, who);
@@ -542,7 +717,7 @@ fn store_redeem(
     {
         crate::world_binding::add_to_allowlist(tx, std::slice::from_ref(&answer.handle))?;
     }
-    let checked_at_ms = now_ms(tx);
+    let checked_at_ms = standing.now_ms;
     match (held, own) {
         (Some(row), _) => {
             let from = row.identity;
@@ -586,19 +761,20 @@ fn store_redeem(
     Ok(answer.entitled)
 }
 
-/// The transaction that stores a re-check's answer about `asked`, the row as it stood when the
-/// request was sent. A row that is gone or holds another handle or check time is left alone: an
-/// unbind, a newer check or another re-check landed during the wait, and an older answer never
-/// overwrites a newer one. An answer that names no handle stores not entitled. An answer under
-/// another handle replaces the row and its entry on the host's list, unless another identity
-/// holds that handle: the standing is then stored on the row as it is.
-fn store_recheck(tx: &ReducerContext, asked: &WorldAccount, answer: &HandleAnswer) {
-    let Some(row) = account_of(tx, asked.identity) else {
-        return;
-    };
-    if row.handle != asked.handle || row.checked_at_ms != asked.checked_at_ms {
-        return;
-    }
+/// The row an answer about `asked` is stored on: `asked`'s identity's row, `asked` being the row
+/// as it stood when the request was sent. None when that row is gone or holds another handle or
+/// check time: an unbind, a newer check or another re-check landed during the wait, and an older
+/// answer never overwrites a newer one.
+fn row_asked_about(tx: &ReducerContext, asked: &WorldAccount) -> Option<WorldAccount> {
+    account_of(tx, asked.identity)
+        .filter(|row| row.handle == asked.handle && row.checked_at_ms == asked.checked_at_ms)
+}
+
+/// Store on `row` what the service answered a handle check about it. An answer that names no
+/// handle stores not entitled. An answer under another handle replaces the row and its entry on
+/// the host's list, unless another identity holds that handle: the standing is then stored on
+/// the row as it is. The row keeps its host mark either way.
+fn store_status(tx: &ReducerContext, row: WorldAccount, answer: &HandleAnswer) {
     let checked_at_ms = now_ms(tx);
     let Some(answered) = answer.handle.as_ref() else {
         tx.db.world_account().handle().update(WorldAccount {
@@ -634,17 +810,167 @@ fn store_recheck(tx: &ReducerContext, asked: &WorldAccount, answer: &HandleAnswe
     });
 }
 
-/// Mark `who`'s row as the one the host plays as and arm the host's own check.
+/// The transaction that stores a re-check's answer about `asked`: the address it reports, and
+/// its status on the row asked about ([`row_asked_about`], [`store_status`]). The address is
+/// stored also when the row is left alone.
+fn store_recheck(tx: &ReducerContext, asked: &WorldAccount, answer: &HandleAnswer) {
+    let row = row_asked_about(tx, asked);
+    if let Some(address) = reported_address(answer.address.as_ref()) {
+        store_egress(tx, address);
+    }
+    if let Some(row) = row {
+        store_status(tx, row, answer);
+    }
+}
+
+/// Replace the rows `stored` of `host_check_schedule` by one row that ticks every
+/// [`HOST_CHECK_INTERVAL_MS`] and holds `last_success_ms`. A row is replaced and never updated:
+/// the host re-queues an updated scheduled row at the call and drops that queue entry when the
+/// transaction then aborts, which would stop an interval row ticking until the host restarts,
+/// while a delete and an insert that roll back leave the first row's entry queued.
+fn replace_host_schedule(
+    ctx: &ReducerContext,
+    stored: impl IntoIterator<Item = u64>,
+    last_success_ms: Option<i64>,
+) {
+    for scheduled_id in stored {
+        ctx.db
+            .host_check_schedule()
+            .scheduled_id()
+            .delete(scheduled_id);
+    }
+    ctx.db.host_check_schedule().insert(HostCheckSchedule {
+        scheduled_id: 0,
+        scheduled_at: ScheduleAt::Interval(TimeDuration::from_micros(
+            HOST_CHECK_INTERVAL_MS * 1000,
+        )),
+        last_success_ms,
+    });
+}
+
+/// Mark `who`'s row as the one the host plays as, clear the mark on every other row, and arm
+/// the host's own check: the body of [`set_host_identity`] past its gates, as a build of
+/// `profile` runs it. Refused with nothing read on a build that names no account service, and
+/// with nothing written when `who` holds no row. A row whose mark does not change is not
+/// written. `host_check_schedule` is left as it is when `who`'s row was marked already and the
+/// table holds one row; otherwise it is left holding one row with no success yet, so the next
+/// tick asks about the newly marked account.
 pub(crate) fn mark_host(
-    _ctx: &ReducerContext,
-    _profile: &BuildProfile,
-    _who: Identity,
+    ctx: &ReducerContext,
+    profile: &BuildProfile,
+    who: Identity,
 ) -> Result<(), String> {
+    const REDUCER: &str = "set_host_identity";
+    if profile.world_check_url.is_none() {
+        return refuse(REDUCER, ctx.sender(), REJECT_BUILD_CHECKS_NOTHING);
+    }
+    let Some(own) = account_of(ctx, who) else {
+        return refuse(REDUCER, ctx.sender(), REJECT_NO_HOST_ACCOUNT);
+    };
+    let marked_elsewhere: Vec<WorldAccount> = ctx
+        .db
+        .world_account()
+        .iter()
+        .filter(|row| row.is_host && row.identity != who)
+        .collect();
+    for row in marked_elsewhere {
+        ctx.db.world_account().handle().update(WorldAccount {
+            is_host: false,
+            ..row
+        });
+    }
+    let was_marked = own.is_host;
+    if !was_marked {
+        ctx.db.world_account().handle().update(WorldAccount {
+            is_host: true,
+            ..own
+        });
+    }
+    let armed: Vec<u64> = ctx
+        .db
+        .host_check_schedule()
+        .iter()
+        .map(|row| row.scheduled_id)
+        .collect();
+    if !(was_marked && armed.len() == 1) {
+        replace_host_schedule(ctx, armed, None);
+    }
     Ok(())
 }
 
-/// Note that the world's names changed.
-pub(crate) fn names_changed(_ctx: &ReducerContext) {}
+/// Have the host's own check ask at its next tick, because the names this world answers to
+/// changed and with them what its `ip:` names claim. Writes nothing when no check is armed, and
+/// when the one armed row holds no success; otherwise `host_check_schedule` is left holding one
+/// row with no success yet. Called by `world_binding::set_world_names`.
+pub(crate) fn names_changed(ctx: &ReducerContext) {
+    let armed: Vec<HostCheckSchedule> = ctx.db.host_check_schedule().iter().collect();
+    let asks_next = match armed.as_slice() {
+        [] => return,
+        [row] => row.last_success_ms.is_none(),
+        _ => false,
+    };
+    if !asks_next {
+        replace_host_schedule(ctx, armed.into_iter().map(|row| row.scheduled_id), None);
+    }
+}
+
+/// What a tick of the host's own check read before it asked: the schedule row that fired and
+/// the success it held, the marked row the check asks about, and the address family the world
+/// asks over.
+struct HostCheck {
+    scheduled_id: u64,
+    last_success_ms: Option<i64>,
+    asked: WorldAccount,
+    family: Option<u8>,
+}
+
+/// The check a tick of the schedule row `scheduled_id` makes at this transaction's time. None,
+/// and the tick sends nothing, when `host_check_schedule` no longer holds that row, when the
+/// row is not due ([`host_check_due`], judged on the stored row), and when no row is marked.
+fn due_host_check(tx: &ReducerContext, scheduled_id: u64) -> Option<HostCheck> {
+    let fired = tx
+        .db
+        .host_check_schedule()
+        .scheduled_id()
+        .find(scheduled_id)?;
+    if !host_check_due(fired.last_success_ms, now_ms(tx)) {
+        return None;
+    }
+    let asked = tx.db.world_account().iter().find(|row| row.is_host)?;
+    Some(HostCheck {
+        scheduled_id,
+        last_success_ms: fired.last_success_ms,
+        asked,
+        family: family_asked(tx),
+    })
+}
+
+/// The transaction that stores the answer to the host's own check: the address it reports, and
+/// its status as a re-check stores it ([`row_asked_about`], [`store_status`]). The success is
+/// stamped, the fired row replaced by one that holds this transaction's time, only when the
+/// status was stored on a row that is still marked and the fired row still holds the success it
+/// held when the tick read it, each judged on the rows as this transaction first reads them. A
+/// change of host or of the world's names during the wait has put a row with no success in its
+/// place, and that row stands: the next tick asks again.
+fn store_host_check(tx: &ReducerContext, check: &HostCheck, answer: &HandleAnswer) {
+    let row = row_asked_about(tx, &check.asked);
+    let fired_unchanged = tx
+        .db
+        .host_check_schedule()
+        .scheduled_id()
+        .find(check.scheduled_id)
+        .is_some_and(|fired| fired.last_success_ms == check.last_success_ms);
+    let stamps = fired_unchanged && row.as_ref().is_some_and(|row| row.is_host);
+    if let Some(address) = reported_address(answer.address.as_ref()) {
+        store_egress(tx, address);
+    }
+    if let Some(row) = row {
+        store_status(tx, row, answer);
+    }
+    if stamps {
+        replace_host_schedule(tx, [check.scheduled_id], Some(now_ms(tx)));
+    }
+}
 
 // --- The account service ----------------------------------------------------------------
 
@@ -669,14 +995,34 @@ fn world_of(ctx: &ProcedureContext) -> String {
     ctx.database_identity().to_hex().to_string()
 }
 
-/// Log a refusal and return it. The reason is always a constant of this crate.
-fn refuse<T>(procedure: &str, sender: Identity, reason: &str) -> Result<T, String> {
-    log_reject(procedure, sender, reason);
+/// Ask the account service at `url` about the account under `handle`. None when there is no
+/// usable answer: the request failed or timed out, the status is not `200`, or the body is not
+/// the answer's shape.
+fn ask_about(ctx: &ProcedureContext, url: &str, handle: &str) -> Option<HandleAnswer> {
+    let world = world_of(ctx);
+    let body = serde_json::to_vec(&HandleCheck {
+        handle,
+        world: &world,
+    })
+    .ok()?;
+    match post_json(ctx, url, body) {
+        Some((STATUS_OK, bytes)) => parse_handle_answer(&bytes),
+        _ => None,
+    }
+}
+
+/// Log a refusal of the procedure or reducer `callee` and return it. The reason is always a
+/// constant of this crate.
+fn refuse<T>(callee: &str, sender: Identity, reason: &str) -> Result<T, String> {
+    log_reject(callee, sender, reason);
     Err(reason.to_string())
 }
 
-/// Redeem `ticket` for `who` at `url` and store the answer: the body of both first-contact
-/// procedures, whose refusals and order the module comment and `store_redeem` give.
+/// Redeem `ticket` for `who` at `url`, over the address family the world asks over, and store
+/// the answer: the body of both first-contact procedures, whose refusals and order the module
+/// comment and `store_redeem` give. The address a usable answer reports is stored in a
+/// transaction of its own before the one that stores the account, so a redeem that is then
+/// refused has still stored it.
 fn redeem(
     ctx: &mut ProcedureContext,
     url: &str,
@@ -693,8 +1039,8 @@ fn redeem(
     if !is_ticket(ticket) {
         return refuse(procedure, sender, REJECT_TICKET_MALFORMED);
     }
-    let names = match ctx.try_with_tx(|tx| prepare_redeem(tx, who, relayed)) {
-        Ok(names) => names,
+    let (names, family) = match ctx.try_with_tx(|tx| prepare_redeem(tx, who, relayed)) {
+        Ok(prepared) => prepared,
         Err(reason) => return refuse(procedure, sender, reason),
     };
     let world = world_of(ctx);
@@ -705,7 +1051,7 @@ fn redeem(
     }) else {
         return refuse(procedure, sender, REJECT_CHECK_UNANSWERED);
     };
-    let answer = match post_json(ctx, url, body) {
+    let answer = match post_json(ctx, &check_url(url, family), body) {
         Some((STATUS_OK, bytes)) => parse_ticket_answer(&bytes),
         Some((STATUS_FORBIDDEN, _)) => return refuse(procedure, sender, REJECT_TICKET_REFUSED),
         _ => None,
@@ -713,6 +1059,9 @@ fn redeem(
     let Some(answer) = answer else {
         return refuse(procedure, sender, REJECT_CHECK_UNANSWERED);
     };
+    if let Some(address) = reported_address(answer.address.as_ref()) {
+        ctx.with_tx(|tx| store_egress(tx, address));
+    }
     match ctx.try_with_tx(|tx| store_redeem(tx, who, relayed, &answer)) {
         Ok(entitled) => Ok(entitled),
         Err(reason) => refuse(procedure, sender, reason),
@@ -764,21 +1113,12 @@ pub(crate) fn recheck_account_under(
     if ctx.sender() != ctx.database_identity() {
         return refuse(PROCEDURE, ctx.sender(), REJECT_NOT_DATABASE);
     }
-    let Some(asked) = ctx.with_tx(|tx| account_of(tx, row.identity)) else {
+    let read =
+        ctx.with_tx(|tx| account_of(tx, row.identity).map(|asked| (asked, family_asked(tx))));
+    let Some((asked, family)) = read else {
         return Ok(());
     };
-    let world = world_of(ctx);
-    let Ok(body) = serde_json::to_vec(&HandleCheck {
-        handle: &asked.handle,
-        world: &world,
-    }) else {
-        return refuse(PROCEDURE, ctx.sender(), REJECT_CHECK_UNANSWERED);
-    };
-    let answer = match post_json(ctx, url, body) {
-        Some((STATUS_OK, bytes)) => parse_handle_answer(&bytes),
-        _ => None,
-    };
-    let Some(answer) = answer else {
+    let Some(answer) = ask_about(ctx, &check_url(url, family), &asked.handle) else {
         return refuse(PROCEDURE, ctx.sender(), REJECT_CHECK_UNANSWERED);
     };
     ctx.with_tx(|tx| store_recheck(tx, &asked, &answer));
@@ -787,17 +1127,39 @@ pub(crate) fn recheck_account_under(
 
 /// [`host_account_check`] as a build of `profile` runs it.
 pub(crate) fn host_account_check_under(
-    _ctx: &mut ProcedureContext,
-    _profile: &BuildProfile,
-    _row: HostCheckSchedule,
+    ctx: &mut ProcedureContext,
+    profile: &BuildProfile,
+    row: HostCheckSchedule,
 ) -> Result<(), String> {
+    const PROCEDURE: &str = "host_account_check";
+    let Some(url) = profile.world_check_url else {
+        return refuse(PROCEDURE, ctx.sender(), REJECT_BUILD_CHECKS_NOTHING);
+    };
+    if ctx.sender() != ctx.database_identity() {
+        return refuse(PROCEDURE, ctx.sender(), REJECT_NOT_DATABASE);
+    }
+    let Some(check) = ctx.with_tx(|tx| due_host_check(tx, row.scheduled_id)) else {
+        return Ok(());
+    };
+    let Some(answer) = ask_about(ctx, &check_url(url, check.family), &check.asked.handle) else {
+        return refuse(PROCEDURE, ctx.sender(), REJECT_CHECK_UNANSWERED);
+    };
+    ctx.with_tx(|tx| store_host_check(tx, &check, &answer));
     Ok(())
 }
 
-/// Mark `who`'s `world_account` row as the one the host plays as. Owner-only.
+/// Name the identity the host plays as: mark `who`'s `world_account` row, clear the mark on
+/// every other, and arm the host's own check ([`mark_host`]). Owner-only. Refused with no
+/// write, in this order: a caller that is not the world's owner
+/// (`access::REJECT_NOT_WORLD_OWNER`); a `who` whose account is pending deletion; a build that
+/// names no account service ([`REJECT_BUILD_CHECKS_NOTHING`]); a `who` that holds no row
+/// ([`REJECT_NO_HOST_ACCOUNT`]). The mark stays on the row until another identity is named or
+/// the row is erased.
 #[spacetimedb::reducer]
-pub fn set_host_identity(_ctx: &ReducerContext, _who: Identity) -> Result<(), String> {
-    Ok(())
+pub fn set_host_identity(ctx: &ReducerContext, who: Identity) -> Result<(), String> {
+    crate::access::require_world_owner(ctx, "set_host_identity")?;
+    crate::guards::require_subject_not_deleting(ctx, who)?;
+    mark_host(ctx, &BUILD_PROFILE, who)
 }
 
 /// Check the caller's account by a ticket the account service issued it for this world, and
@@ -829,8 +1191,13 @@ pub fn recheck_account(ctx: &mut ProcedureContext, row: RecheckSchedule) -> Resu
     recheck_account_under(ctx, &BUILD_PROFILE, row)
 }
 
-/// The host's own check of the account it plays under. Run by the host from the
-/// `host_check_schedule` row.
+/// The host's own check: ask the account service about the account the marked row holds, and
+/// store the answer and, when it lands on that row, the time of the success. Run by the host
+/// from the `host_check_schedule` row every [`HOST_CHECK_INTERVAL_MS`]; any other caller is
+/// refused with [`REJECT_NOT_DATABASE`] before anything is read or sent. A tick sends nothing
+/// while the last success is under [`HOST_CHECK_MIN_AGE_MS`] old or no row is marked, and one
+/// that gets no answer writes nothing, so the next tick asks again. It asks about the marked
+/// row's handle and no other.
 #[spacetimedb::procedure]
 pub fn host_account_check(
     ctx: &mut ProcedureContext,

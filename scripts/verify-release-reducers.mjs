@@ -119,8 +119,14 @@ export function findForbiddenReducers(reducerNames, forbidden) {
 // means the extraction did not work).
 
 // The procedures the module declares, all in server-module/src/account_checks.rs: a world's
-// own checks of a player's account against the account service.
-export const ALLOWED_PROCEDURES = ['check_account', 'check_account_for', 'recheck_account'];
+// own checks of a player's account against the account service, and of the account its host
+// plays under.
+export const ALLOWED_PROCEDURES = [
+  'check_account',
+  'check_account_for',
+  'recheck_account',
+  'host_account_check',
+];
 
 // Every scheduled table of the module and the function it runs. A new schedule joins this list
 // in the change that adds it.
@@ -140,6 +146,7 @@ export const ALLOWED_SCHEDULES = {
   battle_challenge_reaper_schedule: 'battle_challenge_reaper',
   trade_offer_reaper_schedule: 'trade_offer_reaper',
   recheck_schedule: 'recheck_account',
+  host_check_schedule: 'host_account_check',
 };
 
 const KNOWN_SECTION_KINDS = [
