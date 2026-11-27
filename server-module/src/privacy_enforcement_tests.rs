@@ -174,6 +174,10 @@ mod census {
             gate_stmt: Option<usize>,
             via: Vec<String>,
         },
+        /// A procedure, and every classified table its body reaches.
+        Procedure {
+            writes: BTreeSet<String>,
+        },
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
