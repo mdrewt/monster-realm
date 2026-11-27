@@ -119,7 +119,7 @@ pub use world::{
 /// records the new number's entry (`client/src/net/wireContract.test.ts` fails the client test run
 /// until both are done). The module records it in `module_info.protocol`, and `client-wasm`
 /// exports it as `protocol_version()`.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 /// The oldest client protocol a server of this build still speaks to, recorded in
 /// `module_info.min_client_protocol`; `client-wasm` exports it as `min_client_protocol()`. It
 /// rises above every entry of `client/src/net/wireContract.json` that the current bindings break

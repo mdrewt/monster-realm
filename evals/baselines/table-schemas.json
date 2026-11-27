@@ -1980,5 +1980,67 @@
     "unique": [],
     "indexes": [],
     "scheduled": null
+  },
+  "world_account": {
+    "pk": "handle",
+    "visibility": "private",
+    "columns": {
+      "handle": "String",
+      "identity": "Identity",
+      "entitled": "bool",
+      "checked_at_ms": "i64",
+      "is_host": "bool"
+    },
+    "order": [
+      "handle",
+      "identity",
+      "entitled",
+      "checked_at_ms",
+      "is_host"
+    ],
+    "defaults": [],
+    "unique": [
+      "identity"
+    ],
+    "indexes": [],
+    "scheduled": null
+  },
+  "world_check_budget": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u32",
+      "minute_start_ms": "i64",
+      "redeems": "u32"
+    },
+    "order": [
+      "id",
+      "minute_start_ms",
+      "redeems"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
+  },
+  "recheck_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "identity": "Identity"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "identity"
+    ],
+    "defaults": [],
+    "unique": [
+      "identity"
+    ],
+    "indexes": [],
+    "scheduled": "recheck_account"
   }
 }

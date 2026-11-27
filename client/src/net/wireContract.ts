@@ -3,9 +3,9 @@
 // bindings, holds it against the committed `wireContract.json`, and fails the client test run on a
 // change an older client cannot read. Pure: no file, wasm or bindings access here.
 //
-// An entry names tables, views, columns and reducers as they travel on the wire (the SQL and
-// reducer names). Fields, variants and arguments carry the bindings' own keys: BSATN sends them by
-// position, and the bindings hold no other name for them.
+// An entry names tables, views, columns, reducers and procedures as they travel on the wire (the
+// SQL, reducer and procedure names). Fields, variants and arguments carry the bindings' own keys:
+// BSATN sends them by position, and the bindings hold no other name for them.
 import {
   type AlgebraicType,
   ArrayBuilder,
@@ -25,6 +25,11 @@ export interface TableContract {
 export type TypeContract =
   | { readonly fields: readonly Member[] }
   | { readonly variants: readonly Member[] };
+/** A procedure's arguments in order, and its return type as a member's type is spelled. */
+export interface ProcedureContract {
+  readonly args: readonly Member[];
+  readonly returns: string;
+}
 export interface WireEntry {
   readonly serverToClient: {
     readonly tables: Readonly<Record<string, TableContract>>;
@@ -32,6 +37,8 @@ export interface WireEntry {
   };
   readonly clientToServer: {
     readonly reducers: Readonly<Record<string, readonly Member[]>>;
+    /** Held only by an entry whose bindings declare a procedure. */
+    readonly procedures?: Readonly<Record<string, ProcedureContract>>;
     readonly types: Readonly<Record<string, TypeContract>>;
   };
 }
@@ -56,7 +63,16 @@ export interface BindingsExports {
   readonly reducers: Readonly<
     Record<string, { readonly name: string; readonly params: Readonly<Record<string, unknown>> }>
   >;
-  readonly procedures?: Readonly<Record<string, unknown>>;
+  readonly procedures?: Readonly<
+    Record<
+      string,
+      {
+        readonly name: string;
+        readonly params: Readonly<Record<string, unknown>>;
+        readonly returnType: unknown;
+      }
+    >
+  >;
 }
 
 export type WireFinding =
@@ -184,12 +200,6 @@ function spellAlgebraic(type: AlgebraicType): string {
 
 /** Reads the entry the generated bindings describe. */
 export function readWireEntry(bindings: BindingsExports): WireEntry {
-  const declared = Object.keys(bindings.procedures ?? {});
-  if (declared.length > 0) {
-    throw new Error(
-      `wire contract: the bindings declare procedures (${declared.join(', ')}), which it has no rule for`,
-    );
-  }
   const reader = new TypeReader();
   const tables = new Map<string, TableContract>();
   for (const { sourceName, tableDef } of Object.values(bindings.tables)) {
@@ -223,6 +233,15 @@ export function readWireEntry(bindings: BindingsExports): WireEntry {
     reducer.name,
     reader.members(reducer.params),
   ]);
+  const procedures = Object.values(bindings.procedures ?? {}).map(
+    (procedure): [string, ProcedureContract] => [
+      procedure.name,
+      {
+        args: reader.members(procedure.params),
+        returns: reader.spell(procedure.returnType, `the return of ${procedure.name}`),
+      },
+    ],
+  );
   reader.finish();
   const typesOf = (reached: boolean): Record<string, TypeContract> =>
     Object.fromEntries(
@@ -232,7 +251,11 @@ export function readWireEntry(bindings: BindingsExports): WireEntry {
     );
   return {
     serverToClient: { tables: Object.fromEntries(tables), types: typesOf(true) },
-    clientToServer: { reducers: Object.fromEntries(reducers), types: typesOf(false) },
+    clientToServer: {
+      reducers: Object.fromEntries(reducers),
+      ...(procedures.length > 0 ? { procedures: Object.fromEntries(procedures) } : {}),
+      types: typesOf(false),
+    },
   };
 }
 
@@ -254,6 +277,9 @@ function sameType(a: TypeContract | null, b: TypeContract | null): boolean {
 
 const sameTable = (a: TableContract, b: TableContract): boolean =>
   a.primaryKey === b.primaryKey && sameMembers(a.columns, b.columns);
+
+const sameProcedure = (a: ProcedureContract, b: ProcedureContract): boolean =>
+  a.returns === b.returns && sameMembers(a.args, b.args);
 
 /** A variant appended to a sum keeps every call an older client makes decodable. */
 function keepsSentType(recorded: TypeContract, current: TypeContract): boolean {
@@ -301,6 +327,12 @@ function entryDifferences(recorded: WireEntry, current: WireEntry): string[] {
       sameMembers,
     ),
     ...differingPaths(
+      'clientToServer.procedures',
+      recorded.clientToServer.procedures ?? {},
+      current.clientToServer.procedures ?? {},
+      sameProcedure,
+    ),
+    ...differingPaths(
       'clientToServer.types',
       recorded.clientToServer.types,
       current.clientToServer.types,
@@ -324,6 +356,7 @@ function brokenPaths(recorded: WireEntry, current: WireEntry): string[] {
       .filter((name) => !kept(name))
       .map((name) => `${prefix}.${name}`);
   const { serverToClient: read, clientToServer: sent } = recorded;
+  const sentProcedures = sent.procedures ?? {};
   return [
     ...broken('serverToClient.tables', read.tables, (name) => {
       const table = own(current.serverToClient.tables, name);
@@ -335,6 +368,10 @@ function brokenPaths(recorded: WireEntry, current: WireEntry): string[] {
     ...broken('clientToServer.reducers', sent.reducers, (name) => {
       const args = own(current.clientToServer.reducers, name);
       return args !== undefined && sameMembers(sent.reducers[name], args);
+    }),
+    ...broken('clientToServer.procedures', sentProcedures, (name) => {
+      const procedure = own(current.clientToServer.procedures ?? {}, name);
+      return procedure !== undefined && sameProcedure(sentProcedures[name], procedure);
     }),
     ...broken('clientToServer.types', sent.types, (name) => {
       const type = types.get(name);
@@ -427,6 +464,14 @@ export function serializeWireContract(file: WireContractFile): string {
           },
           clientToServer: {
             reducers: sortedRecord(clientToServer.reducers, (args) => args),
+            ...(clientToServer.procedures === undefined
+              ? {}
+              : {
+                  procedures: sortedRecord(clientToServer.procedures, (procedure) => ({
+                    args: procedure.args,
+                    returns: procedure.returns,
+                  })),
+                }),
             types: sortedRecord(clientToServer.types, typeText),
           },
         },
@@ -494,18 +539,35 @@ function tableAt(value: unknown, where: string): TableContract {
   return { primaryKey: table.primaryKey, columns: membersAt(table.columns, `${where}.columns`) };
 }
 
+function procedureAt(value: unknown, where: string): ProcedureContract {
+  const procedure = objectAt(value, where, ['args', 'returns']);
+  if (typeof procedure.returns !== 'string') {
+    fail(`${where}.returns`, 'is not a string');
+  }
+  return { args: membersAt(procedure.args, `${where}.args`), returns: procedure.returns };
+}
+
 function entryAt(value: unknown, where: string): WireEntry {
   const entry = objectAt(value, where, ['serverToClient', 'clientToServer']);
   const read = objectAt(entry.serverToClient, `${where}.serverToClient`, ['tables', 'types']);
-  const sent = objectAt(entry.clientToServer, `${where}.clientToServer`, ['reducers', 'types']);
+  const sentAt = `${where}.clientToServer`;
+  const hasProcedures = Object.hasOwn(objectAt(entry.clientToServer, sentAt), 'procedures');
+  const sent = objectAt(
+    entry.clientToServer,
+    sentAt,
+    hasProcedures ? ['reducers', 'procedures', 'types'] : ['reducers', 'types'],
+  );
   return {
     serverToClient: {
       tables: recordAt(read.tables, `${where}.serverToClient.tables`, tableAt),
       types: recordAt(read.types, `${where}.serverToClient.types`, typeAt),
     },
     clientToServer: {
-      reducers: recordAt(sent.reducers, `${where}.clientToServer.reducers`, membersAt),
-      types: recordAt(sent.types, `${where}.clientToServer.types`, typeAt),
+      reducers: recordAt(sent.reducers, `${sentAt}.reducers`, membersAt),
+      ...(hasProcedures
+        ? { procedures: recordAt(sent.procedures, `${sentAt}.procedures`, procedureAt) }
+        : {}),
+      types: recordAt(sent.types, `${sentAt}.types`, typeAt),
     },
   };
 }
