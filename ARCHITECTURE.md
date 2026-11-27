@@ -65,9 +65,10 @@ only `server-module` turns on its `spacetimedb` feature.
 | `content` | Parsing, loading and validation of every content registry. |
 
 Rules take their inputs explicitly. Time arrives as `Millis`; randomness arrives as a
-seed or as pre-rolled values (`TurnVariance`, `StatusVariance`, individuality seeds).
-On the server, `now_ms` (`server-module/src/marshal.rs`) converts `ctx.timestamp` to
-`Millis`, and seeds are drawn from `ctx.random()`. A tactical battle keeps its seed in
+seed or as pre-rolled values (individuality seeds; `combat`'s `TurnVariance` and
+`StatusVariance`, which no shipped caller uses). On the server, `now_ms`
+(`server-module/src/marshal.rs`) turns `ctx.timestamp` into the milliseconds a rule
+takes as `Millis`, and seeds are drawn from `ctx.random()`. A tactical battle keeps its seed in
 the private `battle_secret` row and draws each target's accuracy and variance rolls
 from `splitmix64(seed ^ action_seq)` (`tactics::resolve::draw_rolls`).
 `clippy.toml` bans wall-clock and unseeded-RNG calls workspace-wide, and `just lint`
@@ -75,7 +76,7 @@ treats clippy warnings as errors. Arithmetic is integer-only; the release and be
 profiles keep overflow checks on. The `spacetimedb` Cargo feature adds the `SpacetimeType`
 derives the server needs; the client builds without it.
 
-Damage is `combat::damage::calc_damage`, in `u64` throughout:
+Damage is `combat::damage::calc_damage`, with `u64` intermediates and a `u16` result:
 `base = (2·level/5 + 2)·power·attack/defense/50 + 2`, then STAB ×3/2, type
 effectiveness ×{0,5,10,20}/10 (0 returns an immune hit before any other term), the
 variance roll in `85..=100` /100, the weather multiplier as an integer
@@ -98,9 +99,7 @@ Content is data, not code. Each registry is a directory under `game-core/content
 2. **Parse and validate.** `load_*` parses the parts and concatenates them;
    `validate_content` and the per-registry validators check cross-references and
    ranges. Ids are stable and append-only; the `append-only-ids` eval keeps a
-   baseline per registry in `evals/baselines/*-ids.json`. Past validation the pure
-   core does not re-check a content invariant: a violation is a panic (the carried
-   `combat::resolve` on a missing skill id).
+   baseline per registry in `evals/baselines/*-ids.json`.
 3. **Seed.** On the server, `sync_content` (owner-only) and `init` call
    `content::sync_content_inner`, which reseeds the public content tables
    (`species_row`, `skill_row`, `item_row`, `zone_def`, `shop_row`, `shop_item_row`,
@@ -131,13 +130,14 @@ Content is data, not code. Each registry is a directory under `game-core/content
    byte-equal to it. A dialogue edit therefore changes the RON, the TS mirror and the
    contract file together. No content table has a locale column; the text a player
    reads is localized in the client catalog (`client/src/ui/i18n/`).
-6. **Tactical content.** The tactical fields live today in four registries keyed by
-   another row's id (`tactics_skills/`, `tactics_species/`, `tactics_items/`,
-   `tactics_zones/`), beside `battle_maps/` and `tactics_tuning.ron`.
-   `validate_tactics_content` (`game-core/src/tactics/content.rs`) joins and lints them;
-   the `game-core` tests run it over the shipped content, and `sync_content_inner` runs
-   it in its validate phase, before any write. `docs/refactors/tactics-content.md`
-   moves each field onto the row it describes.
+
+Tactical content lives in four registries keyed by another row's id
+(`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`), beside
+`battle_maps/` and `tactics_tuning.ron`. `validate_tactics_content`
+(`game-core/src/tactics/content.rs`) joins and lints them; the `game-core` tests run it
+over the shipped content, and `sync_content_inner` runs it in its validate phase, before
+any write. `docs/refactors/tactics-content.md` lists the slices that move each field
+onto the row it describes.
 
 ## client-wasm: the prediction boundary
 

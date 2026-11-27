@@ -74,10 +74,10 @@ resolution to the grid; `game-core` works in integer tiles.
 
 **Why.** For a 2D pixel-art game PixiJS gives a small bundle, mature web tooling and sprite and
 tilemap performance. A Rust/bevy wasm client would remove the TypeScript boundary, but at roughly an
-order of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin:
-generated bindings and a small set of wasm exports. Phaser's batteries (scenes, physics, input)
-duplicate what `game-core` and the client shell provide. A custom WebGL or WebGPU renderer is
-unjustified for 2D. A native or desktop client goal is the condition that would reopen this.
+order of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin
+(generated bindings and the wasm exports) and checked for drift. Phaser's batteries (scenes,
+physics, input) duplicate what `game-core` and the client shell provide. A custom WebGL or WebGPU
+renderer is unjustified for 2D. A native or desktop client goal is the condition that would reopen this.
 
 **Rules out.** Game state or rules in the render layer; a 3D-environment renderer; coupling rules or
 netcode to pixels-per-tile.
@@ -132,7 +132,8 @@ variance roll is drawn from the battle's seed, which the server takes from `ctx.
 formula itself has to be stable and bit-reproducible. Integers make it identical on every target; the
 floor of 1 keeps a hit from ever doing nothing.
 
-**Rules out.** Float math in combat; per-platform rounding; reading randomness inside the resolver.
+**Rules out.** Float math in combat; per-platform rounding; reading ambient randomness inside the
+resolver, which draws only from the seed it is handed.
 
 The formula term by term: `ARCHITECTURE.md` "game-core: the rule layer".
 
@@ -142,7 +143,7 @@ The formula term by term: `ARCHITECTURE.md` "game-core: the rule layer".
 shops, abilities, heal locations, evolution paths, the type chart) is RON under `game-core/content/`,
 one directory per registry, embedded into `game-core` at build time and validated there. The server
 seeds its content tables from it only when its stored content version differs from
-`CONTENT_VERSION`, so every content edit, comments included, bumps that number; an eval enforces it.
+`CONTENT_VERSION`, so every content edit bumps that number; an eval enforces it.
 Content is locale-agnostic: no content table has a locale column, and the client localizes.
 
 **Why.** Content has to reach the client (prediction, maps) and the server (truth) from one source
@@ -161,8 +162,8 @@ The embed, validate, seed and version steps: `ARCHITECTURE.md` "Content pipeline
 
 **Decision.** A value the tactical engine reads about a skill, a species, a battle item or a zone's
 wild encounters is a field of that row, and RON must spell it for every skill, species and encounter
-table. Battle maps and the tactical tuning stay registries of their own. No tactical field has a table
-column. One `game-core` gate checks tactical content: CI runs it as ordinary tests and the content
+table. Battle maps and the tactical tuning stay registries of their own. No content table has a
+column for a tactical field. One `game-core` gate checks tactical content: CI runs it as ordinary tests and the content
 sync runs it before any write. This is the target. The code still holds four registries of tactical
 fields keyed by another row's id, and `docs/refactors/tactics-content.md` gives each field's home and
 lists the slices that move each registry, in order.
