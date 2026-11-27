@@ -16,7 +16,15 @@ export const TARGET_KINDS = ['official', 'test', 'local', 'private'] as const;
 export type TargetKind = (typeof TARGET_KINDS)[number];
 
 export interface ShellDocument {
-  readonly connection: { readonly uri: string; readonly db: string; readonly kind?: TargetKind };
+  readonly connection: {
+    readonly uri: string;
+    readonly db: string;
+    readonly kind?: TargetKind;
+    /** The fingerprint of the world's certificate key, as the invite prints it. */
+    readonly fingerprint?: string;
+  };
+  /** `'desktop'`: the page runs in the desktop shell. Absent: a browser. */
+  readonly host?: 'desktop';
 }
 
 /**

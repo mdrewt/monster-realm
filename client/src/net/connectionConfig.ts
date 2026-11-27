@@ -20,6 +20,10 @@ export interface ResolvedConnection {
   readonly uri: string;
   readonly db: string;
   readonly kind: TargetKind;
+  /** The fingerprint of the world's certificate key, when the document carries one. */
+  readonly fingerprint: string | undefined;
+  /** Whether the document says the page runs in the desktop shell. */
+  readonly desktop: boolean;
 }
 
 type Fields = Record<PropertyKey, unknown>;
@@ -149,7 +153,9 @@ function kindOf(connection: Fields, isDev: boolean): TargetKind {
  */
 export function resolveConnectionConfig(doc: unknown, isDev: boolean): ResolvedConnection {
   if (doc === undefined) {
-    if (isDev) return { uri: DEV_URI, db: DEV_DB, kind: 'test' };
+    if (isDev) {
+      return { uri: DEV_URI, db: DEV_DB, kind: 'test', fingerprint: undefined, desktop: false };
+    }
     throw refusal(
       SHELL_CONFIG_GLOBAL,
       `is not set: the page must load /${SHELL_CONFIG_SCRIPT}, or its host must set the ` +
@@ -166,5 +172,7 @@ export function resolveConnectionConfig(doc: unknown, isDev: boolean): ResolvedC
     uri: uriOf(connection),
     db: dbOf(connection, isDev),
     kind: kindOf(connection, isDev),
+    fingerprint: undefined,
+    desktop: false,
   };
 }

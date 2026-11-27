@@ -11,6 +11,7 @@
 
 import type { connect } from '../net/connection';
 import { AuthoritativeStore } from '../net/store';
+import type { WorldGateState } from '../net/worldTicket';
 import {
   armReseed,
   BATTLE_EMIT_INITIAL,
@@ -20,6 +21,7 @@ import {
   resetBattleEmit,
 } from '../ui/battleEmitModel';
 import type { OutcomeLine } from '../ui/boxView';
+import type { SignInGateView } from '../ui/claimModel';
 import type { SinkKind } from '../ui/feedbackPolicy';
 import { tf } from '../ui/i18n/resolver';
 import { reduceErrorMessage } from '../ui/statusModel';
@@ -201,4 +203,18 @@ export function stepRankedEmit(): void {
   } catch (err) {
     console.error('[obs] ranked', err);
   }
+}
+
+export function buildWorldGateView(
+  _state: WorldGateState,
+  _formatTime: (ms: number) => string,
+): SignInGateView | undefined {
+  return undefined;
+}
+
+export function worldStatusLine(
+  _state: WorldGateState,
+  _formatTime: (ms: number) => string,
+): string | undefined {
+  return undefined;
 }

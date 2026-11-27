@@ -80,6 +80,7 @@ import {
 } from './rowConvert';
 import type { TargetKind } from './shellDocument';
 import type { AuthoritativeStore } from './store';
+import type { TicketSource, WorldGateEvent } from './worldTicket';
 import { createOwnerViewReconciler, OWNER_VIEWS } from './viewReconcile';
 import { isOwnZoneChange } from './warpDetect';
 import {
@@ -163,6 +164,12 @@ export interface ConnectionOptions {
    *  is kept (`tokenPersistenceFor`): on the device for `local` and `private`, per tab for
    *  `official` and `test`. */
   readonly targetKind: TargetKind;
+  /** Whether the page runs in the desktop shell. Absent or false: a browser. */
+  readonly desktop?: boolean;
+  /** The world's name and where its ticket comes from. Present only when a ticket can be had. */
+  readonly world?: { readonly name: string; readonly tickets: TicketSource };
+  /** What the world's account gate should show next. */
+  readonly onWorldGate?: (event: WorldGateEvent) => void;
   /** The protocol this client speaks (client-wasm's `protocol_version()`). Each connection checks
    *  it against the server's `module_info` row before it subscribes anything else. */
   readonly clientProtocol: number;
@@ -211,6 +218,8 @@ export interface Connection {
   join(): void;
   /** The `character` query sets the live connection holds (worldScope.ts). */
   worldScope(): ScopeSummary;
+  /** The player asked for the world's account check to run now. */
+  checkIn(): void;
 }
 
 /** The one error `join_game` answers a caller the server does not admit as an owner of the game
@@ -268,7 +277,7 @@ export function connect(opts: ConnectionOptions): Connection {
     opts.uri,
     opts.db,
     globalThis,
-    tokenPersistenceFor(opts.targetKind),
+    tokenPersistenceFor(opts.targetKind, opts.desktop === true),
   );
   let identity = '';
   let hadSession = false; // distinguishes the first connect from a reconnect (survives rebuilds)
@@ -1460,5 +1469,6 @@ export function connect(opts: ConnectionOptions): Connection {
       attemptJoin(current, name, opts.onError);
     },
     worldScope: () => scopeSummary(),
+    checkIn: () => {},
   };
 }

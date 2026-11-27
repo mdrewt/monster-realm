@@ -139,7 +139,7 @@ function storageMethod(
  * friends server (`private`) keep it on the device, so a page closed and opened again resumes
  * the same player; a server we operate (`official`, `test`) keeps it per tab.
  */
-export function tokenPersistenceFor(kind: TargetKind): TokenPersistence {
+export function tokenPersistenceFor(kind: TargetKind, _desktop: boolean): TokenPersistence {
   switch (kind) {
     case 'local':
     case 'private':
@@ -154,6 +154,12 @@ export function tokenPersistenceFor(kind: TargetKind): TokenPersistence {
       return 'tab';
   }
 }
+
+export function forgetDeviceToken(
+  _host: TokenStorageHost | undefined,
+  _uri: string,
+  _db: string,
+): void {}
 
 /**
  * Build the per-connection-target credential gate.
