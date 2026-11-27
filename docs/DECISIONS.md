@@ -371,8 +371,9 @@ nothing to the commit log and sends nothing, so an idle player's log cost is the
 row written twice a step, and writing it once halves it. What the empty ticks still cost is a small
 share of one thread for each zone with a player at rest. The operator asked for the ticks that move
 nothing to go (disk, bandwidth, reducer thread), but removing them adds a table, a reducer and a
-row lifecycle whose failed opening tick leaves a zone waiting for a key press. Keeping them, and a
-reduced-motion step drawn with no walking frame, are defaults the operator may overrule.
+row lifecycle whose failed opening tick leaves a zone waiting for a key press. The operator kept them
+and accepted a reduced-motion step drawn with no walking frame (2026-11-27, #888); the question returns
+when the world has many zones holding a resting player.
 
 **Rules out.** State that is correct only if a tick ran (a tick counter, a timer decremented per
 tick, an effect that expires after N ticks of an unwatched zone); elapsed-time catch-up when a zone
@@ -2137,9 +2138,10 @@ per shell, and shell code in the client tree); leaving everything to the shell's
 APIs (no route for a call with no web API); a port for a concern no second host needs; a bridge that
 hands the page an object of the shell's, or a bridge function that acts on what the page sends without
 checking it in the shell's own process. Whether a shell's page may call into the shell at all is that
-shell's security posture. The bridge is the default, one the operator may overrule: the Electron shell
-as specified exposes nothing but the shell document, and would have to allow the bridge's functions. A
-shell that exposes none still fits, because the browser's code runs and it handles those web APIs itself.
+shell's security posture. The operator allowed the bridge (2026-11-27, #892), limited to the verbs the
+plan names, and the Electron shell's spec (lpw-11) exposes the bridge's functions beside the shell
+document. A shell that exposes none still fits, because the browser's code runs and it handles those
+web APIs itself.
 
 ## Local-play budgets are measured medians with stated headroom, on one machine profile
 
