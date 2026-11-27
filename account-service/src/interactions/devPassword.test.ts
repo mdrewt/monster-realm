@@ -526,7 +526,13 @@ describe('devAccounts', () => {
     expect(reset.password).not.toBe(created.password);
 
     const payload = await storedPayload(store, 'player@example.com');
-    expect(Object.keys(payload ?? {}).sort()).toEqual(['email', 'entitled', 'passwordHash', 'uid']);
+    expect(Object.keys(payload ?? {}).sort()).toEqual([
+      'email',
+      'entitled',
+      'passwordChangedAt',
+      'passwordHash',
+      'uid',
+    ]);
     expect(payload?.uid).toBe(created.account.sub);
     expect(payload?.entitled).toBe(false);
     expectServiceHashShape(payload?.passwordHash as string);
@@ -593,6 +599,92 @@ describe('the password step: account(sub)', () => {
     expect(await step.account(devSubject(randomUUID()))).toBeUndefined();
     expect(await step.account('player@example.com')).toBeUndefined();
     expect(await step.account('')).toBeUndefined();
+  });
+});
+
+describe('the second a password last changed', () => {
+  // A reset second, in epoch milliseconds: 900 ms into second 1_800_000_123.
+  const RESET_MS = 1_800_000_123_900;
+
+  test('resetPassword stores the second it ran in, the epoch second without its milliseconds [wr261127-c.4]', async () => {
+    // WRONG IMPL KILLED: milliseconds stored as seconds; the second rounded up; nothing stored.
+    const store = memoryStore();
+    const accounts = devAccounts(store.adapter);
+    await accounts.create('player@example.com', { entitled: true });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(RESET_MS);
+    await accounts.resetPassword('player@example.com');
+    expect((await storedPayload(store, 'player@example.com'))?.passwordChangedAt).toBe(
+      1_800_000_123,
+    );
+  });
+
+  test('setEntitled after a reset keeps the stored second [wr261127-c.4]', async () => {
+    // WRONG IMPL KILLED: a write that rebuilds the record without the field (or restamps it).
+    const store = memoryStore();
+    const accounts = devAccounts(store.adapter);
+    await accounts.create('player@example.com', { entitled: true });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(RESET_MS);
+    await accounts.resetPassword('player@example.com');
+    vi.setSystemTime(RESET_MS + 5000);
+    await accounts.setEntitled('player@example.com', false);
+    const payload = await storedPayload(store, 'player@example.com');
+    expect(payload?.passwordChangedAt).toBe(1_800_000_123);
+    expect(payload?.entitled).toBe(false);
+  });
+
+  test('account(sub) answers 0 for an account never reset and the reset second after a reset [wr261127-c.4]', async () => {
+    // WRONG IMPL KILLED: the field left off the step's answer; a never-reset account answered
+    // with undefined or NaN; a stale value after a second reset.
+    const store = memoryStore();
+    const accounts = devAccounts(store.adapter);
+    const { account } = await accounts.create('player@example.com', { entitled: true });
+    const step = devPasswordStep(store.adapter, { failures: limiter() });
+    expect(await step.account(account.sub)).toEqual({
+      sub: account.sub,
+      entitled: true,
+      passwordChangedAt: 0,
+    });
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(RESET_MS);
+    await accounts.resetPassword('player@example.com');
+    expect(await step.account(account.sub)).toEqual({
+      sub: account.sub,
+      entitled: true,
+      passwordChangedAt: 1_800_000_123,
+    });
+
+    vi.setSystemTime(RESET_MS + 61_000);
+    await accounts.resetPassword('player@example.com');
+    expect((await step.account(account.sub))?.passwordChangedAt).toBe(1_800_000_184);
+  });
+
+  test.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['a string', '5'],
+  ])('a stored record whose passwordChangedAt is %s is no account to the step or to find [wr261127-c.4]', async (_name, bad) => {
+    // WRONG IMPL KILLED: a malformed value read as 0 (or as a number), so a record the module
+    // never writes still signs in; validation only on one of the three read paths.
+    const store = memoryStore();
+    const accounts = devAccounts(store.adapter);
+    const { account, password } = await accounts.create('player@example.com', { entitled: true });
+    const step = devPasswordStep(store.adapter, { failures: limiter() });
+    expect(await step.account(account.sub), 'the control: a good record answers').toBeDefined();
+
+    const good = await storedPayload(store, 'player@example.com');
+    await store
+      .adapter('DevAccount')
+      .upsert(
+        'player@example.com',
+        { ...good, passwordChangedAt: bad } as unknown as AdapterPayload,
+        undefined as unknown as number,
+      );
+    expect(await step.account(account.sub)).toBeUndefined();
+    expect(await accounts.find('player@example.com')).toBeUndefined();
+    expect(await step.attempt('player@example.com', password)).toEqual({ kind: 'refused' });
   });
 });
 

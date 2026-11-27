@@ -3271,7 +3271,14 @@ function conn0(rec: BuildRec) {
   return {
     subscriptionBuilder,
     disconnect: rec.disconnect,
-    db: { moduleInfo: rec.moduleInfo.table, module_info: rec.moduleInfo.table },
+    db: {
+      moduleInfo: rec.moduleInfo.table,
+      module_info: rec.moduleInfo.table,
+      // The build's own `my_account` cache, as the SDK's connection object answers it.
+      my_account: {
+        iter: () => (rec.viewRows?.my_account ?? H.viewRows.my_account ?? [])[Symbol.iterator](),
+      },
+    },
     reducers: {
       joinGame: rec.joinGame,
       completeGuestClaim: rec.completeGuestClaim,
@@ -4703,5 +4710,295 @@ describe('connect(): the protocol gate before the subscription set (lpw-4)', {
     } finally {
       errors.mockRestore();
     }
+  });
+});
+
+// =============================================================================================
+// The guest claim completes when the own `my_account` row lands AFTER the first applied snapshot.
+// The SDK's order on a snapshot: the cache holds its rows, the base set's onApplied runs, THEN the
+// snapshot's row callbacks run. Each test models that order: a row "inside the snapshot" is in the
+// build's cache before onApplied and its onInsert is dispatched after it; a late row arrives with
+// its onInsert after onApplied and joins the cache then.
+// =============================================================================================
+
+const WC_OTHER_IDENTITY = { toHexString: () => 'ab'.repeat(32) };
+
+function wcRow(identity: { toHexString(): string } = ID) {
+  return {
+    identity,
+    authIssuer: 'https://auth.example/',
+    createdAtMs: 1n,
+    lastLoginAtMs: 2n,
+    status: { tag: 'Active' },
+    deletionRequestedAtMs: undefined,
+    claimedFrom: undefined,
+    claimedAtMs: undefined,
+    terminalAtMs: undefined,
+  };
+}
+
+/** Run build `buildIdx`'s `my_account` handler for one row event, as the SDK would. */
+function wcFire(event: 'insert' | 'update', row: ReturnType<typeof wcRow>, buildIdx = 0): void {
+  const cb = H.rowEvents.my_account?.[event][buildIdx];
+  if (cb === undefined) throw new Error(`no my_account.${event} handler for build ${buildIdx}`);
+  if (event === 'insert') cb({}, row);
+  else cb({}, row, row);
+}
+
+/** conn0 whose `db` also answers the build's `my_account` cache. */
+const wcConn = (rec: BuildRec) => conn0(rec);
+
+interface Deferred {
+  readonly promise: Promise<void>;
+  resolve(): void;
+  reject(err: Error): void;
+}
+function wcDeferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (err: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('connect(): the guest claim completes on the own my_account row', {
+  sequential: true,
+}, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    H.oidcClients = 0;
+    H.realOidc = false;
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  /** An account build of a tab holding a claim code, built and not yet connected. */
+  async function wcBuilt(opts = makeOpts()) {
+    claimCode.mint(globalThis, URI, DB);
+    writeAuthKind(globalThis, URI, DB, 'account');
+    H.renew = () => Promise.resolve({ kind: 'ok', token: 'acct-jwt' });
+    connect(opts);
+    await settle();
+    const code = claimCode.read(globalThis, URI, DB) as string;
+    return { opts, code, b: H.builds[0] };
+  }
+
+  /** Connect build `b` and apply its first snapshot over `rows` (its my_account cache). */
+  async function wcApplied(b: BuildRec, rows: unknown[]) {
+    b.viewRows = { my_account: rows };
+    b.onConnect?.(wcConn(b), ID, 'acct-jwt');
+    b.onApplied?.();
+    await settle();
+  }
+
+  it('a row landing after the first snapshot sends complete_guest_claim once, however many updates follow [wr261127-c.1]', async () => {
+    // WRONG IMPL KILLED: nothing ever re-fires after the awaiting branch (no send at all); a latch
+    // never set (one send per later insert/update); a send gated on a store write that the
+    // row's own ingest has not made yet.
+    const { opts, code, b } = await wcBuilt();
+    await wcApplied(b, []);
+    expect(opts.onClaimAwaitingAccount).toHaveBeenCalledTimes(1);
+    expect(b.completeGuestClaim).not.toHaveBeenCalled();
+
+    const row = wcRow();
+    b.viewRows = { my_account: [row] };
+    wcFire('insert', row);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(b.completeGuestClaim).toHaveBeenCalledWith({ code });
+
+    wcFire('update', row);
+    wcFire('insert', row);
+    wcFire('update', row);
+    wcFire('update', row);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimAwaitingAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('the late send raises no onClaimPending and keeps the join vetoed [wr261127-c.1]', async () => {
+    // WRONG IMPL KILLED: the late path calls onClaimPending (a later reconnect would re-open the
+    // claim prompt); the late path joins before the claim is answered.
+    const { opts, b } = await wcBuilt();
+    await wcApplied(b, []);
+    const row = wcRow();
+    b.viewRows = { my_account: [row] };
+    wcFire('insert', row);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimPending).not.toHaveBeenCalled();
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('a my_account row of another identity sends nothing, and does not spend the claim [wr261127-c.1]', async () => {
+    // WRONG IMPL KILLED: any my_account row triggers the send; a foreign row flips the latch so
+    // the own row that follows sends nothing.
+    const { b, code } = await wcBuilt();
+    await wcApplied(b, []);
+    const foreign = wcRow(WC_OTHER_IDENTITY);
+    b.viewRows = { my_account: [foreign] };
+    wcFire('insert', foreign);
+    wcFire('update', foreign);
+    await settle();
+    expect(b.completeGuestClaim).not.toHaveBeenCalled();
+
+    const own = wcRow();
+    b.viewRows = { my_account: [foreign, own] };
+    wcFire('insert', own);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(b.completeGuestClaim).toHaveBeenCalledWith({ code });
+  });
+
+  it('a late row after the code is cleared sends nothing [wr261127-c.1]', async () => {
+    // WRONG IMPL KILLED: the late send reuses the code captured at the gate instead of the
+    // stored code (a consumed claim is sent again).
+    const { b } = await wcBuilt();
+    await wcApplied(b, []);
+    claimCode.clear(globalThis, URI, DB);
+    const row = wcRow();
+    b.viewRows = { my_account: [row] };
+    wcFire('insert', row);
+    await settle();
+    expect(b.completeGuestClaim).not.toHaveBeenCalled();
+  });
+
+  it('the late send goes on the raw connection: the onSend logger never sees the code [wr261127-c.1]', async () => {
+    // WRONG IMPL KILLED: the late send goes through the logging wrapper (a bearer secret
+    // reaches the dev reducer-arg sink).
+    const onSend = vi.fn();
+    const { b, code } = await wcBuilt({ ...makeOpts(), onSend } as unknown as ReturnType<
+      typeof makeOpts
+    >);
+    await wcApplied(b, []);
+    const row = wcRow();
+    b.viewRows = { my_account: [row] };
+    wcFire('insert', row);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.stringify(onSend.mock.calls, (_k, v) => (typeof v === 'bigint' ? String(v) : v)),
+    ).not.toContain(code);
+  });
+
+  it('each connection has its own latch: a rebuilt connection sends once on its own late row [wr261127-c.1]', async () => {
+    // WRONG IMPL KILLED: a module-level latch (the second connection never claims); a latch
+    // that survives the rebuild; a superseded socket's late row sending on the dead build.
+    const { opts, code, b } = await wcBuilt();
+    await wcApplied(b, []);
+    const row = wcRow();
+    b.viewRows = { my_account: [row] };
+    wcFire('insert', row);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+
+    b.onDisconnect?.();
+    await nextAttempt();
+    expect(H.builds).toHaveLength(2);
+    const b1 = H.builds[1];
+    await wcApplied(b1, []);
+    expect(opts.onClaimAwaitingAccount).toHaveBeenCalledTimes(2);
+    expect(b1.completeGuestClaim).not.toHaveBeenCalled();
+
+    b1.viewRows = { my_account: [row] };
+    wcFire('insert', row, 1);
+    wcFire('update', row, 1);
+    await settle();
+    expect(b1.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(b1.completeGuestClaim).toHaveBeenCalledWith({ code });
+
+    wcFire('update', row, 0);
+    await settle();
+    expect(b.completeGuestClaim, 'the dead build sends nothing more').toHaveBeenCalledTimes(1);
+    expect(b1.completeGuestClaim).toHaveBeenCalledTimes(1);
+  });
+
+  it('a row inside the first snapshot sends once from the gate, and later inserts and updates send nothing more [wr261127-c.2]', async () => {
+    // WRONG IMPL KILLED: a gate that reads only the store (it sees no row yet, says awaiting,
+    // and the send comes from the ingest); a latch not set by the gate (the ingest then
+    // sends a second time); a send per later update.
+    const { opts, code, b } = await wcBuilt();
+    const row = wcRow();
+    await wcApplied(b, [row]);
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(b.completeGuestClaim).toHaveBeenCalledWith({ code });
+    expect(opts.onClaimPending).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimPending).toHaveBeenCalledWith(code);
+    expect(opts.onClaimAwaitingAccount).not.toHaveBeenCalled();
+
+    wcFire('insert', row);
+    wcFire('update', row);
+    wcFire('update', row);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimPending).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimAwaitingAccount).not.toHaveBeenCalled();
+  });
+
+  it('a snapshot row of another identity is no account of this player: the gate awaits [wr261127-c.2]', async () => {
+    // WRONG IMPL KILLED: the gate takes any cached my_account row for the own one.
+    const { opts, b } = await wcBuilt();
+    await wcApplied(b, [wcRow(WC_OTHER_IDENTITY)]);
+    expect(b.completeGuestClaim).not.toHaveBeenCalled();
+    expect(opts.onClaimPending).not.toHaveBeenCalled();
+    expect(opts.onClaimAwaitingAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('the late claim raises onClaimResult only once the reducer answers: ok on success [wr261127-c.3]', async () => {
+    // WRONG IMPL KILLED: onClaimResult raised when the claim is sent (before the answer); a
+    // success reported with a message; the result raised twice.
+    const { opts, b } = await wcBuilt();
+    const answer = wcDeferred();
+    b.completeGuestClaim.mockImplementation(() => answer.promise);
+    await wcApplied(b, []);
+    const row = wcRow();
+    b.viewRows = { my_account: [row] };
+    wcFire('insert', row);
+    await settle();
+    expect(b.completeGuestClaim).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimResult).not.toHaveBeenCalled();
+
+    wcFire('update', row);
+    await settle();
+    expect(opts.onClaimResult).not.toHaveBeenCalled();
+
+    answer.resolve();
+    await settle();
+    expect(opts.onClaimResult).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimResult).toHaveBeenCalledWith({ ok: true, message: '' });
+  });
+
+  it('the late claim raises onClaimResult with the refusal text when the reducer rejects [wr261127-c.3]', async () => {
+    // WRONG IMPL KILLED: a late rejection swallowed (the player waits forever); the refusal
+    // text dropped; a refusal reported as ok.
+    const { opts, b } = await wcBuilt();
+    const answer = wcDeferred();
+    b.completeGuestClaim.mockImplementation(() => answer.promise);
+    await wcApplied(b, []);
+    const row = wcRow();
+    b.viewRows = { my_account: [row] };
+    wcFire('insert', row);
+    await settle();
+    expect(opts.onClaimResult).not.toHaveBeenCalled();
+
+    answer.reject(new Error('code unknown'));
+    await settle();
+    expect(opts.onClaimResult).toHaveBeenCalledTimes(1);
+    expect(opts.onClaimResult).toHaveBeenCalledWith({ ok: false, message: 'code unknown' });
   });
 });
