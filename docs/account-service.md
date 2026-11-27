@@ -95,7 +95,7 @@ own. No module calls them in this build.
     rate_limited` with `Retry-After`, in seconds. Steam giving no answer, to either question, is
     `503 temporarily_unavailable`. No `steam_ticket`, or a source address that is unknown (Source
     address, below), is `400 invalid_request`, and Steam is not asked. A failure of the store or
-    of the signing is `500 server_error`, with nothing of the failure in it.
+    of the signing is `500`, with nothing of the failure in it.
   - *What the limits count.* Only Steam says whose ticket a ticket is, so a ticket seen for the
     first time costs one request to Steam even when its player is over the limit; the
     remembered ticket saves that request for one presented again, and only ever refuses: a
