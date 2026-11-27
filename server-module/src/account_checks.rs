@@ -133,8 +133,8 @@ pub struct RecheckSchedule {
     pub identity: Identity,
 }
 
-/// An identity a character was moved away from, and when. PRIVATE; an identity reads its own
-/// row through `my_world_move`. The identity's next successful check deletes the row.
+/// The identity a character left for another client, and when. PRIVATE; an identity reads its
+/// own row through `my_world_move`. The identity's next successful check deletes the row.
 #[spacetimedb::table(accessor = world_move)]
 pub struct WorldMove {
     #[primary_key]
@@ -267,8 +267,9 @@ pub(crate) fn move_of(ctx: &ReducerContext, identity: Identity) -> Option<WorldM
     ctx.db.world_move().identity().find(identity)
 }
 
-/// Refuses a caller whose character was moved to another identity and has not checked in
-/// since, with [`REJECT_CHARACTER_MOVED`]. Reads the caller's `world_move` row and writes nothing.
+/// Refuses a caller that holds a `world_move` row, whose character plays under another
+/// identity until it checks in again, with [`REJECT_CHARACTER_MOVED`]. Reads that row and
+/// writes nothing.
 pub(crate) fn require_not_moved(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     if move_of(ctx, ctx.sender()).is_none() {
         return Ok(());

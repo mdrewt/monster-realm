@@ -218,7 +218,7 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 /// party monster (`battle::refresh_lead_level`, 0 with no party).
 /// The character stands where the account's last one stood when it disconnected
 /// (`take_start`), or on the spawn. Rejects a double-join within the same session, and a
-/// caller whose character was moved to another identity until it checks its account in
+/// caller whose character plays under another identity, until it checks its account in
 /// again (`account_checks::require_not_moved`).
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
