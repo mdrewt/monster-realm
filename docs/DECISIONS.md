@@ -830,8 +830,8 @@ send `clear_queue`; the drain lock alone only postpones the queued steps until t
 **Rules out.** Per-call-site battle checks; forfeiting on any single socket close; rating practice
 or wild battles; relying on a client-sent `clear_queue` to end pre-battle movement.
 
-The guards, the disconnect sweep and the retired 1v1 rows: `ARCHITECTURE.md` "server-module: the
-authority" ("Lifecycle"; "Battles, trades and the rest", PvE and PvP).
+The guards, the disconnect sweep and the 1v1 tables no live path writes: `ARCHITECTURE.md`
+"server-module: the authority" ("Lifecycle"; "Battles, trades and the rest", PvE and PvP).
 
 ## Queued actions halt-and-return; the idle clock resets on every accepted submit
 
@@ -880,11 +880,11 @@ credit keeps one write-back funnel and the carried trust/Quality-Time scope. The
 windows-per-unit-turn and pre-queued/live counts are not derivable from events, so they accumulate
 per step. A 1v1 turn on a tactical anchor would pay twice.
 
-**Rules out.** A second ledger store or a per-KO reward write mid-battle; recomputing the killer
-or the split on the client (it renders the award lines as they are); a headroom check for recruits
-(no monster-storage rule exists; the predicate is "the unit has an owner"); paying the win credits
-on a recruit-only win. Moving the fold and the attribution into game-core's reward rules is
-R-bt-9-LEDGERHOME, due with the first slice that adds a heal or revive.
+**Rules out.** A second ledger store or a per-KO reward write mid-battle; recomputing the killer or
+the split on the client (it renders the award lines as they are); a headroom check for recruits (no
+monster-storage rule exists; the predicate is "the unit has an owner"); paying the win credits on a
+recruit-only win. Moving the fold and the attribution into game-core's reward rules is due with the
+first slice that adds a heal or revive.
 
 The fold, the credit and the summary row: `ARCHITECTURE.md` "Schema and privacy model", Tactical
 battles.

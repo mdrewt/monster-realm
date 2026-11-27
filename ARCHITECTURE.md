@@ -388,7 +388,7 @@ writes it again.
   becomes `Recruited`, leaves the board and the initiative, and is never a `Ko`,
   so the settlement credits no XP for it. After a battle ends, only the latest
   finished battle per player is kept. The 1v1 tables (`battle_wild`, `battle_action`,
-  `pvp_deadline_schedule`) are retired in place since bt-17 — never dropped; no new
+  `pvp_deadline_schedule`) are retired in place — never dropped; no new
   rows (the settle and erase sweeps still delete from them).
 - **PvP.** The `battle` table is private; participants read it through
   `my_battle`. The battle checks are `guards::is_in_ongoing_battle` (the player,
