@@ -20,6 +20,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTH_REJECT_SUPPRESS_THRESHOLD,
   createAuthTokenGate,
+  forgetDeviceToken,
   isStoredCredentialRejected,
   type TokenPersistence,
   type TokenStorageHost,
@@ -1355,17 +1356,48 @@ function expectHealthyDeviceRoundTrip(label: string): void {
   );
 }
 
-describe('tokenPersistenceFor: the storage area for the reconnect token, by target kind', () => {
-  it('keeps the reconnect token on the device for a local and a private target [lpw-2.1]', () => {
-    const local: TokenPersistence = tokenPersistenceFor('local');
-    const priv: TokenPersistence = tokenPersistenceFor('private');
+describe('tokenPersistenceFor: the storage area for the reconnect token, by target kind and host', () => {
+  it('keeps the reconnect token on the device for a local and a private target in the desktop shell [lpw-2.1]', () => {
+    const local: TokenPersistence = tokenPersistenceFor('local', true);
+    const priv: TokenPersistence = tokenPersistenceFor('private', true);
     expect(local).toBe('device');
     expect(priv).toBe('device');
   });
 
-  it('keeps the reconnect token per tab for an official and a test target [lpw-2.2]', () => {
-    expect(tokenPersistenceFor('official')).toBe('tab');
-    expect(tokenPersistenceFor('test')).toBe('tab');
+  it('keeps the reconnect token per tab for an official and a test target, in a browser and in the desktop shell [lpw-2.2]', () => {
+    for (const desktop of [false, true]) {
+      expect(tokenPersistenceFor('official', desktop)).toBe('tab');
+      expect(tokenPersistenceFor('test', desktop)).toBe('tab');
+    }
+  });
+
+  it('keeps the reconnect token per tab for every kind in a browser [lpw-24.6]', () => {
+    expect(TARGET_KINDS.map((k) => [k, tokenPersistenceFor(k, false)])).toEqual([
+      ['official', 'tab'],
+      ['test', 'tab'],
+      ['local', 'tab'],
+      ['private', 'tab'],
+    ]);
+  });
+
+  it('keeps the reconnect token on the device in the desktop shell for exactly local and private [lpw-24.7]', () => {
+    expect(TARGET_KINDS.map((k) => [k, tokenPersistenceFor(k, true)])).toEqual([
+      ['official', 'tab'],
+      ['test', 'tab'],
+      ['local', 'device'],
+      ['private', 'device'],
+    ]);
+  });
+
+  it('answers device only for a desktop value of exactly true [lpw-24.7]', () => {
+    for (const desktop of [undefined, null, 1, 'true', 'desktop', {}, [true]]) {
+      for (const kind of ['local', 'private'] as const) {
+        expect(
+          tokenPersistenceFor(kind, desktop as unknown as boolean),
+          `tokenPersistenceFor(${kind}, ${String(JSON.stringify(desktop))})`,
+        ).toBe('tab');
+      }
+    }
   });
 
   it('keeps the reconnect token per tab for every run-time value outside the four kinds, so exactly two strings answer device [lpw-2.2]', () => {
@@ -1391,15 +1423,121 @@ describe('tokenPersistenceFor: the storage area for the reconnect token, by targ
       ['local'],
     ];
     for (const value of outside) {
-      expect(
-        tokenPersistenceFor(value as unknown as TargetKind),
-        `tokenPersistenceFor(${String(JSON.stringify(value))})`,
-      ).toBe('tab');
+      for (const desktop of [false, true]) {
+        expect(
+          tokenPersistenceFor(value as unknown as TargetKind, desktop),
+          `tokenPersistenceFor(${String(JSON.stringify(value))}, ${desktop})`,
+        ).toBe('tab');
+      }
     }
-    expect(TARGET_KINDS.filter((k) => tokenPersistenceFor(k) === 'device')).toEqual([
+    expect(TARGET_KINDS.filter((k) => tokenPersistenceFor(k, true) === 'device')).toEqual([
       'local',
       'private',
     ]);
+  });
+});
+
+/** A recording storage area that also offers `removeItem`. */
+class FakeRemovableStorage {
+  private readonly store = new Map<string, string>();
+  readonly removed: string[] = [];
+  writes = 0;
+
+  constructor(entries: ReadonlyArray<readonly [string, string]> = []) {
+    for (const [k, v] of entries) this.store.set(k, v);
+  }
+
+  getItem(key: string): string | null {
+    return this.store.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string): void {
+    this.writes += 1;
+    this.store.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.removed.push(key);
+    this.store.delete(key);
+  }
+
+  contents(): Map<string, string> {
+    return new Map(this.store);
+  }
+}
+
+describe('forgetDeviceToken: removes a token an earlier build left on the device', () => {
+  /** Another target's token key: same uri, another db. */
+  const OTHER_DB_KEY = `mr.authToken.v1|${encodeURIComponent(DEVICE_URI)}|${encodeURIComponent('other-db')}`;
+  /** Another target's token key: another uri, same db. */
+  const OTHER_URI_KEY = `mr.authToken.v1|${encodeURIComponent('ws://127.0.0.1:3001')}|${encodeURIComponent(DEVICE_DB)}`;
+
+  it('removes exactly this target`s mr.authToken.v1 key from localStorage and nothing else [lpw-24.6]', () => {
+    const markerKey = authKindStorageKey(DEVICE_URI, DEVICE_DB);
+    const local = new FakeRemovableStorage([
+      [DEVICE_KEY, 'tok-OLD'],
+      [OTHER_DB_KEY, 'tok-OTHER-DB'],
+      [OTHER_URI_KEY, 'tok-OTHER-URI'],
+      [markerKey, 'account'],
+    ]);
+    const session = new FakeRemovableStorage([
+      [DEVICE_KEY, 'tok-TAB'],
+      [markerKey, 'account'],
+    ]);
+    const { host, reads } = hostWithAreas(session, local);
+    forgetDeviceToken(host, DEVICE_URI, DEVICE_DB);
+    expect(local.removed).toEqual(['mr.authToken.v1|ws%3A%2F%2F127.0.0.1%3A3000%2Fa%7Cb|d%7Cb']);
+    expect(local.contents()).toEqual(
+      new Map([
+        [OTHER_DB_KEY, 'tok-OTHER-DB'],
+        [OTHER_URI_KEY, 'tok-OTHER-URI'],
+        [markerKey, 'account'],
+      ]),
+    );
+    expect(local.writes).toBe(0);
+    expect(reads.session, 'zero reads of the sessionStorage property').toBe(0);
+    expect(session.removed).toEqual([]);
+    expect(session.writes).toBe(0);
+    expect(session.contents()).toEqual(
+      new Map([
+        [DEVICE_KEY, 'tok-TAB'],
+        [markerKey, 'account'],
+      ]),
+    );
+  });
+
+  it('leaves a device gate for the same target with no token to supply [lpw-24.6]', () => {
+    const local = new FakeRemovableStorage([[DEVICE_KEY, 'tok-OLD']]);
+    const host: TokenStorageHost = { localStorage: local };
+    expect(createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device').tokenForNextAttempt()).toBe(
+      'tok-OLD',
+    );
+    forgetDeviceToken(host, DEVICE_URI, DEVICE_DB);
+    expect(
+      createAuthTokenGate(DEVICE_URI, DEVICE_DB, host, 'device').tokenForNextAttempt(),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['an absent host', () => undefined],
+    ['a host with no storage', () => ({})],
+    ['a localStorage getter that throws', () => hostThrowingOn('localStorage', undefined).host],
+    ['a null localStorage', () => ({ localStorage: null })],
+    ['a localStorage with no removeItem', () => ({ localStorage: { getItem: () => 'tok-OLD' } })],
+    ['a removeItem that is not a function', () => ({ localStorage: { removeItem: 'nope' } })],
+    [
+      'a removeItem that throws',
+      () => ({
+        localStorage: {
+          removeItem: () => {
+            throw new Error('SecurityError');
+          },
+        },
+      }),
+    ],
+  ] as const)('returns quietly over %s [lpw-24.6]', (_label, makeHost) => {
+    const host = makeHost() as TokenStorageHost | undefined;
+    expect(forgetDeviceToken(host, DEVICE_URI, DEVICE_DB)).toBeUndefined();
   });
 });
 

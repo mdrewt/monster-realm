@@ -1114,3 +1114,170 @@ describe('shell/session owner functions', { sequential: true }, () => {
     expect(s.liveReducers()).toBe(reducers);
   });
 });
+
+// --- the world gate's view and status line (no boot) -----------------------------------------
+describe('shell/session world gate projections', { sequential: true }, () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  const MOVED_AT_MS = 1_700_000_000_000;
+
+  /** The module and the resolver it resolves through, from one fresh registry, locale en. */
+  async function gateModules() {
+    vi.resetModules();
+    const s = await import('./session');
+    const resolver = await import('../ui/i18n/resolver');
+    resolver.setLocale('en');
+    return { s, t: resolver.t, tf: resolver.tf, setLocale: resolver.setLocale };
+  }
+
+  /** A formatter that answers a fixed stamp and records what it was asked. */
+  const stamp = () => vi.fn((_ms: number) => 'T-STAMP');
+
+  it('the hidden phase has no view and no status line [lpw-24.1]', async () => {
+    const { s } = await gateModules();
+    expect(s.buildWorldGateView({ phase: 'hidden' }, stamp())).toBeUndefined();
+    expect(s.worldStatusLine({ phase: 'hidden' }, stamp())).toBeUndefined();
+  });
+
+  it('the sign-in phase shows the sign-in title, the world sign-in body as info, and one sign-in row [lpw-24.1]', async () => {
+    const { s, t } = await gateModules();
+    expect(s.buildWorldGateView({ phase: 'sign-in' }, stamp())).toEqual({
+      title: t('claim.gate.signIn.title'),
+      line: { kind: 'info', text: t('world.gate.signIn.body') },
+      rows: [
+        {
+          key: 'signIn',
+          label: t('world.gate.signIn.row'),
+          description: t('claim.gate.signIn.desc'),
+        },
+      ],
+      stays: t('claim.gate.stays'),
+    });
+  });
+
+  it('worldStatusLine has no line for the sign-in, not-owned and refused phases [lpw-24.1]', async () => {
+    const { s } = await gateModules();
+    expect(s.worldStatusLine({ phase: 'sign-in' }, stamp()), 'sign-in').toBeUndefined();
+    expect(s.worldStatusLine({ phase: 'not-owned' }, stamp()), 'not-owned').toBeUndefined();
+    expect(s.worldStatusLine({ phase: 'refused', reason: 'nope' }, stamp()), 'refused').toBe(
+      undefined,
+    );
+  });
+
+  it('the unreachable phase shows the check title, the first-visit line as an error, and one Try again row [lpw-24.3]', async () => {
+    const { s, t } = await gateModules();
+    expect(s.buildWorldGateView({ phase: 'unreachable' }, stamp())).toEqual({
+      title: t('world.gate.check.title'),
+      line: { kind: 'error', text: t('world.gate.unreachable.body') },
+      rows: [
+        {
+          key: 'signIn',
+          label: t('world.gate.retry.row'),
+          description: t('world.gate.retry.desc'),
+        },
+      ],
+      stays: t('claim.gate.stays'),
+    });
+  });
+
+  it('worldStatusLine for the unreachable phase is the first-visit line [lpw-24.3]', async () => {
+    const { s, t } = await gateModules();
+    expect(s.worldStatusLine({ phase: 'unreachable' }, stamp())).toBe(
+      t('world.gate.unreachable.body'),
+    );
+  });
+
+  it('the refused phase with an empty reason shows the failed line as an error and one Try again row [lpw-24.3]', async () => {
+    const { s, t } = await gateModules();
+    expect(s.buildWorldGateView({ phase: 'refused', reason: '' }, stamp())).toEqual({
+      title: t('world.gate.check.title'),
+      line: { kind: 'error', text: t('world.gate.failed.body') },
+      rows: [
+        {
+          key: 'signIn',
+          label: t('world.gate.retry.row'),
+          description: t('world.gate.retry.desc'),
+        },
+      ],
+      stays: t('claim.gate.stays'),
+    });
+  });
+
+  it('the refused phase with a reason shows the refused line carrying that reason [lpw-24.3]', async () => {
+    const { s, t, tf } = await gateModules();
+    const view = s.buildWorldGateView({ phase: 'refused', reason: 'world full' }, stamp());
+    expect(view?.title).toBe(t('world.gate.check.title'));
+    expect(view?.line).toEqual({
+      kind: 'error',
+      text: tf('world.gate.refused.body', { reason: 'world full' }),
+    });
+    expect(view?.rows.map((r) => r.key)).toEqual(['signIn']);
+  });
+
+  it('the unreachable view resolves in the locale current at the call [lpw-24.3]', async () => {
+    const { s, t, setLocale } = await gateModules();
+    const english = s.buildWorldGateView({ phase: 'unreachable' }, stamp());
+    setLocale('fr');
+    try {
+      const french = s.buildWorldGateView({ phase: 'unreachable' }, stamp());
+      expect(french?.title).toBe(t('world.gate.check.title'));
+      expect(french?.line.text).toBe(t('world.gate.unreachable.body'));
+      expect(french?.title, 'precondition: the locales differ').not.toBe(english?.title);
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('the not-owned phase shows the acs not-owned title and body, then the Sign in again row and the store row [lpw-24.4]', async () => {
+    const { s, t } = await gateModules();
+    expect(s.buildWorldGateView({ phase: 'not-owned' }, stamp())).toEqual({
+      title: t('claim.gate.notOwned.title'),
+      line: { kind: 'error', text: t('claim.gate.notOwned.body') },
+      rows: [
+        {
+          key: 'signIn',
+          label: t('world.gate.again.row'),
+          description: t('world.gate.again.desc'),
+        },
+        {
+          key: 'store',
+          label: t('claim.gate.store.title'),
+          description: t('claim.gate.store.desc'),
+        },
+      ],
+      stays: t('claim.gate.stays'),
+    });
+  });
+
+  it('the moved phase shows the moved title, the moved body as info with the time formatTime gave for movedAtMs, and one Sign in again row [lpw-24.5]', async () => {
+    const { s, t, tf } = await gateModules();
+    const formatTime = stamp();
+    expect(s.buildWorldGateView({ phase: 'moved', movedAtMs: MOVED_AT_MS }, formatTime)).toEqual({
+      title: t('world.gate.moved.title'),
+      line: { kind: 'info', text: tf('world.gate.moved.body', { time: 'T-STAMP' }) },
+      rows: [
+        {
+          key: 'signIn',
+          label: t('world.gate.again.row'),
+          description: t('world.gate.again.desc'),
+        },
+      ],
+      stays: t('claim.gate.stays'),
+    });
+    expect(formatTime).toHaveBeenCalled();
+    expect(formatTime.mock.calls.every((c) => c[0] === MOVED_AT_MS)).toBe(true);
+  });
+
+  it('worldStatusLine for the moved phase is the moved body with the time formatTime gave for movedAtMs [lpw-24.5]', async () => {
+    const { s, tf } = await gateModules();
+    const formatTime = stamp();
+    expect(s.worldStatusLine({ phase: 'moved', movedAtMs: MOVED_AT_MS }, formatTime)).toBe(
+      tf('world.gate.moved.body', { time: 'T-STAMP' }),
+    );
+    expect(formatTime).toHaveBeenCalled();
+    expect(formatTime.mock.calls.every((c) => c[0] === MOVED_AT_MS)).toBe(true);
+  });
+});
