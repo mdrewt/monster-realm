@@ -10127,3 +10127,83 @@ fn an_export_holds_the_callers_world_account_row_and_no_other_identitys_lpw23_10
         );
     }
 }
+
+/// Through the shipped `request_data_export` on the native host: the caller's bundle holds one
+/// chunk per exportable table of the manifest, and no chunk and no exportable manifest entry is
+/// named `battle_action`.
+///
+/// kills: the `battle_action` exporter kept (it writes an empty chunk for every caller); its
+/// manifest entry kept; an exporter for a remaining table dropped with it.
+#[test]
+fn an_export_holds_one_chunk_per_exportable_table_and_none_for_battle_action_lpw32_2() {
+    let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
+    let t0: i64 = 1_700_000_000_000;
+    let caller = m22s4_id(0xE6);
+    let fx = crate::native_host_tests::fixture();
+    let w = ih1_export_world(&fx);
+    w.seed_player(caller, 45, 0, 0);
+
+    assert_eq!(
+        fx.run_as_at(caller, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "the caller's export is served"
+    );
+    let chunks = w.chunks_of(caller);
+    let mut names: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
+    names.sort_unstable();
+    assert!(
+        names.iter().any(|n| n == "player"),
+        "fixture: the bundle holds the caller's `player` chunk; its chunks are {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "battle_action"),
+        "the bundle holds a `battle_action` chunk"
+    );
+    let mut exportable = m22s4_manifest_exportable();
+    exportable.sort_unstable();
+    assert!(
+        !exportable.iter().any(|n| n == "battle_action"),
+        "the lifecycle manifest classifies `battle_action` as exportable"
+    );
+    assert_eq!(names, exportable, "one chunk per exportable table");
+}
+
+/// Through the shipped `request_data_export` on the native host: the caller's `player` chunk is
+/// exactly the payload whose one row holds, in order, `identity`, `entity_id`, `name`,
+/// `online`, `discriminator`, `lead_level`.
+///
+/// kills: `last_input_seq` exported on the player row; a column reordered or left out.
+#[test]
+fn an_export_player_row_holds_exactly_its_six_columns_in_order_lpw32_2() {
+    let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
+    let t0: i64 = 1_700_000_000_000;
+    let caller = m22s4_id(0xE7);
+    let fx = crate::native_host_tests::fixture();
+    let w = ih1_export_world(&fx);
+    w.seed_player(caller, 46, 3_141, 17);
+
+    assert_eq!(
+        fx.run_as_at(caller, at(t0), crate::privacy::request_data_export),
+        Ok(()),
+        "the caller's export is served"
+    );
+    let row = m22s4_obj(&[
+        ("identity", m22s4_qid(caller)),
+        ("entity_id", m22s4_quoted_num(46)),
+        ("name", m22s4_qtxt("Ada")),
+        ("online", m22s4_bool(true)),
+        ("discriminator", m22s4_bare(3_141)),
+        ("lead_level", m22s4_bare(17)),
+    ]);
+    let payloads: Vec<String> = w
+        .chunks_of(caller)
+        .into_iter()
+        .filter(|(t, _)| t == "player")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        payloads,
+        vec![m22s4_expected_payload("player", &[row])],
+        "exactly one player chunk, its one row holding the six columns in order"
+    );
+}

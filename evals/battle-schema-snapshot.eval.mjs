@@ -339,6 +339,219 @@ function selfTeeth() {
     }
     if (!message.includes('table-level index')) bad.push(`table-level \`${args}\` did not throw`);
   }
+
+  // The consolidation marker. Every fixture is deep-frozen, so a function that writes to its
+  // input throws, and a case that throws is reported as failed under its own name.
+  const freeze = (o) => {
+    if (o !== null && typeof o === 'object' && !Object.isFrozen(o)) {
+      for (const v of Object.values(o)) freeze(v);
+      Object.freeze(o);
+    }
+    return o;
+  };
+  const check = (what, ok) => {
+    try {
+      if (!ok()) bad.push(what);
+    } catch (err) {
+      bad.push(`${what} (threw ${err?.name ?? err})`);
+    }
+  };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const hasAll = (got, want) => want.every((v) => got.includes(v));
+  const mentions = (got, want) => want.every((v) => got.some((g) => g.includes(v)));
+  // `got` is `want` plus exactly one more violation, and that one names `marker`.
+  const plusMarker = (got, want, marker) => {
+    const extra = got.filter((v) => !want.includes(v));
+    return (
+      got.length === want.length + 1 &&
+      hasAll(got, want) &&
+      extra.length === 1 &&
+      extra[0].includes(marker)
+    );
+  };
+  const marked = (entries, marker = 'lpw-32') => freeze({ ...entries, consolidation: marker });
+  const merge = (prev, next) => mergeBaseViolations(prev, next, appendOnlyViolations);
+
+  const PREV = freeze({
+    first: e(['id', 'a'], { visibility: 'public' }),
+    mid: e(['id', 'b', 'c']),
+    last: e(['id', 'd'], { scheduled: 'tick' }),
+  });
+  const withMid = (mid) =>
+    freeze(
+      mid === undefined
+        ? { first: PREV.first, last: PREV.last }
+        : { first: PREV.first, mid, last: PREV.last },
+    );
+  const BREAKS = [
+    ['a dropped table', withMid(undefined)],
+    ['a removed column', withMid(e(['id', 'b']))],
+    ['a reordered column', withMid(e(['id', 'c', 'b']))],
+    [
+      'a changed column type',
+      withMid(e(['id', 'b', 'c'], { columns: { id: 'u32', b: 'u64', c: 'u32' } })),
+    ],
+    ['a changed pk', withMid(e(['id', 'b', 'c'], { pk: 'b' }))],
+    ['a flipped scheduled', withMid(e(['id', 'b', 'c'], { scheduled: 'sweep' }))],
+  ];
+  const LEGAL = withMid(e(['id', 'b', 'c', 'n'], { defaults: ['n'] }));
+  const CYRILLIC_L = String.fromCodePoint(0x04cf);
+  const UNDECLARED = ['LPW-32', 'lpw-32 ', ' lpw-32', 'lpw-33', 'x', '', `${CYRILLIC_L}pw-32`];
+  const NOT_STRINGS = [true, 1, 0, null, {}, ['lpw-32']];
+
+  check('fixture: the tail append with a default is legal', () => {
+    return appendOnlyViolations(PREV, LEGAL).length === 0;
+  });
+  for (const [label, next] of BREAKS) {
+    const breaks = appendOnlyViolations(PREV, next);
+    check(`fixture: ${label} is a break`, () => breaks.length > 0);
+    check(`the declared consolidation skips the merge-base check for ${label}`, () => {
+      return same(merge(PREV, marked(next)), []);
+    });
+    check(`a marker kept from the merge-base still reports ${label}, plus the marker`, () => {
+      return plusMarker(merge(marked(PREV), marked(next)), breaks, 'lpw-32');
+    });
+    check(
+      `with the marker removed, ${label} is reported as appendOnlyViolations reports it`,
+      () => {
+        return same(merge(marked(PREV), next), appendOnlyViolations(PREV, next));
+      },
+    );
+    check(
+      `with no marker on either side, ${label} is reported as appendOnlyViolations reports it`,
+      () => {
+        return same(merge(PREV, next), breaks);
+      },
+    );
+    for (const marker of UNDECLARED) {
+      for (const [side, prev] of [
+        ['an unmarked merge-base', PREV],
+        ['a merge-base marked lpw-32', marked(PREV)],
+      ]) {
+        check(
+          `the undeclared marker ${JSON.stringify(marker)} over ${side} reports ${label} and names the marker`,
+          () => {
+            return plusMarker(merge(prev, marked(next, marker)), breaks, marker);
+          },
+        );
+      }
+    }
+    for (const value of NOT_STRINGS) {
+      for (const [side, prev] of [
+        ['an unmarked merge-base', PREV],
+        ['a merge-base marked lpw-32', marked(PREV)],
+      ]) {
+        check(
+          `a non-string consolidation ${JSON.stringify(value)} over ${side} reports ${label}`,
+          () => {
+            return same(merge(prev, marked(next, value)), breaks);
+          },
+        );
+      }
+    }
+  }
+  for (const [what, prev, next] of [
+    ['both unmarked', PREV, LEGAL],
+    ['a merge-base marked lpw-32 and an unmarked baseline', marked(PREV), LEGAL],
+    ['an unmarked merge-base and a baseline marked lpw-32', PREV, marked(LEGAL)],
+  ]) {
+    check(`a legal tail append with ${what} has no violation and none names consolidation`, () => {
+      const got = merge(prev, next);
+      return same(got, []) && !got.some((v) => v.includes('consolidation'));
+    });
+  }
+  check('an unchanged baseline marked lpw-32 on both sides has no violation', () => {
+    return same(merge(marked(PREV), marked(PREV)), []);
+  });
+  check(
+    'a legal tail append that kept the inherited marker has exactly one violation, naming it',
+    () => {
+      const got = merge(marked(PREV), marked(LEGAL));
+      return got.length === 1 && got[0].includes('lpw-32');
+    },
+  );
+
+  check('splitConsolidation returns a string marker and the entries without the key', () => {
+    const { marker, entries } = splitConsolidation(
+      freeze({ first: PREV.first, consolidation: 'lpw-32', mid: PREV.mid, last: PREV.last }),
+    );
+    return (
+      marker === 'lpw-32' &&
+      !('consolidation' in entries) &&
+      same(Object.keys(entries), ['first', 'mid', 'last']) &&
+      same(entries, PREV)
+    );
+  });
+  for (const marker of ['LPW-32', 'x', '']) {
+    check(
+      `splitConsolidation returns any string marker, ${JSON.stringify(marker)} included`,
+      () => {
+        const { marker: got, entries } = splitConsolidation(marked(PREV, marker));
+        return got === marker && !('consolidation' in entries) && same(entries, PREV);
+      },
+    );
+  }
+  check('splitConsolidation of a baseline with no key gives marker null and the baseline', () => {
+    const { marker, entries } = splitConsolidation(PREV);
+    return marker === null && same(entries, PREV);
+  });
+  for (const value of NOT_STRINGS) {
+    check(
+      `splitConsolidation keeps the non-string consolidation ${JSON.stringify(value)} in entries`,
+      () => {
+        const { marker, entries } = splitConsolidation(marked(PREV, value));
+        return (
+          marker === null &&
+          'consolidation' in entries &&
+          same(entries.consolidation, value) &&
+          same(entries, marked(PREV, value))
+        );
+      },
+    );
+  }
+  check('splitConsolidation of a deep-frozen baseline does not throw', () => {
+    splitConsolidation(marked(PREV));
+    return true;
+  });
+
+  const failures = (parsed, baseline, prev) => snapshotFailures({ parsed, baseline, prev });
+  for (const [what, baseline] of [
+    ['unmarked', PREV],
+    ['marked lpw-32', marked(PREV)],
+  ]) {
+    check(
+      `snapshotFailures fails when the merge-base baseline is unreadable (baseline ${what})`,
+      () => {
+        return failures(PREV, baseline, null).length > 0;
+      },
+    );
+  }
+  for (const [label, next] of BREAKS) {
+    const breaks = appendOnlyViolations(PREV, next);
+    check(`snapshotFailures passes the declared consolidation of ${label}`, () => {
+      return same(failures(next, marked(next), PREV), []);
+    });
+    check(`snapshotFailures reports ${label} under a marker kept from the merge-base`, () => {
+      const got = failures(next, marked(next), marked(PREV));
+      return got.length > breaks.length && mentions(got, breaks);
+    });
+  }
+  check('snapshotFailures reports drift under a declared consolidation', () => {
+    const next = BREAKS[1][1];
+    const drift = driftViolations(LEGAL, next);
+    const got = failures(LEGAL, marked(next), PREV);
+    return drift.length > 0 && mentions(got, drift);
+  });
+  check('snapshotFailures reports an unindexed zone_id under a declared consolidation', () => {
+    const parsed = freeze({ ...PREV, zone: e(['id', 'zone_id']) });
+    const zoning = zoningViolations(parsed);
+    const got = failures(parsed, marked(parsed), PREV);
+    return zoning.length === 1 && mentions(got, zoning);
+  });
+  check('snapshotFailures passes a marked baseline equal to its merge-base and source', () => {
+    const got = failures(PREV, marked(PREV), marked(PREV));
+    return same(got, []) && !got.some((v) => v.includes('consolidation'));
+  });
   return bad;
 }
 

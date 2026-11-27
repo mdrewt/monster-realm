@@ -3700,3 +3700,182 @@ mod lpw34_7_unstable {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The consolidated schema, read from the generated module definition
+// ---------------------------------------------------------------------------
+
+/// The module's generated definition declares none of the 1v1 action, wild-battle and deadline
+/// tables, schedules no deadline reaper, and carries `player` and `world_access` with exactly
+/// the columns the consolidated schema names.
+mod consolidated_schema {
+    use crate::native_host_tests::fixture;
+    use spacetimedb::sats::AlgebraicType;
+    use spacetimedb::spacetimedb_lib::db::raw_def::v10::RawModuleDefV10;
+    use std::collections::BTreeSet;
+
+    /// The source names of the tables `def` declares.
+    fn table_names(def: &RawModuleDefV10) -> BTreeSet<String> {
+        def.tables()
+            .unwrap_or_else(|| panic!("the generated module def carries no Tables section"))
+            .iter()
+            .map(|t| t.source_name.to_string())
+            .collect()
+    }
+
+    /// The column names of `table`'s row, in declared order.
+    fn columns_of(def: &RawModuleDefV10, table: &str) -> Vec<String> {
+        let ts = def
+            .typespace()
+            .unwrap_or_else(|| panic!("the generated module def carries no typespace"));
+        let tables = def
+            .tables()
+            .unwrap_or_else(|| panic!("the generated module def carries no Tables section"));
+        let Some(t) = tables.iter().find(|t| &*t.source_name == table) else {
+            panic!("`{table}` is not in the generated module def")
+        };
+        let AlgebraicType::Product(row) = &ts[t.product_type_ref] else {
+            panic!("`{table}`'s row type is not a product")
+        };
+        row.elements
+            .iter()
+            .map(|e| e.name.as_deref().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// The generated table list holds no `battle_action`, `battle_wild` or
+    /// `pvp_deadline_schedule`, and holds the live battle tables beside them.
+    ///
+    /// kills: any of the three tables left declared; `battle_wild_unit` dropped with
+    /// `battle_wild`; a table listing that reads empty.
+    #[test]
+    fn the_generated_tables_hold_none_of_the_three_dropped_tables_lpw32_1() {
+        let fx = fixture();
+        let names = table_names(&fx.module_def());
+        for live in [
+            "battle_wild_unit",
+            "battle",
+            "battle_challenge",
+            "move_intent",
+        ] {
+            assert!(
+                names.contains(live),
+                "fixture: `{live}` is a generated table (the listing is the module's)"
+            );
+        }
+        for gone in ["battle_action", "battle_wild", "pvp_deadline_schedule"] {
+            assert!(
+                !names.contains(gone),
+                "the generated module def declares the table `{gone}`"
+            );
+        }
+    }
+
+    /// No scheduled table runs `pvp_deadline_reaper` and no schedule sits on a table named
+    /// `pvp_deadline_schedule`, while `battle_challenge_reaper` stays scheduled; the generated
+    /// bindings' reducer roster holds no `pvp_deadline_reaper` and does hold `join_game`.
+    ///
+    /// kills: the deadline schedule table kept; the reaper kept as a client-callable reducer
+    /// once its schedule table goes; a schedule listing that reads empty.
+    #[test]
+    fn no_schedule_and_no_reducer_runs_the_pvp_deadline_reaper_lpw32_1() {
+        let fx = fixture();
+        let def = fx.module_def();
+        let schedules = def
+            .schedules()
+            .unwrap_or_else(|| panic!("the generated module def carries no Schedules section"));
+        let functions: BTreeSet<String> = schedules
+            .iter()
+            .map(|s| s.function_name.to_string())
+            .collect();
+        let tables: BTreeSet<String> = schedules.iter().map(|s| s.table_name.to_string()).collect();
+        assert!(
+            functions.contains("battle_challenge_reaper"),
+            "fixture: `battle_challenge_reaper` is scheduled; the schedules are {functions:?}"
+        );
+        assert!(
+            !functions.contains("pvp_deadline_reaper"),
+            "a scheduled table runs `pvp_deadline_reaper`"
+        );
+        assert!(
+            !tables.contains("pvp_deadline_schedule"),
+            "a schedule sits on the table `pvp_deadline_schedule`"
+        );
+
+        let reducers = super::admission_roster::generated_reducers();
+        assert!(
+            reducers.contains("join_game"),
+            "fixture: the generated bindings carry `join_game`"
+        );
+        assert!(
+            !reducers.contains("pvp_deadline_reaper"),
+            "the generated bindings carry `pvp_deadline_reaper` as a client-callable reducer"
+        );
+    }
+
+    /// `player`'s generated columns are exactly `identity`, `entity_id`, `name`, `online`,
+    /// `discriminator`, `lead_level`, in that order.
+    ///
+    /// kills: `last_input_seq` kept on `player`; a column reordered or dropped in passing.
+    #[test]
+    fn the_player_table_has_exactly_its_six_columns_in_order_lpw32_1() {
+        let fx = fixture();
+        assert_eq!(
+            columns_of(&fx.module_def(), "player"),
+            [
+                "identity",
+                "entity_id",
+                "name",
+                "online",
+                "discriminator",
+                "lead_level"
+            ],
+            "`player`'s generated columns, in order"
+        );
+    }
+
+    /// `world_access`'s generated columns are exactly `id`, `rule`, in that order.
+    ///
+    /// kills: `password_salt` or `password_hash` kept on `world_access`.
+    #[test]
+    fn the_world_access_table_has_exactly_the_id_and_rule_columns_lpw32_1() {
+        let fx = fixture();
+        assert_eq!(
+            columns_of(&fx.module_def(), "world_access"),
+            ["id", "rule"],
+            "`world_access`'s generated columns, in order"
+        );
+    }
+
+    /// The definition's named types hold none of `BattleAction`, `BattleWild`,
+    /// `PvpDeadlineSchedule` or `PvpAction`, and hold `BattleWildUnit`.
+    ///
+    /// kills: a row type of a dropped table left reachable; the 1v1 action type left in a
+    /// column; a types listing that reads empty.
+    #[test]
+    fn the_named_types_hold_none_of_the_dropped_row_and_action_types_lpw32_1() {
+        let fx = fixture();
+        let def = fx.module_def();
+        let types: BTreeSet<String> = def
+            .types()
+            .unwrap_or_else(|| panic!("the generated module def carries no Types section"))
+            .iter()
+            .map(|t| t.source_name.source_name.to_string())
+            .collect();
+        assert!(
+            types.contains("BattleWildUnit"),
+            "fixture: `BattleWildUnit` is a named type; the types are {types:?}"
+        );
+        for gone in [
+            "BattleAction",
+            "BattleWild",
+            "PvpDeadlineSchedule",
+            "PvpAction",
+        ] {
+            assert!(
+                !types.contains(gone),
+                "the generated module def names the type `{gone}`"
+            );
+        }
+    }
+}
