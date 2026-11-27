@@ -162,24 +162,31 @@ editing `game-core/content/` without bumping `CONTENT_VERSION` and regenerating 
 baseline (the eval failure message prints the exact command); a locale column on
 content rows; localized strings in RON content.
 
-## Tactical content lives in sidecar registries keyed by id
+## Tactical content is part of the row it describes
 
-**Decision.** Tactical battle data does not add fields to `SkillDef`, `Species`, `ItemDef`,
-`ZoneDef` or `EncounterTable`. It lives in its own registries under `game-core/content/`
-(`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`, `battle_maps/`,
-plus the `tactics_tuning.ron` singleton), each row keyed by the carried id.
-`tactics::content::build_kits` joins them onto the carried rows, and
-`validate_tactics_content` runs that join plus the kit lints. CI runs it as ordinary tests;
-`sync_content` runs it in its validate phase, before any write.
+**Decision.** A value the tactical engine reads about a skill, a species, a battle item or a
+zone's wild encounters is a field of that row: `SkillDef.tactics` (tier and geometry),
+`Species.tactics` (movement class, role, stance, kit, signature and footprint),
+`ItemDef.battle_use` (reach and target filter), and `EncounterTable.pack_weights` and
+`battle_map_pool`. RON must spell them for every skill, species and encounter table.
+`battle_maps/` and `tactics_tuning.ron` stay registries of their own. No tactical field has a
+table column. `validate_tactics_content` is the gate for tactical content: CI runs it as
+ordinary tests and `sync_content` runs it in its validate phase, before any write. This is the
+target. The code still holds four registries of tactical fields keyed by another row's id
+(`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`), and
+`docs/refactors/tactics-content.md` lists the slices that move each, in order.
 
-**Why.** A new field on a carried content struct breaks every hand-built struct literal
-(about 100 across game-core and the server tests) and the production marshaling. A field on
-the encounter row would also be lost on the `encounter` table round trip without a schema
-change. Sidecars keep the carried structs and tables frozen. Coverage ("every skill and
-species id has exactly one row") is checked in the join, so a missing row fails loudly.
+**Why.** A skill's power and its reach are one balance decision, and the engine reads them
+together. Kept as two entries that must agree by id, they let an author change one and forget
+the other, and what notices is a join that names an id and no file. One row cannot disagree
+with itself, and a lever left out is a parse error at that row. Nothing a player sees depends
+on keeping the halves apart: the tactical data reaches the client inside the wasm module either
+way, and neither layout puts it in a table.
 
-**Rules out.** Folding tactical fields into the carried structs before the 1v1 system is
-retired; a second copy of the lints in the server; a default row for an uncovered id.
+**Rules out.** A registry of tactical fields keyed by the id of the row they describe; a
+tactical field RON may omit for a skill, a species or an encounter table; a second copy of the
+lints in the server; a column on a content table for a field only the engine reads; a made-up
+tactical value in a content struct built from a table row (a rule takes the values it reads).
 
 ## Server authority: thin reducers in domain modules
 
