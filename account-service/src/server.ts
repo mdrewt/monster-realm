@@ -6,6 +6,7 @@ import { createAttestRoute } from './attest.ts';
 import { type Config, ConfigError, loadConfig, type Profile } from './config.ts';
 import { denyList, steamAccounts } from './denyList.ts';
 import { signInStepFor } from './interactions/router.ts';
+import { STEAM_OPENID_ENDPOINT } from './interactions/steamOpenId.ts';
 import { createHandleKeys, loadAttestationKeys, loadSigningKeys, readHandleKeys } from './keys.ts';
 import { createAccountProvider } from './provider.ts';
 import { createSourceAddress } from './rateLimit.ts';
@@ -48,10 +49,11 @@ export function steamEntitlement(
  * nothing written. `log` receives the start line and every line the attestation, ticket and
  * world-check routes, the Steam ticket grant and the Steam client log.
  *
- * With `MR_STEAM_APP_ID` set the token endpoint takes the Steam ticket grant, decided by the
+ * With `MR_STEAM_APP_ID` set the token endpoint takes the Steam ticket grant and the sign-in step
+ * offers Steam's browser sign-in (beside the password form on a dev profile), both decided by the
  * profile's entitlement source. `options.steamBaseUrl` replaces the profile's Steam origin, for a
- * test's Steam fake: the Steam key is sent wherever it names, so no setting reaches it and the
- * entry file passes none.
+ * test's Steam fake, the address of Steam's browser sign-in under it included: the Steam key is
+ * sent wherever it names, so no setting reaches it and the entry file passes none.
  */
 export async function startServer(
   env: Readonly<Record<string, string | undefined>>,
@@ -74,7 +76,23 @@ export async function startServer(
   const store = openAccountStore(config.databasePath);
   let server: Server;
   try {
-    const signIn = signInStepFor(config.signIn, store.adapter);
+    // One entitlement source decides a Steam player, however they sign in.
+    const entitlement =
+      steam === undefined ? undefined : steamEntitlement(config.profile, store.adapter, steam);
+    const signIn = signInStepFor(
+      config,
+      store.adapter,
+      entitlement === undefined
+        ? undefined
+        : {
+            entitlement,
+            log,
+            endpoint:
+              options.steamBaseUrl === undefined
+                ? undefined
+                : `${options.steamBaseUrl}${new URL(STEAM_OPENID_ENDPOINT).pathname}`,
+          },
+    );
     const sourceAddress = createSourceAddress(config.trustedProxies);
     const { handler } = createAccountProvider({
       issuer: config.issuer,
@@ -82,14 +100,9 @@ export async function startServer(
       adapter: store.adapter,
       signIn,
       steamTicket:
-        steam === undefined
+        steam === undefined || entitlement === undefined
           ? undefined
-          : {
-              authenticateTicket: steam.authenticateTicket,
-              entitlement: steamEntitlement(config.profile, store.adapter, steam),
-              sourceAddress,
-              log,
-            },
+          : { authenticateTicket: steam.authenticateTicket, entitlement, sourceAddress, log },
     });
     // Without a sign-in step nothing is issued, an attestation included.
     const attest =

@@ -1,15 +1,20 @@
+import { createHmac, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type Provider from 'oidc-provider';
 import { type Adapter, errors } from 'oidc-provider';
-import type { SignInMethod } from '../config.ts';
+import type { Config } from '../config.ts';
+import { type SteamEntitlement, type SteamId, steamIdOfSubject } from '../steam/ownership.ts';
 import { devPasswordStep } from './devPassword.ts';
-import { endedPage, notOwnedPage, PAGE_HEADERS, signInPage } from './pages.ts';
+import { endedPage, notOwnedPage, PAGE_HEADERS, signInPage, unavailablePage } from './pages.ts';
+import { steamOpenIdStep } from './steamOpenId.ts';
 
 export interface Account {
   readonly sub: string;
   readonly entitled: boolean;
   /** The epoch second the password was last reset. A code or refresh token issued, or signed in
-   *  for, in an earlier second is refused. Absent: never reset. */
+   *  for, in an earlier second is refused. Absent: never reset, which is every Steam player's
+   *  account, since a Steam player has no password here. What ends a Steam player's tokens is
+   *  the entitlement read at each issuance. */
   readonly passwordChangedAt?: number;
 }
 
@@ -32,19 +37,79 @@ export interface PasswordStep {
   account(sub: string): Promise<Account | undefined>;
 }
 
-/** How a profile signs a player in. The router shows each kind's step; the provider asks `account`. */
-export type SignInStep = PasswordStep;
+/** How a Steam sign-in ends once Steam has sent the browser back. */
+export type SteamSignInOutcome =
+  | { readonly kind: 'signed-in'; readonly sub: string }
+  /** The reply is Steam's and this sign-in's; its player is not entitled. */
+  | { readonly kind: 'not-owned' }
+  /** The reply failed a check; it never says which. */
+  | { readonly kind: 'refused' }
+  /** Steam gave no answer. Nothing was learnt about the reply or its player. */
+  | { readonly kind: 'unavailable' };
 
-/** The step of a profile's sign-in method. This build has none for `steam`. */
+/** A sign-in step that sends the browser to Steam and decides the reply Steam sends it back with. */
+export interface SteamStep {
+  readonly kind: 'steam';
+  /** Steam's login address for a sign-in that comes back to `returnTo`. */
+  loginUrl(returnTo: string): string;
+  /**
+   * Decides Steam's reply: the query the browser came back with, against the address it was sent
+   * out with and the sign-in's state.
+   */
+  complete(
+    reply: URLSearchParams,
+    expected: { readonly returnTo: string; readonly state: string },
+  ): Promise<SteamSignInOutcome>;
+  /** As `PasswordStep['account']`. Rejects when Steam gives no answer: never "not entitled". */
+  account(sub: string): Promise<Account | undefined>;
+}
+
+/** A dev profile with Steam configured: the password form, and the Steam step beside it. */
+export interface PasswordAndSteamStep {
+  readonly kind: 'password-and-steam';
+  readonly password: PasswordStep;
+  readonly steam: SteamStep;
+  /** A Steam player's subject is the Steam step's to answer; every other is the password step's. */
+  account(sub: string): Promise<Account | undefined>;
+}
+
+/** How a profile signs a player in. The router shows each kind's step; the provider asks `account`. */
+export type SignInStep = PasswordStep | SteamStep | PasswordAndSteamStep;
+
+/**
+ * The step of a profile's sign-in method. `steam` is given when Steam is configured for the
+ * profile: `production` then signs in through Steam alone, and a dev profile offers Steam beside
+ * its password form. `production` without it has no step, so nothing is issued.
+ */
 export function signInStepFor(
-  method: SignInMethod,
+  config: Pick<Config, 'signIn' | 'issuer'>,
   adapter: (model: string) => Adapter,
+  steam?: {
+    /** The profile's entitlement source (`steamEntitlementSource`). */
+    readonly entitlement: (steamId: SteamId) => Promise<SteamEntitlement>;
+    readonly log: (line: string) => void;
+    /** Replaces Steam's OpenID address, for a test's Steam fake. */
+    readonly endpoint?: string;
+  },
 ): SignInStep | undefined {
-  switch (method) {
-    case 'dev-password':
-      return devPasswordStep(adapter);
+  const steamStep =
+    steam === undefined
+      ? undefined
+      : steamOpenIdStep({ realm: new URL(config.issuer).origin, adapter, ...steam });
+  switch (config.signIn) {
+    case 'dev-password': {
+      const password = devPasswordStep(adapter);
+      if (steamStep === undefined) return password;
+      return {
+        kind: 'password-and-steam',
+        password,
+        steam: steamStep,
+        account: (sub) =>
+          steamIdOfSubject(sub) === undefined ? password.account(sub) : steamStep.account(sub),
+      };
+    }
     case 'steam':
-      return undefined;
+      return steamStep;
   }
 }
 
@@ -53,19 +118,49 @@ export function interactionPath(uid: string): string {
   return `/interaction/${uid}`;
 }
 
-/** The `uid` a request path names as a sign-in step, or undefined for any other path. */
+/** The path Steam sends the browser back to for the sign-in `uid`. */
+function steamReplyPath(uid: string): string {
+  return `${interactionPath(uid)}/steam`;
+}
+
+const STEP_PATH = /^\/interaction\/([A-Za-z0-9_-]+)(\/steam)?$/;
+
+/**
+ * The `uid` a request path names as a sign-in step, or undefined for any other path. A step has
+ * two paths: its page, and the one Steam sends the browser back to.
+ */
 export function interactionUid(path: string | undefined): string | undefined {
   if (path === undefined) return undefined;
-  return /^\/interaction\/([A-Za-z0-9_-]+)$/.exec(path)?.[1];
+  return STEP_PATH.exec(path)?.[1];
 }
 
 const FORM_TYPE = 'application/x-www-form-urlencoded';
 const MAX_BODY_BYTES = 8192;
 
+/** What a request is answered with, decided apart from the request that asked. */
+type Answer =
+  | { readonly kind: 'redirect'; readonly location: string }
+  | { readonly kind: 'page'; readonly status: number; readonly html: string };
+
 /**
- * Answers `/interaction/<uid>`, the sign-in step of one authorization request; the caller passes
- * the `uid` the path names. A request is tied to its sign-in by the signed cookie the provider set
- * when the request began, and a post is taken only from the issuer's own page.
+ * Answers the sign-in step of one authorization request; the caller passes the `uid` the path
+ * names. A request is tied to its sign-in by the signed cookie the provider set when the request
+ * began, and a post is taken only from the issuer's own page.
+ *
+ * `/interaction/<uid>` is the step's page: the password form, with a link to Steam when the step
+ * has both, or a redirect to Steam when Steam is the only step. `/interaction/<uid>/steam` is
+ * where Steam sends the browser back.
+ *
+ * Steam is told to come back to exactly `<origin>/interaction/<uid>/steam?state=<state>`. The
+ * state is an HMAC of the uid under a key made here, so it cannot be worked out from the uid, is
+ * the same for every look at one sign-in, and dies with the process as the cookies do. A reply is
+ * for this sign-in only when Steam signed that address and the browser came back with that state.
+ *
+ * One reply is decided per sign-in at a time: a reply that arrives while another is being decided
+ * asks nothing and gets that decision's answer. A reply that is refused, or that Steam gives no
+ * answer about, ends the sign-in. Together they bound what a caller can make this service ask
+ * Steam, at one question that does not end in a valid reply per sign-in started; and a second
+ * load of a reply, which Steam vouches for once, cannot end the sign-in the first load completed.
  */
 export function createInteractionRouter(options: {
   readonly provider: Provider;
@@ -74,9 +169,124 @@ export function createInteractionRouter(options: {
 }): (req: IncomingMessage, res: ServerResponse, uid: string) => Promise<void> {
   const { provider, signIn } = options;
   const origin = new URL(options.issuer).origin;
+  const password =
+    signIn.kind === 'password' ? signIn : signIn.kind === 'steam' ? undefined : signIn.password;
+  const steam =
+    signIn.kind === 'steam' ? signIn : signIn.kind === 'password' ? undefined : signIn.steam;
+  const stateKey = randomBytes(32);
+  const deciding = new Map<string, Promise<Answer>>();
+
+  /** What Steam's reply for the sign-in `uid` must match: where it comes back to, and its state. */
+  const expectedOf = (uid: string): { readonly returnTo: string; readonly state: string } => {
+    const state = createHmac('sha256', stateKey).update(uid).digest('base64url');
+    return { returnTo: `${origin}${steamReplyPath(uid)}?state=${state}`, state };
+  };
+
+  /** Stores the sign-in's result for `sub` and returns where the browser goes on to. */
+  const signedIn = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    clientId: string,
+    sub: string,
+    checkedAt: number,
+  ): Promise<string> => {
+    const grant = new provider.Grant({ accountId: sub, clientId });
+    grant.addOIDCScope('openid');
+    const grantId = await grant.save();
+    return provider.interactionResult(
+      req,
+      res,
+      { login: { accountId: sub, remember: false, ts: checkedAt }, consent: { grantId } },
+      { mergeWithLastSubmission: false },
+    );
+  };
+
+  type LiveSignIn = NonNullable<Awaited<ReturnType<typeof liveSignIn>>>;
+
+  const decideSteamReply = async (
+    step: SteamStep,
+    req: IncomingMessage,
+    res: ServerResponse,
+    interaction: LiveSignIn,
+    reply: URLSearchParams,
+  ): Promise<Answer> => {
+    // The second the reply's check starts is the session's login time, as for a password.
+    const checkedAt = Math.floor(Date.now() / 1000);
+    const outcome = await step.complete(reply, expectedOf(interaction.uid));
+    switch (outcome.kind) {
+      case 'signed-in':
+        return {
+          kind: 'redirect',
+          location: await signedIn(
+            req,
+            res,
+            String(interaction.params.client_id),
+            outcome.sub,
+            checkedAt,
+          ),
+        };
+      case 'not-owned':
+        return { kind: 'page', status: 403, html: notOwnedPage() };
+      case 'refused':
+        await interaction.destroy();
+        return { kind: 'page', status: 400, html: endedPage() };
+      case 'unavailable':
+        await interaction.destroy();
+        return { kind: 'page', status: 503, html: unavailablePage() };
+    }
+  };
+
+  const answerSteamReply = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    uid: string,
+    query: string,
+  ): Promise<void> => {
+    if (steam === undefined) {
+      text(res, 404, 'this sign-in has no Steam step');
+      return;
+    }
+    if (req.method !== 'GET') {
+      text(res, 405, 'this address takes GET', { allow: 'GET' });
+      return;
+    }
+    const interaction = await liveSignIn(provider, req, res, uid);
+    if (interaction === undefined) {
+      page(res, 400, endedPage());
+      return;
+    }
+    if (interaction.result?.login !== undefined) {
+      // A second load of a reply that has signed in: the same way on.
+      redirect(res, interaction.returnTo);
+      return;
+    }
+    let decision = deciding.get(interaction.uid);
+    if (decision === undefined) {
+      decision = decideSteamReply(steam, req, res, interaction, new URLSearchParams(query)).finally(
+        () => {
+          deciding.delete(interaction.uid);
+        },
+      );
+      deciding.set(interaction.uid, decision);
+    }
+    const decided = await decision;
+    if (decided.kind === 'redirect') redirect(res, decided.location);
+    else page(res, decided.status, decided.html);
+  };
 
   const answer = async (req: IncomingMessage, res: ServerResponse, uid: string): Promise<void> => {
-    if (req.method !== 'GET' && req.method !== 'POST') {
+    const target = req.url ?? '';
+    const mark = target.indexOf('?');
+    if ((mark === -1 ? target : target.slice(0, mark)) === steamReplyPath(uid)) {
+      await answerSteamReply(req, res, uid, mark === -1 ? '' : target.slice(mark + 1));
+      return;
+    }
+    if (password === undefined) {
+      if (req.method !== 'GET') {
+        text(res, 405, 'this address takes GET', { allow: 'GET' });
+        return;
+      }
+    } else if (req.method !== 'GET' && req.method !== 'POST') {
       text(res, 405, 'this address takes GET and POST', { allow: 'GET, POST' });
       return;
     }
@@ -96,9 +306,17 @@ export function createInteractionRouter(options: {
       page(res, 400, endedPage());
       return;
     }
-    const action = interactionPath(interaction.uid);
+    const steamUrl = (): string | undefined =>
+      steam?.loginUrl(expectedOf(interaction.uid).returnTo);
+    if (password === undefined) {
+      // Steam is the only step, and `steam` is defined whenever `password` is not.
+      redirect(res, String(steamUrl()));
+      return;
+    }
+    const form = (notice?: 'refused' | 'locked' | 'busy'): string =>
+      signInPage({ action: interactionPath(interaction.uid), steam: steamUrl(), notice });
     if (req.method === 'GET') {
-      page(res, 200, signInPage({ action }));
+      page(res, 200, form());
       return;
     }
     if (interaction.result?.login !== undefined) {
@@ -116,10 +334,10 @@ export function createInteractionRouter(options: {
     }
     const fields = new URLSearchParams(body);
     const [email, ...otherEmails] = fields.getAll('email');
-    const [password, ...otherPasswords] = fields.getAll('password');
+    const [given, ...otherPasswords] = fields.getAll('password');
     if (
       email === undefined ||
-      password === undefined ||
+      given === undefined ||
       otherEmails.length > 0 ||
       otherPasswords.length > 0
     ) {
@@ -132,40 +350,25 @@ export function createInteractionRouter(options: {
     // however late the resume that mints the code. Read before the check, so a reset that lands
     // while the hash is computed still ends them.
     const checkedAt = Math.floor(Date.now() / 1000);
-    const outcome = await signIn.attempt(email, password);
+    const outcome = await password.attempt(email, given);
     switch (outcome.kind) {
-      case 'signed-in': {
-        const grant = new provider.Grant({
-          accountId: outcome.sub,
-          clientId: String(interaction.params.client_id),
-        });
-        grant.addOIDCScope('openid');
-        const grantId = await grant.save();
+      case 'signed-in':
         redirect(
           res,
-          await provider.interactionResult(
-            req,
-            res,
-            {
-              login: { accountId: outcome.sub, remember: false, ts: checkedAt },
-              consent: { grantId },
-            },
-            { mergeWithLastSubmission: false },
-          ),
+          await signedIn(req, res, String(interaction.params.client_id), outcome.sub, checkedAt),
         );
         return;
-      }
       case 'not-owned':
         page(res, 403, notOwnedPage());
         return;
       case 'refused':
-        page(res, 400, signInPage({ action, notice: 'refused' }));
+        page(res, 400, form('refused'));
         return;
       case 'locked':
-        page(res, 429, signInPage({ action, notice: 'locked' }));
+        page(res, 429, form('locked'));
         return;
       case 'busy':
-        page(res, 503, signInPage({ action, notice: 'busy' }));
+        page(res, 503, form('busy'));
         return;
     }
   };

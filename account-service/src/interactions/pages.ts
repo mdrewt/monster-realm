@@ -35,15 +35,22 @@ const NOTICES = {
 } as const;
 
 /**
- * The email and password form of the dev sign-in. `action` is the path the form posts to; it is
- * the only thing a caller supplies, so the page never carries an email or a password back.
+ * The email and password form of the dev sign-in. `action` is the path the form posts to. With
+ * `steam`, Steam's login address for this sign-in, the page also offers the Steam sign-in as one
+ * link to it. Those two are all a caller supplies, so the page never carries an email or a
+ * password back.
  */
 export function signInPage(options: {
   readonly action: string;
   readonly notice?: keyof typeof NOTICES;
+  readonly steam?: string;
 }): string {
   const notice =
     options.notice === undefined ? '' : `<p role="alert">${NOTICES[options.notice]}</p>`;
+  const steam =
+    options.steam === undefined
+      ? ''
+      : `<p><a href="${escapeHtml(options.steam)}">Sign in through Steam</a></p>`;
   return page(
     'Sign in to Monster Realm',
     `<h1>Sign in</h1><p>Development and test accounts only.</p>${notice}` +
@@ -52,7 +59,7 @@ export function signInPage(options: {
       `<input id="email" name="email" type="email" autocomplete="username" required maxlength="${MAX_EMAIL_LENGTH}">` +
       '<label for="password">Password</label>' +
       `<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="${MAX_PASSWORD_LENGTH}">` +
-      '<button type="submit">Sign in</button></form>',
+      `<button type="submit">Sign in</button></form>${steam}`,
   );
 }
 
@@ -69,6 +76,14 @@ export function endedPage(): string {
   return page(
     'Sign-in ended',
     '<h1>This sign-in has ended</h1><p>Go back to the game and start signing in again.</p>',
+  );
+}
+
+/** Shown when Steam gave no answer about a sign-in. It names nothing about the account. */
+export function unavailablePage(): string {
+  return page(
+    'Steam could not be reached',
+    '<h1>Steam could not be reached</h1><p>Go back to the game and sign in again in a few minutes.</p>',
   );
 }
 
