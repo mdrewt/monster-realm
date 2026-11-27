@@ -1428,6 +1428,7 @@ const EXPECTED_GATED: &[&str] = &[
     "dev_expire_tactical_window",
     "dev_place_in_load_zone",
     "dismiss_dialogue",
+    "drop_world_binding",
     "enqueue_move",
     "essence_train",
     "evolve",
@@ -1470,11 +1471,11 @@ const EXPECTED_NO_WRITES: &[&str] = &[
 /// `DATA_LIFECYCLE_MANIFEST`, so this only refuses a manifest that shrank.
 const CLASSIFIED_TABLE_FLOOR: usize = 48;
 
-/// Reducer floor for the real corpus: the 69 reducer attributes it carries
-/// (the five trade-session reducers and the seven world-binding reducers
+/// Reducer floor for the real corpus: the 70 reducer attributes it carries
+/// (the five trade-session reducers and the eight world-binding reducers
 /// included), so the per-reducer verdict pin cannot be satisfied by an engine
 /// that finds almost none of them.
-const REDUCER_FLOOR: usize = 69;
+const REDUCER_FLOOR: usize = 70;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)
@@ -2442,6 +2443,9 @@ mod admission_roster {
                 crate::tactics::deploy_units(ctx, 0, Vec::new())
             }),
             probe("dismiss_dialogue", Player, crate::npc::dismiss_dialogue),
+            probe("drop_world_binding", OwnerOnly, |ctx| {
+                crate::world_binding::drop_world_binding(ctx, nobody())
+            }),
             probe("enqueue_move", Player, |ctx| {
                 crate::movement::enqueue_move(ctx, game_core::MoveInput::Jump, 0)
             }),
@@ -2725,11 +2729,11 @@ mod admission_roster {
         );
         assert_eq!(
             generated.len(),
-            49,
+            50,
             "the generated roster: 41 reducers before lpw-9 plus `set_world_access`, plus the \
-             seven world-binding reducers (`request_bind_nonce`, `request_bind_nonce_for`, \
+             eight world-binding reducers (`request_bind_nonce`, `request_bind_nonce_for`, \
              `bind_world_account`, `bind_world_account_for`, `set_world_names`, \
-             `set_world_allowlist`, `unbind_world_account`)"
+             `set_world_allowlist`, `unbind_world_account`, `drop_world_binding`)"
         );
     }
 
@@ -2833,9 +2837,9 @@ mod admission_roster {
         );
     }
 
-    /// The owner-only set is exactly `sync_content`, `set_world_access` and the four owner-only
+    /// The owner-only set is exactly `sync_content`, `set_world_access` and the five owner-only
     /// world-binding reducers (`request_bind_nonce_for`, `bind_world_account_for`,
-    /// `set_world_names`, `set_world_allowlist`); each,
+    /// `drop_world_binding`, `set_world_names`, `set_world_allowlist`); each,
     /// called by an unadmitted non-owner on a `Password` world, answers its OWN owner refusal
     /// (never the admission check's), with no write. `sync_content`'s refusal is read from the
     /// same caller on the same world with no access row, where no admission check can apply.
@@ -2854,6 +2858,7 @@ mod admission_roster {
             owner_only,
             BTreeSet::from([
                 "bind_world_account_for",
+                "drop_world_binding",
                 "request_bind_nonce_for",
                 "set_world_access",
                 "set_world_allowlist",
@@ -3043,6 +3048,7 @@ mod reducer_arguments {
         declare_reducer!(d, CLIENT, crate::accounts::delete_account);
         declare_reducer!(d, CLIENT, crate::tactics::deploy_units);
         declare_reducer!(d, CLIENT, crate::npc::dismiss_dialogue);
+        declare_reducer!(d, CLIENT, crate::world_binding::drop_world_binding);
         declare_reducer!(d, CLIENT, crate::movement::enqueue_move);
         declare_reducer!(d, CLIENT, crate::raising::essence_train);
         declare_reducer!(d, CLIENT, crate::evolution::evolve);

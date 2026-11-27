@@ -549,8 +549,8 @@ left a stranger 1 of its 20 rows over `/sql` and in a subscription, while the ow
   `sql` routes (measured on the probe) and through the MCP tools (measured for the audience
   refusal, which is the same reducer).
 - _In every reducer._ Every reducer of the generated client roster except the owner-only ones
-  (`sync_content`, `set_world_access`, `set_world_names`, `set_world_allowlist` and the two
-  relayed binding reducers) and `unbind_world_account`, which makes no admission check, makes the
+  (`sync_content`, `set_world_access`, `set_world_names`, `set_world_allowlist`,
+  `drop_world_binding` and the two relayed binding reducers) and `unbind_world_account`, which makes no admission check, makes the
   same check (`access::require_admitted`) before anything else, because a connection opened while its identity
   was admitted, or while the rule was `Open`, is not checked again by the host. The test
   `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` holds it: it takes the
@@ -690,7 +690,8 @@ release build has one way to be entitled: a login token on the official server, 
 world.
 
 - On the `official` build `bind_world_account`, the reducer that issues bind nonces, the
-  owner-relayed form of each (see "The order of calls") and `unbind_world_account` return one fixed
+  owner-relayed form of each (see "The order of calls"), `unbind_world_account` and the owner's
+  `drop_world_binding` return one fixed
   error of their own before they decode, read or write anything. An empty key list would
   fail every signature anyway; the fixed error is what lets a test tell the guard from that
   failure.
@@ -1382,7 +1383,7 @@ not-owned message for a bind), the shell and gate halves, the development recipe
 the run over two real hosts, and everything of a browser's bind (the account service's bind route,
 the page's half and a certificate for a bare address). On a `world` build no account exists, so `delete_account` and
 `request_data_export` cannot be reached by a bound player there; the host owns that data and
-deletes rows over SQL, and a player erases their own binding with `unbind_world_account`. The audience-scoped fallback
+deletes rows over SQL or drops a binding with `drop_world_binding`, and a player erases their own binding with `unbind_world_account`. The audience-scoped fallback
 (tokens from the account issuer addressed to one server, with the official module's audience
 check as the single defence and a private host that learns official identities) is not the route:
 a verifier builds and fits the budget. Its one untested question is answered: the audience check

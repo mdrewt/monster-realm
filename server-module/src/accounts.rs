@@ -8,8 +8,11 @@
 //! `schema::rekey_formation`), `privacy::purge_export_bundles`, and the
 //! `erase_*` / `anonymize_*` cascade family the deletion reaper delegates to
 //! (the tactical tables' `schema::erase_tactical_rows` included). The guest
-//! claim delegates to two of that family, `schema::erase_tactical_rows` and
-//! `battle::anonymize_battles`, for the guest identity it retires. Bare reads of
+//! claim delegates to four of that family, `access::erase_admission`,
+//! `world_binding::erase_world_binding`, `schema::erase_tactical_rows` and
+//! `battle::anonymize_battles`, for the guest identity it retires. The reaper
+//! also calls `world_binding::delist_account_of`, which takes the deleted
+//! identity's bound account off the host's list. Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read
 //! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
@@ -1106,8 +1109,9 @@ pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), Strin
 }
 
 /// Complete a guest→account claim: re-key the guest's game data onto the caller,
-/// erase what stays behind under the retired guest identity (its export bundles
-/// and its finished battles), consume the code (single-use), stamp provenance
+/// erase what stays behind under the retired guest identity (its export bundles,
+/// its world admission, wrong-password record, binding and bind nonce, and its
+/// finished battles), consume the code (single-use), stamp provenance
 /// (AUTH-12..21, 26, 34, 35).
 ///
 /// Guard ordering: all caller-state checks (1–4) run BEFORE any code resolution
@@ -1188,6 +1192,12 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // how many chunks it deleted; the count is published
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
+    // The guest's world rows are not re-keyed either: its admission, its
+    // wrong-password record, its binding and its bind nonce go with the identity,
+    // so a later change to `Allowlist` does not list the account of a guest that
+    // is gone. The host's list is not written here.
+    crate::access::erase_admission(ctx, guest);
+    crate::world_binding::erase_world_binding(ctx, guest);
     // The guest's finished battles are not re-keyed (why: docs/DECISIONS.md,
     // "Accounts, guest identity and the claim flow"). The claim erases them as
     // the deletion cascade erases its subject's: the per-battle tactical rows
@@ -1458,7 +1468,9 @@ pub struct AccountDeletionReaperSchedule {
 /// below yanks rows out from under a live battle/trade resolution; 6b the
 /// delegated ERASE sweeps in manifest order (write isolation: every
 /// foreign-table write lives in its owning module, the `rekey_all`
-/// precedent), including the export-bundle purge; 6d `character` strictly
+/// precedent), including the export-bundle purge, and, ahead of the world
+/// binding's erase, the removal of the subject's bound account from the
+/// host's allowlist (`world_binding::delist_account_of`); 6d `character` strictly
 /// before 6c's player display-name tombstone (the spec's order pin — the join
 /// key is the live `player` row); the battle anonymize sweeps its own
 /// join-only children per row before each identity swap; then 6e — LAST, and
@@ -1506,6 +1518,8 @@ pub fn account_deletion_reaper(
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::access::erase_admission(ctx, args.account_identity);
+    // Before the binding goes: it is the only record of the account to take off the list.
+    crate::world_binding::delist_account_of(ctx, args.account_identity);
     crate::world_binding::erase_world_binding(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::schema::erase_tactical_rows(ctx, args.account_identity);

@@ -35,8 +35,9 @@
 //! hash, and the module reads neither.
 //!
 //! WRITE-ISOLATION: this module alone writes `world_access` and `world_admission`, and deletes
-//! `world_admission_attempt` rows (an identity's, when it is admitted or erased); an unbind
-//! deletes an admission row through [`withdraw_admission`]. It reads `config` for the owner,
+//! `world_admission_attempt` rows (an identity's, when it is admitted or erased); an unbind and
+//! the owner's drop of a binding delete an admission row through [`withdraw_admission`]. It
+//! reads `config` for the owner,
 //! reads a binding and the host's list and adds to that list through `crate::world_binding`, and,
 //! when the rule changes, reads the live sessions through `crate::live_session_identities`.
 
@@ -94,8 +95,9 @@ fn holds_admission(ctx: &ReducerContext, identity: Identity) -> bool {
 /// owner and an identity with a `world_admission` row; under `Allowlist` the owner, an
 /// identity whose trusted binding names a listed account, and an identity with no trusted
 /// binding that holds a `world_admission` row. A bound identity whose account is not listed
-/// is refused even with an admission row: the list alone governs it, and its unbind takes the
-/// row with it (`world_binding::unbind_world_account`).
+/// is refused even with an admission row: the list alone governs it, and its unbind or the
+/// owner's drop takes the row with it (`world_binding::unbind_world_account`,
+/// `world_binding::drop_world_binding`).
 pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
     match rule_in_force(ctx) {
         WorldAccessRule::Open => true,
@@ -177,8 +179,8 @@ fn admit_identity(ctx: &ReducerContext, who: Identity, now: i64) {
     }
 }
 
-/// Delete `identity`'s admission row, when it holds one, and nothing else. Called by
-/// `world_binding::unbind_world_account`.
+/// Delete `identity`'s admission row, when it holds one, and nothing else. Called when
+/// `world_binding.rs` erases a binding the build counts, for an unbind or the owner's drop.
 pub(crate) fn withdraw_admission(ctx: &ReducerContext, identity: Identity) {
     if holds_admission(ctx, identity) {
         ctx.db.world_admission().identity().delete(identity);
@@ -186,7 +188,8 @@ pub(crate) fn withdraw_admission(ctx: &ReducerContext, identity: Identity) {
 }
 
 /// Erase what this module holds about `identity`: its admission and any wrong-password record an
-/// earlier module wrote. The deletion cascade's step for these two tables.
+/// earlier module wrote. The step for these two tables of the deletion cascade, and of a guest
+/// claim for the guest identity it retires.
 pub(crate) fn erase_admission(ctx: &ReducerContext, identity: Identity) {
     ctx.db.world_admission().identity().delete(identity);
     ctx.db.world_admission_attempt().identity().delete(identity);

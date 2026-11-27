@@ -996,9 +996,10 @@ fn data_lifecycle_partition_matches_spec_section3() {
          `export_bundle_reaper_schedule` (ADR-0238), sr-7's `battle_summary_reaper_schedule`, \
          lpw-3's `module_info`, lpw-9's `world_access` (the one global access-rule row), and \
          `world_name` and `world_allowlist` (the world's own names and the host's list of \
-         account subjects, each written only by the owner, with no Identity column). \
-         The additions are bookkeeping rather than player data, and \
-         none is reachable by a per-owner cascade step: the rb-24 row holds the identity whose \
+         account subjects, neither with an Identity column; the deletion cascade removes a \
+         deleted identity's own bound subject from the list unless another counted binding \
+         carries it). The additions are bookkeeping rather than player data, and \
+         none is keyed by an identity a per-owner cascade step looks up: the rb-24 row holds the identity whose \
          own cascade it runs, and the rb-48 and sr-7 schedule rows and lpw-3's protocol-number \
          row are each ONE GLOBAL row with no Identity column at all, so there is nothing for a \
          cascade to key on. Every one is an EXPLICIT registry entry with a mandatory reason — \
@@ -3579,7 +3580,8 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
              carries {n} Identity column(s) at some depth, and `{table}` is NOT one of the four \
              frozen exceptions (config, guest_claim, guest_claim_reaper_schedule, \
              account_deletion_reaper_schedule). A NotOwned table with a real owner key is \
-             never erased by the deletion cascade (a NotOwned table has no erase step), \
+             never erased by the deletion cascade (no erase step keys a NotOwned table on an \
+             identity), \
              so its rows survive every account deletion silently \
              — this is the single largest deletion-completeness hole PRV1-15's 'with a direct \
              Identity column' clause exists to close. Either reclassify `{table}` \
@@ -8115,10 +8117,11 @@ mod acct_nh {
         // trade offer: the claim deletes the claimer's sessions instead of
         // moving any onto it. A world admission and the wrong-password record
         // are not re-keyed either: a signed-in identity is a different
-        // identity and passes the door itself, so a claim neither moves nor
-        // erases an admission. A world binding and a bind nonce stay with the
-        // identity that presented the attestation, for the same reason: a
-        // claim neither moves nor erases a binding or a nonce.
+        // identity and passes the door itself, so a claim never moves an
+        // admission onto the claimer. A world binding and a bind nonce belong
+        // to the identity that presented the attestation, for the same reason:
+        // a claim never moves a binding or a nonce. The claim erases the
+        // retired guest's rows of all four tables and leaves the claimer's.
         const NOT_REKEYED: [&str; 20] = [
             "player",
             "player_conversation",
@@ -12724,6 +12727,613 @@ mod acct_nh {
              live: {names_claimer:?}"
         );
         assert_sessions_exactly(&w, &[&strangers], "ts2/claim-deletes");
+    }
+
+    // --- the world's admission and binding rows across the claim and the cascade ----
+
+    mod world_rows {
+        use super::*;
+        use crate::schema::{Config, WorldAccess, WorldAccessRule, WorldAllowlist};
+
+        /// A `kid` no build holds: a binding made under it counts for nothing.
+        const RETIRED_KID: &str = "kid-the-build-does-not-hold";
+        const GUEST_SUB: &str = "dev:claim-guest";
+        const CLAIMER_SUB: &str = "dev:claim-claimer";
+        const BYSTANDER_SUB: &str = "dev:claim-bystander";
+        const OWN_SUB: &str = "dev:cascade-own";
+        const OTHER_SUB: &str = "dev:cascade-other";
+        const KEPT_SUB: &str = "dev:cascade-kept";
+
+        /// The `kid` of a key the default test build holds: a binding under it counts.
+        fn dev_kid() -> &'static str {
+            crate::accounts::DEV_ATTESTATION_KEYS[0].kid
+        }
+
+        /// The world owner the access-rule tests name in `config`.
+        fn world_owner() -> Identity {
+            id(0xD9)
+        }
+
+        /// Registers `world_allowlist` on its key (read, scanned and written) and makes
+        /// `world_binding` scannable, beside what [`world`] registers.
+        fn listing(fx: &Fixture) -> Handle<'_, WorldAllowlist, String> {
+            let _ = fx
+                .table::<WorldBinding>("world_binding", "identity", |r| r.identity)
+                .unique()
+                .writable()
+                .scannable();
+            fx.table_keyed::<WorldAllowlist, String>("world_allowlist", "account_subject", |r| {
+                r.account_subject.clone()
+            })
+            .unique()
+            .writable()
+            .scannable()
+        }
+
+        /// [`listing`] plus what the owner's `set_world_access` reads and writes: `config`
+        /// naming [`world_owner`], `world_access` (no row: `Open`) and `player_session`
+        /// scannable for the carry-over.
+        fn switchable(fx: &Fixture) -> Handle<'_, WorldAllowlist, String> {
+            let list = listing(fx);
+            fx.table_keyed::<Config, u32>("config", "id", |r| r.id)
+                .unique()
+                .seed(&Config {
+                    id: 0,
+                    content_version: 0,
+                    owner_identity: world_owner(),
+                });
+            let _ = fx
+                .table_keyed::<WorldAccess, u32>("world_access", "id", |r| r.id)
+                .unique()
+                .writable();
+            let _ = fx
+                .table::<PlayerSession>("player_session", "identity", |r| r.identity)
+                .writable()
+                .scannable();
+            list
+        }
+
+        fn enlist(list: &Handle<'_, WorldAllowlist, String>, subjects: &[&str]) {
+            for subject in subjects {
+                list.seed(&WorldAllowlist {
+                    account_subject: (*subject).to_string(),
+                });
+            }
+        }
+
+        /// The listed subjects, sorted.
+        fn listed(list: &Handle<'_, WorldAllowlist, String>) -> Vec<String> {
+            let mut out: Vec<String> = list.rows().into_iter().map(|r| r.account_subject).collect();
+            out.sort();
+            out
+        }
+
+        /// `xs` as owned strings, sorted.
+        fn subjects(xs: &[&str]) -> Vec<String> {
+            let mut out: Vec<String> = xs.iter().map(|x| (*x).to_string()).collect();
+            out.sort();
+            out
+        }
+
+        fn bind(w: &W<'_>, who: Identity, subject: &str, kid: &str) {
+            w.binding.seed(&WorldBinding {
+                identity: who,
+                account_subject: subject.to_string(),
+                bound_at_ms: T0 - 30,
+                entitled: true,
+                key_id: kid.to_string(),
+            });
+        }
+
+        fn bind_nonce(w: &W<'_>, who: Identity, k: i64) {
+            w.bind_nonce.seed(&WorldBindNonce {
+                identity: who,
+                nonce: format!("{k:032x}"),
+                expires_at_ms: T0 + 300_000 + k,
+            });
+        }
+
+        /// `who` holds a row of each of the four world tables: an admission, a
+        /// wrong-password record, a binding to `subject` under `kid` and a bind nonce.
+        fn seed_world_rows(w: &W<'_>, who: Identity, subject: &str, kid: &str, k: i64) {
+            w.admission.seed(&WorldAdmission {
+                identity: who,
+                admitted_at_ms: T0 - 100 + k,
+            });
+            w.admission_attempt.seed(&WorldAdmissionAttempt {
+                identity: who,
+                wrong_at_ms: vec![T0 - 50 + k, T0 - 40 + k],
+                last_wrong_at_ms: T0 - 40 + k,
+            });
+            bind(w, who, subject, kid);
+            bind_nonce(w, who, k);
+        }
+
+        /// `who`'s rows of the four world tables, per table, as sorted canonical bytes.
+        fn world_rows_of(w: &W<'_>, who: Identity) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+            vec![
+                (
+                    "world_admission",
+                    encs(
+                        &w.admission
+                            .rows()
+                            .into_iter()
+                            .filter(|r| r.identity == who)
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                (
+                    "world_admission_attempt",
+                    encs(
+                        &w.admission_attempt
+                            .rows()
+                            .into_iter()
+                            .filter(|r| r.identity == who)
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                (
+                    "world_binding",
+                    encs(
+                        &w.binding
+                            .rows()
+                            .into_iter()
+                            .filter(|r| r.identity == who)
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                (
+                    "world_bind_nonce",
+                    encs(
+                        &w.bind_nonce
+                            .rows()
+                            .into_iter()
+                            .filter(|r| r.identity == who)
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+            ]
+        }
+
+        /// What [`world_rows_of`] reports for an identity holding none of the four.
+        fn no_world_rows() -> Vec<(&'static str, Vec<Vec<u8>>)> {
+            [
+                "world_admission",
+                "world_admission_attempt",
+                "world_binding",
+                "world_bind_nonce",
+            ]
+            .into_iter()
+            .map(|table| (table, Vec::new()))
+            .collect()
+        }
+
+        /// Guest `g` is in the world with game data (monster 101 among it), starts a claim
+        /// and leaves; account `c` (no game data) completes the claim through the shipped
+        /// `complete_guest_claim`. Returns the claim's answer.
+        fn claim_guest(fx: &Fixture, w: &W<'_>, g: Identity, c: Identity) -> Result<(), String> {
+            let secret = code('4');
+            w.player.seed(&player_row(g, 1, "Guesty"));
+            assert_eq!(
+                fx.run_as_at(g, at(T0), |ctx| {
+                    crate::accounts::start_guest_claim(ctx, secret.clone())
+                }),
+                Ok(()),
+                "the guest starts a claim"
+            );
+            assert_eq!(w.player.remove(g), 1, "the guest leaves");
+            seed_rekey_rows(w, g, 1);
+            for identity in ladder_oracle(&w.profile.rows(), 100) {
+                w.ladder.seed(&crate::schema::LeaderboardTop { identity });
+            }
+            w.account
+                .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+            signed_in(fx, c, T0 + 1_000, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            })
+        }
+
+        fn owns_monster_101(w: &W<'_>, who: Identity) -> bool {
+            w.monster
+                .rows()
+                .iter()
+                .any(|m| m.monster_id == 101 && m.owner_identity == who)
+        }
+
+        /// `v`, holding an active account, requests its deletion and the shipped
+        /// `account_deletion_reaper` completes the cascade.
+        fn cascade(fx: &Fixture, w: &W<'_>, v: Identity) {
+            w.account
+                .seed(&crate::accounts::new_account_row(v, "iss".to_string(), 1));
+            let _ = deletion_completed_for(fx, v, T0 + 10);
+        }
+
+        // --- the claim ---------------------------------------------------------------
+
+        /// The retired guest holds an admission, a wrong-password record, a dev-key binding
+        /// and a nonce; so do the claimer and a bystander. The claim answers `Ok`, moves the
+        /// guest's monster to the claimer, and leaves the guest no row of any of the four
+        /// tables, while the claimer's and the bystander's rows stay byte for byte.
+        ///
+        /// kills: a claim with no erase; the claimer's or the bystander's rows erased in
+        /// place of the guest's; only some of the four tables erased; an erase that breaks
+        /// the claim itself.
+        #[test]
+        fn a_completed_claim_erases_the_retired_guests_world_rows_and_no_one_elses_wr261127a_1() {
+            let fx = fixture();
+            let w = world(&fx);
+            let _list = listing(&fx);
+            let (g, c, b) = (id(0xD1), id(0xD2), id(0xD3));
+            seed_world_rows(&w, g, GUEST_SUB, dev_kid(), 1);
+            seed_world_rows(&w, c, CLAIMER_SUB, dev_kid(), 2);
+            seed_world_rows(&w, b, BYSTANDER_SUB, dev_kid(), 3);
+            assert!(
+                world_rows_of(&w, g).iter().all(|(_, rows)| rows.len() == 1),
+                "fixture: the guest holds one row of each world table"
+            );
+            let claimer_before = world_rows_of(&w, c);
+            let bystander_before = world_rows_of(&w, b);
+
+            assert_eq!(claim_guest(&fx, &w, g, c), Ok(()), "the claim completes");
+            assert!(
+                owns_monster_101(&w, c),
+                "the claim still moves the guest's monster to the claimer"
+            );
+            assert_eq!(
+                world_rows_of(&w, g),
+                no_world_rows(),
+                "the retired guest holds no admission, attempt, binding or nonce row"
+            );
+            assert_eq!(
+                world_rows_of(&w, c),
+                claimer_before,
+                "the claimer's own rows stay"
+            );
+            assert_eq!(
+                world_rows_of(&w, b),
+                bystander_before,
+                "the bystander's rows stay"
+            );
+        }
+
+        /// A retired guest whose binding is under a key the build does not hold, with a
+        /// nonce and no admission row: the claim erases the binding and the nonce too.
+        ///
+        /// kills: a claim that erases only a binding the build counts.
+        #[test]
+        fn the_claim_erases_a_guest_binding_the_build_does_not_count_wr261127a_1() {
+            let fx = fixture();
+            let w = world(&fx);
+            let _list = listing(&fx);
+            let (g, c) = (id(0xD4), id(0xD5));
+            bind(&w, g, GUEST_SUB, RETIRED_KID);
+            bind_nonce(&w, g, 4);
+            assert_eq!(claim_guest(&fx, &w, g, c), Ok(()), "the claim completes");
+            assert_eq!(
+                world_rows_of(&w, g),
+                no_world_rows(),
+                "the uncounted binding and the nonce are gone"
+            );
+        }
+
+        /// The retired guest's subject, and another, are on the host's list: the claim
+        /// leaves the list unchanged, with no write call on it.
+        ///
+        /// kills (a control): a claim that writes `world_allowlist`.
+        #[test]
+        fn the_claim_leaves_the_allowlist_as_it_was_wr261127a_1() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (g, c) = (id(0xD6), id(0xD7));
+            seed_world_rows(&w, g, GUEST_SUB, dev_kid(), 6);
+            enlist(&list, &[GUEST_SUB, BYSTANDER_SUB]);
+            assert_eq!(claim_guest(&fx, &w, g, c), Ok(()), "the claim completes");
+            assert_eq!(
+                listed(&list),
+                subjects(&[GUEST_SUB, BYSTANDER_SUB]),
+                "every list row stays"
+            );
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "the claim makes no write call on the list"
+            );
+        }
+
+        /// Beside the retired guest, bound to [`GUEST_SUB`] under the dev key, another
+        /// identity holds an admission, a wrong-password record, a dev-key binding to the
+        /// same [`GUEST_SUB`] and a nonce. The claim answers `Ok`, leaves the guest none of
+        /// the four rows, and leaves the other identity's four rows byte for byte.
+        ///
+        /// kills: a claim that erases every binding carrying the guest's subject.
+        #[test]
+        fn the_claim_leaves_another_identity_bound_to_the_guests_subject_wr261127a_1() {
+            let fx = fixture();
+            let w = world(&fx);
+            let _list = listing(&fx);
+            let (g, c, s) = (id(0xC1), id(0xC2), id(0xC3));
+            seed_world_rows(&w, g, GUEST_SUB, dev_kid(), 8);
+            seed_world_rows(&w, s, GUEST_SUB, dev_kid(), 9);
+            let other_before = world_rows_of(&w, s);
+            assert!(
+                other_before.iter().all(|(_, rows)| rows.len() == 1),
+                "fixture: the other identity holds one row of each world table"
+            );
+
+            assert_eq!(claim_guest(&fx, &w, g, c), Ok(()), "the claim completes");
+            assert_eq!(
+                world_rows_of(&w, g),
+                no_world_rows(),
+                "the retired guest holds no admission, attempt, binding or nonce row"
+            );
+            assert_eq!(
+                world_rows_of(&w, s),
+                other_before,
+                "the other identity bound to the guest's subject keeps all four rows"
+            );
+        }
+
+        // --- the claim, then the owner's switch to `Allowlist` ------------------------
+
+        /// The owner switches the world from `Open` to `Allowlist`.
+        fn to_allowlist(fx: &Fixture, ms: i64) -> Result<(), String> {
+            as_conn(fx, world_owner(), None, ms, |ctx| {
+                crate::access::set_world_access(ctx, WorldAccessRule::Allowlist, Vec::new())
+            })
+        }
+
+        /// On an `Open` world, the guest is the only identity bound to [`GUEST_SUB`] (under
+        /// the dev key); the claimer and a bystander are bound to subjects of their own. After
+        /// the claim, the owner's switch to `Allowlist` lists the claimer's and the
+        /// bystander's subjects and not the guest's.
+        ///
+        /// kills: a claim that leaves the guest's binding (its subject is seeded); a claim that
+        /// erases the claimer's binding in place of the guest's.
+        #[test]
+        fn after_the_claim_the_switch_to_allowlist_does_not_list_the_guests_subject_wr261127a_2() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = switchable(&fx);
+            let (g, c, b) = (id(0xE1), id(0xE2), id(0xE3));
+            bind(&w, g, GUEST_SUB, dev_kid());
+            bind(&w, c, CLAIMER_SUB, dev_kid());
+            bind(&w, b, BYSTANDER_SUB, dev_kid());
+            assert_eq!(claim_guest(&fx, &w, g, c), Ok(()), "the claim completes");
+            assert_eq!(to_allowlist(&fx, T0 + 2_000), Ok(()), "the switch");
+            assert_eq!(
+                listed(&list),
+                subjects(&[BYSTANDER_SUB, CLAIMER_SUB]),
+                "the bound subjects are listed, the retired guest's is not"
+            );
+        }
+
+        /// The same world with no claim: the switch lists the guest's subject beside the
+        /// others, so the test above cannot pass on a seed that lists nothing of the guest's
+        /// for another reason.
+        ///
+        /// kills (a control): a seed that skips the guest's binding whatever the claim did.
+        #[test]
+        fn without_the_claim_the_switch_to_allowlist_lists_the_guests_subject_wr261127a_2() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = switchable(&fx);
+            let (g, c, b) = (id(0xE4), id(0xE5), id(0xE6));
+            bind(&w, g, GUEST_SUB, dev_kid());
+            bind(&w, c, CLAIMER_SUB, dev_kid());
+            bind(&w, b, BYSTANDER_SUB, dev_kid());
+            assert_eq!(to_allowlist(&fx, T0 + 2_000), Ok(()), "the switch");
+            assert_eq!(
+                listed(&list),
+                subjects(&[BYSTANDER_SUB, CLAIMER_SUB, GUEST_SUB]),
+                "every bound subject is listed"
+            );
+        }
+
+        // --- the cascade -------------------------------------------------------------
+
+        /// The deleted identity is bound under the dev key to a listed subject no one else
+        /// carries. The cascade removes exactly that list row: a spelling of it in other
+        /// letter case, a longer one, a shorter one, a bystander's listed subject and an
+        /// unrelated row all stay. The bystander's binding stays.
+        ///
+        /// kills: a cascade with no delist; the delist run after the binding is erased
+        /// (the subject is gone by then); the deleted identity's own binding counted as
+        /// another carrier; more than the one row removed, or the whole list cleared.
+        #[test]
+        fn the_cascade_removes_the_deleted_identitys_own_listed_subject_wr261127a_3() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (v, b) = (id(0xF1), id(0xF2));
+            bind(&w, v, OWN_SUB, dev_kid());
+            bind(&w, b, OTHER_SUB, dev_kid());
+            let near = ["DEV:CASCADE-OWN", "dev:cascade-own1", "dev:cascade-ow"];
+            enlist(&list, &[OWN_SUB, OTHER_SUB, KEPT_SUB]);
+            enlist(&list, &near);
+            cascade(&fx, &w, v);
+            let mut want = subjects(&[OTHER_SUB, KEPT_SUB]);
+            want.extend(subjects(&near));
+            want.sort();
+            assert_eq!(listed(&list), want, "only the own subject's row is gone");
+            assert_eq!(
+                world_rows_of(&w, v)[2],
+                ("world_binding", Vec::new()),
+                "the deleted identity's binding is erased"
+            );
+            assert_eq!(
+                world_rows_of(&w, b)[2].1.len(),
+                1,
+                "the bystander's binding stays"
+            );
+        }
+
+        /// The deleted identity's own binding is under a key the build does not hold: its
+        /// listed subject is removed all the same.
+        ///
+        /// kills: a delist only for a deleted identity whose own binding the build counts.
+        #[test]
+        fn the_cascade_removes_the_subject_of_an_uncounted_own_binding_wr261127a_3() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let v = id(0xF3);
+            bind(&w, v, OWN_SUB, RETIRED_KID);
+            enlist(&list, &[OWN_SUB, KEPT_SUB]);
+            cascade(&fx, &w, v);
+            assert_eq!(listed(&list), subjects(&[KEPT_SUB]));
+        }
+
+        /// Another identity carries the subject only under a key the build does not hold, and
+        /// a third carries it only in another letter case under the dev key: neither keeps the
+        /// deleted identity's subject listed. The other-case row, listed too, stays.
+        ///
+        /// kills: an uncounted binding taken as a carrier; carriers compared without case.
+        #[test]
+        fn neither_an_uncounted_carrier_nor_another_spelling_keeps_the_subject_wr261127a_3() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (v, stale, cased) = (id(0xF4), id(0xF5), id(0xF6));
+            bind(&w, v, OWN_SUB, dev_kid());
+            bind(&w, stale, OWN_SUB, RETIRED_KID);
+            bind(&w, cased, "DEV:CASCADE-OWN", dev_kid());
+            enlist(&list, &[OWN_SUB, "DEV:CASCADE-OWN"]);
+            cascade(&fx, &w, v);
+            assert_eq!(listed(&list), subjects(&["DEV:CASCADE-OWN"]));
+        }
+
+        /// Another identity is bound to the same subject under the dev key: the cascade leaves
+        /// every list row unchanged, with no write call on the list, and the other binding
+        /// stays.
+        ///
+        /// kills: a delist with no check for another counted carrier; a delete call issued
+        /// for a subject that is kept.
+        #[test]
+        fn another_counted_binding_keeps_the_subject_listed_with_no_write_wr261127a_4() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (v, twin) = (id(0xF7), id(0xF8));
+            bind(&w, v, OWN_SUB, dev_kid());
+            bind(&w, twin, OWN_SUB, dev_kid());
+            enlist(&list, &[OWN_SUB, KEPT_SUB]);
+            cascade(&fx, &w, v);
+            assert_eq!(listed(&list), subjects(&[OWN_SUB, KEPT_SUB]));
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
+            assert_eq!(
+                world_rows_of(&w, twin)[2].1.len(),
+                1,
+                "the other binding stays"
+            );
+        }
+
+        /// The deleted identity holds no binding: the list, a bound bystander's subject on it
+        /// included, is left unchanged, with no write call.
+        ///
+        /// kills: a list row removed, or the list cleared, for an identity with no binding.
+        #[test]
+        fn an_identity_with_no_binding_leaves_the_list_untouched_wr261127a_4() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (v, b) = (id(0xF9), id(0xFA));
+            bind(&w, b, OTHER_SUB, dev_kid());
+            enlist(&list, &[OTHER_SUB, KEPT_SUB]);
+            cascade(&fx, &w, v);
+            assert_eq!(listed(&list), subjects(&[OTHER_SUB, KEPT_SUB]));
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
+        }
+
+        /// The deleted identity is bound to a subject the list does not hold: the list is left
+        /// unchanged, with no write call.
+        ///
+        /// kills: a delete call on the list for a subject that is not listed.
+        #[test]
+        fn a_subject_that_is_not_listed_makes_no_write_on_the_list_wr261127a_4() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let v = id(0xFB);
+            bind(&w, v, OWN_SUB, dev_kid());
+            enlist(&list, &[KEPT_SUB]);
+            cascade(&fx, &w, v);
+            assert_eq!(listed(&list), subjects(&[KEPT_SUB]));
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
+        }
+
+        /// Three other identities are bound to the deleted identity's subject: one under the
+        /// dev key, the two others under a key the build does not hold, one of them sorting
+        /// below the counted one and one above it, both seeded around it. The one counted
+        /// carrier keeps the subject listed: the list stays byte for byte, with no write call.
+        ///
+        /// kills: a delist decided from the first other binding found rather than from any.
+        #[test]
+        fn a_counted_carrier_among_uncounted_ones_keeps_the_subject_listed_wr261127a_4() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (low, counted, high, v) = (id(0x10), id(0x50), id(0x90), id(0x70));
+            bind(&w, low, OWN_SUB, RETIRED_KID);
+            bind(&w, counted, OWN_SUB, dev_kid());
+            bind(&w, high, OWN_SUB, RETIRED_KID);
+            bind(&w, v, OWN_SUB, dev_kid());
+            enlist(&list, &[OWN_SUB, KEPT_SUB]);
+            let before = encs(&list.rows());
+            cascade(&fx, &w, v);
+            assert_eq!(listed(&list), subjects(&[OWN_SUB, KEPT_SUB]));
+            assert_eq!(encs(&list.rows()), before, "the list stays byte for byte");
+            assert_eq!(
+                fx.writes_to("world_allowlist"),
+                0,
+                "no write call on the list"
+            );
+        }
+
+        /// The deleted identity is bound under the dev key to a subject spelled with upper-case
+        /// letters. The list holds it, its all-lower-case twin, a longer spelling another
+        /// identity is bound to under the dev key, and an unrelated row. The cascade removes
+        /// exactly the deleted identity's spelling; every other row stays, and so does the
+        /// other identity's binding.
+        ///
+        /// kills: the subject lower-cased before the list lookup or delete; a carrier matched
+        /// by prefix rather than by equality.
+        #[test]
+        fn a_mixed_case_subject_is_removed_exactly_not_kept_by_a_longer_one_wr261127a_3() {
+            let fx = fixture();
+            let w = world(&fx);
+            let list = listing(&fx);
+            let (v, longer) = (id(0xFC), id(0xFD));
+            let mixed = "Dev:Cascade-Mixed";
+            let lower = "dev:cascade-mixed";
+            let extended = "Dev:Cascade-Mixed1";
+            bind(&w, v, mixed, dev_kid());
+            bind(&w, longer, extended, dev_kid());
+            enlist(&list, &[mixed, lower, extended, KEPT_SUB]);
+            cascade(&fx, &w, v);
+            assert_eq!(
+                listed(&list),
+                subjects(&[lower, extended, KEPT_SUB]),
+                "only the deleted identity's exact spelling is gone"
+            );
+            assert_eq!(
+                world_rows_of(&w, longer)[2].1.len(),
+                1,
+                "the longer spelling's binding stays"
+            );
+        }
     }
 }
 

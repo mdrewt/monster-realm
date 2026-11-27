@@ -12,8 +12,8 @@
 
 use super::{
     attestation_expired, bind_nonce_expired, bind_world_account, bind_world_account_for,
-    binds_nothing, bound_entitled, erase_world_binding, is_visible_ascii, on_allowlist,
-    request_bind_nonce, request_bind_nonce_for, set_world_allowlist, set_world_names,
+    binds_nothing, bound_entitled, drop_world_binding, erase_world_binding, is_visible_ascii,
+    on_allowlist, request_bind_nonce, request_bind_nonce_for, set_world_allowlist, set_world_names,
     trusted_binding, verify_attestation, VerifiedAttestation, ACCOUNT_SUBJECT_MAX_BYTES,
     ATTESTATION_MAX_BYTES, BIND_NONCE_BYTES, BIND_NONCE_SWEEP_MAX, BIND_NONCE_TTL_MS,
     MAX_ALLOWLIST_ACCOUNTS, MAX_WORLD_NAMES, REJECT_ALLOWLIST_ACCOUNT, REJECT_ATTESTATION_EXPIRED,
@@ -688,6 +688,11 @@ fn passes(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
 /// `who` erases its own binding (`unbind_world_account`).
 fn unbind(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
     call(fx, who, ms, super::unbind_world_account)
+}
+
+/// `caller` drops the binding of `who` (`drop_world_binding`).
+fn drop_binding_of(fx: &Fixture, caller: Identity, who: Identity, ms: i64) -> Result<(), String> {
+    call(fx, caller, ms, |ctx| drop_world_binding(ctx, who))
 }
 
 // =====================================================================================
@@ -2967,6 +2972,60 @@ mod official_build {
         });
         assert_refused_unread(&fx, &w, "a caller with no binding", || {
             unbind(&fx, id(0x44), BIND_AT)
+        });
+    }
+
+    /// The owner's drop of a bound identity holding a nonce and an admission row is refused
+    /// with no write: the binding, the nonce and the admission row all stay.
+    ///
+    /// kills: the inert reducer (`Ok`); a drop that erases on a build that binds nothing.
+    #[test]
+    fn the_official_build_refuses_the_owners_drop_with_no_write_wr261127a_6_official() {
+        let fx = fixture();
+        let w = bindable_world(&fx);
+        w.binding
+            .seed(&binding_row(alice(), SUB, T0 - 5_000, true, dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        assert_refused(
+            &fx,
+            &w,
+            REJECT_BUILD_BINDS_NOTHING,
+            "drop_world_binding",
+            || drop_binding_of(&fx, owner(), alice(), BIND_AT),
+        );
+        assert!(
+            bindings(&w).contains(&bview(alice(), SUB, T0 - 5_000, true, dev_kid())),
+            "the binding stays"
+        );
+        assert_eq!(
+            nonce_of(&w, alice()),
+            Some((NONCE_A.to_string(), NONCE_EXPIRES)),
+            "the nonce row stays"
+        );
+        assert_eq!(w.admission.rows().len(), 1, "the admission row stays");
+    }
+
+    /// The build's refusal is the drop's first step and reads nothing: for a caller that is
+    /// not the owner, for the owner naming an identity pending deletion, and for the owner
+    /// naming an identity with no binding.
+    ///
+    /// kills: the build guard placed after the owner check, after the deletion gate or after
+    /// the binding lookup.
+    #[test]
+    fn the_build_refusal_comes_before_every_other_drop_check_wr261127a_6_official() {
+        let fx = fixture();
+        let w = bindable_world(&fx);
+        w.binding
+            .seed(&binding_row(alice(), SUB, T0 - 5_000, true, dev_kid()));
+        w.account.seed(&deleting_account(alice()));
+        assert_refused_unread(&fx, &w, "a caller that is not the owner", || {
+            drop_binding_of(&fx, id(0x44), bob(), BIND_AT)
+        });
+        assert_refused_unread(&fx, &w, "a target pending deletion", || {
+            drop_binding_of(&fx, owner(), alice(), BIND_AT)
+        });
+        assert_refused_unread(&fx, &w, "a target with no binding", || {
+            drop_binding_of(&fx, owner(), id(0x44), BIND_AT)
         });
     }
 }
@@ -5663,5 +5722,482 @@ mod unbind {
         );
         assert_eq!(call(&fx, alice(), T0 + 4_000, crate::on_connect), Ok(()));
         assert_eq!(sessions_of(&w, alice()), vec![conn_of(alice())]);
+    }
+}
+
+// =====================================================================================
+// The world's owner drops the binding of an identity it names. A binding the build counts
+// takes that identity's admission row with it; nothing of the owner's, and nothing of anyone
+// else's, changes.
+// =====================================================================================
+
+mod drop_binding {
+    use super::super::REJECT_NO_BINDING;
+    use super::*;
+    use crate::access::{REJECT_NOT_ADMITTED, REJECT_NOT_WORLD_OWNER};
+    use crate::guards::REJECT_DELETION_GATED;
+    use crate::schema::WorldAdmissionAttempt;
+
+    /// What the drop of a counted binding writes when the named identity also holds a nonce
+    /// and an admission row.
+    const BINDING_NONCE_AND_ADMISSION: [&str; 3] =
+        ["world_binding", "world_bind_nonce", "world_admission"];
+    /// What the drop writes for a named identity holding a binding and a nonce, and no
+    /// admission row the drop withdraws.
+    const BINDING_AND_NONCE: [&str; 2] = ["world_binding", "world_bind_nonce"];
+
+    /// An identity holding nothing: no binding, no nonce, no admission row.
+    fn carol() -> Identity {
+        id(0x33)
+    }
+
+    /// An identity with a binding of its own whose account is pending deletion.
+    fn dave() -> Identity {
+        id(0x66)
+    }
+
+    fn attempt_row(who: Identity) -> WorldAdmissionAttempt {
+        WorldAdmissionAttempt {
+            identity: who,
+            wrong_at_ms: vec![T0 - 3_000, T0 - 2_000],
+            last_wrong_at_ms: T0 - 2_000,
+        }
+    }
+
+    /// [`alice`]'s entitled binding to [`SUB`] under `kid`.
+    fn alice_bound(kid: &str) -> WorldBinding {
+        binding_row(alice(), SUB, T0 - 1_000, true, kid)
+    }
+
+    fn bob_binding() -> BindingView {
+        bview(bob(), OTHER_SUB, T0 - 5_000, true, dev_kid())
+    }
+
+    fn bob_nonce() -> NonceView {
+        nview(bob(), NONCE_B, NONCE_EXPIRES)
+    }
+
+    fn owner_binding() -> BindingView {
+        bview(owner(), THIRD_SUB, T0 - 2_000, true, dev_kid())
+    }
+
+    fn owner_nonce() -> NonceView {
+        nview(owner(), NONCE_C, NONCE_EXPIRES)
+    }
+
+    /// [`valid_world`] with `rule` stored: [`alice`] holds [`NONCE_A`] and no binding; the
+    /// bystander [`bob`] holds a nonce, a dev-key binding to [`OTHER_SUB`] and an admission
+    /// row; the owner holds a dev-key binding to [`THIRD_SUB`], a nonce and an admission row
+    /// of its own. `world_admission` is writable (the drop withdraws a row of it), and the
+    /// wrong-password records are registered on their key, read-only.
+    fn drop_world(
+        fx: &Fixture,
+        rule: WorldAccessRule,
+    ) -> (W<'_>, Handle<'_, WorldAdmissionAttempt>) {
+        let w = valid_world(fx);
+        let _ = fx
+            .table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
+            .unique()
+            .writable();
+        let attempts = fx
+            .table::<WorldAdmissionAttempt>("world_admission_attempt", "identity", |r| r.identity)
+            .unique();
+        w.access.seed(&rule_row(rule));
+        w.binding.seed(&binding_row(
+            owner(),
+            THIRD_SUB,
+            T0 - 2_000,
+            true,
+            dev_kid(),
+        ));
+        w.nonce.seed(&nonce_row(owner(), NONCE_C, NONCE_EXPIRES));
+        w.admission.seed(&admission_row(owner()));
+        w.admission.seed(&admission_row(bob()));
+        (w, attempts)
+    }
+
+    /// [`footprint`] and the wrong-password records, with their write count.
+    fn everything(
+        fx: &Fixture,
+        w: &W<'_>,
+        attempts: &Handle<'_, WorldAdmissionAttempt>,
+    ) -> Footprint {
+        let mut all = footprint(fx, w);
+        all.push((
+            "world_admission_attempt",
+            encs(&attempts.rows()),
+            fx.writes_to("world_admission_attempt"),
+        ));
+        all
+    }
+
+    /// `fp` without the entries of the tables in `changed`.
+    fn but(fp: &Footprint, changed: &[&str]) -> Footprint {
+        fp.iter()
+            .filter(|(table, _, _)| !changed.contains(table))
+            .cloned()
+            .collect()
+    }
+
+    /// The owner drops `who`'s binding and is answered `Ok`; every table outside `changed`
+    /// then holds what it held before, with no write call.
+    fn assert_drops(
+        fx: &Fixture,
+        w: &W<'_>,
+        attempts: &Handle<'_, WorldAdmissionAttempt>,
+        who: Identity,
+        changed: &[&str],
+        label: &str,
+    ) {
+        fx.reset_writes();
+        let before = everything(fx, w, attempts);
+        assert_eq!(
+            drop_binding_of(fx, owner(), who, BIND_AT),
+            Ok(()),
+            "{label}: the drop"
+        );
+        assert_eq!(
+            but(&everything(fx, w, attempts), changed),
+            but(&before, changed),
+            "{label}: every other table as it was, with no write call"
+        );
+    }
+
+    /// `caller`'s drop of `who` answers exactly `want`, and every registered table holds what
+    /// it held before, with no write call.
+    fn assert_drop_refused(
+        fx: &Fixture,
+        w: &W<'_>,
+        attempts: &Handle<'_, WorldAdmissionAttempt>,
+        (caller, who): (Identity, Identity),
+        want: &str,
+        label: &str,
+    ) {
+        fx.reset_writes();
+        let before = everything(fx, w, attempts);
+        assert_eq!(
+            drop_binding_of(fx, caller, who, BIND_AT),
+            Err(want.to_string()),
+            "{label}"
+        );
+        assert_eq!(
+            everything(fx, w, attempts),
+            before,
+            "{label}: every table as seeded, and no write call"
+        );
+    }
+
+    /// The identities holding an admission row, sorted.
+    fn admitted(w: &W<'_>) -> Vec<[u8; 32]> {
+        sorted(
+            w.admission
+                .rows()
+                .into_iter()
+                .map(|r| r.identity.to_byte_array())
+                .collect(),
+        )
+    }
+
+    // --- The named identity's rows go, and nothing else ---------------------------------
+
+    /// Under `Allowlist`, [`alice`], admitted by her listed account and holding an admission
+    /// row and a wrong-password record, has her dev-key binding dropped by the owner: her
+    /// binding, nonce and admission row go and she is refused. The owner's own binding,
+    /// nonce and admission row, the bystander's, the list (her account still on it) and her
+    /// wrong-password record all stay, with no write call outside the three tables.
+    ///
+    /// kills: the inert reducer; the caller's (owner's) rows erased in place of the named
+    /// identity's; a counted binding's admission never withdrawn; the list, the
+    /// wrong-password records or a bystander's rows written.
+    #[test]
+    fn the_owner_drops_a_counted_binding_with_its_nonce_and_admission_wr261127a_5() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB, THIRD_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        attempts.seed(&attempt_row(alice()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: the listed account admits alice"
+        );
+        assert_drops(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_NONCE_AND_ADMISSION,
+            "a counted binding",
+        );
+        assert_eq!(
+            bindings(&w),
+            sorted(vec![bob_binding(), owner_binding()]),
+            "alice's binding is gone; the owner's and the bystander's stay"
+        );
+        assert_eq!(
+            nonces(&w),
+            sorted(vec![bob_nonce(), owner_nonce()]),
+            "alice's nonce is gone; the owner's and the bystander's stay"
+        );
+        assert_eq!(
+            admitted(&w),
+            sorted(vec![bob().to_byte_array(), owner().to_byte_array()]),
+            "alice's admission row is gone; the owner's and the bystander's stay"
+        );
+        assert_eq!(
+            passes(&fx, alice(), BIND_AT + 1),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "unbound and holding no admission row, alice is refused"
+        );
+    }
+
+    /// Under `Open` and under `Password`, [`alice`] holds a dev-key binding, a nonce and an
+    /// admission row, and the bystander holds an admission row. The owner's drop takes her
+    /// binding, nonce and admission row; the owner's and the bystander's rows stay, with no
+    /// write call outside the three tables.
+    ///
+    /// kills: the admission withdrawn only when the rule in force is `Allowlist`.
+    #[test]
+    fn under_open_and_password_a_counted_bindings_admission_goes_with_the_drop_wr261127a_5() {
+        for (rule, label) in [
+            (WorldAccessRule::Open, "under Open"),
+            (WorldAccessRule::Password, "under Password"),
+        ] {
+            let fx = fixture();
+            let (w, attempts) = drop_world(&fx, rule);
+            w.binding.seed(&alice_bound(dev_kid()));
+            w.admission.seed(&admission_row(alice()));
+            assert!(
+                admitted(&w).contains(&alice().to_byte_array()),
+                "{label}: fixture: alice holds an admission row"
+            );
+            assert_drops(
+                &fx,
+                &w,
+                &attempts,
+                alice(),
+                &BINDING_NONCE_AND_ADMISSION,
+                label,
+            );
+            assert_eq!(
+                bindings(&w),
+                sorted(vec![bob_binding(), owner_binding()]),
+                "{label}: alice's binding is gone; the owner's and the bystander's stay"
+            );
+            assert_eq!(
+                nonces(&w),
+                sorted(vec![bob_nonce(), owner_nonce()]),
+                "{label}: alice's nonce is gone; the owner's and the bystander's stay"
+            );
+            assert_eq!(
+                admitted(&w),
+                sorted(vec![bob().to_byte_array(), owner().to_byte_array()]),
+                "{label}: alice's admission row is gone; the owner's and the bystander's stay"
+            );
+        }
+    }
+
+    /// Under `Password`, a binding under a key the build does not hold is dropped too, with
+    /// its nonce; the identity's admission row stays, with no write call on
+    /// `world_admission`, and still admits it.
+    ///
+    /// kills: a drop that erases only a binding the build counts; the admission withdrawn
+    /// for a binding the build does not count.
+    #[test]
+    fn the_owner_drops_an_uncounted_binding_and_its_admission_stays_wr261127a_5() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Password);
+        w.binding.seed(&alice_bound(RETIRED_KID));
+        w.admission.seed(&admission_row(alice()));
+        assert_drops(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_AND_NONCE,
+            "an uncounted binding",
+        );
+        assert_eq!(bindings(&w), sorted(vec![bob_binding(), owner_binding()]));
+        assert_eq!(nonces(&w), sorted(vec![bob_nonce(), owner_nonce()]));
+        assert_eq!(
+            passes(&fx, alice(), BIND_AT + 1),
+            Ok(()),
+            "the admission row still admits alice"
+        );
+    }
+
+    /// The named identity's nonce goes with its binding whether or not it has expired, and
+    /// another identity's expired nonce stays. It holds no admission row, so
+    /// `world_admission` is not written.
+    ///
+    /// kills: a drop that deletes only an outstanding (unexpired) nonce, or none; a sweep of
+    /// other identities' expired nonces; an admission delete issued for an identity that
+    /// holds no admission row.
+    #[test]
+    fn an_expired_nonce_goes_with_the_dropped_binding_wr261127a_5() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Open);
+        assert_eq!(
+            w.nonce.remove(alice()),
+            1,
+            "fixture: alice's live nonce removed"
+        );
+        w.nonce.seed(&nonce_row(alice(), NONCE_A, T0 - 1));
+        w.nonce.seed(&nonce_row(id(0x55), NONCE_C, T0 - 1));
+        w.binding.seed(&alice_bound(dev_kid()));
+        assert_drops(
+            &fx,
+            &w,
+            &attempts,
+            alice(),
+            &BINDING_AND_NONCE,
+            "an expired nonce",
+        );
+        assert_eq!(bindings(&w), sorted(vec![bob_binding(), owner_binding()]));
+        assert_eq!(
+            nonces(&w),
+            sorted(vec![
+                bob_nonce(),
+                owner_nonce(),
+                nview(id(0x55), NONCE_C, T0 - 1)
+            ]),
+            "alice's expired nonce is gone; the other expired nonce stays"
+        );
+    }
+
+    /// A bound identity holding no nonce and no admission row: only `world_binding` is
+    /// written.
+    ///
+    /// kills: a nonce delete issued for an identity that holds none; an admission delete
+    /// issued for an identity that holds none.
+    #[test]
+    fn a_bound_identity_with_no_nonce_writes_only_the_binding_table_wr261127a_5() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Open);
+        assert_eq!(w.nonce.remove(alice()), 1, "fixture: alice holds no nonce");
+        w.binding.seed(&alice_bound(dev_kid()));
+        assert_drops(&fx, &w, &attempts, alice(), &["world_binding"], "no nonce");
+        assert_eq!(bindings(&w), sorted(vec![bob_binding(), owner_binding()]));
+        assert_eq!(nonces(&w), sorted(vec![bob_nonce(), owner_nonce()]));
+    }
+
+    // --- Refusals ---------------------------------------------------------------------
+
+    /// Under `Allowlist`, every caller but the owner is refused with the owner refusal and no
+    /// write: an admitted, bound caller naming a bound bystander, naming itself, naming an
+    /// identity with no binding and naming an identity pending deletion; a bound bystander
+    /// naming it; and an unbound caller the rule refuses.
+    ///
+    /// kills: the inert reducer; no owner check; the binding lookup or the deletion gate
+    /// placed before the owner check.
+    #[test]
+    fn anyone_but_the_owner_is_refused_with_no_write_wr261127a_6() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Allowlist);
+        seed_allowed(&w, &[SUB, OTHER_SUB]);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        w.binding
+            .seed(&binding_row(dave(), THIRD_SUB, T0 - 3_000, true, dev_kid()));
+        w.account.seed(&deleting_account(dave()));
+        assert_eq!(
+            passes(&fx, alice(), T0),
+            Ok(()),
+            "fixture: alice is admitted"
+        );
+        for (pair, label) in [
+            ((alice(), bob()), "alice naming bob"),
+            ((alice(), alice()), "alice naming herself"),
+            (
+                (alice(), carol()),
+                "alice naming an identity with no binding",
+            ),
+            (
+                (alice(), dave()),
+                "alice naming an identity pending deletion",
+            ),
+            ((bob(), alice()), "bob naming alice"),
+            ((carol(), alice()), "an unbound, unadmitted caller"),
+        ] {
+            assert_drop_refused(&fx, &w, &attempts, pair, REJECT_NOT_WORLD_OWNER, label);
+        }
+    }
+
+    /// The owner naming an identity with no binding is refused with no write, whether it
+    /// holds nothing (carol) or a nonce and an admission row ([`alice`], whose rows stay).
+    ///
+    /// kills: the inert reducer; `Ok` for an identity with no binding; its nonce or its
+    /// admission row deleted.
+    #[test]
+    fn the_owner_naming_an_identity_with_no_binding_is_refused_wr261127a_6() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Password);
+        w.admission.seed(&admission_row(alice()));
+        for who in [carol(), alice()] {
+            let label = format!("no binding: {}", who.to_hex());
+            assert_drop_refused(
+                &fx,
+                &w,
+                &attempts,
+                (owner(), who),
+                REJECT_NO_BINDING,
+                &label,
+            );
+        }
+        assert_eq!(
+            nonce_of(&w, alice()),
+            Some((NONCE_A.to_string(), NONCE_EXPIRES)),
+            "alice's nonce stays"
+        );
+        assert!(
+            admitted(&w).contains(&alice().to_byte_array()),
+            "alice's admission row stays"
+        );
+    }
+
+    /// The owner naming a bound identity whose account is pending deletion is refused by the
+    /// deletion gate with no write: its binding, nonce and admission row stay.
+    ///
+    /// kills: the inert reducer; no deletion gate on the named identity.
+    #[test]
+    fn the_owner_naming_a_bound_identity_pending_deletion_is_refused_wr261127a_6() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Open);
+        w.binding.seed(&alice_bound(dev_kid()));
+        w.admission.seed(&admission_row(alice()));
+        w.account.seed(&deleting_account(alice()));
+        assert_drop_refused(
+            &fx,
+            &w,
+            &attempts,
+            (owner(), alice()),
+            REJECT_DELETION_GATED,
+            "a bound identity pending deletion",
+        );
+        assert!(
+            bindings(&w).contains(&bview(alice(), SUB, T0 - 1_000, true, dev_kid())),
+            "the binding stays"
+        );
+    }
+
+    /// The owner naming an identity with no binding whose account is pending deletion gets
+    /// the deletion gate's refusal, not the no-binding one: the gate comes before the
+    /// binding is read.
+    ///
+    /// kills: the binding lookup placed before the deletion gate.
+    #[test]
+    fn the_deletion_gate_comes_before_the_binding_lookup_wr261127a_6() {
+        let fx = fixture();
+        let (w, attempts) = drop_world(&fx, WorldAccessRule::Open);
+        w.account.seed(&deleting_account(alice()));
+        assert_drop_refused(
+            &fx,
+            &w,
+            &attempts,
+            (owner(), alice()),
+            REJECT_DELETION_GATED,
+            "an unbound identity pending deletion",
+        );
     }
 }
