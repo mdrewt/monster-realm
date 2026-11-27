@@ -11,12 +11,14 @@ import {
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1401,6 +1403,42 @@ describe('handle keys', () => {
       expect(error.setting).toBe(HANDLE_SETTING);
       expect(statSync(path).isDirectory()).toBe(true);
       expect(readdirSync(path)).toEqual([]);
+    });
+  });
+
+  describe('a symbolic link at the handle key path', () => {
+    test.each(
+      PROFILES,
+    )('a link that points at nothing is refused by %s, and nothing is written through it or beside it', (profile) => {
+      if (!POSIX) return;
+      const target = join(hdir, 'nowhere.json');
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      symlinkSync(target, path);
+      for (const generateIfMissing of [false, true]) {
+        const error = handleRefusalOf(() =>
+          readHandleKeys(handleSource(profile, path, generateIfMissing)),
+        );
+        expectCleanHandleRefusal(error, []);
+        expect(lstatSync(path).isSymbolicLink()).toBe(true);
+        expect(existsSync(target)).toBe(false);
+        expect(readdirSync(hdir)).toEqual([HANDLE_KEY_FILE_NAME]);
+      }
+    });
+
+    test.each(
+      PROFILES,
+    )('a link to a valid handle key file loads under %s as that file does, leaving both as they are', (profile) => {
+      if (!POSIX) return;
+      const a = generateHandleKey();
+      const target = join(hdir, 'real.json');
+      writeKeyFile(target, handleFile([a], profile));
+      const bytes = readFileSync(target);
+      const path = join(hdir, HANDLE_KEY_FILE_NAME);
+      symlinkSync(target, path);
+      expect(readHandleKeys(handleSource(profile, path))).toEqual({ keys: [a] });
+      expect(lstatSync(path).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target).equals(bytes)).toBe(true);
+      expect(readdirSync(hdir).sort()).toEqual([HANDLE_KEY_FILE_NAME, 'real.json'].sort());
     });
   });
 });

@@ -1208,3 +1208,122 @@ describe('MR_ACCOUNT_TRUSTED_PROXY', () => {
     }
   });
 });
+
+describe('the handle key file is never another file of the service', () => {
+  const MARKED_DIR = resolve('/srv/INTERNALMARKERdatadir');
+
+  test.each([
+    ['local-dev', LOCAL, LOCAL_DEV_DATA_DIR],
+    ['hosted-dev', HOSTED, HOSTED_DATA_DIR],
+  ] as const)('%s refuses the default login key file as the handle key file', (_p, env, dataDir) => {
+    expectRefused(
+      { ...env, MR_ACCOUNT_HANDLE_KEY_FILE: join(dataDir, 'keys.json') },
+      HANDLE_SETTING,
+    );
+  });
+
+  test.each([
+    ['local-dev', LOCAL],
+    ['hosted-dev', HOSTED],
+  ] as const)('%s refuses a set login key file as the handle key file', (_p, env) => {
+    const keyFile = resolve('/srv/keys/signing.json');
+    expectRefused(
+      { ...env, MR_ACCOUNT_KEY_FILE: keyFile, MR_ACCOUNT_HANDLE_KEY_FILE: keyFile },
+      HANDLE_SETTING,
+    );
+  });
+
+  test.each([
+    ['local-dev', LOCAL, LOCAL_DEV_DATA_DIR],
+    ['hosted-dev', HOSTED, HOSTED_DATA_DIR],
+  ] as const)('%s refuses the database file as the handle key file', (_p, env, dataDir) => {
+    expectRefused(
+      { ...env, MR_ACCOUNT_HANDLE_KEY_FILE: join(dataDir, 'account.sqlite') },
+      HANDLE_SETTING,
+    );
+  });
+
+  test('production refuses its database file as the handle key file acs-14.9', () => {
+    expectRefused(
+      { ...PRODUCTION, MR_ACCOUNT_HANDLE_KEY_FILE: join(PROD_DATA_DIR, 'account.sqlite') },
+      HANDLE_SETTING,
+    );
+  });
+
+  test('production, which holds no login key file, takes keys.json in its data directory as the handle key file acs-14.9', () => {
+    const path = join(PROD_DATA_DIR, 'keys.json');
+    expect(loadConfig({ ...PRODUCTION, MR_ACCOUNT_HANDLE_KEY_FILE: path }).handleKeys).toEqual({
+      path,
+      generateIfMissing: false,
+    });
+  });
+
+  test('a handle key file refused as another file of the service is never repeated', () => {
+    const rows: Env[] = [
+      {
+        ...LOCAL,
+        MR_ACCOUNT_DATA_DIR: MARKED_DIR,
+        MR_ACCOUNT_HANDLE_KEY_FILE: join(MARKED_DIR, 'keys.json'),
+      },
+      {
+        ...LOCAL,
+        MR_ACCOUNT_DATA_DIR: MARKED_DIR,
+        MR_ACCOUNT_HANDLE_KEY_FILE: join(MARKED_DIR, 'account.sqlite'),
+      },
+      {
+        ...HOSTED,
+        MR_ACCOUNT_DATA_DIR: MARKED_DIR,
+        MR_ACCOUNT_HANDLE_KEY_FILE: join(MARKED_DIR, 'keys.json'),
+      },
+      {
+        ...PRODUCTION,
+        MR_ACCOUNT_DATA_DIR: MARKED_DIR,
+        MR_ACCOUNT_HANDLE_KEY_FILE: join(MARKED_DIR, 'account.sqlite'),
+      },
+    ];
+    for (const env of rows) {
+      expectNoLeak(expectRefused(env, HANDLE_SETTING), 'INTERNALMARKERdatadir');
+    }
+  });
+
+  test.each([
+    ['local-dev', LOCAL],
+    ['hosted-dev', HOSTED],
+  ] as const)('%s takes a handle key file beside the login key file and the database', (_p, env) => {
+    const dataDir = resolve('/srv/data');
+    const path = join(dataDir, HANDLE_KEY_FILE_NAME);
+    expect(
+      loadConfig({ ...env, MR_ACCOUNT_DATA_DIR: dataDir, MR_ACCOUNT_HANDLE_KEY_FILE: path })
+        .handleKeys.path,
+    ).toBe(path);
+  });
+});
+
+describe('MR_ACCOUNT_TRUSTED_PROXY refuses an IPv4-mapped IPv6 entry', () => {
+  const MAPPED: ReadonlyArray<readonly [string, string]> = [
+    ['a mapped address', '::ffff:192.0.2.7'],
+    ['a mapped block', '::ffff:10.0.0.0/104'],
+    ['a mapped address in hex and upper case', '::FFFF:a00:1'],
+    ['a mapped address written in full', '0:0:0:0:0:ffff:c000:207'],
+    ['the whole mapped block', '::ffff:0:0/96'],
+    ['a good entry then a mapped one', '10.0.0.0/8,::ffff:192.0.2.7'],
+  ];
+
+  test.each(
+    EVERY_PROFILE.flatMap(([profile, env]) =>
+      MAPPED.map(([name, value]) => [profile, name, env, value] as const),
+    ),
+  )('%s refuses %s', (_p, _name, env, value) => {
+    expectRefused({ ...env, MR_ACCOUNT_TRUSTED_PROXY: value }, PROXY_SETTING);
+  });
+
+  test('a refused mapped entry is never repeated in the refusal', () => {
+    for (const [, env] of EVERY_PROFILE) {
+      const error = expectRefused(
+        { ...env, MR_ACCOUNT_TRUSTED_PROXY: '::ffff:203.0.113.77' },
+        PROXY_SETTING,
+      );
+      expectNoLeak(error, '203.0.113.77');
+    }
+  });
+});

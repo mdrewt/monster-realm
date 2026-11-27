@@ -3,12 +3,14 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, request } from 'node:http';
@@ -1614,5 +1616,72 @@ describe('the handle key file at start', () => {
     expect(proc.output.stderr).toContain(HANDLE_SETTING);
     expect(proc.output.stdout).not.toContain('listening=');
     expect(existsSync(dataDir)).toBe(false);
+  });
+});
+
+describe('a local-dev start whose handle key path is unusable', () => {
+  test('a symbolic link at the handle key path that points at nothing refuses the start, naming the setting, writing and listening on nothing', async () => {
+    if (!POSIX) return;
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { mode: 0o700 });
+    const target = join(dataDir, 'nowhere.json');
+    const link = join(dataDir, HANDLE_KEY_FILE_NAME);
+    symlinkSync(target, link);
+    const port = await freePort();
+    const lines: string[] = [];
+    const error = await startRefusal(
+      { ...localEnv(dataDir), MR_ACCOUNT_PORT: String(port) },
+      lines,
+    );
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe(HANDLE_SETTING);
+    expect((error as ConfigError).message).toContain(HANDLE_SETTING);
+    expect(readdirSync(dataDir)).toEqual([HANDLE_KEY_FILE_NAME]);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(existsSync(target)).toBe(false);
+    expect(lines).toEqual([]);
+    expect(await connectOutcome(port)).toBe('refused');
+  });
+
+  test('MR_ACCOUNT_HANDLE_KEY_FILE naming the default login key file refuses the start, naming the setting, writing and listening on nothing', async () => {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { mode: 0o700 });
+    const port = await freePort();
+    const lines: string[] = [];
+    const error = await startRefusal(
+      {
+        ...localEnv(dataDir),
+        MR_ACCOUNT_PORT: String(port),
+        [HANDLE_SETTING]: join(dataDir, 'keys.json'),
+      },
+      lines,
+    );
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe(HANDLE_SETTING);
+    expect(readdirSync(dataDir)).toEqual([]);
+    expect(lines).toEqual([]);
+    expect(await connectOutcome(port)).toBe('refused');
+  });
+
+  test('MR_ACCOUNT_HANDLE_KEY_FILE naming a set login key file refuses the start and creates neither directory', async () => {
+    const dataDir = join(root, 'data');
+    const keyFile = join(root, 'keys-elsewhere', 'keys.json');
+    const port = await freePort();
+    const lines: string[] = [];
+    const error = await startRefusal(
+      {
+        ...localEnv(dataDir),
+        MR_ACCOUNT_PORT: String(port),
+        MR_ACCOUNT_KEY_FILE: keyFile,
+        [HANDLE_SETTING]: keyFile,
+      },
+      lines,
+    );
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe(HANDLE_SETTING);
+    expect(existsSync(dataDir)).toBe(false);
+    expect(existsSync(dirname(keyFile))).toBe(false);
+    expect(lines).toEqual([]);
+    expect(await connectOutcome(port)).toBe('refused');
   });
 });

@@ -2079,3 +2079,205 @@ describe('what the routes log and store', () => {
     expect(await adapter.find(ticketId(issued[1]!))).toEqual({ account: SUB2, world: NAME });
   });
 });
+
+// ---- the documented numbers ----
+
+describe('the numbers a world sizes itself against', () => {
+  test('a ticket presented 59 seconds after it is issued is redeemed, and one presented 60 seconds after is refused acs-14.3', async () => {
+    const h = await harness();
+    const early = await issue(h);
+    const late = await issue(h);
+    clock = T0 + 59;
+    expect(redeemedOf(await redeem(h, early)).name).toBe(NAME);
+    clock = T0 + 60;
+    expectError(await redeem(h, late), 403);
+  });
+
+  test('every limit and bound holds the number the service documents', () => {
+    expect({
+      TICKET_TTL_SECONDS,
+      TICKET_LIMIT,
+      TICKET_WINDOW_SECONDS,
+      WORLD_CHECK_ADDRESS_LIMIT,
+      WORLD_CHECK_ADDRESS_WINDOW_SECONDS,
+      WORLD_CHECK_HANDLE_LIMIT,
+      WORLD_CHECK_HANDLE_WINDOW_SECONDS,
+      MAX_WORLD_NAME_LENGTH,
+      MAX_WORLD_NAMES,
+      MAX_TICKET_BODY_BYTES,
+      MAX_WORLD_CHECK_BODY_BYTES,
+    }).toEqual({
+      TICKET_TTL_SECONDS: 60,
+      TICKET_LIMIT: 10,
+      TICKET_WINDOW_SECONDS: 60,
+      WORLD_CHECK_ADDRESS_LIMIT: 120,
+      WORLD_CHECK_ADDRESS_WINDOW_SECONDS: 60,
+      WORLD_CHECK_HANDLE_LIMIT: 12,
+      WORLD_CHECK_HANDLE_WINDOW_SECONDS: 3600,
+      MAX_WORLD_NAME_LENGTH: 512,
+      MAX_WORLD_NAMES: 16,
+      MAX_TICKET_BODY_BYTES: 1024,
+      MAX_WORLD_CHECK_BODY_BYTES: 16384,
+    });
+  });
+});
+
+// ---- a body with no Content-Length ----
+
+/**
+ * `send` with the body written in pieces of `size` bytes under `transfer-encoding: chunked`: the
+ * request carries no Content-Length, so only the bytes that arrive tell the route its size.
+ */
+function sendChunked(port: number, call: Call, size = 1000): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = {
+      host: call.host ?? HOST,
+      ...call.headers,
+      'transfer-encoding': 'chunked',
+    };
+    expect(Object.keys(headers)).not.toContain('content-length');
+    const source = call.source === undefined ? ADDRESS : call.source;
+    if (source !== null) headers[SOURCE_HEADER] = source;
+    const agent = new Agent({ keepAlive: true });
+    let answered = false;
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: call.path ?? WORLD_CHECK_PATH,
+        method: call.method ?? 'POST',
+        headers,
+        agent,
+      },
+      (res) => {
+        answered = true;
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          agent.destroy();
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('error', (error) => {
+      // A server that answers before the body is sent may close while it is still being written.
+      if (!answered) {
+        agent.destroy();
+        reject(error);
+      }
+    });
+    const body =
+      typeof call.body === 'string' ? Buffer.from(call.body) : (call.body ?? Buffer.alloc(0));
+    for (let at = 0; at < body.length; at += size) req.write(body.subarray(at, at + size));
+    req.end();
+  });
+}
+
+describe('a body sent with no Content-Length is bounded by the bytes that arrive', () => {
+  test('a chunked /ticket body one byte over MAX_TICKET_BODY_BYTES is 413 and issues nothing', async () => {
+    const h = await harness();
+    const body = padded(worldBody(), MAX_TICKET_BODY_BYTES + 1);
+    const reply = await sendChunked(h.port, ticketCall(good(h), body), 100);
+    expectError(reply, 413);
+    expectTicketHeaders(reply);
+    expect(h.state.upserts).toBe(0);
+    expect(h.lines).toEqual([]);
+  });
+
+  test('a chunked /ticket body of exactly MAX_TICKET_BODY_BYTES is answered as the request it is', async () => {
+    const h = await harness();
+    const body = padded(worldBody(), MAX_TICKET_BODY_BYTES);
+    const ticket = ticketOf(await sendChunked(h.port, ticketCall(good(h), body), 100));
+    expect(h.tickets.spend(ticket)).toEqual({ account: SUB, world: NAME });
+  });
+
+  test('a chunked /world/check body one byte over MAX_WORLD_CHECK_BODY_BYTES is 413, and the ticket at its start stays live', async () => {
+    const h = await harness();
+    const ticket = await issue(h);
+    const body = padded(JSON.stringify(redeemBody(ticket)), MAX_WORLD_CHECK_BODY_BYTES + 1);
+    const reply = await sendChunked(h.port, checkCall(body));
+    expectError(reply, 413);
+    expectCheckHeaders(reply);
+    expect(h.state.reads).toEqual([]);
+    expect(redeemedOf(await redeem(h, ticket)).name).toBe(NAME);
+  });
+
+  test('a chunked /world/check body of exactly MAX_WORLD_CHECK_BODY_BYTES is answered as the request it is', async () => {
+    const h = await harness();
+    const ticket = await issue(h);
+    const body = padded(JSON.stringify(redeemBody(ticket)), MAX_WORLD_CHECK_BODY_BYTES);
+    expect(redeemedOf(await sendChunked(h.port, checkCall(body))).name).toBe(NAME);
+  });
+});
+
+// ---- a failed handle check ----
+
+describe('a handle check whose account read fails', () => {
+  test('keeps its place in the pair count: past the limit it is 429, and stays so after the read recovers acs-14.7', async () => {
+    const h = await harness();
+    const handle = h.handles.seal(SUB, WORLD);
+    h.state.failure = { value: new Error('the account store is down') };
+    for (let i = 1; i <= WORLD_CHECK_HANDLE_LIMIT; i += 1) {
+      const reply = await checkHandle(h, handle);
+      expect(reply.status, `check ${i}: ${reply.body}`).toBe(500);
+    }
+    const reads = h.state.reads.length;
+    expectError(await checkHandle(h, handle), 429);
+    expect(h.state.reads).toHaveLength(reads);
+    h.state.failure = undefined;
+    expectError(await checkHandle(h, handle), 429);
+    expect(h.state.reads).toHaveLength(reads);
+    clock = T0 + WORLD_CHECK_HANDLE_WINDOW_SECONDS;
+    expect(checkedOf(await checkHandle(h, handle)).handle).toBe(handle);
+  });
+});
+
+// ---- a body with a member more than its form ----
+
+describe('a check body with a member more than its form', () => {
+  // Each extra member sorts after the first two of the form, so a form recognised by its leading
+  // members alone takes these bodies for the form.
+  const MORE: ReadonlyArray<readonly [string, (ticket: string) => object]> = [
+    ['a member that sorts after world', (ticket) => ({ ...redeemBody(ticket), zone: 1 })],
+    ['a member that sorts between ticket and world', (ticket) => ({ ...redeemBody(ticket), u: 1 })],
+    [
+      'a member that sorts after world and holds a name',
+      (ticket) => ({ ...redeemBody(ticket), worlds: [NAME] }),
+    ],
+  ];
+
+  test.each(
+    MORE,
+  )('a ticket form with %s is 400 and spends nothing acs-14.3', async (_name, build) => {
+    const h = await harness();
+    const ticket = await issue(h);
+    const reply = await send(h.port, checkCall(build(ticket)));
+    expectError(reply, 400);
+    expectCheckHeaders(reply);
+    expect(h.state.reads).toEqual([]);
+    expect(h.lines).toHaveLength(1);
+    expect(redeemedOf(await redeem(h, ticket)).name).toBe(NAME);
+  });
+
+  test.each([
+    ['a member that sorts after world', { zone: 1 }],
+    ['a member that sorts after world and holds a world', { worlds: WORLD }],
+  ] as ReadonlyArray<
+    readonly [string, Record<string, unknown>]
+  >)('a handle form with %s is 400 and reads no account acs-14.3', async (_name, more) => {
+    const h = await harness();
+    const handle = h.handles.seal(SUB, WORLD);
+    const reply = await send(h.port, checkCall({ ...handleBody(handle), ...more }));
+    expectError(reply, 400);
+    expectCheckHeaders(reply);
+    expect(h.state.reads).toEqual([]);
+    expect(checkedOf(await checkHandle(h, handle)).handle).toBe(handle);
+  });
+});
