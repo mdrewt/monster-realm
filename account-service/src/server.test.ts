@@ -20,6 +20,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLocalJWKSet, type JSONWebKeySet, jwtVerify } from 'jose';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { type SteamStub, startSteamStub } from '../test-util/steamStub.ts';
+import { ID_TOKEN_CLAIMS } from './claims.ts';
 import { ConfigError, HOSTED_DEV_ISSUER } from './config.ts';
 import {
   ATTESTATION_KEY_FILE_NAME,
@@ -1683,5 +1685,541 @@ describe('a local-dev start whose handle key path is unusable', () => {
     expect(existsSync(dirname(keyFile))).toBe(false);
     expect(lines).toEqual([]);
     expect(await connectOutcome(port)).toBe('refused');
+  });
+});
+
+// ---- the Steam ticket grant, served by startServer ----
+
+const STEAM_GRANT = 'urn:monster-realm:steam-ticket';
+const STEAM_IDENTITY = 'monster-realm-account';
+const AUTHENTICATE_PATH = '/ISteamUserAuth/AuthenticateUserTicket/v1/';
+const stubs: SteamStub[] = [];
+
+afterEach(async () => {
+  for (const stub of stubs.splice(0)) await stub.close();
+});
+
+/** A Steam fake for one test, closed after it. */
+async function steamStub(): Promise<SteamStub> {
+  const stub = await startSteamStub();
+  stubs.push(stub);
+  return stub;
+}
+
+/** A local-dev env with Steam as app 480 and the fake's key. */
+function steamEnv(dataDir: string, stub: SteamStub, extra: Env = {}): Env {
+  return {
+    ...localEnv(dataDir),
+    MR_STEAM_APP_ID: '480',
+    MR_STEAM_WEB_API_KEY: stub.key,
+    ...extra,
+  };
+}
+
+/** `startServer` with the test's Steam fake as Steam's origin; the server is closed after the test. */
+async function startWithSteam(
+  env: Env,
+  stub: SteamStub,
+  lines: string[] = [],
+): Promise<RunningServer> {
+  const server = await startServer(
+    env,
+    (line) => {
+      lines.push(line);
+    },
+    { steamBaseUrl: stub.url },
+  );
+  servers.push(server);
+  return server;
+}
+
+interface SteamLocal {
+  readonly stub: SteamStub;
+  readonly port: number;
+  readonly adminEnv: Env;
+}
+
+/**
+ * A fresh Steam fake and a local-dev server that checks Steam as app 480 against it, with the
+ * client made by the admin command. `extra` adds settings to the server's env.
+ */
+async function steamLocal(extra: Env = {}, lines: string[] = []): Promise<SteamLocal> {
+  const dataDir = join(root, 'steam');
+  const adminEnv: Env = { MR_ACCOUNT_PROFILE: 'local-dev', MR_ACCOUNT_DATA_DIR: dataDir };
+  await admin(adminEnv, ['set-client', CLIENT_ID, REDIRECT_URI]);
+  const stub = await steamStub();
+  const server = await startWithSteam(steamEnv(dataDir, stub, extra), stub, lines);
+  return { stub, port: portOf(server.url), adminEnv };
+}
+
+/** One exchange at the token endpoint: `headers` and `params` add to the request. */
+function exchange(
+  port: number,
+  ticket: string,
+  headers: Record<string, string> = {},
+  params: Record<string, string> = {},
+): Promise<FlowReply> {
+  return flowSend(
+    port,
+    'POST',
+    '/token',
+    { host: LOCAL_HOST_HEADER, 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    new URLSearchParams({
+      grant_type: STEAM_GRANT,
+      client_id: CLIENT_ID,
+      steam_ticket: ticket,
+      ...params,
+    }).toString(),
+  );
+}
+
+function forwardedFor(address: string): Record<string, string> {
+  return { 'x-forwarded-for': address };
+}
+
+function setSteamEntitlement(
+  adminEnv: Env,
+  steamId: string,
+  flag: 'entitled' | 'not-entitled',
+): Promise<Map<string, string>> {
+  return admin(adminEnv, ['set-entitlement', `steam:${steamId}`, flag]);
+}
+
+/** A ticket the fake never issued, of a live ticket's length in hex: Steam is asked and says no. */
+function unissuedTicket(): string {
+  return randomBytes(234).toString('hex');
+}
+
+/** The ID token of a `200` whose body is exactly `{ id_token, expires_in }`. */
+function issuedIn(reply: FlowReply, name = ''): string {
+  expect(reply.status, `${name} ${reply.body}`).toBe(200);
+  const json = bodyOf(reply);
+  expect(Object.keys(json).sort(), name).toEqual(['expires_in', 'id_token']);
+  expect(json.expires_in, name).toBe(3600);
+  expect(json.id_token, name).toEqual(expect.any(String));
+  return json.id_token as string;
+}
+
+/** The refusal of a ticket: `400`, `invalid_grant` and a description, nothing else. */
+function expectRefused(reply: FlowReply, name = ''): void {
+  expect(reply.status, `${name} ${reply.body}`).toBe(400);
+  const json = bodyOf(reply);
+  expect(Object.keys(json).sort(), name).toEqual(['error', 'error_description']);
+  expect(json.error, name).toBe('invalid_grant');
+  expect(json.error_description, name).toEqual(expect.any(String));
+}
+
+/** An answer of the service that is no ticket refusal: `status`, an `error` not invalid_grant. */
+function expectServiceRefusal(reply: FlowReply, status: number, name = ''): void {
+  expect(reply.status, `${name} ${reply.body}`).toBe(status);
+  const json = bodyOf(reply);
+  expect(json.error, name).toEqual(expect.any(String));
+  expect(json.error, name).not.toBe('invalid_grant');
+  expect(json, name).not.toHaveProperty('id_token');
+}
+
+/** A `429` whose `retry-after` is whole seconds, at least 1 and at most the window. */
+function expectLimited(reply: FlowReply, windowSeconds: number, name = ''): void {
+  expectServiceRefusal(reply, 429, name);
+  const retryAfter = String(reply.headers['retry-after']);
+  expect(retryAfter, name).toMatch(/^[1-9][0-9]*$/);
+  expect(Number(retryAfter), name).toBeLessThanOrEqual(windowSeconds);
+}
+
+/** Every header of an answer but `date`. */
+function describingHeaders(reply: FlowReply): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(reply.headers).filter(([name]) => name !== 'date'));
+}
+
+async function discoveryWith(
+  port: number,
+  headers: Record<string, string> = {},
+): Promise<Record<string, unknown>> {
+  const reply = await flowSend(port, 'GET', '/.well-known/openid-configuration', {
+    host: LOCAL_HOST_HEADER,
+    ...headers,
+  });
+  expect(reply.status, reply.body).toBe(200);
+  return bodyOf(reply);
+}
+
+describe('the Steam ticket grant served by startServer', () => {
+  test('a SteamID the admin command entitled exchanges a ticket for an ID token that verifies under /jwks, with exactly the named claims and sub steam:<id> acs-9.1', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000001';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const ticket = local.stub.issueTicket(steamId, 'monster-realm-account');
+    const reply = await exchange(local.port, ticket);
+    const idToken = issuedIn(reply);
+    expect(reply.headers['cache-control']).toBe('no-store');
+
+    const served = await getJson(local.port, '/jwks', LOCAL_HOST_HEADER);
+    expect(served.status).toBe(200);
+    const verified = await jwtVerify(
+      idToken,
+      createLocalJWKSet(served.json as unknown as JSONWebKeySet),
+      { issuer: 'http://localhost:4455', audience: CLIENT_ID, algorithms: ['ES256'] },
+    );
+    expect(Object.keys(verified.payload).sort()).toEqual([...ID_TOKEN_CLAIMS].sort());
+    expect(verified.payload.sub).toBe('steam:76561198000000001');
+    expect(verified.payload.iss).toBe('http://localhost:4455');
+    expect(verified.payload.aud).toBe(CLIENT_ID);
+    expect(verified.payload.mr_ent).toEqual(['base-game']);
+    expect(verified.payload.exp! - verified.payload.iat!).toBe(3600);
+    expect((served.json.keys as PublicKey[]).map((key) => key.kid)).toContain(
+      verified.protectedHeader.kid,
+    );
+
+    // Steam is asked once, with the ticket as sent and the service's identity; a dev profile
+    // never asks Steam about ownership.
+    expect(local.stub.requests).toHaveLength(1);
+    const [asked] = local.stub.requests;
+    expect(asked!.path).toBe(AUTHENTICATE_PATH);
+    expect(asked!.query.get('ticket')).toBe(ticket);
+    expect(asked!.query.get('identity')).toBe('monster-realm-account');
+  });
+
+  test('a ticket in the other letter case is the same ticket and issues for the same sub acs-9.1', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000002';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    const upper = claimsOf(issuedIn(await exchange(local.port, ticket.toUpperCase())));
+    expect(upper.sub).toBe('steam:76561198000000002');
+  });
+
+  test('no flag, a not-entitled flag, an entitled flag then denied, another identity, a ticket Steam never issued and one not hex all get one identical invalid_grant answer, and nothing is issued acs-9.2', async () => {
+    const lines: string[] = [];
+    const local = await steamLocal({}, lines);
+    const noFlag = '76561198000000011';
+    const notEntitled = '76561198000000012';
+    const denied = '76561198000000013';
+    const otherIdentity = '76561198000000014';
+    await setSteamEntitlement(local.adminEnv, notEntitled, 'not-entitled');
+    await setSteamEntitlement(local.adminEnv, denied, 'entitled');
+    await admin(local.adminEnv, ['deny', `steam:${denied}`]);
+    await setSteamEntitlement(local.adminEnv, otherIdentity, 'entitled');
+
+    const causes: ReadonlyArray<readonly [string, string]> = [
+      ['no flag', local.stub.issueTicket(noFlag, STEAM_IDENTITY)],
+      ['flagged not-entitled', local.stub.issueTicket(notEntitled, STEAM_IDENTITY)],
+      ['entitled and denied', local.stub.issueTicket(denied, STEAM_IDENTITY)],
+      ['issued for another identity', local.stub.issueTicket(otherIdentity, 'another-identity')],
+      ['never issued by Steam', unissuedTicket()],
+      ['not hex', `${randomBytes(16).toString('hex')}zz`],
+    ];
+    const replies: FlowReply[] = [];
+    for (const [name, ticket] of causes) {
+      const reply = await exchange(local.port, ticket);
+      expectRefused(reply, name);
+      replies.push(reply);
+    }
+    const first = replies[0]!;
+    for (const [index, reply] of replies.entries()) {
+      const name = causes[index]![0];
+      expect(reply.body, name).toBe(first.body);
+      expect(describingHeaders(reply), name).toEqual(describingHeaders(first));
+    }
+    expect(lines).toHaveLength(1);
+
+    // The control: the player refused for the identity is entitled, and its own ticket issues.
+    const control = claimsOf(
+      issuedIn(await exchange(local.port, local.stub.issueTicket(otherIdentity, STEAM_IDENTITY))),
+    );
+    expect(control.sub).toBe('steam:76561198000000014');
+  });
+
+  test('deny refuses at the next exchange and allow after it issues again, on the same ticket acs-9.2', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000021';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    issuedIn(await exchange(local.port, ticket), 'entitled');
+    await admin(local.adminEnv, ['deny', `steam:${steamId}`]);
+    expectRefused(await exchange(local.port, ticket), 'denied');
+    await admin(local.adminEnv, ['allow', `steam:${steamId}`]);
+    const allowed = claimsOf(issuedIn(await exchange(local.port, ticket), 'allowed'));
+    expect(allowed.sub).toBe('steam:76561198000000021');
+  });
+
+  test('set-entitlement entitled after a refusal issues at the next exchange, and not-entitled refuses again acs-9.2', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000022';
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    expectRefused(await exchange(local.port, ticket), 'no flag');
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const entitled = claimsOf(issuedIn(await exchange(local.port, ticket), 'entitled'));
+    expect(entitled.sub).toBe('steam:76561198000000022');
+    await setSteamEntitlement(local.adminEnv, steamId, 'not-entitled');
+    expectRefused(await exchange(local.port, ticket), 'not-entitled');
+  });
+
+  test('a ticket that issued once is refused when Steam rejects it at the next exchange acs-9.2', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000023';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    issuedIn(await exchange(local.port, ticket));
+    local.stub.respondNext('AuthenticateUserTicket', {
+      kind: 'body',
+      body: JSON.stringify({
+        response: { error: { errorcode: 3, errordesc: 'Invalid parameter' } },
+      }),
+    });
+    const before = local.stub.requests.length;
+    expectRefused(await exchange(local.port, ticket));
+    expect(local.stub.requests.length).toBe(before + 1);
+  });
+
+  test('with a trusted proxy the 61st exchange from one forwarded address is 429 with nothing sent to Steam, while another forwarded address is answered acs-9.3', async () => {
+    const local = await steamLocal({ MR_ACCOUNT_TRUSTED_PROXY: '127.0.0.1' });
+    const ticket = unissuedTicket();
+    // The proxy appends the caller's address: the last entry is the source, whatever precedes it.
+    for (let i = 0; i < 60; i += 1) {
+      expectRefused(
+        await exchange(local.port, ticket, forwardedFor(`198.51.100.${i}, 203.0.113.10`)),
+        `exchange ${i + 1}`,
+      );
+    }
+    expect(local.stub.requests).toHaveLength(60);
+    expectLimited(
+      await exchange(local.port, ticket, forwardedFor('198.51.100.200, 203.0.113.10')),
+      60,
+    );
+    expectLimited(await exchange(local.port, unissuedTicket(), forwardedFor('203.0.113.10')), 60);
+    expect(local.stub.requests).toHaveLength(60);
+
+    const steamId = '76561198000000031';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const other = await exchange(
+      local.port,
+      local.stub.issueTicket(steamId, STEAM_IDENTITY),
+      forwardedFor('203.0.113.20'),
+    );
+    expect(claimsOf(issuedIn(other)).sub).toBe('steam:76561198000000031');
+    expect(local.stub.requests).toHaveLength(61);
+  });
+
+  test('with no trusted proxy a changed X-Forwarded-For does not escape the address window acs-9.3', async () => {
+    const local = await steamLocal();
+    const ticket = unissuedTicket();
+    for (let i = 0; i < 60; i += 1) {
+      expectRefused(
+        await exchange(local.port, ticket, forwardedFor(`203.0.113.${i}`)),
+        `exchange ${i + 1}`,
+      );
+    }
+    expect(local.stub.requests).toHaveLength(60);
+    expectLimited(await exchange(local.port, ticket, forwardedFor('203.0.113.250')), 60);
+    expectLimited(await exchange(local.port, unissuedTicket()), 60);
+    expect(local.stub.requests).toHaveLength(60);
+  });
+
+  test("the 31st exchange of one SteamID's ticket is 429 with nothing sent to Steam, from any address and in either letter case acs-9.3", async () => {
+    const local = await steamLocal({ MR_ACCOUNT_TRUSTED_PROXY: '127.0.0.1' });
+    const steamId = '76561198000000041';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    for (let i = 0; i < 30; i += 1) {
+      issuedIn(
+        await exchange(local.port, ticket, forwardedFor(`203.0.113.${i}`)),
+        `exchange ${i + 1}`,
+      );
+    }
+    const sent = local.stub.requests.length;
+    expectLimited(await exchange(local.port, ticket, forwardedFor('203.0.113.200')), 3600);
+    expectLimited(
+      await exchange(local.port, ticket.toUpperCase(), forwardedFor('203.0.113.201')),
+      3600,
+    );
+    expect(local.stub.requests.length).toBe(sent);
+
+    // The window is the SteamID's own: another player is still answered.
+    const otherId = '76561198000000042';
+    await setSteamEntitlement(local.adminEnv, otherId, 'entitled');
+    const other = await exchange(
+      local.port,
+      local.stub.issueTicket(otherId, STEAM_IDENTITY),
+      forwardedFor('203.0.113.202'),
+    );
+    expect(claimsOf(issuedIn(other)).sub).toBe('steam:76561198000000042');
+  });
+
+  test('thirty refusals of a player who is not entitled fill that SteamID window too, and a flag set after it does not reopen it acs-9.3', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000043';
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    for (let i = 0; i < 30; i += 1) {
+      expectRefused(await exchange(local.port, ticket), `exchange ${i + 1}`);
+    }
+    const sent = local.stub.requests.length;
+    expectLimited(await exchange(local.port, ticket), 3600);
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    expectLimited(await exchange(local.port, ticket), 3600);
+    expect(local.stub.requests.length).toBe(sent);
+  });
+
+  test('tickets Steam never issued, sent with a steamid parameter naming a player, never spend that player window acs-9.3', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000044';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    for (let i = 0; i < 30; i += 1) {
+      expectRefused(
+        await exchange(local.port, unissuedTicket(), {}, { steamid: steamId }),
+        `exchange ${i + 1}`,
+      );
+    }
+    const real = await exchange(local.port, local.stub.issueTicket(steamId, STEAM_IDENTITY));
+    expect(claimsOf(issuedIn(real)).sub).toBe('steam:76561198000000044');
+  });
+
+  test('35 parallel exchanges of one SteamID issue exactly 30 tokens and limit the other 5 acs-9.3', async () => {
+    const local = await steamLocal();
+    const steamId = '76561198000000045';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    const replies = await Promise.all(
+      Array.from({ length: 35 }, () => exchange(local.port, ticket)),
+    );
+    const issued = replies.filter((reply) => reply.status === 200);
+    const limited = replies.filter((reply) => reply.status === 429);
+    expect(issued).toHaveLength(30);
+    expect(limited).toHaveLength(5);
+    for (const reply of issued) issuedIn(reply);
+    for (const reply of limited) expectLimited(reply, 3600);
+  });
+
+  test('without MR_STEAM_APP_ID the token endpoint answers unsupported_grant_type and discovery does not list the grant', async () => {
+    const dataDir = join(root, 'data');
+    await admin({ MR_ACCOUNT_PROFILE: 'local-dev', MR_ACCOUNT_DATA_DIR: dataDir }, [
+      'set-client',
+      CLIENT_ID,
+      REDIRECT_URI,
+    ]);
+    const server = await start(localEnv(dataDir));
+    const port = portOf(server.url);
+    const reply = await exchange(port, unissuedTicket());
+    expect(reply.status, reply.body).toBe(400);
+    expect(bodyOf(reply).error).toBe('unsupported_grant_type');
+    expect(bodyOf(reply)).not.toHaveProperty('id_token');
+    const discovery = await discoveryWith(port);
+    expect(discovery.grant_types_supported).toEqual(expect.any(Array));
+    expect(discovery.grant_types_supported).not.toContain('urn:monster-realm:steam-ticket');
+  });
+
+  test('with Steam configured discovery lists the grant and names the issuer under forged forwarding headers', async () => {
+    const local = await steamLocal({ MR_ACCOUNT_TRUSTED_PROXY: '127.0.0.1' });
+    const plain = await discoveryWith(local.port);
+    expect(plain.grant_types_supported).toContain('urn:monster-realm:steam-ticket');
+    const forged = await discoveryWith(local.port, {
+      'x-forwarded-host': 'evil.example',
+      'x-forwarded-proto': 'https',
+      'x-forwarded-for': '203.0.113.9',
+    });
+    expect(forged.issuer).toBe('http://localhost:4455');
+    expect(forged.token_endpoint).toBe('http://localhost:4455/token');
+    expect(forged.jwks_uri).toBe('http://localhost:4455/jwks');
+    expect(forged.grant_types_supported).toContain('urn:monster-realm:steam-ticket');
+  });
+
+  test('MR_STEAM_APP_ID 480 with no Web API key starts and offers the grant, and every exchange answers 503 with nothing sent to Steam', async () => {
+    const dataDir = join(root, 'steam');
+    const adminEnv: Env = { MR_ACCOUNT_PROFILE: 'local-dev', MR_ACCOUNT_DATA_DIR: dataDir };
+    await admin(adminEnv, ['set-client', CLIENT_ID, REDIRECT_URI]);
+    const steamId = '76561198000000051';
+    await setSteamEntitlement(adminEnv, steamId, 'entitled');
+    const stub = await steamStub();
+    const server = await startWithSteam({ ...localEnv(dataDir), MR_STEAM_APP_ID: '480' }, stub);
+    const port = portOf(server.url);
+    expect((await discoveryWith(port)).grant_types_supported).toContain(
+      'urn:monster-realm:steam-ticket',
+    );
+    expectServiceRefusal(await exchange(port, stub.issueTicket(steamId, STEAM_IDENTITY)), 503);
+    expectServiceRefusal(await exchange(port, unissuedTicket()), 503);
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  test('a Web API key with a space refuses the start naming MR_STEAM_WEB_API_KEY and never its value, writing and listening on nothing', async () => {
+    const dataDir = join(root, 'steam');
+    const stub = await steamStub();
+    const parts = [randomBytes(12).toString('hex'), randomBytes(12).toString('hex')];
+    const spaced = parts.join(' ');
+    const port = await freePort();
+    const lines: string[] = [];
+    let error: unknown;
+    try {
+      await startWithSteam(
+        {
+          ...localEnv(dataDir),
+          MR_ACCOUNT_PORT: String(port),
+          MR_STEAM_APP_ID: '480',
+          MR_STEAM_WEB_API_KEY: spaced,
+        },
+        stub,
+        lines,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).setting).toBe('MR_STEAM_WEB_API_KEY');
+    for (const part of parts) expect((error as ConfigError).message).not.toContain(part);
+    expect(existsSync(dataDir)).toBe(false);
+    expect(lines).toEqual([]);
+    expect(await connectOutcome(port)).toBe('refused');
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  test('across a run that issues, refuses, fails and limits, the log holds the start line, one line with the sub and time per token, one Steam failure line, and no ticket, key or address', async () => {
+    const lines: string[] = [];
+    const local = await steamLocal({ MR_ACCOUNT_TRUSTED_PROXY: '127.0.0.1' }, lines);
+    const from = forwardedFor('203.0.113.77');
+    const startedAt = Math.floor(Date.now() / 1000);
+    const steamId = '76561198000000061';
+    const notEntitled = '76561198000000062';
+    await setSteamEntitlement(local.adminEnv, steamId, 'entitled');
+    const ticket = local.stub.issueTicket(steamId, STEAM_IDENTITY);
+    const unissued = unissuedTicket();
+    const notEntitledTicket = local.stub.issueTicket(notEntitled, STEAM_IDENTITY);
+    const otherIdentityTicket = local.stub.issueTicket(steamId, 'another-identity');
+
+    local.stub.respondNext('AuthenticateUserTicket', { kind: 'status', status: 500 });
+    expectServiceRefusal(await exchange(local.port, ticket, from), 503, 'Steam failed');
+    const idTokens: string[] = [];
+    idTokens.push(issuedIn(await exchange(local.port, ticket.toUpperCase(), from)));
+    for (let i = 1; i < 30; i += 1) {
+      idTokens.push(issuedIn(await exchange(local.port, ticket, from), `exchange ${i + 1}`));
+    }
+    expectRefused(await exchange(local.port, unissued, from), 'never issued');
+    expectRefused(await exchange(local.port, notEntitledTicket, from), 'not entitled');
+    expectRefused(await exchange(local.port, otherIdentityTicket, from), 'another identity');
+    expectLimited(await exchange(local.port, ticket, from), 3600);
+    const endedAt = Math.floor(Date.now() / 1000);
+
+    expect(START_LINE.exec(lines[0] ?? ''), lines[0]).not.toBeNull();
+    const after = lines.slice(1);
+    const tokenLines = after.filter((line) => line.includes('steam:76561198000000061'));
+    expect(tokenLines).toHaveLength(30);
+    expect(after).toHaveLength(31);
+    for (const line of tokenLines) {
+      const time = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/.exec(line);
+      expect(time, line).not.toBeNull();
+      const seconds = Date.parse(time![0]) / 1000;
+      expect(seconds, line).toBeGreaterThanOrEqual(startedAt);
+      expect(seconds, line).toBeLessThanOrEqual(endedAt);
+    }
+
+    const tickets = [ticket, unissued, notEntitledTicket, otherIdentityTicket];
+    const secrets = [
+      local.stub.key,
+      '203.0.113.77',
+      ...tickets.flatMap((t) => [t, t.toUpperCase(), t.slice(0, 32), t.slice(0, 32).toUpperCase()]),
+      ...idTokens.map((token) => token.split('.')[2] ?? token),
+    ];
+    for (const line of lines) {
+      for (const secret of secrets) expect(line).not.toContain(secret);
+    }
+    // The start line names the address the server listens on; every line after it is checked.
+    for (const line of after) expect(line).not.toContain('127.0.0.1');
   });
 });
