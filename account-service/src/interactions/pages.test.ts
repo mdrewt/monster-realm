@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, test } from 'vitest';
-import { endedPage, notOwnedPage, PAGE_HEADERS, signInPage } from './pages.ts';
+import { endedPage, notOwnedPage, PAGE_HEADERS, signInPage, unavailablePage } from './pages.ts';
 
 const ACTION = '/interaction/AbCdEfGh0123456789_-';
 const NOTICES = ['refused', 'locked', 'busy'] as const;
@@ -347,5 +347,250 @@ describe('notOwnedPage and endedPage', () => {
     });
     expect(withJunk).toBe(page);
     expect(page).not.toContain('/interaction/abc');
+  });
+});
+
+const STEAM_LOGIN_ADDRESS = `https://steamcommunity.com/openid/login?${new URLSearchParams([
+  ['openid.ns', 'http://specs.openid.net/auth/2.0'],
+  ['openid.mode', 'checkid_setup'],
+  ['openid.return_to', `http://localhost:4455${ACTION}/steam?state=q1W2e3R4t5Y6`],
+  ['openid.realm', 'http://localhost:4455'],
+  ['openid.identity', 'http://specs.openid.net/auth/2.0/identifier_select'],
+  ['openid.claimed_id', 'http://specs.openid.net/auth/2.0/identifier_select'],
+])}`;
+const OTHER_STEAM_LOGIN_ADDRESS = `http://127.0.0.1:4567/openid/login?${new URLSearchParams([
+  ['openid.ns', 'http://specs.openid.net/auth/2.0'],
+  ['openid.mode', 'checkid_setup'],
+  ['openid.return_to', 'http://localhost:4455/interaction/ZZZZZZZZZZZZZZZZ/steam?state=zz'],
+])}`;
+
+/** The raw (still escaped) href of the page's one link. */
+function steamHref(html: string): string {
+  const links = elements(html, 'a');
+  expect(links, 'one link').toHaveLength(1);
+  const href = links[0]!.attrs.get('href');
+  expect(href, 'an href on the link').toBeDefined();
+  return href!;
+}
+
+function steamPages(): Array<[string, string]> {
+  return [
+    ['the form with the Steam link', signInPage({ action: ACTION, steam: STEAM_LOGIN_ADDRESS })],
+    ...NOTICES.map((notice): [string, string] => [
+      `the form with the Steam link and the ${notice} notice`,
+      signInPage({ action: ACTION, notice, steam: STEAM_LOGIN_ADDRESS }),
+    ]),
+  ];
+}
+
+function expectTheForm(html: string): void {
+  expect(elements(html, 'form')).toHaveLength(1);
+  const form = formOf(html);
+  expect(form.attrs.get('method')?.toLowerCase()).toBe('post');
+  expect(decode(form.attrs.get('action') ?? '')).toBe(ACTION);
+  const inputs = elements(html, 'input').filter((input) => input.attrs.get('type') !== 'hidden');
+  expect(inputs.map((input) => input.attrs.get('name')).sort()).toEqual(['email', 'password']);
+  expect(inputs.find((input) => input.attrs.get('name') === 'email')!.attrs.get('type')).toBe(
+    'email',
+  );
+  expect(inputs.find((input) => input.attrs.get('name') === 'password')!.attrs.get('type')).toBe(
+    'password',
+  );
+}
+
+describe('signInPage with a Steam login address', () => {
+  test.each([
+    undefined,
+    ...NOTICES,
+  ])('without a Steam address (notice %s) the password form is offered alone, with no link acs-10.5', (notice) => {
+    const html = signInPage(notice === undefined ? { action: ACTION } : { action: ACTION, notice });
+    expectTheForm(html);
+    expect(elements(html, 'a')).toHaveLength(0);
+  });
+
+  test.each([
+    undefined,
+    ...NOTICES,
+  ])('a steam option left undefined (notice %s) gives the bytes of a page without one', (notice) => {
+    const without = signInPage(
+      notice === undefined ? { action: ACTION } : { action: ACTION, notice },
+    );
+    const undefinedSteam = signInPage(
+      notice === undefined
+        ? { action: ACTION, steam: undefined }
+        : { action: ACTION, notice, steam: undefined },
+    );
+    expect(undefinedSteam).toBe(without);
+  });
+
+  test('with a Steam address the page offers the password form and one link to Steam acs-10.5', () => {
+    const html = signInPage({ action: ACTION, steam: STEAM_LOGIN_ADDRESS });
+    expectTheForm(html);
+    expect(decode(steamHref(html))).toBe(STEAM_LOGIN_ADDRESS);
+  });
+
+  test.each(
+    NOTICES,
+  )('with a Steam address and the %s notice the page keeps its one alert, the form and the link acs-10.5', (notice) => {
+    const html = signInPage({ action: ACTION, notice, steam: STEAM_LOGIN_ADDRESS });
+    expectTheForm(html);
+    expect(decode(steamHref(html))).toBe(STEAM_LOGIN_ADDRESS);
+    expect(alerts(html)).toEqual(alerts(signInPage({ action: ACTION, notice })));
+  });
+
+  test('the address is written escaped: every & as an entity, no raw quote or angle bracket', () => {
+    const raw = steamHref(signInPage({ action: ACTION, steam: STEAM_LOGIN_ADDRESS }));
+    expect(STEAM_LOGIN_ADDRESS).toContain('&');
+    expect(raw).toContain('&amp;');
+    expect(raw).not.toMatch(/&(?!(?:#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]*);)/);
+    expect(raw).not.toMatch(/["'<>]/);
+  });
+
+  test.each([
+    ['a double quote and a tag', `${STEAM_LOGIN_ADDRESS}&x="><script>alert(1)</script><a href="`],
+    ['a single quote and a handler', `${STEAM_LOGIN_ADDRESS}&y=' onmouseover='alert(1)`],
+    ['angle brackets', 'https://steamcommunity.com/openid/login?a=<b>&c=>'],
+    ['an entity already written', 'https://steamcommunity.com/openid/login?a=&amp;&quot;'],
+  ])('an address with %s stays inside the href, escaped', (_name, steam) => {
+    const html = signInPage({ action: ACTION, steam });
+    expect(html).not.toMatch(/<script/i);
+    expect(elements(html, 'form')).toHaveLength(1);
+    const raw = steamHref(html);
+    expect(decode(raw)).toBe(steam);
+    expect(raw).not.toMatch(/["'<>]/);
+    expect(raw).not.toMatch(/&(?!(?:#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]*);)/);
+    for (const [attr] of elements(html, 'a')[0]!.attrs) {
+      expect(attr.startsWith('on'), attr).toBe(false);
+    }
+  });
+
+  test('the address is the only thing it changes: another address gives the page with only the href moved', () => {
+    for (const notice of [undefined, ...NOTICES]) {
+      const pageA = signInPage(
+        notice === undefined
+          ? { action: ACTION, steam: STEAM_LOGIN_ADDRESS }
+          : { action: ACTION, notice, steam: STEAM_LOGIN_ADDRESS },
+      );
+      const pageB = signInPage(
+        notice === undefined
+          ? { action: ACTION, steam: OTHER_STEAM_LOGIN_ADDRESS }
+          : { action: ACTION, notice, steam: OTHER_STEAM_LOGIN_ADDRESS },
+      );
+      const rawA = steamHref(pageA);
+      const rawB = steamHref(pageB);
+      expect(pageA.split(rawA)).toHaveLength(2);
+      expect(pageA.split(rawA).join(rawB)).toBe(pageB);
+    }
+  });
+
+  test.each(
+    steamPages(),
+  )('%s is a complete HTML document whose one URL is the link, with no script or handler', (_name, html) => {
+    expect(html).toMatch(/^\s*<!doctype html>/i);
+    const htmlTags = elements(html, 'html');
+    expect(htmlTags).toHaveLength(1);
+    expect(htmlTags[0]!.attrs.get('lang')).toBe('en');
+    expect(html).toMatch(/<\/html>\s*$/i);
+    expect(html).not.toMatch(/<script/i);
+    expect(html).not.toMatch(/javascript:/i);
+    expect(html.split(steamHref(html)).join('')).not.toMatch(/https?:/i);
+    for (const element of elements(html)) {
+      for (const [attr] of element.attrs) {
+        expect(attr.startsWith('on'), `<${element.name} ${attr}>`).toBe(false);
+      }
+      expect(element.name).not.toBe('iframe');
+      expect(element.name).not.toBe('img');
+      expect(element.name).not.toBe('link');
+    }
+  });
+
+  test.each(
+    steamPages(),
+  )('every inline style of %s is one the policy lets through by its hash', (name, html) => {
+    const allowed = new Set(cspDirectives().get('style-src') ?? []);
+    for (const match of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)) {
+      const body = match[1]!;
+      const hashes = ['sha256', 'sha384', 'sha512'].map(
+        (alg) => `'${alg}-${createHash(alg).update(body, 'utf8').digest('base64')}'`,
+      );
+      expect(
+        hashes.some((hash) => allowed.has(hash)),
+        `${name}: a <style> the policy blocks`,
+      ).toBe(true);
+    }
+    for (const element of elements(html)) {
+      expect(element.attrs.has('style'), `${name}: a style attribute on <${element.name}>`).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('unavailablePage', () => {
+  test('is byte-identical on every call, whatever it is given', () => {
+    const page = unavailablePage();
+    expect(typeof page).toBe('string');
+    expect(unavailablePage()).toBe(page);
+    const withJunk = (unavailablePage as (...args: unknown[]) => string)(
+      'steam:76561197960287930',
+      {
+        sub: 'steam:76561197960287930',
+        email: 'player@example.com',
+      },
+    );
+    expect(withJunk).toBe(page);
+  });
+
+  test('holds nothing about any account', () => {
+    const page = (unavailablePage as (...args: unknown[]) => string)({
+      sub: 'steam:76561197960287930',
+      email: 'player@example.com',
+    });
+    expect(page).not.toContain('76561197960287930');
+    expect(page).not.toContain('steam:');
+    expect(page).not.toContain('dev:');
+    expect(page).not.toContain('player@example.com');
+  });
+
+  test('differs from the form, the form with the Steam link, the not-owned page and the ended page', () => {
+    const pages = new Set([
+      unavailablePage(),
+      signInPage({ action: ACTION }),
+      signInPage({ action: ACTION, steam: STEAM_LOGIN_ADDRESS }),
+      notOwnedPage(),
+      endedPage(),
+    ]);
+    expect(pages.size).toBe(5);
+  });
+
+  test('is a complete HTML document with no script, handler or external URL', () => {
+    const html = unavailablePage();
+    expect(html).toMatch(/^\s*<!doctype html>/i);
+    const htmlTags = elements(html, 'html');
+    expect(htmlTags).toHaveLength(1);
+    expect(htmlTags[0]!.attrs.get('lang')).toBe('en');
+    expect(html).toMatch(/<title>[^<]*\S[^<]*<\/title>/i);
+    expect(html).toMatch(/<\/html>\s*$/i);
+    expect(html).not.toMatch(/<script/i);
+    expect(html).not.toMatch(/javascript:/i);
+    expect(html).not.toMatch(/https?:/i);
+    for (const element of elements(html)) {
+      for (const [attr] of element.attrs) {
+        expect(attr.startsWith('on'), `<${element.name} ${attr}>`).toBe(false);
+      }
+    }
+  });
+
+  test('every inline style is one the policy lets through by its hash', () => {
+    const html = unavailablePage();
+    const allowed = new Set(cspDirectives().get('style-src') ?? []);
+    for (const match of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)) {
+      const body = match[1]!;
+      const hashes = ['sha256', 'sha384', 'sha512'].map(
+        (alg) => `'${alg}-${createHash(alg).update(body, 'utf8').digest('base64')}'`,
+      );
+      expect(hashes.some((hash) => allowed.has(hash))).toBe(true);
+    }
+    for (const element of elements(html)) expect(element.attrs.has('style')).toBe(false);
   });
 });

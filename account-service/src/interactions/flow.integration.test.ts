@@ -8,13 +8,24 @@ import { DatabaseSync } from 'node:sqlite';
 import { createLocalJWKSet, type JSONWebKeySet, jwtVerify } from 'jose';
 import type { AdapterPayload } from 'oidc-provider';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  type SteamStub,
+  type SteamStubAnswer,
+  type SteamStubOwnership,
+  startSteamStub,
+} from '../../test-util/steamStub.ts';
 import { ID_TOKEN_CLAIMS } from '../claims.ts';
+import { type DenyList, denyList, type SteamAccounts, steamAccounts } from '../denyList.ts';
+import type { SteamTicketGrantOptions } from '../grants/steamTicket.ts';
 import { generateSigningKey, type SigningJwk } from '../keys.ts';
 import { createAccountProvider, registerClient, SIGN_IN_TTL_SECONDS } from '../provider.ts';
+import { createSourceAddress } from '../rateLimit.ts';
+import { parseSteamId, type SteamId, steamEntitlementSource } from '../steam/ownership.ts';
+import { createSteamWebApi } from '../steam/webApi.ts';
 import { type AccountStore, openAccountStore } from '../store/sqliteAdapter.ts';
 import { type DevAccounts, devAccounts, devPasswordStep } from './devPassword.ts';
-import { endedPage, notOwnedPage, signInPage } from './pages.ts';
-import type { PasswordStep } from './router.ts';
+import { endedPage, notOwnedPage, signInPage, unavailablePage } from './pages.ts';
+import { type PasswordStep, signInStepFor } from './router.ts';
 
 // The whole sign-in over HTTP: the SQLite store, the real password step, the provider's handler.
 
@@ -1408,5 +1419,1162 @@ describe('only the interaction cookies, by exact name, reach the provider', () =
     expect([...names].sort()).toEqual(INTERACTION_COOKIES);
     const added = rows(w).filter((row) => !before.has(key(row)));
     expect(added.map((row) => row.model)).toEqual(['Interaction']);
+  });
+});
+
+// ---- the Steam browser sign-in over HTTP: the SQLite store, the Steam stub, and the step ----
+// ---- signInStepFor builds over a real entitlement source ----
+
+const PLAYER = parseSteamId('76561198000000001')!;
+const OTHER_PLAYER = parseSteamId('76561198000000002')!;
+const THIRD_PLAYER = parseSteamId('76561198000000003')!;
+const PLAYER_SUB = 'steam:76561198000000001';
+const OPENID_NS = 'http://specs.openid.net/auth/2.0';
+const IDENTIFIER_SELECT = 'http://specs.openid.net/auth/2.0/identifier_select';
+const CLAIMED_ID_PREFIX = 'https://steamcommunity.com/openid/id/';
+const OPENID_PATH = '/openid/login';
+const OWNERSHIP_PATH = '/ISteamUser/CheckAppOwnership/v4/';
+const TICKET_GRANT = 'urn:monster-realm:steam-ticket';
+const TICKET_IDENTITY = 'monster-realm-account';
+/** The production rows' app id: the game's own, not Valve's 480. */
+const GAME_APP_ID = 3_141_590;
+/** The six parameters of Steam's login address, sorted. */
+const LOGIN_PARAMETERS = [
+  'openid.claimed_id',
+  'openid.identity',
+  'openid.mode',
+  'openid.ns',
+  'openid.realm',
+  'openid.return_to',
+];
+const LINE_FEED = String.fromCharCode(10);
+/** 43 base64url characters: the form of an interaction's state, and no sign-in's. */
+const MADE_UP_STATE = 'A'.repeat(43);
+/** The models of what a sign-in issues: none is stored for a player who gets nothing. */
+const ISSUED_MODELS: ReadonlySet<string> = new Set([
+  'AuthorizationCode',
+  'AccessToken',
+  'RefreshToken',
+]);
+
+interface SteamWorld extends World {
+  readonly stub: SteamStub;
+  readonly deny: DenyList;
+  /** The dev profiles' entitlement flags on `steam:` subjects. */
+  readonly flags: SteamAccounts;
+  /** What the Steam step logged. */
+  readonly lines: string[];
+  readonly production: boolean;
+  readonly method: 'steam' | 'dev-password';
+}
+
+interface SteamWorldOptions {
+  /** The profile's sign-in method; default `steam`. */
+  readonly signIn?: 'steam' | 'dev-password';
+  /** Give the step Steam (the entitlement source, the log, the stub's endpoint); default true. */
+  readonly withSteam?: boolean;
+  /** The entitlement source's profile; default `local-dev`, where the dev flag decides. */
+  readonly profile?: 'local-dev' | 'production';
+  /** Build the provider with the Steam ticket grant beside the step; default false. */
+  readonly ticketGrant?: boolean;
+}
+
+/** One fresh service with a Steam stub: its own temp directory, database file, keys and server. */
+async function steamWorld(options: SteamWorldOptions = {}): Promise<SteamWorld> {
+  const profile = options.profile ?? 'local-dev';
+  const production = profile === 'production';
+  const method = options.signIn ?? 'steam';
+  const stub = await startSteamStub(production ? { appId: GAME_APP_ID } : undefined);
+  cleanups.push(() => stub.close());
+  const dir = mkdtempSync(join(tmpdir(), 'acs10-'));
+  cleanups.push(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const dbPath = join(dir, 'account.sqlite');
+  const store = openAccountStore(dbPath);
+  cleanups.push(() => {
+    store.close();
+  });
+  await registerClient(store.adapter, { clientId: CLIENT_ID, redirectUri: REDIRECT_URI });
+  const keys = [generateSigningKey()];
+  const deny = denyList(store.adapter);
+  const flags = steamAccounts(store.adapter);
+  const api = createSteamWebApi({
+    config: { profile, steam: { appId: stub.appId } },
+    env: production ? { MR_STEAM_PUBLISHER_KEY: stub.key } : { MR_STEAM_WEB_API_KEY: stub.key },
+    log: () => undefined,
+    baseUrl: stub.url,
+  });
+  const entitlement = steamEntitlementSource({
+    profile,
+    denied: (steamId) => deny.has(steamId),
+    devFlag: (steamId) => flags.entitled(steamId),
+    checkAppOwnership: (steamId) => api.checkAppOwnership(steamId),
+  });
+  const lines: string[] = [];
+  const log = (line: string): void => {
+    lines.push(line);
+  };
+  const steam =
+    options.withSteam === false ? undefined : { entitlement, log, endpoint: stub.openIdEndpoint };
+  const step = signInStepFor({ signIn: method, issuer: ISSUER }, store.adapter, steam);
+  expect(step, 'the sign-in step of the profile').toBeDefined();
+  const steamTicket: SteamTicketGrantOptions | undefined =
+    options.ticketGrant === true
+      ? {
+          authenticateTicket: (ticket, identity) => api.authenticateTicket(ticket, identity),
+          entitlement,
+          sourceAddress: createSourceAddress([]),
+          log: () => undefined,
+        }
+      : undefined;
+  const { handler } = createAccountProvider({
+    issuer: ISSUER,
+    keys: { keys },
+    adapter: store.adapter,
+    signIn: step,
+    steamTicket,
+  });
+  const server = createServer(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      resolve();
+    });
+  });
+  cleanups.push(
+    () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => {
+          resolve();
+        });
+      }),
+  );
+  return {
+    port: (server.address() as AddressInfo).port,
+    dir,
+    dbPath,
+    store,
+    keys,
+    accounts: devAccounts(store.adapter),
+    stub,
+    deny,
+    flags,
+    lines,
+    production,
+    method,
+  };
+}
+
+function owned(steamId: string): SteamStubOwnership {
+  return { ownsapp: true, permanent: true, sitelicense: false, ownersteamid: steamId };
+}
+
+/** Makes `steamId` entitled the way the world's profile reads it. */
+async function entitle(w: SteamWorld, steamId: SteamId): Promise<void> {
+  if (w.production) w.stub.setOwnership(steamId, owned(steamId));
+  else await w.flags.setEntitled(steamId, true);
+}
+
+function openIdChecks(w: SteamWorld): number {
+  return w.stub.requests.filter((sent) => sent.path === OPENID_PATH).length;
+}
+
+function ownershipChecks(w: SteamWorld): number {
+  return w.stub.requests.filter((sent) => sent.path === OWNERSHIP_PATH).length;
+}
+
+function nonceRows(w: World): Row[] {
+  return rows(w).filter((row) => row.model === 'SteamNonce');
+}
+
+function issuedRows(w: World): Row[] {
+  return rows(w).filter((row) => ISSUED_MODELS.has(row.model));
+}
+
+function addedRows(w: World, before: readonly Row[]): Row[] {
+  const seen = new Set(before.map((row) => `${row.model}/${row.id}`));
+  return rows(w).filter((row) => !seen.has(`${row.model}/${row.id}`));
+}
+
+/** The payload of the one `model` record stored under the digest of `value`. */
+function storedPayload(w: World, model: string, value: string): Record<string, unknown> {
+  const id = createHash('sha256').update(value).digest('base64url');
+  const found = rows(w).filter((row) => row.model === model && row.id === id);
+  expect(found, `${model} under its digest`).toHaveLength(1);
+  return JSON.parse(found[0]!.payload) as Record<string, unknown>;
+}
+
+const HTML_ENTITIES: Readonly<Record<string, string>> = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&#x27;': "'",
+};
+
+function unescapeHtml(text: string): string {
+  return text.replace(
+    /&(?:amp|lt|gt|quot|#39|#x27);/g,
+    (entity) => HTML_ENTITIES[entity] ?? entity,
+  );
+}
+
+/** The address of the one link of a page, unescaped. */
+function steamLinkOf(page: string): string {
+  expect(page.match(/<a[\s>]/g) ?? [], 'links on the page').toHaveLength(1);
+  const found = /<a\s[^>]*?\bhref=(?:"([^"]*)"|'([^']*)')/.exec(page);
+  expect(found, 'the link has an address').not.toBeNull();
+  return unescapeHtml(found![1] ?? found![2] ?? '');
+}
+
+/** Checks Steam's login address for the sign-in `uid`, and returns its callback and state. */
+function expectLoginUrl(
+  w: SteamWorld,
+  address: string,
+  uid: string,
+): { readonly returnTo: string; readonly callbackState: string } {
+  expect(address.startsWith(`${w.stub.openIdEndpoint}?`), address).toBe(true);
+  const query = new URLSearchParams(address.slice(w.stub.openIdEndpoint.length + 1));
+  expect([...query.keys()].sort()).toEqual(LOGIN_PARAMETERS);
+  expect(query.get('openid.ns')).toBe('http://specs.openid.net/auth/2.0');
+  expect(query.get('openid.mode')).toBe('checkid_setup');
+  expect(query.get('openid.identity')).toBe(IDENTIFIER_SELECT);
+  expect(query.get('openid.claimed_id')).toBe(IDENTIFIER_SELECT);
+  expect(query.get('openid.realm')).toBe('http://localhost:4455');
+  const returnTo = String(query.get('openid.return_to'));
+  const prefix = `http://localhost:4455/interaction/${uid}/steam?state=`;
+  expect(returnTo.startsWith(prefix), returnTo).toBe(true);
+  const callbackState = returnTo.slice(prefix.length);
+  expect(callbackState).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(callbackState).not.toBe(uid);
+  return { returnTo, callbackState };
+}
+
+interface SteamStart {
+  readonly jar: Jar;
+  readonly started: Started;
+  /** Steam's login address the step gave the browser. */
+  readonly loginUrl: string;
+  /** Our callback: the `openid.return_to` of `loginUrl`. */
+  readonly returnTo: string;
+  /** The interaction's state in the callback. */
+  readonly callbackState: string;
+}
+
+/** Steam's login address on the step's page: the redirect of a Steam-only step, else the link. */
+function loginUrlOf(w: SteamWorld, page: Reply, action: string): string {
+  if (w.method === 'steam') {
+    expect(page.status, page.body).toBe(303);
+    expect(page.headers['cache-control']).toBe('no-store');
+    return String(page.headers.location);
+  }
+  expect(page.status, page.body).toBe(200);
+  const link = steamLinkOf(page.body);
+  expect(page.body).toBe(signInPage({ action, steam: link }));
+  return link;
+}
+
+/** Starts a sign-in and opens its step: the browser holds Steam's login address. */
+async function steamStart(w: SteamWorld, extra: Record<string, string> = {}): Promise<SteamStart> {
+  const jar = newJar();
+  const started = await begin(w, jar, extra);
+  const page = await call(w, jar, 'GET', started.path);
+  const loginUrl = loginUrlOf(w, page, started.path);
+  const { returnTo, callbackState } = expectLoginUrl(w, loginUrl, started.uid);
+  return { jar, started, loginUrl, returnTo, callbackState };
+}
+
+/** The request target of an address of the issuer. */
+function replyTarget(reply: string): string {
+  const url = new URL(reply);
+  expect(url.origin).toBe(ISSUER);
+  return `${url.pathname}${url.search}`;
+}
+
+/** The browser's request when Steam sends it back from `s` signed in as `steamId`. */
+function replyFor(
+  w: SteamWorld,
+  s: SteamStart,
+  steamId: string = PLAYER,
+  change?: Readonly<Record<string, string>>,
+): string {
+  return replyTarget(w.stub.openIdReply(s.loginUrl, steamId, change));
+}
+
+/** The browser's request for a valid reply for PLAYER, its query then changed by `edit`. */
+function editedReply(w: SteamWorld, s: SteamStart, edit: (query: URLSearchParams) => void): string {
+  const url = new URL(w.stub.openIdReply(s.loginUrl, PLAYER));
+  expect(url.origin).toBe(ISSUER);
+  const query = new URLSearchParams(url.search);
+  edit(query);
+  return `${url.pathname}?${query.toString()}`;
+}
+
+function firstCharacterChanged(text: string): string {
+  return `${text.startsWith('A') ? 'B' : 'A'}${text.slice(1)}`;
+}
+
+/** `digits` in their fullwidth forms: digits to a reader, not to an ASCII digit class. */
+function fullwidthDigits(digits: string): string {
+  return [...digits].map((digit) => String.fromCharCode(0xff10 + Number(digit))).join('');
+}
+
+function codeOf(resumed: Reply, started: Started): string {
+  expect(resumed.status, resumed.body).toBe(303);
+  const back = new URL(String(resumed.headers.location));
+  expect(`${back.origin}${back.pathname}`).toBe(REDIRECT_URI);
+  expect(back.searchParams.get('state')).toBe(started.state);
+  expect(back.searchParams.get('iss')).toBe(ISSUER);
+  const code = back.searchParams.get('code');
+  expect(code).toEqual(expect.any(String));
+  return code!;
+}
+
+function expectNoCode(reply: Reply): void {
+  const location = reply.headers.location;
+  if (location !== undefined) {
+    expect(new URL(location, ISSUER).searchParams.has('code'), location).toBe(false);
+  }
+}
+
+interface SteamSigned extends Signed {
+  readonly start: SteamStart;
+}
+
+async function steamSignInToCode(
+  w: SteamWorld,
+  steamId: string,
+  extra: Record<string, string> = {},
+): Promise<SteamSigned> {
+  const before = grantIds(w);
+  const s = await steamStart(w, extra);
+  const back = await call(w, s.jar, 'GET', replyFor(w, s, steamId));
+  expect(back.status, back.body).toBe(303);
+  expect(back.headers.location).toBe(`${ISSUER}/auth/${s.started.uid}`);
+  expect(back.headers['cache-control']).toBe('no-store');
+  const code = codeOf(await call(w, s.jar, 'GET', `/auth/${s.started.uid}`), s.started);
+  const fresh = grantIds(w).filter((id) => !before.includes(id));
+  expect(fresh).toHaveLength(1);
+  return { code, verifier: s.started.verifier, jar: s.jar, grantId: fresh[0]!, start: s };
+}
+
+async function steamSignInToTokens(
+  w: SteamWorld,
+  steamId: string,
+  extra: Record<string, string> = {},
+): Promise<SteamSigned & { readonly tokens: Tokens }> {
+  const signed = await steamSignInToCode(w, steamId, extra);
+  return { ...signed, tokens: tokensOf(await exchange(w, signed.code, signed.verifier)) };
+}
+
+/** A password sign-in on a page that also offers Steam. */
+async function passwordSignInBesideSteam(w: SteamWorld, who: Person): Promise<Tokens> {
+  const jar = newJar();
+  const started = await begin(w, jar);
+  const posted = await call(w, jar, 'POST', started.path, {
+    headers: GOOD_POST,
+    body: credentials(who.email, who.password),
+  });
+  expect(posted.status, posted.body).toBe(303);
+  expect(posted.headers.location).toBe(`${ISSUER}/auth/${started.uid}`);
+  const code = codeOf(await call(w, jar, 'GET', `/auth/${started.uid}`), started);
+  return tokensOf(await exchange(w, code, started.verifier));
+}
+
+/** The ID token the ticket grant issues for a fresh ticket of `steamId`. */
+async function ticketIdToken(w: SteamWorld, steamId: string): Promise<string> {
+  const reply = await token(
+    w,
+    {
+      grant_type: TICKET_GRANT,
+      client_id: CLIENT_ID,
+      steam_ticket: w.stub.issueTicket(steamId, TICKET_IDENTITY),
+    },
+    { accept: 'application/json' },
+  );
+  expect(reply.status, JSON.stringify(reply.json)).toBe(200);
+  expect(reply.json.id_token).toEqual(expect.any(String));
+  return reply.json.id_token as string;
+}
+
+/** Verifies an ID token under /jwks: exactly the named claims, for `sub`, an hour long. */
+async function expectSteamIdToken(
+  w: World,
+  jwt: string,
+  sub: string,
+): Promise<Record<string, unknown>> {
+  const keySet = createLocalJWKSet(await servedKeySet(w));
+  const { payload, protectedHeader } = await jwtVerify(jwt, keySet, {
+    issuer: ISSUER,
+    audience: CLIENT_ID,
+  });
+  expect(protectedHeader.alg).toBe('ES256');
+  expect(Object.keys(payload).sort()).toEqual([...ID_TOKEN_CLAIMS].sort());
+  expect(payload.iss).toBe(ISSUER);
+  expect(payload.sub).toBe(sub);
+  expect(payload.aud).toBe(CLIENT_ID);
+  expect(payload.mr_ent).toEqual(['base-game']);
+  expect(Number(payload.exp) - Number(payload.iat)).toBe(3600);
+  return { ...payload };
+}
+
+/**
+ * After a sign-in ended: the same reply again, a fresh valid reply, the step's page and the resume
+ * each give the ended page or no code, Steam is asked nothing more, and nothing is issued.
+ */
+async function expectEndedForGood(w: SteamWorld, s: SteamStart, target: string): Promise<void> {
+  const asked = openIdChecks(w);
+  for (const again of [target, replyFor(w, s)]) {
+    const reply = await call(w, s.jar, 'GET', again);
+    expect(reply.status, reply.body).toBe(400);
+    expect(reply.body).toBe(endedPage());
+  }
+  const page = await call(w, s.jar, 'GET', s.started.path);
+  expect(page.status).toBe(400);
+  expect(page.body).toBe(endedPage());
+  expectNoCode(await call(w, s.jar, 'GET', `/auth/${s.started.uid}`));
+  expect(openIdChecks(w), 'check_authentication requests after the end').toBe(asked);
+  expect(grantIds(w)).toEqual([]);
+  expect(issuedRows(w)).toEqual([]);
+}
+
+/** The reply `target` on `s` ends the sign-in: the ended page, nothing stored, and no way on. */
+async function expectEndedBy(
+  w: SteamWorld,
+  s: SteamStart,
+  target: string,
+  steamAsked: number,
+): Promise<void> {
+  const before = rows(w);
+  const answered = await call(w, s.jar, 'GET', target);
+  expect(answered.status, answered.body).toBe(400);
+  expect(answered.body).toBe(endedPage());
+  expect(answered.headers.location).toBeUndefined();
+  expect(openIdChecks(w), 'check_authentication requests').toBe(steamAsked);
+  expect(addedRows(w, before)).toEqual([]);
+  expect(nonceRows(w)).toEqual([]);
+  expect(w.lines).toEqual([]);
+  await expectEndedForGood(w, s, target);
+}
+
+/** The browser's request for a reply on the sign-in `s`, whose player PLAYER is entitled. */
+type ReplyTarget = (w: SteamWorld, s: SteamStart) => string | Promise<string>;
+
+function signedEndpoint(make: (endpoint: string) => string): ReplyTarget {
+  return (w, s) => replyFor(w, s, PLAYER, { op_endpoint: make(w.stub.openIdEndpoint) });
+}
+
+function signedReturnTo(make: (s: SteamStart) => string): ReplyTarget {
+  return (w, s) => replyFor(w, s, PLAYER, { return_to: make(s) });
+}
+
+/** A valid reply whose browser query carries exactly these `state` values instead of its own. */
+function browserState(states: (s: SteamStart) => readonly string[]): ReplyTarget {
+  return (w, s) =>
+    editedReply(w, s, (query) => {
+      query.delete('state');
+      for (const state of states(s)) query.append('state', state);
+    });
+}
+
+function claimedAs(claimedId: string): ReplyTarget {
+  return (w, s) => replyFor(w, s, PLAYER, { claimed_id: claimedId, identity: claimedId });
+}
+
+/** Replies Steam answers is_valid:false for, each right in every other respect. */
+const STEAM_SAYS_INVALID: ReadonlyArray<readonly [string, ReplyTarget]> = [
+  [
+    'its signature changed after signing',
+    (w, s) =>
+      editedReply(w, s, (query) => {
+        query.set('openid.sig', firstCharacterChanged(String(query.get('openid.sig'))));
+      }),
+  ],
+  [
+    "another player's claimed id and identity put in after signing",
+    (w, s) =>
+      editedReply(w, s, (query) => {
+        query.set('openid.claimed_id', `${CLAIMED_ID_PREFIX}${OTHER_PLAYER}`);
+        query.set('openid.identity', `${CLAIMED_ID_PREFIX}${OTHER_PLAYER}`);
+      }),
+  ],
+  [
+    'an is_valid:false answer from Steam',
+    (w, s) => {
+      w.stub.respondNext('CheckAuthentication', {
+        kind: 'body',
+        body: `ns:${OPENID_NS}${LINE_FEED}is_valid:false${LINE_FEED}`,
+        headers: { 'content-type': 'text/plain;charset=utf-8' },
+      });
+      return replyFor(w, s);
+    },
+  ],
+];
+
+/** Replies that fail a check of the reply itself, each signed so Steam would vouch for it. */
+const REPLY_CHECKS: ReadonlyArray<readonly [string, ReplyTarget]> = [
+  ['an op_endpoint at localhost', signedEndpoint((e) => e.replace('127.0.0.1', 'localhost'))],
+  ['an op_endpoint with a trailing slash', signedEndpoint((e) => `${e}/`)],
+  ['an op_endpoint with a query', signedEndpoint((e) => `${e}?x=1`)],
+  ['an op_endpoint over https', signedEndpoint((e) => e.replace('http:', 'https:'))],
+  ['an op_endpoint spelt /OpenID/', signedEndpoint((e) => e.replace('/openid/', '/OpenID/'))],
+  [
+    "another sign-in's callback as return_to",
+    async (w, s) => replyFor(w, s, PLAYER, { return_to: (await steamStart(w)).returnTo }),
+  ],
+  [
+    "this sign-in's state under another sign-in's uid as return_to",
+    async (w, s) => {
+      const other = await steamStart(w);
+      return replyFor(w, s, PLAYER, {
+        return_to: `${ISSUER}/interaction/${other.started.uid}/steam?state=${s.callbackState}`,
+      });
+    },
+  ],
+  ['the callback with &x=1 appended', signedReturnTo((s) => `${s.returnTo}&x=1`)],
+  ['the callback without its query', signedReturnTo((s) => s.returnTo.split('?')[0]!)],
+  ['the callback over https', signedReturnTo((s) => s.returnTo.replace('http:', 'https:'))],
+  ['the callback at an IP', signedReturnTo((s) => s.returnTo.replace('localhost', '127.0.0.1'))],
+  ['the callback at another port', signedReturnTo((s) => s.returnTo.replace(':4455/', ':4456/'))],
+  ['no state', browserState(() => [])],
+  [
+    "another sign-in's state",
+    async (w, s) => {
+      const other = await steamStart(w);
+      return editedReply(w, s, (query) => {
+        query.set('state', other.callbackState);
+      });
+    },
+  ],
+  ['the uid as the state', browserState((s) => [s.started.uid])],
+  ['the state twice', browserState((s) => [s.callbackState, s.callbackState])],
+  ['the state, then another', browserState((s) => [s.callbackState, MADE_UP_STATE])],
+  ['another state, then the state', browserState((s) => [MADE_UP_STATE, s.callbackState])],
+  [
+    'the state with one character changed',
+    browserState((s) => [firstCharacterChanged(s.callbackState)]),
+  ],
+  ['a claimed id of 16 digits', claimedAs(`${CLAIMED_ID_PREFIX}${PLAYER.slice(0, 16)}`)],
+  ['a claimed id of 18 digits', claimedAs(`${CLAIMED_ID_PREFIX}${PLAYER}1`)],
+  ['a claimed id over http', claimedAs(`http://steamcommunity.com/openid/id/${PLAYER}`)],
+  ['a claimed id at www', claimedAs(`https://www.steamcommunity.com/openid/id/${PLAYER}`)],
+  ['a claimed id with a trailing slash', claimedAs(`${CLAIMED_ID_PREFIX}${PLAYER}/`)],
+  ['a claimed id ending in a line feed', claimedAs(`${CLAIMED_ID_PREFIX}${PLAYER}${LINE_FEED}`)],
+  ['a fullwidth claimed id', claimedAs(`${CLAIMED_ID_PREFIX}${fullwidthDigits(PLAYER)}`)],
+  ['a claimed id with a prefix before https', claimedAs(`x${CLAIMED_ID_PREFIX}${PLAYER}`)],
+  [
+    'two claimed ids on two lines',
+    claimedAs(`${CLAIMED_ID_PREFIX}${OTHER_PLAYER}${LINE_FEED}${CLAIMED_ID_PREFIX}${PLAYER}`),
+  ],
+  [
+    "another player's identity",
+    (w, s) => replyFor(w, s, PLAYER, { identity: `${CLAIMED_ID_PREFIX}${OTHER_PLAYER}` }),
+  ],
+  [
+    "another player's claimed id",
+    (w, s) => replyFor(w, s, PLAYER, { claimed_id: `${CLAIMED_ID_PREFIX}${OTHER_PLAYER}` }),
+  ],
+];
+
+/** Ways a dev profile stops entitling a Steam player, each with its undoing. */
+const DEV_REVOCATIONS: ReadonlyArray<
+  readonly [string, (w: SteamWorld) => Promise<void>, (w: SteamWorld) => Promise<void>]
+> = [
+  [
+    'the flag set not-entitled',
+    (w) => w.flags.setEntitled(PLAYER, false),
+    (w) => w.flags.setEntitled(PLAYER, true),
+  ],
+  ['the player denied', (w) => w.deny.add(PLAYER), (w) => w.deny.remove(PLAYER)],
+];
+
+/** What Steam may report for PLAYER that does not entitle them. */
+const OWNERSHIP_LOSSES: ReadonlyArray<readonly [string, SteamStubOwnership]> = [
+  ['no licence', { ownsapp: false, permanent: false, sitelicense: false, ownersteamid: '0' }],
+  [
+    "another player's licence",
+    { ownsapp: true, permanent: true, sitelicense: false, ownersteamid: OTHER_PLAYER },
+  ],
+  ['a site licence', { ownsapp: true, permanent: true, sitelicense: true, ownersteamid: PLAYER }],
+  [
+    'a licence that is not permanent',
+    { ownsapp: true, permanent: false, sitelicense: false, ownersteamid: PLAYER },
+  ],
+];
+
+const OWNERSHIP_OUTAGES: ReadonlyArray<readonly [string, SteamStubAnswer]> = [
+  ['answers 500', { kind: 'status', status: 500 }],
+  ['answers a body that is not JSON', { kind: 'body', body: 'not json' }],
+  ['closes the connection', { kind: 'closed' }],
+];
+
+describe('a Steam player signs in through the browser', () => {
+  test('the step sends the browser to Steam with exactly the six parameters, our callback as return_to and our origin as realm, the same address at every look and another state for another sign-in acs-10.1', async () => {
+    const w = await steamWorld();
+    const s = await steamStart(w);
+    expect(s.returnTo).toBe(
+      `http://localhost:4455/interaction/${s.started.uid}/steam?state=${s.callbackState}`,
+    );
+    const again = await call(w, s.jar, 'GET', s.started.path);
+    expect(again.status).toBe(303);
+    expect(again.headers.location).toBe(s.loginUrl);
+    const other = await steamStart(w);
+    expect(other.started.uid).not.toBe(s.started.uid);
+    expect(other.callbackState).not.toBe(s.callbackState);
+    expect(w.stub.requests).toEqual([]);
+  });
+
+  test('an entitled player completes the round trip to a code that exchanges for an ID token verified under /jwks with exactly the named claims, sub steam:<steamid64>, and a refresh token acs-10.1', async () => {
+    freezeAt(T0);
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const signed = await steamSignInToCode(w, PLAYER);
+    const reply = await exchange(w, signed.code, signed.verifier);
+    const tokens = tokensOf(reply);
+    expect(reply.json.token_type).toBe('Bearer');
+    expect(tokens.refresh_token).not.toBe(tokens.access_token);
+    expect(payloadOf(tokens.id_token)).toEqual({
+      iss: ISSUER,
+      sub: 'steam:76561198000000001',
+      aud: CLIENT_ID,
+      mr_ent: ['base-game'],
+      iat: T0_SECONDS,
+      exp: T0_SECONDS + 3600,
+    });
+    await expectSteamIdToken(w, tokens.id_token, 'steam:76561198000000001');
+
+    const checks = w.stub.requests.filter((sent) => sent.path === OPENID_PATH);
+    expect(checks).toHaveLength(1);
+    expect(checks[0]!.method).toBe('POST');
+    expect(String(checks[0]!.headers['content-type'])).toMatch(
+      /^application\/x-www-form-urlencoded/,
+    );
+    const posted = new URLSearchParams(checks[0]!.body);
+    expect(posted.get('openid.mode')).toBe('check_authentication');
+    expect(posted.get('openid.claimed_id')).toBe(
+      'https://steamcommunity.com/openid/id/76561198000000001',
+    );
+    expect(nonceRows(w)).toHaveLength(1);
+    expect(ownershipChecks(w)).toBe(0);
+    expect(w.lines).toEqual([]);
+  });
+
+  test("a second exchange of a Steam sign-in's code is refused and ends its chain, leaving no record of the grant acs-10.1", async () => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const signed = await steamSignInToTokens(w, PLAYER);
+    expect(recordsOfGrant(w, signed.grantId).length).toBeGreaterThan(1);
+    expectInvalidGrant(await exchange(w, signed.code, signed.verifier));
+    expectInvalidGrant(await refresh(w, signed.tokens.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+  });
+
+  test("a Steam sign-in's code presented 60 seconds after it was issued is refused, and one second earlier it is exchanged acs-10.1", async () => {
+    freezeAt(T0);
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const late = await steamSignInToCode(w, PLAYER);
+    vi.setSystemTime(T0 + 60_000);
+    expectInvalidGrant(await exchange(w, late.code, late.verifier));
+
+    vi.setSystemTime(T0 + 120_000);
+    const onTime = await steamSignInToCode(w, PLAYER);
+    vi.setSystemTime(T0 + 179_000);
+    const tokens = tokensOf(await exchange(w, onTime.code, onTime.verifier));
+    await expectSteamIdToken(w, tokens.id_token, PLAYER_SUB);
+  });
+
+  test('the code and tokens of a Steam sign-in are stored under their digests, and a refresh rotates the refresh token, the spent one then ending the chain acs-10.1', async () => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const signed = await steamSignInToCode(w, PLAYER);
+    const tokens = tokensOf(await exchange(w, signed.code, signed.verifier));
+    expectStoredUnderDigest(w, [
+      ['AuthorizationCode', signed.code],
+      ['AccessToken', tokens.access_token],
+      ['RefreshToken', tokens.refresh_token],
+    ]);
+    const rotated = tokensOf(await refresh(w, tokens.refresh_token));
+    expect(rotated.refresh_token).not.toBe(tokens.refresh_token);
+    await expectSteamIdToken(w, rotated.id_token, PLAYER_SUB);
+    expectStoredUnderDigest(w, [['RefreshToken', rotated.refresh_token]]);
+
+    expectInvalidGrant(await refresh(w, tokens.refresh_token));
+    expectInvalidGrant(await refresh(w, rotated.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+  });
+
+  test('five loads of one valid reply at once are one decision: Steam is asked once, one grant is made, every load gets the same redirect, and the resume gives a code acs-10.1', async () => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    w.stub.refuseReplayedAssertions(true);
+    const s = await steamStart(w);
+    const target = replyFor(w, s);
+    const loads = await Promise.all(Array.from({ length: 5 }, () => call(w, s.jar, 'GET', target)));
+    for (const load of loads) {
+      expect(load.status, load.body).toBe(303);
+      expect(load.headers.location).toBe(`${ISSUER}/auth/${s.started.uid}`);
+    }
+    expect(openIdChecks(w)).toBe(1);
+    expect(grantIds(w)).toHaveLength(1);
+
+    const reload = await call(w, s.jar, 'GET', target);
+    expect(reload.status).toBe(303);
+    expect(reload.headers.location).toBe(`${ISSUER}/auth/${s.started.uid}`);
+    expect(openIdChecks(w)).toBe(1);
+    expect(grantIds(w)).toHaveLength(1);
+
+    const code = codeOf(await call(w, s.jar, 'GET', `/auth/${s.started.uid}`), s.started);
+    const tokens = tokensOf(await exchange(w, code, s.started.verifier));
+    await expectSteamIdToken(w, tokens.id_token, PLAYER_SUB);
+  });
+});
+
+describe("a reply that fails one of the reply's checks ends the sign-in", () => {
+  test.each(
+    STEAM_SAYS_INVALID,
+  )('a reply with %s is checked with Steam once and ends the sign-in: the ended page, nothing stored, and no code by any continuation acs-10.2', async (_name, make) => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    await w.flags.setEntitled(OTHER_PLAYER, true);
+    const s = await steamStart(w);
+    await expectEndedBy(w, s, await make(w, s), 1);
+  });
+
+  test.each(
+    REPLY_CHECKS,
+  )('a reply with %s ends the sign-in at once: the ended page, nothing sent to Steam, nothing stored, and no code by any continuation acs-10.2', async (_name, make) => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    await w.flags.setEntitled(OTHER_PLAYER, true);
+    const s = await steamStart(w);
+    await expectEndedBy(w, s, await make(w, s), 0);
+  });
+
+  test('a reply naming a second listener as its op_endpoint reaches neither listener and ends the sign-in acs-10.2', async () => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const second = await startSteamStub();
+    cleanups.push(() => second.close());
+    const s = await steamStart(w);
+    const target = replyFor(w, s, PLAYER, { op_endpoint: second.openIdEndpoint });
+    await expectEndedBy(w, s, target, 0);
+    expect(second.requests).toEqual([]);
+  });
+});
+
+describe('a reused nonce ends the sign-in', () => {
+  test('a reply answered not-owned, presented again on the same sign-in once the player is flagged, gets the ended page and no code by any continuation acs-10.2', async () => {
+    const w = await steamWorld();
+    const s = await steamStart(w);
+    const target = replyFor(w, s);
+    const first = await call(w, s.jar, 'GET', target);
+    expect(first.status).toBe(403);
+    expect(first.body).toBe(notOwnedPage());
+    expect(nonceRows(w)).toHaveLength(1);
+
+    await w.flags.setEntitled(PLAYER, true);
+    const before = rows(w);
+    const again = await call(w, s.jar, 'GET', target);
+    expect(again.status, again.body).toBe(400);
+    expect(again.body).toBe(endedPage());
+    expect(addedRows(w, before)).toEqual([]);
+    expect(nonceRows(w)).toHaveLength(1);
+    await expectEndedForGood(w, s, target);
+
+    // The control: the flag entitles the player on a sign-in of their own with a fresh nonce.
+    const signed = await steamSignInToTokens(w, PLAYER);
+    await expectSteamIdToken(w, signed.tokens.id_token, PLAYER_SUB);
+  });
+
+  test('a new reply signed over the nonce of one answered not-owned, on the same sign-in, gets the ended page and no code by any continuation acs-10.2', async () => {
+    const w = await steamWorld();
+    const s = await steamStart(w);
+    const target = replyFor(w, s);
+    const nonce = String(new URLSearchParams(target.split('?')[1]).get('openid.response_nonce'));
+    expect((await call(w, s.jar, 'GET', target)).status).toBe(403);
+
+    await w.flags.setEntitled(PLAYER, true);
+    const replay = replyFor(w, s, PLAYER, { response_nonce: nonce });
+    expect(replay).not.toBe(target);
+    const before = rows(w);
+    const again = await call(w, s.jar, 'GET', replay);
+    expect(again.status, again.body).toBe(400);
+    expect(again.body).toBe(endedPage());
+    expect(addedRows(w, before)).toEqual([]);
+    await expectEndedForGood(w, s, replay);
+  });
+
+  test("a reply signed over the nonce of another sign-in's reply gets the ended page and no code acs-10.2", async () => {
+    const w = await steamWorld();
+    const first = await steamStart(w);
+    const target = replyFor(w, first);
+    const nonce = String(new URLSearchParams(target.split('?')[1]).get('openid.response_nonce'));
+    expect((await call(w, first.jar, 'GET', target)).status).toBe(403);
+
+    await w.flags.setEntitled(PLAYER, true);
+    const s = await steamStart(w);
+    const replay = replyFor(w, s, PLAYER, { response_nonce: nonce });
+    const before = rows(w);
+    const again = await call(w, s.jar, 'GET', replay);
+    expect(again.status, again.body).toBe(400);
+    expect(again.body).toBe(endedPage());
+    expect(addedRows(w, before)).toEqual([]);
+    await expectEndedForGood(w, s, replay);
+  });
+});
+
+describe('Steam not answering the check of a reply', () => {
+  test('ends the sign-in with the unavailable page, stores no nonce, logs one line holding nothing of the reply, and a new sign-in completes', async () => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const s = await steamStart(w);
+    const target = replyFor(w, s);
+    const query = new URLSearchParams(target.split('?')[1]);
+    w.stub.respondNext('CheckAuthentication', { kind: 'status', status: 500 });
+    const before = rows(w);
+    const answer = await call(w, s.jar, 'GET', target);
+    expect(answer.status, answer.body).toBe(503);
+    expect(answer.body).toBe(unavailablePage());
+    expect(openIdChecks(w)).toBe(1);
+    expect(addedRows(w, before)).toEqual([]);
+    expect(nonceRows(w)).toEqual([]);
+    expect(w.lines).toHaveLength(1);
+    const reply = [
+      String(query.get('openid.sig')),
+      String(query.get('openid.response_nonce')),
+      PLAYER,
+      s.callbackState,
+      s.returnTo,
+    ];
+    for (const value of reply) expect(w.lines[0]).not.toContain(value);
+    await expectEndedForGood(w, s, target);
+
+    const signed = await steamSignInToTokens(w, PLAYER);
+    await expectSteamIdToken(w, signed.tokens.id_token, PLAYER_SUB);
+  });
+});
+
+describe('a Steam player who is not entitled', () => {
+  test('with no flag, a flag set not-entitled, or an entitled flag and a place on the deny-list, gets the not-owned page in the same bytes and nothing stored for a grant acs-10.3', async () => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(OTHER_PLAYER, false);
+    await w.flags.setEntitled(THIRD_PLAYER, true);
+    await w.deny.add(THIRD_PLAYER);
+    for (const steamId of [PLAYER, OTHER_PLAYER, THIRD_PLAYER]) {
+      const s = await steamStart(w);
+      const answer = await call(w, s.jar, 'GET', replyFor(w, s, steamId));
+      expect(answer.status, steamId).toBe(403);
+      expect(answer.body, steamId).toBe(notOwnedPage());
+      expect(answer.headers.location).toBeUndefined();
+      const resumed = await call(w, s.jar, 'GET', `/auth/${s.started.uid}`);
+      expect(resumed.status, steamId).toBe(303);
+      expect(interactionUid(resumed.headers.location)).not.toBe(s.started.uid);
+    }
+    expect(grantIds(w)).toEqual([]);
+    expect(issuedRows(w)).toEqual([]);
+  });
+
+  test('a not-owned answer leaves the sign-in open: once the player is flagged, a fresh reply on it signs in', async () => {
+    const w = await steamWorld();
+    const s = await steamStart(w);
+    expect((await call(w, s.jar, 'GET', replyFor(w, s))).status).toBe(403);
+    await w.flags.setEntitled(PLAYER, true);
+    const back = await call(w, s.jar, 'GET', replyFor(w, s));
+    expect(back.status, back.body).toBe(303);
+    expect(back.headers.location).toBe(`${ISSUER}/auth/${s.started.uid}`);
+    const code = codeOf(await call(w, s.jar, 'GET', `/auth/${s.started.uid}`), s.started);
+    const tokens = tokensOf(await exchange(w, code, s.started.verifier));
+    await expectSteamIdToken(w, tokens.id_token, PLAYER_SUB);
+  });
+
+  test.each(
+    DEV_REVOCATIONS,
+  )("%s between Steam's reply and the resume gives a new sign-in step and no code acs-10.3", async (_name, revoke) => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const s = await steamStart(w);
+    const back = await call(w, s.jar, 'GET', replyFor(w, s));
+    expect(back.status, back.body).toBe(303);
+    await revoke(w);
+    const resumed = await call(w, s.jar, 'GET', `/auth/${s.started.uid}`);
+    expect(resumed.status).toBe(303);
+    expect(interactionUid(resumed.headers.location)).not.toBe(s.started.uid);
+    expect(issuedRows(w)).toEqual([]);
+  });
+});
+
+describe('the entitlement of a Steam sign-in is read again at every issuance', () => {
+  test.each(
+    DEV_REVOCATIONS,
+  )('after a Steam sign-in, %s makes the next refresh fail with every record of the grant gone, and undoing it revives no token of it acs-10.3', async (_name, revoke, restore) => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const signed = await steamSignInToTokens(w, PLAYER);
+    const rotated = tokensOf(await refresh(w, signed.tokens.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId).length).toBeGreaterThan(1);
+    await revoke(w);
+    expectInvalidGrant(await refresh(w, rotated.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+
+    await restore(w);
+    expectInvalidGrant(await refresh(w, rotated.refresh_token));
+    expectInvalidGrant(await refresh(w, signed.tokens.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+    // The control: undone, the player signs in again.
+    await steamSignInToTokens(w, PLAYER);
+  });
+
+  test.each(
+    DEV_REVOCATIONS,
+  )('after a Steam sign-in, %s makes the code exchange fail with every record of the grant gone, undone or not acs-10.3', async (_name, revoke, restore) => {
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const signed = await steamSignInToCode(w, PLAYER);
+    expect(recordsOfGrant(w, signed.grantId).length).toBeGreaterThan(0);
+    await revoke(w);
+    expectInvalidGrant(await exchange(w, signed.code, signed.verifier));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+    await restore(w);
+    expectInvalidGrant(await exchange(w, signed.code, signed.verifier));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+  });
+});
+
+describe('on a production step, the ownership Steam reports decides at every issuance', () => {
+  test.each(
+    OWNERSHIP_LOSSES,
+  )('a player Steam reports with %s gets the not-owned page and nothing stored for a grant acs-10.3', async (_name, ownership) => {
+    const w = await steamWorld({ profile: 'production' });
+    w.stub.setOwnership(PLAYER, ownership);
+    const s = await steamStart(w);
+    const answer = await call(w, s.jar, 'GET', replyFor(w, s));
+    expect(answer.status, answer.body).toBe(403);
+    expect(answer.body).toBe(notOwnedPage());
+    expect(ownershipChecks(w)).toBeGreaterThan(0);
+    const resumed = await call(w, s.jar, 'GET', `/auth/${s.started.uid}`);
+    expect(resumed.status).toBe(303);
+    expect(interactionUid(resumed.headers.location)).not.toBe(s.started.uid);
+    expect(grantIds(w)).toEqual([]);
+    expect(issuedRows(w)).toEqual([]);
+  });
+
+  test.each(
+    OWNERSHIP_LOSSES,
+  )('after a sign-in, Steam reporting %s makes the next refresh fail with every record of the grant gone, and owning it again revives nothing acs-10.3', async (_name, ownership) => {
+    const w = await steamWorld({ profile: 'production' });
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    const signed = await steamSignInToTokens(w, PLAYER);
+    await expectSteamIdToken(w, signed.tokens.id_token, PLAYER_SUB);
+    const rotated = tokensOf(await refresh(w, signed.tokens.refresh_token));
+    w.stub.setOwnership(PLAYER, ownership);
+    expectInvalidGrant(await refresh(w, rotated.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    expectInvalidGrant(await refresh(w, rotated.refresh_token));
+    expectInvalidGrant(await refresh(w, signed.tokens.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+  });
+
+  test.each(
+    OWNERSHIP_LOSSES,
+  )('after a sign-in, Steam reporting %s makes the code exchange fail with every record of the grant gone acs-10.3', async (_name, ownership) => {
+    const w = await steamWorld({ profile: 'production' });
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    const signed = await steamSignInToCode(w, PLAYER);
+    w.stub.setOwnership(PLAYER, ownership);
+    expectInvalidGrant(await exchange(w, signed.code, signed.verifier));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    expectInvalidGrant(await exchange(w, signed.code, signed.verifier));
+  });
+
+  test('an owner on the deny-list gets the not-owned page, and denying an owner after a sign-in ends the chain, allowed again or not acs-10.3', async () => {
+    const w = await steamWorld({ profile: 'production' });
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    w.stub.setOwnership(OTHER_PLAYER, owned(OTHER_PLAYER));
+    await w.deny.add(OTHER_PLAYER);
+    const s = await steamStart(w);
+    const answer = await call(w, s.jar, 'GET', replyFor(w, s, OTHER_PLAYER));
+    expect(answer.status, answer.body).toBe(403);
+    expect(answer.body).toBe(notOwnedPage());
+    expect(grantIds(w)).toEqual([]);
+
+    const signed = await steamSignInToTokens(w, PLAYER);
+    await w.deny.add(PLAYER);
+    expectInvalidGrant(await refresh(w, signed.tokens.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+    await w.deny.remove(PLAYER);
+    expectInvalidGrant(await refresh(w, signed.tokens.refresh_token));
+  });
+
+  test.each(
+    OWNERSHIP_OUTAGES,
+  )('an ownership check that %s at a refresh is a server error that revokes nothing, and the same refresh token works once Steam answers acs-10.3', async (_name, outage) => {
+    const w = await steamWorld({ profile: 'production' });
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    const signed = await steamSignInToTokens(w, PLAYER);
+    const before = recordsOfGrant(w, signed.grantId).length;
+    expect(before).toBeGreaterThan(1);
+    w.stub.respondNext('CheckAppOwnership', outage);
+    const failed = await refresh(w, signed.tokens.refresh_token);
+    expect(failed.status, JSON.stringify(failed.json)).toBeGreaterThanOrEqual(500);
+    expect(failed.status).toBeLessThan(600);
+    expect(failed.json.error).toBe('server_error');
+    expect(failed.json).not.toHaveProperty('id_token');
+    expect(recordsOfGrant(w, signed.grantId)).toHaveLength(before);
+
+    const next = tokensOf(await refresh(w, signed.tokens.refresh_token));
+    await expectSteamIdToken(w, next.id_token, PLAYER_SUB);
+  });
+});
+
+describe('one player through the ticket grant and through the browser', () => {
+  test.each([
+    ['local-dev'],
+    ['production'],
+  ] as const)('on %s gets ID tokens with one sub, steam:<steamid64> acs-10.4', async (profile) => {
+    const w = await steamWorld({ profile, ticketGrant: true });
+    await entitle(w, PLAYER);
+    const browser = await steamSignInToTokens(w, PLAYER);
+    const fromBrowser = await expectSteamIdToken(w, browser.tokens.id_token, PLAYER_SUB);
+    const fromTicket = await expectSteamIdToken(w, await ticketIdToken(w, PLAYER), PLAYER_SUB);
+    expect(fromTicket.sub).toBe(fromBrowser.sub);
+    expect(fromBrowser.sub).toBe('steam:76561198000000001');
+  });
+});
+
+describe('a dev profile', () => {
+  test('without Steam offers the password form alone, the same bytes as before, answers its Steam callback 404 and writes and asks nothing acs-10.5', async () => {
+    const w = await steamWorld({ signIn: 'dev-password', withSteam: false });
+    const jar = newJar();
+    const started = await begin(w, jar);
+    const page = await call(w, jar, 'GET', started.path);
+    expect(page.status).toBe(200);
+    expect(page.body).toBe(signInPage({ action: started.path }));
+    expect(page.body).not.toMatch(/<a[\s>]/);
+
+    const before = rows(w);
+    const callback = `${started.path}/steam?state=${MADE_UP_STATE}&openid.mode=id_res`;
+    const answer = await call(w, jar, 'GET', callback);
+    expect(answer.status).toBe(404);
+    expect(rows(w)).toEqual(before);
+    expect(w.stub.requests).toEqual([]);
+
+    const who = await person(w);
+    const signed = await signInToTokens(w, who);
+    expectIdTokenClaims(signed.tokens.id_token, who);
+  });
+
+  test("with Steam offers the form and one link to Steam's login address, and the password sign-in still works beside it acs-10.5", async () => {
+    const w = await steamWorld({ signIn: 'dev-password' });
+    const s = await steamStart(w);
+    expect(s.loginUrl.startsWith(`${w.stub.openIdEndpoint}?`)).toBe(true);
+    const who = await person(w);
+    const tokens = await passwordSignInBesideSteam(w, who);
+    expectIdTokenClaims(tokens.id_token, who);
+    expect(w.stub.requests).toEqual([]);
+  });
+
+  test('a Steam sign-in there is entitled by the dev flag alone: a licence Steam would report, with no flag or a flag set not-entitled, gets the not-owned page, and Steam is never asked about ownership acs-10.5', async () => {
+    const w = await steamWorld({ signIn: 'dev-password' });
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    for (const flag of ['none', 'not-entitled'] as const) {
+      if (flag === 'not-entitled') await w.flags.setEntitled(PLAYER, false);
+      const s = await steamStart(w);
+      const answer = await call(w, s.jar, 'GET', replyFor(w, s));
+      expect(answer.status, flag).toBe(403);
+      expect(answer.body, flag).toBe(notOwnedPage());
+      const resumed = await call(w, s.jar, 'GET', `/auth/${s.started.uid}`);
+      expect(resumed.status, flag).toBe(303);
+      expect(interactionUid(resumed.headers.location)).not.toBe(s.started.uid);
+    }
+    expect(grantIds(w)).toEqual([]);
+    expect(ownershipChecks(w)).toBe(0);
+  });
+
+  test('a Steam player the dev flag entitles signs in there with no licence at Steam, and the flag alone ends the chain at a refresh, Steam never asked about ownership acs-10.5', async () => {
+    const w = await steamWorld({ signIn: 'dev-password' });
+    await w.flags.setEntitled(PLAYER, true);
+    const signed = await steamSignInToTokens(w, PLAYER);
+    await expectSteamIdToken(w, signed.tokens.id_token, PLAYER_SUB);
+    const rotated = tokensOf(await refresh(w, signed.tokens.refresh_token));
+    w.stub.setOwnership(PLAYER, owned(PLAYER));
+    await w.flags.setEntitled(PLAYER, false);
+    expectInvalidGrant(await refresh(w, rotated.refresh_token));
+    expect(recordsOfGrant(w, signed.grantId)).toEqual([]);
+    expect(ownershipChecks(w)).toBe(0);
+  });
+
+  test('with Steam, each kind of account is read from its own source at a refresh: a dev: subject from the password accounts, a steam: subject from the dev flag acs-10.5', async () => {
+    const w = await steamWorld({ signIn: 'dev-password' });
+    await w.flags.setEntitled(PLAYER, true);
+    const dev = await person(w);
+    const devChain = await passwordSignInBesideSteam(w, dev);
+    const steamChain = await steamSignInToTokens(w, PLAYER);
+
+    await w.accounts.setEntitled(dev.email, false);
+    expectInvalidGrant(await refresh(w, devChain.refresh_token));
+    const steamNext = tokensOf(await refresh(w, steamChain.tokens.refresh_token));
+    await expectSteamIdToken(w, steamNext.id_token, PLAYER_SUB);
+
+    const otherDev = await person(w);
+    const otherChain = await passwordSignInBesideSteam(w, otherDev);
+    await w.flags.setEntitled(PLAYER, false);
+    expectInvalidGrant(await refresh(w, steamNext.refresh_token));
+    expectIdTokenClaims(tokensOf(await refresh(w, otherChain.refresh_token)).id_token, otherDev);
+    expect(ownershipChecks(w)).toBe(0);
+  });
+});
+
+describe('the time of a Steam sign-in', () => {
+  test('the code, every refresh token and an ID token asked for with max_age carry the second the reply was checked, however late the resume', async () => {
+    freezeAt(T0);
+    const w = await steamWorld();
+    await w.flags.setEntitled(PLAYER, true);
+    const s = await steamStart(w, { max_age: '3600' });
+    vi.setSystemTime(T0 + 5000);
+    const back = await call(w, s.jar, 'GET', replyFor(w, s));
+    expect(back.status, back.body).toBe(303);
+
+    vi.setSystemTime(T0 + 40_000);
+    const code = codeOf(await call(w, s.jar, 'GET', `/auth/${s.started.uid}`), s.started);
+    expect(storedPayload(w, 'AuthorizationCode', code).authTime).toBe(T0_SECONDS + 5);
+
+    vi.setSystemTime(T0 + 41_000);
+    const tokens = tokensOf(await exchange(w, code, s.started.verifier));
+    const payload = payloadOf(tokens.id_token);
+    expect(payload.sub).toBe(PLAYER_SUB);
+    expect(payload.auth_time).toBe(T0_SECONDS + 5);
+    expect(payload.iat).toBe(T0_SECONDS + 41);
+    expect(storedPayload(w, 'RefreshToken', tokens.refresh_token).authTime).toBe(T0_SECONDS + 5);
+
+    vi.setSystemTime(T0 + 600_000);
+    const rotated = tokensOf(await refresh(w, tokens.refresh_token));
+    expect(storedPayload(w, 'RefreshToken', rotated.refresh_token).authTime).toBe(T0_SECONDS + 5);
+  });
+
+  test("a password reset of a dev account in a later second ends that account's chain and leaves a Steam player's code and chain working", async () => {
+    freezeAt(T0);
+    const w = await steamWorld({ signIn: 'dev-password' });
+    await w.flags.setEntitled(PLAYER, true);
+    const someone = await person(w);
+    const theirs = await passwordSignInBesideSteam(w, someone);
+    const chain = await steamSignInToTokens(w, PLAYER);
+    const held = await steamSignInToCode(w, PLAYER);
+
+    vi.setSystemTime(T0 + 1000);
+    await w.accounts.resetPassword(someone.email);
+    vi.setSystemTime(T0 + 2000);
+    expectInvalidGrant(await refresh(w, theirs.refresh_token));
+    const rotated = tokensOf(await refresh(w, chain.tokens.refresh_token));
+    await expectSteamIdToken(w, rotated.id_token, PLAYER_SUB);
+    tokensOf(await refresh(w, rotated.refresh_token));
+    const exchanged = tokensOf(await exchange(w, held.code, held.verifier));
+    await expectSteamIdToken(w, exchanged.id_token, PLAYER_SUB);
   });
 });

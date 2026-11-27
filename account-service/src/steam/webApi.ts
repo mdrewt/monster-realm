@@ -253,7 +253,8 @@ function checkedOrigin(baseUrl: string): string {
   return baseUrl;
 }
 
-function isTimeout(error: unknown): boolean {
+/** Whether a failed exchange ran out of its `AbortSignal.timeout`. */
+export function isTimeout(error: unknown): boolean {
   return (error as { readonly name?: unknown } | null)?.name === 'TimeoutError';
 }
 
@@ -261,7 +262,7 @@ function isTimeout(error: unknown): boolean {
  * The body as text, or undefined when it is longer than the cap or not UTF-8. It counts the
  * bytes as they are decoded and stops reading at the cap, whatever length the answer declared.
  */
-async function readCapped(response: Response): Promise<string | undefined> {
+export async function readCapped(response: Response): Promise<string | undefined> {
   if (response.body === null) return '';
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
