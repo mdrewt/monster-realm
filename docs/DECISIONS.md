@@ -349,7 +349,7 @@ or a deadline and computed from elapsed time when next read. In a world with nob
 no `movement_tick` runs, and the one schedule that keeps running is the 60 s heartbeat, which
 writes no row: every reaper is a one-shot armed when something is owed, and one that bounds a
 table by age holds at most one row, at the oldest row's expiry, re-armed no sooner than its fixed
-delay. Decided, not built (lpw-26, designed and measured in `docs/refactors/idle-tick.md`): an
+delay. Decided, not built (designed and measured in `docs/refactors/idle-tick.md`): an
 NPC's step is written once, at rest, and the interval row stays, with nothing else about the tick
 changed; removing the ticks that move nothing waits on the operator and, if built, rewrites this
 entry.
