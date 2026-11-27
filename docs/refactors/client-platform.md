@@ -70,9 +70,13 @@ owns it.
 | `client/src/main.ts` | module scope | `window.` (`error`, `unhandledrejection`) | error capture |
 | `client/src/main.ts` | `main` | `requestAnimationFrame` | frame clock |
 | `client/src/main.ts` | module scope | `window.` (`__game`, `__mrTrade`, `__mrPvp`, `__mrTactics` under `import.meta.env` `DEV`; `__mrBuild`) | debug hooks |
+| `client/src/net/connection.ts` | `connect` (`build`) | the SDK's WebSocket, opened by `DbConnection.builder().withUri(…)` to the target's address | network |
+| `client/src/observability/telemetry.ts` | `loadOtelSdk` | the metrics exporter's HTTP request to the build's endpoint, made only toward an `official` or `test` target | network |
+| `client/src/render/world.ts` | `WorldRenderer` | Pixi's `Assets.load` of the art atlases, from the page's own origin | network |
 
 No file reads or requests fullscreen, and no file calls Steam; the store entry above is the only
-Steam-related reach.
+Steam-related reach. The wasm module and the bundle's own chunks load from the page's origin like
+the art.
 
 ### 1.3 Concerns, their ports and what each adapter provides
 
@@ -101,6 +105,7 @@ about a shell comes from its documentation unless it says "unverified"; none was
 | error capture | none: `main.ts` registers the DOM events | `error`, `unhandledrejection` on `window` | same web API | same web API |
 | frame clock | none | `requestAnimationFrame` | same web API | same web API |
 | debug hooks | none: assignments in `main.ts`, the four hooks only in a development build | properties of `window` | same web API | same web API |
+| network | none: the SDK, the exporter and Pixi open their own connections | the page's origin and the configured addresses | the app protocol serves the bundle and its art; the shell's content security policy names the world's server in `connect-src` | the same, through Tauri's protocol and its content security policy |
 
 ### 1.4 Ports with no call site today
 
