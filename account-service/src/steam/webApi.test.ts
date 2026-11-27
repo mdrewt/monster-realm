@@ -968,15 +968,15 @@ describe('what the client logs', () => {
         expect(outcomeOf(result), `${call}: ${expected}`).toBe(expected);
         expect(target.requests.length - requestsBefore, `${call}: ${expected}`).toBe(requests);
         const added = lines.slice(linesBefore);
-        const reason =
-          result.kind === 'failed' ? (result.error as SteamApiError).reason : undefined;
-        if (reason !== undefined && LOGGED_REASONS.includes(reason)) {
+        const error = result.kind === 'failed' ? (result.error as SteamApiError) : undefined;
+        const reason = error?.reason;
+        if (error !== undefined && reason !== undefined && LOGGED_REASONS.includes(reason)) {
           failures += 1;
           expect(added, `${call}: ${expected}`).toHaveLength(1);
           expect(added[0]).toContain(call);
           expect(added[0]).toContain(reason);
           if (reason === 'status') {
-            expect(added[0]).toContain(String((result.error as SteamApiError).status));
+            expect(added[0]).toContain(String(error.status));
           }
         } else {
           expect(added, `${call}: ${expected}`).toEqual([]);
